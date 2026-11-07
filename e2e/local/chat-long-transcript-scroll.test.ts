@@ -40,6 +40,17 @@ const TAIL_MARKER = "long-chat-tail-marker"
 const ROW_MARKER = "long-chat-row"
 /** A row may not move by more than this (px) across an expansion or a click. */
 const JUMP_TOLERANCE = 2
+/** One wheel notch of the scroll-up walk. */
+const WHEEL_STEP = 1_200
+/**
+ * Chromium does not deliver `mouse.wheel(0, 1200)` as exactly 1200 px of
+ * scroll — it normalises the delta, and the amount it lands on varies a little
+ * between runs (1186.5 and 1205 observed). A row that keeps its place under the
+ * reader moves by the wheel's distance, so the comparison needs a few percent
+ * of slack. A second, unowned correction is orders of magnitude larger: it
+ * moves the row by the whole expansion height, thousands of px.
+ */
+const WHEEL_TOLERANCE = Math.round(WHEEL_STEP * 0.04)
 /**
  * Slack for `scrollTop` while pinned to the bottom of the transcript: the
  * container clamps against `maxScroll`, so a height-estimate correction of a
@@ -411,6 +422,20 @@ async function pickVisibleWorkedAboveTail(page: Page, tailWindow = TAIL_WINDOW):
   return "gave-up"
 }
 
+/**
+ * Height of the turn row that owns the picked header. Used to prove the click
+ * actually opened the group — a header that stays put because nothing happened
+ * would pass the position assertion for the wrong reason.
+ */
+async function pickedRowHeight(page: Page): Promise<number | null> {
+  return page.evaluate(() => {
+    const header = document.querySelector('[data-e2e-pick="1"]') as HTMLElement | null
+    if (!header) return null
+    const row = header.closest('[data-testid^="turn-row-"]') as HTMLElement | null
+    return row ? row.getBoundingClientRect().height : null
+  })
+}
+
 async function openLongChat(page: Page, turns = TURN_COUNT): Promise<LongChatState> {
   const state = await installLongChat(page, turns)
   await openTeamHome(page)
@@ -448,11 +473,29 @@ test.describe("a long chat scrolls like a short one", () => {
     for (let attempt = 0; attempt < 60; attempt++) {
       const before = await scrollTop(page)
       if (before <= JUMP_TOLERANCE) break
-      await wheel(page, -1_200, 1, 200)
+      const anchor = await anchorRow(page)
+      const mountedBefore = (await mountedRows(page)).length
+      await wheel(page, -WHEEL_STEP, 1, 200)
       const after = await scrollTop(page)
-      expect(after, "wheeling up moved the transcript down").toBeLessThanOrEqual(
-        before + JUMP_TOLERANCE,
-      )
+      const mountedAfter = (await mountedRows(page)).length
+      if (mountedAfter > mountedBefore && anchor) {
+        // A page of history mounted above the reader. `scrollTop` legitimately
+        // *increases* here — the correction keeps the same content on screen —
+        // so the invariant is that the row under the reader moved by the wheel's
+        // distance and no more. A second, unowned correction (the browser's
+        // anchoring, or a gap counted twice) shows up as a much larger move.
+        const top = await rowTop(page, anchor.id)
+        if (top !== null) {
+          expect(
+            Math.abs(top - anchor.top - WHEEL_STEP),
+            `an expansion moved the row under the reader ${top - anchor.top}px for a ${WHEEL_STEP}px wheel step`,
+          ).toBeLessThanOrEqual(WHEEL_TOLERANCE)
+        }
+      } else {
+        expect(after, "wheeling up moved the transcript down").toBeLessThanOrEqual(
+          before + JUMP_TOLERANCE,
+        )
+      }
     }
 
     expect(await scrollTop(page), "the transcript never reached the first turn").toBeLessThanOrEqual(
@@ -468,7 +511,7 @@ test.describe("a long chat scrolls like a short one", () => {
     // And back down.
     for (let attempt = 0; attempt < 80; attempt++) {
       const before = await scrollTop(page)
-      await wheel(page, 1_200, 1, 200)
+      await wheel(page, WHEEL_STEP, 1, 200)
       const after = await scrollTop(page)
       expect(after, "wheeling down moved the transcript up").toBeGreaterThanOrEqual(
         before - JUMP_TOLERANCE,
@@ -595,7 +638,7 @@ test.describe("a long chat scrolls like a short one", () => {
     for (let attempt = 0; attempt < 20; attempt++) {
       mountedAbove = (await mountedRows(page)).length
       if (mountedAbove > TAIL_WINDOW) break
-      await wheel(page, -1_200, 1, 250)
+      await wheel(page, -WHEEL_STEP, 1, 250)
     }
     expect(
       mountedAbove,
@@ -615,8 +658,15 @@ test.describe("a long chat scrolls like a short one", () => {
     const aboveBefore = (await aboveHeader.boundingBox())!
     const aboveTop = await scrollTop(page)
     const rowsBefore = (await mountedRows(page)).length
+    const rowHeightBefore = await pickedRowHeight(page)
 
-    await aboveHeader.click()
+    // Click at the header's own coordinates rather than `locator.click()`:
+    // Playwright's click scrolls the element into view first, and that scroll
+    // is exactly what this assertion measures (SHO-359).
+    await page.mouse.click(
+      aboveBefore.x + aboveBefore.width / 2,
+      aboveBefore.y + aboveBefore.height / 2,
+    )
     await expect(
       page.locator('[data-testid="collapsible-plain-body"]').first(),
     ).toBeVisible({ timeout: 10_000 })
@@ -631,10 +681,19 @@ test.describe("a long chat scrolls like a short one", () => {
     }
 
     const aboveAfter = (await aboveHeader.boundingBox())!
+    const rowHeightAfter = await pickedRowHeight(page)
     console.log(
       `[sho-359] above-tail group: headerY ${aboveBefore.y.toFixed(1)} -> ${aboveAfter.y.toFixed(1)}, ` +
-        `scrollTop ${aboveTop} -> ${await scrollTop(page)}, rows ${rowsBefore} -> ${(await mountedRows(page)).length} | ${samples.join(" ; ")}`,
+        `scrollTop ${aboveTop} -> ${await scrollTop(page)}, rows ${rowsBefore} -> ${(await mountedRows(page)).length}, ` +
+        `rowHeight ${rowHeightBefore} -> ${rowHeightAfter} | ${samples.join(" ; ")}`,
     )
+    // The click must have opened the group, or the position assertion below
+    // would pass because nothing happened at all.
+    expect(rowHeightBefore, "the picked row had no height").not.toBeNull()
+    expect(
+      rowHeightAfter! - rowHeightBefore!,
+      "clicking the work group did not open it",
+    ).toBeGreaterThan(20)
     expect(
       Math.abs(aboveAfter.y - aboveBefore.y),
       `an expanded group above the tail window moved its header ${aboveAfter.y - aboveBefore.y}px`,
@@ -658,7 +717,7 @@ test.describe("a long chat scrolls like a short one", () => {
     // And it scrolls to the first turn like it always did.
     for (let attempt = 0; attempt < 20; attempt++) {
       if ((await scrollTop(page)) <= JUMP_TOLERANCE) break
-      await wheel(page, -1_200, 1, 150)
+      await wheel(page, -WHEEL_STEP, 1, 150)
     }
     expect(await scrollTop(page)).toBeLessThanOrEqual(JUMP_TOLERANCE)
     await expect(page.getByText(HEAD_MARKER, { exact: false }).first()).toBeVisible()
