@@ -145,8 +145,10 @@ describe('the workspace agent screen opens from the device', () => {
       screen.indexOf('const applyBoot = (record'),
       screen.indexOf('const loadWorkspaceChat = useCallback'),
     )
-    expect(read).toContain('}, [bootKey, initialSessionId, startNewSession])')
-    expect(read).not.toContain('workspaces')
+    expect(read).toContain('}, [bootKey, initialSessionId, startNewSession, workspace?.kind])')
+    // The MST workspaces collection (a new array every render) must not be in the
+    // dep array — it would cancel and restart the IDB read on every render.
+    expect(read).not.toMatch(/,\s*workspaces[,\]]/)
   })
 
   test('the workspace survives the collection being between answers', () => {
@@ -168,6 +170,20 @@ describe('the workspace agent screen opens from the device', () => {
 
   test('a successful load answers the next open', () => {
     expect(screen).toContain('rememberWorkspaceChatBoot<PersonalAgentProfile>(bootKey, {')
+  })
+
+  test('applyBoot applies the session for personal workspaces even when startNewSession=true (SHO-364)', () => {
+    // The home landing passes `startNewSession` for every workspace kind, but
+    // `agentSessionSource` returns 'new' only for team workspaces. For a
+    // personal workspace the session source is always 'primary', so the boot
+    // sessionId is the right chat to resume. `!startNewSession` as a flat
+    // guard blocked it, leaving sessionId=null after the IDB read while
+    // profile was already applied — `workspaceChatLoadingView` then returned
+    // 'spinner' and "Preparing Workspace Agent Chat…" flashed (SHO-364).
+    // The guard now checks `!(startNewSession && workspace?.kind === 'team')`.
+    const boot = screen.slice(screen.indexOf('const applyBoot = (record'), screen.indexOf('if (!bootKey) return'))
+    expect(boot).not.toContain('!startNewSession')
+    expect(boot).toContain("!(startNewSession && workspace?.kind === 'team')")
   })
 })
 

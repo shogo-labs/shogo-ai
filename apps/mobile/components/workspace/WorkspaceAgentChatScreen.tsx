@@ -320,11 +320,20 @@ export const WorkspaceAgentChatScreen = observer(
         if (!record) return
         const shown = shownIdentity.current
         if (record.profile && !shown.profile) setProfile(record.profile)
+        // `startNewSession` only means "create a fresh session" for team
+        // workspaces — `agentSessionSource` returns 'new' only when
+        // `startNewSession && kind === 'team'`. For a personal workspace the
+        // source is always 'primary', so the boot sessionId is the correct
+        // chat to resume and must be applied. Blocking it here left
+        // `sessionId = null` after the IDB read while `profile` was already
+        // set, producing a render with `hasProfile=true, hasSession=false,
+        // bootPending=false` → `workspaceChatLoadingView` returned 'spinner'
+        // → "Preparing Workspace Agent Chat…" flashed (SHO-364).
         if (
           record.sessionId &&
           !shown.sessionId &&
           !initialSessionId &&
-          !startNewSession
+          !(startNewSession && workspace?.kind === 'team')
         ) {
           setSessionId(record.sessionId)
         }
@@ -350,7 +359,7 @@ export const WorkspaceAgentChatScreen = observer(
       return () => {
         cancelled = true
       }
-    }, [bootKey, initialSessionId, startNewSession])
+    }, [bootKey, initialSessionId, startNewSession, workspace?.kind])
 
     const loadWorkspaceChat = useCallback(async () => {
       avatarStreaming.current = false
