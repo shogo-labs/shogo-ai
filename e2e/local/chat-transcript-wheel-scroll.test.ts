@@ -2,20 +2,17 @@ import { test, expect, type Page, type Route } from "@playwright/test"
 import { openTeamHome } from "./helpers"
 
 /**
- * SHO-365 — a wheel aimed at reply content must move the transcript.
+ * SHO-365 — a wheel over reply content must move the transcript.
  *
- * Measured in Chromium: a box with vertical overflow *around* the text under the
- * pointer takes the gesture for itself and the transcript moves 0 px for a −100
- * notch, while the same box anywhere else in the reply leaves the transcript
- * scrolling normally. So no box inside a reply may be a vertical scroll
- * container.
+ * Streamdown gives its table box `overflow-x-auto overflow-y-auto` and an inline
+ * `max-height: 300px`. A table longer than that becomes a vertical scroller of
+ * its own, and a wheel aimed at any cell is spent inside it: the transcript does
+ * not move while the pointer is over the table, while the same gesture over the
+ * gutter scrolls the chat. Measured in Chromium on `main` at this size, the
+ * transcript moved 0 px for a −100 notch.
  *
- * Streamdown asks its table wrapper for `overflow-x-auto overflow-y-auto`. In
- * our Tailwind build those utilities produce no CSS (computed `overflow-y` is
- * `visible`), but a single generated rule would turn the wrapper into exactly
- * the box above, so the vertical axis is clipped explicitly and this spec holds
- * it there. The height is forced short here to prove the wheel still reaches the
- * transcript with the pointer over a table cell.
+ * The table below is deliberately taller than the cap, so the spec is red on
+ * `main` and green once the box stops capping and clipping itself.
  */
 
 test.setTimeout(300_000)
@@ -26,15 +23,12 @@ const MESSAGES_GLOB = "**/api/chat-messages**"
 
 const CELL_TEXT = "CELLPROBE the wheel is aimed at this table cell"
 
-const REPLY = [
-  `## Table probe`,
-  ``,
-  `| column | probe |`,
-  `| ------ | ----- |`,
-  `| a | ${CELL_TEXT} |`,
-  `| b | second row |`,
-  `| c | third row |`,
-].join("\n")
+const TABLE_ROWS = Array.from(
+  { length: 26 },
+  (_, i) => `| row ${i} | ${i === 4 ? CELL_TEXT : `value ${i}`} |`,
+)
+
+const REPLY = [`## Table probe`, ``, `| column | probe |`, `| ------ | ----- |`, ...TABLE_ROWS].join("\n")
 
 function sse(events: Record<string, unknown>[]): string {
   return events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("")
@@ -101,51 +95,44 @@ const SCROLLER = `(() => {
   return all.find((el) => getComputedStyle(el).overflowY === 'auto' && el.scrollHeight - el.clientHeight > 100) || null
 })()`
 
-test("a wheel over a table cell scrolls the transcript", async ({ page }) => {
+test("a wheel over a tall table cell scrolls the transcript", async ({ page }) => {
   await install(page)
   await openTeamHome(page)
   const composer = page
     .getByTestId("home-composer-input")
     .or(page.getByRole("textbox", { name: "Describe the agent you want to build" }))
   await composer.click()
-  await composer.fill("table wheel probe")
+  await composer.fill("tall table wheel probe")
   await page.keyboard.press("Enter")
   await page.waitForURL(/\/projects\//, { timeout: 60_000 })
   await expect(page.getByText("CELLPROBE", { exact: false }).first()).toBeVisible({ timeout: 150_000 })
 
-  const wrapper = await page.evaluate(() => {
-    const cell = [...document.querySelectorAll('[data-streamdown="table-cell"]')].find((el) =>
-      (el.textContent || "").includes("CELLPROBE"),
-    ) as HTMLElement | undefined
-    const box = cell?.closest('[data-streamdown="table-wrapper"]') as HTMLElement | null
-    if (!box) return null
-    const style = getComputedStyle(box)
-    return {
-      overflowY: style.overflowY,
-      range: box.scrollHeight - box.clientHeight,
-      height: box.clientHeight,
-      content: box.scrollHeight,
-    }
-  })
-  expect(wrapper, "Streamdown renders a table wrapper").toBeTruthy()
-  console.log("WRAPPER", JSON.stringify(wrapper))
-
-  // The wrapper is never a vertical scroller, whatever overflow it holds.
-  expect(wrapper!.overflowY).toBe("clip")
-
-  // Force the couple of pixels of vertical overflow that make it one.
   const point = await page.evaluate(() => {
     const cell = [...document.querySelectorAll('[data-streamdown="table-cell"]')].find((el) =>
       (el.textContent || "").includes("CELLPROBE"),
     ) as HTMLElement
-    const box = cell.closest('[data-streamdown="table-wrapper"]') as HTMLElement
-    box.style.height = `${Math.max(12, box.scrollHeight - 3)}px`
     cell.scrollIntoView({ block: "center" })
     const r = cell.getBoundingClientRect()
-    return { x: r.x + Math.min(r.width / 2, 40), y: r.y + r.height / 2, range: box.scrollHeight - box.clientHeight }
+    return { x: r.x + Math.min(r.width / 2, 40), y: r.y + r.height / 2 }
   })
-  console.log("RANGE", point.range)
   await page.waitForTimeout(300)
+
+  const box = await page.evaluate(() => {
+    const cell = [...document.querySelectorAll('[data-streamdown="table-cell"]')].find((el) =>
+      (el.textContent || "").includes("CELLPROBE"),
+    ) as HTMLElement
+    const outer = cell.closest('[data-streamdown="table-wrapper"]') as HTMLElement
+    const wrapper = outer.firstElementChild as HTMLElement
+    const style = getComputedStyle(wrapper)
+    return {
+      overflowY: style.overflowY,
+      maxHeight: style.maxHeight,
+      height: wrapper.clientHeight,
+      content: wrapper.scrollHeight,
+      range: wrapper.scrollHeight - wrapper.clientHeight,
+    }
+  })
+  console.log("TABLEBOX", JSON.stringify(box))
 
   const before = (await page.evaluate(SCROLLER + "?.scrollTop ?? null")) as number
   await page.mouse.move(point.x, point.y)
@@ -154,5 +141,12 @@ test("a wheel over a table cell scrolls the transcript", async ({ page }) => {
   const after = (await page.evaluate(SCROLLER + "?.scrollTop ?? null")) as number
 
   console.log("WHEEL", JSON.stringify({ before, after, moved: after - before }))
+
+  // The table box renders the whole table instead of scrolling inside itself.
+  // (`clip` on the vertical axis computes to `hidden` next to `overflow-x: auto`;
+  // neither is user-scrollable, which is the point.)
+  expect(["hidden", "clip"]).toContain(box.overflowY)
+  expect(box.maxHeight).toBe("none")
+  // The gesture reached the transcript instead of dying inside the table box.
   expect(after - before).toBeLessThanOrEqual(-90)
 })

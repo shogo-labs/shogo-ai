@@ -143,15 +143,16 @@
   border-color: var(--md-border) !important;
 }
 
-/* SHO-365: a table only ever needs to scroll sideways. Streamdown's wrapper
- * asks for `overflow-x-auto overflow-y-auto`; the vertical scroller is not
- * wanted and it costs the reader the transcript — the box takes the wheel for
- * the couple of pixels its last row or a descender overflows by, and the chat
- * stops moving while the pointer is over a table. `overflow-x: auto` on its
- * own would have the same effect (a `visible` other axis computes to `auto`),
- * so the vertical axis is explicitly clipped. A wrapper that does cap its
- * height keeps its own scrolling. */
-.chat-md [data-streamdown="table-wrapper"]:not([style*="max-height"]) {
+/* SHO-365: a table in a reply is as tall as it is, and it only ever scrolls
+ * sideways. Streamdown's table box asks for `overflow-x-auto overflow-y-auto`
+ * and caps itself at `max-height: 300px`, which makes a long table a vertical
+ * scroller of its own: a wheel over any cell is spent inside that box, so the
+ * transcript stops moving while the pointer is over a table while the same
+ * gesture over the gutter scrolls the chat. The cap is dropped here so the
+ * whole table renders into the transcript, which is the box that should scroll.
+ * (`overflow-x` keeps its own horizontal scrolling.) */
+.chat-md [data-streamdown="table-wrapper"] > div {
+  max-height: none !important;
   overflow-y: clip !important;
 }
 
