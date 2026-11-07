@@ -7192,6 +7192,9 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
       cleanupRelay()
       if (err instanceof BrowserPoolTimeoutError) throw err
       if (process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN) {
+        // A relay-reported protocol mismatch already names both versions and the
+        // fix; appending the generic "is it installed?" hint would bury it.
+        if (/protocol/i.test(err.message)) throw err
         throw new Error(
           `Failed to connect to browser via extension: ${err.message}. ` +
             'Make sure Chrome is running with the "Playwright MCP Bridge" extension installed, ' +

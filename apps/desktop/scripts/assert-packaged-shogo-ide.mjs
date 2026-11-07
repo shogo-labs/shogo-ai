@@ -11,6 +11,8 @@ const DESKTOP_DIR = path.resolve(__dirname, '..')
 const explicitApp = process.env.SHOGO_APP_PATH || process.argv[2]
 
 const REQUIRED_FILES = [
+  'bundle/browser-relay.cjs',
+  'node_modules/ws/package.json',
   'apps/shogo-ide/package.json',
   'apps/shogo-ide/product.shogo.template.json',
   'apps/shogo-ide/scripts/materialize-distribution.mjs',
