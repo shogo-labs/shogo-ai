@@ -151,7 +151,7 @@
  * own would have the same effect (a `visible` other axis computes to `auto`),
  * so the vertical axis is explicitly clipped. A wrapper that does cap its
  * height keeps its own scrolling. */
-.chat-md [data-streamdown="table-wrapper"] > div:not([style*="max-height"]) {
+.chat-md [data-streamdown="table-wrapper"]:not([style*="max-height"]) {
   overflow-y: clip !important;
 }
 
