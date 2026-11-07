@@ -5,8 +5,9 @@
 // ---------------------------------------------------------------------------
 // Served live by the agent-runtime at GET /agent/canvas/bridge.js and
 // injected into every workspace HTML response. Owns all iframe-side infra:
-//   - update toast (with animated glowing outline)
-//   - SSE listener for agent rebuild events (-> show toast)
+//   - update bar (drawn by the host above the preview, or a slim top bar in
+//     the document when no host is present)
+//   - SSE listener for agent rebuild events (-> update bar)
 //   - parent <-> iframe theme + capability bridge
 //   - async error forwarding to the parent
 //   - canvas-ready handshake
@@ -76,123 +77,94 @@
   ].join('\n'))
 
   // -------------------------------------------------------------------------
-  // Update toast
+  // Update bar
   // -------------------------------------------------------------------------
+  // A rebuild produced new output. The bar must never cover the user's app,
+  // so when the host can draw it (Studio / the mobile app) the parent draws a
+  // full-width bar ABOVE the preview and this document draws nothing. The
+  // in-document bar is only the fallback for a standalone preview tab (or any
+  // host that never acks), and it is pinned to the top instead of floating at
+  // the bottom.
 
   var TOAST_ID = '__shogo-update-toast'
   var TOAST_STYLE_ID = '__shogo-toast-styles'
+
+  // Set by a host that draws the bar itself: either before this script runs
+  // (window.__shogoCanvasHostDrawsUpdateBar — the native WebView injection) or
+  // by a `canvas-host` message from the parent frame.
+  var hostDrawsUpdateBar = !!window.__shogoCanvasHostDrawsUpdateBar
+  // A rebuild happened but no host ack had arrived yet. If one shows up later
+  // we hand the update over instead of losing it.
+  var updatePending = false
 
   function injectToastStyles() {
     if (document.getElementById(TOAST_STYLE_ID)) return
     var style = document.createElement('style')
     style.id = TOAST_STYLE_ID
     style.textContent = [
-      '@property --__shogo-toast-angle {',
-      "  syntax: '<angle>';",
-      '  initial-value: 0deg;',
-      '  inherits: false;',
-      '}',
-      '@keyframes __shogo-slide-up {',
-      '  from { opacity: 0; transform: translate(-50%, 12px); }',
-      '  to   { opacity: 1; transform: translate(-50%, 0); }',
-      '}',
-      '@keyframes __shogo-rotate-angle {',
-      '  to { --__shogo-toast-angle: 360deg; }',
-      '}',
-      '@keyframes __shogo-pulse-glow {',
-      '  0%, 100% {',
-      '    box-shadow:',
-      '      0 4px 24px oklch(0 0 0 / 0.18),',
-      '      0 0 18px oklch(0.7 0.22 280 / 0.45),',
-      '      0 0 36px oklch(0.72 0.22 320 / 0.25);',
-      '  }',
-      '  50% {',
-      '    box-shadow:',
-      '      0 4px 24px oklch(0 0 0 / 0.18),',
-      '      0 0 28px oklch(0.72 0.24 280 / 0.7),',
-      '      0 0 56px oklch(0.74 0.24 320 / 0.4);',
-      '  }',
+      '@keyframes __shogo-bar-fade-in {',
+      '  from { opacity: 0; }',
+      '  to   { opacity: 1; }',
       '}',
       '#' + TOAST_ID + ' {',
       '  position: fixed;',
-      '  bottom: 16px;',
-      '  left: 50%;',
-      '  transform: translateX(-50%);',
+      '  top: 0; left: 0; right: 0;',
       '  z-index: 2147483647;',
       '  display: flex;',
       '  align-items: center;',
-      '  gap: 10px;',
-      '  padding: 8px 12px 8px 16px;',
-      '  border-radius: 999px;',
-      '  border: 2px solid transparent;',
-      '  background:',
-      '    linear-gradient(',
-      '      oklch(from var(--background, #fff) l c h / 0.88),',
-      '      oklch(from var(--background, #fff) l c h / 0.88)',
-      '    ) padding-box,',
-      '    conic-gradient(',
-      '      from var(--__shogo-toast-angle),',
-      '      oklch(0.7 0.22 280),',
-      '      oklch(0.75 0.22 320),',
-      '      oklch(0.78 0.2 30),',
-      '      oklch(0.82 0.2 80),',
-      '      oklch(0.78 0.18 180),',
-      '      oklch(0.7 0.22 240),',
-      '      oklch(0.7 0.22 280)',
-      '    ) border-box;',
-      '  color: var(--foreground, #111);',
+      '  justify-content: center;',
+      '  gap: 8px;',
+      '  min-height: 28px;',
+      '  box-sizing: border-box;',
+      '  padding: 0 28px;',
+      '  background: rgb(226 121 39);',
+      '  color: #fff;',
       "  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;",
-      '  font-size: 13px;',
-      '  line-height: 1;',
-      '  backdrop-filter: blur(16px);',
-      '  -webkit-backdrop-filter: blur(16px);',
-      '  box-shadow:',
-      '    0 4px 24px oklch(0 0 0 / 0.18),',
-      '    0 0 18px oklch(0.7 0.22 280 / 0.45),',
-      '    0 0 36px oklch(0.72 0.22 320 / 0.25);',
-      '  animation:',
-      '    __shogo-slide-up 0.25s ease-out,',
-      '    __shogo-rotate-angle 3s linear infinite,',
-      '    __shogo-pulse-glow 2s ease-in-out infinite;',
-      '  pointer-events: auto;',
+      '  font-size: 12px;',
+      '  font-weight: 500;',
+      '  line-height: 28px;',
+      '  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);',
+      '  animation: __shogo-bar-fade-in 0.15s ease-out;',
       '}',
       '#' + TOAST_ID + ' button {',
       '  border: none;',
       '  cursor: pointer;',
       '  font-family: inherit;',
-      '  font-size: 13px;',
+      '  font-size: 12px;',
       '  line-height: 1;',
-      '  border-radius: 999px;',
-      '  padding: 6px 14px;',
-      '  font-weight: 600;',
+      '  color: #fff;',
       '}',
       '#' + TOAST_ID + ' .refresh-btn {',
-      '  background: var(--primary, #111);',
-      '  color: var(--primary-foreground, #fff);',
+      '  background: rgba(255, 255, 255, 0.2);',
+      '  border-radius: 4px;',
+      '  padding: 3px 8px;',
+      '  font-weight: 600;',
       '}',
       '#' + TOAST_ID + ' .dismiss-btn {',
+      '  position: absolute;',
+      '  right: 4px;',
+      '  top: 0;',
+      '  bottom: 0;',
       '  background: transparent;',
-      '  color: var(--muted-foreground, #888);',
-      '  padding: 4px 6px;',
-      '  font-size: 15px;',
-      '  line-height: 1;',
+      '  padding: 0 8px;',
+      '  font-size: 14px;',
       '}',
       '#' + TOAST_ID + ' .dismiss-btn:hover {',
-      '  color: var(--foreground, #111);',
+      '  color: rgba(255, 255, 255, 0.75);',
       '}',
     ].join('\n')
     document.head.appendChild(style)
   }
 
-  function showUpdateToast() {
+  function showUpdateBar() {
     // Cross-script dedup: if any prior bridge (e.g. an old embedded copy
-    // baked into a stale main.tsx) already mounted a toast, don't add a
+    // baked into a stale main.tsx) already mounted a bar, don't add a
     // second one.
     if (document.getElementById(TOAST_ID)) return
     injectToastStyles()
 
-    var toastEl = document.createElement('div')
-    toastEl.id = TOAST_ID
+    var barEl = document.createElement('div')
+    barEl.id = TOAST_ID
 
     var label = document.createElement('span')
     label.textContent = 'Update available'
@@ -205,15 +177,53 @@
     var dismissBtn = document.createElement('button')
     dismissBtn.className = 'dismiss-btn'
     dismissBtn.textContent = '\u00d7'
+    dismissBtn.setAttribute('aria-label', 'Dismiss')
     dismissBtn.onclick = function () {
       var el = document.getElementById(TOAST_ID)
       if (el) el.remove()
     }
 
-    toastEl.appendChild(label)
-    toastEl.appendChild(refreshBtn)
-    toastEl.appendChild(dismissBtn)
-    document.body.appendChild(toastEl)
+    barEl.appendChild(label)
+    barEl.appendChild(refreshBtn)
+    barEl.appendChild(dismissBtn)
+    document.body.appendChild(barEl)
+  }
+
+  function removeUpdateBar() {
+    var el = document.getElementById(TOAST_ID)
+    if (el) el.remove()
+  }
+
+  // Post to the embedding frame, or to our own window when this document is
+  // top-level (the native WebView publishes window messages to React Native).
+  function postToHost(msg) {
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage(msg, '*')
+      } else {
+        window.postMessage(msg, '*')
+      }
+    } catch (_err) { /* ignore */ }
+  }
+
+  function onHostDrawsUpdateBar() {
+    hostDrawsUpdateBar = true
+    if (!updatePending) return
+    // The rebuild landed before the host acknowledged it. Hand it over now and
+    // drop the fallback bar so exactly one bar is ever visible.
+    updatePending = false
+    removeUpdateBar()
+    postToHost({ type: 'canvas-update-available' })
+  }
+
+  function notifyUpdateAvailable() {
+    updatePending = true
+    if (hostDrawsUpdateBar) {
+      updatePending = false
+      postToHost({ type: 'canvas-update-available' })
+      return
+    }
+    showUpdateBar()
   }
 
   // -------------------------------------------------------------------------
@@ -237,7 +247,7 @@
         try {
           var evt = JSON.parse(e.data)
           if (evt && evt.type === 'init') { sseReady = true; return }
-          if (evt && evt.type === 'reload' && sseReady) showUpdateToast()
+          if (evt && evt.type === 'reload' && sseReady) notifyUpdateAvailable()
         } catch (_err) { /* ignore malformed events */ }
       }
       sse.onerror = function () {
@@ -289,6 +299,13 @@
     if (!msg || typeof msg !== 'object') return
     if (msg.type === 'canvas-theme') {
       applyCanvasTheme(msg.variables, msg.isDark)
+    } else if (msg.type === 'canvas-host') {
+      // The host draws the update bar itself (a row above the preview), so
+      // this document must never draw its own.
+      if (msg.updateBar === true) onHostDrawsUpdateBar()
+    } else if (msg.type === 'canvas-reload') {
+      // Reload on the current route/hash, exactly like the bar's Refresh.
+      window.location.reload()
     }
   })
 

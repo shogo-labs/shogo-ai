@@ -136,6 +136,13 @@ interface ThemeMessage {
   isDark: boolean
 }
 
+/**
+ * Tells the in-document bridge that we draw the "Update available" bar
+ * ourselves, as a row above the preview — so it must not draw its own
+ * overlay over the user's app.
+ */
+export const CANVAS_HOST_UPDATE_BAR_MESSAGE = { type: 'canvas-host', updateBar: true } as const
+
 interface BridgeProps {
   url: string
   agentUrl: string
@@ -154,6 +161,9 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<{ phase: string; message: string } | null>(null)
   const [refreshCount, setRefreshCount] = useState(0)
+  // A rebuild produced new output and the bridge told us so. We show the bar
+  // here (above the iframe, in normal layout) so it never covers the preview.
+  const [updateAvailable, setUpdateAvailable] = useState(false)
   // Pending "document loaded but no canvas-ready yet" fallback timer.
   const loadFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -213,7 +223,14 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
         readyRef.current = true
         clearLoadFallback()
         setLoading(false)
+        // The document just (re)loaded, so any "update available" bar it was
+        // showing is stale — and the fresh bridge needs to know we draw the
+        // bar ourselves before its first rebuild event.
+        setUpdateAvailable(false)
+        sendToIframe(CANVAS_HOST_UPDATE_BAR_MESSAGE)
         if (themeMessage) sendToIframe(themeMessage)
+      } else if (msg.type === 'canvas-update-available') {
+        setUpdateAvailable(true)
       } else if (msg.type === 'canvas-capabilities') {
         onCanvasCapabilities?.({ supportsTheme: !!msg.supportsTheme })
       } else if (msg.type === 'canvas-error') {
@@ -249,43 +266,89 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
     setRefreshCount((c) => c + 1)
   }, [clearLoadFallback])
 
+  const handleUpdateRefresh = useCallback(() => {
+    setUpdateAvailable(false)
+    sendToIframe({ type: 'canvas-reload' })
+  }, [sendToIframe])
+
   return (
     <View style={styles.container}>
-      {loading && !error && (
-        <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="large" color="#888" />
-          <Text style={styles.loadingText}>Loading preview…</Text>
-        </View>
+      {updateAvailable && (
+        <CanvasUpdateBar
+          testID="canvas-update-bar"
+          onRefresh={handleUpdateRefresh}
+          onDismiss={() => setUpdateAvailable(false)}
+        />
       )}
-      {error && (
-        <View style={styles.errorOverlay}>
-          <Text style={styles.errorIcon}>⚠️</Text>
-          <Text style={styles.errorTitle}>
-            {error.phase === 'compile' ? 'Build Error' : 'Runtime Error'}
-          </Text>
-          <Text style={styles.errorMessage} numberOfLines={4}>
-            {error.message}
-          </Text>
-          <TouchableOpacity style={styles.retryButton} onPress={handleRetry}>
-            <Text style={styles.retryButtonText}>Retry</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-      <iframe
-        ref={iframeRef}
-        src={`${url}${url.includes('?') ? '&' : '?'}_v=${refreshCount}`}
-        data-testid="canvas-preview-iframe"
-        title="Project preview"
-        onLoad={handleIframeLoad}
-        style={{
-          width: '100%',
-          height: '100%',
-          border: 'none',
-          backgroundColor: 'transparent',
-          opacity: loading || error ? 0 : 1,
-        } as any}
-        allow="clipboard-write; clipboard-read; microphone; camera; display-capture; autoplay; fullscreen; geolocation; midi; encrypted-media; accelerometer; gyroscope; magnetometer; xr-spatial-tracking"
-      />
+      <View style={styles.previewPane}>
+        {loading && !error && (
+          <View style={styles.loadingOverlay}>
+            <ActivityIndicator size="large" color="#888" />
+            <Text style={styles.loadingText}>Loading preview…</Text>
+          </View>
+        )}
+        {error && (
+          <View style={styles.errorOverlay}>
+            <Text style={styles.errorIcon}>⚠️</Text>
+            <Text style={styles.errorTitle}>
+              {error.phase === 'compile' ? 'Build Error' : 'Runtime Error'}
+            </Text>
+            <Text style={styles.errorMessage} numberOfLines={4}>
+              {error.message}
+            </Text>
+            <TouchableOpacity style={styles.retryButton} onPress={handleRetry}>
+              <Text style={styles.retryButtonText}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        <iframe
+          ref={iframeRef}
+          src={`${url}${url.includes('?') ? '&' : '?'}_v=${refreshCount}`}
+          data-testid="canvas-preview-iframe"
+          title="Project preview"
+          onLoad={handleIframeLoad}
+          style={{
+            width: '100%',
+            height: '100%',
+            border: 'none',
+            backgroundColor: 'transparent',
+            opacity: loading || error ? 0 : 1,
+          } as any}
+          allow="clipboard-write; clipboard-read; microphone; camera; display-capture; autoplay; fullscreen; geolocation; midi; encrypted-media; accelerometer; gyroscope; magnetometer; xr-spatial-tracking"
+        />
+      </View>
+    </View>
+  )
+}
+
+/**
+ * "Update available" bar, styled like the app's own UpdateBanner: a slim
+ * full-width orange row with a Refresh button and a dismiss ×. It sits in
+ * normal layout ABOVE the preview, so a rebuild never covers the app.
+ */
+function CanvasUpdateBar({
+  onRefresh,
+  onDismiss,
+  testID,
+}: {
+  onRefresh: () => void
+  onDismiss: () => void
+  testID?: string
+}) {
+  return (
+    <View testID={testID} style={styles.updateBar}>
+      <Text style={styles.updateBarText}>Update available</Text>
+      <TouchableOpacity testID="canvas-update-refresh" onPress={onRefresh} style={styles.updateBarButton}>
+        <Text style={styles.updateBarButtonText}>Refresh</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        testID="canvas-update-dismiss"
+        onPress={onDismiss}
+        style={styles.updateBarDismiss}
+        accessibilityLabel="Dismiss update"
+      >
+        <Text style={styles.updateBarDismissText}>×</Text>
+      </TouchableOpacity>
     </View>
   )
 }
@@ -312,10 +375,17 @@ export const NATIVE_CANVAS_MESSAGE_BRIDGE = `
   window.addEventListener('message', function (event) {
     var data = event.data;
     if (!data || typeof data !== 'object') return;
-    if (data.type === 'canvas-ready' || data.type === 'canvas-error' || data.type === 'canvas-capabilities') {
+    if (data.type === 'canvas-ready' || data.type === 'canvas-error' || data.type === 'canvas-capabilities' || data.type === 'canvas-update-available') {
       publish(data);
     }
   });
+  // React Native draws the "Update available" bar above the WebView, so the
+  // bridge must not draw its own over the page. The flag covers the bridge
+  // having already run; the message covers one that runs later.
+  try { window.__shogoCanvasHostDrawsUpdateBar = true; } catch (_err) {}
+  try {
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'canvas-host', updateBar: true } }));
+  } catch (_err) {}
   if (window.parent === window) {
     publish({ type: 'canvas-ready' });
   }
@@ -329,6 +399,9 @@ function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCan
   const readyRef = useRef(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<{ phase: string; message: string } | null>(null)
+  // A rebuild produced new output; the bar lives above the WebView so it never
+  // covers the page (mirrors the web iframe path).
+  const [updateAvailable, setUpdateAvailable] = useState(false)
 
   const nativeCookie = useMemo(
     () => (Platform.OS !== 'web' ? (authClient as { getCookie?: () => string }).getCookie?.() : undefined),
@@ -377,6 +450,9 @@ function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCan
 
       if (msg.type === 'canvas-ready') {
         dismissLoading()
+        setUpdateAvailable(false)
+      } else if (msg.type === 'canvas-update-available') {
+        setUpdateAvailable(true)
       } else if (msg.type === 'canvas-capabilities') {
         onCanvasCapabilities?.({ supportsTheme: !!msg.supportsTheme })
       } else if (msg.type === 'canvas-error') {
@@ -416,8 +492,20 @@ function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCan
     setError({ phase: 'runtime', message })
   }, [])
 
+  const handleUpdateRefresh = useCallback(() => {
+    setUpdateAvailable(false)
+    webViewRef.current?.reload?.()
+  }, [])
+
   return (
     <View style={styles.container}>
+      {updateAvailable && (
+        <CanvasUpdateBar
+          testID="canvas-update-bar"
+          onRefresh={handleUpdateRefresh}
+          onDismiss={() => setUpdateAvailable(false)}
+        />
+      )}
       <WebView
         ref={webViewRef}
         source={webViewSource}
@@ -460,9 +548,54 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  previewPane: {
+    flex: 1,
+  },
   webview: {
     flex: 1,
     backgroundColor: 'transparent',
+  },
+  // Matches apps/mobile/components/UpdateBanner.tsx (`bg-brand-landing`,
+  // `text-xs font-medium text-white`, white/20 button) so the canvas banner
+  // reads as the same component.
+  updateBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgb(226, 121, 39)',
+    paddingVertical: 6,
+    paddingHorizontal: 32,
+    position: 'relative',
+  },
+  updateBarText: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#fff',
+  },
+  updateBarButton: {
+    marginLeft: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  updateBarButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  updateBarDismiss: {
+    position: 'absolute',
+    right: 8,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  updateBarDismissText: {
+    fontSize: 15,
+    lineHeight: 15,
+    color: '#fff',
   },
   placeholder: {
     flex: 1,
