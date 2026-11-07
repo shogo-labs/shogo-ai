@@ -599,6 +599,72 @@ export async function dropDatabase(
   }
 }
 
+/** Database identifiers this service will build SQL for. */
+const SAFE_DB_NAME = /^[a-z][a-z0-9_]{0,62}$/
+
+/**
+ * Copy a database for a rehearsal (SHO-308 §7).
+ *
+ * `CREATE DATABASE … TEMPLATE` is Postgres's own copy: it reproduces the tables,
+ * indexes and rows from the source without a dump round-trip, so a rehearsal
+ * measures a real load against the environment's real schema — and because the
+ * copy is a different database, the measured load never touches live rows.
+ *
+ * Postgres refuses to use a template that has other sessions attached, so this
+ * reports `template_busy` with that cause rather than a bare driver error: the
+ * caller's answer is to stop the warm pod (or the metal VM) and retry, not to
+ * fix the copy.
+ */
+export async function cloneDatabase(
+  sourceName: string,
+  targetName: string,
+): Promise<ProjectDatabase> {
+  for (const name of [sourceName, targetName]) {
+    if (!SAFE_DB_NAME.test(name)) {
+      throw new Error(`Refusing to clone to/from unsafe database name "${name}"`)
+    }
+  }
+  const pool = getAdminPool()
+  const client = await pool.connect()
+  try {
+    const exists = await client.query(`SELECT 1 FROM pg_database WHERE datname = $1`, [targetName])
+    if (exists.rows.length > 0) {
+      await client.query(
+        `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
+        [targetName],
+      )
+      await client.query(`DROP DATABASE IF EXISTS "${targetName}"`)
+    }
+    if (!(await client.query(`SELECT 1 FROM pg_roles WHERE rolname = $1`, [targetName])).rows.length) {
+      // No password: the copy is only ever reached by this script, over the
+      // primary, and it is dropped when the rehearsal ends.
+      await client.query(`CREATE USER "${targetName}"`)
+    }
+    try {
+      await client.query(`CREATE DATABASE "${targetName}" OWNER "${targetName}" TEMPLATE "${sourceName}"`)
+    } catch (err: any) {
+      if (err?.code === '55006') {
+        throw new Error(
+          `template_busy: "${sourceName}" still has open sessions, so Postgres cannot copy it. ` +
+            `Stop the environment's pod (or the metal VM) and re-run the rehearsal.`,
+        )
+      }
+      throw err
+    }
+    const connectionUrl = `postgres://${targetName}@${PROJECTS_DB_HOST}:${PROJECTS_DB_PORT}/${targetName}`
+    return {
+      databaseName: targetName,
+      username: targetName,
+      password: '',
+      connectionUrl,
+      host: PROJECTS_DB_HOST,
+      port: parseInt(PROJECTS_DB_PORT, 10),
+    }
+  } finally {
+    client.release()
+  }
+}
+
 /**
  * Build a DATABASE_URL for a project given stored credentials.
  * Used when we already have credentials and just need the URL.
