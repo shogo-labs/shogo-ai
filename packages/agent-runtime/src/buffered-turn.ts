@@ -60,7 +60,7 @@ export interface BufferedStreamHandle {
   /** Abort the model call behind this turn, if the session still has one. */
   abort: () => void
   /** Write the terminal frame (if missing) and complete the buffer now. */
-  reap: (reason: string) => void
+  reap: (reason: string, status?: 'failed' | 'aborted') => void
 }
 
 export interface BufferedTurnDeps {
@@ -109,17 +109,19 @@ export function createBufferedTurns(deps: BufferedTurnDeps) {
     // The bgReader `finally` synthesizes one when this stays false.
     let terminalFrameWritten = false
 
-    // Force the turn closed from outside (the orphan reaper). A turn whose model
-    // fetch is a dead socket never settles, so nothing else would ever write the
-    // terminal frame or release it from the stream registry (SHO-348).
-    const reap = (reason: string) => {
+    // Force the turn closed from outside (the orphan reaper, or an explicit user
+    // Stop). A turn whose model fetch is a dead socket — or whose tool call never
+    // settles — never ends on its own, so nothing else would ever write the
+    // terminal frame or release it from the stream registry (SHO-348). An
+    // explicit Stop is `aborted`, not `failed`: the user ended it on purpose.
+    const reap = (reason: string, status: 'failed' | 'aborted' = 'failed') => {
       if (!terminalFrameWritten) {
         try {
           bufWriter.append(
             encodeTurnCompleteFrame({
               turnId,
               chatSessionId: chatSessionKey,
-              status: 'failed',
+              status,
               error: reason,
               lastSeq: bufWriter.lastSeq,
               completedAt: Date.now(),

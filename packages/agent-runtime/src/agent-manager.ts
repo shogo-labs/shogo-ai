@@ -21,6 +21,22 @@ import {
 } from './subagent'
 import type { ToolContext } from './gateway-tools'
 import { dropChannel as dropScreencastChannel } from './screencast-broadcaster'
+import {
+  releaseSubagentInstanceResources,
+} from './subagent-watchdog'
+
+export {
+  DEFAULT_SUBAGENT_IDLE_TIMEOUT_MS,
+  DEFAULT_SUBAGENT_MAX_DURATION_MS,
+  subagentIdleTimeoutMs,
+  subagentMaxDurationMs,
+  waitForSubagentInstance,
+  synthesizeWaitResult,
+  registerSubagentInstanceCleanup,
+  releaseSubagentInstanceResources,
+  type SubagentWaitOutcome,
+  type SubagentWaitOptions,
+} from './subagent-watchdog'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -93,6 +109,8 @@ export interface ManagedInstance {
   status: 'running' | 'completed' | 'failed' | 'cancelled'
   startedAt: number
   completedAt?: number
+  /** Last time the instance showed real progress (model delta, tool start/end). */
+  lastActivityAt: number
   result?: SubagentResult
   promise: Promise<SubagentResult>
   abort: AbortController
@@ -350,14 +368,40 @@ export class AgentManager {
     const regEntry = this.registry.get(type)
 
     const recentActivity: ActivityEntry[] = []
+    // Progress clock for the spawn watchdog (SHO-358): model output and tool
+    // boundaries are the only things that prove a run is still working.
+    let lastActivityAt = startTime
+    const touchActivity = () => {
+      lastActivityAt = Date.now()
+      const live = this.instances.get(instanceId)
+      if (live) live.lastActivityAt = lastActivityAt
+    }
     const trackingCallbacks: SubagentStreamCallbacks = {
       ...callbacks,
+      onTextDelta: (delta) => {
+        touchActivity()
+        callbacks?.onTextDelta?.(delta)
+      },
+      onThinkingDelta: (delta) => {
+        touchActivity()
+        callbacks?.onThinkingDelta?.(delta)
+      },
       onModelResolved: (model) => {
+        touchActivity()
         const inst = this.instances.get(instanceId)
         if (inst) inst.model = model
         callbacks?.onModelResolved?.(model)
       },
+      onToolCallStart: (toolName, toolCallId) => {
+        touchActivity()
+        callbacks?.onToolCallStart?.(toolName, toolCallId)
+      },
+      onBeforeToolCall: async (toolName, args, toolCallId) => {
+        touchActivity()
+        await callbacks?.onBeforeToolCall?.(toolName, args, toolCallId)
+      },
       onAfterToolCall: async (toolName, args, result, isError, toolCallId) => {
+        touchActivity()
         const summary = isError
           ? 'ERROR'
           : typeof result === 'string' ? result.substring(0, 120) : JSON.stringify(result).substring(0, 120)
@@ -473,6 +517,7 @@ export class AgentManager {
       sessionId: parentCtx.sessionId,
       status: 'running',
       startedAt: startTime,
+      lastActivityAt,
       promise,
       abort: abortController,
       recentActivity,
@@ -493,6 +538,10 @@ export class AgentManager {
     inst.status = 'cancelled'
     inst.completedAt = Date.now()
     try { dropScreencastChannel(id) } catch {}
+    // A run wedged in a tool that never settles never reaches `runSubagent`'s
+    // `finally`, so its browser page/lease has to be released here or it holds
+    // a pool slot for the rest of the turn's life (SHO-358).
+    void releaseSubagentInstanceResources(id)
     return true
   }
 
@@ -502,13 +551,8 @@ export class AgentManager {
    */
   cancelAll(): string[] {
     const cancelled: string[] = []
-    for (const [id, inst] of this.instances) {
-      if (inst.status !== 'running') continue
-      inst.abort.abort()
-      inst.status = 'cancelled'
-      inst.completedAt = Date.now()
-      try { dropScreencastChannel(id) } catch {}
-      cancelled.push(id)
+    for (const [id] of this.instances) {
+      if (this.cancel(id)) cancelled.push(id)
     }
     return cancelled
   }
