@@ -10,8 +10,9 @@
  * replaced" divider, so the user can see exactly what the resend will drop.
  */
 
-import { memo } from "react"
-import { Text, View } from "react-native"
+import { memo, useLayoutEffect, useRef, type ReactNode } from "react"
+import { Platform, Text, View } from "react-native"
+import type { LayoutChangeEvent } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import type { UIMessage } from "@ai-sdk/react"
 import { useTurnGrouping } from "./useTurnGrouping"
@@ -49,6 +50,46 @@ export interface TurnListProps {
   onContentShift?: (dy: number) => void
   /** Resets the mounted window — a different chat was opened. */
   resetKey?: string | null
+}
+
+/**
+ * One mounted turn row.
+ *
+ * On web `onLayout` is driven by a `ResizeObserver` and deferred through
+ * `setTimeout(0)`, so a click that lands in the same task as the mount can beat
+ * the first measurement. The row's own growth — a work group opening — is then
+ * folded into the mount correction and the transcript scrolls out from under
+ * the click (SHO-359: the header jumped 190 px, exactly the group body).
+ * Measuring the DOM node in a layout effect closes that window: it runs before
+ * paint, so no input can arrive first. Native keeps `onLayout` alone.
+ */
+const TurnRow = function TurnRow({
+  turnId,
+  onLayout,
+  children,
+}: {
+  turnId: string
+  onLayout: (event: LayoutChangeEvent) => void
+  children: ReactNode
+}) {
+  const ref = useRef<View>(null)
+  useLayoutEffect(() => {
+    if (Platform.OS !== "web") return
+    const node = ref.current as unknown as { getBoundingClientRect?: () => DOMRect } | null
+    const height = node?.getBoundingClientRect?.().height
+    if (!height || height <= 0) return
+    onLayout({
+      nativeEvent: { layout: { x: 0, y: 0, width: 0, height } },
+    } as LayoutChangeEvent)
+    // Mount only: later size changes are what `onLayout` is for.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  return (
+    <View ref={ref} testID={`turn-row-${turnId}`} className="gap-2" onLayout={onLayout}>
+      {children}
+    </View>
+  )
 }
 
 /**
@@ -110,12 +151,7 @@ export const TurnList = memo(
           const dimmed = dimFrom >= 0 && index >= dimFrom
           const dimTail = dimFrom > 0 && index === dimFrom - 1
           return (
-            <View
-              key={turn.id}
-              testID={`turn-row-${turn.id}`}
-              className="gap-2"
-              onLayout={onTurnLayout(turn.id)}
-            >
+            <TurnRow key={turn.id} turnId={turn.id} onLayout={onTurnLayout(turn.id)}>
               {dimmed && index === dimFrom ? (
                 <View className="flex-row items-center gap-2 py-1">
                   <View className="h-px flex-1 bg-border/60" />
@@ -135,7 +171,7 @@ export const TurnList = memo(
                 dimmed={dimmed}
                 dimTail={dimTail}
               />
-            </View>
+            </TurnRow>
           )
         })}
         {rejoining ? <RejoinRow /> : null}

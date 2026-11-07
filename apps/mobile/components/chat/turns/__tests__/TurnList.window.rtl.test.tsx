@@ -13,7 +13,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test"
 import { resolve } from "node:path"
 import { act, render } from "@testing-library/react"
-import { createElement } from "react"
+import { createElement, forwardRef } from "react"
 import { createReactNativeMock } from "../../../../test/react-native-mock"
 
 const layoutHandlers = new Map<string, (event: any) => void>()
@@ -22,14 +22,14 @@ const rnMock = () =>
   createReactNativeMock({
     Text: ({ children, ...rest }: any) =>
       createElement("span", { ...rest, style: undefined }, children),
-    View: ({ children, testID, onLayout, style, ...rest }: any) => {
+    View: forwardRef(({ children, testID, onLayout, style, ...rest }: any, ref: any) => {
       if (onLayout) layoutHandlers.set(String(testID), onLayout)
       return createElement(
         "div",
-        { ...rest, "data-testid": testID, "data-height": style?.height },
+        { ...rest, ref, "data-testid": testID, "data-height": style?.height },
         children,
       )
-    },
+    }),
   })
 
 mock.module("react-native", () => rnMock())
@@ -500,5 +500,54 @@ describe("TurnList — mounted window (AC 3)", () => {
     expect(shifts).toEqual([])
 
     view.unmount()
+  })
+
+  test("a newly mounted turn is measured before any input can arrive", () => {
+    // react-native-web defers `onLayout` through `setTimeout(0)`, so a click in
+    // the same task as the mount used to beat the first measurement and have
+    // the row's own growth (a work group opening) charged as content above the
+    // reader — the 190 px jump in SHO-359. The row measures its DOM node in a
+    // layout effect instead, which runs before paint. This test never fires a
+    // layout event: the correction has to arrive from the mount alone.
+    const original = Element.prototype.getBoundingClientRect
+    Element.prototype.getBoundingClientRect = function () {
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 320,
+        bottom: 400,
+        width: 320,
+        height: 400,
+        toJSON: () => ({}),
+      } as DOMRect
+    }
+    try {
+      const scroll = createTranscriptScrollSignal()
+      const shifts: number[] = []
+      const view = render(
+        createElement(TurnList as any, {
+          messages: longChat(300),
+          scrollSignal: scroll,
+          onContentShift: (dy: number) => shifts.push(dy),
+        }),
+      )
+
+      // The tail window mounts with no pending estimate, so it reports nothing.
+      expect(shifts).toEqual([])
+
+      // The expansion mounts 20 turns; each is measured at 400 px against the
+      // 280 px the spacer reserved, so the reader is corrected by 120 px per
+      // turn — without a single layout event being fired.
+      scrollToWindowTop(scroll, 270)
+      expect(shifts).toEqual(
+        Array.from({ length: TURN_WINDOW_STEP }, () => 400 - TURN_WINDOW_ESTIMATE),
+      )
+
+      view.unmount()
+    } finally {
+      Element.prototype.getBoundingClientRect = original
+    }
   })
 })
