@@ -210,6 +210,11 @@ import {
 } from "../../lib/workspace-store"
 import { shouldRestoreChatWorkspace } from "../../lib/switch-workspace"
 import {
+  nextDrainableMessage,
+  replaceQueuedMessage,
+  shouldReleaseServerEdit,
+} from "../../lib/queued-message-edit"
+import {
   hasAcceptedAiConsent,
   acceptAiConsent,
   revokeAiConsent,
@@ -357,6 +362,7 @@ import {
   Shield,
   KeyRound,
   MessageCircleQuestion,
+  Pencil,
 } from "lucide-react-native"
 import { type PlanData } from "./PlanCard"
 import { usePlanStreamSafe } from "./PlanStreamContext"
@@ -380,9 +386,10 @@ import {
 } from "./turns/pendingQuestion"
 import { AskUserQuestionWidget } from "./turns/AskUserQuestionWidget"
 import {
-  buildAskUserAnswerMessage,
   stripAskUserAnswerMarker,
+  buildAskUserAnswerMessage,
 } from "./turns/askUserAnswers"
+import { isEditingQueuedError } from "./queued-edit-marker"
 import { NativeAskUserQuestionSheet } from "./NativeAskUserQuestionSheet"
 import {
   ASK_IN_AGENT_EVENT,
@@ -2177,6 +2184,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
     currentSessionId ? (sessionQueueCache.get(currentSessionId) ?? []) : [],
   )
   const isProcessingQueueRef = useRef(false)
+  /**
+   * The queued row the composer is currently editing (SHO-356). While it is
+   * set the row stays in the dock, parked as "editing" so the turn-end drain
+   * cannot send it, and Send writes back into that row instead of appending a
+   * new one.
+   */
+  const [editingQueuedId, setEditingQueuedId] = useState<string | null>(null)
+  /** Why a queue action was refused, shown on its row instead of the console. */
+  const [queuedActionErrors, setQueuedActionErrors] = useState<
+    Record<string, string>
+  >({})
 
   const sessionContextUsage = (currentSession as any)?.contextUsageTokens
   const sessionContextWindow = (currentSession as any)?.contextWindowTokens
@@ -7357,8 +7375,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
     isProcessingQueueRef.current = true
 
-    const nextMessage = messageQueue[0]
-    setMessageQueue((queue) => queue.slice(1))
+    // The row the composer is editing is not ready to send: the person is
+    // still changing it, so the drain takes the next one (SHO-356).
+    const nextMessage = nextDrainableMessage(messageQueue, editingQueuedId)
+    if (!nextMessage) {
+      isProcessingQueueRef.current = false
+      return
+    }
+    setMessageQueue((queue) =>
+      queue.filter((message) => message.id !== nextMessage.id),
+    )
 
     try {
       if (nextMessage.offline && nextMessage.offlineRetry) {
@@ -7395,6 +7421,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     sendMessageInternal,
     deliverMessage,
     currentSessionId,
+    editingQueuedId,
     messageQueue,
   ])
 
@@ -7694,24 +7721,104 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }
   }, [currentSessionId, messageQueue])
 
+  // An edit belongs to the chat it started in: switching chats leaves the
+  // composer's text alone but puts the row back on its own queue (SHO-356).
+  const editingQueuedIdRef = useRef<string | null>(null)
+  editingQueuedIdRef.current = editingQueuedId
+  useEffect(() => {
+    const id = editingQueuedIdRef.current
+    if (!id) return
+    editingQueuedIdRef.current = null
+    setEditingQueuedId(null)
+    // Only a server row has a hold parked on it; a local row is held by this
+    // window alone (SHO-356, QA round 1).
+    if (shouldReleaseServerEdit(id, serverQueue.isServerQueued)) {
+      void serverQueue.releaseEdit(id).catch(() => {})
+    }
+    // Only a session change ends an edit; `editingQueuedId` itself is read from
+    // the ref so this does not fire on every keystroke of an edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSessionId])
+
+  /** A refused queue write, said the way the row can show it. */
+  const queueActionMessage = useCallback(
+    (error: unknown, fallback: string): string => {
+      const candidate = error as { status?: number; message?: string } | null
+      if (candidate?.status === 404) return "This message was already sent"
+      if (candidate?.status === 409) return "This message is already being sent"
+      const message = candidate?.message?.trim()
+      return message ? message : fallback
+    },
+    [],
+  )
+
+  const clearQueuedActionError = useCallback((messageId: string) => {
+    setQueuedActionErrors((errors) => {
+      if (!(messageId in errors)) return errors
+      const next = { ...errors }
+      delete next[messageId]
+      return next
+    })
+  }, [])
+
+  const setQueuedActionError = useCallback((messageId: string, text: string) => {
+    setQueuedActionErrors((errors) => ({ ...errors, [messageId]: text }))
+  }, [])
+
+  /**
+   * Leave edit mode. `release` puts a server row back on the queue untouched;
+   * it is skipped when the row is gone anyway (it was deleted or sent).
+   */
+  const leaveQueuedEdit = useCallback(
+    (release: boolean) => {
+      const id = editingQueuedId
+      if (!id) return
+      setEditingQueuedId(null)
+      if (!release) return
+      // A local `queue-…` row has no server hold: releasing it PATCHes an id
+      // the store does not hold ("Item not found") and paints that on a row
+      // that is still queued (SHO-356, QA round 1).
+      if (!shouldReleaseServerEdit(id, serverQueue.isServerQueued)) return
+      void serverQueue.releaseEdit(id).catch((error) => {
+        setQueuedActionError(
+          id,
+          queueActionMessage(error, "Couldn't put this message back on the queue"),
+        )
+      })
+    },
+    [editingQueuedId, queueActionMessage, serverQueue],
+  )
+
   const handleRemoveQueuedMessage = useCallback(
     (messageId: string) => {
       const removed =
         messageQueue.find((m) => m.id === messageId) ??
         serverQueue.queuedMessages.find((m) => m.id === messageId)
       if (removed) clearOptimisticEcho(removed.content)
+      clearQueuedActionError(messageId)
+      // Deleting the row being edited ends the edit; its text stays in the
+      // composer, as the draft it already is, but nothing holds the row back.
+      if (editingQueuedId === messageId) setEditingQueuedId(null)
       if (serverQueue.isServerQueued(messageId)) {
         void serverQueue.remove(messageId).catch((error) => {
-          console.warn(
-            "[ChatPanel] Failed to remove server queued message:",
-            error,
+          setQueuedActionError(
+            messageId,
+            queueActionMessage(error, "Couldn't delete this queued message"),
           )
         })
         return
       }
       setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
     },
-    [clearOptimisticEcho, messageQueue, serverQueue],
+    [
+      clearOptimisticEcho,
+      clearQueuedActionError,
+      editingQueuedId,
+      messageQueue,
+      queueActionMessage,
+      serverQueue,
+      setQueuedActionError,
+    ],
   )
 
   const handleReorderQueuedMessage = useCallback(
@@ -7747,49 +7854,82 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [serverQueue],
   )
 
-  // Pull a queued message back into the input as a draft so the user can
-  // tweak the text/attachments and re-send. We remove the original entry
-  // immediately so re-submitting just appends a fresh queue item rather than
-  // duplicating the in-flight one.
+  // Load a queued message into the composer so the person can change it, while
+  // leaving the row in the dock (SHO-356). Sending writes the change back into
+  // that row — same place in the queue, no duplicate — and cancelling puts it
+  // back untouched. The row is parked as "editing" while the composer holds
+  // it, so the turn ending cannot send the text the person is in the middle of
+  // replacing.
   const handleEditQueuedMessage = useCallback(
     (messageId: string) => {
+      if (editingQueuedId === messageId) return
       const serverTarget = serverQueue.queuedMessages.find(
         (m) => m.id === messageId,
       )
-      if (serverTarget) {
-        clearOptimisticEcho(serverTarget.content)
-        void serverQueue.remove(messageId).catch((error) => {
-          console.warn(
-            "[ChatPanel] Failed to edit server queued message:",
-            error,
-          )
-        })
-        setRestoreDraftRequest({
-          nonce: Date.now(),
-          content: serverTarget.content,
-          files: serverTarget.files,
-        })
-        // The pulled-back text becomes this chat's draft (SHO-261).
-        composerMemory.saveDraft(serverTarget.content, [])
-        return
-      }
-      let target: QueuedMessage | undefined
-      setMessageQueue((queue) => {
-        target = queue.find((m) => m.id === messageId)
-        if (!target) return queue
-        return queue.filter((m) => m.id !== messageId)
-      })
+      const localTarget = messageQueue.find((m) => m.id === messageId)
+      const target = serverTarget ?? localTarget
       if (!target) return
+      // A different row is already being edited: put that one back first, so
+      // only ever one row is held.
+      if (editingQueuedId) leaveQueuedEdit(true)
+      clearQueuedActionError(messageId)
       clearOptimisticEcho(target.content)
+      setEditingQueuedId(messageId)
       setRestoreDraftRequest({
         nonce: Date.now(),
         content: target.content,
         files: target.files,
       })
+      // The pulled-back text becomes this chat's draft (SHO-261).
       composerMemory.saveDraft(target.content, [])
+      if (!serverTarget) return
+      void serverQueue.holdForEdit(messageId).catch((error) => {
+        // Could not park it (already sent, or already being dispatched): the
+        // row is no longer editable, so stop pretending it is.
+        setEditingQueuedId((current) =>
+          current === messageId ? null : current,
+        )
+        setQueuedActionError(
+          messageId,
+          queueActionMessage(
+            error,
+            "This message was already sent, so your edit will be queued as a new message",
+          ),
+        )
+      })
     },
-    [clearOptimisticEcho, composerMemory, serverQueue],
+    [
+      clearOptimisticEcho,
+      clearQueuedActionError,
+      composerMemory,
+      editingQueuedId,
+      leaveQueuedEdit,
+      messageQueue,
+      queueActionMessage,
+      serverQueue,
+      setQueuedActionError,
+    ],
   )
+
+  /** Cancel an edit in progress: the row goes back on the queue as it was. */
+  const handleCancelQueuedEdit = useCallback(() => {
+    leaveQueuedEdit(true)
+  }, [leaveQueuedEdit])
+
+  /**
+   * A row parked for an edit that this window is no longer editing would never
+   * dispatch — the server only claims `pending` rows. That is the state a
+   * reload, a crash or a chat switch leaves behind, so put it back.
+   */
+  useEffect(() => {
+    const parked = serverQueue.queuedMessages.filter(
+      (message) =>
+        message.id !== editingQueuedId && isEditingQueuedError(message.error),
+    )
+    for (const message of parked) {
+      void serverQueue.releaseEdit(message.id).catch(() => {})
+    }
+  }, [editingQueuedId, serverQueue, serverQueue.queuedMessages])
 
   /**
    * Local queue rows the person clicked "Send now" on while a turn was
@@ -7898,24 +8038,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [messageQueue, sentNowIds, serverQueue.queuedMessages],
   )
 
-  const enqueueServerMessage = useCallback(
-    async (
-      content: string,
-      files?: FileAttachment[],
-      perMsgModel?: string,
-      references?: ChatReference[],
+  /**
+   * The `body` a queued (or edited) message is sent with. Consumes the
+   * confirmed plan, since a plan belongs to the message it was approved for.
+   */
+  const buildQueuedBody = useCallback(
+    (
+      trimmedContent: string,
+      perMsgModel: string | undefined,
+      references: ChatReference[] | undefined,
     ) => {
-      const trimmedContent = content.trim()
-      if (!(await ensureAiConsentForMessage())) {
-        // Nothing was queued, so the bubble the caller painted for this send
-        // must not stay in the transcript.
-        clearOptimisticEcho(trimmedContent)
-        return
-      }
-
       const planToSend = confirmedPlanRef.current
       confirmedPlanRef.current = null
-      const body = buildChatSendBody({
+      return buildChatSendBody({
         featureId,
         phase,
         chatSessionId: currentSessionId,
@@ -7942,6 +8077,60 @@ const ChatPanelContent = observer(function ChatPanelContent({
         references,
         extra: { text: trimmedContent },
       })
+    },
+    [
+      currentSession,
+      currentSessionId,
+      featureId,
+      focusedProjectId,
+      ideBridge.context,
+      ideMode,
+      isPhoneViewport,
+      phase,
+      projectId,
+      selectedModel,
+      userId,
+      windowWidth,
+      workspaceId,
+    ],
+  )
+
+  /**
+   * Enrichment (git status / diagnostics on desktop) can take a second on a big
+   * repo. It runs alongside the write and is patched into the row's body
+   * before the server dispatches it, so it never holds the dock row back.
+   */
+  const queuedEnrich = useCallback(
+    (text: string) =>
+      enrichMessage
+        ? () =>
+            enrichMessage(text).catch((error) => {
+              console.warn(
+                "[ChatPanel] enrichMessage failed for queued message:",
+                error,
+              )
+              return text
+            })
+        : undefined,
+    [enrichMessage],
+  )
+
+  const enqueueServerMessage = useCallback(
+    async (
+      content: string,
+      files?: FileAttachment[],
+      perMsgModel?: string,
+      references?: ChatReference[],
+    ) => {
+      const trimmedContent = content.trim()
+      if (!(await ensureAiConsentForMessage())) {
+        // Nothing was queued, so the bubble the caller painted for this send
+        // must not stay in the transcript.
+        clearOptimisticEcho(trimmedContent)
+        return
+      }
+
+      const body = buildQueuedBody(trimmedContent, perMsgModel, references)
 
       // The dock row is the create's own optimistic insert, so it has to be
       // the first thing that happens: the message is queued, not sent, and it
@@ -7956,20 +8145,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         selectedModel: perMsgModel || selectedModel,
         references,
         body,
-        // Enrichment (git status / diagnostics on desktop) can take a second
-        // on a big repo. It runs alongside the create and is patched into the
-        // row's body before the server dispatches it, so it never holds the
-        // dock row back.
-        enrich: enrichMessage
-          ? () =>
-              enrichMessage(trimmedContent).catch((error) => {
-                console.warn(
-                  "[ChatPanel] enrichMessage failed for queued message:",
-                  error,
-                )
-                return trimmedContent
-              })
-          : undefined,
+        enrich: queuedEnrich(trimmedContent),
       })
       // The queued turn is the server's to run: until it takes the row there
       // is no user message in this session, so the message lives in the dock
@@ -7980,23 +8156,88 @@ const ChatPanelContent = observer(function ChatPanelContent({
       releaseStopSnapshot()
     },
     [
+      buildQueuedBody,
       clearOptimisticEcho,
-      currentSession,
-      currentSessionId,
-      enrichMessage,
-      featureId,
-      focusedProjectId,
-      ideBridge.context,
-      ideMode,
-      isPhoneViewport,
-      phase,
-      projectId,
+      ensureAiConsentForMessage,
+      queuedEnrich,
       releaseStopSnapshot,
       selectedModel,
       serverQueue,
-      userId,
-      windowWidth,
-      workspaceId,
+    ],
+  )
+
+  /**
+   * Write an edit back into the queued row the composer is editing (SHO-356).
+   * The row keeps its place in the queue; nothing new is appended.
+   *
+   * If the server will not take the edit — it dispatched the row in the
+   * meantime (`not_found`), or is dispatching it now (`busy`) — the edit cannot
+   * land where it was made, so it goes on the queue as a new message and the
+   * old row says why. A silent duplicate is exactly the bug this replaces.
+   */
+  const editQueuedServerMessage = useCallback(
+    async (
+      id: string,
+      content: string,
+      files?: FileAttachment[],
+      perMsgModel?: string,
+      references?: ChatReference[],
+    ) => {
+      const trimmedContent = content.trim()
+      const body = buildQueuedBody(trimmedContent, perMsgModel, references)
+      try {
+        await serverQueue.edit(id, {
+          content: trimmedContent,
+          files,
+          selectedModel: perMsgModel || selectedModel,
+          references,
+          body,
+          enrich: queuedEnrich(trimmedContent),
+        })
+        clearQueuedActionError(id)
+        setEditingQueuedId((current) => (current === id ? null : current))
+        releaseStopSnapshot()
+      } catch (error) {
+        const status = (error as { status?: number } | null)?.status
+        if (status !== 404 && status !== 409) {
+          // Anything else — offline, a 5xx, an expired session — did not refuse
+          // the edit: the row is still queued with its old text, and enqueueing
+          // it as new would duplicate the message. Keep the edit open, put the
+          // text back in the composer so Send retries the same edit, and say
+          // what happened on the row (SHO-356, QA round 1).
+          setQueuedActionError(
+            id,
+            queueActionMessage(error, "Couldn't save your change — try again"),
+          )
+          setRestoreDraftRequest({ nonce: Date.now(), content, files })
+          console.warn(
+            "[ChatPanel] Could not edit the queued message in place:",
+            error,
+          )
+          return
+        }
+        setEditingQueuedId((current) => (current === id ? null : current))
+        setQueuedActionError(
+          id,
+          "This message was already sent, so your edit is queued as a new message",
+        )
+        console.warn(
+          "[ChatPanel] The queued message could not be edited in place:",
+          error,
+        )
+        await enqueueServerMessage(trimmedContent, files, perMsgModel, references)
+      }
+    },
+    [
+      buildQueuedBody,
+      clearQueuedActionError,
+      enqueueServerMessage,
+      queuedEnrich,
+      queueActionMessage,
+      releaseStopSnapshot,
+      selectedModel,
+      serverQueue,
+      setQueuedActionError,
     ],
   )
 
@@ -8027,6 +8268,39 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // device; everywhere else this resolves on the next microtask, so the
       // echo below still paints before any request goes out.
       if (!(await ensureAiConsentForMessage())) return
+
+      // A send while a queued row is being edited is that row's edit, not a new
+      // message: it goes back where it came from, keeping its place in the
+      // queue (SHO-356).
+      if (editingQueuedId) {
+        const editingLocal = messageQueue.some((m) => m.id === editingQueuedId)
+        if (editingLocal) {
+          clearOptimisticEcho(trimmedContent)
+          setMessageQueue((queue) =>
+            replaceQueuedMessage(queue, editingQueuedId, {
+              content: trimmedContent,
+              files,
+              selectedModel: perMsgModel,
+              references,
+            }),
+          )
+          setEditingQueuedId(null)
+          return
+        }
+        if (serverQueue.isServerQueued(editingQueuedId)) {
+          await editQueuedServerMessage(
+            editingQueuedId,
+            trimmedContent,
+            files,
+            perMsgModel,
+            references,
+          )
+          return
+        }
+        // The row is gone (deleted, or the server took it): fall through and
+        // send this as an ordinary message so the text is not lost.
+        setEditingQueuedId(null)
+      }
 
       const queueMessage = async () => {
         // Anything that lands in `displayedQueue` (the dock) must not also sit
@@ -8119,13 +8393,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
     },
     [
       clearOptimisticEcho,
+      editQueuedServerMessage,
+      editingQueuedId,
       enqueueServerMessage,
       isStreaming,
       localAgentUrl,
+      messageQueue,
       sendMessageInternal,
       currentSessionId,
       probeLiveTurn,
       reloadAndAttachLiveTurn,
+      serverQueue,
       showOptimisticEcho,
     ],
   )
@@ -10313,6 +10591,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
                       onDismiss={() => setContinueChipDismissed(true)}
                     />
                   ) : null}
+                  {editingQueuedId ? (
+                    <View className="flex-row items-center gap-2 border-t border-border/50 bg-muted/40 px-3 py-1.5">
+                      <Pencil size={11} className="text-muted-foreground flex-shrink-0" />
+                      <Text
+                        className="flex-1 min-w-0 text-[11px] text-muted-foreground"
+                        numberOfLines={1}
+                      >
+                        Editing queued message · Send updates it in place
+                      </Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Cancel editing queued message"
+                        onPress={handleCancelQueuedEdit}
+                        className="flex-row items-center gap-1 rounded border border-border px-2 py-0.5 active:opacity-60"
+                      >
+                        <X size={10} className="text-foreground" />
+                        <Text className="text-[10px] font-medium text-foreground">
+                          Cancel
+                        </Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
                   <ChatInput
                     onSubmit={handleInputSubmit}
                     uploadStatus={uploadStatus}
@@ -10335,6 +10635,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     isPro={hasAdvancedModelAccess}
                     onUpgradeClick={handleUpgradeClick}
                     queuedMessages={displayedQueue}
+                    queuedEditingId={editingQueuedId}
+                    queuedMessageErrors={queuedActionErrors}
                     onRemoveQueuedMessage={handleRemoveQueuedMessage}
                     onReorderQueuedMessage={handleReorderQueuedMessage}
                     onEditQueuedMessage={handleEditQueuedMessage}

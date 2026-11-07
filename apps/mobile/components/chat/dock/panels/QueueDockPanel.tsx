@@ -33,9 +33,14 @@ import type {
 import { wakeRefusalMessage } from "../../../../lib/wake-refusal"
 import type { QueuedMessage } from "../../ChatInput"
 import { stripAskUserAnswerMarker } from "../../turns/askUserAnswers"
+import { isEditingQueuedError } from "../../queued-edit-marker"
 
 export interface QueueDockPanelProps {
   queuedMessages: QueuedMessage[]
+  /** The row the composer is editing right now: it stays in the dock, marked. */
+  editingId?: string | null
+  /** Why a queue action was refused, per row id. */
+  messageErrors?: Record<string, string>
   onRemoveQueuedMessage?: (messageId: string) => void
   onReorderQueuedMessage?: (messageId: string, direction: "up" | "down") => void
   onEditQueuedMessage?: (messageId: string) => void
@@ -250,6 +255,8 @@ function AgentWakeRow({
 
 function QueueBody({
   queuedMessages,
+  editingId,
+  messageErrors,
   onRemoveQueuedMessage,
   onReorderQueuedMessage,
   onEditQueuedMessage,
@@ -287,6 +294,12 @@ function QueueBody({
         const primaryText = trimmedContent
           ? trimmedContent
           : attachmentLabel || "Empty message"
+        // The dock's own edit state decides this, not the row's marker: a row
+        // can still be parked while this window is no longer editing it (it
+        // crashed, reloaded, or the person switched chats) and that is repaired
+        // by releasing the hold, not by writing "Editing" for ever.
+        const editing = editingId === msg.id
+        const rowError = messageErrors?.[msg.id]
         return (
           <Pressable
             key={msg.id}
@@ -297,7 +310,12 @@ function QueueBody({
               Platform.OS === "web" && "hover:bg-muted/40",
             )}
           >
-            {msg.status === "failed" ? (
+            {editing ? (
+              <Pencil
+                size={11}
+                className="text-muted-foreground flex-shrink-0"
+              />
+            ) : msg.status === "failed" ? (
               <AlertTriangle
                 size={11}
                 className="text-destructive flex-shrink-0"
@@ -321,15 +339,33 @@ function QueueBody({
               <Text
                 className={cn(
                   "text-xs",
-                  msg.status === "failed"
-                    ? "text-destructive"
-                    : "text-foreground",
+                  editing
+                    ? "text-muted-foreground italic"
+                    : msg.status === "failed"
+                      ? "text-destructive"
+                      : "text-foreground",
                 )}
                 numberOfLines={1}
               >
                 {primaryText}
               </Text>
-              {msg.error && (
+              {editing && (
+                <Text
+                  className="text-[10px] text-muted-foreground"
+                  numberOfLines={1}
+                >
+                  Editing…
+                </Text>
+              )}
+              {rowError && (
+                <Text
+                  className="text-[10px] text-destructive"
+                  numberOfLines={2}
+                >
+                  {rowError}
+                </Text>
+              )}
+              {!editing && msg.error && !isEditingQueuedError(msg.error) && (
                 <Text
                   className="text-[10px] text-destructive"
                   numberOfLines={1}
@@ -435,7 +471,9 @@ export function QueueDockPanel(props: QueueDockPanelProps) {
       summary: parts.join(" · "),
       defaultExpanded: true,
       flushBody: true,
-      render: () => <QueueBody {...props} />,
+      render: () => (
+        <QueueBody {...props} editingId={props.editingId ?? null} />
+      ),
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props, offlineCount, wakeCount, parts.join("|")])
