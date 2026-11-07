@@ -19,7 +19,7 @@ import { TurnGroup } from "./TurnGroup"
 import { RejoinRow } from "./RejoinRow"
 import { useMessageEditContext } from "./MessageEditContext"
 import { firstDimmedTurnIndex, replacedTurnsLabel } from "./editResend"
-import { useTurnWindow } from "./useTurnWindow"
+import { useTurnWindow, TURN_WINDOW_ROW_GAP } from "./useTurnWindow"
 import type { TranscriptScrollSignal } from "./transcript-scroll"
 import type { ToolCallData } from "../tools/types"
 
@@ -99,7 +99,9 @@ export const TurnList = memo(
     const { start, spacerHeight, onTurnLayout } = turnWindow
 
     return (
-      <View testID="turn-list" className={cn("gap-4", className)}>
+      // The gap is a style, not a class, so the value the spacer reserves
+      // (`TURN_WINDOW_ROW_GAP`) is literally the same number the layout uses.
+      <View testID="turn-list" className={cn(className)} style={{ gap: TURN_WINDOW_ROW_GAP }}>
         {start > 0 ? (
           <View testID="turn-window-spacer" style={{ height: spacerHeight }} />
         ) : null}
