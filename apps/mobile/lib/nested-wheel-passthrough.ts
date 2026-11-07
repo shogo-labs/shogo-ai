@@ -101,6 +101,42 @@ export function findNestedScroller(
 }
 
 /**
+ * Make a wheel gesture over the transcript move it, always.
+ *
+ * A gesture whose target sits inside a box that silently absorbs it — a
+ * horizontally scrolling wrapper whose computed `overflow-y` is `auto`, a row
+ * with a pixel or two of overflow — leaves the transcript still: the browser
+ * moves that box by the gesture's 1–4px and clamps it, the rest of the delta is
+ * lost, and the transcript never sees it. Nothing calls `preventDefault`, so no
+ * handler looks guilty and the transcript's own `scrollTop` never changes.
+ *
+ * So the transcript takes the gesture instead of guessing whether the browser
+ * applied it (a frame later is too late: Chromium scrolls off the compositor
+ * and the read comes back unchanged, which scrolled everything twice — measured
+ * in a real browser, a −100 notch moved the transcript −200). The delta is
+ * applied here, in the capture phase, and the gesture is prevented; a gesture a
+ * nested scroller can still consume (a wide code block mid-travel) is left to
+ * that element.
+ */
+export function attachUnclaimedWheelFallback(node: Element): () => void {
+  const onWheel: EventListener = (event) => {
+    const gesture = event as WheelEvent
+    if (gesture.defaultPrevented) return
+    if (!(gesture.target instanceof Element)) return
+    const { axis, delta } = pixels(gesture)
+    if (!delta) return
+    if (findNestedScroller(gesture.target, node, gesture)) return
+    if (!canMove(axis, node, delta)) return
+    gesture.preventDefault()
+    const scroller = node as HTMLElement
+    if (axis === 'x') scroller.scrollLeft += delta
+    else scroller.scrollTop += delta
+  }
+  node.addEventListener('wheel', onWheel, { capture: true, passive: false })
+  return () => node.removeEventListener('wheel', onWheel, { capture: true })
+}
+
+/**
  * Hand wheel gestures over a nested scroller back to that element.
  *
  * Listens in the capture phase on a container *above* the list, so it runs

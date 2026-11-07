@@ -143,6 +143,18 @@
   border-color: var(--md-border) !important;
 }
 
+/* SHO-365: a table only ever needs to scroll sideways. Streamdown's wrapper
+ * asks for `overflow-x-auto overflow-y-auto`; the vertical scroller is not
+ * wanted and it costs the reader the transcript — the box takes the wheel for
+ * the couple of pixels its last row or a descender overflows by, and the chat
+ * stops moving while the pointer is over a table. `overflow-x: auto` on its
+ * own would have the same effect (a `visible` other axis computes to `auto`),
+ * so the vertical axis is explicitly clipped. A wrapper that does cap its
+ * height keeps its own scrolling. */
+.chat-md [data-streamdown="table-wrapper"] > div:not([style*="max-height"]) {
+  overflow-y: clip !important;
+}
+
 /* Code block container — flat, minimal chrome */
 .chat-md [data-streamdown="code-block"] {
   margin-top: 0 !important;
