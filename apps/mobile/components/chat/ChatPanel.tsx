@@ -323,6 +323,8 @@ import { useIdeBridge } from "./ideBridge"
 import { TurnList } from "./turns"
 import {
   createTranscriptScrollSignal,
+  optOutOfBrowserScrollAnchoring,
+  type TranscriptScrollOrigin,
   type TranscriptScrollSignal,
 } from "./turns"
 import {
@@ -1521,6 +1523,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
   if (!transcriptScrollSignalRef.current) {
     transcriptScrollSignalRef.current = createTranscriptScrollSignal()
   }
+  /**
+   * SHO-359: until this timestamp, the offset a scroll event reports is the
+   * result of our own reading-position correction rather than the person
+   * moving. The turn window still records it but must not react to it (an
+   * expansion that landed near the top would otherwise start the next
+   * expansion, and a correction near the bottom would shrink the window).
+   */
+  const correctionScrollUntilRef = useRef(0)
+  /** The origin of the next reported offset, for the scroll signal. */
+  const scrollReportOrigin = useCallback(
+    (): TranscriptScrollOrigin =>
+      Date.now() < correctionScrollUntilRef.current ? "correction" : "scroll",
+    [],
+  )
   /** Last known scroll offset, so a content shift can be applied to it. */
   const lastScrollOffsetRef = useRef(0)
   const MESSAGE_PAGE_SIZE = 50
@@ -1630,14 +1646,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
    * Deliberately ref-only — a scroll frame must not re-render the panel.
    */
   const feedTranscriptScroll = useCallback(
-    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    (
+      event: NativeSyntheticEvent<NativeScrollEvent>,
+      origin: TranscriptScrollOrigin = "scroll",
+    ) => {
       const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent
       lastScrollOffsetRef.current = contentOffset.y
-      transcriptScrollSignalRef.current?.report({
-        y: contentOffset.y,
-        viewportHeight: layoutMeasurement.height,
-        contentHeight: contentSize.height,
-      })
+      transcriptScrollSignalRef.current?.report(
+        {
+          y: contentOffset.y,
+          viewportHeight: layoutMeasurement.height,
+          contentHeight: contentSize.height,
+        },
+        origin,
+      )
     },
     [],
   )
@@ -1650,17 +1672,24 @@ const ChatPanelContent = observer(function ChatPanelContent({
    * pinned, and the autoscroll path already owns the offset — and while a
    * "load earlier" page is settling, because `onContentSizeChange` already
    * scrolls by the content delta for that case and the two would double up.
+   *
+   * The scroll is ours, not the reader's (SHO-359): it is marked programmatic
+   * for the follow/load-older logic, and reported to the turn window as a
+   * `correction` so it can't start the next expansion or a shrink.
    */
   const handleTurnWindowContentShift = useCallback(
     (dy: number) => {
       if (!dy || shouldFollowBottom() || isLoadingOlderRef.current) return
+      markProgrammaticScroll()
+      correctionScrollUntilRef.current =
+        Date.now() + PROGRAMMATIC_SCROLL_GUARD_MS
       lastScrollOffsetRef.current = Math.max(0, lastScrollOffsetRef.current + dy)
       scrollViewRef.current?.scrollTo({
         y: lastScrollOffsetRef.current,
         animated: false,
       })
     },
-    [shouldFollowBottom],
+    [shouldFollowBottom, markProgrammaticScroll],
   )
 
   const scrollToBottomIfFollowing = useCallback(
@@ -1736,6 +1765,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
    * heuristic requires the user to scroll up >100px between streaming chunks
    * to escape auto-scroll, which feels like fighting the chat. Wheel, touch,
    * and keyboard navigation all count as intent to leave the bottom.
+   *
+   * The same node also opts out of the browser's scroll anchoring (SHO-359):
+   * `useTurnWindow` owns the reading position, and letting Chromium move
+   * `scrollTop` for the same content change would apply every correction twice.
    */
   useEffect(() => {
     if (Platform.OS !== "web") return
@@ -1743,6 +1776,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       (scrollViewRef.current as any)?.getScrollableNode?.() ??
       (scrollViewRef.current as any)
     if (!node || typeof node.addEventListener !== "function") return
+    optOutOfBrowserScrollAnchoring(node)
+    // …and on the content box too: anchoring looks at the scroller's subtree,
+    // and this covers a browser that only honours the property there.
+    optOutOfBrowserScrollAnchoring(
+      (scrollViewRef.current as any)?.getInnerViewNode?.(),
+    )
 
     const disengage = () => {
       isUserAtBottomRef.current = false
@@ -6564,6 +6603,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [handleLoadOlderMessages],
   )
 
+  /** Native onScroll: report the offset, labelled with where it came from. */
+  const handleTranscriptScrollNative = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) =>
+      feedTranscriptScroll(e, scrollReportOrigin()),
+    [feedTranscriptScroll, scrollReportOrigin],
+  )
+
   /**
    * Web: track bottom for follow-scroll + debounced load-older near top.
    * Native omits onScroll entirely here — stick-to-bottom uses drag/momentum end handlers.
@@ -6575,8 +6621,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // autoscroll that follows a streaming reply), so it can shrink back to
       // the tail while the person just watches a long turn. Only the *follow
       // state* and the load-older trigger below have to ignore programmatic
-      // events.
-      feedTranscriptScroll(e)
+      // events — and a reading-position correction is reported as such so it
+      // can't drive the window by itself (SHO-359).
+      feedTranscriptScroll(e, scrollReportOrigin())
       if (Date.now() < programmaticScrollUntilRef.current) return
 
       const overflows = contentSize.height > layoutMeasurement.height + 1
@@ -6604,7 +6651,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         loadOlderWebDebounceRef.current = null
       }
     },
-    [handleLoadOlderMessages, feedTranscriptScroll],
+    [handleLoadOlderMessages, feedTranscriptScroll, scrollReportOrigin],
   )
 
   // Re-hydrate pendingPlan from persisted messages on session restore
@@ -10072,7 +10119,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   onTouchCancel={() => {
                     nativeEditTapStartRef.current = null
                   }}
-                  onScroll={isNative ? feedTranscriptScroll : handleMessagesScrollWeb}
+                  onScroll={
+                    isNative ? handleTranscriptScrollNative : handleMessagesScrollWeb
+                  }
                   onScrollBeginDrag={() => {
                     if (isNative) {
                       nativeEditTapStartRef.current = null

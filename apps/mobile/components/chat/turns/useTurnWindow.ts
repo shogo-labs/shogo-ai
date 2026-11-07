@@ -47,6 +47,13 @@ export const TURN_WINDOW_BOTTOM_EDGE = 240
  * error the moment the real height is measured.
  */
 export const TURN_WINDOW_ESTIMATE = 280
+/**
+ * Vertical gap between two rows of the transcript (the turn list's `gap-4`).
+ * A collapsed turn has to reserve its gap as well as its height, otherwise
+ * every expansion silently adds `gap × page` to the content above the reader
+ * and the transcript jumps — see the note on `spacerHeight` below.
+ */
+export const TURN_WINDOW_ROW_GAP = 16
 /** Minimum gap between two expansions, so a fling can't mount the lot. */
 const EXPAND_THROTTLE_MS = 150
 
@@ -123,6 +130,8 @@ export function useTurnWindow({
   extraRef.current = state.extra
   const countRef = useRef(count)
   countRef.current = count
+  const editingIndexRef = useRef(editingIndex)
+  editingIndexRef.current = editingIndex
   const spacerHeightRef = useRef(0)
 
   const heightsRef = useRef(new Map<string, number>())
@@ -152,13 +161,34 @@ export function useTurnWindow({
 
   const expand = useCallback(
     function expand() {
-      const current = startRef.current
-      if (current <= 0) return
-      const nextStart = Math.max(0, current - TURN_WINDOW_STEP)
+      const total = countRef.current
+      const tailStartNow = Math.max(0, total - TURN_WINDOW_SIZE)
+      const windowStartNow = Math.max(0, tailStartNow - extraRef.current)
+      if (windowStartNow <= 0) return
+
+      const nextExtra =
+        extraRef.current + Math.min(TURN_WINDOW_STEP, windowStartNow)
+      const nextWindowStart = Math.max(0, tailStartNow - nextExtra)
+      // An open in-place editor pins everything from its row down, so the
+      // derived window start is not what actually mounts. Only turns that
+      // really appear in the tree may be given a pending baseline — marking an
+      // already-mounted, already-measured turn is what made a work group jump
+      // out from under the click (its own height change was then read as
+      // "content above the reader changed").
+      const editorIndex = editingIndexRef.current
+      const nextStart =
+        editorIndex != null && editorIndex >= 0
+          ? Math.min(nextWindowStart, editorIndex)
+          : nextWindowStart
+      lastExpandAtRef.current = Date.now()
+      setExtra(nextExtra)
+
+      const currentStart = startRef.current
+      if (nextStart >= currentStart) return
       // Everything between the new start and the current one is about to mount
       // above the reader: remember what the spacer was charging for it so its
       // real height can be reconciled the moment it is measured.
-      for (let index = nextStart; index < current; index++) {
+      for (let index = nextStart; index < currentStart; index++) {
         const id = turnsRef.current[index]?.id
         if (!id) continue
         pendingRef.current.set(
@@ -166,8 +196,6 @@ export function useTurnWindow({
           heightsRef.current.get(id) ?? TURN_WINDOW_ESTIMATE,
         )
       }
-      lastExpandAtRef.current = Date.now()
-      setExtra(extraRef.current + (current - nextStart))
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
       // A fling can land straight at the very top of the collapsed region,
       // where no further scroll event will arrive. Keep pulling the window
@@ -190,7 +218,22 @@ export function useTurnWindow({
 
   useEffect(() => {
     if (!scrollSignal) return
-    return scrollSignal.subscribe(() => {
+    return scrollSignal.subscribe((origin) => {
+      // Our own reading-position correction is not the person scrolling: it
+      // must never start an expansion or a shrink, or the hook oscillates
+      // against itself (SHO-359). The sample is still stored, so the next real
+      // scroll sees the corrected offset.
+      if (origin === "correction") {
+        // It also retires the pending retry: that timer exists to pull the
+        // window open when a *fling* lands at the top, and a correction is not
+        // the person still moving.
+        if (retryTimerRef.current) {
+          clearTimeout(retryTimerRef.current)
+          retryTimerRef.current = null
+        }
+        lastExpandAtRef.current = Date.now()
+        return
+      }
       const { y, viewportHeight, contentHeight } = scrollSignal.read()
       const current = startRef.current
 
@@ -201,7 +244,12 @@ export function useTurnWindow({
       const nearBottom =
         contentHeight - y - viewportHeight < TURN_WINDOW_BOTTOM_EDGE
       if (nearBottom) {
-        if (extraRef.current !== 0) setExtra(0)
+        if (extraRef.current !== 0) {
+          // Those turns unmount before they were ever measured, so their
+          // baselines describe rows that are no longer in the tree.
+          pendingRef.current.clear()
+          setExtra(0)
+        }
         return
       }
 
@@ -219,7 +267,10 @@ export function useTurnWindow({
     })
   }, [scrollSignal, expand, setExtra])
 
-  let spacerHeight = 0
+  // Each collapsed turn costs its height *and* the gap that separated it from
+  // its neighbour in the mounted list. Without the gap every expansion adds
+  // `gap × page` px of uncorrected height above the reader (SHO-359).
+  let spacerHeight = TURN_WINDOW_ROW_GAP * start
   for (let index = 0; index < start; index++) {
     spacerHeight += heightsRef.current.get(turns[index].id) ?? TURN_WINDOW_ESTIMATE
   }
