@@ -227,10 +227,9 @@ export function parseSerialIdColumns(schema: string): Map<string, string> {
     for (const raw of body!.split('\n')) {
       const line = raw.trim()
       if (!/@id\b/.test(line)) continue
-      // `autoincrement()` is SQLite's spelling; the publish transform rewrites it
-      // to Postgres's `auto()`, and both are a sequence that has to be moved past
-      // the seeded rows.
-      if (!/@default\(\s*(?:autoincrement|auto)\(\)\s*\)/.test(line)) continue
+      // An autoincrement id is a sequence on Postgres, and it has to be moved
+      // past the seeded rows.
+      if (!/@default\(\s*autoincrement\(\)\s*\)/.test(line)) continue
       const field = /^(\w+)\s+Int\b/.exec(line)
       if (!field) continue
       out.set(modelTables.get(model!) ?? model!, field[1]!)

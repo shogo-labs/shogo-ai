@@ -193,11 +193,15 @@ export async function applyPublishedSchema(
       'utf-8',
     )
 
+    // Both commands name the config explicitly: run from the project directory,
+    // Prisma would otherwise load the app's own prisma.config.ts (its SQLite
+    // file). Prisma 7 has no `--skip-generate` on `db push` and no `--schema`
+    // on `db execute`; either flag makes the command print its help and exit 1.
     const env = { ...process.env, PUBLISHED_DATABASE_URL: input.databaseUrl }
     try {
       await pkg.execToolAsync(
         'prisma',
-        ['db', 'push', '--skip-generate', '--schema', schemaPath],
+        ['db', 'push', '--config', configPath],
         input.projectDir,
         { env, timeout: APPLY_TIMEOUT_MS },
       )
@@ -228,7 +232,7 @@ export async function applyPublishedSchema(
         try {
           await pkg.execToolAsync(
             'prisma',
-            ['db', 'execute', '--schema', schemaPath, '--file', sqlPath],
+            ['db', 'execute', '--config', configPath, '--file', sqlPath],
             input.projectDir,
             { env, timeout: APPLY_TIMEOUT_MS },
           )
