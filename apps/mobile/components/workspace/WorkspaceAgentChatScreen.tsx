@@ -351,11 +351,13 @@ export const WorkspaceAgentChatScreen = observer(
         .then((record) => {
           if (cancelled) return
           applyBoot(record)
+          // Clear bootPending only when IDB held a record. On a miss, leave
+          // it true: loadWorkspaceChat clears it once it has set profile +
+          // session, so there is no 'spinner' window between the IDB miss
+          // and the network answer (SHO-364 R2).
+          if (record) setBootPending(false)
         })
         .catch(() => undefined)
-        .finally(() => {
-          if (!cancelled) setBootPending(false)
-        })
       return () => {
         cancelled = true
       }
@@ -461,6 +463,10 @@ export const WorkspaceAgentChatScreen = observer(
         if (version !== loadVersion.current) return
         setProfile(nextProfile)
         setSessionId(session.id)
+        // Clear bootPending here so it goes false in the same batch as the
+        // profile + session, never leaving a render where both are null
+        // with bootPending already false (SHO-364 R2).
+        setBootPending(false)
         publishCurrentWorkspaceSession(workspace.id, session.id)
         // Answer for the next open, and for the island and side chats, which
         // read the same record (SHO-309). Only a plain open resumes the cached
@@ -476,6 +482,9 @@ export const WorkspaceAgentChatScreen = observer(
         // rather than replacing it with an error (SHO-309).
         const shown = shownIdentity.current
         if (shown.sessionId && shown.profile) return
+        // If bootPending is still true (IDB miss, waiting for this load),
+        // clear it so the error view can render (SHO-364 R2).
+        setBootPending(false)
         setError(
           cause instanceof Error
             ? cause.message

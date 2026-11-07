@@ -172,6 +172,32 @@ describe('the workspace agent screen opens from the device', () => {
     expect(screen).toContain('rememberWorkspaceChatBoot<PersonalAgentProfile>(bootKey, {')
   })
 
+  test('an IDB miss leaves bootPending true; loadWorkspaceChat clears it (SHO-364 R2)', () => {
+    // When IDB has nothing (first-ever open) the effect must NOT set
+    // bootPending=false in a .finally() — that creates a render where
+    // hasProfile=false, hasSession=false, bootPending=false → 'spinner'
+    // → "Preparing Workspace Agent Chat…" before the network answers.
+    // Instead the effect only clears it when a record was found, and
+    // loadWorkspaceChat clears it in the same batch as setProfile +
+    // setSessionId (success) or before setError (failure).
+    const effect = screen.slice(
+      screen.indexOf('const applyBoot = (record'),
+      screen.indexOf('const loadWorkspaceChat = useCallback'),
+    )
+    // The IDB read must NOT unconditionally clear bootPending in .finally().
+    expect(effect).not.toMatch(/\.finally\s*\(\s*\(\s*\)\s*=>\s*\{[\s\S]{0,120}setBootPending\s*\(\s*false\s*\)/)
+    // It must clear it only when a record was found.
+    expect(effect).toContain('if (record) setBootPending(false)')
+    // loadWorkspaceChat must clear bootPending in the success path, in the
+    // same synchronous batch as setProfile + setSessionId.
+    const load = screen.slice(screen.indexOf('const loadWorkspaceChat = useCallback'))
+    const successBlock = load.slice(load.indexOf('setProfile(nextProfile)'), load.indexOf('publishCurrentWorkspaceSession('))
+    expect(successBlock).toContain('setBootPending(false)')
+    // And in the error path so the error view can render.
+    const errorBlock = load.slice(load.indexOf('const shown = shownIdentity.current'), load.indexOf("Could not load Workspace Agent Chat") + 60)
+    expect(errorBlock).toContain('setBootPending(false)')
+  })
+
   test('applyBoot applies the session for personal workspaces even when startNewSession=true (SHO-364)', () => {
     // The home landing passes `startNewSession` for every workspace kind, but
     // `agentSessionSource` returns 'new' only for team workspaces. For a
