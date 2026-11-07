@@ -2743,8 +2743,46 @@ app.post('/agent/stop', async (c) => {
   // the floor and causing project-chat's auto-resume to return 204 (which it
   // bills as a $0 stop-or-crash partial — see the comment in
   // `apps/api/src/routes/project-chat.ts`).
+  //
+  // But the wind-down is only a *preference*: when a tool call ignores the
+  // abort (a browser `snapshot` on a frozen page), the loop never returns and
+  // the turn stays `active` forever — prod had a chat stuck 18 h, and neither
+  // this route nor `/agent/subagents/:id/stop` could end it (SHO-358). So after
+  // a grace period the turn is force-reaped: terminal frame written, buffer
+  // completed, no longer reported as busy.
+  scheduleStopReap(stopSessionKey)
   return c.json({ stopped: aborted, cancelledSubagents })
 })
+
+/**
+ * Force-reap a stopped session's turn if it is still streaming after the grace
+ * period. Reads the registry at fire time, so a clean wind-down (the normal
+ * case, ~ms) leaves this a no-op.
+ */
+function scheduleStopReap(sessionKey: string): void {
+  // Only the turn(s) live at Stop time: a message sent right after Stop starts a
+  // new turn on the same session, and that one must not be reaped.
+  const stoppedTurnIds = new Set(streamRegistry.turnIdsFor(sessionKey))
+  if (stoppedTurnIds.size === 0) return
+  const timer = setTimeout(() => {
+    try {
+      streamRegistry.forceReapSession(
+        sessionKey,
+        'the turn was stopped and did not wind down within the grace period (a tool call was still running)',
+        'aborted',
+        stoppedTurnIds,
+      )
+    } catch (err: any) {
+      console.warn('[agent-runtime] stop reap failed:', err?.message ?? err)
+    }
+  }, STOP_REAP_GRACE_MS)
+  ;(timer as any)?.unref?.()
+}
+
+/** How long a stopped turn may take to wind down on its own before it is reaped. */
+const STOP_REAP_GRACE_MS = Number(process.env.STOP_REAP_GRACE_MS) > 0
+  ? Number(process.env.STOP_REAP_GRACE_MS)
+  : 10_000
 
 // Cancel a single running subagent by AgentManager instance id
 app.post('/agent/subagents/:instanceId/stop', async (c) => {

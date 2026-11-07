@@ -6939,6 +6939,53 @@ function captureBrowserCall(
 
 const BROWSER_TOOL_IDLE_RELEASE_MS = 5 * 60 * 1000
 
+/**
+ * How long one browser action may take before the page is declared unresponsive.
+ *
+ * Playwright puts no timeout on `evaluate`/`title`/`$$eval`/`screenshot`, so on
+ * a page whose main thread is busy or frozen those calls never settle — and the
+ * tool, the sub-agent that called it, and that sub-agent's chat all hang with
+ * it (SHO-358). 30 s is far longer than a healthy action needs.
+ */
+export const DEFAULT_BROWSER_ACTION_TIMEOUT_MS = 30_000
+
+/** How long the frozen-page probe may take before the page is written off. */
+export const BROWSER_PAGE_PROBE_TIMEOUT_MS = 2_000
+
+/** Upper bound on closing a page/context that may itself be unresponsive. */
+const BROWSER_CLOSE_TIMEOUT_MS = 5_000
+
+/**
+ * A Playwright call that passed its deadline. Thrown out of the call site and
+ * turned into an actionable tool error by the tool's catch block: the tool
+ * probes the page, and closes it when the page has stopped answering.
+ */
+export class BrowserActionDeadlineError extends Error {
+  constructor(
+    readonly label: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`browser ${label} exceeded its ${timeoutMs}ms deadline`)
+    this.name = 'BrowserActionDeadlineError'
+  }
+}
+
+/** Resolve/reject `promise` within `ms`; never hangs, never throws late. */
+export async function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ms)
+        ;(timer as any)?.unref?.()
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 const browserToolDisposers = new WeakMap<AgentTool, () => Promise<void>>()
 
 /** Release the browser resources held by a tool from createBrowserTool (no-op otherwise). */
@@ -6981,6 +7028,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
   let browser: any = null
   let lease: BrowserLease | null = null
   let unregisterSessionCleanup: (() => void) | null = null
+  let unregisterInstanceCleanup: (() => void) | null = null
   let ensurePromise: Promise<any> | null = null
   let idleReleaseTimer: ReturnType<typeof setTimeout> | null = null
   let inFlightCalls = 0
@@ -7001,6 +7049,83 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
   const pagesWithLogListeners = new WeakSet<object>()
 
   scLog(`[screencast] createBrowserTool instanceId=${ctx.subagentInstanceId ?? '<none>'}`)
+
+  function actionTimeoutMs(action: string, waitMs: number): number {
+    const raw = Number(process.env.BROWSER_ACTION_TIMEOUT_MS)
+    if (Number.isFinite(raw) && raw > 0) return raw
+    // `wait_for` is waiting on purpose; its own wait plus a margin is the bound.
+    if (action === 'wait_for') return (waitMs || 10_000) + 5_000
+    return DEFAULT_BROWSER_ACTION_TIMEOUT_MS
+  }
+
+  /**
+   * Run one Playwright call under a deadline.
+   *
+   * A late settle is swallowed here so it cannot become an unhandled rejection;
+   * the caller gets `BrowserActionDeadlineError` and turns it into an
+   * actionable tool error.
+   */
+  function deadline<T>(label: string, call: () => Promise<T>, timeoutMs: number): Promise<T> {
+    const promise = Promise.resolve().then(call)
+    void promise.catch(() => {})
+    let timer: ReturnType<typeof setTimeout> | undefined
+    return new Promise<T>((resolve, reject) => {
+      timer = setTimeout(() => reject(new BrowserActionDeadlineError(label, timeoutMs)), timeoutMs)
+      ;(timer as any)?.unref?.()
+      promise.then(
+        (value) => {
+          if (timer) clearTimeout(timer)
+          resolve(value)
+        },
+        (err) => {
+          if (timer) clearTimeout(timer)
+          reject(err)
+        },
+      )
+    })
+  }
+
+  /** `locator.count()`, bounded, and 0 only for an ordinary failure (not a deadline). */
+  function countLocator(label: string, locator: any, timeoutMs: number): Promise<number> {
+    return deadline<number>(label, () => locator.count(), timeoutMs).catch((err: any) => {
+      if (err instanceof BrowserActionDeadlineError) throw err
+      return 0
+    })
+  }
+
+  /** Has the page's main thread answered a trivial script within the probe window? */
+  async function pageAnswersProbe(): Promise<boolean> {
+    const p = page
+    if (!p) return false
+    const raw = Number(process.env.BROWSER_PAGE_PROBE_TIMEOUT_MS)
+    const probeMs = Number.isFinite(raw) && raw > 0 ? raw : BROWSER_PAGE_PROBE_TIMEOUT_MS
+    const answered = await settleWithin(
+      Promise.resolve().then(() => p.evaluate('1')).then(() => true, () => false),
+      probeMs,
+    )
+    return answered === true
+  }
+
+  /**
+   * Turn a missed deadline into an error the model can act on: say which action
+   * stopped, whether the page still answers, and — when it does not — close the
+   * page so the pool slot, the CPU and the screencast are released and the next
+   * action opens a fresh page.
+   */
+  async function describeMissedDeadline(err: BrowserActionDeadlineError): Promise<Error> {
+    const seconds = Math.round(err.timeoutMs / 1000)
+    if (await pageAnswersProbe()) {
+      return new Error(
+        `\`${err.label}\` did not finish within ${seconds}s, but the page is still responding. ` +
+          'Try again, wait for it to finish loading, or use a smaller action (browser({ action: "text" }) instead of a full snapshot).',
+      )
+    }
+    await cleanup()
+    return new Error(
+      `The page stopped responding to \`${err.label}\` for ${seconds}s (its main thread is busy or frozen). ` +
+        'I closed it. Navigate again, or report the frozen page as a finding.',
+    )
+  }
 
   function pushLog(entry: Omit<BrowserLogEntry, 'ts'>) {
     const text = entry.text.length > BROWSER_LOG_TEXT_LIMIT ? `${entry.text.slice(0, BROWSER_LOG_TEXT_LIMIT)}…` : entry.text
@@ -7184,6 +7309,11 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         if (ctx.sessionId) {
           unregisterSessionCleanup = registerBrowserSessionCleanup(ctx.sessionId, () => cleanup())
         }
+        // A wedged sub-agent never reaches `runSubagent`'s `finally`, so cancel
+        // needs its own handle on this page/lease (SHO-358).
+        if (ctx.subagentInstanceId) {
+          unregisterInstanceCleanup = registerSubagentInstanceCleanup(ctx.subagentInstanceId, () => cleanup())
+        }
       }
       await preparePage(page)
       await ensureScreencast()
@@ -7239,13 +7369,17 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
       unregisterSessionCleanup()
       unregisterSessionCleanup = null
     }
+    if (unregisterInstanceCleanup) {
+      unregisterInstanceCleanup()
+      unregisterInstanceCleanup = null
+    }
     if (screencastStarted && cdpSession) {
-      try {
-        await cdpSession.send('Page.stopScreencast')
-      } catch {}
-      try {
-        await cdpSession.detach()
-      } catch {}
+      // Fire-and-forget: a frozen page never answers these, and closing the
+      // page/context below tears the session down anyway. Waiting here added
+      // 10 s to every cleanup of a frozen page (SHO-358).
+      const session = cdpSession
+      void settleWithin(session.send('Page.stopScreencast'), BROWSER_CLOSE_TIMEOUT_MS).catch(() => {})
+      void settleWithin(session.detach(), BROWSER_CLOSE_TIMEOUT_MS).catch(() => {})
     }
     cdpSession = null
     screencastStarted = false
@@ -7268,13 +7402,17 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
     isExtensionMode = false
     if (wasExtensionMode) {
       try {
-        if (currentBrowser) await currentBrowser.close()
+        if (currentBrowser) await settleWithin(currentBrowser.close(), BROWSER_CLOSE_TIMEOUT_MS)
       } catch {}
-    } else {
+    } else if (currentLease) {
+      // The lease owns the context, so releasing it closes the page too — and
+      // it frees the pool slot immediately instead of waiting on a frozen page
+      // that can make `close()` never settle (SHO-358).
+      await settleWithin(currentLease.release(), BROWSER_CLOSE_TIMEOUT_MS)
+    } else if (currentPage) {
       try {
-        if (currentPage) await currentPage.close()
+        await settleWithin(Promise.resolve().then(() => currentPage.close()), BROWSER_CLOSE_TIMEOUT_MS)
       } catch {}
-      if (currentLease) await currentLease.release()
     }
     cleanupRelay()
   }
@@ -7364,7 +7502,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         }),
       ),
     }),
-    execute: async (_toolCallId, params) => {
+    execute: async (_toolCallId, params, signal) => {
       const {
         action,
         url,
@@ -7391,6 +7529,9 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
 
       clearIdleRelease()
       inFlightCalls++
+      // An aborted turn must not leave a page (and its pool slot) behind.
+      const onTurnAbort = () => { void cleanup() }
+      signal?.addEventListener('abort', onTurnAbort, { once: true })
       try {
         if (action === 'close') {
           await cleanup()
@@ -7411,6 +7552,10 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         }
 
         const p = await ensureBrowser()
+        // Every page action gets this deadline: Playwright has none of its own
+        // for evaluate/title/screenshot, so a frozen main thread would hang here
+        // forever (SHO-358).
+        const actionTimeout = actionTimeoutMs(action, waitMs)
 
         switch (action) {
           case 'navigate': {
@@ -7440,16 +7585,20 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
               await p.waitForLoadState('networkidle', { timeout: 5000 })
             } catch {}
             if (waitMs > 0) await p.waitForTimeout(Math.min(waitMs, 5000))
-            const title = await p.title()
+            const title = await deadline('navigate', () => p.title(), actionTimeout)
             const pageUrl = p.url()
             return textResult({ ok: true, title, url: pageUrl })
           }
           case 'snapshot': {
-            const snapshot = (await p.evaluate(ACCESSIBILITY_SNAPSHOT_SCRIPT)) as { text: string; refCount: number }
+            const snapshot = (await deadline(
+              'snapshot',
+              () => p.evaluate(ACCESSIBILITY_SNAPSHOT_SCRIPT),
+              actionTimeout,
+            )) as { text: string; refCount: number }
             return textResult({
               snapshot: snapshot.text,
               url: p.url(),
-              title: await p.title(),
+              title: await deadline('snapshot', () => p.title(), actionTimeout),
               refCount: snapshot.refCount,
             })
           }
@@ -7465,7 +7614,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             try {
               await locator.click({ timeout: 10000 })
             } catch (clickErr: any) {
-              const found = await locator.count().catch(() => 0)
+              const found = await countLocator('click', locator, actionTimeout)
               if (found === 0)
                 return textResult({
                   error: staleTargetHint('click', ref, selector),
@@ -7489,7 +7638,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             try {
               await locator.fill(value, { timeout: 10000 })
             } catch (fillErr: any) {
-              const found = await locator.count().catch(() => 0)
+              const found = await countLocator('fill', locator, actionTimeout)
               if (found === 0)
                 return textResult({
                   error: staleTargetHint('fill', ref, selector),
@@ -7501,11 +7650,15 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
           }
           case 'extract': {
             if (!selector) return textResult({ error: 'selector is required for extract' })
-            const elements = await p.$$eval(selector, (els: Element[]) =>
-              els.map((el) => ({
-                text: el.textContent?.trim(),
-                html: el.outerHTML.substring(0, 500),
-              })),
+            const elements = await deadline<any[]>(
+              'extract',
+              () => p.$$eval(selector, (els: Element[]) =>
+                els.map((el) => ({
+                  text: el.textContent?.trim(),
+                  html: el.outerHTML.substring(0, 500),
+                })),
+              ),
+              actionTimeout,
             )
             return textResult({
               elements: elements.slice(0, 50),
@@ -7514,14 +7667,14 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             })
           }
           case 'text': {
-            const rawText = await p.evaluate(() => document.body.innerText)
+            const rawText = await deadline('text', () => p.evaluate(() => document.body.innerText), actionTimeout)
             const cleaned = typeof rawText === 'string' ? cleanPlainText(rawText) : rawText
             const truncated =
               typeof cleaned === 'string' && cleaned.length > 50000 ? cleaned.substring(0, 50000) + '\n[Truncated]' : cleaned
             return textResult({
               content: truncated,
               url: p.url(),
-              title: await p.title(),
+              title: await deadline('text', () => p.title(), actionTimeout),
             })
           }
           case 'screenshot': {
@@ -7541,10 +7694,14 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             screenshotCount += 1
             const runDir = resolveScreenshotRunDir(ctx.workspaceDir, ctx.subagentInstanceId)
             const screenshotPath = nextScreenshotFilePath(runDir, screenshotCount)
-            const buffer = await p.screenshot({
-              path: screenshotPath,
-              fullPage: false,
-            })
+            const buffer = await deadline<Buffer>(
+              'screenshot',
+              () => p.screenshot({
+                path: screenshotPath,
+                fullPage: false,
+              }),
+              actionTimeout,
+            )
             // Expose the path as workspace-relative so canvas data + markdown
             // reports can reference it portably.
             const relPath = relative(ctx.workspaceDir, screenshotPath)
@@ -7572,19 +7729,21 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
               })
             let result: unknown
             try {
-              result = await p.evaluate(value)
+              result = await deadline('evaluate', () => p.evaluate(value), actionTimeout)
             } catch (evalErr: any) {
+              if (evalErr instanceof BrowserActionDeadlineError) throw evalErr
               if (!EVALUATE_STATEMENT_SYNTAX_RE.test(evalErr?.message ?? '')) throw evalErr
               // The syntax error means nothing ran, so retrying is safe.
               const asBody = `(async () => {\n${value}\n})()`
               if (/(^|[;{}\n])\s*return\b/.test(value)) {
-                result = await p.evaluate(asBody)
+                result = await deadline('evaluate', () => p.evaluate(asBody), actionTimeout)
               } else {
                 try {
-                  result = await p.evaluate(`(async () => { return (\n${value}\n) })()`)
+                  result = await deadline('evaluate', () => p.evaluate(`(async () => { return (\n${value}\n) })()`), actionTimeout)
                 } catch (exprErr: any) {
+                  if (exprErr instanceof BrowserActionDeadlineError) throw exprErr
                   if (!/SyntaxError/i.test(exprErr?.message ?? '')) throw exprErr
-                  result = await p.evaluate(asBody)
+                  result = await deadline('evaluate', () => p.evaluate(asBody), actionTimeout)
                 }
               }
             }
@@ -7592,7 +7751,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
           }
           case 'viewport': {
             viewportSize = requestedViewport
-            await p.setViewportSize(viewportSize)
+            await deadline('viewport', () => p.setViewportSize(viewportSize), actionTimeout)
             return textResult({ ok: true, action: 'viewport', viewport: viewportSize, url: p.url() })
           }
           case 'console': {
@@ -7617,7 +7776,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             try {
               await locator.selectOption(value, { timeout: 10000 })
             } catch (selectErr: any) {
-              const found = await locator.count().catch(() => 0)
+              const found = await countLocator('select', locator, actionTimeout)
               if (found === 0)
                 return textResult({
                   error: staleTargetHint('select', ref, selector),
@@ -7639,24 +7798,32 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
               if (locator) await locator.scrollIntoViewIfNeeded({ timeout: 5000 })
             } else {
               const distance = parseInt(value || '500', 10)
-              await p.evaluate((d: number) => window.scrollBy(0, d), distance)
+              await deadline('scroll', () => p.evaluate((d: number) => window.scrollBy(0, d), distance), actionTimeout)
             }
             return textResult({ ok: true, action: 'scroll' })
           }
           case 'wait_for': {
             if (!selector) return textResult({ error: 'selector is required for wait_for' })
-            await p.waitForSelector(selector, { timeout: waitMs || 10000 })
+            await deadline(
+              'wait_for',
+              () => p.waitForSelector(selector, { timeout: waitMs || 10000 }),
+              actionTimeout,
+            )
             return textResult({ ok: true, action: 'wait_for', selector })
           }
           default:
             return textResult({ error: `Unknown browser action: ${action}` })
         }
       } catch (err: any) {
+        if (err instanceof BrowserActionDeadlineError) {
+          return textResult({ error: (await describeMissedDeadline(err)).message, action })
+        }
         if (lease && (isDeadBrowserError(err?.message) || page?.isClosed?.())) {
           await cleanup()
         }
         return textResult({ error: `Browser error: ${err.message}`, action })
       } finally {
+        signal?.removeEventListener('abort', onTurnAbort)
         inFlightCalls--
         if (inFlightCalls === 0) scheduleIdleRelease()
       }
@@ -8500,7 +8667,14 @@ function createDisconnectTool(ctx: ToolContext): AgentTool {
 // Agent Orchestration Tools (agent_create, agent_spawn, agent_status, etc.)
 // ---------------------------------------------------------------------------
 
-import { AgentManager } from './agent-manager'
+import type { AgentManager } from './agent-manager'
+import {
+  registerSubagentInstanceCleanup,
+  subagentIdleTimeoutMs,
+  subagentMaxDurationMs,
+  synthesizeWaitResult,
+  waitForSubagentInstance,
+} from './subagent-watchdog'
 import type { ModelTierName, ForkContext } from './subagent'
 import { isInForkChild, buildForkDirective } from './subagent-prompts'
 
@@ -8621,7 +8795,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         }),
       ),
     }),
-    execute: async (toolCallId, params) => {
+    execute: async (toolCallId, params, signal) => {
       const {
         prompt,
         model_tier,
@@ -8687,7 +8861,11 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         const w = ctx.uiWriter
         const spawn = buildSpawnCallbacks(w, toolCallId)
         const forkDirective = buildForkDirective(prompt)
-        const result = await runSubagent(forkConfig, forkDirective, ctx, allToolsGetter(), spawn?.callbacks, { forkContext })
+        const result = await runSubagent(forkConfig, forkDirective, ctx, allToolsGetter(), spawn?.callbacks, {
+          forkContext,
+          // The parent turn's signal, so Stop ends a forked run too (SHO-358).
+          signal,
+        })
 
         const subModel = result.effectiveModelId || ctx.effectiveModel || ctx.config.model.name
         if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
@@ -8804,10 +8982,37 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         })
       }
 
-      // Synchronous: wait for completion
+      // Synchronous: wait for completion — but never forever. A sub-agent whose
+      // tool call never settles would otherwise pin this chat turn open for
+      // hours (prod: 18 h), unkillable by Stop (SHO-358).
       const inst = am.getInstance(instanceId)
       if (!inst) return textResult({ error: 'Instance lost' })
-      const result = await inst.promise
+      const outcome = await waitForSubagentInstance(inst, {
+        idleMs: subagentIdleTimeoutMs(),
+        maxMs: subagentMaxDurationMs(),
+        parentSignal: signal,
+      })
+      let result = outcome.kind === 'settled' ? outcome.result : synthesizeWaitResult({}, '')
+      if (outcome.kind !== 'settled') {
+        const partial = spawn?.getAccumulatedOutput()
+        const stoppedReason = outcome.kind === 'timeout'
+          ? `stopped after ${outcome.reason}`
+          : outcome.reason === 'parent-abort'
+            ? 'stopped because this turn was cancelled'
+            : 'stopped by a cancel request'
+        // End the instance's own loop too, and release whatever it holds
+        // (its browser page/lease, its screencast channel).
+        am.cancel(instanceId)
+        result = synthesizeWaitResult(
+          {
+            agentId: partial?.agentId ?? undefined,
+            effectiveModelId: partial?.model ?? undefined,
+            toolCalls: partial?.parts?.filter((p: any) => p?.type === 'tool').length ?? 0,
+            responseText: lastSubagentText(partial?.parts),
+          },
+          `The sub-agent ${stoppedReason}.`,
+        )
+      }
 
       if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
         const subModel = result.effectiveModelId || ctx.effectiveModel || ctx.config.model.name
@@ -8835,10 +9040,17 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
 
       const accumulated = spawn?.getAccumulatedOutput()
       const failed = inst.status === 'failed' || result.responseEmpty === true
+      // A watchdog/cancel end is its own outcome: the parent must be able to tell
+      // "it stopped" from "it failed" from "it finished" (SHO-358).
+      const status = outcome.kind === 'timeout'
+        ? 'timeout'
+        : outcome.kind === 'cancelled'
+          ? 'cancelled'
+          : inst.status
       return subagentToolResult({
         instance_id: instanceId,
         agent_id: result.agentId,
-        status: inst.status,
+        status,
         toolCalls: result.toolCalls,
         iterations: result.iterations,
         tokens: { input: result.inputTokens, output: result.outputTokens },
@@ -8877,6 +9089,20 @@ function withTaskOutput(
 }
 
 const MAX_SUBAGENT_RESPONSE_CHARS = 8000
+
+/**
+ * The sub-agent's own last words from its streamed parts, for a run that was
+ * stopped rather than finished — the partial report the parent can still use,
+ * instead of an empty string (SHO-358).
+ */
+export function lastSubagentText(parts: any[] | undefined): string {
+  if (!parts?.length) return ''
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const part = parts[i]
+    if (part?.type === 'text' && typeof part.text === 'string' && part.text.trim()) return part.text
+  }
+  return ''
+}
 
 export function capSubagentResponse(text: string): string {
   if (text.length <= MAX_SUBAGENT_RESPONSE_CHARS) return text

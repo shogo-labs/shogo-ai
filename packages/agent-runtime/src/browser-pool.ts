@@ -57,6 +57,24 @@ export interface BrowserPoolOptions {
 export const DEFAULT_MAX_CONTEXTS = 2
 export const DEFAULT_IDLE_CLOSE_MS = 5 * 60 * 1000
 export const DEFAULT_ACQUIRE_TIMEOUT_MS = 60 * 1000
+/** Upper bound on closing a context when its page may be frozen (SHO-358). */
+export const RELEASE_CLOSE_TIMEOUT_MS = 5_000
+
+/** Awaits `promise`, but never longer than `ms`. */
+async function settleWithinTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ms)
+        unrefTimer(timer)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
 
 export class BrowserPoolTimeoutError extends Error {
   constructor(maxContexts: number, waitedMs: number) {
@@ -181,8 +199,11 @@ export class BrowserPool {
   private async releaseLease(state: LeaseState): Promise<void> {
     const wasLive = !state.done && this.leases.delete(state)
     state.done = true
-    try { await state.context.close() } catch {}
+    // Free the slot first: `release()` means the caller is done with the
+    // context, and closing a context whose page is frozen can never settle.
+    // Waiting for that close to finish used to hold the slot (SHO-358).
     if (wasLive) this.freeSlot()
+    try { await settleWithinTimeout(state.context.close(), RELEASE_CLOSE_TIMEOUT_MS) } catch {}
   }
 
   /** Hand the slot to the next waiter (FIFO) or give it back. */
