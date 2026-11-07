@@ -21,7 +21,7 @@
  * locks while it runs.
  */
 
-import { spawn } from 'child_process'
+import { spawn } from '@shogo/shared-runtime/child-process'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { createRequire } from 'module'
 import { tmpdir } from 'os'
