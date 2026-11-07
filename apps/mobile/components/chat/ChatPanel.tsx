@@ -230,6 +230,7 @@ import {
   normalizePlanData,
 } from "../../lib/chat-send-body"
 import { chatColumnStyle } from "../../lib/chat-column"
+import { attachUnclaimedWheelFallback } from "../../lib/nested-wheel-passthrough"
 import { NATIVE_COMPOSER_KEYBOARD_GAP } from "../../lib/native-composer-keyboard"
 import { ProjectComposerDock } from "./composer/ProjectComposerDock"
 import {
@@ -1803,7 +1804,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
     node.addEventListener("wheel", onWheel, { passive: true })
     node.addEventListener("touchstart", onTouchStart, { passive: true })
     node.addEventListener("keydown", onKeyDown)
+    // A wheel over the reply text is not always the transcript's: a box in the
+    // markdown can take the gesture and clamp it. Apply the delta ourselves when
+    // the browser moved nothing.
+    const detachWheelFallback = attachUnclaimedWheelFallback(node)
     return () => {
+      detachWheelFallback()
       node.removeEventListener("wheel", onWheel)
       node.removeEventListener("touchstart", onTouchStart)
       node.removeEventListener("keydown", onKeyDown)
