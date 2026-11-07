@@ -104,6 +104,7 @@ export async function ensureEnvironmentDatabase(
       databaseName,
       secretName,
       writeSecret: opts.exposeToPod === true,
+      rotateWhenCredentialsUnknown: true,
     })
   } catch (err: any) {
     const notConfigured = /PROJECTS_DB_ADMIN_URL|not configured/i.test(err?.message ?? '')
