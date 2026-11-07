@@ -393,12 +393,8 @@ module "dns" {
 # =============================================================================
 # Same shape as production-us's `kourier_us`: a PROXIED record in the publish
 # zone that the subdomain-router Worker uses as a `resolveOverride` target, plus
-# a script-less route so the origin pull never re-runs a Worker. The LB is the
-# long-lived `kourier` Service in `kourier-system` on the staging cluster (not
-# terraform-managed here, hence the literal).
-locals {
-  staging_kourier_lb_ip = "141.148.27.1"
-}
+# a script-less route so the origin pull never re-runs a Worker. The LB is
+# `local.staging_kourier_lb_ip` (defined with the preview router below).
 
 data "cloudflare_zone" "publish" {
   name = "shogo.one"
