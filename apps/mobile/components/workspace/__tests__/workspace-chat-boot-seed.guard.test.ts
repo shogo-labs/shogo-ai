@@ -145,8 +145,10 @@ describe('the workspace agent screen opens from the device', () => {
       screen.indexOf('const applyBoot = (record'),
       screen.indexOf('const loadWorkspaceChat = useCallback'),
     )
-    expect(read).toContain('}, [bootKey, initialSessionId, startNewSession])')
-    expect(read).not.toContain('workspaces')
+    expect(read).toContain('}, [bootKey, initialSessionId, startNewSession, workspace?.kind])')
+    // The MST workspaces collection (a new array every render) must not be in the
+    // dep array — it would cancel and restart the IDB read on every render.
+    expect(read).not.toMatch(/,\s*workspaces[,\]]/)
   })
 
   test('the workspace survives the collection being between answers', () => {
@@ -168,6 +170,46 @@ describe('the workspace agent screen opens from the device', () => {
 
   test('a successful load answers the next open', () => {
     expect(screen).toContain('rememberWorkspaceChatBoot<PersonalAgentProfile>(bootKey, {')
+  })
+
+  test('an IDB miss leaves bootPending true; loadWorkspaceChat clears it (SHO-364 R2)', () => {
+    // When IDB has nothing (first-ever open) the effect must NOT set
+    // bootPending=false in a .finally() — that creates a render where
+    // hasProfile=false, hasSession=false, bootPending=false → 'spinner'
+    // → "Preparing Workspace Agent Chat…" before the network answers.
+    // Instead the effect only clears it when a record was found, and
+    // loadWorkspaceChat clears it in the same batch as setProfile +
+    // setSessionId (success) or before setError (failure).
+    const effect = screen.slice(
+      screen.indexOf('const applyBoot = (record'),
+      screen.indexOf('const loadWorkspaceChat = useCallback'),
+    )
+    // The IDB read must NOT unconditionally clear bootPending in .finally().
+    expect(effect).not.toMatch(/\.finally\s*\(\s*\(\s*\)\s*=>\s*\{[\s\S]{0,120}setBootPending\s*\(\s*false\s*\)/)
+    // It must clear it only when a record was found.
+    expect(effect).toContain('if (record) setBootPending(false)')
+    // loadWorkspaceChat must clear bootPending in the success path, in the
+    // same synchronous batch as setProfile + setSessionId.
+    const load = screen.slice(screen.indexOf('const loadWorkspaceChat = useCallback'))
+    const successBlock = load.slice(load.indexOf('setProfile(nextProfile)'), load.indexOf('publishCurrentWorkspaceSession('))
+    expect(successBlock).toContain('setBootPending(false)')
+    // And in the error path so the error view can render.
+    const errorBlock = load.slice(load.indexOf('const shown = shownIdentity.current'), load.indexOf("Could not load Workspace Agent Chat") + 60)
+    expect(errorBlock).toContain('setBootPending(false)')
+  })
+
+  test('applyBoot applies the session for personal workspaces even when startNewSession=true (SHO-364)', () => {
+    // The home landing passes `startNewSession` for every workspace kind, but
+    // `agentSessionSource` returns 'new' only for team workspaces. For a
+    // personal workspace the session source is always 'primary', so the boot
+    // sessionId is the right chat to resume. `!startNewSession` as a flat
+    // guard blocked it, leaving sessionId=null after the IDB read while
+    // profile was already applied — `workspaceChatLoadingView` then returned
+    // 'spinner' and "Preparing Workspace Agent Chat…" flashed (SHO-364).
+    // The guard now checks `!(startNewSession && workspace?.kind === 'team')`.
+    const boot = screen.slice(screen.indexOf('const applyBoot = (record'), screen.indexOf('if (!bootKey) return'))
+    expect(boot).not.toContain('!startNewSession')
+    expect(boot).toContain("!(startNewSession && workspace?.kind === 'team')")
   })
 })
 
