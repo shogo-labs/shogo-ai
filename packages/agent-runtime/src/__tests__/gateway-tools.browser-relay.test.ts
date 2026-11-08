@@ -55,6 +55,11 @@ mock.module('../screencast-broadcaster', () => ({
   publish: (instanceId: string, frame: any) => {
     screencastPublishes.push({ instanceId, frame })
   },
+  // agent-manager imports this statically; a mock missing it fails the link.
+  dropChannel: () => {},
+  subscribe: () => () => {},
+  getLastFrame: () => undefined,
+  hasSubscribers: () => false,
 }))
 
 // Patch child_process.spawn on the module namespace. gateway-tools spawns

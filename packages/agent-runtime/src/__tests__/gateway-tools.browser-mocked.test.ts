@@ -743,3 +743,108 @@ describe('gateway-tools browser tool (playwright-core mocked)', () => {
     expect(r.details.ok).toBe(true)
   })
 })
+
+// =====================================================================
+// SHO-358 — a page whose main thread stops answering
+// =====================================================================
+//
+// Prod: a browser sub-agent's `snapshot` sat in `await page.evaluate(...)`
+// forever on a page whose main thread was busy. Playwright puts no timeout on
+// `evaluate`, so the tool call never settled, the sub-agent never settled, and
+// the chat turn stayed active for 18 h. Every action now has a deadline, and a
+// page that fails the post-deadline probe is closed and its pool slot freed.
+describe('gateway-tools browser tool — action deadlines (SHO-358)', () => {
+  beforeEach(async () => {
+    const { resetSharedBrowserPool } = await import('../browser-pool')
+    await resetSharedBrowserPool()
+    mkdirSync(TEST_DIR, { recursive: true })
+    setEnv('PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH', undefined)
+    setEnv('PLAYWRIGHT_MCP_EXTENSION_TOKEN', undefined)
+    setEnv('BROWSER_CDP_ENDPOINT', undefined)
+    setEnv('CONTAINER', undefined)
+    setEnv('SHOGO_MOCK_CAPTURE_DIR', undefined)
+    setEnv('BROWSER_ACTION_TIMEOUT_MS', '50')
+    setEnv('BROWSER_PAGE_PROBE_TIMEOUT_MS', '20')
+  })
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+    restoreEnv()
+  })
+
+  test('snapshot on a frozen page returns the "stopped responding" error within the deadline', async () => {
+    const { tool } = await freshBrowserTool()
+    await exec(tool, { action: 'navigate', url: 'https://frozen.example/' })
+
+    // The main thread is now busy: nothing the page is asked to run answers.
+    fakePage.evaluate = () => new Promise(() => {})
+
+    const started = Date.now()
+    const r = await exec(tool, { action: 'snapshot' })
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(r.details.error).toContain('stopped responding')
+    expect(r.details.error).toContain('snapshot')
+    expect(r.details.error).toContain('I closed it')
+    expect(r.details.action).toBe('snapshot')
+  })
+
+  test('the frozen page and its lease are released, so the next navigate works', async () => {
+    const { getSharedBrowserPool } = await import('../browser-pool')
+    const { tool } = await freshBrowserTool()
+    await exec(tool, { action: 'navigate', url: 'https://frozen.example/' })
+    const pool = getSharedBrowserPool()
+    expect(pool.activeCount).toBe(1)
+
+    fakePage.evaluate = () => new Promise(() => {})
+    await exec(tool, { action: 'snapshot' })
+    expect(pool.activeCount).toBe(0)
+
+    // A fresh page is opened for the next action rather than reusing the corpse.
+    const fresh = makeFakePage({ title: 'Recovered' })
+    const originalNewPage = fakePage
+    fakePage = fresh
+    fresh.evaluate = async () => ({ text: 'a11y', refCount: 1 })
+    const nav = await exec(tool, { action: 'navigate', url: 'https://recovered.example/' })
+    expect(nav.details.ok).toBe(true)
+    expect(nav.details.title).toBe('Recovered')
+    expect(pool.activeCount).toBe(1)
+    void originalNewPage
+  })
+
+  test('a page that still answers is not closed when one action is slow', async () => {
+    const { getSharedBrowserPool } = await import('../browser-pool')
+    const { tool } = await freshBrowserTool()
+    await exec(tool, { action: 'navigate', url: 'https://slow.example/' })
+
+    // Only the snapshot script hangs; the probe's `evaluate('1')` answers.
+    fakePage.evaluate = ((fn: any) =>
+      fn === '1' ? Promise.resolve(1) : new Promise(() => {})) as any
+
+    const r = await exec(tool, { action: 'snapshot' })
+    expect(r.details.error).toContain('did not finish within')
+    expect(r.details.error).toContain('still responding')
+    expect(getSharedBrowserPool().activeCount).toBe(1)
+  })
+
+  test('evaluate and text share the deadline', async () => {
+    const { tool } = await freshBrowserTool()
+    await exec(tool, { action: 'navigate', url: 'https://frozen.example/' })
+    fakePage.evaluate = () => new Promise(() => {})
+
+    const evalResult = await exec(tool, { action: 'evaluate', value: '1 + 1' })
+    expect(evalResult.details.error).toContain('stopped responding')
+
+    const text = await exec(tool, { action: 'text' })
+    expect(text.details.error).toContain('stopped responding')
+  })
+
+  test('a sub-agent cancel releases the page and its pool slot', async () => {
+    const { getSharedBrowserPool } = await import('../browser-pool')
+    const { releaseSubagentInstanceResources } = await import('../agent-manager')
+    const { tool } = await freshBrowserTool({ subagentInstanceId: 'agent-sho-358' })
+    await exec(tool, { action: 'navigate', url: 'https://x.example/' })
+    expect(getSharedBrowserPool().activeCount).toBe(1)
+
+    await releaseSubagentInstanceResources('agent-sho-358')
+    expect(getSharedBrowserPool().activeCount).toBe(0)
+  })
+})
