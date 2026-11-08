@@ -708,6 +708,11 @@ model Project {
   // the workspace role and the tier ceiling (apps/api/src/config/instance-sizes.ts)
   // — the generic project PATCH drops the field.
   workspaceDiskGiB Int?
+  // Guest memory (MiB) for this project's metal microVM; null = the fleet's
+  // standard VM size (METAL_MEM_MIB). Operator-set only (no route writes it;
+  // the generic project PATCH drops the field). A workspace runtime takes the
+  // largest value among its members. See apps/metal-agent vmMemMiBFromEnv.
+  vmMemoryMiB Int?
 
   // Relations
   workspace              Workspace                       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)

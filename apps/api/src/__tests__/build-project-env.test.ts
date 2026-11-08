@@ -920,6 +920,33 @@ describe('buildProjectEnv — workspace drive (SHO-349)', () => {
   })
 })
 
+describe('buildProjectEnv — guest memory (Project.vmMemoryMiB)', () => {
+  test('sends an operator-set request on metal', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      vmMemoryMiB: 8192,
+      workspace: { instanceSize: 'micro' },
+    }))
+    const env = await buildProjectEnv('proj-mem', { forMetal: true })
+    expect(env.SHOGO_VM_BOOT_MEM_MIB).toBe('8192')
+  })
+
+  test('is absent when unset, and off metal', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      vmMemoryMiB: null,
+      workspace: { instanceSize: 'micro' },
+    }))
+    expect((await buildProjectEnv('proj-mem-none', { forMetal: true })).SHOGO_VM_BOOT_MEM_MIB).toBeUndefined()
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      vmMemoryMiB: 8192,
+      workspace: { instanceSize: 'micro' },
+    }))
+    expect((await buildProjectEnv('proj-mem-k8s')).SHOGO_VM_BOOT_MEM_MIB).toBeUndefined()
+  })
+})
+
 // ─── Docker-capable ("Tier 2") project class ──────────────────────────────
 
 describe('buildProjectEnv — SHOGO_RUNTIME_CLASS (Docker project class)', () => {

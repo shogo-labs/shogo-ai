@@ -587,6 +587,9 @@ model Project {
   // fleet default. Read-only on desktop (the machine's own disk is used) — the
   // column exists in both tracks for schema parity. See schema.prisma.
   workspaceDiskGiB Int?
+  // Guest memory (MiB) for a metal microVM; unused on desktop (the machine's
+  // own RAM is used) — kept for schema parity. See schema.prisma.
+  vmMemoryMiB Int?
   // Optional SSH host for desktop Remote-SSH projects. When set, the
   // primary ProjectFolder path is resolved on the remote machine.
   remoteHostId  String?
