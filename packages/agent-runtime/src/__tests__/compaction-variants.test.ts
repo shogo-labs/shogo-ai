@@ -9,7 +9,7 @@
  * block lists what was dropped, and the turn-boundary and mid-turn paths
  * produce the same session shape.
  */
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, setSystemTime } from 'bun:test'
 import type { AssistantMessage, Message, ToolResultMessage, UserMessage } from '@mariozechner/pi-ai'
 import { SessionManager } from '../session-manager'
 import { MidTurnAutocompactor } from '../midturn-autocompact'
@@ -17,6 +17,17 @@ import { dropToolResultsAtCompaction, DROP_MIN_RESULT_CHARS } from '../compactio
 import { COMPACTION_VARIANTS, resolveCompactionVariant } from '../compaction-variants'
 import { renderTranscriptForSummary } from '../compaction-transcript'
 import { renderCompactionFacts, collectCompactionFacts } from '../compaction-facts'
+
+/**
+ * The summary prefix messages are stamped with `Date.now()` when a history is
+ * built, so two builds in one test can straddle a millisecond and differ by 1 ms
+ * (SHO-361). Pin the clock for the whole file: the byte-identical comparisons
+ * below stay as strong as they are, timestamps included.
+ */
+const FIXED_NOW = new Date('2026-01-01T00:00:00.000Z')
+
+beforeEach(() => setSystemTime(FIXED_NOW))
+afterEach(() => setSystemTime())
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }
 
