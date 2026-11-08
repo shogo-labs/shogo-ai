@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 // nothing here reads it (the default dep is always overridden).
 mock.module('../../lib/prisma', () => ({ prisma: {} }))
 
-const { ensurePublishedImage, fetchPublishedArtifact } = await import('../published-build.service')
+const { ensurePublishedImage, fetchPublishedArtifact, jobPodsVerdict } = await import('../published-build.service')
 const { buildPublishedImageJob, buildJobName, buildLogTail, digestFromTerminationMessage } = await import(
   '../../lib/published-build-job'
 )
@@ -473,5 +473,36 @@ describe('buildLogTail', () => {
 
   it('is empty for an empty log rather than "undefined"', () => {
     expect(buildLogTail(null)).toBe('')
+  })
+})
+
+// SHO-308, staging 2026-11-08: the build pushed its image and exited 0, but the
+// API read the pod before the Job controller set `status.succeeded` and called
+// the build failed. A terminated pod is only a failure when it exited non-zero.
+describe('jobPodsVerdict', () => {
+  const pod = (phase: string, containers: any[], init: any[] = []) => ({
+    status: { phase, containerStatuses: containers, initContainerStatuses: init },
+  })
+  const exited = (exitCode: number) => ({ state: { terminated: { exitCode } } })
+
+  it('keeps waiting when the build exited 0 but the Job has not caught up', () => {
+    expect(jobPodsVerdict([pod('Succeeded', [exited(0)], [exited(0)])])).toBe('running')
+  })
+
+  it('keeps waiting while the build is still running or there is no pod yet', () => {
+    expect(jobPodsVerdict([pod('Running', [{ state: { running: {} } }], [exited(0)])])).toBe('running')
+    expect(jobPodsVerdict([])).toBe('running')
+  })
+
+  it('fails fast when the build container exited non-zero', () => {
+    expect(jobPodsVerdict([pod('Running', [exited(1)])])).toBe('failed')
+  })
+
+  it('fails fast when the artifact download init container exited non-zero', () => {
+    expect(jobPodsVerdict([pod('Pending', [{ state: { waiting: {} } }], [exited(22)])])).toBe('failed')
+  })
+
+  it('fails fast when the pod itself failed (evicted)', () => {
+    expect(jobPodsVerdict([pod('Failed', [])])).toBe('failed')
   })
 })
