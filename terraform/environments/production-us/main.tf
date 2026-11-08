@@ -108,6 +108,38 @@ resource "cloudflare_worker_route" "kourier_bypass" {
   # script_name intentionally omitted → Workers skipped for this host.
 }
 
+# The same Kourier origin inside the custom-domains (Cloudflare for SaaS) zone.
+# Custom hostnames run the Worker in that zone, and resolveOverride only works
+# within one zone, so Knative-backed apps on a custom domain need their own
+# proxied Kourier record there (plus a no-script route, as above).
+data "cloudflare_zone" "custom_domains" {
+  count = var.enable_custom_domains ? 1 : 0
+  name  = var.custom_domains_zone
+}
+
+resource "cloudflare_record" "kourier_us_custom_domains" {
+  count   = var.enable_custom_domains ? 1 : 0
+  zone_id = data.cloudflare_zone.custom_domains[0].id
+  name    = "kourier-us"
+  content = local.prod_us_kourier_lb_ip
+  type    = "A"
+  proxied = true
+  ttl     = 1
+  comment = "resolveOverride target for knative-backed custom domains (subdomain-router Worker, SaaS zone)"
+}
+
+# Created by hand during the 2026-11-08 dhruvanarayan.co.in incident; adopt it.
+import {
+  to = cloudflare_record.kourier_us_custom_domains[0]
+  id = "3da4f3f70d16e4cb81b5c43de125cc19/3127b42ac3d2de47c9fefe5cb6c63d4e"
+}
+
+resource "cloudflare_worker_route" "kourier_bypass_custom_domains" {
+  count   = var.enable_custom_domains ? 1 : 0
+  zone_id = data.cloudflare_zone.custom_domains[0].id
+  pattern = "${cloudflare_record.kourier_us_custom_domains[0].hostname}/*"
+}
+
 data "oci_containerengine_cluster_kube_config" "main" {
   cluster_id = module.us.cluster_id
 }
@@ -300,7 +332,8 @@ module "us" {
   # `/api/*` traffic from the subdomain-router Worker to this region's Knative
   # (Kourier) ingress via the DNS-only `kourier-us.shogo.one` host (see the
   # locals note above for the IP-fetch + Worker-loop gotchas this avoids).
-  kourier_origin = "http://${cloudflare_record.kourier_us.hostname}"
+  kourier_origin                = "http://${cloudflare_record.kourier_us.hostname}"
+  custom_domains_kourier_origin = var.enable_custom_domains ? "http://${cloudflare_record.kourier_us_custom_domains[0].hostname}" : null
 
   # METAL-backed published apps: the public Shogo API origin the subdomain-router
   # Worker proxies `/api/*` to (→ /api/published/{subdomain}/...). The API

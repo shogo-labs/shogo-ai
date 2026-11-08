@@ -105,10 +105,13 @@ export async function ensureProductionEnvironment(
 ): Promise<PublishedEnvironmentRow> {
   const existing = await getEnvironment(projectId, 'production')
   if (existing) {
-    if (existing.subdomain !== subdomain) {
+    // The row's minReplicas is what the substrate applies, so an always-on
+    // project must never publish from a row that still allows scale-to-zero.
+    const raiseMin = opts?.alwaysOn === true && existing.minReplicas < 1
+    if (existing.subdomain !== subdomain || raiseMin) {
       const updated = await prisma.publishedEnvironment.update({
         where: { id: existing.id },
-        data: { subdomain },
+        data: { subdomain, ...(raiseMin ? { minReplicas: 1 } : {}) },
       })
       return updated as PublishedEnvironmentRow
     }
@@ -125,6 +128,22 @@ export async function ensureProductionEnvironment(
     },
   })
   return created as PublishedEnvironmentRow
+}
+
+/**
+ * Persist the always-on toggle on the production row, which every later
+ * publish and reconcile applies to the ksvc: on keeps at least one replica,
+ * off allows scale-to-zero. No-op when the project has no production row.
+ */
+export async function setProductionAlwaysOn(projectId: string, alwaysOn: boolean): Promise<void> {
+  const existing = await getEnvironment(projectId, 'production')
+  if (!existing) return
+  const minReplicas = alwaysOn ? Math.max(existing.minReplicas, 1) : 0
+  if (minReplicas === existing.minReplicas) return
+  await prisma.publishedEnvironment.update({
+    where: { id: existing.id },
+    data: { minReplicas, maxReplicas: Math.max(existing.maxReplicas, minReplicas) },
+  })
 }
 
 export function scaleSettingsOf(env: PublishedEnvironmentRow): PublishedScaleSettings {

@@ -282,6 +282,12 @@ variable "custom_domains_zone" {
   default     = null
 }
 
+variable "custom_domains_kourier_origin" {
+  description = "Forwarded to `publish-hosting-oci`: proxied Kourier origin host in the custom-domains zone, used by the Worker to reach Knative-backed apps on custom domains. Null disables it."
+  type        = string
+  default     = null
+}
+
 variable "kourier_origin" {
   description = "Forwarded to `publish-hosting-oci`: DNS-only origin host that terminates at this region's Knative (Kourier) ingress serving the `{subdomain}.shogo.one` DomainMappings. The subdomain-router Worker proxies server-backed `/api/*` here with the Host header rewritten to the published hostname. Null disables proxying (server-backed apps fall back to static serving) until the ingress host is set."
   type        = string

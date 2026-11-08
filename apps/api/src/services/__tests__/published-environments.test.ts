@@ -70,6 +70,7 @@ const {
   ensureProductionEnvironment,
   getProjectPublishedCaps,
   setEnvironmentScale,
+  setProductionAlwaysOn,
 } = await import('../published-environments.service')
 
 beforeEach(() => {
@@ -96,6 +97,40 @@ describe('ensureProductionEnvironment', () => {
     expect(b.id).toBe(a.id)
     expect(b.subdomain).toBe('acme-2')
     expect(envs).toHaveLength(1)
+  })
+
+  it('raises an existing scale-to-zero row to one replica for an always-on publish', async () => {
+    await ensureProductionEnvironment('p1', 'acme')
+    const env = await ensureProductionEnvironment('p1', 'acme', { alwaysOn: true })
+    expect(env.minReplicas).toBe(1)
+    expect(envs[0].minReplicas).toBe(1)
+  })
+
+  it('keeps a higher configured minimum for an always-on publish', async () => {
+    await ensureProductionEnvironment('p1', 'acme')
+    envs[0].minReplicas = 2
+    envs[0].maxReplicas = 3
+    const env = await ensureProductionEnvironment('p1', 'acme', { alwaysOn: true })
+    expect(env.minReplicas).toBe(2)
+  })
+})
+
+describe('setProductionAlwaysOn', () => {
+  it('turning always-on on persists at least one replica on the production row', async () => {
+    await ensureProductionEnvironment('p1', 'acme')
+    await setProductionAlwaysOn('p1', true)
+    expect(envs[0].minReplicas).toBe(1)
+  })
+
+  it('turning always-on off lets the row scale to zero', async () => {
+    await ensureProductionEnvironment('p1', 'acme', { alwaysOn: true })
+    await setProductionAlwaysOn('p1', false)
+    expect(envs[0].minReplicas).toBe(0)
+  })
+
+  it('is a no-op before the first publish', async () => {
+    await setProductionAlwaysOn('p1', true)
+    expect(envs).toHaveLength(0)
   })
 })
 

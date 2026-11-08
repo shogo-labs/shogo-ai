@@ -12,6 +12,7 @@
  */
 
 import { prisma } from '../lib/prisma'
+import { ensurePublishedCustomDomainMapping } from '../lib/published-custom-domain-mapping'
 import {
   getCustomHostname,
   getCustomHostnamesConfig,
@@ -406,6 +407,9 @@ export async function refreshCustomDomain(opts: {
       publishedSubdomain,
       canonicalForRow(row, siblings),
     )
+    if (becameActive) {
+      await ensurePublishedCustomDomainMapping(row.hostname, publishedSubdomain, row.projectId)
+    }
   }
 
   // Independent, authoritative DNS verdict: is the CUSTOMER's CNAME + DCV TXT
