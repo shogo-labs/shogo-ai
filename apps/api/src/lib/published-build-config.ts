@@ -84,9 +84,16 @@ export function shouldBuildPublishedImage(substrateKind: 'knative' | 'metal'): b
   return publishedBuildSetup().ok
 }
 
-/** How long the API waits for one build before failing the publish. */
-export function publishedBuildTimeoutMs(): number {
-  const raw = Number(process.env.PUBLISH_BUILD_TIMEOUT_MS)
+/**
+ * How long the API waits for one per-commit image build before failing the
+ * publish.
+ *
+ * Deliberately NOT `PUBLISH_BUILD_TIMEOUT_MS`: that variable is the *app*
+ * build's budget (180s, `publish-timeouts.ts`). Sharing it meant an override
+ * aimed at one step silently resized the other.
+ */
+export function publishedImageBuildTimeoutMs(): number {
+  const raw = Number(process.env.PUBLISH_IMAGE_BUILD_TIMEOUT_MS)
   if (Number.isFinite(raw) && raw > 0) return raw
   return 900_000
 }

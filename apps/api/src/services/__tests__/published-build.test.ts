@@ -127,6 +127,38 @@ describe('ensurePublishedImage', () => {
     expect(res.message).toContain('no dist')
   })
 
+  it('tells the artifact upload the app build already ran', async () => {
+    // The publish flow builds the app before it asks for an image; a second
+    // build there is a full Vite/Expo run the publish has just done.
+    const seen: Array<{ alreadyBuilt?: boolean }> = []
+    const res = await ensurePublishedImage(
+      { ...input, alreadyBuilt: true },
+      deps({
+        uploadArtifact: async (arg: { alreadyBuilt?: boolean }) => {
+          seen.push(arg)
+          return { url: 'https://s3.internal/acme/artifacts/abc.tar.gz' }
+        },
+      }),
+    )
+    expect(res.ok).toBe(true)
+    expect(seen).toHaveLength(1)
+    expect(seen[0].alreadyBuilt).toBe(true)
+  })
+
+  it('defaults to building when the caller did not build', async () => {
+    const seen: Array<{ alreadyBuilt?: boolean }> = []
+    await ensurePublishedImage(
+      input,
+      deps({
+        uploadArtifact: async (arg: { alreadyBuilt?: boolean }) => {
+          seen.push(arg)
+          return { url: 'https://s3.internal/acme/artifacts/abc.tar.gz' }
+        },
+      }),
+    )
+    expect(seen[0].alreadyBuilt).toBe(false)
+  })
+
   it('pins the built digest onto the repository', async () => {
     const digest = `sha256:${'c'.repeat(64)}`
     const res = await ensurePublishedImage(
