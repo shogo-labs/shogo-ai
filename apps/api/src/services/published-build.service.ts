@@ -34,7 +34,7 @@ import { prisma } from '../lib/prisma'
 import {
   publishedBuildPollIntervalMs,
   publishedBuildSetup,
-  publishedBuildTimeoutMs,
+  publishedImageBuildTimeoutMs,
   type PublishedBuildConfig,
 } from '../lib/published-build-config'
 import {
@@ -80,6 +80,13 @@ export interface EnsurePublishedImageInput {
   subdomain: string
   commitSha: string
   createdBy?: string | null
+  /**
+   * The caller already ran the app build for this publish, so the runtime's
+   * publish staging dir is current. Skips the redundant build inside
+   * `uploadArtifact` — a second full Vite/Expo build that the publish step
+   * before this one has just done.
+   */
+  alreadyBuilt?: boolean
   /** Test seam: skip the poll delay. */
   pollIntervalMs?: number
   timeoutMs?: number
@@ -93,7 +100,7 @@ export interface EnsurePublishedImageInput {
 export interface PublishedBuildDeps {
   config: () => { ok: boolean; config: PublishedBuildConfig | null; missing: string[] }
   findReusableImage: (input: { projectId: string; commitSha: string }) => Promise<{ imageRef: string; imageDigest: string } | null>
-  uploadArtifact: (input: { projectId: string; subdomain: string; commitSha: string }) => Promise<{ url: string } | { error: string }>
+  uploadArtifact: (input: { projectId: string; subdomain: string; commitSha: string; alreadyBuilt?: boolean }) => Promise<{ url: string } | { error: string }>
   createJob: (job: BuildKitJobObject) => Promise<void>
   readJob: (name: string, namespace: string) => Promise<{
     status: 'running' | 'succeeded' | 'failed'
@@ -150,6 +157,7 @@ export async function ensurePublishedImage(
     projectId: input.projectId,
     subdomain: input.subdomain,
     commitSha,
+    alreadyBuilt: input.alreadyBuilt === true,
   })
   if ('error' in artifact) {
     return {
@@ -171,7 +179,7 @@ export async function ensurePublishedImage(
     builderImage: config.builderImage,
     dockerfile: publishedDockerfile(),
     dockerfileName: PUBLISHED_DOCKERFILE_NAME,
-    activeDeadlineSeconds: Math.ceil((input.timeoutMs ?? publishedBuildTimeoutMs()) / 1000),
+    activeDeadlineSeconds: Math.ceil((input.timeoutMs ?? publishedImageBuildTimeoutMs()) / 1000),
   })
 
   // A Job name that already exists is either a previous attempt that timed out
@@ -202,7 +210,7 @@ export async function ensurePublishedImage(
     }
   }
 
-  const timeoutMs = input.timeoutMs ?? publishedBuildTimeoutMs()
+  const timeoutMs = input.timeoutMs ?? publishedImageBuildTimeoutMs()
   const pollMs = input.pollIntervalMs ?? publishedBuildPollIntervalMs()
   const deadline = Date.now() + timeoutMs
   let last: Awaited<ReturnType<PublishedBuildDeps['readJob']>> | null = null
@@ -335,11 +343,17 @@ async function uploadPublishedArtifact(input: {
   projectId: string
   subdomain: string
   commitSha: string
+  alreadyBuilt?: boolean
 }): Promise<{ url: string } | { error: string }> {
   try {
-    const { triggerBuildWithRetry } = await import('../routes/publish')
-    const built = await triggerBuildWithRetry(input.projectId)
-    if (!built.success) return { error: built.error ?? 'the publish build failed' }
+    // The publish flow builds the app before it gets here, so the runtime's
+    // publish staging dir is already current. Only the redeploy/cutover paths,
+    // which never ran a build, need one.
+    if (!input.alreadyBuilt) {
+      const { triggerBuildWithRetry } = await import('../routes/publish')
+      const built = await triggerBuildWithRetry(input.projectId)
+      if (!built.success) return { error: built.error ?? 'the publish build failed' }
+    }
 
     const { getProjectPodUrl } = await import('../lib/knative-project-manager')
     const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')

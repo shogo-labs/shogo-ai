@@ -5,6 +5,7 @@ import {
   DEFAULT_PUBLISH_BUILD_TIMEOUT_MS,
   DEFAULT_PUBLISH_CONFIGURE_TIMEOUT_METAL_MS,
   DEFAULT_PUBLISH_DOWNLOAD_TIMEOUT_MS,
+  DEFAULT_PUBLISH_IMAGE_BUILD_TIMEOUT_MS,
   DEFAULT_PUBLISH_UPLOAD_TIMEOUT_MS,
   PUBLISH_REQUEST_SLACK_MS,
   publishRequestTimeoutMs,
@@ -12,12 +13,13 @@ import {
 } from '../publish-timeouts'
 
 describe('publish timeouts', () => {
-  test('defaults cover two builds, download, upload, metal configure, and slack', () => {
+  test('defaults cover two builds, download, upload, metal configure, image build, and slack', () => {
     expect(publishRequestTimeoutMs({})).toBe(
       DEFAULT_PUBLISH_BUILD_TIMEOUT_MS * 2
         + DEFAULT_PUBLISH_DOWNLOAD_TIMEOUT_MS
         + DEFAULT_PUBLISH_UPLOAD_TIMEOUT_MS
         + DEFAULT_PUBLISH_CONFIGURE_TIMEOUT_METAL_MS
+        + DEFAULT_PUBLISH_IMAGE_BUILD_TIMEOUT_MS
         + PUBLISH_REQUEST_SLACK_MS,
     )
   })
@@ -34,7 +36,19 @@ describe('publish timeouts', () => {
         + DEFAULT_PUBLISH_DOWNLOAD_TIMEOUT_MS
         + DEFAULT_PUBLISH_UPLOAD_TIMEOUT_MS
         + DEFAULT_PUBLISH_CONFIGURE_TIMEOUT_METAL_MS
+        + DEFAULT_PUBLISH_IMAGE_BUILD_TIMEOUT_MS
         + PUBLISH_REQUEST_SLACK_MS,
+    )
+  })
+
+  test('the image build has its own budget, not the app build\'s', () => {
+    // PUBLISH_BUILD_TIMEOUT_MS is the app build. Resizing it must not resize
+    // the image build, which used to read the same variable.
+    const env = { PUBLISH_BUILD_TIMEOUT_MS: '1000' }
+    expect(publishStepTimeouts(env).imageBuildMs).toBe(DEFAULT_PUBLISH_IMAGE_BUILD_TIMEOUT_MS)
+    expect(publishStepTimeouts({ PUBLISH_IMAGE_BUILD_TIMEOUT_MS: '5000' }).imageBuildMs).toBe(5000)
+    expect(publishStepTimeouts({ PUBLISH_IMAGE_BUILD_TIMEOUT_MS: '5000' }).buildMs).toBe(
+      DEFAULT_PUBLISH_BUILD_TIMEOUT_MS,
     )
   })
 })

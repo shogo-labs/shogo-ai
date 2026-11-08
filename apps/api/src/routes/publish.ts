@@ -554,11 +554,34 @@ export async function triggerBuildWithRetry(projectId: string): Promise<{ succes
   return triggerBuild(projectId)
 }
 
-export async function publishConfigureTimeoutMs(projectId: string): Promise<number> {
+/**
+ * The configure step's budget.
+ *
+ * A server-backed Knative publish builds the per-commit image *inside* this
+ * step (SHO-308 §2), and that build has its own budget. The configure timeout
+ * has to cover it: at 60s every server app died with `configure_timeout` while
+ * the image build was still running, and the publish was marked failed even
+ * though the build went on to succeed.
+ *
+ * `serverBacked` is passed in by the caller, which has already probed it, so a
+ * static publish keeps the short budget and still fails fast on a hang.
+ */
+export async function publishConfigureTimeoutMs(
+  projectId: string,
+  opts?: { serverBacked?: boolean },
+): Promise<number> {
   try {
     const { getPublishSubstrate } = await import("../lib/substrate/router")
     const substrate = await getPublishSubstrate(projectId)
     if (substrate.kind === 'metal') return PUBLISH_CONFIGURE_TIMEOUT_METAL_MS
+    if (opts?.serverBacked) {
+      const { shouldBuildPublishedImage, publishedImageBuildTimeoutMs } = await import(
+        "../lib/published-build-config"
+      )
+      if (shouldBuildPublishedImage('knative')) {
+        return PUBLISH_CONFIGURE_TIMEOUT_MS + publishedImageBuildTimeoutMs()
+      }
+    }
   } catch (err: any) {
     console.warn(`[Publish] Could not resolve publish substrate for ${projectId}: ${err?.message ?? err}`)
   }
@@ -913,6 +936,8 @@ async function configurePublishedService(
     serverBacked?: boolean
     environment?: "production" | "staging"
     allowDataLoss?: boolean
+    /** The caller already ran the app build for this publish. */
+    artifactAlreadyBuilt?: boolean
   },
 ): Promise<{ serverBacked: boolean }> {
   // An uploaded bundle (desktop publish) is static by construction: there is no
@@ -1001,6 +1026,7 @@ async function configurePublishedService(
         environmentId: environment.id,
         subdomain,
         commitSha,
+        alreadyBuilt: opts?.artifactAlreadyBuilt === true,
       })
       if (!image.ok) {
         // A publish must never ship a runtime it could not build: the ksvc
@@ -1428,12 +1454,22 @@ export async function publishProject(
         // static nginx), its DomainMapping, and the SERVER_BACKED edge flag.
         await setPublishStatus(projectId, 'configuring')
         try {
-          const configureTimeoutMs = await publishConfigureTimeoutMs(projectId)
+          // Probe once, here: the configure budget depends on it (a server app
+          // builds its image inside this step) and configurePublishedService
+          // would otherwise probe again.
+          const serverBacked =
+            fileSource.kind === 'uploaded'
+              ? fileSource.serverBacked
+              : await detectServerBacked(projectId)
+          const configureTimeoutMs = await publishConfigureTimeoutMs(projectId, { serverBacked })
           await withTimeout(
             configurePublishedService(projectId, subdomain, {
               alwaysOn,
               allowDataLoss: opts.allowDataLoss === true,
-              ...(fileSource.kind === 'uploaded' ? { serverBacked: fileSource.serverBacked } : {}),
+              serverBacked,
+              // The publish flow built the app in step 1, so the image build
+              // must not build it a second time.
+              artifactAlreadyBuilt: fileSource.kind !== 'uploaded',
             }),
             configureTimeoutMs,
             'Publish configure',
