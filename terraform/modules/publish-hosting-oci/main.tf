@@ -662,10 +662,27 @@ resource "cloudflare_worker_script" "subdomain_router" {
     //               only override DNS to Kourier).
     // Same-zone subrequests skip this Worker, so there is no self-loop. A short
     // timeout keeps the loading page polling rather than holding one request open.
-    async function probePublishedReady(env, subdomain, url, timeoutMs, backend) {
+    //
+    // viaPlatform: the request came in on a custom domain, so this Worker is
+    // running in the Cloudflare-for-SaaS zone. resolveOverride needs the URL
+    // host and the override host in the SAME zone, so from there the Kourier
+    // override is ignored and the connection 522s. Instead ask the platform
+    // host's own wake endpoint: it is another zone, so its Worker runs and
+    // makes the same-zone Kourier hop.
+    async function probePublishedReady(env, subdomain, url, timeoutMs, backend, viaPlatform) {
       const ctrl = new AbortController();
       const timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
       try {
+        if (backend === 'knative' && viaPlatform) {
+          const platformWake = 'https://' + subdomain + '.' + PUBLISH_DOMAIN + '/__shogo/wake';
+          const resp = await fetch(platformWake, {
+            signal: ctrl.signal,
+            headers: { 'User-Agent': 'Cloudflare-Worker-Wake' },
+          });
+          if (!resp.ok) return false;
+          const body = await resp.json().catch(function () { return { ready: false }; });
+          return !!(body && body.ready);
+        }
         if (backend === 'metal') {
           const API = (env.API_PUBLISHED_ORIGIN || '').replace(/\/+$/, '');
           if (!API) return false;
@@ -778,6 +795,7 @@ resource "cloudflare_worker_script" "subdomain_router" {
         // exact host first, then the www-stripped form. Unknown hosts 404
         // rather than guessing a (wrong) prefix from the first label.
         let subdomain = platformSubdomain(hostname);
+        const isCustomDomain = !subdomain;
         let canonical = null;
         if (!subdomain && env.CUSTOM_DOMAINS) {
           let entry = parseCustomDomain(await env.CUSTOM_DOMAINS.get(rawHost));
@@ -823,7 +841,7 @@ resource "cloudflare_worker_script" "subdomain_router" {
         // apps are always "ready" (served from the edge).
         if (WAKE_PATHS.indexOf(url.pathname) !== -1) {
           if (!backend) return wakeJsonResponse(true);
-          return wakeJsonResponse(await probePublishedReady(env, subdomain, url, 5000, backend));
+          return wakeJsonResponse(await probePublishedReady(env, subdomain, url, 5000, backend, isCustomDomain));
         }
 
         // SERVER-BACKED apps: proxy dynamic `/api/*` to the project's running
@@ -851,6 +869,11 @@ resource "cloudflare_worker_script" "subdomain_router" {
               backendReq.headers.set('X-Forwarded-Proto', 'https');
               return fetch(backendReq);
             }
+          } else if (isCustomDomain) {
+            // Cross-zone: let the platform host's Worker do the Kourier hop
+            // (see probePublishedReady).
+            const platformUrl = 'https://' + subdomain + '.' + PUBLISH_DOMAIN + url.pathname + url.search;
+            return fetch(new Request(platformUrl, request));
           } else {
             const KOURIER_ORIGIN = (env.KOURIER_ORIGIN || '').replace(/\/+$/, '');
             if (KOURIER_ORIGIN) {
@@ -871,7 +894,7 @@ resource "cloudflare_worker_script" "subdomain_router" {
         // The probe nudges the backend so it is already starting while the
         // visitor waits. Skipped for static apps (no backend to wake).
         if (backend && isDocumentRequest(request, url)) {
-          const ready = await probePublishedReady(env, subdomain, url, 3000, backend);
+          const ready = await probePublishedReady(env, subdomain, url, 3000, backend, isCustomDomain);
           if (!ready) return shogoLoadingResponse(subdomain + '.' + PUBLISH_DOMAIN);
         }
 
