@@ -102,6 +102,7 @@ mock.module('@kubernetes/client-node', () => withK8sExports({
 }))
 
 let projectKnativeServiceName: string | null = null
+let customDomainRows: { hostname: string }[] = []
 mock.module('../lib/prisma', () => withPrismaExports({
   prisma: {
     project: {
@@ -122,6 +123,9 @@ mock.module('../lib/prisma', () => withPrismaExports({
     },
     workspace: {
       findUnique: async () => ({ instanceSize: workspaceInstanceSize }),
+    },
+    customDomain: {
+      findMany: async () => customDomainRows,
     },
     $queryRawUnsafe: async () => queryRawRows,
     $executeRawUnsafe: async (sql: string) => {
@@ -482,6 +486,61 @@ describe('deletePreviewDomainMapping', () => {
     deleteNotFound = true
     const mgr = new KnativeProjectManager()
     await expect(mgr.deletePreviewDomainMapping('p1')).resolves.toBeUndefined()
+  })
+})
+
+// =========================================================================
+// published DomainMappings for custom hostnames
+// =========================================================================
+
+describe('published custom-domain DomainMappings', () => {
+  beforeEach(() => {
+    customDomainRows = []
+  })
+
+  // The k8s mock records each call twice; key on the request object.
+  const unique = <T,>(xs: T[]) => [...new Set(xs)]
+  const dmCreates = () =>
+    unique(
+      capture
+        .filter((c) => c.method === 'createNamespacedCustomObject' && c.args[0].plural === 'domainmappings')
+        .map((c) => c.args[0]),
+    ).map((a: any) => a.body)
+
+  test('publishing production also maps every custom hostname to the published service', async () => {
+    customDomainRows = [{ hostname: 'acme.example' }, { hostname: 'www.acme.example' }]
+    const mgr = new KnativeProjectManager()
+    await mgr.createPublishedDomainMapping('acme', 'p1', 'production')
+    const bodies = dmCreates()
+    expect(bodies.map((b: any) => b.metadata.name)).toEqual(['acme.shogo.one', 'acme.example', 'www.acme.example'])
+    const custom = bodies[1]
+    expect(custom.spec.ref.name).toBe('published-p1')
+    expect(custom.metadata.labels['shogo.io/component']).toBe('published-custom-domain')
+    expect(custom.metadata.labels['shogo.io/published-subdomain']).toBe('acme')
+  })
+
+  test('a non-production environment does not map custom hostnames', async () => {
+    customDomainRows = [{ hostname: 'acme.example' }]
+    const mgr = new KnativeProjectManager()
+    await mgr.createPublishedDomainMapping('acme--staging', 'p1', 'staging')
+    expect(dmCreates().map((b: any) => b.metadata.name)).toEqual(['acme--staging.shogo.one'])
+  })
+
+  test('an existing custom-hostname mapping is not an error', async () => {
+    customDomainRows = [{ hostname: 'acme.example' }]
+    createConflict = true
+    const mgr = new KnativeProjectManager()
+    await expect(mgr.createPublishedDomainMapping('acme', 'p1', 'production')).resolves.toBeUndefined()
+  })
+
+  test('deleting the published mapping also deletes its custom-hostname mappings', async () => {
+    customListResponse = { items: [{ metadata: { name: 'acme.example' } }, { metadata: { name: 'www.acme.example' } }] }
+    const mgr = new KnativeProjectManager()
+    await mgr.deletePublishedDomainMapping('acme')
+    const deleted = unique(
+      capture.filter((c) => c.method === 'deleteNamespacedCustomObject').map((c) => c.args[0]),
+    ).map((a: any) => a.name)
+    expect(deleted).toEqual(['acme.shogo.one', 'acme.example', 'www.acme.example'])
   })
 })
 

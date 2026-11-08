@@ -3,8 +3,8 @@
  * its script from main.tf and drive it with a mocked fetch + KV to pin the
  * custom-domain routing for Knative-backed apps: a custom domain runs the
  * Worker in the Cloudflare-for-SaaS zone, where a resolveOverride to the
- * publish zone's Kourier record is ignored and 522s, so those requests must
- * go to the platform host instead.
+ * publish zone's Kourier record does not apply and 522s, so those requests
+ * keep the custom host and override DNS to the SaaS zone's Kourier record.
  */
 import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
@@ -41,7 +41,6 @@ function mockFetch() {
   globalThis.fetch = (async (req: Request | string, init?: Call['init']) => {
     const url = typeof req === 'string' ? req : req.url
     calls.push({ url, init })
-    if (url.endsWith('/__shogo/wake')) return new Response('{"ready":true}', { status: 200 })
     return new Response('ok', { status: 200 })
   }) as unknown as typeof fetch
 }
@@ -54,32 +53,44 @@ const kv = (m: Record<string, string>) => ({ get: async (k: string) => m[k] ?? n
 const env = {
   CUSTOM_DOMAINS: kv({ 'acme.example': '{"s":"acme","c":"acme.example"}' }),
   SERVER_BACKED: kv({ acme: 'knative' }),
-  KOURIER_ORIGIN: 'https://kourier-us.shogo.one',
+  KOURIER_ORIGIN: 'http://kourier-us.shogo.one',
+  CUSTOM_DOMAINS_KOURIER_ORIGIN: 'http://kourier-us.shogo.online',
 }
 
 describe('subdomain-router worker: knative backend', () => {
-  test('custom-domain wake probes the platform host without resolveOverride', async () => {
+  test('custom-domain wake probes its own host via the SaaS-zone Kourier record', async () => {
     const worker = await loadWorker()
     mockFetch()
     const res = await worker.fetch(new Request('https://acme.example/__shogo/wake'), env)
     expect(await res.json()).toEqual({ ready: true })
-    expect(calls[0].url).toBe('https://acme.shogo.one/__shogo/wake')
-    expect(calls[0].init?.cf).toBeUndefined()
+    expect(calls[0].url).toBe('https://acme.example/ready')
+    expect(calls[0].init?.cf?.resolveOverride).toBe('kourier-us.shogo.online')
   })
 
-  test('custom-domain /api is forwarded to the platform host without resolveOverride', async () => {
+  test('custom-domain /api keeps its own host and overrides DNS to the SaaS-zone Kourier record', async () => {
     const worker = await loadWorker()
     mockFetch()
     await worker.fetch(new Request('https://acme.example/api/schedule?x=1'), env)
-    expect(calls[0].url).toBe('https://acme.shogo.one/api/schedule?x=1')
-    expect(calls[0].init?.cf).toBeUndefined()
+    expect(calls[0].url).toBe('https://acme.example/api/schedule?x=1')
+    expect(calls[0].init?.cf?.resolveOverride).toBe('kourier-us.shogo.online')
+  })
+
+  test('custom-domain wake reports not ready when the SaaS-zone origin is unbound', async () => {
+    const worker = await loadWorker()
+    mockFetch()
+    const res = await worker.fetch(
+      new Request('https://acme.example/__shogo/wake'),
+      { ...env, CUSTOM_DOMAINS_KOURIER_ORIGIN: undefined },
+    )
+    expect(await res.json()).toEqual({ ready: false })
+    expect(calls).toHaveLength(0)
   })
 
   test('custom-domain navigation serves the site once the platform reports ready', async () => {
     const worker = await loadWorker()
     mockFetch()
     const res = await worker.fetch(new Request('https://acme.example/', { headers: { accept: 'text/html' } }), env)
-    expect(calls[0].url).toBe('https://acme.shogo.one/__shogo/wake')
+    expect(calls[0].url).toBe('https://acme.example/ready')
     expect(await res.text()).not.toContain('Waking')
   })
 

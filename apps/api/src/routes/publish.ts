@@ -18,6 +18,7 @@
 import { Hono } from "hono"
 import { PutObjectCommand, CopyObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3"
 import { prisma } from "../lib/prisma"
+import { removePublishedCustomDomainMapping } from "../lib/published-custom-domain-mapping"
 import { deriveProjectRuntimeToken } from "../lib/project-runtime-token"
 import {
   PUBLISH_BUCKET,
@@ -2277,6 +2278,7 @@ export async function deleteCustomDomain(projectId: string, domainId: string): P
         await deleteCustomHostname(member.cfCustomHostnameId)
       }
       await deleteHostnameMapping(member.hostname)
+      await removePublishedCustomDomainMapping(member.hostname)
     }
     const removedIds = groupRows.map((d) => d.id)
     await prisma.customDomain.deleteMany({ where: { id: { in: removedIds } } })

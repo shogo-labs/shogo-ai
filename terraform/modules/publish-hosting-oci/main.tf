@@ -79,6 +79,12 @@ variable "custom_domain_fallback_hostname" {
 # input is `kourier_origin` — the Knative ingress the Worker proxies `/api/*`
 # to. When it's unset the Worker can't proxy (no origin), so server-backed apps
 # fall back to static serving until the ingress host is configured.
+variable "custom_domains_kourier_origin" {
+  description = "Origin URL whose HOSTNAME the subdomain-router Worker uses as the `resolveOverride` target for Knative-backed apps reached on a CUSTOM domain. Must be an orange-clouded record in `custom_domains_zone` whose origin is the Kourier ingress LB: the Worker runs in that zone for custom hostnames, and resolveOverride only works within one zone, so `kourier_origin` (publish zone) cannot be used there. Kourier routes the request through a DomainMapping for the custom hostname. Null leaves Knative-backed custom domains unproxied."
+  type        = string
+  default     = null
+}
+
 variable "kourier_origin" {
   description = "Origin URL whose HOSTNAME the subdomain-router Worker uses as a `resolveOverride` target for server-backed `/api/*` traffic. The hostname must be an ORANGE-CLOUDED (proxied) record in the publish zone whose origin is the cluster's Knative (Kourier) ingress LB serving the `{subdomain}.shogo.one` DomainMappings. The Worker keeps the published host in the request URL (so Cloudflare sends `Host: {subdomain}.{publish_domain}`, which the DomainMapping routes to `published-{projectId}`) and only overrides DNS resolution to this host — Cloudflare ignores a manually-set Host header, and resolveOverride requires both hosts to be proxied in the same zone. The scheme is ignored (the Worker reuses the inbound request scheme). Leave null to disable server-backed proxying even when the KV map exists."
   type        = string
@@ -351,6 +357,14 @@ resource "cloudflare_worker_script" "subdomain_router" {
 
   # The Knative ingress origin for server-backed `/api/*`. Only bound when
   # configured; the Worker guards on `env.KOURIER_ORIGIN` presence.
+  dynamic "plain_text_binding" {
+    for_each = var.custom_domains_kourier_origin != null && var.custom_domains_kourier_origin != "" ? [1] : []
+    content {
+      name = "CUSTOM_DOMAINS_KOURIER_ORIGIN"
+      text = var.custom_domains_kourier_origin
+    }
+  }
+
   dynamic "plain_text_binding" {
     for_each = var.kourier_origin != null && var.kourier_origin != "" ? [1] : []
     content {
@@ -663,25 +677,31 @@ resource "cloudflare_worker_script" "subdomain_router" {
     // Same-zone subrequests skip this Worker, so there is no self-loop. A short
     // timeout keeps the loading page polling rather than holding one request open.
     //
-    // viaPlatform: the request came in on a custom domain, so this Worker is
-    // running in the Cloudflare-for-SaaS zone. resolveOverride needs the URL
-    // host and the override host in the SAME zone, so from there the Kourier
-    // override is ignored and the connection 522s. Instead ask the platform
-    // host's own wake endpoint: it is another zone, so its Worker runs and
-    // makes the same-zone Kourier hop.
-    async function probePublishedReady(env, subdomain, url, timeoutMs, backend, viaPlatform) {
+    // customHost: the request came in on a custom domain, so this Worker runs in
+    // the Cloudflare-for-SaaS zone. resolveOverride only works within one zone,
+    // so the publish-zone Kourier record is unusable from here (522), and the
+    // platform host can't be used either (its zone runs this same script, which
+    // Cloudflare does not re-invoke, so the fetch lands on the 192.0.2.1
+    // placeholder). Keep the custom host in the URL and override DNS to a
+    // Kourier record in the SaaS zone; Kourier routes it through a DomainMapping
+    // for the custom hostname (created by the API).
+    function customDomainKourierHost(env) {
+      return (env.CUSTOM_DOMAINS_KOURIER_ORIGIN || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    }
+
+    async function probePublishedReady(env, subdomain, url, timeoutMs, backend, customHost) {
       const ctrl = new AbortController();
       const timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
       try {
-        if (backend === 'knative' && viaPlatform) {
-          const platformWake = 'https://' + subdomain + '.' + PUBLISH_DOMAIN + '/__shogo/wake';
-          const resp = await fetch(platformWake, {
+        if (backend === 'knative' && customHost) {
+          const override = customDomainKourierHost(env);
+          if (!override) return false;
+          const resp = await fetch(url.protocol + '//' + customHost + '/ready', {
+            cf: { resolveOverride: override },
             signal: ctrl.signal,
             headers: { 'User-Agent': 'Cloudflare-Worker-Wake' },
           });
-          if (!resp.ok) return false;
-          const body = await resp.json().catch(function () { return { ready: false }; });
-          return !!(body && body.ready);
+          return resp.ok;
         }
         if (backend === 'metal') {
           const API = (env.API_PUBLISHED_ORIGIN || '').replace(/\/+$/, '');
@@ -795,7 +815,7 @@ resource "cloudflare_worker_script" "subdomain_router" {
         // exact host first, then the www-stripped form. Unknown hosts 404
         // rather than guessing a (wrong) prefix from the first label.
         let subdomain = platformSubdomain(hostname);
-        const isCustomDomain = !subdomain;
+        const customHost = subdomain ? null : rawHost;
         let canonical = null;
         if (!subdomain && env.CUSTOM_DOMAINS) {
           let entry = parseCustomDomain(await env.CUSTOM_DOMAINS.get(rawHost));
@@ -841,7 +861,7 @@ resource "cloudflare_worker_script" "subdomain_router" {
         // apps are always "ready" (served from the edge).
         if (WAKE_PATHS.indexOf(url.pathname) !== -1) {
           if (!backend) return wakeJsonResponse(true);
-          return wakeJsonResponse(await probePublishedReady(env, subdomain, url, 5000, backend, isCustomDomain));
+          return wakeJsonResponse(await probePublishedReady(env, subdomain, url, 5000, backend, customHost));
         }
 
         // SERVER-BACKED apps: proxy dynamic `/api/*` to the project's running
@@ -869,11 +889,15 @@ resource "cloudflare_worker_script" "subdomain_router" {
               backendReq.headers.set('X-Forwarded-Proto', 'https');
               return fetch(backendReq);
             }
-          } else if (isCustomDomain) {
-            // Cross-zone: let the platform host's Worker do the Kourier hop
-            // (see probePublishedReady).
-            const platformUrl = 'https://' + subdomain + '.' + PUBLISH_DOMAIN + url.pathname + url.search;
-            return fetch(new Request(platformUrl, request));
+          } else if (customHost) {
+            // Same-zone Kourier hop from the SaaS zone (see probePublishedReady).
+            const override = customDomainKourierHost(env);
+            if (override) {
+              const backendReq = new Request(url.protocol + '//' + customHost + url.pathname + url.search, request);
+              backendReq.headers.set('X-Forwarded-Host', customHost);
+              backendReq.headers.set('X-Forwarded-Proto', 'https');
+              return fetch(backendReq, { cf: { resolveOverride: override } });
+            }
           } else {
             const KOURIER_ORIGIN = (env.KOURIER_ORIGIN || '').replace(/\/+$/, '');
             if (KOURIER_ORIGIN) {
@@ -894,7 +918,7 @@ resource "cloudflare_worker_script" "subdomain_router" {
         // The probe nudges the backend so it is already starting while the
         // visitor waits. Skipped for static apps (no backend to wake).
         if (backend && isDocumentRequest(request, url)) {
-          const ready = await probePublishedReady(env, subdomain, url, 3000, backend, isCustomDomain);
+          const ready = await probePublishedReady(env, subdomain, url, 3000, backend, customHost);
           if (!ready) return shogoLoadingResponse(subdomain + '.' + PUBLISH_DOMAIN);
         }
 

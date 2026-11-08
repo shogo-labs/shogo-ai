@@ -261,6 +261,8 @@ module "publish_hosting" {
   # Knative (Kourier) ingress so the Worker can proxy `/api/*` for KNATIVE-backed
   # published apps.
   kourier_origin = var.kourier_origin
+  # Same, for Knative-backed apps reached on a custom domain (SaaS zone).
+  custom_domains_kourier_origin = var.custom_domains_kourier_origin
 
   # METAL-backed published apps: the public Shogo API origin the Worker proxies
   # `/api/*` to (→ /api/published/{subdomain}/...) so the API can forward to the
