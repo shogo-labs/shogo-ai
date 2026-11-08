@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 // nothing here reads it (the default dep is always overridden).
 mock.module('../../lib/prisma', () => ({ prisma: {} }))
 
-const { ensurePublishedImage } = await import('../published-build.service')
+const { ensurePublishedImage, fetchPublishedArtifact } = await import('../published-build.service')
 const { buildPublishedImageJob, buildJobName, buildLogTail, digestFromTerminationMessage } = await import(
   '../../lib/published-build-job'
 )
@@ -157,6 +157,88 @@ describe('ensurePublishedImage', () => {
       }),
     )
     expect(seen[0].alreadyBuilt).toBe(false)
+  })
+
+  // SHO-308, staging 2026-11-08: `/agent/dist-files?publish=true` deleted the
+  // staging dir `/agent/publish-artifact` reads, so every server-backed publish
+  // died with artifact_missing. The runtime is fixed, but a pod can still be
+  // running the old handler (metal rootfs lags the API), so the one safe
+  // fallback is a single rebuild and a single retry.
+  describe('fetchPublishedArtifact', () => {
+    const distNotFound = { ok: false as const, status: 404, body: '{"error":"dist_not_found"}' }
+
+    it('rebuilds once and retries once when the runtime lost its build output', async () => {
+      const calls: string[] = []
+      let requests = 0
+      const res = await fetchPublishedArtifact(
+        { projectId: 'proj-1', alreadyBuilt: true },
+        {
+          requestArtifact: async () => {
+            requests++
+            calls.push(`artifact:${requests}`)
+            return requests === 1 ? distNotFound : { ok: true as const, archive: 'Zm9v' }
+          },
+          rebuild: async () => {
+            calls.push('rebuild')
+            return { success: true }
+          },
+          log: () => {},
+        },
+      )
+      expect(res).toEqual({ archive: 'Zm9v' })
+      expect(calls).toEqual(['artifact:1', 'rebuild', 'artifact:2'])
+    })
+
+    it('does not rebuild when the caller had not built yet', async () => {
+      let rebuilt = 0
+      const res = await fetchPublishedArtifact(
+        { projectId: 'proj-1', alreadyBuilt: false },
+        {
+          requestArtifact: async () => distNotFound,
+          rebuild: async () => {
+            rebuilt++
+            return { success: true }
+          },
+          log: () => {},
+        },
+      )
+      expect('error' in res).toBe(true)
+      expect(rebuilt).toBe(0)
+    })
+
+    it('does not rebuild for a failure that is not a missing build output', async () => {
+      let rebuilt = 0
+      const res = await fetchPublishedArtifact(
+        { projectId: 'proj-1', alreadyBuilt: true },
+        {
+          requestArtifact: async () => ({ ok: false as const, status: 500, body: 'artifact_failed' }),
+          rebuild: async () => {
+            rebuilt++
+            return { success: true }
+          },
+          log: () => {},
+        },
+      )
+      expect('error' in res).toBe(true)
+      expect(rebuilt).toBe(0)
+    })
+
+    it('surfaces a failed rebuild instead of retrying into the same error', async () => {
+      let requests = 0
+      const res = await fetchPublishedArtifact(
+        { projectId: 'proj-1', alreadyBuilt: true },
+        {
+          requestArtifact: async () => {
+            requests++
+            return distNotFound
+          },
+          rebuild: async () => ({ success: false, error: 'vite exited 1' }),
+          log: () => {},
+        },
+      )
+      expect('error' in res && res.error).toContain('vite exited 1')
+      expect(requests).toBe(1)
+    })
   })
 
   it('pins the built digest onto the repository', async () => {

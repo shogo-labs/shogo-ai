@@ -2797,7 +2797,8 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 // Preview Manager (app mode — lazy init)
 // ---------------------------------------------------------------------------
 
-import { PreviewManager, PUBLISH_STAGING_DIR, publishedBootPlan } from './preview-manager'
+import { PreviewManager, publishedBootPlan } from './preview-manager'
+import { handleDistFiles, handlePublishArtifact, type PublishEndpointDeps } from './publish-endpoints'
 import { installRuntimeJobGuard } from './process-tree'
 import { cleanupStagingOutput } from './build-output-commit'
 import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
@@ -6153,151 +6154,18 @@ function getProjectPreviewManager(projectId?: string): PreviewManager | null {
   return getPreviewManager()
 }
 
-// Recursively collect every file under `dist/` as `{ path, content (base64) }`.
-// Consumed by apps/api/src/routes/publish.ts -> downloadDistFiles() to upload
-// the build output to the published-apps S3 bucket.
-//
-// Lives under `/agent/*`, NOT `/api/*`. The `/api/*` namespace is owned by
-// the user app's sidecar Hono server (see code-agent-prompt.ts) and the
-// runtime mounts `app.all('/api/*', ...)` higher up to proxy every `/api/*`
-// request to it. The original placement at `/api/dist-files` (commit
-// 2f9b326d) was registered after that proxy and shadowed from day one —
-// every publish hit either the proxy's `if (!port) return c.notFound()`
-// branch (404) or got the user app's SPA fallback (200 + index.html, which
-// the publisher then failed to JSON-parse). `/agent/*` is the
-// runtime-owned namespace, is auth-gated by `authPrefixes` so callers must
-// send `x-runtime-token`, and is in the SPA catch-all skip-list — so this
-// endpoint is no longer reachable as a userland route.
-const PUBLISH_DIST_MAX_FILE_SIZE = 50 * 1024 * 1024
-
-function collectPublishDistFiles(dir: string, baseDir: string): Array<{ path: string; content: string }> {
-  const out: Array<{ path: string; content: string }> = []
-  if (!existsSync(dir)) return out
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (isMacOSJunkName(entry.name)) continue
-    const fullPath = join(dir, entry.name)
-    const relPath = fullPath.slice(baseDir.length + 1).replace(/\\/g, '/')
-    if (entry.isDirectory()) {
-      out.push(...collectPublishDistFiles(fullPath, baseDir))
-    } else if (entry.isFile()) {
-      try {
-        const stat = statSync(fullPath)
-        if (stat.size > PUBLISH_DIST_MAX_FILE_SIZE) continue
-        out.push({
-          path: relPath,
-          content: readFileSync(fullPath).toString('base64'),
-        })
-      } catch {
-        // skip unreadable files
-      }
-    }
-  }
-  return out
+// The two publish endpoints live in `publish-endpoints.ts` so a test can drive
+// the real handlers against a real directory. They share one staging dir, and
+// the bug that shipped when they were inline here was exactly that interaction:
+// `dist-files` deleted the directory `publish-artifact` needed next.
+const publishEndpointDeps: PublishEndpointDeps = {
+  projectDir: (projectId) => getProjectWorkspaceDir(projectId),
+  outputRoot: (projectId, projectDir) => getProjectPreviewManager(projectId)?.bundlerCwd ?? projectDir,
 }
 
-app.get('/agent/dist-files', (c) => {
-  const projectId = c.req.query('projectId')
-  const publishBuild = c.req.query('publish') === 'true'
-  const projectDir = getProjectWorkspaceDir(projectId)
-  if (!projectDir) {
-    return c.json({ error: 'project_not_attached', message: 'Project is not attached to this runtime' }, 404)
-  }
-  // Publish builds are written under the PreviewManager's bundler cwd, which
-  // is `<projectDir>/project` for legacy-layout workspaces.
-  const outputRoot = publishBuild
-    ? getProjectPreviewManager(projectId)?.bundlerCwd ?? projectDir
-    : projectDir
-  const distDir = join(outputRoot, publishBuild ? PUBLISH_STAGING_DIR : 'dist')
-  if (!existsSync(distDir)) {
-    return c.json(
-      { error: 'dist_not_found', message: 'No dist/ directory — run a build first' },
-      404,
-    )
-  }
-  const files = collectPublishDistFiles(distDir, distDir)
-  if (publishBuild) {
-    cleanupStagingOutput(outputRoot, PUBLISH_STAGING_DIR)
-  }
-  return c.json(files)
-})
+app.get('/agent/dist-files', (c) => handleDistFiles(c, publishEndpointDeps))
 
-/**
- * The build context a published image is built from (SHO-308 §2), as a gzipped
- * tar, base64-encoded.
- *
- * Publishing used to build on boot: the pod hydrated source and then ran
- * `bun install`, `prisma generate` and a Vite build before it could answer.
- * Now the image is built once per commit, in a BuildKit Job, from this
- * artifact — so a published pod only has to start. What goes in it:
- *
- *   - the project's source at its current commit, minus `node_modules`, `.git`
- *     and the caches a build regenerates anyway;
- *   - the root-based `dist/` that `buildForPublish()` just produced, since a
- *     published bundle must be served from `/` rather than `/p/<id>/`.
- *
- * Called by `apps/api/src/services/published-build.service.ts` right after
- * `POST /agent/publish-build`, under the runtime-owned `/agent/*` namespace
- * (so `x-runtime-token` gated like `/agent/dist-files`).
- */
-app.get('/agent/publish-artifact', async (c) => {
-  const projectId = c.req.query('projectId')
-  const projectDir = getProjectWorkspaceDir(projectId)
-  if (!projectDir) {
-    return c.json({ error: 'project_not_attached', message: 'Project is not attached to this runtime' }, 404)
-  }
-  const outputRoot = getProjectPreviewManager(projectId)?.bundlerCwd ?? projectDir
-  const stagingDir = join(outputRoot, PUBLISH_STAGING_DIR)
-  if (!existsSync(stagingDir)) {
-    return c.json(
-      { error: 'dist_not_found', message: 'No publish build output — run /agent/publish-build first' },
-      404,
-    )
-  }
-
-  // What may enter the image is decided in one place, and it is exercised by
-  // `publish-artifact-filter.test.ts`: matching only the first path segment let
-  // a nested `apps/*/node_modules` (and `.env` files) into the context, which
-  // `COPY . /app` lays down *before* `bun install`.
-  const filter = createPublishedArtifactFilter({
-    projectDir,
-    stagingDirName: PUBLISH_STAGING_DIR,
-  })
-
-  const { cp, mkdtemp, readFile, rm } = await import('fs/promises')
-  const os = await import('os')
-  const tar = await import('tar')
-  const tmpDir = await mkdtemp(join(os.tmpdir(), 'shogo-publish-artifact-'))
-  const contextDir = join(tmpDir, 'context')
-  const archivePath = join(tmpDir, 'artifact.tar.gz')
-  try {
-    // Fold the WAL back into the DB before copying it. Otherwise the tarball
-    // would skip `-wal` (see publish-artifact-filter) and lose the writes it
-    // still holds — a published app booting with a DB that is behind its own
-    // last write.
-    for (const rel of ['prisma/dev.db', 'dev.db']) {
-      const dbPath = join(projectDir, rel)
-      if (!existsSync(dbPath)) continue
-      try {
-        const { Database } = await import('bun:sqlite')
-        const db = new Database(dbPath, { readonly: false })
-        db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
-        db.close()
-      } catch (err: any) {
-        console.warn(`[agent-runtime] publish-artifact: checkpoint of ${rel} failed: ${err?.message ?? err}`)
-      }
-    }
-    await cp(projectDir, contextDir, { recursive: true, filter })
-    await cp(stagingDir, join(contextDir, 'dist'), { recursive: true })
-    await tar.create({ gzip: true, file: archivePath, cwd: contextDir, portable: true }, ['.'])
-    const buf = await readFile(archivePath)
-    cleanupStagingOutput(outputRoot, PUBLISH_STAGING_DIR)
-    return c.json({ archive: buf.toString('base64'), bytes: buf.length })
-  } catch (err: any) {
-    return c.json({ error: 'artifact_failed', message: err?.message ?? String(err) }, 500)
-  } finally {
-    await rm(tmpDir, { recursive: true, force: true }).catch(() => {})
-  }
-})
+app.get('/agent/publish-artifact', (c) => handlePublishArtifact(c, publishEndpointDeps))
 
 /**
  * Build the requested project for publishing. Workspace previews need a
