@@ -589,22 +589,50 @@ export async function publishConfigureTimeoutMs(
 }
 
 /**
- * Download dist/ files from the runtime pod
+ * Whether this project's publish will build a per-commit image (SHO-308 §2).
+ *
+ * The publish flow needs to know *before* it downloads the build output: the
+ * download and the image build read the same staging directory, and only the
+ * last reader may delete it. Same predicate `configurePublishedService` uses to
+ * decide to build, so the two cannot disagree.
  */
-async function downloadDistFiles(projectId: string): Promise<Map<string, Buffer>> {
+export async function willBuildPublishedImage(projectId: string): Promise<boolean> {
+  try {
+    const { getPublishSubstrate } = await import("../lib/substrate/router")
+    const substrate = await getPublishSubstrate(projectId)
+    const { shouldBuildPublishedImage } = await import("../lib/published-build-config")
+    return shouldBuildPublishedImage(substrate.kind as "knative" | "metal")
+  } catch (err: any) {
+    console.warn(`[Publish] Could not resolve the image-build decision for ${projectId}: ${err?.message ?? err}`)
+    return false
+  }
+}
+
+/**
+ * Download dist/ files from the runtime pod.
+ *
+ * `keep` leaves the runtime's publish staging dir in place. A server-backed
+ * publish reads that directory twice — once here for the static bundle, once in
+ * `/agent/publish-artifact` for the image build context — and the first read used
+ * to delete it, so every server-backed publish failed with `artifact_missing`
+ * (SHO-308, staging, 2026-11-08). Static publishes keep the cleanup: nothing else
+ * will read it.
+ */
+async function downloadDistFiles(projectId: string, opts?: { keep?: boolean }): Promise<Map<string, Buffer>> {
   const { getProjectPodUrl } = await import("../lib/knative-project-manager")
   const podUrl = await getProjectPodUrl(projectId)
   const files = new Map<string, Buffer>()
 
-  console.log(`[Publish] Downloading dist files from ${podUrl}`)
+  console.log(`[Publish] Downloading dist files from ${podUrl}${opts?.keep ? ' (keeping the staging dir)' : ''}`)
 
   // Endpoint lives under the runtime-owned `/agent/*` namespace (auth-gated
   // via `x-runtime-token`). The previous `/api/dist-files` placement was
   // shadowed by the runtime's `app.all('/api/*')` user-app proxy, so every
   // publish before this fix either got a bare 404 (proxy's no-port branch)
   // or the user app's SPA fallback HTML (which then failed JSON parsing).
+  const keepQuery = opts?.keep ? '&keep=true' : ''
   const response = await fetch(
-    `${podUrl}/agent/dist-files?projectId=${encodeURIComponent(projectId)}&publish=true`,
+    `${podUrl}/agent/dist-files?projectId=${encodeURIComponent(projectId)}&publish=true${keepQuery}`,
     {
     headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
     signal: AbortSignal.timeout(PUBLISH_DOWNLOAD_TIMEOUT_MS),
@@ -1406,11 +1434,15 @@ export async function publishProject(
       await acquirePublishLock(projectId)
       try {
         let files: Map<string, Buffer>
+        // Probed once, before the download: whether an image build follows decides
+        // whether the download may delete the staging dir it shares with it.
+        let serverBacked: boolean
 
         if (fileSource.kind === 'uploaded') {
           // The caller already built the bundle; there is nothing to build or
           // download here, only to upload.
           files = fileSource.files
+          serverBacked = fileSource.serverBacked
         } else {
           // Step 1: Trigger build
           await setPublishStatus(projectId, 'building')
@@ -1420,9 +1452,17 @@ export async function publishProject(
             return { ok: false, status: 500, code: buildResult.code || "build_failed", message: buildResult.error || "Build failed" }
           }
 
+          // Step 1.5: probe once, here. The configure budget depends on it (a
+          // server app builds its image inside that step), and so does the
+          // download below: a server-backed publish reads the runtime's publish
+          // staging dir twice — once for the static bundle, once for the image
+          // build context — so the first read must not delete it.
+          serverBacked = await detectServerBacked(projectId)
+          const imageBuildFollows = serverBacked && (await willBuildPublishedImage(projectId))
+
           // Step 2: Download dist files
           try {
-            files = await downloadDistFiles(projectId)
+            files = await downloadDistFiles(projectId, { keep: imageBuildFollows })
           } catch (err: any) {
             console.error("[Publish] Failed to download dist files:", err)
             const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
@@ -1454,13 +1494,8 @@ export async function publishProject(
         // static nginx), its DomainMapping, and the SERVER_BACKED edge flag.
         await setPublishStatus(projectId, 'configuring')
         try {
-          // Probe once, here: the configure budget depends on it (a server app
-          // builds its image inside this step) and configurePublishedService
-          // would otherwise probe again.
-          const serverBacked =
-            fileSource.kind === 'uploaded'
-              ? fileSource.serverBacked
-              : await detectServerBacked(projectId)
+          // `serverBacked` was probed before the download (step 1.5): the
+          // configure budget depends on it, and so did the download's cleanup.
           const configureTimeoutMs = await publishConfigureTimeoutMs(projectId, { serverBacked })
           await withTimeout(
             configurePublishedService(projectId, subdomain, {
