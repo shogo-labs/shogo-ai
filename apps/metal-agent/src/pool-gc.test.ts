@@ -10,12 +10,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
 import { CacheIndex, type CacheEntry } from './cache-index'
 import { MetalWarmPool } from './pool'
+import { M, metrics } from './metrics'
 import type { FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotMeta, SnapshotStore } from './snapshot-store'
 
@@ -96,7 +97,13 @@ function makePool(
 
 /** Like `seed`, but stamps a caller-chosen rootfs identity (to model a snapshot
  *  taken against an OLD golden rootfs, i.e. before a rootfs rebuild). */
-function seedWithIdentity(cfg: any, projectId: string, rootfsIdentity: string, lastAccessAt = 100) {
+function seedWithIdentity(
+  cfg: any,
+  projectId: string,
+  rootfsIdentity: string,
+  lastAccessAt = 100,
+  extra: Partial<CacheEntry> = {},
+) {
   const snapshotPath = join(cfg.snapDir, `${projectId}.vmstate`)
   const memFilePath = join(cfg.snapDir, `${projectId}.mem`)
   const rootfs = join(cfg.runDir, `${projectId}.rootfs.ext4`)
@@ -117,6 +124,7 @@ function seedWithIdentity(cfg: any, projectId: string, rootfsIdentity: string, l
     suspendedAt: lastAccessAt,
     lastAccessAt,
     rootfsIdentity,
+    ...extra,
     v: 1,
   }
   new CacheIndex(cfg.snapDir).put(e)
@@ -427,6 +435,64 @@ describe('pool resume rootfs-identity gate', () => {
     expect(new CacheIndex(cfg.snapDir).get('proj')).toBeNull()
     // ...but the durable copy is left intact (we only evicted the local hot copy).
     expect(store.removed).toEqual([])
+  })
+
+  /** A fake manager whose quarantine moves the file aside, as rootfs.quarantine does in full mode. */
+  const quarantining = (cfg: () => any) => ({
+    quarantineRootfs: (p: string, label: string) => {
+      const q = join(cfg().runDir, 'quarantine')
+      mkdirSync(q, { recursive: true })
+      const dest = join(q, `${label}.rootfs.ext4`)
+      renameSync(p, dest)
+      return dest
+    },
+  })
+
+  test('gc quarantines, never deletes, a stale snapshot whose final source backup failed', async () => {
+    // 2026-11-08: a release rebuilt the rootfs; a workspace runtime whose
+    // member export had been timing out was suspended onto the old image, and
+    // the stale sweep deleted the only copy of two days of rendered video.
+    let c: any
+    const store = new FakeStore('NEW')
+    const { pool, cfg } = makePool(dir, store, { rootfsIdentity: 'NEW', ...noPressure }, quarantining(() => c) as any)
+    c = cfg
+    const unbacked = seedWithIdentity(cfg, 'ws:unbacked', 'OLD', 100, { finalBackupFailed: true })
+    pool.rehydrate()
+    const before = metrics.getCounter(M.unbackedSnapshotQuarantined)
+
+    const report = await pool.gcSweep()
+
+    expect(report.staleReclaimed).toEqual(['ws:unbacked'])
+    expect(new CacheIndex(cfg.snapDir).get('ws:unbacked')).toBeNull()
+    expect(existsSync(unbacked.memFilePath)).toBe(false)
+    expect(existsSync(unbacked.rootfs)).toBe(false)
+    const kept = join(cfg.runDir, 'quarantine')
+    const files = readdirSync(kept)
+    expect(files.some((f) => f.endsWith('.rootfs.ext4'))).toBe(true)
+    const meta = JSON.parse(readFileSync(join(kept, files.find((f) => f.endsWith('.json'))!), 'utf8'))
+    expect(meta.projectId).toBe('ws:unbacked')
+    expect(metrics.getCounter(M.unbackedSnapshotQuarantined)).toBe(before + 1)
+  })
+
+  test('a stale resume quarantines an unbacked snapshot instead of deleting it', async () => {
+    let c: any
+    const store = new FakeStore('OLD', false)
+    const { pool, cfg } = makePool(dir, store, { rootfsIdentity: 'NEW' }, quarantining(() => c) as any)
+    c = cfg
+    const a = seedWithIdentity(cfg, 'proj', 'OLD', 100, { finalBackupFailed: true })
+    pool.rehydrate()
+
+    expect(await pool.resume('proj')).toBeNull()
+
+    expect(existsSync(a.rootfs)).toBe(false)
+    expect(readdirSync(join(cfg.runDir, 'quarantine')).some((f) => f.endsWith('.rootfs.ext4'))).toBe(true)
+  })
+
+  test('the finalBackupFailed flag survives an agent restart', () => {
+    const { pool, cfg } = makePool(dir, new FakeStore('NEW'), { rootfsIdentity: 'NEW' })
+    seedWithIdentity(cfg, 'p', 'NEW', 100, { finalBackupFailed: true })
+    pool.rehydrate()
+    expect(new CacheIndex(cfg.snapDir).get('p')?.finalBackupFailed).toBe(true)
   })
 
   test('gc reclaims wrong-rootfs snapshots with no disk pressure, and spares resumable ones', async () => {

@@ -134,6 +134,7 @@ function makePool() {
   ]) {
     ;(pool as any)[m] = async () => undefined
   }
+  ;(pool as any).saveWorkspaceMembersToStore = async () => []
   return { pool, alive, pushed, snapshotted, release: () => release() }
 }
 

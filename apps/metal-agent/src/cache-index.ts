@@ -74,6 +74,11 @@ export interface CacheEntry {
   workspaceOrigin?: 'template' | 'backup' | 'snapshot'
   /** Taken on a staged rootfs and promoted at activation: the durable copy is still to be pushed. */
   durablePending?: boolean
+  /**
+   * The source backup taken at this suspend failed, so this snapshot holds the
+   * only copy of the latest workspace. Dropping it quarantines its disks.
+   */
+  finalBackupFailed?: boolean
   v: 1
 }
 

@@ -803,6 +803,8 @@ export interface SuspendedVm {
   workspaceOrigin?: 'template' | 'backup' | 'snapshot'
   /** See CacheEntry.durablePending. */
   durablePending?: boolean
+  /** See CacheEntry.finalBackupFailed. */
+  finalBackupFailed?: boolean
 }
 
 export interface GcReport {
@@ -1086,6 +1088,12 @@ export class MetalWarmPool {
    * or packing. In-memory only — a restart just costs one redundant export.
    */
   private dataTags = new Map<string, string>()
+  /**
+   * Size of each project's last source export, in bytes (Infinity after one
+   * timed out), so the next export's deadline scales the way hydrate's does.
+   * Memory only: after a restart the first export uses the flat timeout.
+   */
+  private exportSizeHints = new Map<string, number>()
   /** Home-state exports, serialized per project for the same reason as `dataFlight`. */
   private homeFlight = new Singleflight<boolean>()
   /** Last home-state change tag per project; the `dataTags` counterpart. */
@@ -1619,6 +1627,7 @@ export class MetalWarmPool {
       repoEtag: e.repoEtag,
       workspaceOrigin: e.workspaceOrigin,
       durablePending: e.durablePending,
+      finalBackupFailed: e.finalBackupFailed,
     }
   }
 
@@ -1733,7 +1742,7 @@ export class MetalWarmPool {
     projectId: string,
     destDir: string,
   ): Promise<{ outcome: 'exported' | 'conflict' | 'empty'; detail?: string }> {
-    const bytes = await this.fetchExport(assigned.handle, assigned.runtimeToken, destDir)
+    const bytes = await this.exportSource(assigned, projectId, destDir)
     let outcome: 'exported' | 'conflict' | 'empty' = 'empty'
     let detail: string | undefined
     if (bytes) {
@@ -2544,8 +2553,13 @@ export class MetalWarmPool {
    * `protected` seam so tests can inject bytes (or null) without a live guest.
    * Returns null when the guest reports nothing to back up (204, empty project).
    */
-  protected async fetchExport(handle: FcVmHandle, token?: string, dir?: string): Promise<Uint8Array | null> {
-    const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
+  protected async fetchExport(
+    handle: FcVmHandle,
+    token?: string,
+    dir?: string,
+    budgetMs = this.cfg.hydrateTimeoutMs,
+  ): Promise<Uint8Array | null> {
+    const dl = exportDeadline(budgetMs)
     try {
       const res = await fetch(`${handle.agentUrl}/pool/export`, {
         method: 'POST',
@@ -2568,6 +2582,28 @@ export class MetalWarmPool {
       throw err
     } finally {
       dl.dispose()
+    }
+  }
+
+  /**
+   * Export one project's source with a deadline sized from its previous export.
+   *
+   * The guest packs the whole archive before it sends a byte, so a flat 60 s
+   * deadline fails every export of a multi-gigabyte workspace (rendered video,
+   * say) — and kept failing it, so the durable backup silently stopped moving
+   * while the snapshot carried the only copy of days of work. After a timeout
+   * the next attempt gets the full hydrate ceiling.
+   */
+  private async exportSource(a: AssignedVm, projectId: string, dir?: string): Promise<Uint8Array | null> {
+    const hint = this.exportSizeHints.get(projectId)
+    const budgetMs = hint === undefined ? this.cfg.hydrateTimeoutMs : this.hydrateBudgetMs(hint)
+    try {
+      const bytes = await this.fetchExport(a.handle, a.runtimeToken, dir, budgetMs)
+      if (bytes) this.exportSizeHints.set(projectId, bytes.byteLength)
+      return bytes
+    } catch (err: any) {
+      if (String(err?.message ?? err).includes('export timed out')) this.exportSizeHints.set(projectId, Infinity)
+      throw err
     }
   }
 
@@ -2610,7 +2646,7 @@ export class MetalWarmPool {
   private async saveBackupToStore(a: AssignedVm): Promise<SourceSaveResult> {
     if (publishedSourceId(a.projectId)) return 'empty'
     return this.sourceLock.run(a.projectId, async () => {
-      const bytes = await this.fetchExport(a.handle, a.runtimeToken)
+      const bytes = await this.exportSource(a, a.projectId)
       if (!bytes) {
         console.log(`[pool] no source to back up for ${a.projectId} (empty/new workspace)`)
         return 'empty'
@@ -2750,11 +2786,7 @@ export class MetalWarmPool {
     const { ids } = await this.workspaceMembersForBackup(a)
     for (const projectId of ids) {
       try {
-        const bytes = await this.fetchExport(
-          a.handle,
-          a.runtimeToken,
-          `/app/workspace/${projectId}`,
-        )
+        const bytes = await this.exportSource(a, projectId, `/app/workspace/${projectId}`)
         if (!bytes) {
           console.warn(
             `[pool] workspace member ${projectId} in ${a.projectId} exported nothing (empty or not on disk) — no source backup written`,
@@ -4612,6 +4644,9 @@ export class MetalWarmPool {
       // the latest source and push it to the durable S3 backup so a resume on a
       // DIFFERENT metal machine (snapshot miss) still cold-hydrates real source.
       // Best-effort — the snapshot below is the primary cross-host resume path.
+      // A failure is remembered on the snapshot, though: it is then the only
+      // copy of the latest work, and dropping it must not delete it.
+      let finalBackupFailed = false
       if (!untouchedPrewarm) {
         if (a.projectId.startsWith('ws:')) {
           // A legacy VM's foreign members are only in this guest; once suspended,
@@ -4619,11 +4654,17 @@ export class MetalWarmPool {
           await this.drainForeignMembersOf(a, 3_000).catch((err) =>
             console.error(`[pool] draining foreign members of ${a.projectId} failed:`, err?.message ?? err),
           )
-          await this.saveWorkspaceMembersToStore(a)
+          const failed = await this.saveWorkspaceMembersToStore(a).catch((err) => {
+            console.error(`[pool] workspace member backups for ${a.projectId} failed:`, err?.message ?? err)
+            return [{ projectId: a.projectId, reason: String(err?.message ?? err) }]
+          })
+          finalBackupFailed = failed.length > 0
         } else {
-          await this.saveBackupToStore(a).catch((err) =>
-            console.error(`[pool] source backup for ${a.projectId} failed (snapshot still durable):`, err?.message ?? err),
-          )
+          const saved = await this.saveBackupToStore(a).catch((err) => {
+            console.error(`[pool] source backup for ${a.projectId} failed (snapshot still durable):`, err?.message ?? err)
+            return 'lost' as const
+          })
+          finalBackupFailed = saved === 'lost'
         }
 
         // Same for writable state (database + uploads), and for the same reason:
@@ -4682,6 +4723,7 @@ export class MetalWarmPool {
         memberSourceEtags: this.trustedMemberSourceEtags(a),
         repoEtag: this.trustedRepoEtag(a),
         workspaceOrigin: a.workspaceOrigin,
+        ...(finalBackupFailed ? { finalBackupFailed: true } : {}),
       }
       const untrustedSource = this.sourceUntrustedReason(a)
 
@@ -4721,10 +4763,12 @@ export class MetalWarmPool {
       if (this.store.kind !== 'none' && this.localSnapshotIsStale(s)) {
         // Booted from a superseded rootfs: every pull would reject this
         // snapshot, so uploading it only costs bytes. The final backups above
-        // already hold the work, and the next open cold-boots from them.
+        // hold the work and the next open cold-boots from them — unless one
+        // failed, in which case evictLocal quarantines this snapshot's disks.
         console.log(
           `[pool] skipping durable push for ${projectId}: snapshot is from rootfs ${s.rootfsIdentity}, ` +
-            `host is on ${this.classRootfsIdentity(a.handle.vmClass)}`,
+            `host is on ${this.classRootfsIdentity(a.handle.vmClass)}` +
+            (s.finalBackupFailed ? ' — its final source backup FAILED; the snapshot is the only copy' : ''),
         )
       } else if (this.store.kind !== 'none') {
         if ((await this.pushDurable(s, a.workspaceOrigin)) === 'blocked') this.evictLocal(projectId)
@@ -4868,6 +4912,7 @@ export class MetalWarmPool {
       repoEtag: s.repoEtag,
       workspaceOrigin: s.workspaceOrigin,
       durablePending: s.durablePending,
+      finalBackupFailed: s.finalBackupFailed,
       v: 1,
     }
     index.put(e)
@@ -6460,10 +6505,66 @@ export class MetalWarmPool {
   evictLocal(projectId: string): boolean {
     const s = this.suspended.get(projectId)
     if (!s) return false
-    this.deleteLocalArtifacts(s.snapshot)
+    if (s.finalBackupFailed) this.quarantineUnbackedSnapshot(s)
+    else this.deleteLocalArtifacts(s.snapshot)
     this.suspended.delete(projectId)
     this.index.remove(projectId)
     return true
+  }
+
+  /**
+   * Drop a snapshot whose final source backup failed without losing its
+   * workspace: the disks go to quarantine (as in rescueWorkspace) and only the
+   * memory and VM-state files are deleted. The durable backups are older than
+   * this snapshot, so deleting it — stale-rootfs reclaim, a stale resume —
+   * silently rolls the project back.
+   */
+  private quarantineUnbackedSnapshot(s: SuspendedVm): void {
+    const snap = s.snapshot
+    const label = `${s.projectId}-${Date.now()}`
+    let keptDrive: string | null = null
+    if (snap.workspaceDrive) {
+      try { keptDrive = this.mgr.quarantineWorkspaceDrive(snap.workspaceDrive, label) } catch { /* reported below */ }
+    }
+    let kept: string | null = null
+    try { kept = this.mgr.quarantineRootfs(snap.rootfs, label) } catch { /* reported below */ }
+    const where = keptDrive ?? kept
+    if (where) {
+      try {
+        writeFileSync(
+          `${where}.json`,
+          JSON.stringify({
+            projectId: s.projectId,
+            why: 'snapshot dropped after its final source backup failed',
+            at: new Date().toISOString(),
+            suspendedAt: new Date(s.suspendedAt).toISOString(),
+            rootfsIdentity: s.rootfsIdentity,
+            backupParentEtag: s.backupEtag,
+            memberSourceEtags: s.memberSourceEtags,
+            workspaceDrive: keptDrive ?? undefined,
+            rootfs: kept ?? undefined,
+          }),
+        )
+      } catch { /* the disk itself is what matters */ }
+    }
+    for (const p of [snap.snapshotPath, snap.memFilePath]) {
+      try { rmSync(p, { force: true }) } catch { /* ignore */ }
+    }
+    if (snap.dataDrive) {
+      try { this.mgr.releaseDataDrive(snap.dataDrive) } catch { /* ignore */ }
+    }
+    if (!kept) {
+      try { this.mgr.releaseRootfs(snap.rootfs) } catch { /* ignore */ }
+    }
+    if (!this.tapHeldByRunningVm(snap.net)) {
+      try { this.mgr.releaseTap(snap.net) } catch { /* the GC sweep retries */ }
+    }
+    metrics.inc(M.unbackedSnapshotQuarantined)
+    console.error(
+      `[pool] UNBACKED SNAPSHOT DROPPED for ${s.projectId} — its final source backup failed, so its latest ` +
+        `workspace is ONLY on ${where ?? `${snap.workspaceDrive ?? snap.rootfs} (quarantine failed; left in place)`}. ` +
+        `Recover it before it is lost.`,
+    )
   }
 
   /** Delete a project's pre-warmed staged snapshot, if any. */
