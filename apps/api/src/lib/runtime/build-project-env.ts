@@ -78,6 +78,8 @@ export async function buildProjectEnv(
         settings: true,
         cloudSyncMode: true,
         workspaceDiskGiB: true,
+        vmMemoryMiB: true,
+        vmVcpus: true,
         workspace: { select: { composioScope: true, instanceSize: true } },
       } as any,
     }) as (Record<string, any> & {
@@ -86,6 +88,8 @@ export async function buildProjectEnv(
       settings?: unknown
       cloudSyncMode?: string | null
       workspaceDiskGiB?: number | null
+      vmMemoryMiB?: number | null
+      vmVcpus?: number | null
       workspace?: { composioScope?: string | null; instanceSize?: string | null } | null
     }) | null
     if (project) {
@@ -233,6 +237,14 @@ export async function buildProjectEnv(
         env.SHOGO_VM_DISK_MIB = String(
           resolveWorkspaceDiskMiB(project.workspaceDiskGiB, instanceSize as InstanceSizeName),
         )
+        // Operator-set guest memory (Project.vmMemoryMiB). Separate from
+        // SHOGO_VM_MEM_MIB, which is the tier's budget accounting.
+        if (typeof project.vmMemoryMiB === 'number' && project.vmMemoryMiB > 0) {
+          env.SHOGO_VM_BOOT_MEM_MIB = String(project.vmMemoryMiB)
+        }
+        if (typeof project.vmVcpus === 'number' && project.vmVcpus > 0) {
+          env.SHOGO_VM_BOOT_VCPUS = String(project.vmVcpus)
+        }
       }
 
       // Exposed-ports allowlist (Phase 3: client-side tunnel + public per-port

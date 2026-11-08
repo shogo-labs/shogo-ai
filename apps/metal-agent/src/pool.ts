@@ -998,6 +998,37 @@ function workspaceDriveMiBFromEnv(env: Record<string, string> | undefined): numb
   return Number.isFinite(mib) && mib > 0 ? mib : undefined
 }
 
+/** Largest guest memory an assignment may ask for (see vmMemMiBFromEnv). */
+const MAX_REQUESTED_VM_MEM_MIB = 32 * 1024
+
+/**
+ * Guest memory (MiB) the control plane asked for on this assignment
+ * (`SHOGO_VM_BOOT_MEM_MIB`, from `Project.vmMemoryMiB`). Undefined = the
+ * class's own size. Only ever raises it: a request at or below the pool size
+ * is served by a pooled VM.
+ */
+export function vmMemMiBFromEnv(env: Record<string, string> | undefined): number | undefined {
+  const raw = env?.SHOGO_VM_BOOT_MEM_MIB
+  if (!raw) return undefined
+  const mib = parseInt(raw, 10)
+  return Number.isFinite(mib) && mib > 0 ? Math.min(mib, MAX_REQUESTED_VM_MEM_MIB) : undefined
+}
+
+/** Most vCPUs an assignment may ask for (see vmVcpusFromEnv). */
+const MAX_REQUESTED_VM_VCPUS = 16
+
+/**
+ * vCPUs the control plane asked for on this assignment (`SHOGO_VM_BOOT_VCPUS`,
+ * from `Project.vmVcpus`). Undefined = the class's own count. Like memory, it
+ * only ever raises it.
+ */
+export function vmVcpusFromEnv(env: Record<string, string> | undefined): number | undefined {
+  const raw = env?.SHOGO_VM_BOOT_VCPUS
+  if (!raw) return undefined
+  const n = parseInt(raw, 10)
+  return Number.isFinite(n) && n > 0 ? Math.min(n, MAX_REQUESTED_VM_VCPUS) : undefined
+}
+
 async function probeHealth(url: string, timeoutMs = 1000): Promise<boolean> {
   try {
     const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(timeoutMs) })
@@ -1231,11 +1262,20 @@ export class MetalWarmPool {
     throw new Error(`VM ${handle.id} never became healthy`)
   }
 
-  private async bootOne(pool = true, vmClass: VmClass = 'standard', rootfsBase?: string): Promise<PooledVm> {
-    // No memoryMB/cpus override here — startVM resolves both from the class's
-    // own config (classConfig in config.ts), so a docker-class VM gets its own
-    // sizing rather than the standard fleet's.
-    const handle = await this.mgr.startVM(rootfsBase ? { vmClass, rootfsBase } : { vmClass })
+  private async bootOne(
+    pool = true,
+    vmClass: VmClass = 'standard',
+    rootfsBase?: string,
+    size?: { memoryMB?: number; cpus?: number },
+  ): Promise<PooledVm> {
+    // startVM resolves memory and vCPUs from the class's own config
+    // (classConfig in config.ts) unless an assignment asked for a bigger VM.
+    const handle = await this.mgr.startVM({
+      vmClass,
+      ...(rootfsBase ? { rootfsBase } : {}),
+      ...(size?.memoryMB ? { memoryMB: size.memoryMB } : {}),
+      ...(size?.cpus ? { cpus: size.cpus } : {}),
+    })
     // startVM self-cleans a partial boot; a VM that boots but never becomes
     // healthy is our responsibility to stop, or its FC process leaks (never
     // enters `available`/`assigned`, so nothing else would ever kill it).
@@ -2083,13 +2123,24 @@ export class MetalWarmPool {
     if (projectId.startsWith('ws:')) {
       env = await timer.time('confirm_members', () => this.withConfirmedNewMembers(env))
     }
-    // Pool VMs boot from the current image, so a staged boot always starts fresh.
-    let vm = staged ? null : this.claim(vmClass)
+    // Pool VMs boot from the current image at the class's size, so a staged
+    // boot or a project that needs a bigger VM always starts fresh.
+    const cc = classConfig(this.cfg, vmClass)
+    const wantMiB = vmMemMiBFromEnv(env)
+    const wantCpus = vmVcpusFromEnv(env)
+    const bigger =
+      (wantMiB !== undefined && wantMiB > cc.memMiB) || (wantCpus !== undefined && wantCpus > cc.vcpus)
+        ? {
+            ...(wantMiB !== undefined && wantMiB > cc.memMiB ? { memoryMB: wantMiB } : {}),
+            ...(wantCpus !== undefined && wantCpus > cc.vcpus ? { cpus: wantCpus } : {}),
+          }
+        : undefined
+    let vm = staged || bigger ? null : this.claim(vmClass)
     if (!vm) {
       const t0 = performance.now()
       let waited = 0
       vm = await this.heavy.run(
-        () => this.bootOne(false, vmClass, staged?.path),
+        () => this.bootOne(false, vmClass, staged?.path, bigger),
         (ms) => {
           waited = ms
           timer.add('heavy_wait', ms)
