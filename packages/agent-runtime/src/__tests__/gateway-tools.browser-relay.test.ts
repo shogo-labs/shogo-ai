@@ -67,7 +67,7 @@ class FakeChild extends EventEmitter {
   kill() { this.killed = true; setImmediate(() => this.emit('exit', 0)) }
 }
 let lastChild: FakeChild | null = null
-let spawnBehavior: 'success' | 'error' | 'exit-nonzero' | 'timeout' = 'success'
+let spawnBehavior: 'success' | 'error' | 'exit-nonzero' | 'timeout' | 'protocol-mismatch' = 'success'
 {
   const cp = require('child_process')
   spyOn(cp, 'spawn').mockImplementation((_cmd: string, _args: string[], _opts: any) => {
@@ -81,6 +81,22 @@ let spawnBehavior: 'success' | 'error' | 'exit-nonzero' | 'timeout' = 'success'
       if (spawnBehavior === 'exit-nonzero') {
         child.stderr.emit('data', Buffer.from('relay panic'))
         child.emit('exit', 2)
+        return
+      }
+      if (spawnBehavior === 'protocol-mismatch') {
+        // What browser-relay.cjs prints when the installed extension speaks a
+        // different relay protocol than the one the relay asks for.
+        child.stdout.emit('data', Buffer.from(
+          JSON.stringify({
+            type: 'error',
+            protocolVersion: 2,
+            message:
+              'Playwright extension protocol mismatch: the installed Playwright MCP Bridge extension speaks ' +
+              'protocol 3 (extension v0.6.0, profile "Default"), but Shogo\'s relay speaks protocol 2. ' +
+              'Update Shogo Desktop so its relay speaks protocol 3.',
+          }) + '\n',
+        ))
+        child.emit('exit', 1)
         return
       }
       if (spawnBehavior === 'timeout') {
@@ -186,6 +202,20 @@ describe('spawnCDPRelay', () => {
     const tool = createBrowserTool(ctx)
     const r: any = await tool.execute('id', { action: 'navigate', url: 'https://example.com' })
     expect(String(r.details?.error || '')).toMatch(/Relay exited|relay panic|MCP Bridge/i)
+    await tool.execute('id', { action: 'close' })
+  })
+
+  test('relay-reported protocol mismatch is surfaced verbatim, naming both versions', async () => {
+    spawnBehavior = 'protocol-mismatch'
+    const ctx = makeCtx()
+    const tool = createBrowserTool(ctx)
+    const r: any = await tool.execute('id', { action: 'navigate', url: 'https://example.com' })
+    const error = String(r.details?.error || '')
+    expect(error).toMatch(/protocol mismatch/i)
+    expect(error).toContain('protocol 3')
+    expect(error).toContain('protocol 2')
+    // The generic "is it installed?" hint must not bury the real cause.
+    expect(error).not.toMatch(/Make sure Chrome is running/)
     await tool.execute('id', { action: 'close' })
   })
 
