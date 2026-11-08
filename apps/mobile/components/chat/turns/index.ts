@@ -10,6 +10,8 @@ export { useTurnGrouping } from "./useTurnGrouping"
 export { TurnList, type TurnListProps } from "./TurnList"
 export {
   createTranscriptScrollSignal,
+  optOutOfBrowserScrollAnchoring,
+  type TranscriptScrollOrigin,
   type TranscriptScrollSample,
   type TranscriptScrollSignal,
 } from "./transcript-scroll"

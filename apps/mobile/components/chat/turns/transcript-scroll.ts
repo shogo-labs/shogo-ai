@@ -22,10 +22,22 @@ export interface TranscriptScrollSample {
   contentHeight: number
 }
 
+/**
+ * Where a reported offset came from.
+ *
+ * `correction` is the panel's own reading-position repair (a window expansion
+ * made the content above the reader taller or shorter). It is still the true
+ * offset — subscribers that read the signal later must see it — but the turn
+ * window must not treat it as the person moving, or a correction that lands
+ * near the top triggers the next expansion and the hook feeds itself
+ * (SHO-359).
+ */
+export type TranscriptScrollOrigin = "scroll" | "correction"
+
 export interface TranscriptScrollSignal {
   read(): TranscriptScrollSample
-  report(sample: TranscriptScrollSample): void
-  subscribe(listener: () => void): () => void
+  report(sample: TranscriptScrollSample, origin?: TranscriptScrollOrigin): void
+  subscribe(listener: (origin: TranscriptScrollOrigin) => void): () => void
 }
 
 const ORIGIN: TranscriptScrollSample = {
@@ -38,11 +50,11 @@ export function createTranscriptScrollSignal(
   initial: TranscriptScrollSample = ORIGIN,
 ): TranscriptScrollSignal {
   let sample = initial
-  const listeners = new Set<() => void>()
+  const listeners = new Set<(origin: TranscriptScrollOrigin) => void>()
 
   return {
     read: () => sample,
-    report(next) {
+    report(next, origin = "scroll") {
       // Ignore identical reports: a ScrollView fires on every frame and the
       // subscribers only care about meaningful movement.
       if (
@@ -53,7 +65,7 @@ export function createTranscriptScrollSignal(
         return
       }
       sample = next
-      for (const listener of listeners) listener()
+      for (const listener of listeners) listener(origin)
     },
     subscribe(listener) {
       listeners.add(listener)
@@ -62,4 +74,24 @@ export function createTranscriptScrollSignal(
       }
     },
   }
+}
+
+/**
+ * Web only: stop the browser from running its own scroll anchoring on the
+ * transcript.
+ *
+ * Chromium/Electron anchors the visible content by default (`overflow-anchor:
+ * auto`), so it already moves `scrollTop` when a turn mounts above the reader
+ * or an estimate is replaced by the real height. The turn window corrects for
+ * the same change (`real − estimate`, the only correction that also works on
+ * native), so with anchoring left on every expansion is applied twice and the
+ * transcript is thrown by `dy` — down when the real turns are taller than the
+ * estimate, up when they are shorter (SHO-359).
+ *
+ * One owner of the reading position: the hook, on every platform.
+ */
+export function optOutOfBrowserScrollAnchoring(node: unknown): void {
+  const style = (node as { style?: { overflowAnchor?: string } } | null)?.style
+  if (!style) return
+  style.overflowAnchor = "none"
 }
