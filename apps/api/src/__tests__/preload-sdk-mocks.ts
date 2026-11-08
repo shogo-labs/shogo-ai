@@ -233,6 +233,16 @@ mock.module('@shogo/shared-runtime', () => ({
     listProjectArchives: async () => [],
   }),
   isMacOSJunkName: (_name: string) => false,
+  // Git LFS helpers named by `routes/git-lfs.ts` (SHO-368). Mirror the real
+  // implementations in packages/shared-runtime/src/lfs.ts exactly — the route
+  // builds object keys and validates oids through these.
+  lfsKeyPrefix: (env: NodeJS.ProcessEnv = process.env) =>
+    (env.S3_LFS_PREFIX || 'lfs/objects').replace(/^\/+|\/+$/g, ''),
+  isValidLfsOid: (oid: string) => /^[0-9a-f]{64}$/.test(oid),
+  lfsObjectKey: (projectId: string, oid: string, prefix: string = (process.env.S3_LFS_PREFIX || 'lfs/objects').replace(/^\/+|\/+$/g, '')) => {
+    if (!/^[0-9a-f]{64}$/.test(oid)) throw new Error(`invalid lfs oid: ${oid}`)
+    return `${projectId}/${prefix}/${oid.slice(0, 2)}/${oid.slice(2, 4)}/${oid}`
+  },
   // Symbols the `@shogo/agent-runtime/src/agent-loop` graph names on the barrel.
   // apps/api routes never needed them, so the mirror above never had them — a
   // missing name is a hard SyntaxError at module load, not a runtime no-op
