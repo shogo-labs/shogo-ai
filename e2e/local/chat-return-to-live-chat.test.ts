@@ -108,7 +108,8 @@ function runningTurn(text: string): string {
 /**
  * What `/stream?snapshot=1` answers with: the whole message so far in one chunk,
  * then the rest of the turn. The resume installs the snapshot in one go
- * (`applyMessageSnapshot`), which is why hiding the stale tail costs nothing.
+ * (`applyMessageSnapshot`), replacing the partial the reopen painted — which is
+ * why keeping that partial on screen costs nothing and never duplicates it.
  */
 function snapshotTurn(text: string): string {
   return [
@@ -475,24 +476,23 @@ test.describe("coming back to a live chat", () => {
 })
 
 /**
- * Rejoining a turn that is still running (SHO-297).
+ * Rejoining a turn that is still running (SHO-297, SHO-366).
  *
  * A chat that is not already mounted as a tab paints the half-written reply
  * from when the person left, then waits for the delta and the `/turn` probe
- * before it attaches. For those seconds nothing on screen said the turn was
- * live, so the chat read as frozen. It now hides that stale reply and shows a
- * "Rejoining live reply…" row until the resume snapshot lands.
+ * before it attaches. Nothing on screen said the turn was live, so the chat read
+ * as frozen. It now keeps that reply on screen and puts a "Rejoining live
+ * reply…" shimmer under it, as the last thing in the transcript, until the
+ * resume snapshot replaces the partial in place.
  */
 const REJOIN_ROW = "chat-rejoining-row"
 
 /**
  * Record whether `needle` ever reached the DOM after the watcher is armed.
  *
- * Visibility assertions are point-in-time, and the whole point of the rejoin
- * row is that the stale reply never paints — so an interval sample could miss
- * a one-frame flash. This runs every animation frame and flips a flag the spec
- * reads at the end. Armed through localStorage so the reload that starts the
- * reopen is the moment it starts watching.
+ * An interval sample could miss a one-frame flash, so this runs every animation
+ * frame and flips a flag the spec reads at the end. Armed through localStorage
+ * so the reload that starts the reopen is the moment it starts watching.
  */
 async function watchForText(page: Page, needle: string): Promise<void> {
   await page.addInitScript((watched: string) => {
@@ -591,7 +591,9 @@ function moveToStaleTail(state: ReturnState): void {
 }
 
 test.describe("rejoining a turn that is still running", () => {
-  test("a reopen mid-turn hides the stale reply and shows the rejoin row", async ({ page }) => {
+  test("a reopen mid-turn keeps the reply so far and puts the row under it", async ({
+    page,
+  }) => {
     await watchForText(page, "old-words")
     const state = await installMocks(page)
     await openProjectChat(page)
@@ -619,16 +621,49 @@ test.describe("rejoining a turn that is still running", () => {
       "Stop is offered for the turn this window is rejoining",
     ).toBeVisible({ timeout: 2_000 })
 
+    // SHO-366: the reply received so far stays on screen, with the row under it.
+    const staleReply = page.getByText(state.staleReply, { exact: false }).first()
+    await expect(
+      staleReply,
+      "the reply received so far is on screen while rejoining",
+    ).toBeVisible({ timeout: 5_000 })
+    const replyBox = await staleReply.boundingBox()
+    const rowBox = await page.getByTestId(REJOIN_ROW).boundingBox()
+    expect(replyBox, "the partial reply has a box").not.toBeNull()
+    expect(rowBox, "the rejoin row has a box").not.toBeNull()
+    expect(
+      rowBox!.y,
+      `the rejoin row (${Math.round(rowBox!.y)}) sits under the reply so far ` +
+        `(${Math.round(replyBox!.y)})`,
+    ).toBeGreaterThanOrEqual(replyBox!.y + replyBox!.height - 1)
+
     await expect(
       page.getByText("new-words", { exact: false }).first(),
       "the resume snapshot replaces the row with the live reply",
     ).toBeVisible({ timeout: 30_000 })
     await expect(page.getByTestId(REJOIN_ROW)).toHaveCount(0)
+    // The snapshot replaced the partial in place: one copy of the reply, none
+    // of the stale text left behind.
+    await expect(
+      page.getByText(state.staleReply, { exact: false }),
+      "the stale copy of the reply is gone once the snapshot replaced it",
+    ).toHaveCount(0)
+    await expect(
+      page.getByText(state.liveReply, { exact: false }).first(),
+      "the live reply is on screen once the snapshot landed",
+    ).toBeVisible()
+    const transcript = await page.getByTestId("turn-list").innerText()
+    const occurrences = transcript.split(state.liveReply).length - 1
+    expect(
+      occurrences,
+      `the live reply is on screen exactly once, not duplicated ` +
+        `(${occurrences} copies):\n${transcript.slice(0, 600)}`,
+    ).toBe(1)
 
     expect(
       await sawWatchedText(page),
-      "the stale half-written reply was painted before the live stream landed",
-    ).toBe(false)
+      "the reply received so far never painted while rejoining",
+    ).toBe(true)
   })
 
   test("the probe runs before the history read finishes", async ({ page }) => {
@@ -767,9 +802,9 @@ test.describe("rejoining a turn that is still running", () => {
     await expect(page.getByTestId(REJOIN_ROW)).toBeVisible({ timeout: 15_000 })
     await expect(
       page.getByText("old-words", { exact: false }).first(),
-      "the saved reply is back once rejoining gives up",
-    ).toBeVisible({ timeout: 20_000 })
-    await expect(page.getByTestId(REJOIN_ROW)).toHaveCount(0)
+      "the reply received so far is still on screen",
+    ).toBeVisible()
+    await expect(page.getByTestId(REJOIN_ROW)).toHaveCount(0, { timeout: 20_000 })
     await expect(
       page.getByText("Retry", { exact: true }).first(),
       "the transport error offers Retry",
