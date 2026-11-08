@@ -155,6 +155,11 @@ const HighlightedDiffLines = memo(function HighlightedDiffLines({
               paddingRight: 4,
               whiteSpace: "pre",
               overflowX: "auto",
+              // SHO-365: keep the implicit vertical scroller out of it. A
+              // `visible` overflow-y next to `overflow-x: auto` computes to
+              // `auto`, and this row then eats the wheel for the pixels a
+              // descender overflows by instead of scrolling the transcript.
+              overflowY: "clip",
               color: fallbackColors[line.type],
             }}
             dangerouslySetInnerHTML={
