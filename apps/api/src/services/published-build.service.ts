@@ -525,19 +525,32 @@ async function readJobStatus(
     return { status: 'failed', message: failureReason(job), logTail: await podLogTail(core, namespace, name) }
   }
 
-  // A pod that is gone (evicted) while the Job reports nothing is a failure:
-  // without it the API would wait out the whole timeout for a build that
-  // cannot finish.
   const pods = await core.listNamespacedPod({ namespace, labelSelector: `job-name=${name}` })
-  const items = (pods as any)?.items ?? []
-  if (items.length === 0) return { status: 'running' }
-  const terminated = items.some((pod: any) =>
-    (pod.status?.containerStatuses ?? []).some((c: any) => c.state?.terminated),
-  )
-  if (terminated) {
+  if (jobPodsVerdict((pods as any)?.items ?? []) === 'failed') {
     return { status: 'failed', message: failureReason(job), logTail: await podLogTail(core, namespace, name) }
   }
   return { status: 'running' }
+}
+
+/**
+ * What the build pods say while the Job itself reports neither outcome.
+ *
+ * A container that exited non-zero (or was killed or evicted) is a failure, so
+ * the API does not wait out the whole timeout for a build that cannot finish.
+ * A clean exit is not: the Job controller sets `status.succeeded` a moment
+ * after the pod terminates, and reading that gap as a failure threw away a
+ * build whose image had already been pushed (SHO-308, staging, 2026-11-08).
+ */
+export function jobPodsVerdict(pods: any[]): 'running' | 'failed' {
+  for (const pod of pods) {
+    if (pod?.status?.phase === 'Failed') return 'failed'
+    const statuses = [...(pod?.status?.initContainerStatuses ?? []), ...(pod?.status?.containerStatuses ?? [])]
+    for (const c of statuses) {
+      const exitCode = c?.state?.terminated?.exitCode
+      if (typeof exitCode === 'number' && exitCode !== 0) return 'failed'
+    }
+  }
+  return 'running'
 }
 
 function failureReason(job: any): string | null {
