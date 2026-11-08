@@ -2713,6 +2713,8 @@ export function publishRoutes() {
         }
 
         updates.publishedAlwaysOn = wantOn
+        const { setProductionAlwaysOn } = await import("../services/published-environments.service")
+        await setProductionAlwaysOn(projectId, wantOn)
 
         // Apply to the live runtime via the owning substrate (Knative min-scale,
         // or the metal published VM's always-on pin). Best-effort: the DB flag is
