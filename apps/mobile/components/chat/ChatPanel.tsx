@@ -5859,6 +5859,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
           ? newest.createdAt
           : new Date(newest.createdAt).getTime()
       if (!Number.isFinite(at)) return
+      // A first-page response does not include the delta cursor. Keep the
+      // newest row's timestamp as a safe provisional cursor while the cursor
+      // request is in flight, rather than persisting this otherwise-valid
+      // transcript with `cursor: null`. The panel can be remounted in that
+      // window (for example, Back then Forward into a workspace chat); without
+      // a provisional cursor, the new panel has the messages but is forced to
+      // download the first page again. `deltaSince` deliberately overlaps this
+      // timestamp, so the authoritative response still reconciles any race.
+      const provisionalCursor = new Date(at).toISOString()
+      historyMetaRef.current.set(key, { cursor: provisionalCursor, total: null })
+      const cachedBeforeCursor = cachedMessagesRef.current
+      if (cachedBeforeCursor?.length) {
+        void persistProjectHistory(sessionId, cachedBeforeCursor)
+      }
       const body = await fetchChatChanges(
         sessionId,
         new Date(at - 5000).toISOString(),
