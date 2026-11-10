@@ -5859,6 +5859,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           ? newest.createdAt
           : new Date(newest.createdAt).getTime()
       if (!Number.isFinite(at)) return
+      const previousMeta = historyMetaRef.current.get(key)
       // A first-page response does not include the delta cursor. Keep the
       // newest row's timestamp as a safe provisional cursor while the cursor
       // request is in flight, rather than persisting this otherwise-valid
@@ -5870,14 +5871,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
       const provisionalCursor = new Date(at).toISOString()
       historyMetaRef.current.set(key, { cursor: provisionalCursor, total: null })
       const cachedBeforeCursor = cachedMessagesRef.current
-      if (cachedBeforeCursor?.length) {
-        void persistProjectHistory(sessionId, cachedBeforeCursor)
-      }
+      const provisionalWrite = cachedBeforeCursor?.length
+        ? persistProjectHistory(sessionId, cachedBeforeCursor)
+        : Promise.resolve()
       const body = await fetchChatChanges(
         sessionId,
         new Date(at - 5000).toISOString(),
       )
-      if (!body?.cursor) return
+      // Finish the provisional write before replacing it, so an IndexedDB
+      // write already in flight cannot restore the unusable cursor afterward.
+      await provisionalWrite.catch(() => {})
+      if (!body?.cursor) {
+        if (previousMeta) historyMetaRef.current.set(key, previousMeta)
+        else historyMetaRef.current.delete(key)
+        const cached = cachedMessagesRef.current
+        if (cached?.length) void persistProjectHistory(sessionId, cached)
+        return
+      }
       historyMetaRef.current.set(key, {
         cursor: body.cursor,
         total: body.total ?? null,

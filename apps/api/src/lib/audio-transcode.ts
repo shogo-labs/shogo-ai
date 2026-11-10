@@ -29,6 +29,9 @@ function isAacMp4(bytes: Uint8Array): boolean {
     if (boxSize < 8 || offset + boxSize > bytes.byteLength) return false
     const kind = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8))
     if (kind === 'moov') {
+      // This deliberately checks for the `mp4a` sample-entry marker without
+      // fully parsing stsd/esds. It is a lightweight signature check and can
+      // false-positive if those bytes appear elsewhere in the moov metadata.
       const end = offset + boxSize - 4
       for (let i = offset + 8; i <= end; i += 1) {
         if (bytes[i] === 0x6d && bytes[i + 1] === 0x70 && bytes[i + 2] === 0x34 && bytes[i + 3] === 0x61) {

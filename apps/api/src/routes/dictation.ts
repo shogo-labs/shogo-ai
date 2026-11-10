@@ -15,13 +15,14 @@ export const dictationRoutes = new Hono()
 
 /** Short chat-composer dictation, available in both local and cloud mode. */
 dictationRoutes.post('/dictation/transcribe', async (c) => {
+  const localMode = process.env.SHOGO_LOCAL_MODE === 'true'
   const auth = c.get('auth') as { isAuthenticated?: boolean; userId?: string; via?: string } | undefined
-  if (!auth?.isAuthenticated || !auth.userId) {
+  if (!localMode && (!auth?.isAuthenticated || !auth.userId)) {
     return c.json({ error: 'Please sign in to use voice typing.' }, 401)
   }
   // Runtime and API-key identities can carry an owner's userId without being
   // that person. Dictation is a personal-workspace, user-initiated operation.
-  if (auth.via !== 'session' && auth.via !== 'tunnel') {
+  if (!localMode && auth?.via !== 'session' && auth?.via !== 'tunnel') {
     return c.json({ error: 'Voice typing requires a user session.' }, 403)
   }
 
@@ -55,7 +56,7 @@ dictationRoutes.post('/dictation/transcribe', async (c) => {
   }
 
   try {
-    if (process.env.SHOGO_LOCAL_MODE === 'true') {
+    if (localMode) {
       const result = await transcribeDictation(audio)
       if (!result.ok) return c.json({ error: 'Send a WAV clip of 8 MB or less' }, 400)
       return c.json({ text: result.text })

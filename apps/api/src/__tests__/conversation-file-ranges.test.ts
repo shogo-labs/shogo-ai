@@ -131,6 +131,15 @@ describe('GET /conversation-files/:id byte ranges', () => {
     expect(missing.status).toBe(404)
   })
 
+  test('does not send MP4 video attachments through the audio conversion path', async () => {
+    attachmentRow = { ...attachment, name: 'screen-recording.mp4', mimeType: 'video/mp4' }
+    const response = await getFile(undefined, `?t=${token}&playback=m4a`)
+    expect(response.status).toBe(415)
+    expect(await response.json()).toEqual({
+      error: { code: 'unsupported_audio', message: 'This audio format cannot be converted for playback' },
+    })
+  })
+
   test('refuses a clip whose token is missing or wrong', async () => {
     const noToken = await getFile(undefined, '')
     expect(noToken.status).toBe(403)

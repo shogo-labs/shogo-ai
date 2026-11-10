@@ -27,6 +27,9 @@ export function createApp(options: CreateAppOptions): Hono {
     '/api/version',
     '/api/config',
     '/api/local/',
+    // Dictation enforces session/tunnel auth itself in cloud mode and permits
+    // signed-out use only on the local desktop API.
+    '/api/dictation/',
     '/api/ai/',
     '/api/tools/',
     '/api/f/',

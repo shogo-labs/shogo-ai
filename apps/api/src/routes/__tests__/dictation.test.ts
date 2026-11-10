@@ -53,6 +53,26 @@ test('accepts a session clip and transcribes it', async () => {
   expect(mintToken).not.toHaveBeenCalled()
 })
 
+test('allows signed-out dictation on the local desktop API', async () => {
+  auth = { isAuthenticated: false }
+  const response = await app.request('/api/dictation/transcribe', {
+    method: 'POST', body: wav,
+  })
+  expect(response.status).toBe(200)
+  expect(await response.json()).toEqual({ text: 'spoken text' })
+  expect(transcribe).toHaveBeenCalledTimes(1)
+})
+
+test('still requires authentication for cloud dictation', async () => {
+  process.env.SHOGO_LOCAL_MODE = 'false'
+  auth = { isAuthenticated: false }
+  const response = await app.request('/api/dictation/transcribe', {
+    method: 'POST', body: wav,
+  })
+  expect(response.status).toBe(401)
+  expect(transcribe).not.toHaveBeenCalled()
+})
+
 test('bills cloud transcription to the signed-in user personal workspace', async () => {
   process.env.SHOGO_LOCAL_MODE = 'false'
   const response = await app.request('/api/dictation/transcribe', { method: 'POST', body: wav })
@@ -65,6 +85,7 @@ test('bills cloud transcription to the signed-in user personal workspace', async
 })
 
 test('rejects a runtime identity before spending transcription resources', async () => {
+  process.env.SHOGO_LOCAL_MODE = 'false'
   auth = { isAuthenticated: true, userId: 'owner', via: 'runtimeToken' }
   const response = await app.request('/api/dictation/transcribe', { method: 'POST', body: wav })
   expect(response.status).toBe(403)

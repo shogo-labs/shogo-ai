@@ -121,6 +121,9 @@ const REQUIRED_LOCAL_ROUTES = [
   'POST /api/voice/op/:opId',
   'GET /api/voice/signed-url',
   'POST /api/voice/transcript/:chatSessionId',
+  // Desktop dictation uses the API endpoint even when the local user has no
+  // Better Auth session; the handler owns the local/cloud auth decision.
+  'POST /api/dictation/transcribe',
   // The file viewer (SHO-70): a shared file opens in the app, so the metadata
   // and text routes it renders from must answer on desktop too — otherwise the
   // viewer is a blank screen on exactly the surface that has no browser tab.

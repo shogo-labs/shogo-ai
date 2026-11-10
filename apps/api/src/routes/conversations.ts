@@ -1134,7 +1134,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       if (c.req.query('playback') === 'm4a') {
         const canConvert = /^(?:audio\/(?:webm|ogg|opus|mp4)|video\/webm|application\/ogg)(?:;|$)/i.test(row.mimeType)
           || /\.(?:webm|ogg|opus)$/i.test(row.name)
-          || /\.(?:m4a|mp4)$/i.test(row.name)
+          || /\.m4a$/i.test(row.name)
         if (!canConvert) {
           return c.json({ error: { code: 'unsupported_audio', message: 'This audio format cannot be converted for playback' } }, 415)
         }
@@ -1181,10 +1181,10 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         'Cache-Control': 'private, max-age=300',
         'Accept-Ranges': 'bytes',
       }
-      const file = await readConversationFile(row.storageKey, {
-        ...(download ? { downloadName: row.name } : {}),
-        responseContentType: row.mimeType,
-      })
+      const file = await readConversationFile(
+        row.storageKey,
+        download ? { downloadName: row.name } : undefined,
+      )
       if (file.kind === 'redirect') {
         // An <img>, <video>, iframe or link click follows the redirect to object
         // storage happily, and a native client does too. A script fetch does
