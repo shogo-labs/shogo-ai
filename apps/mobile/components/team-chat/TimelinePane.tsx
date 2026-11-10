@@ -275,12 +275,27 @@ export function TimelinePane(props: TimelinePaneProps) {
     sought.current = highlight
     const id = highlight
     void (async () => {
+      if (conversation.kind === 'dm' || conversation.kind === 'group_dm') {
+        // In DMs the target endpoint gives us its sequence directly. Fetching
+        // it first avoids paging through up to 1,200 unrelated messages.
+        const message = await api.message(id).catch(() => null)
+        if (!message || message.conversationId !== conversation.id) return
+        if (!message.threadRootId) {
+          await timeline.loadBeforeSeq(message.seq + 1).catch(() => {})
+        } else {
+          props.onOpenThread?.(message)
+        }
+        return
+      }
+
       if (await seekOlder((messages) => messages.some((m) => m.id === id))) return
-      // Too far back to load into the timeline: show it on its own in the thread view.
       const message = await api.message(id).catch(() => null)
-      if (message && props.onOpenThread) props.onOpenThread(message)
+      if (!message || message.conversationId !== conversation.id) return
+      // In channels, keep the existing fallback for messages beyond the
+      // seek window; replies still open their actual thread.
+      if (props.onOpenThread) props.onOpenThread(message)
     })()
-  }, [highlight, highlightLoaded, timeline.loading, threadRootId, seekOlder, props.onOpenThread])
+  }, [highlight, highlightLoaded, timeline.loading, threadRootId, seekOlder, props.onOpenThread, timeline.loadBeforeSeq, conversation.kind])
 
   const oldestLoaded = timeline.state.messages.find((m) => !m.pending)
   const unreadNotLoaded = !!unread && timeline.state.hasMoreOlder && !!oldestLoaded &&
@@ -303,6 +318,11 @@ export function TimelinePane(props: TimelinePaneProps) {
   }, [timeline.remove])
   const onStop = useCallback((m: ChatMessage) => void timeline.stopAgent(m.id).catch(() => {}), [timeline.stopAgent])
   const onLoadOlder = useCallback(() => void timeline.loadOlder().catch(() => {}), [timeline.loadOlder])
+  const onLoadNewer = useCallback(() => void timeline.loadNewer().catch(() => {}), [timeline.loadNewer])
+  const onJumpToLatest = useCallback(() => {
+    setHighlight(null)
+    void timeline.reload().catch(() => {})
+  }, [timeline.reload])
   const onEditLast = useCallback(() => {
     const messages = timeline.state.messages
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -419,6 +439,9 @@ export function TimelinePane(props: TimelinePaneProps) {
       header={props.header}
       emptyText={filtering ? 'No matching activity yet.' : threadRootId ? 'No replies yet.' : isChannel ? `This is the very beginning of #${conversation.name}.` : 'Say hello.'}
       onLoadOlder={threadRootId ? undefined : onLoadOlder}
+      hasMoreNewer={timeline.hasMoreNewer}
+      onLoadNewer={timeline.hasMoreNewer ? onLoadNewer : undefined}
+      onJumpToLatest={timeline.hasMoreNewer ? onJumpToLatest : undefined}
       onTrim={timeline.trimOld}
       trimThreshold={TIMELINE_SOFT_LIMIT}
       onReply={props.onOpenThread}

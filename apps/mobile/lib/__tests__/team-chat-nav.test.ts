@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from 'bun:test'
-import { currentThreadFocus, openConversationTarget, sessionCrumbs, sessionRoute, setThreadFocus, threadCrumbs, threadNavAction } from '../team-chat-nav'
+import { currentThreadFocus, openConversationMessage, openConversationTarget, sessionCrumbs, sessionRoute, setThreadFocus, threadCrumbs, threadNavAction } from '../team-chat-nav'
 
 describe('session trail', () => {
   const origin = { conversationId: 'c1', conversationLabel: 'eng', conversationKind: 'channel', threadRootId: 't1', agentName: 'Reviewer' }
@@ -127,6 +127,31 @@ describe('openConversationTarget', () => {
     expect(currentThreadFocus()).toEqual({ conversationId: 'c1', threadRootId: 'b' })
     setThreadFocus(null, second)
     expect(currentThreadFocus()).toEqual({ conversationId: null, threadRootId: null })
+  })
+})
+
+describe('openConversationMessage', () => {
+  function router() {
+    const pushes: unknown[] = []
+    return { push: (href: unknown) => pushes.push(href), setParams: () => {}, pushes }
+  }
+
+  test('a top-level message opens the conversation focused on that message, not a thread', () => {
+    const nav = router()
+    openConversationMessage(nav as any, { conversationId: 'dm1', messageId: 'm1', threadRootId: null })
+    expect(nav.pushes).toEqual([{
+      pathname: '/(app)/c/[conversationId]',
+      params: { conversationId: 'dm1', msg: 'm1' },
+    }])
+  })
+
+  test('a reply opens its actual thread and keeps the reply as the focus target', () => {
+    const nav = router()
+    openConversationMessage(nav as any, { conversationId: 'dm1', messageId: 'reply1', threadRootId: 'root1' })
+    expect(nav.pushes).toEqual([{
+      pathname: '/(app)/c/[conversationId]',
+      params: { conversationId: 'dm1', thread: 'root1', msg: 'reply1' },
+    }])
   })
 })
 

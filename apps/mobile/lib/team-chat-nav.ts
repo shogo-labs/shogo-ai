@@ -172,6 +172,22 @@ export function openConversationTarget(router: PushRouter, target: ConversationT
   return action
 }
 
+/**
+ * Open a message in its conversation. A message id identifies the focus point;
+ * only an actual thread root identifies a thread. Keeping those values
+ * separate prevents top-level messages from accidentally opening as threads.
+ */
+export function openConversationMessage(
+  router: PushRouter,
+  target: { conversationId: string; messageId?: string | null; threadRootId?: string | null },
+): ThreadNavAction {
+  return openConversationTarget(router, {
+    conversationId: target.conversationId,
+    thread: target.threadRootId,
+    msg: target.messageId,
+  })
+}
+
 export interface Crumb {
   key: string
   label: string

@@ -22,7 +22,7 @@ import { usePhoneLayout } from '../../../lib/native-phone-layout'
 import { TabScreenHeader } from '../../../components/layout/TabScreenHeader'
 import { teamChatApi, type AskResult, type SearchResponse } from '../../../lib/team-chat-api'
 import { mentionNames, renderMentions, searchSnippet } from '../../../lib/team-chat-state'
-import { openConversationTarget } from '../../../lib/team-chat-nav'
+import { openConversationMessage } from '../../../lib/team-chat-nav'
 
 const api = teamChatApi()
 const DEBOUNCE_MS = 250
@@ -130,10 +130,10 @@ export default function TeamChatSearch() {
   const addFilter = (chip: string) => setQuery((q) => (q.includes(chip) ? q : `${q.trim()} ${chip}`.trim() + ' '))
 
   const open = (r: Pick<Result, 'message' | 'conversation'>) => {
-    openConversationTarget(router, {
+    openConversationMessage(router, {
       conversationId: r.conversation.id,
-      thread: r.message.threadRootId,
-      msg: r.message.id,
+      threadRootId: r.message.threadRootId,
+      messageId: r.message.id,
     })
   }
 

@@ -27,6 +27,10 @@ export interface MessageListProps extends RowHandlers {
   emptyText?: string
   header?: React.ReactElement | null
   onLoadOlder?: () => void
+  /** A deep link can start at an older slice and page forward through the gap. */
+  hasMoreNewer?: boolean
+  onLoadNewer?: () => void
+  onJumpToLatest?: () => void
   /** Called when the reader is back at the latest message and many messages are loaded. */
   onTrim?: () => void
   trimThreshold?: number
@@ -58,7 +62,7 @@ const NO_INSETS = { top: 0, bottom: 0 }
 
 /** Newest-at-bottom list (an inverted FlatList, so it stays pinned to the latest message). */
 export function MessageList({
-  state, loading, me, names, mentionables, channelMemberIds, canManage, inThread, emptyText, header, onLoadOlder, onTrim, trimThreshold = Infinity,
+  state, loading, me, names, mentionables, channelMemberIds, canManage, inThread, emptyText, header, onLoadOlder, hasMoreNewer = false, onLoadNewer, onJumpToLatest, onTrim, trimThreshold = Infinity,
   unreadAfterSeq = null, unreadUpToSeq = Infinity, unreadNotLoaded = false, unreadCount = null, onRevealUnread, highlightId = null, insets = NO_INSETS, ...handlers
 }: MessageListProps) {
   const rows = useMemo(() => {
@@ -234,6 +238,11 @@ export function MessageList({
         extraData={`${firstUnreadId}:${highlightId}`}
         onEndReached={onLoadOlder}
         onEndReachedThreshold={0.4}
+        ListHeaderComponent={hasMoreNewer && onLoadNewer ? (
+          <Pressable accessibilityRole="button" accessibilityLabel="Load newer messages" onPress={onLoadNewer} className="items-center py-3 active:opacity-70">
+            <Text className="text-sm font-medium text-primary">Load newer messages</Text>
+          </Pressable>
+        ) : null}
         // Inverted: the container's top padding is the visual bottom.
         contentContainerStyle={{ paddingTop: 8 + insets.bottom, paddingBottom: 8 + insets.top, flexGrow: 1 }}
         scrollIndicatorInsets={{ top: insets.bottom, bottom: insets.top }}
@@ -289,7 +298,7 @@ export function MessageList({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Jump to latest message"
-          onPress={() => listRef.current?.scrollToOffset({ offset: 0, animated: true })}
+          onPress={hasMoreNewer && onJumpToLatest ? onJumpToLatest : () => listRef.current?.scrollToOffset({ offset: 0, animated: true })}
           className="absolute self-center flex-row items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 shadow-sm active:bg-muted web:hover:bg-muted"
           style={{ bottom: insets.bottom + 12 }}
         >
