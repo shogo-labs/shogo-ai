@@ -104,7 +104,9 @@ async function expectEchoWhileProbePending(
   await expect
     .poll(() => probe.count(), { timeout: 10_000, message: "the live-turn probe is pending" })
     .toBeGreaterThan(0)
-  await expect(page.getByText(text, { exact: true })).toBeVisible({ timeout: 2_000 })
+  // The repeated-text case already has an older visible match; the new echo
+  // is appended last while its probe is held open.
+  await expect(page.getByText(text, { exact: true }).last()).toBeVisible({ timeout: 2_000 })
 }
 
 // ─── Window helpers ─────────────────────────────────────────────────────────
