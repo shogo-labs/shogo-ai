@@ -598,18 +598,21 @@ export function useConversationTimeline(
 
   /** Start a contiguous slice at the target. Keep the newest slice in the device cache until this one catches up. */
   const loadBeforeSeq = useCallback(async (beforeSeq: number, limit = PAGE_SIZE) => {
-    if (!conversationId || threadRootId) return
+    if (!conversationId || threadRootId) return false
     const page = await api.messages(conversationId, { beforeSeq, limit })
     const newest = page.messages[page.messages.length - 1]
-    if (!newest || newest.seq !== beforeSeq - 1) return
+    if (!newest || newest.seq !== beforeSeq - 1) return false
+    const latestSeq = lastConfirmedSeq(stateRef.current)
+    const hasNewer = latestSeq === 0 || latestSeq > newest.seq
     newerCursorRef.current = newest.seq
-    anchoredRef.current = true
-    setHasMoreNewer(true)
+    anchoredRef.current = hasNewer
+    setHasMoreNewer(hasNewer)
     setState((cur) => {
       const next = mergePage(cur, page, 'initial')
       stateRef.current = next
       return next
     })
+    return true
   }, [conversationId, threadRootId])
 
   /** Page forward from an anchored deep link without skipping the intervening messages. */

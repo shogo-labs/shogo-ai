@@ -213,6 +213,9 @@ export function TimelinePane(props: TimelinePaneProps) {
     if (props.highlightMessageId) setHighlight(props.highlightMessageId)
   }, [props.highlightMessageId])
   const highlightLoaded = !!highlight && timeline.state.messages.some((m) => m.id === highlight)
+  const isDirectMessage = conversation.kind === 'dm' || conversation.kind === 'group_dm'
+  const [locatedHighlight, setLocatedHighlight] = useState<string | null>(null)
+  const waitingForTarget = isDirectMessage && !!highlight && !highlightLoaded && locatedHighlight !== highlight
   useEffect(() => {
     if (!highlightLoaded) return
     const t = setTimeout(() => setHighlight(null), HIGHLIGHT_MS)
@@ -271,31 +274,42 @@ export function TimelinePane(props: TimelinePaneProps) {
 
   const sought = useRef<string | null>(null)
   useEffect(() => {
-    if (!highlight || highlightLoaded || timeline.loading || threadRootId || sought.current === highlight) return
+    if (!highlight || threadRootId) return
+    if (highlightLoaded) {
+      if (isDirectMessage) setLocatedHighlight(highlight)
+      return
+    }
+    if (timeline.loading || sought.current === highlight) return
     sought.current = highlight
     const id = highlight
     void (async () => {
-      if (conversation.kind === 'dm' || conversation.kind === 'group_dm') {
-        // In DMs the target endpoint gives us its sequence directly. Fetching
-        // it first avoids paging through up to 1,200 unrelated messages.
+      let targetLoaded = false
+      try {
+        if (isDirectMessage) {
+          // In DMs the target endpoint gives us its sequence directly. Fetching
+          // it first avoids paging through up to 1,200 unrelated messages.
+          const message = await api.message(id).catch(() => null)
+          if (!message || message.conversationId !== conversation.id) return
+          if (!message.threadRootId) {
+            targetLoaded = await timeline.loadBeforeSeq(message.seq + 1).catch(() => false)
+          } else {
+            props.onOpenThread?.(message)
+            targetLoaded = true
+          }
+          return
+        }
+
+        if (await seekOlder((messages) => messages.some((m) => m.id === id))) return
         const message = await api.message(id).catch(() => null)
         if (!message || message.conversationId !== conversation.id) return
-        if (!message.threadRootId) {
-          await timeline.loadBeforeSeq(message.seq + 1).catch(() => {})
-        } else {
-          props.onOpenThread?.(message)
-        }
-        return
+        // In channels, keep the existing fallback for messages beyond the
+        // seek window; replies still open their actual thread.
+        if (props.onOpenThread) props.onOpenThread(message)
+      } finally {
+        if (isDirectMessage && !targetLoaded) setLocatedHighlight(id)
       }
-
-      if (await seekOlder((messages) => messages.some((m) => m.id === id))) return
-      const message = await api.message(id).catch(() => null)
-      if (!message || message.conversationId !== conversation.id) return
-      // In channels, keep the existing fallback for messages beyond the
-      // seek window; replies still open their actual thread.
-      if (props.onOpenThread) props.onOpenThread(message)
     })()
-  }, [highlight, highlightLoaded, timeline.loading, threadRootId, seekOlder, props.onOpenThread, timeline.loadBeforeSeq, conversation.kind])
+  }, [highlight, highlightLoaded, timeline.loading, threadRootId, seekOlder, props.onOpenThread, timeline.loadBeforeSeq, conversation.id, isDirectMessage])
 
   const oldestLoaded = timeline.state.messages.find((m) => !m.pending)
   const unreadNotLoaded = !!unread && timeline.state.hasMoreOlder && !!oldestLoaded &&
@@ -426,8 +440,8 @@ export function TimelinePane(props: TimelinePaneProps) {
     : undefined
   const list = (
     <MessageList
-      state={{ ...timeline.state, messages: visibleMessages }}
-      loading={timeline.loading}
+      state={{ ...timeline.state, messages: waitingForTarget ? [] : visibleMessages }}
+      loading={timeline.loading || waitingForTarget}
       me={me}
       names={names}
       mentionables={mentionables}
@@ -462,6 +476,7 @@ export function TimelinePane(props: TimelinePaneProps) {
       unreadCount={filtering ? null : unreadTotal}
       onRevealUnread={onRevealUnread}
       highlightId={highlight}
+      deferHighlightReveal={isDirectMessage && !!props.highlightMessageId}
       insets={listInsets}
     />
   )

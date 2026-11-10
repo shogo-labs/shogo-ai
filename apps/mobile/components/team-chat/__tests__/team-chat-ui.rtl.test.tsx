@@ -1550,6 +1550,19 @@ describe('opening a channel with unread', () => {
     expect(onOpenThread).not.toHaveBeenCalled()
   })
 
+  test('a DM deep link does not flash the newest page while locating its target', async () => {
+    const dm = channel({ id: 'dm-1', kind: 'dm', lastSeq: 500, lastReadSeq: 500 })
+    activityTimeline.messages = [message({ id: 'latest', conversationId: 'dm-1', seq: 500, text: 'Newest message' })]
+    let resolveMessage!: (message: any) => void
+    apiTargetMessage = new Promise((resolve) => { resolveMessage = resolve })
+
+    renderPane(dm, { highlightMessageId: 'old-dm' })
+
+    expect(screen.queryByText('Newest message')).toBeNull()
+    await act(async () => { resolveMessage(message({ id: 'old-dm', conversationId: 'dm-1', seq: 10 })) })
+    await waitFor(() => expect(loadBeforeSeqCalls).toEqual([[11, 50]]))
+  })
+
   test('an old DM reply still opens its real thread', async () => {
     const dm = channel({ id: 'dm-1', kind: 'dm', lastSeq: 500, lastReadSeq: 500 })
     activityTimeline.messages = [message({ id: 'latest', conversationId: 'dm-1', seq: 500 })]
