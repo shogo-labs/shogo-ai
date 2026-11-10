@@ -15,7 +15,7 @@
  * person typing still shows: `desktop-cloud-workspaces.test.ts` covers that
  * with a real second user.
  */
-import { expect, test, type Browser, type Page } from "@playwright/test"
+import { expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test"
 import { LOCAL_API_BASE, openTeamHome } from "./helpers"
 
 const suffix = Date.now().toString(36)
@@ -62,16 +62,20 @@ test.describe("Team chat: you never see your own typing", () => {
 
   let windowA: Page
   let windowB: Page
+  let windowContext: BrowserContext
   let workspaceId: string
   let channelId: string
   let threadRootId: string
 
-  test.beforeAll(async ({ browser }: { browser: Browser }) => {
-    windowA = await browser.newPage()
+  test.beforeAll(async ({ browser }: { browser: Browser }, testInfo) => {
+    // `browser.newPage()` owns a one-page context. Use an explicit context so
+    // the second page is a real second window sharing the same cookies.
+    windowContext = await browser.newContext({ baseURL: String(testInfo.project.use.baseURL) })
+    windowA = await windowContext.newPage()
     await windowA.setViewportSize({ width: 1440, height: 900 })
     await openTeamHome(windowA)
     // A second window of the same signed-in user: same storage, its own socket.
-    windowB = await windowA.context().newPage()
+    windowB = await windowContext.newPage()
     await windowB.setViewportSize({ width: 1440, height: 900 })
 
     const workspaces = await apiJson(windowA, "GET", "/api/workspaces")
@@ -95,8 +99,7 @@ test.describe("Team chat: you never see your own typing", () => {
   })
 
   test.afterAll(async () => {
-    await windowB?.close()
-    await windowA?.close()
+    await windowContext?.close()
   })
 
   test("typing in a channel shows in no window of the typist, though the server does deliver it", async () => {
