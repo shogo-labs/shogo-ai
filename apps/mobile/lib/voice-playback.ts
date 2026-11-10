@@ -27,6 +27,7 @@ export interface VoicePlaybackSnapshot {
   /** Attachment currently loaded into the engine, if any. */
   activeId: string | null
   isPlaying: boolean
+  isLoading: boolean
   positionMs: number
   durationMs: number
   rate: PlaybackSpeed
@@ -36,6 +37,7 @@ export interface VoicePlaybackSnapshot {
 const INITIAL: VoicePlaybackSnapshot = {
   activeId: null,
   isPlaying: false,
+  isLoading: false,
   positionMs: 0,
   durationMs: 0,
   rate: 1,
@@ -73,13 +75,19 @@ function getEngine(): VoicePlaybackEngine {
           update({ positionMs, durationMs: knownDuration })
         }
       },
+      onPlaying: () => {
+        if (snapshot.isPlaying) update({ isLoading: false })
+      },
+      onWaiting: () => {
+        if (snapshot.isPlaying) update({ isLoading: true })
+      },
       onEnded: () => {
         pendingSeek = null
-        update({ isPlaying: false, positionMs: 0 })
+        update({ isPlaying: false, isLoading: false, positionMs: 0 })
       },
       onError: () => {
         pendingSeek = null
-        update({ isPlaying: false, error: 'Could not play this voice note. Tap to retry.' })
+        update({ isPlaying: false, isLoading: false, error: 'Could not play this voice note. Tap to retry.' })
       },
     })
   }
@@ -94,6 +102,11 @@ function subscribe(listener: () => void): () => void {
 }
 
 const getSnapshot = (): VoicePlaybackSnapshot => snapshot
+
+/** Start fetching metadata for a visible web note before the user taps play. */
+export function preloadVoiceNote(url: string): () => void {
+  return getEngine().preload(url)
+}
 
 function seekPositionMs(target: SeekTarget, durationMs: number): number {
   return 'ratio' in target
@@ -117,6 +130,7 @@ function startVoiceNote(note: VoiceNotePlayable, audio: VoicePlaybackEngine): vo
   update({
     activeId: note.id,
     isPlaying: true,
+    isLoading: true,
     positionMs: 0,
     durationMs: note.durationMs && Number.isFinite(note.durationMs) && note.durationMs > 0
       ? note.durationMs
@@ -131,7 +145,7 @@ function startVoiceNote(note: VoiceNotePlayable, audio: VoicePlaybackEngine): vo
     if (!snapshot.isPlaying) return
     audio.play()
   } catch {
-    update({ isPlaying: false, error: 'Could not play this voice note. Tap to retry.' })
+    update({ isPlaying: false, isLoading: false, error: 'Could not play this voice note. Tap to retry.' })
   }
 }
 
@@ -155,18 +169,18 @@ export function toggleVoiceNote(note: VoiceNotePlayable): void {
   const audio = getEngine()
   if (snapshot.activeId === note.id && snapshot.isPlaying) {
     audio.pause()
-    update({ isPlaying: false })
+    update({ isPlaying: false, isLoading: false })
     return
   }
   if (snapshot.activeId !== note.id || snapshot.error) {
     startVoiceNote(note, audio)
     return
   }
-  update({ isPlaying: true, error: null })
+  update({ isPlaying: true, isLoading: true, error: null })
   try {
     audio.play()
   } catch {
-    update({ isPlaying: false, error: 'Could not play this voice note. Tap to retry.' })
+    update({ isPlaying: false, isLoading: false, error: 'Could not play this voice note. Tap to retry.' })
   }
 }
 
@@ -203,5 +217,5 @@ export function stopVoiceNote(): void {
   if (!snapshot.activeId && !snapshot.isPlaying) return
   pendingSeek = null
   getEngine().pause()
-  update({ activeId: null, isPlaying: false, positionMs: 0, durationMs: 0, error: null })
+  update({ activeId: null, isPlaying: false, isLoading: false, positionMs: 0, durationMs: 0, error: null })
 }

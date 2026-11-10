@@ -408,6 +408,8 @@ export interface PresignOptions {
    * link save the file instead of displaying it.
    */
   responseContentDisposition?: string
+  /** Content type for a signed read response when stored object metadata is stale. */
+  responseContentType?: string
   /**
    * `x-amz-meta-*` values baked into a signed **write**. The uploader must send
    * them, so they cannot be attached after signing — used by the workspace-root
@@ -765,6 +767,7 @@ export async function getArtifactPresignedReadUrl(
     Bucket: bucket,
     Key: key,
     ...(options.responseContentDisposition ? { ResponseContentDisposition: options.responseContentDisposition } : {}),
+    ...(options.responseContentType ? { ResponseContentType: options.responseContentType } : {}),
   })
   return getSignedUrl(client, command, { expiresIn })
 }

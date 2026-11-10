@@ -866,11 +866,15 @@ export type DictationResult =
  * Unlike live meeting chunks it isn't tied to a recording or meeting; it
  * just returns text. Local sherpa/Whisper first, cloud as the fallback.
  */
-export async function transcribeDictation(audio: Buffer): Promise<DictationResult> {
+export async function transcribeDictation(
+  audio: Buffer,
+  options: { cloudAuth?: CloudTranscriptionAuth } = {},
+): Promise<DictationResult> {
   if (
     audio.length <= WAV_HEADER_SIZE ||
     audio.length > DICTATION_MAX_BYTES ||
-    audio.toString('ascii', 0, 4) !== 'RIFF'
+    audio.toString('ascii', 0, 4) !== 'RIFF' ||
+    audio.toString('ascii', 8, 12) !== 'WAVE'
   ) {
     return { ok: false, reason: 'invalid' }
   }
@@ -881,7 +885,11 @@ export async function transcribeDictation(audio: Buffer): Promise<DictationResul
   const clipPath = join(dir, `${Date.now()}-${randomBytes(6).toString('hex')}.wav`)
   writeFileSync(clipPath, audio)
   try {
-    const result = await transcribe(clipPath, { model: config.whisperModel, preferLocal: local })
+    const result = await transcribe(clipPath, {
+      model: config.whisperModel,
+      preferLocal: local,
+      cloudAuth: options.cloudAuth,
+    })
     return { ok: true, text: result.text.trim() }
   } finally {
     removeAudioFiles(clipPath)

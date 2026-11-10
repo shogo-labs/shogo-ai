@@ -1698,6 +1698,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         ...(f.uri ? { uri: f.uri } : {}),
         ...(f.file ? { file: f.file } : {}),
         ...(f.previewUrl ? { previewUrl: f.previewUrl } : {}),
+        ...(f.durationMs ? { durationMs: f.durationMs } : {}),
+        ...(f.peaks ? { peaks: f.peaks } : {}),
       })),
       ...pastedAttachments,
     ];

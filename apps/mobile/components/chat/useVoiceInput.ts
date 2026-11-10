@@ -18,7 +18,7 @@ type VoiceStatus = 'idle' | 'recording' | 'transcribing'
 const MIC_BLOCKED_MESSAGE =
   'Microphone access is blocked. Allow Shogo in System Settings > Privacy & Security > Microphone, then try again.'
 
-/** True inside the Electron app, where Web Speech has no backend. */
+/** True inside Electron, where microphone errors can link to OS settings. */
 function isDesktopApp(): boolean {
   return Platform.OS === 'web' && !!getDesktopBridge()
 }
@@ -28,19 +28,6 @@ function formatDuration(ms: number): string {
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
-}
-
-// ---------------------------------------------------------------------------
-// Web: Browser SpeechRecognition
-// ---------------------------------------------------------------------------
-
-function getSpeechRecognitionCtor(): (new () => any) | null {
-  if (typeof window === 'undefined') return null
-  return (
-    (window as any).SpeechRecognition ??
-    (window as any).webkitSpeechRecognition ??
-    null
-  )
 }
 
 // ---------------------------------------------------------------------------
@@ -76,13 +63,12 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
   const isMountedRef = useRef(true)
   const transcriptionHandlerRef = useRef(onTranscript)
 
-  // Web-only refs
-  const recognitionRef = useRef<any>(null)
   const autoStopTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const finalTranscriptRef = useRef('')
   const liveTranscriptRef = useRef('')
-  const stoppingRef = useRef(false)
-  // Desktop (Electron) capture session; see desktop-dictation.ts
+  const stopRecordingRef = useRef<() => Promise<void>>(async () => {})
+  const startingWebCaptureRef = useRef(false)
+  // Browser and desktop capture session; see desktop-dictation.ts.
   const desktopRef = useRef<DesktopDictation | null>(null)
 
   const [status, setStatus] = useState<VoiceStatus>('idle')
@@ -96,8 +82,9 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
   }, [onTranscript])
 
   const isSupported = useMemo(() => {
-    if (isDesktopApp()) return !!(typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia)
-    if (Platform.OS === 'web') return !!getSpeechRecognitionCtor()
+    if (Platform.OS === 'web') {
+      return !!(typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia)
+    }
     const mod = getNativeModule()
     if (!mod) return false
     try {
@@ -196,10 +183,12 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
     finalTranscriptRef.current = ''
     liveTranscriptRef.current = ''
     setLiveTranscript('')
-    stoppingRef.current = false
-
-    if (isDesktopApp()) {
-      // ---- Desktop path: record locally, transcribe via the local API ----
+    if (Platform.OS === 'web') {
+      if (startingWebCaptureRef.current) return
+      startingWebCaptureRef.current = true
+      // Browser SpeechRecognition relies on an external browser speech service
+      // and often fails with a generic network error. Capture audio here and
+      // send it to Shogo's transcription API instead.
       try {
         const session = await startDesktopDictation()
         if (!isMountedRef.current) {
@@ -209,165 +198,58 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
         desktopRef.current = session
         setStatus('recording')
         autoStopTimeoutRef.current = setTimeout(() => {
-          stopRecording().catch(() => {})
+          stopRecordingRef.current().catch(() => {})
         }, MAX_RECORDING_MS)
       } catch (err: any) {
         desktopRef.current = null
         if (!isMountedRef.current) return
         if (err instanceof MicPermissionError) {
-          setMicBlocked(true)
-          setError(MIC_BLOCKED_MESSAGE)
+          if (isDesktopApp()) {
+            setMicBlocked(true)
+            setError(MIC_BLOCKED_MESSAGE)
+          } else {
+            setError(
+              'Microphone access was blocked. Allow microphone access for this site in your browser settings, then try again.'
+            )
+          }
         } else {
           setError(err?.message || 'Could not start the microphone.')
         }
+      } finally {
+        startingWebCaptureRef.current = false
       }
       return
     }
 
-    if (Platform.OS !== 'web') {
-      // ---- Native path ----
-      const mod = getNativeModule()
-      if (!mod) return
-
-      try {
-        const perms = await mod.requestPermissionsAsync()
-        if (!perms.granted) {
-          setError(
-            'Microphone / speech recognition permission was denied. Please allow it in Settings.'
-          )
-          return
-        }
-
-        mod.start({
-          lang: 'en-US',
-          interimResults: true,
-          continuous: true,
-        })
-        setStatus('recording')
-
-        autoStopTimeoutRef.current = setTimeout(() => {
-          try {
-            mod.stop()
-          } catch {}
-        }, MAX_RECORDING_MS)
-      } catch (err: any) {
-        setError(err?.message || 'Failed to start speech recognition.')
-      }
-      return
-    }
-
-    // ---- Web path (unchanged) ----
-    const Ctor = getSpeechRecognitionCtor()
-    if (!Ctor) return
+    // ---- Native path ----
+    const mod = getNativeModule()
+    if (!mod) return
 
     try {
-      const recognition = new Ctor()
-      recognition.continuous = true
-      recognition.interimResults = true
-      recognition.lang = navigator?.language || 'en-US'
-
-      recognition.onresult = (event: any) => {
-        let finalText = ''
-        let interimText = ''
-        for (let i = 0; i < event.results.length; i++) {
-          const result = event.results[i]
-          if (result.isFinal) {
-            finalText += result[0].transcript
-          } else {
-            interimText += result[0].transcript
-          }
-        }
-        finalTranscriptRef.current = finalText
-        const combined = finalText + interimText
-        liveTranscriptRef.current = combined
-        setLiveTranscript(combined)
-      }
-
-      recognition.onerror = (event: any) => {
-        const errorCode = event?.error
-        if (errorCode === 'aborted') return
-
-        if (errorCode === 'no-speech') {
-          if (!stoppingRef.current) return
-          cleanup()
-          recognitionRef.current = null
-          setStatus('idle')
-          setElapsedMs(0)
-          setLiveTranscript('')
-          setError('No speech detected. Please try again.')
-          return
-        }
-
-        cleanup()
-        recognitionRef.current = null
-        setStatus('idle')
-        setElapsedMs(0)
-        setLiveTranscript('')
-
-        const errorMessages: Record<string, string> = {
-          'not-allowed':
-            'Microphone access was blocked. Please allow it and try again.',
-          'service-not-available':
-            'Speech recognition is not available in this browser.',
-          network:
-            'Network error. Please check your connection and try again.',
-        }
+      const perms = await mod.requestPermissionsAsync()
+      if (!perms.granted) {
         setError(
-          errorMessages[errorCode] ||
-            `Speech recognition error: ${errorCode}`
-        )
-      }
-
-      recognition.onend = () => {
-        cleanup()
-        recognitionRef.current = null
-
-        if (!isMountedRef.current) return
-
-        const transcript = (
-          finalTranscriptRef.current || liveTranscriptRef.current
-        ).trim()
-
-        if (transcript) {
-          transcriptionHandlerRef.current(transcript)
-        }
-
-        setStatus('idle')
-        setElapsedMs(0)
-        setLiveTranscript('')
-        finalTranscriptRef.current = ''
-        liveTranscriptRef.current = ''
-      }
-
-      recognitionRef.current = recognition
-      recognition.start()
-      setStatus('recording')
-
-      autoStopTimeoutRef.current = setTimeout(() => {
-        stopRecording().catch(() => {})
-      }, MAX_RECORDING_MS)
-    } catch (err: any) {
-      cleanup()
-      recognitionRef.current = null
-      setStatus('idle')
-      setElapsedMs(0)
-      const msg = String(err?.message || '').toLowerCase()
-      if (
-        msg.includes('permission') ||
-        msg.includes('denied') ||
-        msg.includes('notallowederror')
-      ) {
-        setError(
-          'Microphone access was blocked. Please allow it and try again.'
+          'Microphone / speech recognition permission was denied. Please allow it in Settings.'
         )
         return
       }
-      setError(
-        err?.message ||
-          'Speech recognition is not available in this browser.'
-      )
+
+      mod.start({
+        lang: 'en-US',
+        interimResults: true,
+        continuous: true,
+      })
+      setStatus('recording')
+
+      autoStopTimeoutRef.current = setTimeout(() => {
+        try {
+          mod.stop()
+        } catch {}
+      }, MAX_RECORDING_MS)
+    } catch (err: any) {
+      setError(err?.message || 'Failed to start speech recognition.')
     }
-  }, [cleanup, isSupported, status])
+  }, [isSupported, status])
 
   // ---------------------------------------------------------------------------
   // Stop
@@ -409,12 +291,11 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
       }
       return
     }
-
-    const recognition = recognitionRef.current
-    if (!recognition) return
-    stoppingRef.current = true
-    recognition.stop()
   }, [cleanup])
+
+  useEffect(() => {
+    stopRecordingRef.current = stopRecording
+  }, [stopRecording])
 
   // ---------------------------------------------------------------------------
   // Toggle
@@ -457,14 +338,7 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
         desktopRef.current = null
       }
 
-      if (Platform.OS === 'web') {
-        const recognition = recognitionRef.current
-        if (recognition) {
-          try {
-            recognition.abort()
-          } catch {}
-        }
-      } else {
+      if (Platform.OS !== 'web') {
         const mod = getNativeModule()
         if (mod) {
           try {
@@ -484,7 +358,7 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
       setMicBlocked(false)
     },
     error,
-    /** Set when the OS/Chromium refused the mic; offer {@link openMicSettings}. */
+    /** Set when Electron can offer the OS microphone settings shortcut. */
     micBlocked,
     openMicSettings: () => {
       void getDesktopBridge()?.openMicrophoneSettings?.()

@@ -18,6 +18,7 @@ import {
   buildConversationFileKey,
   conversationFileUrl,
   loadConversationFileBytes,
+  normalizeVoiceNoteMetadata,
   parseAttachmentDurationMs,
   parseAttachmentPeaks,
   parseByteRange,
@@ -806,8 +807,8 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       if (file.size > MAX_CONVERSATION_FILE_BYTES) {
         return c.json({ error: { code: 'too_large', message: 'Files are limited to 50 MB' } }, 413)
       }
-      const name = (file as File).name || 'file'
-      const mimeType = file.type || 'application/octet-stream'
+      let name = (file as File).name || 'file'
+      let mimeType = file.type || 'application/octet-stream'
       // A composer that lost the file's bytes still posts the multipart framing
       // and an empty file part. Storing that row would hand the person an
       // attachment that downloads as 0 bytes days later, with nothing anywhere
@@ -821,8 +822,13 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         })
         return c.json({ error: { code: 'empty_file', message: `"${name}" is empty (0 bytes), so nothing was uploaded. Attach it again.` } }, 400)
       }
-      const key = buildConversationFileKey(access.conversation.workspaceId, access.conversation.id, name)
       const bytes = new Uint8Array(await file.arrayBuffer())
+      const voiceNoteMetadata = normalizeVoiceNoteMetadata(name, bytes)
+      if (voiceNoteMetadata) {
+        name = voiceNoteMetadata.name
+        mimeType = voiceNoteMetadata.mimeType
+      }
+      const key = buildConversationFileKey(access.conversation.workspaceId, access.conversation.id, name)
       await putConversationFile(key, bytes, mimeType)
       const width = numberParam(String(form?.get('width') ?? ''))
       const height = numberParam(String(form?.get('height') ?? ''))
@@ -1126,8 +1132,9 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       // players request the AAC/MP4 variant while browsers keep using the
       // original recording format.
       if (c.req.query('playback') === 'm4a') {
-        const canConvert = /^(?:audio\/(?:webm|ogg|opus)|video\/webm|application\/ogg)(?:;|$)/i.test(row.mimeType)
+        const canConvert = /^(?:audio\/(?:webm|ogg|opus|mp4)|video\/webm|application\/ogg)(?:;|$)/i.test(row.mimeType)
           || /\.(?:webm|ogg|opus)$/i.test(row.name)
+          || /\.(?:m4a|mp4)$/i.test(row.name)
         if (!canConvert) {
           return c.json({ error: { code: 'unsupported_audio', message: 'This audio format cannot be converted for playback' } }, 415)
         }
@@ -1174,7 +1181,10 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         'Cache-Control': 'private, max-age=300',
         'Accept-Ranges': 'bytes',
       }
-      const file = await readConversationFile(row.storageKey, download ? { downloadName: row.name } : undefined)
+      const file = await readConversationFile(row.storageKey, {
+        ...(download ? { downloadName: row.name } : {}),
+        responseContentType: row.mimeType,
+      })
       if (file.kind === 'redirect') {
         // An <img>, <video>, iframe or link click follows the redirect to object
         // storage happily, and a native client does too. A script fetch does

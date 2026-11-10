@@ -18,6 +18,30 @@ let cachedBytes = 0
 let activeConversions = 0
 const conversionQueue: Array<() => void> = []
 
+function isAacMp4(bytes: Uint8Array): boolean {
+  if (bytes.byteLength < 16 || String.fromCharCode(...bytes.subarray(4, 8)) !== 'ftyp') return false
+
+  // An MP4 container alone does not guarantee an iOS-compatible audio codec.
+  // Look for the AAC sample entry in its movie metadata, never in media data.
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  for (let offset = 0; offset + 8 <= bytes.byteLength;) {
+    const boxSize = view.getUint32(offset)
+    if (boxSize < 8 || offset + boxSize > bytes.byteLength) return false
+    const kind = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8))
+    if (kind === 'moov') {
+      const end = offset + boxSize - 4
+      for (let i = offset + 8; i <= end; i += 1) {
+        if (bytes[i] === 0x6d && bytes[i + 1] === 0x70 && bytes[i + 2] === 0x34 && bytes[i + 3] === 0x61) {
+          return true
+        }
+      }
+      return false
+    }
+    offset += boxSize
+  }
+  return false
+}
+
 export class AudioTranscodeError extends Error {
   constructor(message: string, readonly code: 'unavailable' | 'failed' | 'too_large' | 'busy') {
     super(message)
@@ -66,7 +90,16 @@ export async function getTranscodedAudio(
   const pending = inFlight.get(cacheKey)
   if (pending) return pending
 
-  const conversion = withConversionSlot(async () => transcodeAudioToM4a(await loadSource()))
+  const conversion = withConversionSlot(async () => {
+    const source = await loadSource()
+    if (source.byteLength > MAX_CONVERSATION_FILE_BYTES) {
+      throw new AudioTranscodeError('Audio file exceeds the conversion limit', 'too_large')
+    }
+    // Some browser recorders label MP4/AAC bytes as WebM. AVPlayer already
+    // supports these bytes, so avoid a needless ffmpeg pass on iOS. Other
+    // codecs inside MP4 still need conversion.
+    return isAacMp4(source) ? source : transcodeAudioToM4a(source)
+  })
   inFlight.set(cacheKey, conversion)
   try {
     const bytes = await conversion

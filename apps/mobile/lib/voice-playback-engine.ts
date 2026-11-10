@@ -12,11 +12,14 @@ import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from "expo-aud
 
 export interface VoicePlaybackHandlers {
   onProgress: (positionMs: number, durationMs: number) => void
+  onPlaying?: () => void
+  onWaiting?: () => void
   onEnded: () => void
   onError: (error?: unknown) => void
 }
 
 export interface VoicePlaybackEngine {
+  preload: (url: string) => () => void
   load: (url: string) => void
   play: () => void
   pause: () => void
@@ -43,6 +46,8 @@ export function createVoicePlaybackEngine(handlers: VoicePlaybackHandlers): Voic
           return
         }
         handlers.onProgress(status.currentTime * 1000, (status.duration ?? 0) * 1000)
+        if (status.isBuffering) handlers.onWaiting?.()
+        else if (status.playing) handlers.onPlaying?.()
         if (status.didJustFinish) handlers.onEnded()
       })
       return player
@@ -64,6 +69,9 @@ export function createVoicePlaybackEngine(handlers: VoicePlaybackHandlers): Voic
   }
 
   return {
+    preload() {
+      return () => {}
+    },
     load(url) {
       playRequest += 1
       try {
