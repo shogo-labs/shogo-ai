@@ -1,0 +1,15 @@
+diff --git a/build/lib/copilot.ts b/build/lib/copilot.ts
+index 7d8ae23f..dabab6e5 100644
+--- a/build/lib/copilot.ts
++++ b/build/lib/copilot.ts
+@@ -250,7 +250,9 @@ export function prepareBuiltInCopilotRipgrepShim(platform: string, arch: string,
+ 	const copilotBase = path.join(extensionNodeModules, '@github', 'copilot');
+ 	const copilotSdkBase = path.join(copilotBase, 'sdk');
+ 	if (!fs.existsSync(copilotSdkBase)) {
+-		throw new Error(`[prepareBuiltInCopilotRipgrepShim] Copilot SDK directory not found at ${copilotSdkBase}`);
++		// Shogo: Shogo IDE builds remove the built-in Copilot extension, so there is no SDK to shim.
++		console.warn(`[prepareBuiltInCopilotRipgrepShim] skipped: Copilot SDK not found at ${copilotSdkBase}`);
++		return;
+ 	}
+ 	materializeBuiltInCopilotSdkPlatformFiles(copilotPackagePlatformArch, tgrepPlatformArch, copilotBase, appNodeModulesDir, options);
+ 	pruneNonTargetCopilotSdkPrebuilds(copilotPackagePlatformArch, path.join(copilotSdkBase, 'prebuilds'), copilotPlatforms);

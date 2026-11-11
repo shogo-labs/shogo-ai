@@ -49,6 +49,7 @@ Other overrides: `SHOGO_IDE_SERVER_BASE_URL` (download from a mirror; file names
 
 | Patch | What it does |
 | --- | --- |
+| `build-skip-copilot-shim.patch` | Build only: the REH packaging step that shims ripgrep into the built-in Copilot extension skips cleanly when the Copilot SDK is absent (Shogo IDE builds remove Copilot). |
 | `remove-built-in-chat.patch` | Hides the built-in Chat view so Shogo Chat owns the secondary sidebar. |
 | `shogo-chat-explorer-drop.patch` | Lets Explorer files/folders (and editor tabs) be dropped on Shogo Chat; the URIs go to `shogo.context.addUris`. Its parser is unit-tested in-repo by `bun test apps/shogo-ide/scripts/__tests__`. |
 
