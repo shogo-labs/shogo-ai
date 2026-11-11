@@ -14,7 +14,9 @@
  *   3. The folder project starts restricted and "Trust folder" flips it.
  *   4. Its runtime spawns from the bundled toolchain under the app's launch
  *      PATH (Finder's /usr/bin:/bin:/usr/sbin:/sbin, not a dev shell's).
- *   5. A terminal session spawns where the project folder is reachable, and
+ *   5. The IDE explorer lists every top-level entry of a 250-entry folder,
+ *      dot-entries and a `.git` pointer file included (#1989).
+ *   6. A terminal session spawns where the project folder is reachable, and
  *      a command typed over its WebSocket echoes back (a real PTY, which on
  *      Windows needs the bundled Bun to be >= 1.4 for ConPTY).
  *
@@ -24,7 +26,7 @@
  *   `--bundled-bun` checks the app's shipped Bun meets MIN_BUNDLED_BUN.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import {
@@ -51,6 +53,21 @@ export function versionAtLeast(actual: string, min: string): boolean {
     if (d !== 0) return d > 0
   }
   return true
+}
+
+/**
+ * The shape of the folder from #1989: dot-entries that sort first, a `.git`
+ * worktree pointer file, a `src/` tree and enough plain files that a walk cut
+ * short shows. Returns every top-level name the explorer must list.
+ */
+export function writeExplorerFixture(folder: string): string[] {
+  for (let i = 0; i < 30; i++) writeFileSync(join(folder, `.dot-file-${i}`), 'x')
+  for (let i = 0; i < 5; i++) mkdirSync(join(folder, `.dot-dir-${i}`), { recursive: true })
+  writeFileSync(join(folder, '.git'), 'gitdir: ../.git/modules/smoke\n')
+  mkdirSync(join(folder, 'src', 'nested'), { recursive: true })
+  writeFileSync(join(folder, 'src', 'nested', 'file.ts'), 'export const x = 1\n')
+  for (let i = 0; i < 200; i++) writeFileSync(join(folder, `file-${String(i).padStart(3, '0')}.py`), 'x = 1\n')
+  return readdirSync(folder)
 }
 
 function arg(name: string): string | undefined {
@@ -164,6 +181,7 @@ async function main(): Promise<void> {
   const folder = arg('--folder') ?? mkdtempSync(join(homedir(), 'shogo-smoke-folder-'))
   mkdirSync(folder, { recursive: true })
   writeFileSync(join(folder, 'README.md'), '# desktop smoke\n')
+  const expectedNames = writeExplorerFixture(folder)
   const created = await s.call('POST', '/api/local/projects/from-folders', { paths: [folder], acceptedGitRoot: false })
   const project = created.json?.project ?? created.json
   check(created.status < 300 && project?.id, 'open a folder as a project', created)
@@ -185,6 +203,26 @@ async function main(): Promise<void> {
     await Bun.sleep(3_000)
   }
   check(runtime.json?.status === 'running', 'project runtime spawns under the launch PATH', runtime)
+
+  // #1989: the explorer listed a dozen dot-entries of a 200-entry folder.
+  const treePath = `/api/projects/${project.id}/agent-proxy/agent/workspace/tree?scope=project`
+  const tree = await s.call('GET', treePath)
+  const listed = new Set<string>((tree.json?.tree ?? []).map((n: { name: string }) => n.name))
+  const missing = expectedNames.filter((name) => !listed.has(name))
+  check(tree.status === 200 && missing.length === 0, `the explorer lists all ${expectedNames.length} top-level entries`, {
+    status: tree.status,
+    truncated: tree.json?.truncated,
+    missing: missing.slice(0, 20),
+  })
+  if (tree.json?.truncated) console.log(`  note: listing was truncated (${tree.json.truncatedReason}) but complete`)
+  const gitEntry = (tree.json?.tree ?? []).find((n: { name: string }) => n.name === '.git')
+  check(gitEntry?.type === 'file', 'a .git pointer file is listed as a file', gitEntry)
+  const src = await s.call('GET', `${treePath}&path=src`)
+  check(
+    src.status === 200 && (src.json?.tree ?? []).some((n: { name: string }) => n.name === 'nested'),
+    'expanding src lists its folders',
+    src,
+  )
 
   const term = await s.call('POST', `/api/projects/${project.id}/terminal/sessions`, { cols: 80, rows: 24 })
   check(term.status === 200 && term.json?.id, 'terminal session spawns', term)

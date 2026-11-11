@@ -1,0 +1,328 @@
+name: Desktop E2E (packaged)
+
+# Packages the desktop app UNSIGNED on Windows and macOS and runs the
+# packaged smoke plus the Playwright specs against it on every relevant PR,
+# so desktop regressions show up before a release (#1989). No signing,
+# notarization or publishing: this workflow never touches a signing quota.
+#
+# The build steps mirror desktop-release-windows.yml / desktop-release-macos.yml
+# minus signing. Keep BUN_VERSION, NODE_VERSION and the runner images in sync
+# with those files; scripts/check-desktop-e2e-pins.ts (run by ci.yml) fails
+# when they drift.
+
+on:
+  pull_request:
+    paths:
+      - apps/desktop/**
+      - apps/mobile/**
+      - apps/shogo-ide/**
+      - apps/api/**
+      - packages/agent-runtime/**
+      - packages/sdk/**
+      - scripts/ci/desktop-packaged-smoke.ts
+      - .github/workflows/desktop-e2e.yml
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: '1.4.4'
+  NODE_VERSION: '24.15.0'
+
+jobs:
+  build-web:
+    name: Build Expo Web
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-web-bun${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-web-bun${{ env.BUN_VERSION }}-
+      - run: bun install
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: bun run build:packages
+      - run: bun run web:build
+        env:
+          EXPO_PUBLIC_LOCAL_MODE: 'true'
+          EXPO_PUBLIC_API_URL: 'http://localhost:8002'
+          EXPO_PUBLIC_APP_ENV: production
+          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: web-dist-e2e
+          path: apps/mobile/dist/
+          retention-days: 3
+
+  windows:
+    name: Packaged E2E (Windows x64)
+    needs: build-web
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-desktop-win32-x64-bun${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-desktop-win32-x64-bun${{ env.BUN_VERSION }}-
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: web-dist-e2e
+          path: apps/mobile/dist/
+
+      - name: Download Bun binary (for bundling in app)
+        run: |
+          mkdir -p apps/desktop/resources/bun
+          cd apps/desktop/resources/bun
+          curl -fSL -o bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${{ env.BUN_VERSION }}/bun-windows-x64.zip"
+          7z x bun.zip || unzip bun.zip
+          mv bun-windows-x64/bun* . || true
+          rm -rf bun-windows-x64 bun.zip
+          [ -f bun.exe ] && cp bun.exe bunx.exe
+
+      - run: bun install --linker=isolated
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: bun run build:packages
+      - run: bun run generate:routes
+      - run: bun run db:generate:all
+      - run: node apps/desktop/scripts/bundle-api.mjs
+      - run: bunx prisma db push --schema=prisma/schema.local.prisma --accept-data-loss
+        env:
+          DATABASE_URL: file:./apps/desktop/resources/seed.db
+      - name: Install desktop dependencies
+        working-directory: apps/desktop
+        run: npm install
+      - name: Ensure Electron binary is downloaded
+        working-directory: apps/desktop
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            [ -f node_modules/electron/dist/electron.exe ] && break
+            rm -rf node_modules/electron/dist node_modules/electron/path.txt
+            node node_modules/electron/install.js || node node_modules/electron/cli.js --version || true
+            sleep 5
+          done
+          [ -f node_modules/electron/dist/electron.exe ] || { echo "::error::Electron binary missing"; exit 1; }
+      - name: Build TypeScript
+        working-directory: apps/desktop
+        run: npx tsc && npm run bundle:main && npm run bundle:pty-host
+
+      - name: Package (unsigned)
+        working-directory: apps/desktop
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SKIP_MOBILE_BUILD: '1'
+        run: |
+          for attempt in 1 2 3; do
+            rm -rf out
+            npx electron-forge package --arch=x64 || true
+            [ -f out/Shogo-win32-x64/Shogo.exe ] && exit 0
+            sleep 5
+          done
+          echo "::error::electron-forge package produced no out/Shogo-win32-x64/Shogo.exe"
+          exit 1
+
+      - name: Verify packaged Shogo IDE resources
+        working-directory: apps/desktop
+        run: node scripts/assert-packaged-shogo-ide.mjs out
+
+      - name: Boot the packaged app and run the packaged smoke
+        run: |
+          set -uo pipefail
+          EXE="$PWD/apps/desktop/out/Shogo-win32-x64/Shogo.exe"
+          PROFILE="$APPDATA/Shogo"
+          rm -rf "$PROFILE"; mkdir -p "$PROFILE/logs"
+          LOG="$PROFILE/logs/main.log"; : > "$LOG"
+          "$EXE" > /tmp/shogo-stdout.log 2>&1 &
+          RESULT=""
+          for _ in $(seq 1 150); do
+            if grep -qE '\[FATAL\].*Failed to start local server|Failed to run database migrations' "$LOG" /tmp/shogo-stdout.log 2>/dev/null; then RESULT=fail; break; fi
+            if grep -q 'API server is healthy' "$LOG" /tmp/shogo-stdout.log 2>/dev/null; then RESULT=pass; break; fi
+            sleep 2
+          done
+          SMOKE=fail
+          if [ "$RESULT" = pass ]; then
+            bun scripts/ci/desktop-packaged-smoke.ts --log "$LOG" --bundled-bun "$(dirname "$EXE")/resources/bun/bun.exe" && SMOKE=pass
+          fi
+          taskkill //F //T //IM Shogo.exe > /dev/null 2>&1 || true
+          if [ "$SMOKE" != pass ]; then
+            echo "=== main.log ==="; cat "$LOG" || true
+            echo "::error::Packaged smoke failed (boot=$RESULT)"
+            exit 1
+          fi
+
+      - name: Playwright specs against the packaged app
+        working-directory: apps/desktop
+        env:
+          PLAYWRIGHT_E2E: '1'
+        run: |
+          export SHOGO_E2E_EXECUTABLE="$PWD/out/Shogo-win32-x64/Shogo.exe"
+          npx playwright test --config e2e/playwright.config.ts e2e/explorer-folder-project.spec.ts e2e/shogo-ide-open.spec.ts
+
+      - name: Upload traces and logs
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: desktop-e2e-windows
+          path: |
+            test-results/notetaker-e2e
+            ~/AppData/Roaming/Shogo/logs
+          retention-days: 7
+
+  macos:
+    name: Packaged E2E (macOS arm64)
+    needs: build-web
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-desktop-darwin-arm64-bun${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-desktop-darwin-arm64-bun${{ env.BUN_VERSION }}-
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: web-dist-e2e
+          path: apps/mobile/dist/
+
+      - name: Download Bun binary (for bundling in app)
+        run: |
+          mkdir -p apps/desktop/resources/bun
+          cd apps/desktop/resources/bun
+          curl -fSL -o bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${{ env.BUN_VERSION }}/bun-darwin-aarch64.zip"
+          unzip bun.zip
+          mv bun-darwin-aarch64/bun* . || true
+          rm -rf bun-darwin-aarch64 bun.zip
+          ln bun bunx
+          chmod +x bun bunx
+
+      - run: bun install
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: bun run build:packages
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+      - run: bun run generate:routes
+      - run: bun run db:generate:all
+      - run: node apps/desktop/scripts/bundle-api.mjs
+        env:
+          SHOGO_TARGET_ARCH: arm64
+      - run: bunx prisma db push --schema=prisma/schema.local.prisma --accept-data-loss
+        env:
+          DATABASE_URL: file:./apps/desktop/resources/seed.db
+      - name: Install desktop dependencies
+        working-directory: apps/desktop
+        run: npm install
+      - name: Ensure Electron binary is downloaded
+        working-directory: apps/desktop
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BIN=node_modules/electron/dist/Electron.app/Contents/MacOS/Electron
+          for attempt in 1 2 3 4 5; do
+            [ -f "$BIN" ] && break
+            rm -rf node_modules/electron/dist node_modules/electron/path.txt
+            node node_modules/electron/install.js || node node_modules/electron/cli.js --version || true
+            sleep 5
+          done
+          [ -f "$BIN" ] || { echo "::error::Electron binary missing"; exit 1; }
+      - name: Build TypeScript
+        working-directory: apps/desktop
+        run: npx tsc && npm run bundle:main && npm run bundle:pty-host
+
+      - name: Package (unsigned)
+        working-directory: apps/desktop
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SKIP_MOBILE_BUILD: '1'
+        run: |
+          for attempt in 1 2 3; do
+            rm -rf out
+            npx electron-forge package --arch=arm64 || true
+            [ -d out/Shogo-darwin-arm64/Shogo.app ] && exit 0
+            sleep 5
+          done
+          echo "::error::electron-forge package produced no out/Shogo-darwin-arm64/Shogo.app"
+          exit 1
+
+      - name: Verify packaged Shogo IDE resources
+        working-directory: apps/desktop
+        run: node scripts/assert-packaged-shogo-ide.mjs out
+
+      - name: Boot the packaged app and run the packaged smoke
+        run: |
+          set -uo pipefail
+          APP="$PWD/apps/desktop/out/Shogo-darwin-arm64/Shogo.app"
+          rm -rf "$HOME/Library/Application Support/Shogo" "$HOME/Library/Logs/Shogo"
+          mkdir -p "$HOME/Library/Logs/Shogo"
+          LOG="$HOME/Library/Logs/Shogo/main.log"; : > "$LOG"
+          "$APP/Contents/MacOS/Shogo" > /tmp/shogo-stdout.log 2>&1 &
+          APP_PID=$!
+          RESULT=""
+          for _ in $(seq 1 150); do
+            if grep -qE '\[FATAL\].*Failed to start local server|Failed to run database migrations' "$LOG" /tmp/shogo-stdout.log 2>/dev/null; then RESULT=fail; break; fi
+            if grep -q 'API server is healthy' "$LOG" /tmp/shogo-stdout.log 2>/dev/null; then RESULT=pass; break; fi
+            sleep 2
+          done
+          SMOKE=fail
+          if [ "$RESULT" = pass ]; then
+            bun scripts/ci/desktop-packaged-smoke.ts --log "$LOG" --bundled-bun "$APP/Contents/Resources/bun/bun" && SMOKE=pass
+          fi
+          kill "$APP_PID" 2>/dev/null || true
+          pkill -f "Shogo.app/Contents" 2>/dev/null || true
+          if [ "$SMOKE" != pass ]; then
+            echo "=== main.log ==="; cat "$LOG" || true
+            echo "::error::Packaged smoke failed (boot=$RESULT)"
+            exit 1
+          fi
+
+      - name: Playwright specs against the packaged app
+        working-directory: apps/desktop
+        env:
+          PLAYWRIGHT_E2E: '1'
+        run: |
+          export SHOGO_E2E_EXECUTABLE="$PWD/out/Shogo-darwin-arm64/Shogo.app/Contents/MacOS/Shogo"
+          npx playwright test --config e2e/playwright.config.ts e2e/explorer-folder-project.spec.ts e2e/shogo-ide-open.spec.ts
+
+      - name: Upload traces and logs
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: desktop-e2e-macos
+          path: |
+            test-results/notetaker-e2e
+            ~/Library/Logs/Shogo
+          retention-days: 7

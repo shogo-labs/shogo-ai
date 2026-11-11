@@ -49,8 +49,12 @@ export function shogoIdeSourceDir(): string {
     : path.join(resolveRepoRoot(), 'apps', 'shogo-ide')
 }
 
+/** Next to main.log (same directory choice as main.ts). */
 export function shogoIdeLogPath(): string {
-  return path.join(app.getPath('userData'), 'logs', 'shogo-ide.log')
+  const logDir = process.platform === 'win32'
+    ? path.join(app.getPath('userData'), 'logs')
+    : path.join(app.getPath('home'), 'Library', 'Logs', 'Shogo')
+  return path.join(logDir, 'shogo-ide.log')
 }
 
 export function appendShogoIdeLog(message: string): void {

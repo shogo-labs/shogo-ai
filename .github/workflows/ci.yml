@@ -147,7 +147,7 @@ jobs:
           changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
           printf '%s\n' "$changed"
           if printf '%s\n' "$changed" | grep -Eq \
-            '^(packages/agent-runtime/src/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|trust-resolver|workspace-runtime-mode|runtime-lsp-routes|pty-[a-z-]+|runtime-terminal-routes|quick-commands|detected-urls|process-tree|sandbox-exec)\.ts$|packages/agent-runtime/src/__tests__/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|canvas-file-watcher-mounts|trust-resolver-workspace-mounts|runtime-lsp-routes-scope|workspace-runtime-mode|pty-session|pty-ws-e2e|runtime-terminal-routes|process-tree|qa-sho144-cancel-truth\.acceptance|qa-sho144-windows-tree\.acceptance)\.test\.ts$|packages/sdk/src/(child-ledger|vite-watch)\.ts$|packages/agent-runtime/src/__tests__/helpers/pty-shell\.ts$|apps/api/src/lib/runtime/|apps/api/src/__tests__/runtime-manager-startWorkspace\.test\.ts$|scripts/(run-tests-isolated|postinstall|db-generate-all|__tests__/desktop-next-beta-version\.test)\.ts$|package\.json$|\.github/workflows/ci\.yml$)'; then
+            '^(packages/agent-runtime/src/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|trust-resolver|workspace-runtime-mode|runtime-lsp-routes|pty-[a-z-]+|runtime-terminal-routes|quick-commands|detected-urls|process-tree|sandbox-exec)\.ts$|packages/agent-runtime/src/__tests__/(path-boundary|permission-engine|runtime-trust|canvas-file-watcher|fs-tree-walker|workspace-file-routes|canvas-file-watcher-mounts|trust-resolver-workspace-mounts|runtime-lsp-routes-scope|workspace-runtime-mode|pty-session|pty-ws-e2e|runtime-terminal-routes|process-tree|qa-sho144-cancel-truth\.acceptance|qa-sho144-windows-tree\.acceptance)\.test\.ts$|packages/sdk/src/(child-ledger|vite-watch)\.ts$|packages/agent-runtime/src/__tests__/helpers/pty-shell\.ts$|apps/api/src/lib/runtime/|apps/api/src/__tests__/runtime-manager-startWorkspace\.test\.ts$|scripts/(run-tests-isolated|postinstall|db-generate-all|__tests__/desktop-next-beta-version\.test)\.ts$|apps/desktop/src/code-oss-server/|apps/desktop/src/child-process\.ts$|apps/desktop/src/__tests__/code-(oss-server-[a-z-]+|workbench-status)\.test\.ts$|apps/shogo-ide/scripts/|package\.json$|\.github/workflows/ci\.yml$)'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "relevant=false" >> "$GITHUB_OUTPUT"
@@ -386,6 +386,9 @@ jobs:
         run: |
           bun scripts/check-shogo-ide-server-manifest.ts --offline
           bun --no-env-file test scripts/__tests__/check-shogo-ide-server-manifest.test.ts
+
+      - name: Packaged desktop E2E builds like a release
+        run: bun scripts/check-desktop-e2e-pins.ts
 
       - name: Check CI `bun install` steps authenticate ripgrep-prebuilt
         if: needs.prelude.outputs.verified != 'true'
@@ -1344,6 +1347,11 @@ jobs:
           bun --no-env-file test src/__tests__/exec-nul-redirect.test.ts src/__tests__/qa-sho180-park-notify.acceptance.test.ts
           cd ../..
           bun --no-env-file test scripts/__tests__/desktop-next-beta-version.test.ts
+          # #1989: Shogo IDE server install (Windows tar.exe, MAX_PATH budget,
+          # junction cleanup), launch (node.exe, taskkill tree kill, /c:/ folder
+          # URLs) and the build inputs' CRLF-stable hash.
+          bun --no-env-file test apps/desktop/src/__tests__/code-oss-server-manifest.test.ts apps/desktop/src/__tests__/code-oss-server-install.test.ts apps/desktop/src/__tests__/code-oss-server-launch.test.ts apps/desktop/src/__tests__/code-oss-server-legacy-cleanup.test.ts apps/desktop/src/__tests__/code-workbench-status.test.ts
+          bun --no-env-file test apps/shogo-ide/scripts/__tests__/code-oss-server.test.ts
           # The Windows installer ships this bundle; build it on the platform that packages it.
           bun --no-env-file test apps/api/src/__tests__/runtime-manager-startWorkspace.test.ts apps/api/src/lib/runtime/__tests__/local-bundle-integrity.test.ts
 
