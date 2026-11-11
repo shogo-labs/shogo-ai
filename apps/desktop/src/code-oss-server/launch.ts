@@ -13,8 +13,7 @@ import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
-import type { ChildProcess, SpawnOptions } from 'node:child_process'
-import { spawn as defaultSpawn } from '../child-process'
+import { spawn as defaultSpawn, type ChildProcess, type SpawnOptions } from '../child-process'
 
 /** Every flag `buildServerArgs` may emit. All are server options at the pinned commit. */
 export const SERVER_FLAG_ALLOWLIST: ReadonlySet<string> = new Set([
