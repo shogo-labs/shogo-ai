@@ -92,7 +92,7 @@
     "shogo-ide:hardening:report": "bun run --cwd apps/shogo-ide hardening:report",
     "shogo-ide:extension:build": "bun run --cwd apps/shogo-ide extension:build",
     "shogo-ide:extension:typecheck": "bun run --cwd apps/shogo-ide extension:typecheck",
-    "shogo-ide:codeoss:clone:print": "bun run --cwd apps/shogo-ide codeoss:clone:print",
+    "shogo-ide:codeoss:server:build": "bun run --cwd apps/shogo-ide codeoss:server:build",
     "docs:dev": "bun run --cwd apps/docs dev",
     "docs:build": "bun run --cwd apps/docs build",
     "typecheck": "bun --no-env-file scripts/run-typecheck.ts",

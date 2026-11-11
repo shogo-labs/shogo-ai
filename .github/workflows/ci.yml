@@ -373,8 +373,11 @@ jobs:
       - name: Shogo Code extension (typecheck, phase checks)
         run: |
           bun run --cwd apps/shogo-ide extension:typecheck
-          node apps/shogo-ide/scripts/phase1-check.mjs
-          node apps/shogo-ide/scripts/phase3-check.mjs
+          for check in apps/shogo-ide/scripts/phase*-check.mjs; do
+            echo "::group::$check"
+            node "$check"
+            echo "::endgroup::"
+          done
 
       # The desktop app downloads the server named in this manifest; it must
       # match the repo's pin + patches + shogo-core. On a PR that changes them,

@@ -5,9 +5,9 @@
  * Electron-free so it can be unit tested.
  *
  * The server's own `node[.exe]` runs `out/server-main.js` directly: no
- * `code-server.bat` / `.sh` (spawning a .bat without a shell fails with EINVAL
- * on current Node), no dev-mode `VSCODE_DEV`, and only flags the server
- * accepts (it silently ignores desktop-only ones).
+ * upstream launcher scripts (spawning a .bat without a shell fails with
+ * EINVAL on current Node), no dev mode, and only flags the server accepts
+ * (it silently ignores desktop-only ones).
  */
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'

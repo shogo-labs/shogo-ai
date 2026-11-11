@@ -1,5 +1,5 @@
-# Code - OSS is intentionally kept out of the repository.
-# Use scripts/print-code-oss-clone-command.mjs to create a local checkout here.
+# Code - OSS is intentionally kept out of the repository; the commit it is
+# built from is pinned in code-oss.lock.json (see README.md).
 upstream/vscode/
 upstream/vscode-oss/
 

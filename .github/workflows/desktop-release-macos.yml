@@ -768,6 +768,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify packaged Shogo IDE resources
+        # Bundled Bun, apps/shogo-ide (incl. the prebuilt-server manifest) and
+        # no unresolved workspace-source requires in app.asar.
+        working-directory: apps/desktop
+        run: node scripts/assert-packaged-shogo-ide.mjs out
+
       - name: Cleanup macOS Signing Keychain
         if: always()
         run: |

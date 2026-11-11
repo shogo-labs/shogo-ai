@@ -25,6 +25,7 @@ const chatView = read('apps/shogo-ide/extensions/shogo-core/src/chatViewProvider
 const manifest = read('apps/shogo-ide/extensions/shogo-core/package.json')
 const desktopBridge = read('apps/desktop/src/shogo-ide.ts')
 const ideViews = read('apps/desktop/src/ide-views.ts')
+const serverBuild = read('apps/shogo-ide/scripts/build-code-oss-server.mjs')
 
 assert(extension.includes("registerWebviewViewProvider('shogo.agentChat'"), 'shogo-core must register the Shogo Chat webview')
 assert(chatView.includes('workbench.view.extension.shogo-agent-chat'), 'shogo-core must focus the Shogo Chat auxiliary container')
@@ -37,10 +38,11 @@ assert(manifest.includes('shogo.desktopChat.url'), 'extension manifest must expo
 assert(manifest.includes('shogo-agent-chat'), 'extension manifest must own the Shogo Chat secondary sidebar container')
 assert(manifest.includes('shogo.agentChat'), 'extension manifest must own the Shogo Chat webview')
 assert(!desktopBridge.includes('extensions/shogo-agent-chat'), 'desktop bridge must not require the removed standalone chat extension')
-assert(desktopBridge.includes('syncBundledShogoExtensions'), 'desktop bridge must sync bundled Shogo extensions into the runtime profile')
-assert(desktopBridge.includes('syncFilteredSystemExtensions'), 'desktop bridge must filter upstream system extensions')
+// shogo-core is built into the prebuilt server and Copilot is removed from it at build time.
+assert(serverBuild.includes("join(extensionsDir, 'shogo-core')"), 'the server build must bundle shogo-core as a built-in extension')
+assert(serverBuild.includes("'copilot', 'copilot-chat'"), 'the server build must remove the upstream Copilot extensions')
+assert(desktopBridge.includes("'shogo.desktopChat.url'"), 'runtime settings must carry the Desktop chat URL')
 assert(ideViews.includes('SHOGO_DESKTOP_CHAT_URL'), 'managed workbench must pass the Desktop chat URL to Code-OSS')
-assert(ideViews.includes('--builtin-extensions-dir'), 'managed workbench must use the filtered system extensions directory')
 
 if (errors.length > 0) {
   console.error('Shogo Agent Chat Phase 5/6 check failed:')
