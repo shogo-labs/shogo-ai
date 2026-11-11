@@ -2,22 +2,22 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { BrowserWindow } from 'electron'
-import { spawn, type ChildProcess } from './child-process'
 import { createHash } from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import { getApiUrl } from './local-server'
 import { getWorkspacesDir } from './paths'
-import { ensureShogoIdeRuntimeProfile, ensureShogoIdeSetup, getShogoIdeStatus, SHOGO_IDE_DISABLED_UPSTREAM_EXTENSIONS, syncShogoIdeProduct } from './shogo-ide'
+import { appendShogoIdeLog, ensureShogoIdeRuntimeProfile, ensureShogoIdeServer, shogoIdeSourceDir } from './shogo-ide'
+import { killProcessTree, startCodeOssServer, type RunningServer } from './code-oss-server/launch'
+import type { CodeWorkbenchReport } from './code-oss-server/status'
 
 interface IdeServerRecord {
-  key: string
   workspacePath: string
-  url: string | null
-  proc: ChildProcess
-  ready: Promise<string>
+  ready: Promise<RunningServer>
+  running?: RunningServer
 }
 
+/** One server per workspace folder, shared by every window showing it. */
 const servers = new Map<string, IdeServerRecord>()
 const ideWindows = new Map<string, BrowserWindow>()
 
@@ -25,14 +25,11 @@ function serverKey(workspacePath: string): string {
   return path.resolve(workspacePath)
 }
 
-function stableHash(value: string): string {
-  return createHash('sha256').update(path.resolve(value)).digest('hex')
-}
-
-function serverPortRange(workspacePath: string): string {
-  const offset = parseInt(stableHash(workspacePath).slice(0, 4), 16) % 1000
+/** A stable 10-port range per workspace, so a reopened server tends to keep its URL. */
+function serverPortRange(workspacePath: string): [number, number] {
+  const offset = parseInt(createHash('sha256').update(path.resolve(workspacePath)).digest('hex').slice(0, 4), 16) % 1000
   const start = 18000 + offset * 10
-  return `${start}-${start + 9}`
+  return [start, start + 9]
 }
 
 function ideWindowKey(ownerWindowId: number | undefined, projectId: string, workspacePath: string): string {
@@ -47,186 +44,106 @@ function resolveWorkspacePath(projectId: string, workspacePath?: string): string
   return fs.existsSync(candidate) ? candidate : null
 }
 
-function codeOssWorkspaceUrl(baseUrl: string, workspacePath: string): string {
-  try {
-    const url = new URL(baseUrl)
-    url.searchParams.set('folder', workspacePath)
-    return url.toString()
-  } catch {
-    const separator = baseUrl.includes('?') ? '&' : '?'
-    return `${baseUrl}${separator}folder=${encodeURIComponent(workspacePath)}`
-  }
+function isAlive(server: RunningServer | undefined): server is RunningServer {
+  return !!server && server.proc.exitCode === null && server.proc.signalCode === null
 }
 
-function extractCodeOssServerUrl(text: string): string | null {
-  const candidates = text.match(/https?:\/\/[^\s'"<>]+/g) ?? []
-  for (const candidate of candidates) {
-    const normalized = candidate.replace(/[),.;]+$/, '')
-    try {
-      const url = new URL(normalized)
-      if (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1' || url.hostname === '0.0.0.0') {
-        if (url.hostname === '0.0.0.0') url.hostname = '127.0.0.1'
-        return url.toString()
-      }
-    } catch {
-      continue
-    }
-  }
-  return null
-}
-
-function codeOssWebArgs(status: ReturnType<typeof getShogoIdeStatus>, workspacePath: string, desktopChatUrl?: string): string[] {
-  const runtime = ensureShogoIdeRuntimeProfile(status.workspacePath, { desktopChatUrl, profileKey: workspacePath })
-  const shogoCoreExtensionPath = path.join(status.workspacePath, 'extensions', 'shogo-core')
-  return [
-    '--skip-welcome',
-    '--disable-telemetry',
-    '--disable-crash-reporter',
-    '--disable-workspace-trust',
-    '--user-data-dir', runtime.userDataDir,
-    '--extensions-dir', runtime.extensionsDir,
-    '--builtin-extensions-dir', runtime.systemExtensionsDir,
-    '--extensionDevelopmentPath', shogoCoreExtensionPath,
-    '--host', '127.0.0.1',
-    '--port', serverPortRange(workspacePath),
-    '--agents-user-data-dir', runtime.agentsUserDataDir,
-    '--agents-extensions-dir', runtime.agentsExtensionsDir,
-    '--crash-reporter-directory', runtime.crashReporterDirectory,
-    ...SHOGO_IDE_DISABLED_UPSTREAM_EXTENSIONS.map((extensionId) => `--disable-extension=${extensionId}`),
-    workspacePath,
-  ]
-}
-
-function codeOssLaunchCommand(scriptPath: string, args: string[]): { command: string; args: string[] } {
-  if (process.platform === 'win32') return { command: scriptPath, args }
-  return { command: 'npx', args: ['-y', '-p', 'node@24.15.0', 'bash', scriptPath, ...args] }
-}
-
-function trimLaunchOutput(output: string[]): string {
-  return output.join('').split(/\r?\n/).filter(Boolean).slice(-12).join('\n')
-}
-
-async function startIdeServer(workspacePath: string, desktopChatUrl?: string): Promise<IdeServerRecord> {
+async function getServer(workspacePath: string, chatUrl: string | undefined, report: CodeWorkbenchReport): Promise<RunningServer> {
   const key = serverKey(workspacePath)
   const existing = servers.get(key)
-  if (existing) return existing
-
-  let status = getShogoIdeStatus()
-  await ensureShogoIdeSetup(status)
-  status = getShogoIdeStatus()
-  if (!status.codeOssCheckoutExists) {
-    throw new Error('Code OSS checkout is not present after setup.')
-  }
-  syncShogoIdeProduct(status)
-
-  const scriptPath = path.join(status.codeOssCheckoutPath, 'scripts', process.platform === 'win32' ? 'code-server.bat' : 'code-server.sh')
-  if (!fs.existsSync(scriptPath)) {
-    throw new Error(`Code OSS web runner not found at ${scriptPath}`)
-  }
-
-  const args = codeOssWebArgs(status, workspacePath, desktopChatUrl)
-  const launch = codeOssLaunchCommand(scriptPath, args)
-  const output: string[] = []
-  let resolvedUrl: string | null = null
-
-  const proc = spawn(launch.command, launch.args, {
-    cwd: status.codeOssCheckoutPath,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      SHOGO_IDE_PHASE: 'same-app-window',
-      SHOGO_IDE_WORKSPACE: status.workspacePath,
-      SHOGO_AGENT_BRIDGE_URL: getApiUrl(),
-      ...(desktopChatUrl ? { SHOGO_DESKTOP_CHAT_URL: desktopChatUrl } : {}),
-      VSCODE_DEV: '1',
-    },
-  })
-
-  const ready = new Promise<string>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error('Timed out waiting for Code OSS web server URL'))
-    }, 30_000)
-
-    const onData = (chunk: Buffer) => {
-      const text = chunk.toString()
-      output.push(text)
-      if (output.length > 40) output.splice(0, output.length - 40)
-      const url = extractCodeOssServerUrl(text)
-      if (url && !resolvedUrl) {
-        resolvedUrl = url
-        clearTimeout(timeout)
-        resolve(resolvedUrl)
-      }
+  if (existing) {
+    try {
+      const running = await existing.ready
+      if (isAlive(running)) return running
+    } catch {
+      // the previous start failed; start again
     }
+    if (servers.get(key) === existing) servers.delete(key)
+  }
 
-    proc.stdout.on('data', onData)
-    proc.stderr.on('data', onData)
-    proc.once('error', (error) => {
-      clearTimeout(timeout)
-      reject(error)
+  const record = { workspacePath } as IdeServerRecord
+  record.ready = (async () => {
+    const serverDir = await ensureShogoIdeServer((progress) =>
+      report(progress.phase, { received: progress.received, total: progress.total }),
+    )
+    report('starting')
+    const profile = ensureShogoIdeRuntimeProfile(workspacePath, { desktopChatUrl: chatUrl })
+    const running = await startCodeOssServer({
+      serverDir,
+      profile,
+      portRange: serverPortRange(workspacePath),
+      env: {
+        ...process.env,
+        SHOGO_IDE_WORKSPACE: shogoIdeSourceDir(),
+        SHOGO_AGENT_BRIDGE_URL: getApiUrl(),
+        ...(chatUrl ? { SHOGO_DESKTOP_CHAT_URL: chatUrl } : {}),
+      },
+      log: appendShogoIdeLog,
     })
-    proc.once('exit', (code) => {
-      servers.delete(key)
-      if (!resolvedUrl) {
-        clearTimeout(timeout)
-        const details = trimLaunchOutput(output)
-        reject(new Error(`Code OSS web server exited before startup (${code ?? 'unknown'})${details ? `
-${details}` : ''}`))
-      }
+    running.proc.once('exit', (code, signal) => {
+      appendShogoIdeLog(`Shogo IDE server for ${workspacePath} exited (${code ?? signal})`)
+      if (servers.get(key) === record) servers.delete(key)
     })
+    record.running = running
+    return running
+  })()
+  servers.set(key, record)
+  record.ready.catch(() => {
+    if (servers.get(key) === record) servers.delete(key)
   })
-
-  const rec: IdeServerRecord = { key, workspacePath, url: null, proc, ready }
-  ready.then((url) => { rec.url = url }).catch(() => undefined)
-  servers.set(key, rec)
-  return rec
+  return record.ready
 }
 
+/**
+ * Open (or focus) the Shogo IDE window for a project. Progress goes through
+ * `report`; failures throw with a message meant for the user.
+ */
 export async function openIdeWindow(
   projectId: string,
   createWindow: () => BrowserWindow,
-  opts: { workspacePath?: string; chatUrl?: string; ownerWindowId?: number } = {},
-): Promise<{ ok: true; windowId: number; url: string } | { ok: false; error: string }> {
-  if (!projectId) return { ok: false, error: 'project-id-required' }
+  opts: { workspacePath?: string; chatUrl?: string; ownerWindowId?: number; report: CodeWorkbenchReport },
+): Promise<{ windowId: number; url: string }> {
+  const workspacePath = resolveWorkspacePath(projectId, opts.workspacePath)
+  if (!workspacePath) throw new Error('This project has no folder on this machine to open in Shogo IDE.')
+  const windowKey = ideWindowKey(opts.ownerWindowId, projectId, workspacePath)
 
-  try {
-    const workspacePath = resolveWorkspacePath(projectId, opts.workspacePath)
-    if (!workspacePath) return { ok: false, error: 'workspace-path-required' }
-    const windowKey = ideWindowKey(opts.ownerWindowId, projectId, workspacePath)
+  const server = await getServer(workspacePath, opts.chatUrl, opts.report)
+  const url = server.workbenchUrl(workspacePath)
 
-    const existing = ideWindows.get(windowKey)
-    if (existing && !existing.isDestroyed()) {
-      const server = await startIdeServer(workspacePath, opts.chatUrl)
-      const url = codeOssWorkspaceUrl(await server.ready, workspacePath)
-      if (!existing.webContents.getURL().includes('folder=')) {
-        await existing.loadURL(url)
-      }
-      if (existing.isMinimized()) existing.restore()
-      existing.show()
-      existing.focus()
-      return { ok: true, windowId: existing.id, url: existing.webContents.getURL() }
-    }
-
-    const server = await startIdeServer(workspacePath, opts.chatUrl)
-    const url = codeOssWorkspaceUrl(await server.ready, workspacePath)
-    const window = createWindow()
-    ideWindows.set(windowKey, window)
-    window.setTitle('Shogo-IDE')
-    window.once('closed', () => {
-      if (ideWindows.get(windowKey)?.id === window.id) ideWindows.delete(windowKey)
-    })
-    await window.loadURL(url)
-    window.show()
-    window.focus()
-    return { ok: true, windowId: window.id, url }
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  const existing = ideWindows.get(windowKey)
+  if (existing && !existing.isDestroyed()) {
+    if (!existing.webContents.getURL().startsWith(`http://127.0.0.1:${server.port}/`)) await existing.loadURL(url)
+    if (existing.isMinimized()) existing.restore()
+    existing.show()
+    existing.focus()
+    return { windowId: existing.id, url: existing.webContents.getURL() }
   }
+
+  const window = createWindow()
+  ideWindows.set(windowKey, window)
+  window.setTitle('Shogo-IDE')
+  window.once('closed', () => {
+    if (ideWindows.get(windowKey)?.id === window.id) ideWindows.delete(windowKey)
+    const stillShown = [...ideWindows.keys()].some((k) => k.endsWith(`:${path.resolve(workspacePath)}`))
+    if (!stillShown) stopServer(workspacePath)
+  })
+  await window.loadURL(url)
+  window.show()
+  window.focus()
+  appendShogoIdeLog(`Opened Shogo IDE for ${workspacePath}`)
+  return { windowId: window.id, url }
+}
+
+function stopServer(workspacePath: string): void {
+  const key = serverKey(workspacePath)
+  const record = servers.get(key)
+  servers.delete(key)
+  if (isAlive(record?.running)) killProcessTree(record.running.proc)
 }
 
 export function disposeIdeServers(): void {
-  for (const rec of servers.values()) {
-    rec.proc.kill('SIGTERM')
+  for (const record of servers.values()) {
+    if (isAlive(record.running)) killProcessTree(record.running.proc)
   }
   servers.clear()
 }

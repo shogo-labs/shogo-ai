@@ -70,6 +70,8 @@ import { describeLiveActivity, liveActivityTotal, setApiDrain } from './live-act
 import { IdleRestart } from './restart-when-idle'
 type RecordingModule = typeof import('./recording')
 import { registerFsIpcHandlers } from './fs-ipc'
+import { createCodeWorkbenchOpener, type CodeWorkbenchOpenResult, type CodeWorkbenchStatus } from './code-oss-server/status'
+import { appendShogoIdeLog, shogoIdeLogPath } from './shogo-ide'
 import { registerGitIpcHandlers, disposeGitIpc } from './git/ipc'
 import { registerRunIpcHandlers, disposeRunIpc } from './run-ipc'
 import { DEBUG_IPC_CHANNELS } from './debug-channels'
@@ -822,7 +824,11 @@ function embeddedDesktopBridgeScript(): string {
     signOutCloud: async () => ({ ok: false }),
     onNavigate: () => {},
     removeNavigateListener: () => {},
-    codeWorkbench: { open: async () => ({ ok: false, error: 'Already inside Shogo IDE' }) },
+    codeWorkbench: {
+      open: async () => ({ ok: false, error: 'Already inside Shogo IDE' }),
+      onStatus: () => () => {},
+      openLog: async () => ({ ok: false }),
+    },
   };
   window.shogoDesktop = Object.assign({}, bridge, window.shogoDesktop || {});
 })();
@@ -1066,24 +1072,39 @@ if (process.env.SHOGO_E2E === '1') {
   ;(globalThis as { __shogoE2E?: { openNewWindow: () => void } }).__shogoE2E = { openNewWindow }
 }
 
-async function openCodeWorkbenchWindow(
+const codeWorkbenchOpener = createCodeWorkbenchOpener({ logPath: shogoIdeLogPath, log: appendShogoIdeLog })
+
+/**
+ * Starts opening Shogo IDE in the background and returns at once: a first
+ * open downloads the server. Progress and failures reach the requesting
+ * window as `code-workbench:status` events (#1989).
+ */
+function openCodeWorkbenchWindow(
   options: { projectId?: string; workspacePath?: string } = {},
   ownerWindow?: BrowserWindow | null,
-): Promise<{ ok: true; windowId: number; url: string } | { ok: false; error: string }> {
-  if (!options.projectId) return { ok: false, error: 'project-id-required' }
-  const { openIdeWindow } = await loadIde()
-  return openIdeWindow(
-    options.projectId,
-    () => windowManager.createCodeWorkbenchWindow(options),
-    {
-      workspacePath: options.workspacePath,
-      ownerWindowId: ownerWindow?.id,
-      chatUrl: await getEmbeddableAppWindowUrl(buildCodeWorkbenchChatPath({
-        projectId: options.projectId,
-        workspacePath: options.workspacePath,
-      })),
+  onError?: (status: CodeWorkbenchStatus) => void,
+): CodeWorkbenchOpenResult {
+  const projectId = options.projectId
+  return codeWorkbenchOpener.open({
+    key: `${ownerWindow?.id ?? 'global'}:${projectId}`,
+    projectId,
+    emit: (status) => {
+      if (ownerWindow && !ownerWindow.isDestroyed()) ownerWindow.webContents.send('code-workbench:status', status)
     },
-  )
+    onError,
+    run: async (report) => {
+      const { openIdeWindow } = await loadIde()
+      await openIdeWindow(projectId!, () => windowManager.createCodeWorkbenchWindow(options), {
+        workspacePath: options.workspacePath,
+        ownerWindowId: ownerWindow?.id,
+        chatUrl: await getEmbeddableAppWindowUrl(buildCodeWorkbenchChatPath({
+          projectId: projectId!,
+          workspacePath: options.workspacePath,
+        })),
+        report,
+      })
+    },
+  })
 }
 
 function parseCodeWorkbenchOptionsFromUrl(rawUrl: string): { projectId?: string; workspacePath?: string } | null {
@@ -1128,19 +1149,19 @@ function openActiveCodeWorkbenchFromMenu(): void {
   }
 
   const ownerWindow = BrowserWindow.getFocusedWindow() ?? windowManager.getPrimaryWindow()
-  void openCodeWorkbenchWindow(options, ownerWindow).then((result) => {
-    if (!result.ok) {
-      const win = BrowserWindow.getFocusedWindow() ?? windowManager.getPrimaryWindow()
-      const dialogOptions = {
-        type: 'error' as const,
-        message: 'Could not open Shogo IDE',
-        detail: result.error,
-        buttons: ['OK'],
-      }
-      if (win) void dialog.showMessageBox(win, dialogOptions)
-      else void dialog.showMessageBox(dialogOptions)
+  const showError = (detail: string) => {
+    const win = BrowserWindow.getFocusedWindow() ?? windowManager.getPrimaryWindow()
+    const dialogOptions = {
+      type: 'error' as const,
+      message: 'Could not open Shogo IDE',
+      detail: `${detail}\n\nDetails: ${shogoIdeLogPath()}`,
+      buttons: ['OK'],
     }
-  })
+    if (win) void dialog.showMessageBox(win, dialogOptions)
+    else void dialog.showMessageBox(dialogOptions)
+  }
+  const result = openCodeWorkbenchWindow(options, ownerWindow, (status) => showError(status.message ?? 'Unknown error'))
+  if (!result.ok) showError(result.error)
 }
 
 function buildDockMenu(): void {
@@ -1423,6 +1444,13 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle('code-workbench:open', (event, options?: { projectId?: string; workspacePath?: string }) => {
     return openCodeWorkbenchWindow(options ?? {}, windowManager.getWindowForWebContents(event.sender))
+  })
+  // Opens main's own log file; the renderer never supplies a path here.
+  ipcMain.handle('code-workbench:open-log', async () => {
+    const logPath = shogoIdeLogPath()
+    if (!fs.existsSync(logPath)) return { ok: false, error: 'No Shogo IDE log yet' }
+    const error = await shell.openPath(logPath)
+    return error ? { ok: false, error } : { ok: true }
   })
 
   // A local `file://` share in the viewer: show it in Finder (Explorer on

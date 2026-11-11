@@ -36,6 +36,11 @@ import {
   useColorScheme,
 } from "react-native";
 import {
+  alertCodeWorkbenchError,
+  getCodeWorkbenchBridge,
+  type CodeWorkbenchStatus,
+} from "../../../../lib/code-workbench-status";
+import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
@@ -3443,47 +3448,46 @@ export default observer(function ProjectLayout() {
     [billingHasActive, billingHasAdvanced, billingRefetch]
   );
 
+  // Opening runs in the desktop main process; progress and failures arrive
+  // as `code-workbench:status` events (a first open downloads the server).
+  const [codeWorkbenchStatus, setCodeWorkbenchStatus] = useState<CodeWorkbenchStatus | null>(null);
+  const openCodeWorkbenchRef = useRef<() => void>(() => {});
+  const showCodeWorkbenchError = useCallback((message: string) => {
+    const bridge = getCodeWorkbenchBridge();
+    alertCodeWorkbenchError(message, {
+      retry: () => openCodeWorkbenchRef.current(),
+      ...(bridge?.openLog ? { openLog: () => void bridge.openLog!() } : {}),
+    });
+  }, []);
   const handleOpenCodeWorkbench = useCallback(() => {
     if (!projectId) return;
-    const bridge =
-      Platform.OS === "web" && typeof window !== "undefined"
-        ? (
-            window as unknown as {
-              shogoDesktop?: {
-                codeWorkbench?: {
-                  open?: (opts: {
-                    projectId?: string;
-                    workspacePath?: string;
-                  }) => Promise<{ ok?: boolean; error?: string }>;
-                };
-              };
-            }
-          ).shogoDesktop?.codeWorkbench
-        : undefined;
+    const bridge = Platform.OS === "web" ? getCodeWorkbenchBridge() : undefined;
     if (bridge?.open) {
       void bridge
         .open({
           projectId: projectId!,
           ...(localFolderPath ? { workspacePath: localFolderPath } : {}),
         })
-        .then((result: { ok?: boolean; error?: string } | undefined) => {
-          if (result && result.ok === false) {
-            Alert.alert(
-              "Could not open Shogo IDE",
-              result.error ?? "Unknown error"
-            );
-          }
+        .then((result) => {
+          if (result && result.ok === false) showCodeWorkbenchError(result.error ?? "Unknown error");
         })
         .catch((err: unknown) => {
-          Alert.alert(
-            "Could not open Shogo IDE",
-            err instanceof Error ? err.message : String(err)
-          );
+          showCodeWorkbenchError(err instanceof Error ? err.message : String(err));
         });
       return;
     }
     handlePreviewTabChange("ide");
-  }, [handlePreviewTabChange, localFolderPath, projectId]);
+  }, [handlePreviewTabChange, localFolderPath, projectId, showCodeWorkbenchError]);
+  openCodeWorkbenchRef.current = handleOpenCodeWorkbench;
+  useEffect(() => {
+    if (Platform.OS !== "web" || !projectId) return;
+    const unsubscribe = getCodeWorkbenchBridge()?.onStatus?.((status) => {
+      if (status.projectId !== projectId) return;
+      setCodeWorkbenchStatus(status);
+      if (status.phase === "error") showCodeWorkbenchError(status.message ?? "Unknown error");
+    });
+    return unsubscribe;
+  }, [projectId, showCodeWorkbenchError]);
 
   // enrichMessage: auto-inject terminal context into every chat message.
   // Dynamically imports the desktop terminal store (no-op on mobile/web).
@@ -3886,6 +3890,7 @@ export default observer(function ProjectLayout() {
       !!(window as any).shogoDesktop?.isDesktop
         ? handleOpenCodeWorkbench
         : undefined,
+    codeWorkbenchStatus,
     // Imperative jump into a Settings section (the Publish dropdown's
     // "Custom domain" row). Same nonce pattern the Agents jump uses, so a
     // second tap after navigating away lands again.
