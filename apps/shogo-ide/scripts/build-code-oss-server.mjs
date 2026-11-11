@@ -251,9 +251,22 @@ async function verify({ serverDir }) {
     if (unauthorized.status === 200) throw new Error('Server served the workbench without the connection token')
     console.log(`Server smoke passed on port ${port}`)
   } finally {
-    child.kill()
-    rmSync(scratch, { recursive: true, force: true })
+    await stopTree(child)
+    try {
+      rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 })
+    } catch (error) {
+      console.warn(`Could not remove ${scratch}: ${error instanceof Error ? error.message : error}`)
+    }
   }
+}
+
+/** Stops the server and the extension hosts it spawned (child.kill() leaves those running on Windows). */
+async function stopTree(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  const exited = new Promise((resolvePromise) => child.once('exit', resolvePromise))
+  if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+  else child.kill()
+  await Promise.race([exited, new Promise((r) => setTimeout(r, 10_000))])
 }
 
 async function main() {
