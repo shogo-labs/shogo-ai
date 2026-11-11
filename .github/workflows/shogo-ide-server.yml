@@ -14,7 +14,8 @@ name: Shogo IDE server
 on:
   push:
     branches: [main]
-    paths: &server-inputs
+    # Keep in sync with the pull_request list below.
+    paths:
       - apps/shogo-ide/code-oss.lock.json
       - apps/shogo-ide/patches/code-oss/**
       - apps/shogo-ide/product.shogo.template.json
@@ -30,7 +31,21 @@ on:
       - apps/shogo-ide/scripts/write-code-oss-server-manifest.mjs
       - .github/workflows/shogo-ide-server.yml
   pull_request:
-    paths: *server-inputs
+    paths:
+      - apps/shogo-ide/code-oss.lock.json
+      - apps/shogo-ide/patches/code-oss/**
+      - apps/shogo-ide/product.shogo.template.json
+      - apps/shogo-ide/distribution/distribution.manifest.json
+      - apps/shogo-ide/distribution/defaults/**
+      - apps/shogo-ide/distribution/builtin-extensions/**
+      - apps/shogo-ide/extensions/shogo-core/**
+      - apps/shogo-ide/scripts/apply-code-oss-patches.mjs
+      - apps/shogo-ide/scripts/apply-product-overrides.mjs
+      - apps/shogo-ide/scripts/build-code-oss-server.mjs
+      - apps/shogo-ide/scripts/code-oss-artifact-id.mjs
+      - apps/shogo-ide/scripts/materialize-distribution.mjs
+      - apps/shogo-ide/scripts/write-code-oss-server-manifest.mjs
+      - .github/workflows/shogo-ide-server.yml
   workflow_dispatch:
 
 # Queue, never cancel: on a PR every push re-triggers this workflow (the paths
@@ -224,6 +239,8 @@ jobs:
 
       - name: Commit the manifest to the PR branch
         if: github.event_name == 'pull_request'
+        env:
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           set -euo pipefail
           if git diff --quiet -- apps/shogo-ide/code-oss-server.manifest.json && git ls-files --error-unmatch apps/shogo-ide/code-oss-server.manifest.json >/dev/null 2>&1; then
@@ -234,7 +251,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add apps/shogo-ide/code-oss-server.manifest.json
           git commit -m "chore(shogo-ide): record prebuilt server $ARTIFACT_ID"
-          git push origin "HEAD:${{ github.head_ref }}"
+          git push origin "HEAD:$HEAD_REF"
           echo "::notice::Pushed the manifest. Commits pushed with GITHUB_TOKEN do not start new workflow runs; push again (or re-run) to test this head."
 
       - name: Open a manifest PR
