@@ -135,6 +135,11 @@ mock.module('../lib/prisma', () => withPrismaExports({
             }
           : null,
     },
+    // resolveEffectivePlan combines the subscription with any active grant
+    // (SHO-343); this workspace has none.
+    workspaceGrant: {
+      findMany: async () => [],
+    },
     $transaction: async (fn: any) =>
       fn({
         // SHO-258 §2: the consume transaction resolves its promo-credit source,

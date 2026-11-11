@@ -1076,10 +1076,11 @@ describe('consumeUsage (rolling windows)', () => {
     expect(r.reason).toBe('overage_cap_reached')
   })
 
-  it('resolves one seat’s window, not seats × seat (per seat, not pooled)', async () => {
-    // 3 paid seats, but the allowance a member is shown and metered against is
-    // their own: pro's 8 / 40, not the pooled 24 / 120 that any member could
-    // drain. Per-member isolation is proven with real member rows in
+  it('seatless usage reports the pooled allowance (per-seat × seats)', async () => {
+    // A caller with no seat behind it — an agent/schedule turn, `system`, or
+    // the child-workspace admin view — meters the pooled allowance, never one
+    // seat's worth for the whole workspace (SHO-343). Per-member isolation is
+    // proven with real member rows in
     // `apps/api/src/__tests__/billing-service.test.ts`.
     wallets.set('w1', freshWallet())
     setPlan('pro', 1)
@@ -1088,8 +1089,8 @@ describe('consumeUsage (rolling windows)', () => {
     const threeSeats = await billing.getUsageWindows('w1')
 
     expect(oneSeat.fiveHour.limitUsd).toBeGreaterThan(0)
-    expect(threeSeats.fiveHour.limitUsd).toBe(oneSeat.fiveHour.limitUsd)
-    expect(threeSeats.weekly.limitUsd).toBe(oneSeat.weekly.limitUsd)
+    expect(threeSeats.fiveHour.limitUsd).toBeCloseTo(oneSeat.fiveHour.limitUsd! * 3)
+    expect(threeSeats.weekly.limitUsd).toBeCloseTo(oneSeat.weekly.limitUsd! * 3)
   })
 
   it('enterprise is unlimited within windows (no block)', async () => {

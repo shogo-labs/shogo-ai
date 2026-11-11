@@ -716,7 +716,9 @@ export const defaultStreamDeps: StreamSessionDeps = {
   async admit(ticket) {
     if (isLocalMode()) return true
     const { checkUsageBalance } = await import('./billing.service')
-    return (await checkUsageBalance(ticket.workspaceId)).ok
+    // Meter the same identity the transcription debit uses, so the preflight
+    // and the debit read the same seat (SHO-343).
+    return (await checkUsageBalance(ticket.workspaceId, 0.001, ticket.userId ?? 'system')).ok
   },
 }
 
