@@ -35,7 +35,7 @@ import { dirname, extname, join, relative, resolve } from 'path'
 import { isBinaryBuffer, isBinaryFilePath } from '@shogo-ai/sdk/file-types'
 import { isWithinRoot } from './path-boundary'
 import {
-  walkFilesTree,
+  walkFilesTreeWithMeta,
   WORKSPACE_TREE_HIDDEN_DIRS,
   WORKSPACE_TREE_HIDDEN_FILES,
   WORKSPACE_TREE_LAZY_DIRS,
@@ -141,10 +141,12 @@ export interface WorkspaceFileRoutesConfig {
   /** Paths are `workspaceRelativePath`s, whatever scope the request used. */
   onFileWritten?: (workspaceRelative: string, absolutePath: string) => void
   onFileDeleted?: (workspaceRelative: string) => void
+  /** Tests only: override the tree walker's wall-clock budget. */
+  treeTimeBudgetMs?: number
 }
 
 export function workspaceFileRoutes(config: WorkspaceFileRoutesConfig) {
-  const { workspaceDir, filesDir, getProjectRoot } = config
+  const { workspaceDir, filesDir, getProjectRoot, treeTimeBudgetMs } = config
   const app = new Hono()
 
   const requestRoot = (c: { req: { query(name: string): string | undefined } }) =>
@@ -180,14 +182,16 @@ export function workspaceFileRoutes(config: WorkspaceFileRoutesConfig) {
     // and `sdkFs.ts` for the IDE-side handling.
     // `signal: c.req.raw.signal` wires Hono's per-request abort straight
     // into the walker, so a superseded request stops reading directories.
-    const tree = await walkFilesTree(startDir, rootResolved, {
+    // `truncated` tells the IDE some entries are stubs so it can re-fetch.
+    const { tree, truncated, truncatedReason } = await walkFilesTreeWithMeta(startDir, rootResolved, {
       hiddenDirs: WORKSPACE_TREE_HIDDEN_DIRS,
       lazyDirs: WORKSPACE_TREE_LAZY_DIRS,
       hiddenFiles: WORKSPACE_TREE_HIDDEN_FILES,
       eagerDepth: 1,
       signal: c.req.raw.signal,
+      ...(treeTimeBudgetMs !== undefined ? { timeBudgetMs: treeTimeBudgetMs } : {}),
     })
-    return c.json({ tree })
+    return c.json({ tree, truncated, ...(truncatedReason ? { truncatedReason } : {}) })
   })
 
   // Read a file. Text files come back as `content` (utf-8 string); binary

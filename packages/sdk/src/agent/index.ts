@@ -56,6 +56,7 @@ export type {
   ChatOptions,
   ChatStreamEvent,
   FileNode,
+  WorkspaceTreeResult,
   SearchResult,
   VisualMode,
   WorkspaceBundle,
