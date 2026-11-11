@@ -138,10 +138,13 @@ jobs:
 
       - name: Linux native build dependencies
         if: runner.os == 'Linux'
+        # The runner's apt mirror list points at azure.archive.ubuntu.com,
+        # which has had DNS outages; fall back to archive.ubuntu.com.
         run: |
           for attempt in 1 2 3; do
             sudo apt-get update && sudo apt-get install -y libkrb5-dev libx11-dev libxkbfile-dev libsecret-1-dev && exit 0
-            echo "apt attempt $attempt failed; retrying"
+            echo "apt attempt $attempt failed; switching to archive.ubuntu.com and retrying"
+            sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|http://archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
             sleep 15
           done
           exit 1
