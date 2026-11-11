@@ -33,9 +33,13 @@ on:
     paths: *server-inputs
   workflow_dispatch:
 
+# Queue, never cancel: on a PR every push re-triggers this workflow (the paths
+# filter sees the whole PR diff), and cancelling would throw away a build of
+# an hour or more. A queued run whose artifact id is already published skips
+# straight to refreshing the manifest.
 concurrency:
   group: shogo-ide-server-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -96,8 +100,9 @@ jobs:
             runner: macos-15
           - target: darwin-x64
             runner: macos-15-intel
+          # Electron 43's V8 headers (root native modules) need GCC 13+.
           - target: linux-x64
-            runner: ubuntu-22.04
+            runner: ubuntu-24.04
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     defaults:
