@@ -115,9 +115,6 @@ jobs:
             runner: macos-15
           - target: darwin-x64
             runner: macos-15-intel
-          # Electron 43's V8 headers (root native modules) need GCC 13+.
-          - target: linux-x64
-            runner: ubuntu-24.04
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     defaults:
@@ -135,19 +132,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Linux native build dependencies
-        if: runner.os == 'Linux'
-        # The runner's apt mirror list points at azure.archive.ubuntu.com,
-        # which has had DNS outages; fall back to archive.ubuntu.com.
-        run: |
-          for attempt in 1 2 3; do
-            sudo apt-get update && sudo apt-get install -y libkrb5-dev libx11-dev libxkbfile-dev libsecret-1-dev && exit 0
-            echo "apt attempt $attempt failed; switching to archive.ubuntu.com and retrying"
-            sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|http://archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
-            sleep 15
-          done
-          exit 1
 
       # The win32 REH packaging step runs `signtool verify` / `signtool remove`
       # on native modules before rcedit, so signtool must be on PATH.
@@ -184,10 +168,60 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # linux-x64 (dev and CI use; not a desktop release target) builds in a
+  # Debian container: its packages come from deb.debian.org rather than the
+  # runner's Ubuntu mirrors (which have had long DNS outages), and trixie's
+  # GCC 14 handles Electron 43's V8 headers in the root native modules.
+  build-linux:
+    name: Build (linux-x64)
+    needs: resolve
+    if: needs.resolve.outputs.needs_build == 'true'
+    runs-on: ubuntu-24.04
+    container: node:24-trixie
+    timeout-minutes: 180
+    steps:
+      - name: Native build dependencies
+        run: |
+          apt-get update
+          apt-get install -y libkrb5-dev libx11-dev libxkbfile-dev libsecret-1-dev
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Prepare the pinned Code - OSS checkout
+        run: |
+          git config --global --add safe.directory '*'
+          node apps/shogo-ide/scripts/build-code-oss-server.mjs --target linux-x64 --work "$RUNNER_TEMP/scos" --phase prepare
+
+      - name: Read the checkout's Node version
+        id: nvmrc
+        run: echo "version=$(tr -d '[:space:]' < "$RUNNER_TEMP/scos/vscode/.nvmrc")" >> "$GITHUB_OUTPUT"
+
+      - name: Use the checkout's Node version
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: ${{ steps.nvmrc.outputs.version }}
+
+      - name: Build, package and verify
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node apps/shogo-ide/scripts/build-code-oss-server.mjs --target linux-x64 --work "$RUNNER_TEMP/scos" --out "$RUNNER_TEMP/scos/artifacts" --phase build,package,verify
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: shogo-ide-server-linux-x64
+          path: ${{ runner.temp }}/scos/artifacts/*
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish and record the manifest
-    needs: [resolve, build]
-    if: always() && needs.resolve.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    needs: [resolve, build, build-linux]
+    if: >-
+      always() && needs.resolve.result == 'success' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped') &&
+      (needs.build-linux.result == 'success' || needs.build-linux.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
