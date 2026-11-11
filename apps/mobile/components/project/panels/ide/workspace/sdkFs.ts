@@ -24,6 +24,7 @@ import type {
   WorkspaceSubscribeOptions,
   WsFile,
   WsNode,
+  WsTreeListing,
 } from './types'
 
 const TEXT_EXTS = new Set(
@@ -126,9 +127,13 @@ export class SdkFs implements WorkspaceService {
    * user expands them in the FileTree.
    */
   async listTree(path?: string): Promise<WsNode[]> {
-    const tree = await retry429(() => this.client.getWorkspaceTree(path))
+    return (await this.listTreeWithMeta(path)).nodes
+  }
+
+  async listTreeWithMeta(path?: string): Promise<WsTreeListing> {
+    const { tree, truncated } = await retry429(() => this.client.getWorkspaceTreeWithMeta(path))
     // The runtime sorts, but an older runtime returns raw readdir order.
-    return sortTree(tree.map(toWsNode))
+    return { nodes: sortTree(tree.map(toWsNode)), truncated }
   }
 
   async readFile(path: string): Promise<WsFile> {
