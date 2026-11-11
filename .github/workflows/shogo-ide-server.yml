@@ -133,10 +133,15 @@ jobs:
       - name: Prepare the pinned Code - OSS checkout
         run: node apps/shogo-ide/scripts/build-code-oss-server.mjs --target ${{ matrix.target }} --work "$RUNNER_TEMP/scos" --phase prepare
 
+      # setup-node resolves node-version-file inside the workspace; the checkout lives in RUNNER_TEMP.
+      - name: Read the checkout's Node version
+        id: nvmrc
+        run: echo "version=$(tr -d '[:space:]' < "$RUNNER_TEMP/scos/vscode/.nvmrc")" >> "$GITHUB_OUTPUT"
+
       - name: Use the checkout's Node version
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version-file: ${{ runner.temp }}/scos/vscode/.nvmrc
+          node-version: ${{ steps.nvmrc.outputs.version }}
 
       - name: Build, package and verify
         env:
