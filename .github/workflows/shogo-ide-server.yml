@@ -138,7 +138,13 @@ jobs:
 
       - name: Linux native build dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libkrb5-dev libx11-dev libxkbfile-dev libsecret-1-dev
+        run: |
+          for attempt in 1 2 3; do
+            sudo apt-get update && sudo apt-get install -y libkrb5-dev libx11-dev libxkbfile-dev libsecret-1-dev && exit 0
+            echo "apt attempt $attempt failed; retrying"
+            sleep 15
+          done
+          exit 1
 
       # The win32 REH packaging step runs `signtool verify` / `signtool remove`
       # on native modules before rcedit, so signtool must be on PATH.
