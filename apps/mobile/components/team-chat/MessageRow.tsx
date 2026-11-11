@@ -5,7 +5,7 @@
  * body with mentions, attachments, reactions, thread summary, and live agent
  * replies (streaming text, the tool in use, Stop).
  */
-import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { Image, Linking, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
 import { createPortal } from 'react-dom'
 import { useRouter } from 'expo-router'
@@ -865,6 +865,7 @@ function MessageRowImpl(props: MessageRowProps) {
   const [showFullUpdate, setShowFullUpdate] = useState(false)
   const foldBody = askedOfMe && !showFullUpdate && (body?.length ?? 0) > LONG_UPDATE_CHARS
   const isWeb = Platform.OS === 'web'
+  const isAndroid = Platform.OS === 'android'
   // Clicking an image opens the same viewer the agent chat uses instead of
   // handing the URL to the browser. The gallery is the message's own images,
   // so a post with several can be stepped through.
@@ -1022,6 +1023,10 @@ function MessageRowImpl(props: MessageRowProps) {
   }
   // Web only: pointer enter/leave drive the row hover, and a right-click opens the actions menu.
   const rowWebProps = isWeb ? ({ onPointerEnter: hoverIn, onPointerLeave: hoverOut, onContextMenu } as object) : {}
+  // On Android, a row-level Pressable competes with native long-press text selection.
+  // Keep row gestures on iOS and web, but let Android's selectable Text own the touch.
+  const RowContainer = (isAndroid ? View : Pressable) as ComponentType<any>
+  const rowNativeProps = !isWeb && !isAndroid ? { onLongPress: openActions } : {}
 
   // "Hey Shogo" in a huddle: the request, with the transcript the agent was given behind a toggle.
   const wakeBlock = huddleWakeBlockOf(message.blocks)
@@ -1180,8 +1185,8 @@ function MessageRowImpl(props: MessageRowProps) {
   }
 
   return (
-    <Pressable
-      onLongPress={isWeb ? undefined : openActions}
+    <RowContainer
+      {...rowNativeProps}
       {...rowWebProps}
       style={editing ? { zIndex: 50 } : undefined}
       className={cn(
@@ -1199,7 +1204,16 @@ function MessageRowImpl(props: MessageRowProps) {
     >
       <View className="w-8">
         {grouped ? (
-          active ? (
+          isAndroid && hasMenu ? (
+            <Pressable
+              onPress={openActions}
+              accessibilityRole="button"
+              accessibilityLabel="More actions"
+              className="h-8 w-8 items-center justify-center rounded-md active:bg-muted"
+            >
+              <MoreHorizontal size={14} className="text-muted-foreground" />
+            </Pressable>
+          ) : active ? (
             <TimeTooltip iso={message.createdAt} align="start">
               {(h) => (
                 <Text numberOfLines={1} className={cn('pt-1 text-[10px] text-muted-foreground', h && 'underline')}>
@@ -1241,6 +1255,17 @@ function MessageRowImpl(props: MessageRowProps) {
             <TimeTooltip iso={message.createdAt}>
               {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{formatTime(message.createdAt)}</Text>}
             </TimeTooltip>
+            {isAndroid && hasMenu && (
+              <Pressable
+                onPress={openActions}
+                accessibilityRole="button"
+                accessibilityLabel="More actions"
+                hitSlop={4}
+                className="ml-auto h-6 w-6 shrink-0 items-center justify-center rounded-md active:bg-muted"
+              >
+                <MoreHorizontal size={14} className="text-muted-foreground" />
+              </Pressable>
+            )}
           </View>
         )}
 
@@ -1591,7 +1616,7 @@ function MessageRowImpl(props: MessageRowProps) {
           alt={activeLightboxImage?.name ?? 'Image attachment'}
         />
       )}
-    </Pressable>
+    </RowContainer>
   )
 }
 
