@@ -99,6 +99,11 @@ jobs:
         # which is statically linked into the bun binary.
         run: bun scripts/check-migrations.ts
 
+      - name: Shogo IDE server manifest matches the repo and is downloadable
+        # "Open in Shogo IDE" downloads the server archive this manifest names
+        # (#1989). A stale or unreachable manifest ships a dead button.
+        run: bun scripts/check-shogo-ide-server-manifest.ts
+
       - name: Install dependencies (for prisma migrate diff)
         # The drift check shells out to `prisma migrate diff`, which
         # needs the `prisma` package installed. We install with

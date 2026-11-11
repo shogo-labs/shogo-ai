@@ -177,6 +177,11 @@ jobs:
       - name: Replay desktop SQLite migrations against an empty DB
         run: bun scripts/check-migrations.ts
 
+      - name: Shogo IDE server manifest matches the repo and is downloadable
+        # "Open in Shogo IDE" downloads the server archive this manifest names
+        # (#1989). A stale or unreachable manifest ships a dead button.
+        run: bun scripts/check-shogo-ide-server-manifest.ts
+
       - name: Install dependencies (for prisma migrate diff)
         run: bun install --frozen-lockfile --ignore-scripts
 

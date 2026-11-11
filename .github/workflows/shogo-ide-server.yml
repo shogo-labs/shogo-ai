@@ -1,0 +1,248 @@
+name: Shogo IDE server
+
+# Builds the prebuilt Shogo IDE server (Code - OSS REH-web at the commit pinned
+# in apps/shogo-ide/code-oss.lock.json, with apps/shogo-ide/patches/code-oss
+# applied and shogo-core built in) for every desktop target, publishes it as a
+# prerelease named after its input-keyed artifact id, and records the URLs and
+# SHA-256s in apps/shogo-ide/code-oss-server.manifest.json, which the desktop
+# app downloads from on first "Open in Shogo IDE" (#1989).
+#
+# A release whose assets already exist is never rebuilt: the artifact id
+# changes only when the pin or a hashed input changes (see
+# apps/shogo-ide/scripts/code-oss-artifact-id.mjs).
+
+on:
+  push:
+    branches: [main]
+    paths: &server-inputs
+      - apps/shogo-ide/code-oss.lock.json
+      - apps/shogo-ide/patches/code-oss/**
+      - apps/shogo-ide/product.shogo.template.json
+      - apps/shogo-ide/distribution/distribution.manifest.json
+      - apps/shogo-ide/distribution/defaults/**
+      - apps/shogo-ide/distribution/builtin-extensions/**
+      - apps/shogo-ide/extensions/shogo-core/**
+      - apps/shogo-ide/scripts/apply-code-oss-patches.mjs
+      - apps/shogo-ide/scripts/apply-product-overrides.mjs
+      - apps/shogo-ide/scripts/build-code-oss-server.mjs
+      - apps/shogo-ide/scripts/code-oss-artifact-id.mjs
+      - apps/shogo-ide/scripts/materialize-distribution.mjs
+      - apps/shogo-ide/scripts/write-code-oss-server-manifest.mjs
+      - .github/workflows/shogo-ide-server.yml
+  pull_request:
+    paths: *server-inputs
+  workflow_dispatch:
+
+concurrency:
+  group: shogo-ide-server-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '24.15.0'
+
+jobs:
+  resolve:
+    name: Resolve artifact id
+    # Fork PRs have no write token; their server builds happen after merge.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      artifact_id: ${{ steps.id.outputs.artifact_id }}
+      needs_build: ${{ steps.release.outputs.needs_build }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - id: id
+        run: node apps/shogo-ide/scripts/code-oss-artifact-id.mjs --github-output
+      - id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.id.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          have="$(gh release view "$ARTIFACT_ID" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null || true)"
+          missing=0
+          for target in win32-x64 darwin-arm64 darwin-x64 linux-x64; do
+            for suffix in tar.gz tar.gz.sha256; do
+              grep -qx "$ARTIFACT_ID-$target.$suffix" <<<"$have" || missing=1
+            done
+          done
+          if [ "$missing" = 0 ]; then
+            echo "Release $ARTIFACT_ID already has every asset; skipping the build."
+            echo "needs_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: resolve
+    if: needs.resolve.outputs.needs_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: win32-x64
+            runner: windows-2022
+          - target: darwin-arm64
+            runner: macos-15
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: linux-x64
+            runner: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Linux native build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libkrb5-dev libx11-dev libxkbfile-dev libsecret-1-dev
+
+      # The win32 REH packaging step runs `signtool verify` / `signtool remove`
+      # on native modules before rcedit, so signtool must be on PATH.
+      - name: Put signtool on PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw 'signtool.exe not found in the Windows SDK' }
+          $signtool.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Prepare the pinned Code - OSS checkout
+        run: node apps/shogo-ide/scripts/build-code-oss-server.mjs --target ${{ matrix.target }} --work "$RUNNER_TEMP/scos" --phase prepare
+
+      - name: Use the checkout's Node version
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version-file: ${{ runner.temp }}/scos/vscode/.nvmrc
+
+      - name: Build, package and verify
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node apps/shogo-ide/scripts/build-code-oss-server.mjs --target ${{ matrix.target }} --work "$RUNNER_TEMP/scos" --out "$RUNNER_TEMP/scos/artifacts" --phase build,package,verify
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: shogo-ide-server-${{ matrix.target }}
+          path: ${{ runner.temp }}/scos/artifacts/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish and record the manifest
+    needs: [resolve, build]
+    if: always() && needs.resolve.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ARTIFACT_ID: ${{ needs.resolve.outputs.artifact_id }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # On a PR, check out the branch itself so the manifest can be pushed to it.
+          ref: ${{ github.head_ref || github.ref }}
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Refuse a branch that moved past the built commit
+        if: github.event_name == 'pull_request'
+        run: |
+          id="$(node apps/shogo-ide/scripts/code-oss-artifact-id.mjs | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).artifactId))')"
+          if [ "$id" != "$ARTIFACT_ID" ]; then
+            echo "::error::The branch now resolves to $id, not $ARTIFACT_ID; the newer push runs its own build."
+            exit 1
+          fi
+
+      - name: Download built servers
+        if: needs.resolve.outputs.needs_build == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: shogo-ide-server-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish the prerelease
+        if: needs.resolve.outputs.needs_build == 'true'
+        run: |
+          set -euo pipefail
+          # Never "latest": the desktop update feed and releases worker resolve v* tags only.
+          if gh release view "$ARTIFACT_ID" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$ARTIFACT_ID" artifacts/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$ARTIFACT_ID" artifacts/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "${{ github.event.pull_request.head.sha || github.sha }}" \
+              --prerelease --latest=false \
+              --title "Shogo IDE server $ARTIFACT_ID" \
+              --notes "Prebuilt Shogo IDE server (Code - OSS REH-web). Built by ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Not a desktop release."
+          fi
+
+      - name: Fetch the existing release
+        if: needs.resolve.outputs.needs_build != 'true'
+        run: gh release download "$ARTIFACT_ID" --repo "$GITHUB_REPOSITORY" --dir artifacts
+
+      - name: Write the manifest
+        run: node apps/shogo-ide/scripts/write-code-oss-server-manifest.mjs --dir artifacts --repo "$GITHUB_REPOSITORY"
+
+      - name: Commit the manifest to the PR branch
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- apps/shogo-ide/code-oss-server.manifest.json && git ls-files --error-unmatch apps/shogo-ide/code-oss-server.manifest.json >/dev/null 2>&1; then
+            echo "Manifest already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/shogo-ide/code-oss-server.manifest.json
+          git commit -m "chore(shogo-ide): record prebuilt server $ARTIFACT_ID"
+          git push origin "HEAD:${{ github.head_ref }}"
+          echo "::notice::Pushed the manifest. Commits pushed with GITHUB_TOKEN do not start new workflow runs; push again (or re-run) to test this head."
+
+      - name: Open a manifest PR
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- apps/shogo-ide/code-oss-server.manifest.json && git ls-files --error-unmatch apps/shogo-ide/code-oss-server.manifest.json >/dev/null 2>&1; then
+            echo "Manifest already current."
+            exit 0
+          fi
+          branch="bot/shogo-ide-server-$ARTIFACT_ID"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add apps/shogo-ide/code-oss-server.manifest.json
+          git commit -m "chore(shogo-ide): record prebuilt server $ARTIFACT_ID"
+          git push --force origin "$branch"
+          gh pr create --repo "$GITHUB_REPOSITORY" --base "${GITHUB_REF_NAME}" --head "$branch" \
+            --title "chore(shogo-ide): record prebuilt server $ARTIFACT_ID" \
+            --body "Points the desktop app at the Shogo IDE server built by ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}." \
+            || echo "::warning::Could not open the PR automatically; open one from $branch."

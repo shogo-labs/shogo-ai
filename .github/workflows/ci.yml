@@ -376,6 +376,14 @@ jobs:
           node apps/shogo-ide/scripts/phase1-check.mjs
           node apps/shogo-ide/scripts/phase3-check.mjs
 
+      # The desktop app downloads the server named in this manifest; it must
+      # match the repo's pin + patches + shogo-core. On a PR that changes them,
+      # shogo-ide-server.yml rebuilds and pushes a fresh manifest to the branch.
+      - name: Shogo IDE server manifest is current
+        run: |
+          bun scripts/check-shogo-ide-server-manifest.ts --offline
+          bun --no-env-file test scripts/__tests__/check-shogo-ide-server-manifest.test.ts
+
       - name: Check CI `bun install` steps authenticate ripgrep-prebuilt
         if: needs.prelude.outputs.verified != 'true'
         # Guards against the `@vscode/ripgrep` 403 flake — see
