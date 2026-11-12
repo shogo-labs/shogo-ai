@@ -185,14 +185,19 @@ jobs:
           export SHOGO_E2E_EXECUTABLE="$PWD/out/Shogo-win32-x64/Shogo.exe"
           npx playwright test --config e2e/playwright.config.ts e2e/explorer-folder-project.spec.ts e2e/shogo-ide-open.spec.ts
 
+      # upload-artifact needs one common root, so bring the app logs into the workspace.
+      - name: Collect app logs
+        if: failure()
+        run: |
+          mkdir -p test-results/app-logs
+          cp -r "$APPDATA/Shogo/logs/." test-results/app-logs/ 2>/dev/null || true
+
       - name: Upload traces and logs
         if: failure()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: desktop-e2e-windows
-          path: |
-            test-results/notetaker-e2e
-            ~/AppData/Roaming/Shogo/logs
+          path: test-results
           retention-days: 7
 
   macos:
@@ -317,12 +322,16 @@ jobs:
           export SHOGO_E2E_EXECUTABLE="$PWD/out/Shogo-darwin-arm64/Shogo.app/Contents/MacOS/Shogo"
           npx playwright test --config e2e/playwright.config.ts e2e/explorer-folder-project.spec.ts e2e/shogo-ide-open.spec.ts
 
+      - name: Collect app logs
+        if: failure()
+        run: |
+          mkdir -p test-results/app-logs
+          cp -r "$HOME/Library/Logs/Shogo/." test-results/app-logs/ 2>/dev/null || true
+
       - name: Upload traces and logs
         if: failure()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: desktop-e2e-macos
-          path: |
-            test-results/notetaker-e2e
-            ~/Library/Logs/Shogo
+          path: test-results
           retention-days: 7

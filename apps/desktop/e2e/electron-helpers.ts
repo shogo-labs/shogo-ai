@@ -9,10 +9,11 @@ import type { ElectronApplication, Page } from '@playwright/test'
  */
 export const E2E_API_PORT = process.env.SHOGO_E2E_API_PORT || '38917'
 
-function isMainWindow(page: Page): boolean {
+/** Packaged builds serve the renderer from `shogo://app`; dev builds from Metro over http. */
+function isMainWindow(page: Page, protocols: readonly string[]): boolean {
   try {
     const url = new URL(page.url())
-    return url.protocol.startsWith('http') && !url.pathname.startsWith('/island')
+    return protocols.includes(url.protocol) && !url.pathname.startsWith('/island')
   } catch {
     return false
   }
@@ -20,12 +21,14 @@ function isMainWindow(page: Page): boolean {
 
 /**
  * The app window. `firstWindow()` is a race: the notch island opens its own
- * window at about the same time, and it can win.
+ * window at about the same time, and it can win. A `shogo://` window wins
+ * over an http one (in a packaged app the Shogo-IDE window is http).
  */
 export async function mainAppWindow(app: ElectronApplication, timeoutMs = 60_000): Promise<Page> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const page = app.windows().find(isMainWindow)
+    const windows = app.windows()
+    const page = windows.find((w) => isMainWindow(w, ['shogo:'])) ?? windows.find((w) => isMainWindow(w, ['http:', 'https:']))
     if (page) return page
     await new Promise((r) => setTimeout(r, 100))
   }

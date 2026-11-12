@@ -58,6 +58,8 @@ test.describe('with the published server', () => {
   let installRoot: string
 
   test.beforeAll(async () => {
+    // Hooks don't inherit test.setTimeout; a cold packaged launch needs more than the config default.
+    test.setTimeout(420_000)
     folder = writeFixtureFolder('shogo-e2e-ide-').folder
     installRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'shogo-ide-install-'))
     shogo = await launchPackagedApp({ env: { SHOGO_IDE_SERVER_INSTALL_ROOT: installRoot } })
@@ -104,6 +106,7 @@ test.describe('when the server cannot be downloaded', () => {
   let installRoot: string
 
   test.beforeAll(async () => {
+    test.setTimeout(420_000)
     folder = writeFixtureFolder('shogo-e2e-ide-fail-').folder
     installRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'shogo-ide-install-empty-'))
     shogo = await launchPackagedApp({

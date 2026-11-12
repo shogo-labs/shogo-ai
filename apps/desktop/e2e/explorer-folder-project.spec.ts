@@ -20,6 +20,8 @@ let shogo: PackagedApp
 let folder: string
 
 test.beforeAll(async () => {
+  // Hooks don't inherit test.setTimeout; a cold packaged launch needs more than the config default.
+  test.setTimeout(420_000)
   folder = writeFixtureFolder('shogo-e2e-explorer-').folder
   shogo = await launchPackagedApp()
   await openFolderProjectIde(shogo.page, folder)
