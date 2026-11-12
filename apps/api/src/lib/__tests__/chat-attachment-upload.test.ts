@@ -3,17 +3,20 @@
 /**
  * SHO-370 — the API proxy's plan-gated attachment cap and its 413 body.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it, mock } from 'bun:test'
 
-const previousLocalMode = process.env.SHOGO_LOCAL_MODE
-beforeAll(() => {
-  // Local mode resolves `hasPaidSubscription` to true without touching Stripe.
-  process.env.SHOGO_LOCAL_MODE = 'true'
-})
-afterAll(() => {
-  if (previousLocalMode === undefined) delete process.env.SHOGO_LOCAL_MODE
-  else process.env.SHOGO_LOCAL_MODE = previousLocalMode
-})
+const MB = 1024 * 1024
+
+/**
+ * `resolveChatAttachmentCap` resolves the workspace's paid/free answer through
+ * the billing seam. Stub that seam here so the unit never reaches
+ * `billing.service` → `resolveBillingWorkspaceId` → a live Prisma read (the
+ * full-package run has no database). Controllable per test.
+ */
+let paid = true
+mock.module('../../services/billing-runtime', () => ({
+  hasPaidSubscription: async (_workspaceId: string) => paid,
+}))
 
 const {
   CHAT_ATTACHMENT_MAX_BYTES_HEADER,
@@ -22,7 +25,9 @@ const {
   resolveChatAttachmentCap,
 } = await import('../chat-attachment-upload')
 
-const MB = 1024 * 1024
+afterEach(() => {
+  paid = true
+})
 
 describe('chat attachment upload cap (SHO-370)', () => {
   it('recognises only PUT /agent/chat/attachments as a streamed upload', () => {
@@ -53,8 +58,15 @@ describe('chat attachment upload cap (SHO-370)', () => {
     expect(body.error.message).toContain('500 MB')
   })
 
-  it('resolves the paid cap in local mode (desktop is never blocked)', async () => {
-    const cap = await resolveChatAttachmentCap('local-workspace')
+  it('resolves the paid 500 MB cap when the workspace has a paid subscription', async () => {
+    paid = true
+    const cap = await resolveChatAttachmentCap('paid-workspace')
     expect(cap).toEqual({ capBytes: 500 * MB, plan: 'paid' })
+  })
+
+  it('resolves the free 100 MB cap when the workspace has no paid subscription', async () => {
+    paid = false
+    const cap = await resolveChatAttachmentCap('free-workspace')
+    expect(cap).toEqual({ capBytes: 100 * MB, plan: 'free' })
   })
 })
