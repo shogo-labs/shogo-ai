@@ -125,7 +125,7 @@ import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { addQuickAction, validateQuickActions } from './quick-actions'
 import { withActionRules, withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, scratchPathForWrite, type PermissionEngine } from './permission-engine'
 import { assertAllowedPath as assertAllowedPathRaw, getRuntimeTrust } from './runtime-trust'
-import { isBinaryFilePath } from '@shogo/shared-runtime'
+import { isBinaryFilePath, isZernioSocialToolkit, normalizeToolkitName, zernioPlatformsFromQuery, type ZernioSocialToolkit } from '@shogo/shared-runtime'
 import { isShogoAgentEmail, withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
 import { missingCodePlanSections } from './plan-sections'
 
@@ -8111,6 +8111,31 @@ function createChannelListTool(ctx: ToolContext): AgentTool {
 // Integration Discovery Tools (unified search / connect / disconnect)
 // ---------------------------------------------------------------------------
 
+const ZERNIO_SOCIAL_LABELS: Record<ZernioSocialToolkit, string> = {
+  instagram: 'Instagram',
+  tiktok: 'TikTok',
+}
+
+/**
+ * The `search_integrations` row for a Zernio-connected platform. Instagram and
+ * TikTok are not Composio toolkits: the account is connected on the Social
+ * page, so the install command points at `social_media` instead of `connect`.
+ */
+function zernioSocialSearchResult(platform: ZernioSocialToolkit, capabilityOff: boolean) {
+  const label = ZERNIO_SOCIAL_LABELS[platform]
+  return {
+    name: `${label} (Zernio)`,
+    id: `social:${platform}`,
+    source: 'managed' as const,
+    provider: 'zernio',
+    description: `Connect ${platform === 'instagram' ? 'an' : 'a'} ${label} account for posting, comments and DMs. The person signs in on ${label}'s own page; no credentials.`,
+    installCommand: `social_media({ action: "connect", platform: "${platform}" })`,
+    ...(capabilityOff
+      ? { note: 'Turn on Social management (socialManagementEnabled) first' }
+      : {}),
+  }
+}
+
 /**
  * Unified search across managed OAuth integrations (Composio), bundled
  * skills, and MCP server catalog. Each result carries a `source` tag so
@@ -8122,7 +8147,8 @@ function createSearchIntegrationsTool(ctx: ToolContext): AgentTool {
     name: 'search_integrations',
     description:
       'Search for integrations by keyword. Returns managed OAuth integrations (Google, Slack, GitHub, etc.), bundled skills, and MCP protocol servers in one tagged list. Each result has a `source` tag (managed | skill | mcp). Pass `source` to filter to one backend.\n\n' +
-      'When results are empty: do NOT give up after one query. Retry with a different keyword first — try the integration\'s common name ("google calendar"), the underlying capability ("calendar", "events", "scheduling"), or a sibling provider ("gcal", "outlook"). Only conclude an integration does not exist after at least 2 different searches return empty.',
+      'When results are empty: do NOT give up after one query. Retry with a different keyword first — try the integration\'s common name ("google calendar"), the underlying capability ("calendar", "events", "scheduling"), or a sibling provider ("gcal", "outlook"). Only conclude an integration does not exist after at least 2 different searches return empty.\n\n' +
+      'Instagram and TikTok accounts connect through `social_media` (Zernio), not here.',
     label: 'Search Integrations',
     parameters: Type.Object({
       query: Type.String({
@@ -8145,6 +8171,11 @@ function createSearchIntegrationsTool(ctx: ToolContext): AgentTool {
       const results: Array<Record<string, any>> = []
 
       if (!source || source === 'managed') {
+        for (const platform of zernioPlatformsFromQuery(query)) {
+          results.push(
+            zernioSocialSearchResult(platform, ctx.config.socialManagementEnabled !== true),
+          )
+        }
         if (isComposioEnabled()) {
           try {
             const composioToolkits = await searchComposioToolkits(query)
@@ -8531,7 +8562,8 @@ function createConnectTool(ctx: ToolContext): AgentTool {
     description:
       'Install (connect) an integration so its tools become available. Auto-routes by name: tries Composio managed OAuth first (Google, Slack, GitHub, etc. — no credentials needed), falls back to the MCP catalog (postgres, etc.), then to a remote URL if provided. Files and shell commands are built in (read_file, write_file, edit_file, exec) — do not connect filesystem or computer-use. Use `source: "mcp"` to skip Composio. Use `skill:<name>` to install a bundled skill. Pair with search_integrations to discover names.\n\n' +
       'When to call connect vs. when not to: only call connect when the user has asked for an ACTION you can\'t perform without that integration (send a calendar invite, post to Slack, query a Postgres database, etc.). Do NOT call connect when the user is asking to "show", "list", "compare", "describe", or "preview" data you can already produce with `web`, `read_file`, or in-context information — installing an integration the user did not ask for forces them through an OAuth dance for no reason and is one of the most disliked agent behaviors. If you\'re unsure whether the user wants the action or just an explanation, ask one clarifying question via `ask_user` before calling connect.\n\n' +
-      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec (`gh issue list`, `gh issue create`, `gh pr list`, `gh pr create --repo <owner>/<repo> --base main --head <branch> --title "..." --body-file .tmp/pr-body.md`, `gh run list`). Opening a PR is normally `gh pr create` in exec after pushing the source branch; the `github_create_pr` tool is an optional alternative that opens the PR as the Shogo GitHub App and adds the standard footer. Either way end the body with the standard Made with Shogo footer and a `Card: <KEY>` line. To bring a repository into a project, use `github_connect`. If gh is not authenticated: for a project\'s repository, use `github_connect` (pass the user\'s token if they shared one); only for one-off work outside a project\'s repository, save the PAT to workspace `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
+      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec (`gh issue list`, `gh issue create`, `gh pr list`, `gh pr create --repo <owner>/<repo> --base main --head <branch> --title "..." --body-file .tmp/pr-body.md`, `gh run list`). Opening a PR is normally `gh pr create` in exec after pushing the source branch; the `github_create_pr` tool is an optional alternative that opens the PR as the Shogo GitHub App and adds the standard footer. Either way end the body with the standard Made with Shogo footer and a `Card: <KEY>` line. To bring a repository into a project, use `github_connect`. If gh is not authenticated: for a project\'s repository, use `github_connect` (pass the user\'s token if they shared one); only for one-off work outside a project\'s repository, save the PAT to workspace `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.\n\n' +
+      'Instagram and TikTok accounts connect through `social_media` (Zernio), not here.',
     label: 'Connect Integration',
     parameters: Type.Object({
       name: Type.String({
@@ -8572,6 +8604,28 @@ function createConnectTool(ctx: ToolContext): AgentTool {
       try {
         if (name.startsWith('skill:')) {
           return await connectSkill(ctx, name.slice(6))
+        }
+
+        // Instagram and TikTok accounts connect through Zernio (`social_media`),
+        // never Composio. Refuse before any OAuth starts, for both the plain
+        // toolkit name and the `social:<platform>` id search_integrations returns.
+        // An explicit MCP request (`source: "mcp"` or a `url`) is the person's
+        // own choice and is left alone.
+        const explicitMcp = source === 'mcp' || (source !== 'managed' && !!url)
+        const zernioName = name.startsWith('social:') ? name.slice('social:'.length) : name
+        if (!explicitMcp && isZernioSocialToolkit(zernioName)) {
+          const platform = normalizeToolkitName(zernioName) as ZernioSocialToolkit
+          const label = ZERNIO_SOCIAL_LABELS[platform]
+          return textResult({
+            redirect: true,
+            provider: 'zernio',
+            platform,
+            error: `${label} connects through Zernio, not Composio.`,
+            next: `social_media({ action: "connect", platform: "${platform}" })`,
+            ...(ctx.config.socialManagementEnabled !== true
+              ? { note: 'Turn on Social management (socialManagementEnabled) first' }
+              : {}),
+          })
         }
 
         if (!ctx.mcpClientManager) {

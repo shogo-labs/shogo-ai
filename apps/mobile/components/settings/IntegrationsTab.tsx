@@ -78,6 +78,14 @@ interface Provider {
   whiteLabeled?: boolean
 }
 
+/** Instagram/TikTok connect through Zernio (the Social page), not Composio. */
+interface SocialProvider {
+  toolkit: string
+  name: string
+  provider: string
+  href: string
+}
+
 /** Friendly display labels + emoji icons for the toolkits we care about
  * most. Anything not listed falls back to the raw slug, title-cased. */
 const TOOLKIT_DISPLAY: Record<string, { label: string; icon: string }> = {
@@ -107,6 +115,8 @@ const TOOLKIT_DISPLAY: Record<string, { label: string; icon: string }> = {
   metaads: { label: 'Meta Ads', icon: '📣' },
   googleads: { label: 'Google Ads', icon: '🎯' },
   calendly: { label: 'Calendly', icon: '🗓️' },
+  instagram: { label: 'Instagram', icon: '📸' },
+  tiktok: { label: 'TikTok', icon: '🎵' },
 }
 
 function getToolkitDisplay(toolkit: string) {
@@ -159,6 +169,7 @@ export function IntegrationsTab() {
 
   const [connections, setConnections] = useState<Connection[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
+  const [socialProviders, setSocialProviders] = useState<SocialProvider[]>([])
   const [providersEnabled, setProvidersEnabled] = useState(true)
   const [isLoading, setIsLoading] = useState(false)
   const [providersLoading, setProvidersLoading] = useState(false)
@@ -292,9 +303,10 @@ export function IntegrationsTab() {
   const loadProviders = useCallback(async () => {
     setProvidersLoading(true)
     try {
-      const { providers: list, enabled } = await api.getIntegrationProviders(http)
+      const { providers: list, enabled, socialProviders: social } = await api.getIntegrationProviders(http)
       setProviders(list)
       setProvidersEnabled(enabled)
+      setSocialProviders(social)
     } catch (err: any) {
       console.warn(LOG_PREFIX, 'Failed to load providers', err)
     } finally {
@@ -408,6 +420,16 @@ export function IntegrationsTab() {
         p.name.toLowerCase().includes(q),
     )
   }, [providers, browseQuery])
+
+  const filteredSocialProviders = useMemo(() => {
+    const q = browseQuery.trim().toLowerCase()
+    if (!q) return socialProviders
+    return socialProviders.filter(
+      (p) =>
+        p.toolkit.toLowerCase().includes(q) ||
+        p.name.toLowerCase().includes(q),
+    )
+  }, [socialProviders, browseQuery])
 
   const activeConnections = connections.filter(
     (c) => c.status?.toLowerCase() === 'active',
@@ -734,6 +756,37 @@ export function IntegrationsTab() {
                 )}
               </View>
 
+              {filteredSocialProviders.length > 0 && (
+                <View className="gap-1.5">
+                  {filteredSocialProviders.map((p) => {
+                    const display = getToolkitDisplay(p.toolkit)
+                    return (
+                      <Pressable
+                        key={`social:${p.toolkit}`}
+                        onPress={() => router.push('/(app)/social' as any)}
+                        className="flex-row items-center gap-3 px-3 py-2.5 rounded-md border border-border"
+                      >
+                        <View className="w-8 h-8 rounded bg-muted items-center justify-center">
+                          <Text className="text-base">{display.icon}</Text>
+                        </View>
+                        <View className="flex-1">
+                          <Text className="text-sm font-medium text-foreground">
+                            {p.name || display.label}
+                          </Text>
+                          <Text className="text-[11px] text-muted-foreground">
+                            Connect on the Social page
+                          </Text>
+                        </View>
+                        <View className="flex-row items-center gap-1 px-2 py-1">
+                          <Text className="text-xs text-foreground">Open Social</Text>
+                          <ExternalLink size={12} className="text-muted-foreground" />
+                        </View>
+                      </Pressable>
+                    )
+                  })}
+                </View>
+              )}
+
               {!providersEnabled ? (
                 <Card>
                   <CardContent className="p-4">
@@ -744,7 +797,7 @@ export function IntegrationsTab() {
                     </Text>
                   </CardContent>
                 </Card>
-              ) : filteredProviders.length === 0 && !providersLoading ? (
+              ) : filteredProviders.length === 0 && filteredSocialProviders.length === 0 && !providersLoading ? (
                 <Card>
                   <CardContent className="p-4">
                     <Text className="text-sm text-muted-foreground">
