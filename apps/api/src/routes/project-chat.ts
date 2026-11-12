@@ -929,6 +929,11 @@ export async function trackUsageFromStream(
           messagesAfter: Number(payload.messagesAfter) || 0,
           summaryChars: Number(payload.summaryChars) || 0,
           contextWindowTokens: Number(payload.contextWindowTokens) || undefined,
+          // What the estimate included beyond the messages, and whether variant
+          // B dropped tool results — the two fields that let a prod row explain
+          // `tokensAfter` (SHO-381).
+          promptOverheadTokens: Number(payload.promptOverheadTokens) || undefined,
+          droppedToolResults: Number(payload.droppedToolResults) || undefined,
         },
       })
       persistenceDirty = true

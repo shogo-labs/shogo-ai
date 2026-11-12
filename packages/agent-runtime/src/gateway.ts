@@ -4859,9 +4859,15 @@ export class AgentGateway {
           })
           // Hand back what the session now holds: the persisted summary (with
           // the facts block) and the tail a variant may have rewritten, so the
-          // memo re-emits the session, not the raw loop array (SHO-327).
+          // memo re-emits the session, not the raw loop array (SHO-327). The
+          // dropped-result count rides along so the compaction event can say
+          // whether B1 actually dropped anything (SHO-381).
           if (!result) return undefined
-          return { summary: result.storedSummary, kept: result.keptMessages }
+          return {
+            summary: result.storedSummary,
+            kept: result.keptMessages,
+            droppedToolResults: result.droppedToolResults,
+          }
         },
       })
 
@@ -5037,7 +5043,8 @@ export class AgentGateway {
             console.log(
               `${this.logPrefix} Mid-turn summarization (${event.trigger}/${event.reason}): ` +
               `${event.tokensBefore} -> ${event.tokensAfter} tokens, ` +
-              `${event.messagesBefore} -> ${event.messagesAfter} messages ` +
+              `${event.messagesBefore} -> ${event.messagesAfter} messages, ` +
+              `overhead ${event.promptOverheadTokens}, dropped ${event.droppedToolResults} tool results ` +
               `(cap ${autoCompactTokens}, window ${modelContextWindowTokens}) for session ${sessionId}`,
             )
             // Cache-break attribution: the prefix fingerprint changes exactly
@@ -5065,6 +5072,11 @@ export class AgentGateway {
                   messagesAfter: event.messagesAfter,
                   summaryChars: event.summaryChars,
                   contextWindowTokens,
+                  // What the estimate included beyond the messages, and whether
+                  // variant B dropped any tool results — the two things a prod
+                  // row needs to explain `tokensAfter` (SHO-381).
+                  promptOverheadTokens: event.promptOverheadTokens,
+                  droppedToolResults: event.droppedToolResults,
                 },
               })
             } catch { /* client disconnected mid-turn — the row still persists API-side */ }

@@ -35,7 +35,7 @@ function makeTool(name: string, descriptionChars: number): AgentTool {
     description: 'd'.repeat(descriptionChars),
     parameters: { type: 'object', properties: {} } as any,
     execute: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
-  } as AgentTool
+  } as unknown as AgentTool
 }
 
 /**
@@ -188,6 +188,19 @@ describe('SHO-381 prompt overhead counts only the advertised tools', () => {
     const over = await compactor.transform(conversation(200_000))
     expect(over.event).not.toBeNull()
     expect(over.event!.tokensBefore).toBeGreaterThan(200_000 + 52_000)
+  })
+
+  test('a throwing overhead reader is logged, not swallowed into a zero overhead', async () => {
+    // A zero overhead would silently disable the trigger — the exact failure
+    // this card is about. The turn must keep running, but the failure must be
+    // visible and the messages must come back untouched.
+    const { compactor } = makeCompactor(() => {
+      throw new Error('schema stringify exploded')
+    })
+    const messages = conversation(300_000)
+    const out = await compactor.transform(messages)
+    expect(out.event).toBeNull()
+    expect(out.messages).toBe(messages)
   })
 })
 
