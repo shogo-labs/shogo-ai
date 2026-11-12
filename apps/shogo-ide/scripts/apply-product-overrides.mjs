@@ -36,6 +36,12 @@ const COPILOT_IDS = new Set(['GitHub.copilot', 'GitHub.copilot-chat'])
  * Returns upstream's product.json with Shogo's identity applied. Marketplace
  * built-ins are dropped (shogo-core is copied into the build instead) so the
  * build never downloads Microsoft extensions.
+ *
+ * `defaultChatAgent` must stay: the web workbench inlines product.json at build
+ * time and, since 1.143, asserts it while loading (onboardingVariationA.ts),
+ * so without it the workbench never renders. Copilot stays off through
+ * `chat.disableAIFeatures`, set in every desktop runtime profile
+ * (apps/desktop/src/shogo-ide.ts) and in distribution/defaults/settings.json.
  */
 export function applyProductOverrides(product, generatedProduct) {
   const next = { ...product }
@@ -43,7 +49,6 @@ export function applyProductOverrides(product, generatedProduct) {
     if (generatedProduct[key] !== undefined) next[key] = generatedProduct[key]
   }
   next.builtInExtensions = []
-  delete next.defaultChatAgent
   delete next.trustedExtensionAuthAccess
   next.builtInExtensionsEnabledWithAutoUpdates = Array.isArray(product.builtInExtensionsEnabledWithAutoUpdates)
     ? product.builtInExtensionsEnabledWithAutoUpdates.filter((id) => !COPILOT_IDS.has(id))

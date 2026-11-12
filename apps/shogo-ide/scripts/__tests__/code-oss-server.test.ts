@@ -98,11 +98,19 @@ describe('applyProductOverrides', () => {
     expect(next.nameShort).toBe('Shogo')
     expect(next.applicationName).toBe('shogo-ide')
     expect(next.builtInExtensions).toEqual([])
-    expect(next.defaultChatAgent).toBeUndefined()
     expect(next.trustedExtensionAuthAccess).toBeUndefined()
     expect(next.builtInExtensionsEnabledWithAutoUpdates).toEqual(['ms-python.python'])
     expect(next.untouched).toBe(1)
     expect(next.extensionEnabledApiProposals['shogo.shogo-core']).toBeDefined()
+  })
+
+  test('keeps defaultChatAgent, which the 1.143 workbench asserts while loading', () => {
+    expect(applyProductOverrides(upstream, generated).defaultChatAgent).toEqual(upstream.defaultChatAgent)
+  })
+
+  test('keeps AI features off by default, since defaultChatAgent stays', () => {
+    const settings = JSON.parse(readFileSync(join(SHOGO_IDE_ROOT, 'distribution', 'defaults', 'settings.json'), 'utf8'))
+    expect(settings['chat.disableAIFeatures']).toBe(true)
   })
 
   test('does not mutate its input', () => {
