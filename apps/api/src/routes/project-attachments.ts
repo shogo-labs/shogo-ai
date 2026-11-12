@@ -166,8 +166,12 @@ export type { ProjectAttachmentRow }
 /** Mounted at `/api/projects` in both cloud and local mode. */
 export function projectAttachmentRoutes(): Hono {
   const router = new Hono()
-  router.use('*', authMiddleware)
-  router.use('*', requireAuth)
+  // Scope auth to this router's own paths. A bare `use('*')` on a sub-app
+  // mounted at `/api/projects` registers as `/api/projects/*` and would run
+  // `requireAuth` on every later route under that prefix — including the
+  // anonymous webchat agent-proxy (SHO-380).
+  router.use('/:id/attachments', authMiddleware, requireAuth)
+  router.use('/:id/attachments/*', authMiddleware, requireAuth)
 
   router.get('/:id/attachments', listProjectAttachmentsHandler)
   router.post('/:id/attachments', attachProjectHandler)
