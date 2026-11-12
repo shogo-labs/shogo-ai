@@ -58,6 +58,7 @@ mock.module("../../project/panels/ide/CodeEditor", () => ({
 }))
 
 const { ShareFileView } = await import("../ShareFileViewer")
+const { API_URL } = await import("../../../lib/api-url")
 
 const target = { kind: "share" as const, href: "/api/f/signed-token", name: "q4-report.pdf" }
 const originalFetch = globalThis.fetch
@@ -280,5 +281,43 @@ describe("a file that is on this machine (local desktop share)", () => {
     await waitFor(() => expect(document.body.textContent).toContain("notes.txt"))
     expect(document.querySelector('[data-rn-shim="share-file-reveal"]')).toBeNull()
     expect(document.querySelector('[data-rn-shim="share-file-open-external"]')).toBeNull()
+  })
+})
+
+/**
+ * The desktop renderer runs at `shogo://app`. A `share_file` link is minted on
+ * the public cloud origin, and a cross-origin fetch to it is refused there
+ * ("Failed to fetch"): the API answers an unknown origin with
+ * `ALLOWED_ORIGINS[0]`. The bytes must come from this app's own API relay.
+ */
+describe("a share link on the public cloud origin", () => {
+  /** base64url claims, exactly the shape the API signs. */
+  function signedToken(workspaceId: string, path: string): string {
+    const claims = { typ: "shared-file", workspaceId, path, exp: 9_999_999_999, iat: 1 }
+    return `${Buffer.from(JSON.stringify(claims), "utf8").toString("base64url")}.c2ln`
+  }
+
+  test("is fetched through the app's own API, never the cloud host", async () => {
+    const token = signedToken("ws-cloud-1", "artifacts/BUILD-AND-DOWNLOAD-GUIDE.md")
+    const urls: string[] = []
+    globalThis.fetch = mock(async (input: any) => {
+      urls.push(String(input))
+      return new Response("# hello", { status: 200, headers: { "content-type": "text/markdown" } })
+    }) as unknown as typeof fetch
+
+    render(
+      <ShareFileView
+        target={{
+          kind: "share",
+          href: `https://studio.shogo.ai/api/f/${token}`,
+          name: "BUILD-AND-DOWNLOAD-GUIDE.md",
+        }}
+        onClose={() => {}}
+      />,
+    )
+
+    await waitFor(() => expect(urls.length).toBeGreaterThan(0))
+    expect(urls[0]).toBe(`${API_URL}/api/cloud/ws-cloud-1/f/${token}`)
+    expect(urls.some((url) => url.includes("studio.shogo.ai"))).toBe(false)
   })
 })

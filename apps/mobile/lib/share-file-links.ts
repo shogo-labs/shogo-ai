@@ -320,6 +320,57 @@ export function parseInAppFileHref(
 }
 
 /**
+ * The URL the viewer should actually `fetch` for an in-app file.
+ *
+ * `share_file` mints its link on the API's **public** origin
+ * (`SHOGO_PUBLIC_API_URL` — `https://studio.shogo.ai` in cloud), but the
+ * desktop renderer runs at `shogo://app`. The API answers an origin it does not
+ * know with `ALLOWED_ORIGINS[0]` (`apps/api/src/server.ts`), so a cross-origin
+ * fetch to that host is refused by the browser and the viewer showed
+ * "Failed to fetch". The local API already relays
+ * `/api/cloud/<workspaceId>/<path>` to cloud with that workspace's key, so a
+ * cloud link is rebased onto the API origin and handed to that relay.
+ *
+ * A relative link needs nothing: `resolveChatAttachmentUrl` prefixes the API
+ * origin and the workspace fetch router adds the `/api/cloud/` prefix, which is
+ * why relative file links kept working while these did not.
+ */
+export function inAppFileFetchHref(
+  file: { href: string; kind?: InAppFileKind },
+  apiUrl: string | null | undefined,
+): string {
+  const { href } = file
+  if (!apiUrl || isRelativeHref(href)) return href
+  let target: URL
+  let api: URL
+  try {
+    target = new URL(href)
+    api = new URL(apiUrl)
+  } catch {
+    return href
+  }
+  // Same origin as the API: nothing to relay.
+  if (target.origin === api.origin) return href
+  // Anything the app does not serve itself stays exactly as written.
+  const share = SHARE_FILE_PATH_RE.exec(target.pathname)
+  if (share) {
+    const token = share[1]!
+    // `/api/cloud/<ws>/f/<token>` is relayed as cloud `/api/f/<token>`. The
+    // token's own workspace decides, not the active one: a cloud file opened
+    // while a local workspace is active must still reach its own workspace.
+    const workspaceId = shareFileClaims(token)?.workspaceId
+    if (workspaceId) {
+      return `${apiUrl.replace(/\/+$/, '')}/api/cloud/${encodeURIComponent(workspaceId)}/f/${token}`
+    }
+    return `${apiUrl.replace(/\/+$/, '')}${target.pathname}`
+  }
+  if (!STORED_FILE_PATH_RE.test(target.pathname)) return href
+  // A stored path keeps its shape (`/api/cloud/<ws>/...` when already relayed);
+  // a bare one gets the prefix from the fetch router.
+  return `${apiUrl.replace(/\/+$/, '')}${target.pathname}${target.search}`
+}
+
+/**
  * What to tell the user about a failed download, from the API's own `code`
  * rather than a generic "could not load". The route answers `expired`,
  * `invalid_link`, `file_not_found`, `runtime_unavailable`, `rate_limited` and
