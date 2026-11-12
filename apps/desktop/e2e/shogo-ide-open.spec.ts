@@ -33,6 +33,22 @@ async function recordStatus(page: Page): Promise<void> {
 
 const phases = (page: Page) => page.evaluate(() => (window as any).__shogoIdePhases as string[])
 
+/** Console output of each Shogo-IDE window, attached to the report if a test fails. */
+const ideConsole = new Map<Page, string[]>()
+
+async function expectWorkbench(ide: Page, timeoutMs: number): Promise<void> {
+  try {
+    await expect(ide.locator('.monaco-workbench')).toBeVisible({ timeout: timeoutMs })
+  } catch (error) {
+    const info = test.info()
+    await info.attach('shogo-ide-console', { body: (ideConsole.get(ide) ?? []).join('\n') || '(no console output)', contentType: 'text/plain' })
+    await info.attach('shogo-ide-window', { body: await ide.screenshot().catch(() => Buffer.from('')), contentType: 'image/png' })
+    await info.attach('shogo-ide-html', { body: (await ide.content().catch(() => '')).slice(0, 20_000), contentType: 'text/html' })
+    console.log(`Shogo-IDE window ${ide.url()} console:\n${(ideConsole.get(ide) ?? []).join('\n')}`)
+    throw error
+  }
+}
+
 /** The Shogo-IDE window: its URL carries the workspace `folder` (the token is stripped by a redirect). */
 async function waitForIdeWindow(shogo: PackagedApp, timeoutMs: number): Promise<Page> {
   const deadline = Date.now() + timeoutMs
@@ -44,7 +60,15 @@ async function waitForIdeWindow(shogo: PackagedApp, timeoutMs: number): Promise<
         return false
       }
     })
-    if (ide) return ide
+    if (ide) {
+      if (!ideConsole.has(ide)) {
+        const lines: string[] = []
+        ideConsole.set(ide, lines)
+        ide.on('console', (m) => lines.push(`[${m.type()}] ${m.text()}`))
+        ide.on('pageerror', (e) => lines.push(`[pageerror] ${e.message}`))
+      }
+      return ide
+    }
     const dialog = shogo.page.getByRole('alertdialog')
     if (await dialog.count()) throw new Error(`Open in Shogo IDE failed: ${await dialog.first().innerText()}`)
     await new Promise((r) => setTimeout(r, 500))
@@ -77,7 +101,7 @@ test.describe('with the published server', () => {
     await recordStatus(page)
     await openButton(page).click()
     const ide = await waitForIdeWindow(shogo, 540_000)
-    await expect(ide.locator('.monaco-workbench')).toBeVisible({ timeout: 120_000 })
+    await expectWorkbench(ide, 120_000)
     await expect(ide.locator('.explorer-folders-view .monaco-list-row', { hasText: 'README.md' }).first()).toBeVisible({ timeout: 120_000 })
     expect(await phases(page)).toEqual(expect.arrayContaining(['downloading', 'verifying', 'extracting', 'starting', 'ready']))
     // shogo-core is built in; Copilot is removed from the build.
@@ -93,7 +117,7 @@ test.describe('with the published server', () => {
     const started = Date.now()
     await openButton(page).click()
     const ide = await waitForIdeWindow(shogo, 60_000)
-    await expect(ide.locator('.monaco-workbench')).toBeVisible({ timeout: 60_000 })
+    await expectWorkbench(ide, 60_000)
     expect(Date.now() - started).toBeLessThan(15_000)
     expect(await phases(page)).not.toContain('downloading')
     await ide.close()

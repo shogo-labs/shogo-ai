@@ -102,8 +102,10 @@ export function writeFixtureFolder(prefix: string): { folder: string; names: str
   for (let i = 0; i < 30; i++) fs.writeFileSync(path.join(folder, `.dot-file-${i}`), 'x')
   for (let i = 0; i < 5; i++) fs.mkdirSync(path.join(folder, `.dot-dir-${i}`))
   fs.writeFileSync(path.join(folder, '.git'), 'gitdir: ../.git/modules/e2e\n')
+  // Two children, so the explorer shows `src` rather than compacting it to `src/nested`.
   fs.mkdirSync(path.join(folder, 'src', 'nested'), { recursive: true })
   fs.writeFileSync(path.join(folder, 'src', 'nested', 'file.ts'), 'export const x = 1\n')
+  fs.writeFileSync(path.join(folder, 'src', 'main.py'), 'print(1)\n')
   for (let i = 0; i < 200; i++) fs.writeFileSync(path.join(folder, `file-${String(i).padStart(3, '0')}.py`), 'x = 1\n')
   return { folder, names: fs.readdirSync(folder) }
 }
@@ -117,14 +119,9 @@ export async function openFolderProjectIde(page: Page, folder: string): Promise<
   const project = created.body?.project ?? created.body
   if (!project?.id) throw new Error(`opening ${folder} failed (${created.status}): ${JSON.stringify(created.body).slice(0, 300)}`)
   await apiFetch(page, `/api/local/projects/${project.id}/trust`, { method: 'POST', body: { trusted: true } })
-  await page.goto(new URL(`/projects/${encodeURIComponent(project.id)}?tab=ide`, page.url()).toString(), { waitUntil: 'domcontentloaded' })
-  const explorer = page.getByLabel('Explorer', { exact: true }).first()
-  try {
-    await expect(explorer).toBeVisible({ timeout: 120_000 })
-  } catch {
-    await page.getByTestId('project-tab-ide').first().click()
-    await expect(explorer).toBeVisible({ timeout: 120_000 })
-  }
+  await page.goto(new URL(`/projects/${encodeURIComponent(project.id)}`, page.url()).toString(), { waitUntil: 'domcontentloaded' })
+  await page.getByTestId('project-tab-ide').first().click({ timeout: 120_000 })
+  await expect(page.getByLabel('Explorer', { exact: true }).first()).toBeVisible({ timeout: 120_000 })
   return project.id as string
 }
 

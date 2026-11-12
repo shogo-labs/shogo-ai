@@ -43,6 +43,7 @@ test('folders, dot-entries and the .git pointer file are all listed', async () =
 test('src expands to its folders', async () => {
   await explorerRow(shogo.page, 'src').click()
   await expect(explorerRow(shogo.page, 'nested')).toBeVisible({ timeout: 30_000 })
+  await expect(explorerRow(shogo.page, 'main.py')).toBeVisible()
 })
 
 test('the 200th plain file is reachable by scrolling', async () => {

@@ -1952,6 +1952,18 @@ function setupSessionHandlers(): void {
     const headers = { ...details.responseHeaders }
 
     const isApiOrigin = details.url.startsWith(apiOrigin)
+    // A Shogo-IDE window shows the Code - OSS web workbench, which sends its
+    // own CSP; replacing it with the renderer's (and rewriting CORS to
+    // shogo://app) leaves the workbench blank (#1989). Calls it makes to the
+    // Shogo API keep the handling below.
+    if (
+      !isApiOrigin &&
+      details.webContents &&
+      windowManager.getWindowRecordForWebContents(details.webContents)?.kind === 'code-workbench'
+    ) {
+      callback({})
+      return
+    }
     // Direct agent-runtime ports (e.g. http://localhost:<agentPort>/agent/
     // workspace/download/...) echo back `ALLOWED_ORIGINS[0]` (http://localhost:3000)
     // for our `shogo://app` origin, so credentialed fetches — chat image
