@@ -347,11 +347,14 @@ describe('GET/POST /api/workspaces/:workspaceId/agent-proxy/*', () => {
     billingAnswer = async () => {
       throw new Error('billing lookup unavailable')
     }
-    store.fetchImpl = async () =>
-      new Response(JSON.stringify({ savedPath: 'files/small.zip', bytes: 8 }), {
+    let forwardedCap: string | null = null
+    store.fetchImpl = async (_url, init) => {
+      forwardedCap = init!.headers.get('x-attachment-max-bytes')
+      return new Response(JSON.stringify({ savedPath: 'files/small.zip', bytes: 8 }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       })
+    }
 
     const payload = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xde, 0xad, 0xbe, 0xef])
     const app = buildApp()
@@ -366,6 +369,7 @@ describe('GET/POST /api/workspaces/:workspaceId/agent-proxy/*', () => {
     // The cap lookup is a soft dependency: a transient billing/DB failure must
     // degrade to the paid cap, never surface as proxy_error for a healthy upload.
     expect(res.status).toBe(200)
+    expect(forwardedCap).toBe(String(500 * 1024 * 1024))
   })
 
   test('still buffers a non-upload body (chat turn JSON)', async () => {
