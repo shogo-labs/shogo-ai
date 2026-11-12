@@ -2279,27 +2279,6 @@ export class MetalWarmPool {
       }
     }
 
-    // Restore the agent's encrypted home directory (~/.ssh, ~/.oci, ...).
-    // Best-effort like writable state, and for the same reason a failure marks
-    // the VM untrusted: it now has an empty home, which must never be exported
-    // over the real one.
-    if (homeStateEligible(publishedSubdomain)) {
-      try {
-        const h = await timer.time('hydrate_home', () => this.hydrateHomeState(projectId, vm.handle, env))
-        if (h === 'unsupported') a.homeExportUnsupported = true
-        else if (h.hydrated) a.homeParentEtag = h.parentEtag
-        this.writeLive(a)
-      } catch (err: any) {
-        metrics.inc(M.homeHydrateFailed)
-        this.distrustHome(a, `home-state hydrate failed at assign (${err?.message ?? err})`)
-        console.error(
-          `[pool] home-state hydrate failed for ${projectId} — booting with an empty home. ` +
-            `This VM is marked UNTRUSTED and will NOT overwrite the durable home archive:`,
-          err?.message ?? err,
-        )
-      }
-    }
-
     // Overlay the project's durable `.git`. git_only's per-turn artifact is
     // `repo.git.tar.gz`; metal guests cannot persist it themselves (no S3
     // creds), so the host hydrates it here — after source, before the guest
@@ -2345,6 +2324,32 @@ export class MetalWarmPool {
         a.repoExportedHeadSha = undefined
         a.repoExportSha = undefined
         this.writeLive(a)
+      }
+    }
+
+    // Restore the agent's encrypted home directory (~/.ssh, ~/.oci, ...) and
+    // its workspace `.env*` files LAST, after the git checkout above and the
+    // member hydrate before it. Both replace whole directory trees, so a
+    // workspace `.env` restored earlier is gone before the agent ever runs —
+    // the cold-boot data loss this ordering exists to prevent.
+    //
+    // Best-effort like writable state, and for the same reason a failure marks
+    // the VM untrusted: it now has an empty home, which must never be exported
+    // over the real one.
+    if (homeStateEligible(publishedSubdomain)) {
+      try {
+        const h = await timer.time('hydrate_home', () => this.hydrateHomeState(projectId, vm.handle, env))
+        if (h === 'unsupported') a.homeExportUnsupported = true
+        else if (h.hydrated) a.homeParentEtag = h.parentEtag
+        this.writeLive(a)
+      } catch (err: any) {
+        metrics.inc(M.homeHydrateFailed)
+        this.distrustHome(a, `home-state hydrate failed at assign (${err?.message ?? err})`)
+        console.error(
+          `[pool] home-state hydrate failed for ${projectId} — booting with an empty home. ` +
+            `This VM is marked UNTRUSTED and will NOT overwrite the durable home archive:`,
+          err?.message ?? err,
+        )
       }
     }
 

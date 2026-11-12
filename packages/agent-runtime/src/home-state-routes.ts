@@ -24,19 +24,27 @@ import {
   decryptHomeState,
   encryptHomeState,
   homeStateTag,
+  isWorkspaceSecretFile,
   packHomeState,
   parseHomeStateKey,
   resolveHomeDir,
   restoreHomeState,
   scanHomeState,
   sweepHomeRestoreStages,
+  workspaceSecretRoots,
   type HomeStateKey,
+  type WorkspaceSecretRoot,
 } from './home-state'
 
 export interface HomeStateConfig {
   homeDir: string
   key: HomeStateKey
   projectId: string
+  /**
+   * Project roots whose `.env*` files ride in the archive (the runtime's own
+   * root). Empty when the runtime was not told its workspace directory.
+   */
+  secretRoots: WorkspaceSecretRoot[]
 }
 
 /** Null when this guest must not persist its home directory. */
@@ -49,7 +57,7 @@ export function homeStateConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Ho
   const projectId = env.HOME_STATE_ID || env.PROJECT_ID
   const key = parseHomeStateKey(env)
   if (!key) return null
-  return { homeDir: resolveHomeDir(env), key, projectId }
+  return { homeDir: resolveHomeDir(env), key, projectId, secretRoots: workspaceSecretRoots(env) }
 }
 
 function disabled(): Response {
@@ -66,7 +74,7 @@ export async function handleExportHome(
   const fsp = await import('node:fs/promises')
   let stage: string | null = null
   try {
-    const scan = scanHomeState(cfg.homeDir)
+    const scan = scanHomeState(cfg.homeDir, { secretRoots: cfg.secretRoots })
     const tag = homeStateTag(scan)
     if (tag === null) return new Response(null, { status: 204 })
     if (req.headers.get('if-none-match') === tag) {
@@ -117,9 +125,11 @@ export async function handleHydrateHome(req: Request, opts: { env?: NodeJS.Proce
   try {
     sweepHomeRestoreStages(cfg.homeDir)
     const gz = decryptHomeState(blob, { key: cfg.key, projectId: cfg.projectId })
-    const { units } = await restoreHomeState(cfg.homeDir, gz)
-    const tops = [...new Set(units.map((u) => u.split('/')[0]))]
-    console.log(`[pool/hydrate-home] restored ${units.length} unit(s) under ${tops.join(', ')}`)
+    const { units } = await restoreHomeState(cfg.homeDir, gz, { secretRoots: cfg.secretRoots })
+    const envFiles = units.filter((u) => isWorkspaceSecretFile(u.split('/').pop() ?? '')).length
+    console.log(
+      `[pool/hydrate-home] restored ${units.length} path(s)` + (envFiles ? `, ${envFiles} workspace .env file(s)` : ''),
+    )
     return Response.json({ ok: true, units })
   } catch (err: any) {
     if (err instanceof HomeStateDecryptError || err instanceof HomeStateInvalidArchiveError) {

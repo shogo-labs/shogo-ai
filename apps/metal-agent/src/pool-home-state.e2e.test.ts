@@ -19,12 +19,14 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
 import { randomBytes } from 'node:crypto'
-import { lstatSync, mkdtempSync, rmSync } from 'fs'
+import { existsSync, lstatSync, mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { WORKSPACE_SECRET_DIR } from '../../../packages/agent-runtime/src/home-state'
+import { DEFAULT_WORKSPACE_GITIGNORE } from '../../../packages/shared-runtime/src/repo-store'
 import { MetalWarmPool, type AssignedVm } from './pool'
 import type { SnapshotStore } from './snapshot-store'
-import { FakeHost, FakeS3, fakeHostConfig, useFakeS3Env, type FakeGuest } from './test-harness/fake-metal-host'
+import { FakeHost, FakeS3, fakeHostConfig, git, tarOf, useFakeS3Env, type FakeGuest } from './test-harness/fake-metal-host'
 
 const KEY = 'p1/home-state.enc'
 let restoreEnv: () => void
@@ -72,6 +74,53 @@ async function rebuildAndReopen(pool: MetalWarmPool, env: Record<string, string>
   await pool.evictForGc('p1', { alsoDurable: true })
   await pool.open('p1', env)
 }
+
+describe('workspace .env durability (e2e)', () => {
+  /**
+   * The incident: a workspace runtime's root `.env` (the tokens an agent saved,
+   * which "are auto-loaded") is gitignored, so the git repo that cold-boots the
+   * workspace never carried it, and the root tree itself is never archived.
+   */
+  test('a ws: runtime keeps its root .env across a cold boot, and git still ignores it', async () => {
+    const { s3, pool, assigned, guest } = rig()
+    const id = 'ws:proj:m1'
+    const env = { ...envFor(), WORKSPACE_PROJECT_IDS: 'm1' }
+    // The member project exists, so the runtime has a real workspace tree to
+    // hydrate into (a member with no archive is not materialised at all).
+    s3.put('m1/project-src.tar.gz', tarOf({ 'App.tsx': 'export default 1\n' }))
+    await pool.open(id, env)
+    const firstVm = assigned(id).handle.id
+
+    const g = guest(id)
+    g.writeWorkspace('.gitignore', DEFAULT_WORKSPACE_GITIGNORE)
+    const body = 'GITHUB_TOKEN=ghp_example\nTRIPO_API_KEY=trip\n'
+    g.writeWorkspace('.env', body, 0o600)
+
+    expect(await pool.exportAllHomeState()).toBe(1)
+    const stored = Buffer.from(s3.body(`${id}/home-state.enc`)!)
+    expect(stored.subarray(0, 4).toString()).toBe('SHGH')
+    for (const secret of ['ghp_example', 'TRIPO_API_KEY']) {
+      expect(stored.includes(Buffer.from(secret))).toBe(false)
+    }
+
+    // A rootfs rebuild: every snapshot is invalid, so the only way back is the
+    // durable repo + the encrypted home archive.
+    await pool.suspend(id)
+    await pool.evictForGc(id, { alsoDurable: true })
+    await pool.open(id, env)
+
+    expect(assigned(id).handle.id).not.toBe(firstVm)
+    const after = guest(id)
+    expect(after.read('.env')).toBe(body)
+    expect(lstatSync(join(after.ws, '.env')).mode & 0o777).toBe(0o600)
+    // Still ignored: never committed, never inside the repo bundle.
+    expect(git(after.ws, 'check-ignore', '.env')).toBe('.env')
+    expect(git(after.ws, 'ls-files')).not.toContain('.env')
+    // The export's staging copy never outlives the export.
+    expect(existsSync(join(after.home, WORKSPACE_SECRET_DIR))).toBe(false)
+    expect(existsSync(join(after.ws, WORKSPACE_SECRET_DIR))).toBe(false)
+  }, 60_000)
+})
 
 describe('home directory durability (e2e)', () => {
   test('credentials survive a cold boot, encrypted at rest, with their permissions', async () => {

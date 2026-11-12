@@ -22,20 +22,23 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import {
   HOME_STATE_MAX_ENTRIES,
   HomeStateDecryptError,
   HomeStateInvalidArchiveError,
   HomeStateTooLargeError,
+  WORKSPACE_SECRET_DIR,
   decryptHomeState,
   encryptHomeState,
   homeStateTag,
+  isWorkspaceSecretFile,
   packHomeState,
   parseHomeStateKey,
   restoreHomeState,
   scanHomeState,
   validateArchiveNames,
+  workspaceSecretRoots,
   type HomeStateKey,
 } from '../home-state'
 
@@ -287,6 +290,143 @@ describe('pack + restore', () => {
   test('packHomeState returns null when there is nothing to persist', async () => {
     put('workspace/a', 'x')
     expect(await packHomeState(home, { stageDir: stage })).toBeNull()
+  })
+})
+
+describe('workspace secrets (.env at a project root)', () => {
+  const WS = () => join(root, 'workspace')
+
+  function putWs(dir: string, rel: string, body: string, mode = 0o644): void {
+    const p = join(dir, rel)
+    mkdirSync(dirname(p), { recursive: true })
+    writeFileSync(p, body)
+    chmodSync(p, mode)
+  }
+
+  const rootOnly = () => [{ slot: 'root', dir: WS() }]
+
+  test('scan picks up .env* at each project root and nothing else', () => {
+    mkdirSync(WS(), { recursive: true })
+    putWs(WS(), '.env', 'TOKEN=abc')
+    putWs(WS(), '.env.local', 'LOCAL=1')
+    putWs(WS(), '.env.production', 'PROD=1')
+    putWs(WS(), '.env.example', 'TOKEN=')
+    putWs(WS(), '.env.local.template', 'LOCAL=')
+    putWs(WS(), '.gitignore', '.env\n')
+    putWs(WS(), 'src/.env', 'NESTED=1')
+    putWs(WS(), 'member/.env', 'MEMBER=1')
+
+    const scan = scanHomeState(home, { secretRoots: [{ slot: 'root', dir: WS() }, { slot: 'member', dir: join(WS(), 'member') }] })
+    const rels = scan.entries.map((e) => e.rel)
+    expect(rels).toContain(`${WORKSPACE_SECRET_DIR}/root/.env`)
+    expect(rels).toContain(`${WORKSPACE_SECRET_DIR}/root/.env.local`)
+    expect(rels).toContain(`${WORKSPACE_SECRET_DIR}/root/.env.production`)
+    expect(rels).toContain(`${WORKSPACE_SECRET_DIR}/member/.env`)
+    expect(rels.some((r) => r.endsWith('.env.example'))).toBe(false)
+    expect(rels.some((r) => r.includes('template'))).toBe(false)
+    expect(rels.some((r) => r.includes('src/'))).toBe(false)
+    expect(rels).not.toContain(`${WORKSPACE_SECRET_DIR}/root/.gitignore`)
+    expect(scan.entries.find((e) => e.rel.endsWith('/root/.env'))?.src).toBe(join(WS(), '.env'))
+  })
+
+  test('the tag moves when a .env changes, so the export is not skipped', () => {
+    mkdirSync(WS(), { recursive: true })
+    putWs(WS(), '.env', 'A=1')
+    const t0 = homeStateTag(scanHomeState(home, { secretRoots: rootOnly() }))
+    expect(t0).not.toBeNull()
+    putWs(WS(), '.env', 'A=2')
+    expect(homeStateTag(scanHomeState(home, { secretRoots: rootOnly() }))).not.toBe(t0)
+  })
+
+  test('export → wipe → restore brings the file back byte-identical and 0600', async () => {
+    mkdirSync(WS(), { recursive: true })
+    const body = 'GITHUB_TOKEN=ghp_example\nTRIPO_API_KEY=trip\n'
+    putWs(WS(), '.env', body, 0o644)
+
+    const gz = await packedWithSecrets()
+    // The staging copy must not survive the export inside HOME.
+    expect(existsSync(join(home, WORKSPACE_SECRET_DIR))).toBe(false)
+
+    const target = freshHome()
+    const targetWs = join(root, 'restored-workspace')
+    mkdirSync(targetWs)
+    const { units } = await restoreHomeState(target, gz, {
+      sameOwner: false,
+      secretRoots: [{ slot: 'root', dir: targetWs }],
+    })
+    expect(read(targetWs, '.env')).toBe(body)
+    expect(lstatSync(join(targetWs, '.env')).mode & 0o777).toBe(0o600)
+    expect(units).toContain(join(targetWs, '.env'))
+    // Nothing from the container is left lying around in HOME.
+    expect(existsSync(join(target, WORKSPACE_SECRET_DIR))).toBe(false)
+  })
+
+  async function packedWithSecrets(): Promise<Uint8Array> {
+    const p = await packHomeState(home, { stageDir: stage, scan: scanHomeState(home, { secretRoots: rootOnly() }) })
+    if (!p) throw new Error('nothing packed')
+    return p.gz
+  }
+
+  test('a .env deleted before the export stays deleted, and restore replaces an old copy', async () => {
+    mkdirSync(WS(), { recursive: true })
+    putWs(WS(), '.env', 'OLD=1')
+    const gz = await packedWithSecrets()
+
+    const targetWs = join(root, 'restored-workspace')
+    mkdirSync(targetWs)
+    writeFileSync(join(targetWs, '.env'), 'STALE=from-a-previous-life')
+    await restoreHomeState(freshHome(), gz, { sameOwner: false, secretRoots: [{ slot: 'root', dir: targetWs }] })
+    expect(read(targetWs, '.env')).toBe('OLD=1')
+
+    // Now delete it before the next export: nothing to archive, so nothing returns.
+    rmSync(join(WS(), '.env'))
+    const empty = await packHomeState(home, { stageDir: stage, scan: scanHomeState(home, { secretRoots: rootOnly() }) })
+    expect(empty).toBeNull()
+  })
+
+  test('an archive with no workspace secrets restores exactly as before', async () => {
+    put('.ssh/id_ed25519', 'KEY', 0o600)
+    const gz = await packed()
+    const target = freshHome()
+    const ws = join(root, 'no-secrets-ws')
+    mkdirSync(ws)
+    const { units } = await restoreHomeState(target, gz, { sameOwner: false, secretRoots: [{ slot: 'root', dir: ws }] })
+    expect(units).toEqual(['.ssh'])
+    expect(readdirSync(ws)).toEqual([])
+  })
+
+  test('validateArchiveNames accepts only .env* inside the container', () => {
+    expect(() => validateArchiveNames([`${WORKSPACE_SECRET_DIR}/root/.env`])).not.toThrow()
+    expect(() => validateArchiveNames([`${WORKSPACE_SECRET_DIR}/m1/.env.local`])).not.toThrow()
+    for (const bad of [
+      `${WORKSPACE_SECRET_DIR}/root/.gitconfig`,
+      `${WORKSPACE_SECRET_DIR}/root/passwd`,
+      `${WORKSPACE_SECRET_DIR}/root/src/.env`,
+      `${WORKSPACE_SECRET_DIR}/a/b/.env`,
+      `${WORKSPACE_SECRET_DIR}/../.env`,
+    ]) {
+      expect(() => validateArchiveNames([bad])).toThrow(HomeStateInvalidArchiveError)
+    }
+  })
+
+  test('workspaceSecretRoots names only the runtime root, and nothing unsafe', () => {
+    const roots = workspaceSecretRoots({
+      WORKSPACE_DIR: '/app/workspace',
+      WORKSPACE_PROJECT_IDS: 'p1, p2,,../escape,root',
+    })
+    // Members carry their own `.env*` in their source archive; a second durable
+    // copy here would let an older one win.
+    expect(roots).toEqual([{ slot: 'root', dir: resolve('/app/workspace') }])
+    expect(workspaceSecretRoots({})).toEqual([])
+  })
+
+  test('isWorkspaceSecretFile matches the names git ignores and not the templates', () => {
+    for (const name of ['.env', '.env.local', '.env.production', '.env.staging', '.env.test.local']) {
+      expect(isWorkspaceSecretFile(name)).toBe(true)
+    }
+    for (const name of ['.env.example', '.env.sample', '.env.local.template', 'env', '.gitignore', 'config/.env']) {
+      expect(isWorkspaceSecretFile(name)).toBe(false)
+    }
   })
 })
 
