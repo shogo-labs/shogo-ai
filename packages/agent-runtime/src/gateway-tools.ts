@@ -13260,9 +13260,21 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
         }
       }
 
-      if (type === 'webchat' && !channelConfig.widgetSecret) {
-        const { randomUUID } = await import('crypto')
-        channelConfig.widgetSecret = randomUUID()
+      if (type === 'webchat') {
+        // Keep the key already saved in config.json so a reconnect does not
+        // break pages that are already embedding the widget (SHO-380).
+        const { existsSync, readFileSync } = await import('fs')
+        const { join } = await import('path')
+        const { resolveWebchatWidgetSecret } = await import('./channels/webchat-key')
+        const configPath = join(ctx.workspaceDir, 'config.json')
+        let savedWebchat: Record<string, string> | undefined
+        if (existsSync(configPath)) {
+          try {
+            const saved = JSON.parse(readFileSync(configPath, 'utf-8'))
+            savedWebchat = saved?.channels?.find((c: any) => c.type === 'webchat')?.config
+          } catch { /* ignore a malformed config; a fresh key is still correct */ }
+        }
+        channelConfig.widgetSecret = resolveWebchatWidgetSecret(channelConfig, savedWebchat)
       }
 
       try {

@@ -67,6 +67,7 @@ import {
   stableTransformContext,
 } from './stable-compaction'
 import { MIDTURN_KEEP_RECENT_MESSAGES, MidTurnAutocompactor } from './midturn-autocompact'
+import { advertisedTools, createPromptOverheadReader, toolSchemaChars } from './prompt-overhead'
 import { scrubInvalidImages } from './image-size-guard'
 import {
   CACHE_BOUNDARY,
@@ -1730,6 +1731,19 @@ export class AgentGateway {
     console.log(`[AgentGateway] Loaded ${this.skills.length} skills, ${this.configSkills.length} config skills, ${this.quickActions.length} quick actions`)
 
     await this.refreshHooks(true)
+
+    // Backfill a widget key for an already-connected webchat channel that has
+    // none (channels connected from the Studio panel before SHO-380 never got
+    // one), so existing embeds start working without a reconnect.
+    const webchatConfigPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
+    if (webchatConfigPath) {
+      const { backfillWebchatWidgetSecret } = await import('./channels/webchat-key')
+      const widgetSecret = backfillWebchatWidgetSecret(webchatConfigPath)
+      if (widgetSecret) {
+        const entry = this.config.channels.find((c) => c.type === 'webchat')
+        if (entry) entry.config = { ...entry.config, widgetSecret }
+      }
+    }
 
     // Connect channels
     for (const channelConfig of this.config.channels) {
@@ -4390,14 +4404,15 @@ export class AgentGateway {
         // ---- 1) Per-tool schema sizing ----
         // Only the advertised set is sent (SHO-97). Deferred tools are counted,
         // not sized: their cost per request is zero, which is the whole point.
-        const advertisedTools = isAdvertisedTool ? tools.filter(t => isAdvertisedTool(t)) : [...tools]
-        const deferredToolCount = tools.length - advertisedTools.length
-        const toolSizes = advertisedTools.map(t => {
-          const schema = JSON.stringify({ name: t.name, description: t.description, input_schema: t.parameters })
-          return { name: t.name, chars: schema.length }
+        // Same helper as the compactor's overhead (SHO-381), so the two cannot
+        // disagree about what is on the wire.
+        const advertised = advertisedTools(tools, isAdvertisedTool)
+        const deferredToolCount = tools.length - advertised.length
+        const toolSizes = advertised.map(t => {
+          return { name: t.name, chars: toolSchemaChars(t) }
         })
-        const toolSchemaChars = toolSizes.reduce((s, t) => s + t.chars, 0)
-        const toolSchemaEstTokens = Math.ceil(toolSchemaChars / 4)
+        const toolSchemaCharsTotal = toolSizes.reduce((s, t) => s + t.chars, 0)
+        const toolSchemaEstTokens = Math.ceil(toolSchemaCharsTotal / 4)
         const toolSchemasPerTool = toolSizes
           .map(t => ({ name: t.name, chars: t.chars, estTokens: Math.ceil(t.chars / 4) }))
           .sort((a, b) => b.chars - a.chars || a.name.localeCompare(b.name))
@@ -4528,7 +4543,7 @@ export class AgentGateway {
         const candidateLabels = [
           ...breakdown.map(s => s.label.length),
           'tool-schemas (XX)'.length,
-          `Tool schemas (${advertisedTools.length})`.length,
+          `Tool schemas (${advertised.length})`.length,
           `deferred (${deferredToolCount} tools, not sent)`.length + 2,
           `Chat context (${history.length} msgs)`.length,
           'assistant-tool-calls (XXX)'.length + 2, // children sit 2 chars deeper
@@ -4564,7 +4579,7 @@ export class AgentGateway {
           `      ${label.padEnd(subChildLabelWidth)}    : ${chars.toLocaleString().padStart(7)} chars ~${Math.ceil(chars / 4).toLocaleString().padStart(6)} tok`
 
         // Tool schemas: parent (advertised) + per-tool top 10 + other + deferred
-        lines.push(fmtParent(`Tool schemas (${advertisedTools.length})`, toolSchemaChars, toolSchemaEstTokens))
+        lines.push(fmtParent(`Tool schemas (${advertised.length})`, toolSchemaCharsTotal, toolSchemaEstTokens))
         const TOP_SCHEMAS = 10
         const topSchemas = toolSchemasPerTool.slice(0, TOP_SCHEMAS)
         const restSchemas = toolSchemasPerTool.slice(TOP_SCHEMAS)
@@ -4692,9 +4707,9 @@ export class AgentGateway {
           sections: breakdown,
           totalChars,
           totalEstTokens,
-          toolSchemaChars,
+          toolSchemaChars: toolSchemaCharsTotal,
           toolSchemaEstTokens,
-          toolCount: advertisedTools.length,
+          toolCount: advertised.length,
           registeredToolCount: tools.length,
           deferredToolCount,
           toolSchemasPerTool,
@@ -4791,12 +4806,18 @@ export class AgentGateway {
       // that is where this fires. One instance per turn: a new turn starts
       // fresh, which is what makes "one summary per turn" and the mid-turn
       // manual request both meaningful.
-      const promptOverheadTokens =
-        Math.ceil(systemPrompt.length / 4) +
-        tools.reduce((sum, t) => {
-          const schema = JSON.stringify({ name: t.name, description: t.description, input_schema: t.parameters })
-          return sum + Math.ceil(schema.length / 4)
-        }, 0)
+      // What the request costs besides its messages: the system prompt plus the
+      // schemas that are actually sent. Read per call, because the advertised
+      // set changes mid-turn (a `read_guide` activation, a `connect` hot-add)
+      // and a deferred tool's schema is not in the request at all — counting
+      // all of them made every turn in a tool-heavy workspace look ~330k over
+      // the cap, so it compacted every turn and could never get under the floor
+      // (SHO-381).
+      const promptOverheadTokens = createPromptOverheadReader({
+        systemPrompt,
+        tools,
+        isAdvertisedTool,
+      })
       // Per-call prefix fingerprints for this turn, paired with the provider's
       // reported cache writes at turn end (`SHOGO_PREFIX_LOG=0` silences it).
       const callFingerprints: Array<{
@@ -4838,9 +4859,15 @@ export class AgentGateway {
           })
           // Hand back what the session now holds: the persisted summary (with
           // the facts block) and the tail a variant may have rewritten, so the
-          // memo re-emits the session, not the raw loop array (SHO-327).
+          // memo re-emits the session, not the raw loop array (SHO-327). The
+          // dropped-result count rides along so the compaction event can say
+          // whether B1 actually dropped anything (SHO-381).
           if (!result) return undefined
-          return { summary: result.storedSummary, kept: result.keptMessages }
+          return {
+            summary: result.storedSummary,
+            kept: result.keptMessages,
+            droppedToolResults: result.droppedToolResults,
+          }
         },
       })
 
@@ -5016,7 +5043,8 @@ export class AgentGateway {
             console.log(
               `${this.logPrefix} Mid-turn summarization (${event.trigger}/${event.reason}): ` +
               `${event.tokensBefore} -> ${event.tokensAfter} tokens, ` +
-              `${event.messagesBefore} -> ${event.messagesAfter} messages ` +
+              `${event.messagesBefore} -> ${event.messagesAfter} messages, ` +
+              `overhead ${event.promptOverheadTokens}, dropped ${event.droppedToolResults} tool results ` +
               `(cap ${autoCompactTokens}, window ${modelContextWindowTokens}) for session ${sessionId}`,
             )
             // Cache-break attribution: the prefix fingerprint changes exactly
@@ -5044,6 +5072,11 @@ export class AgentGateway {
                   messagesAfter: event.messagesAfter,
                   summaryChars: event.summaryChars,
                   contextWindowTokens,
+                  // What the estimate included beyond the messages, and whether
+                  // variant B dropped any tool results — the two things a prod
+                  // row needs to explain `tokensAfter` (SHO-381).
+                  promptOverheadTokens: event.promptOverheadTokens,
+                  droppedToolResults: event.droppedToolResults,
                 },
               })
             } catch { /* client disconnected mid-turn — the row still persists API-side */ }
