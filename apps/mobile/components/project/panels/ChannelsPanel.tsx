@@ -230,6 +230,19 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
     ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/webhook/incoming`
     : null
 
+  /**
+   * WebChat embed snippet. The widget script refuses to start without a
+   * `?widgetKey=`, and the key is only exposed on the owner-only
+   * `/agent/status` (never the public health endpoint) — see SHO-380.
+   */
+  const webchatWidgetKey = (() => {
+    const key = channels.find((c) => c.type === 'webchat')?.metadata?.widgetKey
+    return typeof key === 'string' && key ? key : null
+  })()
+  const webchatSnippet = agentUrl && webchatWidgetKey
+    ? `<script src="${agentUrl}/agent/channels/webchat/widget.js?widgetKey=${encodeURIComponent(webchatWidgetKey)}"></script>`
+    : null
+
   // ── "Run on" routing ──────────────────────────────────────────────
   // Reads `Project.preferredInstanceId` and offers a picker over the
   // workspace's paired machines (desktops + `shogo worker` CLI sign-ins).
@@ -879,13 +892,14 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                             className="text-[10px] text-foreground font-mono"
                             selectable
                           >
-                            {`<script src="${agentUrl}/agent/channels/webchat/widget.js"></script>`}
+                            {webchatSnippet ?? 'Reconnect the channel to generate a widget key.'}
                           </Text>
                         </View>
                         <Pressable
+                          disabled={!webchatSnippet}
                           onPress={async () => {
-                            const snippet = `<script src="${agentUrl}/agent/channels/webchat/widget.js"></script>`
-                            await Clipboard.setStringAsync(snippet)
+                            if (!webchatSnippet) return
+                            await Clipboard.setStringAsync(webchatSnippet)
                             setCopiedSnippet(true)
                             setTimeout(() => setCopiedSnippet(false), 2000)
                           }}

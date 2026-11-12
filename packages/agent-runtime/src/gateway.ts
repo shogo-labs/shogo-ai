@@ -1731,6 +1731,19 @@ export class AgentGateway {
 
     await this.refreshHooks(true)
 
+    // Backfill a widget key for an already-connected webchat channel that has
+    // none (channels connected from the Studio panel before SHO-380 never got
+    // one), so existing embeds start working without a reconnect.
+    const webchatConfigPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
+    if (webchatConfigPath) {
+      const { backfillWebchatWidgetSecret } = await import('./channels/webchat-key')
+      const widgetSecret = backfillWebchatWidgetSecret(webchatConfigPath)
+      if (widgetSecret) {
+        const entry = this.config.channels.find((c) => c.type === 'webchat')
+        if (entry) entry.config = { ...entry.config, widgetSecret }
+      }
+    }
+
     // Connect channels
     for (const channelConfig of this.config.channels) {
       try {

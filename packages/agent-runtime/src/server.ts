@@ -1475,6 +1475,17 @@ app.get('/agent/status', (c) => {
     channels: [],
     skills: [],
   }
+  // The owner-only status view carries the webchat widget key so the Channels
+  // panel can render a working embed snippet. The public
+  // `/agent/channels/webchat/health` must never include it (SHO-380).
+  const webchat = agentGateway?.getChannel('webchat') as WebChatAdapter | undefined
+  const webchatKey = webchat?.getWidgetSecret()
+  if (webchatKey && Array.isArray((status as any).channels)) {
+    const entry = (status as any).channels.find((ch: any) => ch.type === 'webchat')
+    if (entry) {
+      entry.metadata = { ...(entry.metadata ?? {}), widgetKey: webchatKey }
+    }
+  }
   return c.json(status)
 })
 
@@ -1773,6 +1784,13 @@ app.post('/agent/channels/connect', async (c) => {
     }
 
     fileConfig.channels = fileConfig.channels || []
+    if (type === 'webchat') {
+      // Keep the key already saved in config.json so a reconnect does not
+      // break pages that are already embedding the widget (SHO-380).
+      const { resolveWebchatWidgetSecret } = await import('./channels/webchat-key')
+      const savedWebchat = fileConfig.channels.find((ch: any) => ch.type === 'webchat')?.config
+      channelConfig.widgetSecret = resolveWebchatWidgetSecret(channelConfig, savedWebchat)
+    }
     const channelEntry = { type, config: channelConfig, model: channelModel }
     const existing = fileConfig.channels.findIndex((ch: any) => ch.type === type)
     if (existing >= 0) {
@@ -1785,7 +1803,12 @@ app.post('/agent/channels/connect', async (c) => {
 
     writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
 
-    return c.json({ ok: true, type, message: `${type} channel connected` })
+    return c.json({
+      ok: true,
+      type,
+      message: `${type} channel connected`,
+      ...(type === 'webchat' ? { widgetKey: channelConfig.widgetSecret } : {}),
+    })
   } catch (error: any) {
     return c.json({ error: error.message || `Failed to connect ${type}` }, 500)
   }
