@@ -120,6 +120,40 @@ describe('workspace .env durability (e2e)', () => {
     expect(existsSync(join(after.home, WORKSPACE_SECRET_DIR))).toBe(false)
     expect(existsSync(join(after.ws, WORKSPACE_SECRET_DIR))).toBe(false)
   }, 60_000)
+
+  test('a root .env deleted before the export does not come back on the next cold boot', async () => {
+    const { s3, pool, assigned, guest } = rig()
+    const id = 'ws:proj:m1'
+    const env = { ...envFor(), WORKSPACE_PROJECT_IDS: 'm1' }
+    s3.put('m1/project-src.tar.gz', tarOf({ 'App.tsx': 'export default 1\n' }))
+    await pool.open(id, env)
+
+    const coldBoot = async (): Promise<void> => {
+      await pool.suspend(id)
+      await pool.evictForGc(id, { alsoDurable: true })
+      await pool.open(id, env)
+    }
+
+    const g = guest(id)
+    g.writeWorkspace('.gitignore', DEFAULT_WORKSPACE_GITIGNORE)
+    g.writeWorkspace('.env', 'TOKEN=old\n', 0o600)
+    g.writeWorkspace('.env.local', 'LOCAL=keep\n', 0o600)
+    expect(await pool.exportAllHomeState()).toBe(1)
+    await coldBoot()
+    expect(guest(id).read('.env')).toBe('TOKEN=old\n')
+
+    // The agent removes the token file and keeps the other one. The archive
+    // now says "this root has .env.local and no .env", which the next cold
+    // boot has to honour instead of restoring the stale copy.
+    rmSync(join(guest(id).ws, '.env'))
+    expect(await pool.exportAllHomeState()).toBe(1)
+    await coldBoot()
+
+    const after = guest(id)
+    expect(existsSync(join(after.ws, '.env'))).toBe(false)
+    expect(after.read('.env.local')).toBe('LOCAL=keep\n')
+    expect(assigned(id).handle.id).toBeDefined()
+  }, 60_000)
 })
 
 describe('home directory durability (e2e)', () => {

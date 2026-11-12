@@ -25,7 +25,9 @@
  *     ciphertext. The project id is bound in as associated data, so a blob
  *     cannot be replayed into a different project even by someone holding it.
  *   - Restore REPLACES each persisted unit rather than merging into it, so a
- *     deleted key stays deleted and nothing half-old survives.
+ *     deleted key stays deleted and nothing half-old survives. The same holds
+ *     for the `.env*` set: each slot the archive carries stands for that root's
+ *     whole set, so a name it does not list is removed.
  */
 
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
@@ -310,8 +312,24 @@ export function scanHomeState(
 
   // Each project's `.env*`. Files only: a directory called `.env` is not a
   // secret, and a symlink out of HOME is not ours to archive.
+  //
+  // The slot DIRECTORY is recorded even when the root has no `.env*` at all,
+  // so "this root had no secrets when we exported" is part of the archive.
+  // Omitting it would make a deleted `.env` indistinguishable from an old
+  // archive that never knew about one, and restore would leave the stale copy
+  // in place.
   for (const secretRoot of opts.secretRoots ?? []) {
     if (!SLOT_NAME.test(secretRoot.slot)) continue
+    if (entries.length >= HOME_STATE_MAX_ENTRIES) {
+      throw new HomeStateTooLargeError(`more than ${HOME_STATE_MAX_ENTRIES} entries under the persisted home paths`)
+    }
+    entries.push({
+      rel: `${WORKSPACE_SECRET_DIR}/${secretRoot.slot}`,
+      kind: 'dir',
+      size: 0,
+      mtimeNs: 0n,
+      mode: 0o700,
+    })
     let names: string[]
     try {
       names = readdirSync(secretRoot.dir).sort()
@@ -422,13 +440,23 @@ export async function packHomeState(
 
   const root = resolve(homeDir)
   const secretStage = join(root, WORKSPACE_SECRET_DIR)
-  const staged = scan.entries.some((e) => e.src)
+  const secretEntries = scan.entries.filter(
+    (e) => e.rel === WORKSPACE_SECRET_DIR || e.rel.startsWith(`${WORKSPACE_SECRET_DIR}/`),
+  )
+  const staged = secretEntries.length > 0
   if (staged) {
     rmSync(secretStage, { recursive: true, force: true })
-    for (const entry of scan.entries) {
-      if (!entry.src) continue
+    for (const entry of secretEntries) {
       const dest = join(root, entry.rel)
       mkdirSync(dirname(dest), { recursive: true })
+      if (entry.kind === 'dir') {
+        // A slot with no `.env*` still needs its directory in the tar, so the
+        // restore side knows this root's set was empty at export time.
+        mkdirSync(dest, { recursive: true })
+        chmodSync(dest, entry.mode & 0o777)
+        continue
+      }
+      if (!entry.src) continue
       copyFileSync(entry.src, dest)
       chmodSync(dest, entry.mode & 0o777)
       const mtime = Number(entry.mtimeNs / 1_000_000n)
@@ -543,6 +571,11 @@ function restoreUnits(treeRoot: string): string[] {
  * the export stays deleted, and the mode is forced to 0600 — the archive
  * carries whatever the agent had, and the one thing worse than losing a token
  * is leaving it world-readable.
+ *
+ * Each slot the archive carries speaks for that root's WHOLE `.env*` set: a
+ * `.env*` name present live but absent from the slot is deleted. An archive
+ * with no container at all (one written before this member existed) leaves
+ * every destination untouched.
  */
 function restoreWorkspaceSecrets(
   treeRoot: string,
@@ -574,10 +607,37 @@ function restoreWorkspaceSecrets(
       continue
     }
     const destInside = isInside(homeRoot, dest)
+    const names = new Set<string>()
     for (const name of readdirSync(slotDir).sort()) {
       if (!isWorkspaceSecretFile(name)) continue
       const from = join(slotDir, name)
-      if (!lstatSync(from).isFile()) continue
+      try {
+        if (!lstatSync(from).isFile()) continue
+      } catch {
+        continue
+      }
+      names.add(name)
+    }
+
+    // The slot directory stands for this root's ENTIRE `.env*` set, so a name
+    // the archive does not carry was deleted before the export and must not
+    // survive the restore. An archive written before this member existed has no
+    // container at all and leaves every destination untouched.
+    try {
+      for (const name of readdirSync(dest)) {
+        if (!isWorkspaceSecretFile(name) || names.has(name)) continue
+        const stale = join(dest, name)
+        const st = lstatSync(stale)
+        if (!st.isFile() && !st.isSymbolicLink()) continue
+        rmSync(stale, { force: true })
+        console.log(`[home-state] removed ${destInside ? relative(homeRoot, stale) : stale}: not in the archive`)
+      }
+    } catch (err: any) {
+      if (err?.code !== 'ENOENT') console.warn(`[home-state] could not prune ${dest}: ${err?.message ?? err}`)
+    }
+
+    for (const name of names) {
+      const from = join(slotDir, name)
       const to = join(dest, name)
       try {
         rmSync(to, { force: true })

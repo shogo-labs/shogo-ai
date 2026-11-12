@@ -377,11 +377,46 @@ describe('workspace secrets (.env at a project root)', () => {
     writeFileSync(join(targetWs, '.env'), 'STALE=from-a-previous-life')
     await restoreHomeState(freshHome(), gz, { sameOwner: false, secretRoots: [{ slot: 'root', dir: targetWs }] })
     expect(read(targetWs, '.env')).toBe('OLD=1')
+  })
 
-    // Now delete it before the next export: nothing to archive, so nothing returns.
+  test('a .env deleted before the export is removed by the next restore, even with other home state', async () => {
+    // The archive still packs (other units, and the slot directory alone, are
+    // enough), so this is the case a "nothing to pack" shortcut used to hide.
+    put('.ssh/id_ed25519', 'KEY', 0o600)
+    mkdirSync(WS(), { recursive: true })
+    putWs(WS(), '.env', 'A=1')
+    putWs(WS(), '.env.local', 'B=2')
+    const first = await packedWithSecrets()
+
+    const targetWs = join(root, 'deleted-workspace')
+    mkdirSync(targetWs)
+    writeFileSync(join(targetWs, '.env'), 'A=1')
+    writeFileSync(join(targetWs, '.env.local'), 'B=2')
+    await restoreHomeState(freshHome(), first, { sameOwner: false, secretRoots: [{ slot: 'root', dir: targetWs }] })
+    expect(read(targetWs, '.env')).toBe('A=1')
+
+    // Delete one name before the next export; the other must still come back.
     rmSync(join(WS(), '.env'))
-    const empty = await packHomeState(home, { stageDir: stage, scan: scanHomeState(home, { secretRoots: rootOnly() }) })
-    expect(empty).toBeNull()
+    const scan = scanHomeState(home, { secretRoots: rootOnly() })
+    expect(scan.entries.map((e) => e.rel)).toEqual(expect.arrayContaining([`${WORKSPACE_SECRET_DIR}/root`]))
+    const second = await packHomeState(home, { stageDir: stage, scan })
+    expect(second).not.toBeNull()
+
+    await restoreHomeState(freshHome(), second!.gz, { sameOwner: false, secretRoots: [{ slot: 'root', dir: targetWs }] })
+    expect(existsSync(join(targetWs, '.env'))).toBe(false)
+    expect(read(targetWs, '.env.local')).toBe('B=2')
+  })
+
+  test('a root with no .env at all still records its slot, so an old copy is cleared', async () => {
+    put('.gitconfig', '[user]', 0o600)
+    mkdirSync(WS(), { recursive: true })
+    const gz = await packedWithSecrets()
+
+    const targetWs = join(root, 'empty-workspace')
+    mkdirSync(targetWs)
+    writeFileSync(join(targetWs, '.env'), 'STALE=1')
+    await restoreHomeState(freshHome(), gz, { sameOwner: false, secretRoots: [{ slot: 'root', dir: targetWs }] })
+    expect(readdirSync(targetWs)).toEqual([])
   })
 
   test('an archive with no workspace secrets restores exactly as before', async () => {
