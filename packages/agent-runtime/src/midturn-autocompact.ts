@@ -101,8 +101,14 @@ export interface MidTurnAutocompactOptions {
     splitIndex: number,
     opts: { replaceSummary: boolean },
   ) => { summary?: string; kept?: Message[] } | void
-  /** System prompt + tool schema tokens, counted in the trigger and the event. */
-  promptOverheadTokens?: number
+  /**
+   * System prompt + tool schema tokens, counted in the trigger and the event.
+   *
+   * A function is read on every call, because the advertised tool set changes
+   * mid-turn (a `read_guide` activation, a `connect` hot-add) and only the
+   * schemas that are actually sent cost anything (SHO-381).
+   */
+  promptOverheadTokens?: number | (() => number)
   minDeltaTokens?: number
   /**
    * Summarize after a gap longer than this between two model calls, even under
@@ -325,6 +331,21 @@ export class MidTurnAutocompactor {
   private estimate(messages: Message[]): number {
     let tokens = 0
     for (const msg of messages) tokens += estimateMessageTokens(msg)
-    return tokens + (this.opts.promptOverheadTokens ?? 0)
+    return tokens + this.overhead()
+  }
+
+  /**
+   * The prompt overhead for the request about to be sent. Read per call: the
+   * advertised tool set can change mid-turn, and a deferred tool's schema is
+   * not in the request at all (SHO-381).
+   */
+  private overhead(): number {
+    const overhead = this.opts.promptOverheadTokens
+    if (typeof overhead !== 'function') return overhead ?? 0
+    try {
+      return overhead()
+    } catch {
+      return 0
+    }
   }
 }
