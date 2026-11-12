@@ -291,4 +291,10 @@ mock.module('@shogo/shared-runtime', () => ({
       startsWith(0x52, 0x49, 0x46, 0x46)
     )
   },
+  // Instagram/TikTok connect through Zernio, not Composio (SHO-379).
+  // `apps/api/src/routes/integrations.ts` names these on the barrel; mirror the
+  // real implementations in packages/shared-runtime/src/social-providers.ts.
+  ZERNIO_SOCIAL_TOOLKITS: ['instagram', 'tiktok'],
+  isZernioSocialToolkit: (name: string) =>
+    ['instagram', 'tiktok'].includes(name.toLowerCase().replace(/[-_\s]/g, '')),
 }))
