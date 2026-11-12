@@ -100,6 +100,15 @@ mock.module('../../services/workspace-session.service', () => ({
   WorkspaceSessionError: MockWorkspaceSessionError,
 }))
 
+// The attachment-upload proxy resolves the plan cap through the billing seam
+// (SHO-370), so `hasPaidSubscription` now runs on that request. Keep the real
+// exports and answer paid — no Stripe, no Prisma read.
+const realBillingRuntime = await import('../../services/billing-runtime')
+mock.module('../../services/billing-runtime', () => ({
+  ...realBillingRuntime,
+  hasPaidSubscription: async () => true,
+}))
+
 const originalFetch = globalThis.fetch
 
 const { workspaceChatRoutes } = await import('../workspace-chat')
