@@ -14,8 +14,12 @@ const MB = 1024 * 1024
  * full-package run has no database). Controllable per test.
  */
 let paid = true
+let billingThrows = false
 mock.module('../../services/billing-runtime', () => ({
-  hasPaidSubscription: async (_workspaceId: string) => paid,
+  hasPaidSubscription: async (_workspaceId: string) => {
+    if (billingThrows) throw new Error('billing lookup unavailable')
+    return paid
+  },
 }))
 
 const {
@@ -27,6 +31,7 @@ const {
 
 afterEach(() => {
   paid = true
+  billingThrows = false
 })
 
 describe('chat attachment upload cap (SHO-370)', () => {
@@ -68,5 +73,11 @@ describe('chat attachment upload cap (SHO-370)', () => {
     paid = false
     const cap = await resolveChatAttachmentCap('free-workspace')
     expect(cap).toEqual({ capBytes: 100 * MB, plan: 'free' })
+  })
+
+  it('falls back to the paid cap when the billing lookup throws', async () => {
+    billingThrows = true
+    const cap = await resolveChatAttachmentCap('failing-workspace')
+    expect(cap).toEqual({ capBytes: 500 * MB, plan: 'paid' })
   })
 })

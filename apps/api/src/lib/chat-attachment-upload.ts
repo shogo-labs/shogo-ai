@@ -47,7 +47,20 @@ export interface ChatAttachmentCap {
  * client both read the same numbers from `config/usage-plans`.
  */
 export async function resolveChatAttachmentCap(workspaceId: string): Promise<ChatAttachmentCap> {
-  const paid = await hasPaidSubscription(workspaceId)
+  let paid: boolean
+  try {
+    paid = await hasPaidSubscription(workspaceId)
+  } catch (error) {
+    // Both proxies call this inside the catch-all that answers 502
+    // `proxy_error`, so a transient billing/DB failure must not turn a healthy
+    // upload into a 502. Fall back to the paid cap — still bounded by the API
+    // body limit and the runtime's own ceiling — and log it.
+    console.warn(
+      `[chat-attachment] hasPaidSubscription failed for workspace ${workspaceId}; using the paid cap`,
+      error instanceof Error ? error.message : error,
+    )
+    paid = true
+  }
   return { capBytes: getChatAttachmentCapForPaid(paid), plan: paid ? 'paid' : 'free' }
 }
 

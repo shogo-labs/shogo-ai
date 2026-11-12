@@ -104,9 +104,11 @@ mock.module('../../services/workspace-session.service', () => ({
 // (SHO-370), so `hasPaidSubscription` now runs on that request. Keep the real
 // exports and answer paid — no Stripe, no Prisma read.
 const realBillingRuntime = await import('../../services/billing-runtime')
+/** Answers `hasPaidSubscription` — a test can swap it to throw (SHO-370). */
+let billingAnswer: () => Promise<boolean> = async () => true
 mock.module('../../services/billing-runtime', () => ({
   ...realBillingRuntime,
-  hasPaidSubscription: async () => true,
+  hasPaidSubscription: async () => billingAnswer(),
 }))
 
 const originalFetch = globalThis.fetch
@@ -137,6 +139,7 @@ describe('GET/POST /api/workspaces/:workspaceId/agent-proxy/*', () => {
     store.sessionWorkspaceMatches = true
     store.foreignSession = false
     store.defaultCalls = []
+    billingAnswer = async () => true
     globalThis.fetch = ((url: any, init?: any) => {
       if (store.fetchImpl) return store.fetchImpl(String(url), init)
       return originalFetch(url, init)
@@ -340,6 +343,31 @@ describe('GET/POST /api/workspaces/:workspaceId/agent-proxy/*', () => {
     expect(received).toEqual(Array.from(payload))
   })
 
+  test('an upload still succeeds when the billing lookup throws (no 502)', async () => {
+    billingAnswer = async () => {
+      throw new Error('billing lookup unavailable')
+    }
+    store.fetchImpl = async () =>
+      new Response(JSON.stringify({ savedPath: 'files/small.zip', bytes: 8 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+
+    const payload = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xde, 0xad, 0xbe, 0xef])
+    const app = buildApp()
+    const res = await app.fetch(
+      new Request('http://x/api/workspaces/ws-1/agent-proxy/agent/chat/attachments?name=small.zip', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/zip', 'content-length': String(payload.byteLength) },
+        body: payload,
+      }),
+    )
+
+    // The cap lookup is a soft dependency: a transient billing/DB failure must
+    // degrade to the paid cap, never surface as proxy_error for a healthy upload.
+    expect(res.status).toBe(200)
+  })
+
   test('still buffers a non-upload body (chat turn JSON)', async () => {
     let capturedInit: any = null
     store.fetchImpl = async (_url, init) => {
@@ -359,5 +387,54 @@ describe('GET/POST /api/workspaces/:workspaceId/agent-proxy/*', () => {
     expect(typeof (capturedInit.body as any)?.getReader).toBe('undefined')
     expect(capturedInit.duplex).toBeUndefined()
     expect(new TextDecoder().decode(capturedInit.body)).toBe('{"q":"hello"}')
+  })
+
+  test('a failing billing lookup does not turn an attachment upload into a 502', async () => {
+    // Planner/QA: resolveChatAttachmentCap runs inside the proxy's catch-all, so
+    // an unguarded hasPaidSubscription throw became 502 proxy_error. It must
+    // fall back to the paid cap and still stream the upload.
+    let capturedInit: any = null
+    let received: number[] = []
+    store.fetchImpl = async (_url, init) => {
+      capturedInit = init
+      const reader = (init!.body as ReadableStream<Uint8Array>).getReader()
+      const chunks: number[] = []
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        chunks.push(...value)
+      }
+      received = chunks
+      return new Response(JSON.stringify({ savedPath: 'files/big.zip' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    billingAnswer = async () => {
+      throw new Error('billing lookup unavailable')
+    }
+
+    const payload = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xde, 0xad, 0xbe, 0xef])
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(payload)
+        controller.close()
+      },
+    })
+
+    const app = buildApp()
+    const res = await app.fetch(
+      new Request('http://x/api/workspaces/ws-1/agent-proxy/agent/chat/attachments?name=big.zip', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/zip', 'content-length': String(payload.byteLength) },
+        body,
+        // @ts-expect-error Bun accepts duplex on RequestInit; TS lib does not.
+        duplex: 'half',
+      }),
+    )
+
+    expect(res.status).toBe(200)
+    expect(capturedInit.headers.get('x-attachment-max-bytes')).toBe(String(500 * 1024 * 1024))
+    expect(received).toEqual(Array.from(payload))
   })
 })
