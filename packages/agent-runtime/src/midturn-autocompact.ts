@@ -70,6 +70,17 @@ export interface ContextSummarizedEvent {
   messagesBefore: number
   messagesAfter: number
   summaryChars: number
+  /**
+   * The prompt overhead (system prompt + advertised tool schemas) this
+   * compaction's estimates included, so a prod row can say how much of
+   * `tokensAfter` is tool definitions rather than conversation (SHO-381).
+   */
+  promptOverheadTokens: number
+  /**
+   * Tool results variant B dropped from the kept tail (0 = none). Without it a
+   * prod row cannot answer whether B1 is actually dropping anything (SHO-381).
+   */
+  droppedToolResults: number
 }
 
 export interface MidTurnAutocompactOptions {
@@ -100,9 +111,15 @@ export interface MidTurnAutocompactOptions {
     summary: string,
     splitIndex: number,
     opts: { replaceSummary: boolean },
-  ) => { summary?: string; kept?: Message[] } | void
-  /** System prompt + tool schema tokens, counted in the trigger and the event. */
-  promptOverheadTokens?: number
+  ) => { summary?: string; kept?: Message[]; droppedToolResults?: number } | void
+  /**
+   * System prompt + tool schema tokens, counted in the trigger and the event.
+   *
+   * A function is read on every call, because the advertised tool set changes
+   * mid-turn (a `read_guide` activation, a `connect` hot-add) and only the
+   * schemas that are actually sent cost anything (SHO-381).
+   */
+  promptOverheadTokens?: number | (() => number)
   minDeltaTokens?: number
   /**
    * Summarize after a gap longer than this between two model calls, even under
@@ -187,6 +204,14 @@ export class MidTurnAutocompactor {
   }> {
     try {
       return await this.transformOnce(messages)
+    } catch (err: any) {
+      // A throwing overhead reader is a bug, not a reason to send a request
+      // with no compaction decision: log it loudly and keep the turn running
+      // on the memoized (or raw) context. Never fall back to a zero overhead —
+      // that silently disables the trigger, which is the failure this class
+      // exists to prevent (SHO-381).
+      console.warn(`[MidTurnAutocompact] transform failed, keeping current context: ${err?.message}`)
+      return { messages: this.memo ? this.withMemo(messages) : messages, event: null }
     } finally {
       // Start the idle clock when the call to the model would begin: the gap
       // before the *next* transform is time this loop spent off the model.
@@ -201,7 +226,11 @@ export class MidTurnAutocompactor {
     // After a compaction in this turn the wire gets the memoized array; its
     // size (not the raw loop array's) is what the next request costs.
     const wire = this.memo ? this.withMemo(messages) : messages
-    const estimate = this.estimate(wire)
+    // Read once per call: the advertised set can change mid-turn, and the same
+    // number must be used for `tokensBefore` and `tokensAfter` so the event's
+    // `promptOverheadTokens` is exactly what the estimates included.
+    const overheadTokens = this.overhead()
+    const estimate = this.estimate(wire, overheadTokens)
     const reason = this.compactionReason(estimate)
     if (reason === null) return { messages: wire, event: null }
 
@@ -257,7 +286,7 @@ export class MidTurnAutocompactor {
       this.baseIndex = splitIndex
 
       const emitted = [...prefix, ...(keptTail ?? messages.slice(splitIndex))]
-      const tokensAfter = this.estimate(emitted)
+      const tokensAfter = this.estimate(emitted, overheadTokens)
       this.lastCompactionTokens = tokensAfter
       this.manualRequested = false
 
@@ -271,6 +300,8 @@ export class MidTurnAutocompactor {
           messagesBefore: wire.length,
           messagesAfter: emitted.length,
           summaryChars: effectiveSummary.length,
+          promptOverheadTokens: overheadTokens,
+          droppedToolResults: applied?.droppedToolResults ?? 0,
         },
       }
     } catch (err: any) {
@@ -322,9 +353,21 @@ export class MidTurnAutocompactor {
     return [...memo.prefix, ...memo.keptTail, ...messages.slice(tailStart + memo.keptTail.length)]
   }
 
-  private estimate(messages: Message[]): number {
+  private estimate(messages: Message[], overheadTokens: number): number {
     let tokens = 0
     for (const msg of messages) tokens += estimateMessageTokens(msg)
-    return tokens + (this.opts.promptOverheadTokens ?? 0)
+    return tokens + overheadTokens
+  }
+
+  /**
+   * The prompt overhead for the request about to be sent. Read per call: the
+   * advertised tool set can change mid-turn, and a deferred tool's schema is
+   * not in the request at all (SHO-381). A throwing reader propagates to
+   * `transform`, which logs it — swallowing it here would silently disable the
+   * trigger.
+   */
+  private overhead(): number {
+    const overhead = this.opts.promptOverheadTokens
+    return typeof overhead === 'function' ? overhead() : (overhead ?? 0)
   }
 }
