@@ -585,3 +585,30 @@ export function getPublishedPlanCaps(planId: string | null | undefined): Publish
     staging: PUBLISHED_STAGING_ENVS[plan],
   }
 }
+
+// =============================================================================
+// Chat attachment size caps (SHO-370)
+// =============================================================================
+//
+// The agent-chat attachment limit is a plan entitlement, not a runtime setting:
+// Free is held to a hard 100 MB on every attachment (archives included), while
+// every paid tier — and desktop/local mode, which resolves to a paid plan — gets
+// the API's 500 MB body ceiling. These are the only two numbers; the API proxy,
+// the runtime and the client all read them from here.
+
+/** Hard per-attachment cap for the free plan, in bytes. */
+export const FREE_CHAT_ATTACHMENT_BYTES = 100 * 1024 * 1024
+
+/** Per-attachment cap for paid plans (and desktop/local), in bytes. */
+export const PAID_CHAT_ATTACHMENT_BYTES = 500 * 1024 * 1024
+
+/** Per-attachment cap for a plan id. Unknown plans fall back to free. */
+export function getChatAttachmentCap(planId: string | null | undefined): number {
+  const plan = normalizePlanId(planId) ?? 'free'
+  return plan === 'free' ? FREE_CHAT_ATTACHMENT_BYTES : PAID_CHAT_ATTACHMENT_BYTES
+}
+
+/** Per-attachment cap from a resolved paid/free entitlement. */
+export function getChatAttachmentCapForPaid(paid: boolean): number {
+  return paid ? PAID_CHAT_ATTACHMENT_BYTES : FREE_CHAT_ATTACHMENT_BYTES
+}

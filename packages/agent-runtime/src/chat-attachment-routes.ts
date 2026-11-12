@@ -63,14 +63,22 @@ export function chatAttachmentRoutes(opts: ChatAttachmentRoutesOptions): Hono {
     }
     const mediaType = headerSafeName(c.req.header('content-type')) || 'application/octet-stream'
 
+    // The API proxy sets the plan-gated cap (SHO-370) so a chunked body with no
+    // `content-length` is still cut off on the real byte count. It can only
+    // *lower* this route's own cap, never raise it — the route is behind
+    // `x-runtime-token`, so only the API can set the header.
+    const headerCap = Number.parseInt(c.req.header('x-attachment-max-bytes') || '', 10)
+    const effectiveMaxBytes =
+      Number.isFinite(headerCap) && headerCap > 0 ? Math.min(maxBytes, headerCap) : maxBytes
+
     // Refuse before reading a byte when the client already told us the size.
     const declared = Number.parseInt(c.req.header('content-length') || '', 10)
-    if (Number.isFinite(declared) && declared > maxBytes) {
+    if (Number.isFinite(declared) && declared > effectiveMaxBytes) {
       return c.json(
         {
           error: {
             code: 'attachment_too_large',
-            message: `"${name}" is ${(declared / (1024 * 1024)).toFixed(1)} MB, over the ${(maxBytes / (1024 * 1024)).toFixed(0)} MB attachment limit.`,
+            message: `"${name}" is ${(declared / (1024 * 1024)).toFixed(1)} MB, over the ${(effectiveMaxBytes / (1024 * 1024)).toFixed(0)} MB attachment limit.`,
           },
         },
         413,
@@ -83,7 +91,7 @@ export function chatAttachmentRoutes(opts: ChatAttachmentRoutesOptions): Hono {
         name,
         mediaType,
         body: c.req.raw.body,
-        maxBytes,
+        maxBytes: effectiveMaxBytes,
         filesSubdir: opts.filesSubdir,
       })
       try {
@@ -105,7 +113,7 @@ export function chatAttachmentRoutes(opts: ChatAttachmentRoutesOptions): Hono {
           {
             error: {
               code: 'attachment_too_large',
-              message: `"${name}" is over the ${(maxBytes / (1024 * 1024)).toFixed(0)} MB attachment limit.`,
+              message: `"${name}" is over the ${(effectiveMaxBytes / (1024 * 1024)).toFixed(0)} MB attachment limit.`,
             },
           },
           413,

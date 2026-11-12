@@ -119,7 +119,17 @@ export interface BillingDataState {
   trialEndsAt: string | null
   /** An invoiced-but-unpaid overage block; overage stays paused until paid. */
   overagePayment: OveragePaymentPending | null
+  /**
+   * Per-attachment cap for agent-chat uploads, in bytes (SHO-370). Free is a
+   * hard 100 MB; paid tiers get 500 MB. Falls back to the paid cap while the
+   * plan is still loading (or when billing is off / local mode), so a desktop
+   * user is never blocked by a slow fetch — the server is the real gate.
+   */
+  chatAttachmentBytes: number
 }
+
+/** Paid per-attachment cap, used as the client fallback (SHO-370). */
+export const DEFAULT_CHAT_ATTACHMENT_BYTES = 500 * 1024 * 1024
 
 /** Usage events are fetched one page at a time via the collection's offset/limit. */
 const USAGE_EVENTS_PAGE_SIZE = 50
@@ -162,6 +172,9 @@ export function useBillingData(
   const [effectivePlan, setEffectivePlan] = useState<{ planId: string; source: PlanSource } | null>(null)
   const [usageWindows, setUsageWindows] = useState<UsageWindows | undefined>(undefined)
   const [promoCredit, setPromoCredit] = useState<PromoCreditView | undefined>(undefined)
+  // Plan-gated chat attachment cap (SHO-370). `undefined` until the plan
+  // resolves; callers fall back to the paid cap so a slow fetch never blocks.
+  const [chatAttachmentBytes, setChatAttachmentBytes] = useState<number | undefined>(undefined)
   const [trial, setTrial] = useState<{ eligible: boolean; endsAt: string | null }>({ eligible: false, endsAt: null })
   // `null` = not yet loaded. Kept separate from `effectivePlan` so callers
   // can distinguish "still loading" from "definitely not paid" and avoid a
@@ -190,6 +203,7 @@ export function useBillingData(
           source?: PlanSource
           usageWindows?: UsageWindows
           promoCredit?: PromoCreditView
+          limits?: { chatAttachmentBytes?: number }
           trialEligible?: boolean
           trialEndsAt?: string | null
           paidTier?: boolean
@@ -209,6 +223,9 @@ export function useBillingData(
             })
             if (data.usageWindows) setUsageWindows(data.usageWindows as UsageWindows)
             if (data.promoCredit) setPromoCredit(data.promoCredit as PromoCreditView)
+            if (typeof data.limits?.chatAttachmentBytes === "number") {
+              setChatAttachmentBytes(data.limits.chatAttachmentBytes)
+            }
             setTrial({ eligible: !!data.trialEligible, endsAt: data.trialEndsAt ?? null })
             if (typeof data.paidTier === "boolean") setPaidTier(data.paidTier)
             setOveragePayment(
@@ -431,6 +448,7 @@ export function useBillingData(
     planSource,
     usageWindows: liveUsageWindows,
     promoCredit,
+    chatAttachmentBytes: chatAttachmentBytes ?? DEFAULT_CHAT_ATTACHMENT_BYTES,
     trialEligible: trial.eligible,
     trialEndsAt: trial.endsAt,
   }

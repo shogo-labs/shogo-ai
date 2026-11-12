@@ -589,6 +589,8 @@ export interface ChatPanelProps {
     hasActiveSubscription: boolean
     hasAdvancedModelAccess?: boolean
     refetchUsageWallet: () => void
+    /** Per-attachment chat upload cap in bytes (SHO-370). */
+    chatAttachmentBytes?: number
   }
   /** Called whenever the streaming messages array changes (for TerminalPanel etc.) */
   onMessagesChange?: (messages: any[]) => void
@@ -1311,6 +1313,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const trialEligible = Boolean(
     (billingData ? (billingData as any).trialEligible : (ownBillingData as any).trialEligible),
   )
+  // Per-attachment upload cap (SHO-370). Undefined when billing is off (local
+  // mode) so ChatInput falls back to the paid default — the server is the gate.
+  const chatAttachmentBytes = billingData
+    ? billingData.chatAttachmentBytes
+    : platformFeatureFlags.billing
+      ? ownBillingData.chatAttachmentBytes
+      : undefined
 
   const handleUpgradeClick = useCallback(() => {
     router.push("/(app)/billing" as any)
@@ -10716,6 +10725,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     ideFileSearch={ideBridge.listFiles}
                     onOpenIdeFile={ideBridge.openFile}
                     presentation={presentation}
+                    maxFileSizeBytes={chatAttachmentBytes}
                   />
                 </ProjectComposerDock>
               ) : (

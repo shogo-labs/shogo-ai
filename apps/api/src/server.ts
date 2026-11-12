@@ -120,7 +120,12 @@ import {
 } from './lib/title-parse'
 import { openSession, closeSession, hasSession } from './lib/proxy-billing-session'
 import { teeChatStreamForBilling } from './lib/chat-usage-tracker'
-import { isChatAttachmentUpload } from './lib/chat-attachment-upload'
+import {
+  CHAT_ATTACHMENT_MAX_BYTES_HEADER,
+  chatAttachmentTooLargeBody,
+  isChatAttachmentUpload,
+  resolveChatAttachmentCap,
+} from './lib/chat-attachment-upload'
 import { techStackRoutes } from './routes/tech-stacks'
 import { apiKeyRoutes, resolveApiKey } from './routes/api-keys'
 import { parseProjectSettings, encodeProjectSettingsForWrite } from './lib/project-settings'
@@ -158,7 +163,7 @@ import { resetCloudKeyState } from './lib/cloud-key-state'
 import { userProfileRoutes } from './routes/local-user'
 import { localCloudBillingRoutes } from './routes/local-cloud-billing'
 import { adminSignupRiskRoutes } from './routes/admin-signup-risk'
-import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, getMonthlyIncludedForPlanAndPrice, promoCreditAvailableUsd } from './config/usage-plans'
+import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, getChatAttachmentCap, getMonthlyIncludedForPlanAndPrice, promoCreditAvailableUsd } from './config/usage-plans'
 import { meetingRoutes } from './routes/meetings'
 import { localProjectsRoutes } from './routes/local-projects'
 import { projectAttachmentRoutes } from './routes/project-attachments'
@@ -3843,7 +3848,16 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   const streamUpload = isChatAttachmentUpload(c.req.method, path)
   let requestBody: ArrayBuffer | ReadableStream<Uint8Array> | undefined
   if (streamUpload) {
+    // Plan-gated cap (SHO-370): Free is a hard 100 MB on every attachment,
+    // paid tiers get the 500 MB body ceiling. Refuse a declared over-cap
+    // upload before reading a byte, and hand the runtime the same cap so a
+    // chunked body with no `content-length` is still cut off on real bytes.
+    const cap = await resolveChatAttachmentCap(authedWorkspaceId ?? '')
     const declaredLength = c.req.header('content-length')
+    if (declaredLength && Number(declaredLength) > cap.capBytes) {
+      return c.json(chatAttachmentTooLargeBody(cap), 413)
+    }
+    headers.set(CHAT_ATTACHMENT_MAX_BYTES_HEADER, String(cap.capBytes))
     if (declaredLength) headers.set('content-length', declaredLength)
     requestBody = c.req.raw.body ?? undefined
   } else if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
@@ -7849,6 +7863,11 @@ app.get('/api/billing/workspace-plan', async (c) => {
       // current trial ends.
       trialEligible: trialCheck.eligible,
       trialEndsAt: sub?.status === 'trialing' ? (sub as any).currentPeriodEnd ?? null : null,
+      // Plan-gated limits the client reads instead of computing (SHO-370).
+      // Free = 100 MB per chat attachment; Basic+ = 500 MB.
+      limits: {
+        chatAttachmentBytes: getChatAttachmentCap(sub?.planId ?? effective),
+      },
     })
   } catch (error: any) {
     return c.json({ error: { code: 'plan_query_failed', message: error.message } }, 500)

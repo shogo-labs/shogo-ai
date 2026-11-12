@@ -23,7 +23,12 @@ import { context, metrics, propagation, SpanStatusCode, trace } from '@opentelem
 import type { IRuntimeManager } from '../lib/runtime'
 import { ChatLatency } from '../lib/chat-latency'
 import { workspaceDownloadPath } from '../lib/chat-attachments'
-import { isChatAttachmentUpload } from '../lib/chat-attachment-upload'
+import {
+  CHAT_ATTACHMENT_MAX_BYTES_HEADER,
+  chatAttachmentTooLargeBody,
+  isChatAttachmentUpload,
+  resolveChatAttachmentCap,
+} from '../lib/chat-attachment-upload'
 import { captureWake, type WakeInfo } from '../lib/wake-capture'
 import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing-runtime'
@@ -331,7 +336,16 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       // `chat-attachment-upload.ts` (SHO-213).
       const streamUpload = isChatAttachmentUpload(method, path)
       if (streamUpload) {
+        // Plan-gated cap (SHO-370): Free is a hard 100 MB on every attachment,
+        // paid tiers get the 500 MB body ceiling. Refuse a declared over-cap
+        // upload before reading a byte, and hand the runtime the same cap so a
+        // chunked body with no `content-length` is still cut off on real bytes.
+        const cap = await resolveChatAttachmentCap(workspaceId)
         const declared = c.req.header('content-length')
+        if (declared && Number(declared) > cap.capBytes) {
+          return c.json(chatAttachmentTooLargeBody(cap), 413)
+        }
+        headers.set(CHAT_ATTACHMENT_MAX_BYTES_HEADER, String(cap.capBytes))
         if (declared) headers.set('content-length', declared)
       }
       const body = streamUpload

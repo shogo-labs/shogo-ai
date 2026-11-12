@@ -102,11 +102,11 @@ describe("composer attachments", () => {
 
     expect(result.current.pendingFiles).toHaveLength(0);
     expect(result.current.fileError).toContain("large.txt");
-    expect(result.current.fileError).toContain("100MB");
+    expect(result.current.fileError).toContain("500MB");
     globalThis.FileReader = originalReader;
   });
 
-  test("allows oversized zip and shogo project archives", () => {
+  test("archives obey the same cap as any other file (SHO-370)", () => {
     expect(isComposerArchive("bundle.zip", "application/octet-stream")).toBe(
       true,
     );
@@ -141,9 +141,26 @@ describe("composer attachments", () => {
       ]);
     });
 
-    expect(result.current.pendingFiles).toHaveLength(1);
-    expect(result.current.fileError).toBeNull();
+    // No exemption: an over-cap archive is refused like any other file.
+    expect(result.current.pendingFiles).toHaveLength(0);
+    expect(result.current.fileError).toContain("bundle.zip");
     globalThis.FileReader = originalReader;
+  });
+
+  test("a plan-derived cap is honoured for archives too", () => {
+    const { result } = renderHook(() =>
+      useComposerAttachments({ enableDomEvents: false, maxFileSizeBytes: 100 * 1024 * 1024 }),
+    );
+
+    act(() => {
+      result.current.processFiles([
+        { name: "big.zip", type: "application/zip", size: 100 * 1024 * 1024 + 1 } as File,
+      ]);
+    });
+
+    expect(result.current.pendingFiles).toHaveLength(0);
+    expect(result.current.fileError).toContain("big.zip");
+    expect(result.current.fileError).toContain("100MB");
   });
 
   test("gives a pick with no inline bytes an object URL to paint from", () => {
@@ -168,7 +185,8 @@ describe("composer attachments", () => {
       const zip = {
         name: "bundle.zip",
         type: "application/zip",
-        size: MAX_FILE_SIZE + 1,
+        // Above the inline threshold (so it streams) but within the cap.
+        size: 50 * 1024 * 1024,
       } as File;
 
       act(() => {
