@@ -217,9 +217,9 @@ function rateCardSeconds(
   entry: MediaEntry | undefined,
   endpoint: string,
 ): number | undefined {
-  const direct = Number(input.duration)
-  if (Number.isFinite(direct) && direct > 0) return direct
-  // Multi-shot requests bill the sum of their shots, not a single duration.
+  // Multi-shot requests bill the sum of their shots, not the top-level duration.
+  // Check this first: buildHiggsfieldVideoRequest sends BOTH duration and multi_prompt/multi_shots,
+  // so reading input.duration before this would always skip the shot sum.
   for (const name of ['multi_prompt', 'multi_shots'] as const) {
     const shots = input[name]
     if (!Array.isArray(shots)) continue
@@ -235,6 +235,8 @@ function rateCardSeconds(
     }
     if (complete && total > 0) return total
   }
+  const direct = Number(input.duration)
+  if (Number.isFinite(direct) && direct > 0) return direct
   // Nothing sent: fall back to the endpoint's documented default duration.
   if (entry) {
     const documented = Number(optionFor(entry, endpoint, 'duration')?.default)

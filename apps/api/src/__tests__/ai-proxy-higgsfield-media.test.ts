@@ -242,6 +242,22 @@ describe('helpers', () => {
     expect(estimate.rawUsd).toBeCloseTo(0.0714 * 8, 4)
   })
 
+  test('multi-shot billing uses shot sum even when top-level duration is also set (real request shape)', async () => {
+    // buildHiggsfieldVideoRequest always sends BOTH duration and multi_prompt/multi_shots.
+    // rateCardSeconds must sum the shots (3+5=8 s), not short-circuit on duration (5 s).
+    mockRateCard('rate/kling-3.0', RATE_CARDS.kling30)
+    const entry = (VIDEO_MODEL_CATALOG as any)['hf-kling-3.0-std']
+    const estimate = await higgsfieldEstimate(
+      'k',
+      'rate/kling-3.0',
+      { duration: 5, multi_prompt: [{ prompt: 'a', duration: 3 }, { prompt: 'b', duration: 5 }] },
+      undefined,
+      { entry },
+    )
+    // Should price at 8 s (shot sum), not 5 s (top-level duration).
+    expect(estimate.rawUsd).toBeCloseTo(0.0714 * 8, 4)
+  })
+
   test('a resolution the card does not offer is a validation error naming the rates', async () => {
     mockRateCard('rate/seedance-2.0', RATE_CARDS.seedance20)
     const entry = (VIDEO_MODEL_CATALOG as any)['hf-seedance-2.0']
