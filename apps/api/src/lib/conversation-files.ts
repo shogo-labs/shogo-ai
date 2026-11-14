@@ -89,6 +89,26 @@ export function parseAttachmentDurationMs(value: unknown): number | null {
   return Math.min(Math.round(ms), MAX_ATTACHMENT_DURATION_MS)
 }
 
+/** Correct voice-note metadata when a recorder's declared type disagrees with its container. */
+export function normalizeVoiceNoteMetadata(
+  name: string,
+  bytes: Uint8Array,
+): { name: string; mimeType: string } | null {
+  if (!/^voice note(?:\.[^/]*)?$/i.test(name)) return null
+
+  let normalized: { mimeType: string; extension: string } | null = null
+  const ascii = (start: number, end: number) => String.fromCharCode(...bytes.subarray(start, end))
+  if (bytes.byteLength >= 12 && ascii(4, 8) === 'ftyp') normalized = { mimeType: 'audio/mp4', extension: 'm4a' }
+  else if (bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) {
+    normalized = { mimeType: 'audio/webm', extension: 'webm' }
+  } else if (ascii(0, 4) === 'OggS') normalized = { mimeType: 'audio/ogg', extension: 'ogg' }
+  else if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WAVE') normalized = { mimeType: 'audio/wav', extension: 'wav' }
+  if (!normalized) return null
+
+  const stem = name.replace(/\.[^.]*$/, '') || 'Voice note'
+  return { name: `${stem}.${normalized.extension}`, mimeType: normalized.mimeType }
+}
+
 /**
  * Waveform levels for a voice note, as `0-100` values. Stored space separated.
  * Returns null for anything unparseable so the player falls back to a
@@ -181,7 +201,7 @@ export type ConversationFileRead =
  */
 export async function readConversationFile(
   key: string,
-  options: { downloadName?: string | null } = {},
+  options: { downloadName?: string | null; responseContentType?: string | null } = {},
 ): Promise<ConversationFileRead> {
   if (isLocalMode()) return { kind: 'bytes', bytes: await readFile(localPath(key)) }
   const responseContentDisposition = options.downloadName
@@ -189,7 +209,11 @@ export async function readConversationFile(
     : undefined
   return {
     kind: 'redirect',
-    url: await getArtifactPresignedReadUrl(key, { expiresIn: 300, responseContentDisposition }),
+    url: await getArtifactPresignedReadUrl(key, {
+      expiresIn: 300,
+      responseContentDisposition,
+      responseContentType: options.responseContentType ?? undefined,
+    }),
   }
 }
 

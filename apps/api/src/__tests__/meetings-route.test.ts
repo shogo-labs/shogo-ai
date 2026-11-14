@@ -198,6 +198,7 @@ mock.module('../lib/prisma', () => ({ prisma: prismaMock }))
 // ─── Import after mocks ──────────────────────────────────────────────
 
 const { meetingRoutes } = await import('../routes/meetings')
+const { dictationRoutes } = await import('../routes/dictation')
 
 const ORIG_OPENAI = process.env.OPENAI_API_KEY
 const ORIG_AIPROXY = process.env.AI_PROXY_URL
@@ -1544,7 +1545,7 @@ describe('getMeetingConfig fallback (localConfig throws)', () => {
   })
 })
 
-describe('POST /api/local/transcribe (chat dictation)', () => {
+describe('POST /dictation/transcribe (local chat dictation)', () => {
   /** A minimal RIFF/WAVE buffer large enough to clear the header check. */
   const wavClip = (bytes = 2048) => {
     const buf = Buffer.alloc(bytes)
@@ -1553,7 +1554,7 @@ describe('POST /api/local/transcribe (chat dictation)', () => {
     return buf
   }
   const post = (body: Buffer | string) =>
-    meetingRoutes.request('/api/local/transcribe', {
+    dictationRoutes.request('/dictation/transcribe', {
       method: 'POST',
       headers: { 'content-type': 'audio/wav' },
       body,
@@ -1583,7 +1584,7 @@ describe('POST /api/local/transcribe (chat dictation)', () => {
   })
 
   test('413 when the declared size is over the cap', async () => {
-    const res = await meetingRoutes.request('/api/local/transcribe', {
+    const res = await dictationRoutes.request('/dictation/transcribe', {
       method: 'POST',
       headers: { 'content-type': 'audio/wav', 'content-length': String(64 * 1024 * 1024) },
       body: wavClip(),

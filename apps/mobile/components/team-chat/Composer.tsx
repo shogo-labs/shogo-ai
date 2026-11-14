@@ -343,10 +343,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     try {
       const note = await recorder.stop()
       if (!note) return
+      const audioType = note.mimeType.split(';', 1)[0].trim().toLowerCase()
       inputRef.current?.addAttachment({
         dataUrl: note.dataUrl,
         uri: note.uri,
-        name: `Voice note.${note.mimeType === 'audio/mp4' ? 'm4a' : 'webm'}`,
+        name: `Voice note.${audioType === 'audio/mp4' ? 'm4a' : audioType === 'audio/ogg' ? 'ogg' : audioType === 'audio/wav' ? 'wav' : 'webm'}`,
         type: note.mimeType,
         // Base64 is 4/3 of the bytes; only used for the size guard.
         size: note.dataUrl ? Math.round((note.dataUrl.length * 3) / 4) : 0,

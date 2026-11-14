@@ -160,6 +160,8 @@ import { localCloudBillingRoutes } from './routes/local-cloud-billing'
 import { adminSignupRiskRoutes } from './routes/admin-signup-risk'
 import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, getMonthlyIncludedForPlanAndPrice, promoCreditAvailableUsd } from './config/usage-plans'
 import { meetingRoutes } from './routes/meetings'
+import { dictationRoutes } from './routes/dictation'
+import { DICTATION_MAX_BYTES } from './services/meeting.service'
 import { localProjectsRoutes } from './routes/local-projects'
 import { projectAttachmentRoutes } from './routes/project-attachments'
 import { localLogsRoutes } from './routes/local-logs'
@@ -678,7 +680,15 @@ app.use('*', secureHeaders({
 // routes/project-export-import.ts). This middleware runs before any route, so
 // it must permit the largest tier's bundle; per-route logic enforces tighter,
 // plan-gated caps (e.g. Free/Basic imports are limited to 50 MB).
-app.use('*', bodyLimit({ maxSize: 500 * 1024 * 1024 }))
+// Dictation has a fixed small cap here as well: bodyLimit eagerly reads
+// chunked requests, before the route can enforce its own limit.
+const generalBodyLimit = bodyLimit({ maxSize: 500 * 1024 * 1024 })
+const dictationBodyLimit = bodyLimit({ maxSize: DICTATION_MAX_BYTES })
+app.use('*', (c, next) =>
+  c.req.path === '/api/dictation/transcribe'
+    ? dictationBodyLimit(c, next)
+    : generalBodyLimit(c, next)
+)
 
 // =============================================================================
 // Global Error Handling
@@ -1644,6 +1654,7 @@ if (process.env.SHOGO_LOCAL_MODE === 'true') {
 }
 
 // Marketplace
+app.route('/api', dictationRoutes)
 app.route('/api/marketplace', marketplaceRoutes())
 
 // Tech stack catalog — public, no auth required. (The legacy
