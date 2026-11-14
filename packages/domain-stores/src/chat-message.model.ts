@@ -24,6 +24,7 @@ export const ChatMessageModel = types
     imageData: types.optional(types.string, ""),
     parts: types.optional(types.string, ""),
     createdAt: types.optional(types.number, 0),
+    updatedAt: types.optional(types.number, 0),
     agent: types.optional(types.string, "technical"),
     model: types.optional(types.string, ""),
     authorUserId: types.optional(types.string, ""),
