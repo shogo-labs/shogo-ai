@@ -282,6 +282,47 @@ async function waitForStoredHistory(page: Page, timeoutMs = 20_000): Promise<num
   throw new Error("the device never stored this chat's history")
 }
 
+/** Wait until the durable slice includes the cursor needed for delta-only reopens. */
+async function hasStoredHistoryCursor(
+  page: Page,
+  messageId: string,
+  total: number,
+): Promise<boolean> {
+  return page.evaluate(
+    async ({ id, expectedTotal }) => {
+      const db = await new Promise<IDBDatabase | null>((resolve) => {
+        const open = indexedDB.open("shogo-chat-history")
+        open.onsuccess = () => resolve(open.result)
+        open.onerror = () => resolve(null)
+        open.onblocked = () => resolve(null)
+      })
+      if (!db) return false
+      if (!db.objectStoreNames.contains("project")) {
+        db.close()
+        return false
+      }
+      return new Promise<boolean>((resolve) => {
+        const request = db.transaction("project", "readonly").objectStore("project").getAll()
+        request.onsuccess = () => {
+          const found = request.result.some(
+            (row: any) =>
+              row.entry?.messages?.some((message: any) => message?.id === id) &&
+              typeof row.entry.cursor === "string" &&
+              row.entry.total === expectedTotal,
+          )
+          db.close()
+          resolve(found)
+        }
+        request.onerror = () => {
+          db.close()
+          resolve(false)
+        }
+      })
+    },
+    { id: messageId, expectedTotal: total },
+  )
+}
+
 test.describe("project chat keeps its history on the device", () => {
   test("a reopen paints from the device and asks only what changed", async ({ page }) => {
     const state = await installMocks(page)
@@ -670,6 +711,12 @@ test.describe("a workspace agent chat opens from the device", () => {
       .poll(() => bootRecordStored(page), {
         timeout: 20_000,
         message: "the screen stored the chat it opens",
+      })
+      .toBe(true)
+    await expect
+      .poll(() => hasStoredHistoryCursor(page, "ws-1", state.total), {
+        timeout: 20_000,
+        message: "the device stored the transcript together with its delta cursor",
       })
       .toBe(true)
 

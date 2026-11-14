@@ -9,8 +9,8 @@
  *
  * Everything here is mocked: the `**\/chat` POST is fulfilled with a
  * hand-built UI message stream (same frame protocol as
- * `chat-offline-resilience.test.ts`) and the `/turn` probe is held open for
- * `PROBE_DELAY_MS`, so no model is called and the delay is deterministic.
+ * `chat-offline-resilience.test.ts`), and the `/turn` probe stays open until
+ * the test has confirmed the echo is visible. No model is called.
  *
  * Start the local stack first:
  *   SHOGO_LOCAL_MODE=true bun run api:dev &
@@ -26,15 +26,11 @@ import { openTeamHome } from "./helpers"
 const CHAT_URL_GLOB = "**/api/{projects,workspaces}/*/chat"
 const TURN_URL_GLOB = "**/api/{projects,workspaces}/*/chat/*/turn"
 
-/** How long the live-turn probe is held open — the freeze the echo must not sit behind. */
-const PROBE_DELAY_MS = 1_500
 /**
- * How long the bubble may take to paint, measured from the Enter keypress.
- * ~15–40 ms on an idle local machine, 106–126 ms on a loaded PR runner (3 shards
- * in parallel, measured on #1525), so 250 ms is the default. The property under
- * test is only "well under `PROBE_DELAY_MS`" — 250 ms is 6× under it.
+ * Generous paint ceiling for a loaded CI runner. The stronger assertion is
+ * that the echo remains visible before the test releases the pending probe.
  */
-const ECHO_BUDGET_MS = Number(process.env.E2E_ECHO_BUDGET_MS || 250)
+const ECHO_BUDGET_MS = Number(process.env.E2E_ECHO_BUDGET_MS || 1_000)
 const REPLY_TEXT = "Echo timing reply."
 
 // ─── SSE frames (AI SDK `UIMessageChunk`s, one JSON object per `data:` line) ─
@@ -73,10 +69,17 @@ async function installChatMock(page: Page) {
   })
 }
 
-/** Holds every live-turn probe open for `delayMs`, then answers "no live turn". */
-async function delayTurnProbe(page: Page, delayMs: number) {
+/** Holds each live-turn probe until the test has asserted the echo is visible. */
+async function holdTurnProbe(page: Page) {
+  const pending = new Set<() => void>()
   await page.route(TURN_URL_GLOB, async (route: Route) => {
-    await new Promise((resolve) => setTimeout(resolve, delayMs))
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    pending.add(release)
+    await blocked
+    pending.delete(release)
     await route
       .fulfill({
         status: 200,
@@ -85,6 +88,25 @@ async function delayTurnProbe(page: Page, delayMs: number) {
       })
       .catch(() => undefined)
   })
+  return {
+    count: () => pending.size,
+    releaseAll: () => {
+      for (const release of pending) release()
+    },
+  }
+}
+
+async function expectEchoWhileProbePending(
+  page: Page,
+  text: string,
+  probe: Awaited<ReturnType<typeof holdTurnProbe>>,
+) {
+  await expect
+    .poll(() => probe.count(), { timeout: 10_000, message: "the live-turn probe is pending" })
+    .toBeGreaterThan(0)
+  // The repeated-text case already has an older visible match; the new echo
+  // is appended last while its probe is held open.
+  await expect(page.getByText(text, { exact: true }).last()).toBeVisible({ timeout: 2_000 })
 }
 
 // ─── Window helpers ─────────────────────────────────────────────────────────
@@ -198,51 +220,67 @@ test.describe("sent message paints before the live-turn probe — E2E (mocked)",
   })
 
   test("the bubble paints within the budget while the probe hangs, as the last turn", async () => {
-    await delayTurnProbe(page, PROBE_DELAY_MS)
+    const probe = await holdTurnProbe(page)
+    try {
+      const first = "First message before the slow one"
+      const firstElapsed = await sendAndTimeEcho(page, first)
+      await expectEchoWhileProbePending(page, first, probe)
+      expect(firstElapsed).toBeLessThan(ECHO_BUDGET_MS)
+      probe.releaseAll()
+      await expect(page.getByText(REPLY_TEXT).last()).toBeVisible({ timeout: 15_000 })
+      await waitForAgentIdle(page)
+      const repliesBefore = await page.getByText(REPLY_TEXT).count()
 
-    const first = "First message before the slow one"
-    await sendAndTimeEcho(page, first)
-    await expect(page.getByText(REPLY_TEXT).last()).toBeVisible({ timeout: 15_000 })
-    await waitForAgentIdle(page)
-    const repliesBefore = await page.getByText(REPLY_TEXT).count()
+      const second = "Sent while the turn probe hangs"
+      const elapsed = await sendAndTimeEcho(page, second)
+      await expectEchoWhileProbePending(page, second, probe)
 
-    const second = "Sent while the turn probe hangs"
-    const elapsed = await sendAndTimeEcho(page, second)
+      // The probe is still in flight at this point: the bubble cannot be gated on it.
+      expect(elapsed, `echo painted ${elapsed.toFixed(1)}ms after Enter`).toBeLessThan(ECHO_BUDGET_MS)
 
-    // The probe is still in flight at this point: the bubble cannot be gated on it.
-    expect(elapsed, `echo painted ${elapsed.toFixed(1)}ms after Enter`).toBeLessThan(ECHO_BUDGET_MS)
+      const order = await transcriptOrder(page, second, REPLY_TEXT)
+      // Composer cleared synchronously, bubble already at the bottom of the transcript.
+      expect(order.composer).toBe("")
+      expect(order.echoAt).toBeGreaterThan(order.replyAt)
+      // Nothing from the answer has landed yet, so the echo is the newest item.
+      expect(await page.getByText(REPLY_TEXT).count()).toBe(repliesBefore)
 
-    const order = await transcriptOrder(page, second, REPLY_TEXT)
-    // Composer cleared synchronously, bubble already at the bottom of the transcript.
-    expect(order.composer).toBe("")
-    expect(order.echoAt).toBeGreaterThan(order.replyAt)
-    // Nothing from the answer has landed yet, so the echo is the newest item.
-    expect(await page.getByText(REPLY_TEXT).count()).toBe(repliesBefore)
-
-    await expect(page.getByText(second, { exact: true })).toHaveCount(1)
-    await expect(page.getByText(REPLY_TEXT).last()).toBeVisible({ timeout: 20_000 })
-    // No duplicate once the real message replaces the echo.
-    await expect(page.getByText(second, { exact: true })).toHaveCount(1)
-    await waitForAgentIdle(page)
-    await page.unroute(TURN_URL_GLOB)
+      await expect(page.getByText(second, { exact: true })).toHaveCount(1)
+      probe.releaseAll()
+      await expect(page.getByText(REPLY_TEXT).last()).toBeVisible({ timeout: 20_000 })
+      // No duplicate once the real message replaces the echo.
+      await expect(page.getByText(second, { exact: true })).toHaveCount(1)
+      await waitForAgentIdle(page)
+    } finally {
+      probe.releaseAll()
+      await page.unroute(TURN_URL_GLOB)
+    }
   })
 
   test("re-sending the same text still paints a new bubble immediately", async () => {
-    await delayTurnProbe(page, PROBE_DELAY_MS)
+    const probe = await holdTurnProbe(page)
+    try {
+      const repeated = "keep going please"
+      const firstElapsed = await sendAndTimeEcho(page, repeated)
+      await expectEchoWhileProbePending(page, repeated, probe)
+      expect(firstElapsed).toBeLessThan(ECHO_BUDGET_MS)
+      probe.releaseAll()
+      await expect(page.getByText(REPLY_TEXT).last()).toBeVisible({ timeout: 15_000 })
+      await waitForAgentIdle(page)
+      await expect(page.getByText(repeated, { exact: true })).toHaveCount(1)
 
-    const repeated = "keep going please"
-    await sendAndTimeEcho(page, repeated)
-    await expect(page.getByText(REPLY_TEXT).last()).toBeVisible({ timeout: 15_000 })
-    await waitForAgentIdle(page)
-    await expect(page.getByText(repeated, { exact: true })).toHaveCount(1)
+      const elapsed = await sendAndTimeEcho(page, repeated)
+      await expectEchoWhileProbePending(page, repeated, probe)
+      expect(elapsed).toBeLessThan(ECHO_BUDGET_MS)
+      await expect(page.getByText(repeated, { exact: true })).toHaveCount(2)
+      probe.releaseAll()
 
-    const elapsed = await sendAndTimeEcho(page, repeated)
-    expect(elapsed).toBeLessThan(ECHO_BUDGET_MS)
-    await expect(page.getByText(repeated, { exact: true })).toHaveCount(2)
-
-    await expect(page.getByText(REPLY_TEXT).last()).toBeVisible({ timeout: 20_000 })
-    await expect(page.getByText(repeated, { exact: true })).toHaveCount(2)
-    await waitForAgentIdle(page)
-    await page.unroute(TURN_URL_GLOB)
+      await expect(page.getByText(REPLY_TEXT).last()).toBeVisible({ timeout: 20_000 })
+      await expect(page.getByText(repeated, { exact: true })).toHaveCount(2)
+      await waitForAgentIdle(page)
+    } finally {
+      probe.releaseAll()
+      await page.unroute(TURN_URL_GLOB)
+    }
   })
 })

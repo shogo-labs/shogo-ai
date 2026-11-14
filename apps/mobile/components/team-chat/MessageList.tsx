@@ -27,6 +27,10 @@ export interface MessageListProps extends RowHandlers {
   emptyText?: string
   header?: React.ReactElement | null
   onLoadOlder?: () => void
+  /** A deep link can start at an older slice and page forward through the gap. */
+  hasMoreNewer?: boolean
+  onLoadNewer?: () => void
+  onJumpToLatest?: () => void
   /** Called when the reader is back at the latest message and many messages are loaded. */
   onTrim?: () => void
   trimThreshold?: number
@@ -42,6 +46,8 @@ export interface MessageListProps extends RowHandlers {
   onRevealUnread?: () => void
   /** Scroll to and emphasize this message once it's loaded. */
   highlightId?: string | null
+  /** Keep the list hidden until a deep link has reached its target row. */
+  deferHighlightReveal?: boolean
   /** Space taken by chrome floating over the list (header above, composer below). */
   insets?: { top: number; bottom: number }
 }
@@ -58,8 +64,8 @@ const NO_INSETS = { top: 0, bottom: 0 }
 
 /** Newest-at-bottom list (an inverted FlatList, so it stays pinned to the latest message). */
 export function MessageList({
-  state, loading, me, names, mentionables, channelMemberIds, canManage, inThread, emptyText, header, onLoadOlder, onTrim, trimThreshold = Infinity,
-  unreadAfterSeq = null, unreadUpToSeq = Infinity, unreadNotLoaded = false, unreadCount = null, onRevealUnread, highlightId = null, insets = NO_INSETS, ...handlers
+  state, loading, me, names, mentionables, channelMemberIds, canManage, inThread, emptyText, header, onLoadOlder, hasMoreNewer = false, onLoadNewer, onJumpToLatest, onTrim, trimThreshold = Infinity,
+  unreadAfterSeq = null, unreadUpToSeq = Infinity, unreadNotLoaded = false, unreadCount = null, onRevealUnread, highlightId = null, deferHighlightReveal = false, insets = NO_INSETS, ...handlers
 }: MessageListProps) {
   const rows = useMemo(() => {
     const items = foldStatusRuns(state.messages)
@@ -115,9 +121,22 @@ export function MessageList({
   const scrollToRow = useCallback((index: number, viewPosition: number) => {
     listRef.current?.scrollToIndex({ index, viewPosition, animated: false })
   }, [])
+  const highlightIdRef = useRef(highlightId)
+  highlightIdRef.current = highlightId
+  const highlightScrollFailed = useRef(false)
+  const [revealedHighlightId, setRevealedHighlightId] = useState<string | null>(null)
   const onScrollToIndexFailed = useCallback((info: { index: number; averageItemLength: number }) => {
+    highlightScrollFailed.current = true
+    const targetId = highlightIdRef.current
     listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false })
-    setTimeout(() => listRef.current?.scrollToIndex({ index: info.index, viewPosition: 0.5, animated: false }), 80)
+    setTimeout(() => {
+      if (targetId && targetId !== highlightIdRef.current) return
+      highlightScrollFailed.current = false
+      listRef.current?.scrollToIndex({ index: info.index, viewPosition: 0.5, animated: false })
+      requestAnimationFrame(() => {
+        if (targetId && targetId === highlightIdRef.current && !highlightScrollFailed.current) setRevealedHighlightId(targetId)
+      })
+    }, 80)
   }, [])
 
   // The list opens at the latest message on every surface: a channel with a lot
@@ -126,15 +145,40 @@ export function MessageList({
   const highlightRow = highlightId ? rows.findIndex((r) => r.message.id === highlightId || r.folded.some((m) => m.id === highlightId)) : -1
   const scrolledToHighlight = useRef<string | null>(null)
   useEffect(() => {
-    if (!highlightId || highlightRow < 0 || scrolledToHighlight.current === highlightId) return
+    if (!highlightId) {
+      scrolledToHighlight.current = null
+      highlightScrollFailed.current = false
+      setRevealedHighlightId(null)
+      return
+    }
+    if (highlightRow < 0 || scrolledToHighlight.current === highlightId) return
     scrolledToHighlight.current = highlightId
-    requestAnimationFrame(() => scrollToRow(highlightRow, 0.5))
+    highlightScrollFailed.current = false
+    let revealFrame: number | null = null
+    const scrollFrame = requestAnimationFrame(() => {
+      scrollToRow(highlightRow, 0.5)
+      revealFrame = requestAnimationFrame(() => {
+        if (highlightIdRef.current === highlightId && !highlightScrollFailed.current) setRevealedHighlightId(highlightId)
+      })
+    })
+    return () => {
+      cancelAnimationFrame(scrollFrame)
+      if (revealFrame !== null) cancelAnimationFrame(revealFrame)
+      if (scrolledToHighlight.current === highlightId) scrolledToHighlight.current = null
+    }
   }, [highlightId, highlightRow, scrollToRow])
 
   const [furthestVisible, setFurthestVisible] = useState(-1)
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
     let max = -1
-    for (const v of viewableItems) if (typeof v.index === 'number' && v.index > max) max = v.index
+    const targetId = highlightIdRef.current
+    for (const v of viewableItems) {
+      if (typeof v.index === 'number' && v.index > max) max = v.index
+      const row = v.item as Row
+      if (targetId && (row.message.id === targetId || row.folded.some((message) => message.id === targetId))) {
+        setRevealedHighlightId(targetId)
+      }
+    }
     setFurthestVisible(max)
   }).current
   const [unreadPillDismissed, setUnreadPillDismissed] = useState(false)
@@ -215,7 +259,7 @@ export function MessageList({
   }
 
   return (
-    <View className="flex-1" ref={rootRef}>
+    <View className="flex-1" style={{ opacity: deferHighlightReveal && highlightId && highlightRow >= 0 && revealedHighlightId !== highlightId ? 0 : 1 }} ref={rootRef}>
       <FlatList
         ref={listRef}
         inverted
@@ -234,6 +278,11 @@ export function MessageList({
         extraData={`${firstUnreadId}:${highlightId}`}
         onEndReached={onLoadOlder}
         onEndReachedThreshold={0.4}
+        ListHeaderComponent={hasMoreNewer && onLoadNewer ? (
+          <Pressable accessibilityRole="button" accessibilityLabel="Load newer messages" onPress={onLoadNewer} className="items-center py-3 active:opacity-70">
+            <Text className="text-sm font-medium text-primary">Load newer messages</Text>
+          </Pressable>
+        ) : null}
         // Inverted: the container's top padding is the visual bottom.
         contentContainerStyle={{ paddingTop: 8 + insets.bottom, paddingBottom: 8 + insets.top, flexGrow: 1 }}
         scrollIndicatorInsets={{ top: insets.bottom, bottom: insets.top }}
@@ -289,7 +338,7 @@ export function MessageList({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Jump to latest message"
-          onPress={() => listRef.current?.scrollToOffset({ offset: 0, animated: true })}
+          onPress={hasMoreNewer && onJumpToLatest ? onJumpToLatest : () => listRef.current?.scrollToOffset({ offset: 0, animated: true })}
           className="absolute self-center flex-row items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 shadow-sm active:bg-muted web:hover:bg-muted"
           style={{ bottom: insets.bottom + 12 }}
         >

@@ -111,7 +111,7 @@ mock.module('react-native', () =>
         onKeyDown: (e: any) => onKeyPress?.({ nativeEvent: { key: e.key, shiftKey: e.shiftKey }, preventDefault: () => e.preventDefault() }),
       })
     }),
-    FlatList: forwardRef(function List({ data, renderItem, keyExtractor, ListEmptyComponent, ListFooterComponent, onViewableItemsChanged }: any, ref: any) {
+    FlatList: forwardRef(function List({ data, renderItem, keyExtractor, ListEmptyComponent, ListFooterComponent, ListHeaderComponent, onViewableItemsChanged }: any, ref: any) {
       // The list's own scroll node, as react-native-web reports it — where its
       // native `wheel` listener lives.
       const scroller = useRef<HTMLDivElement | null>(null)
@@ -128,6 +128,7 @@ mock.module('react-native', () =>
       return createElement(
         'div',
         { ref: scroller, 'data-scroll-node': 'true' },
+        ListHeaderComponent,
         data.length
           ? data.map((item: any, index: number) => createElement(Fragment, { key: keyExtractor ? keyExtractor(item, index) : index }, renderItem({ item, index })))
           : ListEmptyComponent,
@@ -167,6 +168,8 @@ mock.module('../../../lib/team-chat-connection', () => ({
   sendTyping: (_ws: string, conversationId: string) => sentTyping.push(conversationId),
 }))
 const muteCalls: Array<{ id: string; projectId: string | null; muted: boolean }> = []
+/** A specific message returned by the deep-link fallback endpoint. */
+let apiTargetMessage: any = null
 // The server reports huddles as on only when it has LiveKit configured.
 let huddlesOn = false
 mock.module('../../../lib/team-chat-api', () => ({
@@ -176,6 +179,7 @@ mock.module('../../../lib/team-chat-api', () => ({
   isAgentDm: (c: any) => c.kind === 'dm' && (c.participants ?? []).some((p: any) => p.type === 'agent'),
   isSelfDm: (c: any) => c.kind === 'dm' && (c.participants ?? []).some((p: any) => p.type === 'user' && p.self === true),
   teamChatApi: () => ({
+    message: async (_id: string) => apiTargetMessage,
     huddles: async () => ({ enabled: huddlesOn, huddles: [] }),
     pin: async (id: string, pinned: boolean) => { pins.push({ id, pinned }) },
     createReminder: async (_ws: string, input: { messageId: string; remindAt: string }) => {
@@ -243,9 +247,12 @@ mock.module('../../../hooks/useChatShortcuts', () => ({
   useEditRequest: () => {},
   requestEditMessage: () => {},
 }))
-const activityTimeline: { messages: any[]; channels: any[]; hasMoreOlder?: boolean; older?: any[][] } = { messages: [], channels: [] }
+const activityTimeline: { messages: any[]; channels: any[]; hasMoreOlder?: boolean; hasMoreNewer?: boolean; older?: any[][] } = { messages: [], channels: [] }
 /** Pages the pane asked the timeline to load. */
 const loadOlderCalls: string[] = []
+/** Sequence-anchored pages requested for old message deep links. */
+const loadBeforeSeqCalls: Array<[number, number]> = []
+const loadNewerCalls: string[] = []
 /** People typing in the pane's scope; a running agent is the dock's business. */
 const typingUsers: Array<{ id: string; name: string }> = []
 /** Replies a pane asked the server to stop. */
@@ -258,6 +265,7 @@ mock.module('../../../hooks/useTeamChat', () => ({
   useChannelDirectory: () => activityTimeline.channels,
   useConversationTimeline: () => ({
     state: { messages: activityTimeline.messages, hasMoreOlder: activityTimeline.hasMoreOlder ?? false, streaming: {} },
+    hasMoreNewer: activityTimeline.hasMoreNewer ?? false,
     loading: false,
     error: null,
     getState: () => ({ messages: activityTimeline.messages, hasMoreOlder: activityTimeline.hasMoreOlder ?? false, streaming: {} }),
@@ -267,6 +275,10 @@ mock.module('../../../hooks/useTeamChat', () => ({
       if (page) activityTimeline.messages = [...page, ...activityTimeline.messages]
       activityTimeline.hasMoreOlder = (activityTimeline.older?.length ?? 0) > 0
     },
+    loadBeforeSeq: async (beforeSeq: number, limit = 50) => {
+      loadBeforeSeqCalls.push([beforeSeq, limit])
+    },
+    loadNewer: async () => { loadNewerCalls.push('newer') },
     react: async () => {},
     edit: () => {},
     remove: async () => {},
@@ -1442,17 +1454,23 @@ describe('opening a channel with unread', () => {
   beforeEach(() => {
     listScrolls.length = 0
     loadOlderCalls.length = 0
+    loadBeforeSeqCalls.length = 0
+    loadNewerCalls.length = 0
     reportViewable = null
+    apiTargetMessage = null
     activityTimeline.messages = []
     activityTimeline.channels = []
     activityTimeline.hasMoreOlder = false
+    activityTimeline.hasMoreNewer = false
     activityTimeline.older = undefined
   })
   afterEach(() => {
     cleanup()
+    apiTargetMessage = null
     activityTimeline.messages = []
     activityTimeline.channels = []
     activityTimeline.hasMoreOlder = false
+    activityTimeline.hasMoreNewer = false
     activityTimeline.older = undefined
   })
 
@@ -1516,6 +1534,56 @@ describe('opening a channel with unread', () => {
     renderPane(channel({ lastSeq: 12, lastReadSeq: 12 }), { highlightMessageId: 'm4' })
 
     await waitFor(() => expect(listScrolls).toContainEqual({ kind: 'index', index: 8, viewPosition: 0.5 }))
+  })
+
+  test('an old top-level DM link loads around the target without opening a thread or paging recent history', async () => {
+    const dm = channel({ id: 'dm-1', kind: 'dm', lastSeq: 500, lastReadSeq: 500 })
+    activityTimeline.messages = [message({ id: 'latest', conversationId: 'dm-1', seq: 500 })]
+    activityTimeline.hasMoreOlder = true
+    apiTargetMessage = message({ id: 'old-dm', conversationId: 'dm-1', seq: 10 })
+    const onOpenThread = mock(() => {})
+
+    renderPane(dm, { highlightMessageId: 'old-dm', onOpenThread })
+
+    await waitFor(() => expect(loadBeforeSeqCalls).toEqual([[11, 50]]))
+    expect(loadOlderCalls).toEqual([])
+    expect(onOpenThread).not.toHaveBeenCalled()
+  })
+
+  test('a DM deep link does not flash the newest page while locating its target', async () => {
+    const dm = channel({ id: 'dm-1', kind: 'dm', lastSeq: 500, lastReadSeq: 500 })
+    activityTimeline.messages = [message({ id: 'latest', conversationId: 'dm-1', seq: 500, text: 'Newest message' })]
+    let resolveMessage!: (message: any) => void
+    apiTargetMessage = new Promise((resolve) => { resolveMessage = resolve })
+
+    renderPane(dm, { highlightMessageId: 'old-dm' })
+
+    expect(screen.queryByText('Newest message')).toBeNull()
+    await act(async () => { resolveMessage(message({ id: 'old-dm', conversationId: 'dm-1', seq: 10 })) })
+    await waitFor(() => expect(loadBeforeSeqCalls).toEqual([[11, 50]]))
+  })
+
+  test('an old DM reply still opens its real thread', async () => {
+    const dm = channel({ id: 'dm-1', kind: 'dm', lastSeq: 500, lastReadSeq: 500 })
+    activityTimeline.messages = [message({ id: 'latest', conversationId: 'dm-1', seq: 500 })]
+    activityTimeline.hasMoreOlder = true
+    apiTargetMessage = message({ id: 'old-reply', conversationId: 'dm-1', seq: 10, threadRootId: 'root-1' })
+    const onOpenThread = mock(() => {})
+
+    renderPane(dm, { highlightMessageId: 'old-reply', onOpenThread })
+
+    await waitFor(() => expect(onOpenThread).toHaveBeenCalledWith(apiTargetMessage))
+    expect(loadBeforeSeqCalls).toEqual([])
+    expect(loadOlderCalls).toEqual([])
+  })
+
+  test('an anchored DM offers paging toward newer messages', () => {
+    activityTimeline.messages = [message({ id: 'old-dm', conversationId: 'dm-1', seq: 10 })]
+    activityTimeline.hasMoreNewer = true
+    renderPane(channel({ id: 'dm-1', kind: 'dm' }))
+
+    fireEvent.click(screen.getByLabelText('Load newer messages'))
+    expect(loadNewerCalls).toEqual(['newer'])
   })
 
   test('a thread has no unread pill', () => {

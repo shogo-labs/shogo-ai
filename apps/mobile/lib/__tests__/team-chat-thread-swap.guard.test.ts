@@ -84,6 +84,14 @@ describe('one thread at a time', () => {
     expect(read('components/team-chat/MessageRow.tsx')).toContain('openConversationTarget(router, {')
   })
 
+  test('message targets keep the focus message separate from the thread root', () => {
+    const helper = read(HELPER)
+    expect(helper).toContain('return openConversationTarget(router, {')
+    expect(helper).toContain('thread: target.threadRootId')
+    expect(helper).toContain('msg: target.messageId')
+    expect(helper).not.toContain('thread: target.threadRootId ?? target.messageId')
+  })
+
   test('the conversation screen publishes which thread is in focus', () => {
     const screen = read('app/(app)/c/[conversationId].tsx')
     expect(screen).toContain('setThreadFocus({ conversationId, threadRootId }, activeToken)')
@@ -91,7 +99,7 @@ describe('one thread at a time', () => {
   })
 
   test('every entry point the card names opens through the helper', () => {
-    const callers = sources.filter((file) => file.path !== HELPER && /openConversationTarget\(/.test(file.text)).map((file) => file.path)
+    const callers = sources.filter((file) => file.path !== HELPER && /openConversation(?:Target|Message)\(/.test(file.text)).map((file) => file.path)
     for (const path of [
       'app/(app)/c/[conversationId].tsx',
       'app/(app)/c/inbox.tsx',
