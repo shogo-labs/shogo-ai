@@ -319,7 +319,7 @@ export const PRO_FEATURES = [
 ]
 
 export const BUSINESS_FEATURES = [
-  'Everything in Pro, plus:',
+  'Everything in Basic, plus:',
   'Highest 5-hour & weekly usage limits (per seat)',
   'Team analytics & usage reporting',
   'SSO authentication',

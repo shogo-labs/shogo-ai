@@ -89,6 +89,8 @@ test.describe("Pro is retired — no path sells it (SHO-397)", () => {
       ).toBeVisible()
     }
     await expect(page.getByTestId("plan-card-business").getByText("Upgrade to Business")).toBeVisible()
+    // No copy on the page still presents Pro as the tier below Business.
+    await expect(page.getByText("Everything in Pro")).toHaveCount(0)
   })
 
   test("Billing at a phone viewport also has no Pro card", async () => {
