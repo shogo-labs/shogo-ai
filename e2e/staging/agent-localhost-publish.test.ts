@@ -123,7 +123,15 @@ test.describe("Agent preview hygiene", () => {
 
     const response = await request.get(link!, { timeout: 60_000 })
     expect(response.status()).toBe(200)
-    expect(response.headers()["content-disposition"]).toMatch(/^attachment;/i)
+    // SHO-388 serves a PDF (like a picture) `inline` so the app's own viewer can
+    // render it without fetching the whole body first; a type that cannot
+    // preview stays `attachment`. Either way the link must still be a real
+    // download for this artifact, so pin the name and the bytes.
+    expect(response.headers()["content-type"]).toContain("application/pdf")
+    expect(response.headers()["content-disposition"]).toMatch(
+      /^(?:inline|attachment);\s*filename="artifact-delivery-test\.pdf"/i,
+    )
+    expect((await response.body()).byteLength, "the link must serve the artifact").toBeGreaterThan(0)
   })
 
   test("the hygiene checks read the agent's messages, not the page body", async () => {

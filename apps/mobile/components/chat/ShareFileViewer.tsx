@@ -93,13 +93,18 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
 
     const load = async () => {
       try {
-        // A picture or a PDF is shown by its URL, never buffered: the app's
-        // `<Image>` and the PDF view fetch what they need themselves, and a
-        // 300 MB PDF must not be downloaded to read page one (SHO-388). One
-        // one-byte range probe keeps the error UX — a dead link still shows the
-        // API's `code` — without pulling the body down.
+        // A video or an audio file is streamed, never buffered: 300 MB of mp4
+        // must not download before the first frame. On native a picture or a PDF
+        // is shown by its URL too, never buffered, so a 300 MB PDF is not
+        // downloaded to read page one (SHO-388). One one-byte range probe keeps
+        // the error UX — a dead link still shows the API's `code` — and tells us
+        // the size and type; the element then fetches what it needs itself,
+        // seeks included.
         const namedKind = fileViewKind(target.name, null)
-        if (Platform.OS !== "web" && (namedKind === "image" || namedKind === "pdf")) {
+        const streamsInPlace = namedKind === "video" || namedKind === "audio"
+        const nativeDocument =
+          Platform.OS !== "web" && (namedKind === "image" || namedKind === "pdf")
+        if (streamsInPlace || nativeDocument) {
           const probe = await fetch(source, {
             credentials: "include",
             headers: { Range: "bytes=0-0" },
@@ -201,6 +206,12 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
     setSaving(true)
     setSaveError(null)
     try {
+      // A streamed video or audio file has no body in hand: the link is the
+      // download, and the browser/OS fetches it once.
+      if (state.objectUrl == null && state.text === undefined) {
+        await downloadAttachment(source, target.name)
+        return
+      }
       if (Platform.OS === "web") {
         if (typeof document === "undefined") return
         const href =

@@ -9,7 +9,7 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { resolve } from 'node:path'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { createElement, type ReactNode } from 'react'
+import { createElement, useEffect, type ReactNode } from 'react'
 import { createReactNativeMock } from '../../../test/react-native-mock'
 import * as lucideStub from '../../../test/stubs/lucide-react-native'
 
@@ -41,6 +41,18 @@ mock.module(resolve(import.meta.dir, '../../project/panels/ide/CodeEditor'), () 
 mock.module(resolve(import.meta.dir, '../../chat/MarkdownText'), () => ({
   MarkdownText: ({ children }: { children: string }) =>
     createElement('div', { 'data-testid': 'markdown-body' }, children),
+}))
+
+// The player is a native module (`expo-video`); the test only has to see what
+// the viewer hands it, and to be able to make it fail.
+let nativeVideoFails = false
+mock.module(resolve(import.meta.dir, '../../chat/NativeVideoView'), () => ({
+  default: ({ url, onError }: { url: string; onError?: () => void }) => {
+    useEffect(() => {
+      if (nativeVideoFails) onError?.()
+    }, [onError])
+    return createElement('div', { 'data-testid': 'native-video-view', 'data-uri': url })
+  },
 }))
 
 mock.module(resolve(import.meta.dir, '../VoiceNotePlayer'), () => ({
@@ -129,6 +141,7 @@ const { FileViewer } = await import('../FileViewer')
 afterEach(() => {
   cleanup()
   downloads.length = 0
+  nativeVideoFails = false
 })
 
 function query(id: string): HTMLElement | null {
@@ -148,10 +161,26 @@ describe('opening a shared file on a phone', () => {
     expect(query('file-viewer-download')).toBeNull()
   })
 
-  test('a video it cannot play still offers its own download', async () => {
+  test('a video plays in the app\'s own player, streamed from its link', async () => {
     render(createElement(FileViewer, { attachmentId: 'video' }))
 
-    await screen.findByText('No preview for this file type.')
+    // The lazy player resolves one tick later; what matters is that the link
+    // goes to expo-video rather than to the "no preview, use Download" card
+    // (SHO-387).
+    const player = await waitFor(() => {
+      const node = query('native-video-view')
+      expect(node).not.toBeNull()
+      return node!
+    })
+    expect(player.getAttribute('data-uri')).toBe('/api/conversation-files/att-1?t=sig')
+    expect(screen.queryByText('No preview for this file type.')).toBeNull()
+  })
+
+  test('a video the player cannot show still offers its own download', async () => {
+    nativeVideoFails = true
+    render(createElement(FileViewer, { attachmentId: 'video' }))
+
+    await screen.findByText('Could not play this video.')
     fireEvent.click(screen.getByText('Download'))
 
     await waitFor(() =>

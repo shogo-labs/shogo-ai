@@ -387,6 +387,14 @@ export {
 } from './published-schema'
 
 export {
+  parseByteRange,
+  fileRangeResponse,
+  type ParsedByteRange,
+  type SliceableFile,
+  type FileRangeResponseOptions,
+} from './byte-range'
+
+export {
   publishedImageRepository,
   publishedImageRepositoryOf,
   publishedImageTag,
