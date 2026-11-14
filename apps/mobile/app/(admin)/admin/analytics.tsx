@@ -417,12 +417,12 @@ export default function AdminMarketingAnalyticsPage() {
         {/* Activity + active-user trends: side-by-side on desktop */}
         <View className="mb-5">
           <SectionLabel title="Momentum" detail="Activity and audience movement" />
-          <View className={cn('gap-4', isWide && 'flex-row')}>
+          <View className={cn('gap-4', isWide && 'flex-row items-stretch')}>
             <View className={cn(isWide && 'flex-1')}>
-              <ActivityTrendsChart data={activityTs.data} loading={activityTs.loading} />
+              <ActivityTrendsChart data={activityTs.data} loading={activityTs.loading} fillHeight={isWide} />
             </View>
             <View className={cn(isWide && 'flex-1')}>
-              <ActiveUsersTrendChart data={activeUsersTs.data} loading={activeUsersTs.loading} />
+              <ActiveUsersTrendChart data={activeUsersTs.data} loading={activeUsersTs.loading} fillHeight={isWide} />
             </View>
           </View>
         </View>

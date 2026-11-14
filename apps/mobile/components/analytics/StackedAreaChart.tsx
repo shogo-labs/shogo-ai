@@ -58,6 +58,13 @@ export interface StackedAreaChartProps {
    * Use `bar` for daily counts, `area` for cumulative totals and ratios.
    */
   variant?: 'area' | 'bar'
+  /**
+   * Grow to fill the parent instead of sitting at a fixed `height` (which
+   * becomes the minimum). Lets two cards in a row end at the same edge when
+   * their headers differ in height — the extra space goes into the plot
+   * rather than leaving a gap under the axis.
+   */
+  fillHeight?: boolean
 }
 
 /** Default palette tuned to read well on dark and light backgrounds. */
@@ -101,13 +108,19 @@ export function StackedAreaChart({
   formatTooltip = defaultFormatTooltip,
   markToday = true,
   variant = 'area',
+  fillHeight = false,
 }: StackedAreaChartProps) {
   const [width, setWidth] = useState(720)
+  const [measuredHeight, setMeasuredHeight] = useState<number | null>(null)
   const [hoverIdx, setHoverIdx] = useState<number | null>(null)
   const isBar = variant === 'bar'
 
+  // `height` is the floor: the plot never shrinks below it, and grows into
+  // whatever the card has left over once the header is laid out.
+  const boxHeight = fillHeight ? Math.max(measuredHeight ?? height, height) : height
+
   const innerW = Math.max(0, width - PADDING.left - PADDING.right)
-  const innerH = Math.max(0, height - PADDING.top - PADDING.bottom)
+  const innerH = Math.max(0, boxHeight - PADDING.top - PADDING.bottom)
 
   const { stacked, yMax } = useMemo(() => {
     let max = 0
@@ -136,7 +149,7 @@ export function StackedAreaChart({
     return (
       <View
         className="rounded-xl border border-border bg-card items-center justify-center"
-        style={{ height }}
+        style={{ height: boxHeight }}
       >
         <Text className="text-sm text-muted-foreground">No usage data for this period</Text>
         {days.length > 0 && yMax === 0 && (
@@ -218,10 +231,13 @@ export function StackedAreaChart({
   return (
     <View
       testID={`stacked-chart-${variant}`}
-      onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
-      style={{ width: '100%' }}
+      onLayout={(e) => {
+        setWidth(e.nativeEvent.layout.width)
+        if (fillHeight) setMeasuredHeight(e.nativeEvent.layout.height)
+      }}
+      style={fillHeight ? { width: '100%', flex: 1, minHeight: height } : { width: '100%' }}
     >
-      <Svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`}>
+      <Svg width="100%" height={boxHeight} viewBox={`0 0 ${width} ${boxHeight}`}>
         <Defs>
           {series.map((s) => (
             <LinearGradient
@@ -358,7 +374,7 @@ export function StackedAreaChart({
           top: 0,
           left: PADDING.left,
           right: PADDING.right,
-          height,
+          height: boxHeight,
           flexDirection: 'row',
         }}
       >
