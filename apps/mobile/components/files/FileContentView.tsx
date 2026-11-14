@@ -161,7 +161,7 @@ export function FileContentView({
   if (Platform.OS !== "web") {
     if (kind === "image" && nativeImage) return <>{nativeImage}</>
     if (kind === "pdf" && url) return <NativePdf url={url} name={name} testID={testID} />
-    if (kind === "video" && url) return <NativeVideo url={url} testID={testID} />
+    if (kind === "video" && url) return <NativeVideo url={url} download={download} testID={testID} />
     return (
       <BinaryFallback message={binaryMessage} download={download} url={url} name={name} testID={testID} />
     )
@@ -366,17 +366,33 @@ function CodeBody({
  * streamed link (a `Range`-capable route) starts playing without downloading
  * the whole file, and a player that cannot decode the file reports it.
  */
-function NativeVideo({ url, testID }: { url: string; testID?: string }) {
+function NativeVideo({
+  url,
+  download,
+  testID,
+}: {
+  url: string
+  download?: ReactNode
+  testID?: string
+}) {
   const window = useWindowDimensions()
   // The space is not known until the host lays us out, but the player can start
   // either way, so it opens at the window size and narrows on the first layout.
   const [size, setSize] = useState({ width: window.width, height: window.height * 0.6 })
   const [failed, setFailed] = useState(false)
 
+  // A clip the platform cannot decode still has to be reachable, so a failed
+  // player keeps the host's Download next to the reason it could not play.
   if (failed) {
     return (
       <View className="flex-1 items-center justify-center gap-2 px-6 py-8" testID={testID ?? "file-view-video"}>
         <Text className="text-center text-sm text-foreground">Could not play this video.</Text>
+        {download ? (
+          <Text className="text-center text-[11px] text-muted-foreground">
+            Use Download to save it and open it in its own app.
+          </Text>
+        ) : null}
+        {download}
       </View>
     )
   }
