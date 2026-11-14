@@ -44,6 +44,15 @@ export async function authenticate(c: Context, projectId?: string): Promise<Inte
   if (hadBearer) {
     const identity = await validatePodToken(authHeader!.slice(7))
     if (identity) return { kind: 'sa' }
+    // A workspace-scoped device key (`shogo_sk_…`), which is how a signed-in
+    // desktop forwards an internal call for one of its cloud workspaces
+    // (`relayToCloud`). It is the same authority that workspace's own runtime
+    // token carries, so it answers as that workspace — nothing wider (SHO-389).
+    if (!projectId && authHeader!.startsWith('Bearer shogo_sk_')) {
+      const { resolveApiKey } = await import('./api-keys')
+      const resolved = await resolveApiKey(authHeader!.slice(7)).catch(() => null)
+      if (resolved?.workspaceId) return { kind: 'workspace', workspaceId: resolved.workspaceId }
+    }
     console.warn(
       `[InternalAuth] SA token rejected; falling through to runtime token` +
         `${projectId ? ` projectId=${projectId}` : ''}`,

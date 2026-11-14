@@ -118,7 +118,12 @@ const prismaMock = {
     },
   },
 }
-mock.module('../lib/prisma', () => ({ prisma: prismaMock }))
+const prismaMockWithWorkspaces = {
+  ...prismaMock,
+  // The cross-workspace authorizer asks which instance owns a target (SHO-389).
+  workspace: { findUnique: async () => null },
+}
+mock.module('../lib/prisma', () => ({ prisma: prismaMockWithWorkspaces }))
 
 // cost-analytics.service mock
 const costAnalytics = {
@@ -651,7 +656,10 @@ describe('GET /subagent-overrides/resolve', () => {
     }
     const headers = { 'x-runtime-token': 'workspace-token' }
     const denied = await app.request('/workspaces/other/history/search?q=SQLite', { headers })
-    expect(denied.status).toBe(401)
+    // A valid token for another workspace is a refusal, not a bad credential:
+    // cross-workspace calls answer a structured 403 (SHO-389).
+    expect(denied.status).toBe(403)
+    expect((await denied.json()).error.code).toBe('cross_workspace_forbidden')
     const search = await app.request('/workspaces/workspace-1/history/search?q=SQLite', { headers })
     expect(search.status).toBe(200)
     expect((await search.json()).results[0].id).toBe('chat-1')

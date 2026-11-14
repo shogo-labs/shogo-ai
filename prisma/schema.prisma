@@ -6225,3 +6225,57 @@ model NativeUsageMonth {
   @@unique([nativeAppId, month])
   @@map("native_usage_months")
 }
+
+// =============================================================================
+// CROSS-WORKSPACE APPROVALS (SHO-389)
+// =============================================================================
+
+/// One write another workspace's agent is allowed to make, once.
+///
+/// The Personal workspace agent may act in the person's other workspaces. A
+/// read needs nothing here; a write is approved per call in the chat that asked
+/// for it (the security dialog, or a decision card in a channel thread), and
+/// the runtime then has the API mint a row here. The request that uses it
+/// carries `X-Cross-Workspace-Approval`; the API spends it on use, so a
+/// runtime that skips the prompt can never obtain one, and approving one call
+/// does not authorise the next. `argsHash` binds the approval to the exact
+/// arguments the person saw (`cross-workspace.ts` `argsHash`).
+///
+/// Recorded on the side that runs the write: a desktop runtime's write to a
+/// cloud workspace is minted and spent in the cloud (relayToCloud).
+model CrossWorkspaceApproval {
+  id                String    @id @default(uuid())
+  /// The workspace whose agent asked (the Personal workspace).
+  callerWorkspaceId String
+  targetWorkspaceId String
+  /// The agent tool the approval was granted for, e.g. `work_item_move`.
+  tool              String
+  /// sha256 over the tool arguments the person was shown.
+  argsHash          String
+  requesterUserId   String
+  /// pending | spent | expired
+  status            String    @default("pending")
+  spentAt           DateTime?
+  expiresAt         DateTime
+  createdAt         DateTime  @default(now())
+
+  @@index([targetWorkspaceId, status])
+  @@map("cross_workspace_approvals")
+}
+
+/// One row per cross-workspace call that actually ran (SHO-389): who asked,
+/// from where, at what, and under which approval for a write.
+model CrossWorkspaceAudit {
+  id                String   @id @default(uuid())
+  callerWorkspaceId String
+  targetWorkspaceId String
+  tool              String
+  userId            String?
+  /// read | write
+  kind              String
+  approvalId        String?
+  createdAt         DateTime @default(now())
+
+  @@index([targetWorkspaceId, createdAt])
+  @@map("cross_workspace_audit")
+}

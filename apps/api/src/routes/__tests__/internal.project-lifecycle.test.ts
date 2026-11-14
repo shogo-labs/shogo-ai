@@ -108,6 +108,11 @@ mock.module('../../lib/prisma', () => ({
         return { id: where.id, ...row }
       },
     },
+    // The cross-workspace authorizer asks which instance owns a target (SHO-389).
+    // Nothing is hosted here, so every target answers "not on this instance".
+    workspace: {
+      findUnique: async () => null,
+    },
     member: {
       findFirst: async ({ where }: { where: { workspaceId: string; role: string } }) => {
         const candidates = store.members
@@ -248,11 +253,14 @@ describe('GET /workspaces/:workspaceId/projects/graph', () => {
     expect(res.status).toBe(200)
   })
 
-  test('401 for a project token whose workspace differs (cross-workspace)', async () => {
+  test('403 for a project token whose workspace differs (cross-workspace)', async () => {
     store.runtimeVerify = { ok: true, projectId: 'proj-1', format: 'v1' }
     store.resolvedWorkspaceId = 'ws-OTHER'
     const res = await app.request('/workspaces/ws-1/projects/graph', { headers: { 'x-runtime-token': 'rt' } })
-    expect(res.status).toBe(401)
+    // A valid token for another workspace is refused as a cross-workspace call,
+    // with the reason, rather than as an unusable credential (SHO-389).
+    expect(res.status).toBe(403)
+    expect((await res.json()).error.code).toBe('cross_workspace_forbidden')
   })
 
   test('200 for a workspace token matching the path workspace', async () => {
@@ -261,10 +269,11 @@ describe('GET /workspaces/:workspaceId/projects/graph', () => {
     expect(res.status).toBe(200)
   })
 
-  test('401 for a workspace token scoped to a different workspace', async () => {
+  test('403 for a workspace token scoped to a different workspace', async () => {
     store.workspaceVerify = { ok: true, workspaceId: 'ws-OTHER' }
     const res = await app.request('/workspaces/ws-1/projects/graph', { headers: { 'x-runtime-token': 'wrt' } })
-    expect(res.status).toBe(401)
+    expect(res.status).toBe(403)
+    expect((await res.json()).error.code).toBe('cross_workspace_forbidden')
   })
 
   test('401 with no credentials', async () => {
