@@ -249,12 +249,18 @@ test.describe("A video share_file link in chat streams instead of downloading", 
     // the API origin), not a buffered copy.
     expect(src).toBe(`${API}${href}`)
 
-    // One `bytes=0-0` probe first, answered 206 with the total size — that is
-    // what the pane's size line is built from, without reading the body.
+    // The viewer's own `bytes=0-0` probe is answered 206 with the total size —
+    // that is what the pane's size line is built from, without reading the
+    // body. The element then asks for its own ranges; the order of the two is
+    // the browser's business, so only the set is asserted.
     await expect
       .poll(() => served.length, { timeout: 20_000 })
       .toBeGreaterThan(0)
-    expect(served[0]).toEqual({ range: "bytes=0-0", status: 206 })
+    await expect
+      .poll(() => served.some((entry) => entry.range === "bytes=0-0" && entry.status === 206), {
+        timeout: 20_000,
+      })
+      .toBe(true)
     await expect(pane.getByText(/4 KB/)).toBeVisible({ timeout: 20_000 })
 
     // It really plays, and every request it made while playing was a range.
