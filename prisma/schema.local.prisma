@@ -4989,3 +4989,39 @@ model NativeUsageMonth {
   @@unique([nativeAppId, month])
   @@map("native_usage_months")
 }
+
+// =============================================================================
+// CROSS-WORKSPACE APPROVALS (SHO-389)
+// =============================================================================
+
+model CrossWorkspaceApproval {
+  id                String    @id @default(uuid())
+  callerWorkspaceId String
+  targetWorkspaceId String
+  tool              String
+  argsHash          String
+  requesterUserId   String
+  /// pending | spent | expired
+  status            String    @default("pending")
+  spentAt           DateTime?
+  expiresAt         DateTime
+  createdAt         DateTime  @default(now())
+
+  @@index([targetWorkspaceId, status])
+  @@map("cross_workspace_approvals")
+}
+
+model CrossWorkspaceAudit {
+  id                String   @id @default(uuid())
+  callerWorkspaceId String
+  targetWorkspaceId String
+  tool              String
+  userId            String?
+  /// read | write
+  kind              String
+  approvalId        String?
+  createdAt         DateTime @default(now())
+
+  @@index([targetWorkspaceId, createdAt])
+  @@map("cross_workspace_audit")
+}

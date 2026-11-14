@@ -53,6 +53,7 @@ import { summariseTurn, lastTurnStart } from './turn-boundary'
 import { createCompactionSummarizer } from './compaction-summarizer'
 import type { ToolContext } from './gateway-tools'
 import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, subagentOrchestrationDisabled, expectedCoreToolsForAgentMode, createModeUnavailableTool, workspaceAgentToolsRegistered, getSessionTodos, type RestrictedMode } from './gateway-tools'
+import { crossWorkspaceEnabledFor } from './cross-workspace'
 import { DEFAULT_CLOUD_SECURITY_PREFERENCE, PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { buildExposedPortsPrompt } from './exposed-ports-prompt'
 import { buildConcurrentChatsPrompt, concurrentChatLabel, type ConcurrentChat } from './concurrent-chats-prompt'
@@ -212,6 +213,36 @@ work visible, and communicate in concise user-facing language.
   project. If they say it anyway, follow this guide.
 - Do not expose internal project ids or builder mechanics unless the user asks.
 `
+
+/**
+ * Appended to the Personal agent's prompt when it can reach the person's other
+ * workspaces (SHO-389). Kept to what the tools actually enforce: reads are
+ * free, every write asks, and a scheduled turn has nobody to ask.
+ */
+export const CROSS_WORKSPACE_GUIDE = `## Running other workspaces
+
+You can read — and, with the person's approval, act in — every workspace they
+belong to, not just this Personal one. Those tools take a \`workspace\`
+argument (id, slug or name).
+
+- **Find them first.** \`list_projects({ workspaces: true })\` returns each
+  workspace's id, name, slug, kind and where it runs (\`source: local|cloud\`),
+  plus \`reachable\`. An ambiguous name (\`"odin"\`) comes back as candidates —
+  ask which one; never pick for them.
+- **Reporting on a workspace:** \`board_summary\` + \`board_health\` for the
+  numbers, \`work_item_list\` for what is in flight, \`team_chat_list\` /
+  \`team_chat_read\` for the last day, \`agent_runs_list\` for failures.
+  Merged PRs are already on the cards (\`pr\` field and \`work_item_link\`), so
+  there is no GitHub call to make. Finish with **one** message covering all the
+  workspaces asked for, and say which ones you could not reach and why.
+- **Writes always ask.** Every card, comment, post, schedule or project call in
+  another workspace raises an approval prompt for that one call, whatever the
+  security mode — approving one does not approve the next. Pass the approval
+  through; if it is denied or times out, say so and leave the workspace alone.
+- **A scheduled or triggered turn cannot ask**, so a write there is refused.
+  Those turns report what they would have done instead.
+- **When you create the report schedule, pin workspace ids, not names**, so a
+  renamed workspace still matches.`
 
 /**
  * The runtime's own listening ports: the SPA on `PORT` plus the API sidecar.
@@ -6045,7 +6076,10 @@ export class AgentGateway {
     }
 
     parts.push(buildCodeAgentGeneralGuide())
-    if (cfg.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
+    if (cfg.capabilityProfile === 'personal') {
+      parts.push(PERSONAL_COMPANION_GUIDE)
+      if (crossWorkspaceEnabledFor(cfg)) parts.push(CROSS_WORKSPACE_GUIDE)
+    }
     parts.push(buildCapabilityStatusSection(cfg, {
       scope: chatContext === 'workspace' ? 'workspace' : 'project',
       projectName: chatContext === 'workspace' ? undefined : this.projectDisplayName(this.projectId),
@@ -6103,7 +6137,10 @@ export class AgentGateway {
     }
 
     parts.push(buildCodeAgentGeneralGuide())
-    if (cfg.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
+    if (cfg.capabilityProfile === 'personal') {
+      parts.push(PERSONAL_COMPANION_GUIDE)
+      if (crossWorkspaceEnabledFor(cfg)) parts.push(CROSS_WORKSPACE_GUIDE)
+    }
     parts.push(buildCapabilityStatusSection(cfg, {
       scope: chatContext === 'workspace' ? 'workspace' : 'project',
       projectName: chatContext === 'workspace' ? undefined : this.projectDisplayName(this.projectId),
@@ -6271,6 +6308,7 @@ export class AgentGateway {
     pushStable('background-tasks-guide', BACKGROUND_TASKS_GUIDE)
     if (cfg.capabilityProfile === 'personal') {
       pushStable('personal-companion-mode', PERSONAL_COMPANION_GUIDE)
+      if (crossWorkspaceEnabledFor(cfg)) pushStable('cross-workspace-guide', CROSS_WORKSPACE_GUIDE)
     }
 
     // 2b. Shogo SDK guide — when/how to reach for @shogo-ai/sdk in user apps.

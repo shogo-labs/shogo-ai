@@ -10,7 +10,6 @@ import { Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import type { MentionTarget } from "./file-links"
 import type { MarkdownVariant } from "./MarkdownText"
-import { ChatFilePreviews } from "./ChatFilePreviews"
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext"
 
 export interface ChatMarkdownProps {
@@ -31,12 +30,6 @@ export interface ChatMarkdownProps {
   onMentionPress?: (target: MentionTarget) => void
   /** Extra classes. A color class such as `text-white` overrides the default. */
   className?: string
-  /**
-   * Show an inline picture/video card under the text for a file link the app
-   * serves. On by default for a chat body; off for tool cards and search
-   * results, where the file is already the subject of the card.
-   */
-  filePreviews?: boolean
 }
 
 // Metro inlines `Platform.OS` and drops the other branch, so a web bundle
@@ -56,34 +49,29 @@ export function ChatMarkdown({
   onLinkPress,
   onMentionPress,
   className,
-  filePreviews,
 }: ChatMarkdownProps) {
   const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
   // A card body stays card-sized on every surface; the chat default is 16/24
   // in the phone chrome and 12px elsewhere.
   const isCard = variant === "card"
-  const showFilePreviews = filePreviews ?? !isCard
   return (
-    <>
-      <MarkdownText
-        className={cn(
-          isCard
-            ? "text-foreground text-xs prose-sm"
-            : Platform.OS !== "web" || usesMobileWorkspaceChrome
-            ? "text-foreground text-base leading-6"
-            : "text-foreground text-xs prose-sm",
-          className,
-        )}
-        variant={variant}
-        isStreaming={isStreaming}
-        onFilePress={onFilePress}
-        fileExists={fileExists}
-        onLinkPress={onLinkPress}
-        onMentionPress={onMentionPress}
-      >
-        {children}
-      </MarkdownText>
-      {showFilePreviews ? <ChatFilePreviews text={children} isStreaming={isStreaming} /> : null}
-    </>
+    <MarkdownText
+      className={cn(
+        isCard
+          ? "text-foreground text-xs prose-sm"
+          : Platform.OS !== "web" || usesMobileWorkspaceChrome
+          ? "text-foreground text-base leading-6"
+          : "text-foreground text-xs prose-sm",
+        className,
+      )}
+      variant={variant}
+      isStreaming={isStreaming}
+      onFilePress={onFilePress}
+      fileExists={fileExists}
+      onLinkPress={onLinkPress}
+      onMentionPress={onMentionPress}
+    >
+      {children}
+    </MarkdownText>
   )
 }

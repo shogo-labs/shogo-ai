@@ -313,6 +313,13 @@ export interface RequestApprovalOptions {
   origin?: ApprovalOrigin
   /** How long to wait for the person. Remote requests fit inside the caller's request budget. */
   timeoutSeconds?: number
+  /**
+   * Never answer from (or write to) the session cache. A cross-workspace write
+   * asks every time, even when the same call was allowed earlier this turn.
+   */
+  noCache?: boolean
+  /** Answer `timeout` rather than `denied` when nobody answers in time. */
+  expireOnTimeout?: boolean
 }
 
 /** How long a remote request waits at this computer before answering `timeout`. */
@@ -841,7 +848,7 @@ export class PermissionEngine {
     // Check session cache first (e.g. "Allow Once" from earlier in this turn).
     // A remote request has no cache key at all: what this computer's own agent
     // was allowed is not an answer for work it was handed (SHO-333).
-    const cacheKey = remote ? null : `${toolName}:${this.paramCacheKey(params)}`
+    const cacheKey = remote || opts.noCache ? null : `${toolName}:${this.paramCacheKey(params)}`
     if (cacheKey) {
       const cached = this.sessionApprovalCache.get(cacheKey)
       if (cached !== undefined) return cached ? 'approved' : 'denied'
@@ -878,7 +885,7 @@ export class PermissionEngine {
         this.pendingApprovals.delete(requestId)
         this.queuedApprovals.delete(requestId)
         if (!remote) this.denialCount++
-        resolveOutcome(remote ? 'timeout' : 'denied')
+        resolveOutcome(remote || opts.expireOnTimeout ? 'timeout' : 'denied')
       }, timeoutMs)
 
       const entry: PendingApproval = { settle: resolveOutcome, timer, cacheKey, category, origin, request }

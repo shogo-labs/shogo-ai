@@ -24,20 +24,15 @@ import {
   rememberWorkspaceKind,
   resolveActiveWorkspaceId,
   setActiveWorkspaceId,
-  setActiveWorkspaceFollowsShared,
   subscribeActiveWorkspaceId,
 } from '../workspace-store'
 
 beforeEach(() => {
   localStorage.clear()
-  sessionStorage.clear()
 })
 
 afterEach(() => {
   localStorage.clear()
-  sessionStorage.clear()
-  // Follower mode is module state; a test that turns it on must not leak.
-  setActiveWorkspaceFollowsShared(false)
 })
 
 describe('getActiveWorkspaceId / setActiveWorkspaceId / clearActiveWorkspaceId', () => {
@@ -187,7 +182,7 @@ describe('a workspace switch the person just made', () => {
     setActiveWorkspaceId('ws-old')
     setActiveWorkspaceId('ws-new')
     // Age the record rather than waiting: the TTL is wall-clock.
-    sessionStorage.setItem(
+    localStorage.setItem(
       INTENT_KEY,
       JSON.stringify({ id: 'ws-new', left: ['ws-old'], at: Date.now() - 60_000 }),
     )
@@ -216,17 +211,15 @@ describe('a workspace switch the person just made', () => {
     expect(getActiveWorkspaceId()).toBe('ws-c')
   })
 
-  test('stays in this tab: another tab’s switch cannot echo the old id back', () => {
+  test('is published to other windows, which then cannot echo the old id back', () => {
     setActiveWorkspaceId('ws-old')
     setActiveWorkspaceId('ws-new')
 
-    // Tab B "switches" by writing the shared default; tab A ignores the event
-    // and keeps its own selection (SHO-390), so no stale screen can echo it.
-    localStorage.setItem('shogo:active-workspace-id', 'ws-other-tab')
+    // The second window sees the switch through `storage`, re-renders, and its
+    // still-mounted chat screen writes the workspace its chat belongs to.
     window.dispatchEvent(
-      new StorageEvent('storage', { key: 'shogo:active-workspace-id', newValue: 'ws-other-tab' }),
+      new StorageEvent('storage', { key: 'shogo:active-workspace-id', newValue: 'ws-new' }),
     )
-    expect(getActiveWorkspaceId()).toBe('ws-new')
     expect(setActiveWorkspaceId('ws-old', { reason: 'automatic' })).toBe(false)
     expect(getActiveWorkspaceId()).toBe('ws-new')
   })
@@ -236,7 +229,6 @@ describe('a workspace switch the person just made', () => {
     setActiveWorkspaceId('ws-new')
     clearActiveWorkspaceId()
 
-    expect(sessionStorage.getItem(INTENT_KEY)).toBeNull()
     expect(localStorage.getItem(INTENT_KEY)).toBeNull()
     setActiveWorkspaceId('ws-other', { reason: 'automatic' })
     expect(getActiveWorkspaceId()).toBe('ws-other')
@@ -291,125 +283,20 @@ describe('subscribeActiveWorkspaceId', () => {
   })
 })
 
-/**
- * SHO-390: one workspace per browser tab. The selection is sessionStorage, so
- * a switch in one tab leaves the others alone; localStorage is only the
- * default a new tab starts from, and the desktop island follows it.
- */
-describe('one workspace per tab', () => {
-  const ID_KEY = 'shogo:active-workspace-id'
-  const KIND_KEY = 'shogo:active-workspace-kind'
-
-  test('a person’s switch is kept in this tab and mirrored as the new-tab default', () => {
-    setActiveWorkspaceId('ws-1')
-
-    expect(sessionStorage.getItem(ID_KEY)).toBe('ws-1')
-    expect(localStorage.getItem(ID_KEY)).toBe('ws-1')
-  })
-
-  test('an automatic write stays in this tab and never moves the default', () => {
-    setActiveWorkspaceId('ws-1')
-    expect(setActiveWorkspaceId('ws-fallback', { reason: 'automatic' })).toBe(true)
-
-    expect(getActiveWorkspaceId()).toBe('ws-fallback')
-    expect(sessionStorage.getItem(ID_KEY)).toBe('ws-fallback')
-    expect(localStorage.getItem(ID_KEY)).toBe('ws-1')
-  })
-
-  test('this tab’s own selection wins over the shared default', () => {
-    localStorage.setItem(ID_KEY, 'ws-other-tab')
-    sessionStorage.setItem(ID_KEY, 'ws-this-tab')
-
-    expect(getActiveWorkspaceId()).toBe('ws-this-tab')
-  })
-
-  test('a tab with no selection of its own seeds it from the shared default', () => {
-    localStorage.setItem(ID_KEY, 'ws-last-chosen')
-
-    expect(getActiveWorkspaceId()).toBe('ws-last-chosen')
-    expect(sessionStorage.getItem(ID_KEY)).toBe('ws-last-chosen')
-  })
-
-  test('reloading a tab keeps its workspace even after another tab switched', () => {
-    sessionStorage.setItem(ID_KEY, 'ws-this-tab')
-    // Another tab picks a workspace: it writes the shared default only.
-    localStorage.setItem(ID_KEY, 'ws-other-tab')
-
-    // A reload keeps sessionStorage.
-    expect(getActiveWorkspaceId()).toBe('ws-this-tab')
-  })
-
-  test('a “duplicated” tab opens on its source tab’s workspace', () => {
-    sessionStorage.setItem(ID_KEY, 'ws-this-tab')
-    localStorage.setItem(ID_KEY, 'ws-other-tab')
-    const copied = sessionStorage.getItem(ID_KEY)
-
-    sessionStorage.clear()
-    if (copied != null) sessionStorage.setItem(ID_KEY, copied)
-
-    expect(getActiveWorkspaceId()).toBe('ws-this-tab')
-  })
-
-  test('does not notify this tab when another tab writes the shared keys', () => {
+describe('switches made in another window', () => {
+  test('notify subscribers when the active workspace changes elsewhere', () => {
     let pings = 0
     const unsub = subscribeActiveWorkspaceId(() => {
       pings++
     })
-    setActiveWorkspaceId('ws-mine')
-    pings = 0
-
-    localStorage.setItem(ID_KEY, 'ws-theirs')
-    window.dispatchEvent(new StorageEvent('storage', { key: ID_KEY, newValue: 'ws-theirs' }))
-    window.dispatchEvent(new StorageEvent('storage', { key: KIND_KEY, newValue: null }))
-    window.dispatchEvent(new StorageEvent('storage', { key: null }))
-
-    expect(pings).toBe(0)
-    expect(getActiveWorkspaceId()).toBe('ws-mine')
-    unsub()
-  })
-
-  test('a follower window (the island) still follows the shared default', () => {
-    setActiveWorkspaceFollowsShared(true)
-    localStorage.setItem(ID_KEY, 'ws-2')
-
-    let pings = 0
-    const unsub = subscribeActiveWorkspaceId(() => {
-      pings++
-    })
-
-    localStorage.setItem(ID_KEY, 'ws-3')
-    window.dispatchEvent(new StorageEvent('storage', { key: ID_KEY, newValue: 'ws-3' }))
-    expect(pings).toBe(1)
-    expect(getActiveWorkspaceId()).toBe('ws-3')
-
+    localStorage.setItem('shogo:active-workspace-id', 'ws-2')
+    window.dispatchEvent(new StorageEvent('storage', { key: 'shogo:active-workspace-id', newValue: 'ws-2' }))
     window.dispatchEvent(new StorageEvent('storage', { key: 'unrelated', newValue: 'x' }))
     expect(pings).toBe(1)
-
+    expect(getActiveWorkspaceId()).toBe('ws-2')
     unsub()
-    window.dispatchEvent(new StorageEvent('storage', { key: ID_KEY, newValue: 'ws-4' }))
+    window.dispatchEvent(new StorageEvent('storage', { key: 'shogo:active-workspace-id', newValue: 'ws-3' }))
     expect(pings).toBe(1)
-  })
-
-  test('a follower window ignores its own tab’s leftovers and reads the shared id', () => {
-    sessionStorage.setItem(ID_KEY, 'ws-left-behind')
-    localStorage.setItem(ID_KEY, 'ws-shared')
-    setActiveWorkspaceFollowsShared(true)
-
-    expect(getActiveWorkspaceId()).toBe('ws-shared')
-  })
-
-  test('sign-out clears this tab and the next tab’s default', () => {
-    setActiveWorkspaceId('ws-1')
-    rememberWorkspaceKind('ws-1', 'team')
-
-    clearActiveWorkspaceId()
-
-    expect(getActiveWorkspaceId()).toBeNull()
-    expect(localStorage.getItem(ID_KEY)).toBeNull()
-    expect(sessionStorage.getItem(ID_KEY)).toBeNull()
-    expect(localStorage.getItem(KIND_KEY)).toBeNull()
-    expect(sessionStorage.getItem(KIND_KEY)).toBeNull()
-    expect(getCachedWorkspaceKind('ws-1')).toBeNull()
   })
 })
 

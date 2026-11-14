@@ -34,45 +34,23 @@ class MemoryStorage implements StorageBackend {
   }
 }
 
-function probe(storage: () => Storage | undefined, testKey: string): StorageBackend | null {
+function resolveBackend(): StorageBackend {
+  if (typeof window === 'undefined') return new MemoryStorage()
   try {
-    const store = storage()
-    if (!store) return null
-    store.setItem(testKey, '1')
-    store.removeItem(testKey)
-    return store
+    const testKey = '__shogo_storage_probe__'
+    window.localStorage.setItem(testKey, '1')
+    window.localStorage.removeItem(testKey)
+    return window.localStorage
   } catch {
-    return null
+    return new MemoryStorage()
   }
 }
 
-function resolveBackend(): StorageBackend {
-  if (typeof window === 'undefined') return new MemoryStorage()
-  return probe(() => window.localStorage, '__shogo_storage_probe__') ?? new MemoryStorage()
-}
-
-/**
- * Tab-scoped storage (`sessionStorage`): shared with nothing, survives reload
- * in this tab, and is copied by "Duplicate tab". Used for state that must not
- * follow the person into another tab. Falls back to the same in-memory map
- * when the browser blocks it.
- */
-function resolveSessionBackend(): StorageBackend {
-  if (typeof window === 'undefined') return new MemoryStorage()
-  return probe(() => window.sessionStorage, '__shogo_session_probe__') ?? new MemoryStorage()
-}
-
 let backend: StorageBackend | null = null
-let sessionBackend: StorageBackend | null = null
 
 function getBackend(): StorageBackend {
   if (!backend) backend = resolveBackend()
   return backend
-}
-
-function getSessionBackend(): StorageBackend {
-  if (!sessionBackend) sessionBackend = resolveSessionBackend()
-  return sessionBackend
 }
 
 export const safeGetItem = (key: string): string | null => {
@@ -85,16 +63,4 @@ export const safeSetItem = (key: string, value: string): void => {
 
 export const safeRemoveItem = (key: string): void => {
   getBackend().removeItem(key)
-}
-
-export const safeSessionGetItem = (key: string): string | null => {
-  return getSessionBackend().getItem(key)
-}
-
-export const safeSessionSetItem = (key: string, value: string): void => {
-  getSessionBackend().setItem(key, value)
-}
-
-export const safeSessionRemoveItem = (key: string): void => {
-  getSessionBackend().removeItem(key)
 }

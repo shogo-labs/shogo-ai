@@ -49,9 +49,6 @@ beforeAll(() => {
   writeFileSync(join(mergedRoot, 'media', 'voice.mp3'), 'not really audio')
   writeFileSync(join(mergedRoot, 'media', 'notes.md'), '# Notes')
   writeFileSync(join(mergedRoot, 'media', 'icon.woff2'), 'wOF2')
-  writeFileSync(join(mergedRoot, 'media', 'photo.png'), 'not really a png')
-  writeFileSync(join(mergedRoot, 'media', 'report.pdf'), '%PDF-1.4')
-  writeFileSync(join(mergedRoot, 'media', 'logo.svg'), '<svg/>')
 
   mkdirSync(join(workspacesDir, 'proj-a'), { recursive: true })
   writeFileSync(join(workspacesDir, 'proj-a', 'report.txt'), 'project file')
@@ -122,23 +119,6 @@ describe('local shared file routes: content types', () => {
       const response = await app.fetch(new Request(`http://localhost/api/f/${workspaceLink(path)}`))
       expect(response.status).toBe(200)
       expect(response.headers.get('content-type')).toBe(expected)
-    }
-  })
-
-  it('opens pictures and PDFs in place, and still saves everything else', async () => {
-    const app = localSharedFileRoutes({ workspacesDir })
-    const cases: Array<[string, string]> = [
-      ['media/photo.png', 'inline'],
-      ['media/report.pdf', 'inline'],
-      ['exports/summary.csv', 'attachment'],
-      ['media/logo.svg', 'attachment'],
-    ]
-    for (const [path, disposition] of cases) {
-      const response = await app.fetch(new Request(`http://localhost/api/f/${workspaceLink(path)}`))
-      expect(response.status).toBe(200)
-      expect(response.headers.get('content-disposition')).toBe(
-        `${disposition}; filename="${path.split('/').pop()}"`,
-      )
     }
   })
 

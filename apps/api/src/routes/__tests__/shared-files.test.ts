@@ -53,7 +53,7 @@ describe('shared file routes', () => {
 
     expect(response.status).toBe(200)
     expect(await response.text()).toBe('PDF bytes')
-    expect(response.headers.get('content-disposition')).toBe('inline; filename="final report.pdf"')
+    expect(response.headers.get('content-disposition')).toBe('attachment; filename="final report.pdf"')
     expect(response.headers.get('content-type')).toBe('application/pdf')
     expect(requestedUrl).toBe('http://runtime/agent/workspace/download/project-1/reports/final%20report.pdf')
     expect(requestedToken).toBe('runtime-secret')
@@ -135,7 +135,7 @@ describe('shared file routes', () => {
 
     expect(response.status).toBe(200)
     expect(await response.text()).toBe('PDF bytes')
-    expect(response.headers.get('content-disposition')).toBe('inline; filename="final report.pdf"')
+    expect(response.headers.get('content-disposition')).toBe('attachment; filename="final report.pdf"')
     expect((await app.fetch(new Request('http://studio.test/api/f/not-a-token'))).status).toBe(404)
   })
 
@@ -155,42 +155,6 @@ describe('shared file routes', () => {
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toBe('application/octet-stream')
     expect(response.headers.get('content-disposition')).toBe('attachment; filename="app.exe"')
-  })
-
-  it('serves pictures and PDFs inline so they render in place', async () => {
-    globalThis.fetch = (async () => new Response('bytes', {
-      status: 200,
-      headers: { 'content-type': 'image/png' },
-    })) as typeof fetch
-
-    const app = sharedFileRoutes({
-      pinChatToHomeRegion: async () => null,
-      resolveAgentProxyPodUrl: async () => ({ ok: true, kind: 'pod', url: 'http://runtime' }),
-      deriveProjectRuntimeToken: async () => 'runtime-secret',
-    })
-
-    const png = await app.fetch(new Request(`http://api.test/f/${token('shots/screen.png')}`))
-    expect(png.headers.get('content-disposition')).toBe('inline; filename="screen.png"')
-
-    const pdf = await app.fetch(new Request(`http://api.test/f/${token('reports/final report.pdf')}`))
-    expect(pdf.headers.get('content-disposition')).toBe('inline; filename="final report.pdf"')
-  })
-
-  it('never serves an SVG inline, whatever its type claims', async () => {
-    globalThis.fetch = (async () => new Response('<svg/>', {
-      status: 200,
-      headers: { 'content-type': 'image/svg+xml' },
-    })) as typeof fetch
-
-    const app = sharedFileRoutes({
-      pinChatToHomeRegion: async () => null,
-      resolveAgentProxyPodUrl: async () => ({ ok: true, kind: 'pod', url: 'http://runtime' }),
-      deriveProjectRuntimeToken: async () => 'runtime-secret',
-    })
-    const response = await app.fetch(new Request(`http://api.test/f/${token('assets/logo.svg')}`))
-
-    expect(response.headers.get('content-type')).toBe('application/octet-stream')
-    expect(response.headers.get('content-disposition')).toBe('attachment; filename="logo.svg"')
   })
 
   it('passes binary downloads through a paired-instance tunnel', async () => {
@@ -396,7 +360,7 @@ describe('shared file routes', () => {
 
     expect(response.status).toBe(200)
     expect(await response.text()).toBe('PDF bytes')
-    expect(response.headers.get('content-disposition')).toBe('inline; filename="final report.pdf"')
+    expect(response.headers.get('content-disposition')).toBe('attachment; filename="final report.pdf"')
     expect(requested).toEqual([
       'http://runtime/agent/workspace/download/project-1/reports/final%20report.pdf',
       'http://runtime/agent/workspace/download/reports/final%20report.pdf',

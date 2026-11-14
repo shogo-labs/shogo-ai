@@ -79,7 +79,6 @@ async function flush() {
 beforeEach(() => {
   calls.length = 0
   try { (globalThis as any).localStorage?.clear?.() } catch { /* ignore */ }
-  try { (globalThis as any).sessionStorage?.clear?.() } catch { /* ignore */ }
 })
 
 describe('useVisibleModels (workspace-aware)', () => {

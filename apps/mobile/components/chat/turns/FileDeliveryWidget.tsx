@@ -4,6 +4,7 @@
 import { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  InteractionManager,
   Platform,
   Pressable,
   Text,
@@ -15,10 +16,6 @@ import type { ToolCallData } from "../tools/types";
 import { FileTypeIcon } from "../FileTypeIcon";
 import { useShareFileOpener } from "../share-file-context";
 import { parseInAppFileHref } from "../../../lib/share-file-links";
-import { downloadAttachment } from "../../../lib/attachment-download";
-import { fileViewKind } from "../../files/file-view-kind";
-import { ChatFilePreviewCard } from "../ChatFilePreviews";
-import type { InlineMediaTarget } from "../inline-file-previews";
 
 function resultObject(result: unknown): Record<string, unknown> {
   if (result && typeof result === "object") return result as Record<string, unknown>;
@@ -42,6 +39,16 @@ function formatExpiry(value: unknown): string {
 
 function basename(path: string): string {
   return path.split(/[\\/]/).pop() || "download";
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
 }
 
 export interface FileDeliveryWidgetProps {
@@ -81,63 +88,70 @@ export function FileDeliveryWidget({ tool, className }: FileDeliveryWidgetProps)
     }
   }, [copyValue, isLocal]);
 
-  /**
-   * The chip opens the app's viewer on every platform, not just the web — the
-   * viewer draws the picture / plays the clip / renders the PDF, where the OS
-   * share sheet could only hand the file to another app (SHO-388). The separate
-   * Download control still saves it.
-   */
-  const open = useCallback(() => {
-    if (servedFile && openShareFile) {
-      openShareFile({ ...servedFile, name: servedFile.name === "Download" ? name : servedFile.name });
-      return;
-    }
-    if (!url || typeof document === "undefined") return;
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = name;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-  }, [name, openShareFile, servedFile, url]);
-
   const download = useCallback(async () => {
     if (!url || busy) return;
     setError(null);
+    if (Platform.OS === "web") {
+      // A cross-origin `download` attribute is ignored, so a bare anchor
+      // navigates the webview to the API's JSON. Open the file in the app's
+      // own viewer instead, which fetches and saves the bytes it has (SHO-80).
+      if (servedFile && openShareFile) {
+        openShareFile({ ...servedFile, name: servedFile.name === "Download" ? name : servedFile.name });
+        return;
+      }
+      if (typeof document === "undefined") return;
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      return;
+    }
+
     setBusy(true);
     try {
-      await downloadAttachment(url, name);
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`Download failed (${response.status})`);
+      const base64 = arrayBufferToBase64(await response.arrayBuffer());
+      const { cacheDirectory, writeAsStringAsync, EncodingType } =
+        await import("expo-file-system/legacy");
+      const Sharing = await import("expo-sharing");
+      if (!cacheDirectory) throw new Error("Could not access app storage");
+      const fileUri = `${cacheDirectory}${Date.now()}-${name}`;
+      await writeAsStringAsync(fileUri, base64, { encoding: EncodingType.Base64 });
+      await new Promise<void>((resolve) => {
+        InteractionManager.runAfterInteractions(() => resolve());
+      });
+      try {
+        await Sharing.shareAsync(fileUri, { dialogTitle: `Download ${name}` });
+      } catch (shareError) {
+        if (Platform.OS !== "ios") throw shareError;
+        const { Share } = await import("react-native");
+        await Share.share({ url: fileUri, title: name });
+      }
     } catch (caught: any) {
       setError(caught?.message ?? "Download failed");
     } finally {
       setBusy(false);
     }
-  }, [busy, name, url]);
-
-  const mediaTarget = useMemo<InlineMediaTarget | null>(() => {
-    if (!servedFile) return null;
-    const label = servedFile.name === "Download" ? name : servedFile.name;
-    const mediaKind = fileViewKind(label, null);
-    if (mediaKind !== "image" && mediaKind !== "video") return null;
-    return { ...servedFile, name: label, mediaKind };
-  }, [name, servedFile]);
+  }, [busy, name, openShareFile, servedFile, url]);
 
   if (tool.state !== "success" || !url) return null;
 
   const expires = `Link expires ${formatExpiry(expiresAt)}`;
   // A local share has no expiry to report; the path is the useful detail.
   const subtitle = isLocal ? path : expires;
-  const opensInViewer = !!servedFile && !!openShareFile;
-  const actionLabel = opensInViewer || isLocal ? `Open ${name}` : `Download ${name}`;
+  const actionLabel = isLocal ? `Open ${name}` : `Download ${name}`;
   const chipTitle = `${actionLabel} · ${subtitle}`;
-  const accessibilityLabel = opensInViewer ? actionLabel : `Download ${name}. ${expires}`;
+  const accessibilityLabel = isLocal ? actionLabel : `Download ${name}. ${expires}`;
 
   return (
-    <View className={cn("items-start gap-1.5", className)}>
-      {mediaTarget ? <ChatFilePreviewCard target={mediaTarget} /> : null}
+    <View className={cn("items-start", className)}>
       <View className="max-w-full flex-row items-center overflow-hidden rounded-md border border-border bg-muted/40">
         <Pressable
-          onPress={open}
+          onPress={download}
+          disabled={busy}
           accessibilityRole="link"
           accessibilityLabel={accessibilityLabel}
           // @ts-expect-error -- web-only tooltip
@@ -145,22 +159,11 @@ export function FileDeliveryWidget({ tool, className }: FileDeliveryWidgetProps)
           testID="file-delivery-chip"
           className="shrink flex-row items-center gap-1.5 py-1 pl-2 pr-1.5 hover:bg-muted active:opacity-70"
         >
-          <FileTypeIcon path={name} size={14} />
+          {busy ? <ActivityIndicator size="small" /> : <FileTypeIcon path={name} size={14} />}
           <Text className="shrink text-[11px] font-medium text-foreground" numberOfLines={1}>
-            {name}
+            {busy ? "Preparing…" : name}
           </Text>
-        </Pressable>
-        <Pressable
-          onPress={download}
-          disabled={busy}
-          accessibilityRole="button"
-          accessibilityLabel={`Download ${name}`}
-          // @ts-expect-error -- web-only tooltip
-          title={`Download ${name}`}
-          testID="file-delivery-download"
-          className="self-stretch justify-center border-l border-border px-1.5 hover:bg-muted active:opacity-70"
-        >
-          {busy ? <ActivityIndicator size="small" /> : <Download size={12} className="text-muted-foreground" />}
+          <Download size={12} className="text-muted-foreground" />
         </Pressable>
         <Pressable
           onPress={copyLink}

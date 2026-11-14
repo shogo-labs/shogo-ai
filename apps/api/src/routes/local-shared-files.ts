@@ -6,7 +6,6 @@ import { readFile, stat } from 'fs/promises'
 import { describeSharedFileToken, diagnoseSharedFileToken, sharedFileLinkError } from '../lib/shared-file-token'
 import { resolveLocalSharedFileTarget } from '../lib/local-shared-file-target'
 import { mimeTypeForFile } from '../lib/local-file-mime'
-import { isInlinePreviewContentType } from '../lib/shared-file-disposition'
 
 export interface LocalSharedFileRoutesConfig {
   workspacesDir: string
@@ -53,14 +52,11 @@ export function localSharedFileRoutes(config: LocalSharedFileRoutesConfig): Hono
 
       const filename = filenameFor(payload.path)
       const contentType = mimeTypeForFile(filename)
-      // Pictures, video, audio and PDFs open in place; a viewer's WebView only
-      // renders a document when the response says `inline` (SHO-388).
-      const disposition = isInlinePreviewContentType(contentType) ? 'inline' : 'attachment'
       const body = await readFile(target)
       return new Response(body, {
         headers: {
           'Content-Type': contentType,
-          'Content-Disposition': `${disposition}; filename="${filename}"`,
+          'Content-Disposition': `attachment; filename="${filename}"`,
           'Content-Length': String(body.byteLength),
           'Cache-Control': 'private, no-store',
           'X-Content-Type-Options': 'nosniff',

@@ -24,6 +24,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { isSafeRelativePath, parseSystemManifest } from './system-manifest'
 import { BOARD_TEMPLATES, boardTemplateArgs, findWorkTemplate, listWorkTemplates, mergeWorkTemplate } from './work-templates'
+import { crossWorkspaceTargetId } from './cross-workspace'
 
 const MANIFEST_PATH = 'shogo-system.yaml'
 
@@ -64,7 +65,8 @@ const ITEM_REF = Type.String({ description: 'Card key (e.g. "SUP-42") or id.' })
 const CHANNEL = Type.String({ description: 'Channel name (without #) or id.' })
 
 function workspaceIdOf(ctx: ToolContext): string | null {
-  return resolveRuntimeIdentity().workspaceId || ctx.workspaceId || null
+  // A cross-workspace tool call acts in the target the gate resolved (SHO-389).
+  return crossWorkspaceTargetId() ?? (resolveRuntimeIdentity().workspaceId || ctx.workspaceId || null)
 }
 
 function identity(ctx: ToolContext) {

@@ -39,6 +39,7 @@ import {
   type AgentStatusCard,
 } from './internal-api'
 import { uploadWorkspaceMedia } from './workspace-media'
+import { crossWorkspaceTargetId } from './cross-workspace'
 
 const KIND_SCHEMA = Type.Union(
   [Type.Literal('status'), Type.Literal('result'), Type.Literal('decision'), Type.Literal('alert')],
@@ -152,7 +153,8 @@ export const TEAM_CHAT_GUIDE = [
 ].join('\n')
 
 function workspaceIdOf(ctx: ToolContext): string | null {
-  return resolveRuntimeIdentity().workspaceId || ctx.workspaceId || null
+  // A cross-workspace tool call acts in the target the gate resolved (SHO-389).
+  return crossWorkspaceTargetId() ?? (resolveRuntimeIdentity().workspaceId || ctx.workspaceId || null)
 }
 
 export function channelIdentity(ctx: ToolContext): AgentChannelIdentity {

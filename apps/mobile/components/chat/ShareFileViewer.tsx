@@ -14,17 +14,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import {
-  ActivityIndicator,
-  Image,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  useWindowDimensions,
-  View,
-} from "react-native"
+import { ActivityIndicator, Modal, Platform, Pressable, Text, View } from "react-native"
 import { Download, FolderOpen, ExternalLink, RotateCcw, X } from "lucide-react-native"
 import { downloadAttachment } from "../../lib/attachment-download"
 import { resolveChatAttachmentUrl } from "../../lib/chat-attachment-url"
@@ -93,43 +83,6 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
 
     const load = async () => {
       try {
-        // A picture or a PDF is shown by its URL, never buffered: the app's
-        // `<Image>` and the PDF view fetch what they need themselves, and a
-        // 300 MB PDF must not be downloaded to read page one (SHO-388). One
-        // one-byte range probe keeps the error UX — a dead link still shows the
-        // API's `code` — without pulling the body down.
-        const namedKind = fileViewKind(target.name, null)
-        if (Platform.OS !== "web" && (namedKind === "image" || namedKind === "pdf")) {
-          const probe = await fetch(source, {
-            credentials: "include",
-            headers: { Range: "bytes=0-0" },
-          })
-          if (cancelled) return
-          if (!probe.ok) {
-            const body = await probe.json().catch(() => null)
-            const { code, message } = shareFileErrorFromBody(body)
-            setState({
-              status: "error",
-              code: code ?? `http_${probe.status}`,
-              text: shareFileErrorText(code, message),
-            })
-            return
-          }
-          // Cancel whatever body came back: a server that ignores `Range`
-          // sends the whole file, and we do not want it.
-          void probe.body?.cancel().catch(() => {})
-          const total = Number(/\/(\d+)$/.exec(probe.headers.get("content-range") ?? "")?.[1] ?? NaN)
-          setState({
-            status: "ready",
-            kind: namedKind,
-            url: source,
-            mime: blobMimeType(target.name, probe.headers.get("content-type")),
-            size: Number.isFinite(total) ? total : 0,
-            objectUrl: null,
-          })
-          return
-        }
-
         const response = await fetch(source, { credentials: "include" })
         if (!response.ok) {
           const body = await response.json().catch(() => null)
@@ -367,11 +320,6 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
             path={target.path ?? target.name}
             url={state.url}
             text={state.text}
-            nativeImage={
-              Platform.OS !== "web" && state.kind === "image" && state.url ? (
-                <NativeImagePreview url={state.url} name={target.name} />
-              ) : undefined
-            }
             readOnly
             themeMode={isDark ? "dark" : "light"}
             pathKey={viewerPathKey(target.href)}
@@ -379,48 +327,6 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
           />
         </View>
       ) : null}
-    </View>
-  )
-}
-
-/**
- * A picture on a phone, at the size the viewer gives it: fit on Android, and
- * pinch-to-zoom on iOS (which honours `maximumZoomScale` inside a ScrollView).
- * Black behind it, the way every photo viewer does it.
- */
-function NativeImagePreview({ url, name }: { url: string; name: string }) {
-  const window = useWindowDimensions()
-  const [size, setSize] = useState<{ width: number; height: number } | null>(null)
-  // The pane's size arrives on the first layout; until then the picture gets
-  // the window, so it is on screen at once instead of after a blank frame.
-  const frame = size ?? {
-    width: Math.max(1, window.width - 24),
-    height: Math.max(1, Math.round(window.height * 0.6)),
-  }
-  return (
-    <View
-      className="flex-1 bg-black"
-      testID="file-view-image"
-      onLayout={(event) => {
-        const { width, height } = event.nativeEvent.layout
-        if (width > 0 && height > 0) setSize({ width, height })
-      }}
-    >
-      <ScrollView
-        className="flex-1"
-        contentContainerStyle={{ flexGrow: 1, alignItems: "center", justifyContent: "center" }}
-        maximumZoomScale={4}
-        minimumZoomScale={1}
-        centerContent
-      >
-        <Image
-          source={{ uri: url }}
-          style={frame}
-          resizeMode="contain"
-          accessibilityRole="image"
-          accessibilityLabel={name}
-        />
-      </ScrollView>
     </View>
   )
 }
