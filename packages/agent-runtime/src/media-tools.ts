@@ -826,7 +826,7 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
       previous_job_id: Type.Optional(
         Type.String({
           description:
-            'Omni only: continue from an earlier generate_video job. Omit prompt and set resolution "1080p"/"4k" to upscale that draft; pass a prompt to edit it, or to extend it (up to 30 s total) with options { "task": "extend" }.',
+            'Omni only: continue from an earlier generate_video job. Omit prompt and set resolution "1080p"/"4k" to upscale that draft — it re-renders the clip at the higher resolution, so it may differ slightly from the draft. Pass a prompt to edit it, or to extend it (up to 30 s total) with options { "task": "extend" }.',
         }),
       ),
     }),
