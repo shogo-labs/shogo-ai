@@ -9,6 +9,7 @@ import { resolveWorkspaceRuntimeUrl as resolveWorkspaceRuntime } from '../lib/re
 import { resolveAgentProxyPodUrl } from '../lib/agent-proxy-resolver'
 import { relayAgentProxyViaTunnel } from '../lib/tunnel-relay'
 import { describeSharedFileToken, diagnoseSharedFileToken, sharedFileLinkError } from '../lib/shared-file-token'
+import { isInlinePreviewContentType } from '../lib/shared-file-disposition'
 import { importCloudModule } from '../lib/cloud-import'
 import { isMetalEnabled } from '../lib/metal-eligibility'
 
@@ -86,10 +87,15 @@ function downloadHeaders(path: string, upstream?: Headers): Headers {
   const headers = new Headers()
   const contentType = upstream?.get('content-type') || 'application/octet-stream'
   const risky = new Set(['exe', 'msi', 'dmg', 'pkg', 'apk', 'ipa', 'appimage', 'deb', 'rpm', 'html', 'htm', 'svg'])
-  headers.set('Content-Type', risky.has(extension(path)) ? 'application/octet-stream' : contentType)
+  const servedType = risky.has(extension(path)) ? 'application/octet-stream' : contentType
+  headers.set('Content-Type', servedType)
   const filename = safeFilename(path)
   const asciiFilename = filename.replace(/[^\x20-\x7e]/g, '_')
-  const disposition = `attachment; filename="${asciiFilename}"`
+  // A picture, a video, audio or a PDF opens in place rather than saving: that
+  // is what lets the chat preview and the app's viewer load it without first
+  // fetching the whole body (SHO-388).
+  const inline = isInlinePreviewContentType(servedType)
+  const disposition = `${inline ? 'inline' : 'attachment'}; filename="${asciiFilename}"`
   headers.set(
     'Content-Disposition',
     asciiFilename === filename
