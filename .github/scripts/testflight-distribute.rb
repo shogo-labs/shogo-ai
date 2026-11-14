@@ -78,9 +78,16 @@ begin
   # relationship — it answers 403 FORBIDDEN_ERROR ("The relationship
   # 'betaGroups' does not allow 'GET_RELATED'. Allowed operations are: CREATE,
   # DELETE"), which killed every release at this step from v2.5.1 on and, with
-  # it, the App Store review job that needs this one. Idempotency comes from the
-  # POST itself: assigning a build to a group it is already in is a 409, which
-  # is success for our purposes.
+  # it, the App Store review job that needs this one. So there is no way to ask
+  # which groups the build is already in; the answer has to be inferred from the
+  # assign call itself:
+  #
+  #   409 — the build is already in that (external) group.
+  #   422 "Cannot add internal group to a build." — an internal group cannot be
+  #         assigned explicitly because TestFlight adds every build to the
+  #         team's internal groups automatically. Nothing to do.
+  #
+  # Anything else still fails the job.
   group_ids.each do |group_id|
     begin
       client.post(
@@ -89,9 +96,13 @@ begin
       )
       puts "Assigned build #{build_number} to TestFlight group #{group_id}."
     rescue AppStoreConnectError => error
-      raise unless error.status == 409
-
-      puts "Build #{build_number} is already assigned to TestFlight group #{group_id}."
+      if error.status == 409
+        puts "Build #{build_number} is already assigned to TestFlight group #{group_id}."
+      elsif error.status == 422 && error.body.include?("internal group")
+        puts "TestFlight group #{group_id} is internal; build #{build_number} is added to it automatically."
+      else
+        raise
+      end
     end
   end
 
