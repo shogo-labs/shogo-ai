@@ -2,11 +2,13 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 /**
- * Native file/image attachment picker for Android & iOS.
+ * Native file/photo/video attachment picker for Android & iOS.
  *
- * Uses expo-image-picker for photos (gallery + camera) and
+ * Uses expo-image-picker for photos and videos (gallery + camera) and
  * expo-document-picker for files. Document bytes are read with
  * expo-file-system and encoded via @shogo-ai/sdk (no fetch on file URIs).
+ * A video is never read into base64 — it is uploaded from disk (SHO-386); see
+ * `native-media-attachment.ts` for what each pick becomes.
  *
  * UI: AttachSourceSheet (components/chat) — Modal with backdrop dismiss.
  */
@@ -16,6 +18,13 @@ import { EncodingType, readAsStringAsync } from "expo-file-system/legacy"
 import * as ImagePicker from "expo-image-picker";
 import { Platform } from "react-native"
 import { isComposerArchive } from "./composer-attachments"
+import {
+  attachmentFromAsset,
+  cameraPickerOptions,
+  libraryPickerOptions,
+  mimeFromName,
+  newAttachmentId,
+} from "./native-media-attachment"
 
 export interface NativePickedAttachment {
   id: string
@@ -30,6 +39,12 @@ export interface NativePickedAttachment {
   size: number
   /** Local file URI, when the picker kept the file on disk. */
   uri?: string
+  /**
+   * Local URL the composer can paint or play before the upload replaces it
+   * with a workspace URL. A picked video keeps its on-device URI here, since
+   * its bytes are never read into a data URL (SHO-386).
+   */
+  previewUrl?: string
 }
 
 /**
@@ -47,33 +62,6 @@ export interface NativeAttachPickerOptions {
   maxFileSizeBytes: number
   onFiles: (files: NativePickedAttachment[]) => void
   onError: (message: string) => void
-}
-
-function uid(): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
-}
-
-function mimeFromName(name: string): string {
-  const l = name.toLowerCase()
-  if (l.endsWith(".pdf")) return "application/pdf"
-  if (l.endsWith(".txt") || l.endsWith(".log")) return "text/plain"
-  if (l.endsWith(".md") || l.endsWith(".markdown")) return "text/markdown"
-  if (l.endsWith(".csv")) return "text/csv"
-  if (l.endsWith(".json")) return "application/json"
-  if (l.endsWith(".xml")) return "application/xml"
-  if (l.endsWith(".yaml") || l.endsWith(".yml")) return "application/x-yaml"
-  if (l.endsWith(".doc")) return "application/msword"
-  if (l.endsWith(".docx"))
-    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-  if (l.endsWith(".png")) return "image/png"
-  if (l.endsWith(".jpg") || l.endsWith(".jpeg")) return "image/jpeg"
-  if (l.endsWith(".gif")) return "image/gif"
-  if (l.endsWith(".webp")) return "image/webp"
-  if (l.endsWith(".heic")) return "image/heic"
-  if (l.endsWith(".bmp")) return "image/bmp"
-  if (l.endsWith(".svg")) return "image/svg+xml"
-  if (l.endsWith(".zip")) return "application/zip"
-  return "application/octet-stream"
 }
 
 async function uriToDataUrl(uri: string, mime: string): Promise<string> {
@@ -114,36 +102,19 @@ export function executeNativeAttachAction(
   }
 
   const pickLibrary = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["images"],
-      allowsMultipleSelection: remaining > 1,
-      selectionLimit: remaining,
-      quality: 0.92,
-      base64: true,
-    })
+    const result = await ImagePicker.launchImageLibraryAsync(
+      libraryPickerOptions(remaining)
+    )
     if (result.canceled || !result.assets?.length) return
 
     const out: NativePickedAttachment[] = []
     for (const asset of result.assets) {
-      if (asset.type === "video") continue
-      const b64 = asset.base64
-      if (!b64) {
-        onError("Could not read the selected image. Try again.")
+      const built = await attachmentFromAsset(asset, maxFileSizeBytes, "library")
+      if (!built.ok) {
+        onError(built.error)
         return
       }
-      const mime = asset.mimeType ?? "image/jpeg"
-      const size = asset.fileSize ?? Math.floor((b64.length * 3) / 4)
-      if (size > maxFileSizeBytes) {
-        onError(`Each file must be under ${maxFileSizeBytes / (1024 * 1024)} MB.`)
-        return
-      }
-      out.push({
-        id: uid(),
-        dataUrl: `data:${mime};base64,${b64}`,
-        name: asset.fileName?.trim() || `image_${uid()}.jpg`,
-        type: mime,
-        size,
-      })
+      out.push(built.attachment)
     }
     if (out.length > 0) onFiles(out)
   }
@@ -151,32 +122,21 @@ export function executeNativeAttachAction(
   const pickCamera = async () => {
     const perm = await ImagePicker.requestCameraPermissionsAsync()
     if (!perm.granted) {
-      onError("Allow camera access in Settings to take a photo.")
+      onError("Allow camera access in Settings to take a photo or video.")
       return
     }
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.92, base64: true })
+    const result = await ImagePicker.launchCameraAsync(cameraPickerOptions())
     if (result.canceled || !result.assets?.[0]) return
-    const asset = result.assets[0]
-    const b64 = asset.base64
-    if (!b64) {
-      onError("Could not read the captured photo.")
+    const built = await attachmentFromAsset(
+      result.assets[0],
+      maxFileSizeBytes,
+      "camera"
+    )
+    if (!built.ok) {
+      onError(built.error)
       return
     }
-    const mime = asset.mimeType ?? "image/jpeg"
-    const size = asset.fileSize ?? Math.floor((b64.length * 3) / 4)
-    if (size > maxFileSizeBytes) {
-      onError(`Each file must be under ${maxFileSizeBytes / (1024 * 1024)} MB.`)
-      return
-    }
-    onFiles([
-      {
-        id: uid(),
-        dataUrl: `data:${mime};base64,${b64}`,
-        name: asset.fileName?.trim() || `photo_${Date.now()}.jpg`,
-        type: mime,
-        size,
-      },
-    ])
+    onFiles([built.attachment])
   }
 
   const pickDocuments = async () => {
@@ -208,7 +168,7 @@ export function executeNativeAttachAction(
       // uploaded from disk instead of being read here.
       const streamFromDisk = isComposerArchive(doc.name, mime) || size > MAX_PICK_BASE64_BYTES
       if (streamFromDisk) {
-        out.push({ id: uid(), dataUrl: "", name: doc.name, type: mime, size, uri: doc.uri })
+        out.push({ id: newAttachmentId(), dataUrl: "", name: doc.name, type: mime, size, uri: doc.uri })
         continue
       }
       let dataUrl: string
@@ -218,7 +178,7 @@ export function executeNativeAttachAction(
         onError(`Could not read "${doc.name}".`)
         return
       }
-      out.push({ id: uid(), dataUrl, name: doc.name, type: mime, size: size || dataUrl.length })
+      out.push({ id: newAttachmentId(), dataUrl, name: doc.name, type: mime, size: size || dataUrl.length })
     }
     if (out.length > 0) onFiles(out)
   }
