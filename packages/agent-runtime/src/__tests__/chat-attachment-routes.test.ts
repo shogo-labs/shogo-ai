@@ -131,6 +131,36 @@ describe('PUT /agent/chat/attachments', () => {
     })
   })
 
+  test('lowers its cap from x-attachment-max-bytes (SHO-370)', async () => {
+    await withWorkspace(async (workspaceDir) => {
+      const app = chatAttachmentRoutes({ workspaceDir, maxBytes: 1024, ...silent })
+      const res = await upload(app, 'big.txt', 'far too many bytes', {
+        'content-type': 'text/plain',
+        'x-attachment-max-bytes': '8',
+      })
+
+      expect(res.status).toBe(413)
+      const body = (await res.json()) as { error: { code: string } }
+      expect(body.error.code).toBe('attachment_too_large')
+      expect(existsSync(join(workspaceDir, 'files', 'big.txt'))).toBe(false)
+    })
+  })
+
+  test('a forged x-attachment-max-bytes larger than the route cap does not raise it', async () => {
+    await withWorkspace(async (workspaceDir) => {
+      const app = chatAttachmentRoutes({ workspaceDir, maxBytes: 8, ...silent })
+      const res = await upload(app, 'big.txt', 'far too many bytes', {
+        'content-type': 'text/plain',
+        'x-attachment-max-bytes': '1000000',
+      })
+
+      expect(res.status).toBe(413)
+      const body = (await res.json()) as { error: { code: string } }
+      expect(body.error.code).toBe('attachment_too_large')
+      expect(existsSync(join(workspaceDir, 'files', 'big.txt'))).toBe(false)
+    })
+  })
+
   test('calls the index hook with the saved file and survives a throwing hook', async () => {
     await withWorkspace(async (workspaceDir) => {
       const seen: string[] = []

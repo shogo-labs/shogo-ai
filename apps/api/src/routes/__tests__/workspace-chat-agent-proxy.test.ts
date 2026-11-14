@@ -100,6 +100,17 @@ mock.module('../../services/workspace-session.service', () => ({
   WorkspaceSessionError: MockWorkspaceSessionError,
 }))
 
+// The attachment-upload proxy resolves the plan cap through the billing seam
+// (SHO-370), so `hasPaidSubscription` now runs on that request. Keep the real
+// exports and answer paid — no Stripe, no Prisma read.
+const realBillingRuntime = await import('../../services/billing-runtime')
+/** Answers `hasPaidSubscription` — a test can swap it to throw (SHO-370). */
+let billingAnswer: () => Promise<boolean> = async () => true
+mock.module('../../services/billing-runtime', () => ({
+  ...realBillingRuntime,
+  hasPaidSubscription: async () => billingAnswer(),
+}))
+
 const originalFetch = globalThis.fetch
 
 const { workspaceChatRoutes } = await import('../workspace-chat')
@@ -128,6 +139,7 @@ describe('GET/POST /api/workspaces/:workspaceId/agent-proxy/*', () => {
     store.sessionWorkspaceMatches = true
     store.foreignSession = false
     store.defaultCalls = []
+    billingAnswer = async () => true
     globalThis.fetch = ((url: any, init?: any) => {
       if (store.fetchImpl) return store.fetchImpl(String(url), init)
       return originalFetch(url, init)
@@ -329,6 +341,35 @@ describe('GET/POST /api/workspaces/:workspaceId/agent-proxy/*', () => {
     expect(capturedInit.headers.get('content-length')).toBe(String(payload.byteLength))
     expect(capturedInit.headers.get('x-runtime-token')).toBe('mock-workspace-runtime-token')
     expect(received).toEqual(Array.from(payload))
+  })
+
+  test('an upload still succeeds when the billing lookup throws (no 502)', async () => {
+    billingAnswer = async () => {
+      throw new Error('billing lookup unavailable')
+    }
+    let forwardedCap: string | null = null
+    store.fetchImpl = async (_url, init) => {
+      forwardedCap = init!.headers.get('x-attachment-max-bytes')
+      return new Response(JSON.stringify({ savedPath: 'files/small.zip', bytes: 8 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+
+    const payload = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xde, 0xad, 0xbe, 0xef])
+    const app = buildApp()
+    const res = await app.fetch(
+      new Request('http://x/api/workspaces/ws-1/agent-proxy/agent/chat/attachments?name=small.zip', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/zip', 'content-length': String(payload.byteLength) },
+        body: payload,
+      }),
+    )
+
+    // The cap lookup is a soft dependency: a transient billing/DB failure must
+    // degrade to the paid cap, never surface as proxy_error for a healthy upload.
+    expect(res.status).toBe(200)
+    expect(forwardedCap).toBe(String(500 * 1024 * 1024))
   })
 
   test('still buffers a non-upload body (chat turn JSON)', async () => {

@@ -34,7 +34,12 @@ import {
 import type { ChatReferenceInput } from "./chat-references";
 
 export const MAX_FILES = 10;
-export const MAX_FILE_SIZE = 100 * 1024 * 1024;
+/**
+ * Default per-file cap when the host does not pass a plan-derived one. This is
+ * the paid ceiling (SHO-370); a Free workspace is held to 100 MB by the API and
+ * by the `maxFileSizeBytes` the chat panel passes from billing.
+ */
+export const MAX_FILE_SIZE = 500 * 1024 * 1024;
 
 /**
  * Above this size a picked file keeps its `File`/`uri` and is uploaded at send
@@ -82,7 +87,11 @@ export function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** Returns true for project archives, which intentionally bypass the byte limit. */
+/**
+ * Returns true for project archives. Archives are no longer exempt from the
+ * size cap (SHO-370) — they only take the streamed-upload path, since they are
+ * usually large.
+ */
 export function isComposerArchive(name: string, type = ""): boolean {
   const lowerName = name.toLowerCase();
   const lowerType = type.toLowerCase();
@@ -93,14 +102,6 @@ export function isComposerArchive(name: string, type = ""): boolean {
     lowerType === "application/zip" ||
     lowerType === "application/x-zip-compressed"
   );
-}
-
-/** Shared size-limit exception used by web and native attachment flows. */
-export function isFileSizeExempt(file: {
-  name: string;
-  type: string;
-}): boolean {
-  return isComposerArchive(file.name, file.type);
 }
 
 export function estimateDataUrlSize(dataUrl: string): number {
@@ -218,10 +219,7 @@ export function useComposerAttachments({
       }
 
       const accepted = picked.filter((file) => {
-        if (
-          isComposerArchive(file.name, file.type) ||
-          file.size <= maxFileSizeBytes
-        ) {
+        if (file.size <= maxFileSizeBytes) {
           return true;
         }
         reportError(
@@ -262,7 +260,7 @@ export function useComposerAttachments({
       };
 
       source.forEach((file) => {
-        if (!isFileSizeExempt(file) && file.size > maxFileSizeBytes) {
+        if (file.size > maxFileSizeBytes) {
           reportError(
             `File "${file.name}" exceeds ${maxFileSizeBytes / (1024 * 1024)}MB limit`,
           );
@@ -300,7 +298,7 @@ export function useComposerAttachments({
         // URL here is what made big attachments time out (SHO-213). It still
         // needs a URL to paint from, so the chip and the optimistic bubble use
         // an object URL over the same `File` (no bytes copied).
-        if (isFileSizeExempt(file) || file.size > MAX_INLINE_PICK_BYTES) {
+        if (isComposerArchive(file.name, file.type) || file.size > MAX_INLINE_PICK_BYTES) {
           const previewUrl = objectUrlFor(file);
           push({
             dataUrl: "",

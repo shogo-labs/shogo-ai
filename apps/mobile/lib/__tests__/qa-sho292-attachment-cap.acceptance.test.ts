@@ -102,7 +102,7 @@ describe('SHO-292 — the composer cap is 100 MB', () => {
     expect(body).not.toContain(';base64,')
   }, 60_000)
 
-  test('exactly 100 MB is accepted', () => {
+  test('exactly the cap is accepted', () => {
     const { result } = renderHook(() => useComposerAttachments({ enableDomEvents: false }))
 
     act(() => {
@@ -113,22 +113,40 @@ describe('SHO-292 — the composer cap is 100 MB', () => {
     expect(result.current.pendingFiles).toHaveLength(1)
   })
 
-  test('101 MB is refused with a message that says 100MB, and nothing is uploaded', () => {
+  test('one byte over the cap is refused with a message that names the cap, and nothing is uploaded', () => {
     const { result } = renderHook(() => useComposerAttachments({ enableDomEvents: false }))
     const before = received.length
 
     act(() => {
-      result.current.processFiles([bigFile('huge.bin', 'application/octet-stream', 101 * MB)])
+      result.current.processFiles([bigFile('huge.bin', 'application/octet-stream', MAX_FILE_SIZE + 1)])
     })
 
     expect(result.current.pendingFiles).toHaveLength(0)
     expect(result.current.fileError).toContain('huge.bin')
-    expect(result.current.fileError).toContain('exceeds 100MB limit')
+    expect(result.current.fileError).toContain('exceeds 500MB limit')
     expect(received.length).toBe(before)
   })
 
-  test('archives keep their exemption above 100 MB', () => {
-    const { result } = renderHook(() => useComposerAttachments({ enableDomEvents: false }))
+  test('a Free plan cap of 100 MB refuses a 100 MB + 1 byte archive (SHO-370)', () => {
+    const { result } = renderHook(() =>
+      useComposerAttachments({ enableDomEvents: false, maxFileSizeBytes: 100 * MB }),
+    )
+
+    act(() => {
+      result.current.processFiles([
+        { name: 'project.zip', type: 'application/zip', size: 100 * MB + 1 } as File,
+      ])
+    })
+
+    expect(result.current.pendingFiles).toHaveLength(0)
+    expect(result.current.fileError).toContain('project.zip')
+    expect(result.current.fileError).toContain('exceeds 100MB limit')
+  })
+
+  test('a Free plan cap of 100 MB still accepts a 30 MB archive', () => {
+    const { result } = renderHook(() =>
+      useComposerAttachments({ enableDomEvents: false, maxFileSizeBytes: 100 * MB }),
+    )
     const originalReader = globalThis.FileReader
     class ImmediateFileReader {
       result: string | null = null
@@ -143,7 +161,7 @@ describe('SHO-292 — the composer cap is 100 MB', () => {
     try {
       act(() => {
         result.current.processFiles([
-          { name: 'project.zip', type: 'application/zip', size: 150 * MB } as File,
+          { name: 'project.zip', type: 'application/zip', size: 30 * MB } as File,
         ])
       })
 
