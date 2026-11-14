@@ -33,6 +33,12 @@ export interface VideoJobRecord {
   /** Price captured from `/estimate` at submit — what the completion is billed. */
   estimate?: { rawUsd: number; billedUsd: number; credits?: number }
   /**
+   * How that price was arrived at: a `/estimate` quote, or the endpoint's
+   * per-video-second rate card × duration. Recorded on the usage row so the
+   * dashboard can tell the two apart.
+   */
+  priceSource?: 'estimate' | 'rate_card'
+  /**
    * The spend reservation placed for this job's price at submit, released when
    * it is charged or fails. Absent when nothing was reserved (local mode).
    */

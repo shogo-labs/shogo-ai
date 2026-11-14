@@ -3661,7 +3661,7 @@ async function cachedHiggsfieldEstimate(
   if (!body) return null
   let value: HiggsfieldEstimate | null = null
   try {
-    value = await higgsfieldEstimate(apiKey, request.endpoint, body, signal)
+    value = await higgsfieldEstimate(apiKey, request.endpoint, body, signal, { entry })
   } catch {
     value = null
   }
@@ -3769,7 +3769,7 @@ export async function listMediaModels(
               price: {
                 unit: 'image',
                 usd: rawUsd !== undefined ? roundUsd(calculateHiggsfieldUsageCost({ rawUsd }).billedUsd) : null,
-                source: estimate?.rawUsd !== undefined ? 'estimate' : rawUsd !== undefined ? 'catalog' : 'unknown',
+                source: estimate?.rawUsd !== undefined ? estimate.source ?? 'estimate' : rawUsd !== undefined ? 'catalog' : 'unknown',
               },
             }
           }
@@ -3870,7 +3870,7 @@ export async function listMediaModels(
             unit: 'clip',
             usd: rawUsd !== undefined ? roundUsd(calculateHiggsfieldUsageCost({ rawUsd }).billedUsd) : null,
             ...(estimate?.rawUsd !== undefined ? { default_clip_usd: roundUsd(calculateHiggsfieldUsageCost({ rawUsd: estimate.rawUsd }).billedUsd), default_duration: entry.defaultDuration } : {}),
-            source: estimate ? 'estimate' : rawUsd !== undefined ? 'catalog' : 'unknown',
+            source: estimate ? estimate.source ?? 'estimate' : rawUsd !== undefined ? 'catalog' : 'unknown',
           },
         }
       }
@@ -3967,7 +3967,7 @@ function recordHiggsfieldVideoUsage(
       ...(job.resolution ? { resolution: job.resolution } : {}),
       ...(job.sourceVideo ? { sourceVideo: true } : {}),
       imageToVideo: job.imageToVideo,
-      priceSource: 'estimate',
+      priceSource: job.priceSource ?? 'estimate',
     },
   }, chatSessionId)
 }
@@ -6404,12 +6404,12 @@ export function aiProxyRoutes() {
           audio: body.audio,
           options: body.options,
         })
-        const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, c.req.raw.signal)
+        const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, c.req.raw.signal, { entry: videoEntry })
         const charge = higgsfieldCharge(estimate.rawUsd)
         if (!charge) {
           return c.json({ error: { message: 'Higgsfield returned no price for this request.', type: 'server_error', code: 'estimate_unavailable' } }, 503)
         }
-        return c.json({ model: videoEntry.id, provider: 'higgsfield', unit: 'clip', duration, raw_usd: roundUsd(charge.rawUsd), usd: roundUsd(charge.billedUsd), credits: estimate.credits, source: 'estimate' })
+        return c.json({ model: videoEntry.id, provider: 'higgsfield', unit: 'clip', duration, raw_usd: roundUsd(charge.rawUsd), usd: roundUsd(charge.billedUsd), credits: estimate.credits, source: estimate.source ?? 'estimate' })
       }
 
       const entry = imageEntry!
@@ -6424,12 +6424,12 @@ export function aiProxyRoutes() {
           quality: body.quality,
           options: body.options,
         })
-        const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, c.req.raw.signal)
+        const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, c.req.raw.signal, { entry })
         const charge = higgsfieldCharge(estimate.rawUsd)
         if (!charge) {
           return c.json({ error: { message: 'Higgsfield returned no price for this image.', type: 'server_error', code: 'estimate_unavailable' } }, 503)
         }
-        return c.json({ model: entry.id, provider: 'higgsfield', unit: 'image', raw_usd: roundUsd(charge.rawUsd), usd: roundUsd(charge.billedUsd), credits: estimate.credits, source: 'estimate' })
+        return c.json({ model: entry.id, provider: 'higgsfield', unit: 'image', raw_usd: roundUsd(charge.rawUsd), usd: roundUsd(charge.billedUsd), credits: estimate.credits, source: estimate.source ?? 'estimate' })
       }
       const charge = calculateImageUsageCost(entry.id, body.quality || 'standard', body.size || '1024x1024')
       return c.json({ model: entry.id, provider: entry.provider, unit: 'image', raw_usd: roundUsd(charge.rawUsd), usd: roundUsd(charge.billedUsd), source: 'catalog' })
@@ -6672,6 +6672,7 @@ export function aiProxyRoutes() {
 
       let charge: { rawUsd: number; billedUsd: number } | null
       let credits: number | undefined
+      let priceSource: 'estimate' | 'rate_card' = 'estimate'
       if (entry.genjutsu) {
         // Genjutsu answers `/estimate` with a prose rate card, not a `usd`
         // figure, so price it from the vendor's per-second table instead.
@@ -6682,10 +6683,42 @@ export function aiProxyRoutes() {
             'estimate_unavailable',
           )
         }
+        priceSource = 'rate_card'
       } else {
-        const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, signal).catch(() => null)
-        charge = higgsfieldCharge(estimate?.rawUsd ?? null)
-        credits = estimate?.credits
+        let estimate: HiggsfieldEstimate
+        try {
+          estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, signal, { entry })
+        } catch (error) {
+          // Surface what Higgsfield actually said. Only a transient failure is
+          // worth retrying; a model that is priced per token, or a resolution
+          // the rate card does not offer, will fail the same way every time.
+          const transient =
+            error instanceof HiggsfieldError
+              ? error.code === 'provider_busy' ||
+                error.code === 'server' ||
+                error.code === 'timeout' ||
+                (error.code === 'unavailable' && (error.status ?? 0) >= 500)
+              : true
+          const detail = String(
+            (error instanceof HiggsfieldError ? error.message : (error as Error)?.message) ??
+              'Higgsfield could not be reached',
+          ).replace(/\.$/, '')
+          return c.json(
+            {
+              error: {
+                message: transient
+                  ? `Could not get a price for this video (${detail}). Nothing was submitted or charged; try again.`
+                  : `${detail}. Nothing was submitted or charged.`,
+                type: 'server_error',
+                code: 'estimate_unavailable',
+              },
+            },
+            mediaErrorStatus(error) === 400 ? 400 : 503,
+          )
+        }
+        charge = higgsfieldCharge(estimate.rawUsd)
+        credits = estimate.credits
+        priceSource = estimate.source ?? 'estimate'
         if (!charge) {
           return c.json(
             { error: { message: 'Higgsfield did not return a price for this request. Nothing was submitted or charged; try again.', type: 'server_error', code: 'estimate_unavailable' } },
@@ -6718,6 +6751,7 @@ export function aiProxyRoutes() {
         statusUrl: submission.statusUrl,
         requestId: submission.requestId,
         estimate: { rawUsd: charge.rawUsd, billedUsd: charge.billedUsd, ...(credits !== undefined ? { credits } : {}) },
+        priceSource,
         ...(hold ? { hold } : {}),
         duration: billedDuration,
         audio: audio && !!entry.audio,
@@ -6737,7 +6771,7 @@ export function aiProxyRoutes() {
         audio: audio && !!entry.audio,
         provider: 'higgsfield',
         estimated_usd: roundUsd(charge.billedUsd),
-        price_source: entry.genjutsu ? 'rate_card' : 'estimate',
+        price_source: priceSource,
       })
     } catch (error: any) {
       console.error('[AI Proxy] Video submit error:', error.message)
