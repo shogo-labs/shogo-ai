@@ -12,6 +12,9 @@ spec:
       annotations:
         autoscaling.knative.dev/min-scale: "1"
         autoscaling.knative.dev/max-scale: "5"
+        # Always-on (min-scale >= 1): keep the activator out of the request
+        # path once Ready. See the api ksvc's target-burst-capacity note.
+        autoscaling.knative.dev/target-burst-capacity: "0"
     spec:
       containers:
         - name: docs
