@@ -28,9 +28,12 @@ import {
   ChevronRight,
   XCircle,
   Clock,
+  Download,
+  Upload,
 } from 'lucide-react-native'
 import type { HttpClient } from '@shogo-ai/sdk'
 import { cn } from '@shogo/shared-ui/primitives'
+import { downloadKeystoreFile, pickKeystoreFile } from '../../lib/pick-file-base64'
 import {
   api,
   type NativeApp,
@@ -57,7 +60,11 @@ interface AppStoresSectionProps {
 /** Human label + a yes/no for each credential kind. */
 const CREDENTIAL_COPY: Record<
   NativeCredentialKind,
-  { title: string; why: string; fields: { name: string; label: string; multiline?: boolean; secret?: boolean }[] }
+  {
+    title: string
+    why: string
+    fields: { name: string; label: string; multiline?: boolean; secret?: boolean; pickFile?: boolean }[]
+  }
 > = {
   asc_api_key: {
     title: 'Apple App Store Connect key',
@@ -78,6 +85,16 @@ const CREDENTIAL_COPY: Record<
     title: 'Expo access token',
     why: 'Only needed on deployments that build with your own Expo account instead of Shogo’s.',
     fields: [{ name: 'token', label: 'EXPO_TOKEN', secret: true }],
+  },
+  android_keystore: {
+    title: 'Android upload keystore',
+    why: 'The key your releases are signed with. Upload the .jks you already use if this app shipped elsewhere — a Play listing only accepts the same key. Keep a copy: it cannot be re-issued.',
+    fields: [
+      { name: 'keystoreBase64', label: 'Keystore file (.jks / .keystore)', pickFile: true },
+      { name: 'keystorePassword', label: 'Keystore password', secret: true },
+      { name: 'keyAlias', label: 'Key alias' },
+      { name: 'keyPassword', label: 'Key password', secret: true },
+    ],
   },
 }
 
@@ -116,6 +133,8 @@ export function AppStoresSection({ projectId, workspaceId, http, embedded = fals
 
   // One draft per credential kind, so switching cards never loses a paste.
   const [drafts, setDrafts] = useState<Record<string, Record<string, string>>>({})
+  // The file name of a picked keystore, so the card can show which file is staged.
+  const [pickedFiles, setPickedFiles] = useState<Record<string, string>>({})
   const [savingKind, setSavingKind] = useState<NativeCredentialKind | null>(null)
 
   const load = useCallback(async () => {
@@ -181,6 +200,7 @@ export function AppStoresSection({ projectId, workspaceId, http, embedded = fals
       const credential = await api.saveNativeCredential(http, workspaceId, kind, draft)
       setCredentials((prev) => [...prev.filter((c) => c.kind !== kind), credential])
       setDrafts((prev) => ({ ...prev, [kind]: {} }))
+      setPickedFiles((prev) => ({ ...prev, [kind]: '' }))
     } catch (err: any) {
       // The API validates against Apple/Google on save, so this message is the
       // provider's own reason — show it verbatim rather than replacing it.
@@ -209,11 +229,47 @@ export function AppStoresSection({ projectId, workspaceId, http, embedded = fals
     ])
   }
 
+  /**
+   * Stage the keystore file itself. Only the bytes go into the draft — the
+   * passwords and alias are separate fields because all four are required.
+   */
+  const stageKeystore = async (kind: NativeCredentialKind, field: string) => {
+    try {
+      const picked = await pickKeystoreFile()
+      if (!picked) return
+      setDrafts((prev) => ({ ...prev, [kind]: { ...(prev[kind] ?? {}), [field]: picked.base64 } }))
+      setPickedFiles((prev) => ({ ...prev, [kind]: picked.name }))
+      setError(null)
+    } catch (err: any) {
+      setError(err?.message || 'Could not read that file.')
+    }
+  }
+
+  /** Hand the saved keystore back to its owner, so losing this app is survivable. */
+  const downloadKeystore = async () => {
+    if (!workspaceId) return
+    try {
+      const exported = await api.exportAndroidKeystore(http, workspaceId)
+      setError(null)
+      await downloadKeystoreFile({ filename: exported.filename, base64: exported.keystoreBase64 })
+      // The passwords live only in the API response, so they are shown here and
+      // nowhere else: a downloaded .jks is useless without the three values.
+      Alert.alert(
+        'Keystore downloaded',
+        `Store it with its password and alias:\n\nkeystore password: ${exported.keystorePassword}\nkey alias: ${exported.keyAlias}\nkey password: ${exported.keyPassword}`,
+      )
+    } catch (err: any) {
+      setError(err?.message || 'Could not export the keystore.')
+    }
+  }
+
   const idsLocked = Boolean(app?.idsLockedAt)
   const hasAsc = credentials.some((c) => c.kind === 'asc_api_key')
   const hasPlay = credentials.some((c) => c.kind === 'play_service_account')
   const kinds: NativeCredentialKind[] =
-    mode === 'byok' ? ['asc_api_key', 'play_service_account', 'expo_token'] : ['asc_api_key', 'play_service_account']
+    mode === 'byok'
+      ? ['asc_api_key', 'play_service_account', 'android_keystore', 'expo_token']
+      : ['asc_api_key', 'play_service_account', 'android_keystore']
 
   if (loading) {
     return (
@@ -363,35 +419,58 @@ export function AppStoresSection({ projectId, workspaceId, http, embedded = fals
               {stored ? (
                 <View className="flex-row items-center justify-between">
                   <Text className="font-mono text-[11px] text-muted-foreground">{stored.maskedHint}</Text>
-                  <Pressable
-                    onPress={() => removeCredential(kind)}
-                    className="flex-row items-center gap-1 rounded-md px-2 py-1 active:bg-muted"
-                  >
-                    <Trash2 size={12} className="text-destructive" />
-                    <Text className="text-[11px] text-destructive">Remove</Text>
-                  </Pressable>
+                  <View className="flex-row items-center gap-1">
+                    {kind === 'android_keystore' && (
+                      <Pressable
+                        onPress={downloadKeystore}
+                        className="flex-row items-center gap-1 rounded-md px-2 py-1 active:bg-muted"
+                      >
+                        <Download size={12} className="text-primary" />
+                        <Text className="text-[11px] text-primary">Download</Text>
+                      </Pressable>
+                    )}
+                    <Pressable
+                      onPress={() => removeCredential(kind)}
+                      className="flex-row items-center gap-1 rounded-md px-2 py-1 active:bg-muted"
+                    >
+                      <Trash2 size={12} className="text-destructive" />
+                      <Text className="text-[11px] text-destructive">Remove</Text>
+                    </Pressable>
+                  </View>
                 </View>
               ) : (
                 <View className="gap-2">
                   {copy.fields.map((field) => (
                     <View key={field.name}>
                       <Text className="mb-1 text-[11px] text-muted-foreground">{field.label}</Text>
-                      <TextInput
-                        value={draft[field.name] ?? ''}
-                        onChangeText={(text) =>
-                          setDrafts((prev) => ({ ...prev, [kind]: { ...(prev[kind] ?? {}), [field.name]: text } }))
-                        }
-                        multiline={field.multiline}
-                        secureTextEntry={field.secret && !field.multiline}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                        placeholder={field.multiline ? 'Paste it here' : ''}
-                        placeholderTextColor="#9ca3af"
-                        className={cn(
-                          'rounded-lg border border-border px-3 text-xs text-foreground web:outline-none',
-                          field.multiline ? 'min-h-[76px] py-2' : 'h-9',
-                        )}
-                      />
+                      {field.pickFile ? (
+                        <Pressable
+                          onPress={() => stageKeystore(kind, field.name)}
+                          className="h-9 flex-row items-center justify-center gap-1.5 rounded-lg border border-dashed border-border active:bg-muted"
+                        >
+                          <Upload size={12} className="text-muted-foreground" />
+                          <Text className="text-xs text-foreground">
+                            {pickedFiles[kind] || draft[field.name] ? pickedFiles[kind] || 'File selected' : 'Choose file'}
+                          </Text>
+                        </Pressable>
+                      ) : (
+                        <TextInput
+                          value={draft[field.name] ?? ''}
+                          onChangeText={(text) =>
+                            setDrafts((prev) => ({ ...prev, [kind]: { ...(prev[kind] ?? {}), [field.name]: text } }))
+                          }
+                          multiline={field.multiline}
+                          secureTextEntry={field.secret && !field.multiline}
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          placeholder={field.multiline ? 'Paste it here' : ''}
+                          placeholderTextColor="#9ca3af"
+                          className={cn(
+                            'rounded-lg border border-border px-3 text-xs text-foreground web:outline-none',
+                            field.multiline ? 'min-h-[76px] py-2' : 'h-9',
+                          )}
+                        />
+                      )}
                     </View>
                   ))}
                   <Pressable

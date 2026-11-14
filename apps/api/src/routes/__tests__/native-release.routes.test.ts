@@ -57,6 +57,14 @@ describe('native release routes are mounted where the callers point', () => {
       ).status,
     ).toBe(401)
     expect((await call('/api/workspaces/w1/native/credentials/expo_token', { method: 'DELETE' })).status).toBe(401)
+    expect(
+      (
+        await call('/api/workspaces/w1/native/credentials/android_keystore/export', {
+          method: 'POST',
+          body: {},
+        })
+      ).status,
+    ).toBe(401)
   })
 
   it('answers the project app + release routes', async () => {
