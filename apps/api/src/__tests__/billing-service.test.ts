@@ -277,6 +277,48 @@ mock.module('../config/usage-plans', () => ({
       legacy: false,
     }
   },
+  // Mirrors config/usage-plans getGrantAllowance (SHO-343): a grant resolves
+  // like a null-price subscription, then its monthlyIncludedUsd raises the
+  // per-seat weekly allowance when it buys more.
+  getGrantAllowance: (
+    planId: string | null | undefined,
+    opts: { freeSeats?: number; monthlyIncludedUsd?: number } = {},
+  ) => {
+    const lc = String(planId ?? 'free').toLowerCase().trim()
+    const key = lc.startsWith('enterprise') ? 'enterprise'
+      : lc.startsWith('business') ? 'business'
+      : lc.startsWith('pro') ? 'pro'
+      : lc.startsWith('basic') ? 'basic'
+      : 'free'
+    const base = key === 'business'
+      ? { windowLimits: { fiveHourUsd: 3.96, weeklyUsd: 9.9 }, monthlyIncludedUsdPerSeat: 40, legacy: true }
+      : (() => {
+          const limits: Record<string, { fiveHourUsd: number; weeklyUsd: number } | null> = {
+            free: { fiveHourUsd: 0.5, weeklyUsd: 2 },
+            basic: { fiveHourUsd: 2, weeklyUsd: 10 },
+            pro: { fiveHourUsd: 8, weeklyUsd: 40 },
+            enterprise: null,
+          }
+          const perSeat: Record<string, number> = { free: 0, basic: 5, pro: 20, enterprise: 2000 }
+          return {
+            windowLimits: limits[key] ? { ...(limits[key] as any) } : null,
+            monthlyIncludedUsdPerSeat: perSeat[key] ?? 0,
+            legacy: false,
+          }
+        })()
+    if (base.windowLimits == null) return base
+    const monthly = opts.monthlyIncludedUsd ?? 0
+    if (monthly <= 0) return base
+    const seats = Math.max(1, Math.floor(opts.freeSeats ?? 0))
+    const weeklyFromMonthly = monthly / seats / (365.25 / 12 / 7)
+    if (weeklyFromMonthly <= base.windowLimits.weeklyUsd) return base
+    const ratio = base.windowLimits.fiveHourUsd / base.windowLimits.weeklyUsd
+    return {
+      windowLimits: { fiveHourUsd: weeklyFromMonthly * ratio, weeklyUsd: weeklyFromMonthly },
+      monthlyIncludedUsdPerSeat: monthly / seats,
+      legacy: base.legacy,
+    }
+  },
   getMonthlyIncludedForPlanAndPrice: (plan: string, seats = 1, stripePriceId?: string | null) => {
     if (/^(basic|pro|business)_\d+$/.test(plan)) {
       if (plan.startsWith('basic')) return 5

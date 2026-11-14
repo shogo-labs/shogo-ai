@@ -7482,7 +7482,14 @@ export function aiProxyRoutes() {
 
     // An already-admitted chat turn still in flight is never re-gated
     // mid-message — e.g. the transcribe_audio tool running inside a turn.
-    if (!(await isTurnInFlight(c, tokenPayload)) && !await billingService.hasBalance(tokenPayload.workspaceId)) {
+    if (
+      !(await isTurnInFlight(c, tokenPayload)) &&
+      !await billingService.hasBalance(
+        tokenPayload.workspaceId,
+        0.001,
+        resolveUsageMemberId(tokenPayload),
+      )
+    ) {
       const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId, {
         userId: tokenPayload.userId,
         source: 'ai-proxy',
