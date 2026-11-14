@@ -42,9 +42,9 @@ const TEST_USER = makeTestUser("PreviewPub")
  * the served-file route makes (SHO-388): a picture opens in place, an SVG is
  * relabelled and saved because it can carry script, and plain text has nothing
  * to preview. The PDF row lives in the delivery test above, where #2010 pinned
- * it. Video and audio are deliberately absent — SHO-387 owns their disposition
- * and range handling, so pinning them here would re-open this card when that
- * lands.
+ * it. Video and audio are deliberately absent: SHO-387 (#2001) owns their
+ * disposition and range handling, and `e2e/local/chat-share-video-streams`
+ * already covers the streaming half.
  */
 const SERVED_FILES = [
   { name: "artifact-preview-test.png", disposition: "inline", contentType: "image/png" },
