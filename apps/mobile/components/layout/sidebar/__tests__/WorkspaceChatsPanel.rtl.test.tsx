@@ -76,6 +76,31 @@ const View = ({ accessibilityLabel, children, testID, ...props }: any) =>
     children,
   );
 
+// SHO-391: the list is cached per user + server + workspace, and the rows live
+// in AsyncStorage on the device.
+const deviceStore = new Map<string, string>();
+mock.module("@react-native-async-storage/async-storage", () => ({
+  default: {
+    getItem: async (k: string) => deviceStore.get(k) ?? null,
+    setItem: async (k: string, v: string) => {
+      deviceStore.set(k, v);
+    },
+    removeItem: async (k: string) => {
+      deviceStore.delete(k);
+    },
+    getAllKeys: async () => [...deviceStore.keys()],
+    multiRemove: async (keys: string[]) => {
+      keys.forEach((k) => deviceStore.delete(k));
+    },
+  },
+}));
+mock.module(resolve(import.meta.dir, "../../../../contexts/auth"), () => ({
+  useAuth: () => ({ user: { id: "u1" } }),
+}));
+mock.module(resolve(import.meta.dir, "../../../../contexts/active-instance"), () => ({
+  useActiveInstance: () => ({ instance: null }),
+}));
+
 mock.module("react-native", () => createReactNativeMock({ Pressable, View }));
 mock.module("expo-router", () => ({
   useRouter: () => ({ push, replace: mock(() => {}) }),
@@ -163,10 +188,13 @@ const { chatActivityEvents, chatSessionEvents } = await import(
 // The 5 s activity cache is one per window (SHO-277); a case here must not see
 // the answer an earlier case cached.
 const { workspaceActivity } = await import("../../../../lib/workspace-activity");
+const workspaceChatsCache = await import("../../../../lib/workspace-chats-cache");
 
-beforeEach(() => {
+beforeEach(async () => {
   cleanup();
   workspaceActivity.reset();
+  await workspaceChatsCache.clearWorkspaceChatsCache();
+  deviceStore.clear();
   push.mockClear();
   updateChatSession.mockClear();
   deleteChatSession.mockClear();
@@ -376,5 +404,46 @@ describe("WorkspaceChatsPanel", () => {
     await waitFor(() =>
       expect(listWorkspaceSessions.mock.calls.length).toBeGreaterThan(before),
     );
+  });
+});
+
+// ─── SHO-391: a remount paints from the device ───────────────────────────────
+//
+// The sidebar renders one tab panel at a time, so every Home click mounted a
+// fresh panel: `sessions = []` + `loading = true`, then a full refetch. The
+// list it already had is now on the device.
+
+describe("WorkspaceChatsPanel device cache", () => {
+  test("a remount paints the last list with no loading state, before the list answers", async () => {
+    const first = render(<WorkspaceChatsPanel />);
+    await screen.findByLabelText("Chat: Birthday party");
+    first.unmount();
+
+    // This mount will never get an answer: everything on screen is cached.
+    listWorkspaceSessions.mockImplementation(
+      () => new Promise(() => {}) as Promise<any[]>,
+    );
+    await act(async () => {
+      render(<WorkspaceChatsPanel />);
+    });
+
+    expect(screen.getByLabelText("Chat: Birthday party")).toBeTruthy();
+    expect(screen.getByLabelText("Chat: Trip ideas")).toBeTruthy();
+    expect(screen.queryByText("Loading…")).toBeNull();
+  });
+
+  test("a failing list keeps the rows that were already shown", async () => {
+    render(<WorkspaceChatsPanel />);
+    await screen.findByLabelText("Chat: Birthday party");
+
+    listWorkspaceSessions.mockImplementation(async () => {
+      throw new Error("offline");
+    });
+    await act(async () => {
+      chatSessionEvents.emit({ workspaceId: "w1", refresh: true });
+    });
+
+    expect(screen.getByLabelText("Chat: Birthday party")).toBeTruthy();
+    expect(screen.queryByText("Loading…")).toBeNull();
   });
 });

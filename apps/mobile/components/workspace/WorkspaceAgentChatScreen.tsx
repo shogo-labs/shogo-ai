@@ -29,6 +29,10 @@ import { pickTeamWorkspace } from "../../lib/team-workspace"
 import { useWorkspaceInView, type WorkspaceInView } from "../../hooks/useWorkspaceInView"
 import { workspaceInViewWhileLoading } from "../../lib/workspace-in-view"
 import {
+  fetchWorkspaceChats,
+  workspaceChatsKey,
+} from "../../lib/workspace-chats-cache"
+import {
   getActiveWorkspaceId,
   getCachedWorkspaceKind,
   subscribeActiveWorkspaceId,
@@ -438,7 +442,21 @@ export const WorkspaceAgentChatScreen = observer(
             return cached.promise
           }
           const promise = ensureLandingSession(workspace.id, {
-            list: (workspaceId) => api.listWorkspaceSessions(http, workspaceId),
+            // A fresh network answer, never the cache: reusing an empty "Chat"
+            // must not happen on the strength of a list from before someone
+            // used it (SHO-391). `force` only skips the recent-answer window —
+            // it still joins a request already in flight.
+            list: (workspaceId) =>
+              fetchWorkspaceChats(
+                http,
+                workspaceId,
+                workspaceChatsKey(
+                  user?.id,
+                  chatHistoryOrigin(activeInstance?.instanceId),
+                  workspaceId,
+                ),
+                { force: true },
+              ),
             create: (workspaceId) =>
               api.createWorkspaceSession(http, workspaceId, {
                 inferredName: LANDING_SESSION_NAME,
