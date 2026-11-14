@@ -12,10 +12,29 @@
  *   - The agent promises "I'll deploy it now", does the work, and only then
  *     hits the Pro-plan gate on `publish`.
  */
+/**
+ * What publishing can actually do for this workspace, stamped by the API
+ * (apps/api/src/lib/stamp-workspace-plan.ts) from the SAME sources the publish
+ * route enforces: the plan's published-app caps and the substrate seam. The
+ * agent otherwise fills this gap with guesses ("the pod sleeps, use a VPS",
+ * "Vercel can't run a backend") — see SHO-362.
+ */
+export interface PublishHosting {
+  /** Where published apps are provisioned. Metal runs one instance, no staging. */
+  substrate: 'metal' | 'knative'
+  /** The plan has at least one always-on slot, so a published app can stay awake. */
+  alwaysOn: boolean
+  /** Replica ceiling per environment; `null` = unlimited. */
+  maxReplicas: number | null
+  /** A staging environment can be created at `{sub}.shogo.one--staging`. */
+  staging: boolean
+}
+
 export interface AccountContext {
   modelDisplayName?: string
   planId?: string
   canPublishSubdomain?: boolean
+  publishHosting?: PublishHosting
   /**
    * Names of the caller's Team workspaces, stamped only on a Personal-workspace
    * chat (see apps/api/src/lib/stamp-team-workspace-names.ts). Software work
@@ -34,12 +53,42 @@ export function parseAccountContext(body: Record<string, unknown>): AccountConte
     : ''
   const plan = typeof body.planId === 'string' && /^[a-z_]{1,24}$/.test(body.planId) ? body.planId : undefined
   const teamWorkspaceNames = parseTeamWorkspaceNames(body.teamWorkspaceNames)
+  const publishHosting = parsePublishHosting(body.publishHosting)
   return {
     ...(name ? { modelDisplayName: name } : {}),
     ...(plan ? { planId: plan } : {}),
     ...(typeof body.canPublishSubdomain === 'boolean' ? { canPublishSubdomain: body.canPublishSubdomain } : {}),
+    ...(publishHosting ? { publishHosting } : {}),
     ...(teamWorkspaceNames ? { teamWorkspaceNames } : {}),
   }
+}
+
+/**
+ * The hosting stamp decides what the agent may claim about a published app, so
+ * a malformed one is dropped entirely rather than half-rendered: an unrecognised
+ * substrate must not silently read as "knative, scales".
+ */
+export function parsePublishHosting(raw: unknown): PublishHosting | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const r = raw as Record<string, unknown>
+  if (r.substrate !== 'metal' && r.substrate !== 'knative') return undefined
+  if (typeof r.alwaysOn !== 'boolean' || typeof r.staging !== 'boolean') return undefined
+  const maxReplicas = r.maxReplicas
+  if (maxReplicas !== null && (typeof maxReplicas !== 'number' || !Number.isFinite(maxReplicas) || maxReplicas < 1)) {
+    return undefined
+  }
+  return { substrate: r.substrate, alwaysOn: r.alwaysOn, maxReplicas, staging: r.staging }
+}
+
+/** One sentence of what hosting does here, from the stamp — never more than it says. */
+export function describePublishHosting(h: PublishHosting): string {
+  const parts = ['full-stack hosting — the frontend, its server and its database — on a `*.shogo.one` URL or a domain the user owns']
+  parts.push(h.alwaysOn ? 'always-on available' : 'no always-on on this plan, so a published app can sleep when idle')
+  if (h.substrate === 'metal' || h.maxReplicas === 1) parts.push('one instance (no replicas)')
+  else if (h.maxReplicas === null) parts.push('unlimited replicas')
+  else parts.push(`up to ${h.maxReplicas} replicas`)
+  parts.push(h.staging ? 'staging available' : 'no staging environment')
+  return parts.join('; ')
 }
 
 /**
@@ -88,6 +137,9 @@ export function buildAccountContextPrompt(ctx: AccountContext): string | null {
     } else {
       lines.push(`- Workspace plan: **${plan}**.`)
     }
+  }
+  if (ctx.publishHosting) {
+    lines.push(`- Publishing: ${describePublishHosting(ctx.publishHosting)}. Say only this when the user asks about hosting, deploying, scaling, load testing or keeping something online; the Hosting section explains what you may not say.`)
   }
   if (ctx.teamWorkspaceNames) {
     const names = ctx.teamWorkspaceNames

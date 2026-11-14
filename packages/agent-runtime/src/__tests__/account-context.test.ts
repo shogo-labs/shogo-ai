@@ -79,4 +79,58 @@ describe('buildAccountContextPrompt', () => {
     expect(out).toContain('subdomain is available')
     expect(out).not.toMatch(/requires Pro/)
   })
+
+  // SHO-362: the agent used to guess at hosting ("the pod sleeps, use a VPS")
+  // because the account context only carried the plan, not what publishing can
+  // actually do. The stamp now renders one line, and the line never claims more
+  // than the substrate and the plan allow.
+  test('renders the publishing line from the stamp', () => {
+    const out = buildAccountContextPrompt({
+      planId: 'pro',
+      publishHosting: { substrate: 'knative', alwaysOn: true, maxReplicas: 5, staging: true },
+    })!
+    expect(out).toContain('- Publishing: full-stack hosting')
+    expect(out).toContain('up to 5 replicas')
+    expect(out).toContain('staging available')
+    expect(out).toContain('always-on available')
+  })
+
+  test('on a metal substrate it claims one instance and no staging, whatever the plan says', () => {
+    const out = buildAccountContextPrompt({
+      planId: 'business',
+      publishHosting: { substrate: 'metal', alwaysOn: true, maxReplicas: 1, staging: false },
+    })!
+    expect(out).toContain('one instance (no replicas)')
+    expect(out).not.toMatch(/up to \d+ replicas/)
+    expect(out).toContain('no staging environment')
+  })
+
+  test('a free workspace has no always-on, and the line says so', () => {
+    const out = buildAccountContextPrompt({
+      planId: 'free',
+      canPublishSubdomain: false,
+      publishHosting: { substrate: 'knative', alwaysOn: false, maxReplicas: 1, staging: false },
+    })!
+    expect(out).toContain('no always-on on this plan')
+    expect(out).toContain('no staging environment')
+    expect(out).toContain('one instance (no replicas)')
+  })
+
+  test('unlimited replicas render as unlimited, not as a number', () => {
+    const out = buildAccountContextPrompt({
+      publishHosting: { substrate: 'knative', alwaysOn: true, maxReplicas: null, staging: true },
+    })!
+    expect(out).toContain('unlimited replicas')
+  })
+
+  test('drops a malformed hosting stamp rather than rendering a half-truth', () => {
+    expect(parseAccountContext({ publishHosting: { substrate: 'lambda', alwaysOn: true, maxReplicas: 5, staging: true } }).publishHosting)
+      .toBeUndefined()
+    expect(parseAccountContext({ publishHosting: { substrate: 'knative', alwaysOn: 'yes', maxReplicas: 5, staging: true } }).publishHosting)
+      .toBeUndefined()
+    expect(parseAccountContext({ publishHosting: { substrate: 'knative', alwaysOn: true, maxReplicas: 0, staging: true } }).publishHosting)
+      .toBeUndefined()
+    expect(parseAccountContext({ publishHosting: 'metal' })).toEqual({})
+    expect(buildAccountContextPrompt({ publishHosting: undefined as any })).toBeNull()
+  })
 })
