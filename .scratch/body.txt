@@ -1,0 +1,151 @@
+    sessionMessages
+      .loadPage(
+        { sessionId: currentSessionId, agent: "technical" },
+        { limit: MESSAGE_PAGE_SIZE, offset: 0 },
+      )
+      .then((_result: any) => {
+        if (myGeneration !== loadGenerationRef.current) return
+        if (isStreamingRef.current || isSendingMessageRef.current) return
+
+        const loaded = [...sessionMessages.all].sort(
+          (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0),
+        )
+
+        if (loaded.length === 0) return
+
+        const aiMessages = loaded.map((msg: any) => {
+          const baseMessage: any = {
+            id: msg.id,
+            role: msg.role as "user" | "assistant",
+            content: msg.content,
+            // Carried through so `extractTurnTiming`'s createdAt fallback
+            // and the `TurnFooter` relative-time label ("2m ago") have a
+            // real timestamp for historical (pre-`data-turn-timing`)
+            // messages loaded from the server.
+            createdAt: msg.createdAt,
+          }
+          if (msg.parts) {
+            try {
+              baseMessage.parts = JSON.parse(msg.parts)
+            } catch (err) {
+              console.warn("[ChatPanel] Failed to parse message parts:", err)
+            }
+          }
+          return baseMessage
+        })
+
+        const cached = cachedMessagesRef.current
+        // Never paint a transcript that is behind what is on screen: the reply
+        // this panel just streamed is written server-side after the stream
+        // EOFs, so history can legitimately be missing it (SHO-85).
+        const paint = resolveHistoryPaint({
+          history: aiMessages,
+          current: cached ?? [],
+          keepsLiveTail: liveReplySessionRef.current === loadSessionId,
+        })
+        if (paint.keptLiveTail) {
+          historyPaintAttemptRef.current += 1
+          reportHistoryPaintKeptLiveTail("effect-1", paint.reason, aiMessages)
+          return
+        }
+        // Paint the decision's transcript rather than raw history: when history
+        // is ahead of the screen it also carries the reply that only exists on
+        // screen, spliced in front of the prompt that started the next turn
+        // (SHO-147).
+        const painted = paint.messages as any[]
+        const textLength = (m: any): number => {
+          const fromParts = (m?.parts ?? []).reduce(
+            (n: number, p: any) =>
+              n + (p?.type === "text" && typeof p.text === "string" ? p.text.length : 0),
+            0,
+          )
+          return fromParts || (typeof m?.content === "string" ? m.content.length : 0)
+        }
+        // A reply read while the server was still writing it keeps its id and
+        // only grows, so compare its text too.
+        const changed =
+          !cached ||
+          cached.length !== painted.length ||
+          cached[cached.length - 1]?.id !==
+            painted[painted.length - 1]?.id ||
+          textLength(cached[cached.length - 1]) !==
+            textLength(painted[painted.length - 1])
+
+        if (changed) {
+          cachedMessagesRef.current = painted
+          writeSessionMessageCache(loadSessionId, painted)
+          setMessages(painted)
+          historyPaintAttemptRef.current = 0
+        } else {
+          // Same shape as cache — still refresh the module cache entry so any
+          // later in-flight mutations (status flips, etc.) don't drift.
+          writeSessionMessageCache(loadSessionId, painted)
+        }
+        // History accounts for the screen again: the reply it was missing has
+        // been written (or was never this panel's), so the next paint may go
+        // ahead without the live-tail guard (SHO-85).
+        if (!paint.carriedLiveReply) liveReplySessionRef.current = null
+      })
+      .catch((err: any) =>
+        console.error("[ChatPanel] Failed to load messages:", err),
+      )
+      .finally(() => {
+        // Stamp the cache freshness on every completion path (empty results,
+        // populated results, and errors). Without this, an empty session would
+        // skip the stamp via the `loaded.length === 0` early return above and
+        // then loop: Effect 1 re-runs on the isLoadingMessages flip, the
+        // `cacheAgeMs < 5000` bailout misses, a new fetch starts, and the
+        // resulting isInitialLoadComplete flip used to fire `useChat`'s
+        // resumeStream every cycle (visible as
+        // `[AgentChat] Stream reconnect ... snapshot=none` spam plus a
+        // flickering "Loading conversation..." indicator). Now that
+        // `useChat({ resume: false })` no longer auto-attaches we still
+        // need the stamp for the dedup-the-fetch reason.
+        cacheRefreshedAtRef.current.set(loadSessionId, performance.now())
+        if (myGeneration === loadGenerationRef.current) {
+          isLoadingMessagesRef.current = false
+          setIsLoadingMessages(false)
+          setIsInitialLoadComplete(true)
+        }
+
+        // Now that the history is in place, ask the runtime if there's a
+        // genuinely live, in-progress turn to attach to. The probe is
+        // robust (every failure mode → 'unknown' → no attach) so this
+        // block is fire-and-forget. Critical: only run for the live
+        // generation — otherwise a tab switch mid-load would attach to
+        // a stale session's stream and corrupt the active panel's
+        // message list (the original "I see the same message twice"
+        // shape, just from a different angle).
+        if (myGeneration !== loadGenerationRef.current) return
+        if (liveTurnReloadNonce === historyOnlyNonceRef.current) return
+        const turnUrl = buildChatTurnUrl(
+          API_URL!,
+          projectId,
+          localAgentUrl,
+          loadSessionId,
+          chatWorkspaceId,
+        )
+        void probeChatTurn({
+          url: turnUrl,
+          fetch: expoFetch,
+          headers: nativeHeaders ? nativeHeaders() : undefined,
+          credentials: Platform.OS === "web" ? "include" : undefined,
+          retryDelaysMs: [1000, 3000],
+        }).then((turn) => {
+          if (myGeneration !== loadGenerationRef.current) return
+          lastLiveTurnCheckAtRef.current = Date.now()
+          const expectedLive = liveTurnExpectedRef.current
+          liveTurnExpectedRef.current = false
+          // A turn this window stopped is not a turn to attach to, even while
+          // the runtime still reports it (stop reaches it a beat later).
+          const stopped = turn.turnId !== null && turn.turnId === stoppedTurnIdRef.current
+          if (isLiveTurnOtherThan(turn, stoppedTurnIdRef.current)) {
+            guardedAutoResumeStream("live-turn-probe")
+          } else if (expectedLive && !stopped) {
+            setTimeout(
+              () => reloadAndAttachLiveTurnRef.current({ settle: false }),
+              750,
+            )
+          }
+        })
+      })

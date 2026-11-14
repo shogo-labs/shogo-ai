@@ -134,13 +134,17 @@ test("health and the model listing report Higgsfield as the default", async ({ r
   expect(listing.images[0].id).toBe("hf-soul-v2")
   expect(listing.videos[0].id).toBe("hf-hailuo-2.3")
   expect(listing.default_video_model).toBe("hf-hailuo-2.3")
-  // Higgsfield is the only provider: nothing fal-shaped may be listed, and every
-  // model must publish the options an agent needs to fill a request.
+  // Higgsfield and Gemini Omni are the only providers: nothing fal-shaped may be
+  // listed, and every model must publish the options an agent needs to fill a
+  // request. Omni lists even without a Google key, marked unavailable (SHO-393).
   for (const model of [...listing.images, ...listing.videos]) {
-    expect(model.provider, `${model.id} is not a Higgsfield model`).toBe("higgsfield")
+    expect(["higgsfield", "google"], `${model.id} is from an unexpected provider`).toContain(model.provider)
     expect(model.endpoints?.length, `${model.id} lists no endpoints`).toBeGreaterThan(0)
     expect(model.options?.length, `${model.id} lists no options`).toBeGreaterThan(0)
   }
+  expect(listing.images.every((model: any) => model.provider === "higgsfield")).toBe(true)
+  expect(listing.videos.filter((model: any) => model.provider !== "higgsfield").map((model: any) => model.id))
+    .toEqual(["google-omni-1.2-flash"])
 })
 
 test("Kling 3.0 Std is listed with both endpoints, 3–15 s and sound", async ({ request }) => {

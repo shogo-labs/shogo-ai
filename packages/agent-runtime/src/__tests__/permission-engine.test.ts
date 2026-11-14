@@ -14,7 +14,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SYMLINKS_SUPPORTED } from './helpers/symlink-support'
 
+// Only the logger is stubbed. Spreading the real barrel keeps every other
+// export visible to files that share this process (the Windows job runs this
+// suite alongside `workspace-file-routes`, which imports `fileRangeResponse`).
+const actualSharedRuntime = await import('@shogo/shared-runtime')
 mock.module('@shogo/shared-runtime', () => ({
+  ...actualSharedRuntime,
   createLogger: () => ({
     info: () => {}, warn: () => {}, error: () => {}, debug: () => {},
   }),

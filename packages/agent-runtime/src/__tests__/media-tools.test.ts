@@ -404,6 +404,82 @@ describe('generate_video', () => {
     const r = await run('generate_video', { source_video: 'refs/clip.mov', genjutsu: 'object_swap', prompt: 'x' })
     expect(r.error).toContain('must be an .mp4')
   })
+
+  // Gemini Omni: the clip's bytes come from the proxy, and a draft is continued
+  // through `previous_job_id` rather than a new prompt.
+  describe('Gemini Omni (previous_job_id)', () => {
+    function mockOmniFlow(statusBody: Record<string, unknown>) {
+      let submitBody: any
+      on(`${PROXY}/videos/generations`, (_u, init) => {
+        submitBody = JSON.parse(String(init?.body))
+        return json({ id: 'vid_omni', status: 'queued', model: 'google-omni-1.2-flash', duration: 3, audio: true, estimated_usd: 0.08, provider: 'google' })
+      })
+      on(`${PROXY}/videos/vid_omni`, () => json({ id: 'vid_omni', status: 'completed', ...statusBody }))
+      return { submitBody: () => submitBody }
+    }
+
+    test('forwards previous_job_id with no prompt (an upscale)', async () => {
+      const flow = mockOmniFlow({
+        video: { url: null, content_path: '/v1/videos/vid_omni/content', content_type: 'video/mp4' },
+      })
+      const r = await run('generate_video', {
+        previous_job_id: 'vid_draft',
+        model: 'google-omni-1.2-flash',
+        resolution: '1080p',
+        path: 'videos/up.mp4',
+      })
+      expect(r.error).toBeUndefined()
+      expect(flow.submitBody()).toMatchObject({
+        previous_job_id: 'vid_draft',
+        model: 'google-omni-1.2-flash',
+        resolution: '1080p',
+      })
+      expect(flow.submitBody().prompt).toBeUndefined()
+      expect(r.status).toBe('completed')
+      // The saved result keeps the job id, so it can be continued again.
+      expect(r.id).toBe('vid_omni')
+    })
+
+    test('downloads from the proxy with the bearer, never from a foreign URL', async () => {
+      // Registered before the status route: the harness picks the first prefix
+      // match, and `/videos/vid_omni` would otherwise shadow `…/content`.
+      on(`${PROXY}/videos/vid_omni/content`, () =>
+        new Response(new Uint8Array([0, 0, 0, 24]), { headers: { 'Content-Type': 'video/mp4' } }))
+      mockOmniFlow({
+        video: { url: null, content_path: '/v1/videos/vid_omni/content', content_type: 'video/mp4' },
+      })
+
+      const r = await run('generate_video', {
+        previous_job_id: 'vid_draft',
+        model: 'google-omni-1.2-flash',
+        path: 'videos/from-proxy.mp4',
+      })
+      expect(r.error).toBeUndefined()
+
+      const download = calls.find((c) => c.url === `${PROXY}/videos/vid_omni/content`)
+      expect(download).toBeDefined()
+      expect((download!.init?.headers as any).Authorization).toBe('Bearer pt')
+      expect(readFileSync(join(TEST_DIR, 'videos/from-proxy.mp4'))).toEqual(Buffer.from([0, 0, 0, 24]))
+    })
+
+    test('a vendor URL is fetched without our token', async () => {
+      mockOmniFlow({ video: { url: 'https://cdn.example/clip.mp4', content_type: 'video/mp4' } })
+      on('https://cdn.example/clip.mp4', () =>
+        new Response(new Uint8Array([9, 9]), { headers: { 'Content-Type': 'video/mp4' } }))
+
+      const r = await run('generate_video', { prompt: 'a fox', model: 'google-omni-1.2-flash', path: 'videos/fox.mp4' })
+      expect(r.error).toBeUndefined()
+      const download = calls.find((c) => c.url === 'https://cdn.example/clip.mp4')
+      expect(download).toBeDefined()
+      expect((download!.init?.headers as any)?.Authorization).toBeUndefined()
+    })
+
+    test('refuses a call with neither prompt, source video nor previous_job_id', async () => {
+      const r = await run('generate_video', { model: 'google-omni-1.2-flash' })
+      expect(r.error).toContain('previous_job_id')
+      expect(calls.length).toBe(0)
+    })
+  })
 })
 
 // =========================================================================

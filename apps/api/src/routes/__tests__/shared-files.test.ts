@@ -53,7 +53,7 @@ describe('shared file routes', () => {
 
     expect(response.status).toBe(200)
     expect(await response.text()).toBe('PDF bytes')
-    expect(response.headers.get('content-disposition')).toBe('attachment; filename="final report.pdf"')
+    expect(response.headers.get('content-disposition')).toBe('inline; filename="final report.pdf"')
     expect(response.headers.get('content-type')).toBe('application/pdf')
     expect(requestedUrl).toBe('http://runtime/agent/workspace/download/project-1/reports/final%20report.pdf')
     expect(requestedToken).toBe('runtime-secret')
@@ -135,7 +135,7 @@ describe('shared file routes', () => {
 
     expect(response.status).toBe(200)
     expect(await response.text()).toBe('PDF bytes')
-    expect(response.headers.get('content-disposition')).toBe('attachment; filename="final report.pdf"')
+    expect(response.headers.get('content-disposition')).toBe('inline; filename="final report.pdf"')
     expect((await app.fetch(new Request('http://studio.test/api/f/not-a-token'))).status).toBe(404)
   })
 
@@ -155,6 +155,42 @@ describe('shared file routes', () => {
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toBe('application/octet-stream')
     expect(response.headers.get('content-disposition')).toBe('attachment; filename="app.exe"')
+  })
+
+  it('serves pictures and PDFs inline so they render in place', async () => {
+    globalThis.fetch = (async () => new Response('bytes', {
+      status: 200,
+      headers: { 'content-type': 'image/png' },
+    })) as typeof fetch
+
+    const app = sharedFileRoutes({
+      pinChatToHomeRegion: async () => null,
+      resolveAgentProxyPodUrl: async () => ({ ok: true, kind: 'pod', url: 'http://runtime' }),
+      deriveProjectRuntimeToken: async () => 'runtime-secret',
+    })
+
+    const png = await app.fetch(new Request(`http://api.test/f/${token('shots/screen.png')}`))
+    expect(png.headers.get('content-disposition')).toBe('inline; filename="screen.png"')
+
+    const pdf = await app.fetch(new Request(`http://api.test/f/${token('reports/final report.pdf')}`))
+    expect(pdf.headers.get('content-disposition')).toBe('inline; filename="final report.pdf"')
+  })
+
+  it('never serves an SVG inline, whatever its type claims', async () => {
+    globalThis.fetch = (async () => new Response('<svg/>', {
+      status: 200,
+      headers: { 'content-type': 'image/svg+xml' },
+    })) as typeof fetch
+
+    const app = sharedFileRoutes({
+      pinChatToHomeRegion: async () => null,
+      resolveAgentProxyPodUrl: async () => ({ ok: true, kind: 'pod', url: 'http://runtime' }),
+      deriveProjectRuntimeToken: async () => 'runtime-secret',
+    })
+    const response = await app.fetch(new Request(`http://api.test/f/${token('assets/logo.svg')}`))
+
+    expect(response.headers.get('content-type')).toBe('application/octet-stream')
+    expect(response.headers.get('content-disposition')).toBe('attachment; filename="logo.svg"')
   })
 
   it('passes binary downloads through a paired-instance tunnel', async () => {
@@ -360,7 +396,7 @@ describe('shared file routes', () => {
 
     expect(response.status).toBe(200)
     expect(await response.text()).toBe('PDF bytes')
-    expect(response.headers.get('content-disposition')).toBe('attachment; filename="final report.pdf"')
+    expect(response.headers.get('content-disposition')).toBe('inline; filename="final report.pdf"')
     expect(requested).toEqual([
       'http://runtime/agent/workspace/download/project-1/reports/final%20report.pdf',
       'http://runtime/agent/workspace/download/reports/final%20report.pdf',
@@ -382,6 +418,92 @@ describe('shared file routes', () => {
     // The path as signed, the prefix-stripped read, and the same read from the
     // runtime's own project root.
     expect(calls).toBe(3)
+  })
+  // SHO-387: a media element asks the runtime for byte ranges. The API is the
+  // hop in the middle, so it has to carry the request's range through and hand
+  // the 206 back intact (`content-range` included), or every video downloads
+  // in full before it plays.
+  it('forwards Range and passes a 206 through with its content-range', async () => {
+    let forwardedRange = ''
+    let forwardedIfRange = ''
+    globalThis.fetch = (async (_input, init) => {
+      const headers = new Headers(init?.headers)
+      forwardedRange = headers.get('range') || ''
+      forwardedIfRange = headers.get('if-range') || ''
+      return new Response(new Uint8Array([0, 1, 2, 3]), {
+        status: 206,
+        headers: {
+          'content-type': 'video/mp4',
+          'content-length': '4',
+          'content-range': 'bytes 0-3/1048576',
+          'accept-ranges': 'bytes',
+        },
+      })
+    }) as typeof fetch
+
+    const response = await retryingApp([]).fetch(
+      new Request(`http://api.test/api/f/${token('media/clip.mp4')}`, {
+        headers: { range: 'bytes=0-3', 'if-range': '"etag-1"' },
+      }),
+    )
+
+    expect(response.status).toBe(206)
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([0, 1, 2, 3]))
+    expect(forwardedRange).toBe('bytes=0-3')
+    expect(forwardedIfRange).toBe('"etag-1"')
+    expect(response.headers.get('content-range')).toBe('bytes 0-3/1048576')
+    expect(response.headers.get('accept-ranges')).toBe('bytes')
+    // Inline, so a video opens in a player instead of saving (SHO-387).
+    expect(response.headers.get('content-disposition')).toBe('inline; filename="clip.mp4"')
+  })
+
+  it('forwards Range through a paired-instance tunnel', async () => {
+    let relayedHeaders: Record<string, string> = {}
+    const app = sharedFileRoutes({
+      pinChatToHomeRegion: async () => null,
+      resolveAgentProxyPodUrl: async () => ({
+        ok: true,
+        kind: 'tunnel',
+        instanceId: 'instance-1',
+        workspaceId: 'workspace-1',
+        projectId: 'project-1',
+      }),
+      deriveProjectRuntimeToken: async () => 'runtime-secret',
+      relayAgentProxyViaTunnel: async (options) => {
+        relayedHeaders = options.headers
+        return new Response(new Uint8Array([9, 8]), {
+          status: 206,
+          headers: { 'content-type': 'video/mp4', 'content-range': 'bytes 10-11/100' },
+        })
+      },
+    })
+
+    const response = await app.fetch(
+      new Request(`http://api.test/f/${token('media/clip.mp4')}`, { headers: { range: 'bytes=10-11' } }),
+    )
+
+    expect(response.status).toBe(206)
+    expect(relayedHeaders.range).toBe('bytes=10-11')
+    expect(response.headers.get('content-range')).toBe('bytes 10-11/100')
+  })
+
+  it('answers 416 instead of retrying other roots as "not found"', async () => {
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls++
+      return new Response(null, {
+        status: 416,
+        headers: { 'content-range': 'bytes */1024' },
+      })
+    }) as typeof fetch
+
+    const response = await retryingApp([]).fetch(
+      new Request(`http://api.test/api/f/${token('media/clip.mp4')}`, { headers: { range: 'bytes=4096-' } }),
+    )
+
+    expect(response.status).toBe(416)
+    expect(calls).toBe(1)
+    expect(response.headers.get('content-range')).toBe('bytes */1024')
   })
 })
 

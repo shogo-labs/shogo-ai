@@ -375,6 +375,12 @@ export function calculateImageUsageCost(
 // Video Generation Usage Costs
 // =============================================================================
 
+/** Marked-up charge for a raw upstream amount; every media kind marks up the same way. */
+export function calculateMarkedUpUsageCost(rawUsd: number): UsageCostResult {
+  const raw = Math.max(0, rawUsd)
+  return { rawUsd: raw, billedUsd: raw * MARKUP_MULTIPLIER }
+}
+
 /**
  * USD for a Higgsfield request: the free `/estimate` captured at submit time,
  * marked up exactly like every other media charge. Never used for a request
@@ -382,8 +388,7 @@ export function calculateImageUsageCost(
  * billing them would overcharge.
  */
 export function calculateHiggsfieldUsageCost(estimate: { rawUsd: number }): UsageCostResult {
-  const rawUsd = Math.max(0, estimate.rawUsd)
-  return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
+  return calculateMarkedUpUsageCost(estimate.rawUsd)
 }
 
 /**
@@ -411,6 +416,84 @@ export function calculateGenjutsuUsageCost(
   if (perSecond === undefined || !Number.isFinite(seconds) || seconds <= 0) return null
   const rawUsd = seconds * perSecond
   return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
+}
+
+/**
+ * Google Omni token rates, USD per million tokens
+ * (ai.google.dev/gemini-api/docs/pricing, Nov 2026): $1.50 input (text, image,
+ * and the previous turn's video on an edit), $12 video output, $9 text and
+ * thinking output. An Omni turn is billed from the tokens the interaction
+ * reports, so this table plus {@link calculateGoogleVideoUsageCost} is the whole
+ * price of a clip — including the parent clip's input tokens a follow-up turn
+ * pays for again.
+ */
+export const GOOGLE_VIDEO_TOKEN_USD = {
+  inputPerMillion: 1.5,
+  videoOutputPerMillion: 12,
+  textOutputPerMillion: 9,
+} as const
+
+/** The shape `readOmniUsage` hands over (a subset of Google's `usage` object). */
+export interface GoogleVideoUsage {
+  total_input_tokens?: number
+  total_output_tokens?: number
+  total_thought_tokens?: number
+  output_tokens_by_modality?: Record<string, number>
+}
+
+/**
+ * USD for one finished Omni turn, from its own usage tokens, marked up like
+ * every other media charge.
+ *
+ * Without a modality split every output token is billed at the video rate: that
+ * is the only safe direction, because undercounting output would underbill a
+ * video we did deliver. Thinking tokens are billed at the text rate.
+ */
+export function calculateGoogleVideoUsageCost(usage: GoogleVideoUsage): UsageCostResult {
+  const input = Math.max(0, usage.total_input_tokens ?? 0)
+  const thought = Math.max(0, usage.total_thought_tokens ?? 0)
+  const byModality = usage.output_tokens_by_modality ?? {}
+
+  let videoOutput = 0
+  let otherOutput = 0
+  const modalities = Object.keys(byModality)
+  if (modalities.length > 0) {
+    for (const modality of modalities) {
+      const tokens = Math.max(0, byModality[modality] ?? 0)
+      if (/video/i.test(modality)) videoOutput += tokens
+      else otherOutput += tokens
+    }
+  } else {
+    videoOutput = Math.max(0, usage.total_output_tokens ?? 0)
+  }
+
+  const rawUsd =
+    (input * GOOGLE_VIDEO_TOKEN_USD.inputPerMillion +
+      videoOutput * GOOGLE_VIDEO_TOKEN_USD.videoOutputPerMillion +
+      (otherOutput + thought) * GOOGLE_VIDEO_TOKEN_USD.textOutputPerMillion) /
+    1_000_000
+
+  return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
+}
+
+/**
+ * Video output tokens Google bills per second of clip, by resolution tier
+ * (ai.google.dev/gemini-api/docs/pricing, Nov 2026). These are the numbers the
+ * catalog's per-second rates are converted from, and the ones a follow-up turn
+ * pays again as *input* when it re-reads the parent clip.
+ */
+export const GOOGLE_VIDEO_TOKENS_PER_SECOND: Record<string, number> = {
+  '360p': 1_931,
+  '720p': 5_792,
+  '1080p': 8_688,
+  '4k': 17_376,
+}
+
+/** The parent clip's input tokens, at the cheaper input rate. `0` when unknown. */
+export function googleVideoInputAllowanceUsd(resolution: string | undefined, seconds: number): number {
+  const tokensPerSecond = resolution ? GOOGLE_VIDEO_TOKENS_PER_SECOND[resolution] : undefined
+  if (!tokensPerSecond || !Number.isFinite(seconds) || seconds <= 0) return 0
+  return (tokensPerSecond * seconds * GOOGLE_VIDEO_TOKEN_USD.inputPerMillion) / 1_000_000
 }
 
 // =============================================================================

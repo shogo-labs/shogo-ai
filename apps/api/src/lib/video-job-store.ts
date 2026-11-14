@@ -19,17 +19,24 @@ import { getSharedRedis } from './tunnel-redis'
 export interface VideoJobRecord {
   id: string
   /** Which vendor owns the job; the status route dispatches on it. */
-  provider: 'higgsfield'
+  provider: 'higgsfield' | 'google'
   workspaceId: string
   projectId: string
   userId?: string
   chatSessionId?: string | null
   model: string
   endpoint: string
-  /** Where to poll. Provider-specific; checked against the provider's base on read. */
-  statusUrl: string
+  /**
+   * Where to poll. Provider-specific; checked against the provider's base on read.
+   * Absent for Google Omni, which polls its own interaction id.
+   */
+  statusUrl?: string
   /** Higgsfield request id, for cancel and support. */
   requestId?: string
+  /** Google: the Interactions API interaction this job wraps (`previous_job_id` chains on it). */
+  interactionId?: string
+  /** Google: the job this one continues (upscale / edit / extend). */
+  parentJobId?: string
   /** Price captured from `/estimate` at submit — what the completion is billed. */
   estimate?: { rawUsd: number; billedUsd: number; credits?: number }
   /**
@@ -56,6 +63,18 @@ export interface VideoJobRecord {
 /** The vendor keeps results for a while; a day comfortably covers slow queues and late polls. */
 export const VIDEO_JOB_TTL_SECONDS = 24 * 60 * 60
 
+/**
+ * Google keeps a stored interaction for 55 days on the paid tier, and
+ * `previous_job_id` chains on that stored interaction — so an Omni job record
+ * has to outlive a draft made weeks ago, not just a slow queue.
+ */
+export const GOOGLE_VIDEO_JOB_TTL_SECONDS = 30 * 24 * 60 * 60
+
+/** How long this job's record lives: long enough to be continued, not longer. */
+export function videoJobTtlSeconds(provider: VideoJobRecord['provider']): number {
+  return provider === 'google' ? GOOGLE_VIDEO_JOB_TTL_SECONDS : VIDEO_JOB_TTL_SECONDS
+}
+
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 const records = new Map<string, { record: VideoJobRecord; expiresAt: number }>()
 const charged = new Map<string, number>()
@@ -80,7 +99,10 @@ function sweepLocal(now: number): void {
 function putLocal(record: VideoJobRecord): void {
   const now = Date.now()
   sweepLocal(now)
-  records.set(jobKey(record.id), { record, expiresAt: now + VIDEO_JOB_TTL_SECONDS * 1000 })
+  records.set(jobKey(record.id), {
+    record,
+    expiresAt: now + videoJobTtlSeconds(record.provider) * 1000,
+  })
 }
 
 function getLocal(id: string): VideoJobRecord | undefined {
@@ -94,7 +116,7 @@ function claimLocal(id: string): boolean {
   sweepLocal(now)
   const k = chargeKey(id)
   if (charged.has(k)) return false
-  charged.set(k, now + VIDEO_JOB_TTL_SECONDS * 1000)
+  charged.set(k, now + GOOGLE_VIDEO_JOB_TTL_SECONDS * 1000)
   return true
 }
 
@@ -102,7 +124,7 @@ export async function putVideoJob(record: VideoJobRecord): Promise<void> {
   const r = redisOrNull()
   if (!r) return putLocal(record)
   try {
-    await r.set(jobKey(record.id), JSON.stringify(record), 'EX', VIDEO_JOB_TTL_SECONDS)
+    await r.set(jobKey(record.id), JSON.stringify(record), 'EX', videoJobTtlSeconds(record.provider))
   } catch (err) {
     console.warn('[video-job-store] Redis SET failed, falling back to local map:', (err as Error).message)
     putLocal(record)
