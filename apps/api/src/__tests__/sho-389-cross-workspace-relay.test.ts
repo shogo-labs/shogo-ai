@@ -18,6 +18,14 @@ import { Hono } from 'hono'
 import { setupChannelsTestDb } from './helpers/channels-test-db'
 
 const { dir } = setupChannelsTestDb()
+// Every env var this file changes is put back in `afterAll`: the api suite runs
+// many files in one process, and a leaked `SHOGO_CLOUD_URL` or `SHOGO_LOCAL_MODE`
+// silently changes how the next file's routes resolve.
+const originalEnv = {
+  BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET,
+  SHOGO_LOCAL_MODE: process.env.SHOGO_LOCAL_MODE,
+  SHOGO_CLOUD_URL: process.env.SHOGO_CLOUD_URL,
+}
 process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET || 'sho-389-relay-secret'
 process.env.SHOGO_LOCAL_MODE = 'true'
 process.env.SHOGO_CLOUD_URL = 'http://cloud.test'
@@ -73,7 +81,10 @@ beforeAll(async () => {
 
 afterAll(() => {
   globalThis.fetch = realFetch
-  delete process.env.SHOGO_LOCAL_MODE
+  for (const [key, value] of Object.entries(originalEnv)) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
   rmSync(dir, { recursive: true, force: true })
 })
 
