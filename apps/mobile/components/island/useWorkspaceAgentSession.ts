@@ -9,6 +9,8 @@
 import { useCallback, useEffect, useState } from "react"
 import { useDomainHttp } from "../../contexts/domain"
 import { api } from "../../lib/api"
+import { fetchWorkspaceChats } from "../../lib/workspace-chats-cache"
+import { useWorkspaceChatsCacheKey } from "../../hooks/useWorkspaceChatsCacheKey"
 import { useWorkspaceAgentProfile } from "../../hooks/useWorkspaceAgentProfile"
 import { DEFAULT_AGENT_NAME } from "./island-view"
 import type { WorkspaceAgentChat } from "./workspace-agent-rows"
@@ -34,6 +36,9 @@ export function useWorkspaceAgentChats(
   refreshTick = 0,
 ): { chats: WorkspaceAgentChat[]; loading: boolean; error: string | null } {
   const http = useDomainHttp()
+  // Same device scope as the sidebar list, so this joins the request the panel
+  // is already making instead of asking the API a second time (SHO-391).
+  const cacheKey = useWorkspaceChatsCacheKey(workspaceId)
   const [chats, setChats] = useState<WorkspaceAgentChat[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -42,8 +47,7 @@ export function useWorkspaceAgentChats(
     if (!enabled || !workspaceId) return
     let cancelled = false
     setLoading(true)
-    void api
-      .listWorkspaceSessions(http, workspaceId)
+    void fetchWorkspaceChats(http, workspaceId, cacheKey)
       .then((sessions) => {
         if (cancelled) return
         setError(null)
@@ -64,7 +68,7 @@ export function useWorkspaceAgentChats(
     return () => {
       cancelled = true
     }
-  }, [enabled, http, refreshTick, workspaceId])
+  }, [cacheKey, enabled, http, refreshTick, workspaceId])
 
   return { chats, loading, error }
 }

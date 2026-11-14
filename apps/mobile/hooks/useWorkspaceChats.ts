@@ -5,6 +5,10 @@
  * chats. Home, the phone drawer and the side-chats screen all read and mutate
  * through this hook, so a rename in one place lands everywhere and there is a
  * single `listWorkspaceSessions` call site.
+ *
+ * The list is cached on the device (SHO-391): a remount paints what the last
+ * visit had on its first frame and revalidates behind it, and a failed refresh
+ * keeps the rows that were already on screen instead of blanking them.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppState } from 'react-native'
@@ -16,7 +20,14 @@ import {
 import { api } from '../lib/api'
 import { workspaceActivity } from '../lib/workspace-activity'
 import { chatActivityEvents, chatSessionEvents } from '../lib/chat-session-events'
+import {
+  fetchWorkspaceChats,
+  peekWorkspaceChats,
+  readWorkspaceChats,
+  writeWorkspaceChats,
+} from '../lib/workspace-chats-cache'
 import { sortSideChats, type SideChatItem } from '../lib/side-chats'
+import { useWorkspaceChatsCacheKey } from './useWorkspaceChatsCacheKey'
 
 export type WorkspaceChat = SideChatItem & {
   workspaceId?: string
@@ -52,8 +63,23 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
   const http = useDomainHttp()
   const actions = useDomainActions()
   const chatSessions = useChatSessionCollection()
-  const [sessions, setSessions] = useState<WorkspaceChat[]>([])
-  const [loading, setLoading] = useState(true)
+  // The device scope of this list: user + server + workspace (SHO-391). Null
+  // while signed out or before a workspace is known: then nothing is cached
+  // and the fetch is a plain one.
+  const cacheKey = useWorkspaceChatsCacheKey(workspaceId)
+  const [sessions, setSessions] = useState<WorkspaceChat[]>(
+    () => peekWorkspaceChats(cacheKey) ?? [],
+  )
+  const [loading, setLoading] = useState(
+    () => peekWorkspaceChats(cacheKey) === null,
+  )
+  // A list the server has answered for since the last reset: the only case
+  // where an empty list is worth keeping on the device (every chat deleted).
+  const authoritativeRef = useRef(false)
+  // The scope this hook is showing now. A response that answers for a workspace
+  // the user has already left must not paint — nor be cached under the new key.
+  const scopeRef = useRef(cacheKey)
+  scopeRef.current = cacheKey
   const [creating, setCreating] = useState(false)
   // A turn this client watched start — painted before the next server poll.
   const [localRunningIds, setLocalRunningIds] = useState<Set<string>>(new Set())
@@ -85,20 +111,53 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
 
   const refresh = useCallback(async () => {
     if (!workspaceId) return
+    const key = cacheKey
     try {
-      const all = await api.listWorkspaceSessions(http, workspaceId)
+      const all = await fetchWorkspaceChats(http, workspaceId, key)
+      if (scopeRef.current !== key) return
+      authoritativeRef.current = true
       setSessions(all)
     } catch {
-      setSessions([])
+      // A failed refresh keeps the rows already on screen — offline, a flaky
+      // mobile network or a 500 must never blank a list the user was reading.
+      // Only a first load with nothing cached ends in the empty state.
     } finally {
       setLoading(false)
     }
-  }, [http, workspaceId])
+  }, [cacheKey, http, workspaceId])
 
+  /**
+   * Switching workspace (or signing in) seeds from that workspace's own cache
+   * instead of `[]`: a mirror hit paints in this commit, and a device-only hit
+   * paints as soon as the storage read lands. `loading` is only true when
+   * neither has anything — an honest "Loading…" for a first-ever open.
+   */
   useEffect(() => {
-    setSessions([])
-    setLoading(true)
-  }, [workspaceId])
+    authoritativeRef.current = false
+    const cached = peekWorkspaceChats(cacheKey)
+    setSessions(cached ?? [])
+    setLoading(cached === null)
+    if (cached !== null || !cacheKey) return
+    let cancelled = false
+    void readWorkspaceChats(cacheKey).then((rows) => {
+      if (cancelled || !rows) return
+      setSessions((current) => (current.length > 0 ? current : rows))
+      setLoading(false)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [cacheKey, workspaceId])
+
+  // What this list shows is what the next mount paints. Mutations (create,
+  // rename, pin, archive, delete) all land in `sessions`, so they are written
+  // through here instead of in each of them.
+  useEffect(() => {
+    if (!cacheKey) return
+    writeWorkspaceChats(cacheKey, sessions, {
+      allowEmpty: authoritativeRef.current,
+    })
+  }, [cacheKey, sessions])
 
   useEffect(() => {
     setLocalRunningIds(new Set())

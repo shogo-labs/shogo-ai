@@ -42,6 +42,7 @@ let sessionsResult: () => any[] = () => CHATS();
 let activeChatsResult: () => Promise<unknown[]> = async () => [];
 const listWorkspaceSessions = mock(async () => sessionsResult());
 const listWorkspaceActiveChats = mock(async () => (await activeChatsResult()) as any[])
+const createWorkspaceSession = mock(async () => ({ id: "chat-new", workspaceId: "w1" }))
 
 const appStateListeners = new Set<(state: string) => void>();
 const AppState = {
@@ -52,11 +53,36 @@ const AppState = {
   },
 };
 
+// The device cache (SHO-391) keeps AsyncStorage rows; a Map stands in for it.
+const deviceStore = new Map<string, string>();
+
 mock.module("react-native", () =>
   createReactNativeMock({ AppState } as any),
 );
+mock.module("@react-native-async-storage/async-storage", () => ({
+  default: {
+    getItem: async (k: string) => deviceStore.get(k) ?? null,
+    setItem: async (k: string, v: string) => {
+      deviceStore.set(k, v);
+    },
+    removeItem: async (k: string) => {
+      deviceStore.delete(k);
+    },
+    getAllKeys: async () => [...deviceStore.keys()],
+    multiRemove: async (keys: string[]) => {
+      keys.forEach((k) => deviceStore.delete(k));
+    },
+  },
+}));
+// The list is cached per user + server + workspace: this is who we are.
+mock.module(resolve(import.meta.dir, "../../contexts/auth"), () => ({
+  useAuth: () => ({ user: { id: "u1" } }),
+}));
+mock.module(resolve(import.meta.dir, "../../contexts/active-instance"), () => ({
+  useActiveInstance: () => ({ instance: null }),
+}));
 mock.module(resolve(import.meta.dir, "../../lib/api"), () => ({
-  api: { listWorkspaceSessions, listWorkspaceActiveChats },
+  api: { listWorkspaceSessions, listWorkspaceActiveChats, createWorkspaceSession },
 }));
 mock.module(resolve(import.meta.dir, "../../contexts/domain"), () => ({
   useDomainHttp: () => stableHttp,
@@ -69,6 +95,7 @@ const { chatActivityEvents, chatSessionEvents } = await import(
   "../../lib/chat-session-events"
 );
 const { workspaceActivity } = await import("../../lib/workspace-activity");
+const workspaceChatsCache = await import("../../lib/workspace-chats-cache");
 
 function turn(id: string, startedAt = "2026-10-03T10:00:00.000Z") {
   return {
@@ -132,11 +159,16 @@ beforeEach(async () => {
   cleanup();
   // One shared activity cache per window (SHO-277).
   workspaceActivity.reset();
+  await workspaceChatsCache.clearWorkspaceChatsCache();
+  deviceStore.clear();
   appStateListeners.clear();
   AppState.currentState = "active";
   sessionsResult = () => CHATS();
   activeChatsResult = async () => [];
   listWorkspaceSessions.mockClear();
+  // A previous case may have pointed this at a throwing server.
+  listWorkspaceSessions.mockImplementation(async () => sessionsResult());
+  createWorkspaceSession.mockClear();
   listWorkspaceActiveChats.mockClear();
   emittedScopes = [];
 });
@@ -444,3 +476,120 @@ describe("useWorkspaceChats poll cadence", () => {
     expect(listWorkspaceActiveChats.mock.calls.length).toBe(beforeUnmount);
   });
 });
+
+// ─── SHO-391: the list paints from the device ────────────────────────────────
+//
+// Every Home click used to mount a hook that started at `[]` / `loading: true`
+// and refetched, and one failed request blanked a list the user was reading.
+
+describe("useWorkspaceChats device cache", () => {
+  /** A mount whose list request fails — the network a cache has to cover. */
+  async function mountOffline(workspaceId = "w1") {
+    listWorkspaceSessions.mockImplementation(async () => {
+      throw new Error("offline")
+    })
+    const rendered = renderHook(() => useWorkspaceChats(workspaceId))
+    await act(async () => {
+      await rendered.result.current.refresh()
+    })
+    await flush()
+    return rendered
+  }
+
+  test("a remount paints the cached rows on its first frame, with no loading state", async () => {
+    const first = await mount()
+    expect(first.result.current.sessions.map((chat) => chat.id)).toEqual(["chat-1", "chat-2"])
+    first.unmount()
+    // Nothing lands from the network now: what is on screen came from the cache.
+    const second = await mountOffline()
+
+    expect(second.result.current.loading).toBe(false)
+    expect(second.result.current.sessions.map((chat) => chat.id)).toEqual(["chat-1", "chat-2"])
+    expect(second.result.current.active.map((chat) => chat.id)).toEqual(["chat-2", "chat-1"])
+  })
+
+  test("a failed refresh keeps the rows already on screen", async () => {
+    const { result } = await mount()
+    expect(result.current.sessions).toHaveLength(2)
+
+    listWorkspaceSessions.mockImplementation(async () => {
+      throw new Error("500")
+    })
+    await act(async () => {
+      await result.current.refresh()
+    })
+
+    expect(result.current.sessions.map((chat) => chat.id)).toEqual(["chat-1", "chat-2"])
+    expect(result.current.loading).toBe(false)
+  })
+
+  test("a first-ever load that fails ends in the empty state, not a spinner", async () => {
+    const { result } = await mountOffline("w9")
+
+    expect(result.current.loading).toBe(false)
+    expect(result.current.sessions).toEqual([])
+  })
+
+  test("a rename survives a remount without waiting for the network", async () => {
+    const first = await mount()
+    // The server has the rename, so the refresh the rename triggers agrees.
+    sessionsResult = () =>
+      CHATS().map((chat) =>
+        chat.id === "chat-1" ? { ...chat, name: "Renamed party" } : chat,
+      )
+    await act(async () => {
+      await first.result.current.updateChat("chat-1", { name: "Renamed party" })
+    })
+    first.unmount()
+
+    const second = await mountOffline()
+    const renamed = second.result.current.sessions.find((chat) => chat.id === "chat-1")
+    expect(renamed?.name).toBe("Renamed party")
+  })
+
+  test("an answer for a workspace you already left never paints", async () => {
+    let answerOld: (rows: any[]) => void = () => {}
+    listWorkspaceSessions.mockImplementationOnce(
+      () => new Promise<any[]>((resolve) => { answerOld = resolve }),
+    )
+    const { result, rerender } = renderHook(({ id }) => useWorkspaceChats(id), {
+      initialProps: { id: "w1" },
+    }) as any
+    act(() => {
+      void result.current.refresh()
+    })
+
+    sessionsResult = () => [{ id: "chat-w2", workspaceId: "w2", name: "Two" }]
+    rerender({ id: "w2" })
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.sessions.map((chat) => chat.id)).toEqual(["chat-w2"])
+
+    // The first workspace's answer lands now, after the switch.
+    await act(async () => {
+      answerOld([{ id: "chat-w1", workspaceId: "w1", name: "One" }])
+      await Promise.resolve()
+    })
+    expect(result.current.sessions.map((chat) => chat.id)).toEqual(["chat-w2"])
+  })
+
+  test("one workspace's cache never paints another's rows", async () => {
+    const first = await mount()
+    first.unmount()
+
+    const other = await mountOffline("w2")
+    expect(other.result.current.sessions).toEqual([])
+  })
+
+  test("a chat created here is in the cache the next mount paints", async () => {
+    const first = await mount()
+    await act(async () => {
+      await first.result.current.createChat({ inferredName: "Brand new" })
+    })
+    first.unmount()
+
+    const second = await mountOffline()
+    expect(second.result.current.sessions.map((chat) => chat.id)).toContain("chat-new")
+  })
+})
