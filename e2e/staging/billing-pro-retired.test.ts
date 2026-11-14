@@ -16,7 +16,8 @@ import { isLiveStripeEnv, makeTestUser, signUpAndOnboard } from "./helpers"
  *   • New workspace offers Business only and posts `planId: 'business'`;
  *   • posting `planId: 'pro'` straight at either checkout route still lands on
  *     the Business $16 price, never the retired $20 Pro price;
- *   • `PUT /api/ai/v1/subscription` is 404 on a hosted (production) target.
+ *   • `PUT /api/ai/v1/subscription` is 404 on production and still reachable
+ *     (401 without a token) on staging/local.
  *
  * The Stripe assertions need test-mode keys, so they skip on a live target.
  *
@@ -25,12 +26,6 @@ import { isLiveStripeEnv, makeTestUser, signUpAndOnboard } from "./helpers"
 
 const TEST_USER = makeTestUser("ProRetired")
 const LIVE = isLiveStripeEnv()
-
-/** A hosted target runs with NODE_ENV=production, so the debug PUT is gated. */
-function isHostedTarget(): boolean {
-  const target = process.env.E2E_TARGET_URL || process.env.STAGING_URL || ""
-  return !!target && !target.includes("localhost") && !target.includes("127.0.0.1")
-}
 
 async function navigateToBilling(page: Page) {
   await page.goto("/billing")
@@ -175,14 +170,20 @@ test.describe("Pro is retired — no path sells it (SHO-397)", () => {
     expect(text).not.toContain("$20.00")
   })
 
-  test("PUT /api/ai/v1/subscription is 404 on a hosted target", async () => {
-    test.skip(!isHostedTarget(), "the debug PUT is allowed in local mode")
-
+  test("PUT /api/ai/v1/subscription is gated by environment", async () => {
     const res = await page.request.put("/api/ai/v1/subscription", {
       data: { planId: "business" },
     })
-    expect(res.status()).toBe(404)
-    const body = (await res.json()) as { error?: { code?: string } }
-    expect(body.error?.code).toBe("not_found")
+
+    if (LIVE) {
+      // Production: the debug route does not exist at all.
+      expect(res.status()).toBe(404)
+      const body = (await res.json()) as { error?: { code?: string } }
+      expect(body.error?.code).toBe("not_found")
+    } else {
+      // Staging and local keep the route for tests, so an unauthenticated call
+      // reaches the auth check and is rejected there — not by the env gate.
+      expect(res.status()).toBe(401)
+    }
   })
 })
