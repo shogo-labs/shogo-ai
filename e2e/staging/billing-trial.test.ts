@@ -52,15 +52,21 @@ test.describe("7-day free trial", () => {
     await page.close()
   })
 
-  test("free workspace sees the 7-day trial CTA on Basic, Pro and Business", async () => {
+  test("free workspace sees the 7-day trial CTA on Basic and Business", async () => {
     await navigateToBilling(page)
 
-    for (const plan of ["basic", "pro", "business"] as const) {
+    for (const plan of ["basic", "business"] as const) {
       const card = page.getByTestId(`plan-card-${plan}`)
       await expect(card).toBeVisible()
       await expect(card.getByText("Start 7-day free trial")).toBeVisible()
       await expect(card.getByText("$0 today. Card required; cancel anytime.")).toBeVisible()
     }
+  })
+
+  test("Pro is not sold: no Pro card and no Pro trial CTA (SHO-397)", async () => {
+    await navigateToBilling(page)
+    await expect(page.getByTestId("plan-card-pro")).toHaveCount(0)
+    await expect(page.getByText("Upgrade to Pro")).toHaveCount(0)
   })
 
   test("enterprise has no trial CTA", async () => {
@@ -72,19 +78,19 @@ test.describe("7-day free trial", () => {
     test.skip(LIVE, "Stripe Checkout with a test card is not run against live keys")
     await navigateToBilling(page)
 
-    await page.getByTestId("plan-card-pro").getByText("Start 7-day free trial").click()
+    await page.getByTestId("plan-card-business").getByText("Start 7-day free trial").click()
     await page.waitForURL(/checkout\.stripe\.com/, { timeout: 30_000 })
     expect(page.url()).toContain("checkout.stripe.com")
   })
 
   test("a trialing subscription shows the trial end date and hides the CTA", async () => {
-    const started = await bootstrapTrialSubscriptionViaApi(page, TEST_USER, "pro", 7)
+    const started = await bootstrapTrialSubscriptionViaApi(page, TEST_USER, "business", 7)
     test.skip(!started, "needs SHOGO_E2E_BOOTSTRAP_SECRET to bootstrap a trial")
 
     await navigateToBilling(page)
     await expect(page.getByText(/Free trial ends /)).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByTestId("plan-card-pro").getByText("Start 7-day free trial")).toHaveCount(0)
     await expect(page.getByTestId("plan-card-basic").getByText("Start 7-day free trial")).toHaveCount(0)
+    await expect(page.getByTestId("plan-card-business").getByText("Start 7-day free trial")).toHaveCount(0)
   })
 
   test("the trial allocates the free wallet only (no monthly allowance)", async () => {
@@ -113,5 +119,18 @@ test.describe("7-day free trial", () => {
     const body = await res.json()
     expect(body.trialEligible).toBe(false)
     expect(body.trialEndsAt).toBeTruthy()
+  })
+
+  test("a current Pro subscriber still sees Pro as their plan (SHO-397)", async () => {
+    const started = await bootstrapTrialSubscriptionViaApi(page, TEST_USER, "pro", 7)
+    test.skip(!started, "needs SHOGO_E2E_BOOTSTRAP_SECRET to bootstrap a subscription")
+
+    await navigateToBilling(page)
+    await expect(page.getByText("You're on Pro Plan")).toBeVisible({ timeout: 15_000 })
+    await expect(
+      page.getByText("Pro is no longer sold. You move to Business at your next renewal."),
+    ).toBeVisible()
+    // The Pro card is gone even for a Pro subscriber — Business is the upgrade.
+    await expect(page.getByTestId("plan-card-pro")).toHaveCount(0)
   })
 })

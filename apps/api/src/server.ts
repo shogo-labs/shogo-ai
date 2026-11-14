@@ -16,7 +16,7 @@ import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync, readFileSync, rea
 import { auth } from './auth'
 import type { PaidInstanceSize } from './config/stripe-prices'
 import { resolveSubscriptionContext, selectPlanItem } from './services/stripe-subscription-sync.service'
-import { resolveCheckoutPriceId } from './services/stripe-price-lookup.service'
+import { resolveCheckoutPriceId, normalizeCheckoutPlanId } from './services/stripe-price-lookup.service'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import type { InstanceSizeName } from './config/instance-sizes'
 import * as workspaceService from './services/workspace.service'
@@ -7661,22 +7661,29 @@ app.post('/api/billing/checkout', async (c) => {
     if (planId !== 'basic' && planId !== 'pro' && planId !== 'business') {
       return c.json({ error: { code: 'invalid_plan', message: `Unknown plan: ${planId}` } }, 400)
     }
-    // Basic is single-user, always 1 seat. Pro/Business default to 1, can be more.
-    const seats = planId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
+    // Pro is retired (SHO-339/SHO-397). Older web, desktop and Android builds
+    // still post `pro`; remap it to Business so they land on the price we
+    // actually sell instead of a 400 or the retired $20 price.
+    const checkoutPlanId = normalizeCheckoutPlanId(planId)
+    if (checkoutPlanId !== planId) {
+      console.log(`[Billing] ${planId} checkout remapped to ${checkoutPlanId}`)
+    }
+    // Basic is single-user, always 1 seat. Business defaults to 1, can be more.
+    const seats = checkoutPlanId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
 
     // Resolved from the configured id, or by `lookup_key` when the v2.5.0
     // price's id has not been deployed as an env var yet (SHO-339). Never
     // falls back to the legacy price — a checkout either gets the new price
     // or fails loudly.
-    const priceId = await resolveCheckoutPriceId(stripe, planId, billingInterval as 'monthly' | 'annual')
+    const priceId = await resolveCheckoutPriceId(stripe, checkoutPlanId as 'basic' | 'pro' | 'business', billingInterval as 'monthly' | 'annual')
 
     if (!priceId) {
-      return c.json({ error: { code: 'price_not_provisioned', message: `The ${planId} ${billingInterval} price has not been created in Stripe yet` } }, 503)
+      return c.json({ error: { code: 'price_not_provisioned', message: `The ${checkoutPlanId} ${billingInterval} price has not been created in Stripe yet` } }, 503)
     }
 
     const metadata: Record<string, string> = {
       workspaceId,
-      planId,
+      planId: checkoutPlanId,
       billingInterval,
       seats: String(seats),
     }
@@ -7693,7 +7700,7 @@ app.post('/api/billing/checkout', async (c) => {
       wantsTrial: Boolean(wantsTrial),
       userId,
       workspaceId,
-      planId,
+      planId: checkoutPlanId,
       metadata,
       affiliate: affiliateOverrides,
     })
@@ -7918,11 +7925,17 @@ app.post('/api/billing/workspace-checkout', async (c) => {
     if (planId !== 'basic' && planId !== 'pro' && planId !== 'business') {
       return c.json({ error: { code: 'invalid_plan', message: `Unknown plan: ${planId}` } }, 400)
     }
-    const seats = planId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
+    // Pro is retired (SHO-339/SHO-397) — remap an old client's `pro` to
+    // Business so it lands on the price we actually sell.
+    const checkoutPlanId = normalizeCheckoutPlanId(planId)
+    if (checkoutPlanId !== planId) {
+      console.log(`[Billing] ${planId} workspace checkout remapped to ${checkoutPlanId}`)
+    }
+    const seats = checkoutPlanId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
 
-    const priceId = await resolveCheckoutPriceId(stripe, planId, billingInterval as 'monthly' | 'annual')
+    const priceId = await resolveCheckoutPriceId(stripe, checkoutPlanId as 'basic' | 'pro' | 'business', billingInterval as 'monthly' | 'annual')
     if (!priceId) {
-      return c.json({ error: { code: 'price_not_provisioned', message: `The ${planId} ${billingInterval} price has not been created in Stripe yet` } }, 503)
+      return c.json({ error: { code: 'price_not_provisioned', message: `The ${checkoutPlanId} ${billingInterval} price has not been created in Stripe yet` } }, 503)
     }
 
     // Create workspace + owner membership immediately (bypasses hook limit)
@@ -7935,7 +7948,7 @@ app.post('/api/billing/workspace-checkout', async (c) => {
 
     const metadata: Record<string, string> = {
       workspaceId: newWorkspaceId,
-      planId,
+      planId: checkoutPlanId,
       billingInterval,
       seats: String(seats),
     }
@@ -7955,7 +7968,7 @@ app.post('/api/billing/workspace-checkout', async (c) => {
       wantsTrial: Boolean(wantsTrial),
       userId,
       workspaceId: newWorkspaceId,
-      planId,
+      planId: checkoutPlanId,
       metadata,
       affiliate: affiliateOverrides,
     })

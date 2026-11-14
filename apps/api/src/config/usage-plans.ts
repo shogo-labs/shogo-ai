@@ -554,7 +554,10 @@ export const SIGNUP_CREDIT_TTL_DAYS = 30
  * it when the trial ends. Only one trial per user, workspace and card.
  */
 export const TRIAL_PERIOD_DAYS = 7
-export const TRIAL_ELIGIBLE_PLANS: readonly PlanId[] = ['basic', 'pro', 'business']
+// Pro is retired (SHO-339/SHO-397): no new Pro trial can start through any
+// path. Existing Pro subscriptions keep their plan until the migration moves
+// them to Business at renewal.
+export const TRIAL_ELIGIBLE_PLANS: readonly PlanId[] = ['basic', 'business']
 
 /**
  * Promo credit that can still be spent at `now`. Zero once the credit has
