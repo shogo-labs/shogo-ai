@@ -160,6 +160,53 @@ describe('connect url', () => {
     expect(calls.find((entry) => entry.path === '/connect/tiktok').query.forceReauth).toBeUndefined()
   })
 
+  test('a Facebook Login connect asks Zernio for it, and keeps the reconnect row', async () => {
+    providerReply = { '/connect/instagram': { authUrl: 'https://zernio.com/oauth/instagram' } }
+    store.accounts.push({
+      id: 'acct_1',
+      workspaceId: 'ws_1',
+      zernioAccountId: 'zernio_ig',
+      platform: 'instagram',
+      isActive: true,
+    })
+
+    await connectUrl({
+      workspaceId: 'ws_1',
+      workspaceName: 'Acme',
+      platform: 'instagram',
+      redirectUrl: 'https://api.example.com/return',
+      loginMethod: 'facebook_login',
+      reconnectAccountId: 'acct_1',
+    })
+
+    const call = calls.find((entry) => entry.path === '/connect/instagram')
+    expect(call.query.loginMethod).toBe('facebook_login')
+    // Reconnecting keeps the same provider account, so its row, automations and
+    // history survive the switch to Facebook Login.
+    expect(call.query.reconnectAccountId).toBe('zernio_ig')
+  })
+
+  test('loginMethod is Instagram only, and an unknown value is refused', async () => {
+    providerReply = { '/connect/tiktok': { authUrl: 'https://zernio.com/oauth/tiktok' } }
+    await connectUrl({
+      workspaceId: 'ws_1',
+      workspaceName: 'Acme',
+      platform: 'tiktok',
+      redirectUrl: 'https://api.example.com/return',
+      loginMethod: 'facebook_login',
+    })
+    expect(calls.find((entry) => entry.path === '/connect/tiktok').query.loginMethod).toBeUndefined()
+
+    const error = await connectUrl({
+      workspaceId: 'ws_1',
+      workspaceName: 'Acme',
+      platform: 'instagram',
+      redirectUrl: 'https://api.example.com/return',
+      loginMethod: 'password',
+    }).catch((err) => err)
+    expect(error.code).toBe('invalid_login_method')
+  })
+
   test('a reconnect resolves our row id to the provider id it belongs to', async () => {
     store.accounts.push({
       id: 'acct_1',

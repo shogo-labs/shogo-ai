@@ -547,6 +547,110 @@ describe('the body Zernio actually reads', () => {
   })
 })
 
+describe('licensed music on a Reel', () => {
+  const REEL = 'https://cdn.example.com/reel.mp4'
+
+  test('audio goes out as audioConfiguration on the Instagram target only', async () => {
+    providerReply = { id: 'zernio_post_30' }
+    await createPost('ws_1', 'Acme', {
+      content: 'With music',
+      accountIds: ['acct_ig', 'acct_tt'],
+      mediaUrls: [REEL],
+      audio: { audioId: '1234567890', audioVolume: 80, videoVolume: 100 },
+      publishNow: true,
+    })
+
+    const platforms = calls.find((call) => call.path === '/posts').body.platforms
+    const instagram = platforms.find((platform: any) => platform.accountId === 'zernio_ig')
+    expect(instagram.platformSpecificData).toEqual({
+      audioConfiguration: { audioId: '1234567890', audioVolume: 80, videoVolume: 100 },
+    })
+    const tiktok = platforms.find((platform: any) => platform.accountId === 'zernio_tt')
+    expect(tiktok.platformSpecificData.audioConfiguration).toBeUndefined()
+  })
+
+  test('a variant’s own audioConfiguration wins over the post-level track', async () => {
+    providerReply = { id: 'zernio_post_31' }
+    await createPost('ws_1', 'Acme', {
+      content: 'Per-account track',
+      accountIds: ['acct_ig'],
+      mediaUrls: [REEL],
+      audio: { audioId: '111' },
+      variants: {
+        acct_ig: { platformSpecificData: { audioConfiguration: { audioId: '222', audioVolume: 10 } } },
+      },
+      publishNow: true,
+    })
+
+    const instagram = calls
+      .find((call) => call.path === '/posts')
+      .body.platforms.find((platform: any) => platform.accountId === 'zernio_ig')
+    expect(instagram.platformSpecificData.audioConfiguration).toEqual({ audioId: '222', audioVolume: 10 })
+  })
+
+  test('without audio the request body is exactly what it was before', async () => {
+    providerReply = { id: 'zernio_post_32' }
+    await createPost('ws_1', 'Acme', {
+      content: 'No music',
+      accountIds: ['acct_ig'],
+      mediaUrls: [REEL],
+      publishNow: true,
+    })
+
+    const sent = calls.find((call) => call.path === '/posts')
+    expect(sent.body).toEqual({
+      profileId: 'zernio_profile_1',
+      content: 'No music',
+      platforms: [{ accountId: 'zernio_ig', platform: 'instagram' }],
+      mediaItems: [{ url: REEL, type: 'video' }],
+      publishNow: true,
+    })
+  })
+
+  test('an image, a carousel or a Story is refused before Zernio is called', async () => {
+    const image = await createPost('ws_1', 'Acme', {
+      content: 'Still frame',
+      accountIds: ['acct_ig'],
+      mediaUrls: [IMAGE],
+      audio: { audioId: '1234567890' },
+      publishNow: true,
+    }).catch((err) => err)
+    expect(image.code).toBe('audio_needs_reel')
+    expect(image.message).toContain('instagram @brand.ig')
+
+    const carousel = await createPost('ws_1', 'Acme', {
+      content: 'Two clips',
+      accountIds: ['acct_ig'],
+      mediaUrls: [REEL, REEL],
+      audio: { audioId: '1234567890' },
+      publishNow: true,
+    }).catch((err) => err)
+    expect(carousel.code).toBe('audio_needs_reel')
+
+    expect(calls.filter((call) => call.path === '/posts')).toHaveLength(0)
+  })
+
+  test('a malformed track is refused rather than sent', async () => {
+    const notNumeric = await createPost('ws_1', 'Acme', {
+      content: 'Bad id',
+      accountIds: ['acct_ig'],
+      mediaUrls: [REEL],
+      audio: { audioId: 'track-abc' },
+      publishNow: true,
+    }).catch((err) => err)
+    expect(notNumeric.code).toBe('invalid_audio')
+
+    const badVolume = await createPost('ws_1', 'Acme', {
+      content: 'Bad volume',
+      accountIds: ['acct_ig'],
+      mediaUrls: [REEL],
+      audio: { audioId: '1234567890', audioVolume: 140 },
+      publishNow: true,
+    }).catch((err) => err)
+    expect(badVolume.code).toBe('invalid_audio')
+  })
+})
+
 describe('deleting a post that never went live', () => {
   test('a draft is dropped here and never sent to the provider', async () => {
     const post = await createPost('ws_1', 'Acme', { content: 'Idea', accountIds: [], draft: true })

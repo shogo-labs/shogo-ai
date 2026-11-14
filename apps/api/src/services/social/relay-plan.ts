@@ -130,6 +130,11 @@ export function planRelayRequest(args: {
     // device already has signed in.
     if (typeof args.query.forceReauth === 'string') query.forceReauth = args.query.forceReauth
     if (typeof args.query.expectedUsername === 'string') query.expectedUsername = args.query.expectedUsername
+    // Instagram Login or Facebook Login. Only the two literals are forwarded, so
+    // a desktop cannot smuggle an arbitrary value into the provider's OAuth state.
+    if (args.query.loginMethod === 'instagram_login' || args.query.loginMethod === 'facebook_login') {
+      query.loginMethod = args.query.loginMethod
+    }
     if (typeof args.query.reconnectAccountId === 'string') {
       query.reconnectAccountId = args.query.reconnectAccountId
     }
@@ -205,6 +210,32 @@ export function planRelayRequest(args: {
       path: `/accounts/${encodeURIComponent(seg[1]!)}`,
       query: { profileId: args.profile!.zernioProfileId },
       body: method === 'PATCH' ? { profileId: args.profile!.zernioProfileId } : undefined,
+      verifyAccountId: seg[1]!,
+    }
+  }
+
+  // ── Instagram audio: the licensed music / original-sound catalog ────────
+  //
+  // A read, but it is scoped to one account: the account has to be proved to
+  // belong to this workspace before the provider is asked, and only the two
+  // search filters are forwarded. `audioId` is a path segment, so it is
+  // encoded rather than passed through.
+  if (seg[0] === 'accounts' && seg[2] === 'instagram' && seg[3] === 'audio' && (seg.length === 4 || seg.length === 5)) {
+    const missing = needsProfile(args.profile)
+    if (missing) return missing
+    if (method !== 'GET') {
+      return deny(405, 'method_not_allowed', `${method} ${args.path} is not relayed`)
+    }
+    const query: Record<string, string> = {}
+    for (const key of ['audioType', 'q']) {
+      const value = args.query[key]
+      if (typeof value === 'string' && value) query[key] = value
+    }
+    const base = `/accounts/${encodeURIComponent(seg[1]!)}/instagram/audio`
+    return {
+      kind: 'forward',
+      path: seg.length === 5 ? `${base}/${encodeURIComponent(seg[4]!)}` : base,
+      query,
       verifyAccountId: seg[1]!,
     }
   }

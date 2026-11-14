@@ -10852,6 +10852,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       `Actions: "profile" and "recent_posts" take a handle; ` +
       `"connect" takes a platform and returns a sign-in LINK to give the person — never ask for or accept a username, password or 2FA code; ` +
       `"accounts" lists the connected accounts and their ids; ` +
+      `"audio" searches Instagram's licensed music / original sounds for a connected Instagram account (omit query for trending) and returns audio ids to pass to "post" as \`audio\`; it needs the account connected with Facebook Login; ` +
       `"post" publishes or schedules one post to one or more accounts (content, account_ids, media, scheduled_for/publish_now/draft); ` +
       `"posts" lists posts, "calendar" the schedule and "analytics" the numbers; ` +
       `"delete" takes a post_id and removes a draft, a scheduled or failed post, or a published one — it unpublishes each target the provider can remove, and returns the ones the person has to remove in the Instagram / TikTok / Snapchat app with their links; ` +
@@ -10874,6 +10875,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
           Type.Literal('automate'),
           Type.Literal('connect'),
           Type.Literal('accounts'),
+          Type.Literal('audio'),
           Type.Literal('post'),
           Type.Literal('posts'),
           Type.Literal('delete'),
@@ -10882,7 +10884,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         ],
         {
           description:
-            'profile | recent_posts | inbox | reply | comment_reply | automate | connect | accounts | post | posts | delete | calendar | analytics',
+            'profile | recent_posts | inbox | reply | comment_reply | automate | connect | accounts | audio | post | posts | delete | calendar | analytics',
         },
       ),
       platform: Type.Optional(
@@ -10975,6 +10977,34 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
             'For action "post": JSON TikTok settings, e.g. {"privacyLevel":"PUBLIC_TO_EVERYONE","contentPreviewConfirmed":true,"expressConsentGiven":true} for a direct post. Omit it and the video goes to the creator\'s TikTok inbox as a draft (the safe default).',
         }),
       ),
+      audio: Type.Optional(
+        Type.String({
+          description:
+            'For action "post": JSON Instagram Reel track, e.g. {"audio_id":"1234567890","audio_volume":80,"video_volume":100}. Get audio_id from action "audio". Applies to every Instagram target; other platforms ignore it. The Instagram target must be a single video (a Reel) — an image, carousel or Story is refused.',
+        }),
+      ),
+      audio_type: Type.Optional(
+        Type.Union([Type.Literal('music'), Type.Literal('original_sound')], {
+          description: 'For action "audio": which half of the catalog to search. Defaults to music.',
+        }),
+      ),
+      query: Type.Optional(
+        Type.String({
+          description: 'For action "audio": what to search for. Omit it to get what is trending.',
+        }),
+      ),
+      audio_id: Type.Optional(
+        Type.String({
+          description:
+            'For action "audio": re-check one track id and refresh its preview URL (a track id is only good for about a day and a half). Omit it to search.',
+        }),
+      ),
+      login_method: Type.Optional(
+        Type.Union([Type.Literal('instagram_login'), Type.Literal('facebook_login')], {
+          description:
+            'For action "connect" with platform "instagram": how to sign in. "facebook_login" goes through the Facebook Page linked to the Instagram account and is the only way to use licensed music on Reels. Defaults to Instagram Login.',
+        }),
+      ),
       expected_username: Type.Optional(
         Type.String({
           description:
@@ -11029,6 +11059,11 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         post_id?: unknown
         allow_duplicate?: unknown
         tiktok?: unknown
+        audio?: unknown
+        audio_type?: unknown
+        query?: unknown
+        audio_id?: unknown
+        login_method?: unknown
         expected_username?: unknown
         force_reauth?: unknown
         status?: unknown
@@ -11052,6 +11087,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         'automate',
         'connect',
         'accounts',
+        'audio',
         'post',
         'posts',
         'delete',
@@ -11083,10 +11119,12 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
           })
         }
         const expected = String(params.expected_username ?? '').trim().replace(/^@+/, '')
+        const loginMethod = String(params.login_method ?? '').trim().toLowerCase()
         const result = await socialInternalCall(ctx, 'POST', '/social/connect', {
           platform,
           ...(expected ? { expectedUsername: expected } : {}),
           ...(params.force_reauth === true ? { forceReauth: true } : {}),
+          ...(loginMethod ? { loginMethod } : {}),
         })
         if (!result.ok) {
           return textResult({ error: result.error, code: result.code, suggestion: result.suggestion })
@@ -11100,7 +11138,9 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
             `Give the person this link and ask them to open it in a browser and sign in on ${platformLabel(platform)}'s own page. ` +
             `When they finish they land on a page saying the account is connected; run action "accounts" to see it. ` +
             (platform === 'instagram'
-              ? 'Instagram needs a professional (Business or Creator) account to publish — Instagram converts a personal one during sign-in.'
+              ? loginMethod === 'facebook_login'
+                ? 'They must pick the Facebook Page linked to their Instagram account — that is what makes licensed music on Reels available.'
+                : 'Instagram needs a professional (Business or Creator) account to publish — Instagram converts a personal one during sign-in.'
               : ''),
           never:
             'Never ask for, accept or store a username, password or 2FA code: Shogo never sees them, and this flow never needs them.',
@@ -11124,6 +11164,59 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
             active: account.isActive !== false,
             needs_reconnect: account.needsReconnect === true,
           })),
+        })
+      }
+
+      if (action === 'audio') {
+        const accountId = String(params.account_id ?? '').trim()
+        if (!accountId) {
+          return textResult({
+            error: 'account_id is required: run action "accounts" and pass the Instagram account_id.',
+          })
+        }
+        const audioId = String(params.audio_id ?? '').trim()
+        const query = new URLSearchParams()
+        if (!audioId) {
+          const audioType = String(params.audio_type ?? '').trim()
+          if (audioType) query.set('audioType', audioType)
+          const q = String(params.query ?? '').trim()
+          if (q) query.set('q', q)
+        }
+        const path = audioId
+          ? `/social/accounts/${encodeURIComponent(accountId)}/instagram/audio/${encodeURIComponent(audioId)}`
+          : `/social/accounts/${encodeURIComponent(accountId)}/instagram/audio${query.toString() ? `?${query.toString()}` : ''}`
+        const result = await socialInternalCall(ctx, 'GET', path)
+        if (!result.ok) {
+          return textResult({
+            error: result.error,
+            code: result.code,
+            suggestion:
+              result.code === 'instagram_audio_requires_facebook_login'
+                ? 'That account is on Instagram Login. Reconnect it with login_method "facebook_login" (through the Facebook Page linked to it), then search again.'
+                : result.code === 'not_instagram'
+                  ? 'Audio is Instagram-only: pass an Instagram account_id from action "accounts".'
+                  : result.suggestion,
+          })
+        }
+        const tracks: any[] = Array.isArray(result.data?.audio) ? result.data.audio : []
+        return textResult({
+          count: tracks.length,
+          audio: tracks.map((track: any) => ({
+            audio_id: track.audioId,
+            title: track.title,
+            audio_type: track.audioType,
+            duration_ms: track.durationMs,
+            artist: track.artist,
+            preview_url: track.downloadUrl,
+          })),
+          licensing: result.data?.licensing ?? null,
+          note: audioId
+            ? tracks.length
+              ? 'Track is still available; its preview URL is refreshed.'
+              : 'That track id is no longer in the catalog — search again and pick another.'
+            : tracks.length
+              ? 'Pass an audio_id to action "post" as audio: {"audio_id":"…","audio_volume":80,"video_volume":100}. The Instagram target must be a single video (a Reel).'
+              : 'No tracks came back. Try a different query, or audio_type "original_sound".',
         })
       }
 
@@ -11197,6 +11290,14 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
 
         const scheduledFor = String(params.scheduled_for ?? '').trim()
         const tiktok = parseJsonObject(params.tiktok)
+        const audioInput = parseJsonObject(params.audio)
+        const audio = audioInput
+          ? {
+              ...(audioInput.audio_id !== undefined ? { audioId: audioInput.audio_id } : {}),
+              ...(audioInput.audio_volume !== undefined ? { audioVolume: audioInput.audio_volume } : {}),
+              ...(audioInput.video_volume !== undefined ? { videoVolume: audioInput.video_volume } : {}),
+            }
+          : undefined
         const created = await socialInternalCall(ctx, 'POST', '/social/posts', {
           content,
           accountIds: targetIds,
@@ -11206,6 +11307,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
           ...(params.publish_now === true ? { publishNow: true } : {}),
           ...(isDraft ? { draft: true } : {}),
           ...(tiktok ? { tiktok } : {}),
+          ...(audio ? { audio } : {}),
           ...(params.allow_duplicate === true ? { allowDuplicate: true } : {}),
         })
         if (!created.ok) return textResult({ error: created.error, suggestion: created.suggestion })

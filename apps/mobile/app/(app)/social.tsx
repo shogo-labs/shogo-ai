@@ -35,6 +35,7 @@ import { openAuthFlow, preCreateAuthWindow } from '@shogo/ui-kit/platform'
 import {
   CalendarDays,
   CheckCheck,
+  Facebook,
   Instagram,
   MessageCircle,
   Music2,
@@ -167,7 +168,7 @@ export default function SocialScreen() {
    * so the platform re-authorises that account instead of adding a second one.
    */
   const connectAccount = useCallback(
-    async (platform: string, reconnectAccountId?: string) => {
+    async (platform: string, reconnectAccountId?: string, loginMethod?: string) => {
       if (connecting) return
       setConnecting(reconnectAccountId ?? platform)
       setNotice(null)
@@ -175,7 +176,11 @@ export default function SocialScreen() {
       try {
         const res = await call('/connect', {
           method: 'POST',
-          body: { platform, ...(reconnectAccountId ? { reconnectAccountId } : {}) },
+          body: {
+            platform,
+            ...(reconnectAccountId ? { reconnectAccountId } : {}),
+            ...(loginMethod ? { loginMethod } : {}),
+          },
         })
         const url = typeof res?.url === 'string' ? res.url.trim() : ''
         if (!url) throw new Error('The platform did not return a sign-in link. Try again in a moment.')
@@ -361,7 +366,7 @@ function AccountsTab({
   analytics: any | null
   /** The platform or account id whose sign-in is currently being opened. */
   connecting: string | null
-  onConnect: (platform: string, reconnectAccountId?: string) => void
+  onConnect: (platform: string, reconnectAccountId?: string, loginMethod?: string) => void
 }) {
   return (
     <>
@@ -397,6 +402,27 @@ function AccountsTab({
           Instagram needs a professional (Business or Creator) account, and it
           switches your account over during that sign-in.
         </Text>
+        {/*
+          Licensed music on Reels is served by Meta only to an account signed in
+          through a Facebook Page, so the Facebook route is a second, explicit
+          choice rather than a hidden default.
+        */}
+        <Pressable
+          disabled={!!connecting}
+          onPress={() => onConnect('instagram', undefined, 'facebook_login')}
+          className={`flex-row items-center gap-1.5 self-start px-3 py-2 mt-1 rounded-lg border ${
+            connecting ? 'border-border opacity-60' : 'border-border'
+          }`}
+        >
+          {connecting === 'instagram' ? (
+            <ActivityIndicator size="small" />
+          ) : (
+            <Facebook size={14} className="text-foreground" />
+          )}
+          <Text className="text-xs font-medium text-foreground">
+            Connect Instagram with Facebook (needed for music on Reels)
+          </Text>
+        </Pressable>
       </Card>
 
       {accounts.length === 0 ? (
@@ -427,18 +453,32 @@ function AccountsTab({
                 {account.needsReconnect ? ' — token expired' : ''}
               </Text>
               {needsAttention ? (
-                <Pressable
-                  disabled={!!connecting}
-                  onPress={() => onConnect(account.platform, account.id)}
-                  className="flex-row items-center gap-1.5 self-start px-2.5 py-1.5 mt-1 rounded-lg border border-border"
-                >
-                  {busy ? (
-                    <ActivityIndicator size="small" />
-                  ) : (
-                    <RefreshCw size={12} className="text-foreground" />
-                  )}
-                  <Text className="text-xs font-medium text-foreground">Reconnect</Text>
-                </Pressable>
+                <View className="flex-row flex-wrap gap-2 mt-1">
+                  <Pressable
+                    disabled={!!connecting}
+                    onPress={() => onConnect(account.platform, account.id)}
+                    className="flex-row items-center gap-1.5 self-start px-2.5 py-1.5 rounded-lg border border-border"
+                  >
+                    {busy ? (
+                      <ActivityIndicator size="small" />
+                    ) : (
+                      <RefreshCw size={12} className="text-foreground" />
+                    )}
+                    <Text className="text-xs font-medium text-foreground">Reconnect</Text>
+                  </Pressable>
+                  {account.platform === 'instagram' ? (
+                    <Pressable
+                      disabled={!!connecting}
+                      onPress={() => onConnect('instagram', account.id, 'facebook_login')}
+                      className="flex-row items-center gap-1.5 self-start px-2.5 py-1.5 rounded-lg border border-border"
+                    >
+                      <Facebook size={12} className="text-foreground" />
+                      <Text className="text-xs font-medium text-foreground">
+                        Reconnect with Facebook (music on Reels)
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                </View>
               ) : null}
             </Card>
           )
