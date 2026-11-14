@@ -1,0 +1,31 @@
+{
+  "artifactId": "shogo-ide-server-0feedbf3d9ba-9ec3aac85815",
+  "commit": "0feedbf3d9bac4e27e50d5475fe45336a67fbd7b",
+  "inputsHash": "9ec3aac8581568ad88d4defb291fc1a168be9f02fa5b438ec4d7fae75b057adb",
+  "assets": {
+    "win32-x64": {
+      "file": "shogo-ide-server-0feedbf3d9ba-9ec3aac85815-win32-x64.tar.gz",
+      "url": "https://github.com/shogo-labs/shogo-ai/releases/download/shogo-ide-server-0feedbf3d9ba-9ec3aac85815/shogo-ide-server-0feedbf3d9ba-9ec3aac85815-win32-x64.tar.gz",
+      "sha256": "853866b4a4a51415e49e98dffaef0a17893431fcde5e5abd4b7cd8e256e38f42",
+      "size": 146973070
+    },
+    "darwin-arm64": {
+      "file": "shogo-ide-server-0feedbf3d9ba-9ec3aac85815-darwin-arm64.tar.gz",
+      "url": "https://github.com/shogo-labs/shogo-ai/releases/download/shogo-ide-server-0feedbf3d9ba-9ec3aac85815/shogo-ide-server-0feedbf3d9ba-9ec3aac85815-darwin-arm64.tar.gz",
+      "sha256": "d7497a655fc44370e5151fc45a704b9c8c34c342aa51ad71eb9db4d13121d231",
+      "size": 149181058
+    },
+    "darwin-x64": {
+      "file": "shogo-ide-server-0feedbf3d9ba-9ec3aac85815-darwin-x64.tar.gz",
+      "url": "https://github.com/shogo-labs/shogo-ai/releases/download/shogo-ide-server-0feedbf3d9ba-9ec3aac85815/shogo-ide-server-0feedbf3d9ba-9ec3aac85815-darwin-x64.tar.gz",
+      "sha256": "e76575e462faa0f69bfabb2f03ac74291934c791fdae907f6f4c97bedfa39872",
+      "size": 162067311
+    },
+    "linux-x64": {
+      "file": "shogo-ide-server-0feedbf3d9ba-9ec3aac85815-linux-x64.tar.gz",
+      "url": "https://github.com/shogo-labs/shogo-ai/releases/download/shogo-ide-server-0feedbf3d9ba-9ec3aac85815/shogo-ide-server-0feedbf3d9ba-9ec3aac85815-linux-x64.tar.gz",
+      "sha256": "b292b52219e02caaad603a102d471343c62c91ba7e3cc52578b385e72f532e7f",
+      "size": 164551316
+    }
+  }
+}

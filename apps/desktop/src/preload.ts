@@ -3,6 +3,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { AudioCaptureManager, type PcmChunkMessage } from './audio/audio-capture-manager'
 import type { IslandConfig } from './island-protocol'
+import type { CodeWorkbenchStatus } from './code-oss-server/status'
 
 const portArg = process.argv.find((a) => a.startsWith('--api-port='))
 const apiPort = portArg ? portArg.split('=')[1] : '39100'
@@ -205,7 +206,16 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   setBadgeCount: (count: number) => ipcRenderer.invoke('set-badge-count', count),
 
   codeWorkbench: {
+    /** Returns at once (`{ ok: true, pending: true }`); progress arrives through `onStatus`. */
     open: (opts?: { projectId?: string; workspacePath?: string }) => ipcRenderer.invoke('code-workbench:open', opts ?? {}),
+    onStatus: (callback: (status: CodeWorkbenchStatus) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, status: CodeWorkbenchStatus) => callback(status)
+      ipcRenderer.on('code-workbench:status', listener)
+      return () => {
+        ipcRenderer.removeListener('code-workbench:status', listener)
+      }
+    },
+    openLog: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('code-workbench:open-log'),
   },
   // Open the native folder picker for external/IDE-style projects.
   // Returns `{ ok: true, paths: string[] }` on selection or

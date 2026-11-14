@@ -41,6 +41,7 @@ import type {
   WorkspaceSubscribeOptions,
   WsFile,
   WsNode,
+  WsTreeListing,
 } from './types'
 
 // The `shogoDesktop.fs.*` surface exposed by `apps/desktop/src/preload.ts`.
@@ -67,7 +68,10 @@ export interface DesktopFsBridge {
       children?: unknown
       lazy?: boolean
       ignored?: boolean
+      stub?: boolean
     }>
+    /** Some entries are stubs because the walker's budget ran out. */
+    truncated?: boolean
     error?: string
   }>
   readFile(root: string, relPath: string): Promise<{
@@ -158,6 +162,10 @@ export class DesktopFs implements WorkspaceService {
   // ───── Read-path: IPC ────────────────────────────────────────────────────
 
   async listTree(path?: string): Promise<WsNode[]> {
+    return (await this.listTreeWithMeta(path)).nodes
+  }
+
+  async listTreeWithMeta(path?: string): Promise<WsTreeListing> {
     const res = await this.bridge.listTree(this.root, path)
     if (!res.ok) {
       // Fall back to HTTP on any bridge error rather than wedging the
@@ -165,9 +173,9 @@ export class DesktopFs implements WorkspaceService {
       // workspace directory being created — SdkFs will hit the same
       // backing store via agent-runtime and either succeed or surface a
       // proper error to the FileTree's error UI.
-      return this.sdkFs.listTree(path)
+      return this.sdkFs.listTreeWithMeta(path)
     }
-    return sortTree((res.tree ?? []).map(toWsNode))
+    return { nodes: sortTree((res.tree ?? []).map(toWsNode)), truncated: res.truncated === true }
   }
 
   async readFile(path: string): Promise<WsFile> {

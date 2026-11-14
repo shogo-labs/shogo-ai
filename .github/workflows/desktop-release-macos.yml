@@ -177,6 +177,11 @@ jobs:
       - name: Replay desktop SQLite migrations against an empty DB
         run: bun scripts/check-migrations.ts
 
+      - name: Shogo IDE server manifest matches the repo and is downloadable
+        # "Open in Shogo IDE" downloads the server archive this manifest names
+        # (#1989). A stale or unreachable manifest ships a dead button.
+        run: bun scripts/check-shogo-ide-server-manifest.ts
+
       - name: Install dependencies (for prisma migrate diff)
         run: bun install --frozen-lockfile --ignore-scripts
 
@@ -763,6 +768,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify packaged Shogo IDE resources
+        # Bundled Bun, apps/shogo-ide (incl. the prebuilt-server manifest) and
+        # no unresolved workspace-source requires in app.asar.
+        working-directory: apps/desktop
+        run: node scripts/assert-packaged-shogo-ide.mjs out
+
       - name: Cleanup macOS Signing Keychain
         if: always()
         run: |
@@ -798,14 +809,17 @@ jobs:
     name: Boot smoke test (macOS x64 / Intel)
     needs: build-desktop
     runs-on: macos-15-intel
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # The smoke imports the dependency-free PTY frame codec from pty-core.
+          # The smoke imports the dependency-free PTY frame codec from pty-core;
+          # the Playwright specs live in apps/desktop/e2e.
           sparse-checkout: |
             scripts/ci
             packages/pty-core/src
+            apps/desktop/e2e
+            package.json
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -929,6 +943,27 @@ jobs:
           fi
           echo "::error::Boot smoke test TIMED OUT — neither healthy nor fatal marker appeared within ~240s. See logs above."
           exit 1
+
+      # #1989: explorer completeness and "Open in Shogo IDE" (download, start,
+      # reopen, failure dialog) against the release build itself.
+      - name: Playwright specs against the packaged app
+        working-directory: apps/desktop/e2e
+        env:
+          PLAYWRIGHT_E2E: '1'
+        run: |
+          set -euo pipefail
+          npm init -y > /dev/null
+          npm install --no-save --no-audit --no-fund "@playwright/test@$(node -p "require('../../../package.json').devDependencies['@playwright/test']")"
+          export SHOGO_E2E_EXECUTABLE="$(cd ../../.. && pwd)/${{ steps.extract.outputs.app }}/Contents/MacOS/Shogo"
+          npx playwright test --config playwright.config.ts explorer-folder-project.spec.ts shogo-ide-open.spec.ts
+
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: boot-smoke-macos-playwright
+          path: test-results/notetaker-e2e
+          retention-days: 7
 
   release:
     name: Create Release

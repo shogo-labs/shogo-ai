@@ -99,6 +99,10 @@ import { getActiveEnvKey, telemetryEnvFor } from "../lib/env-override";
 import { getRuntimeAppEnv } from "../lib/runtime-env";
 
 import { isNoiseEvent } from "../lib/sentry-noise-filter";
+import { installWebAlert } from "../lib/web-alert";
+import { WebAlertHost } from "../components/web-alert/WebAlertHost";
+
+installWebAlert();
 
 Sentry.init({
   dsn: sentryDsn,
@@ -275,6 +279,7 @@ function AuthenticatedAppShell({
           </Stack>
         </ShareFileHost>
         {!bare && <EnvironmentBadge />}
+        {Platform.OS === "web" && !island && <WebAlertHost />}
       </BuddyLookProvider>
     </ActiveInstanceProvider>
   );

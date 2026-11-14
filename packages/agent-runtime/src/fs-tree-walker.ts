@@ -91,9 +91,13 @@ export const WORKSPACE_TREE_IGNORE_FILES: readonly string[] = [
 /**
  * Defensive caps. These are intentionally generous — they exist to keep a
  * runaway walk (symlink cycle, mis-mounted FUSE, 10⁶-file repo) from
- * hanging the UI, NOT to enforce a product limit. When tripped, the walker
- * returns the partial tree silently; the user sees what it managed to
- * scan and lazy-expansion still works for the rest.
+ * hanging the UI, NOT to enforce a product limit. When one trips, the walker
+ * stops calling `stat` and stops descending, but still lists every name in
+ * the directory it is reading: the rest come back as `stub: true` entries
+ * (directories also `lazy: true`), and `walkFilesTreeWithMeta` reports
+ * `truncated`. The time budget is wall-clock, so a stalled event loop trips
+ * it too; dropping names there made the explorer show a handful of
+ * dot-files for a 200-entry folder (#1989).
  */
 const DEFAULT_MAX_ENTRIES = 50_000
 const DEFAULT_MAX_DEPTH = 24
@@ -129,6 +133,22 @@ export interface WorkspaceTreeNode {
    * are expected to render them dimmed.
    */
   ignored?: boolean
+  /**
+   * True when a defensive cap tripped before this entry was `stat`ed: the
+   * name and type are real, `modified` is 0 and `size` is absent.
+   */
+  stub?: boolean
+}
+
+export type WalkTruncatedReason = 'time' | 'entries' | 'aborted'
+
+export interface WalkFilesTreeResult {
+  tree: WorkspaceTreeNode[]
+  /** A defensive cap tripped; some entries are stubs or unexpanded. */
+  truncated: boolean
+  truncatedReason?: WalkTruncatedReason
+  elapsedMs: number
+  entriesScanned: number
 }
 
 /**
@@ -214,6 +234,7 @@ interface WalkState {
   deadline: number
   signal?: AbortSignal
   entriesScanned: number
+  truncatedReason?: WalkTruncatedReason
 }
 
 /**
@@ -299,10 +320,44 @@ function chainIgnores(chain: IgnoreLayer[], absPath: string, isDir: boolean): bo
 }
 
 function withinBudget(state: WalkState): boolean {
-  if (state.entriesScanned >= state.maxEntries) return false
-  if (Date.now() >= state.deadline) return false
-  if (state.signal?.aborted) return false
-  return true
+  if (state.truncatedReason) return false
+  if (state.signal?.aborted) state.truncatedReason = 'aborted'
+  else if (state.entriesScanned >= state.maxEntries) state.truncatedReason = 'entries'
+  else if (Date.now() >= state.deadline) state.truncatedReason = 'time'
+  return !state.truncatedReason
+}
+
+/**
+ * Entry for a name read after the budget ran out: no `stat` (except to
+ * classify a symlink or junction), no descent. Applies the same hidden and
+ * ignore rules as a full entry.
+ */
+async function stubEntry(
+  entry: { name: string; isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean },
+  absPath: string,
+  relPath: string,
+  state: WalkState,
+  chain: IgnoreLayer[],
+): Promise<WorkspaceTreeNode | null> {
+  let isDir = entry.isDirectory()
+  if (entry.isSymbolicLink() || (!isDir && !entry.isFile())) {
+    try {
+      isDir = (await fsp.stat(absPath)).isDirectory()
+    } catch {
+      return null
+    }
+  }
+  if (isDir ? state.hiddenDirs.has(entry.name) : state.hiddenFiles.has(entry.name)) return null
+  const ignored = chain.length > 0 && chainIgnores(chain, absPath, isDir)
+  return {
+    name: entry.name,
+    path: relPath,
+    type: isDir ? 'directory' : 'file',
+    modified: 0,
+    stub: true,
+    ...(isDir ? { lazy: true } : {}),
+    ...(ignored ? { ignored: true } : {}),
+  }
 }
 
 /**
@@ -345,11 +400,15 @@ async function walkInner(
   }
   const results: WorkspaceTreeNode[] = []
   for (const entry of entries) {
-    if (!withinBudget(state)) break
     const absPath = join(dir, entry.name)
     // Always emit POSIX-style separators so Windows runtimes don't surface
     // `tools\foo\bar.ts` (which the IDE would then URL-encode as `%5C`).
     const relPath = absPath.slice(state.rootDir.length + 1).replace(/\\/g, '/')
+    if (!withinBudget(state)) {
+      const stub = await stubEntry(entry, absPath, relPath, state, localChain)
+      if (stub) results.push(stub)
+      continue
+    }
     let stat
     try {
       stat = await fsp.stat(absPath)
@@ -458,6 +517,16 @@ export async function walkFilesTree(
   rootDir: string,
   options: WalkFilesTreeOptions = {},
 ): Promise<WorkspaceTreeNode[]> {
+  return (await walkFilesTreeWithMeta(dir, rootDir, options)).tree
+}
+
+/** `walkFilesTree` plus whether (and why) a defensive cap cut the walk short. */
+export async function walkFilesTreeWithMeta(
+  dir: string,
+  rootDir: string,
+  options: WalkFilesTreeOptions = {},
+): Promise<WalkFilesTreeResult> {
+  const startedAt = Date.now()
   const respectGitignore = options.respectGitignore !== false
   const state: WalkState = {
     rootDir,
@@ -482,5 +551,19 @@ export async function walkFilesTree(
   } catch {
     /* missing dir — walkInner returns [] */
   }
-  return walkInner(dir, 0, state, ancestorChain, new Set([realStart]), realStart)
+  const tree = await walkInner(dir, 0, state, ancestorChain, new Set([realStart]), realStart)
+  const elapsedMs = Date.now() - startedAt
+  if (state.truncatedReason && state.truncatedReason !== 'aborted') {
+    console.warn(
+      `[fs-tree-walker] walk truncated (${state.truncatedReason}) after ${elapsedMs}ms, ` +
+        `${state.entriesScanned} entries stat'ed: ${dir}`,
+    )
+  }
+  return {
+    tree,
+    truncated: !!state.truncatedReason,
+    ...(state.truncatedReason ? { truncatedReason: state.truncatedReason } : {}),
+    elapsedMs,
+    entriesScanned: state.entriesScanned,
+  }
 }

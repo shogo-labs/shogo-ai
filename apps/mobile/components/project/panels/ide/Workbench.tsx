@@ -48,6 +48,8 @@ import { SearchPane, type SearchPersist, type SearchSeed } from "./SearchPane";
 import { preloadMonaco } from "./CodeEditor";
 import { applyDirty, loadDirty, saveDirty, snapshotDirty } from "./hotExit";
 import { findDir, mergeDirChildren, nearestLoadedDir, parentDir } from "./workspace/tree-merge";
+import { followTruncatedListing, listTreeMeta } from "./workspace/tree-listing";
+import { ExplorerIncompleteNotice } from "./ExplorerIncompleteNotice";
 import { OPEN_FILE_EVENT, type OpenFileDetail } from "./terminal/file-links";
 import { loadRecents, loadSession, pushRecent, saveRecents, saveSession, sessionHasTabs, snapshotSession } from "./session";
 import { SettingsPane } from "./SettingsPane";
@@ -540,15 +542,54 @@ export function Workbench({
 
   /** Lazy dirs (node_modules, dist…) the user has expanded, per root. */
   const loadedLazyRef = useRef<Record<string, Set<string>>>({});
+  /** Cancels the re-listing of a truncated directory, keyed `${rootId}:${path}`. */
+  const truncatedFollowRef = useRef<Map<string, () => void>>(new Map());
+  const followTruncated = useCallback(
+    (key: string, options: Parameters<typeof followTruncatedListing>[0]) => {
+      truncatedFollowRef.current.get(key)?.();
+      truncatedFollowRef.current.set(
+        key,
+        followTruncatedListing({
+          ...options,
+          onSettled: (stillTruncated) => {
+            truncatedFollowRef.current.delete(key);
+            options.onSettled(stillTruncated);
+          },
+        }),
+      );
+    },
+    [],
+  );
+  useEffect(() => {
+    const follows = truncatedFollowRef.current;
+    return () => {
+      for (const cancel of follows.values()) cancel();
+      follows.clear();
+    };
+  }, []);
 
   const loadRoot = useCallback(
     async (id: string) => {
       const svc = services[id];
       if (!svc) return;
-      setRoot(id, { loading: true, error: null });
+      truncatedFollowRef.current.get(`${id}:`)?.();
+      truncatedFollowRef.current.delete(`${id}:`);
+      setRoot(id, { loading: true, error: null, incomplete: false });
       try {
-        const raw = await svc.listTree("", 4);
+        const { nodes: raw, truncated } = await listTreeMeta(svc, "", 4);
         setRoot(id, { tree: annotateRoot(raw, id), loading: false });
+        // A busy runtime can run out of walk budget: every name is there but
+        // some folders are unexpanded. Show it now, list again in the background.
+        if (truncated) {
+          followTruncated(`${id}:`, {
+            fetch: () => listTreeMeta(svc, "", 4),
+            apply: ({ nodes }) =>
+              setRoots((prev) =>
+                prev.map((r) => (r.id === id ? { ...r, tree: mergeDirChildren(r.tree, annotateRoot(nodes, id)) } : r)),
+              ),
+            onSettled: (stillTruncated) => setRoot(id, { incomplete: stillTruncated }),
+          });
+        }
         // A refresh replaces every lazy dir with an unloaded stub, which
         // would collapse `node_modules`/`dist` the user already expanded
         // (their rows would turn into "empty"). Re-fetch them, parents first
@@ -579,7 +620,7 @@ export function Workbench({
         });
       }
     },
-    [services, setRoot],
+    [services, setRoot, followTruncated],
   );
 
   const refreshAllRoots = useCallback(async () => {
@@ -597,7 +638,7 @@ export function Workbench({
     async (rootId: string, path: string) => {
       const svc = services[rootId];
       if (!svc) throw new Error(`Unknown workspace: ${rootId}`);
-      const raw = await svc.listTree(path);
+      const { nodes: raw, truncated } = await listTreeMeta(svc, path);
       const children = annotateRoot(raw, rootId);
       (loadedLazyRef.current[rootId] ??= new Set()).add(path);
       setRoots((prev) =>
@@ -605,8 +646,29 @@ export function Workbench({
           r.id === rootId ? { ...r, tree: spliceSubtree(r.tree, path, children) } : r,
         ),
       );
+      if (truncated) {
+        followTruncated(`${rootId}:${path}`, {
+          fetch: () => listTreeMeta(svc, path),
+          apply: ({ nodes }) =>
+            setRoots((prev) =>
+              prev.map((r) =>
+                r.id === rootId
+                  ? {
+                      ...r,
+                      tree: spliceSubtree(
+                        r.tree,
+                        path,
+                        mergeDirChildren(findDir(r.tree, path)?.children, annotateRoot(nodes, rootId)),
+                      ),
+                    }
+                  : r,
+              ),
+            ),
+          onSettled: () => {},
+        });
+      }
     },
-    [services],
+    [services, followTruncated],
   );
 
   // Keep open editors in sync with agent filesystem writes (Cursor-style).
@@ -3736,6 +3798,7 @@ function FilesPane({
   const [collapseReq, setCollapseReq] = useState<{ nonce: number } | null>(null);
   const anyLoading = roots.some((r) => r.loading);
   const anyError = roots.find((r) => r.error);
+  const anyIncomplete = roots.some((r) => r.incomplete && !r.loading && !r.error);
 
   return (
     <div className="flex h-full flex-col">
@@ -3810,6 +3873,7 @@ function FilesPane({
           <div className="text-[color:var(--ide-muted)]">{anyError.error}</div>
         </div>
       ) : null}
+      {anyIncomplete ? <ExplorerIncompleteNotice onRefresh={onRefresh} /> : null}
 
       <div className="flex-1 overflow-auto">
         <FileTree

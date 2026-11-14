@@ -83,6 +83,34 @@ describe('?scope=project (the IDE path space)', () => {
     expect(tree.find((n) => n.name === 'agents')).toEqual(expect.objectContaining({ type: 'directory', path: 'agents' }))
   })
 
+  test('a complete tree reports truncated: false', async () => {
+    const res = await request('/agent/workspace/tree?scope=project')
+    const body = (await res.json()) as { truncated: boolean; truncatedReason?: string }
+    expect(body.truncated).toBe(false)
+    expect(body.truncatedReason).toBeUndefined()
+  })
+
+  test('an exhausted walk budget still lists every name and says so', async () => {
+    const budgetApp = workspaceFileRoutes({
+      workspaceDir: merged,
+      filesDir,
+      getProjectRoot: () => projectScopeRoot(merged, ANCHOR),
+      treeTimeBudgetMs: 0,
+    })
+    const res = await budgetApp.fetch(new Request('http://runtime/agent/workspace/tree?scope=project'))
+    const body = (await res.json()) as {
+      tree: Array<{ name: string; type: string; lazy?: boolean; stub?: boolean }>
+      truncated: boolean
+      truncatedReason?: string
+    }
+    expect(body.truncated).toBe(true)
+    expect(body.truncatedReason).toBe('time')
+    expect(body.tree.map((n) => n.name).sort()).toEqual(['agents', 'app.py'])
+    expect(body.tree.find((n) => n.name === 'agents')).toEqual(
+      expect.objectContaining({ type: 'directory', lazy: true, stub: true }),
+    )
+  })
+
   test('lazy subtree paths stay project-relative', async () => {
     const res = await request('/agent/workspace/tree?scope=project&path=agents')
     const { tree } = (await res.json()) as { tree: Array<{ name: string; path: string }> }

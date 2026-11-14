@@ -67,6 +67,18 @@ export interface FileNode {
    * true.
    */
   lazy?: boolean
+  /**
+   * True when the server's walk budget ran out before this entry was
+   * `stat`ed: the name and type are real, `modified` is 0 and `size` absent.
+   */
+  stub?: boolean
+}
+
+export interface WorkspaceTreeResult {
+  tree: FileNode[]
+  /** Some entries are stubs; fetch again for full metadata. */
+  truncated: boolean
+  truncatedReason?: 'time' | 'entries' | 'aborted'
 }
 
 export interface SearchResult {
