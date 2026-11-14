@@ -26,7 +26,7 @@ export type Provider = 'anthropic' | 'openai' | 'google' | 'local' | 'openrouter
  * Anthropic/OpenAI model names. */
 export const OPENROUTER_MODEL_PREFIX = 'openrouter:' as const
 export type ImageProvider = 'openai' | 'google' | 'local' | 'higgsfield'
-export type VideoProvider = 'higgsfield'
+export type VideoProvider = 'higgsfield' | 'google'
 export type ModelTier = 'economy' | 'standard' | 'premium'
 export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'fable' | 'gpt' | 'gemini' | 'other'
 export type ModelGeneration = 'current' | 'legacy'
@@ -210,6 +210,18 @@ export interface VideoModelEntry {
   displayName: string
   /** Text-to-video endpoint. Absent on image-to-video-only families. */
   textToVideoApiModel?: string
+  /**
+   * One upstream model id that serves every mode, for providers whose API has
+   * a single generation entry point (Google Omni). Providers with one endpoint
+   * per mode use `textToVideoApiModel` / `imageToVideoApiModel` instead.
+   */
+  apiModel?: string
+  /**
+   * Modes a single-`apiModel` provider serves (`Google Omni`): everything it
+   * can do is one `interactions` call with a different prompt or `task`.
+   * Absent for endpoint-per-mode providers, where the endpoints say it.
+   */
+  modes?: readonly ('text_to_video' | 'image_to_video' | 'reference_to_video' | 'edit' | 'extend')[]
   /** Image-to-video endpoint (animates `start_image`). */
   imageToVideoApiModel?: string
   /** Durations in seconds the model accepts. Empty when the clip follows a source video. */
@@ -224,10 +236,12 @@ export interface VideoModelEntry {
   /** Upstream list price for one clip, in USD (per-request priced providers: Higgsfield). */
   usdPerRequest?: number
   /**
-   * Price per source second by resolution tier (Genjutsu). These workflows
-   * quote no `usd` from `/estimate` — the vendor answers with a prose
-   * description of the rate card — so the numbers here are the vendor's
-   * published rates and the proxy bills `rate(resolution) × source seconds`.
+   * Price per generated second by resolution tier, for models whose vendor
+   * publishes a rate card instead of quoting a price up front. Genjutsu
+   * workflows answer `/estimate` with prose, so the proxy bills
+   * `rate(resolution) × source seconds`; Google Omni is billed from the
+   * interaction's own usage tokens on completion, and this table is the
+   * submit-time hold and the listing's advertised price.
    */
   usdPerSecondByResolution?: Record<string, number>
   /** Most reference images (character/object elements) one request accepts. */
@@ -878,8 +892,57 @@ export type ImageModelId = keyof typeof IMAGE_MODEL_CATALOG
 // Video Model Catalog
 // ---------------------------------------------------------------------------
 
+/**
+ * Google Gemini Omni, through the Interactions API (the same
+ * `POST /v1beta/interactions` Lyria uses). One model id serves every mode —
+ * text-to-video, image-to-video, reference-to-video, edit and extend — as a
+ * follow-up turn on `previous_interaction_id`.
+ *
+ * Google documents 1080p and 4K only as a *generation-time* option ("generated
+ * using upscaling"): there is no standalone upscale endpoint, so re-rendering an
+ * existing clip at a higher resolution is the follow-up turn the proxy sends.
+ *
+ * Prices are Google's published token rates converted at its per-resolution
+ * output rate (ai.google.dev/gemini-api/docs/pricing, Nov 2026): 1,931 / 5,792
+ * / 8,688 / 17,376 video tokens per second at 360p / 720p / 1080p / 4K, at
+ * $12 per million output tokens — $0.023 / $0.07 / $0.104 / $0.209 per second.
+ * Billing itself uses the interaction's own usage tokens, not this table.
+ */
+export const GOOGLE_VIDEO_MODELS = {
+  'google-omni-1.2-flash': {
+    id: 'google-omni-1.2-flash',
+    provider: 'google',
+    apiModel: 'gemini-omni-1.2-flash',
+    displayName: 'Gemini Omni 1.2 Flash',
+    modes: ['text_to_video', 'image_to_video', 'reference_to_video', 'edit', 'extend'],
+    durations: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    defaultDuration: 10,
+    aspectRatios: ['16:9', '9:16'],
+    resolutions: ['360p', '720p', '1080p', '4k'],
+    defaultResolution: '720p',
+    usdPerSecondByResolution: { '360p': 0.023, '720p': 0.07, '1080p': 0.104, '4k': 0.209 },
+    maxReferenceImages: 6,
+    audio: true,
+    endpoints: ['gemini-omni-1.2-flash'],
+    optionsByEndpoint: {
+      'gemini-omni-1.2-flash': [
+        {
+          name: 'task',
+          type: 'string',
+          enum: ['text_to_video', 'image_to_video', 'reference_to_video', 'edit', 'extend'],
+          title: 'Video task',
+          endpoints: ['gemini-omni-1.2-flash'],
+        },
+      ],
+    },
+    bestFor:
+      'Fast drafts at 360p, then upscale/edit/extend the same clip; native audio; up to 6 references',
+  },
+} as const satisfies Record<string, VideoModelEntry>
+
 export const VIDEO_MODEL_CATALOG = {
   ...HIGGSFIELD_VIDEO_MODELS,
+  ...GOOGLE_VIDEO_MODELS,
 } as const satisfies Record<string, VideoModelEntry>
 
 export type VideoModelId = keyof typeof VIDEO_MODEL_CATALOG
