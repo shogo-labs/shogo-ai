@@ -64,6 +64,8 @@ import {
   projectIdFromRef,
   requestRoute,
   scopeDenied,
+  SCOPE_ALLOWANCE_KEY,
+  SCOPE_DENIAL_KEY,
   scopeRequesterUserId,
   type InternalAuthenticate,
   type InternalIdentity,
@@ -726,6 +728,86 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     }
   })
 
+  /**
+   * Cross-workspace transport (SHO-389), in one place rather than in every
+   * route.
+   *
+   * A call from the Personal workspace's agent to *another* workspace is
+   * answered or forwarded by whichever instance owns that workspace's data: a
+   * cloud workspace from a signed-in desktop goes out through `relayToCloud`
+   * with that workspace's device key; a workspace whose compute is a paired
+   * desktop cannot be served from here, so it says `desktop_offline` instead of
+   * returning an empty 200. Every other request — and every call in the
+   * runtime's own workspace — falls straight through to the route, unchanged.
+   *
+   * The check runs here, before anything leaves the machine, because this is
+   * the only side holding the person's requester ticket and approval record.
+   * The instance that then runs the call re-checks its own rows.
+   */
+  app.use('/workspaces/:workspaceId/*', async (c, next) => {
+    const target = c.req.param('workspaceId')
+    if (!target) return next()
+    const identity = await authenticate(c)
+    if (identity?.kind !== 'workspace' || identity.workspaceId === target) return next()
+
+    const { resolveTargetHome } = await import('../lib/cross-workspace')
+    const home = await resolveTargetHome(target)
+    if (home.kind === 'local') return next()
+
+    const allowed = await authorizeCrossWorkspaceTarget(c, {
+      identity,
+      tokenWorkspaceId: identity.workspaceId,
+      targetWorkspaceId: target,
+    })
+    if (!allowed.ok) {
+      ;(c as any).set?.(SCOPE_DENIAL_KEY, allowed)
+      return scopeDenied(c)
+    }
+    // The forwarded call names the person it is for, and the routes below read
+    // them from this slot, so it has to be set here too (SHO-389).
+    ;(c as any).set?.(SCOPE_ALLOWANCE_KEY, allowed)
+
+    if (home.kind === 'cloud') {
+      const body =
+        c.req.method === 'GET' || c.req.method === 'HEAD' ? undefined : await c.req.json().catch(() => undefined)
+      const relayed = await relayToCloud(c, target, c.req.path, body)
+      if (relayed) return relayed
+      return c.json(
+        {
+          error: {
+            code: 'cloud_unreachable',
+            message: `That workspace lives in Shogo Cloud, which this machine can't reach right now.`,
+          },
+        },
+        502,
+      )
+    }
+    if (home.kind === 'desktop') {
+      const name = await (await import('../lib/prisma')).prisma.workspace
+        .findUnique({ where: { id: target }, select: { name: true } })
+        .then((w) => w?.name ?? null)
+        .catch(() => null)
+      return c.json(
+        {
+          error: {
+            code: 'desktop_offline',
+            message: `${name ?? 'That workspace'} runs on a paired desktop, which is not connected right now.`,
+          },
+        },
+        503,
+      )
+    }
+    return c.json(
+      {
+        error: {
+          code: home.code,
+          message: home.message,
+        },
+      },
+      home.code === 'not_a_member' ? 403 : home.code === 'cloud_signed_out' ? 401 : 502,
+    )
+  })
+
   // ---------------------------------------------------------------------------
   // Workspace agent profile and goals (universal workspace primitives; see
   // routes/workspace-agent.ts). Mounted here with the runtime-pod / SA
@@ -774,7 +856,9 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         // workspace it claims to be (a project with attachments runs as a workspace runtime anchored on
         // itself); with no claim it speaks as the workspace agent.
         const projectId = identity?.kind === 'project' ? identity.projectId : undefined
-        return { workspaceId, projectId }
+        // A cross-workspace call is made for a person; attribute the post to them.
+        const requesterId = scopeRequesterUserId(c)
+        return { workspaceId, projectId, ...(requesterId ? { userId: requesterId } : {}) }
       },
     }),
   )
@@ -2854,6 +2938,18 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       const value = c.req.header(name)
       if (value) crossHeaders[name] = value
     }
+    // Who the call is for: the cloud can't re-verify the ticket (different
+    // signing secret), so the desktop names the person and the Personal
+    // workspace it acted in, and the cloud believes them only from a device key.
+    {
+      const identity = await authenticate(c)
+      const requesterUserId = scopeRequesterUserId(c)
+      if (identity?.kind === 'workspace' && requesterUserId) {
+        const { CROSS_WORKSPACE_FROM_HEADER, CROSS_WORKSPACE_REQUESTER_HEADER } = await import('../lib/cross-workspace')
+        crossHeaders[CROSS_WORKSPACE_FROM_HEADER] = identity.workspaceId
+        crossHeaders[CROSS_WORKSPACE_REQUESTER_HEADER] = requesterUserId
+      }
+    }
     try {
       const upstream = await fetchUpstream(upstreamPath, {
         method: c.req.method,
@@ -2967,26 +3063,53 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       )
     }
 
-    const forwarded = await relayToCloud(
-      c,
-      targetWorkspaceId,
-      `/api/workspaces/${encodeURIComponent(targetWorkspaceId)}/cross-workspace/approvals`,
-      body,
-    )
-    if (forwarded) return forwarded
+    const {
+      CROSS_WORKSPACE_WRITE_TOOLS,
+      mintCrossWorkspaceApproval,
+      resolveTargetHome,
+      targetAccessAllows,
+      targetWorkspaceAccess,
+    } = await import('../lib/cross-workspace')
 
-    const { targetAccessAllows, targetWorkspaceAccess, mintCrossWorkspaceApproval } = await import('../lib/cross-workspace')
-    const access = await targetWorkspaceAccess(caller.userId, targetWorkspaceId)
-    if (!targetAccessAllows(access, true)) {
+    // Only a tool that may cross a workspace boundary can be approved. Without
+    // this the runtime's own refusal for `schedule_delete` and friends would be
+    // the only thing standing between a buggy (or prompt-injected) turn and an
+    // approval it should never have been given.
+    if (!CROSS_WORKSPACE_WRITE_TOOLS.has(tool)) {
       return c.json(
         {
           error: {
-            code: 'not_a_member',
-            message: 'You are not a member of that workspace with permission to change it, so there is nothing to approve.',
+            code: 'cross_workspace_unsupported',
+            message: `${tool} can't act in another workspace, so there is nothing to approve. Reports and ordinary card/chat changes are the tools that cross a boundary.`,
           },
         },
         403,
       )
+    }
+
+    // Minted here, on the instance the runtime talks to, and spent here: the
+    // approval row, its single use and the audit trail stay in one database.
+    // A cloud workspace is reached from here by `relayToCloud` *after* the
+    // spend, so forwarding the mint would leave the local side unable to spend
+    // what it never wrote.
+    const home = await resolveTargetHome(targetWorkspaceId)
+    if (home.kind === 'unreachable') {
+      const status = home.code === 'cloud_signed_out' ? 401 : home.code === 'not_a_member' ? 403 : 502
+      return c.json({ error: { code: home.code, message: home.message } }, status)
+    }
+    if (home.kind !== 'cloud') {
+      const access = await targetWorkspaceAccess(caller.userId, targetWorkspaceId)
+      if (!targetAccessAllows(access, true)) {
+        return c.json(
+          {
+            error: {
+              code: 'not_a_member',
+              message: 'You are not a member of that workspace with permission to change it, so there is nothing to approve.',
+            },
+          },
+          403,
+        )
+      }
     }
     const minted = await mintCrossWorkspaceApproval({
       callerWorkspaceId: workspaceId,

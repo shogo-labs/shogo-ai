@@ -75,6 +75,32 @@ function canonicalJson(value: unknown): string {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`
 }
 
+/**
+ * The tools whose cross-workspace call may be approved (SHO-389). Mirrors
+ * `CROSS_WORKSPACE_WRITE_TOOLS` in `packages/agent-runtime/src/cross-workspace.ts`
+ * — the runtime decides what prompts, this decides what can be *minted*, so a
+ * runtime that asks nicely for `schedule_delete` is refused with
+ * `cross_workspace_unsupported` instead of being handed an approval. The
+ * destructive and administrative tools are absent on purpose: they never cross
+ * a workspace boundary, even with a person's yes.
+ */
+export const CROSS_WORKSPACE_WRITE_TOOLS: ReadonlySet<string> = new Set([
+  'work_item_create',
+  'work_item_update',
+  'work_item_move',
+  'work_item_comment',
+  'work_item_link',
+  'work_item_bulk_update',
+  'team_chat_post',
+  'team_chat_update',
+  'team_chat_doc_update',
+  'schedule_create',
+  'schedule_update',
+  'trigger_update',
+  'agent_run_stop',
+  'project_call',
+])
+
 /** Mint the approval a runtime asks for after the person said yes. */
 export async function mintCrossWorkspaceApproval(input: {
   callerWorkspaceId: string
@@ -192,7 +218,100 @@ export function targetAccessAllows(access: AccessContext, write: boolean): boole
   return access.permissions.has(write ? 'workspace:update' : 'workspace:read')
 }
 
+/**
+ * The person a forwarded cross-workspace call was made for (SHO-389).
+ *
+ * A desktop that relays a call to a cloud workspace has already proved who it
+ * is for — it holds the person's ticket and their owned Personal workspace, and
+ * it spends the approval. The cloud cannot re-verify that ticket (different
+ * signing secret), so the desktop names the person in two headers instead. They
+ * are only believed when the caller authenticated with a **workspace device
+ * key** (the `Authorization: Bearer shogo_sk_…` a signed-in desktop uses) *and*
+ * names a Personal workspace that person actually owns — so a runtime token,
+ * which an agent can read, cannot use them to impersonate anybody.
+ */
+export const CROSS_WORKSPACE_FROM_HEADER = 'X-Cross-Workspace-From'
+export const CROSS_WORKSPACE_REQUESTER_HEADER = 'X-Cross-Workspace-Requester'
+
+export async function relayedCrossWorkspaceRequester(c: {
+  req: { header: (n: string) => string | undefined }
+}): Promise<string | null> {
+  if (!c.req.header('Authorization')?.startsWith('Bearer shogo_sk_')) return null
+  const from = c.req.header(CROSS_WORKSPACE_FROM_HEADER)
+  const userId = c.req.header(CROSS_WORKSPACE_REQUESTER_HEADER)
+  if (!from || !userId) return null
+  const caller = await db.workspace
+    .findUnique({ where: { id: from }, select: { kind: true, personalOwnerId: true } })
+    .catch(() => null)
+  if (caller?.kind !== 'personal' || caller.personalOwnerId !== userId) return null
+  return userId
+}
+
 /** Membership facts for a person in a target workspace (the person's own view). */
 export async function targetWorkspaceAccess(userId: string, targetWorkspaceId: string): Promise<AccessContext> {
   return loadAccess({ userId, via: 'session' }, { workspaceId: targetWorkspaceId })
+}
+
+/** Where a target workspace's data actually lives, from this instance's view. */
+export type TargetHome =
+  /** This instance holds the workspace: answer it here. */
+  | { kind: 'local' }
+  /** A signed-in desktop's cloud workspace: relay with its device key. */
+  | { kind: 'cloud'; key: string }
+  /** The workspace exists here but its compute is a paired desktop. */
+  | { kind: 'desktop'; hostInstanceId: string }
+  /** This instance can't reach it, and says why. */
+  | { kind: 'unreachable'; code: 'cloud_signed_out' | 'cloud_unreachable' | 'not_a_member'; message: string }
+
+/**
+ * Which instance can answer a call for `targetWorkspaceId` (SHO-389).
+ *
+ * This matters because the person's membership cannot be read from the wrong
+ * database: a signed-in desktop holds no rows for its cloud workspaces ("Nothing
+ * from those workspaces is copied into SQLite"), so `loadAccess` there answered
+ * `not_a_member` for a workspace the person plainly belongs to. For a cloud
+ * workspace the desktop holds, the cloud-issued **per-workspace device key is
+ * the membership proof** — the cloud only hands a key over for a workspace the
+ * person is in — and the cloud re-checks its own rows when it runs the call.
+ */
+export async function resolveTargetHome(targetWorkspaceId: string): Promise<TargetHome> {
+  const row = await db.workspace
+    .findUnique({ where: { id: targetWorkspaceId }, select: { hostInstanceId: true } })
+    .catch(() => null)
+  if (row && !row.hostInstanceId) return { kind: 'local' }
+  if (row?.hostInstanceId) return { kind: 'desktop', hostInstanceId: row.hostInstanceId }
+
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+    return {
+      kind: 'unreachable',
+      code: 'not_a_member',
+      message: 'That workspace does not exist, or you are not a member of it.',
+    }
+  }
+
+  const { listCloudWorkspaces } = await import('../services/cloud-workspaces')
+  const cloud = await listCloudWorkspaces().catch(() => null)
+  const entry = cloud?.workspaces.find((w) => w.id === targetWorkspaceId)
+  if (entry) {
+    return cloud?.reachable === false
+      ? {
+          kind: 'unreachable',
+          code: 'cloud_unreachable',
+          message: "Shogo Cloud can't be reached right now, so that workspace can't be read. Try again once you're back online.",
+        }
+      : { kind: 'cloud', key: entry.key }
+  }
+  if (!cloud?.user) {
+    return {
+      kind: 'unreachable',
+      code: 'cloud_signed_out',
+      message:
+        'That workspace lives in Shogo Cloud and this machine is not signed in to it. Sign in to reach your cloud workspaces.',
+    }
+  }
+  return {
+    kind: 'unreachable',
+    code: 'not_a_member',
+    message: 'You are not a member of that workspace, so it is not reachable from here.',
+  }
 }

@@ -143,7 +143,8 @@ export type InternalAuthenticate = (c: Context, projectId?: string) => Promise<I
  */
 export interface ScopeDenial {
   ok: false
-  status: 401 | 403
+  /** 502 for a target this instance cannot reach (`cloud_unreachable`). */
+  status: 401 | 403 | 502
   code: string
   message: string
 }
@@ -266,7 +267,12 @@ export function createInternalAuthorizers(authenticate: InternalAuthenticate) {
         : await (await import('../lib/project-runtime-token')).resolveProjectWorkspaceId(identity.projectId)
 
     if (tokenWorkspaceId === workspaceId) {
-      const sameWorkspace: ScopeAllowance = { ok: true, identity, userId: null }
+      // A call relayed here by the person's desktop (device key) names the person
+      // it was made for, so a cross-workspace write stays attributed to them on
+      // the side that runs it.
+      const { relayedCrossWorkspaceRequester } = await import('../lib/cross-workspace')
+      const relayedFor = await relayedCrossWorkspaceRequester(c as any)
+      const sameWorkspace: ScopeAllowance = { ok: true, identity, userId: relayedFor }
       try {
         ;(c as any).set?.(SCOPE_ALLOWANCE_KEY, sameWorkspace)
       } catch {
@@ -335,13 +341,24 @@ export function createInternalAuthorizers(authenticate: InternalAuthenticate) {
       )
     }
 
-    const { targetAccessAllows, targetWorkspaceAccess } = await import('../lib/cross-workspace')
-    const access = await targetWorkspaceAccess(ticket.userId, targetWorkspaceId)
-    if (!targetAccessAllows(access, write)) {
-      return forbidden(
-        'not_a_member',
-        `You are not a member of the target workspace (or your role there can't ${write ? 'change' : 'read'} it), so this call was refused. Only workspaces you belong to are reachable.`,
-      )
+    const { resolveTargetHome, targetAccessAllows, targetWorkspaceAccess } = await import('../lib/cross-workspace')
+    const home = await resolveTargetHome(targetWorkspaceId)
+    if (home.kind === 'unreachable') {
+      const status = home.code === 'cloud_signed_out' ? 401 : home.code === 'not_a_member' ? 403 : 502
+      return { ok: false, status, code: home.code, message: home.message }
+    }
+    // A cloud workspace on a signed-in desktop has no local rows to read, so its
+    // membership proof is the per-workspace key the cloud issued (it only issues
+    // one for a workspace the person is in); the cloud re-checks its own rows
+    // when it runs the call. Everywhere else the membership is here to read.
+    if (home.kind !== 'cloud') {
+      const access = await targetWorkspaceAccess(ticket.userId, targetWorkspaceId)
+      if (!targetAccessAllows(access, write)) {
+        return forbidden(
+          'not_a_member',
+          `You are not a member of the target workspace (or your role there can't ${write ? 'change' : 'read'} it), so this call was refused. Only workspaces you belong to are reachable.`,
+        )
+      }
     }
 
     let approvalId: string | null = null

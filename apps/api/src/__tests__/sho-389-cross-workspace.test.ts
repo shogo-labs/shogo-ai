@@ -251,3 +251,138 @@ describe('authorizeCrossWorkspace', () => {
     expect(r.json.code).toBe('not_a_member')
   })
 })
+
+/**
+ * The half the daily report actually runs from: a signed-in desktop reaching a
+ * *cloud* workspace. Those workspaces have no rows in the desktop's SQLite, so
+ * membership there cannot be read with `loadAccess` — the per-workspace device
+ * key the cloud issued is the proof, and the cloud re-checks its own rows when
+ * it runs the call.
+ */
+describe('a desktop reaching a cloud workspace', () => {
+  const CLOUD_TARGET = 'cloud-target-nada'
+  const CLOUD_KEY = 'shogo_sk_cloudtargetkey000000000000000000'
+
+  const store = async (input: { user: { id: string } | null; workspaces: Array<{ id: string; key: string }> }) => {
+    await db.localConfig.upsert({
+      where: { key: 'SHOGO_CLOUD_WORKSPACES' },
+      update: {
+        value: JSON.stringify({
+          enabled: true,
+          user: input.user ? { id: input.user.id, name: 'owner', email: 'owner@example.com' } : null,
+          workspaces: input.workspaces.map((w) => ({ id: w.id, name: 'Nada', slug: 'nada', kind: 'team', key: w.key })),
+          syncedAt: new Date().toISOString(),
+        }),
+      },
+      create: {
+        key: 'SHOGO_CLOUD_WORKSPACES',
+        value: JSON.stringify({
+          enabled: true,
+          user: input.user ? { id: input.user.id, name: 'owner', email: 'owner@example.com' } : null,
+          workspaces: input.workspaces.map((w) => ({ id: w.id, name: 'Nada', slug: 'nada', kind: 'team', key: w.key })),
+          syncedAt: new Date().toISOString(),
+        }),
+      },
+    })
+    const { _resetCloudWorkspacesForTests } = await import('../services/cloud-workspaces')
+    _resetCloudWorkspacesForTests()
+  }
+
+  beforeAll(() => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+  })
+  afterAll(async () => {
+    delete process.env.SHOGO_LOCAL_MODE
+    await db.localConfig.deleteMany({ where: { key: 'SHOGO_CLOUD_WORKSPACES' } }).catch(() => undefined)
+    const { _resetCloudWorkspacesForTests } = await import('../services/cloud-workspaces')
+    _resetCloudWorkspacesForTests()
+  })
+
+  test('its home is the cloud, with the key that proves membership', async () => {
+    await store({ user: { id: ownerId }, workspaces: [{ id: CLOUD_TARGET, key: CLOUD_KEY }] })
+    const { resolveTargetHome } = await import('../lib/cross-workspace')
+    expect(await resolveTargetHome(CLOUD_TARGET)).toEqual({ kind: 'cloud', key: CLOUD_KEY })
+  })
+
+  test('a read is allowed without a local member row, so the relay can run', async () => {
+    await store({ user: { id: ownerId }, workspaces: [{ id: CLOUD_TARGET, key: CLOUD_KEY }] })
+    const r = await probe(crossProbe, 'GET', CLOUD_TARGET, {
+      'x-runtime-token': personalToken,
+      'X-Requester-Ticket': ticketFor(personalWorkspaceId, ownerId),
+    })
+    expect(r.json).toEqual({ ok: true, code: null, message: null, userId: ownerId })
+  })
+
+  test('a write there is still one approval, spent on use', async () => {
+    await store({ user: { id: ownerId }, workspaces: [{ id: CLOUD_TARGET, key: CLOUD_KEY }] })
+    const headers = {
+      'x-runtime-token': personalToken,
+      'X-Requester-Ticket': ticketFor(personalWorkspaceId, ownerId),
+    }
+    expect((await probe(crossProbe, 'POST', CLOUD_TARGET, headers)).json.code).toBe('approval_required')
+
+    const hash = argsHash({ column: 'Done' })
+    const minted = await mintCrossWorkspaceApproval({
+      callerWorkspaceId: personalWorkspaceId,
+      targetWorkspaceId: CLOUD_TARGET,
+      tool: 'work_item_move',
+      argsHash: hash,
+      requesterUserId: ownerId,
+    })
+    const withApproval = {
+      ...headers,
+      'X-Cross-Workspace-Approval': minted.id,
+      'X-Cross-Workspace-Tool': 'work_item_move',
+      'X-Cross-Workspace-Args-Hash': hash,
+    }
+    expect((await probe(crossProbe, 'POST', CLOUD_TARGET, withApproval)).json.ok).toBe(true)
+    expect((await probe(crossProbe, 'POST', CLOUD_TARGET, withApproval)).json.code).toBe('approval_required')
+  })
+
+  test('a workspace no key was issued for is not a member, and says so', async () => {
+    await store({ user: { id: ownerId }, workspaces: [] })
+    const r = await probe(crossProbe, 'GET', CLOUD_TARGET, {
+      'x-runtime-token': personalToken,
+      'X-Requester-Ticket': ticketFor(personalWorkspaceId, ownerId),
+    })
+    expect(r.json.code).toBe('not_a_member')
+  })
+
+  test('a signed-out desktop answers cloud_signed_out, not a misleading refusal', async () => {
+    await store({ user: null, workspaces: [] })
+    const r = await probe(crossProbe, 'GET', CLOUD_TARGET, {
+      'x-runtime-token': personalToken,
+      'X-Requester-Ticket': ticketFor(personalWorkspaceId, ownerId),
+    })
+    expect(r.json.code).toBe('cloud_signed_out')
+  })
+
+  test('a relayed call is attributed to its person only from a device key', async () => {
+    const { relayedCrossWorkspaceRequester } = await import('../lib/cross-workspace')
+    const fake = (headers: Record<string, string>) => ({ req: { header: (n: string) => headers[n] } })
+    const named = {
+      'X-Cross-Workspace-From': personalWorkspaceId,
+      'X-Cross-Workspace-Requester': ownerId,
+    }
+
+    expect(await relayedCrossWorkspaceRequester(fake({ ...named, Authorization: `Bearer ${CLOUD_KEY}` }))).toBe(ownerId)
+    // A runtime token is readable by the agent, so it must not be able to name a person.
+    expect(await relayedCrossWorkspaceRequester(fake(named))).toBeNull()
+    expect(await relayedCrossWorkspaceRequester(fake({ ...named, Authorization: 'Bearer rt_v1_other' }))).toBeNull()
+    // A Personal workspace that person does not own is not a claim to believe.
+    expect(
+      await relayedCrossWorkspaceRequester(fake({ ...named, 'X-Cross-Workspace-Requester': 'someone-else', Authorization: `Bearer ${CLOUD_KEY}` })),
+    ).toBeNull()
+  })
+})
+
+describe('what an approval may be minted for', () => {
+  test('destructive and administrative tools are not approvable', async () => {
+    const { CROSS_WORKSPACE_WRITE_TOOLS } = await import('../lib/cross-workspace')
+    for (const tool of ['schedule_delete', 'trigger_delete', 'system_apply', 'project_create', 'board_delete']) {
+      expect(CROSS_WORKSPACE_WRITE_TOOLS.has(tool)).toBe(false)
+    }
+    expect(CROSS_WORKSPACE_WRITE_TOOLS.has('work_item_move')).toBe(true)
+    expect(CROSS_WORKSPACE_WRITE_TOOLS.has('team_chat_post')).toBe(true)
+  })
+})
