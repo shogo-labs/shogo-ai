@@ -63,6 +63,8 @@ import {
   logAuthReject,
   projectIdFromRef,
   requestRoute,
+  scopeDenied,
+  scopeRequesterUserId,
   type InternalAuthenticate,
   type InternalIdentity,
 } from './internal-runtime-auth'
@@ -317,8 +319,13 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     loadGitHub,
     resolveSharedFileTarget,
   } = opts
-  const { validateAuth, authorizeWorkspaceScope, authorizeWorkspaceRuntimeRequest } =
-    createInternalAuthorizers(authenticate)
+  const {
+    validateAuth,
+    authorizeWorkspaceScope,
+    authorizeWorkspaceRuntimeRequest,
+    authorizeCrossWorkspace,
+    authorizeCrossWorkspaceTarget,
+  } = createInternalAuthorizers(authenticate)
   const app = new Hono()
 
   /**
@@ -486,7 +493,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : null
     const projectId = typeof body.projectId === 'string' ? body.projectId : undefined
     if (!(await authorizeWorkspaceScope(c, workspaceId, projectId))) {
-      return c.json({ error: 'Unauthorized' }, 401)
+      return scopeDenied(c)
     }
 
     const userId = typeof body.userId === 'string' && body.userId
@@ -630,7 +637,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     }
 
     if (!(await authorizeWorkspaceScope(c, workspaceId, projectId))) {
-      return c.json({ error: 'Unauthorized' }, 401)
+      return scopeDenied(c)
     }
 
     try {
@@ -675,7 +682,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     // token must be checked against it — otherwise any pod could write metrics
     // (and skew model-quality analytics) for a workspace it doesn't belong to.
     if (!(await authorizeWorkspaceScope(c, workspaceId, projectId))) {
-      return c.json({ error: 'Unauthorized' }, 401)
+      return scopeDenied(c)
     }
 
     const agentType = typeof body.agentType === 'string' ? body.agentType : null
@@ -733,7 +740,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       authorize: async (c): Promise<WorkspaceAgentAuthContext | Response> => {
         const workspaceId = c.req.param('workspaceId')
         if (!(await authorizeWorkspaceScope(c, workspaceId))) {
-          return c.json({ error: 'Unauthorized' }, 401)
+          return scopeDenied(c)
         }
         const identity = await authenticate(c)
         if (!identity) return c.json({ error: 'Unauthorized' }, 401)
@@ -747,7 +754,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       authorize: async (c): Promise<WorkspaceAgentAuthContext | Response> => {
         const workspaceId = c.req.param('workspaceId')
         if (!(await authorizeWorkspaceScope(c, workspaceId))) {
-          return c.json({ error: 'Unauthorized' }, 401)
+          return scopeDenied(c)
         }
         return { workspaceId }
       },
@@ -760,7 +767,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       authorize: async (c): Promise<AgentChannelAuthContext | Response> => {
         const workspaceId = c.req.param('workspaceId')
         if (!(await authorizeWorkspaceScope(c, workspaceId))) {
-          return c.json({ error: 'Unauthorized' }, 401)
+          return scopeDenied(c)
         }
         const identity = await authenticate(c)
         // A project-scoped token pins the author. A workspace runtime may speak as a project of this
@@ -778,11 +785,13 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       authorize: async (c) => {
         const workspaceId = c.req.param('workspaceId')
         if (!(await authorizeWorkspaceScope(c, workspaceId))) {
-          return c.json({ error: 'Unauthorized' }, 401)
+          return scopeDenied(c)
         }
         const identity = await authenticate(c)
         const projectId = identity?.kind === 'project' ? identity.projectId : undefined
-        return { workspaceId, projectId }
+        // A cross-workspace call is made for a person; attribute the write to them.
+        const userId = scopeRequesterUserId(c)
+        return { workspaceId, projectId, ...(userId ? { userId } : {}) }
       },
     }),
   )
@@ -795,7 +804,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       authorize: async (c) => {
         const workspaceId = c.req.param('workspaceId')
         if (!(await authorizeWorkspaceScope(c, workspaceId))) {
-          return c.json({ error: 'Unauthorized' }, 401)
+          return scopeDenied(c)
         }
         const identity = await authenticate(c)
         const projectId = identity?.kind === 'project' ? identity.projectId : undefined
@@ -813,7 +822,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.post('/workspaces/:workspaceId/chat-handoff', async (c) => {
     const workspaceId = c.req.param('workspaceId')
     if (!(await authorizeWorkspaceScope(c, workspaceId))) {
-      return c.json({ error: 'Unauthorized' }, 401)
+      return scopeDenied(c)
     }
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
     const chat = typeof body?.chat === 'string' ? body.chat.trim() : ''
@@ -864,7 +873,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.get('/workspaces/:workspaceId/chat-reachable', async (c) => {
     const workspaceId = c.req.param('workspaceId')
     if (!(await authorizeWorkspaceScope(c, workspaceId))) {
-      return c.json({ error: 'Unauthorized' }, 401)
+      return scopeDenied(c)
     }
     const ids = (c.req.query('ids') ?? '')
       .split(',')
@@ -888,7 +897,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.get('/workspaces/:workspaceId/agents-paused', async (c) => {
     const workspaceId = c.req.param('workspaceId')
     if (!(await authorizeWorkspaceScope(c, workspaceId))) {
-      return c.json({ error: 'Unauthorized' }, 401)
+      return scopeDenied(c)
     }
     const { readWorkspacePause } = await import('../services/workspace-pause.service')
     return c.json({ paused: await readWorkspacePause(workspaceId) })
@@ -1005,7 +1014,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
 
   app.get('/workspaces/:workspaceId/history/search', async (c) => {
     const workspaceId = c.req.param('workspaceId')
-    if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+    if (!(await authorizeWorkspaceScope(c, workspaceId))) return scopeDenied(c)
     const userId = await historyActorId(c, workspaceId)
     if (userId instanceof Response) return userId
     const rawKind = c.req.query('kind')
@@ -1026,7 +1035,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
 
   app.get('/workspaces/:workspaceId/history/read', async (c) => {
     const workspaceId = c.req.param('workspaceId')
-    if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+    if (!(await authorizeWorkspaceScope(c, workspaceId))) return scopeDenied(c)
     const userId = await historyActorId(c, workspaceId)
     if (userId instanceof Response) return userId
     const kind = c.req.query('kind')
@@ -1048,7 +1057,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.get('/chat-sessions/:chatSessionId/transcript', async (c) => {
     const chatSessionId = c.req.param('chatSessionId')
     const workspaceId = c.req.query('workspaceId')
-    if (!workspaceId || !(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+    if (!workspaceId || !(await authorizeWorkspaceScope(c, workspaceId))) return scopeDenied(c)
     const userId = await historyActorId(c, workspaceId)
     if (userId instanceof Response) return userId
     const transcript = await renderWorkspaceTranscript(chatSessionId, {
@@ -1076,7 +1085,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       : projectId
         ? (await (prisma as any).project.findUnique({ where: { id: projectId }, select: { workspaceId: true } }))?.workspaceId ?? null
         : null)
-    if (!(await authorizeWorkspaceScope(c, workspaceId, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    if (!(await authorizeWorkspaceScope(c, workspaceId, projectId))) return scopeDenied(c)
     const where = { projectId: projectId ?? null, filename: body.filename }
     const existing = await (prisma as any).plan.findFirst({ where })
     const data = {
@@ -1108,7 +1117,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       : projectId
         ? (await (prisma as any).project.findUnique({ where: { id: projectId }, select: { workspaceId: true } }))?.workspaceId ?? null
         : null)
-    if (!(await authorizeWorkspaceScope(c, workspaceId, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    if (!(await authorizeWorkspaceScope(c, workspaceId, projectId))) return scopeDenied(c)
     const existing = await (prisma as any).plan.findFirst({ where: { projectId: projectId ?? null, filename: body.filename } })
     if (existing) await (prisma as any).plan.delete({ where: { id: existing.id } })
     return c.json({ deleted: Boolean(existing) })
@@ -2282,7 +2291,8 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   async function authorizeLifecycleProject(
     c: Context,
     projectId: string,
-  ): Promise<{ identity: InternalIdentity; workspaceId: string } | null> {
+    opts: { crossWorkspaceWrite?: boolean } = {},
+  ): Promise<{ identity: InternalIdentity; workspaceId: string; crossCallerUserId?: string } | null> {
     // A workspace runtime name (`ws:<workspaceId>`) is a runtime key, not a
     // project. Naming it as such stops a caller's wrong id from reading as a
     // token failure, which is what prod logged and what senders retried
@@ -2301,6 +2311,24 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (identity.kind === 'sa') return { identity, workspaceId: project.workspaceId }
     const scope = await identityWorkspaceId(identity)
     if (scope !== project.workspaceId) {
+      // `project_call` from the Personal workspace agent into another workspace
+      // (SHO-389): the same person-scoped rules as every other write, and the
+      // approval is spent here, on the call that runs the callee's turn.
+      if (opts.crossWorkspaceWrite) {
+        const cross = await authorizeCrossWorkspaceTarget(c, {
+          identity,
+          tokenWorkspaceId: scope,
+          targetWorkspaceId: project.workspaceId,
+          write: true,
+        })
+        if (cross.ok) {
+          return {
+            identity,
+            workspaceId: project.workspaceId,
+            ...(cross.userId ? { crossCallerUserId: cross.userId } : {}),
+          }
+        }
+      }
       logAuthReject(
         `lifecycle_workspace_mismatch tokenWorkspace=${scope ?? 'none'}`,
         projectId,
@@ -2392,7 +2420,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    */
   app.get('/workspaces/:workspaceId/projects/graph', async (c) => {
     const workspaceId = c.req.param('workspaceId')
-    if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+    if (!(await authorizeWorkspaceScope(c, workspaceId))) return scopeDenied(c)
     const identity = await authenticate(c)
     if (!identity) return c.json({ error: 'Unauthorized' }, 401)
     const visible = await readableProjectFilter(c, identity, workspaceId, c.req.query('userId'))
@@ -2733,8 +2761,8 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    */
   app.post('/projects/:projectId/agent-call', async (c) => {
     const projectId = c.req.param('projectId')
-    const authz = await authorizeLifecycleProject(c, projectId)
-    if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+    const authz = await authorizeLifecycleProject(c, projectId, { crossWorkspaceWrite: true })
+    if (!authz) return scopeDenied(c)
     const denied = await enforceProjectPermission(c, authz.identity, authz.workspaceId, projectId, 'project:update')
     if (denied) return denied
 
@@ -2757,6 +2785,15 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (callerTicket && callerProjectId !== projectId) {
       const access = await loadAccess({ userId: callerTicket.userId, via: 'session' }, { projectId })
       if (access.permissions.has('project:read') && access.workspaceId === authz.workspaceId) requesterTicket = handOffRequesterTicket(callerTicket, projectId) ?? undefined
+    } else if (authz.crossCallerUserId) {
+      // A `project_call` from the Personal workspace agent: its ticket names the
+      // workspace, not a project, so hand it to the callee project here
+      // (SHO-389). The call itself was approved as a write to that workspace.
+      const workspaceTicket = await verifyRequesterTicketInWorkspace(
+        c.req.header(REQUESTER_TICKET_HEADER),
+        await identityWorkspaceId(authz.identity).then((id) => id ?? ''),
+      )
+      if (workspaceTicket) requesterTicket = handOffRequesterTicket(workspaceTicket, projectId) ?? undefined
     }
 
     const agentCallSvc = await loadAgentCall?.()
@@ -2804,12 +2841,26 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     // to do that, and `fetchUpstream` authenticates as the workspace, not as
     // the person.
     const ticket = c.req.header(REQUESTER_TICKET_HEADER)
+    // A cross-workspace write carries its approval with it (SHO-389): the
+    // side that runs the write mints and spends it, so forwarding is the whole
+    // point of these headers.
+    const {
+      CROSS_WORKSPACE_APPROVAL_HEADER,
+      CROSS_WORKSPACE_TOOL_HEADER,
+      CROSS_WORKSPACE_ARGS_HEADER,
+    } = await import('../lib/cross-workspace')
+    const crossHeaders: Record<string, string> = {}
+    for (const name of [CROSS_WORKSPACE_APPROVAL_HEADER, CROSS_WORKSPACE_TOOL_HEADER, CROSS_WORKSPACE_ARGS_HEADER]) {
+      const value = c.req.header(name)
+      if (value) crossHeaders[name] = value
+    }
     try {
       const upstream = await fetchUpstream(upstreamPath, {
         method: c.req.method,
         headers: {
           'content-type': 'application/json',
           ...(ticket ? { [REQUESTER_TICKET_HEADER]: ticket } : {}),
+          ...crossHeaders,
         },
         search: new URL(c.req.url).search,
         body: body === undefined ? undefined : JSON.stringify(body),
@@ -2827,6 +2878,125 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       )
     }
   }
+
+  /**
+   * The person a "run my other workspaces" call is for, or the refusal.
+   *
+   * Only the Personal workspace's own agent may ask: the token has to be a
+   * workspace runtime token for a `kind: personal` workspace, and its owner has
+   * to be the person on the signed ticket. Project agents (and team workspaces)
+   * get `cross_workspace_forbidden` here, before any target is looked at.
+   */
+  async function crossWorkspaceCaller(
+    c: Context,
+    workspaceId: string,
+  ): Promise<{ ok: true; userId: string } | Response> {
+    if (!(await authorizeWorkspaceScope(c, workspaceId, undefined, { write: false }))) return scopeDenied(c)
+    const identity = await authenticate(c)
+    if (identity?.kind !== 'workspace' || identity.workspaceId !== workspaceId) {
+      return c.json(
+        {
+          error: {
+            code: 'cross_workspace_forbidden',
+            message: 'Only the Personal workspace agent may act in another workspace; a project agent is limited to its own.',
+          },
+        },
+        403,
+      )
+    }
+    const { prisma } = await import('../lib/prisma')
+    const workspace = await (prisma as any).workspace
+      .findUnique({ where: { id: workspaceId }, select: { kind: true, personalOwnerId: true } })
+      .catch(() => null)
+    const { REQUESTER_TICKET_HEADER, verifyRequesterTicketInWorkspace } = await import('../lib/requester-ticket')
+    const ticket = await verifyRequesterTicketInWorkspace(c.req.header(REQUESTER_TICKET_HEADER), workspaceId)
+    if (!workspace || workspace.kind !== 'personal' || !ticket || workspace.personalOwnerId !== ticket.userId) {
+      return c.json(
+        {
+          error: {
+            code: 'cross_workspace_forbidden',
+            message:
+              'Only the owner of the Personal workspace, acting in it, may read or run the other workspaces. Start this from a chat in your Personal workspace.',
+          },
+        },
+        403,
+      )
+    }
+    return { ok: true, userId: ticket.userId }
+  }
+
+  /**
+   * GET /api/internal/workspaces/:workspaceId/cross-workspace/targets
+   *
+   * Every workspace this person can reach, with where its compute lives, so the
+   * agent can resolve a name like "Samsara Game" without guessing and can say
+   * which workspaces a report covered (SHO-389). The agent runtime asks this,
+   * not the model.
+   */
+  app.get('/workspaces/:workspaceId/cross-workspace/targets', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const caller = await crossWorkspaceCaller(c, workspaceId)
+    if (caller instanceof Response) return caller
+    const { listCrossWorkspaceTargets } = await import('../services/cross-workspace-targets')
+    const workspaces = await listCrossWorkspaceTargets(caller.userId, workspaceId)
+    return c.json({ workspaces })
+  })
+
+  /**
+   * POST /api/internal/workspaces/:workspaceId/cross-workspace/approvals
+   *
+   * The runtime asks for this **after** the person approved one write, and
+   * hands the id back on the request that makes it. The row is recorded on the
+   * side that runs the write: on a desktop whose target is a cloud workspace
+   * this relays to the cloud, so the cloud's authorizer is the one that spends
+   * it (SHO-389).
+   */
+  app.post('/workspaces/:workspaceId/cross-workspace/approvals', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const caller = await crossWorkspaceCaller(c, workspaceId)
+    if (caller instanceof Response) return caller
+
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    const targetWorkspaceId = typeof body?.targetWorkspaceId === 'string' ? body.targetWorkspaceId : ''
+    const tool = typeof body?.tool === 'string' ? body.tool : ''
+    const hash = typeof body?.argsHash === 'string' ? body.argsHash : ''
+    if (!targetWorkspaceId || !tool || !hash) {
+      return c.json(
+        { error: { code: 'bad_request', message: 'targetWorkspaceId, tool and argsHash are required' } },
+        400,
+      )
+    }
+
+    const forwarded = await relayToCloud(
+      c,
+      targetWorkspaceId,
+      `/api/workspaces/${encodeURIComponent(targetWorkspaceId)}/cross-workspace/approvals`,
+      body,
+    )
+    if (forwarded) return forwarded
+
+    const { targetAccessAllows, targetWorkspaceAccess, mintCrossWorkspaceApproval } = await import('../lib/cross-workspace')
+    const access = await targetWorkspaceAccess(caller.userId, targetWorkspaceId)
+    if (!targetAccessAllows(access, true)) {
+      return c.json(
+        {
+          error: {
+            code: 'not_a_member',
+            message: 'You are not a member of that workspace with permission to change it, so there is nothing to approve.',
+          },
+        },
+        403,
+      )
+    }
+    const minted = await mintCrossWorkspaceApproval({
+      callerWorkspaceId: workspaceId,
+      targetWorkspaceId,
+      tool,
+      argsHash: hash,
+      requesterUserId: caller.userId,
+    })
+    return c.json({ approvalId: minted.id, expiresAt: minted.expiresAt.toISOString() })
+  })
 
   /**
    * GET /api/internal/workspaces/:workspaceId/root/manifest

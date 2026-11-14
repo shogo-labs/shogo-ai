@@ -124,6 +124,13 @@ import {
 import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { addQuickAction, validateQuickActions } from './quick-actions'
 import { withActionRules, withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, scratchPathForWrite, type PermissionEngine } from './permission-engine'
+import {
+  crossWorkspaceEnabled,
+  crossWorkspaceEnabledFor,
+  crossWorkspaceToolNames,
+  withCrossWorkspaceGate,
+  withCrossWorkspaceParam,
+} from './cross-workspace'
 import { assertAllowedPath as assertAllowedPathRaw, getRuntimeTrust } from './runtime-trust'
 import { isBinaryFilePath, isZernioSocialToolkit, normalizeToolkitName, zernioPlatformsFromQuery, type ZernioSocialToolkit } from '@shogo/shared-runtime'
 import { isShogoAgentEmail, withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
@@ -710,22 +717,57 @@ async function mountWorkspaceProject(
 
 function createListProjectsTool(ctx: ToolContext): AgentTool {
   const metal = isMetalRuntime()
+  const crossWorkspace = crossWorkspaceEnabled(ctx)
   return {
     name: 'list_projects',
     label: 'List Projects',
-    description: metal
-      ? 'List the projects you can access in this Shogo workspace. Other projects are not mounted here; ' +
-        'reach one with `connect_project` and the `project` parameter of the file and shell tools. ' +
-        'Use this when the request names a project ambiguously or asks about project availability.'
-      : 'List the projects you can access in this Shogo workspace and show which ones are currently mounted. ' +
-        'Use this before mounting when the request names a project ambiguously or asks about project availability.',
-    parameters: Type.Object({}),
-    execute: async () => {
+    description:
+      (metal
+        ? 'List the projects you can access in this Shogo workspace. Other projects are not mounted here; ' +
+          'reach one with `connect_project` and the `project` parameter of the file and shell tools. '
+        : 'List the projects you can access in this Shogo workspace and show which ones are currently mounted. ') +
+      'Use this before mounting when the request names a project ambiguously or asks about project availability.' +
+      (crossWorkspace
+        ? ' Pass workspaces: true to list every workspace this person belongs to (id, name, slug, kind, where it runs) — use it to resolve a workspace name for the `workspace` parameter of the board, chat, schedule and project tools, and to say which workspaces a report covered.'
+        : ''),
+    parameters: Type.Object(
+      crossWorkspace
+        ? {
+            workspaces: Type.Optional(
+              Type.Boolean({
+                description: 'List the workspaces this person belongs to instead of the projects in this one.',
+              }),
+            ),
+          }
+        : {},
+    ),
+    execute: async (_toolCallId, params: any) => {
       if (!workspaceMetaToolEnabled(ctx))
         return textResult({
           error: 'This tool is only available in a workspace runtime.',
         })
       const workspaceId = resolveWorkspaceId(ctx)
+      if (crossWorkspace && params?.workspaces === true) {
+        const { fetchCrossWorkspaceTargets } = await import('./internal-api')
+        const targets = await fetchCrossWorkspaceTargets(workspaceId!)
+        if (!targets.ok) {
+          return textResult({
+            error: targets.error ?? "Couldn't load the workspaces you belong to.",
+            code: targets.code ?? 'workspaces_unavailable',
+          })
+        }
+        return textResult({
+          workspaces: (targets.data?.workspaces ?? []).map((w) => ({
+            id: w.id,
+            name: w.name,
+            slug: w.slug,
+            kind: w.kind,
+            source: w.source,
+            reachable: w.reachable,
+            ...(w.unreachableReason ? { unreachable_reason: w.unreachableReason } : {}),
+          })),
+        })
+      }
       const qs = new URLSearchParams({
         ...(ctx.userId ? { userId: ctx.userId } : {}),
         ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
@@ -11670,8 +11712,18 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     tools.push(...createWorkspaceAgentTools(ctx))
     tools.push(...createTriggerTools(ctx))
     // Meetings are private to the personal workspace; the API rejects team workspaces.
-    if (ctx.config.capabilityProfile === 'personal') tools.push(...createMeetingTools(ctx))
-    else {
+    if (ctx.config.capabilityProfile === 'personal') {
+      tools.push(...createMeetingTools(ctx))
+      // The person's Personal agent may also read — and, approved, run — their
+      // other workspaces (SHO-389). It has no boards or team chat of its own, so
+      // every one of these calls names its target with `workspace`; without the
+      // parameter they answer for the empty personal workspace.
+      if (crossWorkspaceEnabled(ctx)) {
+        tools.push(...createChannelTools(ctx))
+        if (!process.env.WORKSPACE_ANCHOR_PROJECT_ID) tools.push(...createAgentRunTools(ctx))
+        tools.push(...createBoardTools(ctx))
+      }
+    } else {
       tools.push(...createChannelTools(ctx))
       // A project-anchored runtime speaks as that project's agent, not the workspace agent.
       if (!process.env.WORKSPACE_ANCHOR_PROJECT_ID) tools.push(...createAgentRunTools(ctx))
@@ -11695,6 +11747,22 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
 
   if (extraTools) {
     tools.push(...extraTools)
+  }
+
+  // The Personal workspace agent may act in the person's other workspaces: the
+  // `workspace` parameter is registered on the tools that support it, and the
+  // gate resolves the target, asks for every write, and scopes the internal
+  // call underneath so every route below keeps one code path (SHO-389).
+  if (crossWorkspaceEnabled(ctx)) {
+    const crossWorkspaceId = resolveRuntimeIdentity().workspaceId || ctx.workspaceId || null
+    for (let i = 0; i < tools.length; i++) {
+      tools[i] = withCrossWorkspaceGate({
+        tool: withCrossWorkspaceParam(tools[i], ctx),
+        ctx,
+        workspaceId: crossWorkspaceId,
+        engine: pe ?? null,
+      })
+    }
   }
 
   // Every tool honours its per-tool action rule (run, ask first, block), even
@@ -12413,6 +12481,14 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
   const lookupsUsable = enabledSocialPlatforms(config).length > 0
   if (!lookupsUsable && config.socialManagementEnabled !== true) disabled.add('social_media')
 
+  // The Personal workspace agent's cross-workspace surface (SHO-389) is not
+  // "team tools it shouldn't have": every one of these calls names ANOTHER
+  // workspace, and the target workspace's own settings — not this empty
+  // personal one — decide what its boards and channels look like. So the
+  // personal profile keeps exactly the tools that take a `workspace`.
+  if (crossWorkspaceEnabledFor(config)) {
+    for (const n of crossWorkspaceToolNames()) disabled.delete(n)
+  }
   const memoryOff = config.memoryEnabled === false
   if (disabled.size === 0 && !memoryOff) return tools
   const kept = tools.filter((t) => {

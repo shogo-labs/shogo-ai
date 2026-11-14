@@ -110,13 +110,15 @@ import {
   type SystemDiff,
   type SystemLock,
 } from './system-manifest'
+import { crossWorkspaceTargetId } from './cross-workspace'
 
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
 function workspaceIdOf(ctx: ToolContext): string | null {
-  return ctx.workspaceId || process.env.WORKSPACE_ID || null
+  // A cross-workspace tool call acts in the target the gate resolved (SHO-389).
+  return crossWorkspaceTargetId() ?? (ctx.workspaceId || process.env.WORKSPACE_ID || null)
 }
 
 function noWorkspace() {
