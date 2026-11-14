@@ -11,6 +11,7 @@ import { observer } from "mobx-react-lite"
 import { useAuth } from "../contexts/auth"
 import { DomainProvider, useWorkspaceCollection } from "../contexts/domain"
 import { useActiveWorkspace } from "../hooks/useActiveWorkspace"
+import { setActiveWorkspaceFollowsShared } from "../lib/workspace-store"
 import { usePlatformConfig } from "../lib/platform-config"
 import { API_URL } from "../lib/api"
 import { PhoneLayoutOverrideProvider } from "../lib/native-phone-layout"
@@ -20,6 +21,11 @@ import { useIslandPointer } from "../components/island/useIslandPointer"
 import { ISLAND_SURFACE_PROPS, ISLAND_TRIGGER_PROPS, getIslandBridge } from "../components/island/types"
 
 const SIGNED_OUT_RETRY_MS = 15_000
+
+// This window is not a tab: it mirrors the workspace the person picked in the
+// main window, including switches made after it loaded (SHO-390). Set at module
+// load so every read below goes to the shared default.
+setActiveWorkspaceFollowsShared(true)
 
 /** The overlay window is transparent, but the page and every navigator
  * container above this route paint an opaque background (react-navigation's

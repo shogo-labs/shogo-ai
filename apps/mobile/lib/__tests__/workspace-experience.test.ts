@@ -4,6 +4,7 @@ import { deriveWorkspaceExperience } from '../workspace-experience'
 
 beforeEach(() => {
   localStorage.clear()
+  sessionStorage.clear()
   clearActiveWorkspaceId()
 })
 
