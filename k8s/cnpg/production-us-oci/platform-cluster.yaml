@@ -104,11 +104,21 @@ spec:
     enablePodMonitor: true
 
   resources:
+    # The old floor (2Gi request / 4Gi limit) never matched the live working
+    # set: platform-pg-2 held 3.88 GiB average / 4.00 GiB peak over 24h — 97%+
+    # of the old limit and 163-393% of the old request — and nothing alerted on
+    # it. The request is now the measured working set so the pod is scheduled
+    # honestly, and the limit keeps 2Gi of OOM headroom above it.
+    # request/limit = 4/6 = 0.667; keep that above 0.6 (see
+    # scripts/__tests__/cnpg-resource-floors.test.ts).
+    # Requests drive scheduling, not just runaway protection: this adds
+    # 2Gi × 2 instances to the scheduled load, so confirm the node pool has that
+    # free allocatable before applying. Unverified — see the PR body.
     requests:
-      memory: "2Gi"
+      memory: "4Gi"
       cpu: "250m"
     limits:
-      memory: "4Gi"
+      memory: "6Gi"
       cpu: "2"
 
   affinity:

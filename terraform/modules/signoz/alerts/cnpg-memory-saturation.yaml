@@ -1,0 +1,126 @@
+# SigNoz alert: CNPG platform Postgres memory saturation
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README (dotted metric names, builder queries not PromQL, v2alpha1, real
+# channel).
+#
+# Why: `platform-pg-2` (production-us-oci) held 97% of its 4Gi limit, at 90%+
+# for 263 of 288 minutes, and pinned at 1.000 (the limit itself) for long
+# stretches; `platform-pg-3` sat at 89% of 1Gi. Nothing alerted on any of it.
+#
+# A CNPG primary that pins its container limit gets OOMKilled by the kubelet,
+# and while it restarts the platform database refuses writes for every tenant —
+# so the page has to land *before* the limit, not after. The matching
+# reservation fix (4Gi request / 6Gi limit on us, 2Gi / 3Gi on eu) lives in
+# `k8s/cnpg/production-us-oci/platform-cluster.yaml` and
+# `k8s/cnpg/production-eu-oci/platform-cluster.yaml`. This rule is what stops
+# the next under-reservation from going unnoticed.
+#
+# APPLY ORDER — apply this rule **atomically with, or after,** the reservation
+# fix above; never before it. At the current us limit `platform-pg-2` is above
+# 90% for 263 of 288 minutes, so `target: 0.90 all_the_times` is red essentially
+# continuously until the pods are resized (post-resize it reads ~0.65). Landing a
+# permanently-red critical rule on a plane that just came back from total silence
+# is how that plane gets muted again, and a muted plane is worse than no rule.
+# Rehearse against the live series first if you can (`--dry-run`, or a temporary
+# `severity: warning`), then apply both together.
+#
+# GROUPING — read before changing groupBy: `platform-pg` is declared with the
+# SAME metadata.name, in the SAME namespace (`shogo-production-system`), by two
+# independent Cluster manifests running on two different physical OKE clusters
+# (`production-us-oci`, `production-eu-oci`; the legacy `production-oci` makes a
+# third). A `k8s.pod.name`-only groupBy therefore splices pods from different
+# clusters into one series — which is what the `platform-pg-3` row carrying a
+# 0.25 GiB (= staging's `256Mi`) request almost certainly is. Group by
+# `k8s.cluster.name` as well, or the alert will page about a phantom pod and
+# hide a real one.
+#
+# `all_the_times` over a 10m rolling window, not an average: a pod that brushes
+# its limit for a few seconds during a checkpoint is not the problem; a pod
+# that lives there is. `max`/`max` is the pessimistic read at both levels for
+# the same reason — averaging would let a pinned replica hide behind a healthy
+# one.
+
+alert: CNPGPostgresMemorySaturation
+alertType: METRIC_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          aggregations:
+            - metricName: k8s.container.memory_limit_utilization
+              timeAggregation: max
+              spaceAggregation: max
+          filter:
+            expression: "k8s.namespace.name = 'shogo-production-system' AND k8s.container.name = 'postgres'"
+          groupBy:
+            - name: k8s.cluster.name
+              fieldContext: attribute
+              fieldDataType: string
+            - name: k8s.pod.name
+              fieldContext: attribute
+              fieldDataType: string
+          legend: "{{k8s.cluster.name}}/{{k8s.pod.name}} mem_limit_util"
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: above
+        matchType: all_the_times
+        target: 0.90
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 10m
+    frequency: 1m
+labels:
+  severity: critical
+  team: platform
+  incident_class: cnpg_memory
+notificationSettings:
+  groupBy: [k8s.cluster.name, k8s.pod.name]
+  renotify:
+    enabled: true
+    interval: 2h
+    alertStates: [firing]
+annotations:
+  summary: "CNPG platform Postgres pod has been above 90% of its memory limit for 10+ minutes"
+  description: |
+    A `platform-pg` container has run at more than 90% of its memory limit for
+    the whole of a 10-minute rolling window in a production cluster. The
+    kubelet OOMKills a container that reaches its limit, and a restarted
+    platform primary refuses writes for every tenant until it is back, so this
+    is a "page before the outage" signal.
+
+    Triage:
+    1. Which pod and how close to the ceiling:
+       `kubectl -n shogo-production-system get pods -l cnpg.io/cluster=platform-pg`
+       `kubectl -n shogo-production-system top pod <pod>`
+    2. Confirm the CNPG machinery agrees (any restarts?):
+       `kubectl -n shogo-production-system describe cluster platform-pg`
+       `kubectl -n shogo-production-system logs <pod> --previous | tail`
+    3. Common causes:
+       - The declared request/limit is below the working set again (that was
+         the 2026-10-14 defect: 2Gi/4Gi on us, 1Gi/2Gi on eu). Fix the
+         manifest, do NOT just raise the limit — a limit with no matching
+         request is the same under-reservation with a bigger blast radius.
+         Both CNPG manifests are pinned by
+         `scripts/__tests__/cnpg-resource-floors.test.ts`.
+       - `shared_buffers` / `work_mem` / `maintenance_work_mem` were raised in
+         the Cluster `postgresql.parameters` without a matching memory bump.
+       - A logical-replication backlog or a long-running `VACUUM`/DDL holding
+         memory. Check `pg_stat_activity` for long transactions.
+    4. If the pod is already restarting in a loop, prefer failing over writes
+       over silently losing them — the replication runbook covers promotion:
+       docs/runbooks/deploy-prod.md
