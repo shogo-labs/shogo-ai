@@ -231,7 +231,10 @@ describe('end to end on desktop — the clicked link 404s, the repaired link ser
     const served = await download.request(`/f/${repairedToken}`)
     expect(served.status).toBe(200)
     expect(served.headers.get('content-type')).toBe('video/mp4')
-    expect(served.headers.get('content-disposition')).toBe('attachment; filename="2026-10-24-A.mp4"')
+    // A video is served `inline` since SHO-387 so pointing a player (or a
+    // direct open) at the repaired link plays it; the app's Download action
+    // still saves it, it does not open the URL.
+    expect(served.headers.get('content-disposition')).toBe('inline; filename="2026-10-24-A.mp4"')
     expect(await served.text()).toBe(bytes)
 
     // And the same token verifies on the verifier the cloud route uses.

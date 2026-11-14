@@ -11,7 +11,8 @@
  */
 
 import { Hono } from 'hono'
-import { readFile, stat } from 'fs/promises'
+import { stat } from 'fs/promises'
+import { fileRangeResponse } from '@shogo/shared-runtime'
 import { resolveLocalAbsoluteFileTarget } from '../lib/local-shared-file-target'
 import { contentDispositionForFile, mimeTypeForFile } from '../lib/local-file-mime'
 
@@ -59,12 +60,17 @@ export function localFileReadRoutes(config: LocalFileReadRoutesConfig): Hono {
         return c.json({ error: { code: 'file_not_found', message: 'File not found' } }, 404)
       }
       const filename = filenameFor(path)
-      const body = await readFile(resolution.target)
-      return new Response(body, {
+      const contentType = mimeTypeForFile(filename)
+      const media = contentType.startsWith('video/') || contentType.startsWith('audio/')
+      // Streamed from disk with `Range` support, so a video the viewer points
+      // a `<video>` at starts and seeks without a full download (SHO-387).
+      return fileRangeResponse({
+        file: Bun.file(resolution.target),
+        size: metadata.size,
+        rangeHeader: c.req.header('range'),
         headers: {
-          'Content-Type': mimeTypeForFile(filename),
-          'Content-Disposition': `${contentDispositionForFile(filename)}; filename="${filename}"`,
-          'Content-Length': String(body.byteLength),
+          'Content-Type': contentType,
+          'Content-Disposition': `${media ? 'inline' : contentDispositionForFile(filename)}; filename="${filename}"`,
           'Cache-Control': 'private, no-store',
           'X-Content-Type-Options': 'nosniff',
         },

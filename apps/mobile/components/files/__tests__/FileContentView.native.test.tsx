@@ -50,6 +50,14 @@ mock.module(resolve(import.meta.dir, "../../../lib/attachment-download"), () => 
   },
 }))
 
+// `expo-video`'s player, loaded lazily by the component; the test only has to
+// see that a video is handed to it.
+mock.module(resolve(import.meta.dir, "../../chat/NativeVideoView"), () => ({
+  default: ({ url, width, height }: { url: string; width: number; height: number }) => (
+    <div data-testid="native-video-view" data-uri={url} data-width={String(Math.round(width))} />
+  ),
+}))
+
 // WKWebView, not a browser: the component only has to hand it the URL.
 mock.module("react-native-webview", () => ({
   default: ({ source, testID }: { source: { uri: string }; testID?: string }) => (
@@ -94,13 +102,29 @@ describe("FileContentView on a phone", () => {
     expect(query("file-view-binary")).toBeNull()
   })
 
-  test("a video falls back, and the fallback downloads the URL it was given", async () => {
+  test("a video plays in the app's own player, streamed from its link", async () => {
     render(<FileContentView kind="video" name="clip.mp4" url="https://api/f/tok" />)
+
+    // The lazy player resolves one tick later; what matters is that the link
+    // goes to expo-video rather than to the "no preview, use Download" card.
+    const player = await waitFor(() => {
+      const node = query("native-video-view")
+      expect(node).toBeTruthy()
+      return node!
+    })
+    expect(player.getAttribute("data-uri")).toBe("https://api/f/tok")
+    expect(screen.queryByText("No preview for this file type.")).toBeNull()
+    expect(query("file-view-binary")).toBeNull()
+    expect(downloads.length).toBe(0)
+  })
+
+  test("a file kind with no renderer still offers the download", async () => {
+    render(<FileContentView kind="font" name="Inter.woff2" url="https://api/f/tok" />)
 
     expect(screen.getByText("No preview for this file type.")).toBeTruthy()
     fireEvent.click(query("file-view-download")!)
 
-    await waitFor(() => expect(downloads).toEqual([{ url: "https://api/f/tok", name: "clip.mp4" }]))
+    await waitFor(() => expect(downloads).toEqual([{ url: "https://api/f/tok", name: "Inter.woff2" }]))
   })
 
   test("the host's own download wins over the built-in one", () => {

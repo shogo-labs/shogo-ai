@@ -32,6 +32,7 @@ import {
   writeFileSync,
 } from 'fs'
 import { dirname, extname, join, relative, resolve } from 'path'
+import { fileRangeResponse } from '@shogo/shared-runtime'
 import { isBinaryBuffer, isBinaryFilePath } from '@shogo-ai/sdk/file-types'
 import { isWithinRoot } from './path-boundary'
 import {
@@ -477,19 +478,24 @@ export function workspaceFileRoutes(config: WorkspaceFileRoutesConfig) {
     }
     if (isDirectoryPath(resolved)) return c.json({ error: 'Path is a directory' }, 400)
 
-    const content = readFileSync(resolved)
     const fileName = subPath.split('/').pop() || 'download'
     const ext = extname(fileName).toLowerCase()
     const contentType = DOWNLOAD_MIME_TYPES[ext] || 'application/octet-stream'
     const isInline = contentType.startsWith('image/') || contentType.startsWith('video/') || contentType === 'application/pdf'
 
-    return new Response(content, {
+    // Streamed, and ranged: a `<video>`/AVPlayer asks for `bytes=…` before it
+    // will play, and seeking is a range request. Reading the whole file here
+    // made every video download in full first.
+    return fileRangeResponse({
+      file: Bun.file(resolved),
+      size: statSync(resolved).size,
+      rangeHeader: c.req.header('range'),
       headers: {
         'Content-Type': contentType,
         'Content-Disposition': `${isInline ? 'inline' : 'attachment'}; filename="${fileName}"`,
-        'Content-Length': String(content.length),
         'Cross-Origin-Resource-Policy': 'cross-origin',
         'Access-Control-Allow-Origin': '*',
+        'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
       },
     })
   })
