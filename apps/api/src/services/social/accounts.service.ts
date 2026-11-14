@@ -201,6 +201,36 @@ async function reconnectTarget(workspaceId: string, raw: unknown): Promise<strin
 }
 
 /**
+ * How Zernio signs an Instagram account in. `instagram_login` is the default and
+ * the only one Shogo ever sent before; `facebook_login` goes through a Facebook
+ * Page linked to the account, and it is the only way Meta serves the licensed
+ * music catalog (`GET /accounts/:id/instagram/audio`).
+ */
+export const INSTAGRAM_LOGIN_METHODS = ['instagram_login', 'facebook_login'] as const
+export type InstagramLoginMethod = (typeof INSTAGRAM_LOGIN_METHODS)[number]
+
+/**
+ * The login method a connect asked for, or undefined when it did not ask.
+ *
+ * Only Instagram has two: every other platform ignores the parameter rather than
+ * failing, because a caller that sends it for a whole fan-out should not have to
+ * special-case the platforms that do not understand it.
+ */
+export function parseLoginMethod(platform: string, raw: unknown): InstagramLoginMethod | undefined {
+  if (raw === undefined || raw === null || raw === '') return undefined
+  if (platform !== 'instagram') return undefined
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : ''
+  if (!(INSTAGRAM_LOGIN_METHODS as readonly string[]).includes(value)) {
+    throw new SocialError(
+      400,
+      'invalid_login_method',
+      `loginMethod must be one of: ${INSTAGRAM_LOGIN_METHODS.join(', ')}`,
+    )
+  }
+  return value as InstagramLoginMethod
+}
+
+/**
  * The URL to send the user to so Zernio can run the platform's OAuth and land
  * back on `redirectUrl` with `accountId` + `username`.
  *
@@ -208,6 +238,8 @@ async function reconnectTarget(workspaceId: string, raw: unknown): Promise<strin
  * of reusing whichever account is already signed in on the device, and
  * `expectedHandle` refuses a login that lands on a different account — together
  * they are what makes "connect *this* Instagram account" mean something.
+ * `loginMethod` (Instagram only) picks Instagram Login or Facebook Login; the
+ * latter is what a Reel with licensed music needs.
  */
 export async function connectUrl(args: {
   workspaceId: string
@@ -217,6 +249,7 @@ export async function connectUrl(args: {
   forceReauth?: unknown
   expectedUsername?: unknown
   reconnectAccountId?: unknown
+  loginMethod?: unknown
 }): Promise<{ url: string; platform: string; profileId: string }> {
   const platform = parsePlatform(args.platform)
   const profile = await ensureProfile(args.workspaceId, args.workspaceName)
@@ -238,6 +271,8 @@ export async function connectUrl(args: {
   // platform that does not understand it is a param its OAuth state would carry
   // for nothing (X caps that state at 500 characters).
   if (platform === 'instagram' && args.forceReauth === true) query.forceReauth = 'true'
+  const loginMethod = parseLoginMethod(platform, args.loginMethod)
+  if (loginMethod) query.loginMethod = loginMethod
   const handle = expectedHandle(args.expectedUsername)
   if (handle) query.expectedUsername = handle
   const reconnect = await reconnectTarget(args.workspaceId, args.reconnectAccountId)

@@ -141,6 +141,88 @@ describe('connect', () => {
       forceReauth: true,
     })
   })
+
+  test('login_method rides through, and the instructions name the Facebook Page', async () => {
+    route(/POST .*\/social\/connect$/, { url: 'https://zernio.com/oauth/instagram' })
+
+    const result = await run({
+      action: 'connect',
+      platform: 'instagram',
+      login_method: 'facebook_login',
+    })
+
+    expect(calls.find((entry) => entry.url.endsWith('/social/connect'))!.body).toEqual({
+      platform: 'instagram',
+      loginMethod: 'facebook_login',
+    })
+    expect(result.instructions).toContain('Facebook Page')
+  })
+})
+
+describe('audio', () => {
+  test('searches the catalog for one account and hands back audio ids', async () => {
+    route(/GET .*\/social\/accounts\/acct_ig\/instagram\/audio\?/, {
+      audio: [
+        {
+          audioId: '1234567890',
+          title: 'Midnight Drive',
+          audioType: 'music',
+          durationMs: 30_000,
+          artist: 'The Neighbourhood',
+          downloadUrl: 'https://cdn.example.com/a.mp3',
+        },
+      ],
+      licensing: "Meta's catalog for business accounts; eligibility not reported",
+    })
+
+    const result = await run({ action: 'audio', account_id: 'acct_ig', query: 'midnight' })
+
+    expect(calls[0].url).toContain('/social/accounts/acct_ig/instagram/audio?q=midnight')
+    expect(result.count).toBe(1)
+    expect(result.audio[0]).toEqual({
+      audio_id: '1234567890',
+      title: 'Midnight Drive',
+      audio_type: 'music',
+      duration_ms: 30_000,
+      artist: 'The Neighbourhood',
+      preview_url: 'https://cdn.example.com/a.mp3',
+    })
+    expect(result.note).toContain('audio_id')
+  })
+
+  test('an audio_id re-checks one track instead of searching', async () => {
+    route(/GET .*\/instagram\/audio\/1234567890$/, { audio: [{ audioId: '1234567890', title: 'Still here' }] })
+
+    const result = await run({ action: 'audio', account_id: 'acct_ig', audio_id: '1234567890' })
+
+    expect(calls[0].url).toContain('/instagram/audio/1234567890')
+    expect(calls[0].url).not.toContain('audioType')
+    expect(result.count).toBe(1)
+  })
+
+  test('an Instagram Login account gets the code and the reconnect call, not raw JSON', async () => {
+    route(
+      /GET .*\/instagram\/audio/,
+      {
+        error: {
+          code: 'instagram_audio_requires_facebook_login',
+          message: 'Instagram audio requires Facebook Login',
+        },
+      },
+      400,
+    )
+
+    const result = await run({ action: 'audio', account_id: 'acct_ig' })
+
+    expect(result.code).toBe('instagram_audio_requires_facebook_login')
+    expect(result.suggestion).toContain('facebook_login')
+  })
+
+  test('account_id is required', async () => {
+    const result = await run({ action: 'audio' })
+    expect(result.error).toContain('account_id')
+    expect(calls).toHaveLength(0)
+  })
 })
 
 describe('accounts', () => {
@@ -423,6 +505,42 @@ describe('posting', () => {
 
     expect(result.error).toContain('Unknown account id')
     expect(calls.filter((entry) => entry.url.endsWith('/social/posts'))).toHaveLength(0)
+  })
+
+  test('audio is mapped from the tool’s snake_case JSON to the route’s body', async () => {
+    route(/GET .*\/social\/accounts$/, accountList)
+    route(/POST .*\/social\/posts$/, { post: { id: 'post_4', status: 'published', targets: [] } })
+
+    await run({
+      action: 'post',
+      content: 'With music',
+      account_ids: ['acct_ig'],
+      media: ['https://cdn.example.com/reel.mp4'],
+      audio: '{"audio_id":"1234567890","audio_volume":80,"video_volume":100}',
+      publish_now: true,
+    })
+
+    const created = calls.find((entry) => entry.url.endsWith('/social/posts'))!
+    expect(created.body.audio).toEqual({
+      audioId: '1234567890',
+      audioVolume: 80,
+      videoVolume: 100,
+    })
+  })
+
+  test('a post with no audio sends no audio field at all', async () => {
+    route(/GET .*\/social\/accounts$/, accountList)
+    route(/POST .*\/social\/posts$/, { post: { id: 'post_5', status: 'published', targets: [] } })
+
+    await run({
+      action: 'post',
+      content: 'No music',
+      account_ids: ['acct_ig'],
+      media: ['https://cdn.example.com/reel.mp4'],
+      publish_now: true,
+    })
+
+    expect(calls.find((entry) => entry.url.endsWith('/social/posts'))!.body.audio).toBeUndefined()
   })
 })
 
