@@ -204,6 +204,30 @@ class DistributeScriptTest < Minitest::Test
     end
   end
 
+  # TestFlight adds every processed build to the team's internal groups by
+  # itself and App Store Connect refuses to assign one explicitly — HTTP 422
+  # "Builds cannot be assigned to this internal group.", which is what killed
+  # the ios-v2.5.7 run after the GET 403 was fixed.
+  def test_an_internal_group_is_never_assigned_explicitly
+    skip "needs plutil (macOS runner)" unless system("command -v plutil > /dev/null 2>&1")
+
+    Dir.mktmpdir("distribute-e2e") do |dir|
+      ipa = write_ipa(dir)
+
+      summary = File.join(dir, "summary.md")
+      File.write(summary, "")
+      harness = File.join(dir, "harness.rb")
+      File.write(harness, distribute_harness(ipa, summary, internal_groups: ["group-a"]))
+
+      output, error_output, run = Open3.capture3(ENV.to_h, "ruby", harness)
+      assert run.success?, "script failed:\n#{output}\n#{error_output}"
+
+      assert_includes output,
+                      "TestFlight group group-a is internal; build 983 is added to it automatically."
+      assert_includes output, "Assigned build 983 to TestFlight group group-b."
+    end
+  end
+
   private
 
   def write_ipa(dir)
@@ -225,7 +249,7 @@ class DistributeScriptTest < Minitest::Test
     ipa
   end
 
-  def distribute_harness(ipa, summary, already_assigned: [])
+  def distribute_harness(ipa, summary, already_assigned: [], internal_groups: [])
     <<~RUBY
       require #{File.join(SCRIPTS, 'lib/app-store-connect').inspect}
       require #{File.join(SCRIPTS, 'lib/ios-app').inspect}
@@ -246,8 +270,12 @@ class DistributeScriptTest < Minitest::Test
           when %r{\\A/v1/builds/}
             { "data" => [] }
           when %r{\\A/v1/betaGroups/}
-            if ALREADY_ASSIGNED.include?(path[%r{\\A/v1/betaGroups/([^/]+)/}, 1])
+            group = path[%r{\\A/v1/betaGroups/([^/]+)/}, 1]
+            if ALREADY_ASSIGNED.include?(group)
               raise AppStoreConnectError.new(409, "{\\"errors\\":[]}")
+            end
+            if INTERNAL_GROUPS.include?(group)
+              raise AppStoreConnectError.new(422, "{\\"errors\\":[{\\"code\\":\\"ENTITY_UNPROCESSABLE\\",\\"detail\\":\\"Cannot add internal group to a build.\\"}]}")
             end
             POSTED << path
             {}
@@ -258,6 +286,7 @@ class DistributeScriptTest < Minitest::Test
       end
 
       ALREADY_ASSIGNED = #{already_assigned.inspect}
+      INTERNAL_GROUPS = #{internal_groups.inspect}
 
       ENV["ASC_KEY_ID"] = "key"
       ENV["ASC_ISSUER_ID"] = "issuer"
@@ -272,7 +301,7 @@ class DistributeScriptTest < Minitest::Test
       ENV["GITHUB_STEP_SUMMARY"] = #{summary.inspect}
 
       load #{File.join(SCRIPTS, 'testflight-distribute.rb').inspect}
-      abort "expected every not-yet-assigned group to be posted" unless POSTED.length == #{2 - already_assigned.length}
+      abort "expected exactly the external, not-yet-assigned groups to be posted" unless POSTED.length == #{2 - already_assigned.length - internal_groups.length}
     RUBY
   end
 end
