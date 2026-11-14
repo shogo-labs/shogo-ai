@@ -234,6 +234,9 @@ export function useComposerAttachments({
         type: file.type,
         size: file.size,
         ...(file.uri ? { uri: file.uri } : {}),
+        // A native video keeps its on-device URI so the chip's play badge and
+        // VideoPreviewModal have a source before the upload lands (SHO-386).
+        ...(file.previewUrl ? { previewUrl: file.previewUrl } : {}),
       }));
       setPendingFiles((previous) => [
         ...previous,
