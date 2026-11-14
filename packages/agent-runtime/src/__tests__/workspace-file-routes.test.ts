@@ -27,6 +27,8 @@ import {
 } from '../workspace-file-routes'
 
 const DIR_LINK_TYPE = process.platform === 'win32' ? 'junction' : 'dir'
+/** 100 known bytes, so a ranged read can be asserted byte by byte (SHO-387). */
+const RANGE_BODY = Array.from({ length: 100 }, (_, index) => String(index % 10)).join('')
 const ANCHOR = 'project-1'
 
 let base: string
@@ -47,6 +49,7 @@ beforeAll(() => {
   writeFileSync(join(user, 'app.py'), 'app = 1\n')
   mkdirSync(filesDir, { recursive: true })
   writeFileSync(join(filesDir, 'upload.txt'), 'uploaded\n')
+  writeFileSync(join(filesDir, 'range.mp4'), RANGE_BODY)
   writeFileSync(join(merged, 'AGENTS.md'), '# agents\n')
   symlinkSync(user, join(merged, ANCHOR), DIR_LINK_TYPE)
   // A sibling whose name extends the merged root's: `startsWith(root)` alone admits it.
@@ -135,6 +138,58 @@ describe('?scope=project (the IDE path space)', () => {
     const res = await request('/agent/workspace/download/app.py?scope=project')
     expect(res.status).toBe(200)
     expect(await res.text()).toBe('app = 1\n')
+  })
+})
+
+/**
+ * A `<video>`/AVPlayer asks for byte ranges before it will play, and seeks with
+ * one. This route read the whole file and answered 200, so a 300 MB mp4
+ * downloaded in full before the first frame (SHO-387).
+ */
+describe('download ranges', () => {
+  const download = (init?: RequestInit) =>
+    request('/agent/workspace/download/range.mp4', init)
+
+  test('advertises ranges and streams the whole file without one', async () => {
+    const res = await download()
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('accept-ranges')).toBe('bytes')
+    expect(res.headers.get('content-length')).toBe('100')
+    expect(await res.text()).toBe(RANGE_BODY)
+  })
+
+  test('answers a byte range with 206 and its content-range', async () => {
+    const res = await download({ headers: { range: 'bytes=10-19' } })
+
+    expect(res.status).toBe(206)
+    expect(res.headers.get('content-range')).toBe('bytes 10-19/100')
+    expect(res.headers.get('content-length')).toBe('10')
+    expect(res.headers.get('accept-ranges')).toBe('bytes')
+    expect(await res.text()).toBe('0123456789')
+  })
+
+  test('answers a suffix range with the final bytes', async () => {
+    const res = await download({ headers: { range: 'bytes=-5' } })
+
+    expect(res.status).toBe(206)
+    expect(res.headers.get('content-range')).toBe('bytes 95-99/100')
+    expect(await res.text()).toBe('56789')
+  })
+
+  test('answers an open-ended range to the end of the file', async () => {
+    const res = await download({ headers: { range: 'bytes=95-' } })
+
+    expect(res.status).toBe(206)
+    expect(res.headers.get('content-range')).toBe('bytes 95-99/100')
+    expect(await res.text()).toBe('56789')
+  })
+
+  test('answers a range past the end with 416 and the file size', async () => {
+    const res = await download({ headers: { range: 'bytes=500-' } })
+
+    expect(res.status).toBe(416)
+    expect(res.headers.get('content-range')).toBe('bytes */100')
   })
 })
 

@@ -13,8 +13,16 @@
  * `--ide-*` variables from, so hosts stop wrapping by hand.
  */
 
-import { useState, type ReactNode } from "react"
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from "react-native"
+import { Suspense, lazy, useState, type ReactNode } from "react"
+import {
+  ActivityIndicator,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native"
 import { Download } from "lucide-react-native"
 import type { editor } from "monaco-editor"
 import { downloadAttachment } from "../../lib/attachment-download"
@@ -26,6 +34,10 @@ import { languageFor } from "../project/panels/ide/workspace/language"
 import type { FileViewKind } from "./file-view-kind"
 
 type MonacoNs = typeof import("monaco-editor")
+
+// `expo-video`'s native module is only pulled in when a video actually opens
+// on a phone.
+const NativeVideoView = lazy(() => import("../chat/NativeVideoView"))
 
 export interface FileContentViewProps {
   kind: FileViewKind
@@ -143,11 +155,13 @@ export function FileContentView({
   }
 
   // Media, fonts and SQLite render through the IDE's own previews, which are
-  // DOM-only. A PDF has a native renderer of its own, so it is the one kind
-  // that keeps its preview on a phone.
+  // DOM-only. A PDF has a native renderer of its own, and a video plays in the
+  // app's own player: handing a streamed link to `BinaryFallback` meant a
+  // shared video could only be downloaded, never watched (SHO-387).
   if (Platform.OS !== "web") {
     if (kind === "image" && nativeImage) return <>{nativeImage}</>
     if (kind === "pdf" && url) return <NativePdf url={url} name={name} testID={testID} />
+    if (kind === "video" && url) return <NativeVideo url={url} testID={testID} />
     return (
       <BinaryFallback message={binaryMessage} download={download} url={url} name={name} testID={testID} />
     )
@@ -344,6 +358,51 @@ function CodeBody({
         onMount={onEditorMount}
       />
     </div>
+  )
+}
+
+/**
+ * The app's own video player, sized to the space the viewer gives it. A
+ * streamed link (a `Range`-capable route) starts playing without downloading
+ * the whole file, and a player that cannot decode the file reports it.
+ */
+function NativeVideo({ url, testID }: { url: string; testID?: string }) {
+  const window = useWindowDimensions()
+  // The space is not known until the host lays us out, but the player can start
+  // either way, so it opens at the window size and narrows on the first layout.
+  const [size, setSize] = useState({ width: window.width, height: window.height * 0.6 })
+  const [failed, setFailed] = useState(false)
+
+  if (failed) {
+    return (
+      <View className="flex-1 items-center justify-center gap-2 px-6 py-8" testID={testID ?? "file-view-video"}>
+        <Text className="text-center text-sm text-foreground">Could not play this video.</Text>
+      </View>
+    )
+  }
+
+  return (
+    <View
+      className="flex-1 bg-black"
+      testID={testID ?? "file-view-video"}
+      onLayout={(event) => {
+        const { width, height } = event.nativeEvent.layout
+        setSize({ width, height })
+      }}
+    >
+      {size.width > 0 && size.height > 0 ? (
+        <Suspense fallback={<ActivityIndicator className="mt-6" />}>
+          <NativeVideoView
+            url={url}
+            width={size.width}
+            height={size.height}
+            onError={() => setFailed(true)}
+          />
+        </Suspense>
+      ) : (
+        <ActivityIndicator className="mt-6" />
+      )}
+    </View>
   )
 }
 

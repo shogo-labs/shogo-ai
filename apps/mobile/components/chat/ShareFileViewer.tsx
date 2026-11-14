@@ -83,6 +83,43 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
 
     const load = async () => {
       try {
+        // A video or an audio file is streamed, never buffered: 300 MB of mp4
+        // must not download before the first frame. One one-byte range probe
+        // keeps the error UX (a dead link still shows the API's `code`) and
+        // tells us the size and type; the element then fetches what it needs
+        // itself, seeks included.
+        const namedKind = fileViewKind(target.name, null)
+        if (namedKind === "video" || namedKind === "audio") {
+          const probe = await fetch(source, {
+            credentials: "include",
+            headers: { Range: "bytes=0-0" },
+          })
+          if (cancelled) return
+          if (!probe.ok) {
+            const body = await probe.json().catch(() => null)
+            const { code, message } = shareFileErrorFromBody(body)
+            setState({
+              status: "error",
+              code: code ?? `http_${probe.status}`,
+              text: shareFileErrorText(code, message),
+            })
+            return
+          }
+          // Cancel whatever body came back (a server that ignores `Range`
+          // sends the whole file, and we do not want it).
+          void probe.body?.cancel().catch(() => {})
+          const total = Number(/\/(\d+)$/.exec(probe.headers.get("content-range") ?? "")?.[1] ?? NaN)
+          setState({
+            status: "ready",
+            kind: namedKind,
+            url: source,
+            mime: blobMimeType(target.name, probe.headers.get("content-type")),
+            size: Number.isFinite(total) ? total : 0,
+            objectUrl: null,
+          })
+          return
+        }
+
         const response = await fetch(source, { credentials: "include" })
         if (!response.ok) {
           const body = await response.json().catch(() => null)
@@ -154,6 +191,12 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
     setSaving(true)
     setSaveError(null)
     try {
+      // A streamed video or audio file has no body in hand: the link is the
+      // download, and the browser/OS fetches it once.
+      if (state.objectUrl == null && state.text === undefined) {
+        await downloadAttachment(source, target.name)
+        return
+      }
       if (Platform.OS === "web") {
         if (typeof document === "undefined") return
         const href =

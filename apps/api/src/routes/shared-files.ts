@@ -86,10 +86,14 @@ function downloadHeaders(path: string, upstream?: Headers): Headers {
   const headers = new Headers()
   const contentType = upstream?.get('content-type') || 'application/octet-stream'
   const risky = new Set(['exe', 'msi', 'dmg', 'pkg', 'apk', 'ipa', 'appimage', 'deb', 'rpm', 'html', 'htm', 'svg'])
-  headers.set('Content-Type', risky.has(extension(path)) ? 'application/octet-stream' : contentType)
+  const servedType = risky.has(extension(path)) ? 'application/octet-stream' : contentType
+  headers.set('Content-Type', servedType)
   const filename = safeFilename(path)
   const asciiFilename = filename.replace(/[^\x20-\x7e]/g, '_')
-  const disposition = `attachment; filename="${asciiFilename}"`
+  // A video or audio link must open in a player rather than save: that is what
+  // lets the app point a `<video>` straight at it and stream it.
+  const inline = servedType.startsWith('video/') || servedType.startsWith('audio/')
+  const disposition = `${inline ? 'inline' : 'attachment'}; filename="${asciiFilename}"`
   headers.set(
     'Content-Disposition',
     asciiFilename === filename
@@ -98,7 +102,17 @@ function downloadHeaders(path: string, upstream?: Headers): Headers {
   )
   headers.set('X-Content-Type-Options', 'nosniff')
   headers.set('Cache-Control', 'private, no-store')
-  for (const name of ['content-length', 'cross-origin-resource-policy', 'etag', 'last-modified']) {
+  // `content-range` and `accept-ranges` are the range answer itself: dropping
+  // them turns a 206 into an unusable one and hides the file's size from the
+  // viewer's probe.
+  for (const name of [
+    'content-length',
+    'content-range',
+    'accept-ranges',
+    'cross-origin-resource-policy',
+    'etag',
+    'last-modified',
+  ]) {
     const value = upstream?.get(name)
     if (value) headers.set(name, value)
   }
@@ -218,13 +232,22 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
     let fileNotFound = false
     let runtimeDown = false
 
+    // A media element asks for byte ranges; the runtime answers 206 and seeks
+    // work. `If-Range` rides along so a stale validator gets the whole file
+    // back rather than a range of a file that changed.
+    const rangeHeaders: Record<string, string> = {}
+    const rangeHeader = c.req.header('range')
+    const ifRangeHeader = c.req.header('if-range')
+    if (rangeHeader) rangeHeaders.range = rangeHeader
+    if (ifRangeHeader) rangeHeaders['if-range'] = ifRangeHeader
+
     for (const shape of shapes) {
       const agentPath = `/agent/workspace/download/${encodeRuntimePath(shape.path)}`
       const agentUrlPath = shape.scope ? `${agentPath}?scope=${shape.scope}` : agentPath
       const fetchRuntime = (url: string, runtimeToken: string) =>
         fetch(`${url.replace(/\/+$/, '')}${agentUrlPath}`, {
           method: 'GET',
-          headers: { 'x-runtime-token': runtimeToken },
+          headers: { 'x-runtime-token': runtimeToken, ...rangeHeaders },
           signal: c.req.raw.signal,
         })
 
@@ -260,7 +283,7 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
                   agentPath: agentUrlPath,
                   cleanPath: agentPath,
                   method: 'GET',
-                  headers: { 'x-runtime-token': runtimeToken },
+                  headers: { 'x-runtime-token': runtimeToken, ...rangeHeaders },
                 })
               : await fetchRuntime(resolution.url, runtimeToken)
           }
@@ -268,6 +291,16 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
           if (upstream.ok) {
             return new Response(upstream.body, {
               status: upstream.status,
+              headers: downloadHeaders(shape.path, upstream.headers),
+            })
+          }
+          // A range past the end is a real answer about a real file (416 with
+          // `Content-Range: bytes */size`) — retrying other shapes as "not
+          // found" would hide the size the player needs.
+          if (upstream.status === 416) {
+            await upstream.body?.cancel().catch(() => {})
+            return new Response(null, {
+              status: 416,
               headers: downloadHeaders(shape.path, upstream.headers),
             })
           }

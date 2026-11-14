@@ -383,9 +383,95 @@ describe('shared file routes', () => {
     // runtime's own project root.
     expect(calls).toBe(3)
   })
+  // SHO-387: a media element asks the runtime for byte ranges. The API is the
+  // hop in the middle, so it has to carry the request's range through and hand
+  // the 206 back intact (`content-range` included), or every video downloads
+  // in full before it plays.
+  it('forwards Range and passes a 206 through with its content-range', async () => {
+    let forwardedRange = ''
+    let forwardedIfRange = ''
+    globalThis.fetch = (async (_input, init) => {
+      const headers = new Headers(init?.headers)
+      forwardedRange = headers.get('range') || ''
+      forwardedIfRange = headers.get('if-range') || ''
+      return new Response(new Uint8Array([0, 1, 2, 3]), {
+        status: 206,
+        headers: {
+          'content-type': 'video/mp4',
+          'content-length': '4',
+          'content-range': 'bytes 0-3/1048576',
+          'accept-ranges': 'bytes',
+        },
+      })
+    }) as typeof fetch
+
+    const response = await retryingApp([]).fetch(
+      new Request(`http://api.test/api/f/${token('media/clip.mp4')}`, {
+        headers: { range: 'bytes=0-3', 'if-range': '"etag-1"' },
+      }),
+    )
+
+    expect(response.status).toBe(206)
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([0, 1, 2, 3]))
+    expect(forwardedRange).toBe('bytes=0-3')
+    expect(forwardedIfRange).toBe('"etag-1"')
+    expect(response.headers.get('content-range')).toBe('bytes 0-3/1048576')
+    expect(response.headers.get('accept-ranges')).toBe('bytes')
+    // Inline, so a video opens in a player instead of saving (SHO-387).
+    expect(response.headers.get('content-disposition')).toBe('inline; filename="clip.mp4"')
+  })
+
+  it('forwards Range through a paired-instance tunnel', async () => {
+    let relayedHeaders: Record<string, string> = {}
+    const app = sharedFileRoutes({
+      pinChatToHomeRegion: async () => null,
+      resolveAgentProxyPodUrl: async () => ({
+        ok: true,
+        kind: 'tunnel',
+        instanceId: 'instance-1',
+        workspaceId: 'workspace-1',
+        projectId: 'project-1',
+      }),
+      deriveProjectRuntimeToken: async () => 'runtime-secret',
+      relayAgentProxyViaTunnel: async (options) => {
+        relayedHeaders = options.headers
+        return new Response(new Uint8Array([9, 8]), {
+          status: 206,
+          headers: { 'content-type': 'video/mp4', 'content-range': 'bytes 10-11/100' },
+        })
+      },
+    })
+
+    const response = await app.fetch(
+      new Request(`http://api.test/f/${token('media/clip.mp4')}`, { headers: { range: 'bytes=10-11' } }),
+    )
+
+    expect(response.status).toBe(206)
+    expect(relayedHeaders.range).toBe('bytes=10-11')
+    expect(response.headers.get('content-range')).toBe('bytes 10-11/100')
+  })
+
+  it('answers 416 instead of retrying other roots as "not found"', async () => {
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls++
+      return new Response(null, {
+        status: 416,
+        headers: { 'content-range': 'bytes */1024' },
+      })
+    }) as typeof fetch
+
+    const response = await retryingApp([]).fetch(
+      new Request(`http://api.test/api/f/${token('media/clip.mp4')}`, { headers: { range: 'bytes=4096-' } }),
+    )
+
+    expect(response.status).toBe(416)
+    expect(calls).toBe(1)
+    expect(response.headers.get('content-range')).toBe('bytes */1024')
+  })
 })
 
-// SHO-242: a project agent writes `plans/x.md` at its runtime's merged root,
+// SHO-242: a project agent writes `plans/x.md` at its runtime's merged root, `plans/x.md` at its runtime's merged root,
 // which is the one root an unscoped read walks. Desktop now resolves that root
 // locally; this pins the cloud behaviour it matches, so the two cannot drift.
 describe('shared file download shapes', () => {
