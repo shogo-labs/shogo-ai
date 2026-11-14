@@ -10,9 +10,13 @@
  */
 
 import { describe, test, expect, mock, beforeAll, afterAll, beforeEach } from 'bun:test'
+import { Hono } from 'hono'
 
 const mockPrisma = {
   project: {
+    findUnique: mock((_args: any) => Promise.resolve(null as any)),
+  },
+  workspace: {
     findUnique: mock((_args: any) => Promise.resolve(null as any)),
   },
   user: {
@@ -76,9 +80,25 @@ const {
   authMiddleware,
   authorizeProject,
   isProjectReservedTopLevelPath,
+  isWorkspaceRootLfs,
   requireAuth,
   requireProjectAccess,
+  workspaceRootLfsId,
 } = await import('../middleware/auth')
+
+// ─── Git LFS route (real router, mocked object storage) ──────────────
+// Drives the batch/verify routes through the real `authMiddleware` +
+// `requireProjectAccess` chain for the bare-workspace-root case (SHO-368).
+const lfsHeads = new Map<string, number>()
+mock.module('../lib/s3', () => ({
+  headLfsObject: async (key: string) => {
+    const oid = key.split('/').pop()!
+    return lfsHeads.has(oid) ? { size: lfsHeads.get(oid)! } : null
+  },
+  getLfsPresignedReadUrl: async (key: string) => `https://oci.example/get/${key}?sig=read`,
+  getLfsPresignedWriteUrl: async (key: string) => `https://oci.example/put/${key}?sig=write`,
+}))
+const { gitLfsRoutes } = await import('../routes/git-lfs')
 
 /**
  * Helper: derive a legacy (pre-v1) bare-hex token for the same
@@ -140,6 +160,7 @@ function makeCtx(opts: {
 
 beforeEach(() => {
   mockPrisma.project.findUnique.mockReset()
+  mockPrisma.workspace.findUnique.mockReset()
   mockPrisma.user.findUnique.mockReset()
   mockPrisma.member.findMany.mockReset()
   mockPrisma.member.findMany.mockImplementation(() => Promise.resolve([]))
@@ -910,5 +931,233 @@ describe('requireAuth, apiKeyOrSession helpers', () => {
   test('isProjectReservedTopLevelPath recognizes reserved project routes exactly', () => {
     expect(isProjectReservedTopLevelPath('/api/projects/import')).toBe(true)
     expect(isProjectReservedTopLevelPath('/api/projects/import/extra')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// SHO-368 — bare workspace runtime root repo (`ws:<workspaceId>`) LFS
+// ---------------------------------------------------------------------------
+describe('workspace root repo (ws:<workspaceId>) LFS', () => {
+  const WS = 'ws_root_1'
+  const ROOT_ID = `ws:${WS}`
+  const OID = 'c'.repeat(64)
+
+  function workspaceWithOwner(userId = 'user_ws_owner') {
+    return { members: [{ userId }] }
+  }
+
+  describe('authMiddleware', () => {
+    test('authenticates the root repo from the workspace owner, never a project row', async () => {
+      mockPrisma.workspace.findUnique.mockImplementation(() => Promise.resolve(workspaceWithOwner()))
+      for (const op of ['batch', 'verify']) {
+        const { c, stored, calledNext } = makeCtx({
+          headers: { authorization: `Bearer ${deriveWorkspaceRuntimeToken(WS)}` },
+          url: `http://localhost/api/projects/${ROOT_ID}/git/info/lfs/objects/${op}`,
+          method: 'POST',
+        })
+        await authMiddleware(c, async () => { calledNext.called = true })
+        expect(calledNext.called).toBe(true)
+        expect(stored.auth).toEqual({
+          userId: 'user_ws_owner',
+          workspaceId: WS,
+          projectId: ROOT_ID,
+          isAuthenticated: true,
+          via: 'runtimeToken',
+        })
+      }
+      expect(mockPrisma.project.findUnique).not.toHaveBeenCalled()
+    })
+
+    test('a token for another workspace cannot claim this root repo', async () => {
+      mockPrisma.workspace.findUnique.mockImplementation(() => Promise.resolve(workspaceWithOwner()))
+      const { c, stored } = makeCtx({
+        headers: { 'x-runtime-token': deriveWorkspaceRuntimeToken('ws_other') },
+        url: `http://localhost/api/projects/${ROOT_ID}/git/info/lfs/objects/batch`,
+        method: 'POST',
+      })
+      await authMiddleware(c, async () => {})
+      expect(stored.auth?.via).toBeUndefined()
+      expect(stored.auth?.isAuthenticated).toBe(false)
+    })
+
+    test('ws:proj:<id> is not a workspace root repo', async () => {
+      mockPrisma.workspace.findUnique.mockImplementation(() => Promise.resolve(workspaceWithOwner()))
+      mockPrisma.project.findUnique.mockImplementation(() => Promise.resolve(null))
+      const { c, stored } = makeCtx({
+        headers: { 'x-runtime-token': deriveWorkspaceRuntimeToken(WS) },
+        url: 'http://localhost/api/projects/ws:proj:abc/git/info/lfs/objects/batch',
+        method: 'POST',
+      })
+      await authMiddleware(c, async () => {})
+      expect(stored.auth?.via).toBeUndefined()
+    })
+
+    test('a workspace with no owner is refused', async () => {
+      mockPrisma.workspace.findUnique.mockImplementation(() => Promise.resolve({ members: [] }))
+      const { c, stored } = makeCtx({
+        headers: { 'x-runtime-token': deriveWorkspaceRuntimeToken(WS) },
+        url: `http://localhost/api/projects/${ROOT_ID}/git/info/lfs/objects/batch`,
+        method: 'POST',
+      })
+      await authMiddleware(c, async () => {})
+      expect(stored.auth?.isAuthenticated).toBe(false)
+    })
+
+    test('a missing workspace is refused', async () => {
+      mockPrisma.workspace.findUnique.mockImplementation(() => Promise.resolve(null))
+      const { c, stored } = makeCtx({
+        headers: { 'x-runtime-token': deriveWorkspaceRuntimeToken(WS) },
+        url: `http://localhost/api/projects/${ROOT_ID}/git/info/lfs/objects/batch`,
+        method: 'POST',
+      })
+      await authMiddleware(c, async () => {})
+      expect(stored.auth?.isAuthenticated).toBe(false)
+    })
+  })
+
+  describe('requireProjectAccess', () => {
+    test('skips the project authorize lookup for the root repo', async () => {
+      let nextCalled = false
+      const { c, stored } = makeCtx({ params: { projectId: ROOT_ID } })
+      stored.auth = {
+        isAuthenticated: true,
+        userId: 'u',
+        workspaceId: WS,
+        projectId: ROOT_ID,
+        via: 'runtimeToken',
+      }
+      await requireProjectAccess(c, async () => { nextCalled = true })
+      expect(nextCalled).toBe(true)
+      expect(mockPrisma.project.findUnique).not.toHaveBeenCalled()
+      expect(mockPrisma.member.findMany).not.toHaveBeenCalled()
+    })
+
+    test('a ws: id that is not the token workspace is still refused', async () => {
+      let nextCalled = false
+      const { c, stored } = makeCtx({ params: { projectId: 'ws:other' } })
+      stored.auth = {
+        isAuthenticated: true,
+        userId: 'u',
+        workspaceId: WS,
+        projectId: 'ws:other',
+        via: 'runtimeToken',
+      }
+      mockPrisma.user.findUnique.mockImplementation(() => Promise.resolve({ role: 'user' }))
+      mockPrisma.project.findUnique.mockImplementation(() => Promise.resolve(null))
+      await requireProjectAccess(c, async () => { nextCalled = true })
+      expect(nextCalled).toBe(false)
+      expect(c._response().status).toBe(404)
+    })
+  })
+
+  describe('batch/verify route end-to-end (real authMiddleware + requireProjectAccess + LFS router)', () => {
+    function makeLfsApp() {
+      const app = new Hono()
+      app.use('/api/*', authMiddleware)
+      app.use('/api/projects/:projectId/*', requireProjectAccess)
+      app.route('/api', gitLfsRoutes({ workspacesDir: '/tmp/lfs-ws' }))
+      return app
+    }
+
+    function batch(app: Hono, projectId: string, body: unknown, token?: string) {
+      return app.request(`/api/projects/${projectId}/git/info/lfs/objects/batch`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/vnd.git-lfs+json',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+      })
+    }
+
+    test('upload returns a presigned PUT under ws:<W>/lfs/objects/...', async () => {
+      mockPrisma.workspace.findUnique.mockImplementation(() => Promise.resolve(workspaceWithOwner()))
+      lfsHeads.clear()
+      const res = await batch(
+        makeLfsApp(),
+        ROOT_ID,
+        { operation: 'upload', objects: [{ oid: OID, size: 42 }] },
+        deriveWorkspaceRuntimeToken(WS),
+      )
+      expect(res.status).toBe(200)
+      const body: any = await res.json()
+      expect(body.objects[0].actions.upload.href).toContain(
+        `/put/${ROOT_ID}/lfs/objects/${OID.slice(0, 2)}/${OID.slice(2, 4)}/${OID}`,
+      )
+    })
+
+    test('download returns a presigned GET for an existing object', async () => {
+      mockPrisma.workspace.findUnique.mockImplementation(() => Promise.resolve(workspaceWithOwner()))
+      lfsHeads.clear()
+      lfsHeads.set(OID, 42)
+      const res = await batch(
+        makeLfsApp(),
+        ROOT_ID,
+        { operation: 'download', objects: [{ oid: OID, size: 42 }] },
+        deriveWorkspaceRuntimeToken(WS),
+      )
+      expect(res.status).toBe(200)
+      const body: any = await res.json()
+      expect(body.objects[0].actions.download.href).toContain(`/get/${ROOT_ID}/lfs/objects/`)
+    })
+
+    test('verify returns 200 for a stored object', async () => {
+      mockPrisma.workspace.findUnique.mockImplementation(() => Promise.resolve(workspaceWithOwner()))
+      lfsHeads.clear()
+      lfsHeads.set(OID, 42)
+      const res = await makeLfsApp().request(
+        `/api/projects/${ROOT_ID}/git/info/lfs/objects/verify`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/vnd.git-lfs+json',
+            authorization: `Bearer ${deriveWorkspaceRuntimeToken(WS)}`,
+          },
+          body: JSON.stringify({ oid: OID, size: 42 }),
+        },
+      )
+      expect(res.status).toBe(200)
+    })
+
+    test('a token for another workspace is refused (401)', async () => {
+      mockPrisma.workspace.findUnique.mockImplementation(() => Promise.resolve(workspaceWithOwner()))
+      const res = await batch(
+        makeLfsApp(),
+        ROOT_ID,
+        { operation: 'upload', objects: [{ oid: OID, size: 42 }] },
+        deriveWorkspaceRuntimeToken('ws_other'),
+      )
+      expect(res.status).toBe(401)
+    })
+
+    test('a project runtime token cannot claim the root repo (401)', async () => {
+      const res = await batch(
+        makeLfsApp(),
+        ROOT_ID,
+        { operation: 'upload', objects: [{ oid: OID, size: 42 }] },
+        deriveRuntimeToken(ROOT_ID),
+      )
+      expect(res.status).toBe(401)
+    })
+
+    test('a session cookie is refused (401)', async () => {
+      const res = await batch(makeLfsApp(), ROOT_ID, {
+        operation: 'upload',
+        objects: [{ oid: OID, size: 42 }],
+      })
+      expect(res.status).toBe(401)
+    })
+
+    test('a wrt_v1 token on a non-LFS project route is still refused (401)', async () => {
+      mockPrisma.workspace.findUnique.mockImplementation(() => Promise.resolve(workspaceWithOwner()))
+      const app = new Hono()
+      app.use('/api/*', authMiddleware)
+      app.use('/api/projects/:projectId/*', requireProjectAccess)
+      app.get('/api/projects/:projectId/files', (c) => c.json({ ok: true }))
+      const res = await app.request(`/api/projects/${ROOT_ID}/files`, {
+        headers: { authorization: `Bearer ${deriveWorkspaceRuntimeToken(WS)}` },
+      })
+      expect(res.status).toBe(401)
+    })
   })
 })
