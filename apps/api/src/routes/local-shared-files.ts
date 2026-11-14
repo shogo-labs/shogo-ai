@@ -7,6 +7,7 @@ import { fileRangeResponse } from '@shogo/shared-runtime'
 import { describeSharedFileToken, diagnoseSharedFileToken, sharedFileLinkError } from '../lib/shared-file-token'
 import { resolveLocalSharedFileTarget } from '../lib/local-shared-file-target'
 import { mimeTypeForFile } from '../lib/local-file-mime'
+import { isInlinePreviewContentType } from '../lib/shared-file-disposition'
 
 export interface LocalSharedFileRoutesConfig {
   workspacesDir: string
@@ -53,16 +54,18 @@ export function localSharedFileRoutes(config: LocalSharedFileRoutesConfig): Hono
 
       const filename = filenameFor(payload.path)
       const contentType = mimeTypeForFile(filename)
-      const media = contentType.startsWith('video/') || contentType.startsWith('audio/')
-      // Streamed from disk with `Range` support: the viewer's `<video>` starts
-      // playing and seeks without pulling the whole file down first.
+      // Pictures, video, audio and PDFs open in place: the chat preview and the
+      // app's viewer need an `inline` answer (SHO-388). Media is streamed from
+      // disk with `Range` support, so the viewer's `<video>` starts playing and
+      // seeks without pulling the whole file down first (SHO-387).
+      const disposition = isInlinePreviewContentType(contentType) ? 'inline' : 'attachment'
       return fileRangeResponse({
         file: Bun.file(target),
         size: metadata.size,
         rangeHeader: c.req.header('range'),
         headers: {
           'Content-Type': contentType,
-          'Content-Disposition': `${media ? 'inline' : 'attachment'}; filename="${filename}"`,
+          'Content-Disposition': `${disposition}; filename="${filename}"`,
           'Cache-Control': 'private, no-store',
           'X-Content-Type-Options': 'nosniff',
         },

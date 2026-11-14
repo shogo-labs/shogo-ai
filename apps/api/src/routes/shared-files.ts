@@ -9,6 +9,7 @@ import { resolveWorkspaceRuntimeUrl as resolveWorkspaceRuntime } from '../lib/re
 import { resolveAgentProxyPodUrl } from '../lib/agent-proxy-resolver'
 import { relayAgentProxyViaTunnel } from '../lib/tunnel-relay'
 import { describeSharedFileToken, diagnoseSharedFileToken, sharedFileLinkError } from '../lib/shared-file-token'
+import { isInlinePreviewContentType } from '../lib/shared-file-disposition'
 import { importCloudModule } from '../lib/cloud-import'
 import { isMetalEnabled } from '../lib/metal-eligibility'
 
@@ -90,9 +91,11 @@ function downloadHeaders(path: string, upstream?: Headers): Headers {
   headers.set('Content-Type', servedType)
   const filename = safeFilename(path)
   const asciiFilename = filename.replace(/[^\x20-\x7e]/g, '_')
-  // A video or audio link must open in a player rather than save: that is what
-  // lets the app point a `<video>` straight at it and stream it.
-  const inline = servedType.startsWith('video/') || servedType.startsWith('audio/')
+  // Pictures, video, audio and a PDF open in place rather than saving: that is
+  // what lets the chat preview and the app's viewer load it without first
+  // fetching the whole body (SHO-388), and it is what lets the range support in
+  // the routes feed a `<video>` straight off the link (SHO-387).
+  const inline = isInlinePreviewContentType(servedType)
   const disposition = `${inline ? 'inline' : 'attachment'}; filename="${asciiFilename}"`
   headers.set(
     'Content-Disposition',
