@@ -24,7 +24,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { isSafeRelativePath, parseSystemManifest } from './system-manifest'
 import { BOARD_TEMPLATES, boardTemplateArgs, findWorkTemplate, listWorkTemplates, mergeWorkTemplate } from './work-templates'
-import { crossWorkspaceTargetId } from './cross-workspace'
+import { crossWorkspaceTargetId } from './cross-workspace-scope'
 
 const MANIFEST_PATH = 'shogo-system.yaml'
 

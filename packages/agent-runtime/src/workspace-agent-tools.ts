@@ -26,7 +26,7 @@ import {
   updateSchedule as apiUpdateSchedule,
   updateGoal as apiUpdateGoal,
 } from './internal-api'
-import { crossWorkspaceTargetId } from './cross-workspace'
+import { crossWorkspaceTargetId } from './cross-workspace-scope'
 
 function workspaceIdOf(ctx: ToolContext): string | null {
   // A cross-workspace tool call acts in the target the gate resolved (SHO-389).

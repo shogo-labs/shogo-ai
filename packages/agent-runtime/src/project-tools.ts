@@ -110,7 +110,7 @@ import {
   type SystemDiff,
   type SystemLock,
 } from './system-manifest'
-import { crossWorkspaceTargetId } from './cross-workspace'
+import { crossWorkspaceTargetId } from './cross-workspace-scope'
 
 // ---------------------------------------------------------------------------
 // Shared helpers

@@ -39,7 +39,7 @@ import {
   type AgentStatusCard,
 } from './internal-api'
 import { uploadWorkspaceMedia } from './workspace-media'
-import { crossWorkspaceTargetId } from './cross-workspace'
+import { crossWorkspaceTargetId } from './cross-workspace-scope'
 
 const KIND_SCHEMA = Type.Union(
   [Type.Literal('status'), Type.Literal('result'), Type.Literal('decision'), Type.Literal('alert')],

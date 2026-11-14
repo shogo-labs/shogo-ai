@@ -23,7 +23,7 @@ import {
   testTrigger,
   updateTrigger,
 } from './internal-api'
-import { crossWorkspaceTargetId } from './cross-workspace'
+import { crossWorkspaceTargetId } from './cross-workspace-scope'
 
 export const TRIGGER_TOOL_NAMES = [
   'trigger_types_list',
