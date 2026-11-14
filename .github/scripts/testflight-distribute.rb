@@ -73,22 +73,26 @@ begin
   )
 
   build_id = build.fetch("id")
-  existing_groups = client
-    .get("/v1/builds/#{build_id}/betaGroups?limit=200")
-    .fetch("data", [])
-    .map { |group| group.fetch("id") }
 
+  # App Store Connect no longer serves GET on the build's `betaGroups`
+  # relationship — it answers 403 FORBIDDEN_ERROR ("The relationship
+  # 'betaGroups' does not allow 'GET_RELATED'. Allowed operations are: CREATE,
+  # DELETE"), which killed every release at this step from v2.5.1 on and, with
+  # it, the App Store review job that needs this one. Idempotency comes from the
+  # POST itself: assigning a build to a group it is already in is a 409, which
+  # is success for our purposes.
   group_ids.each do |group_id|
-    if existing_groups.include?(group_id)
-      puts "Build #{build_number} is already assigned to TestFlight group #{group_id}."
-      next
-    end
+    begin
+      client.post(
+        "/v1/betaGroups/#{group_id}/relationships/builds",
+        { data: [{ type: "builds", id: build_id }] },
+      )
+      puts "Assigned build #{build_number} to TestFlight group #{group_id}."
+    rescue AppStoreConnectError => error
+      raise unless error.status == 409
 
-    client.post(
-      "/v1/betaGroups/#{group_id}/relationships/builds",
-      { data: [{ type: "builds", id: build_id }] },
-    )
-    puts "Assigned build #{build_number} to TestFlight group #{group_id}."
+      puts "Build #{build_number} is already assigned to TestFlight group #{group_id}."
+    end
   end
 
   summary_lines << "**Processing:** `VALID`"

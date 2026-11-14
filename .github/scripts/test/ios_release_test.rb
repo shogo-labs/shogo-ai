@@ -163,21 +163,7 @@ class DistributeScriptTest < Minitest::Test
     skip "needs plutil (macOS runner)" unless system("command -v plutil > /dev/null 2>&1")
 
     Dir.mktmpdir("distribute-e2e") do |dir|
-      ipa = File.join(dir, "Shogo-test.ipa")
-      app_dir = File.join(dir, "Payload", "Shogo.app")
-      FileUtils.mkdir_p(app_dir)
-      File.write(File.join(app_dir, "Info.plist"), <<~PLIST)
-        <?xml version="1.0" encoding="UTF-8"?>
-        <plist version="1.0">
-        <dict>
-        <key>CFBundleIdentifier</key><string>ai.shogo.app</string>
-        <key>CFBundleVersion</key><string>983</string>
-        <key>CFBundleShortVersionString</key><string>2.4.9</string>
-        </dict>
-        </plist>
-      PLIST
-      _out, error, status = Open3.capture3("zip", "-qr", ipa, "Payload", chdir: dir)
-      assert status.success?, "zip failed: #{error}"
+      ipa = write_ipa(dir)
 
       summary = File.join(dir, "summary.md")
       File.write(summary, "")
@@ -195,9 +181,51 @@ class DistributeScriptTest < Minitest::Test
     end
   end
 
+  # App Store Connect answers 403 FORBIDDEN_ERROR to GET on a build's
+  # `betaGroups` relationship ("only CREATE, DELETE"), so the distributor must
+  # never read it — and a group the build is already in comes back as a 409 that
+  # means success, not a failed release.
+  def test_a_group_the_build_is_already_in_is_not_a_failure
+    skip "needs plutil (macOS runner)" unless system("command -v plutil > /dev/null 2>&1")
+
+    Dir.mktmpdir("distribute-e2e") do |dir|
+      ipa = write_ipa(dir)
+
+      summary = File.join(dir, "summary.md")
+      File.write(summary, "")
+      harness = File.join(dir, "harness.rb")
+      File.write(harness, distribute_harness(ipa, summary, already_assigned: ["group-b"]))
+
+      output, error_output, run = Open3.capture3(ENV.to_h, "ruby", harness)
+      assert run.success?, "script failed:\n#{output}\n#{error_output}"
+
+      assert_includes output, "Assigned build 983 to TestFlight group group-a."
+      assert_includes output, "Build 983 is already assigned to TestFlight group group-b."
+    end
+  end
+
   private
 
-  def distribute_harness(ipa, summary)
+  def write_ipa(dir)
+    ipa = File.join(dir, "Shogo-test.ipa")
+    app_dir = File.join(dir, "Payload", "Shogo.app")
+    FileUtils.mkdir_p(app_dir)
+    File.write(File.join(app_dir, "Info.plist"), <<~PLIST)
+      <?xml version="1.0" encoding="UTF-8"?>
+      <plist version="1.0">
+      <dict>
+      <key>CFBundleIdentifier</key><string>ai.shogo.app</string>
+      <key>CFBundleVersion</key><string>983</string>
+      <key>CFBundleShortVersionString</key><string>2.4.9</string>
+      </dict>
+      </plist>
+    PLIST
+    _out, error, status = Open3.capture3("zip", "-qr", ipa, "Payload", chdir: dir)
+    assert status.success?, "zip failed: #{error}"
+    ipa
+  end
+
+  def distribute_harness(ipa, summary, already_assigned: [])
     <<~RUBY
       require #{File.join(SCRIPTS, 'lib/app-store-connect').inspect}
       require #{File.join(SCRIPTS, 'lib/ios-app').inspect}
@@ -213,9 +241,14 @@ class DistributeScriptTest < Minitest::Test
             { "data" => { "id" => "999", "attributes" => { "name" => "shogo mac", "bundleId" => "ai.shogo.mac" } } }
           when %r{\\A/v1/builds\\?.*filter%5Bversion%5D=983}
             { "data" => [{ "id" => "build-983", "attributes" => { "version" => "983", "processingState" => "VALID" } }] }
+          when %r{\\A/v1/builds/[^/]+/betaGroups}
+            raise "App Store Connect refuses GET on the build's betaGroups relationship (403 GET_RELATED)"
           when %r{\\A/v1/builds/}
             { "data" => [] }
           when %r{\\A/v1/betaGroups/}
+            if ALREADY_ASSIGNED.include?(path[%r{\\A/v1/betaGroups/([^/]+)/}, 1])
+              raise AppStoreConnectError.new(409, "{\\"errors\\":[]}")
+            end
             POSTED << path
             {}
           else
@@ -223,6 +256,8 @@ class DistributeScriptTest < Minitest::Test
           end
         end
       end
+
+      ALREADY_ASSIGNED = #{already_assigned.inspect}
 
       ENV["ASC_KEY_ID"] = "key"
       ENV["ASC_ISSUER_ID"] = "issuer"
@@ -237,7 +272,7 @@ class DistributeScriptTest < Minitest::Test
       ENV["GITHUB_STEP_SUMMARY"] = #{summary.inspect}
 
       load #{File.join(SCRIPTS, 'testflight-distribute.rb').inspect}
-      abort "expected both groups to be assigned" unless POSTED.length == 2
+      abort "expected every not-yet-assigned group to be posted" unless POSTED.length == #{2 - already_assigned.length}
     RUBY
   end
 end
