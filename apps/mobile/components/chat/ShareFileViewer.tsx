@@ -17,9 +17,15 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { ActivityIndicator, Modal, Platform, Pressable, Text, View } from "react-native"
 import { Download, FolderOpen, ExternalLink, RotateCcw, X } from "lucide-react-native"
 import { downloadAttachment } from "../../lib/attachment-download"
+import { API_URL } from "../../lib/api-url"
 import { resolveChatAttachmentUrl } from "../../lib/chat-attachment-url"
 import { getDesktopBridge } from "../../lib/desktop-bridge"
-import { shareFileErrorFromBody, shareFileErrorText, type InAppFileRef } from "../../lib/share-file-links"
+import {
+  inAppFileFetchHref,
+  shareFileErrorFromBody,
+  shareFileErrorText,
+  type InAppFileRef,
+} from "../../lib/share-file-links"
 import { useResolvedTheme } from "../../contexts/theme"
 import { FileContentView, viewerPathKey } from "../files/FileContentView"
 import { blobMimeType, fileViewKind, type FileViewKind } from "../files/file-view-kind"
@@ -66,7 +72,13 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
-  const source = useMemo(() => resolveChatAttachmentUrl(target.href), [target.href])
+  // The bytes come from the app's own API origin, never from whatever host the
+  // message wrote down — a cloud `share_file` link is relayed, not fetched
+  // cross-origin (see `inAppFileFetchHref`).
+  const source = useMemo(
+    () => resolveChatAttachmentUrl(inAppFileFetchHref(target, API_URL)),
+    [target.href, target.kind],
+  )
   const isDark = useResolvedTheme() === "dark"
   // A local share is a file on this machine: the desktop can show it in
   // Finder or hand it to the OS's default app. Nothing to reveal on web/native.
