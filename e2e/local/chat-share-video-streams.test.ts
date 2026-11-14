@@ -245,7 +245,9 @@ test.describe("A video share_file link in chat streams instead of downloading", 
     // it can only exist after the whole body has been buffered into memory.
     const src = await video.getAttribute("src")
     expect(src ?? "").not.toContain("blob:")
-    expect(src).toBe(href)
+    // The element streams the API's own URL (the app resolves the link against
+    // the API origin), not a buffered copy.
+    expect(src).toBe(`${API}${href}`)
 
     // One `bytes=0-0` probe first, answered 206 with the total size — that is
     // what the pane's size line is built from, without reading the body.
