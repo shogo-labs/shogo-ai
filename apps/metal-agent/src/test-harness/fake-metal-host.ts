@@ -293,8 +293,17 @@ export class FakeGuest {
     return existsSync(p) ? readFileSync(p, 'utf-8') : null
   }
 
+  /** Something the agent left in its workspace (`<workspace>/<rel>`). */
+  writeWorkspace(rel: string, body: string, mode = 0o644): void {
+    writeRel(this.ws, rel, body)
+    chmodSync(join(this.ws, rel), mode)
+  }
+
   private homeEnv(): NodeJS.ProcessEnv {
-    return { ...this.env, SHOGO_HOME_STATE_DIR: this.home }
+    // A real guest has HOME=/app and the workspace at /app/workspace. The two
+    // are siblings here (so a source export can never contain the home), but
+    // the workspace must still be named so home-state persists its `.env*`.
+    return { ...this.env, SHOGO_HOME_STATE_DIR: this.home, WORKSPACE_DIR: this.ws }
   }
 
   /** Guest paths as the host sends them: absolute `/app/workspace/...` or workspace-relative. */
