@@ -607,3 +607,31 @@ describe('buildWorkspaceEnv — workspace drive (SHO-349)', () => {
     expect(env.SHOGO_VM_DISK_MIB).toBeUndefined()
   })
 })
+
+// Project.vmMemoryMiB: operator-set guest memory, sent as SHOGO_VM_BOOT_MEM_MIB.
+describe('buildWorkspaceEnv — guest memory', () => {
+  const metalSeams = (memById: Record<string, number | null>) =>
+    ({
+      ...seams,
+      forMetal: true,
+      _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'micro' }),
+      _loadProjects: async (ids: string[]) =>
+        ids.map((id) => ({ id, name: id, settings: { techStackId: 'react-app' }, vmMemoryMiB: memById[id] ?? null })),
+    }) as any
+
+  it('sends the anchor project’s request, leaving the tier budget alone', async () => {
+    const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], { ...metalSeams({ p1: 8192, p2: null }), anchorProjectId: 'p1' })
+    expect(env.SHOGO_VM_BOOT_MEM_MIB).toBe('8192')
+    expect(env.SHOGO_VM_MEM_MIB).toBe(String(2 * 1024))
+  })
+
+  it('takes the largest member for a bare workspace runtime', async () => {
+    const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], metalSeams({ p1: null, p2: 8192 }))
+    expect(env.SHOGO_VM_BOOT_MEM_MIB).toBe('8192')
+  })
+
+  it('is absent when no member asked', async () => {
+    const env = await buildWorkspaceEnv('ws-1', ['p1'], { ...metalSeams({ p1: null }), anchorProjectId: 'p1' })
+    expect(env.SHOGO_VM_BOOT_MEM_MIB).toBeUndefined()
+  })
+})

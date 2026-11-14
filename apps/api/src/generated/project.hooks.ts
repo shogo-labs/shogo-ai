@@ -95,7 +95,7 @@ const IMMUTABLE_FIELDS = ['workspaceId', 'createdBy', 'createdAt'] as const
  * (and may be billed), so it goes through PUT /api/projects/:id/disk, which
  * validates the workspace role and the tier ceiling (SHO-349).
  */
-const ROUTE_ONLY_FIELDS = ['workspaceDiskGiB'] as const
+const ROUTE_ONLY_FIELDS = ['workspaceDiskGiB', 'vmMemoryMiB'] as const
 
 /**
  * Default Project hooks (customize as needed)
