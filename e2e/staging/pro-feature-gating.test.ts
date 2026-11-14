@@ -45,11 +45,13 @@ test.describe("Pro Feature Gating", () => {
 
   // ── Billing Page Gating ──────────────────────────────────────────
 
-  test("billing page shows Pro plan status", async () => {
+  test("billing page shows the paid plan status", async () => {
     await page.goto("/billing")
     await page.waitForSelector("text=Billing", { timeout: 10_000 })
 
-    await expect(page.getByText("You're on Pro Plan")).toBeVisible()
+    // The bootstrap path lands on Pro; the UI fallback buys Business, the only
+    // per-seat plan still sold (Pro is retired, SHO-397).
+    await expect(page.getByText(/You're on (Pro|Business) Plan/)).toBeVisible()
     await expect(page.getByText("Change Plan")).toBeVisible()
     // The one-time 7-day trial is for first-time upgrades only.
     await expect(page.getByText("Start 7-day free trial")).toHaveCount(0)
