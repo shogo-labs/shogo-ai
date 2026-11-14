@@ -37,12 +37,14 @@ async function activate(id: string) {
 
 beforeEach(() => {
   localStorage.clear()
+  sessionStorage.clear()
   _resetWorkspaceRouteForTests()
   clearActiveWorkspaceId()
 })
 
 afterEach(() => {
   localStorage.clear()
+  sessionStorage.clear()
 })
 
 describe('routePath', () => {
