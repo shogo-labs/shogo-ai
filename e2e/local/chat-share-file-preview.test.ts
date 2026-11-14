@@ -235,7 +235,10 @@ test.describe("A share_file link in the workspace chat", () => {
     const audio = pane.locator("audio")
     await expect(audio).toHaveCount(1, { timeout: 30_000 })
     await expect(audio).toHaveAttribute("controls", "")
-    expect((await audio.getAttribute("src"))?.startsWith("blob:")).toBe(true)
+    // Audio streams from the link too (SHO-387): no blob is built for it.
+    const src = await audio.getAttribute("src")
+    expect(src ?? "").not.toContain("blob:")
+    expect(src).toBe(`${API}${href}`)
   })
 
   test("a .md opens on Preview, and its Source toggle is read-only", async () => {
