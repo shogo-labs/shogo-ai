@@ -20,6 +20,7 @@ import { fetchComposioToolSchemas, type ComposioToolSchema } from './composio-au
 import { smartTruncateJson } from './response-transforms'
 import { currentCredentialScope } from './credential-scope'
 import { composioToolOp } from './integration-credentials'
+import { isZernioSocialToolkit } from '@shogo/shared-runtime'
 
 /**
  * Whether Composio OAuth connections are scoped to the workspace
@@ -136,11 +137,16 @@ export async function getComposioToolkitsCatalog(): Promise<ComposioToolkitInfo[
     const result = await client.toolkits.get()
 
     const rawItems: any[] = Array.isArray(result) ? result : (result as any).items || []
-    const items: ComposioToolkitInfo[] = rawItems.map((t: any) => ({
-      slug: t.slug || t.id || '',
-      name: t.name || t.slug || '',
-      logo: t.logo,
-    }))
+    const items: ComposioToolkitInfo[] = rawItems
+      .map((t: any) => ({
+        slug: t.slug || t.id || '',
+        name: t.name || t.slug || '',
+        logo: t.logo,
+      }))
+      // Instagram and TikTok connect through Zernio, not Composio. Dropping
+      // them here covers search, find (including its fuzzy "contained" match)
+      // and every other consumer of the catalog.
+      .filter((t) => !isZernioSocialToolkit(t.slug))
 
     toolkitCache = { items, fetchedAt: Date.now() }
     console.log(`[Composio] Fetched ${items.length} toolkits from catalog`)

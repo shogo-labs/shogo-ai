@@ -1846,16 +1846,21 @@ export const api = {
 
   /**
    * List every Composio toolkit available to this account. Powers the
-   * "browse all" picker on the Integrations settings tab.
+   * "browse all" picker on the Integrations settings tab. `socialProviders`
+   * carries the Instagram/TikTok rows that connect through Zernio (the Social
+   * page) instead of Composio.
    */
   async getIntegrationProviders(http: HttpClient) {
-    const res = await http.get<{ data: Array<{ toolkit: string; name: string; whiteLabeled?: boolean; available?: boolean }>; enabled?: boolean }>(
-      '/api/integrations/providers',
-    )
+    const res = await http.get<{
+      data: Array<{ toolkit: string; name: string; whiteLabeled?: boolean; available?: boolean }>
+      enabled?: boolean
+      socialProviders?: Array<{ toolkit: string; name: string; provider: string; href: string }>
+    }>('/api/integrations/providers')
     const data = res.data?.data
     return {
       providers: Array.isArray(data) ? data : [],
       enabled: res.data?.enabled !== false,
+      socialProviders: Array.isArray(res.data?.socialProviders) ? res.data.socialProviders : [],
     }
   },
 

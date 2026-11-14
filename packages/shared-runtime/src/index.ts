@@ -26,6 +26,14 @@ export {
 } from './workspace-root-sync'
 
 export {
+  ZERNIO_SOCIAL_TOOLKITS,
+  isZernioSocialToolkit,
+  normalizeToolkitName,
+  zernioPlatformsFromQuery,
+  type ZernioSocialToolkit,
+} from './social-providers'
+
+export {
   CAPABILITY_INFO,
   CAPABILITY_KEYS,
   mergeCapabilitySettingsIntoConfig,
