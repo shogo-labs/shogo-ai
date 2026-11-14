@@ -88,7 +88,7 @@ const CREDENTIAL_COPY: Record<
   },
   android_keystore: {
     title: 'Android upload keystore',
-    why: 'The key your releases are signed with. Upload the .jks you already use if this app shipped elsewhere — a Play listing only accepts the same key. Keep a copy: it cannot be re-issued.',
+    why: 'An encrypted backup of the keystore your Android releases were signed with — downloadable from here and removable at any time. Builds do not sign with this copy: Expo signs each build with the keystore held for the project. Save one when you have a key you cannot re-create, because an app that already shipped can never be uploaded again under a different one.',
     fields: [
       { name: 'keystoreBase64', label: 'Keystore file (.jks / .keystore)', pickFile: true },
       { name: 'keystorePassword', label: 'Keystore password', secret: true },
