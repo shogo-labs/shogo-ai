@@ -239,3 +239,108 @@ describe('cloud → a workspace hosted on a paired desktop', () => {
     expect(upstream).toHaveLength(0)
   })
 })
+
+/**
+ * `project_call` names a **project**, not a workspace (SHO-389). A cloud
+ * project has no local row, so before this the route could not resolve it and
+ * answered a bare 401 — the approval was burned and nothing left the machine.
+ */
+describe('project_call into a cloud workspace', () => {
+  const CLOUD_PROJECT = 'cloud-project-nada-1'
+
+  const call = (headers: Record<string, string>) => {
+    const res = app.request(`http://local/api/internal/projects/${CLOUD_PROJECT}/agent-call`, {
+      method: 'POST',
+      headers: { ...baseHeaders(), 'content-type': 'application/json', ...headers },
+      body: JSON.stringify({ message: 'move SAM-12 to Done' }),
+    })
+    return res
+  }
+
+  beforeAll(async () => {
+    await storeCloudWorkspace({ signedIn: true, withKey: true })
+  })
+
+  test('without an approval it is refused with approval_required, not a bare 401', async () => {
+    const res = await call({ 'X-Cross-Workspace-Target': CLOUD_TARGET })
+    expect(res.status).toBe(403)
+    expect((await res.json<any>()).error.code).toBe('approval_required')
+    expect(upstream).toHaveLength(0)
+  })
+
+  test('with one it relays once to the cloud, carrying the approval', async () => {
+    const hash = argsHash({ message: 'move SAM-12 to Done' })
+    const minted = await mintCrossWorkspaceApproval({
+      callerWorkspaceId: personalWorkspaceId,
+      targetWorkspaceId: CLOUD_TARGET,
+      tool: 'project_call',
+      argsHash: hash,
+      requesterUserId: ownerId,
+    })
+    const res = await call({
+      'X-Cross-Workspace-Target': CLOUD_TARGET,
+      'X-Cross-Workspace-Approval': minted.id,
+      'X-Cross-Workspace-Tool': 'project_call',
+      'X-Cross-Workspace-Args-Hash': hash,
+    })
+
+    expect(res.status).toBe(200)
+    expect(upstream).toHaveLength(1)
+    expect(upstream[0].url).toBe(`http://cloud.test/api/internal/projects/${CLOUD_PROJECT}/agent-call`)
+    expect(upstream[0].headers.authorization).toBe(`Bearer ${CLOUD_KEY}`)
+    expect(upstream[0].headers['x-cross-workspace-approval']).toBe(minted.id)
+    expect(upstream[0].headers['x-cross-workspace-target']).toBe(CLOUD_TARGET)
+
+    // Single use: the same approval cannot start a second callee turn.
+    const replay = await call({
+      'X-Cross-Workspace-Target': CLOUD_TARGET,
+      'X-Cross-Workspace-Approval': minted.id,
+      'X-Cross-Workspace-Tool': 'project_call',
+      'X-Cross-Workspace-Args-Hash': hash,
+    })
+    expect(replay.status).toBe(403)
+    expect(upstream).toHaveLength(1)
+  })
+})
+
+/**
+ * Defect QA found in round 2: a local-target `project_call` that a person
+ * refused answered a bare `401 Unauthorized`, which reads as a bad token. The
+ * reason the authorizer produced now reaches the route.
+ */
+describe('project_call into another local workspace', () => {
+  let otherProjectId: string
+  let otherWorkspaceId: string
+
+  beforeAll(async () => {
+    const other = await db.workspace.create({ data: { name: 'Nada', slug: `nada-${crypto.randomUUID().slice(0, 8)}`, kind: 'team' } })
+    otherWorkspaceId = other.id
+    await db.member.create({ data: { userId: ownerId, workspaceId: other.id, role: 'owner', projectId: null } })
+    const project = await db.project.create({ data: { name: `nada-app-${crypto.randomUUID().slice(0, 8)}`, workspaceId: other.id } })
+    otherProjectId = project.id
+  })
+
+  test('without an approval it answers 403 approval_required, not 401', async () => {
+    const res = await app.request(`http://local/api/internal/projects/${otherProjectId}/agent-call`, {
+      method: 'POST',
+      headers: { ...baseHeaders(), 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hello' }),
+    })
+    expect(res.status).toBe(403)
+    expect((await res.json<any>()).error.code).toBe('approval_required')
+  })
+
+  test('a project agent still gets cross_workspace_forbidden', async () => {
+    const { deriveRuntimeToken } = await import('../lib/runtime-token')
+    const local = await db.project.create({
+      data: { name: `p-${crypto.randomUUID().slice(0, 8)}`, workspaceId: personalWorkspaceId },
+    })
+    const res = await app.request(`http://local/api/internal/projects/${otherProjectId}/agent-call`, {
+      method: 'POST',
+      headers: { 'x-runtime-token': deriveRuntimeToken(local.id), 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hello' }),
+    })
+    expect(res.status).toBe(403)
+    expect((await res.json<any>()).error.code).toBe('cross_workspace_forbidden')
+  })
+})

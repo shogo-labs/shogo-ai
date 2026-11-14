@@ -808,6 +808,74 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     )
   })
 
+  /**
+   * The same transport for a call named by **project** rather than workspace
+   * (SHO-389): `project_call` into another workspace.
+   *
+   * The target workspace cannot be read from the URL, and a cloud project has
+   * no local row, so it comes from the header the runtime's gate set — the same
+   * target the agent asked for with `workspace`, still subject to the person's
+   * ticket, their ownership of the Personal workspace, membership there and an
+   * approval for the write. A project in a workspace this instance serves falls
+   * through to the route, which does that check itself.
+   */
+  app.use('/projects/:projectId/*', async (c, next) => {
+    if (process.env.SHOGO_LOCAL_MODE !== 'true') return next()
+    const identity = await authenticate(c)
+    if (identity?.kind !== 'workspace') return next()
+    const projectId = c.req.param('projectId')
+    if (!projectId || !projectIdFromRef(projectId)) return next()
+
+    const local = (await prisma.project
+      .findUnique({ where: { id: projectId }, select: { workspaceId: true } })
+      .catch(() => null)) as { workspaceId: string } | null
+    if (local?.workspaceId === identity.workspaceId) return next()
+
+    const { CROSS_WORKSPACE_TARGET_HEADER } = await import('../lib/cross-workspace')
+    const target = c.req.header(CROSS_WORKSPACE_TARGET_HEADER) ?? local?.workspaceId ?? null
+    if (!target || target === identity.workspaceId) return next()
+
+    const { resolveTargetHome } = await import('../lib/cross-workspace')
+    const home = await resolveTargetHome(target)
+    if (home.kind === 'local') return next()
+
+    const allowed = await authorizeCrossWorkspaceTarget(c, {
+      identity,
+      tokenWorkspaceId: identity.workspaceId,
+      targetWorkspaceId: target,
+      write: true,
+    })
+    if (!allowed.ok) {
+      ;(c as any).set?.(SCOPE_DENIAL_KEY, allowed)
+      return scopeDenied(c)
+    }
+    ;(c as any).set?.(SCOPE_ALLOWANCE_KEY, allowed)
+
+    if (home.kind === 'cloud') {
+      const body = await c.req.json().catch(() => undefined)
+      const relayed = await relayToCloud(c, target, c.req.path, body)
+      if (relayed) return relayed
+      return c.json(
+        {
+          error: {
+            code: 'cloud_unreachable',
+            message: `That project lives in Shogo Cloud, which this machine can't reach right now.`,
+          },
+        },
+        502,
+      )
+    }
+    return c.json(
+      {
+        error: {
+          code: 'desktop_offline',
+          message: `That project runs on a paired desktop, which is not connected right now.`,
+        },
+      },
+      503,
+    )
+  })
+
   // ---------------------------------------------------------------------------
   // Workspace agent profile and goals (universal workspace primitives; see
   // routes/workspace-agent.ts). Mounted here with the runtime-pod / SA
@@ -2412,6 +2480,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
             ...(cross.userId ? { crossCallerUserId: cross.userId } : {}),
           }
         }
+        // Keep the reason: the route answers `approval_required` /
+        // `cross_workspace_forbidden`, not a bare 401 that reads as a bad token
+        // (SHO-389).
+        ;(c as any).set?.(SCOPE_DENIAL_KEY, cross)
       }
       logAuthReject(
         `lifecycle_workspace_mismatch tokenWorkspace=${scope ?? 'none'}`,
@@ -2932,9 +3004,15 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       CROSS_WORKSPACE_APPROVAL_HEADER,
       CROSS_WORKSPACE_TOOL_HEADER,
       CROSS_WORKSPACE_ARGS_HEADER,
+      CROSS_WORKSPACE_TARGET_HEADER,
     } = await import('../lib/cross-workspace')
     const crossHeaders: Record<string, string> = {}
-    for (const name of [CROSS_WORKSPACE_APPROVAL_HEADER, CROSS_WORKSPACE_TOOL_HEADER, CROSS_WORKSPACE_ARGS_HEADER]) {
+    for (const name of [
+      CROSS_WORKSPACE_APPROVAL_HEADER,
+      CROSS_WORKSPACE_TOOL_HEADER,
+      CROSS_WORKSPACE_ARGS_HEADER,
+      CROSS_WORKSPACE_TARGET_HEADER,
+    ]) {
       const value = c.req.header(name)
       if (value) crossHeaders[name] = value
     }

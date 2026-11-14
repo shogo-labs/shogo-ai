@@ -16,6 +16,15 @@ import { createHash } from 'node:crypto'
 export const CROSS_WORKSPACE_APPROVAL_HEADER = 'X-Cross-Workspace-Approval'
 export const CROSS_WORKSPACE_TOOL_HEADER = 'X-Cross-Workspace-Tool'
 export const CROSS_WORKSPACE_ARGS_HEADER = 'X-Cross-Workspace-Args-Hash'
+/**
+ * The workspace the call is for. A `project_call` names a *project*, so the API
+ * cannot tell from the URL which workspace that project lives in — and for a
+ * cloud project there is no local row to look it up. This is the same target
+ * the agent asked for with the `workspace` parameter, not a new permission: the
+ * API still requires the person's ticket, ownership of the Personal workspace,
+ * membership in this target, and an approval for a write.
+ */
+export const CROSS_WORKSPACE_TARGET_HEADER = 'X-Cross-Workspace-Target'
 
 export type CrossWorkspaceScope = {
   /** The workspace the tool body should act in. */
@@ -53,7 +62,10 @@ export function crossWorkspaceTargetId(): string | null {
 export function crossWorkspaceHeaders(): Record<string, string> {
   const scope = storage.getStore()
   if (!scope) return {}
-  const headers: Record<string, string> = { [CROSS_WORKSPACE_TOOL_HEADER]: scope.tool ?? '' }
+  const headers: Record<string, string> = {
+    [CROSS_WORKSPACE_TOOL_HEADER]: scope.tool ?? '',
+    [CROSS_WORKSPACE_TARGET_HEADER]: scope.workspaceId,
+  }
   if (scope.approvalId) {
     headers[CROSS_WORKSPACE_APPROVAL_HEADER] = scope.approvalId
     headers[CROSS_WORKSPACE_ARGS_HEADER] = scope.argsHash ?? ''

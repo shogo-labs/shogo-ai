@@ -32,6 +32,13 @@ const db = prisma as any
 export const CROSS_WORKSPACE_APPROVAL_HEADER = 'X-Cross-Workspace-Approval'
 export const CROSS_WORKSPACE_TOOL_HEADER = 'X-Cross-Workspace-Tool'
 export const CROSS_WORKSPACE_ARGS_HEADER = 'X-Cross-Workspace-Args-Hash'
+/**
+ * Which workspace the call is for, when the URL names a *project* instead
+ * (`project_call`). Set by the runtime's gate from the `workspace` the agent
+ * asked for; it grants nothing on its own — the ticket, personal ownership,
+ * target membership and the approval are still each required.
+ */
+export const CROSS_WORKSPACE_TARGET_HEADER = 'X-Cross-Workspace-Target'
 
 /**
  * How long an approval stays usable. Long enough for the runtime's own request
