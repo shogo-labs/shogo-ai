@@ -179,62 +179,11 @@ mock.module('@shogo-ai/sdk/email/server', () => ({
 const ZERNIO_PLATFORMS = ['instagram', 'tiktok'] as const
 const zernioNormalize = (name: string) => name.toLowerCase().replace(/[-_\s]/g, '')
 
-// Mirror of `packages/shared-runtime/src/byte-range.ts` (SHO-387).
-function mockParseByteRange(header: string | undefined | null, size: number): any {
-  if (!header) return { kind: 'none' }
-  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim())
-  if (!match) return { kind: 'none' }
-  const [, rawStart, rawEnd] = match
-  if (!rawStart && !rawEnd) return { kind: 'none' }
-  if (size <= 0) return { kind: 'unsatisfiable' }
-  if (!rawStart) {
-    const suffix = Number(rawEnd)
-    if (!Number.isFinite(suffix) || suffix <= 0) return { kind: 'none' }
-    return { kind: 'range', start: Math.max(0, size - suffix), end: size - 1 }
-  }
-  const start = Number(rawStart)
-  if (!Number.isFinite(start) || start >= size) return { kind: 'unsatisfiable' }
-  const end = rawEnd ? Math.min(Number(rawEnd), size - 1) : size - 1
-  if (!Number.isFinite(end) || end < start) return { kind: 'none' }
-  return { kind: 'range', start, end }
-}
-
-function mockFileRangeResponse({
-  file,
-  size,
-  rangeHeader,
-  headers = {},
-  status = 200,
-}: {
-  file: { slice(start: number, end: number): BodyInit }
-  size: number
-  rangeHeader?: string | null
-  headers?: Record<string, string>
-  status?: number
-}): Response {
-  const range = mockParseByteRange(rangeHeader, size)
-  if (range.kind === 'unsatisfiable') {
-    return new Response(null, {
-      status: 416,
-      headers: { ...headers, 'Accept-Ranges': 'bytes', 'Content-Range': `bytes */${size}` },
-    })
-  }
-  if (range.kind === 'range') {
-    return new Response(file.slice(range.start, range.end + 1), {
-      status: 206,
-      headers: {
-        ...headers,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': String(range.end - range.start + 1),
-        'Content-Range': `bytes ${range.start}-${range.end}/${size}`,
-      },
-    })
-  }
-  return new Response(file.slice(0, size), {
-    status,
-    headers: { ...headers, 'Accept-Ranges': 'bytes', 'Content-Length': String(size) },
-  })
-}
+// The byte-range helpers are used *by* the routes under test, so the mock must
+// forward the real implementations rather than a copy of them: a hand-written
+// duplicate would keep `local-file-read`/`local-shared-files` green while the
+// shipped `fileRangeResponse` rotted (SHO-387).
+const realByteRange = require('@shogo/shared-runtime/byte-range') as typeof import('@shogo/shared-runtime/byte-range')
 
 mock.module('@shogo/shared-runtime', () => ({
   RUNTIME_CONFIG: {
@@ -378,10 +327,6 @@ mock.module('@shogo/shared-runtime', () => ({
     const normalized = zernioNormalize(query)
     return ZERNIO_PLATFORMS.filter((platform) => normalized.includes(platform))
   },
-  // Mirror of `packages/shared-runtime/src/byte-range.ts` (SHO-387). The real
-  // implementations, not stubs: `conversation-audio-meta.test.ts` asserts the
-  // parsing matrix through the re-export in `lib/conversation-files.ts`, and
-  // the local file routes build their 206/416 answers with `fileRangeResponse`.
-  parseByteRange: mockParseByteRange,
-  fileRangeResponse: mockFileRangeResponse,
+  parseByteRange: realByteRange.parseByteRange,
+  fileRangeResponse: realByteRange.fileRangeResponse,
 }))

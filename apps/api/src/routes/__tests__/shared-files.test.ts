@@ -471,7 +471,7 @@ describe('shared file routes', () => {
   })
 })
 
-// SHO-242: a project agent writes `plans/x.md` at its runtime's merged root, `plans/x.md` at its runtime's merged root,
+// SHO-242: a project agent writes `plans/x.md` at its runtime's merged root,
 // which is the one root an unscoped read walks. Desktop now resolves that root
 // locally; this pins the cloud behaviour it matches, so the two cannot drift.
 describe('shared file download shapes', () => {
