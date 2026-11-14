@@ -1456,7 +1456,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       input.removeAttribute("capture");
       input.multiple = true;
     } else if (action === "library") {
-      input.setAttribute("accept", "image/*");
+      // The same row offers photos and videos on every surface (SHO-386).
+      input.setAttribute("accept", "image/*,video/*");
       input.removeAttribute("capture");
       input.multiple = true;
     } else {

@@ -212,14 +212,14 @@ function openPlusSheetThenPress(row: string) {
 }
 
 describe("SHO-283 — phone composer '+' sheet on web", () => {
-  test("Photo library opens the hidden input for images, in the press's own tick", () => {
+  test("Photo library opens the hidden input for photos and videos, in the press's own tick", () => {
     const { clicks } = renderPhoneComposer()
 
     openPlusSheetThenPress("Photo library")
 
     expect(clicks).toHaveLength(1)
     expect(clicks[0]).toEqual({
-      accept: "image/*",
+      accept: "image/*,video/*",
       capture: null,
       multiple: true,
       sheetStillOpen: true,
@@ -242,10 +242,10 @@ describe("SHO-283 — phone composer '+' sheet on web", () => {
     expect(executeNativeAttachAction).not.toHaveBeenCalled()
   })
 
-  test("Take photo asks for the rear camera", () => {
+  test("Camera asks for the rear camera", () => {
     const { clicks } = renderPhoneComposer()
 
-    openPlusSheetThenPress("Take photo")
+    openPlusSheetThenPress("Camera")
 
     expect(clicks).toHaveLength(1)
     expect(clicks[0]).toEqual({
@@ -257,14 +257,17 @@ describe("SHO-283 — phone composer '+' sheet on web", () => {
     expect(executeNativeAttachAction).not.toHaveBeenCalled()
   })
 
-  test("a pick after Photo library drops the image filter again", () => {
+  test("a pick after Photo library drops the media filter again", () => {
     const { clicks } = renderPhoneComposer()
 
     openPlusSheetThenPress("Photo library")
     fireEvent.click(screen.getByTestId("project-composer-plus"))
     fireEvent.click(screen.getByText("Browse files"))
 
-    expect(clicks.map((click) => click.accept)).toEqual(["image/*", null])
+    expect(clicks.map((click) => click.accept)).toEqual([
+      "image/*,video/*",
+      null,
+    ])
     expect(clicks.map((click) => click.capture)).toEqual([null, null])
   })
 })
