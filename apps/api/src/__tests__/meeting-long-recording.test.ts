@@ -18,7 +18,9 @@ import { join } from 'node:path'
 
 let meetings = new Map<string, any>()
 let prompts: string[] = []
+let generateCalls: any[] = []
 let generated = ''
+let generatedExtras: Record<string, unknown> = {}
 let sherpaCalls: string[][] = []
 
 const prismaMock = {
@@ -41,9 +43,10 @@ mock.module('../lib/resolve-language-model', () => ({
 }))
 mock.module('../lib/ai-proxy-token', () => ({ generateProxyToken: async () => 'proxy-token' }))
 mock.module('ai', () => ({
-  generateText: async ({ prompt }: any) => {
-    prompts.push(prompt)
-    return { text: generated }
+  generateText: async (opts: any) => {
+    prompts.push(opts.prompt)
+    generateCalls.push(opts)
+    return { text: generated, ...generatedExtras }
   },
 }))
 
@@ -137,8 +140,10 @@ afterAll(() => {
 beforeEach(() => {
   meetings = new Map()
   prompts = []
+  generateCalls = []
   sherpaCalls = []
   generated = ''
+  generatedExtras = {}
   // Silent windows are skipped, so the first spoken window gets the opening line.
   windowTexts = (i, total) =>
     i === 0
@@ -215,6 +220,35 @@ describe('long three-person recording that starts with silence', () => {
     expect(prompt).toContain('Priya will send the deck.')
     expect(prompt).toMatch(/speaker_0[012]:/)
     expect(prompt).toContain('speaker_01')
+  })
+
+  test('notes get a 24k output budget with thinking left on', async () => {
+    generated = '# Pricing v2 launch plan\n\n## Summary\nShip pricing v2 on Friday.'
+    await service.transcribeMeeting('m1', wavPath, { enhance: false })
+    await service.enhanceMeeting('m1')
+
+    expect(generateCalls).toHaveLength(1)
+    expect(generateCalls[0].maxOutputTokens).toBe(24_000)
+    expect(generateCalls[0].providerOptions?.shogo?.thinking?.type).not.toBe('disabled')
+  })
+
+  test('a reasoning-only response that hits the budget is reported as empty notes', async () => {
+    generated = ''
+    generatedExtras = { finishReason: 'length', usage: { outputTokens: 24_000, reasoningTokens: 24_000 } }
+    const warn = console.warn
+    const warnings: string[] = []
+    console.warn = (...args: any[]) => void warnings.push(args.join(' '))
+    try {
+      await service.transcribeMeeting('m1', wavPath, { enhance: false })
+      await service.enhanceMeeting('m1')
+    } finally {
+      console.warn = warn
+    }
+
+    const row = meetings.get('m1')
+    expect(row.enhanceStatus).toBe('error')
+    expect(row.enhanceError).toBe('The AI returned empty notes. Try again.')
+    expect(warnings.some((w) => w.includes('finishReason=length') && w.includes('reasoningTokens=24000'))).toBe(true)
   })
 
   test('a 50-minute transcript (about 5,500 words, 557 segments) fits the notes prompt untruncated', () => {
