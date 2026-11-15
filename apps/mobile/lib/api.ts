@@ -786,6 +786,26 @@ export interface ProjectDiskState {
   substrate: 'metal' | 'knative' | 'local'
 }
 
+/** `GET/PUT /api/projects/:id/machine` (Settings → Machine). */
+export type MachineSizeId = 'standard' | 'medium' | 'large' | 'xlarge'
+export interface ProjectMachineState {
+  current: { id: MachineSizeId | 'custom'; label: string; vcpus: number; memMiB: number }
+  options: Array<{
+    id: MachineSizeId
+    label: string
+    vcpus: number
+    memMiB: number
+    allowed: boolean
+    /** Smallest workspace plan that allows this size; null for Standard. */
+    requiredTier: string | null
+  }>
+  instanceSize: string
+  substrate: 'metal' | 'knative' | 'local'
+  running: boolean
+  canChange: boolean
+  canRestart: boolean
+}
+
 export const api = {
   /** POST /api/users/me/attribution (after signup; session cookie / token via HttpClient). */
   async postSignupAttribution(http: HttpClient, body: Record<string, unknown>) {
@@ -1451,6 +1471,33 @@ export const api = {
     const res = await http.put<ProjectDiskState & { growError?: string }>(
       `/api/projects/${projectId}/disk`,
       { sizeGiB },
+    )
+    return res.data
+  },
+
+  /** Machine size (vCPU + memory) for a project, Settings → Machine. */
+  async getProjectMachine(http: HttpClient, projectId: string) {
+    const res = await http.get<ProjectMachineState>(`/api/projects/${projectId}/machine`)
+    return res.data
+  },
+
+  /**
+   * Pick a machine size. `restartRequired` is true when the project is running
+   * at the old size; errors carry the route's message (e.g. the plan needed).
+   */
+  async updateProjectMachine(http: HttpClient, projectId: string, size: MachineSizeId) {
+    const res = await http.put<ProjectMachineState & { restartRequired?: boolean }>(
+      `/api/projects/${projectId}/machine`,
+      { size },
+    )
+    return res.data
+  },
+
+  /** Restart the project's machine from a clean boot (files are saved first). */
+  async restartProjectMachine(http: HttpClient, projectId: string) {
+    const res = await http.post<{ ok: boolean; restarted: boolean; message: string }>(
+      `/api/projects/${projectId}/machine/restart`,
+      {},
     )
     return res.data
   },

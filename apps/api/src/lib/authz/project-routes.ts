@@ -76,6 +76,7 @@ export const PROJECT_UPDATE_ROUTES: readonly string[] = [
   '/database/start', '/database/stop', '/database/proxy', '/database/proxy/*',
   '/disk',
   '/files/*', '/s3/presign',
+  '/machine', '/machine/restart',
   '/git/git-receive-pack', '/git/info/lfs/objects/verify',
   '/github/branch', '/github/pull', '/github/push', '/github/sync',
   // Credential policy routes also check `project.credentials:manage` (or
@@ -105,7 +106,7 @@ export const PROJECT_READ_ROUTES: readonly string[] = [
   '/integrations/:provider/connect',
   // The handler limits the audit log to people who can edit credential policies.
   '/integrations/audit', '/integrations/policies',
-  '/members', '/permissions', '/ports', '/ports/listening', '/preferred-instance',
+  '/machine', '/members', '/permissions', '/ports', '/ports/listening', '/preferred-instance',
   '/preview/metro', '/publish', '/runtime/status', '/s3/files', '/sandbox/url',
   '/tests/list', '/tests/traces', '/tests/traces/*',
   '/thumbnail', '/thumbnail.png', '/workspace/manifest',
