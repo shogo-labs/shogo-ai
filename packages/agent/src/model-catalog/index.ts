@@ -98,6 +98,9 @@ export {
   mediaOption,
   mergeModelOptions,
   optionsForEndpoint,
+  LAST_FRAME_FIELDS,
+  lastFrameField,
+  supportsLastFrame,
 } from './media-options'
 
 export {

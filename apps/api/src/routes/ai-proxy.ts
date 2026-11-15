@@ -78,6 +78,7 @@ import {
   getMusicModelEntry,
   mergeModelOptions,
   endpointsOf,
+  supportsLastFrame,
   resolveMediaModelId,
   type AgentMode,
   type ModelTier,
@@ -3639,6 +3640,8 @@ function mediaErrorStatus(error: any): MediaErrorStatus | 0 {
       case 'invalid_aspect_ratio':
       case 'audio_not_supported':
       case 'image_to_video_unsupported':
+      case 'end_image_unsupported':
+      case 'invalid_end_image':
       case 'text_to_video_unsupported':
       case 'reference_images_unsupported':
         return 400
@@ -3849,6 +3852,7 @@ export async function listMediaModels(
         source_video: !!entry.sourceVideo,
         ...(entry.modes ? { modes: entry.modes } : {}),
         max_reference_images: entry.maxReferenceImages,
+        last_frame: supportsLastFrame(entry),
         audio: !!entry.audio,
         endpoints: endpointsOf(entry),
         options: mergeModelOptions(entry).map(publicOption),
@@ -6631,12 +6635,12 @@ export function aiProxyRoutes() {
    * POST /ai/v1/videos/generations - Submit a video job.
    *
    * Body: `{ prompt, model, duration?, aspect_ratio?, resolution?, audio?,
-   * start_image?, reference_images?, source_video_url?, preset_id?, options? }`
-   * with images as data URIs (or public URLs). `options` carries model-specific
-   * fields (`cfg_scale`, `multi_shots`, `multi_prompt`, `seed`, …) — the proxy
-   * validates each against the endpoint's documented schema. Returns `{ id }`
-   * right away; poll `GET /ai/v1/videos/:id`. Nothing is charged until the job
-   * completes, and a failed / NSFW / canceled job is never charged.
+   * start_image?, end_image?, reference_images?, source_video_url?, preset_id?,
+   * options? }` with images as data URIs (or public URLs). `options` carries
+   * model-specific fields (`cfg_scale`, `multi_shots`, `multi_prompt`, `seed`, …)
+   * — the proxy validates each against the endpoint's documented schema. Returns
+   * `{ id }` right away; poll `GET /ai/v1/videos/:id`. Nothing is charged until
+   * the job completes, and a failed / NSFW / canceled job is never charged.
    */
   router.post('/ai/v1/videos/generations', async (c) => {
     const tokenPayload = await validateProxyAuth(c)
@@ -6670,6 +6674,7 @@ export function aiProxyRoutes() {
         resolution?: string
         audio?: boolean
         start_image?: string
+        end_image?: string
         reference_images?: string[]
         source_video_url?: string
         source_duration_seconds?: number
@@ -6736,6 +6741,26 @@ export function aiProxyRoutes() {
         }
         // The provider trims anything longer than its max, so bill the trimmed length.
         sourceSeconds = Math.min(declared, entry.maxSourceSeconds ?? 30)
+      }
+      if (body.end_image !== undefined) {
+        const acceptable = typeof body.end_image === 'string'
+          && (body.end_image.startsWith('data:image/') || /^https:\/\//i.test(body.end_image))
+        if (!acceptable) return invalid('end_image must be an image data URI or an https URL', 'invalid_end_image')
+        if (entry.sourceVideo) {
+          return invalid(`${entry.displayName} edits a source clip and takes no end_image.`, 'end_image_unsupported')
+        }
+        if (body.start_image === undefined) {
+          return invalid('end_image needs start_image: the clip animates from the first frame to the last.', 'invalid_end_image')
+        }
+        if (!supportsLastFrame(entry)) {
+          const supported = (Object.values(VIDEO_MODEL_CATALOG) as VideoModelEntry[])
+            .filter((candidate) => !candidate.sourceVideo && supportsLastFrame(candidate))
+            .map((candidate) => candidate.id)
+          return invalid(
+            `${entry.displayName} takes no last frame. Models that take end_image: ${supported.join(', ')}.`,
+            'end_image_unsupported',
+          )
+        }
       }
       if (body.start_image !== undefined) {
         const acceptable = typeof body.start_image === 'string'
@@ -6853,20 +6878,27 @@ export function aiProxyRoutes() {
           )
         }
 
-        // Everything the clip is given to look at: the first frame plus refs.
-        const imageRefs = [...(body.start_image ? [body.start_image] : []), ...refs]
+        // Everything the clip is given to look at: the two frames, then refs.
+        // Order matters — Google reads the first image as the first frame and
+        // the second as the last, and only `end_image` makes this an
+        // interpolation (a start image plus a reference is a normal reference
+        // request, which is why the cap below keys on `end_image` alone).
+        const imageRefs = [
+          ...(body.start_image ? [body.start_image] : []),
+          ...(body.end_image ? [body.end_image] : []),
+          ...refs,
+        ]
         if (imageRefs.length > OMNI_MAX_IMAGES) {
           return invalid(
             `${entry.displayName} accepts at most ${OMNI_MAX_IMAGES} images per request; got ${imageRefs.length}.`,
             'too_many_images',
           )
         }
-        // The tool has no separate `last_image`, so a start image plus a
-        // reference image is how a first-and-last-frame pair is asked for — and
-        // Google limits that mode to 10 s.
-        if (body.start_image && refs.length > 0 && duration > 10) {
+        // Google limits first-and-last-frame interpolation to 3–10 s; above that
+        // it answers INVALID_ARGUMENT, so refuse it before any hold.
+        if (body.end_image && duration > 10) {
           return invalid(
-            `A first-and-last-frame request (start_image plus a reference image) is limited to 10 s; got ${duration}.`,
+            `A first-and-last-frame clip (start_image + end_image) is limited to 10 s; got ${duration}.`,
             'invalid_duration',
           )
         }
@@ -6969,6 +7001,11 @@ export function aiProxyRoutes() {
       const startImageUrl = body.start_image
         ? await higgsfieldEnsurePublicUrl(apiKey, body.start_image, signal)
         : undefined
+      // A last frame is an input image like the first, so it has to be public
+      // before the model can be pointed at it.
+      const endImageUrl = body.end_image
+        ? await higgsfieldEnsurePublicUrl(apiKey, body.end_image, signal)
+        : undefined
       const request = buildHiggsfieldVideoRequest(entry, {
         prompt: prompt || undefined,
         duration: entry.sourceVideo ? undefined : duration,
@@ -6976,6 +7013,7 @@ export function aiProxyRoutes() {
         resolution: body.resolution,
         audio: body.audio,
         startImageUrl,
+        endImageUrl,
         referenceUrls,
         sourceVideoUrl: body.source_video_url,
         presetId: body.preset_id,
