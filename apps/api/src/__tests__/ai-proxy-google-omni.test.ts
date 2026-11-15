@@ -147,7 +147,8 @@ const finished = (overrides: Record<string, unknown> = {}) => ({
   steps: [
     { type: 'model_output', content: [{ type: 'video', data: VIDEO_B64, mime_type: 'video/mp4' }] },
   ],
-  usage: { output_tokens_by_modality: { video: 5_793 } },
+  // Google's real shape: modality splits are lists of { modality, tokens }.
+  usage: { total_output_tokens: 5_793, output_tokens_by_modality: [{ modality: 'video', tokens: 5_793 }] },
   ...overrides,
 })
 
@@ -188,6 +189,23 @@ describe('calculateGoogleVideoUsageCost', () => {
       total_thought_tokens: 0,
     })
     expect(cost.rawUsd).toBeCloseTo(1.5 + 9, 6)
+  })
+
+  test("reads Google's list-shaped usage (production response, 5 s 360p)", () => {
+    // Verbatim usage block of a production interaction (Nov 15). The list form
+    // used to read as NaN, so every clip silently fell back to the rate card.
+    const cost = calculateGoogleVideoUsageCost({
+      total_tokens: 10_447,
+      total_input_tokens: 110,
+      input_tokens_by_modality: [{ modality: 'text', tokens: 110 }],
+      total_output_tokens: 9_655,
+      output_tokens_by_modality: [{ modality: 'video', tokens: 9_655 }],
+      total_thought_tokens: 682,
+    } as any)
+    const raw = (110 * 1.5 + 9_655 * 12 + 682 * 9) / 1_000_000
+    expect(cost.rawUsd).toBeCloseTo(raw, 9)
+    expect(Number.isFinite(cost.billedUsd)).toBe(true)
+    expect(cost.billedUsd).toBeCloseTo(raw * MARKUP_MULTIPLIER, 9)
   })
 
   test('without a modality split every output token is billed as video', () => {
