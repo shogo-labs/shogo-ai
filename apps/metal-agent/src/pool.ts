@@ -502,6 +502,17 @@ export interface AssignedVm {
    */
   busy?: boolean
   /**
+   * The guest's breakdown behind `busy`, from `/pool/activity`. `activeTurns` is
+   * agent turns in flight; `liveStreams` is streams that still hold their turn.
+   *
+   * Past `rolloutDeadlineMs` these are the only thing that blocks a rootfs
+   * rotation (`vmInTurn`): a background task or a card-watch mirror can keep
+   * `busy` true forever, but a turn is a person waiting on an answer (SHO-399).
+   * Undefined on a guest too old to report them, where `busy` is all we have.
+   */
+  activeTurns?: number
+  liveStreams?: number
+  /**
    * Wall-clock (ms) of the last request the guest classified as *app usage* —
    * an end-user hitting the built app's `/api/*` sidecar. Together with
    * `lastAgentRequestAt` this GATES the idle reaper (see `lastRealActivityAt`):
@@ -733,6 +744,34 @@ export interface RecycleReport {
   aborted: boolean
   steps: RecycleStep[]
   destroyed?: { stoppedVm: boolean; removedLocal: boolean; removedDurable: boolean }
+  /**
+   * Things that happened because this recycle ran and that the caller should
+   * pass on — today, what `.tmp/` held that the backup does not carry (SHO-399).
+   */
+  notices?: string[]
+  /**
+   * What `.tmp/` held when the recycle looked (SHO-399). `.tmp/` is excluded
+   * from the backup, so this is the list of what will not come back.
+   */
+  tmp?: DroppedTmpReport
+}
+
+/** What the guest measured in `.tmp/` before this VM was replaced (SHO-399). */
+export interface DroppedTmpReport {
+  files: number
+  bytes: number
+  /** Top-level entry names, capped by the guest — what the owner chat is told. */
+  entries?: string[]
+}
+
+/** Parse the guest's `.tmp/` measurement, if it reported one (SHO-399). */
+function readTmpReport(raw: Partial<DroppedTmpReport> | null | undefined): DroppedTmpReport | undefined {
+  const files = Number(raw?.files) || 0
+  if (files <= 0) return undefined
+  const entries = Array.isArray(raw?.entries)
+    ? raw.entries.filter((e): e is string => typeof e === 'string').slice(0, 10)
+    : []
+  return { files, bytes: Number(raw?.bytes) || 0, ...(entries.length ? { entries } : {}) }
 }
 
 interface DataSaveOpts {
@@ -3150,6 +3189,39 @@ export class MetalWarmPool {
     this.writeLive(a)
   }
 
+  /**
+   * Ask the guest to commit its working tree before this VM is backed up and
+   * destroyed (SHO-399). The repo backup bundles commits that already exist and
+   * makes none of its own, so without this every edit since the last
+   * turn-complete auto-commit dies with the VM.
+   *
+   * Returns null on success, or the reason it failed — a failed checkpoint is a
+   * failed backup step, so a non-forced recycle aborts and retries later
+   * instead of dropping the agent's work. A guest older than the route answers
+   * 404 and keeps today's behaviour (the export's own best-effort flush).
+   */
+  protected async checkpointGuest(a: AssignedVm, noteTmp?: (tmp: DroppedTmpReport) => void): Promise<string | null> {
+    if (a.repoHydratePending) return null
+    const res = await fetch(`${a.handle.agentUrl}/pool/checkpoint-commit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(a.runtimeToken ? { 'x-runtime-token': a.runtimeToken, Authorization: `Bearer ${a.runtimeToken}` } : {}),
+      },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(60_000),
+    })
+    if (res.status === 404) return null
+    if (!res.ok) {
+      const text = (await res.text().catch(() => '')).slice(0, 300)
+      return `checkpoint commit failed (${res.status})${text ? `: ${text}` : ''}`
+    }
+    const body = (await res.json().catch(() => null)) as { tmp?: Partial<DroppedTmpReport> } | null
+    const tmp = readTmpReport(body?.tmp)
+    if (tmp) noteTmp?.(tmp)
+    return null
+  }
+
   protected async fetchRepoExport(handle: FcVmHandle, token?: string): Promise<RepoExport | null> {
     const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
     try {
@@ -5462,6 +5534,8 @@ export class MetalWarmPool {
             lastRequestAt?: number
             activeStreams?: number
             busy?: boolean
+            activeTurns?: number
+            liveStreams?: number
             lastAppRequestAt?: number | null
             appRequestCount?: number
             lastAgentRequestAt?: number | null
@@ -5479,6 +5553,12 @@ export class MetalWarmPool {
           // alone can outlive its turn (a stopped or frozen stream), which is
           // what pinned guests busy for hours (SHO-348).
           a.busy = typeof body.busy === 'boolean' ? body.busy : undefined
+          // The breakdown behind `busy`, so a rotation past the deadline can ask
+          // the narrower question "is a turn actually in flight?" instead of
+          // trusting a counter a stray background task keeps above zero (§2,
+          // SHO-399). `undefined` on a guest too old to report them.
+          a.activeTurns = typeof body.activeTurns === 'number' ? body.activeTurns : undefined
+          a.liveStreams = typeof body.liveStreams === 'number' ? body.liveStreams : undefined
           if (this.vmBusy(a)) {
             a.lastTouchedAt = now // an active turn is activity
             a.lastRealActivityAt = now
@@ -5581,6 +5661,25 @@ export class MetalWarmPool {
     return a.busy ?? (a.activeStreams ?? 0) > 0
   }
 
+  /**
+   * Whether a person is waiting on this guest right now: an agent turn is in
+   * flight, or a stream still holds its turn.
+   *
+   * This is the only thing that may block a rootfs rotation once the rollout
+   * deadline has passed (SHO-399). `vmBusy` is a superset — a background task
+   * that never ends, or an API-side card watch mirrored into the task list, also
+   * makes the guest "busy" — and gating rotation on it meant a VM could sit on a
+   * superseded image forever (Samsara pinned for 19 h by a `while pgrep` loop,
+   * KIF by two card watches). A turn, by contrast, ends.
+   *
+   * Falls back to `vmBusy` for a guest too old to break its own count down: we
+   * cannot tell a turn from a task there, so the safe reading is the old one.
+   */
+  private vmInTurn(a: AssignedVm): boolean {
+    if (a.activeTurns === undefined && a.liveStreams === undefined) return this.vmBusy(a)
+    return (a.activeTurns ?? 0) > 0 || (a.liveStreams ?? 0) > 0
+  }
+
   async isBusy(projectId: string): Promise<boolean> {
     const a = this.assigned.get(projectId)
     if (!a) return false
@@ -5672,17 +5771,27 @@ export class MetalWarmPool {
     for (const id of this.rotateRetryAt.keys()) if (!staleIds.has(id)) this.rotateRetryAt.delete(id)
 
     const due = stale.filter((a) => {
-      if (this.vmBusy(a)) return false
       if (now < (this.rotateRetryAt.get(a.projectId) ?? 0)) return false
       const idleFor = now - (a.lastRealActivityAt ?? a.assignedAt)
-      return idleFor >= this.cfg.rolloutIdleMs || now - this.staleSince.get(a.projectId)! >= this.cfg.rolloutDeadlineMs
+      const pastDeadline = now - this.staleSince.get(a.projectId)! >= this.cfg.rolloutDeadlineMs
+      // Past the deadline a turn is the only thing that still blocks rotation:
+      // a background task or a card-watch mirror must not pin a VM to a
+      // superseded rootfs forever (SHO-399). Before it, nothing changes.
+      if (pastDeadline ? this.vmInTurn(a) : this.vmBusy(a)) return false
+      return idleFor >= this.cfg.rolloutIdleMs || pastDeadline
     })
     const cap = this.cfg.reapMaxPerPass ?? 0
     if (cap > 0 && due.length > cap) due.length = cap
     for (const a of due) {
       const alwaysOn = !!a.alwaysOn
       try {
-        const r = await this.recycle(a.projectId, { reason: 'stale-rootfs' })
+        const r = await this.recycle(a.projectId, {
+          reason: 'stale-rootfs',
+          // Tell the guest why it is going away so every stopped task carries
+          // the release as its reason, not a generic restart; the guest settles
+          // them `interrupted` and the owner hears about it after the recycle.
+          stopBackgroundTasks: true,
+        })
         if (r.aborted) {
           this.rotateRetryAt.set(a.projectId, now + ROTATE_RETRY_MS)
           const failed = r.steps.filter((s) => !s.ok).map((s) => `${s.step}: ${s.detail ?? 'failed'}`)
@@ -6690,7 +6799,7 @@ export class MetalWarmPool {
    */
   async recycle(
     runtimeKey: string,
-    opts: { reason?: string; force?: boolean; env?: Record<string, string> } = {},
+    opts: { reason?: string; force?: boolean; env?: Record<string, string>; stopBackgroundTasks?: boolean } = {},
   ): Promise<RecycleReport> {
     if (this.openFlight.has(runtimeKey) || this.suspendFlight.has(runtimeKey)) {
       return {
@@ -6707,11 +6816,25 @@ export class MetalWarmPool {
 
   private async recycleInner(
     runtimeKey: string,
-    opts: { reason?: string; force?: boolean; env?: Record<string, string> },
+    opts: { reason?: string; force?: boolean; env?: Record<string, string>; stopBackgroundTasks?: boolean },
   ): Promise<RecycleReport> {
     const force = !!opts.force
     const state = this.getProjectStatus(runtimeKey).state
     const steps: RecycleStep[] = []
+    const notices: string[] = []
+    let tmpHeld: DroppedTmpReport | undefined
+    // `.tmp/` is dropped by design, so the report names it once — the guest
+    // measures it on the checkpoint and again when it stops tasks, and either
+    // call may come first.
+    const noteTmp = (tmp: DroppedTmpReport) => {
+      if (tmpHeld || tmp.files <= 0) return
+      tmpHeld = tmp
+      const size = tmp.bytes >= 1 << 30 ? `${(tmp.bytes / (1 << 30)).toFixed(1)} GB` : `${Math.max(1, Math.round(tmp.bytes / 1024))} KB`
+      // Name what went, not only how much: "3.6 GB" tells an owner nothing they
+      // can rebuild from, `.tmp/series/, .tmp/wa-gateway.ts` does (SHO-399).
+      const names = tmp.entries?.length ? `: ${tmp.entries.join(', ')}` : ''
+      notices.push(`.tmp/ (${tmp.files} file${tmp.files === 1 ? '' : 's'}, ${size}${names}) was dropped — it is not part of the backup`)
+    }
     const report = (aborted: boolean, extra: Partial<RecycleReport> = {}): RecycleReport => ({
       runtimeKey,
       state,
@@ -6719,14 +6842,29 @@ export class MetalWarmPool {
       forced: force,
       aborted,
       steps,
+      ...(tmpHeld ? { tmp: tmpHeld } : {}),
+      ...(notices.length ? { notices } : {}),
       ...extra,
     })
     console.log(`[pool] recycle ${runtimeKey} requested (state=${state}, force=${force}, reason=${opts.reason ?? 'none'})`)
 
     let a = this.assigned.get(runtimeKey)
-    if (a && this.vmBusy(a) && !force) {
-      steps.push({ step: 'idle', ok: false, detail: `${a.activeStreams ?? 0} agent turn(s) in flight` })
-      return report(true)
+    // A release rotation asks the narrower question the rotation policy already
+    // answered: a turn blocks it, background tasks do not, because they are
+    // about to be stopped and (for declared services) brought back (SHO-399).
+    // Every other caller keeps the old, wider gate.
+    if (a && !force) {
+      const blocked = opts.stopBackgroundTasks ? this.vmInTurn(a) : this.vmBusy(a)
+      if (blocked) {
+        steps.push({
+          step: 'idle',
+          ok: false,
+          detail: opts.stopBackgroundTasks
+            ? `${a.activeTurns ?? 0} agent turn(s) in flight`
+            : `${a.activeStreams ?? 0} agent turn(s) in flight`,
+        })
+        return report(true)
+      }
     }
     let resumed = false
     if (!a && (state === 'suspended' || this.store.kind !== 'none')) {
@@ -6746,7 +6884,12 @@ export class MetalWarmPool {
     }
 
     if (a) {
-      const ok = await this.backupForRecycle(a, steps)
+      const ok = await this.backupForRecycle(a, steps, {
+        stopBackgroundTasks: opts.stopBackgroundTasks,
+        reason: opts.reason,
+        notices,
+        noteTmp,
+      })
       if (!ok && !force) {
         console.error(`[pool] recycle ${runtimeKey} ABORTED — a backup step failed; nothing removed`)
         return report(true, { resumed })
@@ -6765,7 +6908,7 @@ export class MetalWarmPool {
    * refused or quarantined write counts as a failure, because the cold boot
    * that follows restores the durable copy, not the quarantined one.
    */
-  private async backupForRecycle(a: AssignedVm, steps: RecycleStep[]): Promise<boolean> {
+  private async backupForRecycle(a: AssignedVm, steps: RecycleStep[], opts: { stopBackgroundTasks?: boolean; reason?: string; notices?: string[]; noteTmp?: (tmp: DroppedTmpReport) => void } = {}): Promise<boolean> {
     const run = async (step: string, fn: () => Promise<string | null>) => {
       try {
         const problem = await fn()
@@ -6789,6 +6932,13 @@ export class MetalWarmPool {
         steps.push({ step: 'members', ok: false, detail: 'workspace member list unknown; member backups would be skipped' })
       }
     }
+
+    // Commit the working tree BEFORE the repo export (SHO-399). The repo step
+    // bundles the commits that already exist and never makes one, so every edit
+    // made after the last turn-complete auto-commit would go with the VM. A
+    // failed checkpoint fails the recycle (unless forced) instead of quietly
+    // dropping that work — a later rotateStale attempt retries it.
+    await run('checkpoint', () => this.checkpointGuest(a, opts.noteTmp))
 
     await run('repo', async () => {
       if (a.repoHydratePending) return null
@@ -6816,15 +6966,6 @@ export class MetalWarmPool {
       await exportRepo()
       if (out === undefined) await exportRepo()
       return out === 'written' || out === 'empty' ? null : `repo ${out}`
-    })
-
-    await run('source', async () => {
-      if (isWorkspace) {
-        const failed = await this.saveWorkspaceMembersToStore(a)
-        return failed.length ? failed.map((f) => `${f.projectId}: ${f.reason}`).join('; ') : null
-      }
-      const out = await this.saveBackupToStore(a)
-      return out === 'written' || out === 'empty' ? null : `source ${out}`
     })
 
     await run('data', async () => {
@@ -6856,6 +6997,38 @@ export class MetalWarmPool {
         return null
       })
     }
+
+    // Stop background tasks BEFORE the source backup, not after: the source
+    // archive is what carries `.shogo/sessions.db`, and stopping a task writes
+    // its verdict there. Doing it the other way round put the note on disk of a
+    // VM that was about to be destroyed (SHO-399).
+    if (opts.stopBackgroundTasks) {
+      await run('stop-tasks', async () => {
+        const res = await fetch(`${a.handle.agentUrl}/pool/stop-background-tasks`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(a.runtimeToken ? { 'x-runtime-token': a.runtimeToken } : {}) },
+          body: JSON.stringify({ reason: opts.reason ? `this runtime moved to the new release (${opts.reason})` : 'this runtime moved to the new release' }),
+          signal: AbortSignal.timeout(15_000),
+        })
+        if (!res.ok) return `guest refused: HTTP ${res.status}`
+        // The guest measured `.tmp/` before it settled the tasks. Nothing backs
+        // that folder up, so the report says what went with it — a manual
+        // `/recycle` caller can then tell the owner chat (SHO-399).
+        const body = await res.json().catch(() => null) as { tmp?: Partial<DroppedTmpReport> } | null
+        const tmp = readTmpReport(body?.tmp)
+        if (tmp) opts.noteTmp?.(tmp)
+        return null
+      })
+    }
+
+    await run('source', async () => {
+      if (isWorkspace) {
+        const failed = await this.saveWorkspaceMembersToStore(a)
+        return failed.length ? failed.map((f) => `${f.projectId}: ${f.reason}`).join('; ') : null
+      }
+      const out = await this.saveBackupToStore(a)
+      return out === 'written' || out === 'empty' ? null : `source ${out}`
+    })
 
     return steps.every((s) => s.ok)
   }
