@@ -37,6 +37,34 @@ import {
 
 const TEST_USER = makeTestUser("PreviewPub")
 
+/**
+ * The types the delivery test's PDF does not cover, one per disposition rule
+ * the served-file route makes (SHO-388): a picture opens in place, an SVG is
+ * relabelled and saved because it can carry script, and plain text has nothing
+ * to preview. The PDF row lives in the delivery test above, where #2010 pinned
+ * it. Video and audio are deliberately absent: SHO-387 (#2001) owns their
+ * disposition and range handling, and `e2e/local/chat-share-video-streams`
+ * already covers the streaming half.
+ */
+const SERVED_FILES = [
+  { name: "artifact-preview-test.png", disposition: "inline", contentType: "image/png" },
+  // `downloadHeaders` relabels a `.svg` to octet-stream before it decides.
+  { name: "artifact-script-test.svg", disposition: "attachment", contentType: "application/octet-stream" },
+  { name: "artifact-plain-test.txt", disposition: "attachment", contentType: "text/plain" },
+] as const
+
+/** The served-file chips in the transcript, keyed by the file name they show. */
+async function servedFileChips(page: Page): Promise<Array<{ name: string; href: string }>> {
+  const chips = page.locator('a.chat-file-chip[href*="/api/f/"]')
+  const found: Array<{ name: string; href: string }> = []
+  for (let index = 0; index < (await chips.count()); index += 1) {
+    const chip = chips.nth(index)
+    const href = await chip.getAttribute("href")
+    if (href) found.push({ name: (await chip.innerText()).trim(), href })
+  }
+  return found
+}
+
 test.describe("Agent preview hygiene", () => {
   test.describe.configure({ mode: "serial" })
 
@@ -91,9 +119,15 @@ test.describe("Agent preview hygiene", () => {
     // The file request is the project's very first prompt. A vague seed prompt
     // sends the agent off building a whole app (often >180s on staging) that
     // this test never uses, so ask for the artifact directly and skip the build.
+    // The three extra fixtures ride along in the same turn: the disposition
+    // rules only differ by content type, so asking per case would pay the agent
+    // turn (and its flake surface) once per row.
     const prompt =
       "Create a small PDF named artifact-delivery-test.pdf in the workspace. " +
-      "Then use the file-sharing tool to give me a direct download link. " +
+      "Also create these three small files: " +
+      SERVED_FILES.map((file) => `"${file.name}"`).join(", ") +
+      " — a tiny valid PNG, a small SVG shape, and a .txt with a couple of lines. " +
+      "Then use the file-sharing tool to give me a direct download link for each one. " +
       "Do not give me localhost, a preview URL, or a published app URL. " +
       "Do not build or scaffold an app."
     await createProject(page, prompt)
@@ -113,7 +147,13 @@ test.describe("Agent preview hygiene", () => {
     // shows the file name and the signed `/api/f/<token>` URL lives in the
     // anchor's href. Read the href — the body text has no URL to match.
     expect(reply, "file delivery must not print the raw signed URL").not.toMatch(/\/api\/f\//i)
-    const chip = page.locator('a.chat-file-chip[href*="/api/f/"]').last()
+    // Keep the `/api/f/` constraint *and* the name: a same-named path chip
+    // (`files/artifact-delivery-test.pdf`) is not a served link, and `.last()`
+    // would otherwise be free to pick it and 404 the request below.
+    const chip = page
+      .locator('a.chat-file-chip[href*="/api/f/"]')
+      .filter({ hasText: "artifact-delivery-test.pdf" })
+      .last()
     await expect(chip, "the reply should carry a served-file chip").toBeVisible({ timeout: 30_000 })
     expect(await chip.innerText(), "the chip should name the artifact").toContain(
       "artifact-delivery-test.pdf",
@@ -132,6 +172,41 @@ test.describe("Agent preview hygiene", () => {
       /^(?:inline|attachment);\s*filename="artifact-delivery-test\.pdf"/i,
     )
     expect((await response.body()).byteLength, "the link must serve the artifact").toBeGreaterThan(0)
+  })
+
+  test("a served file's disposition follows its content type, not `attachment`", async ({
+    request,
+  }) => {
+    // The rule SHO-388 added, read off the live staging route: a picture renders
+    // in place, an SVG is relabelled and saved (it can carry script), and plain
+    // text has nothing to preview. The PDF row is the delivery test above. All
+    // three links come from that same agent turn — no extra project, no extra
+    // turn — and this is the one place the rule meets the runtime's real
+    // content-type for each extension, which the route-level unit tests mock.
+    const chips = await servedFileChips(page)
+    const names = chips.map((chip) => chip.name)
+    for (const file of SERVED_FILES) {
+      expect(
+        names.some((name) => name.includes(file.name)),
+        `the transcript should carry a chip for ${file.name} — saw ${JSON.stringify(names)}`,
+      ).toBe(true)
+    }
+
+    for (const file of SERVED_FILES) {
+      const chip = chips.filter((candidate) => candidate.name.includes(file.name)).at(-1)!
+      const response = await request.get(chip.href, { timeout: 60_000 })
+      expect(response.status(), `${file.name} should be served`).toBe(200)
+      expect(response.headers()["content-type"], `${file.name} content type`).toContain(
+        file.contentType,
+      )
+      const disposition = response.headers()["content-disposition"] ?? ""
+      expect(disposition, `${file.name} disposition`).toMatch(
+        new RegExp(`^${file.disposition};`, "i"),
+      )
+      expect(disposition, `${file.name} disposition names the file`).toContain(
+        `filename="${file.name}"`,
+      )
+    }
   })
 
   test("the hygiene checks read the agent's messages, not the page body", async () => {
