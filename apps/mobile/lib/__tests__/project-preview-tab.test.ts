@@ -10,7 +10,13 @@
  */
 
 import { describe, test, expect } from 'bun:test'
-import { canvasDisabledRedirect, defaultTabForProject } from '../project-preview-tab'
+import {
+  canvasDisabledRedirect,
+  defaultTabForProject,
+  forgetLandingTab,
+  rememberLandingTab,
+  rememberedLandingTab,
+} from '../project-preview-tab'
 
 describe('defaultTabForProject', () => {
   test('managed + canvas-enabled (default) → canvas', () => {
@@ -100,5 +106,23 @@ describe('canvasDisabledRedirect', () => {
         userRequestedCanvas: false,
       }),
     ).toBe('external-preview')
+  })
+})
+
+describe('session landing tab (?tab= deep link survives a remount)', () => {
+  test('a remembered deep-link tab is returned until the user picks a tab', () => {
+    expect(rememberedLandingTab('p-1')).toBeUndefined()
+    rememberLandingTab('p-1', 'settings')
+    expect(rememberedLandingTab('p-1')).toBe('settings')
+    expect(rememberedLandingTab('p-2')).toBeUndefined()
+    forgetLandingTab('p-1')
+    expect(rememberedLandingTab('p-1')).toBeUndefined()
+  })
+
+  test('a newer deep link replaces the older one', () => {
+    rememberLandingTab('p-3', 'settings')
+    rememberLandingTab('p-3', 'ide')
+    expect(rememberedLandingTab('p-3')).toBe('ide')
+    forgetLandingTab('p-3')
   })
 })
