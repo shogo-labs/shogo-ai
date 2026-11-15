@@ -23,6 +23,10 @@ import {
 import { usePostHogSafe } from "../../../contexts/posthog";
 import { useResolvedTheme } from "../../../contexts/theme";
 import { EVENTS, trackEvent } from "../../../lib/analytics";
+import {
+  UPGRADE_CTA_LABEL,
+  UPGRADE_PLAN_PRICE_LABEL,
+} from "../../../lib/billing-config";
 import { formatModKey } from "../../../lib/keyboard-shortcuts";
 import {
   Popover,
@@ -1539,10 +1543,11 @@ export const AppSidebar = observer(function AppSidebar({
           </View>
         )}
 
-        {/* Upgrade to Pro CTA */}
+        {/* Upgrade CTA — sells the plan that is actually on sale (Business) */}
         {((features.billing && !isPaidPlan) || showLocalUpgrade) && !collapsed && (
           <View className={cn("px-2", isNativeDrawer ? "pt-3" : "pt-2")}>
             <Pressable
+              testID="sidebar-upgrade-cta"
               onPress={() => {
                 router.push(
                   (showLocalUpgrade
@@ -1573,7 +1578,7 @@ export const AppSidebar = observer(function AppSidebar({
                     drawerDensity.text.body,
                   )}
                 >
-                  Upgrade to Pro
+                  {UPGRADE_CTA_LABEL}
                 </Text>
                 <Text
                   className={cn(
@@ -1581,7 +1586,7 @@ export const AppSidebar = observer(function AppSidebar({
                     drawerDensity.text.label,
                   )}
                 >
-                  Unlock more benefits
+                  {UPGRADE_PLAN_PRICE_LABEL} · teams, SSO, analytics
                 </Text>
               </View>
               <Plus

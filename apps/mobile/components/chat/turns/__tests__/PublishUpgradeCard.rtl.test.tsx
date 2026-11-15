@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * A `publish` call refused by the Pro-plan gate (`plan_not_allowed`) used to
+ * A `publish` call refused by the plan gate (`plan_not_allowed`) used to
  * render as a plain tool row, leaving the user with only the agent's text.
- * It now renders a card with an Upgrade button that opens billing.
+ * It now renders a card with an Upgrade button that opens billing, naming the
+ * plan that is actually on sale (Business since Pro was retired in v2.5.0).
  */
 // @ts-ignore Bun resolves this module at test runtime; app tsconfig does not include Bun ambient types.
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
@@ -33,6 +34,9 @@ const push = mock((_to: unknown) => {})
 mock.module("expo-router", () => ({ useRouter: () => ({ push }) }))
 
 const { PublishUpgradeCard, isPublishPlanGate } = await import("../PublishUpgradeCard")
+const { UPGRADE_CTA_LABEL, UPGRADE_PLAN_NAME, UPGRADE_PLAN_PRICE_LABEL } = await import(
+  "@/lib/billing-config"
+)
 
 const gated = {
   id: "p1",
@@ -63,11 +67,22 @@ describe("isPublishPlanGate", () => {
 })
 
 describe("PublishUpgradeCard", () => {
-  test("explains the gate and opens billing from the Upgrade button", () => {
+  test("names the plan that is actually for sale and its real price", () => {
     render(React.createElement(PublishUpgradeCard, { tool: gated }))
-    expect(screen.getByText("Publishing needs Pro")).toBeTruthy()
+    expect(screen.getByText(`Publishing needs ${UPGRADE_PLAN_NAME}`)).toBeTruthy()
+    // The retired v2.5.0 plan for this tier — the card must never sell it.
+    const RETIRED_PLAN_NAME = "Pro"
+    expect(UPGRADE_PLAN_NAME).not.toBe(RETIRED_PLAN_NAME)
+    expect(
+      screen.queryByText(new RegExp(`Upgrade to ${RETIRED_PLAN_NAME}`)),
+    ).toBeNull()
+    expect(screen.getByText(new RegExp(UPGRADE_PLAN_PRICE_LABEL.replace(/[.$]/g, "\\$&")))).toBeTruthy()
     expect(screen.getByText(/my-site\.shogo\.one/)).toBeTruthy()
-    fireEvent.click(screen.getByRole("button", { name: "Upgrade to Pro to publish" }))
+  })
+
+  test("opens billing from the Upgrade button", () => {
+    render(React.createElement(PublishUpgradeCard, { tool: gated }))
+    fireEvent.click(screen.getByRole("button", { name: `${UPGRADE_CTA_LABEL} to publish` }))
     expect(push).toHaveBeenCalledWith("/(app)/billing")
   })
 })

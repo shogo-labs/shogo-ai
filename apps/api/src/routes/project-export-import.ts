@@ -1232,7 +1232,7 @@ export function projectExportImportRoutes() {
       const cap = isProPlus ? MAX_TOTAL_SIZE_PRO : MAX_TOTAL_SIZE_FREE
       const tooLargeMessage = isProPlus
         ? 'Import bundle exceeds the 500 MB limit.'
-        : 'Import is limited to 50 MB on the Free and Basic plans. Upgrade to Pro to import projects up to 500 MB.'
+        : 'Import is limited to 50 MB on the Free and Basic plans. Upgrade to Business to import projects up to 500 MB.'
 
       // Reject early on the cheap `file.size` to avoid buffering an oversized
       // upload into memory before rejecting it.

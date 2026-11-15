@@ -91,7 +91,12 @@ mock.module(resolve(import.meta.dir, "../../../../lib/api"), () => ({
   },
 }))
 
-mock.module(resolve(import.meta.dir, "../../../../lib/billing-config"), () => ({ getPlanDisplayName: () => "Free" }))
+mock.module(resolve(import.meta.dir, "../../../../lib/billing-config"), () => ({
+  getPlanDisplayName: () => "Free",
+  UPGRADE_CTA_LABEL: "Upgrade to Business",
+  UPGRADE_PLAN_NAME: "Business",
+  UPGRADE_PLAN_PRICE_LABEL: "$16/seat/mo",
+}))
 mock.module(resolve(import.meta.dir, "../../../../lib/analytics"), () => ({ EVENTS: {}, trackEvent: () => {} }))
 mock.module(resolve(import.meta.dir, "../../../billing/UsageWindows"), () => ({ CompactUsageWindows: () => null }))
 mock.module(resolve(import.meta.dir, "../../../../hooks/useCloudSession"), () => ({
