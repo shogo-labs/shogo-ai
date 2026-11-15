@@ -8136,8 +8136,21 @@ export function aiProxyRoutes() {
 
   // =========================================================================
   // PUT /ai/v1/subscription - Debug: provision/update subscription for staging/testing
+  //
+  // Grants any plan for free, so it must never be reachable in production.
+  // Gated on the environment, not on the caller: a user's own `shogo_sk_` key
+  // is a valid proxy token, so an auth check alone would let anyone set their
+  // workspace to Business for a year without paying (SHO-397).
   // =========================================================================
   router.put('/ai/v1/subscription', async (c) => {
+    // Read the env at request time, not from the module-load `isLocalDev`
+    // snapshot: this is a security gate, and a stale snapshot is exactly the
+    // kind of thing that leaves it open.
+    const localMode = process.env.SHOGO_LOCAL_MODE === 'true'
+    if (process.env.NODE_ENV === 'production' && !localMode) {
+      return c.json({ error: { message: 'Not found', code: 'not_found' } }, 404)
+    }
+
     const tokenPayload = await validateProxyAuth(c) || await validateAnthropicAuth(c)
     if (!tokenPayload) {
       return c.json({ error: { message: 'Invalid or missing API key', code: 'auth_error' } }, 401)

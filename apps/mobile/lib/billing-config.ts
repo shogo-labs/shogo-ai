@@ -9,9 +9,11 @@
  *   - Pro      $20/seat/mo legacy — $20 of usage included per seat
  *   - Business $16/seat/mo ($156/yr), $20 of usage included per seat
  *
- * Pro is no longer offered at checkout: existing Pro subscriptions move to
- * Business $16 at their next renewal. The `pro` entry stays so an older client
- * build still resolves a price.
+ * Pro is no longer sold: no screen offers it at checkout, and a new `pro`
+ * checkout is remapped to Business server-side. Existing Pro subscriptions
+ * move to Business $16 at their next renewal. The `pro` entry stays so a
+ * current subscriber's plan, price and included usage still render, and an
+ * older client build still resolves a price.
  *
  * Every request is billed at provider raw cost + 20% markup; see
  * `usage-cost.ts` and `usage-plans.ts` on the backend.
@@ -317,7 +319,7 @@ export const PRO_FEATURES = [
 ]
 
 export const BUSINESS_FEATURES = [
-  'Everything in Pro, plus:',
+  'Everything in Basic, plus:',
   'Highest 5-hour & weekly usage limits (per seat)',
   'Team analytics & usage reporting',
   'SSO authentication',

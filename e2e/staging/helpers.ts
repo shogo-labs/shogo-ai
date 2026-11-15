@@ -837,8 +837,8 @@ export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise
   // Wait for workspace + billing data to load (not just the page header).
   // The plan card section only renders after useBillingData and useActiveWorkspace resolve.
   await page.waitForSelector("text=You're on Free Plan", { timeout: 15_000 })
-  // Click the plan card "Upgrade to Pro" button
-  await page.getByText("Upgrade to Pro").last().click()
+  // Click the plan card "Upgrade to Business" button (Pro is retired, SHO-397)
+  await page.getByText("Upgrade to Business").last().click()
   // Wait for navigation to Stripe hosted checkout (window.location.href redirect)
   await page.waitForURL(/checkout\.stripe\.com/, { timeout: 30_000 })
 
