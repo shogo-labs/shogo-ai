@@ -135,6 +135,10 @@ export async function omniImageBlock(ref: string, signal?: AbortSignal): Promise
  * `input` and `response_format` cannot be redirected to a different model or
  * resolution than the one we bill for (same rule as Lyria).
  *
+ * Images come before the text block, which is the order every Google example
+ * uses: the first image is the first frame and the second the last, so
+ * `[image(first), image(last), text]` is a first-and-last-frame request.
+ *
  * `background` and `store` are always on together: `store:false` breaks both
  * `previous_interaction_id` and `background`, so neither is caller-controlled.
  */
@@ -152,7 +156,7 @@ export function buildOmniRequest(
     ...(options ?? {}),
     model: apiModel,
     input: images.length > 0
-      ? [{ type: 'text', text: prompt } as const, ...images]
+      ? [...images, { type: 'text', text: prompt } as const]
       : prompt,
     response_format: responseFormat,
     ...(task ? { generation_config: { video_config: { task } } } : {}),

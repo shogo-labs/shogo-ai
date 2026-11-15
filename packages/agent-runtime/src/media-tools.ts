@@ -489,7 +489,7 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
   return {
     name: 'list_media_models',
     description:
-      'List the image, video, music and 3D models you can use: what each is best for, whether it accepts reference images or a start frame, its endpoints, every documented parameter (allowed values, ranges, defaults) and its Shogo price (per image, per second of video, per song, or per clip). ' +
+      'List the image, video, music and 3D models you can use: what each is best for, whether it accepts reference images, a start frame or a last frame, its endpoints, every documented parameter (allowed values, ranges, defaults) and its Shogo price (per image, per second of video, per song, or per clip). ' +
       'Pass model to see just that model — the best way to check which fields its `options` accepts before calling generate_image, generate_video or generate_music. Check prices here before planning a batch so you can budget it.',
     label: 'List Media Models',
     parameters: Type.Object({
@@ -773,6 +773,7 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
     name: 'generate_video',
     description:
       'Generate a video clip from a text prompt, or animate a still image by passing start_image (recommended: make the still with generate_image first). ' +
+      'Pass start_image + end_image to animate between two stills: the clip interpolates from the first frame to the last (Gemini Omni and the Higgsfield models whose list_media_models entry says last_frame: true). ' +
       'Also edits an existing clip: pass source_video with genjutsu "motion_transfer" | "object_swap" | "restyle" (restyle needs a preset_id from the presets list). ' +
       'Gemini Omni (model "google-omni-1.2-flash") drafts cheaply at 360p and continues the same clip later — pass previous_job_id with a higher resolution and no prompt to upscale it, or with a prompt to edit or extend it. ' +
       'Saves an MP4 to videos/ by default; pass path to save anywhere in the workspace. Billed per clip (Higgsfield) or per output second and by usage tokens (Gemini Omni) — call list_media_models for prices. ' +
@@ -784,7 +785,7 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
       model: Type.Optional(
         Type.String({
           description:
-            'Video model id. Omit it to use the workspace default (hf-hailuo-2.3). "hf-kling-3.0-std" for 3–15 s clips with native sound, "hf-kling-3.0-pro" for multi-shot plus last-frame control, "hf-wan-2.6" for stylized looks up to 15 s, "hf-ltx-2.5-fast" for the cheapest text-to-video that takes an aspect_ratio, "hf-genjutsu-*" to edit a clip, "google-omni-1.2-flash" for fast 360p drafts, native audio, up to 6 references and upscale/edit/extend of the same clip. Retired ids still resolve to the model that replaced them. See list_media_models.',
+            'Video model id. Omit it to use the workspace default (hf-hailuo-2.3). "hf-kling-3.0-std" for 3–15 s clips with native sound, "hf-kling-3.0-pro" for multi-shot plus first-and-last-frame control, "hf-wan-2.6" for stylized looks up to 15 s, "hf-ltx-2.5-fast" for the cheapest text-to-video that takes an aspect_ratio, "hf-genjutsu-*" to edit a clip, "google-omni-1.2-flash" for fast 360p drafts, native audio, up to 6 references, first-and-last-frame interpolation (start_image + end_image, 3–10 s) and upscale/edit/extend of the same clip. Retired ids still resolve to the model that replaced them. See list_media_models.',
         }),
       ),
       duration: Type.Optional(Type.Integer({ minimum: 1, maximum: 30, description: 'Clip length in seconds; each model allows specific values (list_media_models shows the range — Kling 3.0 takes 3–15). A Genjutsu edit follows its source clip.' })),
@@ -792,6 +793,12 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
       resolution: Type.Optional(Type.String({ description: 'Resolution tier: "360p" | "480p" | "720p" | "1080p" | "4k" ("720p" default). Cheaper tiers render faster. Omni: draft at 360p, then upscale with previous_job_id.' })),
       audio: Type.Optional(Type.Boolean({ description: 'Generate sound/dialogue on models that support it (costs more). Default false.' })),
       start_image: Type.Optional(Type.String({ description: 'Workspace image to use as the first frame (image-to-video)' })),
+      end_image: Type.Optional(
+        Type.String({
+          description:
+            'Workspace image to use as the last frame. Needs start_image: the clip animates from start_image to end_image (first-and-last-frame interpolation). Gemini Omni takes 3–10 s for it; list_media_models shows last_frame: true on every model that accepts one.',
+        }),
+      ),
       reference_images: Type.Optional(
         Type.Array(Type.String(), {
           maxItems: MAX_REFERENCE_IMAGES,
@@ -816,7 +823,7 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
         Type.Object({}, {
           additionalProperties: true,
           description:
-            'Model-specific documented fields for the chosen model, e.g. { "cfg_scale": 0.5 }, { "multi_shots": true }, { "multi_prompt": [{ "prompt": "…", "duration": 5 }] }, { "last_image_url": "https://…" }, { "seed": 42 }. list_media_models shows each model\'s fields, allowed values and ranges; anything undeclared is rejected.',
+            'Model-specific documented fields for the chosen model, e.g. { "cfg_scale": 0.5 }, { "multi_shots": true }, { "multi_prompt": [{ "prompt": "…", "duration": 5 }] }, { "seed": 42 }. list_media_models shows each model\'s fields, allowed values and ranges; anything undeclared is rejected. A last frame is end_image, not an options field.',
         }),
       ),
       path: Type.Optional(Type.String({ description: 'Output path anywhere in the workspace (e.g. "public/media/intro.mp4")' })),
@@ -839,6 +846,7 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
         resolution?: string
         audio?: boolean
         start_image?: string
+        end_image?: string
         reference_images?: string[]
         source_video?: string
         genjutsu?: 'motion_transfer' | 'object_swap' | 'restyle'
@@ -863,6 +871,7 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
 
       let target: OutputTarget
       let startImage: string | undefined
+      let endImage: string | undefined
       let sourceVideoUrl: string | undefined
       let sourceDurationSeconds: number | undefined
       const references: string[] = []
@@ -870,10 +879,20 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
         if ((p.reference_images?.length ?? 0) > MAX_REFERENCE_IMAGES) {
           return textResult({ error: `At most ${MAX_REFERENCE_IMAGES} reference images are supported per call.` })
         }
+        if (p.end_image && !p.start_image) {
+          return textResult({
+            error: 'end_image needs start_image: pass the first frame too, and the clip animates from start_image to end_image.',
+          })
+        }
         if (p.start_image) {
           const image = loadWorkspaceImage(ctx, p.start_image)
           if ('error' in image) return textResult({ error: image.error.replace('Reference image', 'Start image') })
           startImage = toDataUri(image)
+        }
+        if (p.end_image) {
+          const image = loadWorkspaceImage(ctx, p.end_image)
+          if ('error' in image) return textResult({ error: image.error.replace('Reference image', 'End image') })
+          endImage = toDataUri(image)
         }
         for (const ref of p.reference_images ?? []) {
           const image = loadWorkspaceImage(ctx, ref)
@@ -916,6 +935,7 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
             resolution: p.resolution,
             audio: p.audio,
             start_image: startImage,
+            end_image: endImage,
             reference_images: references.length > 0 ? references : undefined,
             source_video_url: sourceVideoUrl,
             source_duration_seconds: sourceDurationSeconds,

@@ -112,7 +112,7 @@ const {
 // make this suite minutes long for no extra coverage.
 HIGGSFIELD_POLL.initialMs = 1
 HIGGSFIELD_POLL.maxMs = 1
-const { IMAGE_MODEL_CATALOG, VIDEO_MODEL_CATALOG } = await import('@shogo/model-catalog')
+const { IMAGE_MODEL_CATALOG, VIDEO_MODEL_CATALOG, supportsLastFrame } = await import('@shogo/model-catalog')
 const { _testing: videoStore } = await import('../lib/video-job-store')
 
 const app = new Hono()
@@ -907,6 +907,147 @@ describe('video routes', () => {
     expect(res.status).toBe(200)
     const submitCall = fetchLog.find((f) => f.url === 'https://hf.test/minimax/hailuo-2.3/standard/image-to-video')
     expect(JSON.parse(String(submitCall!.init?.body)).image_url).toBe('https://cdn.test/first.png')
+  })
+
+  test('end_image maps to the endpoint\'s own last-frame field (Kling: last_image_url)', async () => {
+    let uploads = 0
+    on('https://hf.test/files/generate-upload-url', () => {
+      uploads += 1
+      const name = uploads === 1 ? 'first' : 'last'
+      return json({ public_url: `https://cdn.test/${name}.png`, upload_url: `https://s3.test/put/${name}`, upload_headers: {} })
+    })
+    on('https://s3.test/put', () => new Response('', { status: 200 }))
+    mockEstimate('kling-video/v3.0/pro/image-to-video', '0.3150')
+    mockGeneration({ endpoint: 'kling-video/v3.0/pro/image-to-video', videoUrl: 'https://cdn.test/out.mp4' })
+
+    const image = (label: string) => `data:image/png;base64,${Buffer.from(label).toString('base64')}`
+    const { res } = await submit({
+      model: 'hf-kling-3.0-pro',
+      prompt: 'the day turns to night',
+      duration: 5,
+      start_image: image('first'),
+      end_image: image('last'),
+    })
+
+    expect(res.status).toBe(200)
+    const submitCall = fetchLog.find((f) => f.url === 'https://hf.test/kling-video/v3.0/pro/image-to-video')
+    expect(JSON.parse(String(submitCall!.init?.body))).toMatchObject({
+      prompt: 'the day turns to night',
+      duration: 5,
+      image_url: 'https://cdn.test/first.png',
+      last_image_url: 'https://cdn.test/last.png',
+    })
+  })
+
+  test('end_image uses end_image_url on the wan family', async () => {
+    on('https://hf.test/files/generate-upload-url', () => json({
+      public_url: 'https://cdn.test/frame.png', upload_url: 'https://s3.test/put', upload_headers: {},
+    }))
+    on('https://s3.test/put', () => new Response('', { status: 200 }))
+    mockEstimate('alibaba/wan-3.0/image-to-video', '0.2000')
+    mockGeneration({ endpoint: 'alibaba/wan-3.0/image-to-video', videoUrl: 'https://cdn.test/out.mp4' })
+
+    const image = `data:image/png;base64,${Buffer.from('frame').toString('base64')}`
+    const { res } = await submit({
+      model: 'hf-wan-3.0',
+      prompt: 'x',
+      duration: 5,
+      start_image: image,
+      end_image: image,
+    })
+
+    expect(res.status).toBe(200)
+    const submitCall = fetchLog.find((f) => f.url === 'https://hf.test/alibaba/wan-3.0/image-to-video')
+    const body = JSON.parse(String(submitCall!.init?.body))
+    expect(body.end_image_url).toBe('https://cdn.test/frame.png')
+    expect(body.image_url).toBe('https://cdn.test/frame.png')
+  })
+
+  test('a model with no last-frame field refuses end_image, naming the models that take one', async () => {
+    const image = `data:image/png;base64,${Buffer.from('frame').toString('base64')}`
+    const { res, data } = await submit({
+      model: 'hf-hailuo-2.3',
+      prompt: 'x',
+      duration: 6,
+      start_image: image,
+      end_image: image,
+    })
+
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('end_image_unsupported')
+    // The list is derived from the catalog, so it can never go stale.
+    const expected = (Object.values(VIDEO_MODEL_CATALOG) as any[])
+      .filter((entry) => !entry.sourceVideo && supportsLastFrame(entry))
+      .map((entry) => entry.id)
+    for (const id of expected) expect(data.error.message).toContain(id)
+    expect(data.error.message).not.toContain('hf-hailuo-2.3')
+    expect(fetchLog).toHaveLength(0)
+  })
+
+  test('end_image without a start image is refused before any upload', async () => {
+    const image = `data:image/png;base64,${Buffer.from('frame').toString('base64')}`
+    const { res, data } = await submit({ model: 'hf-kling-3.0-pro', prompt: 'x', end_image: image })
+
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('invalid_end_image')
+    expect(fetchLog).toHaveLength(0)
+  })
+
+  test('end_image and options.last_image_url for the same field is ambiguous', async () => {
+    on('https://hf.test/files/generate-upload-url', () => json({
+      public_url: 'https://cdn.test/frame.png', upload_url: 'https://s3.test/put', upload_headers: {},
+    }))
+    on('https://s3.test/put', () => new Response('', { status: 200 }))
+    mockEstimate('kling-video/v3.0/pro/image-to-video', '0.3150')
+
+    const image = `data:image/png;base64,${Buffer.from('frame').toString('base64')}`
+    const { res, data } = await submit({
+      model: 'hf-kling-3.0-pro',
+      prompt: 'x',
+      duration: 5,
+      start_image: image,
+      end_image: image,
+      options: { last_image_url: 'https://cdn.test/other.png' },
+    })
+
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('invalid_end_image')
+    expect(fetchLog.some((f) => f.url === 'https://hf.test/kling-video/v3.0/pro/image-to-video' && f.init?.method === 'POST')).toBe(false)
+  })
+
+  test('a Genjutsu edit takes no end_image', async () => {
+    const image = `data:image/png;base64,${Buffer.from('frame').toString('base64')}`
+    const { res, data } = await submit({
+      model: 'hf-genjutsu-motion-transfer',
+      source_video_url: 'https://cdn.test/in.mp4',
+      source_duration_seconds: 8,
+      reference_images: [image],
+      start_image: image,
+      end_image: image,
+    })
+
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('end_image_unsupported')
+  })
+
+  test('the listing marks last_frame exactly where the catalog documents one', async () => {
+    _resetHiggsfieldEstimateCache()
+    // Every documented endpoint answers with a flat price so the listing completes.
+    on('https://hf.test/estimate/', () => json({ credits: '1.5', usd: '0.0700' }))
+    on('https://hf.test/files/generate-upload-url', () => json({
+      public_url: 'https://cdn.test/frame.png', upload_url: 'https://s3.test/put', upload_headers: {},
+    }))
+    on('https://s3.test/put', () => new Response('', { status: 200 }))
+
+    const data = await listMediaModels(undefined, { kind: 'video' }) as any
+    const expected = (Object.values(VIDEO_MODEL_CATALOG) as any[])
+      .filter((entry) => supportsLastFrame(entry))
+      .map((entry) => entry.id)
+    const listed = data.videos.filter((entry: any) => entry.last_frame).map((entry: any) => entry.id)
+    expect(listed.sort()).toEqual(expected.sort())
+    expect(expected).toContain('hf-kling-3.0-pro')
+    expect(expected).toContain('hf-wan-3.0')
+    expect(listed).not.toContain('hf-hailuo-2.3')
   })
 
   test('genjutsu motion transfer needs a source clip, its length, and a reference', async () => {

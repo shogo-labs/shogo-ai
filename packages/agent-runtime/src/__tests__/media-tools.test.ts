@@ -288,6 +288,45 @@ describe('generate_video', () => {
     expect(flow.submitBody().start_image).toStartWith('data:image/png;base64,')
   })
 
+  test('sends end_image as a data URI beside the start frame', async () => {
+    const flow = mockVideoFlow(['completed'])
+    const r = await run('generate_video', {
+      prompt: 'the day turns to night',
+      model: 'google-omni-1.2-flash',
+      start_image: 'refs/a.png',
+      end_image: 'refs/b.jpg',
+      duration: 5,
+      resolution: '360p',
+    })
+    expect(r.error).toBeUndefined()
+    expect(flow.submitBody().start_image).toStartWith('data:image/png;base64,')
+    expect(flow.submitBody().end_image).toStartWith('data:image/jpeg;base64,')
+    expect(flow.submitBody().duration).toBe(5)
+  })
+
+  test('refuses end_image without start_image before any request', async () => {
+    const flow = mockVideoFlow(['completed'])
+    const r = await run('generate_video', {
+      prompt: 'the day turns to night',
+      model: 'google-omni-1.2-flash',
+      end_image: 'refs/b.jpg',
+    })
+    expect(r.error).toContain('end_image needs start_image')
+    expect(flow.submitBody()).toBeUndefined()
+    expect(calls.some((call) => call.url.includes('/videos/generations'))).toBe(false)
+  })
+
+  test('describes the last frame on both the tool and the model line', async () => {
+    const t = tool('generate_video')
+    expect(t.description).toContain('end_image')
+    const endImage = (t.parameters as any).properties.end_image
+    expect(endImage.description).toContain('last frame')
+    expect(endImage.description).toContain('start_image')
+    const model = (t.parameters as any).properties.model.description
+    expect(model).toContain('first-and-last-frame interpolation')
+    expect(model).toContain('end_image')
+  })
+
   test('forwards model-specific options to the proxy unmodified', async () => {
     const flow = mockVideoFlow(['completed'])
     const options = { cfg_scale: 0.6, multi_shots: true, multi_prompt: [{ prompt: 'a', duration: 3 }, { prompt: 'b', duration: 4 }] }

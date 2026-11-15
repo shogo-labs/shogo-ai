@@ -274,6 +274,12 @@ export interface VideoModelEntry {
   optionsByEndpoint?: Readonly<Record<string, readonly ModelOptionField[]>>
   /** Native audio: the endpoint declares `sound` or `generate_audio`. */
   audio?: boolean
+  /**
+   * The model interpolates between two stills, on a provider whose request has
+   * no documented last-frame field to read it from (Google Omni: a second
+   * `image` block in `input`).
+   */
+  lastFrame?: boolean
 }
 
 export type MusicProvider = 'google'
@@ -923,6 +929,7 @@ export const GOOGLE_VIDEO_MODELS = {
     usdPerSecondByResolution: { '360p': 0.023, '720p': 0.07, '1080p': 0.104, '4k': 0.209 },
     maxReferenceImages: 6,
     audio: true,
+    lastFrame: true,
     endpoints: ['gemini-omni-1.2-flash'],
     optionsByEndpoint: {
       'gemini-omni-1.2-flash': [
@@ -936,7 +943,7 @@ export const GOOGLE_VIDEO_MODELS = {
       ],
     },
     bestFor:
-      'Fast drafts at 360p, then upscale/edit/extend the same clip; native audio; up to 6 references',
+      'Fast drafts at 360p, then upscale/edit/extend the same clip; first-and-last-frame interpolation (3–10 s); native audio; up to 6 references',
   },
 } as const satisfies Record<string, VideoModelEntry>
 

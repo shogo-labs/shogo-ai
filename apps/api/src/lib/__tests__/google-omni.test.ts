@@ -94,7 +94,7 @@ describe('buildOmniRequest', () => {
     expect(body.generation_config).toEqual({ video_config: { task: 'edit' } })
   })
 
-  test('images become inline blocks after the prompt', () => {
+  test('images become inline blocks before the prompt', () => {
     const body = buildOmniRequest(
       { apiModel: 'gemini-omni-1.2-flash', prompt: 'animate this', resolution: '360p', duration: 3 },
       [
@@ -102,10 +102,12 @@ describe('buildOmniRequest', () => {
         { type: 'image', data: 'BBBB', mime_type: 'image/jpeg' },
       ],
     )
+    // Google's documented order is [first frame, last frame, text]: the second
+    // image is the last frame, so the blocks must precede the prompt.
     expect(body.input).toEqual([
-      { type: 'text', text: 'animate this' },
       { type: 'image', data: 'AAAA', mime_type: 'image/png' },
       { type: 'image', data: 'BBBB', mime_type: 'image/jpeg' },
+      { type: 'text', text: 'animate this' },
     ])
   })
 

@@ -265,17 +265,56 @@ describe('POST /ai/v1/videos/generations — Omni validation', () => {
     expect(fetchLog).toHaveLength(0)
   })
 
-  test('two frames (start_image + reference) over 10 s is refused', async () => {
+  test('a first-and-last-frame pair over 10 s is refused, and nothing is submitted', async () => {
     const { res, data } = await submit({
+      model: 'google-omni-1.2-flash',
+      prompt: 'x',
+      duration: 12,
+      start_image: 'data:image/png;base64,AAAA',
+      end_image: 'data:image/png;base64,BBBB',
+    })
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('invalid_duration')
+    expect(data.error.message).toContain('10 s')
+    expect(fetchLog).toHaveLength(0)
+  })
+
+  test('a start image plus a reference image is not a last frame and may run past 10 s', async () => {
+    // Regression: the 10 s cap used to key on `start_image + any reference`,
+    // which refused ordinary reference requests.
+    on(INTERACTIONS, () => json(queued()))
+    const { res } = await submit({
       model: 'google-omni-1.2-flash',
       prompt: 'x',
       duration: 12,
       start_image: 'data:image/png;base64,AAAA',
       reference_images: ['data:image/png;base64,BBBB'],
     })
+    expect(res.status).toBe(200)
+  })
+
+  test('end_image without a start image is refused before submit', async () => {
+    const { res, data } = await submit({
+      model: 'google-omni-1.2-flash',
+      prompt: 'x',
+      duration: 5,
+      end_image: 'data:image/png;base64,BBBB',
+    })
     expect(res.status).toBe(400)
-    expect(data.error.code).toBe('invalid_duration')
-    expect(data.error.message).toContain('10 s')
+    expect(data.error.code).toBe('invalid_end_image')
+    expect(fetchLog).toHaveLength(0)
+  })
+
+  test('a malformed end_image is refused', async () => {
+    const { res, data } = await submit({
+      model: 'google-omni-1.2-flash',
+      prompt: 'x',
+      duration: 5,
+      start_image: 'data:image/png;base64,AAAA',
+      end_image: 'not-an-image',
+    })
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('invalid_end_image')
     expect(fetchLog).toHaveLength(0)
   })
 })
@@ -338,7 +377,7 @@ describe('POST /ai/v1/videos/generations — Omni generation', () => {
     expect(wire.response_format).toMatchObject({ type: 'video', resolution: '360p' })
   })
 
-  test('image-to-video inlines the start image as a block', async () => {
+  test('image-to-video inlines the start image as a block, before the text', async () => {
     let wire: any
     on(INTERACTIONS, (_url, init) => {
       wire = JSON.parse(String(init?.body))
@@ -352,9 +391,62 @@ describe('POST /ai/v1/videos/generations — Omni generation', () => {
       resolution: '360p',
     })
     expect(Array.isArray(wire.input)).toBe(true)
-    expect(wire.input[0]).toEqual({ type: 'text', text: 'the boat starts moving' })
-    expect(wire.input[1]).toEqual({ type: 'image', data: 'AAAA', mime_type: 'image/png' })
+    expect(wire.input[0]).toEqual({ type: 'image', data: 'AAAA', mime_type: 'image/png' })
+    expect(wire.input[1]).toEqual({ type: 'text', text: 'the boat starts moving' })
     expect(wire.generation_config).toBeUndefined()
+  })
+
+  test('first-and-last-frame sends [first, last, text] and saves the clip', async () => {
+    let wire: any
+    // Registered first: the stub answers the earliest matching route, and the
+    // poll URL shares the submit's prefix.
+    on(`${INTERACTIONS}/int_video_1`, () => json(finished()))
+    on(INTERACTIONS, (_url, init) => {
+      if (init?.body) wire = JSON.parse(String(init.body))
+      return json(queued())
+    })
+
+    const { res, data } = await submit({
+      model: 'google-omni-1.2-flash',
+      prompt: 'the seed sprouts into a seedling',
+      start_image: 'data:image/png;base64,FIRST',
+      end_image: 'data:image/png;base64,LAST',
+      duration: 5,
+      resolution: '360p',
+    })
+
+    expect(res.status).toBe(200)
+    // Google reads the two images in order: first frame, then last frame.
+    expect(wire.input).toEqual([
+      { type: 'image', data: 'FIRST', mime_type: 'image/png' },
+      { type: 'image', data: 'LAST', mime_type: 'image/png' },
+      { type: 'text', text: 'the seed sprouts into a seedling' },
+    ])
+    // Interpolation is inferred from the two frames; no task is invented for it.
+    expect(wire.generation_config).toBeUndefined()
+
+    const status = await call(`/ai/v1/videos/${data.id}`)
+    expect(await status.json() as any).toMatchObject({
+      status: 'completed',
+      video: { content_path: `/v1/videos/${data.id}/content`, content_type: 'video/mp4' },
+    })
+    const content = await call(`/ai/v1/videos/${data.id}/content`)
+    expect(content.status).toBe(200)
+    expect(Buffer.from(await content.arrayBuffer())).toEqual(Buffer.from(VIDEO_B64, 'base64'))
+  })
+
+  test('the end frame counts toward the 6-image cap', async () => {
+    const { res, data } = await submit({
+      model: 'google-omni-1.2-flash',
+      prompt: 'x',
+      duration: 3,
+      start_image: 'data:image/png;base64,AAAA',
+      end_image: 'data:image/png;base64,BBBB',
+      reference_images: Array.from({ length: 5 }, () => 'data:image/png;base64,AAAA'),
+    })
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('too_many_images')
+    expect(fetchLog).toHaveLength(0)
   })
 })
 
@@ -566,6 +658,7 @@ describe('list_media_models — Gemini Omni', () => {
     expect(omni.text_to_video).toBe(true)
     expect(omni.image_to_video).toBe(true)
     expect(omni.max_reference_images).toBe(6)
+    expect(omni.last_frame).toBe(true)
     expect(omni.audio).toBe(true)
     expect(omni.parameters.resolutions).toEqual(['360p', '720p', '1080p', '4k'])
     expect(omni.parameters.durations).toContain(15)
