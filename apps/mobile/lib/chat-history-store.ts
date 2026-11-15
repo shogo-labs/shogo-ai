@@ -119,6 +119,28 @@ export function newestUpdatedAt(
   return newest ? new Date(newest).toISOString() : null
 }
 
+/**
+ * The delta cursor for a stored slice.
+ *
+ * A slice written before the cursor was known still has one: its newest row.
+ * Treating it as cursor-less sends the reopen down the cold path and downloads
+ * the page the device already holds — the exact cost this store exists to
+ * remove (SHO-391). Every reader and writer of a transcript goes through here
+ * so the rule cannot drift between them.
+ */
+export function historyCursorFor(
+  entry:
+    | {
+        cursor?: string | null
+        messages?: Array<{ updatedAt?: string | null; createdAt?: string | null }>
+      }
+    | null
+    | undefined,
+): string | null {
+  if (!entry) return null
+  return entry.cursor ?? newestUpdatedAt(entry.messages)
+}
+
 // ─── Backends ────────────────────────────────────────────────────────────────
 
 export interface ChatHistoryBackend {

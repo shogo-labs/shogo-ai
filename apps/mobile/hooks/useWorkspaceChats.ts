@@ -71,6 +71,17 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
     () => peekWorkspaceChats(cacheKey) ?? [],
   )
   const [loading, setLoading] = useState(
+    () => cacheKey !== null && peekWorkspaceChats(cacheKey) === null,
+  )
+  // A device read for this scope is in flight. A read that has not answered is
+  // not "loading": the list is about to appear, and flashing "Loading…" over a
+  // list the device already holds is the bug this cache exists to remove
+  // (SHO-391, the same rule `transcriptLoaderVisible` applies to a transcript).
+  //
+  // It starts true whenever the mirror is empty, because an empty mirror means
+  // a read is about to start — the first frame of a reload must not paint a
+  // loader it is about to replace (SHO-391).
+  const [deviceReadPending, setDeviceReadPending] = useState(
     () => peekWorkspaceChats(cacheKey) === null,
   )
   // A list the server has answered for since the last reset: the only case
@@ -136,14 +147,24 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
     authoritativeRef.current = false
     const cached = peekWorkspaceChats(cacheKey)
     setSessions(cached ?? [])
-    setLoading(cached === null)
-    if (cached !== null || !cacheKey) return
+    // No key yet (the user or the runtime is still resolving): there is nothing
+    // to load, so this is not a loader either (SHO-391).
+    setLoading(cached === null && cacheKey !== null)
+    if (cached !== null || !cacheKey) {
+      setDeviceReadPending(false)
+      return
+    }
     let cancelled = false
-    void readWorkspaceChats(cacheKey).then((rows) => {
-      if (cancelled || !rows) return
-      setSessions((current) => (current.length > 0 ? current : rows))
-      setLoading(false)
-    })
+    setDeviceReadPending(true)
+    void readWorkspaceChats(cacheKey)
+      .then((rows) => {
+        if (cancelled || !rows) return
+        setSessions((current) => (current.length > 0 ? current : rows))
+        setLoading(false)
+      })
+      .finally(() => {
+        if (!cancelled) setDeviceReadPending(false)
+      })
     return () => {
       cancelled = true
     }
@@ -577,7 +598,9 @@ export function useWorkspaceChats(workspaceId: string | undefined) {
     sessions: sessionsWithActivity,
     active,
     archived,
-    loading,
+    // A device read still in flight is not a loader: the rows are about to
+    // appear from the device (SHO-391).
+    loading: loading && !deviceReadPending,
     creating,
     streamingIds,
     completedIds,

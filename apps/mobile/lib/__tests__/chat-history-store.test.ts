@@ -13,6 +13,7 @@ import {
   conversationHistoryKey,
   chatSessionHistoryKey,
   deltaSince,
+  historyCursorFor,
   newestUpdatedAt,
   peekChatHistory,
   readChatHistory,
@@ -153,5 +154,32 @@ describe('chat history store', () => {
     )
     expect(newestUpdatedAt([])).toBeNull()
     expect(newestUpdatedAt(undefined)).toBeNull()
+  })
+
+  // SHO-391: a slice written before the cursor was known must still reopen on
+  // the delta path. Reading it as cursor-less is what made a reload download
+  // the page the device already held.
+  test('a stored slice with no cursor still reports one, from its newest row', () => {
+    expect(
+      historyCursorFor({
+        cursor: null,
+        messages: [
+          { updatedAt: '2026-10-30T10:00:00.000Z' },
+          { updatedAt: '2026-10-30T10:04:00.000Z' },
+        ],
+      }),
+    ).toBe('2026-10-30T10:04:00.000Z')
+  })
+
+  test('a stored cursor wins over the rows, and an empty slice reports none', () => {
+    expect(
+      historyCursorFor({
+        cursor: '2026-10-30T12:00:00.000Z',
+        messages: [{ updatedAt: '2026-10-30T10:04:00.000Z' }],
+      }),
+    ).toBe('2026-10-30T12:00:00.000Z')
+    expect(historyCursorFor({ cursor: null, messages: [] })).toBeNull()
+    expect(historyCursorFor(null)).toBeNull()
+    expect(historyCursorFor(undefined)).toBeNull()
   })
 })
