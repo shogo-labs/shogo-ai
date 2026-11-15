@@ -5276,7 +5276,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
     description: [
       'Publish the web app to a public, persistent URL at `{subdomain}.shogo.one`. Use this for hosting or permanently sharing the web app. For a single generated file, use `share_file` instead — never use publish to deliver a PDF, DOCX, ZIP, EXE, or other artifact.',
       'Shogo also serves the app on a domain the user already owns. NEVER stand up another host for it (no Cloudflare Pages, Vercel, Netlify) — use `domain_action` on this tool. When the user asks to point their own domain at their app ("set up mysite.com"), call `domain_action: "add"` with their domain, then create each returned DNS record EXACTLY as given. If you have DNS access (`cf`/`wrangler`/Route 53, or a token the user gave you), create the records yourself — DNS-only, never proxied — then call `domain_action: "verify"`. If you do not, give the user the records table and point them to Project → Settings → Publishing → Custom domain. `domain_action` never publishes.',
-      'First publish to a subdomain requires the Pro plan or higher. Say so when the user asks to publish/deploy, or if this call returns `plan_not_allowed` (then point them to Settings > Billing to upgrade) — but do not pitch an upgrade when the user only wants to share what you built: the preview URL is public and anyone can open it.',
+      'First publish to a subdomain requires the Business plan ($16/seat/month). Say so when the user asks to publish/deploy, or if this call returns `plan_not_allowed` (then point them to Settings > Billing to upgrade) — but do not pitch an upgrade when the user only wants to share what you built: the preview URL is public and anyone can open it.',
       'First publish: a subdomain is required. If the user already named a subdomain (e.g. "publish to foo" / "host it at foo.shogo.one"), HONOR IT VERBATIM — pass exactly what they asked for (only lowercased), do not rename, prettify, or substitute your own. Only when the user has NOT specified one should you propose a name (e.g. derived from the app/project name) and CONFIRM it before publishing, since this creates a publicly reachable site. If the tool returns `needs_subdomain`, ask the user to confirm a subdomain, then call again with it.',
       'Re-publish (already published): omit `subdomain` to redeploy the latest build to the existing live subdomain. Existing access-level/password settings are preserved unless you pass new ones.',
       'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds and that the scripts/stylesheets it references load — share THAT URL with the user. If it returns `brokenAssets`, the site renders blank: fix the asset paths and republish before telling the user it works.',
@@ -5564,7 +5564,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         }
         if (res.code === 'plan_not_allowed') {
           return textResult({
-            error: 'Publishing to a subdomain requires a Pro (or higher) plan. The chat now shows the user an Upgrade button. Tell them their work is saved and they can publish again once they upgrade; meanwhile they can use the preview URL.',
+            error: 'Publishing to a subdomain requires a Business (or higher) plan. The chat now shows the user an Upgrade button. Tell them their work is saved and they can publish again once they upgrade; meanwhile they can use the preview URL.',
             code: res.code,
           })
         }
@@ -13373,7 +13373,7 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
       }),
       model: Type.Optional(
         Type.String({
-          description: `AI model for this channel. Defaults to "auto". ${availableModelsHint()} Economy-tier models work on all plans; standard/premium require Pro.`,
+          description: `AI model for this channel. Defaults to "auto". ${availableModelsHint()} Economy-tier models work on all plans; standard/premium require Business.`,
         }),
       ),
     }),
@@ -13410,7 +13410,7 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
               }
               if (!access.hasAdvancedModelAccess) {
                 return textResult({
-                  error: `Model '${channelModel}' requires a Pro or higher subscription. Please use an economy-tier model or upgrade your plan.`,
+                  error: `Model '${channelModel}' requires a Business (or higher) subscription. Please use an economy-tier model or upgrade your plan.`,
                 })
               }
             }

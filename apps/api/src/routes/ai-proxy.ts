@@ -4938,7 +4938,7 @@ export function aiProxyRoutes() {
             return c.json(
               {
                 error: {
-                  message: `Model '${request.model}' requires a Pro or higher subscription. Free and Basic plan users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5.4-nano).`,
+                  message: `Model '${request.model}' requires a Business (or higher) subscription. Free and Basic plan users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5.4-nano).`,
                   type: 'billing_error',
                   code: 'model_tier_restricted',
                 },
@@ -5590,7 +5590,7 @@ export function aiProxyRoutes() {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
           if (!hasAdvanced) {
             return c.json(
-              { type: 'error', error: { type: 'billing_error', message: `Model '${resolvedModel}' requires a Pro or higher subscription. Free and Basic plan users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5.4-nano).` } },
+              { type: 'error', error: { type: 'billing_error', message: `Model '${resolvedModel}' requires a Business (or higher) subscription. Free and Basic plan users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5.4-nano).` } },
               403
             )
           }

@@ -312,7 +312,7 @@ export const PREVIEW_URL_EVALS: AgentEval[] = [
         type: 'static',
         paramKeys: ['subdomain'],
         response: {
-          error: 'Publishing to a subdomain requires a Pro (or higher) plan. Tell the user to upgrade in Settings > Billing to publish.',
+          error: 'Publishing to a subdomain requires a Business (or higher) plan. Tell the user to upgrade in Settings > Billing to publish.',
           code: 'plan_not_allowed',
         },
       },

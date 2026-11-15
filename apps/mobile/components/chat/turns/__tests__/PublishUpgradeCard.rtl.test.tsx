@@ -44,7 +44,7 @@ const gated = {
   state: "success",
   args: { subdomain: "my-site" },
   result: {
-    error: "Publishing to a subdomain requires a Pro (or higher) plan.",
+    error: "Publishing to a subdomain requires a Business (or higher) plan.",
     code: "plan_not_allowed",
   },
 } as any

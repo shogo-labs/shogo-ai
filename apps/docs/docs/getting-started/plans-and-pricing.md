@@ -171,5 +171,5 @@ next billing period.
 
 **Is there a free trial for paid plans?**
 The free plan lets you explore Shogo at no cost, with small 5-hour and
-weekly usage windows. When you're ready for more, upgrade to Basic, Pro,
-or Business for larger windows.
+weekly usage windows. When you're ready for more, upgrade to Basic or
+Business for larger windows.
