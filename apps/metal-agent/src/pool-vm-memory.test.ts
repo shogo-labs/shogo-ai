@@ -14,7 +14,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { config, type MetalConfig } from './config'
 import type { FcVmConfig, FcVmHandle } from './firecracker-vm-manager'
-import { MetalWarmPool, vmMemMiBFromEnv, vmVcpusFromEnv } from './pool'
+import { MetalWarmPool, vmBootSize, vmMemMiBFromEnv, vmVcpusFromEnv } from './pool'
 import type { SnapshotStore } from './snapshot-store'
 
 const dirs: string[] = []
@@ -124,5 +124,14 @@ describe('per-project VM memory', () => {
     await pool.start()
     await pool.assign('ws:proj:p1', { SHOGO_VM_BOOT_VCPUS: '2' })
     expect(boots.at(-1)?.cpus).toBeUndefined()
+  })
+
+  test('vmBootSize: upgrade raises only what was asked; a downgrade (no request) is the pool size', () => {
+    const cc = { vcpus: 2, memMiB: 4096 }
+    expect(vmBootSize({ SHOGO_VM_BOOT_VCPUS: '4', SHOGO_VM_BOOT_MEM_MIB: '8192' }, cc)).toEqual({ cpus: 4, memoryMB: 8192 })
+    expect(vmBootSize({ SHOGO_VM_BOOT_MEM_MIB: '8192' }, cc)).toEqual({ memoryMB: 8192 })
+    expect(vmBootSize({ SHOGO_VM_BOOT_VCPUS: '2', SHOGO_VM_BOOT_MEM_MIB: '4096' }, cc)).toBeUndefined()
+    expect(vmBootSize({}, cc)).toBeUndefined()
+    expect(vmBootSize(undefined, cc)).toBeUndefined()
   })
 })

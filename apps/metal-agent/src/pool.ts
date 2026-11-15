@@ -1029,6 +1029,22 @@ export function vmVcpusFromEnv(env: Record<string, string> | undefined): number 
   return Number.isFinite(n) && n > 0 ? Math.min(n, MAX_REQUESTED_VM_VCPUS) : undefined
 }
 
+/**
+ * The size to boot for an assignment, or undefined when a pooled VM of the
+ * class fits. Each half only ever raises the class's size, so asking for less
+ * (or nothing, after a downgrade) gets the standard pooled VM.
+ */
+export function vmBootSize(
+  env: Record<string, string> | undefined,
+  cc: { vcpus: number; memMiB: number },
+): { memoryMB?: number; cpus?: number } | undefined {
+  const wantMiB = vmMemMiBFromEnv(env)
+  const wantCpus = vmVcpusFromEnv(env)
+  const mem = wantMiB !== undefined && wantMiB > cc.memMiB ? { memoryMB: wantMiB } : {}
+  const cpus = wantCpus !== undefined && wantCpus > cc.vcpus ? { cpus: wantCpus } : {}
+  return 'memoryMB' in mem || 'cpus' in cpus ? { ...mem, ...cpus } : undefined
+}
+
 async function probeHealth(url: string, timeoutMs = 1000): Promise<boolean> {
   try {
     const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(timeoutMs) })
@@ -2125,16 +2141,7 @@ export class MetalWarmPool {
     }
     // Pool VMs boot from the current image at the class's size, so a staged
     // boot or a project that needs a bigger VM always starts fresh.
-    const cc = classConfig(this.cfg, vmClass)
-    const wantMiB = vmMemMiBFromEnv(env)
-    const wantCpus = vmVcpusFromEnv(env)
-    const bigger =
-      (wantMiB !== undefined && wantMiB > cc.memMiB) || (wantCpus !== undefined && wantCpus > cc.vcpus)
-        ? {
-            ...(wantMiB !== undefined && wantMiB > cc.memMiB ? { memoryMB: wantMiB } : {}),
-            ...(wantCpus !== undefined && wantCpus > cc.vcpus ? { cpus: wantCpus } : {}),
-          }
-        : undefined
+    const bigger = vmBootSize(env, classConfig(this.cfg, vmClass))
     let vm = staged || bigger ? null : this.claim(vmClass)
     if (!vm) {
       const t0 = performance.now()
