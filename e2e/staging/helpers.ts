@@ -869,3 +869,30 @@ export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise
   await page.waitForURL((url) => !url.toString().includes("stripe.com"), { timeout: 30_000 })
   return "checkout"
 }
+
+/**
+ * Set the e2e user's team workspace compute tier through the backdoor
+ * (`/api/internal/e2e/bootstrap-instance`), as if the instance checkout had
+ * completed. Returns false without the secret or when the backdoor is off, so
+ * callers can `test.skip`.
+ */
+export async function bootstrapInstanceSizeViaApi(
+  page: Page,
+  user: TestUser,
+  instanceSize: "micro" | "small" | "medium" | "large" | "xlarge",
+): Promise<boolean> {
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (!secret) return false
+  const res = await page.request
+    .post(`${bootstrapApiBase()}/api/internal/e2e/bootstrap-instance`, {
+      headers: { "x-e2e-bootstrap-secret": secret, "content-type": "application/json" },
+      data: { userEmail: user.email, instanceSize },
+    })
+    .catch(() => null)
+  if (!res || res.status() === 503) return false
+  if (res.status() === 401) {
+    throw new Error("SHOGO_E2E_BOOTSTRAP_SECRET was rejected by the target API")
+  }
+  if (!res.ok()) throw new Error(`bootstrap-instance failed (${res.status()}): ${await res.text()}`)
+  return true
+}

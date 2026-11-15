@@ -208,6 +208,11 @@ import {
   readRuntimeDiskUsage,
 } from './services/project-disk.service'
 import {
+  describeProjectMachine,
+  planMachineChange,
+  restartProjectMachine,
+} from './services/project-machine.service'
+import {
   apiAuthGate,
   allowUserAppProxyRequest,
   isAllowedUnauthWebchatProxyPath,
@@ -4303,6 +4308,129 @@ app.put('/api/projects/:projectId/disk', async (c) => {
     // The column is saved either way; a failed live grow retries on next open.
     ...(growError ? { growError } : {}),
   })
+})
+
+// =============================================================================
+// Machine size (vCPU + RAM) and restart, for Settings → Machine.
+//
+// Project.vmVcpus / vmMemoryMiB are plan limited (a bigger machine draws more
+// of the workspace's memory budget), so only these routes write them. The host
+// applies a size when it boots the VM, so PUT reports `restartRequired` while
+// the project is running and the panel offers POST /machine/restart.
+// =============================================================================
+
+async function loadMachineState(projectId: string) {
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { vmMemoryMiB: true, vmVcpus: true, workspace: { select: { instanceSize: true } } },
+  })
+  if (!project) return null
+  const instanceSize = (project.workspace?.instanceSize ?? 'micro') as InstanceSizeName
+  const substrate = await projectDiskSubstrate(projectId)
+  let running = false
+  if (substrate === 'metal') {
+    // The URL cache is per API replica; ask the host when this one hasn't seen it.
+    const { peekMetalProjectUrl, getMetalProjectStatus } = await import('./lib/metal-warm-pool-controller')
+    running = !!peekMetalProjectUrl(projectId) || (await getMetalProjectStatus(projectId)).ready
+  }
+  return describeProjectMachine({
+    vmMemoryMiB: project.vmMemoryMiB,
+    vmVcpus: project.vmVcpus,
+    instanceSize,
+    substrate,
+    running,
+  })
+}
+
+/** project:update plus, when `spend`, workspace owner/admin. Returns an error response or the access. */
+async function machineAccess(c: any, projectId: string, spend: boolean) {
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return { res: c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401) }
+  }
+  const access = await loadAccess({ userId, via: 'session' as const }, { projectId })
+  if (!access.exists) {
+    return { res: c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404) }
+  }
+  if (!access.permissions.has('project:update')) {
+    return { res: c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403) }
+  }
+  if (spend && !governsAllProjects(access.workspaceRole)) {
+    return {
+      res: c.json(
+        { error: { code: 'forbidden', message: 'Only workspace owners and admins can change the machine size' } },
+        403,
+      ),
+    }
+  }
+  return { userId }
+}
+
+app.get('/api/projects/:projectId/machine', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  if (!(await verifyProjectAccess(userId, projectId))) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+  const state = await loadMachineState(projectId)
+  if (!state) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  return c.json(state)
+})
+
+app.put('/api/projects/:projectId/machine', async (c) => {
+  const projectId = c.req.param('projectId')
+  const gate = await machineAccess(c, projectId, true)
+  if ('res' in gate) return gate.res
+
+  const before = await loadMachineState(projectId)
+  if (!before) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  if (!before.canChange) {
+    return c.json(
+      {
+        error: {
+          code: 'unsupported',
+          message:
+            before.substrate === 'local'
+              ? 'This project runs on your computer, so it uses your computer\'s own CPU and memory.'
+              : 'Machine size can only be changed for projects on Shogo Cloud machines.',
+        },
+      },
+      412,
+    )
+  }
+  const body = await c.req.json<{ size?: string }>().catch(() => ({}) as { size?: string })
+  const plan = planMachineChange(body.size, before.instanceSize)
+  if (!plan.ok) return c.json({ error: { code: plan.code, message: plan.message } }, plan.status)
+
+  await prisma.project.update({
+    where: { id: projectId },
+    data: { vmMemoryMiB: plan.vmMemoryMiB, vmVcpus: plan.vmVcpus },
+  })
+  const after = (await loadMachineState(projectId))!
+  const changed = after.current.vcpus !== before.current.vcpus || after.current.memMiB !== before.current.memMiB
+  return c.json({ ...after, restartRequired: changed && after.running })
+})
+
+app.post('/api/projects/:projectId/machine/restart', async (c) => {
+  const projectId = c.req.param('projectId')
+  const gate = await machineAccess(c, projectId, false)
+  if ('res' in gate) return gate.res
+  const substrate = await projectDiskSubstrate(projectId)
+  if (substrate !== 'metal') {
+    return c.json(
+      { error: { code: 'unsupported', message: 'Restart from here is only available for projects on Shogo Cloud machines.' } },
+      412,
+    )
+  }
+  const auth = c.get('auth') as any
+  const outcome = await restartProjectMachine(projectId, { id: gate.userId, email: auth?.user?.email })
+  if (!outcome.ok) {
+    return c.json({ error: { code: 'restart_failed', message: outcome.message } }, outcome.status as any)
+  }
+  return c.json(outcome)
 })
 
 // =============================================================================

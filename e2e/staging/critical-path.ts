@@ -25,6 +25,8 @@ export const CRITICAL_PATH_SPECS: readonly string[] = [
   "project-reopen-existing.test.ts",
   // Metal recycle keeps code + database.
   "runtime-recycle.test.ts",
+  // Settings → Machine: upgrade and downgrade really resize the guest; files survive the restarts.
+  "project-machine-size.test.ts",
   // Personal <-> team switching on wide and narrow layouts.
   "workspace-switch.test.ts",
   // Event triggers run, Settings → Automations shows them, /api/v1 answers.
