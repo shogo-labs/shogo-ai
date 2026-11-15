@@ -47,6 +47,7 @@ import {
   Download as DownloadIcon,
   Monitor as MonitorIcon,
   Laptop as LaptopIcon,
+  HardDrive as HardDriveIcon,
   Paintbrush as PaintbrushIcon,
   RefreshCw as RefreshCwIcon,
   KeyRound as KeyRoundIcon,
@@ -109,6 +110,7 @@ import { EVENTS, trackEvent } from "../../lib/analytics";
 import { SecuritySettingsPanel } from "../../components/security/SecuritySettingsPanel";
 import { ComputerAndFilesPanel } from "../../components/settings/ComputerAndFilesPanel";
 import { ComputeTab } from "../../components/settings/ComputeTab";
+import { DiskSettings } from "../../components/settings/DiskSettings";
 import { LocalCloudBillingTab } from "../../components/settings/LocalCloudBillingTab";
 import { UpdatesTab } from "../../components/settings/UpdatesTab";
 import { EnvironmentVersionTrigger } from "../../components/settings/EnvironmentPicker";
@@ -191,6 +193,7 @@ const SETTINGS_ICON_MAP = {
   Download: DownloadIcon,
   Monitor: MonitorIcon,
   Laptop: LaptopIcon,
+  HardDrive: HardDriveIcon,
   Paintbrush: PaintbrushIcon,
   RefreshCw: RefreshCwIcon,
 } as const;
@@ -207,6 +210,8 @@ const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
   integrations: "Plug",
   automations: "Zap",
   "remote-control": "Monitor",
+  data: "Server",
+  disk: "HardDrive",
   account: "User",
   security: "Shield",
   "computer-files": "Laptop",
@@ -369,6 +374,7 @@ function SettingsSidebar({
     tabItem("models"),
     tabItem("integrations"),
     tabItem("automations"),
+    tabItem("disk"),
     tabItem("remote-control"),
     ...(showBilling
       ? [
@@ -4179,6 +4185,33 @@ export function WorkspaceAccountActions({
   );
 }
 
+/**
+ * Settings → Workspace → Disk (SHO-401). The workspace runtime's own drive,
+ * editable by owners/admins. Read-only for everyone else.
+ */
+const WorkspaceDiskTab = observer(function WorkspaceDiskTab() {
+  const http = useDomainHttp();
+  const currentWorkspace = useActiveWorkspace();
+  const { can } = usePermissions({ workspaceId: currentWorkspace?.id });
+  if (!currentWorkspace?.id || !http) {
+    return (
+      <View className="flex-1 items-center justify-center p-6">
+        <Text className="text-sm text-muted-foreground">No workspace selected.</Text>
+      </View>
+    );
+  }
+  if (!can("workspace:update")) {
+    return (
+      <View className="flex-1 items-center justify-center p-6">
+        <Text className="text-sm text-muted-foreground">
+          Only workspace owners and admins can change the workspace disk.
+        </Text>
+      </View>
+    );
+  }
+  return <DiskSettings scope="workspace" workspaceId={currentWorkspace.id} http={http} />;
+});
+
 export const SettingsContent = observer(function SettingsContent({
   activeTab,
   localMode = false,
@@ -4198,6 +4231,7 @@ export const SettingsContent = observer(function SettingsContent({
   return (
     <>
       {activeTab === "workspace" && <WorkspaceSettingsTab />}
+      {activeTab === "disk" && <WorkspaceDiskTab />}
       {activeTab === "people" && !isLocal && <PeopleTab />}
       {activeTab === "chat" && <ChatPreferencesTab highlightSection={section} />}
       {activeTab === "models" && <WorkspaceModelsTab />}

@@ -58,6 +58,20 @@ function metalVmSizeEnv(size: { vcpus: number; memMiB: number }): Record<string,
   return { SHOGO_VM_VCPUS: String(size.vcpus), SHOGO_VM_MEM_MIB: String(size.memMiB) }
 }
 
+/**
+ * Whether a workspace may buy the disk add-on (SHO-401). Lazily imported so
+ * this builder stays free of a hard billing dependency; a lookup failure is
+ * treated as "may not buy" (the safe, capped default).
+ */
+async function defaultCanBuyDiskAddon(workspaceId: string): Promise<boolean> {
+  try {
+    const { resolveDiskAddonEligibility } = await import('../../services/project-disk.service')
+    return (await resolveDiskAddonEligibility(workspaceId)).canBuyAddon
+  } catch {
+    return false
+  }
+}
+
 export interface BuildWorkspaceEnvOpts {
   logPrefix?: string
   /**
@@ -93,7 +107,11 @@ export interface BuildWorkspaceEnvOpts {
     profileName?: string | null
     agentProfile?: { name?: string | null } | null
     composioScope?: string | null
+    instanceSize?: string | null
+    runtimeDiskGiB?: number | null
   } | null>
+  /** Whether this workspace may buy the disk add-on (paid plan). Defaults to a DB lookup. */
+  _canBuyDiskAddon?: (workspaceId: string) => Promise<boolean>
   _loadProjectWorkspaceIds?: (projectIds: string[]) => Promise<Map<string, string>>
   _getProjectOwnerUserId?: (projectId: string) => Promise<string | undefined>
   _generateProxyToken?: typeof generateProxyToken
@@ -188,6 +206,7 @@ export async function buildWorkspaceEnv(
   // Workspace identity carries the base agent persona; per-project
   // AGENTS.md/MEMORY.md layering happens runtime-side (Phase 2b).
   let workspaceInstanceSize: InstanceSizeName = 'micro'
+  let workspaceRuntimeDiskGiB: number | null = null
   try {
     const loadWorkspace =
       opts._loadWorkspace ??
@@ -200,18 +219,22 @@ export async function buildWorkspaceEnv(
             kind: true,
             composioScope: true,
             instanceSize: true,
+            runtimeDiskGiB: true,
             agentProfile: { select: { name: true } },
           } as any,
         })) as {
           name?: string | null
           kind?: string | null
+          profileName?: string | null
           composioScope?: string | null
           instanceSize?: string | null
+          runtimeDiskGiB?: number | null
           agentProfile?: { name?: string | null } | null
         } | null
       })
     const ws = await loadWorkspace(workspaceId)
     if (ws?.instanceSize) workspaceInstanceSize = ws.instanceSize as InstanceSizeName
+    if (typeof ws?.runtimeDiskGiB === 'number') workspaceRuntimeDiskGiB = ws.runtimeDiskGiB
     const { normalizeWorkspaceKind } = await import('../../services/workspace.service')
     env.WORKSPACE_KIND = normalizeWorkspaceKind(ws?.kind)
     const profileName = ws?.profileName || ws?.agentProfile?.name
@@ -314,7 +337,15 @@ export async function buildWorkspaceEnv(
         requestedMemMiB = largest((r) => r.vmMemoryMiB)
         requestedVcpus = largest((r) => r.vmVcpus)
       }
-      env.SHOGO_VM_DISK_MIB = String(resolveWorkspaceDiskMiB(requestedDiskGiB, workspaceInstanceSize))
+      // A bare `ws:<id>` runtime has its own disk setting (SHO-401): the
+      // workspace's runtimeDiskGiB wins over the largest member's request.
+      if (!opts.anchorProjectId && typeof workspaceRuntimeDiskGiB === 'number') {
+        requestedDiskGiB = Math.max(requestedDiskGiB ?? 0, workspaceRuntimeDiskGiB)
+      }
+      const canBuyAddon = await (opts._canBuyDiskAddon ?? defaultCanBuyDiskAddon)(workspaceId)
+      env.SHOGO_VM_DISK_MIB = String(
+        resolveWorkspaceDiskMiB(requestedDiskGiB, workspaceInstanceSize, { canBuyAddon }),
+      )
       // Picked machine size (Project.vmMemoryMiB), the largest member's. The
       // host boots it; the workspace budget counts it (SHOGO_VM_MEM_MIB).
       if (typeof requestedMemMiB === 'number' && requestedMemMiB > 0) {

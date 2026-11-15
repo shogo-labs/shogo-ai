@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * DiskSettings — project Settings → DATA → Disk (SHO-349).
+ * DiskSettings — Settings → DATA → Disk (SHO-349) and Settings → Workspace →
+ * Disk (SHO-401).
  *
- * A project's files live on its own workspace drive. It starts at the fleet
- * default (20 GiB) and can be raised up to the workspace tier's ceiling; the
- * host grows the live drive without a restart. Shown used-vs-total while the
- * project runs, the current size, and a size picker.
+ * A project's files live on its own workspace drive; a bare `ws:<id>` workspace
+ * runtime has its own drive too. Each tier includes a fixed amount of drive
+ * (`includedGiB`); anything above that is a paid per-GiB-month add-on, charged
+ * daily against the usage wallet. The host grows the live drive without a
+ * restart.
  *
  * Two facts the copy has to carry, because they surprise people:
  *   - drives never shrink (ext4 can't, and lowering the setting only caps
@@ -15,18 +17,24 @@
  *     packed on suspend and restored on wake).
  *
  * On desktop (`substrate: 'local'`) there is nothing to grow — the project uses
- * the machine's own disk — so the panel is read-only.
+ * the machine's own disk — so the panel is read-only and shows no price.
  */
 
 import { useCallback, useEffect, useState } from 'react'
 import { View, Text, Pressable, ActivityIndicator, ScrollView } from 'react-native'
+import { useRouter } from 'expo-router'
 import { HardDrive, Minus, Plus } from 'lucide-react-native'
 import type { HttpClient } from '@shogo-ai/sdk'
 import { cn } from '@shogo/shared-ui/primitives'
 import { api, type ProjectDiskState } from '../../lib/api'
 
 interface DiskSettingsProps {
-  projectId: string
+  /** Which drive this panel edits. */
+  scope: 'project' | 'workspace'
+  /** Required when `scope === 'project'`. */
+  projectId?: string
+  /** Required when `scope === 'workspace'`. */
+  workspaceId?: string
   /** Passed in by the settings host; avoids useDomainHttp() inside panels. */
   http: HttpClient
 }
@@ -39,16 +47,25 @@ function formatBytes(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`
 }
 
-export function DiskSettings({ projectId, http }: DiskSettingsProps) {
+function usd(n: number): string {
+  return `$${n.toFixed(2)}`
+}
+
+export function DiskSettings({ scope, projectId, workspaceId, http }: DiskSettingsProps) {
+  const router = useRouter()
   const [state, setState] = useState<ProjectDiskState | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [draftGiB, setDraftGiB] = useState<number>(20)
 
   const load = useCallback(async () => {
     try {
-      const data = await api.getProjectDisk(http, projectId)
+      const data =
+        scope === 'workspace'
+          ? await api.getWorkspaceDisk(http, workspaceId!)
+          : await api.getProjectDisk(http, projectId!)
       setState(data)
       setDraftGiB(Math.max(data.effectiveGiB, data.requestedGiB ?? data.effectiveGiB))
       setError(null)
@@ -57,7 +74,7 @@ export function DiskSettings({ projectId, http }: DiskSettingsProps) {
     } finally {
       setLoading(false)
     }
-  }, [http, projectId])
+  }, [http, projectId, workspaceId, scope])
 
   useEffect(() => {
     load()
@@ -67,15 +84,19 @@ export function DiskSettings({ projectId, http }: DiskSettingsProps) {
     if (!state || saving) return
     setSaving(true)
     setError(null)
+    setNotice(null)
     try {
-      const data = await api.updateProjectDisk(http, projectId, draftGiB)
+      const data =
+        scope === 'workspace'
+          ? await api.updateWorkspaceDisk(http, workspaceId!, draftGiB)
+          : await api.updateProjectDisk(http, projectId!, draftGiB)
       setState(data)
       if ((data as any).growError) {
-        setError('Saved. The running project will pick up the bigger disk the next time it opens.')
+        setNotice('Saved — applies on next start. The running runtime will pick up the bigger disk the next time it opens.')
       }
     } catch (err: any) {
-      // The route's message is the useful one ("This workspace's plan allows
-      // workspace disks up to 40 GiB."), so surface it verbatim.
+      // The route's message is the useful one ("This workspace's plan includes
+      // 20 GiB. Upgrade to buy more disk."), so surface it verbatim.
       setError(err?.message || 'Could not change the disk size')
     } finally {
       setSaving(false)
@@ -92,12 +113,17 @@ export function DiskSettings({ projectId, http }: DiskSettingsProps) {
 
   const readOnly = state?.substrate === 'local'
   const defaultGiB = state?.defaultGiB ?? 20
+  const includedGiB = state?.includedGiB ?? defaultGiB
   const maxGiB = state?.maxGiB ?? defaultGiB
   const currentGiB = state?.effectiveGiB ?? defaultGiB
   const usedBytes = state?.usage?.usedBytes ?? 0
   const totalBytes = state?.usage?.totalBytes ?? currentGiB * 1024 ** 3
   const percent = totalBytes > 0 ? Math.min((usedBytes / totalBytes) * 100, 100) : 0
   const canSave = !readOnly && !saving && draftGiB !== currentGiB && draftGiB <= maxGiB
+  const draftAddonGiB = Math.max(0, draftGiB - includedGiB)
+  const draftMonthlyUsd = draftAddonGiB * (state?.pricePerGiBMonthUsd ?? 0)
+  const nearFull = !!state?.usage && percent >= 90
+  const planBlocked = state?.buyBlockedReason === 'plan_required'
 
   return (
     <ScrollView className="flex-1 bg-background" contentContainerStyle={{ padding: 16 }}>
@@ -106,10 +132,12 @@ export function DiskSettings({ projectId, http }: DiskSettingsProps) {
         <Text className="text-sm font-medium text-foreground">Disk</Text>
       </View>
       <Text className="text-[11px] text-muted-foreground mb-4">
-        Space for this project&apos;s files, dependencies and build output.
+        {scope === 'workspace'
+          ? 'Space for this workspace runtime — every project folder it mounts.'
+          : "Space for this project's files, dependencies and build output."}
         {readOnly
-          ? ' This project runs on your computer, so it uses your own disk.'
-          : ' Raising it is immediate — the project keeps running.'}
+          ? ' This runs on your computer, so it uses your own disk.'
+          : ' Raising it is immediate — the runtime keeps running.'}
       </Text>
 
       {/* Usage bar */}
@@ -131,10 +159,32 @@ export function DiskSettings({ projectId, http }: DiskSettingsProps) {
         </View>
         {!state?.usage && (
           <Text className="text-[11px] text-muted-foreground">
-            Usage appears while the project is running.
+            Usage appears while the runtime is running.
+          </Text>
+        )}
+        {nearFull && (
+          <Text className="text-[11px] text-amber-600">
+            Almost full ({percent.toFixed(0)}%). Raise the disk size below to avoid running out of space.
           </Text>
         )}
       </View>
+
+      {/* Included vs add-on */}
+      {!readOnly && (
+        <View className="mt-3 rounded-lg border border-border p-3 gap-1">
+          <View className="flex-row items-center justify-between">
+            <Text className="text-[12px] text-muted-foreground">Included with your plan</Text>
+            <Text className="text-[12px] text-foreground">{includedGiB} GiB</Text>
+          </View>
+          <View className="flex-row items-center justify-between">
+            <Text className="text-[12px] text-muted-foreground">Add-on</Text>
+            <Text className="text-[12px] text-foreground">
+              {state?.addonGiB ?? 0} GiB
+              {(state?.addonMonthlyUsd ?? 0) > 0 ? ` · ${usd(state!.addonMonthlyUsd)}/mo` : ''}
+            </Text>
+          </View>
+        </View>
+      )}
 
       {/* Size picker */}
       {!readOnly && (
@@ -143,17 +193,17 @@ export function DiskSettings({ projectId, http }: DiskSettingsProps) {
             <View className="flex-1 min-w-0 pr-3">
               <Text className="text-sm text-foreground">Disk size</Text>
               <Text className="text-[11px] text-muted-foreground mt-0.5">
-                {currentGiB} GiB now · up to {maxGiB} GiB on this plan
+                {currentGiB} GiB now · up to {maxGiB} GiB
               </Text>
             </View>
             <View className="flex-row items-center gap-2">
               <Pressable
                 accessibilityLabel="Smaller disk"
-                onPress={() => setDraftGiB((v) => Math.max(defaultGiB, v - 5))}
-                disabled={draftGiB <= defaultGiB || saving}
+                onPress={() => setDraftGiB((v) => Math.max(currentGiB, v - 5))}
+                disabled={draftGiB <= currentGiB || saving}
                 className={cn(
                   'h-8 w-8 items-center justify-center rounded-md border border-border',
-                  (draftGiB <= defaultGiB || saving) && 'opacity-40',
+                  (draftGiB <= currentGiB || saving) && 'opacity-40',
                 )}
               >
                 <Minus size={14} className="text-foreground" />
@@ -175,19 +225,33 @@ export function DiskSettings({ projectId, http }: DiskSettingsProps) {
             </View>
           </View>
 
+          {draftAddonGiB > 0 && (
+            <Text className="text-[11px] text-muted-foreground">
+              {draftAddonGiB} GiB add-on · +{usd(draftMonthlyUsd)}/mo
+            </Text>
+          )}
+
           {!state?.canIncrease && (
             <Text className="text-[11px] text-muted-foreground">
-              {currentGiB} GiB is the most this workspace&apos;s plan allows.
+              {planBlocked
+                ? `${includedGiB} GiB is what your plan includes. Upgrade to buy more disk.`
+                : `${currentGiB} GiB is the most a workspace disk can be.`}
             </Text>
+          )}
+
+          {planBlocked && (
+            <Pressable
+              onPress={() => router.push('/(app)/settings?tab=billing' as any)}
+              className="rounded-md border border-border py-2 items-center"
+            >
+              <Text className="text-sm font-medium text-foreground">Upgrade to a paid plan</Text>
+            </Pressable>
           )}
 
           <Pressable
             onPress={save}
             disabled={!canSave}
-            className={cn(
-              'rounded-md py-2 items-center',
-              canSave ? 'bg-primary' : 'bg-muted',
-            )}
+            className={cn('rounded-md py-2 items-center', canSave ? 'bg-primary' : 'bg-muted')}
           >
             {saving ? (
               <ActivityIndicator size="small" />
@@ -205,6 +269,7 @@ export function DiskSettings({ projectId, http }: DiskSettingsProps) {
         </View>
       )}
 
+      {notice && <Text className="text-[11px] text-amber-600 mt-3">{notice}</Text>}
       {error && <Text className="text-[11px] text-destructive mt-3">{error}</Text>}
     </ScrollView>
   )

@@ -4859,6 +4859,7 @@ export default observer(function ProjectLayout() {
                                 render: () => (
                                   <PanelErrorBoundary panelName="Disk">
                                     <DiskSettings
+                                      scope="project"
                                       projectId={projectId!}
                                       http={http}
                                     />

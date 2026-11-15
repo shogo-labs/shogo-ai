@@ -2,17 +2,24 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, it } from 'bun:test'
-import { destroyProjectRuntime, getProjectSubstrate, getPublishSubstrate, resizeProjectRuntime, unpublishProjectEverywhere } from '../router'
+import { destroyProjectRuntime, getProjectSubstrate, getPublishSubstrate, resizeProjectRuntime, resizeWorkspaceRuntime, unpublishProjectEverywhere } from '../router'
 import { SubstrateUnsupportedError, type ProjectSubstrate, type RuntimeSummary } from '../types'
 
-function fakeSubstrate(kind: 'metal' | 'knative', opts: { resize?: boolean } = {}) {
+function fakeSubstrate(kind: 'metal' | 'knative', opts: { resize?: boolean; resizeWorkspace?: boolean } = {}) {
   const destroyed: string[] = []
   const resized: string[] = []
+  const resizedWorkspaces: string[] = []
   const unpublished: string[] = []
-  const sub: ProjectSubstrate & { destroyed: string[]; resized: string[]; unpublished: string[] } = {
+  const sub: ProjectSubstrate & {
+    destroyed: string[]
+    resized: string[]
+    resizedWorkspaces: string[]
+    unpublished: string[]
+  } = {
     kind,
     destroyed,
     resized,
+    resizedWorkspaces,
     unpublished,
     async resolveUrl(id) {
       return { url: `http://${kind}/${id}` }
@@ -44,6 +51,12 @@ function fakeSubstrate(kind: 'metal' | 'knative', opts: { resize?: boolean } = {
   if (opts.resize) {
     sub.resize = async (id: string) => {
       resized.push(id)
+    }
+  }
+  if (opts.resizeWorkspace) {
+    sub.resizeWorkspaceRuntime = async (workspaceId: string) => {
+      resizedWorkspaces.push(workspaceId)
+      return [{ key: `ws:${workspaceId}`, disk: 'unchanged' }]
     }
   }
   return sub
@@ -238,6 +251,34 @@ describe('substrate router', () => {
           _metalSubstrate: metal,
         }),
       ).rejects.toBeInstanceOf(SubstrateUnsupportedError)
+    })
+  })
+
+  describe('resizeWorkspaceRuntime', () => {
+    it('grows the bare workspace runtime on a substrate that supports it', async () => {
+      const metal = fakeSubstrate('metal', { resizeWorkspace: true })
+      const outcomes = await resizeWorkspaceRuntime('w1', { disk: '50Gi' }, {
+        _isMetalEnabled: () => true,
+        _metalSubstrate: metal,
+      })
+      expect(metal.resizedWorkspaces).toContain('w1')
+      expect(outcomes).toEqual([{ key: 'ws:w1', disk: 'unchanged' }])
+    })
+
+    it('is a no-op off metal', async () => {
+      const outcomes = await resizeWorkspaceRuntime('w1', { disk: '50Gi' }, {
+        _isMetalEnabled: () => false,
+      })
+      expect(outcomes).toEqual([])
+    })
+
+    it('is a no-op when the metal substrate has no workspace-runtime resize', async () => {
+      const metal = fakeSubstrate('metal')
+      const outcomes = await resizeWorkspaceRuntime('w1', { disk: '50Gi' }, {
+        _isMetalEnabled: () => true,
+        _metalSubstrate: metal,
+      })
+      expect(outcomes).toEqual([])
     })
   })
 })

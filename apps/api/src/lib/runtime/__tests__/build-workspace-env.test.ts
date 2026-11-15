@@ -188,6 +188,41 @@ describe('buildWorkspaceEnv', () => {
     }
   })
 
+  it('sizes a bare ws:<id> runtime from Workspace.runtimeDiskGiB, beating the members (SHO-401)', async () => {
+    const env = await buildWorkspaceEnv('ws-1', ['p1'], {
+      ...seams,
+      forMetal: true,
+      _canBuyDiskAddon: async () => true,
+      _loadWorkspace: async () => ({
+        name: 'My WS',
+        composioScope: 'workspace',
+        instanceSize: 'micro',
+        runtimeDiskGiB: 100,
+      }),
+      _loadProjects: async (ids: string[]) =>
+        ids.map((id) => ({ id, name: id, settings: { techStackId: 'react-app' }, workspaceDiskGiB: 30 })),
+    } as any)
+    // 100 GiB beats the member's 30 GiB, and the add-on lets it past the 20 GiB
+    // micro included amount.
+    expect(env.SHOGO_VM_DISK_MIB).toBe(String(100 * 1024))
+  })
+
+  it('caps a bare ws:<id> runtime at the tier when it cannot buy the add-on (SHO-401)', async () => {
+    const env = await buildWorkspaceEnv('ws-1', ['p1'], {
+      ...seams,
+      forMetal: true,
+      _canBuyDiskAddon: async () => false,
+      _loadWorkspace: async () => ({
+        name: 'My WS',
+        composioScope: 'workspace',
+        instanceSize: 'micro',
+        runtimeDiskGiB: 100,
+      }),
+      _loadProjects: async (ids: string[]) => ids.map((id) => ({ id, name: id, settings: { techStackId: 'react-app' } })),
+    } as any)
+    expect(env.SHOGO_VM_DISK_MIB).toBe(String(20 * 1024))
+  })
+
   it('omits SHOGO_EXPOSED_PORTS when no member declares ports', async () => {
     const env = await buildWorkspaceEnv('ws-1', ['p1'], {
       ...seams,
@@ -562,6 +597,8 @@ describe('buildWorkspaceEnv — workspace drive (SHO-349)', () => {
     ({
       ...seams,
       forMetal: true,
+      // No add-on: the ceiling is what the tier includes (SHO-401).
+      _canBuyDiskAddon: async () => false,
       _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'medium' }),
       _loadProjects: async (ids: string[]) =>
         ids.map((id) => ({ id, name: id, settings: { techStackId: 'react-app' }, workspaceDiskGiB: diskById[id] ?? null })),

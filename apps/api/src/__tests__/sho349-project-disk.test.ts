@@ -66,12 +66,30 @@ describe('planDiskChange', () => {
   })
 
   it('rejects anything above the tier ceiling with a readable message', () => {
-    const plan = planDiskChange(120, 'medium')
+    // A workspace that may not buy the add-on is capped at what its tier
+    // includes (402 plan_required); one that may is capped at the hard 200 GiB
+    // (422 plan_ceiling).
+    const blocked = planDiskChange(120, 'medium')
+    expect(blocked.ok).toBe(false)
+    if (!blocked.ok) {
+      expect(blocked.status).toBe(402)
+      expect(blocked.code).toBe('plan_required')
+      expect(blocked.message).toContain('40 GiB')
+    }
+    const overCap = planDiskChange(250, 'medium', { canBuyAddon: true })
+    expect(overCap.ok).toBe(false)
+    if (!overCap.ok) {
+      expect(overCap.status).toBe(422)
+      expect(overCap.code).toBe('plan_ceiling')
+    }
+  })
+
+  it('refuses a size below the current effective size (cannot_shrink)', () => {
+    const plan = planDiskChange(20, 'medium', { canBuyAddon: true, currentEffectiveGiB: 30 })
     expect(plan.ok).toBe(false)
     if (!plan.ok) {
       expect(plan.status).toBe(422)
-      expect(plan.code).toBe('plan_ceiling')
-      expect(plan.message).toContain('40 GiB')
+      expect(plan.code).toBe('cannot_shrink')
     }
   })
 
@@ -95,9 +113,33 @@ describe('describeProjectDisk', () => {
   })
 
   it('pins canIncrease=false with a reason at the ceiling', () => {
+    // Without the add-on, the ceiling is what the tier includes.
     const body = describeProjectDisk({ requestedGiB: 40, instanceSize: 'medium', substrate: 'metal' })
     expect(body.canIncrease).toBe(false)
-    expect(body.reason).toBe('plan_ceiling')
+    expect(body.reason).toBe('plan_required')
+    // With the add-on, the ceiling is the hard 200 GiB.
+    const withAddon = describeProjectDisk({
+      requestedGiB: 40,
+      instanceSize: 'medium',
+      substrate: 'metal',
+      canBuyAddon: true,
+    })
+    expect(withAddon.maxGiB).toBe(MAX_WORKSPACE_DISK_GIB)
+    expect(withAddon.canIncrease).toBe(true)
+  })
+
+  it('reports included vs add-on GiB and the monthly price', () => {
+    const body = describeProjectDisk({
+      requestedGiB: 50,
+      instanceSize: 'micro',
+      substrate: 'metal',
+      canBuyAddon: true,
+    })
+    expect(body.includedGiB).toBe(20)
+    expect(body.effectiveGiB).toBe(50)
+    expect(body.addonGiB).toBe(30)
+    expect(body.pricePerGiBMonthUsd).toBe(0.15)
+    expect(body.addonMonthlyUsd).toBe(4.5)
   })
 
   it('passes measured usage through with a timestamp', () => {
