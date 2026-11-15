@@ -27,6 +27,7 @@ import {
 } from "react-native"
 import { useRouter } from "expo-router"
 import { cn } from "@shogo/shared-ui/primitives"
+import { UPGRADE_PLAN_NAME } from "@/lib/billing-config"
 import { AUTO_MODEL_ID } from "@shogo/model-catalog"
 import { Check, Lock, Settings2, ChevronRight, ChevronDown } from "lucide-react-native"
 import { AutoModelOption } from "./AutoModelOption"
@@ -151,7 +152,7 @@ export function ModelPickerMenu({
           onPress={() => onSelect(model.id)}
           testID={`model-option-${model.id}`}
           accessibilityRole="button"
-          accessibilityLabel={`${model.shortDisplayName ?? model.displayName}${isLocked ? ", requires Pro" : ""}`}
+          accessibilityLabel={`${model.shortDisplayName ?? model.displayName}${isLocked ? `, requires ${UPGRADE_PLAN_NAME}` : ""}`}
           aria-selected={isSelected}
           onHoverIn={isWeb ? () => setHoveredId(model.id) : undefined}
           onHoverOut={isWeb ? () => setHoveredId((id) => (id === model.id ? null : id)) : undefined}

@@ -89,14 +89,16 @@ test.describe("Billing & Upgrade Flow", () => {
     await expect(page.getByText("Weekly window", { exact: true }).first()).toBeVisible()
   })
 
-  test("free plan: sidebar shows Upgrade to Pro CTA", async () => {
+  test("free plan: sidebar CTA sells Business at its real price", async () => {
     await page.goto("/home")
     await page.waitForSelector("text=What are we building", { timeout: 10_000 })
 
-    await expect(page.getByText("Upgrade to Pro")).toBeVisible()
-    await expect(
-      page.getByText("Unlock more benefits").or(page.getByText(/of \$[\d.]+ left/)),
-    ).toBeVisible()
+    // Pro is retired (SHO-397/SHO-398): the CTA names the plan on sale.
+    const cta = page.getByTestId("sidebar-upgrade-cta")
+    await expect(cta).toBeVisible()
+    await expect(cta.getByText("Upgrade to Business")).toBeVisible()
+    await expect(cta.getByText(/\$16\/seat\/mo/)).toBeVisible()
+    await expect(page.getByText("Upgrade to Pro")).toHaveCount(0)
   })
 
   test("free plan: per-seat pricing tiers displayed (v2.5.0 USD)", async () => {
