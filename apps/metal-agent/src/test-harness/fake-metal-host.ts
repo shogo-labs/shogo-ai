@@ -190,6 +190,12 @@ export class FakeGuest {
   readonly adoptGate = new RepoAdoptGate()
   /** Every `/pool/repo-hydrated` adopt answer, in order: 200, 409 (busy), 504, 500. */
   readonly adoptStatuses: number[] = []
+  /** Every request path this guest served, in order (SHO-399 ordering assertions). */
+  readonly calls: string[] = []
+  /** Bodies of the `/pool/stop-background-tasks` calls this guest served. */
+  readonly stopTaskBodies: Array<{ reason?: string }> = []
+  /** What this guest reports its `.tmp/` held when the host stops its tasks. */
+  tmpDropped?: { files: number; bytes: number }
   alive = true
   private server: ReturnType<typeof Bun.serve>
   private settleGit!: () => void
@@ -315,6 +321,7 @@ export class FakeGuest {
 
   private async handle(req: Request): Promise<Response> {
     const path = new URL(req.url).pathname
+    this.calls.push(path)
     // agent-runtime's app-wide middleware: anything that can write the
     // workspace marks it in use and waits out a late `.git` swap.
     if (this.kind === 'deferring' && !isWorkspaceNeutralRequest(req.method, path)) await this.adoptGate.enter()
@@ -372,6 +379,9 @@ export class FakeGuest {
       }
       case '/pool/export-data':
         return new Response(null, { status: 204 })
+      case '/pool/stop-background-tasks':
+        this.stopTaskBodies.push(body ?? {})
+        return Response.json({ ok: true, stopped: 0, ...(this.tmpDropped ? { tmpDropped: true, tmp: this.tmpDropped } : {}) })
       default:
         return Response.json({ ok: true })
     }

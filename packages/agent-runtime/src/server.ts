@@ -19,6 +19,7 @@ import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { createBufferedTurns, type PipelineCallHooks, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
 import { StreamRegistry, DEFAULT_STREAM_ORPHAN_TTL_MS } from './stream-registry'
+import { guestBusy } from './runtime-busy'
 import { describeTurn } from './turn-status'
 import { RepoAdoptGate, isWorkspaceNeutralRequest } from './repo-adopt-gate'
 import { shouldFlushGitBeforeExport } from './git-export-policy'
@@ -938,7 +939,7 @@ const { app, state, logTiming } = await createRuntimeApp({
     // pin is what stopped an expired AI-proxy token from ever refreshing on
     // metal (SHO-348).
     const liveStreams = streamRegistry.liveCount()
-    const busy = work.turns + work.tasks + liveStreams > 0
+    const busy = guestBusy({ turns: work.turns, tasks: work.tasks, liveStreams })
     return {
       activeSessions: stats.length,
       lastActivityAt: lastSessionActivity,
@@ -3845,6 +3846,70 @@ app.post('/pool/quiesce', async (c) => {
   console.log(`[pool/quiesce] ${JSON.stringify(projects)}`)
   return c.json({ ok: true, projects })
 })
+
+/**
+ * Stop every local background task because the host is replacing this VM for a
+ * release. The host calls this before it destroys the VM so each task settles
+ * `interrupted` with the real reason, and a task the agent was told about in the
+ * background carries its outcome to the owner's chat across the restart
+ * (SHO-399). `.tmp/` is not part of the backup, so a task whose files lived
+ * there is told that in the same breath.
+ */
+app.post('/pool/stop-background-tasks', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const reason = typeof body?.reason === 'string' && body.reason.trim()
+    ? body.reason.trim()
+    : 'this runtime moved to the new release'
+  const tmp = droppedTmp()
+  const note = tmp ? `${describeTmp(tmp)} is not kept across a recycle — move the script and its env file into the project` : undefined
+  const stopped = agentGateway?.stopBackgroundTasksForRelease?.({ reason, ...(note ? { note } : {}) }) ?? 0
+  console.log(`[pool/stop-background-tasks] stopped ${stopped} task(s): ${reason}${tmp ? ` (${describeTmp(tmp)} dropped)` : ''}`)
+  return c.json({ ok: true, stopped, reason, tmpDropped: !!note, ...(tmp ? { tmp } : {}) })
+})
+
+/** What `.tmp/` holds that this recycle will not carry over. */
+export interface DroppedTmp {
+  files: number
+  bytes: number
+}
+
+/**
+ * Measure `.tmp/`, so the chat that owns this runtime is told *what* it is
+ * about to lose rather than only that something was lost (SHO-399). Bounded:
+ * a 3.6 GB folder of build output is reported by size, not by walking forever.
+ */
+function droppedTmp(): DroppedTmp | undefined {
+  try {
+    const root = join(WORKSPACE_DIR, '.tmp')
+    let files = 0
+    let bytes = 0
+    const walk = (dir: string, depth: number): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (files >= 5000) return
+        const p = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          if (depth < 4) walk(p, depth + 1)
+          continue
+        }
+        files += 1
+        try {
+          bytes += statSync(p).size
+        } catch { /* vanished mid-walk */ }
+      }
+    }
+    walk(root, 0)
+    return files > 0 ? { files, bytes } : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function describeTmp(tmp: DroppedTmp): string {
+  const size = tmp.bytes >= 1 << 30
+    ? `${(tmp.bytes / (1 << 30)).toFixed(1)} GB`
+    : `${Math.max(1, Math.round(tmp.bytes / 1024))} KB`
+  return `.tmp/ (${tmp.files} file${tmp.files === 1 ? '' : 's'}, ${size})`
+}
 
 // Workspace-drive maintenance for a live grow (SHO-349) — see workspace-drive.ts.
 // The host freezes the guest around its ftruncate + PATCH /drives, then thaws

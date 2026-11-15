@@ -16,6 +16,7 @@ import { join, resolve, extname, dirname, relative, sep } from 'path'
 import { execSync } from '@shogo/shared-runtime/child-process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
+import { declareService, deriveServiceName, serviceTmpWarning, undeclareService } from './services-registry'
 import type { SessionTodo, SessionTodosSnapshot } from './plan-continuation'
 import { createProjectTools, resolveProjectRef } from './project-tools'
 import {
@@ -61,7 +62,7 @@ import { resolveProjectCredentialEnv } from './project-process-env'
 import { getHomeWatch, homeNotPersistedNote } from './home-state-watch'
 import { commandTargetsGateway, gatewayKillRefusal } from './gateway-self-protect'
 import { consumeExecCwdMarker, execCwdDirFor, newExecCwdMarker } from './exec-cwd'
-import { checkSelfDetach, selfDetachRefusal } from './exec-detach'
+import { checkSelfDetach, findSelfMatchingPattern, patternSelfMatchHint, selfDetachRefusal } from './exec-detach'
 import { findPolledTasks, type PollMatch } from './exec-poll'
 import { CommandRegistry, type CommandEntry } from './command-registry'
 import type { TaskEntry } from './task-registry'
@@ -1659,7 +1660,12 @@ function taskOutputPath(ctx: ToolContext, entry: { outputFile?: string }): strin
   return ctx.commandRegistry?.displayPath(entry.outputFile) ?? entry.outputFile
 }
 
-function buildSoftTimeoutResult(ctx: ToolContext, entry: CommandEntry, softTimeoutMs: number | null): AgentToolResult<any> {
+function buildSoftTimeoutResult(
+  ctx: ToolContext,
+  entry: CommandEntry,
+  softTimeoutMs: number | null,
+  extra: Record<string, unknown> = {},
+): AgentToolResult<any> {
   const elapsedMs = Date.now() - entry.handle.startedAt
   return textResult({
     status: 'running',
@@ -1677,6 +1683,7 @@ function buildSoftTimeoutResult(ctx: ToolContext, entry: CommandEntry, softTimeo
         ? 'Started in the background. '
         : `Still running after ${Math.round(softTimeoutMs / 1000)}s; it keeps running in the background. `) +
       BACKGROUND_TASK_HINT,
+    ...extra,
   })
 }
 
@@ -1764,10 +1771,37 @@ function withSleepPollSteering(tool: AgentTool, ctx: ToolContext): AgentTool {
   }
 }
 
+/**
+ * Steer a `pgrep -f` / `pkill -f` that also matches its own shell (SHO-399).
+ *
+ * A warning, never a refusal: `pkill -f` is a legitimate way to target another
+ * process, and the pattern is only self-matching by accident. The command runs;
+ * the result carries the note so the agent can wait on the task instead of
+ * spinning, or break the self-match with the bracket trick.
+ */
+function withPatternSelfMatchSteering(tool: AgentTool): AgentTool {
+  const run = tool.execute
+  return {
+    ...tool,
+    execute: async (toolCallId, params, signal) => {
+      const result = await run(toolCallId, params, signal)
+      const command = (params as { command?: string })?.command ?? ''
+      const match = findSelfMatchingPattern(command)
+      if (!match) return result
+      const details = result?.details as Record<string, unknown> | undefined
+      // Nothing ran (refused, or stopped before spawn): a steering note about a
+      // command that never started only confuses the reader.
+      if (details && (details.error || details.ok === false)) return result
+      const taskId = typeof details?.task_id === 'string' ? details.task_id : undefined
+      return withSteering(result, { code: 'pattern_matches_itself', hint: patternSelfMatchHint(match, taskId) })
+    },
+  }
+}
+
 function createExecTool(ctx: ToolContext): AgentTool {
-  return withSleepPollSteering({
+  return withPatternSelfMatchSteering(withSleepPollSteering({
     name: 'exec',
-    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail${isSearchEnabled() ? ', and the \`search\` tool over grep/rg for finding code' : '; use rg (ripgrep) to find code'}. Tokens saved to .env are auto-loaded. Long-running commands become background tasks: set \`background: true\` to start one immediately (never detach it yourself with \`&\` or \`nohup\`; those are refused), and any command still running after \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}) is handed back as \`{ status: "running", task_id, output_file }\` while it keeps running.`,
+    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail${isSearchEnabled() ? ', and the \`search\` tool over grep/rg for finding code' : '; use rg (ripgrep) to find code'}. Tokens saved to .env are auto-loaded. Long-running commands become background tasks: set \`background: true\` to start one immediately (never detach it yourself with \`&\` or \`nohup\`; those are refused), and any command still running after \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}) is handed back as \`{ status: "running", task_id, output_file }\` while it keeps running. A background task is stopped after 6 h (env \`SHOGO_EXEC_BACKGROUND_MAX_MS\`); if the command is a long-running service rather than a job with an end, declare it with \`service: true\` — it is exempt from the cap and is restarted after a runtime restart or a VM recycle.`,
     label: 'Execute Command',
     parameters: Type.Object({
       command: Type.String({ description: 'Shell command to execute' }),
@@ -1783,12 +1817,32 @@ function createExecTool(ctx: ToolContext): AgentTool {
           description: 'Start as a background task and return immediately with a task_id (servers, watchers, long builds/tests).',
         }),
       ),
+      service: Type.Optional(
+        Type.Boolean({
+          description:
+            'With `background: true`: this is a long-running service, not a job. It is exempt from the 6 h cap ' +
+            'and is restarted automatically after a runtime restart or a VM recycle. Declared in `.shogo/services.json`; ' +
+            '`task_cancel` on it undeclares it.',
+        }),
+      ),
+      name: Type.Optional(
+        Type.String({ description: 'Service name (with `service: true`), used to match it across a restart. Defaults to the command.' }),
+      ),
     }),
     execute: async (_toolCallId, params, signal) => {
-      const { command, timeout = DEFAULT_EXEC_SOFT_TIMEOUT_MS, background = false } = params as {
+      const { command, timeout = DEFAULT_EXEC_SOFT_TIMEOUT_MS, background = false, service = false, name } = params as {
         command: string
         timeout?: number
         background?: boolean
+        service?: boolean
+        name?: string
+      }
+
+      if (service && !background) {
+        return textResult({
+          error: 'service: true needs background: true',
+          hint: 'A service keeps running after the tool call returns, so it is always a background task: exec({ command, background: true, service: true }).',
+        })
       }
       const attributedCommand = injectCommitTrailer(command, {
         ...process.env,
@@ -1964,12 +2018,36 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // completes within the soft timeout (defensive against races where the
       // model decided to wait while we were already returning).
       const registry = ctx.commandRegistry ?? new CommandRegistry()
-      const entry = registry.register(attributedCommand, handle, { cwd: currentCwd })
+      const serviceMeta = service
+        ? { name: (name && name.trim()) || deriveServiceName(attributedCommand) }
+        : undefined
+      const entry = registry.register(attributedCommand, handle, {
+        cwd: currentCwd,
+        service: !!serviceMeta,
+        name: serviceMeta?.name,
+      })
       // A shell task's thread is its own output file — the log the dock shows.
       entry.link = { kind: 'log', path: registry.displayPath(entry.outputFile) }
 
       if (background) {
         registry.markBackgrounded(entry.id)
+        if (serviceMeta && ctx.sessionId) {
+          // The declaration is what brings it back after a restart or a VM
+          // recycle; it lives in `.shogo/`, which is in the source backup.
+          declareService(ctx.workspaceDir, {
+            name: serviceMeta.name,
+            command,
+            cwd: currentCwd,
+            sessionId: ctx.sessionId,
+            declaredAt: Date.now(),
+          })
+          const tmpWarning = serviceTmpWarning(command)
+          const result = await buildSoftTimeoutResult(ctx, entry, null, {
+            service: serviceMeta.name,
+            ...(tmpWarning ? { warning: tmpWarning } : {}),
+          })
+          return result
+        }
         return buildSoftTimeoutResult(ctx, entry, null)
       }
 
@@ -1998,7 +2076,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
         await withDiskFullHint(completed),
       )
     },
-  }, ctx)
+  }, ctx))
 }
 
 /**
@@ -2941,6 +3019,9 @@ function createTaskListTool(ctx: ToolContext): AgentTool {
           // A stale row is one the restart ended, not one we cannot name.
           status: t.stale ? 'interrupted (runtime restarted)' : t.status,
           elapsed_ms: t.elapsedMs,
+          // A service is restarted after a restart or a recycle, and is not
+          // subject to the background-task cap.
+          ...(t.service ? { service: true, service_name: t.name } : {}),
           ...(registry.displayExistingPath(t.outputFile) ? { output_file: registry.displayExistingPath(t.outputFile) } : {}),
         })),
       })
@@ -2966,16 +3047,28 @@ function createTaskCancelTool(ctx: ToolContext): AgentTool {
       // is still running (SHO-144).
       const { survivors } = await registry.cancel(entry.id)
       const status = registry.get(entry.id)?.status ?? 'cancelled'
+      // Cancelling a service is how you undeclare it: otherwise the next boot
+      // would faithfully restart the thing you just stopped (SHO-399).
+      const undeclared = entry.service && entry.serviceName
+        ? undeclareService(ctx.workspaceDir, entry.serviceName)
+        : false
       if (survivors.length > 0) {
         return textResult({
           ok: false,
           task_id: entry.id,
           status: 'cancel_incomplete',
           survivors,
+          ...(entry.service ? { undeclared_service: entry.serviceName ?? null } : {}),
           hint: survivorHint(survivors),
         })
       }
-      return textResult({ ok: true, task_id: entry.id, status, survivors: [] })
+      return textResult({
+        ok: true,
+        task_id: entry.id,
+        status,
+        survivors: [],
+        ...(entry.service ? { undeclared_service: undeclared ? entry.serviceName ?? null : null } : {}),
+      })
     },
   }
 }

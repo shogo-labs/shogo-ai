@@ -356,6 +356,107 @@ describe('retire on a superseded image', () => {
       expect(await pool.rotateStale(t0 + ROTATE_RETRY_MS)).toEqual({ retired: ['p1'], alwaysOn: [] })
     }, 30_000)
 
+    test('a VM whose only work is a background task is rotated at the deadline, not before (SHO-399)', async () => {
+      const { pool, vm } = await onReplacedImage()
+      const t0 = Date.now()
+      // What a pinned VM looked like in prod: the guest says busy, because a
+      // stray background command keeps `tasks > 0`, but no person is waiting.
+      vm.busy = true
+      vm.activeTurns = 0
+      vm.liveStreams = 0
+      vm.lastRealActivityAt = t0
+
+      expect(await pool.rotateStale(t0)).toEqual({ retired: [], alwaysOn: [] })
+      expect(pool.getAssigned('p1')).toBeDefined()
+
+      expect(await pool.rotateStale(t0 + 24 * 60 * MIN)).toEqual({ retired: ['p1'], alwaysOn: [] })
+      expect(pool.getProjectStatus('p1').state).toBe('none')
+    }, 30_000)
+
+    test('a stale VM with a turn in flight is never rotated, deadline or not', async () => {
+      const { pool, vm } = await onReplacedImage()
+      const t0 = Date.now()
+      vm.busy = true
+      vm.activeTurns = 1
+      vm.liveStreams = 1
+      vm.lastRealActivityAt = t0 - 2 * 24 * 60 * MIN
+
+      expect(await pool.rotateStale(t0)).toEqual({ retired: [], alwaysOn: [] })
+      expect(await pool.rotateStale(t0 + 24 * 60 * MIN)).toEqual({ retired: [], alwaysOn: [] })
+      expect(pool.getAssigned('p1')).toBeDefined()
+    }, 30_000)
+
+    test('a guest too old to report turns keeps today\'s behaviour: busy blocks rotation', async () => {
+      const { pool, vm } = await onReplacedImage()
+      const t0 = Date.now()
+      vm.busy = true
+      vm.activeTurns = undefined
+      vm.liveStreams = undefined
+      vm.lastRealActivityAt = t0 - 2 * 24 * 60 * MIN
+
+      expect(await pool.rotateStale(t0 + 24 * 60 * MIN)).toEqual({ retired: [], alwaysOn: [] })
+      expect(pool.getAssigned('p1')).toBeDefined()
+    }, 30_000)
+
+    test('the rotation asks the guest to stop its background tasks, so they end with the release as their reason', async () => {
+      const { pool, vm } = await onReplacedImage()
+      const t0 = Date.now()
+      vm.busy = true
+      vm.activeTurns = 0
+      vm.liveStreams = 0
+      vm.lastRealActivityAt = t0
+
+      const recycle = pool.recycle.bind(pool)
+      const seen: Array<Record<string, unknown>> = []
+      // First pass only records when this host first saw the VM stale.
+      expect((await pool.rotateStale(t0)).retired).toEqual([])
+      ;(pool as any).recycle = async (id: string, opts: Record<string, unknown> = {}) => {
+        seen.push(opts)
+        return recycle(id, opts as any)
+      }
+      expect(await pool.rotateStale(t0 + 24 * 60 * MIN)).toEqual({ retired: ['p1'], alwaysOn: [] })
+      expect(seen).toHaveLength(1)
+      expect(seen[0]!.stopBackgroundTasks).toBe(true)
+      expect(seen[0]!.reason).toBe('stale-rootfs')
+    }, 30_000)
+
+    test('the rotation stops background tasks BEFORE it backs up source, so the verdict reaches the next VM (SHO-399)', async () => {
+      const { r, pool, vm } = await onReplacedImage()
+      const t0 = Date.now()
+      vm.busy = true
+      vm.activeTurns = 0
+      vm.liveStreams = 0
+      vm.lastRealActivityAt = t0
+      const guest = r.host.guestFor(vm.handle)!
+      // The first pass only records when this host saw the VM stale.
+      expect((await pool.rotateStale(t0)).retired).toEqual([])
+      expect(await pool.rotateStale(t0 + 24 * 60 * MIN)).toEqual({ retired: ['p1'], alwaysOn: [] })
+
+      const stop = guest.calls.indexOf('/pool/stop-background-tasks')
+      const source = guest.calls.indexOf('/pool/export')
+      expect(stop).toBeGreaterThanOrEqual(0)
+      expect(source).toBeGreaterThanOrEqual(0)
+      // `.shogo/sessions.db` travels in the source archive; stopping after the
+      // export would write the verdict onto a VM that is about to be destroyed.
+      expect(stop).toBeLessThan(source)
+      expect(guest.stopTaskBodies[0]!.reason).toContain('the new release')
+    }, 30_000)
+
+    test('the recycle report names what `.tmp/` held, so the owner chat can be told (SHO-399)', async () => {
+      const { r, pool, vm } = await onReplacedImage()
+      const guest = r.host.guestFor(vm.handle)!
+      // What KIF's `.tmp` held when it was recycled by hand.
+      guest.tmpDropped = { files: 3, bytes: 3.6 * 1024 ** 3 }
+
+      const report = await pool.recycle('p1', { reason: 'stale-rootfs', stopBackgroundTasks: true })
+      expect(report.aborted).toBe(false)
+      // The guest measures it because nothing backs `.tmp/` up; the report is
+      // what a caller passes on, since the task notes only exist when a task
+      // was stopped and a manual recycle may have none.
+      expect(report.notices?.[0]).toContain('.tmp/ (3 files, 3.6 GB)')
+      expect(report.notices?.[0]).toContain('not part of the backup')
+    }, 30_000)
+
     test('a VM on the current image is left alone', async () => {
       const r = rig()
       r.cfg.rolloutIdleMs = 15 * MIN

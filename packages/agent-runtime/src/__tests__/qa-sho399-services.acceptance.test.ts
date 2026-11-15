@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * SHO-399 §3 — `exec({ background: true, service: true })` end to end, through
+ * the real tool: it declares the service, restarts it on the next boot, and
+ * `task_cancel` is the only way to undeclare one.
+ */
+
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { mkdirSync, rmSync } from 'fs'
+import { join } from 'path'
+import { createTools, type ToolContext } from '../gateway-tools'
+import { CommandRegistry } from '../command-registry'
+import { readDeclaredServices } from '../services-registry'
+import { AgentGateway } from '../gateway'
+import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
+
+const TEST_DIR = '/tmp/qa-sho399-services'
+
+function makeCtx(overrides?: Partial<ToolContext>): ToolContext {
+  return {
+    workspaceDir: TEST_DIR,
+    channels: new Map(),
+    config: {
+      heartbeatInterval: 1800,
+      heartbeatEnabled: false,
+      quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
+      channels: [],
+      model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
+    } as any,
+    projectId: 'test',
+    sessionId: 'chat',
+    ...overrides,
+  }
+}
+
+async function run(ctx: ToolContext, name: string, params: Record<string, any>) {
+  const all = createTools(ctx)
+  const t = all.find((x) => x.name === name)
+  if (!t) throw new Error(`Tool not found: ${name}`)
+  return (await t.execute('test-call', params)).details as any
+}
+
+let registry: CommandRegistry
+
+beforeEach(() => {
+  rmSync(TEST_DIR, { recursive: true, force: true })
+  mkdirSync(join(TEST_DIR, '.shogo'), { recursive: true })
+  mkdirSync(join(TEST_DIR, '.tmp'), { recursive: true })
+  trustWorkspaceForTests(TEST_DIR)
+  registry = new CommandRegistry()
+})
+
+afterEach(async () => {
+  await registry.killAll().catch(() => {})
+  clearTrustForTests()
+  rmSync(TEST_DIR, { recursive: true, force: true })
+})
+
+describe('a declared service', () => {
+  test('service: true writes .shogo/services.json and marks the task', async () => {
+    const ctx = makeCtx({ commandRegistry: registry })
+    const result = await run(ctx, 'exec', { command: 'sleep 30', background: true, service: true, name: 'sleeper' })
+    expect(result.error).toBeUndefined()
+    expect(result.service).toBe('sleeper')
+    expect(result.task_id).toMatch(/^t_/)
+
+    const declared = readDeclaredServices(TEST_DIR)
+    expect(declared).toHaveLength(1)
+    expect(declared[0]).toMatchObject({ name: 'sleeper', command: 'sleep 30', sessionId: 'chat', cwd: TEST_DIR })
+
+    // task_list marks it, so the agent can tell a service from a stray command.
+    const listed = await run(ctx, 'task_list', {})
+    expect(listed.tasks.find((t: any) => t.task_id === result.task_id).service).toBe(true)
+  })
+
+  test('service: true without background is refused before anything spawns', async () => {
+    const ctx = makeCtx({ commandRegistry: registry })
+    const result = await run(ctx, 'exec', { command: 'sleep 30', service: true })
+    expect(String(result.error)).toContain('service: true needs background: true')
+    expect(readDeclaredServices(TEST_DIR)).toEqual([])
+  })
+
+  test('a .tmp/ reference comes back with the warning', async () => {
+    const ctx = makeCtx({ commandRegistry: registry })
+    const result = await run(ctx, 'exec', {
+      command: 'sleep 30 && cat .tmp/tunnel.env',
+      background: true,
+      service: true,
+      name: 'tunnel',
+    })
+    expect(String(result.warning)).toContain('.tmp/` is not kept across a recycle')
+  })
+
+  test('a name that is not given defaults to the command', async () => {
+    const ctx = makeCtx({ commandRegistry: registry })
+    const result = await run(ctx, 'exec', { command: 'sleep 30', background: true, service: true })
+    expect(result.service).toBe('sleep 30')
+  })
+
+  test('task_cancel undeclares it, so the next boot does not restart it', async () => {
+    const ctx = makeCtx({ commandRegistry: registry })
+    const started = await run(ctx, 'exec', { command: 'sleep 30', background: true, service: true, name: 'sleeper' })
+    expect(readDeclaredServices(TEST_DIR)).toHaveLength(1)
+
+    const cancelled = await run(ctx, 'task_cancel', { task_id: started.task_id })
+    expect(cancelled.ok).toBe(true)
+    expect(cancelled.undeclared_service).toBe('sleeper')
+    expect(readDeclaredServices(TEST_DIR)).toEqual([])
+  })
+})
+
+describe('a gateway restart', () => {
+  test('restarts every declared service into its own session', async () => {
+    // Declare one as the tool would, then boot a fresh gateway over the same
+    // workspace: this is exactly the cold-boot / post-recycle path.
+    const ctx = makeCtx({ commandRegistry: registry })
+    await run(ctx, 'exec', { command: 'sleep 30', background: true, service: true, name: 'sleeper' })
+    await registry.killAll().catch(() => {})
+
+    const gateway = new AgentGateway(TEST_DIR, 'test')
+    const out = await gateway.restartDeclaredServices()
+    expect(out.failed).toEqual([])
+    expect(out.restarted).toEqual(['sleeper'])
+
+    const sessions = (gateway as any).commandRegistries as Map<string, CommandRegistry>
+    const chatRegistry = sessions.get('chat')
+    expect(chatRegistry).toBeDefined()
+    const rows = chatRegistry!.listAll()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.service).toBe(true)
+    expect(rows[0]!.status).toBe('running')
+    await chatRegistry!.killAll().catch(() => {})
+  }, 20_000)
+})
