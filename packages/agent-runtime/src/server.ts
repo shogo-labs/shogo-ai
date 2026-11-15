@@ -3908,12 +3908,18 @@ app.post('/pool/checkpoint-commit', async (c) => {
 export interface DroppedTmp {
   files: number
   bytes: number
+  /** Top-level entry names, capped — what the owner chat is told it lost. */
+  entries: string[]
 }
+
+/** How many top-level `.tmp/` names travel in the notice. */
+const TMP_ENTRIES_CAP = 10
 
 /**
  * Measure `.tmp/`, so the chat that owns this runtime is told *what* it is
  * about to lose rather than only that something was lost (SHO-399). Bounded:
- * a 3.6 GB folder of build output is reported by size, not by walking forever.
+ * a 3.6 GB folder of build output is reported by size and by its top-level
+ * names, not by walking forever.
  */
 function droppedTmp(): DroppedTmp | undefined {
   try {
@@ -3935,7 +3941,15 @@ function droppedTmp(): DroppedTmp | undefined {
       }
     }
     walk(root, 0)
-    return files > 0 ? { files, bytes } : undefined
+    if (files === 0) return undefined
+    let entries: string[] = []
+    try {
+      entries = readdirSync(root, { withFileTypes: true })
+        .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
+        .sort()
+        .slice(0, TMP_ENTRIES_CAP)
+    } catch { /* top level unreadable mid-walk */ }
+    return { files, bytes, entries }
   } catch {
     return undefined
   }
@@ -3945,7 +3959,8 @@ function describeTmp(tmp: DroppedTmp): string {
   const size = tmp.bytes >= 1 << 30
     ? `${(tmp.bytes / (1 << 30)).toFixed(1)} GB`
     : `${Math.max(1, Math.round(tmp.bytes / 1024))} KB`
-  return `.tmp/ (${tmp.files} file${tmp.files === 1 ? '' : 's'}, ${size})`
+  const names = tmp.entries.length ? `: ${tmp.entries.join(', ')}` : ''
+  return `.tmp/ (${tmp.files} file${tmp.files === 1 ? '' : 's'}, ${size}${names})`
 }
 
 // Workspace-drive maintenance for a live grow (SHO-349) — see workspace-drive.ts.

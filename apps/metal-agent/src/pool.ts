@@ -753,7 +753,25 @@ export interface RecycleReport {
    * What `.tmp/` held when the recycle looked (SHO-399). `.tmp/` is excluded
    * from the backup, so this is the list of what will not come back.
    */
-  tmp?: { files: number; bytes: number }
+  tmp?: DroppedTmpReport
+}
+
+/** What the guest measured in `.tmp/` before this VM was replaced (SHO-399). */
+export interface DroppedTmpReport {
+  files: number
+  bytes: number
+  /** Top-level entry names, capped by the guest — what the owner chat is told. */
+  entries?: string[]
+}
+
+/** Parse the guest's `.tmp/` measurement, if it reported one (SHO-399). */
+function readTmpReport(raw: Partial<DroppedTmpReport> | null | undefined): DroppedTmpReport | undefined {
+  const files = Number(raw?.files) || 0
+  if (files <= 0) return undefined
+  const entries = Array.isArray(raw?.entries)
+    ? raw.entries.filter((e): e is string => typeof e === 'string').slice(0, 10)
+    : []
+  return { files, bytes: Number(raw?.bytes) || 0, ...(entries.length ? { entries } : {}) }
 }
 
 interface DataSaveOpts {
@@ -3124,7 +3142,7 @@ export class MetalWarmPool {
    * instead of dropping the agent's work. A guest older than the route answers
    * 404 and keeps today's behaviour (the export's own best-effort flush).
    */
-  protected async checkpointGuest(a: AssignedVm, noteTmp?: (tmp: { files: number; bytes: number }) => void): Promise<string | null> {
+  protected async checkpointGuest(a: AssignedVm, noteTmp?: (tmp: DroppedTmpReport) => void): Promise<string | null> {
     if (a.repoHydratePending) return null
     const res = await fetch(`${a.handle.agentUrl}/pool/checkpoint-commit`, {
       method: 'POST',
@@ -3140,9 +3158,9 @@ export class MetalWarmPool {
       const text = (await res.text().catch(() => '')).slice(0, 300)
       return `checkpoint commit failed (${res.status})${text ? `: ${text}` : ''}`
     }
-    const body = (await res.json().catch(() => null)) as { tmp?: { files?: number; bytes?: number } } | null
-    const files = Number(body?.tmp?.files) || 0
-    if (files > 0) noteTmp?.({ files, bytes: Number(body?.tmp?.bytes) || 0 })
+    const body = (await res.json().catch(() => null)) as { tmp?: Partial<DroppedTmpReport> } | null
+    const tmp = readTmpReport(body?.tmp)
+    if (tmp) noteTmp?.(tmp)
     return null
   }
 
@@ -6746,15 +6764,18 @@ export class MetalWarmPool {
     const state = this.getProjectStatus(runtimeKey).state
     const steps: RecycleStep[] = []
     const notices: string[] = []
-    let tmpHeld: { files: number; bytes: number } | undefined
+    let tmpHeld: DroppedTmpReport | undefined
     // `.tmp/` is dropped by design, so the report names it once — the guest
     // measures it on the checkpoint and again when it stops tasks, and either
     // call may come first.
-    const noteTmp = (tmp: { files: number; bytes: number }) => {
+    const noteTmp = (tmp: DroppedTmpReport) => {
       if (tmpHeld || tmp.files <= 0) return
       tmpHeld = tmp
       const size = tmp.bytes >= 1 << 30 ? `${(tmp.bytes / (1 << 30)).toFixed(1)} GB` : `${Math.max(1, Math.round(tmp.bytes / 1024))} KB`
-      notices.push(`.tmp/ (${tmp.files} file${tmp.files === 1 ? '' : 's'}, ${size}) was dropped — it is not part of the backup`)
+      // Name what went, not only how much: "3.6 GB" tells an owner nothing they
+      // can rebuild from, `.tmp/series/, .tmp/wa-gateway.ts` does (SHO-399).
+      const names = tmp.entries?.length ? `: ${tmp.entries.join(', ')}` : ''
+      notices.push(`.tmp/ (${tmp.files} file${tmp.files === 1 ? '' : 's'}, ${size}${names}) was dropped — it is not part of the backup`)
     }
     const report = (aborted: boolean, extra: Partial<RecycleReport> = {}): RecycleReport => ({
       runtimeKey,
@@ -6829,7 +6850,7 @@ export class MetalWarmPool {
    * refused or quarantined write counts as a failure, because the cold boot
    * that follows restores the durable copy, not the quarantined one.
    */
-  private async backupForRecycle(a: AssignedVm, steps: RecycleStep[], opts: { stopBackgroundTasks?: boolean; reason?: string; notices?: string[]; noteTmp?: (tmp: { files: number; bytes: number }) => void } = {}): Promise<boolean> {
+  private async backupForRecycle(a: AssignedVm, steps: RecycleStep[], opts: { stopBackgroundTasks?: boolean; reason?: string; notices?: string[]; noteTmp?: (tmp: DroppedTmpReport) => void } = {}): Promise<boolean> {
     const run = async (step: string, fn: () => Promise<string | null>) => {
       try {
         const problem = await fn()
@@ -6935,9 +6956,9 @@ export class MetalWarmPool {
         // The guest measured `.tmp/` before it settled the tasks. Nothing backs
         // that folder up, so the report says what went with it — a manual
         // `/recycle` caller can then tell the owner chat (SHO-399).
-        const body = await res.json().catch(() => null) as { tmp?: { files?: number; bytes?: number } } | null
-        const files = Number(body?.tmp?.files) || 0
-        if (files > 0) opts.noteTmp?.({ files, bytes: Number(body?.tmp?.bytes) || 0 })
+        const body = await res.json().catch(() => null) as { tmp?: Partial<DroppedTmpReport> } | null
+        const tmp = readTmpReport(body?.tmp)
+        if (tmp) opts.noteTmp?.(tmp)
         return null
       })
     }

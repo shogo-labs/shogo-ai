@@ -447,14 +447,15 @@ describe('retire on a superseded image', () => {
       const { r, pool, vm } = await onReplacedImage()
       const guest = r.host.guestFor(vm.handle)!
       // What KIF's `.tmp` held when it was recycled by hand.
-      guest.tmpDropped = { files: 3, bytes: 3.6 * 1024 ** 3 }
+      guest.tmpDropped = { files: 3, bytes: 3.6 * 1024 ** 3, entries: ['series/', 'wa-gateway.ts', 'tunnel.env'] }
 
       const report = await pool.recycle('p1', { reason: 'stale-rootfs', stopBackgroundTasks: true })
       expect(report.aborted).toBe(false)
       // The guest measures it because nothing backs `.tmp/` up; the report is
       // what a caller passes on, since the task notes only exist when a task
       // was stopped and a manual recycle may have none.
-      expect(report.notices?.[0]).toContain('.tmp/ (3 files, 3.6 GB)')
+      expect(report.tmp).toEqual({ files: 3, bytes: 3.6 * 1024 ** 3, entries: ['series/', 'wa-gateway.ts', 'tunnel.env'] })
+      expect(report.notices?.[0]).toContain('.tmp/ (3 files, 3.6 GB: series/, wa-gateway.ts, tunnel.env)')
       expect(report.notices?.[0]).toContain('not part of the backup')
     }, 30_000)
 

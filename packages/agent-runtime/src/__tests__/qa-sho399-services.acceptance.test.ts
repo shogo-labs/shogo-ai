@@ -7,11 +7,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { createTools, type ToolContext } from '../gateway-tools'
 import { CommandRegistry } from '../command-registry'
-import { readDeclaredServices } from '../services-registry'
+import { readDeclaredServices, undeclareService } from '../services-registry'
 import { AgentGateway } from '../gateway'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
@@ -158,6 +158,34 @@ describe('where the registry lives (SHO-399)', () => {
     mkdirSync(join(TEST_DIR, 'anchor-1'), { recursive: true })
     await withEnv({ WORKSPACE_RUNTIME: 'true', WORKSPACE_ANCHOR_PROJECT_ID: 'anchor-1' }, () => {
       expect(readDeclaredServices(TEST_DIR).map((s) => s.name)).toEqual(['legacy'])
+    })
+  })
+
+  test('task_cancel undeclares a service that was declared at the root before the registry moved', async () => {
+    // The exact round-2 bug: the anchor file is written empty by the undeclare,
+    // and reading fell back to the root declaration, so the cancelled service
+    // came back on the next boot (QA, SHO-399).
+    const anchorFile = join(TEST_DIR, 'anchor-1', '.shogo', 'services.json')
+    const rootFile = join(TEST_DIR, '.shogo', 'services.json')
+    // The pre-move runtime: a root declaration and no canonical file yet.
+    mkdirSync(join(TEST_DIR, 'anchor-1', '.shogo'), { recursive: true })
+    writeFileSync(rootFile, JSON.stringify({ services: [{ name: 'wa-gateway', command: 'bun wa-gateway.ts', cwd: TEST_DIR, sessionId: 'chat', declaredAt: 1 }] }))
+
+    await withEnv({ WORKSPACE_RUNTIME: 'true', WORKSPACE_ANCHOR_PROJECT_ID: 'anchor-1' }, () => {
+      expect(readDeclaredServices(TEST_DIR).map((s) => s.name)).toEqual(['wa-gateway'])
+      expect(undeclareService(TEST_DIR, 'wa-gateway')).toBe(true)
+      // Both files must be clear: neither may resurrect it on the next boot.
+      expect(readDeclaredServices(TEST_DIR)).toEqual([])
+      expect(JSON.parse(readFileSync(rootFile, 'utf8')).services).toEqual([])
+      expect(JSON.parse(readFileSync(anchorFile, 'utf8')).services).toEqual([])
+    })
+  })
+
+  test('an empty anchor file is authoritative — it is how an undeclare is spelled', async () => {
+    mkdirSync(join(TEST_DIR, 'anchor-1', '.shogo'), { recursive: true })
+    writeFileSync(join(TEST_DIR, 'anchor-1', '.shogo', 'services.json'), JSON.stringify({ services: [] }))
+    await withEnv({ WORKSPACE_RUNTIME: 'true', WORKSPACE_ANCHOR_PROJECT_ID: 'anchor-1' }, () => {
+      expect(readDeclaredServices(TEST_DIR)).toEqual([])
     })
   })
 })

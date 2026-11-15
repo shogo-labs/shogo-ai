@@ -195,7 +195,7 @@ export class FakeGuest {
   /** Bodies of the `/pool/stop-background-tasks` calls this guest served. */
   readonly stopTaskBodies: Array<{ reason?: string }> = []
   /** What this guest reports its `.tmp/` held when the host stops its tasks. */
-  tmpDropped?: { files: number; bytes: number }
+  tmpDropped?: { files: number; bytes: number; entries?: string[] }
   /**
    * When set, `/pool/checkpoint-commit` answers 500 with this message — models a
    * guest whose checkpoint commit fails, which must abort a non-forced recycle.

@@ -76,24 +76,36 @@ function readFrom(dir: string, workspaceDir: string): DeclaredService[] {
   }
 }
 
-/** Every declared service, in declaration order. Never throws. */
+/**
+ * Every declared service, in declaration order. Never throws.
+ *
+ * An existing canonical file is authoritative even when it lists nothing —
+ * that empty list IS how `task_cancel` undeclares a service. Falling back to a
+ * root declaration whenever the canonical one is empty resurrected a cancelled
+ * service on the next boot, so the fallback happens only when the canonical
+ * file has never been written (QA, SHO-399).
+ */
 export function readDeclaredServices(workspaceDir: string, env: NodeJS.ProcessEnv = process.env): DeclaredService[] {
   const dir = servicesDir(workspaceDir, env)
-  const services = readFrom(dir, workspaceDir)
-  if (services.length > 0 || dir === workspaceDir) return services
+  if (existsSync(servicesFilePath(dir))) return readFrom(dir, workspaceDir)
+  if (dir === workspaceDir) return []
   // A declaration written before the registry moved (or by a runtime whose
   // anchor was not mounted yet) is still honoured.
   return readFrom(workspaceDir, workspaceDir)
 }
 
-function write(workspaceDir: string, services: DeclaredService[]): void {
-  const path = servicesFilePath(servicesDir(workspaceDir))
+function writeTo(dir: string, services: DeclaredService[]): void {
+  const path = servicesFilePath(dir)
   try {
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(path, `${JSON.stringify({ services }, null, 2)}\n`, 'utf8')
   } catch (err: any) {
     console.error(`[services] could not write ${path}:`, err?.message ?? err)
   }
+}
+
+function write(workspaceDir: string, services: DeclaredService[]): void {
+  writeTo(servicesDir(workspaceDir), services)
 }
 
 /** Add or replace a declaration (by name) and return the new list. */
@@ -104,13 +116,29 @@ export function declareService(workspaceDir: string, service: DeclaredService): 
   return next
 }
 
-/** Remove a declaration by name. Returns whether one was there. */
+/**
+ * Remove a declaration by name. Returns whether one was there.
+ *
+ * It clears the name from EVERY registry file the runtime can see, not just the
+ * canonical one: a runtime that declared services before the registry moved to
+ * the anchor member still has a root file, and leaving it behind meant a
+ * cancelled service came back on the next boot (QA, SHO-399).
+ */
 export function undeclareService(workspaceDir: string, name: string): boolean {
-  const before = readDeclaredServices(workspaceDir)
-  const next = before.filter((s) => s.name !== name)
-  if (next.length === before.length) return false
-  write(workspaceDir, next)
-  return true
+  const canonical = servicesDir(workspaceDir)
+  const current = readDeclaredServices(workspaceDir)
+  const kept = current.filter((s) => s.name !== name)
+  let removed = kept.length !== current.length
+  if (removed) writeTo(canonical, kept)
+  if (canonical !== workspaceDir && existsSync(servicesFilePath(workspaceDir))) {
+    const legacy = readFrom(workspaceDir, workspaceDir)
+    const legacyKept = legacy.filter((s) => s.name !== name)
+    if (legacyKept.length !== legacy.length) {
+      removed = true
+      writeTo(workspaceDir, legacyKept)
+    }
+  }
+  return removed
 }
 
 /**
