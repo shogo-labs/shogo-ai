@@ -438,7 +438,20 @@ export interface GoogleVideoUsage {
   total_input_tokens?: number
   total_output_tokens?: number
   total_thought_tokens?: number
-  output_tokens_by_modality?: Record<string, number>
+  output_tokens_by_modality?: Array<{ modality?: string; tokens?: number }> | Record<string, number>
+}
+
+function tokenCount(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+}
+
+/** Google's `[{ modality, tokens }]` list (or a `{ modality: tokens }` map) as pairs. */
+function modalityTokens(byModality: GoogleVideoUsage['output_tokens_by_modality']): Array<[string, number]> {
+  if (!byModality) return []
+  if (Array.isArray(byModality)) {
+    return byModality.map((row) => [String(row?.modality ?? ''), tokenCount(row?.tokens)])
+  }
+  return Object.entries(byModality).map(([modality, tokens]) => [modality, tokenCount(tokens)])
 }
 
 /**
@@ -450,21 +463,19 @@ export interface GoogleVideoUsage {
  * video we did deliver. Thinking tokens are billed at the text rate.
  */
 export function calculateGoogleVideoUsageCost(usage: GoogleVideoUsage): UsageCostResult {
-  const input = Math.max(0, usage.total_input_tokens ?? 0)
-  const thought = Math.max(0, usage.total_thought_tokens ?? 0)
-  const byModality = usage.output_tokens_by_modality ?? {}
+  const input = tokenCount(usage.total_input_tokens)
+  const thought = tokenCount(usage.total_thought_tokens)
+  const byModality = modalityTokens(usage.output_tokens_by_modality)
 
   let videoOutput = 0
   let otherOutput = 0
-  const modalities = Object.keys(byModality)
-  if (modalities.length > 0) {
-    for (const modality of modalities) {
-      const tokens = Math.max(0, byModality[modality] ?? 0)
+  if (byModality.length > 0) {
+    for (const [modality, tokens] of byModality) {
       if (/video/i.test(modality)) videoOutput += tokens
       else otherOutput += tokens
     }
   } else {
-    videoOutput = Math.max(0, usage.total_output_tokens ?? 0)
+    videoOutput = tokenCount(usage.total_output_tokens)
   }
 
   const rawUsd =

@@ -64,8 +64,11 @@ export interface OmniUsage {
   total_output_tokens?: number
   total_thought_tokens?: number
   total_tokens?: number
-  output_tokens_by_modality?: Record<string, number>
+  /** Google sends `[{ modality: 'video', tokens: 9655 }]`; a `{ video: 9655 }` map is also read. */
+  output_tokens_by_modality?: OmniModalityTokens
 }
+
+export type OmniModalityTokens = Array<{ modality?: string; tokens?: number }> | Record<string, number>
 
 /** An upstream failure, carrying the status and body the callers report. */
 export class OmniError extends Error {
