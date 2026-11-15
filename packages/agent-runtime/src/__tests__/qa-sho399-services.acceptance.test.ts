@@ -7,7 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { createTools, type ToolContext } from '../gateway-tools'
 import { CommandRegistry } from '../command-registry'
@@ -107,6 +107,58 @@ describe('a declared service', () => {
     expect(cancelled.ok).toBe(true)
     expect(cancelled.undeclared_service).toBe('sleeper')
     expect(readDeclaredServices(TEST_DIR)).toEqual([])
+  })
+})
+
+describe('where the registry lives (SHO-399)', () => {
+  const withEnv = async <T>(env: Record<string, string | undefined>, fn: () => T | Promise<T>): Promise<T> => {
+    const keys = ['WORKSPACE_RUNTIME', 'WORKSPACE_ANCHOR_PROJECT_ID']
+    const saved = new Map(keys.map((k) => [k, process.env[k]]))
+    for (const [k, v] of Object.entries(env)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+    try {
+      return await fn()
+    } finally {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+  }
+
+  test('a workspace runtime writes into the anchor member, whose tree IS backed up', async () => {
+    mkdirSync(join(TEST_DIR, 'anchor-1', '.shogo'), { recursive: true })
+    await withEnv({ WORKSPACE_RUNTIME: 'true', WORKSPACE_ANCHOR_PROJECT_ID: 'anchor-1' }, async () => {
+      const ctx = makeCtx({ commandRegistry: registry })
+      await run(ctx, 'exec', { command: 'sleep 30', background: true, service: true, name: 'wa-gateway' })
+      // A workspace runtime's ROOT tree is in no backup — a recycle restores
+      // each member's tree only — so a root copy would be gone on the very
+      // recycle this declaration exists to survive.
+      expect(existsSync(join(TEST_DIR, '.shogo', 'services.json'))).toBe(false)
+      expect(existsSync(join(TEST_DIR, 'anchor-1', '.shogo', 'services.json'))).toBe(true)
+      expect(readDeclaredServices(TEST_DIR).map((s) => s.name)).toEqual(['wa-gateway'])
+    })
+  })
+
+  test('a project runtime keeps the root, which its own source backup carries', async () => {
+    await withEnv({ WORKSPACE_RUNTIME: undefined, WORKSPACE_ANCHOR_PROJECT_ID: undefined }, () => {
+      const ctx = makeCtx({ commandRegistry: registry })
+      return run(ctx, 'exec', { command: 'sleep 30', background: true, service: true, name: 'tunnel' })
+    })
+    expect(existsSync(join(TEST_DIR, '.shogo', 'services.json'))).toBe(true)
+  })
+
+  test('a declaration already at the root is still honoured', async () => {
+    writeFileSync(
+      join(TEST_DIR, '.shogo', 'services.json'),
+      JSON.stringify({ services: [{ name: 'legacy', command: 'sleep 30', cwd: TEST_DIR, sessionId: 'chat', declaredAt: 1 }] }),
+    )
+    mkdirSync(join(TEST_DIR, 'anchor-1'), { recursive: true })
+    await withEnv({ WORKSPACE_RUNTIME: 'true', WORKSPACE_ANCHOR_PROJECT_ID: 'anchor-1' }, () => {
+      expect(readDeclaredServices(TEST_DIR).map((s) => s.name)).toEqual(['legacy'])
+    })
   })
 })
 

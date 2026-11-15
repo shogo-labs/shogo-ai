@@ -12,13 +12,15 @@
  *
  * A service is `exec({ background: true, service: true })`. It is exempt from
  * the background-task cap, it does not block a release rotation (it comes back),
- * and it is restarted from this file on the next boot. `.shogo/services.json`
- * lives under `.shogo/`, which IS in the source backup, so the declaration
- * survives both a recycle and a cold boot (only `.shogo/logs/` and
- * `.shogo/tasks/` are dropped).
+ * and it is restarted from this file on the next boot. The file lives under
+ * `.shogo/` in the tree the runtime's SOURCE backup carries — the workspace
+ * root for a project runtime, the anchor member for a workspace runtime, whose
+ * root tree is in no backup (see {@link servicesDir}). Everything under
+ * `.shogo/` except logs and task rows rides that archive, so the declaration
+ * survives both a recycle and a cold boot.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { basename, dirname, join } from 'path'
 
 export interface DeclaredService {
@@ -38,10 +40,31 @@ export function servicesFilePath(workspaceDir: string): string {
   return join(workspaceDir, '.shogo', 'services.json')
 }
 
-/** Every declared service, in declaration order. Never throws. */
-export function readDeclaredServices(workspaceDir: string): DeclaredService[] {
+/**
+ * Where the registry file lives, which is not always the workspace root.
+ *
+ * A workspace runtime's ROOT tree is in no backup: a recycle restores each
+ * member's tree, the members' `data` and (when eligible) `home`, and nothing
+ * else. A declaration written at the root would therefore be gone on the very
+ * recycle it exists to survive — QA caught that on this card (SHO-399), and it
+ * is exactly KIF's declared gateway. The anchor member's tree IS backed up
+ * (source archive, which carries `.shogo/`), so write there.
+ *
+ * Every other runtime — and a workspace whose anchor member is not on disk —
+ * keeps the root, which is what a project runtime's own source backup carries.
+ */
+export function servicesDir(workspaceDir: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (env.WORKSPACE_RUNTIME !== 'true') return workspaceDir
+  const anchor = env.WORKSPACE_ANCHOR_PROJECT_ID?.trim()
+  if (!anchor) return workspaceDir
+  const dir = join(workspaceDir, anchor)
+  return existsSync(dir) ? dir : workspaceDir
+}
+
+/** Parse one registry file. Never throws. */
+function readFrom(dir: string, workspaceDir: string): DeclaredService[] {
   try {
-    const raw = readFileSync(servicesFilePath(workspaceDir), 'utf8')
+    const raw = readFileSync(servicesFilePath(dir), 'utf8')
     const parsed = JSON.parse(raw) as { services?: unknown }
     const list = Array.isArray(parsed?.services) ? parsed.services : []
     return list.filter((s): s is DeclaredService => {
@@ -53,8 +76,18 @@ export function readDeclaredServices(workspaceDir: string): DeclaredService[] {
   }
 }
 
+/** Every declared service, in declaration order. Never throws. */
+export function readDeclaredServices(workspaceDir: string, env: NodeJS.ProcessEnv = process.env): DeclaredService[] {
+  const dir = servicesDir(workspaceDir, env)
+  const services = readFrom(dir, workspaceDir)
+  if (services.length > 0 || dir === workspaceDir) return services
+  // A declaration written before the registry moved (or by a runtime whose
+  // anchor was not mounted yet) is still honoured.
+  return readFrom(workspaceDir, workspaceDir)
+}
+
 function write(workspaceDir: string, services: DeclaredService[]): void {
-  const path = servicesFilePath(workspaceDir)
+  const path = servicesFilePath(servicesDir(workspaceDir))
   try {
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(path, `${JSON.stringify({ services }, null, 2)}\n`, 'utf8')
