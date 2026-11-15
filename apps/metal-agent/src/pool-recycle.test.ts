@@ -33,6 +33,13 @@ class TestPool extends MetalWarmPool {
   protected override async guestHasRepoBundles(): Promise<boolean> {
     return false
   }
+  /** The checkpoint commit a recycle asks the guest for (SHO-399). */
+  checkpointOutcome: string | null = null
+  checkpointCalls = 0
+  protected override async checkpointGuest(): Promise<string | null> {
+    this.checkpointCalls += 1
+    return this.checkpointOutcome
+  }
 
   protected override async guestMountedMembers(): Promise<string[] | null> {
     return this.guestMembers
@@ -130,15 +137,37 @@ describe('pool.recycle', () => {
     // the archive the next VM restores.
     expect(pool.events).toEqual(['repo p1', 'data p1', 'home p1', 'source p1'])
     expect(r.steps.map((s) => [s.step, s.ok])).toEqual([
+      ['checkpoint', true],
       ['repo', true],
       ['data', true],
       ['home', true],
       ['source', true],
       ['destroy', true],
     ])
+    // The checkpoint commit comes first: the repo step bundles commits that
+    // already exist, so anything edited since the last auto-commit has to be
+    // committed before it runs or it never reaches the durable copy.
+    expect(pool.checkpointCalls).toBe(1)
     expect(stopped).toEqual(['vm-1'])
     expect(r.destroyed?.stoppedVm).toBe(true)
     expect(pool.getProjectStatus('p1').state).toBe('none')
+  })
+
+  test('a failed checkpoint commit aborts before anything is stopped (SHO-399)', async () => {
+    const pool = makePool()
+    pool.add('p1')
+    pool.checkpointOutcome = 'checkpoint commit failed (500): index.lock exists'
+    const r = await pool.recycle('p1')
+
+    expect(r.aborted).toBe(true)
+    expect(r.steps.find((s) => s.step === 'checkpoint')).toEqual({
+      step: 'checkpoint',
+      ok: false,
+      detail: 'checkpoint commit failed (500): index.lock exists',
+    })
+    // Nothing was removed: the next rotation attempt retries.
+    expect(stopped).toEqual([])
+    expect(pool.getProjectStatus('p1').state).toBe('assigned')
   })
 
   test('a failed backup aborts and leaves the VM running', async () => {

@@ -3867,6 +3867,43 @@ app.post('/pool/stop-background-tasks', async (c) => {
   return c.json({ ok: true, stopped, reason, tmpDropped: !!note, ...(tmp ? { tmp } : {}) })
 })
 
+/**
+ * Take a checkpoint commit of the live working tree because the host is about
+ * to back up the repo and destroy this VM (SHO-399).
+ *
+ * The host's repo backup bundles the commits that already exist; it does not
+ * commit anything itself, and the last turn-complete auto-commit may be hours
+ * old (no turn ran in between). Anything edited since then used to go with the
+ * VM. This is the same committer the turn-complete path uses, awaited, and it
+ * reports failure instead of swallowing it — a recycle with no checkpoint is a
+ * recycle that loses the agent's work, so the host aborts rather than proceeds.
+ *
+ * 404-able: a guest older than this route simply 404s and the host falls back
+ * to the export's own best-effort flush.
+ */
+app.post('/pool/checkpoint-commit', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const destinationDir = resolvePoolWorkspaceDir(body?.dir)
+  // Measured here as well as on stop-background-tasks: a manual `/recycle` of
+  // an idle runtime stops no tasks, but `.tmp/` is dropped all the same.
+  const tmp = droppedTmp()
+  await gitLayerReady
+  if (!gitSyncInstance || destinationDir !== WORKSPACE_DIR) {
+    return c.json({ ok: true, committed: false, sha: '', files: 0, skipped: 'no-git-sync', ...(tmp ? { tmp } : {}) })
+  }
+  try {
+    const result = await gitSyncInstance.checkpoint()
+    console.log(
+      `[pool/checkpoint-commit] ${result.committed ? `committed ${result.files} file(s) at ${result.sha.slice(0, 12)}` : 'working tree already committed'}` +
+        `${tmp ? ` (.tmp/ ${describeTmp(tmp)} will be dropped)` : ''}`,
+    )
+    return c.json({ ok: true, ...result, ...(tmp ? { tmp } : {}) })
+  } catch (err: any) {
+    console.error('[pool/checkpoint-commit] failed:', err?.message ?? err)
+    return c.json({ ok: false, error: err?.message ?? 'checkpoint commit failed', code: 'checkpoint-failed' }, 500)
+  }
+})
+
 /** What `.tmp/` holds that this recycle will not carry over. */
 export interface DroppedTmp {
   files: number

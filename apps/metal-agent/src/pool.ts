@@ -749,6 +749,11 @@ export interface RecycleReport {
    * pass on — today, what `.tmp/` held that the backup does not carry (SHO-399).
    */
   notices?: string[]
+  /**
+   * What `.tmp/` held when the recycle looked (SHO-399). `.tmp/` is excluded
+   * from the backup, so this is the list of what will not come back.
+   */
+  tmp?: { files: number; bytes: number }
 }
 
 interface DataSaveOpts {
@@ -3106,6 +3111,39 @@ export class MetalWarmPool {
     if (a.repoUntrustedReason === reason) return
     a.repoUntrustedReason = reason
     this.writeLive(a)
+  }
+
+  /**
+   * Ask the guest to commit its working tree before this VM is backed up and
+   * destroyed (SHO-399). The repo backup bundles commits that already exist and
+   * makes none of its own, so without this every edit since the last
+   * turn-complete auto-commit dies with the VM.
+   *
+   * Returns null on success, or the reason it failed — a failed checkpoint is a
+   * failed backup step, so a non-forced recycle aborts and retries later
+   * instead of dropping the agent's work. A guest older than the route answers
+   * 404 and keeps today's behaviour (the export's own best-effort flush).
+   */
+  protected async checkpointGuest(a: AssignedVm, noteTmp?: (tmp: { files: number; bytes: number }) => void): Promise<string | null> {
+    if (a.repoHydratePending) return null
+    const res = await fetch(`${a.handle.agentUrl}/pool/checkpoint-commit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(a.runtimeToken ? { 'x-runtime-token': a.runtimeToken, Authorization: `Bearer ${a.runtimeToken}` } : {}),
+      },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(60_000),
+    })
+    if (res.status === 404) return null
+    if (!res.ok) {
+      const text = (await res.text().catch(() => '')).slice(0, 300)
+      return `checkpoint commit failed (${res.status})${text ? `: ${text}` : ''}`
+    }
+    const body = (await res.json().catch(() => null)) as { tmp?: { files?: number; bytes?: number } } | null
+    const files = Number(body?.tmp?.files) || 0
+    if (files > 0) noteTmp?.({ files, bytes: Number(body?.tmp?.bytes) || 0 })
+    return null
   }
 
   protected async fetchRepoExport(handle: FcVmHandle, token?: string): Promise<RepoExport | null> {
@@ -6708,6 +6746,16 @@ export class MetalWarmPool {
     const state = this.getProjectStatus(runtimeKey).state
     const steps: RecycleStep[] = []
     const notices: string[] = []
+    let tmpHeld: { files: number; bytes: number } | undefined
+    // `.tmp/` is dropped by design, so the report names it once — the guest
+    // measures it on the checkpoint and again when it stops tasks, and either
+    // call may come first.
+    const noteTmp = (tmp: { files: number; bytes: number }) => {
+      if (tmpHeld || tmp.files <= 0) return
+      tmpHeld = tmp
+      const size = tmp.bytes >= 1 << 30 ? `${(tmp.bytes / (1 << 30)).toFixed(1)} GB` : `${Math.max(1, Math.round(tmp.bytes / 1024))} KB`
+      notices.push(`.tmp/ (${tmp.files} file${tmp.files === 1 ? '' : 's'}, ${size}) was dropped — it is not part of the backup`)
+    }
     const report = (aborted: boolean, extra: Partial<RecycleReport> = {}): RecycleReport => ({
       runtimeKey,
       state,
@@ -6715,6 +6763,7 @@ export class MetalWarmPool {
       forced: force,
       aborted,
       steps,
+      ...(tmpHeld ? { tmp: tmpHeld } : {}),
       ...(notices.length ? { notices } : {}),
       ...extra,
     })
@@ -6760,6 +6809,7 @@ export class MetalWarmPool {
         stopBackgroundTasks: opts.stopBackgroundTasks,
         reason: opts.reason,
         notices,
+        noteTmp,
       })
       if (!ok && !force) {
         console.error(`[pool] recycle ${runtimeKey} ABORTED — a backup step failed; nothing removed`)
@@ -6779,7 +6829,7 @@ export class MetalWarmPool {
    * refused or quarantined write counts as a failure, because the cold boot
    * that follows restores the durable copy, not the quarantined one.
    */
-  private async backupForRecycle(a: AssignedVm, steps: RecycleStep[], opts: { stopBackgroundTasks?: boolean; reason?: string; notices?: string[] } = {}): Promise<boolean> {
+  private async backupForRecycle(a: AssignedVm, steps: RecycleStep[], opts: { stopBackgroundTasks?: boolean; reason?: string; notices?: string[]; noteTmp?: (tmp: { files: number; bytes: number }) => void } = {}): Promise<boolean> {
     const run = async (step: string, fn: () => Promise<string | null>) => {
       try {
         const problem = await fn()
@@ -6803,6 +6853,13 @@ export class MetalWarmPool {
         steps.push({ step: 'members', ok: false, detail: 'workspace member list unknown; member backups would be skipped' })
       }
     }
+
+    // Commit the working tree BEFORE the repo export (SHO-399). The repo step
+    // bundles the commits that already exist and never makes one, so every edit
+    // made after the last turn-complete auto-commit would go with the VM. A
+    // failed checkpoint fails the recycle (unless forced) instead of quietly
+    // dropping that work — a later rotateStale attempt retries it.
+    await run('checkpoint', () => this.checkpointGuest(a, opts.noteTmp))
 
     await run('repo', async () => {
       if (a.repoHydratePending) return null
@@ -6880,11 +6937,7 @@ export class MetalWarmPool {
         // `/recycle` caller can then tell the owner chat (SHO-399).
         const body = await res.json().catch(() => null) as { tmp?: { files?: number; bytes?: number } } | null
         const files = Number(body?.tmp?.files) || 0
-        if (files > 0) {
-          const bytes = Number(body?.tmp?.bytes) || 0
-          const size = bytes >= 1 << 30 ? `${(bytes / (1 << 30)).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1024))} KB`
-          opts.notices?.push(`.tmp/ (${files} file${files === 1 ? '' : 's'}, ${size}) was dropped — it is not part of the backup`)
-        }
+        if (files > 0) opts.noteTmp?.({ files, bytes: Number(body?.tmp?.bytes) || 0 })
         return null
       })
     }

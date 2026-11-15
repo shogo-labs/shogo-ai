@@ -78,6 +78,7 @@ export {
   type GitWorkspaceSyncConfig,
   type SpawnGitFn,
   type SyncParkInfo,
+  type CheckpointResult,
   type CloudSyncMode,
 } from './git-sync'
 
