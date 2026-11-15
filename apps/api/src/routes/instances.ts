@@ -92,6 +92,12 @@ const STREAM_MAX_TIMEOUT_MS = 600_000
 const HEARTBEAT_INTERVAL_MS = 25_000
 const TUNNEL_WAIT_TIMEOUT_MS = 10_000
 const TUNNEL_WAIT_POLL_MS = 500
+/**
+ * How long a failed wake is remembered. A host that is asleep stays asleep for
+ * seconds, not milliseconds, so a burst of callers (a panel opening, a rewarm
+ * probe, a retry) should fail fast instead of each holding its own wait.
+ */
+const TUNNEL_OFFLINE_CACHE_MS = 30_000
 const STREAMING_POST_PATTERNS = ['/agent/chat', '/agent/logs/stream']
 const STREAMING_GET_PATTERNS = ['/agent/canvas/stream', '/agent/logs/stream']
 const CHAT_RESUME_STREAM_RE = /^\/agent\/chat\/[^/]+\/stream$/
@@ -226,6 +232,10 @@ interface TunnelHeartbeat {
 type TunnelMessage = TunnelResponse | TunnelStreamChunk | TunnelHeartbeat | { type: 'pong' }
 
 const tunnels = new Map<string, TunnelConnection>()
+/** One in-flight wake per instance, shared by every caller that arrives during it. */
+const tunnelWakeWaits = new Map<string, Promise<boolean>>()
+/** Instance id → epoch ms until which a failed wake is remembered. */
+const tunnelOfflineUntil = new Map<string, number>()
 
 export function generateRequestId(): string {
   return `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
@@ -317,6 +327,7 @@ export async function handleInstanceWsOpen(ws: WebSocket & { data?: any }) {
     streamHandlers: new Map(),
   }
   tunnels.set(instanceId, conn)
+  tunnelOfflineUntil.delete(instanceId)
 
   // Await ownership registration BEFORE marking the instance 'online' in
   // Postgres. Otherwise another pod seeing the DB row flip to online can
@@ -1852,11 +1863,41 @@ export function hasLocalTunnel(instanceId: string): boolean {
  * Wake an instance's tunnel if it is asleep and wait up to `timeoutMs` for it.
  * Used by the machine-workspace relay, which has to be honest about "offline"
  * instead of forwarding into a void.
+ *
+ * Callers arrive in bursts — a studio panel opening, a rewarm probe, a retry —
+ * and a host that is asleep stays asleep for seconds. So one wake is shared per
+ * instance, and a failed wake is remembered for `TUNNEL_OFFLINE_CACHE_MS` so the
+ * rest of the burst fails in milliseconds instead of each holding its own wait
+ * (PERF-21).
  */
 export async function ensureTunnelConnected(
   instanceId: string,
   timeoutMs: number = TUNNEL_WAIT_TIMEOUT_MS,
 ): Promise<boolean> {
+  if (tunnels.has(instanceId)) return true
+
+  const offlineUntil = tunnelOfflineUntil.get(instanceId)
+  if (offlineUntil !== undefined) {
+    if (offlineUntil > Date.now()) return false
+    tunnelOfflineUntil.delete(instanceId)
+  }
+
+  const inFlight = tunnelWakeWaits.get(instanceId)
+  if (inFlight) return inFlight
+
+  const wait = wakeTunnel(instanceId, timeoutMs)
+    .then((connected) => {
+      if (!connected) tunnelOfflineUntil.set(instanceId, Date.now() + TUNNEL_OFFLINE_CACHE_MS)
+      return connected
+    })
+    .finally(() => {
+      tunnelWakeWaits.delete(instanceId)
+    })
+  tunnelWakeWaits.set(instanceId, wait)
+  return wait
+}
+
+async function wakeTunnel(instanceId: string, timeoutMs: number): Promise<boolean> {
   if (tunnels.has(instanceId)) return true
 
   let remotePod = await getTunnelOwner(instanceId)
