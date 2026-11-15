@@ -40,7 +40,7 @@ const metalState = (over: Record<string, unknown> = {}) => ({
 async function openDiskPanel(page: Page, projectId: string): Promise<void> {
   await page.goto(`/projects/${projectId}?tab=settings`);
   await page.waitForLoadState("networkidle");
-  const nav = page.getByTestId("n-disk");
+  const nav = page.getByTestId("settings-nav-disk");
   await expect(nav).toBeVisible({ timeout: 60_000 });
   await nav.click();
   await expect(page.getByText("Disk size", { exact: false }).first()).toBeVisible({ timeout: 30_000 });

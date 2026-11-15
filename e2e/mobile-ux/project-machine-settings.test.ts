@@ -36,7 +36,7 @@ const state = (current: (typeof options)[number], over: Record<string, unknown> 
 async function openMachinePanel(page: Page, projectId: string): Promise<void> {
   await page.goto(`/projects/${projectId}?tab=settings`);
   await page.waitForLoadState("networkidle");
-  const nav = page.getByTestId("n-machine");
+  const nav = page.getByTestId("settings-nav-machine");
   await expect(nav).toBeVisible({ timeout: 60_000 });
   await nav.click();
   await expect(page.getByText("Current size").first()).toBeVisible({ timeout: 30_000 });

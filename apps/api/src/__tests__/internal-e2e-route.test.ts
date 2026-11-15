@@ -42,6 +42,13 @@ mock.module('../services/billing.service', () => ({
   getUsageWallet: getUsageWalletMock,
 }))
 
+const syncInstanceFromStripeMock = mock(async (..._a: any[]) => {})
+const downgradeToMicroMock = mock(async (_w: string) => {})
+mock.module('../services/instance.service', () => ({
+  syncInstanceFromStripe: syncInstanceFromStripeMock,
+  downgradeToMicro: downgradeToMicroMock,
+}))
+
 const userFindUnique = mock(async (_: any) => null as any)
 mock.module('../lib/prisma', () => ({
   prisma: { user: { findUnique: userFindUnique } },
@@ -94,6 +101,8 @@ beforeEach(() => {
   getUsageWalletMock.mockReset()
   userFindUnique.mockReset()
   userFindUnique.mockImplementation(async () => null)
+  syncInstanceFromStripeMock.mockReset()
+  downgradeToMicroMock.mockReset()
 })
 
 afterEach(() => {
@@ -630,5 +639,53 @@ describe('POST /delete-test-user', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: true, users: 0, workspaces: 0, projects: 0, failed: [] })
     expect(userFindUnique.mock.calls[0][0].where.email).toBe('e2e-a-1@mailnull.com')
+  })
+})
+
+// ─── POST /bootstrap-instance ─────────────────────────────────────────────
+
+describe('POST /bootstrap-instance', () => {
+  const path = '/api/internal/e2e/bootstrap-instance'
+
+  test('401 with the wrong secret, before touching billing', async () => {
+    const res = await authedPost(path, JSON.stringify({ workspaceId: 'ws-1', instanceSize: 'medium' }), 'nope')
+    expect(res.status).toBe(401)
+    expect(syncInstanceFromStripeMock).not.toHaveBeenCalled()
+  })
+
+  test('503 in production without the override', async () => {
+    process.env.NODE_ENV = 'production'
+    const res = await authedPost(path, JSON.stringify({ workspaceId: 'ws-1', instanceSize: 'medium' }))
+    expect(res.status).toBe(503)
+  })
+
+  test('400 for an unknown size', async () => {
+    const res = await authedPost(path, JSON.stringify({ workspaceId: 'ws-1', instanceSize: 'huge' }))
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe('invalid_instanceSize')
+  })
+
+  test('sets the tier with an e2e_bootstrap_ subscription id', async () => {
+    const res = await authedPost(path, JSON.stringify({ workspaceId: 'ws-1', instanceSize: 'medium' }))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, workspaceId: 'ws-1', instanceSize: 'medium' })
+    const args = syncInstanceFromStripeMock.mock.calls[0]
+    expect(args[0]).toBe('ws-1')
+    expect(String(args[1])).toStartWith('e2e_bootstrap_isub_ws-1_')
+    expect(String(args[2])).toBe('e2e_bootstrap_cus_ws-1')
+    expect(args[3]).toBe('medium')
+  })
+
+  test('micro goes through downgradeToMicro', async () => {
+    const res = await authedPost(path, JSON.stringify({ workspaceId: 'ws-1', instanceSize: 'micro' }))
+    expect(res.status).toBe(200)
+    expect(downgradeToMicroMock).toHaveBeenCalledWith('ws-1')
+    expect(syncInstanceFromStripeMock).not.toHaveBeenCalled()
+  })
+
+  test('the email lookup is restricted to e2e addresses', async () => {
+    const res = await authedPost(path, JSON.stringify({ userEmail: 'real@person.com', instanceSize: 'medium' }))
+    expect(res.status).toBe(400)
+    expect(userFindUnique).not.toHaveBeenCalled()
   })
 })

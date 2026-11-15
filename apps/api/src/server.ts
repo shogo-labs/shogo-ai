@@ -4329,8 +4329,9 @@ async function loadMachineState(projectId: string) {
   const substrate = await projectDiskSubstrate(projectId)
   let running = false
   if (substrate === 'metal') {
-    const { peekMetalProjectUrl } = await import('./lib/metal-warm-pool-controller')
-    running = !!peekMetalProjectUrl(projectId)
+    // The URL cache is per API replica; ask the host when this one hasn't seen it.
+    const { peekMetalProjectUrl, getMetalProjectStatus } = await import('./lib/metal-warm-pool-controller')
+    running = !!peekMetalProjectUrl(projectId) || (await getMetalProjectStatus(projectId)).ready
   }
   return describeProjectMachine({
     vmMemoryMiB: project.vmMemoryMiB,
