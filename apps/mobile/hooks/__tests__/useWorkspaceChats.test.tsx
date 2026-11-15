@@ -55,13 +55,19 @@ const AppState = {
 
 // The device cache (SHO-391) keeps AsyncStorage rows; a Map stands in for it.
 const deviceStore = new Map<string, string>();
+// A cold start's device read can be held open, so a test can see what the list
+// reports while the read is still in flight.
+let deviceReadGate: Promise<void> | null = null;
 
 mock.module("react-native", () =>
   createReactNativeMock({ AppState } as any),
 );
 mock.module("@react-native-async-storage/async-storage", () => ({
   default: {
-    getItem: async (k: string) => deviceStore.get(k) ?? null,
+    getItem: async (k: string) => {
+      if (deviceReadGate) await deviceReadGate;
+      return deviceStore.get(k) ?? null;
+    },
     setItem: async (k: string, v: string) => {
       deviceStore.set(k, v);
     },
@@ -528,6 +534,39 @@ describe("useWorkspaceChats device cache", () => {
 
     expect(result.current.loading).toBe(false)
     expect(result.current.sessions).toEqual([])
+  })
+
+  test("a cold start does not flash a loader while the device read is in flight", async () => {
+    // A first visit puts the list on the device.
+    const first = await mount()
+    expect(first.result.current.sessions.map((chat) => chat.id)).toEqual(["chat-1", "chat-2"])
+    first.unmount()
+    await new Promise((resolve) => setTimeout(resolve, 1_100))
+    // A new JS session: the mirror is empty, the device still holds the rows.
+    workspaceChatsCache.resetWorkspaceChatsCacheState()
+
+    let release: () => void = () => {}
+    deviceReadGate = new Promise<void>((resolve) => {
+      release = () => resolve()
+    })
+    const second = renderHook(() => useWorkspaceChats("w1"))
+    await act(async () => {
+      await Promise.resolve()
+    })
+    // The read has not answered, so the list is not "loading" — it is about to
+    // paint what the device holds (SHO-391).
+    expect(second.result.current.loading).toBe(false)
+    expect(second.result.current.sessions).toEqual([])
+
+    release()
+    deviceReadGate = null
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(second.result.current.sessions.map((chat) => chat.id)).toEqual(["chat-1", "chat-2"])
+    expect(second.result.current.loading).toBe(false)
   })
 
   test("a rename survives a remount without waiting for the network", async () => {
