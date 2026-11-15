@@ -12,6 +12,7 @@ import { resolveAgentModelEnv } from './agent-model-defaults'
 import {
   INSTANCE_SIZES,
   meetsMinimumInstanceSize,
+  accountedVmMemMiB,
   resolveMetalVmSize,
   resolveWorkspaceDiskMiB,
   type InstanceSizeName,
@@ -237,10 +238,17 @@ export async function buildProjectEnv(
         env.SHOGO_VM_DISK_MIB = String(
           resolveWorkspaceDiskMiB(project.workspaceDiskGiB, instanceSize as InstanceSizeName),
         )
-        // Operator-set guest memory (Project.vmMemoryMiB). Separate from
-        // SHOGO_VM_MEM_MIB, which is the tier's budget accounting.
+        // Picked machine size (Project.vmMemoryMiB). The host boots it; the
+        // workspace budget counts it (SHOGO_VM_MEM_MIB).
         if (typeof project.vmMemoryMiB === 'number' && project.vmMemoryMiB > 0) {
           env.SHOGO_VM_BOOT_MEM_MIB = String(project.vmMemoryMiB)
+          env.SHOGO_VM_MEM_MIB = String(
+            accountedVmMemMiB(
+              parseInt(env.SHOGO_VM_MEM_MIB, 10),
+              project.vmMemoryMiB,
+              instanceSize as InstanceSizeName,
+            ),
+          )
         }
         if (typeof project.vmVcpus === 'number' && project.vmVcpus > 0) {
           env.SHOGO_VM_BOOT_VCPUS = String(project.vmVcpus)

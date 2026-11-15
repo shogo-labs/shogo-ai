@@ -37,6 +37,7 @@ import { generateProxyToken } from '../ai-proxy-token'
 import {
   INSTANCE_SIZES,
   meetsMinimumInstanceSize,
+  accountedVmMemMiB,
   resolveMetalVmSize,
   resolveWorkspaceDiskMiB,
   type InstanceSizeName,
@@ -314,10 +315,13 @@ export async function buildWorkspaceEnv(
         requestedVcpus = largest((r) => r.vmVcpus)
       }
       env.SHOGO_VM_DISK_MIB = String(resolveWorkspaceDiskMiB(requestedDiskGiB, workspaceInstanceSize))
-      // Operator-set guest memory (Project.vmMemoryMiB), the largest member's.
-      // Separate from SHOGO_VM_MEM_MIB, which is the tier's budget accounting.
+      // Picked machine size (Project.vmMemoryMiB), the largest member's. The
+      // host boots it; the workspace budget counts it (SHOGO_VM_MEM_MIB).
       if (typeof requestedMemMiB === 'number' && requestedMemMiB > 0) {
         env.SHOGO_VM_BOOT_MEM_MIB = String(requestedMemMiB)
+        env.SHOGO_VM_MEM_MIB = String(
+          accountedVmMemMiB(parseInt(env.SHOGO_VM_MEM_MIB, 10), requestedMemMiB, workspaceInstanceSize),
+        )
       }
       if (typeof requestedVcpus === 'number' && requestedVcpus > 0) {
         env.SHOGO_VM_BOOT_VCPUS = String(requestedVcpus)

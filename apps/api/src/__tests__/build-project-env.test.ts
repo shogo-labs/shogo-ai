@@ -962,6 +962,28 @@ describe('buildProjectEnv — guest memory (Project.vmMemoryMiB)', () => {
     }))
     expect((await buildProjectEnv('proj-cpu-none', { forMetal: true })).SHOGO_VM_BOOT_VCPUS).toBeUndefined()
   })
+
+  test('counts a picked machine against the workspace budget, capped at the budget', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      vmMemoryMiB: 8192,
+      workspace: { instanceSize: 'large' },
+    }))
+    expect((await buildProjectEnv('proj-acct', { forMetal: true })).SHOGO_VM_MEM_MIB).toBe('8192')
+    // Operator-set above a micro tier's 2 GiB budget: counted at the budget, not beyond it.
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      vmMemoryMiB: 8192,
+      workspace: { instanceSize: 'micro' },
+    }))
+    expect((await buildProjectEnv('proj-acct-micro', { forMetal: true })).SHOGO_VM_MEM_MIB).toBe('2048')
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      vmMemoryMiB: null,
+      workspace: { instanceSize: 'large' },
+    }))
+    expect((await buildProjectEnv('proj-acct-none', { forMetal: true })).SHOGO_VM_MEM_MIB).toBe('4096')
+  })
 })
 
 // ─── Docker-capable ("Tier 2") project class ──────────────────────────────
