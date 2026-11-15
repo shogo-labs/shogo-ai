@@ -1762,7 +1762,7 @@ app.post('/agent/channels/connect', async (c) => {
         if (accessRes.ok) {
           const access = await accessRes.json() as { hasAdvancedModelAccess?: boolean }
           if (!access.hasAdvancedModelAccess) {
-            return c.json({ error: 'Advanced model requires a Pro or higher subscription. Use "basic" or upgrade your plan.' }, 403)
+            return c.json({ error: 'Advanced model requires a Business (or higher) subscription. Use "basic" or upgrade your plan.' }, 403)
           }
         }
       } catch {
@@ -1842,7 +1842,7 @@ app.patch('/agent/channels/:type/model', async (c) => {
         if (accessRes.ok) {
           const access = await accessRes.json() as { hasAdvancedModelAccess?: boolean }
           if (!access.hasAdvancedModelAccess) {
-            return c.json({ error: `Model '${model}' requires a Pro or higher subscription.` }, 403)
+            return c.json({ error: `Model '${model}' requires a Business (or higher) subscription.` }, 403)
           }
         }
       } catch {

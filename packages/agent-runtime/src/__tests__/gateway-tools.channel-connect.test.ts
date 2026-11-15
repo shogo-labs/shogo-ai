@@ -82,7 +82,7 @@ describe('channel_connect — pro-model access check', () => {
       config: { url: 'https://example.com/hook' },
       model: 'claude-sonnet-4-5',
     })
-    expect(String(r.error)).toContain('requires a Pro or higher subscription')
+    expect(String(r.error)).toContain('requires a Business (or higher) subscription')
   })
 
   test('non-economy model with proxy access granted proceeds', async () => {

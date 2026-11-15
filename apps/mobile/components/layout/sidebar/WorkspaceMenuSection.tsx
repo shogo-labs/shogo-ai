@@ -10,7 +10,10 @@ import { ActivityIndicator, Linking, Platform, Pressable, Text, useWindowDimensi
 import { Cloud, CloudOff, ExternalLink, LogIn, LogOut, Plus, Settings, Sparkles, Users, Zap } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import { usePostHogSafe } from "../../../contexts/posthog";
-import { getPlanDisplayName } from "../../../lib/billing-config";
+import {
+  getPlanDisplayName,
+  UPGRADE_CTA_LABEL,
+} from "../../../lib/billing-config";
 import { EVENTS, trackEvent } from "../../../lib/analytics";
 import { CompactUsageWindows } from "../../billing/UsageWindows";
 import { densityFor } from "../../../lib/phone-density";
@@ -470,7 +473,7 @@ export function WorkspaceMenuSection({
               className="text-white"
             />
             <Text className={cn("font-medium text-white", density.text.body)}>
-              Upgrade to Pro
+              {UPGRADE_CTA_LABEL}
             </Text>
           </Pressable>
         </View>

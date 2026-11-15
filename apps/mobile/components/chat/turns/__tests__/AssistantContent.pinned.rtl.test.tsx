@@ -139,7 +139,7 @@ describe("AssistantContent pinned work", () => {
       toolName: "publish",
       state: "output-available",
       input: { subdomain: "my-site" },
-      output: { error: "Publishing to a subdomain requires a Pro (or higher) plan.", code: "plan_not_allowed" },
+      output: { error: "Publishing to a subdomain requires a Business (or higher) plan.", code: "plan_not_allowed" },
     }
     render(
       createElement(AssistantContent, {

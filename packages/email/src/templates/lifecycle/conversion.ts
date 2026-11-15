@@ -13,14 +13,14 @@ export const conversionUsageLimitTemplate: EmailTemplate<{
   proWindow: string
 }> = {
   name: 'conversion-usage-limit',
-  subject: 'You maxed out your free {{appName}} window — Pro is 10× bigger',
+  subject: 'You maxed out your free {{appName}} window — Business is 9× bigger',
   html: wrapInLayout(`
     <span class="email-badge">Time to upgrade</span>
     <h1 class="email-h1" style="margin-top:16px;">You're outgrowing the free plan</h1>
     <p class="email-text">Hi {{name}},</p>
     <p class="email-text">
       You just hit your free usage window — which means your agents are doing
-      real work for you. The free tier is capped low on purpose. Pro takes the
+      real work for you. The free tier is capped low on purpose. Business takes the
       brakes off.
     </p>
     <p class="email-text">
@@ -29,7 +29,7 @@ export const conversionUsageLimitTemplate: EmailTemplate<{
     <div style="background:#f8f8f8;border-radius:8px;padding:16px 20px;margin:0 0 16px;">
       <div class="email-detail-row">
         <span class="email-detail-label">Usage window (5h)</span>
-        <span class="email-detail-value">{{freeWindow}} → {{proWindow}} (10×)</span>
+        <span class="email-detail-value">{{freeWindow}} → {{proWindow}} (9×)</span>
       </div>
       <div class="email-detail-row">
         <span class="email-detail-label">Advanced AI models</span>
@@ -45,15 +45,15 @@ export const conversionUsageLimitTemplate: EmailTemplate<{
       </div>
     </div>
     <p class="email-text">
-      Pro is <strong>$20/seat/month</strong>. If your agents save you more than
-      an hour a week, it's already paid for itself — and you stop losing momentum
-      every time the free window fills up.
+      Business is <strong>$16/seat/month</strong>. If your agents save you more
+      than an hour a week, it's already paid for itself — and you stop losing
+      momentum every time the free window fills up.
     </p>
-    <a href="{{appUrl}}/billing?plan=pro" class="email-btn" style="color:#ffffff;text-decoration:none;">
-      Upgrade to Pro →
+    <a href="{{appUrl}}/billing?plan=business" class="email-btn" style="color:#ffffff;text-decoration:none;">
+      Upgrade to Business →
     </a>
     <p class="email-muted">
-      Prefer to save 2 months? <a href="{{appUrl}}/billing?plan=pro&amp;interval=annual" style="color:#e8853d;text-decoration:none;font-weight:600;">Get Pro annual for $200/yr →</a>
+      Prefer to save 2 months? <a href="{{appUrl}}/billing?plan=business&amp;interval=annual" style="color:#e8853d;text-decoration:none;font-weight:600;">Get Business annual for $156/yr →</a>
     </p>
     <hr class="email-divider">
     <p class="email-muted">
@@ -65,7 +65,7 @@ export const conversionUsageLimitTemplate: EmailTemplate<{
     appName: EMAIL_CONSTANTS.APP_NAME,
     appUrl: EMAIL_CONSTANTS.APP_URL,
     freeWindow: '$0.20',
-    proWindow: '$1.96',
+    proWindow: '$1.84',
   },
 }
 
@@ -89,7 +89,7 @@ export const conversionPowerUserTemplate: EmailTemplate<{
     </p>
     <p class="email-text">
       You're currently limited to economy AI models and small usage windows.
-      Pro unlocks:
+      Business unlocks:
     </p>
     <div style="background:#f8f8f8;border-radius:8px;padding:16px 20px;margin:0 0 16px;">
       <div class="email-detail-row">
@@ -98,7 +98,7 @@ export const conversionPowerUserTemplate: EmailTemplate<{
       </div>
       <div class="email-detail-row">
         <span class="email-detail-label">Usage windows</span>
-        <span class="email-detail-value">10× larger</span>
+        <span class="email-detail-value">9× larger</span>
       </div>
       <div class="email-detail-row">
         <span class="email-detail-label">Always-on apps</span>
@@ -106,19 +106,19 @@ export const conversionPowerUserTemplate: EmailTemplate<{
       </div>
       <div class="email-detail-row" style="border-bottom:none;">
         <span class="email-detail-label">Annual pricing</span>
-        <span class="email-detail-value">$200/yr (2 months free)</span>
+        <span class="email-detail-value">$156/yr (2 months free)</span>
       </div>
     </div>
     <p class="email-text">
-      Annual is the smart move if you plan to stick around — same Pro features,
+      Annual is the smart move if you plan to stick around — same Business features,
       billed once a year.
     </p>
-    <a href="{{appUrl}}/billing?plan=pro&interval=annual" class="email-btn" style="color:#ffffff;text-decoration:none;">
-      Get Pro annual ($200/yr) →
+    <a href="{{appUrl}}/billing?plan=business&interval=annual" class="email-btn" style="color:#ffffff;text-decoration:none;">
+      Get Business annual ($156/yr) →
     </a>
     <hr class="email-divider">
     <p class="email-muted">
-      Monthly is also available at $20/seat/month if you prefer.
+      Monthly is also available at $16/seat/month if you prefer.
     </p>
   `),
   defaults: {

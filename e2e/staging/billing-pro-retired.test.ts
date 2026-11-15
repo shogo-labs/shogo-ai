@@ -83,6 +83,8 @@ test.describe("Pro is retired — no path sells it (SHO-397)", () => {
     // The retired plan has no card, no trial CTA and no upgrade button.
     await expect(page.getByTestId("plan-card-pro")).toHaveCount(0)
     await expect(page.getByText("Upgrade to Pro")).toHaveCount(0)
+    // Every upsell CTA names the plan that is on sale (SHO-398).
+    await expect(page.getByTestId("sidebar-upgrade-cta").getByText("Upgrade to Business")).toBeVisible()
     for (const plan of ["basic", "business"] as const) {
       await expect(
         page.getByTestId(`plan-card-${plan}`).getByText("Start 7-day free trial"),

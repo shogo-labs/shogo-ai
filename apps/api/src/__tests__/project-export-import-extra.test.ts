@@ -321,7 +321,7 @@ describe('POST /import — additional edges', () => {
     const res = await authedApp().fetch(importReqWithSize(51 * MB))
     expect(res.status).toBe(413)
     const body: any = await res.json()
-    expect(body.error).toMatch(/Upgrade to Pro/i)
+    expect(body.error).toMatch(/Upgrade to Business/i)
   })
 
   test('pro+ upload between 50 MB and 500 MB is not rejected by the size gate', async () => {

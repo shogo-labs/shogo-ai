@@ -278,7 +278,7 @@ function importTooLargeMessage(cap: number): string {
   const mb = Math.round(cap / (1024 * 1024))
   return cap >= MAX_EXPORT_BYTES_PRO
     ? `Workspace archives are limited to ${mb} MB.`
-    : `Importing a workspace is limited to ${mb} MB on the Free and Basic plans. Upgrade to Pro to import up to 500 MB.`
+    : `Importing a workspace is limited to ${mb} MB on the Free and Basic plans. Upgrade to Business to import up to 500 MB.`
 }
 
 async function billingTierIsProPlus(workspaceId: string): Promise<boolean> {

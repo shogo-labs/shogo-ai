@@ -262,7 +262,7 @@ describe('AI proxy Shogo Cloud forwarding', () => {
       type: 'error',
       error: {
         type: 'billing_error',
-        message: "Model 'claude-sonnet-4-6' requires a Pro or higher subscription.",
+        message: "Model 'claude-sonnet-4-6' requires a Business (or higher) subscription.",
       },
     })
     nextFetchResponses.push(() => new Response(billingErrorBody, {
