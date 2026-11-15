@@ -14,6 +14,8 @@ import {
   decodeLegacyPriceId,
   getInstancePriceId,
   getInstancePrices,
+  INSTANCE_PRICE_LOOKUP_KEYS,
+  resolveInstancePriceId,
   getOveragePriceConfig,
   getOveragePriceId,
   getPriceId,
@@ -218,6 +220,54 @@ describe('Instance prices', () => {
         expect(cfg[size].monthly).toBeTruthy()
         expect(cfg[size].annual).toBeTruthy()
       }
+    }
+  })
+
+  it('every configured instance price is a real Stripe price id, not a placeholder', () => {
+    // Production shipped `price_instance_large_monthly_live` and every upgrade
+    // 500'd with "No such price". A truthiness check cannot catch that.
+    for (const cfg of [INSTANCE_PRICES_STAGING, INSTANCE_PRICES_PRODUCTION]) {
+      for (const size of ['small', 'medium', 'large', 'xlarge'] as const) {
+        for (const interval of ['monthly', 'annual'] as const) {
+          expect(cfg[size][interval]).toMatch(/^price_[A-Za-z0-9]{8,}$/)
+        }
+      }
+    }
+  })
+
+  it('resolveInstancePriceId prefers the configured id and never calls the lookup', async () => {
+    let called = 0
+    const id = await resolveInstancePriceId('large', 'monthly', async () => {
+      called++
+      return 'price_from_lookup'
+    })
+    expect(id).toBe(INSTANCE_PRICES_STAGING.large.monthly)
+    expect(called).toBe(0)
+  })
+
+  it('resolveInstancePriceId falls back to the lookup key when no id is configured', async () => {
+    const saved = INSTANCE_PRICES_STAGING.xlarge.annual
+    INSTANCE_PRICES_STAGING.xlarge.annual = ''
+    try {
+      const seen: string[] = []
+      const id = await resolveInstancePriceId('xlarge', 'annual', async (key) => {
+        seen.push(key)
+        return 'price_from_lookup'
+      })
+      expect(id).toBe('price_from_lookup')
+      expect(seen).toEqual([INSTANCE_PRICE_LOOKUP_KEYS.xlarge.annual])
+    } finally {
+      INSTANCE_PRICES_STAGING.xlarge.annual = saved
+    }
+  })
+
+  it('resolveInstancePriceId returns null when the price is missing everywhere', async () => {
+    const saved = INSTANCE_PRICES_STAGING.large.monthly
+    INSTANCE_PRICES_STAGING.large.monthly = ''
+    try {
+      expect(await resolveInstancePriceId('large', 'monthly', async () => null)).toBeNull()
+    } finally {
+      INSTANCE_PRICES_STAGING.large.monthly = saved
     }
   })
 })
