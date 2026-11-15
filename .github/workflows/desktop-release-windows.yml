@@ -371,6 +371,11 @@ jobs:
 
       - name: Bundle API server into resources
         shell: bash
+        # Same cross-arch ripgrep fetch as the macOS workflow: keep the
+        # @vscode/ripgrep postinstall authenticated so a shared runner's
+        # unauthenticated GitHub API quota can never 403 this step.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node apps/desktop/scripts/bundle-api.mjs
 
       - name: Create seed database (SQLite)
