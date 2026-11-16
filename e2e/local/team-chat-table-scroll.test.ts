@@ -196,7 +196,9 @@ test.describe("markdown tables in team chat scroll on both axes", () => {
     await signIn(page)
     await page.addInitScript((id) => {
       localStorage.setItem("shogo:active-workspace-id", id)
+      sessionStorage.setItem("shogo:active-workspace-id", id)
       localStorage.setItem("shogo:active-workspace-kind", JSON.stringify({ id, kind: "team" }))
+      sessionStorage.setItem("shogo:active-workspace-kind", JSON.stringify({ id, kind: "team" }))
     }, workspaceId)
     // The wide desktop layout puts the thread in a resizable side pane.
     await page.setViewportSize({ width: 1280, height: 720 })

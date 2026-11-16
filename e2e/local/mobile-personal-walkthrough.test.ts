@@ -75,6 +75,7 @@ function homeComposer(page: Page) {
 async function openPersonalHome(page: Page, workspace: WorkspaceRow) {
   await page.addInitScript((activeWorkspace) => {
     localStorage.setItem("shogo:active-workspace-id", activeWorkspace.id);
+    sessionStorage.setItem("shogo:active-workspace-id", activeWorkspace.id);
     localStorage.setItem(
       "shogo:active-workspace-kind",
       JSON.stringify({ id: activeWorkspace.id, kind: "personal" }),

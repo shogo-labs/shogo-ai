@@ -50,7 +50,9 @@ async function useTeamWorkspace(page: Page): Promise<string> {
   const teamId = await teamWorkspaceId(page)
   await page.evaluate((id) => {
     localStorage.setItem("shogo:active-workspace-id", id)
+    sessionStorage.setItem("shogo:active-workspace-id", id)
     localStorage.setItem("shogo:active-workspace-kind", "team")
+    sessionStorage.setItem("shogo:active-workspace-kind", "team")
   }, teamId)
   return teamId
 }
@@ -114,7 +116,9 @@ test.describe("Chat preferences are Settings → Chat", () => {
 
     await page.evaluate((id) => {
       localStorage.setItem("shogo:active-workspace-id", id as string)
+      sessionStorage.setItem("shogo:active-workspace-id", id as string)
       localStorage.setItem("shogo:active-workspace-kind", "personal")
+      sessionStorage.setItem("shogo:active-workspace-kind", "personal")
     }, personalId)
 
     await page.goto("/c/settings")

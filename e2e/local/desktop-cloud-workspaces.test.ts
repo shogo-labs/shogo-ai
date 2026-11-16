@@ -134,7 +134,9 @@ test.describe("Desktop + Shogo Cloud workspaces", () => {
     localPersonalName = local.name
     await page.evaluate((id) => {
       localStorage.setItem("shogo:active-workspace-id", id)
+      sessionStorage.setItem("shogo:active-workspace-id", id)
       localStorage.setItem("shogo:active-workspace-kind", JSON.stringify({ id, kind: "personal" }))
+      sessionStorage.setItem("shogo:active-workspace-kind", JSON.stringify({ id, kind: "personal" }))
     }, local.id)
 
     const signIn = await json(
@@ -148,7 +150,9 @@ test.describe("Desktop + Shogo Cloud workspaces", () => {
     await page?.evaluate(() => {
       localStorage.removeItem("shogo:cloud-workspaces")
       localStorage.removeItem("shogo:active-workspace-id")
+      sessionStorage.removeItem("shogo:active-workspace-id")
       localStorage.removeItem("shogo:active-workspace-kind")
+      sessionStorage.removeItem("shogo:active-workspace-kind")
     }).catch(() => {})
     await page?.close()
     await owner?.api.dispose()

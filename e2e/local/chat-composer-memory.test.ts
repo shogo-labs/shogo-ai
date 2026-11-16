@@ -130,7 +130,9 @@ async function mockChatTurns(page: Page): Promise<SentTurn[]> {
 async function useTeamWorkspace(page: Page) {
   await page.evaluate((id) => {
     localStorage.setItem("shogo:active-workspace-id", id)
+    sessionStorage.setItem("shogo:active-workspace-id", id)
     localStorage.setItem("shogo:active-workspace-kind", "team")
+    sessionStorage.setItem("shogo:active-workspace-kind", "team")
   }, workspaceId)
 }
 

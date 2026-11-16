@@ -178,7 +178,9 @@ async function openPhoneBuilder(page: Page): Promise<void> {
   await page.addInitScript(
     (record: { id: string; kind: string }) => {
       localStorage.setItem("shogo:active-workspace-id", record.id)
+      sessionStorage.setItem("shogo:active-workspace-id", record.id)
       localStorage.setItem("shogo:active-workspace-kind", JSON.stringify(record))
+      sessionStorage.setItem("shogo:active-workspace-kind", JSON.stringify(record))
     },
     { id: workspace!.id, kind: workspace!.kind ?? "team" },
   )

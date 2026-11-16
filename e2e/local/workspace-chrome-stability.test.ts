@@ -103,7 +103,9 @@ test.describe('workspace chrome does not pop between team and personal', () => {
     await installFlashRecorder(page)
     await page.addInitScript((id: string) => {
       localStorage.setItem('shogo:active-workspace-id', id)
+      sessionStorage.setItem('shogo:active-workspace-id', id)
       localStorage.removeItem('shogo:active-workspace-kind')
+      sessionStorage.removeItem('shogo:active-workspace-kind')
     }, personal.id)
     const release = await holdWorkspaceList(page, personal)
 
@@ -124,7 +126,9 @@ test.describe('workspace chrome does not pop between team and personal', () => {
     await installFlashRecorder(page)
     await page.addInitScript((id: string) => {
       localStorage.setItem('shogo:active-workspace-id', id)
+      sessionStorage.setItem('shogo:active-workspace-id', id)
       localStorage.setItem('shogo:active-workspace-kind', JSON.stringify({ id, kind: 'personal' }))
+      sessionStorage.setItem('shogo:active-workspace-kind', JSON.stringify({ id, kind: 'personal' }))
     }, personal.id)
     const release = await holdWorkspaceList(page, personal)
 

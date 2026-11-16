@@ -180,7 +180,10 @@ test.describe("SHO-390 — one workspace per browser tab", () => {
     // Both tabs start in X, and X is the shared default a new tab would seed.
     await switchWorkspaceWide(tabA, X.name)
     await tabA.evaluate(
-      ([id]) => localStorage.setItem("shogo:active-workspace-id", id),
+      ([id]) => {
+        localStorage.setItem("shogo:active-workspace-id", id)
+        sessionStorage.setItem("shogo:active-workspace-id", id)
+      },
       [X.id],
     )
 

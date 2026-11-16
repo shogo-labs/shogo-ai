@@ -239,7 +239,9 @@ test.describe("A file the workspace agent wrote in another project", () => {
     expect(workspace?.id, `workspace list ${workspaces.status}`).toBeTruthy()
     await page.evaluate((id) => {
       localStorage.setItem("shogo:active-workspace-id", id)
+      sessionStorage.setItem("shogo:active-workspace-id", id)
       localStorage.setItem("shogo:active-workspace-kind", "team")
+      sessionStorage.setItem("shogo:active-workspace-kind", "team")
     }, workspace.id)
     await page.goto("/")
     await composer(page).waitFor({ state: "visible", timeout: 60_000 })

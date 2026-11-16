@@ -126,6 +126,7 @@ async function installFileMock(page: Page, expectedPath: string, content: string
 async function activateWorkspace(page: Page, workspaceId: string): Promise<void> {
   await page.addInitScript((id) => {
     localStorage.setItem("shogo:active-workspace-id", id)
+    sessionStorage.setItem("shogo:active-workspace-id", id)
   }, workspaceId)
 }
 

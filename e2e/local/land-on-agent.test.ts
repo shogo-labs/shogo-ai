@@ -254,7 +254,9 @@ test.describe("Landing on the workspace agent (local)", () => {
     const workspaceId = await personalWorkspaceId(page)
     await page.addInitScript((id) => {
       localStorage.setItem("shogo:active-workspace-id", id)
+      sessionStorage.setItem("shogo:active-workspace-id", id)
       localStorage.setItem("shogo:active-workspace-kind", JSON.stringify({ id, kind: "personal" }))
+      sessionStorage.setItem("shogo:active-workspace-kind", JSON.stringify({ id, kind: "personal" }))
     }, workspaceId)
 
     // The first load may create the workspace's primary session; after that the

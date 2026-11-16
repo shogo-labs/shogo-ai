@@ -172,6 +172,7 @@ test("the drawer lists workspace chats newest activity first", async ({ page }) 
 
   await page.addInitScript((activeWorkspace: WorkspaceRow) => {
     localStorage.setItem("shogo:active-workspace-id", activeWorkspace.id);
+    sessionStorage.setItem("shogo:active-workspace-id", activeWorkspace.id);
     localStorage.setItem(
       "shogo:active-workspace-kind",
       JSON.stringify({ id: activeWorkspace.id, kind: "personal" }),
@@ -298,6 +299,7 @@ test("pinned chats lead and the archived group is activity-ordered too", async (
 
   await page.addInitScript((activeWorkspace: WorkspaceRow) => {
     localStorage.setItem("shogo:active-workspace-id", activeWorkspace.id);
+    sessionStorage.setItem("shogo:active-workspace-id", activeWorkspace.id);
     localStorage.setItem(
       "shogo:active-workspace-kind",
       JSON.stringify({ id: activeWorkspace.id, kind: "personal" }),

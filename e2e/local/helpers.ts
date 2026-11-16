@@ -72,7 +72,9 @@ export async function openTeamHome(page: Page, timeout = 30_000): Promise<void> 
 
   await page.evaluate((id) => {
     localStorage.setItem("shogo:active-workspace-id", id)
+    sessionStorage.setItem("shogo:active-workspace-id", id)
     localStorage.setItem("shogo:active-workspace-kind", "team")
+    sessionStorage.setItem("shogo:active-workspace-kind", "team")
   }, teamId)
   await page.goto("/home")
   await page.getByText("What are we building", { exact: false }).first().waitFor({ state: "visible", timeout })
