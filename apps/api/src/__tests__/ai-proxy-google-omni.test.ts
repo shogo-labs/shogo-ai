@@ -234,6 +234,21 @@ describe('POST /ai/v1/videos/generations — Omni validation', () => {
     expect(fetchLog).toHaveLength(0)
   })
 
+  test('invalid input is reported before missing Google configuration', async () => {
+    delete process.env.GOOGLE_API_KEY
+    const { res, data } = await submit({
+      model: 'google-omni-1.2-flash',
+      prompt: 'x',
+      duration: 12,
+      start_image: 'data:image/png;base64,AAAA',
+      end_image: 'data:image/png;base64,BBBB',
+    })
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('invalid_duration')
+    expect(data.error.message).toContain('10 s')
+    expect(fetchLog).toHaveLength(0)
+  })
+
   test('more than 6 images is refused before submit', async () => {
     const { res, data } = await submit({
       model: 'google-omni-1.2-flash',

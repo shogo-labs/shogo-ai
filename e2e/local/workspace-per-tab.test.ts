@@ -161,6 +161,13 @@ test.describe("SHO-390 — one workspace per browser tab", () => {
     tabA.setDefaultTimeout(30_000)
     await tabA.setViewportSize({ width: 1280, height: 800 })
 
+    // The global setup signs in through a separate API context. This isolated
+    // browser context needs its own session before calling the local API.
+    const signedIn = await tabA.request.post(`${LOCAL_API_BASE}/api/local/auto-sign-in`)
+    if (!signedIn.ok()) {
+      throw new Error(`local auto-sign-in failed (${signedIn.status()}): ${await signedIn.text()}`)
+    }
+
     const body = await apiJson<any>(tabA, "GET", "/api/workspaces")
     const items = (body?.items ?? body?.data?.items ?? body) as Array<{ id?: string; name?: string }>
     const workspaces = items.filter((w): w is Workspace => !!w?.id && !!w?.name)

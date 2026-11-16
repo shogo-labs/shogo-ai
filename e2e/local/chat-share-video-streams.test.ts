@@ -110,6 +110,9 @@ function corsHeaders(route: Route): Record<string, string> {
     "access-control-allow-credentials": "true",
     "access-control-allow-headers": "*",
     "access-control-allow-methods": "GET, OPTIONS",
+    // Fetch cannot read these non-safelisted headers cross-origin unless the
+    // API explicitly exposes them; the viewer needs Content-Range for size.
+    "access-control-expose-headers": "Content-Range, Accept-Ranges",
     "cache-control": "private, no-store",
   }
 }

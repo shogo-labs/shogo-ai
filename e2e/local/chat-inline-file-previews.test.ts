@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page, type Route } from "@playwright/test"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 
 /**
  * Russell's bug, end to end: a picture or a clip an agent shared into chat was
@@ -22,11 +24,8 @@ import { test, expect, type Page, type Route } from "@playwright/test"
 
 const API = process.env.E2E_API_URL || "http://localhost:8002"
 
-/** A real 1x1 PNG: a `<img>` only proves it drew when the bytes decode. */
-const PNG_BYTES = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
-  "base64",
-)
+/** A real-size image keeps the responsive preview assertion meaningful. */
+const PNG_BYTES = readFileSync(join(__dirname, "../../apps/mobile/assets/icon.png"))
 
 let frameCounter = 0
 function sseFrame(event: Record<string, unknown>): string {
