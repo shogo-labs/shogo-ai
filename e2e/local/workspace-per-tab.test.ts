@@ -161,6 +161,12 @@ test.describe("SHO-390 — one workspace per browser tab", () => {
     tabA.setDefaultTimeout(30_000)
     await tabA.setViewportSize({ width: 1280, height: 800 })
 
+    // This spec owns a BrowserContext, so establish the local-mode session in it.
+    const signIn = await context.request.post(LOCAL_API_BASE + "/api/local/auto-sign-in")
+    if (!signIn.ok()) {
+      throw new Error("local auto-sign-in failed (" + signIn.status() + "): " + await signIn.text())
+    }
+
     const body = await apiJson<any>(tabA, "GET", "/api/workspaces")
     const items = (body?.items ?? body?.data?.items ?? body) as Array<{ id?: string; name?: string }>
     const workspaces = items.filter((w): w is Workspace => !!w?.id && !!w?.name)

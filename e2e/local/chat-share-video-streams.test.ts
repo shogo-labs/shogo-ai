@@ -110,6 +110,7 @@ function corsHeaders(route: Route): Record<string, string> {
     "access-control-allow-credentials": "true",
     "access-control-allow-headers": "*",
     "access-control-allow-methods": "GET, OPTIONS",
+    "access-control-expose-headers": "Content-Range, Accept-Ranges, Content-Length",
     "cache-control": "private, no-store",
   }
 }

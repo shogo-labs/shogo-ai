@@ -6784,6 +6784,16 @@ export function aiProxyRoutes() {
         return invalid(`${entry.displayName} needs at least 1 reference image (the subject to drive or swap in).`, 'missing_reference_images')
       }
 
+      // Validate Google's first-and-last-frame duration before checking whether
+      // the provider is configured. Invalid requests must get the same 400
+      // validation response on keyless local stacks as they do in production.
+      if (entry.provider === 'google' && body.end_image && duration > 10) {
+        return invalid(
+          `A first-and-last-frame clip (start_image + end_image) is limited to 10 s; got ${duration}.`,
+          'invalid_duration',
+        )
+      }
+
       // ---- Google Gemini Omni ------------------------------------------------
       // One model id: every turn is one Interactions API call, so a generation,
       // an edit, an extension and an "upscale" all come through here.
@@ -6894,15 +6904,6 @@ export function aiProxyRoutes() {
             'too_many_images',
           )
         }
-        // Google limits first-and-last-frame interpolation to 3–10 s; above that
-        // it answers INVALID_ARGUMENT, so refuse it before any hold.
-        if (body.end_image && duration > 10) {
-          return invalid(
-            `A first-and-last-frame clip (start_image + end_image) is limited to 10 s; got ${duration}.`,
-            'invalid_duration',
-          )
-        }
-
         // Reserved before anything goes upstream: the rate card for this
         // resolution × length, plus the parent clip's input tokens on a
         // follow-up turn (Google charges to read it back in).
