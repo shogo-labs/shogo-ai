@@ -19,9 +19,23 @@
 
 import { Hono } from 'hono'
 import { Composio } from '@composio/core'
+import { isZernioSocialToolkit, ZERNIO_SOCIAL_TOOLKITS } from '@shogo/shared-runtime'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { isShogoCloudAuthed } from '../lib/cloud-forwarding'
 import { shouldSkipForwardedHeader } from '../lib/proxy-headers'
+
+/**
+ * Instagram and TikTok accounts connect through Zernio (the Social page), not
+ * Composio. The provider list filters those toolkits out and returns these rows
+ * so Settings › Integrations can link to the Social page instead.
+ */
+const ZERNIO_SOCIAL_LABELS: Record<string, string> = { instagram: 'Instagram', tiktok: 'TikTok' }
+const ZERNIO_SOCIAL_PROVIDERS = ZERNIO_SOCIAL_TOOLKITS.map((toolkit) => ({
+  toolkit,
+  name: ZERNIO_SOCIAL_LABELS[toolkit] ?? toolkit,
+  provider: 'zernio' as const,
+  href: '/social',
+}))
 
 async function disableTriggersForConnections(input: { connectedAccountIds?: string[]; entityIds?: string[]; toolkit?: string }) {
   try {
@@ -374,21 +388,23 @@ export function integrationRoutes() {
 
     const composio = getComposio()
     if (!composio) {
-      return c.json({ ok: true, data: [], enabled: false })
+      return c.json({ ok: true, data: [], enabled: false, socialProviders: ZERNIO_SOCIAL_PROVIDERS })
     }
 
     try {
       const toolkits = await composio.toolkits.get()
-      const providers = toolkits.map((toolkit: any) => ({
-        toolkit: toolkit.slug,
-        name: toolkit.name,
-        whiteLabeled: !!TOOLKIT_AUTH_CONFIG_OVERRIDES[toolkit.slug],
-        available: true,
-      }))
-      return c.json({ ok: true, data: providers, enabled: true })
+      const providers = toolkits
+        .filter((toolkit: any) => !isZernioSocialToolkit(toolkit.slug))
+        .map((toolkit: any) => ({
+          toolkit: toolkit.slug,
+          name: toolkit.name,
+          whiteLabeled: !!TOOLKIT_AUTH_CONFIG_OVERRIDES[toolkit.slug],
+          available: true,
+        }))
+      return c.json({ ok: true, data: providers, enabled: true, socialProviders: ZERNIO_SOCIAL_PROVIDERS })
     } catch (err: any) {
       console.error('[Integrations] Failed to list providers:', err.message)
-      return c.json({ ok: true, data: [], enabled: true })
+      return c.json({ ok: true, data: [], enabled: true, socialProviders: ZERNIO_SOCIAL_PROVIDERS })
     }
   })
 
@@ -409,6 +425,21 @@ export function integrationRoutes() {
 
     if (!toolkit) {
       return c.json({ error: 'toolkit is required' }, 400)
+    }
+
+    // Instagram and TikTok connect through Zernio (the Social page), never
+    // Composio. Refuse before the cloud forward and before any pruning so no
+    // OAuth starts and existing connections are left untouched.
+    if (isZernioSocialToolkit(toolkit)) {
+      const label = ZERNIO_SOCIAL_LABELS[toolkit.toLowerCase().replace(/[-_\s]/g, '')] ?? toolkit
+      return c.json(
+        {
+          error: `${label} connects through the Social page (Zernio).`,
+          code: 'social_provider_zernio',
+          href: '/social',
+        },
+        409,
+      )
     }
 
     if (isShogoCloudAuthed()) {

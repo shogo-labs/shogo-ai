@@ -240,7 +240,7 @@ async function checkTier(
   return c.json(
     {
       error: {
-        message: `The model '${publicId}' requires a Pro or higher subscription.`,
+        message: `The model '${publicId}' requires a Business (or higher) subscription.`,
         type: 'billing_error',
         code: 'model_tier_restricted',
       },

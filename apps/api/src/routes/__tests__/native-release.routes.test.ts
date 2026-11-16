@@ -14,12 +14,15 @@
 
 import { describe, expect, it, mock } from 'bun:test'
 import { Hono } from 'hono'
+import { prismaProxy, useFakePrisma } from '../../services/native-release/__tests__/prisma-fixture'
 
 // The route looks the project up before it authenticates, so stub the row out
 // instead of depending on whatever database happens to be behind the test run.
-mock.module('../../lib/prisma', () => ({
-  prisma: { project: { findUnique: async () => null } },
-}))
+// Through the shared fixture rather than a private factory: `mock.module` is
+// process-wide, and a second factory for `lib/prisma` in the same run serves
+// whichever file registered last.
+mock.module('../../lib/prisma', () => ({ prisma: prismaProxy }))
+useFakePrisma({ project: { findUnique: async () => null } })
 
 const { nativeReleaseRelayRoutes, nativeReleaseRoutes, nativeWebhookRoutes } = await import('../native-release')
 
@@ -57,6 +60,14 @@ describe('native release routes are mounted where the callers point', () => {
       ).status,
     ).toBe(401)
     expect((await call('/api/workspaces/w1/native/credentials/expo_token', { method: 'DELETE' })).status).toBe(401)
+    expect(
+      (
+        await call('/api/workspaces/w1/native/credentials/android_keystore/export', {
+          method: 'POST',
+          body: {},
+        })
+      ).status,
+    ).toBe(401)
   })
 
   it('answers the project app + release routes', async () => {

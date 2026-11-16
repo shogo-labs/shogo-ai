@@ -8,6 +8,7 @@
 export * from './client'
 export * from './profiles.service'
 export * from './accounts.service'
+export * from './audio.service'
 export * from './publishing.service'
 export * from './inbox.service'
 export * from './automations.service'

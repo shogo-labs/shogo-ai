@@ -22,6 +22,7 @@ import {
   handleEasWebhook,
   listCredentials,
   nativeReleaseMode,
+  readAndroidKeystore,
   saveCredential,
   sourcesUploaded,
   startRelease,
@@ -119,6 +120,41 @@ export function nativeReleaseRoutes(config: NativeReleaseRoutesConfig): Hono {
     if (userId instanceof Response) return userId
     await deleteCredential(workspaceId, c.req.param('kind') as CredentialKind)
     return c.json({ ok: true })
+  })
+
+  /**
+   * The owner's download of the Android upload keystore.
+   *
+   * POST, not GET: the body carries the keystore's passwords back to the browser,
+   * and a GET response is the kind of thing a proxy or an access log keeps. The
+   * row is removed by the plain `DELETE /native/credentials/android_keystore`
+   * above, like every other credential.
+   */
+  router.post('/workspaces/:workspaceId/native/credentials/android_keystore/export', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const userId = await requireMember(c, workspaceId)
+    if (userId instanceof Response) return userId
+
+    const keystore = await readAndroidKeystore(workspaceId)
+    if (!keystore) {
+      return c.json(
+        {
+          error: {
+            code: 'keystore_missing',
+            message: 'This workspace has no Android upload keystore saved.',
+          },
+        },
+        404,
+      )
+    }
+    c.header('cache-control', 'no-store')
+    return c.json({
+      filename: 'upload-keystore.jks',
+      keystoreBase64: keystore.keystoreBase64,
+      keystorePassword: keystore.keystorePassword,
+      keyAlias: keystore.keyAlias,
+      keyPassword: keystore.keyPassword,
+    })
   })
 
   router.get('/projects/:projectId/native/app', async (c) => {

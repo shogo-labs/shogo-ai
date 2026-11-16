@@ -13,6 +13,7 @@ import { authClient } from '../lib/auth-client'
 import { clearActiveWorkspaceId } from '../lib/workspace-store'
 import { clearTeamChatCache } from '../lib/team-chat-cache'
 import { clearChatHistory } from '../lib/chat-history-store'
+import { clearWorkspaceChatsCache } from '../lib/workspace-chats-cache'
 import { clearChatPanelMessageCache } from '../lib/chat-panel-message-cache'
 
 export { useAuth, useAuthOptional, getAuthUserSnapshot } from '@shogo/shared-app/auth'
@@ -25,6 +26,9 @@ function onSignOut(): void {
   // session unless they are dropped here (SHO-260). `clearChatPanelMessageCache`
   // was exported for exactly this and had no caller.
   void clearChatHistory()
+  // The workspace-agent chats list is likewise per user: the next account on
+  // this device must not see the previous one's rows (SHO-391).
+  void clearWorkspaceChatsCache()
   clearChatPanelMessageCache()
 }
 

@@ -44,7 +44,9 @@ function ignored(name: string): boolean {
   return (
     IGNORED_NAMES.has(name) ||
     name.endsWith('_history') ||
-    name.startsWith('.shogo-home-restore-')
+    // Every scratch directory home-state stages inside HOME: restore stages
+    // and the export's workspace-secret container.
+    name.startsWith('.shogo-home-')
   )
 }
 
@@ -125,7 +127,7 @@ export function homeNotPersistedNote(paths: string[]): string {
   return (
     `${shown} ${paths.length === 1 ? 'was' : 'were'} created but will NOT be saved across restarts ` +
     `(only ~/.ssh, ~/.oci, ~/.aws, ~/.kube, ~/.docker, ~/.gnupg, ~/.config/<tool>, ~/.gitconfig, ~/.netrc, ` +
-    `~/.git-credentials, ~/.bashrc and ~/.profile are). If it holds login, token or OAuth state, point the tool ` +
+    `~/.git-credentials, ~/.bashrc, ~/.profile and the workspace root's .env are). If it holds login, token or OAuth state, point the tool ` +
     `at ~/.config/${first} with its config-dir env var or flag, or move it to ~/.config/${first} and symlink the old path to it.`
   )
 }

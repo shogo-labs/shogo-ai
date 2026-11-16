@@ -352,3 +352,55 @@ describe("ChatInput integration — mobile-web TextInput changes", () => {
     expect(commits).toBe(commitsAfterTyping)
   })
 })
+
+/**
+ * SHO-370 — a Free workspace's over-cap pick shows the server's free-plan
+ * wording and a tappable Upgrade, not just the bare "exceeds …MB limit" line.
+ */
+describe("ChatInput — free-plan attachment cap upgrade prompt (SHO-370)", () => {
+  function dropFiles(container: HTMLElement, files: any[]) {
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement
+    expect(input).toBeTruthy()
+    Object.defineProperty(input, "files", { value: files, configurable: true })
+    fireEvent.change(input)
+  }
+
+  test("a free-cap over-size pick shows the free wording and a working Upgrade link", () => {
+    const upgrade = mock(() => {})
+    const view = render(
+      <ChatInput
+        onSubmit={mock(() => {})}
+        isPro
+        maxFileSizeBytes={1024 * 1024}
+        onUpgradeClick={upgrade}
+      />,
+    )
+
+    // A plain object with a large `size` — the over-cap path refuses it before
+    // any byte is read, so no 500 MB allocation is needed.
+    dropFiles(view.container, [
+      { name: "big.zip", type: "application/zip", size: 2 * 1024 * 1024 },
+    ])
+
+    expect(screen.getByText('File "big.zip" exceeds 1MB limit')).toBeTruthy()
+    expect(
+      screen.getByText(/Free workspaces can attach files up to 1 MB/),
+    ).toBeTruthy()
+    fireEvent.click(screen.getByText("Upgrade"))
+    expect(upgrade).toHaveBeenCalledTimes(1)
+  })
+
+  test("the paid cap shows no upgrade prompt for the same over-size pick", () => {
+    const view = render(
+      <ChatInput onSubmit={mock(() => {})} isPro maxFileSizeBytes={500 * 1024 * 1024} />,
+    )
+
+    dropFiles(view.container, [
+      { name: "big.bin", type: "application/octet-stream", size: 500 * 1024 * 1024 + 1 },
+    ])
+
+    expect(screen.getByText('File "big.bin" exceeds 500MB limit')).toBeTruthy()
+    expect(screen.queryByText(/Free workspaces can attach files up to/)).toBeNull()
+    expect(screen.queryByText("Upgrade")).toBeNull()
+  })
+})

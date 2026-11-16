@@ -173,6 +173,18 @@ mock.module('@shogo-ai/sdk/email/server', () => ({
 // `packages/shared-runtime/src/*` imports that several tests use deliberately as
 // the escape hatch (qa-sho212 loads s3-sync "by path (a specifier the preload
 // does not mock)"). The agent-loop symbols it needs are added explicitly below.
+// Mirror of `packages/shared-runtime/src/social-providers.ts` (SHO-379). Kept as
+// module-scope constants so the four barrel exports below cannot drift from each
+// other the way they drifted from the real module.
+const ZERNIO_PLATFORMS = ['instagram', 'tiktok'] as const
+const zernioNormalize = (name: string) => name.toLowerCase().replace(/[-_\s]/g, '')
+
+// The byte-range helpers are used *by* the routes under test, so the mock must
+// forward the real implementations rather than a copy of them: a hand-written
+// duplicate would keep `local-file-read`/`local-shared-files` green while the
+// shipped `fileRangeResponse` rotted (SHO-387).
+const realByteRange = require('@shogo/shared-runtime/byte-range') as typeof import('@shogo/shared-runtime/byte-range')
+
 mock.module('@shogo/shared-runtime', () => ({
   RUNTIME_CONFIG: {
     apiPort: 4000,
@@ -233,6 +245,16 @@ mock.module('@shogo/shared-runtime', () => ({
     listProjectArchives: async () => [],
   }),
   isMacOSJunkName: (_name: string) => false,
+  // Git LFS helpers named by `routes/git-lfs.ts` (SHO-368). Mirror the real
+  // implementations in packages/shared-runtime/src/lfs.ts exactly — the route
+  // builds object keys and validates oids through these.
+  lfsKeyPrefix: (env: NodeJS.ProcessEnv = process.env) =>
+    (env.S3_LFS_PREFIX || 'lfs/objects').replace(/^\/+|\/+$/g, ''),
+  isValidLfsOid: (oid: string) => /^[0-9a-f]{64}$/.test(oid),
+  lfsObjectKey: (projectId: string, oid: string, prefix: string = (process.env.S3_LFS_PREFIX || 'lfs/objects').replace(/^\/+|\/+$/g, '')) => {
+    if (!/^[0-9a-f]{64}$/.test(oid)) throw new Error(`invalid lfs oid: ${oid}`)
+    return `${projectId}/${prefix}/${oid.slice(0, 2)}/${oid.slice(2, 4)}/${oid}`
+  },
   // Symbols the `@shogo/agent-runtime/src/agent-loop` graph names on the barrel.
   // apps/api routes never needed them, so the mirror above never had them — a
   // missing name is a hard SyntaxError at module load, not a runtime no-op
@@ -291,4 +313,20 @@ mock.module('@shogo/shared-runtime', () => ({
       startsWith(0x52, 0x49, 0x46, 0x46)
     )
   },
+  // Instagram/TikTok connect through Zernio, not Composio (SHO-379).
+  // `apps/api/src/routes/integrations.ts` names ZERNIO_SOCIAL_TOOLKITS and
+  // isZernioSocialToolkit; the `@shogo/agent-runtime` graph names
+  // normalizeToolkitName and zernioPlatformsFromQuery. All four are re-exported
+  // from the barrel, so all four must exist here. Mirror the real
+  // implementations in packages/shared-runtime/src/social-providers.ts.
+  ZERNIO_SOCIAL_TOOLKITS: ZERNIO_PLATFORMS,
+  normalizeToolkitName: zernioNormalize,
+  isZernioSocialToolkit: (name: string) =>
+    (ZERNIO_PLATFORMS as readonly string[]).includes(zernioNormalize(name)),
+  zernioPlatformsFromQuery: (query: string) => {
+    const normalized = zernioNormalize(query)
+    return ZERNIO_PLATFORMS.filter((platform) => normalized.includes(platform))
+  },
+  parseByteRange: realByteRange.parseByteRange,
+  fileRangeResponse: realByteRange.fileRangeResponse,
 }))

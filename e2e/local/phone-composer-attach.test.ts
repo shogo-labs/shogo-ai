@@ -158,10 +158,12 @@ test.describe("SHO-283 — phone composer attach rows open a real chooser", () =
     await page.goto(`/projects/${projectId}`)
     await composer(page).waitFor({ state: "visible", timeout: 120_000 })
 
-    // Photo library — an image chooser, no camera capture, and the pick lands.
+    // Photo library — a photo/video chooser, no camera capture, and the pick lands.
     await openPlusSheet(page)
     const library = await tapRow(page, "Photo library")
-    expect(await library.element().getAttribute("accept")).toBe("image/*")
+    expect(await library.element().getAttribute("accept")).toBe(
+      "image/*,video/*",
+    )
     expect(await library.element().getAttribute("capture")).toBeNull()
     await library.setFiles({
       name: "qa-photo.png",
@@ -189,9 +191,9 @@ test.describe("SHO-283 — phone composer attach rows open a real chooser", () =
       timeout: 30_000,
     })
 
-    // Take photo — the camera, not the library.
+    // Camera — the camera, not the library.
     await openPlusSheet(page)
-    const camera = await tapRow(page, "Take photo")
+    const camera = await tapRow(page, "Camera")
     expect(await camera.element().getAttribute("accept")).toBe("image/*")
     expect(await camera.element().getAttribute("capture")).toBe("environment")
   })

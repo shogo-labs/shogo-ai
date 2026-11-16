@@ -58,6 +58,11 @@ mock.module('../config/usage-plans', () => ({
     monthlyIncludedUsdPerSeat: 0,
     legacy: false,
   }),
+  getGrantAllowance: () => ({
+    windowLimits: { fiveHourUsd: 0.5, weeklyUsd: 2 },
+    monthlyIncludedUsdPerSeat: 0,
+    legacy: false,
+  }),
   normalizePlanId: (p: string | null | undefined) => (p ?? null),
   comparePlanRank: () => 0,
   getAlwaysOnAllowance: () => 0,

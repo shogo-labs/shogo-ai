@@ -296,7 +296,9 @@ describe('AC2 — every documented endpoint and field reaches a model', () => {
     const video = await listMediaModels(undefined, { kind: 'video' })
     const image = await listMediaModels(undefined, { kind: 'image' })
 
-    expect(video.videos.map((model: any) => model.id).sort()).toEqual(higgsfieldVideoModels.map((entry) => entry.id).sort())
+    // Every model in the catalog that this server can list, Higgsfield's
+    // generated snapshot plus the hand-written Google Omni entry.
+    expect(video.videos.map((model: any) => model.id).sort()).toEqual(videoModels.map((entry) => entry.id).sort())
     expect(image.images.map((model: any) => model.id).sort()).toEqual(higgsfieldImageModels.map((entry) => entry.id).sort())
     expect(all.videos.length).toBe(video.videos.length)
     expect(all.images.length).toBe(image.images.length)

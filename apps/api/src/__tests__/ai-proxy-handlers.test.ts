@@ -757,6 +757,50 @@ describe('/ai/v1/subscription', () => {
     const data = await res.json() as any
     expect(data.planId).toBe('team')
   })
+
+  test('PUT is 404 in production (no free plan grants) — SHO-397', async () => {
+    const prevNodeEnv = process.env.NODE_ENV
+    const prevLocalMode = process.env.SHOGO_LOCAL_MODE
+    process.env.NODE_ENV = 'production'
+    delete process.env.SHOGO_LOCAL_MODE
+    try {
+      const app = buildApp()
+      const res = await app.fetch(new Request('http://x/api/ai/v1/subscription', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({ planId: 'business' }),
+      }))
+      expect(res.status).toBe(404)
+      const data = await res.json() as any
+      expect(data.error.code).toBe('not_found')
+    } finally {
+      process.env.NODE_ENV = prevNodeEnv
+      if (prevLocalMode === undefined) delete process.env.SHOGO_LOCAL_MODE
+      else process.env.SHOGO_LOCAL_MODE = prevLocalMode
+    }
+  })
+
+  test('PUT still works in production when local mode is on (desktop)', async () => {
+    const prevNodeEnv = process.env.NODE_ENV
+    const prevLocalMode = process.env.SHOGO_LOCAL_MODE
+    process.env.NODE_ENV = 'production'
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    try {
+      const app = buildApp()
+      const res = await app.fetch(new Request('http://x/api/ai/v1/subscription', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({ planId: 'business' }),
+      }))
+      expect(res.status).toBe(200)
+      const data = await res.json() as any
+      expect(data.planId).toBe('business')
+    } finally {
+      process.env.NODE_ENV = prevNodeEnv
+      if (prevLocalMode === undefined) delete process.env.SHOGO_LOCAL_MODE
+      else process.env.SHOGO_LOCAL_MODE = prevLocalMode
+    }
+  })
 })
 
 // =========================================================================

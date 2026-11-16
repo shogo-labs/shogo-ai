@@ -19,6 +19,7 @@ export {
   IMAGE_MODEL_CATALOG,
   VIDEO_MODEL_CATALOG,
   MUSIC_MODEL_CATALOG,
+  GOOGLE_VIDEO_MODELS,
   HIGGSFIELD_LEGACY_MODEL_ALIASES,
   AUTO_MODEL_ID,
   OPENROUTER_MODEL_PREFIX,
@@ -97,6 +98,9 @@ export {
   mediaOption,
   mergeModelOptions,
   optionsForEndpoint,
+  LAST_FRAME_FIELDS,
+  lastFrameField,
+  supportsLastFrame,
 } from './media-options'
 
 export {

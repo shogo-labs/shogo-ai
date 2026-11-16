@@ -79,6 +79,6 @@ export type ComposerAttachRow = {
 /** One source of truth for the native plus-menu attachment actions. */
 export const PLUS_ATTACH_ROWS: ComposerAttachRow[] = [
   { action: 'documents', label: 'Browse files', hint: 'Any file type', Icon: FolderOpen },
-  { action: 'camera', label: 'Take photo', hint: 'Use your camera', Icon: Camera },
-  { action: 'library', label: 'Photo library', hint: 'Pick from your gallery', Icon: ImageIcon },
+  { action: 'camera', label: 'Camera', hint: 'Photo or video', Icon: Camera },
+  { action: 'library', label: 'Photo library', hint: 'Photos and videos', Icon: ImageIcon },
 ]

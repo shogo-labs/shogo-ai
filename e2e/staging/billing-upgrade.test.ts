@@ -10,7 +10,7 @@ import { homeComposerInput, makeTestUser, signUpAndOnboard } from "./helpers"
  *   • sign-up → free plan landing
  *   • free-plan billing page (5-hour + weekly usage windows)
  *   • sidebar Upgrade-to-Pro CTA
- *   • Pro/Business/Enterprise pricing tiers
+ *   • Basic/Business/Enterprise pricing tiers (Pro is retired, SHO-397)
  *   • upgrade button reaches Stripe Checkout
  *
  * Stripe Checkout's Adaptive-Pricing UI now leads with a payment-method
@@ -89,47 +89,47 @@ test.describe("Billing & Upgrade Flow", () => {
     await expect(page.getByText("Weekly window", { exact: true }).first()).toBeVisible()
   })
 
-  test("free plan: sidebar shows Upgrade to Pro CTA", async () => {
+  test("free plan: sidebar CTA sells Business at its real price", async () => {
     await page.goto("/home")
     await page.waitForSelector("text=What are we building", { timeout: 10_000 })
 
-    await expect(page.getByText("Upgrade to Pro")).toBeVisible()
-    await expect(
-      page.getByText("Unlock more benefits").or(page.getByText(/of \$[\d.]+ left/)),
-    ).toBeVisible()
+    // Pro is retired (SHO-397/SHO-398): the CTA names the plan on sale.
+    const cta = page.getByTestId("sidebar-upgrade-cta")
+    await expect(cta).toBeVisible()
+    await expect(cta.getByText("Upgrade to Business")).toBeVisible()
+    await expect(cta.getByText(/\$16\/seat\/mo/)).toBeVisible()
+    await expect(page.getByText("Upgrade to Pro")).toHaveCount(0)
   })
 
-  test("free plan: per-seat pricing tiers displayed (v1.5.0 USD)", async () => {
+  test("free plan: per-seat pricing tiers displayed (v2.5.0 USD)", async () => {
     await navigateToBilling(page)
 
-    // v1.5.0 pricing: Basic $8/mo, Pro $20/seat, Business $40/seat, Enterprise custom.
+    // v2.5.0 pricing: Basic $8/mo, Business $16/seat, Enterprise custom.
+    // Pro is retired and has no card (SHO-397).
     // Source: apps/mobile/app/(app)/billing.tsx → PLAN_PRICING.
     // Each plan Card is wrapped in a View with a stable testID.
     const basicCard = page.getByTestId("plan-card-basic")
-    const proCard = page.getByTestId("plan-card-pro")
     const businessCard = page.getByTestId("plan-card-business")
     const enterpriseCard = page.getByTestId("plan-card-enterprise")
 
     await expect(basicCard).toBeVisible()
-    await expect(proCard).toBeVisible()
     await expect(businessCard).toBeVisible()
     await expect(enterpriseCard).toBeVisible()
+    await expect(page.getByTestId("plan-card-pro")).toHaveCount(0)
     await expect(enterpriseCard.getByText("Custom", { exact: true })).toBeVisible()
     await expect(basicCard.getByText("$8", { exact: true })).toBeVisible()
-    await expect(proCard.getByText("$20", { exact: true })).toBeVisible()
-    await expect(businessCard.getByText("$40", { exact: true })).toBeVisible()
-    // Pro/Business scale per-seat — the seat counter itself (not price copy)
-    // is the source of truth for seat count on each card.
-    await expect(proCard.getByText("Seats").first()).toBeVisible()
+    await expect(businessCard.getByText("$16", { exact: true })).toBeVisible()
+    // Business scales per-seat — the seat counter itself (not price copy)
+    // is the source of truth for seat count on the card.
     await expect(businessCard.getByText("Seats").first()).toBeVisible()
   })
 
-  test("free plan: 7-day trial CTA is offered on Basic, Pro and Business", async () => {
+  test("free plan: 7-day trial CTA is offered on Basic and Business", async () => {
     await navigateToBilling(page)
 
     // A first-time upgrade can start a 7-day trial ($0 today, card required).
-    // Enterprise is sales-led and has no trial.
-    for (const plan of ["basic", "pro", "business"] as const) {
+    // Enterprise is sales-led and has no trial; Pro is retired (SHO-397).
+    for (const plan of ["basic", "business"] as const) {
       await expect(
         page.getByTestId(`plan-card-${plan}`).getByText("Start 7-day free trial"),
       ).toBeVisible()
@@ -152,16 +152,17 @@ test.describe("Billing & Upgrade Flow", () => {
     await navigateToBilling(page)
 
     // The regular paid button (not the trial button) starts a non-trial checkout.
-    const upgradeButtons = page.getByText("Upgrade to Pro")
+    // Business is the only per-seat plan we sell now (Pro is retired, SHO-397).
+    const upgradeButtons = page.getByText("Upgrade to Business")
     await upgradeButtons.last().click()
 
     await page.waitForURL(/checkout\.stripe\.com/, { timeout: 30_000 })
     expect(page.url()).toContain("checkout.stripe.com")
 
-    await expect(page.getByText(/Subscribe to (Shogo )?Pro/)).toBeVisible({ timeout: 15_000 })
-    // v1.5.0: Pro is $20/seat/month. The exact label on Stripe Checkout
-    // is "$20.00 per seat / month" so a partial "$20.00" match is enough.
-    await expect(page.getByText("$20.00")).toBeVisible()
+    await expect(page.getByText(/Subscribe to (Shogo )?Business/)).toBeVisible({ timeout: 15_000 })
+    // v2.5.0: Business is $16/seat/month. The exact label on Stripe Checkout
+    // is "$16.00 per seat / month" so a partial "$16.00" match is enough.
+    await expect(page.getByText("$16.00")).toBeVisible()
   })
 
   // ── Phase 4: Post-Upgrade UI (skipped) ───────────────────────────

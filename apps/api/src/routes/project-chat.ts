@@ -72,6 +72,17 @@ const chatTracer = trace.getTracer("shogo-api-chat")
 // Environment detection
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
+/**
+ * A count that may legitimately be 0, kept as 0. `Number(x) || undefined`
+ * erases a real zero, which for `droppedToolResults` is the difference between
+ * "variant B1 ran and dropped nothing" and "the field was never sent" (SHO-381).
+ */
+function optionalCount(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const n = Number(value)
+  return Number.isFinite(n) ? n : undefined
+}
+
 // How long a chat request will BLOCK waiting for a metal project's runtime to
 // wake (rejoining the host's in-flight resume/boot) before degrading to a
 // retryable `pod_starting` 503. Covers essentially all real wakes (warm resume
@@ -929,6 +940,13 @@ export async function trackUsageFromStream(
           messagesAfter: Number(payload.messagesAfter) || 0,
           summaryChars: Number(payload.summaryChars) || 0,
           contextWindowTokens: Number(payload.contextWindowTokens) || undefined,
+          // What the estimate included beyond the messages, and whether variant
+          // B dropped tool results — the two fields that let a prod row explain
+          // `tokensAfter` (SHO-381). `|| undefined` would erase a real 0, and
+          // "B1 ran and dropped nothing" is exactly the state a prod row has to
+          // be able to tell apart from "variant A / field absent".
+          promptOverheadTokens: optionalCount(payload.promptOverheadTokens),
+          droppedToolResults: optionalCount(payload.droppedToolResults),
         },
       })
       persistenceDirty = true

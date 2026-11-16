@@ -123,6 +123,7 @@ import {
   chatHistoryKey as buildChatHistoryKey,
   chatSessionHistoryKey,
   deltaSince,
+  historyCursorFor,
   peekChatHistory,
   readChatHistory,
   removeChatHistory,
@@ -589,6 +590,8 @@ export interface ChatPanelProps {
     hasActiveSubscription: boolean
     hasAdvancedModelAccess?: boolean
     refetchUsageWallet: () => void
+    /** Per-attachment chat upload cap in bytes (SHO-370). */
+    chatAttachmentBytes?: number
   }
   /** Called whenever the streaming messages array changes (for TerminalPanel etc.) */
   onMessagesChange?: (messages: any[]) => void
@@ -1311,6 +1314,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const trialEligible = Boolean(
     (billingData ? (billingData as any).trialEligible : (ownBillingData as any).trialEligible),
   )
+  // Per-attachment upload cap (SHO-370). Undefined when billing is off (local
+  // mode) so ChatInput falls back to the paid default — the server is the gate.
+  const chatAttachmentBytes = billingData
+    ? billingData.chatAttachmentBytes
+    : platformFeatureFlags.billing
+      ? ownBillingData.chatAttachmentBytes
+      : undefined
 
   const handleUpgradeClick = useCallback(() => {
     router.push("/(app)/billing" as any)
@@ -5800,9 +5810,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
       const key = historyKeyFor(sessionId)
       if (!key || !messages.length) return
       const meta = historyMetaRef.current.get(key)
+      // A transcript written before the delta cursor is known — the cold
+      // page's first write, or a remount that has not seeded its meta yet —
+      // must still carry one: the newest row it holds *is* the cursor. Without
+      // it the entry says "no cursor", and the next open (a Home round trip, a
+      // reload) has to download the page again instead of asking for the delta
+      // (SHO-260/SHO-391). `seedHistoryCursor` refines it from the server a
+      // moment later; this is what covers the window before that answers.
+      const cursor = historyCursorFor({ cursor: meta?.cursor, messages })
       const entry: ChatHistoryEntry = {
         messages,
-        cursor: meta?.cursor ?? null,
+        cursor,
         total: meta?.total ?? null,
         hasMoreOlder: false,
         savedAt: Date.now(),
@@ -6015,7 +6033,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       const peeked = peekChatHistory("project", key)
       if (peeked) {
         historyMetaRef.current.set(key, {
-          cursor: peeked.cursor,
+          cursor: historyCursorFor(peeked),
           total: peeked.total,
         })
       }
@@ -6034,8 +6052,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
     void readChatHistory("project", key)
       .then(async (entry) => {
         if (!entry?.messages.length) return
+        // The newest row a stored slice holds is its cursor, so a slice written
+        // before the cursor was known still takes the delta path instead of
+        // re-downloading the page (SHO-391).
+        const cursor = historyCursorFor(entry)
         historyMetaRef.current.set(key, {
-          cursor: entry.cursor,
+          cursor,
           total: entry.total,
         })
         if (activeSessionIdRef.current !== sessionId) return
@@ -6046,8 +6068,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
         setMessages(painted)
         setIsInitialLoadComplete(true)
         try {
-          if (entry.cursor) {
-            await applyChatDelta(sessionId, key, entry.cursor, loadGenerationRef.current)
+          if (cursor) {
+            await applyChatDelta(sessionId, key, cursor, loadGenerationRef.current)
           }
         } catch (err) {
           // A delta that fails (a store write, a row the model rejects) must
@@ -10740,6 +10762,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     ideFileSearch={ideBridge.listFiles}
                     onOpenIdeFile={ideBridge.openFile}
                     presentation={presentation}
+                    maxFileSizeBytes={chatAttachmentBytes}
                   />
                 </ProjectComposerDock>
               ) : (

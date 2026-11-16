@@ -9,9 +9,11 @@
  *   - Pro      $20/seat/mo legacy — $20 of usage included per seat
  *   - Business $16/seat/mo ($156/yr), $20 of usage included per seat
  *
- * Pro is no longer offered at checkout: existing Pro subscriptions move to
- * Business $16 at their next renewal. The `pro` entry stays so an older client
- * build still resolves a price.
+ * Pro is no longer sold: no screen offers it at checkout, and a new `pro`
+ * checkout is remapped to Business server-side. Existing Pro subscriptions
+ * move to Business $16 at their next renewal. The `pro` entry stays so a
+ * current subscriber's plan, price and included usage still render, and an
+ * older client build still resolves a price.
  *
  * Every request is billed at provider raw cost + 20% markup; see
  * `usage-cost.ts` and `usage-plans.ts` on the backend.
@@ -317,7 +319,7 @@ export const PRO_FEATURES = [
 ]
 
 export const BUSINESS_FEATURES = [
-  'Everything in Pro, plus:',
+  'Everything in Basic, plus:',
   'Highest 5-hour & weekly usage limits (per seat)',
   'Team analytics & usage reporting',
   'SSO authentication',
@@ -468,3 +470,29 @@ export function formatCurrencyPrice(amount: number, currency: CurrencyDisplay): 
     ? `${currency.symbol}${formatted}`
     : `${formatted} ${currency.symbol}`
 }
+
+/**
+ * The plan every upsell surface sells (v2.5.0, SHO-398).
+ *
+ * Pro is retired: no screen offers it at checkout and the API remaps a `pro`
+ * request to Business, so an upsell that says "Pro" names a plan nobody can
+ * buy. Publishing, staging, always-on and advanced models are all gated at
+ * `PLAN_RANK >= pro`, which leaves Business as the cheapest purchasable plan
+ * that unlocks them — so that is what the CTAs name.
+ *
+ * Read the name, price and CTA label from here rather than typing them at the
+ * call site: when the ladder moves again (SHO-339 did it once already) there is
+ * one place to change.
+ */
+export const UPGRADE_PLAN_ID = 'business' as const
+
+/** Display name of the plan the upsells sell, e.g. "Business". */
+export const UPGRADE_PLAN_NAME: string = getPlanDisplayName(UPGRADE_PLAN_ID)
+
+/** Per-seat monthly list price of that plan, e.g. "$16/seat/mo". */
+export const UPGRADE_PLAN_PRICE_LABEL: string = PLAN_PRICING[UPGRADE_PLAN_ID].perSeat
+  ? `${formatUsd(PLAN_PRICING[UPGRADE_PLAN_ID].monthly)}/seat/mo`
+  : `${formatUsd(PLAN_PRICING[UPGRADE_PLAN_ID].monthly)}/mo`
+
+/** Button label every upgrade CTA uses, e.g. "Upgrade to Business". */
+export const UPGRADE_CTA_LABEL = `Upgrade to ${UPGRADE_PLAN_NAME}`

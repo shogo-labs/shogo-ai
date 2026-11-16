@@ -94,20 +94,20 @@ describe('trialCheckoutParams', () => {
   })
 
   test('7 days requires a card, cancels if the trial ends without one, and tags the subscription', () => {
-    const p = trial.trialCheckoutParams(7, { workspaceId: 'ws-1', planId: 'pro' })
+    const p = trial.trialCheckoutParams(7, { workspaceId: 'ws-1', planId: 'business' })
     expect(p.payment_method_collection).toBe('always')
     // Cards only: the one-trial-per-card rule needs a card fingerprint.
     expect(p.payment_method_types).toEqual(['card'])
     expect(p.subscription_data).toMatchObject({
       trial_period_days: 7,
       trial_settings: { end_behavior: { missing_payment_method: 'cancel' } },
-      metadata: { workspaceId: 'ws-1', planId: 'pro', trial: 'true' },
+      metadata: { workspaceId: 'ws-1', planId: 'business', trial: 'true' },
     })
   })
 })
 
 describe('buildCheckoutTrialFields', () => {
-  const metadata = { workspaceId: 'ws-1', planId: 'pro', billingInterval: 'monthly', seats: '1' }
+  const metadata = { workspaceId: 'ws-1', planId: 'business', billingInterval: 'monthly', seats: '1' }
   const affiliate = {
     subscription_data: { metadata: { affiliateId: 'aff-1' } },
     metadata: { affiliateId: 'aff-1' },
@@ -115,7 +115,7 @@ describe('buildCheckoutTrialFields', () => {
 
   test('eligible trial: merges affiliate and trial subscription data, card-only', async () => {
     const f = await trial.buildCheckoutTrialFields({
-      wantsTrial: true, userId: 'u-1', workspaceId: 'ws-1', planId: 'pro', metadata, affiliate,
+      wantsTrial: true, userId: 'u-1', workspaceId: 'ws-1', planId: 'business', metadata, affiliate,
     })
     expect(f.metadata).toMatchObject({ ...metadata, affiliateId: 'aff-1', trial: 'true' })
     expect(f.subscription_data).toMatchObject({
@@ -129,7 +129,7 @@ describe('buildCheckoutTrialFields', () => {
     redemptions.push({ userId: 'u-1', workspaceId: 'ws-old', status: 'converted' })
     for (const wantsTrial of [true, false]) {
       const f = await trial.buildCheckoutTrialFields({
-        wantsTrial, userId: 'u-1', workspaceId: 'ws-1', planId: 'pro', metadata, affiliate,
+        wantsTrial, userId: 'u-1', workspaceId: 'ws-1', planId: 'business', metadata, affiliate,
       })
       expect(f.metadata).toEqual({ ...metadata, affiliateId: 'aff-1' })
       expect(f.subscription_data).toEqual({ metadata: { affiliateId: 'aff-1' } })
@@ -141,7 +141,7 @@ describe('buildCheckoutTrialFields', () => {
 
 describe('trialEligibility', () => {
   test('a fresh user upgrading a workspace is eligible', async () => {
-    expect(await trial.trialEligibility({ userId: 'u-1', workspaceId: 'ws-1', planId: 'pro' })).toEqual({ eligible: true })
+    expect(await trial.trialEligibility({ userId: 'u-1', workspaceId: 'ws-1', planId: 'business' })).toEqual({ eligible: true })
   })
 
   test('free and enterprise plans are not trial-eligible', async () => {
@@ -150,6 +150,13 @@ describe('trialEligibility', () => {
       reason: 'plan_not_eligible',
     })
     expect(await trial.trialEligibility({ userId: 'u-1', workspaceId: 'ws-1', planId: 'enterprise' })).toEqual({
+      eligible: false,
+      reason: 'plan_not_eligible',
+    })
+  })
+
+  test('retired Pro is not trial-eligible (SHO-397)', async () => {
+    expect(await trial.trialEligibility({ userId: 'u-1', workspaceId: 'ws-1', planId: 'pro' })).toEqual({
       eligible: false,
       reason: 'plan_not_eligible',
     })
@@ -165,7 +172,7 @@ describe('trialEligibility', () => {
 
   test('a workspace that ever had a subscription is not eligible', async () => {
     subscriptions.push({ workspaceId: 'ws-1', status: 'canceled' })
-    expect(await trial.trialEligibility({ userId: 'u-1', workspaceId: 'ws-1', planId: 'pro' })).toEqual({
+    expect(await trial.trialEligibility({ userId: 'u-1', workspaceId: 'ws-1', planId: 'business' })).toEqual({
       eligible: false,
       reason: 'existing_subscription',
     })
@@ -173,7 +180,7 @@ describe('trialEligibility', () => {
 
   test('a high-risk signup goes to review and gets no trial', async () => {
     assessments.set('u-1', { band: 'high' })
-    expect(await trial.trialEligibility({ userId: 'u-1', workspaceId: 'ws-1', planId: 'pro' })).toEqual({
+    expect(await trial.trialEligibility({ userId: 'u-1', workspaceId: 'ws-1', planId: 'business' })).toEqual({
       eligible: false,
       reason: 'risk_review',
     })
@@ -188,7 +195,7 @@ describe('recordTrialStart (one trial per card)', () => {
   test('first trial on a card is recorded with its fingerprint', async () => {
     cardOf['sub_1'] = 'fp_A'
     const outcome = await trial.recordTrialStart({
-      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'pro',
+      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'business',
       subscriptionId: 'sub_1', stripeCustomerId: 'cus_1',
     })
     expect(outcome).toBe('recorded')
@@ -200,7 +207,7 @@ describe('recordTrialStart (one trial per card)', () => {
     redemptions.push({ userId: 'u-0', workspaceId: 'ws-other', cardFingerprint: 'fp_A', status: 'converted' })
     cardOf['sub_2'] = 'fp_A'
     const outcome = await trial.recordTrialStart({
-      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'pro',
+      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'business',
       subscriptionId: 'sub_2', stripeCustomerId: 'cus_2',
     })
     expect(outcome).toBe('blocked')
@@ -212,11 +219,11 @@ describe('recordTrialStart (one trial per card)', () => {
     redemptions.push({ userId: 'u-0', workspaceId: 'ws-other', cardFingerprint: 'fp_A', status: 'converted' })
     cardOf['sub_2'] = 'fp_A'
     await trial.recordTrialStart({
-      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'pro',
+      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'business',
       subscriptionId: 'sub_2', stripeCustomerId: 'cus_2',
     })
     const again = await trial.recordTrialStart({
-      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'pro',
+      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'business',
       subscriptionId: 'sub_2', stripeCustomerId: 'cus_2',
     })
     expect(again).toBe('already_blocked')
@@ -227,7 +234,7 @@ describe('recordTrialStart (one trial per card)', () => {
     redemptions.push({ userId: 'u-1', workspaceId: 'ws-other', cardFingerprint: 'fp_A', status: 'trialing' })
     cardOf['sub_4'] = 'fp_B'
     const outcome = await trial.recordTrialStart({
-      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'pro',
+      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'business',
       subscriptionId: 'sub_4', stripeCustomerId: 'cus_4',
     })
     expect(outcome).toBe('blocked')
@@ -239,7 +246,7 @@ describe('recordTrialStart (one trial per card)', () => {
     cardOf['sub_5'] = 'fp_C'
     failNextUpsertWithUniqueViolation = true
     const outcome = await trial.recordTrialStart({
-      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'pro',
+      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'business',
       subscriptionId: 'sub_5', stripeCustomerId: 'cus_5',
     })
     expect(outcome).toBe('blocked')
@@ -250,11 +257,11 @@ describe('recordTrialStart (one trial per card)', () => {
   test('a re-delivered webhook for a recorded trial is a no-op', async () => {
     cardOf['sub_1'] = 'fp_A'
     await trial.recordTrialStart({
-      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'pro',
+      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'business',
       subscriptionId: 'sub_1', stripeCustomerId: 'cus_1',
     })
     const again = await trial.recordTrialStart({
-      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'pro',
+      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'business',
       subscriptionId: 'sub_1', stripeCustomerId: 'cus_1',
     })
     expect(again).toBe('already_recorded')
@@ -264,7 +271,7 @@ describe('recordTrialStart (one trial per card)', () => {
     redemptions.push({ userId: 'u-1', workspaceId: 'ws-1', cardFingerprint: null, status: 'converted' })
     cardOf['sub_3'] = 'fp_B'
     const outcome = await trial.recordTrialStart({
-      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'pro',
+      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'business',
       subscriptionId: 'sub_3', stripeCustomerId: 'cus_3',
     })
     expect(outcome).toBe('recorded')
