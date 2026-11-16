@@ -253,6 +253,8 @@ const loadOlderCalls: string[] = []
 /** Sequence-anchored pages requested for old message deep links. */
 const loadBeforeSeqCalls: Array<[number, number]> = []
 const loadNewerCalls: string[] = []
+/** Arguments handed to the read marker by TimelinePane. */
+const readMarkerCalls: Array<[string | null | undefined, number, boolean, boolean | undefined]> = []
 /** People typing in the pane's scope; a running agent is the dock's business. */
 const typingUsers: Array<{ id: string; name: string }> = []
 /** Replies a pane asked the server to stop. */
@@ -289,7 +291,9 @@ mock.module('../../../hooks/useTeamChat', () => ({
     reload: async () => {},
     trimOld: () => {},
   }),
-  useMarkReadWhileVisible: () => {},
+  useMarkReadWhileVisible: (conversationId: string | null | undefined, newestSeq: number, visible: boolean, paused?: boolean) => {
+    readMarkerCalls.push([conversationId, newestSeq, visible, paused])
+  },
   useTypingUsers: () => typingUsers,
   useMentionables: () => hookMentionables.value,
 }))
@@ -1456,6 +1460,7 @@ describe('opening a channel with unread', () => {
     loadOlderCalls.length = 0
     loadBeforeSeqCalls.length = 0
     loadNewerCalls.length = 0
+    readMarkerCalls.length = 0
     reportViewable = null
     apiTargetMessage = null
     activityTimeline.messages = []
@@ -1584,6 +1589,15 @@ describe('opening a channel with unread', () => {
 
     fireEvent.click(screen.getByLabelText('Load newer messages'))
     expect(loadNewerCalls).toEqual(['newer'])
+  })
+
+  test('an anchored DM does not advance its read marker through unseen newer messages', () => {
+    const dm = channel({ id: 'dm-1', kind: 'dm', lastSeq: 500, lastReadSeq: 10 })
+    activityTimeline.messages = [message({ id: 'old-dm', conversationId: 'dm-1', seq: 10 })]
+    activityTimeline.hasMoreNewer = true
+    renderPane(dm)
+
+    expect(readMarkerCalls.at(-1)).toEqual(['dm-1', 10, true, true])
   })
 
   test('a thread has no unread pill', () => {

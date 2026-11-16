@@ -414,6 +414,11 @@ export function useConversationTimeline(
     () => (conversationId ? { conversationId, threadRootId } : null),
     [conversationId, threadRootId],
   )
+  // Async page loads capture their request's scope. Keep the current scope in
+  // a ref so a late deep-link response cannot overwrite a conversation the
+  // reader has already left.
+  const activeScopeRef = useRef(scope)
+  activeScopeRef.current = scope
 
   // The device copy of this channel/thread (SHO-260). `origin` keeps a machine
   // workspace's chat apart from the same user's cloud chats.
@@ -600,6 +605,14 @@ export function useConversationTimeline(
   const loadBeforeSeq = useCallback(async (beforeSeq: number, limit = PAGE_SIZE) => {
     if (!conversationId || threadRootId) return false
     const page = await api.messages(conversationId, { beforeSeq, limit })
+    const activeScope = activeScopeRef.current
+    if (
+      !activeScope ||
+      activeScope.conversationId !== conversationId ||
+      activeScope.threadRootId !== threadRootId
+    ) {
+      return false
+    }
     const newest = page.messages[page.messages.length - 1]
     if (!newest || newest.seq !== beforeSeq - 1) return false
     const latestSeq = lastConfirmedSeq(stateRef.current)

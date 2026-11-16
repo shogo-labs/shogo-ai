@@ -199,7 +199,15 @@ export function TimelinePane(props: TimelinePaneProps) {
     if (unreadTotal !== null || !unread || summaryUnread === undefined) return
     setUnreadTotal(summaryUnread)
   }, [unreadTotal, unread, summaryUnread])
-  useMarkReadWhileVisible(threadRootId || !conversation.joined ? null : conversation.id, newestSeq, visible, readPaused)
+  // An anchored notification view is intentionally a non-contiguous slice.
+  // A realtime insert or reconnect can add a much newer row to that slice,
+  // but the reader has not seen the gap between it and the target yet.
+  useMarkReadWhileVisible(
+    threadRootId || !conversation.joined ? null : conversation.id,
+    newestSeq,
+    visible,
+    readPaused || timeline.hasMoreNewer,
+  )
 
   const onMarkUnread = useCallback((m: ChatMessage) => {
     const afterSeq = Math.max(0, m.seq - 1)
