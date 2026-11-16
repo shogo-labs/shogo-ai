@@ -22,8 +22,8 @@ import {
  *
  * A window that is not a tab, like the desktop island overlay, must keep
  * following the shared default instead: it calls
- * `setActiveWorkspaceFollowsShared()` at module load, reads `localStorage`
- * directly, and keeps the `storage` listener.
+ * `setActiveWorkspaceFollowsShared()` while its route is active, reads
+ * `localStorage` directly, and keeps the `storage` listener.
  */
 const STORAGE_KEY = 'shogo:active-workspace-id'
 const KIND_STORAGE_KEY = 'shogo:active-workspace-kind'

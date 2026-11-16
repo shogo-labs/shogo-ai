@@ -23,9 +23,10 @@ import { ISLAND_SURFACE_PROPS, ISLAND_TRIGGER_PROPS, getIslandBridge } from "../
 const SIGNED_OUT_RETRY_MS = 15_000
 
 // This window is not a tab: it mirrors the workspace the person picked in the
-// main window, including switches made after it loaded (SHO-390). Set at module
-// load so every read below goes to the shared default.
-setActiveWorkspaceFollowsShared(true)
+// main window, including switches made after it loaded (SHO-390). Expo Router
+// can evaluate route modules during discovery, so gate this module-level setup
+// on the preload bridge that exists only in the actual island window.
+if (getIslandBridge()) setActiveWorkspaceFollowsShared(true)
 
 /** The overlay window is transparent, but the page and every navigator
  * container above this route paint an opaque background (react-navigation's
