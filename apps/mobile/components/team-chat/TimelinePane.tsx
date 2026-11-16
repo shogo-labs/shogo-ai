@@ -302,6 +302,9 @@ export function TimelinePane(props: TimelinePaneProps) {
             targetLoaded = await timeline.loadBeforeSeq(message.seq + 1).catch(() => false)
           } else {
             props.onOpenThread?.(message)
+            // The reply lives in its own thread, not this DM timeline. Stop
+            // hiding the DM so it is ready when the reader closes that thread.
+            setHighlight((current) => current === id ? null : current)
             targetLoaded = true
           }
           return

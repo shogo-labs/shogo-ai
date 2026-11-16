@@ -1570,16 +1570,28 @@ describe('opening a channel with unread', () => {
 
   test('an old DM reply still opens its real thread', async () => {
     const dm = channel({ id: 'dm-1', kind: 'dm', lastSeq: 500, lastReadSeq: 500 })
-    activityTimeline.messages = [message({ id: 'latest', conversationId: 'dm-1', seq: 500 })]
+    activityTimeline.messages = [message({ id: 'latest', conversationId: 'dm-1', seq: 500, text: 'Latest DM message' })]
     activityTimeline.hasMoreOlder = true
     apiTargetMessage = message({ id: 'old-reply', conversationId: 'dm-1', seq: 10, threadRootId: 'root-1' })
     const onOpenThread = mock(() => {})
 
-    renderPane(dm, { highlightMessageId: 'old-reply', onOpenThread })
+    const pane = renderPane(dm, { highlightMessageId: 'old-reply', onOpenThread })
 
     await waitFor(() => expect(onOpenThread).toHaveBeenCalledWith(apiTargetMessage))
     expect(loadBeforeSeqCalls).toEqual([])
     expect(loadOlderCalls).toEqual([])
+    pane.rerender(
+      <TimelinePane
+        workspaceId="ws"
+        conversation={dm}
+        me="u-me"
+        mentionables={{ ...mentionables, agents: [] }}
+        visible
+        highlightMessageId={null}
+        onOpenThread={onOpenThread}
+      />,
+    )
+    expect(screen.getByText('Latest DM message')).not.toBeNull()
   })
 
   test('an anchored DM offers paging toward newer messages', () => {
