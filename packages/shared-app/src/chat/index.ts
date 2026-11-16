@@ -33,6 +33,8 @@ export {
   buildChatApiUrl,
   buildChatTurnUrl,
   buildChatTasksUrl,
+  outgoingChatMessages,
+  prepareChatSendBody,
   type ChatTransportOptions,
   type ChatTransportConfig,
 } from './useChatTransport'
