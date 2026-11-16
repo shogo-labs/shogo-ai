@@ -6792,12 +6792,6 @@ export function aiProxyRoutes() {
       // offers), with a prompt an edit, or an extend when `options.task` asks.
       if (entry.provider === 'google') {
         const apiKey = getImageProviderApiKey('google')
-        if (!apiKey) {
-          return c.json(
-            { error: { message: `Video provider 'google' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } },
-            503
-          )
-        }
         if (!entry.apiModel) {
           return c.json(
             { error: { message: `${entry.displayName} has no upstream model id.`, type: 'server_error', code: 'provider_not_configured' } },
@@ -6900,6 +6894,12 @@ export function aiProxyRoutes() {
           return invalid(
             `A first-and-last-frame clip (start_image + end_image) is limited to 10 s; got ${duration}.`,
             'invalid_duration',
+          )
+        }
+        if (!apiKey) {
+          return c.json(
+            { error: { message: `Video provider 'google' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } },
+            503
           )
         }
 
