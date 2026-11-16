@@ -587,9 +587,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: 'E2E (local mode) (1/3)', shard: '1/3' }
-          - { name: 'E2E (local mode) (2/3)', shard: '2/3' }
-          - { name: 'E2E (local mode) (3/3)', shard: '3/3' }
+          - { name: 'E2E (local mode) (1/4)', shard: '1/4' }
+          - { name: 'E2E (local mode) (2/4)', shard: '2/4' }
+          - { name: 'E2E (local mode) (3/4)', shard: '3/4' }
+          - { name: 'E2E (local mode) (4/4)', shard: '4/4' }
           # These specs all need the API pointed at the fake model, which
           # would change every other spec, so they get stacks of their own.
           # They are FOUR jobs, not one (SHO-251): on one worker, all 27 tests
@@ -676,8 +677,9 @@ jobs:
       contents: read
     # 35, not 60: a wedged E2E job holds the whole merge queue for the length
     # of this cap (23:55–01:25Z on 2026-10-20, three entries, ~75 min). Measured
-    # on a green PR run: local shards 11–13 min, so 35 keeps ~10 min of headroom
-    # and still halves the worst case. One number for the whole matrix on
+    # The local-mode suite now uses four shards because shard 3/3 exceeded
+    # this cap after the previously broken setup tests began running. One number
+    # for the whole matrix on
     # purpose: the chat jobs measure 15, 7, 9 and 5 min on CI (SHO-251), all
     # well under 60% of it, and a per-entry cap via `${{ matrix.timeout }}`
     # turned out to mean NO cap at all for entries without the key — a job ran
