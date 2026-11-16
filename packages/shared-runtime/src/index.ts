@@ -66,6 +66,7 @@ export {
 
 export {
   PublishedDataSync,
+  PUBLISHED_SOURCE_KEY,
   createPublishedDataSyncFromEnv,
   type PublishedDataSyncConfig,
 } from './published-data-sync'

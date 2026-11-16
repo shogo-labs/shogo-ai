@@ -20,9 +20,12 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
+import * as tar from 'tar'
+import { S3Sync } from '@shogo/shared-runtime'
 import {
   handleDistFiles,
   handlePublishArtifact,
+  handlePublishSource,
   type PublishEndpointDeps,
 } from '../publish-endpoints'
 import { PUBLISH_STAGING_DIR } from '../preview-manager'
@@ -109,5 +112,76 @@ describe('publish endpoints share the staging dir', () => {
     const res = await detached.fetch(new Request('http://runtime.test/agent/dist-files?publish=true'))
     expect(res.status).toBe(404)
     expect(((await res.json()) as { error: string }).error).toBe('project_not_attached')
+  })
+})
+
+/**
+ * A server-backed publish without a per-commit image pins the editing runtime's
+ * source through this endpoint. Before it, the published pod booted from the
+ * runtime's last backup, which a metal runtime only writes when it stops — so
+ * a fix to `server.tsx` never went live however often it was published.
+ */
+describe('/agent/publish-source', () => {
+  const packWithS3Sync = (dir: string, _projectId: string, dest: string) =>
+    new S3Sync({ bucket: 'unused-for-packing', prefix: 'p1', localDir: dir, watchEnabled: false, syncInterval: 0 }).packProjectArchive(dest)
+
+  async function listArchive(res: Response): Promise<string[]> {
+    const out = mkdtempSync(join(tmpdir(), 'shogo-publish-source-out-'))
+    try {
+      const file = join(out, 'source.tar.gz')
+      writeFileSync(file, Buffer.from(await res.arrayBuffer()))
+      const entries: string[] = []
+      await tar.list({ file, onReadEntry: (e: any) => entries.push(e.path.replace(/^\.\//, '')) } as any)
+      return entries
+    } finally {
+      rmSync(out, { recursive: true, force: true })
+    }
+  }
+
+  it('returns the current working tree, .env included, without node_modules', async () => {
+    writeFileSync(join(workspace, 'server.tsx'), 'app.use("/api/*", requireMember)\n')
+    writeFileSync(join(workspace, '.env'), 'AUTH_SECRET=x\n')
+    mkdirSync(join(workspace, 'node_modules', 'dep'), { recursive: true })
+    writeFileSync(join(workspace, 'node_modules', 'dep', 'index.js'), '')
+
+    const hono = new Hono()
+    hono.get('/agent/publish-source', (c) =>
+      handlePublishSource(c, { projectDir: () => workspace, packSource: packWithS3Sync }),
+    )
+    const res = await hono.fetch(new Request('http://runtime.test/agent/publish-source?projectId=p1'))
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('application/gzip')
+    const entries = await listArchive(res)
+    expect(entries).toContain('server.tsx')
+    // The published server reads its secrets from `.env`; the archive goes to
+    // a private bucket, not into an image layer.
+    expect(entries).toContain('.env')
+    expect(entries.some((e) => e.startsWith('node_modules'))).toBe(false)
+  })
+
+  it('reports a project that is not attached', async () => {
+    const hono = new Hono()
+    hono.get('/agent/publish-source', (c) =>
+      handlePublishSource(c, { projectDir: () => null, packSource: packWithS3Sync }),
+    )
+    const res = await hono.fetch(new Request('http://runtime.test/agent/publish-source?projectId=p1'))
+    expect(res.status).toBe(404)
+    expect(((await res.json()) as { error: string }).error).toBe('project_not_attached')
+  })
+
+  it('answers 500 with the reason when packing fails, so the publish fails loudly', async () => {
+    const hono = new Hono()
+    hono.get('/agent/publish-source', (c) =>
+      handlePublishSource(c, {
+        projectDir: () => workspace,
+        packSource: async () => {
+          throw new Error('disk full')
+        },
+      }),
+    )
+    const res = await hono.fetch(new Request('http://runtime.test/agent/publish-source?projectId=p1'))
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'source_pack_failed', message: 'disk full' })
   })
 })

@@ -582,6 +582,9 @@ export async function publishConfigureTimeoutMs(
       if (shouldBuildPublishedImage('knative')) {
         return PUBLISH_CONFIGURE_TIMEOUT_MS + publishedImageBuildTimeoutMs()
       }
+      // No image: the step pulls the source snapshot from the runtime instead.
+      const { PUBLISH_SOURCE_TIMEOUT_MS } = await import("../services/published-source.service")
+      return PUBLISH_CONFIGURE_TIMEOUT_MS + PUBLISH_SOURCE_TIMEOUT_MS
     }
   } catch (err: any) {
     console.warn(`[Publish] Could not resolve publish substrate for ${projectId}: ${err?.message ?? err}`)
@@ -1084,6 +1087,22 @@ async function configurePublishedService(
         `[Publish] No per-commit image for ${projectId} ` +
           `(substrate=${substrate.kind}${missing.length ? `, missing ${missing.join(", ")}` : ", disabled by PUBLISH_BUILD_IMAGES"})`,
       )
+    }
+  }
+
+  // Without an image the published pod hydrates its source at boot. Pin the
+  // editing runtime's current source for it first, so it never boots from a
+  // backup the runtime has not refreshed since it last stopped. Metal publishes
+  // boot from their own VM and do not read this.
+  if (serverBacked && !publishedImageRef && substrate.kind === "knative") {
+    const { pinPublishedSource } = await import("../services/published-source.service")
+    const pinned = await pinPublishedSource({ projectId, subdomain })
+    if (!pinned.ok) {
+      const { setEnvironmentPublishStatus } = await import("../services/published-ops.service")
+      await setEnvironmentPublishStatus(environment.id, "failed", `${pinned.code}: ${pinned.message}`).catch(
+        (err: any) => console.warn(`[Publish] could not record the source snapshot failure: ${err?.message ?? err}`),
+      )
+      throw new PublishConfigureError(pinned.code, pinned.message, 503)
     }
   }
 

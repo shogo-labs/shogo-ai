@@ -109,4 +109,20 @@ describe('publish build timeout and retry', () => {
       else process.env.PUBLISH_BUILD_IMAGES = previous
     }
   })
+
+  test('a server-backed knative publish without images gets the source snapshot budget', async () => {
+    // No image means configure pulls the source snapshot from the runtime, so
+    // the budget has to cover that download.
+    const previous = process.env.PUBLISH_BUILD_IMAGES
+    process.env.PUBLISH_BUILD_IMAGES = 'off'
+    try {
+      substrate.kind = 'knative'
+      const configure = Number(process.env.PUBLISH_CONFIGURE_TIMEOUT_MS) || 60_000
+      expect(await publishConfigureTimeoutMs('proj-1', { serverBacked: true })).toBe(configure + 180_000)
+      expect(await publishConfigureTimeoutMs('proj-1', { serverBacked: false })).toBe(configure)
+    } finally {
+      if (previous === undefined) delete process.env.PUBLISH_BUILD_IMAGES
+      else process.env.PUBLISH_BUILD_IMAGES = previous
+    }
+  })
 })
