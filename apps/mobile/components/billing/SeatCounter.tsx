@@ -5,11 +5,11 @@ import { Minus, Plus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 
 /**
- * Compact seat selector used on the Pro and Business plan cards.
+ * Compact seat selector used on the Business plan card.
  *
  * Replaces the legacy `TierSelector` (10-tier dropdown). Pricing is per-seat
- * and the included usage scales linearly: $20/seat for Pro (legacy) and
- * $20/seat for Business ($16/seat price since v2.5.0).
+ * and the included usage scales linearly: $16/seat for Business since v2.5.0
+ * (the retired Pro plan was $20/seat).
  */
 export function SeatCounter({
   value,

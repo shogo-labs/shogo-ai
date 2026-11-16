@@ -26,6 +26,14 @@ export {
 } from './workspace-root-sync'
 
 export {
+  ZERNIO_SOCIAL_TOOLKITS,
+  isZernioSocialToolkit,
+  normalizeToolkitName,
+  zernioPlatformsFromQuery,
+  type ZernioSocialToolkit,
+} from './social-providers'
+
+export {
   CAPABILITY_INFO,
   CAPABILITY_KEYS,
   mergeCapabilitySettingsIntoConfig,
@@ -70,6 +78,7 @@ export {
   type GitWorkspaceSyncConfig,
   type SpawnGitFn,
   type SyncParkInfo,
+  type CheckpointResult,
   type CloudSyncMode,
 } from './git-sync'
 
@@ -377,6 +386,14 @@ export {
   type SeedRelation,
   type SeedTableData,
 } from './published-schema'
+
+export {
+  parseByteRange,
+  fileRangeResponse,
+  type ParsedByteRange,
+  type SliceableFile,
+  type FileRangeResponseOptions,
+} from './byte-range'
 
 export {
   publishedImageRepository,

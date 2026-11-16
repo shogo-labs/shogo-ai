@@ -26,6 +26,7 @@ mock.module('../../lib/prisma', () => ({
 const { signSharedFileToken } = await import('../../lib/shared-file-token')
 const { localSharedFileRoutes } = await import('../local-shared-files')
 
+const RANGE_BODY = Array.from({ length: 100 }, (_, index) => String(index % 10)).join('')
 const originalSecret = process.env.BETTER_AUTH_SECRET
 let workspacesDir = ''
 let outsideDir = ''
@@ -46,9 +47,15 @@ beforeAll(() => {
   writeFileSync(join(mergedRoot, 'exports', 'summary.csv'), 'a,b\n1,2\n')
   mkdirSync(join(mergedRoot, 'media'), { recursive: true })
   writeFileSync(join(mergedRoot, 'media', 'clip.mp4'), 'not really a video')
+  // 100 bytes with a known pattern, so a ranged read can be asserted byte by
+  // byte (SHO-387).
+  writeFileSync(join(mergedRoot, 'media', 'range.mp4'), RANGE_BODY)
   writeFileSync(join(mergedRoot, 'media', 'voice.mp3'), 'not really audio')
   writeFileSync(join(mergedRoot, 'media', 'notes.md'), '# Notes')
   writeFileSync(join(mergedRoot, 'media', 'icon.woff2'), 'wOF2')
+  writeFileSync(join(mergedRoot, 'media', 'photo.png'), 'not really a png')
+  writeFileSync(join(mergedRoot, 'media', 'report.pdf'), '%PDF-1.4')
+  writeFileSync(join(mergedRoot, 'media', 'logo.svg'), '<svg/>')
 
   mkdirSync(join(workspacesDir, 'proj-a'), { recursive: true })
   writeFileSync(join(workspacesDir, 'proj-a', 'report.txt'), 'project file')
@@ -119,6 +126,23 @@ describe('local shared file routes: content types', () => {
       const response = await app.fetch(new Request(`http://localhost/api/f/${workspaceLink(path)}`))
       expect(response.status).toBe(200)
       expect(response.headers.get('content-type')).toBe(expected)
+    }
+  })
+
+  it('opens pictures and PDFs in place, and still saves everything else', async () => {
+    const app = localSharedFileRoutes({ workspacesDir })
+    const cases: Array<[string, string]> = [
+      ['media/photo.png', 'inline'],
+      ['media/report.pdf', 'inline'],
+      ['exports/summary.csv', 'attachment'],
+      ['media/logo.svg', 'attachment'],
+    ]
+    for (const [path, disposition] of cases) {
+      const response = await app.fetch(new Request(`http://localhost/api/f/${workspaceLink(path)}`))
+      expect(response.status).toBe(200)
+      expect(response.headers.get('content-disposition')).toBe(
+        `${disposition}; filename="${path.split('/').pop()}"`,
+      )
     }
   })
 
@@ -216,5 +240,57 @@ describe('local shared file routes: honest 404s', () => {
   it('answers `file_not_found` when the token is good but nothing resolves', async () => {
     const { body } = await fetchToken(workspaceLink('exports/missing.csv'))
     expect(body.error.code).toBe('file_not_found')
+  })
+})
+
+/**
+ * A video in the pane is a `<video>` pointed at this route, and both the first
+ * frame and every seek are `Range` requests. Answering 200 with the whole file
+ * downloaded 300 MB before playback (SHO-387).
+ */
+describe('local shared file routes: byte ranges', () => {
+  const request = (init?: RequestInit) =>
+    localSharedFileRoutes({ workspacesDir }).fetch(
+      new Request(`http://localhost/api/f/${workspaceLink('media/range.mp4')}`, init),
+    )
+
+  it('advertises ranges and streams the whole file without one', async () => {
+    const response = await request()
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('accept-ranges')).toBe('bytes')
+    expect(response.headers.get('content-length')).toBe('100')
+    expect(await response.text()).toBe(RANGE_BODY)
+  })
+
+  it('answers a byte range with 206 and its content-range', async () => {
+    const response = await request({ headers: { range: 'bytes=0-9' } })
+
+    expect(response.status).toBe(206)
+    expect(response.headers.get('content-range')).toBe('bytes 0-9/100')
+    expect(response.headers.get('content-length')).toBe('10')
+    expect(response.headers.get('accept-ranges')).toBe('bytes')
+    expect(await response.text()).toBe('0123456789')
+  })
+
+  it('answers a suffix range with the final bytes', async () => {
+    const response = await request({ headers: { range: 'bytes=-5' } })
+
+    expect(response.status).toBe(206)
+    expect(response.headers.get('content-range')).toBe('bytes 95-99/100')
+    expect(await response.text()).toBe('56789')
+  })
+
+  it('answers a range past the end with 416 and the file size', async () => {
+    const response = await request({ headers: { range: 'bytes=200-' } })
+
+    expect(response.status).toBe(416)
+    expect(response.headers.get('content-range')).toBe('bytes */100')
+  })
+
+  it('serves a video inline so a direct open can play it', async () => {
+    const response = await request()
+
+    expect(response.headers.get('content-disposition')).toBe('inline; filename="range.mp4"')
   })
 })

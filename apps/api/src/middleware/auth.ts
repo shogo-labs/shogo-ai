@@ -106,6 +106,32 @@ declare module "hono" {
 const WORKSPACE_TOKEN_PROJECT_ROUTE =
   /^\/api\/projects\/([^/]+)\/git\/info\/lfs\/objects\/(?:batch|verify)$/
 
+/**
+ * The LFS scope id a bare workspace runtime (`ws:<workspaceId>`, no anchor
+ * project) uses for its root repo. It is not a `project` row — the runtime
+ * runs with `PROJECT_ID=ws:<workspaceId>` and pushes its root repo's LFS
+ * objects through the same `/api/projects/:projectId/git/info/lfs/...` URL
+ * every other pod uses (SHO-368).
+ */
+export function workspaceRootLfsId(workspaceId: string): string {
+  return `ws:${workspaceId}`
+}
+
+/**
+ * True when `projectId` is the root-repo LFS scope of the workspace this
+ * runtime-token auth was issued for — i.e. a bare workspace runtime pushing
+ * its root repo. Never true for `ws:proj:*`, a member project, or any id that
+ * does not equal `ws:<auth.workspaceId>`.
+ */
+export function isWorkspaceRootLfs(
+  auth: AuthContext | undefined,
+  projectId: string | undefined,
+): boolean {
+  if (!auth?.isAuthenticated || auth.via !== 'runtimeToken') return false
+  if (!auth.workspaceId || !projectId) return false
+  return projectId === workspaceRootLfsId(auth.workspaceId)
+}
+
 function workspaceTokenLfsScope(
   path: string,
   token: string,
@@ -115,6 +141,48 @@ function workspaceTokenLfsScope(
   const verified = verifyWorkspaceRuntimeToken(token)
   if (!verified.ok) return null
   return { projectId: decodeURIComponent(match[1]), workspaceId: verified.workspaceId }
+}
+
+/**
+ * Runtime-token auth for a bare workspace runtime's root repo
+ * (`ws:<workspaceId>`), or null when the workspace is missing or has no owner.
+ *
+ * There is no `project` row to look up, so the owner is resolved from the
+ * workspace itself — the same "representation, not identity" rule as
+ * `runtimeTokenAuth`: `userId` is the workspace's owner Member, `via` stays
+ * `runtimeToken`, and the capability is still scoped to `ws:<workspaceId>`.
+ */
+async function workspaceRootTokenAuth(
+  path: string,
+  workspaceId: string,
+): Promise<AuthContext | null> {
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: {
+      members: {
+        where: { role: 'owner', projectId: null },
+        orderBy: { createdAt: 'asc' },
+        select: { userId: true },
+        take: 1,
+      },
+    },
+  })
+  if (!workspace) return null
+  const ownerUserId = workspace.members[0]?.userId
+  if (!ownerUserId) {
+    console.warn(
+      "[authMiddleware] runtime-token: no owner resolvable for workspace root repo",
+      { path, workspaceId },
+    )
+    return null
+  }
+  return {
+    userId: ownerUserId,
+    workspaceId,
+    projectId: workspaceRootLfsId(workspaceId),
+    isAuthenticated: true,
+    via: 'runtimeToken',
+  }
 }
 
 /**
@@ -248,10 +316,16 @@ export async function authMiddleware(c: Context, next: Next) {
       c.req.query("projectId") ?? c.req.param("projectId") ?? undefined
     try {
       const verified = verifyRuntimeToken(runtimeToken, legacyFallbackProjectId)
-      const scope = verified.ok
+      const scope: { projectId: string; workspaceId?: string } | null = verified.ok
         ? { projectId: verified.projectId }
         : workspaceTokenLfsScope(c.req.path, runtimeToken)
-      const runtimeAuth = scope ? await runtimeTokenAuth(c.req.path, scope) : null
+      // A bare workspace runtime pushes its root repo as `ws:<workspaceId>`,
+      // which has no `project` row — resolve the owner from the workspace.
+      const runtimeAuth = scope
+        ? scope.workspaceId && scope.projectId === workspaceRootLfsId(scope.workspaceId)
+          ? await workspaceRootTokenAuth(c.req.path, scope.workspaceId)
+          : await runtimeTokenAuth(c.req.path, scope)
+        : null
       if (runtimeAuth) {
         c.set("auth", runtimeAuth)
         await next()
@@ -468,6 +542,17 @@ export async function requireProjectAccess(c: Context, next: Next) {
       { error: { code: "forbidden", message: "Runtime token scope mismatch" } },
       403
     )
+  }
+
+  // A bare workspace runtime's root repo (`ws:<workspaceId>`) is not a project
+  // row, so there is nothing to authorize against. `authMiddleware` only mints
+  // this auth for the two LFS routes, and `isWorkspaceRootLfs` re-checks the id
+  // equals the token's own workspace. Cache the workspace so the home-region
+  // router and region pin resolve it without a project lookup (SHO-368).
+  if (isWorkspaceRootLfs(auth, projectId)) {
+    c.set('workspaceId', auth.workspaceId!)
+    await next()
+    return
   }
 
   const permission = projectRoutePermission(c.req.method, projectSubpath(c.req.path, projectId))

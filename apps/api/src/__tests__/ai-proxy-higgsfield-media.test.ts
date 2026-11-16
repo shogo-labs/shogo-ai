@@ -101,6 +101,9 @@ const {
   buildHiggsfieldVideoRequest,
   nearestHiggsfieldAspectRatio,
   parseHiggsfieldEstimate,
+  parseHiggsfieldRateCard,
+  higgsfieldEstimate,
+  HiggsfieldError,
   formatHiggsfieldError,
   assertHiggsfieldUrl,
   HIGGSFIELD_POLL,
@@ -109,7 +112,7 @@ const {
 // make this suite minutes long for no extra coverage.
 HIGGSFIELD_POLL.initialMs = 1
 HIGGSFIELD_POLL.maxMs = 1
-const { IMAGE_MODEL_CATALOG, VIDEO_MODEL_CATALOG } = await import('@shogo/model-catalog')
+const { IMAGE_MODEL_CATALOG, VIDEO_MODEL_CATALOG, supportsLastFrame } = await import('@shogo/model-catalog')
 const { _testing: videoStore } = await import('../lib/video-job-store')
 
 const app = new Hono()
@@ -169,6 +172,21 @@ function mockEstimate(endpoint: string, usd = '0.0700', credits = '1.500') {
   on(`https://hf.test/estimate/${endpoint}`, () => json({ credits, usd }))
 }
 
+/**
+ * The prose rate card these video endpoints answer `/estimate` with instead of
+ * a `usd` figure — captured from the live API on 2026-11-13.
+ */
+const RATE_CARDS = {
+  seedance25: 'Standard self-serve rates in USD per video second: 480p: $0.1177; 720p: $0.2647; 1080p: $0.6518. Total price = selected rate × output duration in seconds.',
+  seedance20: 'Standard self-serve rates in USD per video second: 480p: $0.0804; 720p: $0.1735; 1080p: $0.4293; 4K: $0.8907. Total price = selected rate × output duration in seconds.',
+  kling25: 'Standard self-serve rates in USD per video second: 1080p: $0.0525. Total price = selected rate × output duration in seconds.',
+  kling30: 'Standard self-serve rates in USD per video second: 720p: $0.0714. Total price = selected rate × output duration in seconds. For explicit multi-shot requests, output duration is the sum of the shot durations.',
+} as const
+
+function mockRateCard(endpoint: string, description: string) {
+  on(`https://hf.test/estimate/${endpoint}`, () => json({ type: 'description', pricing_description: description }))
+}
+
 // =========================================================================
 // Pure helpers
 // =========================================================================
@@ -178,6 +196,85 @@ describe('helpers', () => {
     expect(parseHiggsfieldEstimate({ credits: '1.500', usd: '0.0940' })).toEqual({ rawUsd: 0.094, credits: 1.5 })
     expect(parseHiggsfieldEstimate({ credits: '1.5' })).toBeNull()
     expect(parseHiggsfieldEstimate({ usd: 'not-a-number' })).toBeNull()
+  })
+
+  test('a per-video-second rate card parses to a resolution → USD/second table', () => {
+    expect(parseHiggsfieldRateCard(RATE_CARDS.seedance25)).toEqual({
+      '480p': 0.1177, '720p': 0.2647, '1080p': 0.6518,
+    })
+    // `4K` is upper-case in the vendor's text; the key is normalised.
+    expect(parseHiggsfieldRateCard(RATE_CARDS.seedance20)).toEqual({
+      '480p': 0.0804, '720p': 0.1735, '1080p': 0.4293, '4k': 0.8907,
+    })
+    expect(parseHiggsfieldRateCard(RATE_CARDS.kling25)).toEqual({ '1080p': 0.0525 })
+    expect(parseHiggsfieldRateCard(RATE_CARDS.kling30)).toEqual({ '720p': 0.0714 })
+    // The Marketing Studio token card has no per-second rate to multiply.
+    expect(parseHiggsfieldRateCard('Per 1M tokens: … image output $30.')).toBeNull()
+    expect(parseHiggsfieldRateCard(undefined)).toBeNull()
+  })
+
+  test('a rate card prices the requested resolution × duration', async () => {
+    mockRateCard('rate/seedance-2.5', RATE_CARDS.seedance25)
+    const entry = (VIDEO_MODEL_CATALOG as any)['hf-seedance-2.5']
+    const estimate = await higgsfieldEstimate('k', 'rate/seedance-2.5', { duration: 10, resolution: '480p' }, undefined, { entry })
+    expect(estimate.rawUsd).toBeCloseTo(1.177, 4)
+    expect(estimate.source).toBe('rate_card')
+  })
+
+  test('a single-rate card needs no resolution field', async () => {
+    mockRateCard('rate/kling-2.5', RATE_CARDS.kling25)
+    const entry = (VIDEO_MODEL_CATALOG as any)['hf-kling-2.5-pro']
+    const estimate = await higgsfieldEstimate('k', 'rate/kling-2.5', { duration: 10 }, undefined, { entry })
+    expect(estimate.rawUsd).toBeCloseTo(0.525, 4)
+    expect(estimate.source).toBe('rate_card')
+  })
+
+  test('a multi-shot request bills the sum of its shot durations', async () => {
+    mockRateCard('rate/kling-3.0', RATE_CARDS.kling30)
+    const entry = (VIDEO_MODEL_CATALOG as any)['hf-kling-3.0-std']
+    const estimate = await higgsfieldEstimate(
+      'k',
+      'rate/kling-3.0',
+      { multi_prompt: [{ prompt: 'a', duration: 3 }, { prompt: 'b', duration: 5 }] },
+      undefined,
+      { entry },
+    )
+    expect(estimate.rawUsd).toBeCloseTo(0.0714 * 8, 4)
+  })
+
+  test('multi-shot billing uses shot sum even when top-level duration is also set (real request shape)', async () => {
+    // buildHiggsfieldVideoRequest always sends BOTH duration and multi_prompt/multi_shots.
+    // rateCardSeconds must sum the shots (3+5=8 s), not short-circuit on duration (5 s).
+    mockRateCard('rate/kling-3.0', RATE_CARDS.kling30)
+    const entry = (VIDEO_MODEL_CATALOG as any)['hf-kling-3.0-std']
+    const estimate = await higgsfieldEstimate(
+      'k',
+      'rate/kling-3.0',
+      { duration: 5, multi_prompt: [{ prompt: 'a', duration: 3 }, { prompt: 'b', duration: 5 }] },
+      undefined,
+      { entry },
+    )
+    // Should price at 8 s (shot sum), not 5 s (top-level duration).
+    expect(estimate.rawUsd).toBeCloseTo(0.0714 * 8, 4)
+  })
+
+  test('a resolution the card does not offer is a validation error naming the rates', async () => {
+    mockRateCard('rate/seedance-2.0', RATE_CARDS.seedance20)
+    const entry = (VIDEO_MODEL_CATALOG as any)['hf-seedance-2.0']
+    const error = await higgsfieldEstimate('k', 'rate/seedance-2.0', { duration: 5, resolution: '2k' }, undefined, { entry })
+      .catch((err) => err)
+    expect(error).toBeInstanceOf(HiggsfieldError)
+    expect(error.code).toBe('validation')
+    expect(error.message).toContain('480p, 720p, 1080p, 4k')
+    expect(error.message).toContain('got 2k')
+  })
+
+  test('a token-priced card keeps the per-token refusal', async () => {
+    mockRateCard('rate/token', 'Per 1M tokens: … image output $30.')
+    const error = await higgsfieldEstimate('k', 'rate/token', { duration: 5 }).catch((err) => err)
+    expect(error).toBeInstanceOf(HiggsfieldError)
+    expect(error.code).toBe('unavailable')
+    expect(error.message).toContain('per token')
   })
 
   test('a fastapi validation envelope becomes a readable message', () => {
@@ -642,6 +739,36 @@ describe('video routes', () => {
     expect(fetchLog.some((f) => f.url === 'https://hf.test/minimax/hailuo-2.3/standard/text-to-video' && f.init?.method === 'POST')).toBe(false)
   })
 
+  test('a rate-card model is priced from its per-second table and bills at the marked-up rate', async () => {
+    mockRateCard('bytedance/seedance-2.5/text-to-video', RATE_CARDS.seedance25)
+    mockGeneration({ endpoint: 'bytedance/seedance-2.5/text-to-video', videoUrl: 'https://cdn.test/out.mp4' })
+
+    const { res, data } = await submit({ model: 'hf-seedance-2.5', duration: 10, resolution: '480p' })
+    expect(res.status).toBe(200)
+    expect(data).toMatchObject({ status: 'queued', model: 'hf-seedance-2.5', price_source: 'rate_card' })
+    // 480p × 10 s = $1.177 raw, marked up 1.2×.
+    expect(data.estimated_usd).toBeCloseTo(1.177 * 1.2, 3)
+
+    const status = await call(`/ai/v1/videos/${data.id}`)
+    expect((await status.json() as any).status).toBe('completed')
+    await settle()
+    expect(consumeCalls).toHaveLength(1)
+    expect(consumeCalls[0].rawUsd).toBeCloseTo(1.177, 4)
+    expect(consumeCalls[0].billedUsd).toBeCloseTo(1.177 * 1.2, 3)
+    expect(consumeCalls[0].actionMetadata).toMatchObject({ provider: 'higgsfield', priceSource: 'rate_card' })
+  })
+
+  test('an estimate that throws a HiggsfieldError shows its own reason, not "try again"', async () => {
+    on('https://hf.test/estimate/minimax/hailuo-2.3/standard/text-to-video', () => json({ detail: 'no such model' }, 422))
+
+    const { res, data } = await submit()
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('estimate_unavailable')
+    expect(data.error.message).toContain('no such model')
+    expect(data.error.message).not.toContain('try again')
+    expect(data.error.message).toContain('Nothing was submitted or charged')
+  })
+
   test('Kling 3.0 Standard, text-to-video, 3 s with sound: the documented body', async () => {
     mockEstimate('kling-video/v3.0/std/text-to-video', '0.3150')
     mockGeneration({ endpoint: 'kling-video/v3.0/std/text-to-video', videoUrl: 'https://cdn.test/out.mp4' })
@@ -780,6 +907,147 @@ describe('video routes', () => {
     expect(res.status).toBe(200)
     const submitCall = fetchLog.find((f) => f.url === 'https://hf.test/minimax/hailuo-2.3/standard/image-to-video')
     expect(JSON.parse(String(submitCall!.init?.body)).image_url).toBe('https://cdn.test/first.png')
+  })
+
+  test('end_image maps to the endpoint\'s own last-frame field (Kling: last_image_url)', async () => {
+    let uploads = 0
+    on('https://hf.test/files/generate-upload-url', () => {
+      uploads += 1
+      const name = uploads === 1 ? 'first' : 'last'
+      return json({ public_url: `https://cdn.test/${name}.png`, upload_url: `https://s3.test/put/${name}`, upload_headers: {} })
+    })
+    on('https://s3.test/put', () => new Response('', { status: 200 }))
+    mockEstimate('kling-video/v3.0/pro/image-to-video', '0.3150')
+    mockGeneration({ endpoint: 'kling-video/v3.0/pro/image-to-video', videoUrl: 'https://cdn.test/out.mp4' })
+
+    const image = (label: string) => `data:image/png;base64,${Buffer.from(label).toString('base64')}`
+    const { res } = await submit({
+      model: 'hf-kling-3.0-pro',
+      prompt: 'the day turns to night',
+      duration: 5,
+      start_image: image('first'),
+      end_image: image('last'),
+    })
+
+    expect(res.status).toBe(200)
+    const submitCall = fetchLog.find((f) => f.url === 'https://hf.test/kling-video/v3.0/pro/image-to-video')
+    expect(JSON.parse(String(submitCall!.init?.body))).toMatchObject({
+      prompt: 'the day turns to night',
+      duration: 5,
+      image_url: 'https://cdn.test/first.png',
+      last_image_url: 'https://cdn.test/last.png',
+    })
+  })
+
+  test('end_image uses end_image_url on the wan family', async () => {
+    on('https://hf.test/files/generate-upload-url', () => json({
+      public_url: 'https://cdn.test/frame.png', upload_url: 'https://s3.test/put', upload_headers: {},
+    }))
+    on('https://s3.test/put', () => new Response('', { status: 200 }))
+    mockEstimate('alibaba/wan-3.0/image-to-video', '0.2000')
+    mockGeneration({ endpoint: 'alibaba/wan-3.0/image-to-video', videoUrl: 'https://cdn.test/out.mp4' })
+
+    const image = `data:image/png;base64,${Buffer.from('frame').toString('base64')}`
+    const { res } = await submit({
+      model: 'hf-wan-3.0',
+      prompt: 'x',
+      duration: 5,
+      start_image: image,
+      end_image: image,
+    })
+
+    expect(res.status).toBe(200)
+    const submitCall = fetchLog.find((f) => f.url === 'https://hf.test/alibaba/wan-3.0/image-to-video')
+    const body = JSON.parse(String(submitCall!.init?.body))
+    expect(body.end_image_url).toBe('https://cdn.test/frame.png')
+    expect(body.image_url).toBe('https://cdn.test/frame.png')
+  })
+
+  test('a model with no last-frame field refuses end_image, naming the models that take one', async () => {
+    const image = `data:image/png;base64,${Buffer.from('frame').toString('base64')}`
+    const { res, data } = await submit({
+      model: 'hf-hailuo-2.3',
+      prompt: 'x',
+      duration: 6,
+      start_image: image,
+      end_image: image,
+    })
+
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('end_image_unsupported')
+    // The list is derived from the catalog, so it can never go stale.
+    const expected = (Object.values(VIDEO_MODEL_CATALOG) as any[])
+      .filter((entry) => !entry.sourceVideo && supportsLastFrame(entry))
+      .map((entry) => entry.id)
+    for (const id of expected) expect(data.error.message).toContain(id)
+    expect(data.error.message).not.toContain('hf-hailuo-2.3')
+    expect(fetchLog).toHaveLength(0)
+  })
+
+  test('end_image without a start image is refused before any upload', async () => {
+    const image = `data:image/png;base64,${Buffer.from('frame').toString('base64')}`
+    const { res, data } = await submit({ model: 'hf-kling-3.0-pro', prompt: 'x', end_image: image })
+
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('invalid_end_image')
+    expect(fetchLog).toHaveLength(0)
+  })
+
+  test('end_image and options.last_image_url for the same field is ambiguous', async () => {
+    on('https://hf.test/files/generate-upload-url', () => json({
+      public_url: 'https://cdn.test/frame.png', upload_url: 'https://s3.test/put', upload_headers: {},
+    }))
+    on('https://s3.test/put', () => new Response('', { status: 200 }))
+    mockEstimate('kling-video/v3.0/pro/image-to-video', '0.3150')
+
+    const image = `data:image/png;base64,${Buffer.from('frame').toString('base64')}`
+    const { res, data } = await submit({
+      model: 'hf-kling-3.0-pro',
+      prompt: 'x',
+      duration: 5,
+      start_image: image,
+      end_image: image,
+      options: { last_image_url: 'https://cdn.test/other.png' },
+    })
+
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('invalid_end_image')
+    expect(fetchLog.some((f) => f.url === 'https://hf.test/kling-video/v3.0/pro/image-to-video' && f.init?.method === 'POST')).toBe(false)
+  })
+
+  test('a Genjutsu edit takes no end_image', async () => {
+    const image = `data:image/png;base64,${Buffer.from('frame').toString('base64')}`
+    const { res, data } = await submit({
+      model: 'hf-genjutsu-motion-transfer',
+      source_video_url: 'https://cdn.test/in.mp4',
+      source_duration_seconds: 8,
+      reference_images: [image],
+      start_image: image,
+      end_image: image,
+    })
+
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('end_image_unsupported')
+  })
+
+  test('the listing marks last_frame exactly where the catalog documents one', async () => {
+    _resetHiggsfieldEstimateCache()
+    // Every documented endpoint answers with a flat price so the listing completes.
+    on('https://hf.test/estimate/', () => json({ credits: '1.5', usd: '0.0700' }))
+    on('https://hf.test/files/generate-upload-url', () => json({
+      public_url: 'https://cdn.test/frame.png', upload_url: 'https://s3.test/put', upload_headers: {},
+    }))
+    on('https://s3.test/put', () => new Response('', { status: 200 }))
+
+    const data = await listMediaModels(undefined, { kind: 'video' }) as any
+    const expected = (Object.values(VIDEO_MODEL_CATALOG) as any[])
+      .filter((entry) => supportsLastFrame(entry))
+      .map((entry) => entry.id)
+    const listed = data.videos.filter((entry: any) => entry.last_frame).map((entry: any) => entry.id)
+    expect(listed.sort()).toEqual(expected.sort())
+    expect(expected).toContain('hf-kling-3.0-pro')
+    expect(expected).toContain('hf-wan-3.0')
+    expect(listed).not.toContain('hf-hailuo-2.3')
   })
 
   test('genjutsu motion transfer needs a source clip, its length, and a reference', async () => {
@@ -1068,6 +1336,17 @@ describe('list_media_models', () => {
     const multiPrompt = model.options.find((o: any) => o.name === 'multi_prompt')
     expect(multiPrompt.items).toBe('object')
     expect(multiPrompt.item_fields.map((f: any) => f.name)).toEqual(expect.arrayContaining(['prompt', 'duration']))
+  })
+
+  test('a rate-card video model lists a non-null price from its per-second table', async () => {
+    mockRateCard('bytedance/seedance-2.5/text-to-video', RATE_CARDS.seedance25)
+    const data = await listMediaModels(undefined, { model: 'hf-seedance-2.5' }) as any
+    const model = data.videos[0]
+    expect(model.id).toBe('hf-seedance-2.5')
+    expect(model.price.source).toBe('rate_card')
+    // Default params: 720p × 5 s, marked up 1.2×.
+    expect(model.price.usd).toBeCloseTo(0.2647 * 5 * 1.2, 3)
+    expect(model.price.default_duration).toBe(5)
   })
 
   test('?model= narrows to one model, and an unknown one returns empty lists plus a hint', async () => {

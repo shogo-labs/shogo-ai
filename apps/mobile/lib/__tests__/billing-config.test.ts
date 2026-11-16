@@ -28,6 +28,11 @@ import {
   formatCurrencyPrice,
   getPlanDisplayName,
   getUsageLimitNotice,
+  PLAN_PRICING,
+  UPGRADE_CTA_LABEL,
+  UPGRADE_PLAN_ID,
+  UPGRADE_PLAN_NAME,
+  UPGRADE_PLAN_PRICE_LABEL,
   getWindowDisplays,
   usageFillPixelWidth,
 } from '../billing-config'
@@ -379,5 +384,21 @@ describe('usageFillPixelWidth', () => {
 
   test('returns no fill at zero utilization', () => {
     expect(usageFillPixelWidth(200, 0)).toBe(0)
+  })
+})
+
+describe('the plan the upsells sell (SHO-398)', () => {
+  test('names Business, the plan that is actually on sale', () => {
+    // Pro was retired in v2.5.0 and a `pro` checkout is remapped to Business.
+    expect(UPGRADE_PLAN_ID).toBe('business')
+    expect(UPGRADE_PLAN_NAME).toBe('Business')
+    expect(UPGRADE_CTA_LABEL).toBe('Upgrade to Business')
+  })
+
+  test('price comes from PLAN_PRICING, not a copy typed at the call site', () => {
+    expect(UPGRADE_PLAN_PRICE_LABEL).toBe(
+      `${formatUsd(PLAN_PRICING[UPGRADE_PLAN_ID].monthly)}/seat/mo`,
+    )
+    expect(UPGRADE_PLAN_PRICE_LABEL).toBe('$16/seat/mo')
   })
 })

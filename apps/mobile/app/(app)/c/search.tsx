@@ -330,7 +330,7 @@ function AskPanel({
             <Sparkles size={12} className="text-primary" />
             <Text className="text-xs font-semibold text-primary">Answer</Text>
           </View>
-          <ChatMarkdown isStreaming={false}>{answer.answer}</ChatMarkdown>
+          <ChatMarkdown isStreaming={false} filePreviews={false}>{answer.answer}</ChatMarkdown>
           {shown.length ? <Text className="mt-3 text-xs font-semibold text-muted-foreground">Sources</Text> : null}
         </View>
       }

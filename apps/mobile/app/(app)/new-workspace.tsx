@@ -26,7 +26,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   ArrowLeft,
   Building2,
-  Zap,
   Crown,
 } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
@@ -39,7 +38,6 @@ import { trackInitiateCheckout, trackPurchase } from '../../lib/tracking'
 import {
   PLAN_PRICING,
   SEAT_INCLUDED_USD,
-  PRO_FEATURES,
   BUSINESS_FEATURES,
   ENTERPRISE_FEATURES,
   formatUsd,
@@ -64,7 +62,6 @@ export default function NewWorkspacePage() {
 
   const [workspaceName, setWorkspaceName] = useState('')
   const [billingInterval, setBillingInterval] = useState<'monthly' | 'annual'>('monthly')
-  const [proSeats, setProSeats] = useState(1)
   const [businessSeats, setBusinessSeats] = useState(1)
   const [isCheckoutLoading, setIsCheckoutLoading] = useState(false)
   const [pooledCreateOpen, setPooledCreateOpen] = useState(false)
@@ -81,10 +78,9 @@ export default function NewWorkspacePage() {
     void workspaces.loadAll().catch(() => undefined)
   }, [workspaces])
 
-  const proPricing = PLAN_PRICING.pro
   const businessPricing = PLAN_PRICING.business
 
-  const handleCheckout = useCallback(async (planType: 'pro' | 'business', seats: number) => {
+  const handleCheckout = useCallback(async (planType: 'business', seats: number) => {
     if (!user?.id) return
     if (Platform.OS === 'ios') {
       setError('Additional workspace creation is not available in the iOS app.')
@@ -360,77 +356,6 @@ export default function NewWorkspacePage() {
 
           {/* Plan Cards */}
           <View className="gap-5 md:flex-row md:items-stretch">
-            {/* Pro Plan */}
-            <View className="md:flex-1 md:w-0">
-              <Card className="h-full rounded-2xl border-border/80 bg-card">
-                <CardContent className="gap-5 p-5">
-                  <View className="flex-row items-center gap-2">
-                    <View className="h-9 w-9 items-center justify-center rounded-lg bg-blue-500/10">
-                      <Zap size={18} className="text-blue-500" />
-                    </View>
-                    <Text className="text-lg font-semibold text-foreground">Pro</Text>
-                  </View>
-                  <Text className="text-sm leading-5 text-muted-foreground">
-                    Designed for fast-moving teams building together in real time.
-                  </Text>
-
-                  <View>
-                    <View className="flex-row items-baseline gap-1">
-                      <Text className="text-4xl font-bold text-foreground">
-                        ${billingInterval === 'monthly' ? proPricing.monthly * proSeats : Math.round((proPricing.annual / 12) * proSeats)}
-                      </Text>
-                      <Text className="text-sm text-muted-foreground">per month</Text>
-                    </View>
-                    <Text className="mt-1 text-sm text-muted-foreground">
-                      ${proPricing.monthly}/seat × {proSeats} seat{proSeats === 1 ? '' : 's'} — raw cost + 20% on usage
-                    </Text>
-                  </View>
-
-                  <View>
-                    <Text className="mb-2 text-sm font-medium text-foreground">
-                      Seats
-                    </Text>
-                    <SeatCounter
-                      value={proSeats}
-                      onChange={setProSeats}
-                      min={1}
-                      max={500}
-                      label={`$${proPricing.monthly} / seat / month`}
-                    />
-                  </View>
-
-                  <Pressable
-                    onPress={() => handleCheckout('pro', proSeats)}
-                    disabled={isCheckoutLoading}
-                    className={cn(
-                      'min-h-12 w-full items-center justify-center rounded-xl',
-                      isCheckoutLoading ? 'bg-muted' : 'bg-primary active:bg-primary/80'
-                    )}
-                    accessibilityRole="button"
-                    accessibilityLabel="Subscribe to Pro and create workspace"
-                    aria-disabled={isCheckoutLoading}
-                  >
-                    <Text className={cn(
-                      'text-sm font-semibold',
-                      isCheckoutLoading ? 'text-muted-foreground' : 'text-primary-foreground'
-                    )}>
-                      {isCheckoutLoading ? 'Redirecting...' : 'Subscribe & Create'}
-                    </Text>
-                  </Pressable>
-
-                  <View className="gap-2 border-t border-border pt-4">
-                    <Text className="text-sm font-medium text-foreground">
-                      {formatUsd(SEAT_INCLUDED_USD.pro * proSeats)} of usage / month
-                    </Text>
-                    <Text className="text-sm text-muted-foreground">
-                      All features in Free, plus:
-                    </Text>
-                    <FeatureList features={PRO_FEATURES} />
-                  </View>
-                </CardContent>
-              </Card>
-            </View>
-
             {/* Business Plan */}
             <View className="md:flex-1 md:w-0">
               <View className="items-center -mb-3 z-10">

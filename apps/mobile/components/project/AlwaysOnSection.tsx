@@ -30,6 +30,7 @@ import type { HttpClient } from '@shogo-ai/sdk'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Switch } from '@/components/ui/switch'
 import { api } from '../../lib/api'
+import { UPGRADE_PLAN_NAME } from '../../lib/billing-config'
 
 interface AlwaysOnSectionProps {
   projectId: string
@@ -125,11 +126,13 @@ export function AlwaysOnSection({
         <View className="flex-row items-center gap-2">
           <Text className="text-sm font-medium text-foreground">Always on</Text>
           <View className="rounded px-1.5 bg-primary/10">
-            <Text className="text-[10px] text-primary font-medium">Pro</Text>
+            <Text className="text-[10px] text-primary font-medium">
+              {UPGRADE_PLAN_NAME}
+            </Text>
           </View>
         </View>
         <Text className="text-[11px] text-muted-foreground mt-0.5">
-          Keep your app instant for every visitor — no wake-up delay. Available on Pro & Business.
+          Keep your app instant for every visitor — no wake-up delay. Available on {UPGRADE_PLAN_NAME}.
         </Text>
       </View>
       <ExternalLink size={14} className="text-primary" />

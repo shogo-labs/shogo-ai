@@ -79,3 +79,24 @@ export async function resolveCheckoutPriceId(
 export function priceLookupKeyFor(plan: PlanType, interval: BillingInterval): string {
   return getPriceLookupKey(plan, interval)
 }
+
+/**
+ * Plans that are no longer sold, mapped to the plan that replaced them.
+ *
+ * v2.5.0 retired Pro (SHO-339) but older web, desktop and Android builds still
+ * post `planId: 'pro'`. Remapping at the checkout route means those builds land
+ * on the Business price we actually sell instead of a 400 or the retired $20
+ * price. Existing Pro subscriptions are untouched — this only affects a *new*
+ * checkout.
+ */
+export const RETIRED_CHECKOUT_PLANS: Readonly<Record<string, PlanType>> = {
+  pro: 'business',
+}
+
+/**
+ * The plan a checkout should actually be created for. A retired plan is
+ * remapped to its replacement; everything else passes through unchanged.
+ */
+export function normalizeCheckoutPlanId(requested: string): string {
+  return RETIRED_CHECKOUT_PLANS[requested] ?? requested
+}

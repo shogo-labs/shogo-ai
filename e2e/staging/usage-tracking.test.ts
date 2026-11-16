@@ -67,16 +67,17 @@ test.describe("Usage Tracking", () => {
     await page.close()
   })
 
-  test("billing page shows Pro plan + 5-hour and weekly usage windows", async () => {
+  test("billing page shows the paid plan + 5-hour and weekly usage windows", async () => {
     const plan = await openBilling(page)
 
-    await expect(page.getByText("You're on Pro Plan")).toBeVisible()
+    // The bootstrap path lands on Pro; the UI fallback buys Business (SHO-397).
+    await expect(page.getByText(/You're on (Pro|Business) Plan/)).toBeVisible()
     await expect(page.getByText("Usage limits", { exact: true })).toBeVisible()
     await expect(page.getByText("5-hour window", { exact: true }).first()).toBeVisible()
     await expect(page.getByText("Weekly window", { exact: true }).first()).toBeVisible()
     await expect(page.getByText(/\d+% used/).first()).toBeVisible()
 
-    expect(plan.planId).toBe("pro")
+    expect(["pro", "business"]).toContain(plan.planId)
     expect(plan.usageWindows).toBeTruthy()
     baselineFiveHourUsd = plan.usageWindows!.fiveHour.usedUsd
     // Signup credit is part of the billing payload (it may be fully spent

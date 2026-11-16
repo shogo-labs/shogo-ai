@@ -262,6 +262,11 @@ const NEVER_MACHINE_LOCAL = [
   // A move is a job on the machine that started it: its cursors and id map
   // describe bytes in flight between two instances, and mean nothing elsewhere.
   'WorkspaceMove',
+  // An approval is minted and spent by the instance that runs the write, and a
+  // relayed call carries only its id (SHO-389). Copying the row would let one
+  // machine spend another's approval.
+  'CrossWorkspaceApproval',
+  'CrossWorkspaceAudit',
 ] as const
 
 const NEVER_LIVE_CALL = [

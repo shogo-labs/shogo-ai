@@ -302,6 +302,8 @@ describe('getComposioToolkitsCatalog / search / find', () => {
       { slug: 'github', name: 'GitHub' },
       { id: 'fallback', name: '' },
       { slug: 'google-calendar', name: 'Google Calendar' },
+      { slug: 'instagram', name: 'Instagram' },
+      { slug: 'tiktok', name: 'TikTok' },
     ]
     await initComposioSession('u', 'w', 'p')
   })
@@ -343,6 +345,21 @@ describe('getComposioToolkitsCatalog / search / find', () => {
     expect((await findComposioToolkit('Google_Calendar'))?.slug).toBe('google-calendar')
     expect((await findComposioToolkit('googl'))?.slug).toBe('google-calendar')
     expect(await findComposioToolkit('___no-such-toolkit___')).toBeNull()
+  })
+
+  it('drops Instagram and TikTok from the catalog — they connect through Zernio (SHO-379)', async () => {
+    const items = await getComposioToolkitsCatalog()
+    const slugs = items.map((t) => t.slug)
+    expect(slugs).not.toContain('instagram')
+    expect(slugs).not.toContain('tiktok')
+
+    // No Composio path can pick them: not by exact name, not by the fuzzy
+    // "contained" match, and not through search.
+    expect(await findComposioToolkit('instagram')).toBeNull()
+    expect(await findComposioToolkit('Instagram')).toBeNull()
+    expect(await findComposioToolkit('tik-tok')).toBeNull()
+    expect(await searchComposioToolkits('instagram')).toEqual([])
+    expect(await searchComposioToolkits('tiktok')).toEqual([])
   })
 
   it('getComposioToolkitsCatalog returns [] when the SDK throws', async () => {

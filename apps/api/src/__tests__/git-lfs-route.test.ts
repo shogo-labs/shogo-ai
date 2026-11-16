@@ -34,7 +34,12 @@ mock.module('../lib/prisma', () => ({
 }))
 
 // ─── auth mock ───────────────────────────────────────────────────────
+// The route module also imports `isWorkspaceRootLfs`; these tests use a fake
+// auth context (no `via: 'runtimeToken'`), so the workspace-root branch is
+// never taken. The real predicate is exercised end-to-end in
+// `auth-runtime-token.test.ts`.
 mock.module('../middleware/auth', () => ({
+  isWorkspaceRootLfs: () => false,
   authorizeProject: async (c: any, projectId: string) => {
     const auth = c.get('auth')
     if (!auth?.isAuthenticated) return { ok: false, status: 401, code: 'unauthorized', message: 'no auth' }

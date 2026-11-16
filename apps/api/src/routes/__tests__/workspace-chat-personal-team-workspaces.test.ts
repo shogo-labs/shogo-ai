@@ -87,6 +87,8 @@ mock.module('../../services/billing-runtime', () => ({
   hasAdvancedModelAccess: async () => true,
   consumeUsage: async () => ({ success: true }),
   hasBalance: async () => true,
+  // Needed by the chat-attachment cap seam (SHO-370); paid keeps the 500 MB path.
+  hasPaidSubscription: async () => true,
 }))
 
 mock.module('../../lib/proxy-billing-session-runtime', () => ({

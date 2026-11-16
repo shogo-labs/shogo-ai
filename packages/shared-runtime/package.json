@@ -23,6 +23,7 @@
     "./remote-device-call": "./src/remote-device-call.ts",
     "./published-database": "./src/published-database.ts",
     "./published-schema": "./src/published-schema.ts",
+    "./byte-range": "./src/byte-range.ts",
     "./published-image-ref": "./src/published-image-ref.ts"
   },
   "scripts": {

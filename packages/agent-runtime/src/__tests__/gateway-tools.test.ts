@@ -671,6 +671,64 @@ describe('gateway-tools', () => {
       expect(result.results).toHaveLength(0)
     })
 
+    // SHO-379: Instagram and TikTok connect through Zernio, not Composio.
+    test('search_integrations({ query: "instagram" }) returns the Zernio row, not a Composio toolkit', async () => {
+      const result = await exec(createCtx(), 'search_integrations', { query: 'instagram' })
+      const zernio = result.results.find((r: any) => r.id === 'social:instagram')
+      expect(zernio).toBeDefined()
+      expect(zernio.provider).toBe('zernio')
+      expect(zernio.source).toBe('managed')
+      expect(zernio.installCommand).toBe('social_media({ action: "connect", platform: "instagram" })')
+      // No Composio row for the platform.
+      expect(result.results.some((r: any) => r.id === 'instagram')).toBe(false)
+    })
+
+    test('search_integrations({ query: "tik tok" }) returns the Zernio TikTok row', async () => {
+      const result = await exec(createCtx(), 'search_integrations', { query: 'tik tok' })
+      const zernio = result.results.find((r: any) => r.id === 'social:tiktok')
+      expect(zernio).toBeDefined()
+      expect(zernio.installCommand).toBe('social_media({ action: "connect", platform: "tiktok" })')
+    })
+
+    test('search_integrations notes the Social management capability when it is off', async () => {
+      const result = await exec(createCtx(), 'search_integrations', { query: 'instagram' })
+      const zernio = result.results.find((r: any) => r.id === 'social:instagram')
+      expect(zernio.note).toContain('socialManagementEnabled')
+    })
+
+    test('search_integrations({ query: "meta ads" }) does not add a Zernio row', async () => {
+      const result = await exec(createCtx(), 'search_integrations', { query: 'meta ads' })
+      expect(result.results.some((r: any) => r.provider === 'zernio')).toBe(false)
+    })
+
+    test.each(['instagram', 'Instagram', 'tik-tok', 'tiktok', 'social:instagram', 'social:tiktok'])(
+      'connect({ name: %s }) redirects to social_media and starts no Composio OAuth',
+      async (name) => {
+        const result = await exec(createCtx(), 'connect', { name })
+        expect(result.redirect).toBe(true)
+        expect(result.provider).toBe('zernio')
+        expect(result.next).toContain('social_media({ action: "connect"')
+        expect(result.error).toContain('Zernio')
+        // Capability is off in the default ctx, so the note is present.
+        expect(result.note).toContain('socialManagementEnabled')
+      },
+    )
+
+    test('connect({ name: "instagram" }) omits the capability note when Social management is on', async () => {
+      const ctx = createCtx({ config: { channels: [], model: { provider: 'anthropic', name: 'claude-sonnet-4-5' }, socialManagementEnabled: true } as any })
+      const result = await exec(ctx, 'connect', { name: 'instagram' })
+      expect(result.redirect).toBe(true)
+      expect(result.note).toBeUndefined()
+    })
+
+    test('connect({ name: "metaads" }) is not intercepted by the Zernio guard', async () => {
+      const ctx = createCtx({ mcpClientManager: new MCPClientManager() })
+      const result = await exec(ctx, 'connect', { name: 'metaads' })
+      // Meta Ads stays on Composio: the Zernio redirect must not fire.
+      expect(result.provider).toBeUndefined()
+      expect(result.redirect).toBeUndefined()
+    })
+
     test('disconnect returns error for non-running integration', async () => {
       const ctx = createCtx({ mcpClientManager: new MCPClientManager() })
       const result = await exec(ctx, 'disconnect', { name: 'slack' })

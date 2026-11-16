@@ -238,7 +238,7 @@ export async function createStagingEnvironment(
   if (!caps.staging) {
     return fail(
       'plan_limit',
-      `Staging environments require the Pro plan or higher (your plan: ${caps.plan}).`,
+      `Staging environments require the Business plan or higher (your plan: ${caps.plan}).`,
       402,
       { plan: caps.plan, field: 'staging' },
     )

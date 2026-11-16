@@ -7,7 +7,7 @@
  * - Current plan card with workspace avatar
  * - Usage remaining card (in USD)
  * - Monthly/Annual billing toggle
- * - Pro / Business / Enterprise plan cards with included-USD selectors
+ * - Basic / Business / Enterprise plan cards with included-USD selectors
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
@@ -31,7 +31,6 @@ import {
   Building2,
   Info,
   Sparkles,
-  Zap,
   Crown,
   KeyRound,
 } from 'lucide-react-native'
@@ -52,7 +51,6 @@ import { useBillingData } from '@shogo/shared-app/hooks'
 import {
   PLAN_PRICING,
   BASIC_FEATURES,
-  PRO_FEATURES,
   BUSINESS_FEATURES,
   ENTERPRISE_FEATURES,
   getWindowLimitsForPlan,
@@ -179,7 +177,6 @@ export default observer(function BillingPage() {
   const overageEntitlementExpired = !!effectiveBalance?.overageEnabled && effectiveBalance.overageActive === false
 
   const [billingInterval, setBillingInterval] = useState<'monthly' | 'annual'>('monthly')
-  const [proSeats, setProSeats] = useState(1)
   const [businessSeats, setBusinessSeats] = useState(1)
   const [isCheckoutLoading, setIsCheckoutLoading] = useState(false)
   const [isPortalLoading, setIsPortalLoading] = useState(false)
@@ -399,7 +396,6 @@ export default observer(function BillingPage() {
     ? `${getPlanDisplayName(subscription.planId)} Plan`
     : 'Free Plan'
 
-  const proPricing = PLAN_PRICING.pro
   const businessPricing = PLAN_PRICING.business
   const basicPricing = PLAN_PRICING.basic
 
@@ -425,13 +421,13 @@ export default observer(function BillingPage() {
     return formatCurrencyPrice(localPlan.annual * quantity, regionalPricing.currency)
   }, [regionalPricing])
 
-  const fmtPlanPrice = useCallback((planKey: 'basic' | 'pro' | 'business', monthlyUsd: number, annualUsd: number) => {
+  const fmtPlanPrice = useCallback((planKey: 'basic' | 'business', monthlyUsd: number, annualUsd: number) => {
     return billingInterval === 'annual'
       ? fmtAnnualPrice(annualUsd, planKey)
       : fmtPrice(monthlyUsd, planKey)
   }, [billingInterval, fmtAnnualPrice, fmtPrice])
 
-  const fmtMonthlyEquivalent = useCallback((planKey: 'basic' | 'pro' | 'business', annualUsd: number) => {
+  const fmtMonthlyEquivalent = useCallback((planKey: 'basic' | 'business', annualUsd: number) => {
     return fmtPrice(Math.round(annualUsd / 12), planKey)
   }, [fmtPrice])
 
@@ -440,7 +436,7 @@ export default observer(function BillingPage() {
   const fmtBillingDate = (iso: string) =>
     new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 
-  const handleCheckout = useCallback(async (planType: 'pro' | 'business' | 'basic', seats: number, opts?: { trial?: boolean }) => {
+  const handleCheckout = useCallback(async (planType: 'business' | 'basic', seats: number, opts?: { trial?: boolean }) => {
     if (!currentWorkspace?.id) return
     setIsCheckoutLoading(true)
     try {
@@ -746,7 +742,9 @@ export default observer(function BillingPage() {
                   You're on {planName}
                 </Text>
                 <Text className="text-xs text-muted-foreground">
-                  Upgrade anytime
+                  {subscription?.planId?.startsWith('pro')
+                    ? 'Pro is no longer sold. You move to Business at your next renewal.'
+                    : 'Upgrade anytime'}
                 </Text>
               </View>
             </View>
@@ -1016,74 +1014,6 @@ export default observer(function BillingPage() {
                   All features in Free, plus:
                 </Text>
                 <FeatureList features={BASIC_FEATURES} />
-              </View>
-            </CardContent>
-          </Card>
-        </View>
-
-        {/* Pro Plan */}
-        <View className="lg:w-[calc(50%-12px)] lg:flex-grow-0 xl:w-auto xl:flex-1 xl:basis-0 flex flex-col w-full max-w-[640px] self-center lg:max-w-none lg:self-auto" testID="plan-card-pro">
-          <View className="hidden lg:block lg:min-h-8" />
-          <Card className="lg:flex-1 flex flex-col rounded-2xl border-border shadow-none">
-            <CardContent className="lg:flex-1 flex flex-col p-5 gap-5">
-              <View className="flex-row items-center gap-2.5">
-                <View className="h-9 w-9 items-center justify-center rounded-full bg-blue-500/10">
-                  <Zap size={18} className="text-blue-500" />
-                </View>
-                <Text className="text-lg font-semibold text-foreground">Pro</Text>
-              </View>
-              <Text className="lg:min-h-[44px] text-sm text-muted-foreground">
-                Designed for fast-moving teams building together in real time.
-              </Text>
-
-              <View className="lg:min-h-[100px] gap-0.5">
-                <Text className="text-3xl lg:text-4xl font-bold text-foreground tracking-tight">
-                  {fmtPlanPrice('pro', proPricing.monthly * proSeats, proPricing.annual * proSeats)}
-                </Text>
-                <Text className="text-sm text-muted-foreground">{billingPeriodLabel}</Text>
-                {billingInterval === 'annual' && (
-                  <Text className="text-xs text-muted-foreground">
-                    Equivalent to {fmtMonthlyEquivalent('pro', proPricing.annual * proSeats)}/month
-                  </Text>
-                )}
-              </View>
-
-              {Platform.OS !== 'ios' && (
-                <View className="lg:min-h-[76px]">
-                  <SeatCounter
-                    value={proSeats}
-                    onChange={setProSeats}
-                    min={1}
-                    max={500}
-                    label="Seats"
-                  />
-                </View>
-              )}
-
-              {trialEligible && !hasStripeSubscription && (
-                <StartTrialButton
-                  onPress={() => handleCheckout('pro', proSeats, { trial: true })}
-                  disabled={isCheckoutLoading}
-                />
-              )}
-              <Pressable
-                onPress={() => handleCheckout('pro', proSeats)}
-                disabled={isCheckoutLoading}
-                className="w-full items-center justify-center py-3 rounded-md border border-border bg-background active:bg-muted"
-              >
-                <Text className="text-sm font-medium text-foreground">
-                  {subscription?.planId?.startsWith('pro') ? 'Change Plan' : 'Upgrade to Pro'}
-                </Text>
-              </Pressable>
-
-              <View className="lg:flex-1 gap-2">
-                <Text className="text-sm font-medium text-foreground">
-                  {relativeUsageCopy('pro')}
-                </Text>
-                <Text className="text-sm text-muted-foreground">
-                  All features in Free, plus:
-                </Text>
-                <FeatureList features={PRO_FEATURES} />
               </View>
             </CardContent>
           </Card>

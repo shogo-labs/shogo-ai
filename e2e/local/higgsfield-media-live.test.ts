@@ -134,13 +134,17 @@ test("health and the model listing report Higgsfield as the default", async ({ r
   expect(listing.images[0].id).toBe("hf-soul-v2")
   expect(listing.videos[0].id).toBe("hf-hailuo-2.3")
   expect(listing.default_video_model).toBe("hf-hailuo-2.3")
-  // Higgsfield is the only provider: nothing fal-shaped may be listed, and every
-  // model must publish the options an agent needs to fill a request.
+  // Higgsfield and Gemini Omni are the only providers: nothing fal-shaped may be
+  // listed, and every model must publish the options an agent needs to fill a
+  // request. Omni lists even without a Google key, marked unavailable (SHO-393).
   for (const model of [...listing.images, ...listing.videos]) {
-    expect(model.provider, `${model.id} is not a Higgsfield model`).toBe("higgsfield")
+    expect(["higgsfield", "google"], `${model.id} is from an unexpected provider`).toContain(model.provider)
     expect(model.endpoints?.length, `${model.id} lists no endpoints`).toBeGreaterThan(0)
     expect(model.options?.length, `${model.id} lists no options`).toBeGreaterThan(0)
   }
+  expect(listing.images.every((model: any) => model.provider === "higgsfield")).toBe(true)
+  expect(listing.videos.filter((model: any) => model.provider !== "higgsfield").map((model: any) => model.id))
+    .toEqual(["google-omni-1.2-flash"])
 })
 
 test("Kling 3.0 Std is listed with both endpoints, 3–15 s and sound", async ({ request }) => {
@@ -162,6 +166,52 @@ test("Kling 3.0 Std is listed with both endpoints, 3–15 s and sound", async ({
   for (const name of ["sound", "multi_prompt", "multi_shots", "cfg_scale"]) {
     expect(names, `Kling 3.0 Std is missing '${name}'`).toContain(name)
   }
+})
+
+test("last_frame is published exactly where an endpoint documents one", async ({ request }) => {
+  const res = await request.fetch(`${LOCAL_API_BASE}/api/ai/v1/media/models`, { headers: proxyHeaders(proxy) })
+  expect(res.ok()).toBe(true)
+  const listing = await res.json()
+  const byId = new Map<string, any>((listing.videos ?? []).map((model: any) => [model.id, model]))
+
+  // Kling reads `last_image_url`, the wan family `end_image_url`; both are last
+  // frames as far as an agent is concerned, so both must say so (SHO-400).
+  for (const id of ["hf-kling-3.0-std", "hf-kling-3.0-pro", "hf-wan-3.0", "hf-wan-3.0-prime", "hf-minimax-h3", "hf-seedance-2.5"]) {
+    expect(byId.get(id)?.last_frame, `${id} lost last_frame`).toBe(true)
+  }
+  expect(byId.get("hf-kling-2.5-pro")?.last_frame).toBe(false)
+  expect(byId.get("hf-hailuo-2.3")?.last_frame).toBe(false)
+  // A Genjutsu entry edits a clip, so it can never take a last frame.
+  for (const id of ["hf-genjutsu-motion-transfer", "hf-genjutsu-object-swap", "hf-genjutsu-restyle"]) {
+    expect(byId.get(id)?.last_frame, `${id} claims a last frame`).toBe(false)
+  }
+})
+
+test("end_image is refused where the model has no last-frame field", async ({ request }) => {
+  const image = `data:image/png;base64,${Buffer.from("frame").toString("base64")}`
+
+  // Hailuo 2.3 documents no end-frame field, so the refusal must name the
+  // models that do — and never offer the model that just refused.
+  const unsupported = await request.fetch(`${LOCAL_API_BASE}/api/ai/v1/videos/generations`, {
+    method: "POST",
+    headers: proxyHeaders(proxy),
+    data: { model: "hf-hailuo-2.3", prompt: "x", duration: 6, start_image: image, end_image: image },
+  })
+  expect(unsupported.status()).toBe(400)
+  const refused = await unsupported.json()
+  expect(refused.error?.code).toBe("end_image_unsupported")
+  expect(refused.error?.message).toContain("hf-kling-3.0-pro")
+  expect(refused.error?.message).toContain("hf-wan-3.0")
+  expect(refused.error?.message).not.toContain("hf-hailuo-2.3")
+
+  // A last frame alone has nothing to interpolate from.
+  const noStart = await request.fetch(`${LOCAL_API_BASE}/api/ai/v1/videos/generations`, {
+    method: "POST",
+    headers: proxyHeaders(proxy),
+    data: { model: "hf-kling-3.0-pro", prompt: "x", duration: 5, end_image: image },
+  })
+  expect(noStart.status()).toBe(400)
+  expect((await noStart.json()).error?.code).toBe("invalid_end_image")
 })
 
 test("every listed image model carries a price, and the catalog is complete", async ({ request }) => {

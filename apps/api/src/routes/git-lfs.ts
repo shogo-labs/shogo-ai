@@ -33,7 +33,7 @@
 import { Hono, type Context } from 'hono'
 import { lfsObjectKey, isValidLfsOid } from '@shogo/shared-runtime'
 import { prisma } from '../lib/prisma'
-import { authorizeProject } from '../middleware/auth'
+import { authorizeProject, isWorkspaceRootLfs } from '../middleware/auth'
 import type { Permission } from '@shogo/authz'
 import {
   getLfsPresignedReadUrl,
@@ -87,6 +87,13 @@ async function authorizeLfs(c: Context, projectId: string, permission: Permissio
   const auth = c.get('auth')
   if (!auth?.isAuthenticated || !auth.userId) {
     return lfsError('Authentication required', 401)
+  }
+  // A bare workspace runtime's root repo (`ws:<workspaceId>`) has no project
+  // row: `authMiddleware` already verified the workspace token's scope, and
+  // `requireProjectAccess` skipped the project authorize lookup. There is no
+  // `workingMode` to check either (SHO-368).
+  if (isWorkspaceRootLfs(auth, projectId)) {
+    return null
   }
   const access = await authorizeProject(c, projectId, permission)
   if (!access.ok) {

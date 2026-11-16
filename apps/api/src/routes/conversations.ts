@@ -1220,10 +1220,39 @@ export interface AgentChannelAuthContext {
   workspaceId: string
   /** Agent identity from the runtime token: a project id, null for the workspace agent, undefined when unknown (SA). */
   projectId: string | null | undefined
+  /**
+   * The person this call is made for, when it crosses a workspace boundary
+   * (SHO-389). The post is still the agent's, and carries `blocks.onBehalfOf`
+   * the same way a person's agent-posted DM does — so a card on a board and a
+   * post in a channel are attributed alike.
+   */
+  userId?: string | null
 }
 
 export interface AgentChannelRoutesConfig {
   authorize: (c: any) => Promise<AgentChannelAuthContext | Response>
+}
+
+/**
+ * `blocks.onBehalfOf` for a post made for a person in another workspace
+ * (SHO-389) — the same shape `chat_handoff`/DM posts already use, so the UI
+ * renders one attribution and every surface agrees on it. Undefined for an
+ * ordinary call in the agent's own workspace, where the author is the agent
+ * and nobody is "behind" it.
+ */
+async function onBehalfOfBlock(
+  workspaceId: string,
+  userId: string | null | undefined,
+): Promise<{ userId: string; name: string } | null> {
+  if (!userId) return null
+  const member = await db.member
+    .findFirst({
+      where: { workspaceId, userId, projectId: null },
+      select: { userId: true, user: { select: { name: true, email: true } } },
+    })
+    .catch(() => null)
+  if (!member) return null
+  return { userId: member.userId, name: member.user.name || member.user.email }
 }
 
 const isLocalMode = () => process.env.SHOGO_LOCAL_MODE === 'true'
@@ -1661,7 +1690,8 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       // A card is routine by default; agents mark it a decision or alert when it needs a person.
       const kind = normalizeKind(body.kind) ?? (questions.length ? 'decision' : card ? 'status' : null)
       const note = String(body.text ?? '')
-      const blocks = blocksForKind({ kind, card })
+      const onBehalfOf = await onBehalfOfBlock(auth.workspaceId, auth.userId)
+      const blocks = { ...blocksForKind({ kind, card }), ...(onBehalfOf ? { onBehalfOf } : {}) }
       const result = await postAgentMessage({
         conversationId: conversation.id,
         // Plain `@Name` is resolved at the insert point (`conversation.service.postMessage`).

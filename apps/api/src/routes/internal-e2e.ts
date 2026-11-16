@@ -51,11 +51,56 @@ import {
 } from '../lib/e2e-bootstrap-secret'
 import { prisma, SubscriptionStatus, BillingInterval } from '../lib/prisma'
 import { deleteE2eTestUsers, isE2eTestEmail } from '../services/e2e-test-accounts'
+import { downgradeToMicro, syncInstanceFromStripe } from '../services/instance.service'
+import { INSTANCE_SIZE_ORDER, type InstanceSizeName } from '../config/instance-sizes'
 
 const app = new Hono()
 
 const ALLOWED_PLANS = new Set(['basic', 'pro', 'business'])
 const ALLOWED_INTERVALS = new Set<BillingInterval>(['monthly', 'annual'])
+
+/**
+ * Resolve the target workspace: `workspaceId` directly, or the team workspace
+ * of an `e2e-*@mailnull.com` user (restricted to that shape so the backdoor
+ * can't upgrade arbitrary real users even if the secret leaked).
+ */
+async function resolveE2eWorkspaceId(body: {
+  workspaceId?: string
+  userEmail?: string
+}): Promise<{ workspaceId: string } | { status: 400 | 404; body: Record<string, unknown> }> {
+  const direct = body.workspaceId?.trim()
+  if (direct) return { workspaceId: direct }
+  const email = body.userEmail?.trim().toLowerCase()
+  if (!email) {
+    return { status: 400, body: { ok: false, error: 'workspaceId_or_userEmail_required' } }
+  }
+  if (!isE2eTestEmail(email)) {
+    return {
+      status: 400,
+      body: {
+        ok: false,
+        error: 'userEmail_must_be_e2e_address',
+        message: 'userEmail lookup is restricted to e2e-*@mailnull.com addresses.',
+      },
+    }
+  }
+  // Onboarding gives every user a personal space AND a team workspace, and
+  // projects (and so every Pro spec) live in the team one.
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: {
+      members: {
+        where: { workspaceId: { not: null }, projectId: null },
+        select: { workspaceId: true, workspace: { select: { kind: true } } },
+        orderBy: { createdAt: 'asc' },
+      },
+    },
+  })
+  const members = user?.members ?? []
+  const wid = (members.find((m) => m.workspace?.kind === 'team') ?? members[0])?.workspaceId ?? null
+  if (!wid) return { status: 404, body: { ok: false, error: 'workspace_not_found_for_user', email } }
+  return { workspaceId: wid }
+}
 
 /**
  * POST /api/internal/e2e/bootstrap-subscription
@@ -125,53 +170,9 @@ app.post('/bootstrap-subscription', async (c) => {
     )
   }
 
-  // Resolve workspaceId — either passed directly, or looked up by the
-  // signup email of the e2e user. The email path is restricted to the
-  // `e2e-*@mailnull.com` shape so this can't be abused to upgrade
-  // arbitrary real users even if the secret ever leaked.
-  let workspaceId = body.workspaceId?.trim()
-  if (!workspaceId) {
-    const email = body.userEmail?.trim().toLowerCase()
-    if (!email) {
-      return c.json(
-        { ok: false, error: 'workspaceId_or_userEmail_required' },
-        400,
-      )
-    }
-    if (!isE2eTestEmail(email)) {
-      return c.json(
-        {
-          ok: false,
-          error: 'userEmail_must_be_e2e_address',
-          message:
-            'userEmail lookup is restricted to e2e-*@mailnull.com addresses.',
-        },
-        400,
-      )
-    }
-    // Onboarding gives every user a personal space AND a team workspace, and
-    // projects (and so every Pro spec) live in the team one.
-    const user = await prisma.user.findUnique({
-      where: { email },
-      select: {
-        members: {
-          where: { workspaceId: { not: null }, projectId: null },
-          select: { workspaceId: true, workspace: { select: { kind: true } } },
-          orderBy: { createdAt: 'asc' },
-        },
-      },
-    })
-    const members = user?.members ?? []
-    const wid =
-      (members.find((m) => m.workspace?.kind === 'team') ?? members[0])?.workspaceId ?? null
-    if (!wid) {
-      return c.json(
-        { ok: false, error: 'workspace_not_found_for_user', email },
-        404,
-      )
-    }
-    workspaceId = wid
-  }
+  const resolved = await resolveE2eWorkspaceId(body)
+  if (!('workspaceId' in resolved)) return c.json(resolved.body, resolved.status)
+  const workspaceId = resolved.workspaceId
 
   const now = new Date()
   const periodEnd = new Date(now.getTime() + daysUntilPeriodEnd * 24 * 60 * 60 * 1000)
@@ -227,6 +228,64 @@ app.post('/bootstrap-subscription', async (c) => {
       { ok: false, error: 'bootstrap_failed', message: err?.message ?? 'unknown' },
       500,
     )
+  }
+})
+
+/**
+ * POST /api/internal/e2e/bootstrap-instance
+ *
+ * Body: { workspaceId?: string, userEmail?: string, instanceSize: 'micro'|'small'|'medium'|'large'|'xlarge' }
+ *
+ * Sets the workspace's compute tier as if the instance checkout webhook had
+ * fired (`syncInstanceFromStripe`, ids prefixed `e2e_bootstrap_`); `micro`
+ * goes through `downgradeToMicro`. The machine-size e2e uses it to reach a
+ * tier that allows a bigger machine. Same three guardrails as the
+ * subscription backdoor.
+ */
+app.post('/bootstrap-instance', async (c) => {
+  if (!bootstrapEnabled()) {
+    return c.json({ ok: false, error: 'e2e_bootstrap_disabled' }, 503)
+  }
+  if (!secretMatches(c.req.header(E2E_BOOTSTRAP_HEADER))) {
+    return c.json({ ok: false, error: 'unauthorized' }, 401)
+  }
+  let body: { workspaceId?: string; userEmail?: string; instanceSize?: string }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ ok: false, error: 'invalid_json' }, 400)
+  }
+  const instanceSize = body.instanceSize?.trim() as InstanceSizeName | undefined
+  if (!instanceSize || !INSTANCE_SIZE_ORDER.includes(instanceSize)) {
+    return c.json({ ok: false, error: 'invalid_instanceSize', allowed: INSTANCE_SIZE_ORDER }, 400)
+  }
+  const resolved = await resolveE2eWorkspaceId(body)
+  if (!('workspaceId' in resolved)) return c.json(resolved.body, resolved.status)
+  const { workspaceId } = resolved
+
+  try {
+    if (instanceSize === 'micro') {
+      await downgradeToMicro(workspaceId)
+    } else {
+      const now = new Date()
+      await syncInstanceFromStripe(
+        workspaceId,
+        `e2e_bootstrap_isub_${workspaceId}_${Date.now()}`,
+        `e2e_bootstrap_cus_${workspaceId}`,
+        instanceSize,
+        SubscriptionStatus.active,
+        'monthly',
+        now,
+        new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+      )
+    }
+    // eslint-disable-next-line no-console
+    console.info('[e2e-bootstrap] set instance size', JSON.stringify({ workspaceId, instanceSize }))
+    return c.json({ ok: true, workspaceId, instanceSize })
+  } catch (err: any) {
+    // eslint-disable-next-line no-console
+    console.error('[e2e-bootstrap] bootstrap-instance failed', err)
+    return c.json({ ok: false, error: 'bootstrap_failed', message: err?.message ?? 'unknown' }, 500)
   }
 })
 

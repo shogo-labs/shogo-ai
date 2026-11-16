@@ -346,7 +346,9 @@ export interface PlanAllowance {
  * $40 keeps $9.90/week ($3.96/5h, $40/mo) until its next renewal moves it to
  * the $16 price, at which point the same `business` plan resolves to
  * $4.60/week ($1.84/5h, $20/mo). Everything else — Basic ($8 either way), Pro,
- * Enterprise, grants — resolves straight off today's ladder.
+ * Enterprise — resolves straight off today's ladder. Grants have no price, so
+ * they go through `getGrantAllowance`, which starts from this same null-price
+ * resolution and then applies the grant's `monthlyIncludedUsd` floor.
  *
  * A `null`/missing price on a Business subscription counts as legacy: those
  * rows predate the `stripePriceId` backfill and every one of them is on $40,
@@ -372,6 +374,43 @@ export function getPlanAllowance(
     windowLimits: getWindowLimitsForPlan(normalized),
     monthlyIncludedUsdPerSeat: SEAT_INCLUDED_USD[normalized],
     legacy: false,
+  }
+}
+
+/**
+ * The allowance a super-admin grant confers (SHO-343).
+ *
+ * A grant has no price, so it resolves like a null-price subscription: a
+ * Business grant keeps the legacy $40-seat allowance ($3.96/5h, $9.90/wk) and
+ * every other plan resolves off today's ladder. A grant's `monthlyIncludedUsd`
+ * is a workspace total, so when it buys more than the plan's per-seat monthly
+ * included it raises the per-seat weekly allowance to
+ * `monthlyIncludedUsd / max(1, freeSeats) / WEEKS_PER_MONTH`, with the 5-hour
+ * limit scaled by the plan's own 5h/weekly ratio. `null` (uncapped) stays
+ * uncapped.
+ */
+export function getGrantAllowance(
+  planId: string | null | undefined,
+  opts: { freeSeats?: number; monthlyIncludedUsd?: number } = {},
+): PlanAllowance {
+  const base = getPlanAllowance(planId, null)
+  if (base.windowLimits == null) return base
+
+  const monthlyIncludedUsd = opts.monthlyIncludedUsd ?? 0
+  if (monthlyIncludedUsd <= 0) return base
+
+  const seats = Math.max(1, Math.floor(opts.freeSeats ?? 0))
+  const weeklyFromMonthly = monthlyIncludedUsd / seats / WEEKS_PER_MONTH
+  if (weeklyFromMonthly <= base.windowLimits.weeklyUsd) return base
+
+  const fiveHourRatio = base.windowLimits.fiveHourUsd / base.windowLimits.weeklyUsd
+  return {
+    windowLimits: {
+      fiveHourUsd: weeklyFromMonthly * fiveHourRatio,
+      weeklyUsd: weeklyFromMonthly,
+    },
+    monthlyIncludedUsdPerSeat: monthlyIncludedUsd / seats,
+    legacy: base.legacy,
   }
 }
 
@@ -515,7 +554,10 @@ export const SIGNUP_CREDIT_TTL_DAYS = 30
  * it when the trial ends. Only one trial per user, workspace and card.
  */
 export const TRIAL_PERIOD_DAYS = 7
-export const TRIAL_ELIGIBLE_PLANS: readonly PlanId[] = ['basic', 'pro', 'business']
+// Pro is retired (SHO-339/SHO-397): no new Pro trial can start through any
+// path. Existing Pro subscriptions keep their plan until the migration moves
+// them to Business at renewal.
+export const TRIAL_ELIGIBLE_PLANS: readonly PlanId[] = ['basic', 'business']
 
 /**
  * Promo credit that can still be spent at `now`. Zero once the credit has
@@ -584,4 +626,31 @@ export function getPublishedPlanCaps(planId: string | null | undefined): Publish
     sizes: PUBLISHED_SIZES[plan],
     staging: PUBLISHED_STAGING_ENVS[plan],
   }
+}
+
+// =============================================================================
+// Chat attachment size caps (SHO-370)
+// =============================================================================
+//
+// The agent-chat attachment limit is a plan entitlement, not a runtime setting:
+// Free is held to a hard 100 MB on every attachment (archives included), while
+// every paid tier — and desktop/local mode, which resolves to a paid plan — gets
+// the API's 500 MB body ceiling. These are the only two numbers; the API proxy,
+// the runtime and the client all read them from here.
+
+/** Hard per-attachment cap for the free plan, in bytes. */
+export const FREE_CHAT_ATTACHMENT_BYTES = 100 * 1024 * 1024
+
+/** Per-attachment cap for paid plans (and desktop/local), in bytes. */
+export const PAID_CHAT_ATTACHMENT_BYTES = 500 * 1024 * 1024
+
+/** Per-attachment cap for a plan id. Unknown plans fall back to free. */
+export function getChatAttachmentCap(planId: string | null | undefined): number {
+  const plan = normalizePlanId(planId) ?? 'free'
+  return plan === 'free' ? FREE_CHAT_ATTACHMENT_BYTES : PAID_CHAT_ATTACHMENT_BYTES
+}
+
+/** Per-attachment cap from a resolved paid/free entitlement. */
+export function getChatAttachmentCapForPaid(paid: boolean): number {
+  return paid ? PAID_CHAT_ATTACHMENT_BYTES : FREE_CHAT_ATTACHMENT_BYTES
 }

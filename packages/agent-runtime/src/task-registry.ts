@@ -40,6 +40,34 @@ export const COMPLETED_RETENTION_MS = 10 * 60 * 1000
 export const UNREAD_RETENTION_MS = 24 * 60 * 60 * 1000
 /** How long a shell command must run before it is shown in the chat dock. */
 export const UI_VISIBLE_AFTER_MS = 30_000
+/**
+ * How long a background shell task may run before the registry stops it.
+ *
+ * Without a bound, one stray command (`while pgrep -f render.ts; do sleep 30;
+ * done`, or a tunnel nobody remembers starting) keeps the runtime "busy"
+ * forever: the guest reports `tasks > 0`, the host refuses to rotate the VM, and
+ * it never takes a release (SHO-399). A task that should outlive the cap is a
+ * service — declare it with `exec({ background: true, service: true })` and it
+ * is restarted on the next boot instead of being capped (§3).
+ */
+export const EXEC_BACKGROUND_MAX_MS = 6 * 60 * 60 * 1000
+/** Overridable so a host can tighten or loosen the cap without a rebuild. */
+export const EXEC_BACKGROUND_MAX_ENV = 'SHOGO_EXEC_BACKGROUND_MAX_MS'
+
+/** The effective cap: env override when it parses to a positive number. */
+export function execBackgroundMaxMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = env[EXEC_BACKGROUND_MAX_ENV]
+  const parsed = raw ? Number(raw) : NaN
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : EXEC_BACKGROUND_MAX_MS
+}
+
+/** What a task stopped by the cap says, so the owner reads why it ended. */
+export function backgroundCapSummary(ms: number): string {
+  const hours = ms / 3_600_000
+  const human = hours >= 1 ? `${Math.round(hours * 10) / 10} h` : `${Math.round(ms / 60_000)} min`
+  return `stopped after ${human}: background commands are capped; use \`service: true\` for a long-running service`
+}
+
 /** Rolling in-memory output window per non-shell task, used by `until` matching. */
 const RECENT_OUTPUT_CHARS = 256 * 1024
 /** Polling interval for `until` regex checks. */
@@ -204,6 +232,20 @@ export interface TaskEntry {
   finalResult?: ShellFinalResult
   /** The runtime is sweeping this task on shutdown: it ends `interrupted`, never `completed`. */
   runtimeShutdown?: boolean
+  /**
+   * A declared service (`exec({ service: true })`): restarted from
+   * `.shogo/services.json` on the next boot, so it is exempt from the
+   * background-task cap and its row is not restored from the snapshot.
+   */
+  service?: boolean
+  /** The service's declared name, used to match it across a restart. */
+  serviceName?: string
+  /**
+   * This row's outcome was never handed to its owner — the runtime was going
+   * away for a release and had no chance to wake the chat. The snapshot carries
+   * the flag, and the next boot delivers the note (SHO-399).
+   */
+  notifyOnRestore?: boolean
   /** Rebuilt from its output file after its entry was evicted. */
   recovered?: boolean
   /** Arms the retention window for this entry's finished result. */
@@ -244,6 +286,10 @@ export interface RunningProcess {
   notify: boolean
   remote?: boolean
   stale?: boolean
+  /** Declared with `exec({ service: true })`: restarted on the next boot. */
+  service?: boolean
+  /** The service's declared name. */
+  name?: string
   /** Where the task's work is happening (thread, card, project session, log). */
   link?: TaskLink
   /**
@@ -284,6 +330,12 @@ export interface RunningProcessSnapshot {
   consumed?: boolean
   /** The agent was told it runs in the background (only these own their result). */
   backgrounded?: boolean
+  /** A declared service; restored by restarting it from `.shogo/services.json`, not from this row. */
+  service?: boolean
+  /** The service's declared name. */
+  name?: string
+  /** Settled for a reason its owner was never told; the next boot delivers it (SHO-399). */
+  notifyOnRestore?: boolean
 }
 
 export interface TaskNotification {
@@ -362,6 +414,13 @@ export interface TaskRegistryOptions {
   /** How many unread finished results may sit in memory before the oldest go. */
   maxUnconsumed?: number
   /**
+   * How long a background shell task may run (see {@link EXEC_BACKGROUND_MAX_MS}).
+   * Defaults to the env override, then the built-in cap.
+   */
+  backgroundMaxMs?: number
+  /** How often the cap sweep runs while a background task is alive. */
+  backgroundSweepMs?: number
+  /**
    * Find a task's log after its entry was evicted, so `resolveFinished` can
    * rebuild the result instead of reporting the task as unknown.
    */
@@ -415,6 +474,10 @@ export class TaskRegistry {
   private readonly retentionMs: number
   private readonly unreadRetentionMs: number
   private readonly maxUnconsumed: number
+  private readonly backgroundMaxMs: number
+  private readonly backgroundSweepMs: number
+  /** One sweep timer for the whole registry, not one per task. */
+  private capSweepTimer?: ReturnType<typeof setInterval>
   private readonly findOutputRow?: (id: string) => TaskOutputRow | null
   remote?: RemoteTaskClient
 
@@ -426,6 +489,8 @@ export class TaskRegistry {
     this.retentionMs = options.retentionMs ?? COMPLETED_RETENTION_MS
     this.unreadRetentionMs = options.unreadRetentionMs ?? UNREAD_RETENTION_MS
     this.maxUnconsumed = options.maxUnconsumed ?? 20
+    this.backgroundMaxMs = options.backgroundMaxMs ?? execBackgroundMaxMs()
+    this.backgroundSweepMs = options.backgroundSweepMs ?? Math.min(60_000, Math.max(250, Math.floor(this.backgroundMaxMs / 10)))
     this.findOutputRow = options.resolveOutputRow
   }
 
@@ -434,7 +499,7 @@ export class TaskRegistry {
   // ---------------------------------------------------------------------------
 
   /** Register a freshly spawned shell command. */
-  register(command: string, handle: CommandHandle, opts: { title?: string; notify?: boolean; cwd?: string; link?: TaskLink } = {}): CommandEntry {
+  register(command: string, handle: CommandHandle, opts: { title?: string; notify?: boolean; cwd?: string; link?: TaskLink; service?: boolean; name?: string } = {}): CommandEntry {
     const id = newTaskId()
     let resolveDone!: () => void
     const done = new Promise<void>((r) => { resolveDone = r })
@@ -450,10 +515,13 @@ export class TaskRegistry {
       consumed: false,
       handle,
       link: opts.link,
+      service: opts.service || undefined,
+      serviceName: opts.name,
       done,
     }
     this.entries.set(id, entry)
     this.resolvers.set(id, resolveDone)
+    this.ensureCapSweep()
 
     const writer = this.createWriter(entry, {
       command,
@@ -1192,6 +1260,102 @@ export class TaskRegistry {
     return n
   }
 
+  // ---------------------------------------------------------------------------
+  // Background-task cap
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The single sweep that enforces {@link EXEC_BACKGROUND_MAX_MS}.
+   *
+   * Started on demand (the first shell task registered) and stopped as soon as
+   * no cappable task is left, so an idle registry holds no timer. A per-task
+   * timer would be the obvious alternative and is exactly wrong: it leaks one
+   * handle per exec and outlives the task it was meant to bound.
+   */
+  private ensureCapSweep(): void {
+    if (this.capSweepTimer || !(this.backgroundMaxMs > 0)) return
+    const timer = setInterval(() => {
+      this.enforceBackgroundCap()
+      if (!this.hasCappableTask()) this.stopCapSweep()
+    }, this.backgroundSweepMs)
+    ;(timer as any)?.unref?.()
+    this.capSweepTimer = timer
+  }
+
+  private stopCapSweep(): void {
+    if (!this.capSweepTimer) return
+    clearInterval(this.capSweepTimer)
+    this.capSweepTimer = undefined
+  }
+
+  /** A running local shell task the cap applies to. A service never expires. */
+  private hasCappableTask(): boolean {
+    for (const e of this.entries.values()) {
+      if (e.remote || e.stale || e.service) continue
+      if (e.source === 'shell' && e.status === 'running') return true
+    }
+    return false
+  }
+
+  /**
+   * Stop every local shell task older than the cap, settling each `interrupted`
+   * with a summary that says why and names the way out (`service: true`).
+   *
+   * Returns the ids it stopped, so a caller (or a test) can assert on them. The
+   * normal settle path queues the owner's note, so the agent reads what happened
+   * instead of finding a task that quietly vanished.
+   */
+  enforceBackgroundCap(now = Date.now()): string[] {
+    if (!(this.backgroundMaxMs > 0)) return []
+    const stopped: string[] = []
+    for (const entry of [...this.entries.values()]) {
+      if (entry.remote || entry.stale || entry.service) continue
+      if (entry.source !== 'shell' || entry.status !== 'running') continue
+      if (now - entry.startedAt < this.backgroundMaxMs) continue
+      // Settle before the kill, for the same reason `killAll` marks before it
+      // signals: the verdict is ours, not the signal's.
+      entry.runtimeShutdown = true
+      this.settle(entry, 'interrupted', { summary: backgroundCapSummary(this.backgroundMaxMs) })
+      try { entry.handle?.kill('SIGKILL') } catch { /* already gone */ }
+      stopped.push(entry.id)
+    }
+    return stopped
+  }
+
+  /**
+   * Stop every local task because this runtime is going away for a release (a
+   * stale-rootfs recycle). The reason is not the generic "the runtime
+   * restarted": nothing crashed, the VM is being replaced on purpose, and the
+   * agent that reads the note should be told that much.
+   *
+   * A task the agent was told about in the background carries the outcome to
+   * its owner across the restart (`notifyOnRestore` rides the snapshot into
+   * sessions.db, which the next VM restores). There is no turn left here to
+   * inject a note into — the whole process is about to die — so queueing it in
+   * memory would only be cleared by the shutdown sweep.
+   *
+   * Services are stopped too, but silently: they come back on the new release
+   * from `.shogo/services.json`, and an "interrupted" note for something that is
+   * running again a minute later is noise the agent has to reconcile.
+   */
+  stopForRelease(opts: { reason: string; note?: string }): number {
+    const reason = `stopped: ${opts.reason}`
+    const summary = opts.note ? `${reason} (${opts.note})` : reason
+    let stopped = 0
+    for (const entry of [...this.entries.values()]) {
+      if (entry.remote || entry.stale || entry.status !== 'running') continue
+      const notifyOwner = !entry.service && !!entry.backgrounded
+      entry.runtimeShutdown = true
+      entry.notify = notifyOwner
+      if (notifyOwner) entry.notifyOnRestore = true
+      this.settle(entry, 'interrupted', { summary })
+      try { entry.handle?.kill('SIGKILL') } catch { /* already gone */ }
+      try { void this.cancels.get(entry.id)?.() } catch { /* ignore */ }
+      stopped += 1
+    }
+    return stopped
+  }
+
   /**
    * Counts for "is this runtime busy?", which is a different question from
    * "will anything wake the agent?".
@@ -1200,15 +1364,23 @@ export class TaskRegistry {
    * tasks — so a foreground `exec` still running, a task the agent was told it
    * would `wait` on, or a restored row whose process may still be alive all
    * read as idle, and the host would kill the runtime out from under them
-   * (SHO-143). Here every running task counts, and so does every live child
-   * process, whether or not its row is fresh.
+   * (SHO-143). Here every running *local* task counts, and so does every live
+   * child process, whether or not its row is fresh.
+   *
+   * A remote task does not count (SHO-399). It is a mirror of work the API is
+   * running elsewhere — a card watch, a background `project_call`, an agent
+   * reply — and nothing local is happening for it: the API wakes this session
+   * when it settles, and that wake boots or resumes the runtime anyway. Counting
+   * them is what kept four runtimes on a seven-day-old rootfs: two card-watch
+   * mirrors that had been `running` for 2.6 days with no process behind them
+   * read as "busy" to every lifecycle gate on the host.
    */
   activeWorkCounts(): { tasks: number; children: number } {
     let tasks = 0
     let children = 0
     for (const e of this.entries.values()) {
       if (e.dormant) continue
-      if (this.isRunning(e)) tasks++
+      if (!e.remote && this.isRunning(e)) tasks++
       // A live handle is a live child process even when its row was marked
       // stale by a gateway restart — the work is really still running.
       if (e.handle && !e.handle.exited()) children++
@@ -1251,6 +1423,8 @@ export class TaskRegistry {
       notify: entry.notify && !!entry.backgrounded,
       remote: entry.remote || undefined,
       stale: entry.stale || undefined,
+      service: entry.service || undefined,
+      name: entry.serviceName,
       link: entry.link,
     }
   }
@@ -1372,6 +1546,14 @@ export class TaskRegistry {
         // with; a restart must not turn an unread result into a read one.
         consumed: entry?.consumed,
         backgrounded: entry?.backgrounded,
+        // A declared service is re-created by restarting it from
+        // `.shogo/services.json`, so its row (and its cap exemption) must
+        // travel: without the flag the next boot cannot tell it from a stray
+        // background command and would restore it as an interrupted shell task.
+        service: entry?.service,
+        name: entry?.serviceName,
+        // The owner was never told this one ended: the next boot delivers it.
+        notifyOnRestore: entry?.notifyOnRestore,
       }
     })
   }
@@ -1389,6 +1571,11 @@ export class TaskRegistry {
     let changed = false
     for (const snap of snapshots) {
       if (!snap?.runId || this.entries.has(snap.runId)) continue
+      // A declared service is not restored as a task row: it is restarted from
+      // `.shogo/services.json` (see `restartDeclaredServices`), which is the
+      // authoritative list. Restoring the row would leave a second, dead copy
+      // next to the live one.
+      if (snap.service) continue
       if (snap.remote && snap.source) {
         this.registerRemote({
           id: snap.runId,
@@ -1495,6 +1682,10 @@ export class TaskRegistry {
   /** Restore one settled row; false when it is unknown/too old to keep.  */
   private restoreTerminal(snap: RunningProcessSnapshot, now: number): boolean {
     if (!isTerminalStatus(snap.status) || !snap.finishedAt) return false
+    // A row whose outcome its owner was never told is handed over, not restored
+    // silently: the runtime was recycled for a release before it could wake the
+    // chat, so this boot is the first chance to say what happened (SHO-399).
+    const deliver = !!snap.notifyOnRestore
     const entry: TaskEntry = {
       id: snap.runId,
       runId: snap.runId,
@@ -1504,10 +1695,10 @@ export class TaskRegistry {
       status: snap.status!,
       startedAt: snap.startedAt,
       finishedAt: snap.finishedAt,
-      notify: false,
+      notify: deliver,
       // A snapshot from before this field existed assumed the row was read.
-      consumed: snap.consumed ?? true,
-      backgrounded: snap.backgrounded,
+      consumed: deliver ? false : (snap.consumed ?? true),
+      backgrounded: deliver ? true : snap.backgrounded,
       shown: snap.shown,
       outputFile: snap.outputFile,
       link: snap.link,
@@ -1520,6 +1711,7 @@ export class TaskRegistry {
     if (snap.finishedAt + lease - now <= 0) return true
     this.entries.set(snap.runId, entry)
     this.armRetention(entry)
+    if (deliver) this.queueNote(entry)
     return true
   }
 

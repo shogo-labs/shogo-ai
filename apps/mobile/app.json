@@ -56,8 +56,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Shogo to access your photos so you can attach them to messages.",
-          "cameraPermission": "Allow Shogo to use the camera so you can attach photos to messages and turn on video in huddles."
+          "photosPermission": "Allow Shogo to access your photos and videos so you can attach them to messages.",
+          "cameraPermission": "Allow Shogo to use the camera so you can attach photos and videos to messages and turn on video in huddles."
         }
       ],
       [

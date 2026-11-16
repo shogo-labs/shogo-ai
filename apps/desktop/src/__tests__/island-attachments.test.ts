@@ -39,22 +39,19 @@ describe('Shogo island attachments', () => {
       },
     ])
     expect(error).toContain('large.txt')
-    expect(error).toContain('100MB')
+    expect(error).toContain('500MB')
   })
 
-  test('allows project archives to exceed the byte limit', () => {
+  test('accepts a 300 MB file and a 300 MB archive (local = paid)', () => {
     expect(
       validateIslandFiles([
-        {
-          name: 'project.shogo',
-          type: 'application/octet-stream',
-          size: ISLAND_MAX_FILE_SIZE + 1,
-        },
+        { name: 'video.mp4', type: 'video/mp4', size: 300 * 1024 * 1024 },
+        { name: 'project.zip', type: 'application/zip', size: 300 * 1024 * 1024 },
       ]),
     ).toBeNull()
   })
 
-  test('still caps project archives', () => {
+  test('caps project archives at the same 500 MB ceiling', () => {
     expect(
       validateIslandFiles([
         {

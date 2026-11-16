@@ -190,6 +190,19 @@ export class FakeGuest {
   readonly adoptGate = new RepoAdoptGate()
   /** Every `/pool/repo-hydrated` adopt answer, in order: 200, 409 (busy), 504, 500. */
   readonly adoptStatuses: number[] = []
+  /** Every request path this guest served, in order (SHO-399 ordering assertions). */
+  readonly calls: string[] = []
+  /** Bodies of the `/pool/stop-background-tasks` calls this guest served. */
+  readonly stopTaskBodies: Array<{ reason?: string }> = []
+  /** What this guest reports its `.tmp/` held when the host stops its tasks. */
+  tmpDropped?: { files: number; bytes: number; entries?: string[] }
+  /**
+   * When set, `/pool/checkpoint-commit` answers 500 with this message — models a
+   * guest whose checkpoint commit fails, which must abort a non-forced recycle.
+   */
+  checkpointFailure?: string
+  /** Set false to model a guest older than `/pool/checkpoint-commit` (answers 404). */
+  checkpointSupported = true
   alive = true
   private server: ReturnType<typeof Bun.serve>
   private settleGit!: () => void
@@ -293,8 +306,17 @@ export class FakeGuest {
     return existsSync(p) ? readFileSync(p, 'utf-8') : null
   }
 
+  /** Something the agent left in its workspace (`<workspace>/<rel>`). */
+  writeWorkspace(rel: string, body: string, mode = 0o644): void {
+    writeRel(this.ws, rel, body)
+    chmodSync(join(this.ws, rel), mode)
+  }
+
   private homeEnv(): NodeJS.ProcessEnv {
-    return { ...this.env, SHOGO_HOME_STATE_DIR: this.home }
+    // A real guest has HOME=/app and the workspace at /app/workspace. The two
+    // are siblings here (so a source export can never contain the home), but
+    // the workspace must still be named so home-state persists its `.env*`.
+    return { ...this.env, SHOGO_HOME_STATE_DIR: this.home, WORKSPACE_DIR: this.ws }
   }
 
   /** Guest paths as the host sends them: absolute `/app/workspace/...` or workspace-relative. */
@@ -304,8 +326,19 @@ export class FakeGuest {
     return join(this.ws, dir)
   }
 
+  /** Whether the guest's workspace has an uncommitted tree (false with no repo). */
+  private hasDirtyTree(): boolean {
+    if (!existsSync(join(this.ws, '.git'))) return false
+    try {
+      return git(this.ws, 'status', '--porcelain') !== ''
+    } catch {
+      return false
+    }
+  }
+
   private async handle(req: Request): Promise<Response> {
     const path = new URL(req.url).pathname
+    this.calls.push(path)
     // agent-runtime's app-wide middleware: anything that can write the
     // workspace marks it in use and waits out a late `.git` swap.
     if (this.kind === 'deferring' && !isWorkspaceNeutralRequest(req.method, path)) await this.adoptGate.enter()
@@ -363,6 +396,25 @@ export class FakeGuest {
       }
       case '/pool/export-data':
         return new Response(null, { status: 204 })
+      case '/pool/checkpoint-commit': {
+        if (!this.checkpointSupported) return new Response('not found', { status: 404 })
+        if (this.checkpointFailure) {
+          return Response.json({ ok: false, error: this.checkpointFailure, code: 'checkpoint-failed' }, { status: 500 })
+        }
+        const dirty = this.hasDirtyTree() ? git(this.ws, 'status', '--porcelain') : ''
+        const files = dirty.split('\n').filter((line) => line.trim() !== '').length
+        if (files > 0) gitCommitAll(this.ws, 'checkpoint before recycle')
+        return Response.json({
+          ok: true,
+          committed: files > 0,
+          sha: files > 0 ? git(this.ws, 'rev-parse', 'HEAD') : '',
+          files,
+          ...(this.tmpDropped ? { tmp: this.tmpDropped } : {}),
+        })
+      }
+      case '/pool/stop-background-tasks':
+        this.stopTaskBodies.push(body ?? {})
+        return Response.json({ ok: true, stopped: 0, ...(this.tmpDropped ? { tmpDropped: true, tmp: this.tmpDropped } : {}) })
       default:
         return Response.json({ ok: true })
     }
