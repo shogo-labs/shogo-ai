@@ -440,6 +440,8 @@ export function MessageContent({
   const content = isUser
     ? stripBuildBriefMarker(stripAskUserAnswerMarker(extractTextContent(message)))
     : extractTextContent(message)
+  // Native user bubbles keep their text selectable; native phone actions now
+  // live outside the bubble, so no parent long-press handler competes for it.
   const userBubble = isUser && variant === "userBubble"
   // Only show the preview card when there's genuinely long typed text and no
   // file attachments. When file chips are present the text body is just the
@@ -523,7 +525,7 @@ export function MessageContent({
                 ? "text-[16px] leading-6 text-foreground"
                 : "text-sm leading-5 text-foreground"
           }
-          selectable={!userBubble}
+          selectable={!userBubble || Platform.OS !== "web"}
         />
       )
     ) : null
