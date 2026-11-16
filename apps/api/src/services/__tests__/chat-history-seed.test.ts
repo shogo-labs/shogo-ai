@@ -18,6 +18,7 @@ interface Row {
   sessionId: string
   role: 'user' | 'assistant'
   content: string
+  parts?: string | null
   createdAt: Date
 }
 
@@ -59,6 +60,7 @@ mock.module('../../lib/prisma', () => ({ prisma: mockPrisma }))
 const {
   buildChatHistorySeed,
   historySeedFor,
+  attachmentNote,
   extractiveSummary,
   fitTranscriptTail,
   setChatContextSummarizer,
@@ -75,13 +77,19 @@ function addSession(id: string, extra: Record<string, unknown> = {}) {
   })
 }
 
-function addMessage(sessionId: string, role: 'user' | 'assistant', content: string) {
+function addMessage(
+  sessionId: string,
+  role: 'user' | 'assistant',
+  content: string,
+  parts?: unknown[],
+) {
   store.seq += 1
   store.messages.push({
     id: `m-${store.seq}`,
     sessionId,
     role,
     content,
+    parts: parts ? JSON.stringify(parts) : null,
     createdAt: new Date(2026, 0, 1, 0, 0, 0, store.seq),
   })
 }
@@ -423,6 +431,60 @@ describe('history seed', () => {
     addSession('chat-1', { contextSummary: 'Earlier: the release is on hold.', contextSummaryThroughCount: 12 })
     const seed = await historySeedFor('chat-1')
     expect(seed).toEqual({ summary: 'Earlier: the release is on hold.', messages: [] })
+  })
+})
+
+describe('attachments in the seeded history (SHO-402)', () => {
+  test('a message that was only a screenshot is not dropped from the tail', async () => {
+    addSession('chat-1')
+    addMessage('chat-1', 'user', 'what is wrong with this layout?')
+    // `content` is the display text, so a file-only message has none of it and
+    // used to be filtered out entirely.
+    addMessage('chat-1', 'user', '', [
+      { type: 'file', mediaType: 'image/png', name: 'shot.png', url: 'data:image/png;base64,AAAA' },
+    ])
+
+    const seed = await historySeedFor('chat-1')
+
+    expect(seed!.messages.map((m) => m.text)).toEqual([
+      'what is wrong with this layout?',
+      '[attached: shot.png (image/png)]',
+    ])
+  })
+
+  test('an attachment under some text is noted after it', async () => {
+    addSession('chat-1')
+    addMessage('chat-1', 'user', 'compare these two', [
+      { type: 'file', mediaType: 'image/png', name: 'before.png' },
+      { type: 'file', mediaType: 'image/png', name: 'after.png' },
+    ])
+
+    const seed = await historySeedFor('chat-1')
+
+    expect(seed!.messages[0]!.text).toBe(
+      'compare these two\n[attached: before.png (image/png), after.png (image/png)]',
+    )
+  })
+
+  test('the note carries names only, never file data', () => {
+    const note = attachmentNote({
+      parts: JSON.stringify([
+        { type: 'file', mediaType: 'image/jpeg', name: 'photo.jpg', url: `data:image/jpeg;base64,${'B'.repeat(50_000)}` },
+      ]),
+    })
+    expect(note).toBe('[attached: photo.jpg (image/jpeg)]')
+    expect(note).not.toContain('base64')
+  })
+
+  test('a legacy inline blob too large to parse is noted without its data', () => {
+    const note = attachmentNote({ parts: `[{"type":"file","url":"${'C'.repeat(600_000)}"}]` })
+    expect(note).toBe('[attached: file]')
+  })
+
+  test('rows with no parts, or unreadable parts, add nothing', () => {
+    expect(attachmentNote({ parts: null })).toBe('')
+    expect(attachmentNote({ parts: 'not json' })).toBe('')
+    expect(attachmentNote({ parts: JSON.stringify([{ type: 'text', text: 'hi' }]) })).toBe('')
   })
 })
 
