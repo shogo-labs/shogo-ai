@@ -193,7 +193,9 @@ export function DiskSettings({ scope, projectId, workspaceId, http }: DiskSettin
             <View className="flex-1 min-w-0 pr-3">
               <Text className="text-sm text-foreground">Disk size</Text>
               <Text className="text-[11px] text-muted-foreground mt-0.5">
-                {currentGiB} GiB now · up to {maxGiB} GiB
+                {currentGiB > maxGiB
+                  ? `${currentGiB} GiB now · can't grow on this plan`
+                  : `${currentGiB} GiB now · up to ${maxGiB} GiB`}
               </Text>
             </View>
             <View className="flex-row items-center gap-2">

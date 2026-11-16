@@ -4277,9 +4277,7 @@ app.put('/api/projects/:projectId/disk', async (c) => {
   }
   const instanceSize = (project.workspace?.instanceSize ?? 'micro') as InstanceSizeName
   const eligibility = await resolveDiskAddonEligibility(workspaceId)
-  const currentEffectiveGiB = resolveWorkspaceDiskMiB(project.workspaceDiskGiB, instanceSize, {
-    canBuyAddon: eligibility.canBuyAddon,
-  }) / 1024
+  const currentEffectiveGiB = resolveWorkspaceDiskMiB(project.workspaceDiskGiB, instanceSize) / 1024
   const plan = planDiskChange(body.sizeGiB, instanceSize, {
     canBuyAddon: eligibility.canBuyAddon,
     currentEffectiveGiB,
@@ -4444,9 +4442,7 @@ app.put('/api/workspaces/:workspaceId/disk', async (c) => {
   }
   const instanceSize = (workspace.instanceSize ?? 'micro') as InstanceSizeName
   const eligibility = await resolveDiskAddonEligibility(workspaceId)
-  const currentEffectiveGiB = resolveWorkspaceDiskMiB(workspace.runtimeDiskGiB, instanceSize, {
-    canBuyAddon: eligibility.canBuyAddon,
-  }) / 1024
+  const currentEffectiveGiB = resolveWorkspaceDiskMiB(workspace.runtimeDiskGiB, instanceSize) / 1024
   const plan = planDiskChange(body.sizeGiB, instanceSize, {
     canBuyAddon: eligibility.canBuyAddon,
     currentEffectiveGiB,

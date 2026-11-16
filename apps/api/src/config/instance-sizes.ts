@@ -171,20 +171,26 @@ export function workspaceDiskCeilingGiB(
 /**
  * The workspace-drive size (MiB) to hand a metal host for one assignment.
  *
- * `requestedGiB` is `Project.workspaceDiskGiB` — null when the project never
- * asked. Drives never shrink (ext4 cannot shrink online, and the drive is
- * sparse so a bigger logical size costs nothing until written), so a request
- * below the default — or below the ceiling after a tier downgrade — clamps UP
- * to the default and only caps future growth.
+ * `requestedGiB` is `Project.workspaceDiskGiB` / `Workspace.runtimeDiskGiB` —
+ * null when nothing was ever asked. Drives never shrink (ext4 cannot shrink
+ * online, and the drive is sparse so a bigger logical size costs nothing until
+ * written), so a request below the default clamps UP to the default.
+ *
+ * It clamps only to the **host hard cap** (`MAX_WORKSPACE_DISK_GIB`), never to
+ * the tier ceiling. The tier ceiling is a *write-path* rule enforced by
+ * `planDiskChange`; clamping a stored size down here would shrink a drive that
+ * was legitimately bought on a paid plan and then downgraded — a cold boot
+ * would restore a 50 GiB drive into a 20 GiB file, which is the exact data-loss
+ * mode SHO-401 exists to prevent. A downgraded plan keeps its size (and keeps
+ * paying the add-on for it); it just can't grow.
  */
 export function resolveWorkspaceDiskMiB(
   requestedGiB: number | null | undefined,
   instanceSize: InstanceSizeName,
-  opts: { canBuyAddon?: boolean } = {},
 ): number {
-  const ceiling = workspaceDiskCeilingGiB(instanceSize, opts)
+  void instanceSize
   const wanted = typeof requestedGiB === 'number' && Number.isFinite(requestedGiB) ? Math.floor(requestedGiB) : 0
-  const gib = Math.min(Math.max(wanted, DEFAULT_WORKSPACE_DISK_GIB), ceiling)
+  const gib = Math.min(Math.max(wanted, DEFAULT_WORKSPACE_DISK_GIB), MAX_WORKSPACE_DISK_GIB)
   return gib * 1024
 }
 

@@ -11,7 +11,6 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test'
 let workspacesImpl: () => Promise<any[]> = async () => []
 let claimImpl: () => Promise<boolean> = async () => true
 let consumeImpl: (args: any) => Promise<any> = async () => ({ success: true })
-let eligibilityImpl: (workspaceId: string) => Promise<any> = async () => ({ canBuyAddon: true })
 
 const updateManyCalls: any[] = []
 const consumeCalls: any[] = []
@@ -45,17 +44,12 @@ mock.module('../../services/billing.service', () => ({
   },
 }))
 
-mock.module('../../services/project-disk.service', () => ({
-  resolveDiskAddonEligibility: (id: string) => eligibilityImpl(id),
-}))
-
 const { runDiskAddonDaily, workspaceAddonGiB } = await import('../disk-addon-daily')
 
 beforeEach(() => {
   workspacesImpl = async () => []
   claimImpl = async () => true
   consumeImpl = async () => ({ success: true })
-  eligibilityImpl = async () => ({ canBuyAddon: true })
   updateManyCalls.length = 0
   consumeCalls.length = 0
   delete process.env.SHOGO_LOCAL_MODE
@@ -66,7 +60,6 @@ describe('workspaceAddonGiB', () => {
     // micro includes 20 GiB. Two projects at 30 and 20, runtime at 50.
     const addon = workspaceAddonGiB({
       instanceSize: 'micro',
-      canBuyAddon: true,
       projectDiskGiB: [30, 20],
       runtimeDiskGiB: 50,
     })
@@ -75,8 +68,16 @@ describe('workspaceAddonGiB', () => {
 
   it('is zero when nothing is above included', () => {
     expect(
-      workspaceAddonGiB({ instanceSize: 'medium', canBuyAddon: true, projectDiskGiB: [40], runtimeDiskGiB: null }),
+      workspaceAddonGiB({ instanceSize: 'medium', projectDiskGiB: [40], runtimeDiskGiB: null }),
     ).toBe(0)
+  })
+
+  it('keeps billing a size bought on a paid plan after a downgrade (never clamps down)', () => {
+    // 50 GiB was bought on a paid plan; the workspace is now micro (includes 20).
+    // The stored size must still be 50 — and still billed — not clamped to 20.
+    expect(
+      workspaceAddonGiB({ instanceSize: 'micro', projectDiskGiB: [50], runtimeDiskGiB: null }),
+    ).toBe(30)
   })
 })
 
@@ -133,6 +134,33 @@ describe('runDiskAddonDaily', () => {
     // Claim then rollback: the second updateMany sets the watermark back to null.
     const rollback = updateManyCalls.find((c) => c.data.diskAddonBilledThrough === null)
     expect(rollback).toBeTruthy()
+  })
+
+  it('bills a child workspace\'s drives on the family charge, with the child\'s own included allowance', async () => {
+    workspacesImpl = async () => [
+      {
+        id: 'ws-parent',
+        instanceSize: 'medium', // includes 40
+        runtimeDiskGiB: null,
+        diskAddonBilledThrough: null,
+        projects: [{ workspaceDiskGiB: 40 }], // 0 add-on
+        children: [
+          {
+            id: 'ws-child',
+            instanceSize: 'micro', // includes 20
+            runtimeDiskGiB: null,
+            projects: [{ workspaceDiskGiB: 50 }], // 30 add-on
+          },
+        ],
+      },
+    ]
+    const summary = await runDiskAddonDaily(new Date('2026-11-16T12:00:00Z'))
+    expect(summary.charged).toBe(1)
+    expect(consumeCalls).toHaveLength(1)
+    // One charge on the parent's wallet, covering the child's 30 GiB.
+    expect(consumeCalls[0].workspaceId).toBe('ws-parent')
+    expect(consumeCalls[0].actionMetadata.addonGiB).toBe(30)
+    expect(consumeCalls[0].actionMetadata.drives).toBe(2)
   })
 
   it('does nothing in local mode', async () => {

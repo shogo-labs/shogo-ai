@@ -49,19 +49,40 @@ export interface DiskAddonSummary {
   claimed: boolean
 }
 
+/** The drive-bearing fields of one workspace in a billing family. */
+interface DiskWorkspaceRow {
+  id: string
+  instanceSize: string | null
+  runtimeDiskGiB: number | null
+  projects: Array<{ workspaceDiskGiB: number | null }>
+}
+
+/** Add-on GiB for one workspace's own drives (projects + its runtime drive). */
+function addonForWorkspace(ws: DiskWorkspaceRow): number {
+  return workspaceAddonGiB({
+    instanceSize: (ws.instanceSize ?? 'micro') as InstanceSizeName,
+    projectDiskGiB: ws.projects.map((p) => p.workspaceDiskGiB),
+    runtimeDiskGiB: ws.runtimeDiskGiB,
+  })
+}
+
 /**
  * The add-on GiB a workspace is billed for: every project drive above the
  * tier's included amount, plus the bare workspace-runtime drive.
+ *
+ * Each workspace in a family gets its own included allowance, so a child
+ * workspace's drives are billed on the child's own tier — not against the
+ * parent's included GiB. The charge itself lands on the family wallet
+ * (`consumeUsage` resolves a child to its parent).
  */
 export function workspaceAddonGiB(args: {
   instanceSize: InstanceSizeName
-  canBuyAddon: boolean
   projectDiskGiB: Array<number | null | undefined>
   runtimeDiskGiB: number | null | undefined
 }): number {
   const included = workspaceDiskIncludedGiB(args.instanceSize)
   const effective = (requested: number | null | undefined) =>
-    resolveWorkspaceDiskMiB(requested, args.instanceSize, { canBuyAddon: args.canBuyAddon }) / 1024
+    resolveWorkspaceDiskMiB(requested, args.instanceSize) / 1024
   let addon = 0
   for (const p of args.projectDiskGiB) addon += Math.max(0, effective(p) - included)
   addon += Math.max(0, effective(args.runtimeDiskGiB) - included)
@@ -80,6 +101,9 @@ export async function runDiskAddonDaily(now: Date = new Date()): Promise<DiskAdd
 
   const today = startOfUtcDay(now)
   const home = homeRegionWorkspaceWhere()
+  // Root workspaces only: a child pools its parent's wallet, so the family is
+  // billed once, on the parent's watermark, in the parent's region. The child's
+  // own drives are summed in below with the child's own included allowance.
   const workspaces = await prisma.workspace.findMany({
     where: { ...(home ?? {}), parentWorkspaceId: null },
     select: {
@@ -88,12 +112,19 @@ export async function runDiskAddonDaily(now: Date = new Date()): Promise<DiskAdd
       runtimeDiskGiB: true,
       diskAddonBilledThrough: true,
       projects: { select: { workspaceDiskGiB: true } },
+      children: {
+        select: {
+          id: true,
+          instanceSize: true,
+          runtimeDiskGiB: true,
+          projects: { select: { workspaceDiskGiB: true } },
+        },
+      },
     },
   })
   summary.workspaces = workspaces.length
 
   const { consumeUsage } = await import('../services/billing.service')
-  const { resolveDiskAddonEligibility } = await import('../services/project-disk.service')
 
   for (const ws of workspaces) {
     try {
@@ -102,13 +133,8 @@ export async function runDiskAddonDaily(now: Date = new Date()): Promise<DiskAdd
         summary.skipped += 1
         continue
       }
-      const eligibility = await resolveDiskAddonEligibility(ws.id)
-      const addonGiB = workspaceAddonGiB({
-        instanceSize: (ws.instanceSize ?? 'micro') as InstanceSizeName,
-        canBuyAddon: eligibility.canBuyAddon,
-        projectDiskGiB: ws.projects.map((p) => p.workspaceDiskGiB),
-        runtimeDiskGiB: ws.runtimeDiskGiB,
-      })
+      const family: DiskWorkspaceRow[] = [ws, ...(ws.children ?? [])]
+      const addonGiB = Math.round(family.reduce((sum, w) => sum + addonForWorkspace(w), 0) * 10) / 10
       if (addonGiB <= 0) {
         summary.skipped += 1
         continue
@@ -118,6 +144,10 @@ export async function runDiskAddonDaily(now: Date = new Date()): Promise<DiskAdd
         summary.skipped += 1
         continue
       }
+      const driveCount = family.reduce(
+        (n, w) => n + w.projects.length + (typeof w.runtimeDiskGiB === 'number' ? 1 : 0),
+        0,
+      )
 
       // Claim the day first: a conditional update means only one pod advances
       // the watermark, so a rerun can't double-charge.
@@ -142,7 +172,7 @@ export async function runDiskAddonDaily(now: Date = new Date()): Promise<DiskAdd
         actionMetadata: {
           addonGiB,
           rate: DISK_ADDON_USD_PER_GIB_MONTH,
-          drives: ws.projects.length + (ws.runtimeDiskGiB ? 1 : 0),
+          drives: driveCount,
         },
       })
 

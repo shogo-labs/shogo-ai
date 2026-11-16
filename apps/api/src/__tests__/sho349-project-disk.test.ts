@@ -43,11 +43,12 @@ describe('resolveWorkspaceDiskMiB', () => {
     expect(resolveWorkspaceDiskMiB(-10, 'medium')).toBe(DEFAULT_WORKSPACE_DISK_GIB * 1024)
   })
 
-  it('clamps to the tier after a downgrade', () => {
-    // A project that asked for 80 GiB while on `large` keeps 80 GiB of drive;
-    // the micro ceiling only caps what it may ask for NEXT.
-    expect(resolveWorkspaceDiskMiB(80, 'micro')).toBe(workspaceDiskCeilingGiB('micro') * 1024)
-    expect(resolveWorkspaceDiskMiB(80, 'micro')).toBe(20 * 1024)
+  it('keeps a stored size after a downgrade — the tier only caps what it may ask for next', () => {
+    // A project that asked for 80 GiB while on `large` keeps 80 GiB of drive.
+    // Clamping to the micro ceiling here would restore an 80 GiB drive into a
+    // 20 GiB file on the next cold boot (the data-loss mode SHO-401 fixes).
+    expect(resolveWorkspaceDiskMiB(80, 'micro')).toBe(80 * 1024)
+    expect(workspaceDiskCeilingGiB('micro')).toBe(20)
   })
 
   it('never exceeds the fleet hard cap', () => {
@@ -140,6 +141,18 @@ describe('describeProjectDisk', () => {
     expect(body.addonGiB).toBe(30)
     expect(body.pricePerGiBMonthUsd).toBe(0.15)
     expect(body.addonMonthlyUsd).toBe(4.5)
+  })
+
+  it('keeps a bought size after a downgrade and still bills the add-on (SHO-401)', () => {
+    // 50 GiB bought on a paid plan, then the workspace dropped to free/micro.
+    // The size is kept (never clamped down) and still billed; growth is blocked.
+    const body = describeProjectDisk({ requestedGiB: 50, instanceSize: 'micro', substrate: 'metal' })
+    expect(body.effectiveGiB).toBe(50)
+    expect(body.includedGiB).toBe(20)
+    expect(body.addonGiB).toBe(30)
+    expect(body.addonMonthlyUsd).toBe(4.5)
+    expect(body.canIncrease).toBe(false)
+    expect(body.reason).toBe('plan_required')
   })
 
   it('passes measured usage through with a timestamp', () => {

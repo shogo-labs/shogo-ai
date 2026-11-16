@@ -80,7 +80,7 @@ export function describeProjectDisk(args: {
 }): ProjectDiskDescription {
   const requested = typeof args.requestedGiB === 'number' ? args.requestedGiB : null
   const canBuyAddon = args.canBuyAddon ?? false
-  const effectiveGiB = resolveWorkspaceDiskMiB(requested, args.instanceSize, { canBuyAddon }) / 1024
+  const effectiveGiB = resolveWorkspaceDiskMiB(requested, args.instanceSize) / 1024
   const includedGiB = workspaceDiskIncludedGiB(args.instanceSize)
   const maxGiB = workspaceDiskCeilingGiB(args.instanceSize, { canBuyAddon })
   const addonGiB = Math.max(0, effectiveGiB - includedGiB)

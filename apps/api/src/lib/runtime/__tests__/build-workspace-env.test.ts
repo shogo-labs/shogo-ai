@@ -192,7 +192,6 @@ describe('buildWorkspaceEnv', () => {
     const env = await buildWorkspaceEnv('ws-1', ['p1'], {
       ...seams,
       forMetal: true,
-      _canBuyDiskAddon: async () => true,
       _loadWorkspace: async () => ({
         name: 'My WS',
         composioScope: 'workspace',
@@ -202,16 +201,16 @@ describe('buildWorkspaceEnv', () => {
       _loadProjects: async (ids: string[]) =>
         ids.map((id) => ({ id, name: id, settings: { techStackId: 'react-app' }, workspaceDiskGiB: 30 })),
     } as any)
-    // 100 GiB beats the member's 30 GiB, and the add-on lets it past the 20 GiB
-    // micro included amount.
+    // 100 GiB beats the member's 30 GiB.
     expect(env.SHOGO_VM_DISK_MIB).toBe(String(100 * 1024))
   })
 
-  it('caps a bare ws:<id> runtime at the tier when it cannot buy the add-on (SHO-401)', async () => {
+  it('keeps a stored size above the tier even when the workspace can no longer buy (SHO-401)', async () => {
+    // A downgraded plan keeps its size: clamping to the tier here would restore
+    // a 100 GiB drive into a 20 GiB file on the next cold boot.
     const env = await buildWorkspaceEnv('ws-1', ['p1'], {
       ...seams,
       forMetal: true,
-      _canBuyDiskAddon: async () => false,
       _loadWorkspace: async () => ({
         name: 'My WS',
         composioScope: 'workspace',
@@ -220,7 +219,7 @@ describe('buildWorkspaceEnv', () => {
       }),
       _loadProjects: async (ids: string[]) => ids.map((id) => ({ id, name: id, settings: { techStackId: 'react-app' } })),
     } as any)
-    expect(env.SHOGO_VM_DISK_MIB).toBe(String(20 * 1024))
+    expect(env.SHOGO_VM_DISK_MIB).toBe(String(100 * 1024))
   })
 
   it('omits SHOGO_EXPOSED_PORTS when no member declares ports', async () => {
@@ -597,8 +596,6 @@ describe('buildWorkspaceEnv — workspace drive (SHO-349)', () => {
     ({
       ...seams,
       forMetal: true,
-      // No add-on: the ceiling is what the tier includes (SHO-401).
-      _canBuyDiskAddon: async () => false,
       _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'medium' }),
       _loadProjects: async (ids: string[]) =>
         ids.map((id) => ({ id, name: id, settings: { techStackId: 'react-app' }, workspaceDiskGiB: diskById[id] ?? null })),
@@ -630,10 +627,13 @@ describe('buildWorkspaceEnv — workspace drive (SHO-349)', () => {
     expect(env.SHOGO_VM_DISK_MIB).toBe(String(40 * 1024))
   })
 
-  it('never exceeds the tier ceiling for the workspace', async () => {
-    // `medium` allows 40 GiB: a member asking for 80 resolves to the ceiling.
+  it('honours a stored size above the tier — the ceiling is a write-path rule', async () => {
+    // `medium` includes 40 GiB, but a stored 80 GiB (bought on a paid plan, or
+    // set before a downgrade) must be provisioned as 80. Clamping here would
+    // restore an 80 GiB drive into a 40 GiB file. `planDiskChange` is what
+    // refuses a *new* request above the ceiling.
     const env = await buildWorkspaceEnv('ws-1', ['p1'], metalSeams({ p1: 80 }))
-    expect(env.SHOGO_VM_DISK_MIB).toBe(String(40 * 1024))
+    expect(env.SHOGO_VM_DISK_MIB).toBe(String(80 * 1024))
   })
 
   it('is not emitted off metal', async () => {

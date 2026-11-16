@@ -58,20 +58,6 @@ function metalVmSizeEnv(size: { vcpus: number; memMiB: number }): Record<string,
   return { SHOGO_VM_VCPUS: String(size.vcpus), SHOGO_VM_MEM_MIB: String(size.memMiB) }
 }
 
-/**
- * Whether a workspace may buy the disk add-on (SHO-401). Lazily imported so
- * this builder stays free of a hard billing dependency; a lookup failure is
- * treated as "may not buy" (the safe, capped default).
- */
-async function defaultCanBuyDiskAddon(workspaceId: string): Promise<boolean> {
-  try {
-    const { resolveDiskAddonEligibility } = await import('../../services/project-disk.service')
-    return (await resolveDiskAddonEligibility(workspaceId)).canBuyAddon
-  } catch {
-    return false
-  }
-}
-
 export interface BuildWorkspaceEnvOpts {
   logPrefix?: string
   /**
@@ -110,8 +96,6 @@ export interface BuildWorkspaceEnvOpts {
     instanceSize?: string | null
     runtimeDiskGiB?: number | null
   } | null>
-  /** Whether this workspace may buy the disk add-on (paid plan). Defaults to a DB lookup. */
-  _canBuyDiskAddon?: (workspaceId: string) => Promise<boolean>
   _loadProjectWorkspaceIds?: (projectIds: string[]) => Promise<Map<string, string>>
   _getProjectOwnerUserId?: (projectId: string) => Promise<string | undefined>
   _generateProxyToken?: typeof generateProxyToken
@@ -342,10 +326,7 @@ export async function buildWorkspaceEnv(
       if (!opts.anchorProjectId && typeof workspaceRuntimeDiskGiB === 'number') {
         requestedDiskGiB = Math.max(requestedDiskGiB ?? 0, workspaceRuntimeDiskGiB)
       }
-      const canBuyAddon = await (opts._canBuyDiskAddon ?? defaultCanBuyDiskAddon)(workspaceId)
-      env.SHOGO_VM_DISK_MIB = String(
-        resolveWorkspaceDiskMiB(requestedDiskGiB, workspaceInstanceSize, { canBuyAddon }),
-      )
+      env.SHOGO_VM_DISK_MIB = String(resolveWorkspaceDiskMiB(requestedDiskGiB, workspaceInstanceSize))
       // Picked machine size (Project.vmMemoryMiB), the largest member's. The
       // host boots it; the workspace budget counts it (SHOGO_VM_MEM_MIB).
       if (typeof requestedMemMiB === 'number' && requestedMemMiB > 0) {
