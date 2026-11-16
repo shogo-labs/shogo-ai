@@ -83,6 +83,7 @@ import { useWorkspaceRemountKey } from "../../hooks/useWorkspaceRemountKey";
 import { sidebarOpenEvents } from "../../lib/sidebar-open-events";
 import { getCloudWorkspacesState, refreshCloudWorkspaces, subscribeCloudWorkspaces } from "../../lib/workspace-route";
 import { isConversationPath } from "../../lib/sidebar-tab";
+import { adoptableWorkspaceParam, setActiveWorkspaceId } from "../../lib/workspace-store";
 
 csMark("app:layout:module-load");
 
@@ -426,6 +427,38 @@ function AppLayoutInner() {
     workspaces.loadAll().catch((error: unknown) => {
       console.error("[AppLayout] Failed to load workspaces:", error);
     });
+  }, [isAuthenticated, workspaces]);
+
+  // A workspace link is an app-level request, independent of whether this
+  // route renders the sidebar. Resolve it from the signed-in user's list and
+  // persist it in this tab before the destination page finishes loading.
+  useEffect(() => {
+    if (
+      Platform.OS !== "web" ||
+      typeof window === "undefined" ||
+      !isAuthenticated ||
+      !workspaces
+    ) {
+      return;
+    }
+
+    const url = new URL(window.location.href);
+    const requestedWorkspaceId = url.searchParams.get("workspace");
+    if (!requestedWorkspaceId || url.searchParams.has("checkout")) return;
+
+    url.searchParams.delete("workspace");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+
+    void workspaces
+      .loadAll()
+      .then(() => {
+        const ownWorkspaceIds = (workspaces.all ?? []).map((workspace: any) => workspace.id);
+        const workspaceId = adoptableWorkspaceParam(ownWorkspaceIds, requestedWorkspaceId);
+        if (workspaceId) setActiveWorkspaceId(workspaceId);
+      })
+      .catch((error: unknown) => {
+        console.error("[AppLayout] Failed to resolve workspace link:", error);
+      });
   }, [isAuthenticated, workspaces]);
 
   // Desktop signed in to Shogo Cloud: keep its cloud workspaces in the

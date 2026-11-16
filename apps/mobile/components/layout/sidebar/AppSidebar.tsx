@@ -85,7 +85,6 @@ import {
   setActiveWorkspaceId,
   resolveActiveWorkspaceId,
   subscribeActiveWorkspaceId,
-  adoptableWorkspaceParam,
 } from "../../../lib/workspace-store";
 import {
   reloadAfterWorkspaceSwitch,
@@ -331,37 +330,6 @@ export const AppSidebar = observer(function AppSidebar({
         window.location.href = `/?workspace=${wsId}`;
       };
       provision();
-    } else if (params.get("workspace") && !params.get("checkout")) {
-      const targetWs = params.get("workspace")!;
-      workspaces.loadAll().then(() => {
-        // Only trust `?workspace=` when it names one of *this* user's own
-        // workspaces — an invite/share link pointing at a workspace this
-        // session isn't a member of would otherwise get persisted as
-        // "active" and 403/400 every request from then on.
-        //
-        // A link that names a workspace this account is not in must change
-        // *nothing*: resolving it through `resolveActiveWorkspaceId` answered
-        // the first own workspace and persisted that, which moved the person
-        // out of the workspace they were reading and switched the screen
-        // behind the "you don't have access to this workspace" message
-        // (SHO-284 AC 5).
-        const ownIds = (workspaces.all ?? []).map((w: any) => w.id);
-        const adoptedWs = adoptableWorkspaceParam(ownIds, targetWs);
-        if (!adoptedWs) return;
-        setSelectedWorkspaceId(adoptedWs);
-        setActiveWorkspaceId(adoptedWs);
-        projects
-          .loadAll({ workspaceId: adoptedWs })
-          .catch((e) =>
-            console.error(
-              "[AppSidebar] Failed to load projects for workspace:",
-              e,
-            ),
-          );
-      });
-      const url = new URL(window.location.href);
-      url.searchParams.delete("workspace");
-      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
     }
   }, []);
 
