@@ -68,17 +68,38 @@ mock.module('../lib/prisma', () => ({
     },
     member: { findFirst: async () => ({ id: 'member-1' }) },
     toolCallLog: { createMany: async () => ({ count: 0 }) },
+    modelDefinition: { findMany: async () => [] },
+    subscription: { findFirst: async () => null },
+    chatTurnFrame: { create: async () => ({}) },
     chatSession: {
       findUnique: async () => ({ ...SESSION_ROW }),
       updateMany: async () => ({ count: 0 }),
       update: async () => ({ ...SESSION_ROW }),
     },
     chatMessage: {
+      findUnique: async () => null,
       findMany: async () => messageRows.slice().reverse(),
       count: async () => messageRows.length,
       create: async (args: any) => ({ id: 'created-1', ...args.data }),
     },
   },
+}))
+
+// CI runs without SHOGO_LOCAL_MODE, so `billing-runtime` loads the real cloud
+// service and its `resolveBillingWorkspaceId` reads `prisma.workspace`. The
+// chat path only needs a balance answer, so stub the seam instead of growing
+// the Prisma mock into the whole billing schema.
+mock.module('../services/billing.service', () => ({
+  SYSTEM_WORKSPACE_ID: 'system',
+  checkUsageBalance: async () => ({ ok: true }),
+  usageLimitErrorPayload: (reason?: string) => ({ code: reason ?? 'usage_limit_reached', message: 'limit' }),
+  hasAdvancedModelAccess: async () => true,
+  hasBalance: async () => true,
+  hasPaidSubscription: async () => true,
+  consumeUsage: async () => ({ success: true, remainingIncludedUsd: 99 }),
+  resolveBillingWorkspaceId: async (workspaceId: string) => workspaceId,
+  getEffectivePlanId: async () => 'free',
+  canPublishSubdomain: async () => false,
 }))
 
 mock.module('../services/workspace.service', () => ({

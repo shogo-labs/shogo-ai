@@ -672,6 +672,11 @@ jobs:
           # again through the refocus catch-up. Left in the shards it would
           # `test.skip` itself and run nowhere (SHO-122).
           - { name: 'E2E (chat two windows)', spec: 'chat-two-window-sync' }
+          # chat-send-body-size (SHO-402) asserts on the request the composer
+          # puts on the wire, so it needs no model — but it does need to run.
+          # Left in the shards it was never reached: shard 3 hit its 40m cap
+          # before the file started, so AC1's e2e proof ran nowhere (SHO-122).
+          - { name: 'E2E (chat send body size)', spec: 'chat-send-body-size' }
     permissions:
       contents: read
     # 35, not 60: a wedged E2E job holds the whole merge queue for the length
