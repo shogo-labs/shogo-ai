@@ -895,6 +895,36 @@ describe('consumeUsage', () => {
     expect(stripeCalls.find((c) => c.method === 'invoiceItems.create')).toBeUndefined()
   })
 
+  // SHO-408: the debit that would cross the spend cap is refused, so the
+  // unbilled remainder used to carry forward forever. The refusal now kicks a
+  // partial invoice for it.
+  test('kicks a cap invoice when the debit is refused at the spend cap', async () => {
+    process.env.STRIPE_SECRET_KEY = 'sk_test'
+    seedWallet('ws-1', {
+      dailyIncludedUsd: 0, monthlyIncludedUsd: 0,
+      overageEnabled: true, overageHardLimitUsd: 10, overageAccumulatedUsd: 9.98,
+      fiveHourWindowStart: new Date(), fiveHourUsedUsd: 500,
+      weeklyWindowStart: new Date(), weeklyUsedUsd: 500,
+    })
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', stripeCustomerId: 'cus_1', planId: 'pro', seats: 1 }])
+
+    const res = await billing.consumeUsage({
+      workspaceId: 'ws-1', projectId: null, memberId: 'm-1',
+      actionType: 'chat', billedUsd: 5,
+    })
+    expect(res.success).toBe(false)
+    expect(res.reason).toBe('overage_cap_reached')
+
+    // The kick is fire-and-forget; give its chain of awaits a few ticks.
+    for (let i = 0; i < 20 && !stripeCalls.some((c) => c.method === 'invoiceItems.create'); i++) {
+      await new Promise((r) => setTimeout(r, 0))
+    }
+    const item = stripeCalls.find((c) => c.method === 'invoiceItems.create')
+    expect(item?.args[0].amount).toBe(998)
+    expect(item?.args[0].metadata).toMatchObject({ reason: 'cap', partial: 'true' })
+    expect(walletByWs.get('ws-1').overageBilledUsd).toBe(9.98)
+  })
+
   test('fails when included exhausted, overage disabled', async () => {
     seedWallet('ws-1', { dailyIncludedUsd: 0, monthlyIncludedUsd: 0 })
     const res = await billing.consumeUsage({

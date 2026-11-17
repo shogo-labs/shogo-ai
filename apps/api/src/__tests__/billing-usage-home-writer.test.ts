@@ -256,4 +256,18 @@ describe('wallet provisioning single-writer routing', () => {
     expect(fetchCalls.length).toBe(0)
     expect(walletUpsertCalls).toBe(1)
   })
+
+  // SHO-408: the `customer.subscription.deleted` webhook lands in whichever
+  // region serves it, so the final overage invoice must be routed to the
+  // wallet's home region (one writer) with its reason intact.
+  test('chargeOverage routes the final invoice to the home region with its reason', async () => {
+    await billing.chargeOverage('ws-eu-home', 'final')
+
+    expect(fetchCalls.length).toBe(1)
+    expect(fetchCalls[0].url).toContain('https://eu.internal.example')
+    expect(fetchCalls[0].url).toContain('/api/internal/billing/provision')
+    expect(fetchCalls[0].body.op).toBe('chargeOverage')
+    expect(fetchCalls[0].body.reason).toBe('final')
+    expect(fetchCalls[0].body.workspaceId).toBe('ws-eu-home')
+  })
 })
