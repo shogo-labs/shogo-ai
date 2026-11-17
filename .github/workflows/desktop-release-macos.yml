@@ -435,6 +435,13 @@ jobs:
         # x64) instead of the arm64-runner's host arch. See bundle-api.mjs.
         env:
           SHOGO_TARGET_ARCH: ${{ matrix.arch }}
+          # @vscode/ripgrep's postinstall fetches its binary from the
+          # microsoft/ripgrep-prebuilt GitHub releases API. This step
+          # re-runs that postinstall for cross-arch builds (the macOS
+          # x64 leg builds on an arm64 runner), and unauthenticated
+          # calls are capped at 60/hr per runner IP — shared runners
+          # return 403 and the step dies. The token raises that cap.
+          GITHUB_TOKEN: ${{ github.token }}
         run: node apps/desktop/scripts/bundle-api.mjs
 
       - name: Create seed database (SQLite)

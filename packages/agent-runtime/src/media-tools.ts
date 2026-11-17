@@ -489,7 +489,7 @@ function createListMediaModelsTool(ctx: ToolContext): AgentTool {
   return {
     name: 'list_media_models',
     description:
-      'List the image, video, music and 3D models you can use: what each is best for, whether it accepts reference images or a start frame, its endpoints, every documented parameter (allowed values, ranges, defaults) and its Shogo price (per image, per second of video, per song, or per clip). ' +
+      'List the image, video, music and 3D models you can use: what each is best for, whether it accepts reference images, a start frame or a last frame, its endpoints, every documented parameter (allowed values, ranges, defaults) and its Shogo price (per image, per second of video, per song, or per clip). ' +
       'Pass model to see just that model — the best way to check which fields its `options` accepts before calling generate_image, generate_video or generate_music. Check prices here before planning a batch so you can budget it.',
     label: 'List Media Models',
     parameters: Type.Object({
@@ -624,7 +624,12 @@ interface VideoStatusResponse {
   audio?: boolean
   queue_position?: number
   error?: string
-  video?: { url: string; content_type?: string; file_size?: number }
+  /**
+   * A finished clip. Higgsfield hands out a public `url`; Gemini Omni returns
+   * `content_path` instead — the proxy holds the key, so the bytes come from
+   * the proxy with our token and never from a vendor URL.
+   */
+  video?: { url?: string | null; content_path?: string; content_type?: string; file_size?: number }
 }
 
 interface TrackedVideoJob {
@@ -671,8 +676,22 @@ async function fetchVideoStatus(proxy: ProxyConfig, id: string, signal?: AbortSi
   return (await response.json()) as VideoStatusResponse
 }
 
-async function saveVideo(job: TrackedVideoJob, video: NonNullable<VideoStatusResponse['video']>, signal?: AbortSignal) {
-  const response = await fetch(video.url, { signal })
+async function saveVideo(
+  proxy: ProxyConfig,
+  job: TrackedVideoJob,
+  video: NonNullable<VideoStatusResponse['video']>,
+  signal?: AbortSignal,
+) {
+  // `content_path` is a path on the proxy itself, so the bearer token goes only
+  // there; a vendor `url` is a foreign origin and never receives it.
+  const source = video.content_path
+    ? { url: `${proxy.base}${video.content_path}`, headers: { Authorization: `Bearer ${proxy.token}` } }
+    : video.url
+      ? { url: video.url, headers: undefined }
+      : null
+  if (!source) throw new Error('Video download failed: the provider returned no clip.')
+
+  const response = await fetch(source.url, { headers: source.headers, signal })
   if (!response.ok) throw new Error(`Video download failed (${response.status})`)
   const buffer = Buffer.from(await response.arrayBuffer())
   const dest = job.target.pathFor(0, 1, video.content_type || response.headers.get('content-type') || 'video/mp4')
@@ -690,7 +709,7 @@ async function followVideoJob(proxy: ProxyConfig, job: TrackedVideoJob, deadline
   while (true) {
     const status = await fetchVideoStatus(proxy, job.id, signal)
     if (status.status === 'completed' && status.video) {
-      await saveVideo(job, status.video, signal)
+      await saveVideo(proxy, job, status.video, signal)
       return true
     }
     if (status.status === 'failed') {
@@ -754,24 +773,32 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
     name: 'generate_video',
     description:
       'Generate a video clip from a text prompt, or animate a still image by passing start_image (recommended: make the still with generate_image first). ' +
+      'Pass start_image + end_image to animate between two stills: the clip interpolates from the first frame to the last (Gemini Omni and the Higgsfield models whose list_media_models entry says last_frame: true). ' +
       'Also edits an existing clip: pass source_video with genjutsu "motion_transfer" | "object_swap" | "restyle" (restyle needs a preset_id from the presets list). ' +
-      'Saves an MP4 to videos/ by default; pass path to save anywhere in the workspace. Billed per clip on Higgsfield (the estimate comes back on submit) — call list_media_models for prices. ' +
+      'Gemini Omni (model "google-omni-1.2-flash") drafts cheaply at 360p and continues the same clip later — pass previous_job_id with a higher resolution and no prompt to upscale it, or with a prompt to edit or extend it. ' +
+      'Saves an MP4 to videos/ by default; pass path to save anywhere in the workspace. Billed per clip (Higgsfield) or per output second and by usage tokens (Gemini Omni) — call list_media_models for prices. ' +
       'Video needs a paid plan (Basic or higher); free workspaces can generate images. The workspace must also be able to cover the clip\'s price, or the job is refused before anything is submitted. ' +
       'Waits for the clip (usually 1-5 minutes). Pass wait: false to queue several shots at once, then call generate_video({ job_id }) to check each one.',
     label: 'Generate Video',
     parameters: Type.Object({
-      prompt: Type.Optional(Type.String({ description: 'What happens in the shot: subject, action, camera movement, style' })),
+      prompt: Type.Optional(Type.String({ description: 'What happens in the shot: subject, action, camera movement, style. Required unless previous_job_id is set (an upscale needs no prompt).' })),
       model: Type.Optional(
         Type.String({
           description:
-            'Video model id. Omit it to use the workspace default (hf-hailuo-2.3). "hf-kling-3.0-std" for 3–15 s clips with native sound, "hf-kling-3.0-pro" for multi-shot plus last-frame control, "hf-wan-2.6" for stylized looks up to 15 s, "hf-ltx-2.5-fast" for the cheapest text-to-video that takes an aspect_ratio, "hf-genjutsu-*" to edit a clip. Retired ids still resolve to the model that replaced them. See list_media_models.',
+            'Video model id. Omit it to use the workspace default (hf-hailuo-2.3). "hf-kling-3.0-std" for 3–15 s clips with native sound, "hf-kling-3.0-pro" for multi-shot plus first-and-last-frame control, "hf-wan-2.6" for stylized looks up to 15 s, "hf-ltx-2.5-fast" for the cheapest text-to-video that takes an aspect_ratio, "hf-genjutsu-*" to edit a clip, "google-omni-1.2-flash" for fast 360p drafts, native audio, up to 6 references, first-and-last-frame interpolation (start_image + end_image, 3–10 s) and upscale/edit/extend of the same clip. Retired ids still resolve to the model that replaced them. See list_media_models.',
         }),
       ),
       duration: Type.Optional(Type.Integer({ minimum: 1, maximum: 30, description: 'Clip length in seconds; each model allows specific values (list_media_models shows the range — Kling 3.0 takes 3–15). A Genjutsu edit follows its source clip.' })),
       aspect_ratio: Type.Optional(Type.String({ description: 'e.g. "16:9", "9:16", "1:1". Only models that list one accept it — Hailuo, Kling and Wan follow the start image, so pass a portrait start_image for a 9:16 ad.' })),
-      resolution: Type.Optional(Type.String({ description: 'Resolution tier on models that have one: "480p" | "720p" | "1080p" ("720p" default). Cheaper tiers render faster.' })),
+      resolution: Type.Optional(Type.String({ description: 'Resolution tier: "360p" | "480p" | "720p" | "1080p" | "4k" ("720p" default). Cheaper tiers render faster. Omni: draft at 360p, then upscale with previous_job_id.' })),
       audio: Type.Optional(Type.Boolean({ description: 'Generate sound/dialogue on models that support it (costs more). Default false.' })),
       start_image: Type.Optional(Type.String({ description: 'Workspace image to use as the first frame (image-to-video)' })),
+      end_image: Type.Optional(
+        Type.String({
+          description:
+            'Workspace image to use as the last frame. Needs start_image: the clip animates from start_image to end_image (first-and-last-frame interpolation). Gemini Omni takes 3–10 s for it; list_media_models shows last_frame: true on every model that accepts one.',
+        }),
+      ),
       reference_images: Type.Optional(
         Type.Array(Type.String(), {
           maxItems: MAX_REFERENCE_IMAGES,
@@ -796,13 +823,19 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
         Type.Object({}, {
           additionalProperties: true,
           description:
-            'Model-specific documented fields for the chosen model, e.g. { "cfg_scale": 0.5 }, { "multi_shots": true }, { "multi_prompt": [{ "prompt": "…", "duration": 5 }] }, { "last_image_url": "https://…" }, { "seed": 42 }. list_media_models shows each model\'s fields, allowed values and ranges; anything undeclared is rejected.',
+            'Model-specific documented fields for the chosen model, e.g. { "cfg_scale": 0.5 }, { "multi_shots": true }, { "multi_prompt": [{ "prompt": "…", "duration": 5 }] }, { "seed": 42 }. list_media_models shows each model\'s fields, allowed values and ranges; anything undeclared is rejected. A last frame is end_image, not an options field.',
         }),
       ),
       path: Type.Optional(Type.String({ description: 'Output path anywhere in the workspace (e.g. "public/media/intro.mp4")' })),
       filename: Type.Optional(Type.String({ description: 'Destination filename under videos/ (ignored when path is set)' })),
       wait: Type.Optional(Type.Boolean({ description: 'Wait for the clip to finish (default true). false returns a job_id immediately.' })),
       job_id: Type.Optional(Type.String({ description: 'Check (and save, once finished) a job started earlier with wait: false' })),
+      previous_job_id: Type.Optional(
+        Type.String({
+          description:
+            'Omni only: continue from an earlier generate_video job. Omit prompt and set resolution "1080p"/"4k" to upscale that draft — it re-renders the clip at the higher resolution, so it may differ slightly from the draft. Pass a prompt to edit it, or to extend it (up to 30 s total) with options { "task": "extend" }.',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params, signal) => {
       const p = params as {
@@ -813,6 +846,7 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
         resolution?: string
         audio?: boolean
         start_image?: string
+        end_image?: string
         reference_images?: string[]
         source_video?: string
         genjutsu?: 'motion_transfer' | 'object_swap' | 'restyle'
@@ -822,18 +856,22 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
         filename?: string
         wait?: boolean
         job_id?: string
+        previous_job_id?: string
       }
       const proxy = proxyConfig(ctx)
       if (!proxy) return textResult({ error: 'Video generation is not available: AI proxy not configured.' })
 
       if (p.job_id) return checkVideoJob(ctx, proxy, p.job_id, p, signal)
-      if (!p.prompt && !p.source_video) {
-        return textResult({ error: 'prompt is required (or pass source_video for a Genjutsu edit, or job_id to check an earlier job).' })
+      if (!p.prompt && !p.source_video && !p.previous_job_id) {
+        return textResult({
+          error: 'prompt is required (or pass source_video for a Genjutsu edit, previous_job_id to continue an earlier clip, or job_id to check an earlier job).',
+        })
       }
       const model = p.model ?? (p.genjutsu ? GENJUTSU_MODEL_BY_MODE[p.genjutsu] : undefined)
 
       let target: OutputTarget
       let startImage: string | undefined
+      let endImage: string | undefined
       let sourceVideoUrl: string | undefined
       let sourceDurationSeconds: number | undefined
       const references: string[] = []
@@ -841,10 +879,20 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
         if ((p.reference_images?.length ?? 0) > MAX_REFERENCE_IMAGES) {
           return textResult({ error: `At most ${MAX_REFERENCE_IMAGES} reference images are supported per call.` })
         }
+        if (p.end_image && !p.start_image) {
+          return textResult({
+            error: 'end_image needs start_image: pass the first frame too, and the clip animates from start_image to end_image.',
+          })
+        }
         if (p.start_image) {
           const image = loadWorkspaceImage(ctx, p.start_image)
           if ('error' in image) return textResult({ error: image.error.replace('Reference image', 'Start image') })
           startImage = toDataUri(image)
+        }
+        if (p.end_image) {
+          const image = loadWorkspaceImage(ctx, p.end_image)
+          if ('error' in image) return textResult({ error: image.error.replace('Reference image', 'End image') })
+          endImage = toDataUri(image)
         }
         for (const ref of p.reference_images ?? []) {
           const image = loadWorkspaceImage(ctx, ref)
@@ -887,11 +935,13 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
             resolution: p.resolution,
             audio: p.audio,
             start_image: startImage,
+            end_image: endImage,
             reference_images: references.length > 0 ? references : undefined,
             source_video_url: sourceVideoUrl,
             source_duration_seconds: sourceDurationSeconds,
             preset_id: p.preset_id,
             options: p.options,
+            previous_job_id: p.previous_job_id,
           }),
           signal,
         })
@@ -1002,7 +1052,7 @@ async function checkVideoJob(
       job.audio = status.audio ?? false
     }
     if (status.status === 'completed' && status.video) {
-      await saveVideo(job, status.video, signal)
+      await saveVideo(proxy, job, status.video, signal)
     } else if (status.status === 'failed') {
       job.status = 'failed'
       job.error = status.error || 'Video generation failed'

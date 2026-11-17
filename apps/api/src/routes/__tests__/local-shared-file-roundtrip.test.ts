@@ -84,7 +84,10 @@ describe('desktop shared-file mint → download', () => {
     const served = await download.fetch(new Request(`http://localhost/api/f/${token}`))
     expect(served.status).toBe(200)
     expect(await served.text()).toBe('video bytes')
-    expect(served.headers.get('content-disposition')).toBe('attachment; filename="report.mp4"')
+    // A video link opens in a player (inline), so a direct open streams
+    // instead of saving (SHO-387).
+    expect(served.headers.get('content-disposition')).toBe('inline; filename="report.mp4"')
+    expect(served.headers.get('accept-ranges')).toBe('bytes')
   })
 
   it('serves the file through a workspace link when no project owns it', async () => {

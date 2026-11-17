@@ -186,7 +186,7 @@ test.describe("A share_file link in the workspace chat", () => {
     await page?.close()
   })
 
-  test("an .mp4 opens in the right-hand pane and plays, even when the server says octet-stream", async () => {
+  test("an .mp4 opens in the right-hand pane and streams from its link", async () => {
     const href = registerFixture("media/qa-clip.mp4", {
       contentType: "application/octet-stream",
       body: Buffer.from("\u0000\u0000\u0000\u0018ftypisom-qa-fixture-bytes"),
@@ -206,17 +206,13 @@ test.describe("A share_file link in the workspace chat", () => {
     const video = pane.locator("video")
     await expect(video).toHaveCount(1, { timeout: 30_000 })
     await expect(video).toHaveAttribute("controls", "")
-    const src = await video.getAttribute("src")
-    expect(src?.startsWith("blob:")).toBe(true)
 
-    // The blob carries the type the name implies, not the octet-stream answer:
-    // without that the browser has no decoder to pick.
-    const blobType = await page.evaluate(async (url) => {
-      const response = await fetch(url)
-      const blob = await response.blob()
-      return blob.type
-    }, src!)
-    expect(blobType).toBe("video/mp4")
+    // The name still decides the kind, but the element streams the link itself
+    // (SHO-387): a `blob:` here could only exist after the whole body had been
+    // buffered, which is the bug this replaced.
+    const src = await video.getAttribute("src")
+    expect(src ?? "").not.toContain("blob:")
+    expect(src).toBe(`${API}${href}`)
 
     await expect(pane.getByText("No preview for this file type.")).toHaveCount(0)
     // It opened in the pane, not in a modal or a browser tab.
@@ -239,7 +235,10 @@ test.describe("A share_file link in the workspace chat", () => {
     const audio = pane.locator("audio")
     await expect(audio).toHaveCount(1, { timeout: 30_000 })
     await expect(audio).toHaveAttribute("controls", "")
-    expect((await audio.getAttribute("src"))?.startsWith("blob:")).toBe(true)
+    // Audio streams from the link too (SHO-387): no blob is built for it.
+    const src = await audio.getAttribute("src")
+    expect(src ?? "").not.toContain("blob:")
+    expect(src).toBe(`${API}${href}`)
   })
 
   test("a .md opens on Preview, and its Source toggle is read-only", async () => {

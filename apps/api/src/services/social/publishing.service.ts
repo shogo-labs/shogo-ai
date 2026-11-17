@@ -80,6 +80,13 @@ export interface CreatePostInput {
   /** TikTok settings applied to every TikTok target (`tiktokSettings`). */
   tiktok?: unknown
   /**
+   * Licensed music / original sound for every Instagram target, as
+   * `platformSpecificData.audioConfiguration`. Reels only: a track is attached
+   * when the post is created, and a track that is gone at publish time fails the
+   * post rather than publishing with different audio.
+   */
+  audio?: unknown
+  /**
    * Publish even though the same content, accounts and media went out in the
    * last 15 minutes. A deliberate repost has to say so.
    */
@@ -137,13 +144,21 @@ function mediaItem(url: string): ZernioMediaItem {
  * settings goes to the creator's inbox as a draft, which is the safe default —
  * direct publish would need `privacyLevel` and the two consent flags, so only a
  * caller that supplied a privacy level gets it.
+ *
+ * `audio` is the Instagram Reel track, merged in as `audioConfiguration`. A
+ * variant that carries its own `audioConfiguration` wins, and with no `audio`
+ * the object is exactly what it was before this parameter existed.
  */
 export function platformDataFor(
   platform: string,
   variant: Record<string, unknown> | undefined,
   tiktok: Record<string, unknown> | undefined,
+  audio?: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
   const data: Record<string, unknown> = { ...(variant ?? {}) }
+  if (platform === 'instagram' && audio && data.audioConfiguration === undefined) {
+    data.audioConfiguration = audio
+  }
   if (platform !== 'tiktok') return Object.keys(data).length ? data : undefined
 
   const variantSettings =
@@ -254,6 +269,63 @@ function requireMedia(
   )
 }
 
+/**
+ * The Instagram Reel track, validated, in Zernio's `audioConfiguration` shape.
+ *
+ * `audioId` is a digit string (Meta's catalog ids are numeric), and the two
+ * volumes are integers 0–100. Anything else is refused here rather than by the
+ * provider after the media has been uploaded.
+ */
+export function parseAudioConfiguration(raw: unknown): Record<string, unknown> | undefined {
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new SocialError(400, 'invalid_audio', 'audio must be an object: { audioId, audioVolume?, videoVolume? }')
+  }
+  const input = raw as Record<string, unknown>
+  const audioId = typeof input.audioId === 'string' ? input.audioId.trim() : ''
+  if (!/^\d+$/.test(audioId)) {
+    throw new SocialError(400, 'invalid_audio', 'audio.audioId must be the numeric id from action "audio".')
+  }
+  const configuration: Record<string, unknown> = { audioId }
+  for (const key of ['audioVolume', 'videoVolume'] as const) {
+    const value = input[key]
+    if (value === undefined || value === null) continue
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 100) {
+      throw new SocialError(400, 'invalid_audio', `audio.${key} must be an integer from 0 to 100.`)
+    }
+    configuration[key] = value
+  }
+  return configuration
+}
+
+/**
+ * Refuse a track on a target that cannot carry one, before any provider call.
+ *
+ * Zernio attaches audio to a Reel only: a Story, an image or a carousel is
+ * refused when the post is created, which is after the media upload. A target's
+ * media is its variant's when it has one, otherwise the post's.
+ */
+function requireReelForAudio(
+  accounts: any[],
+  variants: Record<string, any>,
+  mediaUrls: string[],
+): void {
+  const notReels = accounts
+    .filter((account) => account.platform === 'instagram')
+    .filter((account) => {
+      const variantMedia = variants[account.id]?.mediaUrls
+      const media = Array.isArray(variantMedia) && variantMedia.length ? variantMedia : mediaUrls
+      return media.length !== 1 || mediaTypeFor(media[0]!) !== 'video'
+    })
+    .map((account) => `instagram @${account.username}`)
+  if (notReels.length === 0) return
+  throw new SocialError(
+    400,
+    'audio_needs_reel',
+    `Audio can only be attached to a Reel: ${notReels.join(', ')} needs exactly one video and no other media.`,
+  )
+}
+
 /** Same media, in the same order — a different reel is a different post. */
 function sameMedia(left: unknown, right: unknown): boolean {
   const a = Array.isArray(left) ? (left as string[]) : []
@@ -321,12 +393,16 @@ export async function createPost(workspaceId: string, workspaceName: string, inp
 
   const variants = input.variants && typeof input.variants === 'object' ? input.variants : {}
   const accounts = accountIds.length ? await loadAccounts(workspaceId, accountIds) : []
+  const audio = parseAudioConfiguration(input.audio)
 
   // Instagram and TikTok have no text-only post. Refusing here costs nothing;
   // finding out from the provider costs a publish attempt that fails per target
   // and leaves the person with a post full of red rows.
   if (!isDraft) {
     requireMedia(accounts, variants, mediaUrls)
+    // A track rides on a Reel only, and Zernio refuses anything else after the
+    // media upload — so the shape is checked before the post is even created.
+    if (audio) requireReelForAudio(accounts, variants, mediaUrls)
   }
 
   const status: PostStatus = isDraft ? 'draft' : publishNow ? 'publishing' : 'scheduled'
@@ -384,6 +460,7 @@ export async function createPost(workspaceId: string, workspaceName: string, inp
         ? (variant.platformSpecificData as Record<string, unknown>)
         : undefined,
       tiktok,
+      audio,
     )
     if (data) platformData.set(account.id, data)
   }

@@ -52,6 +52,7 @@ import { SkillsPanel } from './SkillsPanel'
 import { ToolsPanel } from './ToolsPanel'
 import { api, createHttpClient, type TechStackSummary } from '../../../lib/api'
 import { cn } from '@shogo/shared-ui/primitives'
+import { UPGRADE_PLAN_NAME } from '@/lib/billing-config'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import { Switch } from '@/components/ui/switch'
 import {
@@ -902,7 +903,9 @@ export function CapabilitiesConfigPane({
                             {isLocked ? (
                               <View className="flex-row items-center gap-1">
                                 <Lock size={10} className="text-muted-foreground" />
-                                <Text className="text-[10px] font-medium text-muted-foreground">Pro</Text>
+                                <Text className="text-[10px] font-medium text-muted-foreground">
+                                  {UPGRADE_PLAN_NAME}
+                                </Text>
                               </View>
                             ) : (
                               <>

@@ -26,6 +26,7 @@ import {
 } from 'lucide-react-native'
 import * as Clipboard from 'expo-clipboard'
 import { cn } from '@shogo/shared-ui/primitives'
+import { UPGRADE_PLAN_NAME } from '@/lib/billing-config'
 import { agentFetch } from '../../../lib/agent-fetch'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import { API_URL } from '../../../lib/api'
@@ -970,7 +971,9 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                                 Advanced
                               </Text>
                               <Text className="text-[10px] text-muted-foreground mt-0.5">
-                                {hasAdvancedModelAccess ? 'Standard tier — Pro plan' : 'Requires Pro plan'}
+                                {hasAdvancedModelAccess
+                                  ? `Standard tier — ${UPGRADE_PLAN_NAME} plan`
+                                  : `Requires ${UPGRADE_PLAN_NAME} plan`}
                               </Text>
                             </Pressable>
                           </View>
@@ -1064,7 +1067,9 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                                 Advanced
                               </Text>
                               <Text className="text-[10px] text-muted-foreground mt-0.5">
-                                {hasAdvancedModelAccess ? 'Standard tier — Pro plan' : 'Requires Pro plan'}
+                                {hasAdvancedModelAccess
+                                  ? `Standard tier — ${UPGRADE_PLAN_NAME} plan`
+                                  : `Requires ${UPGRADE_PLAN_NAME} plan`}
                               </Text>
                             </Pressable>
                           </View>

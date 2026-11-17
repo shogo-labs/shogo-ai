@@ -78,6 +78,7 @@ export {
   type GitWorkspaceSyncConfig,
   type SpawnGitFn,
   type SyncParkInfo,
+  type CheckpointResult,
   type CloudSyncMode,
 } from './git-sync'
 
@@ -385,6 +386,14 @@ export {
   type SeedRelation,
   type SeedTableData,
 } from './published-schema'
+
+export {
+  parseByteRange,
+  fileRangeResponse,
+  type ParsedByteRange,
+  type SliceableFile,
+  type FileRangeResponseOptions,
+} from './byte-range'
 
 export {
   publishedImageRepository,

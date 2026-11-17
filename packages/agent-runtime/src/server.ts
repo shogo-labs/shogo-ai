@@ -19,6 +19,7 @@ import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { createBufferedTurns, type PipelineCallHooks, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
 import { StreamRegistry, DEFAULT_STREAM_ORPHAN_TTL_MS } from './stream-registry'
+import { guestBusy } from './runtime-busy'
 import { describeTurn } from './turn-status'
 import { RepoAdoptGate, isWorkspaceNeutralRequest } from './repo-adopt-gate'
 import { shouldFlushGitBeforeExport } from './git-export-policy'
@@ -937,7 +938,7 @@ const { app, state, logTiming } = await createRuntimeApp({
     // pin is what stopped an expired AI-proxy token from ever refreshing on
     // metal (SHO-348).
     const liveStreams = streamRegistry.liveCount()
-    const busy = work.turns + work.tasks + liveStreams > 0
+    const busy = guestBusy({ turns: work.turns, tasks: work.tasks, liveStreams })
     return {
       activeSessions: stats.length,
       lastActivityAt: lastSessionActivity,
@@ -1761,7 +1762,7 @@ app.post('/agent/channels/connect', async (c) => {
         if (accessRes.ok) {
           const access = await accessRes.json() as { hasAdvancedModelAccess?: boolean }
           if (!access.hasAdvancedModelAccess) {
-            return c.json({ error: 'Advanced model requires a Pro or higher subscription. Use "basic" or upgrade your plan.' }, 403)
+            return c.json({ error: 'Advanced model requires a Business (or higher) subscription. Use "basic" or upgrade your plan.' }, 403)
           }
         }
       } catch {
@@ -1841,7 +1842,7 @@ app.patch('/agent/channels/:type/model', async (c) => {
         if (accessRes.ok) {
           const access = await accessRes.json() as { hasAdvancedModelAccess?: boolean }
           if (!access.hasAdvancedModelAccess) {
-            return c.json({ error: `Model '${model}' requires a Pro or higher subscription.` }, 403)
+            return c.json({ error: `Model '${model}' requires a Business (or higher) subscription.` }, 403)
           }
         }
       } catch {
@@ -3911,6 +3912,122 @@ app.post('/pool/quiesce', async (c) => {
   console.log(`[pool/quiesce] ${JSON.stringify(projects)}`)
   return c.json({ ok: true, projects })
 })
+
+/**
+ * Stop every local background task because the host is replacing this VM for a
+ * release. The host calls this before it destroys the VM so each task settles
+ * `interrupted` with the real reason, and a task the agent was told about in the
+ * background carries its outcome to the owner's chat across the restart
+ * (SHO-399). `.tmp/` is not part of the backup, so a task whose files lived
+ * there is told that in the same breath.
+ */
+app.post('/pool/stop-background-tasks', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const reason = typeof body?.reason === 'string' && body.reason.trim()
+    ? body.reason.trim()
+    : 'this runtime moved to the new release'
+  const tmp = droppedTmp()
+  const note = tmp ? `${describeTmp(tmp)} is not kept across a recycle — move the script and its env file into the project` : undefined
+  const stopped = agentGateway?.stopBackgroundTasksForRelease?.({ reason, ...(note ? { note } : {}) }) ?? 0
+  console.log(`[pool/stop-background-tasks] stopped ${stopped} task(s): ${reason}${tmp ? ` (${describeTmp(tmp)} dropped)` : ''}`)
+  return c.json({ ok: true, stopped, reason, tmpDropped: !!note, ...(tmp ? { tmp } : {}) })
+})
+
+/**
+ * Take a checkpoint commit of the live working tree because the host is about
+ * to back up the repo and destroy this VM (SHO-399).
+ *
+ * The host's repo backup bundles the commits that already exist; it does not
+ * commit anything itself, and the last turn-complete auto-commit may be hours
+ * old (no turn ran in between). Anything edited since then used to go with the
+ * VM. This is the same committer the turn-complete path uses, awaited, and it
+ * reports failure instead of swallowing it — a recycle with no checkpoint is a
+ * recycle that loses the agent's work, so the host aborts rather than proceeds.
+ *
+ * 404-able: a guest older than this route simply 404s and the host falls back
+ * to the export's own best-effort flush.
+ */
+app.post('/pool/checkpoint-commit', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const destinationDir = resolvePoolWorkspaceDir(body?.dir)
+  // Measured here as well as on stop-background-tasks: a manual `/recycle` of
+  // an idle runtime stops no tasks, but `.tmp/` is dropped all the same.
+  const tmp = droppedTmp()
+  await gitLayerReady
+  if (!gitSyncInstance || destinationDir !== WORKSPACE_DIR) {
+    return c.json({ ok: true, committed: false, sha: '', files: 0, skipped: 'no-git-sync', ...(tmp ? { tmp } : {}) })
+  }
+  try {
+    const result = await gitSyncInstance.checkpoint()
+    console.log(
+      `[pool/checkpoint-commit] ${result.committed ? `committed ${result.files} file(s) at ${result.sha.slice(0, 12)}` : 'working tree already committed'}` +
+        `${tmp ? ` (.tmp/ ${describeTmp(tmp)} will be dropped)` : ''}`,
+    )
+    return c.json({ ok: true, ...result, ...(tmp ? { tmp } : {}) })
+  } catch (err: any) {
+    console.error('[pool/checkpoint-commit] failed:', err?.message ?? err)
+    return c.json({ ok: false, error: err?.message ?? 'checkpoint commit failed', code: 'checkpoint-failed' }, 500)
+  }
+})
+
+/** What `.tmp/` holds that this recycle will not carry over. */
+export interface DroppedTmp {
+  files: number
+  bytes: number
+  /** Top-level entry names, capped — what the owner chat is told it lost. */
+  entries: string[]
+}
+
+/** How many top-level `.tmp/` names travel in the notice. */
+const TMP_ENTRIES_CAP = 10
+
+/**
+ * Measure `.tmp/`, so the chat that owns this runtime is told *what* it is
+ * about to lose rather than only that something was lost (SHO-399). Bounded:
+ * a 3.6 GB folder of build output is reported by size and by its top-level
+ * names, not by walking forever.
+ */
+function droppedTmp(): DroppedTmp | undefined {
+  try {
+    const root = join(WORKSPACE_DIR, '.tmp')
+    let files = 0
+    let bytes = 0
+    const walk = (dir: string, depth: number): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (files >= 5000) return
+        const p = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          if (depth < 4) walk(p, depth + 1)
+          continue
+        }
+        files += 1
+        try {
+          bytes += statSync(p).size
+        } catch { /* vanished mid-walk */ }
+      }
+    }
+    walk(root, 0)
+    if (files === 0) return undefined
+    let entries: string[] = []
+    try {
+      entries = readdirSync(root, { withFileTypes: true })
+        .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
+        .sort()
+        .slice(0, TMP_ENTRIES_CAP)
+    } catch { /* top level unreadable mid-walk */ }
+    return { files, bytes, entries }
+  } catch {
+    return undefined
+  }
+}
+
+function describeTmp(tmp: DroppedTmp): string {
+  const size = tmp.bytes >= 1 << 30
+    ? `${(tmp.bytes / (1 << 30)).toFixed(1)} GB`
+    : `${Math.max(1, Math.round(tmp.bytes / 1024))} KB`
+  const names = tmp.entries.length ? `: ${tmp.entries.join(', ')}` : ''
+  return `.tmp/ (${tmp.files} file${tmp.files === 1 ? '' : 's'}, ${size}${names})`
+}
 
 // Workspace-drive maintenance for a live grow (SHO-349) — see workspace-drive.ts.
 // The host freezes the guest around its ftruncate + PATCH /drives, then thaws

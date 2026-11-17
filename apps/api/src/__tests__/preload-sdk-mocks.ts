@@ -179,6 +179,12 @@ mock.module('@shogo-ai/sdk/email/server', () => ({
 const ZERNIO_PLATFORMS = ['instagram', 'tiktok'] as const
 const zernioNormalize = (name: string) => name.toLowerCase().replace(/[-_\s]/g, '')
 
+// The byte-range helpers are used *by* the routes under test, so the mock must
+// forward the real implementations rather than a copy of them: a hand-written
+// duplicate would keep `local-file-read`/`local-shared-files` green while the
+// shipped `fileRangeResponse` rotted (SHO-387).
+const realByteRange = require('@shogo/shared-runtime/byte-range') as typeof import('@shogo/shared-runtime/byte-range')
+
 mock.module('@shogo/shared-runtime', () => ({
   RUNTIME_CONFIG: {
     apiPort: 4000,
@@ -321,4 +327,6 @@ mock.module('@shogo/shared-runtime', () => ({
     const normalized = zernioNormalize(query)
     return ZERNIO_PLATFORMS.filter((platform) => normalized.includes(platform))
   },
+  parseByteRange: realByteRange.parseByteRange,
+  fileRangeResponse: realByteRange.fileRangeResponse,
 }))

@@ -26,7 +26,7 @@
  */
 
 import type { ImageModelEntry, ModelOptionField, VideoModelEntry } from '@shogo/model-catalog'
-import { optionsForEndpoint } from '@shogo/model-catalog'
+import { lastFrameField, optionsForEndpoint } from '@shogo/model-catalog'
 
 export const HIGGSFIELD_DEFAULT_BASE = 'https://api.higgsfield.ai'
 
@@ -63,6 +63,10 @@ export type HiggsfieldErrorCode =
   | 'invalid_aspect_ratio'
   | 'audio_not_supported'
   | 'image_to_video_unsupported'
+  /** `end_image` on a model whose endpoint documents no last-frame field. */
+  | 'end_image_unsupported'
+  /** `end_image` without a start frame, or the same field twice. */
+  | 'invalid_end_image'
   | 'text_to_video_unsupported'
   | 'reference_images_unsupported'
   | 'blocked'
@@ -933,6 +937,8 @@ export interface HiggsfieldVideoParams {
   audio?: boolean
   /** Public URL of the first frame (image-to-video). */
   startImageUrl?: string
+  /** Public URL of the last frame: the clip interpolates from `startImageUrl` to it. */
+  endImageUrl?: string
   /** Public URLs of character/object references. */
   referenceUrls?: string[]
   /** Public URL of the clip a Genjutsu workflow edits. */
@@ -1013,6 +1019,31 @@ export function buildHiggsfieldVideoRequest(
       fail(`${entry.displayName} does not take a start image on ${endpoint}.`, 'image_to_video_unsupported')
     }
     setField(entry, endpoint, input, imageField, params.startImageUrl)
+  }
+
+  if (params.endImageUrl) {
+    if (!params.startImageUrl) {
+      fail(
+        'end_image needs start_image: the clip animates from the first frame to the last.',
+        'invalid_end_image',
+      )
+    }
+    // The vendor decides the spelling (`end_image_url`, `last_image_url`,
+    // `last_frame_url`); the endpoint's own option table says which.
+    const lastField = lastFrameField(entry, endpoint)
+    if (!lastField) {
+      fail(
+        `${entry.displayName} takes no last frame on ${endpoint}.`,
+        'end_image_unsupported',
+      )
+    }
+    if (params.options && lastField in params.options) {
+      fail(
+        `end_image and options.${lastField} are the same field on ${entry.displayName}; pass only end_image.`,
+        'invalid_end_image',
+      )
+    }
+    setField(entry, endpoint, input, lastField, params.endImageUrl)
   }
 
   const references = params.referenceUrls ?? []

@@ -45,11 +45,13 @@ test.describe("Pro Feature Gating", () => {
 
   // ── Billing Page Gating ──────────────────────────────────────────
 
-  test("billing page shows Pro plan status", async () => {
+  test("billing page shows the paid plan status", async () => {
     await page.goto("/billing")
     await page.waitForSelector("text=Billing", { timeout: 10_000 })
 
-    await expect(page.getByText("You're on Pro Plan")).toBeVisible()
+    // The bootstrap path lands on Pro; the UI fallback buys Business, the only
+    // per-seat plan still sold (Pro is retired, SHO-397).
+    await expect(page.getByText(/You're on (Pro|Business) Plan/)).toBeVisible()
     await expect(page.getByText("Change Plan")).toBeVisible()
     // The one-time 7-day trial is for first-time upgrades only.
     await expect(page.getByText("Start 7-day free trial")).toHaveCount(0)
@@ -60,13 +62,13 @@ test.describe("Pro Feature Gating", () => {
 
   // ── Sidebar Gating ───────────────────────────────────────────────
 
-  test("sidebar hides Upgrade CTA for Pro users", async () => {
+  test("sidebar hides Upgrade CTA for paid users", async () => {
     await page.goto("/home")
     await page.waitForSelector("text=What are we building", { timeout: 10_000 })
 
-    // The "Upgrade to Pro" button in the sidebar bottom should be gone
-    const upgradeCTA = page.locator("text=Upgrade to Pro")
-    await expect(upgradeCTA).not.toBeVisible()
+    // The upgrade button in the sidebar bottom should be gone
+    await expect(page.getByTestId("sidebar-upgrade-cta")).toHaveCount(0)
+    await expect(page.getByText("Upgrade to Business")).toHaveCount(0)
   })
 
   // ── Model Selector Gating ────────────────────────────────────────
@@ -85,7 +87,7 @@ test.describe("Pro Feature Gating", () => {
     // Wait for agent to finish streaming — model selector is disabled while streaming
     await waitForAgentResponse(page)
 
-    // ModelPickerMenu labels non-economy rows "…, requires Pro" for Free users.
+    // ModelPickerMenu labels non-economy rows "…, requires Business" for Free users (Pro is retired).
     const modelBtn = page.getByRole("button", { name: "Choose model" }).filter({ visible: true }).last()
     await expect(modelBtn).toBeVisible({ timeout: 15_000 })
     await modelBtn.click()
@@ -93,7 +95,7 @@ test.describe("Pro Feature Gating", () => {
     const options = page.locator('[data-testid^="model-option-"]').filter({ visible: true })
     await expect(options.first()).toBeVisible({ timeout: 10_000 })
     expect(await options.count()).toBeGreaterThan(1)
-    await expect(page.getByRole("button", { name: /, requires Pro$/ })).toHaveCount(0)
+    await expect(page.getByRole("button", { name: /, requires Business$/ })).toHaveCount(0)
 
     await options.last().click()
     await expect(options.first()).toBeHidden({ timeout: 5_000 })

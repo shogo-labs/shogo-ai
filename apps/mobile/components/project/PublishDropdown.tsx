@@ -45,6 +45,11 @@ import {
   PopoverContent,
 } from '@/components/ui/popover'
 import { api, type CustomDomain } from '../../lib/api'
+import {
+  UPGRADE_CTA_LABEL,
+  UPGRADE_PLAN_NAME,
+  UPGRADE_PLAN_PRICE_LABEL,
+} from '../../lib/billing-config'
 import { useDomainHttp } from '../../contexts/domain'
 import { AlwaysOnSection } from './AlwaysOnSection'
 import { isPublishPlanError, publishErrorMessage } from './publish-errors'
@@ -426,7 +431,9 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
           <Text className="text-xs font-medium text-primary-foreground">Publish</Text>
           {!planAllowsPublish && !isPublished && (
             <View className="rounded px-1 bg-primary-foreground/20">
-              <Text className="text-[10px] font-medium text-primary-foreground">Pro</Text>
+              <Text className="text-[10px] font-medium text-primary-foreground">
+                {UPGRADE_PLAN_NAME}
+              </Text>
             </View>
           )}
         </Pressable>
@@ -708,8 +715,9 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
             </View>
           )}
 
-          {/* Pro gate — publishing to a subdomain requires Pro+. Republishing
-              an already-live site is still allowed, so only show this when the
+          {/* Plan gate — publishing to a subdomain needs a Pro-or-higher plan,
+              and Business is the cheapest one still on sale. Republishing an
+              already-live site is still allowed, so only show this when the
               plan can't publish a new/changed subdomain. */}
           {!planAllowsPublish && (
             <Pressable
@@ -721,13 +729,15 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
                 <View className="flex-row items-center gap-2">
                   <Text className="text-sm font-medium text-foreground">Publish to a subdomain</Text>
                   <View className="rounded px-1.5 bg-primary/10">
-                    <Text className="text-[10px] text-primary font-medium">Pro</Text>
+                    <Text className="text-[10px] text-primary font-medium">
+                      {UPGRADE_PLAN_NAME}
+                    </Text>
                   </View>
                 </View>
                 <Text className="text-[11px] text-muted-foreground mt-0.5">
                   {isPublished
-                    ? 'Changing your URL requires Pro. You can still publish updates to your current URL.'
-                    : `Get a permanent public link on your own name.${publishDomain} address. Available on Pro & Business.`}
+                    ? `Changing your URL requires ${UPGRADE_PLAN_NAME}. You can still publish updates to your current URL.`
+                    : `Get a permanent public link on your own name.${publishDomain} address. Available on ${UPGRADE_PLAN_NAME} (${UPGRADE_PLAN_PRICE_LABEL}).`}
                 </Text>
               </View>
               <ExternalLink size={14} className="text-primary" />
@@ -797,7 +807,9 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
                     onPress={goToBilling}
                     className="flex-1 h-10 rounded-lg items-center justify-center bg-primary"
                   >
-                    <Text className="text-sm font-medium text-primary-foreground">Upgrade to Pro</Text>
+                    <Text className="text-sm font-medium text-primary-foreground">
+                      {UPGRADE_CTA_LABEL}
+                    </Text>
                   </Pressable>
                 ) : (
                   <Pressable

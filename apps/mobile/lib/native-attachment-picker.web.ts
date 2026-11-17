@@ -12,6 +12,9 @@ export interface NativePickedAttachment {
   name: string
   type: string
   size: number
+  /** Native only: the file on disk, and a URL the chip can play. */
+  uri?: string
+  previewUrl?: string
 }
 
 export type NativeAttachAction = "library" | "camera" | "documents"

@@ -37,6 +37,7 @@ import { generateProxyToken } from '../ai-proxy-token'
 import {
   INSTANCE_SIZES,
   meetsMinimumInstanceSize,
+  accountedVmMemMiB,
   resolveMetalVmSize,
   resolveWorkspaceDiskMiB,
   type InstanceSizeName,
@@ -98,7 +99,9 @@ export interface BuildWorkspaceEnvOpts {
   _generateProxyToken?: typeof generateProxyToken
   _loadProjects?: (
     projectIds: string[],
-  ) => Promise<Array<{ id: string; name: string | null; settings?: unknown; workspaceDiskGiB?: number | null }>>
+  ) => Promise<
+    Array<{ id: string; name: string | null; settings?: unknown; workspaceDiskGiB?: number | null; vmMemoryMiB?: number | null; vmVcpus?: number | null }>
+  >
   _loadAvailableProjects?: (
     workspaceId: string,
   ) => Promise<Array<{ id: string; name: string | null; description?: string | null }>>
@@ -233,8 +236,15 @@ export async function buildWorkspaceEnv(
         const { prisma } = await import('../prisma')
         return (await prisma.project.findMany({
           where: { id: { in: ids } },
-          select: { id: true, name: true, settings: true, workspaceDiskGiB: true },
-        })) as Array<{ id: string; name: string | null; settings?: unknown; workspaceDiskGiB?: number | null }>
+          select: { id: true, name: true, settings: true, workspaceDiskGiB: true, vmMemoryMiB: true, vmVcpus: true },
+        })) as Array<{
+          id: string
+          name: string | null
+          settings?: unknown
+          workspaceDiskGiB?: number | null
+          vmMemoryMiB?: number | null
+          vmVcpus?: number | null
+        }>
       })
     const rows = attachedProjectIds.length ? await loadProjects(attachedProjectIds) : []
     const nameById = new Map(rows.map((r) => [r.id, r.name]))
@@ -290,14 +300,32 @@ export async function buildWorkspaceEnv(
       // (and therefore `rows`), so sizing off `rows` would always read the default.
       const anchorRow = opts.anchorProjectId ? rows.find((r) => r.id === opts.anchorProjectId) : undefined
       let requestedDiskGiB = anchorRow?.workspaceDiskGiB ?? null
+      let requestedMemMiB = anchorRow?.vmMemoryMiB ?? null
+      let requestedVcpus = anchorRow?.vmVcpus ?? null
       if (!opts.anchorProjectId && requestedMemberIds.length > 0) {
         const memberRows = await loadProjects(requestedMemberIds)
-        requestedDiskGiB = memberRows.reduce<number | null>((max, r) => {
-          if (typeof r.workspaceDiskGiB !== 'number') return max
-          return max === null || r.workspaceDiskGiB > max ? r.workspaceDiskGiB : max
-        }, null)
+        const largest = (pick: (r: (typeof memberRows)[number]) => number | null | undefined) =>
+          memberRows.reduce<number | null>((max, r) => {
+            const v = pick(r)
+            if (typeof v !== 'number') return max
+            return max === null || v > max ? v : max
+          }, null)
+        requestedDiskGiB = largest((r) => r.workspaceDiskGiB)
+        requestedMemMiB = largest((r) => r.vmMemoryMiB)
+        requestedVcpus = largest((r) => r.vmVcpus)
       }
       env.SHOGO_VM_DISK_MIB = String(resolveWorkspaceDiskMiB(requestedDiskGiB, workspaceInstanceSize))
+      // Picked machine size (Project.vmMemoryMiB), the largest member's. The
+      // host boots it; the workspace budget counts it (SHOGO_VM_MEM_MIB).
+      if (typeof requestedMemMiB === 'number' && requestedMemMiB > 0) {
+        env.SHOGO_VM_BOOT_MEM_MIB = String(requestedMemMiB)
+        env.SHOGO_VM_MEM_MIB = String(
+          accountedVmMemMiB(parseInt(env.SHOGO_VM_MEM_MIB, 10), requestedMemMiB, workspaceInstanceSize),
+        )
+      }
+      if (typeof requestedVcpus === 'number' && requestedVcpus > 0) {
+        env.SHOGO_VM_BOOT_VCPUS = String(requestedVcpus)
+      }
       // Paid tiers stay warm, as their single-project runtimes already do.
       // Only with the pooled budget on: it is what bounds how many of a
       // workspace's always-on VMs can be running at once.

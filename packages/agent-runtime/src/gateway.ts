@@ -52,6 +52,7 @@ import { summariseTurn, lastTurnStart } from './turn-boundary'
 import { createCompactionSummarizer } from './compaction-summarizer'
 import type { ToolContext } from './gateway-tools'
 import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, subagentOrchestrationDisabled, expectedCoreToolsForAgentMode, createModeUnavailableTool, workspaceAgentToolsRegistered, getSessionTodos, type RestrictedMode } from './gateway-tools'
+import { crossWorkspaceEnabledFor } from './cross-workspace'
 import { DEFAULT_CLOUD_SECURITY_PREFERENCE, PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { buildExposedPortsPrompt } from './exposed-ports-prompt'
 import { buildConcurrentChatsPrompt, concurrentChatLabel, type ConcurrentChat } from './concurrent-chats-prompt'
@@ -161,6 +162,7 @@ import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
 import { AgentManager } from './agent-manager'
 import { loadWorkspaceCustomAgents } from './subagent'
 import { TaskRegistry, formatTaskNotification, type TaskLink, type TaskSource, type TaskStatus } from './task-registry'
+import { readDeclaredServices, shellQuote } from './services-registry'
 import { cleanupTaskOutputs, listTaskOutputRows, taskOutputBody, taskOutputDir, taskOutputRoot } from './task-output'
 import { createApiTaskClient } from './remote-tasks'
 import { releaseSessionBrowsers, reapOrphanChromium } from './browser-pool'
@@ -211,6 +213,36 @@ work visible, and communicate in concise user-facing language.
   project. If they say it anyway, follow this guide.
 - Do not expose internal project ids or builder mechanics unless the user asks.
 `
+
+/**
+ * Appended to the Personal agent's prompt when it can reach the person's other
+ * workspaces (SHO-389). Kept to what the tools actually enforce: reads are
+ * free, every write asks, and a scheduled turn has nobody to ask.
+ */
+export const CROSS_WORKSPACE_GUIDE = `## Running other workspaces
+
+You can read — and, with the person's approval, act in — every workspace they
+belong to, not just this Personal one. Those tools take a \`workspace\`
+argument (id, slug or name).
+
+- **Find them first.** \`list_projects({ workspaces: true })\` returns each
+  workspace's id, name, slug, kind and where it runs (\`source: local|cloud\`),
+  plus \`reachable\`. An ambiguous name (\`"odin"\`) comes back as candidates —
+  ask which one; never pick for them.
+- **Reporting on a workspace:** \`board_summary\` + \`board_health\` for the
+  numbers, \`work_item_list\` for what is in flight, \`team_chat_list\` /
+  \`team_chat_read\` for the last day, \`agent_runs_list\` for failures.
+  Merged PRs are already on the cards (\`pr\` field and \`work_item_link\`), so
+  there is no GitHub call to make. Finish with **one** message covering all the
+  workspaces asked for, and say which ones you could not reach and why.
+- **Writes always ask.** Every card, comment, post, schedule or project call in
+  another workspace raises an approval prompt for that one call, whatever the
+  security mode — approving one does not approve the next. Pass the approval
+  through; if it is denied or times out, say so and leave the workspace alone.
+- **A scheduled or triggered turn cannot ask**, so a write there is refused.
+  Those turns report what they would have done instead.
+- **When you create the report schedule, pin workspace ids, not names**, so a
+  renamed workspace still matches.`
 
 /**
  * The runtime's own listening ports: the SPA on `PORT` plus the API sidecar.
@@ -1805,6 +1837,16 @@ export class AgentGateway {
       this.teamManager = new TeamManager(this.sessionPersistence)
     }
 
+    // Bring back every service the agent declared with
+    // `exec({ service: true })` — a cold boot and the first boot after a VM
+    // recycle both land here, and for the recycle this is what makes the
+    // declaration worth having (SHO-399). Not awaited: a service that hangs on
+    // startup must not hold the gateway's own start, and each failure is
+    // logged with its name.
+    void this.restartDeclaredServices().catch((err: any) => {
+      console.error('[AgentGateway] service restart failed:', err?.message ?? err)
+    })
+
     // Auto-register custom subagent types from `.shogo/agents/<name>.md` so
     // `agent_spawn({ type: "<name>" })` resolves them without the coordinator
     // having to fall back to `general-purpose` or manually re-declare them via
@@ -2955,6 +2997,10 @@ export class AgentGateway {
         this.sessionManager.setSessionMetadata(sessionId, { runningProcesses: registry.snapshot() })
       })
       registry.onNotification(() => this.scheduleTaskWake(sessionId))
+      // A note queued during the restore above has no listener yet: hand it to
+      // the wake path now, or the outcome of a task the previous VM stopped is
+      // restored into a chat that never hears about it (SHO-399).
+      if (registry.peekNotifications().length > 0) this.scheduleTaskWake(sessionId)
 
       this.commandRegistries.set(sessionId, registry)
       // `sessionManager.get()` is memory-only: on a cold process the session is
@@ -2988,6 +3034,10 @@ export class AgentGateway {
         }
         const rows = listTaskOutputRows(taskOutputDir(this.workspaceDir, sessionId))
         if (rows.length > 0) registry.restoreFromOutputRows(rows)
+        // A row restored with a note its owner never read — a task stopped by a
+        // release recycle, typically — has to reach the chat now. Restoring it
+        // silently would be the same as having told nobody (SHO-399).
+        if (registry.peekNotifications().length > 0) this.scheduleTaskWake(sessionId)
       } catch {
         // Best effort: a dock that starts empty beats a failed first request.
       } finally {
@@ -6049,7 +6099,10 @@ export class AgentGateway {
     }
 
     parts.push(buildCodeAgentGeneralGuide())
-    if (cfg.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
+    if (cfg.capabilityProfile === 'personal') {
+      parts.push(PERSONAL_COMPANION_GUIDE)
+      if (crossWorkspaceEnabledFor(cfg)) parts.push(CROSS_WORKSPACE_GUIDE)
+    }
     parts.push(buildCapabilityStatusSection(cfg, {
       scope: chatContext === 'workspace' ? 'workspace' : 'project',
       projectName: chatContext === 'workspace' ? undefined : this.projectDisplayName(this.projectId),
@@ -6107,7 +6160,10 @@ export class AgentGateway {
     }
 
     parts.push(buildCodeAgentGeneralGuide())
-    if (cfg.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
+    if (cfg.capabilityProfile === 'personal') {
+      parts.push(PERSONAL_COMPANION_GUIDE)
+      if (crossWorkspaceEnabledFor(cfg)) parts.push(CROSS_WORKSPACE_GUIDE)
+    }
     parts.push(buildCapabilityStatusSection(cfg, {
       scope: chatContext === 'workspace' ? 'workspace' : 'project',
       projectName: chatContext === 'workspace' ? undefined : this.projectDisplayName(this.projectId),
@@ -6275,6 +6331,7 @@ export class AgentGateway {
     pushStable('background-tasks-guide', BACKGROUND_TASKS_GUIDE)
     if (cfg.capabilityProfile === 'personal') {
       pushStable('personal-companion-mode', PERSONAL_COMPANION_GUIDE)
+      if (crossWorkspaceEnabledFor(cfg)) pushStable('cross-workspace-guide', CROSS_WORKSPACE_GUIDE)
     }
 
     // 2b. Shogo SDK guide — when/how to reach for @shogo-ai/sdk in user apps.
@@ -8299,6 +8356,80 @@ export class AgentGateway {
       children += counts.children
     }
     return { turns: this.turnLocks.size, tasks, children }
+  }
+
+  /**
+   * Stop every local task because this runtime is being recycled for a release
+   * (SHO-399). Metal calls `/pool/stop-background-tasks` before it destroys the
+   * VM: the host is about to swap the rootfs, and a task it cannot see would
+   * otherwise die with the machine and never explain itself.
+   *
+   * API-mirrored tasks are left alone — the API owns them and they settle on
+   * their own.
+   */
+  stopBackgroundTasksForRelease(opts: { reason: string; note?: string }): number {
+    let stopped = 0
+    for (const reg of this.commandRegistries.values()) {
+      stopped += reg.stopForRelease(opts)
+    }
+    return stopped
+  }
+
+  /**
+   * Bring every service declared in `.shogo/services.json` back up. Runs once on
+   * gateway start (cold boot, or the first boot after a recycle) and is what
+   * makes `exec({ service: true })` mean something (SHO-399).
+   *
+   * Each service is restarted through the `exec` tool itself rather than a
+   * private spawn path: it then gets the same sandbox, credential env, cwd
+   * handling, output file and registry row as when the agent declared it. The
+   * declaration is re-written, which is idempotent.
+   */
+  async restartDeclaredServices(): Promise<{ restarted: string[]; failed: Array<{ name: string; error: string }> }> {
+    const services = readDeclaredServices(this.workspaceDir)
+    const restarted: string[] = []
+    const failed: Array<{ name: string; error: string }> = []
+    if (services.length === 0) return { restarted, failed }
+    for (const svc of services) {
+      try {
+        const tools = createTools(this.serviceToolContext(svc.sessionId))
+        const exec = tools.find((t) => t.name === 'exec')
+        if (!exec) throw new Error('exec tool unavailable')
+        const command = svc.cwd && svc.cwd !== defaultShellCwd(this.workspaceDir)
+          ? `cd ${shellQuote(svc.cwd)} && ${svc.command}`
+          : svc.command
+        const result: any = await exec.execute(`svc_${svc.name}`, { command, background: true, service: true, name: svc.name }, undefined as any)
+        const details = (result as any)?.details ?? {}
+        if (details?.error) throw new Error(String(details.error))
+        restarted.push(svc.name)
+        console.log(`[AgentGateway] restarted service ${svc.name} (${svc.command})`)
+      } catch (err: any) {
+        const message = err?.message ?? String(err)
+        failed.push({ name: svc.name, error: message })
+        console.error(`[AgentGateway] service ${svc.name} could not be restarted:`, message)
+      }
+    }
+    return { restarted, failed }
+  }
+
+  /**
+   * A tool context for one session with no turn attached, used to restart a
+   * declared service at boot. Like `sessionlessToolContext`, minus the
+   * permission gate: nobody is here to approve anything, and the service was
+   * already approved when the agent declared it.
+   */
+  private serviceToolContext(sessionId: string): ToolContext {
+    return {
+      workspaceDir: defaultShellCwd(this.workspaceDir),
+      channels: this.channels,
+      config: this.config,
+      capabilityScope: 'project',
+      projectId: process.env.WORKSPACE_ANCHOR_PROJECT_ID || this.projectId,
+      workspaceId: process.env.WORKSPACE_ID,
+      ...(sessionId ? { sessionId, commandRegistry: this.getOrCreateCommandRegistry(sessionId) } : { commandRegistry: this.remoteCommandRegistry }),
+      sandbox: this.config.sandbox,
+      mainSessionIds: this.config.mainSessionIds,
+    }
   }
 
   /**

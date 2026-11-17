@@ -540,7 +540,11 @@ export interface NativeApp {
   idsLockedAt: string | null
 }
 
-export type NativeCredentialKind = 'asc_api_key' | 'play_service_account' | 'expo_token'
+export type NativeCredentialKind =
+  | 'asc_api_key'
+  | 'play_service_account'
+  | 'android_keystore'
+  | 'expo_token'
 
 /** A stored credential — never the secret, only a mask of what identifies it. */
 export interface NativeCredential {
@@ -780,6 +784,26 @@ export interface ProjectDiskState {
   /** Live usage from the guest; null while the project isn't running. */
   usage: { usedBytes: number; totalBytes: number; measuredAt: string } | null
   substrate: 'metal' | 'knative' | 'local'
+}
+
+/** `GET/PUT /api/projects/:id/machine` (Settings → Machine). */
+export type MachineSizeId = 'standard' | 'medium' | 'large' | 'xlarge'
+export interface ProjectMachineState {
+  current: { id: MachineSizeId | 'custom'; label: string; vcpus: number; memMiB: number }
+  options: Array<{
+    id: MachineSizeId
+    label: string
+    vcpus: number
+    memMiB: number
+    allowed: boolean
+    /** Smallest workspace plan that allows this size; null for Standard. */
+    requiredTier: string | null
+  }>
+  instanceSize: string
+  substrate: 'metal' | 'knative' | 'local'
+  running: boolean
+  canChange: boolean
+  canRestart: boolean
 }
 
 export const api = {
@@ -1451,6 +1475,33 @@ export const api = {
     return res.data
   },
 
+  /** Machine size (vCPU + memory) for a project, Settings → Machine. */
+  async getProjectMachine(http: HttpClient, projectId: string) {
+    const res = await http.get<ProjectMachineState>(`/api/projects/${projectId}/machine`)
+    return res.data
+  },
+
+  /**
+   * Pick a machine size. `restartRequired` is true when the project is running
+   * at the old size; errors carry the route's message (e.g. the plan needed).
+   */
+  async updateProjectMachine(http: HttpClient, projectId: string, size: MachineSizeId) {
+    const res = await http.put<ProjectMachineState & { restartRequired?: boolean }>(
+      `/api/projects/${projectId}/machine`,
+      { size },
+    )
+    return res.data
+  },
+
+  /** Restart the project's machine from a clean boot (files are saved first). */
+  async restartProjectMachine(http: HttpClient, projectId: string) {
+    const res = await http.post<{ ok: boolean; restarted: boolean; message: string }>(
+      `/api/projects/${projectId}/machine/restart`,
+      {},
+    )
+    return res.data
+  },
+
   async getPublishState(http: HttpClient, projectId: string) {
     const res = await http.get<{
       subdomain?: string
@@ -1787,6 +1838,25 @@ export const api = {
 
   async deleteNativeCredential(http: HttpClient, workspaceId: string, kind: NativeCredentialKind) {
     await http.delete(`/api/workspaces/${workspaceId}/native/credentials/${kind}`)
+  },
+
+  /**
+   * The Android upload keystore in the clear, for the owner's own copy.
+   *
+   * POST rather than GET so the keystore's passwords are returned in a body that
+   * no proxy or access log keeps. This is the only read of a credential that
+   * returns plaintext, and it is the user's own signing material — EAS holds the
+   * generated one, but this is the copy that survives a lost project.
+   */
+  async exportAndroidKeystore(http: HttpClient, workspaceId: string) {
+    const res = await http.post<{
+      filename: string
+      keystoreBase64: string
+      keystorePassword: string
+      keyAlias: string
+      keyPassword: string
+    }>(`/api/workspaces/${workspaceId}/native/credentials/android_keystore/export`, {})
+    return res.data
   },
 
   async listNativeReleases(http: HttpClient, projectId: string) {

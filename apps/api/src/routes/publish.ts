@@ -1364,7 +1364,7 @@ export async function publishProject(
           ok: false,
           status: 402,
           code: "plan_not_allowed",
-          message: "Publishing to a subdomain is available on Pro and higher plans. Upgrade to publish.",
+          message: "Publishing to a subdomain is available on the Business plan. Upgrade to publish.",
         }
       }
     }
@@ -2704,7 +2704,7 @@ export function publishRoutes() {
             const code = gate.planAllows ? "slot_exhausted" : "plan_not_allowed"
             const message = gate.planAllows
               ? `You're using all ${gate.allowance} always-on apps on your plan. Upgrade or add a seat to add more.`
-              : "Always on is available on Pro and Business plans. Upgrade to enable it."
+              : "Always on is available on the Business plan. Upgrade to enable it."
             return c.json(
               { error: { code, message, allowance: gate.allowance, used: gate.used } },
               402,

@@ -98,3 +98,23 @@ export function mergeModelOptions(entry: MediaEntry): ModelOptionField[] {
     return merged
   })
 }
+
+/**
+ * Every spelling a vendor has used for the last-frame field. A model that
+ * declares one on the endpoint it is about to submit to can be asked to
+ * interpolate between two stills; which spelling it is, is the vendor's choice.
+ */
+export const LAST_FRAME_FIELDS = ['end_image_url', 'last_image_url', 'last_frame_url'] as const
+
+/** The last-frame field this endpoint documents, or undefined when it has none. */
+export function lastFrameField(entry: MediaEntry, endpoint: string | undefined): string | undefined {
+  return LAST_FRAME_FIELDS.find((name) => !!mediaOption(entry, endpoint, name))
+}
+
+/** Whether any endpoint of the model documents a last-frame field. */
+export function supportsLastFrame(entry: MediaEntry): boolean {
+  // A provider whose request carries the last frame without naming a field
+  // (Google Omni: a second image block) declares it on the entry instead.
+  if ((entry as VideoModelEntry).lastFrame) return true
+  return endpointsOf(entry).some((endpoint) => !!lastFrameField(entry, endpoint))
+}

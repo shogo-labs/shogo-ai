@@ -16,7 +16,7 @@ import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync, readFileSync, rea
 import { auth } from './auth'
 import type { PaidInstanceSize } from './config/stripe-prices'
 import { resolveSubscriptionContext, selectPlanItem } from './services/stripe-subscription-sync.service'
-import { resolveCheckoutPriceId } from './services/stripe-price-lookup.service'
+import { resolveCheckoutPriceId, normalizeCheckoutPlanId } from './services/stripe-price-lookup.service'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import type { InstanceSizeName } from './config/instance-sizes'
 import * as workspaceService from './services/workspace.service'
@@ -207,6 +207,11 @@ import {
   planDiskChange,
   readRuntimeDiskUsage,
 } from './services/project-disk.service'
+import {
+  describeProjectMachine,
+  planMachineChange,
+  restartProjectMachine,
+} from './services/project-machine.service'
 import {
   apiAuthGate,
   allowUserAppProxyRequest,
@@ -4306,6 +4311,129 @@ app.put('/api/projects/:projectId/disk', async (c) => {
 })
 
 // =============================================================================
+// Machine size (vCPU + RAM) and restart, for Settings → Machine.
+//
+// Project.vmVcpus / vmMemoryMiB are plan limited (a bigger machine draws more
+// of the workspace's memory budget), so only these routes write them. The host
+// applies a size when it boots the VM, so PUT reports `restartRequired` while
+// the project is running and the panel offers POST /machine/restart.
+// =============================================================================
+
+async function loadMachineState(projectId: string) {
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { vmMemoryMiB: true, vmVcpus: true, workspace: { select: { instanceSize: true } } },
+  })
+  if (!project) return null
+  const instanceSize = (project.workspace?.instanceSize ?? 'micro') as InstanceSizeName
+  const substrate = await projectDiskSubstrate(projectId)
+  let running = false
+  if (substrate === 'metal') {
+    // The URL cache is per API replica; ask the host when this one hasn't seen it.
+    const { peekMetalProjectUrl, getMetalProjectStatus } = await import('./lib/metal-warm-pool-controller')
+    running = !!peekMetalProjectUrl(projectId) || (await getMetalProjectStatus(projectId)).ready
+  }
+  return describeProjectMachine({
+    vmMemoryMiB: project.vmMemoryMiB,
+    vmVcpus: project.vmVcpus,
+    instanceSize,
+    substrate,
+    running,
+  })
+}
+
+/** project:update plus, when `spend`, workspace owner/admin. Returns an error response or the access. */
+async function machineAccess(c: any, projectId: string, spend: boolean) {
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return { res: c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401) }
+  }
+  const access = await loadAccess({ userId, via: 'session' as const }, { projectId })
+  if (!access.exists) {
+    return { res: c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404) }
+  }
+  if (!access.permissions.has('project:update')) {
+    return { res: c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403) }
+  }
+  if (spend && !governsAllProjects(access.workspaceRole)) {
+    return {
+      res: c.json(
+        { error: { code: 'forbidden', message: 'Only workspace owners and admins can change the machine size' } },
+        403,
+      ),
+    }
+  }
+  return { userId }
+}
+
+app.get('/api/projects/:projectId/machine', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  if (!(await verifyProjectAccess(userId, projectId))) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+  const state = await loadMachineState(projectId)
+  if (!state) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  return c.json(state)
+})
+
+app.put('/api/projects/:projectId/machine', async (c) => {
+  const projectId = c.req.param('projectId')
+  const gate = await machineAccess(c, projectId, true)
+  if ('res' in gate) return gate.res
+
+  const before = await loadMachineState(projectId)
+  if (!before) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+  if (!before.canChange) {
+    return c.json(
+      {
+        error: {
+          code: 'unsupported',
+          message:
+            before.substrate === 'local'
+              ? 'This project runs on your computer, so it uses your computer\'s own CPU and memory.'
+              : 'Machine size can only be changed for projects on Shogo Cloud machines.',
+        },
+      },
+      412,
+    )
+  }
+  const body = await c.req.json<{ size?: string }>().catch(() => ({}) as { size?: string })
+  const plan = planMachineChange(body.size, before.instanceSize)
+  if (!plan.ok) return c.json({ error: { code: plan.code, message: plan.message } }, plan.status)
+
+  await prisma.project.update({
+    where: { id: projectId },
+    data: { vmMemoryMiB: plan.vmMemoryMiB, vmVcpus: plan.vmVcpus },
+  })
+  const after = (await loadMachineState(projectId))!
+  const changed = after.current.vcpus !== before.current.vcpus || after.current.memMiB !== before.current.memMiB
+  return c.json({ ...after, restartRequired: changed && after.running })
+})
+
+app.post('/api/projects/:projectId/machine/restart', async (c) => {
+  const projectId = c.req.param('projectId')
+  const gate = await machineAccess(c, projectId, false)
+  if ('res' in gate) return gate.res
+  const substrate = await projectDiskSubstrate(projectId)
+  if (substrate !== 'metal') {
+    return c.json(
+      { error: { code: 'unsupported', message: 'Restart from here is only available for projects on Shogo Cloud machines.' } },
+      412,
+    )
+  }
+  const auth = c.get('auth') as any
+  const outcome = await restartProjectMachine(projectId, { id: gate.userId, email: auth?.user?.email })
+  if (!outcome.ok) {
+    return c.json({ error: { code: 'restart_failed', message: outcome.message } }, outcome.status as any)
+  }
+  return c.json(outcome)
+})
+
+// =============================================================================
 // Exposed ports (Phase 3, Tier 2 docker project class plan)
 //
 // Stack defaults plus ports the project added (`lib/project-ports.ts`).
@@ -7661,22 +7789,29 @@ app.post('/api/billing/checkout', async (c) => {
     if (planId !== 'basic' && planId !== 'pro' && planId !== 'business') {
       return c.json({ error: { code: 'invalid_plan', message: `Unknown plan: ${planId}` } }, 400)
     }
-    // Basic is single-user, always 1 seat. Pro/Business default to 1, can be more.
-    const seats = planId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
+    // Pro is retired (SHO-339/SHO-397). Older web, desktop and Android builds
+    // still post `pro`; remap it to Business so they land on the price we
+    // actually sell instead of a 400 or the retired $20 price.
+    const checkoutPlanId = normalizeCheckoutPlanId(planId)
+    if (checkoutPlanId !== planId) {
+      console.log(`[Billing] ${planId} checkout remapped to ${checkoutPlanId}`)
+    }
+    // Basic is single-user, always 1 seat. Business defaults to 1, can be more.
+    const seats = checkoutPlanId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
 
     // Resolved from the configured id, or by `lookup_key` when the v2.5.0
     // price's id has not been deployed as an env var yet (SHO-339). Never
     // falls back to the legacy price — a checkout either gets the new price
     // or fails loudly.
-    const priceId = await resolveCheckoutPriceId(stripe, planId, billingInterval as 'monthly' | 'annual')
+    const priceId = await resolveCheckoutPriceId(stripe, checkoutPlanId as 'basic' | 'pro' | 'business', billingInterval as 'monthly' | 'annual')
 
     if (!priceId) {
-      return c.json({ error: { code: 'price_not_provisioned', message: `The ${planId} ${billingInterval} price has not been created in Stripe yet` } }, 503)
+      return c.json({ error: { code: 'price_not_provisioned', message: `The ${checkoutPlanId} ${billingInterval} price has not been created in Stripe yet` } }, 503)
     }
 
     const metadata: Record<string, string> = {
       workspaceId,
-      planId,
+      planId: checkoutPlanId,
       billingInterval,
       seats: String(seats),
     }
@@ -7693,7 +7828,7 @@ app.post('/api/billing/checkout', async (c) => {
       wantsTrial: Boolean(wantsTrial),
       userId,
       workspaceId,
-      planId,
+      planId: checkoutPlanId,
       metadata,
       affiliate: affiliateOverrides,
     })
@@ -7918,11 +8053,17 @@ app.post('/api/billing/workspace-checkout', async (c) => {
     if (planId !== 'basic' && planId !== 'pro' && planId !== 'business') {
       return c.json({ error: { code: 'invalid_plan', message: `Unknown plan: ${planId}` } }, 400)
     }
-    const seats = planId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
+    // Pro is retired (SHO-339/SHO-397) — remap an old client's `pro` to
+    // Business so it lands on the price we actually sell.
+    const checkoutPlanId = normalizeCheckoutPlanId(planId)
+    if (checkoutPlanId !== planId) {
+      console.log(`[Billing] ${planId} workspace checkout remapped to ${checkoutPlanId}`)
+    }
+    const seats = checkoutPlanId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
 
-    const priceId = await resolveCheckoutPriceId(stripe, planId, billingInterval as 'monthly' | 'annual')
+    const priceId = await resolveCheckoutPriceId(stripe, checkoutPlanId as 'basic' | 'pro' | 'business', billingInterval as 'monthly' | 'annual')
     if (!priceId) {
-      return c.json({ error: { code: 'price_not_provisioned', message: `The ${planId} ${billingInterval} price has not been created in Stripe yet` } }, 503)
+      return c.json({ error: { code: 'price_not_provisioned', message: `The ${checkoutPlanId} ${billingInterval} price has not been created in Stripe yet` } }, 503)
     }
 
     // Create workspace + owner membership immediately (bypasses hook limit)
@@ -7935,7 +8076,7 @@ app.post('/api/billing/workspace-checkout', async (c) => {
 
     const metadata: Record<string, string> = {
       workspaceId: newWorkspaceId,
-      planId,
+      planId: checkoutPlanId,
       billingInterval,
       seats: String(seats),
     }
@@ -7955,7 +8096,7 @@ app.post('/api/billing/workspace-checkout', async (c) => {
       wantsTrial: Boolean(wantsTrial),
       userId,
       workspaceId: newWorkspaceId,
-      planId,
+      planId: checkoutPlanId,
       metadata,
       affiliate: affiliateOverrides,
     })

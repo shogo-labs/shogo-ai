@@ -108,40 +108,12 @@ export function parseAttachmentPeaks(value: unknown): string | null {
   return levels.join(' ')
 }
 
-export type ParsedByteRange =
-  | { kind: 'range'; start: number; end: number }
-  | { kind: 'unsatisfiable' }
-  | { kind: 'none' }
 /**
- * A single `bytes=` range, resolved against the file size.
- *
- * Audio and video elements *need* this: iOS AVPlayer and Safari issue a range
- * request before they will play a remote clip at all, and every player seeks
- * with one. An unsupported or malformed range is reported as `none` so the
- * caller serves the whole file, which is what RFC 9110 asks for; only a
- * syntactically valid range that starts past the end is `unsatisfiable`.
+ * `parseByteRange` lives in `@shogo/shared-runtime` so the agent runtime, the
+ * desktop routes and this API all answer `Range` the same way. Re-exported
+ * here because every caller in the API imports it from this module.
  */
-export function parseByteRange(header: string | undefined | null, size: number): ParsedByteRange {
-  if (!header) return { kind: 'none' }
-  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim())
-  if (!match) return { kind: 'none' }
-  const [, rawStart, rawEnd] = match
-  if (!rawStart && !rawEnd) return { kind: 'none' }
-  if (size <= 0) return { kind: 'unsatisfiable' }
-
-  if (!rawStart) {
-    // `bytes=-N`: the final N bytes.
-    const suffix = Number(rawEnd)
-    if (!Number.isFinite(suffix) || suffix <= 0) return { kind: 'none' }
-    return { kind: 'range', start: Math.max(0, size - suffix), end: size - 1 }
-  }
-
-  const start = Number(rawStart)
-  if (!Number.isFinite(start) || start >= size) return { kind: 'unsatisfiable' }
-  const end = rawEnd ? Math.min(Number(rawEnd), size - 1) : size - 1
-  if (!Number.isFinite(end) || end < start) return { kind: 'none' }
-  return { kind: 'range', start, end }
-}
+export { parseByteRange, type ParsedByteRange } from '@shogo/shared-runtime'
 
 function localRoot(): string {
   return join(process.env.SHOGO_DATA_DIR || join(homedir(), '.shogo'), 'conversation-files')

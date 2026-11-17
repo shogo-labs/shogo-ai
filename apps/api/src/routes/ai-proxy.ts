@@ -78,6 +78,7 @@ import {
   getMusicModelEntry,
   mergeModelOptions,
   endpointsOf,
+  supportsLastFrame,
   resolveMediaModelId,
   type AgentMode,
   type ModelTier,
@@ -3457,13 +3458,33 @@ async function generateImageLocal(
 
 import {
   calculateGenjutsuUsageCost,
+  calculateGoogleVideoUsageCost,
   calculateHiggsfieldUsageCost,
   calculateImageUsageCost,
   calculateTranscriptionUsageCost,
   calculate3dUsageCost,
+  calculateMarkedUpUsageCost,
   estimateTripoTaskCost,
+  googleVideoInputAllowanceUsd,
   TRIPO_USD_PER_CREDIT,
 } from '../lib/usage-cost'
+import {
+  OMNI_MAX_IMAGES,
+  OMNI_MAX_TOTAL_SECONDS,
+  OMNI_TASKS,
+  OMNI_UPSCALE_INSTRUCTION,
+  OmniError,
+  buildOmniRequest,
+  getOmniInteraction,
+  mapOmniStatus,
+  omniImageBlock,
+  readOmniText,
+  readOmniUsage,
+  readOmniVideo,
+  submitOmni,
+  type OmniInteraction,
+  type OmniTask,
+} from '../lib/google-omni'
 import {
   HiggsfieldError,
   HIGGSFIELD_UPLOAD_CONTENT_TYPES,
@@ -3597,6 +3618,16 @@ function roundUsd(usd: number): number {
 type MediaErrorStatus = 400 | 402 | 429 | 502 | 503 | 504
 
 function mediaErrorStatus(error: any): MediaErrorStatus | 0 {
+  if (error instanceof OmniError) {
+    switch (error.status) {
+      case 400: return 400
+      case 401:
+      case 403: return 503
+      case 429: return 429
+      case 504: return 504
+      default: return 502
+    }
+  }
   if (error instanceof HiggsfieldError) {
     switch (error.code) {
       case 'provider_busy': return 429
@@ -3609,6 +3640,8 @@ function mediaErrorStatus(error: any): MediaErrorStatus | 0 {
       case 'invalid_aspect_ratio':
       case 'audio_not_supported':
       case 'image_to_video_unsupported':
+      case 'end_image_unsupported':
+      case 'invalid_end_image':
       case 'text_to_video_unsupported':
       case 'reference_images_unsupported':
         return 400
@@ -3636,7 +3669,12 @@ function describeDurationMenu(durations: readonly number[]): string {
 
 /** Error code for the OpenAI-shaped error body. */
 function mediaErrorCode(error: any, fallback: string): string {
-  return error instanceof HiggsfieldError ? error.code : fallback
+  if (error instanceof HiggsfieldError) return error.code
+  if (error instanceof OmniError) {
+    if (error.status === 429) return 'provider_busy'
+    if (error.status === 400) return 'invalid_option'
+  }
+  return fallback
 }
 
 /**
@@ -3796,7 +3834,10 @@ export async function listMediaModels(
       )
 
   const videoEntries = (Object.values(VIDEO_MODEL_CATALOG) as VideoModelEntry[])
-    .filter((entry) => !!getImageProviderApiKey(entry.provider))
+    // A configured provider's models are the ones this server can run. Google is
+    // the exception: Omni is a documented choice worth explaining even when the
+    // key is missing, so it lists with `available:false` instead of vanishing.
+    .filter((entry) => entry.provider === 'google' || !!getImageProviderApiKey(entry.provider))
     .filter((entry) => !wanted || entry.id === wanted)
   const videos = filter.kind === 'image' || filter.kind === 'music'
     ? []
@@ -3806,10 +3847,12 @@ export async function listMediaModels(
         name: entry.displayName,
         provider: entry.provider,
         best_for: entry.bestFor,
-        text_to_video: !!entry.textToVideoApiModel,
-        image_to_video: !!entry.imageToVideoApiModel,
+        text_to_video: !!entry.textToVideoApiModel || !!entry.modes?.includes('text_to_video'),
+        image_to_video: !!entry.imageToVideoApiModel || !!entry.modes?.includes('image_to_video'),
         source_video: !!entry.sourceVideo,
+        ...(entry.modes ? { modes: entry.modes } : {}),
         max_reference_images: entry.maxReferenceImages,
+        last_frame: supportsLastFrame(entry),
         audio: !!entry.audio,
         endpoints: endpointsOf(entry),
         options: mergeModelOptions(entry).map(publicOption),
@@ -3822,9 +3865,41 @@ export async function listMediaModels(
             ? { source_video: `workspace .mp4, ${entry.minSourceSeconds ?? 4}–${entry.maxSourceSeconds ?? 30} s` }
             : {}),
           ...(entry.genjutsu === 'restyle' ? { preset_id: 'required (see presets)' } : {}),
+          ...(entry.provider === 'google'
+            ? { previous_job_id: 'optional — continue an earlier job of this model (upscale / edit / extend)' }
+            : {}),
         },
         ...(entry.deprecated ? { deprecated: true, replacement: entry.replacement } : {}),
         ...videoUnavailable,
+      }
+      if (entry.provider === 'google') {
+        // Google publishes a rate card per output second and bills by usage
+        // tokens on completion, so the advertised price is the rate card.
+        const byResolution: Record<string, number> = {}
+        for (const resolution of entry.resolutions ?? []) {
+          const rate = calculateGenjutsuUsageCost(entry.usdPerSecondByResolution, resolution, 1)
+          if (rate) byResolution[resolution] = roundUsd(rate.billedUsd)
+        }
+        const at = entry.defaultResolution ?? Object.keys(byResolution)[0]
+        const defaultClip = calculateGenjutsuUsageCost(
+          entry.usdPerSecondByResolution,
+          at,
+          entry.defaultDuration,
+        )
+        const configured = !!getImageProviderApiKey('google')
+        return {
+          ...base,
+          price: {
+            unit: 'second',
+            usd: byResolution[at] ?? null,
+            by_resolution: byResolution,
+            ...(defaultClip
+              ? { default_clip_usd: roundUsd(defaultClip.billedUsd), default_duration: entry.defaultDuration }
+              : {}),
+            source: 'rate_card',
+          },
+          ...(paidPlan && !configured ? { available: false, requires: 'provider_not_configured' } : {}),
+        }
       }
       if (entry.provider === 'higgsfield' && higgsfieldKey) {
         // Genjutsu bills per source second, so its price is a rate, not a clip
@@ -3918,7 +3993,7 @@ export async function listMediaModels(
           video_note:
             'Video generation needs a paid plan (Basic or higher). Free workspaces can generate images.',
         }),
-    note: 'Prices include the Shogo markup and are what the workspace is charged. Higgsfield prices are quoted by its free /estimate for the default parameters; a `null` price means the vendor must be asked at submit time (Genjutsu prices depend on the source clip). Every model lists its documented options: pass model-specific ones as `options` on generate_image / generate_video / generate_music.',
+    note: 'Prices include the Shogo markup and are what the workspace is charged. Higgsfield prices are quoted by its free /estimate for the default parameters; a `null` price means the vendor must be asked at submit time (Genjutsu prices depend on the source clip). Gemini Omni is billed per output second and charged from its usage tokens, so its price is the published rate card and `default_clip_usd` is one default-length clip. Every model lists its documented options: pass model-specific ones as `options` on generate_image / generate_video / generate_music.',
   }
 }
 
@@ -3968,6 +4043,55 @@ function recordHiggsfieldVideoUsage(
       ...(job.sourceVideo ? { sourceVideo: true } : {}),
       imageToVideo: job.imageToVideo,
       priceSource: job.priceSource ?? 'estimate',
+    },
+  }, chatSessionId)
+}
+
+/**
+ * Bill a completed Google Omni turn exactly once.
+ *
+ * The price is the interaction's own usage tokens — Google bills an Omni clip
+ * by tokens, and a follow-up turn's input includes the parent clip it re-read.
+ * Google occasionally omits the usage block, so the rate card for this
+ * resolution × length is the floor: a delivered clip is never billed at zero.
+ */
+function recordGoogleVideoUsage(
+  tokenPayload: ProxyTokenPayload,
+  job: VideoJobRecord,
+  entry: VideoModelEntry,
+  interaction: OmniInteraction,
+  chatSessionId?: string | null,
+) {
+  const usage = readOmniUsage(interaction)
+  const fromUsage = usage ? calculateGoogleVideoUsageCost(usage) : null
+  const resolution = job.resolution ?? entry.defaultResolution ?? '720p'
+  const fallback = calculateGenjutsuUsageCost(entry.usdPerSecondByResolution, resolution, job.duration)
+  const cost = fromUsage && fromUsage.rawUsd > 0 ? fromUsage : fallback
+  const priceSource = fromUsage && fromUsage.rawUsd > 0 ? 'usage' : 'rate_card'
+
+  if (!cost || cost.billedUsd <= 0) {
+    console.warn(`[AI Proxy] ⚠️ Google job ${job.id} completed without a price — not charged`)
+    return
+  }
+  if (priceSource === 'rate_card') {
+    console.warn(`[AI Proxy] ⚠️ Google job ${job.id} returned no usage tokens; billed at the rate card`)
+  }
+
+  return recordMediaUsage(tokenPayload, {
+    kind: 'video',
+    model: job.model,
+    rawUsd: cost.rawUsd,
+    billedUsd: cost.billedUsd,
+    seconds: job.duration,
+    actionType: 'ai_video_generation',
+    metadata: {
+      jobId: job.id,
+      provider: 'google',
+      ...(job.interactionId ? { interactionId: job.interactionId } : {}),
+      ...(job.parentJobId ? { parentJobId: job.parentJobId } : {}),
+      ...(job.resolution ? { resolution: job.resolution } : {}),
+      priceSource,
+      ...(usage ? { usage } : {}),
     },
   }, chatSessionId)
 }
@@ -4818,7 +4942,7 @@ export function aiProxyRoutes() {
             return c.json(
               {
                 error: {
-                  message: `Model '${request.model}' requires a Pro or higher subscription. Free and Basic plan users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5.4-nano).`,
+                  message: `Model '${request.model}' requires a Business (or higher) subscription. Free and Basic plan users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5.4-nano).`,
                   type: 'billing_error',
                   code: 'model_tier_restricted',
                 },
@@ -5470,7 +5594,7 @@ export function aiProxyRoutes() {
           const hasAdvanced = await billingService.hasAdvancedModelAccess(tokenPayload.workspaceId)
           if (!hasAdvanced) {
             return c.json(
-              { type: 'error', error: { type: 'billing_error', message: `Model '${resolvedModel}' requires a Pro or higher subscription. Free and Basic plan users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5.4-nano).` } },
+              { type: 'error', error: { type: 'billing_error', message: `Model '${resolvedModel}' requires a Business (or higher) subscription. Free and Basic plan users can use economy-tier models (e.g. claude-haiku-4-5, gpt-5.4-nano).` } },
               403
             )
           }
@@ -6511,12 +6635,12 @@ export function aiProxyRoutes() {
    * POST /ai/v1/videos/generations - Submit a video job.
    *
    * Body: `{ prompt, model, duration?, aspect_ratio?, resolution?, audio?,
-   * start_image?, reference_images?, source_video_url?, preset_id?, options? }`
-   * with images as data URIs (or public URLs). `options` carries model-specific
-   * fields (`cfg_scale`, `multi_shots`, `multi_prompt`, `seed`, …) — the proxy
-   * validates each against the endpoint's documented schema. Returns `{ id }`
-   * right away; poll `GET /ai/v1/videos/:id`. Nothing is charged until the job
-   * completes, and a failed / NSFW / canceled job is never charged.
+   * start_image?, end_image?, reference_images?, source_video_url?, preset_id?,
+   * options? }` with images as data URIs (or public URLs). `options` carries
+   * model-specific fields (`cfg_scale`, `multi_shots`, `multi_prompt`, `seed`, …)
+   * — the proxy validates each against the endpoint's documented schema. Returns
+   * `{ id }` right away; poll `GET /ai/v1/videos/:id`. Nothing is charged until
+   * the job completes, and a failed / NSFW / canceled job is never charged.
    */
   router.post('/ai/v1/videos/generations', async (c) => {
     const tokenPayload = await validateProxyAuth(c)
@@ -6550,6 +6674,7 @@ export function aiProxyRoutes() {
         resolution?: string
         audio?: boolean
         start_image?: string
+        end_image?: string
         reference_images?: string[]
         source_video_url?: string
         source_duration_seconds?: number
@@ -6557,6 +6682,8 @@ export function aiProxyRoutes() {
         genjutsu?: string
         /** Model-specific documented fields (see list_media_models). */
         options?: Record<string, unknown>
+        /** Google Omni only: continue from an earlier generate_video job. */
+        previous_job_id?: string
       }
       if (body.genjutsu && !GENJUTSU_MODEL_BY_WORKFLOW[body.genjutsu]) {
         return invalid(`genjutsu must be one of ${Object.keys(GENJUTSU_MODEL_BY_WORKFLOW).join(', ')}; got '${body.genjutsu}'.`, 'invalid_genjutsu')
@@ -6572,7 +6699,9 @@ export function aiProxyRoutes() {
       }
 
       const prompt = (body.prompt ?? '').trim()
-      if (!prompt && !entry.sourceVideo) return invalid('prompt is required', 'missing_prompt')
+      // An Omni follow-up turn may carry only `previous_job_id` (an upscale, or
+      // an extend driven by `options.task`); everything else needs a prompt.
+      if (!prompt && !entry.sourceVideo && !body.previous_job_id) return invalid('prompt is required', 'missing_prompt')
 
       // A Genjutsu edit's length is the source clip's; everything else has a
       // duration menu the model documents. The list is a range for the newer
@@ -6613,11 +6742,31 @@ export function aiProxyRoutes() {
         // The provider trims anything longer than its max, so bill the trimmed length.
         sourceSeconds = Math.min(declared, entry.maxSourceSeconds ?? 30)
       }
+      if (body.end_image !== undefined) {
+        const acceptable = typeof body.end_image === 'string'
+          && (body.end_image.startsWith('data:image/') || /^https:\/\//i.test(body.end_image))
+        if (!acceptable) return invalid('end_image must be an image data URI or an https URL', 'invalid_end_image')
+        if (entry.sourceVideo) {
+          return invalid(`${entry.displayName} edits a source clip and takes no end_image.`, 'end_image_unsupported')
+        }
+        if (body.start_image === undefined) {
+          return invalid('end_image needs start_image: the clip animates from the first frame to the last.', 'invalid_end_image')
+        }
+        if (!supportsLastFrame(entry)) {
+          const supported = (Object.values(VIDEO_MODEL_CATALOG) as VideoModelEntry[])
+            .filter((candidate) => !candidate.sourceVideo && supportsLastFrame(candidate))
+            .map((candidate) => candidate.id)
+          return invalid(
+            `${entry.displayName} takes no last frame. Models that take end_image: ${supported.join(', ')}.`,
+            'end_image_unsupported',
+          )
+        }
+      }
       if (body.start_image !== undefined) {
         const acceptable = typeof body.start_image === 'string'
           && (body.start_image.startsWith('data:image/') || /^https:\/\//i.test(body.start_image))
         if (!acceptable) return invalid('start_image must be an image data URI or an https URL', 'invalid_start_image')
-        if (!entry.imageToVideoApiModel) return invalid(`${entry.displayName} does not support image-to-video.`, 'image_to_video_unsupported')
+        if (!entry.imageToVideoApiModel && !entry.apiModel) return invalid(`${entry.displayName} does not support image-to-video.`, 'image_to_video_unsupported')
       }
       const refs = body.reference_images ?? []
       if (!Array.isArray(refs) || refs.some((r) => typeof r !== 'string' || !(r.startsWith('data:image/') || /^https:\/\//i.test(r)))) {
@@ -6633,6 +6782,204 @@ export function aiProxyRoutes() {
       }
       if (entry.sourceVideo && entry.genjutsu !== 'restyle' && refs.length === 0) {
         return invalid(`${entry.displayName} needs at least 1 reference image (the subject to drive or swap in).`, 'missing_reference_images')
+      }
+
+      // ---- Google Gemini Omni ------------------------------------------------
+      // One model id: every turn is one Interactions API call, so a generation,
+      // an edit, an extension and an "upscale" all come through here.
+      // `previous_job_id` continues an earlier clip — with no prompt that is the
+      // upscale (a re-render at a higher resolution, the only upscaling Google
+      // offers), with a prompt an edit, or an extend when `options.task` asks.
+      if (entry.provider === 'google') {
+        const apiKey = getImageProviderApiKey('google')
+        if (!apiKey) {
+          return c.json(
+            { error: { message: `Video provider 'google' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } },
+            503
+          )
+        }
+        if (!entry.apiModel) {
+          return c.json(
+            { error: { message: `${entry.displayName} has no upstream model id.`, type: 'server_error', code: 'provider_not_configured' } },
+            503
+          )
+        }
+
+        let parent: VideoJobRecord | undefined
+        const previousJobId = (body.previous_job_id ?? '').trim()
+        if (previousJobId) {
+          parent = await getVideoJob(previousJobId)
+          // Same answer for another workspace's job as for a missing one: a
+          // cross-workspace id must not be distinguishable from a stale one.
+          if (!parent || parent.workspaceId !== tokenPayload.workspaceId) {
+            return c.json(
+              { error: { message: `Video job '${previousJobId}' not found.`, type: 'invalid_request_error', code: 'job_not_found' } },
+              404
+            )
+          }
+          if (parent.provider !== 'google') {
+            return invalid(
+              `previous_job_id continues a ${entry.displayName} clip; '${previousJobId}' was made by ${parent.provider}.`,
+              'previous_job_unsupported',
+            )
+          }
+          if (!parent.interactionId) {
+            return invalid(
+              `Video job '${previousJobId}' has no stored interaction to continue — regenerate the draft.`,
+              'previous_job_unsupported',
+            )
+          }
+        }
+
+        const requestedTask = typeof body.options?.task === 'string' ? body.options.task : undefined
+        if (requestedTask && !(OMNI_TASKS as readonly string[]).includes(requestedTask)) {
+          return invalid(`task must be one of ${OMNI_TASKS.join(', ')}; got '${requestedTask}'.`, 'invalid_option')
+        }
+
+        const upscale = !!parent && !prompt
+        const resolutions = entry.resolutions ?? []
+        if (upscale && !body.resolution) {
+          return invalid(
+            `Upscaling a ${parent!.resolution ?? 'draft'} clip needs resolution "1080p" or "4k".`,
+            'invalid_resolution',
+          )
+        }
+        const resolution = body.resolution ?? parent?.resolution ?? entry.defaultResolution ?? '720p'
+        if (!resolutions.includes(resolution)) {
+          return invalid(`${entry.displayName} renders at ${resolutions.join(', ')}; got '${resolution}'.`, 'invalid_resolution')
+        }
+        if (upscale && resolutions.indexOf(resolution) <= resolutions.indexOf(parent!.resolution ?? '')) {
+          return invalid(
+            `Upscaling a ${parent!.resolution ?? 'draft'} clip needs a higher resolution than the draft; got '${resolution}'.`,
+            'invalid_resolution',
+          )
+        }
+
+        const aspectRatio = body.aspect_ratio ?? parent?.aspectRatio ?? '16:9'
+        if (!entry.aspectRatios.includes(aspectRatio)) {
+          return invalid(`${entry.displayName} renders at ${entry.aspectRatios.join(' or ')}; got '${aspectRatio}'.`, 'invalid_aspect_ratio')
+        }
+
+        if (upscale && body.duration !== undefined && body.duration !== parent!.duration) {
+          return invalid(
+            `An upscale re-renders the draft, so it keeps its ${parent!.duration} s length; duration cannot change.`,
+            'invalid_duration',
+          )
+        }
+        const duration = upscale ? parent!.duration : body.duration ?? entry.defaultDuration
+        if (!entry.durations.includes(duration)) {
+          return invalid(`${entry.displayName} supports durations ${describeDurationMenu(entry.durations)} seconds; got ${duration}.`, 'invalid_duration')
+        }
+        if (parent && !upscale && parent.duration + duration > OMNI_MAX_TOTAL_SECONDS) {
+          return invalid(
+            `Extending ${parent.id} (${parent.duration} s) by ${duration} s would make ${parent.duration + duration} s; ` +
+              `${entry.displayName} caps a chain of turns at ${OMNI_MAX_TOTAL_SECONDS} s.`,
+            'extension_too_long',
+          )
+        }
+
+        // Everything the clip is given to look at: the two frames, then refs.
+        // Order matters — Google reads the first image as the first frame and
+        // the second as the last, and only `end_image` makes this an
+        // interpolation (a start image plus a reference is a normal reference
+        // request, which is why the cap below keys on `end_image` alone).
+        const imageRefs = [
+          ...(body.start_image ? [body.start_image] : []),
+          ...(body.end_image ? [body.end_image] : []),
+          ...refs,
+        ]
+        if (imageRefs.length > OMNI_MAX_IMAGES) {
+          return invalid(
+            `${entry.displayName} accepts at most ${OMNI_MAX_IMAGES} images per request; got ${imageRefs.length}.`,
+            'too_many_images',
+          )
+        }
+        // Google limits first-and-last-frame interpolation to 3–10 s; above that
+        // it answers INVALID_ARGUMENT, so refuse it before any hold.
+        if (body.end_image && duration > 10) {
+          return invalid(
+            `A first-and-last-frame clip (start_image + end_image) is limited to 10 s; got ${duration}.`,
+            'invalid_duration',
+          )
+        }
+
+        // Reserved before anything goes upstream: the rate card for this
+        // resolution × length, plus the parent clip's input tokens on a
+        // follow-up turn (Google charges to read it back in).
+        const output = calculateGenjutsuUsageCost(entry.usdPerSecondByResolution, resolution, duration)
+        if (!output) {
+          return invalid(`Cannot price ${entry.displayName} at ${resolution}.`, 'estimate_unavailable')
+        }
+        const parentInputUsd = parent ? googleVideoInputAllowanceUsd(parent.resolution, parent.duration) : 0
+        const charge = parentInputUsd > 0
+          ? calculateMarkedUpUsageCost(output.rawUsd + parentInputUsd)
+          : output
+
+        const { task: _requestedTask, ...optionFields } = body.options ?? {}
+        const task: OmniTask | undefined = upscale
+          ? undefined
+          : (requestedTask as OmniTask | undefined) ?? (parent ? 'edit' : undefined)
+        const images = await Promise.all(imageRefs.map((ref) => omniImageBlock(ref, c.req.raw.signal)))
+        const requestBody = buildOmniRequest(
+          {
+            apiModel: entry.apiModel,
+            prompt: upscale ? OMNI_UPSCALE_INSTRUCTION : prompt,
+            resolution,
+            aspectRatio,
+            duration,
+            ...(task ? { task } : {}),
+            ...(parent?.interactionId ? { previousInteractionId: parent.interactionId } : {}),
+            options: optionFields,
+          },
+          images,
+        )
+
+        const id = `vid_${randomUUID()}`
+        const auth = await authorizeMediaSpend(
+          c, tokenPayload, charge.billedUsd, id, MEDIA_HOLD_TTL_ASYNC_SECONDS, 'video', internalUsage,
+        )
+        if (!auth.ok) return auth.response
+        hold = auth.hold
+
+        const submission = await submitOmni(apiKey, requestBody, c.req.raw.signal)
+        if (!submission.id) throw new OmniError('Google accepted the request but returned no interaction id.', 502, '')
+
+        await putVideoJob({
+          id,
+          provider: 'google',
+          workspaceId: tokenPayload.workspaceId,
+          projectId: tokenPayload.projectId,
+          userId: tokenPayload.userId,
+          chatSessionId: c.req.header('x-chat-session-id') || null,
+          model: entry.id,
+          endpoint: entry.apiModel,
+          interactionId: submission.id,
+          ...(parent ? { parentJobId: parent.id } : {}),
+          priceSource: 'rate_card',
+          ...(hold ? { hold } : {}),
+          duration,
+          audio: true,
+          aspectRatio,
+          resolution,
+          imageToVideo: !!body.start_image,
+          createdAt: Date.now(),
+        })
+        console.log(
+          `[AI Proxy] 🎬 Video job ${id}: ${tokenPayload.projectId} → google ${submission.id} ` +
+            `(${duration}s ${resolution}${parent ? `, from ${parent.id}` : ''}, $${charge.billedUsd.toFixed(3)})`,
+        )
+
+        return c.json({
+          id,
+          status: 'queued',
+          model: entry.id,
+          duration,
+          audio: true,
+          provider: 'google',
+          estimated_usd: roundUsd(charge.billedUsd),
+          price_source: 'rate_card',
+          ...(parent ? { previous_job_id: parent.id } : {}),
+        })
       }
 
       const apiKey = getImageProviderApiKey(entry.provider)
@@ -6654,6 +7001,11 @@ export function aiProxyRoutes() {
       const startImageUrl = body.start_image
         ? await higgsfieldEnsurePublicUrl(apiKey, body.start_image, signal)
         : undefined
+      // A last frame is an input image like the first, so it has to be public
+      // before the model can be pointed at it.
+      const endImageUrl = body.end_image
+        ? await higgsfieldEnsurePublicUrl(apiKey, body.end_image, signal)
+        : undefined
       const request = buildHiggsfieldVideoRequest(entry, {
         prompt: prompt || undefined,
         duration: entry.sourceVideo ? undefined : duration,
@@ -6661,6 +7013,7 @@ export function aiProxyRoutes() {
         resolution: body.resolution,
         audio: body.audio,
         startImageUrl,
+        endImageUrl,
         referenceUrls,
         sourceVideoUrl: body.source_video_url,
         presetId: body.preset_id,
@@ -6945,6 +7298,10 @@ export function aiProxyRoutes() {
     const base = { id, model: job.model, duration: job.duration, audio: job.audio, created_at: job.createdAt }
 
     if (job.provider === 'higgsfield') {
+      if (!job.statusUrl) {
+        await releaseMediaSpendHold(job.hold)
+        return c.json({ ...base, status: 'failed', error: 'This job has no status URL — regenerate the clip.' })
+      }
       try {
         const status = await higgsfieldStatus(apiKey, job.statusUrl, c.req.raw.signal)
         if (status.status === 'completed') {
@@ -6985,10 +7342,145 @@ export function aiProxyRoutes() {
       }
     }
 
+    if (job.provider === 'google') {
+      if (!job.interactionId) {
+        await releaseMediaSpendHold(job.hold)
+        return c.json({ ...base, status: 'failed', error: 'This job has no interaction to poll — regenerate the clip.' })
+      }
+      try {
+        const interaction = await getOmniInteraction(apiKey, job.interactionId, c.req.raw.signal)
+        const status = mapOmniStatus(interaction.status)
+        if (status === 'completed') {
+          const video = readOmniVideo(interaction)
+          if (!video) {
+            await releaseMediaSpendHold(job.hold)
+            return c.json({ ...base, status: 'failed', error: 'Google finished without returning a video.' })
+          }
+          if (await claimVideoCharge(id)) {
+            await recordGoogleVideoUsage(
+              tokenPayload,
+              job,
+              entry,
+              interaction,
+              c.req.header('x-chat-session-id') || job.chatSessionId || null,
+            )
+            await releaseMediaSpendHold(job.hold)
+          }
+          // The bytes never leave the proxy through the API key: the agent reads
+          // them from `/v1/videos/:id/content`, which re-reads the interaction.
+          return c.json({
+            ...base,
+            status: 'completed',
+            video: { url: null, content_path: `/v1/videos/${id}/content`, content_type: video.mimeType || 'video/mp4' },
+          })
+        }
+        if (status === 'failed') {
+          // Safety blocks, cancellations and errors are not billed.
+          await releaseMediaSpendHold(job.hold)
+          const reason =
+            interaction.error?.message ||
+            readOmniText(interaction) ||
+            `Google ${interaction.status ?? 'failed'} the request.`
+          return c.json({ ...base, status: 'failed', error: reason })
+        }
+        return c.json({ ...base, status })
+      } catch (error: any) {
+        const message: string = error.message || 'Video status check failed'
+        if (error instanceof OmniError && error.status === 400) {
+          return c.json({ ...base, status: 'failed', error: message })
+        }
+        console.error(`[AI Proxy] Google video status error for ${id}:`, message)
+        return c.json(
+          { error: { message, type: 'server_error', code: mediaErrorCode(error, 'video_status_error') } },
+          mediaErrorStatus(error) || 502,
+        )
+      }
+    }
+
     return c.json(
       { error: { message: `Video job '${id}' has no provider.`, type: 'server_error', code: 'provider_not_configured' } },
       503
     )
+  })
+
+  /**
+   * GET /ai/v1/videos/:id/content - the finished clip's bytes.
+   *
+   * The proxy holds the Google key, so the video is re-read from the
+   * interaction and streamed here rather than handed out as a signed URL or a
+   * base64 blob. Nothing is cached: every pod serves the same bytes straight
+   * from Google, and the key never leaves the server.
+   */
+  router.get('/ai/v1/videos/:id/content', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    const id = c.req.param('id')
+    const job = await getVideoJob(id)
+    if (!job || job.workspaceId !== tokenPayload.workspaceId || job.provider !== 'google' || !job.interactionId) {
+      return c.json({ error: { message: `Video job '${id}' not found.`, type: 'invalid_request_error', code: 'job_not_found' } }, 404)
+    }
+
+    const apiKey = getImageProviderApiKey('google')
+    if (!apiKey) {
+      return c.json(
+        { error: { message: `Video provider 'google' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } },
+        503
+      )
+    }
+
+    try {
+      const interaction = await getOmniInteraction(apiKey, job.interactionId, c.req.raw.signal)
+      const video = readOmniVideo(interaction)
+      if (!video) {
+        return c.json(
+          { error: { message: `Video job '${id}' has no clip yet.`, type: 'invalid_request_error', code: 'video_not_ready' } },
+          404
+        )
+      }
+
+      let bytes: Uint8Array
+      if (video.data) {
+        bytes = new Uint8Array(Buffer.from(video.data, 'base64'))
+      } else if (video.uri) {
+        // A `uri` delivery still needs the key, so it is fetched server-side
+        // instead of being passed to the caller.
+        const download = await fetch(video.uri, {
+          headers: { 'x-goog-api-key': apiKey },
+          signal: c.req.raw.signal,
+        })
+        if (!download.ok) {
+          return c.json(
+            { error: { message: `Could not download the clip (${download.status}).`, type: 'server_error', code: 'video_content_unavailable' } },
+            502
+          )
+        }
+        bytes = new Uint8Array(await download.arrayBuffer())
+      } else {
+        return c.json(
+          { error: { message: `Video job '${id}' has no clip yet.`, type: 'invalid_request_error', code: 'video_not_ready' } },
+          404
+        )
+      }
+
+      return c.body(bytes.buffer as ArrayBuffer, 200, {
+        'Content-Type': video.mimeType || 'video/mp4',
+        'Content-Length': String(bytes.byteLength),
+        'Cache-Control': 'private, max-age=3600',
+      })
+    } catch (error: any) {
+      const message: string = error.message || 'Video download failed'
+      console.error(`[AI Proxy] Google video content error for ${id}:`, message)
+      return c.json(
+        { error: { message, type: 'server_error', code: mediaErrorCode(error, 'video_content_error') } },
+        mediaErrorStatus(error) || 502,
+      )
+    }
   })
 
   // =========================================================================
@@ -7682,8 +8174,21 @@ export function aiProxyRoutes() {
 
   // =========================================================================
   // PUT /ai/v1/subscription - Debug: provision/update subscription for staging/testing
+  //
+  // Grants any plan for free, so it must never be reachable in production.
+  // Gated on the environment, not on the caller: a user's own `shogo_sk_` key
+  // is a valid proxy token, so an auth check alone would let anyone set their
+  // workspace to Business for a year without paying (SHO-397).
   // =========================================================================
   router.put('/ai/v1/subscription', async (c) => {
+    // Read the env at request time, not from the module-load `isLocalDev`
+    // snapshot: this is a security gate, and a stale snapshot is exactly the
+    // kind of thing that leaves it open.
+    const localMode = process.env.SHOGO_LOCAL_MODE === 'true'
+    if (process.env.NODE_ENV === 'production' && !localMode) {
+      return c.json({ error: { message: 'Not found', code: 'not_found' } }, 404)
+    }
+
     const tokenPayload = await validateProxyAuth(c) || await validateAnthropicAuth(c)
     if (!tokenPayload) {
       return c.json({ error: { message: 'Invalid or missing API key', code: 'auth_error' } }, 401)

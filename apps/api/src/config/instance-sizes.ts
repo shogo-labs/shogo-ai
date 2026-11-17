@@ -306,6 +306,22 @@ export function getWorkspaceMemoryBudgetMiB(instanceSize: InstanceSizeName): num
 }
 
 /**
+ * Memory a VM draws from the workspace budget (`SHOGO_VM_MEM_MIB`). A project
+ * that picked a bigger machine (`Project.vmMemoryMiB`) is counted at that size,
+ * so a larger machine leaves less room for the workspace's other projects.
+ * Capped at the budget itself: an operator-set size above the tier must not
+ * make the VM unadmittable.
+ */
+export function accountedVmMemMiB(
+  tierMiB: number,
+  requestedMiB: number | null | undefined,
+  instanceSize: InstanceSizeName,
+): number {
+  if (typeof requestedMiB !== 'number' || !(requestedMiB > tierMiB)) return tierMiB
+  return Math.max(tierMiB, Math.min(requestedMiB, getWorkspaceMemoryBudgetMiB(instanceSize)))
+}
+
+/**
  * Mobile stacks need extra disk for `node_modules` plus Metro's bundle
  * cache. Even after picking `small` (4 GiB diskSizeLimit), Expo + RN +
  * three.js can consume more, so we lift the disk overlay specifically
