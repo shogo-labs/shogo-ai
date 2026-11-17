@@ -41,6 +41,19 @@ import {
 
 const STUB_MARKER = 'canvas-bridge.js missing'
 
+/**
+ * The CSS the bridge hands to `injectStyleTag(RESPONSIVE_STYLE_ID, …)`.
+ *
+ * Read out of the source rather than executed: the bridge is an IIFE that
+ * needs a full DOM, and the contract under test is "what CSS does it inject",
+ * not "does the DOM shim work".
+ */
+function injectedResponsiveCss(src: string): string {
+  const call = src.match(/injectStyleTag\(\s*RESPONSIVE_STYLE_ID\s*,\s*([^)]*)\)/)
+  if (!call) throw new Error('canvas-bridge.js no longer injects a responsive stylesheet')
+  return [...call[1]!.matchAll(/'([^']*)'/g)].map((m) => m[1]).join('')
+}
+
 let tmpDir: string
 
 beforeAll(() => {
@@ -63,18 +76,31 @@ describe('loadCanvasBridgeSource', () => {
     expect(src).toMatch(/canvas/i)
   })
 
-  test('bridge stacks desktop KPI grids under Tailwind max-sm (phone / narrow preview)', () => {
+  test('bridge injects only a no-!important overflow guard, never a phone layout rewrite', () => {
+    // SHO-371 (absorbing SHO-378): the bridge used to inject `!important` rules
+    // at phone width that collapsed every `grid-cols-2…6` to one column,
+    // un-truncated `.truncate`, rewrote `[role=tablist]` and turned `flex
+    // h-screen` shells into columns. Agents then fought CSS they never wrote.
+    // The contract now is the opposite: one stylesheet, no `!important`, no
+    // layout rules at all. Layout problems are caught at write time by
+    // `read_lints` instead.
     const src = loadCanvasBridgeSource()
     expect(src).toContain('__shogo-canvas-responsive')
-    expect(src).toContain('var CANVAS_PHONE_MAX_WIDTH_PX = 767')
-    expect(src).toContain("'@media (max-width: ' + CANVAS_PHONE_MAX_WIDTH_PX + 'px)")
-    expect(src).toContain('grid-cols-2')
-    expect(src).toContain('grid-cols-3')
-    expect(src).toContain('grid-template-columns: repeat(1, minmax(0, 1fr))')
-    expect(src).toContain('.flex.h-screen')
-    expect(src).toContain('flex-direction: column !important')
-    expect(src).toContain('.truncate')
     expect(() => new Function(src)).not.toThrow()
+
+    const css = injectedResponsiveCss(src)
+    expect(css).toContain('max-width: 100%')
+    expect(css).not.toContain('!important')
+    expect(css).not.toContain('@media')
+    expect(css).not.toContain('grid-cols')
+    expect(css).not.toContain('grid-template-columns')
+    expect(css).not.toContain('truncate')
+    expect(css).not.toContain('tablist')
+    expect(css).not.toContain('flex-direction')
+
+    // The phone breakpoint constant is what drove the rewrite; its return
+    // would mean the block came back.
+    expect(src).not.toContain('CANVAS_PHONE_MAX_WIDTH_PX')
   })
 
   test('CANVAS_BRIDGE_PATH resolves to the real source file in the repo (runtime ↔ source agree)', () => {
