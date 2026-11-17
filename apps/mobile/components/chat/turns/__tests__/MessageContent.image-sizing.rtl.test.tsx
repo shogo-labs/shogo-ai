@@ -193,6 +193,27 @@ describe('agent chat image attachments', () => {
     expect(previewBox(img).style.height).toBe(before.height)
   })
 
+  /**
+   * SHO-407 AC2: the box is final on the first frame, before any layout pass.
+   *
+   * The attachment row reports its width from `onLayout`, which on web is a
+   * ResizeObserver callback — it runs *after* the first paint. So the first
+   * frame is sized against the 220px fallback and every photo grows by 136px
+   * once the row reports, which is the content growth that leaves a resumed
+   * chat above its bottom (measured: 1530px on a 12-photo chat).
+   */
+  test('the box is already final before the attachment row is measured', () => {
+    const img = renderImage({ width: 1600, height: 900 })
+    const firstFrame = { width: previewBox(img).style.width, height: previewBox(img).style.height }
+
+    reportColumnWidth(img, 900)
+
+    expect(firstFrame).toEqual({
+      width: previewBox(img).style.width,
+      height: previewBox(img).style.height,
+    })
+  })
+
   test('a thumbnail never asks Image.getSize for the original', () => {
     const img = renderImage()
     reportColumnWidth(img, 900)
