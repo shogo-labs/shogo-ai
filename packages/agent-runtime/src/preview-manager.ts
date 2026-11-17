@@ -663,7 +663,7 @@ export interface PreviewManagerConfig {
 // for the one-shot migration that retires `.shogo/server/` on workspace boot.
 //
 // Port resolution preserves the dynamic-port contract from the retired
-// `SkillServerManager`: callers that already wire a per-instance port via
+// skill-server shim: callers that already wire a per-instance port via
 // `SKILL_SERVER_PORT` (local-worker, VM harness, ...) keep working without
 // changes. Precedence:
 //   1. `API_SERVER_PORT` — preferred new name; pinned by the docker
@@ -783,6 +783,39 @@ const SCHEMA_DEBOUNCE_MS = 1500
 const HEALTH_CHECK_RETRIES = 10
 const HEALTH_CHECK_INTERVAL_MS = 500
 
+// `ensureApiServer()` budgets. Sized for a cold generate + `prisma db push` +
+// spawn on a workspace runtime, which routinely takes 10-30 s the first time.
+const ENSURE_API_SERVER_TIMEOUT_MS = 45_000
+const ENSURE_POLL_INTERVAL_MS = 100
+
+/**
+ * Paths the SDK-generated `server.tsx` serves for runtime introspection (see
+ * `generateServer` in packages/sdk). Outside the API base path so user routes
+ * can't collide, and never exposed publicly — only the runtime proxies it.
+ */
+export const API_HEALTH_PATH = '/__shogo/health'
+export const API_ROUTES_PATH = '/__shogo/routes'
+
+/**
+ * Normalise a `/__shogo/routes` payload — `{ method, path }` entries or bare
+ * path strings — into the API-relative, slash-free paths
+ * {@link PreviewManager.getActiveRoutes} returns (`/api/users` → `users`),
+ * de-duplicated and in the server's own order.
+ */
+export function normalizeRouteList(entries: readonly unknown[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const entry of entries) {
+    const raw = typeof entry === 'string' ? entry : (entry as { path?: unknown } | null)?.path
+    if (typeof raw !== 'string') continue
+    const path = raw.replace(/^\/api\//, '').replace(/^\//, '').replace(/\/$/, '')
+    if (!path || seen.has(path)) continue
+    seen.add(path)
+    out.push(path)
+  }
+  return out
+}
+
 // Matches vite's per-rebuild summary line in `--watch` mode:
 //   "built in 1234ms."
 //   "built in 2.96s"
@@ -794,7 +827,7 @@ const HEALTH_CHECK_INTERVAL_MS = 500
 // don't anchor at the start of the line.
 const BUILT_IN_MS_PATTERN = /built in \d/
 
-// Crash-recovery tunables. Mirrors the pre-merge `SkillServerManager`
+// Crash-recovery tunables. Mirrors the pre-merge skill-server shim's
 // behaviour: exponential backoff capped at 30s, give up after 5 attempts
 // in a row. The crash counter resets to 0 on every successful health
 // probe so steady-state edits-while-running don't accumulate budget.
@@ -971,6 +1004,50 @@ export type ApiServerPhase = 'idle' | 'generating' | 'starting' | 'healthy' | 'r
 /** Shared return shape for {@link PreviewManager.start} and {@link PreviewManager.restart}. */
 export type PreviewStartResult = { mode: string; port: number | null; timings: Record<string, number> }
 
+/**
+ * Where {@link PreviewManager.fetchActiveRoutes} got its answer from.
+ *
+ * `server` — asked the running sidecar (`GET /__shogo/routes`, see the SDK
+ * server generator). Authoritative: it lists custom routes too.
+ * `generated-files` — regex over the SDK-generated route files. Only used when
+ * the sidecar isn't healthy or predates `/__shogo/routes`.
+ */
+export type ApiRoutesSource = 'server' | 'generated-files'
+
+/** Phase reported by {@link PreviewManager.ensureApiServer}: `none` = no API server for this project. */
+export type EnsureApiServerPhase = ApiServerPhase | 'none'
+
+export interface EnsureApiServerResult {
+  phase: EnsureApiServerPhase
+  port: number | null
+  /** When the sidecar last answered a health probe, or null if it never has. */
+  reloadedAt: number | null
+  routes: string[]
+  routesSource: ApiRoutesSource
+  /** Last generate/setup/sidecar error, when there is one. */
+  buildError: string | null
+}
+
+export interface EnsureApiServerOptions {
+  /** Budget for the whole ensure — spawning, generating and becoming ready. */
+  timeoutMs?: number
+}
+
+/**
+ * How the gateway reaches the `PreviewManager`s a runtime owns.
+ *
+ * A single-project runtime has exactly one; a workspace runtime has one per
+ * attached project, and the agent may be working in any of them — so a tool
+ * acting on `<projectB>/custom-routes.ts` must sync project B, not the anchor
+ * (`server.ts` builds this from its mount table).
+ */
+export interface ApiServerHost {
+  /** Manager for a project id, folder name or file path inside it; the anchor when omitted. */
+  resolve(ref?: string): PreviewManager | null
+  /** Every project on this runtime that can have an API server. */
+  all(): PreviewManager[]
+}
+
 type PublishBuildResult = {
   ok: boolean
   error?: string
@@ -1046,6 +1123,22 @@ export class PreviewManager {
   // window before the sidecar is spawned.
   private hasApiServer: boolean | null = null
   private regenerating = false
+  /**
+   * `true` when a person deliberately stopped this project (`POST
+   * /preview/stop` or `/p/:id/preview/stop`). {@link ensureApiServer} honours
+   * it — an on-demand start (a schedule turn, an `/api/*` request) must not
+   * undo an explicit stop. Cleared by any start (`start()`/`restart()`).
+   *
+   * A `stopped` phase left behind by {@link quiesceApiServer} is NOT this: it
+   * is restartable on demand.
+   */
+  private stoppedByUser = false
+  /** Shared in-flight {@link ensureApiServer} call so concurrent callers join one. */
+  private ensureInFlight: Promise<EnsureApiServerResult> | null = null
+  /** Last stderr lines from the sidecar — surfaced as `buildError` when it can't start. */
+  private lastApiStderr: string | null = null
+  /** When the sidecar last answered a health probe, or null. */
+  private apiReloadedAt: number | null = null
   // Latches true once the preview has reached `ready` at least once. Lets the
   // readiness gate keep reporting `running` during an in-place schema regen
   // (which transiently moves `_phase` off 'ready') without falsely reporting
@@ -1473,13 +1566,23 @@ export class PreviewManager {
   }
 
   /**
-   * Phase of the project's API sidecar (root `server.tsx`). Mirrors the
-   * legacy `SkillServerManager.phase` getter so callers (gateway prompts,
-   * eval runtime checks) can render a single signal regardless of which
+   * Phase of the project's API sidecar (root `server.tsx`). Keeps the name
+   * and shape of the retired shim's `phase` getter so callers (gateway
+   * prompts, eval runtime checks) render a single signal regardless of which
    * pipeline produced the server.
    */
   get apiServerPhase(): ApiServerPhase {
     return this.apiPhase
+  }
+
+  /** Project id this manager serves in a workspace runtime, or null (single-project). */
+  get projectId(): string | null {
+    return this.workspaceProjectId ?? null
+  }
+
+  /** Directory this manager serves (the project's own folder in a workspace runtime). */
+  get projectDir(): string {
+    return this.workspaceDir
   }
 
   /** Last error from `bun run generate` (or its fallback), or null on success. */
@@ -1543,6 +1646,43 @@ export class PreviewManager {
       return []
     }
   }
+
+  /**
+   * The route table the RUNNING server actually registered, asked of the
+   * server itself (`GET /__shogo/routes`, mounted by the SDK's `server.tsx`
+   * generator after custom routes).
+   *
+   * {@link getActiveRoutes} guesses this by regexing the generated route
+   * files: it never sees `custom-routes.ts` and returns `[]` whenever the
+   * generated layout differs, which is what made `server_sync` report empty
+   * routes to agents. This asks the process instead, and only falls back to
+   * the regex when the sidecar isn't healthy or predates `/__shogo/routes`
+   * (`routesSource: 'generated-files'`, so callers can say so).
+   *
+   * Paths are returned in {@link getActiveRoutes}'s shape — relative to the
+   * API base path, no leading slash (`api/users` → `users`).
+   */
+  async fetchActiveRoutes(timeoutMs = 2000): Promise<{ routes: string[]; routesSource: ApiRoutesSource }> {
+    const port = this.apiServerPort
+    if (port != null) {
+      try {
+        const resp = await fetch(`http://127.0.0.1:${port}${API_ROUTES_PATH}`, {
+          signal: AbortSignal.timeout(timeoutMs),
+        })
+        if (resp.ok) {
+          const body = (await resp.json().catch(() => null)) as { routes?: unknown } | null
+          if (Array.isArray(body?.routes)) {
+            const routes = normalizeRouteList(body.routes)
+            if (routes.length > 0) return { routes, routesSource: 'server' }
+          }
+        }
+      } catch {
+        // Server not answering — fall through to the file-based list.
+      }
+    }
+    return { routes: this.getActiveRoutes(), routesSource: 'generated-files' }
+  }
+
 
   /**
    * SHA-1 hex digest of `prisma/schema.prisma`'s raw bytes. Returns
@@ -2244,6 +2384,9 @@ export class PreviewManager {
    * or the single-flight guarantee above is bypassed.
    */
   private async _runLifecycleOnce(kind: 'start' | 'restart'): Promise<PreviewStartResult> {
+    // Any explicit start (including a restart) clears a deliberate stop, so a
+    // later quiesce/stop cycle starts from a clean slate.
+    this.stoppedByUser = false
     if (kind === 'restart') {
       this.stop()
     }
@@ -3931,6 +4074,7 @@ export class PreviewManager {
 
     proc.stderr?.on('data', (data: Buffer) => {
       const line = data.toString().trim()
+      if (line) this.lastApiStderr = line.slice(0, 2000)
       emitBuildLine(buildLogPath, '[api-stderr]', line, 'stderr')
     })
 
@@ -3980,6 +4124,8 @@ export class PreviewManager {
 
     if (healthy) {
       this.apiPhase = 'healthy'
+      this.lastApiStderr = null
+      this.apiReloadedAt = Date.now()
       // First positive evidence the spawned process has bound the
       // port — unlock the public `apiServerPort` getter so the
       // `/api/*` proxy in server.ts will start forwarding traffic
@@ -4147,9 +4293,9 @@ export class PreviewManager {
    * hasn't fixed). The agent surfaces the failure via
    * `apiLastGenerateError` and the `apiServerPhase=crashed` state.
    *
-   * Mirrors the legacy `SkillServerManager.handleCrash` algorithm so
-   * pods rolled forward across the merge see the same recovery
-   * behaviour they had before.
+   * Mirrors the retired shim's `handleCrash` algorithm so pods rolled
+   * forward across the merge see the same recovery behaviour they had
+   * before.
    */
   private handleCrash(): void {
     if (this.intentionalStop || this.regenerating) return
@@ -4217,6 +4363,179 @@ export class PreviewManager {
       console.error(`[${LOG_PREFIX}] On-demand API recovery failed: ${err?.message ?? err}`)
     })
     return true
+  }
+
+  /**
+   * Record that a person (or the Studio UI) stopped this project on purpose,
+   * so {@link ensureApiServer} leaves it stopped instead of reviving it on the
+   * next `/api/*` request or agent turn. Called by the `/preview/stop` routes.
+   */
+  markStoppedByUser(): void {
+    this.stoppedByUser = true
+  }
+
+  get isStoppedByUser(): boolean {
+    return this.stoppedByUser
+  }
+
+  /** Last error this project's API server produced, for `ensureApiServer`/`server_sync` reporting. */
+  private apiBuildError(): string | null {
+    return this.lastGenerateError ?? this.lastSetupError ?? this.lastApiStderr
+  }
+
+  /**
+   * Status snapshot with no side effects — what `/preview/status`,
+   * `/agent/api-server/status` and `server_sync({ mode: 'status' })` report.
+   */
+  async apiServerStatus(): Promise<EnsureApiServerResult> {
+    const port = this.apiServerPort
+    const routes = await this.fetchActiveRoutes()
+    return {
+      phase: this.hasApiServer === false && this.apiPhase !== 'crashed' ? 'none' : this.apiPhase,
+      port,
+      reloadedAt: this.apiReloadedAt,
+      routes: routes.routes,
+      routesSource: routes.routesSource,
+      buildError: this.apiBuildError(),
+    }
+  }
+
+  /**
+   * Make sure this project's API sidecar is up and answering, starting it if
+   * it is idle/stopped/crashed, and wait for a real health answer before
+   * returning.
+   *
+   * This is the on-demand entry point for `/api/*` (server.ts) and for agent
+   * turns (gateway.ts). Before it existed, only `crashed` self-healed: an
+   * `idle` runtime (a schedule or trigger turn on a cold pod, a first request
+   * before any preview start) and a `stopped` one (left over from
+   * {@link quiesceApiServer} when no rehydrate ran) returned 503 forever, and
+   * agents worked around it by touching files and polling build.log.
+   *
+   * Concurrent callers share one in-flight promise, so 20 parallel requests
+   * spawn exactly one sidecar. `phase: 'none'` means the project has no API
+   * server at all and no work was done.
+   */
+  async ensureApiServer(opts: EnsureApiServerOptions = {}): Promise<EnsureApiServerResult> {
+    if (this.ensureInFlight) return this.ensureInFlight
+    this.ensureInFlight = this._ensureApiServer(opts.timeoutMs ?? ENSURE_API_SERVER_TIMEOUT_MS).finally(() => {
+      this.ensureInFlight = null
+    })
+    return this.ensureInFlight
+  }
+
+  private async _ensureApiServer(timeoutMs: number): Promise<EnsureApiServerResult> {
+    // No sidecar for this project (pre-bootstrap, or generation produced no
+    // `server.tsx`): nothing to start, and saying so must not look like a
+    // failure. A `crashed` phase with `hasApiServer === false` is a generate
+    // failure and is reported as such below.
+    if (this.hasApiServer === false && this.apiPhase !== 'crashed') {
+      return this.snapshot('none')
+    }
+
+    const phase = this.apiPhase
+    if (phase === 'stopped' && this.stoppedByUser) {
+      return this.snapshot(phase)
+    }
+
+    try {
+      if (phase === 'crashed') {
+        this.maybeRecoverApiServer()
+      } else if (phase === 'idle') {
+        if (this.started) {
+          // Bundler is already up — only the API sidecar is missing.
+          await this.startApiServer()
+        } else {
+          // Cold runtime: run the real lifecycle (install/generate/build +
+          // sidecar). It backgrounds its expensive work, so the readiness
+          // probe below is what actually waits.
+          void this.start().catch((err: any) => {
+            console.error(`[${LOG_PREFIX}] On-demand preview start failed: ${err?.message ?? err}`)
+          })
+        }
+      } else if (phase === 'stopped') {
+        // Restartable `stopped` (left behind by quiesce, or by a stop that
+        // never rehydrated) — no deliberate stop to respect here.
+        this.crashCount = 0
+        await this.restartApiServerOnly()
+      } else if (phase === 'starting' || phase === 'restarting' || phase === 'generating') {
+        await (this.apiServerStartInFlight ?? this.lifecycleInFlight ?? Promise.resolve())
+      } else if (phase === 'healthy' && this.apiServerPort == null) {
+        // Phase says healthy but the port went away (a crash between the
+        // exit handler and the next recovery) — start it again.
+        await this.startApiServer()
+      }
+    } catch (err: any) {
+      console.error(`[${LOG_PREFIX}] ensureApiServer start failed: ${err?.message ?? err}`)
+    }
+
+    const deadline = Date.now() + Math.max(0, timeoutMs)
+    let recoveredOnce = this.apiPhase !== 'crashed'
+    while (Date.now() < deadline) {
+      const port = this.apiServerPort
+      if (port != null) {
+        const health = await this.probeApiServer(port)
+        if (health !== 'down') {
+          if (this.apiPhase !== 'healthy') {
+            this.apiPhase = 'healthy'
+            this.apiListening = true
+            this.crashCount = 0
+          }
+          this.apiReloadedAt = Date.now()
+          return {
+            phase: 'healthy',
+            port: this.apiServerPort,
+            reloadedAt: this.apiReloadedAt,
+            ...(await this.fetchActiveRoutes()),
+            buildError: this.apiBuildError(),
+          }
+        }
+      }
+      if (this.apiPhase === 'crashed') {
+        // One recovery attempt per ensure call; a second crash cycle inside
+        // the same budget is a genuinely broken server, not a slow one.
+        if (recoveredOnce) break
+        recoveredOnce = true
+        this.maybeRecoverApiServer()
+      }
+      if (this.apiPhase === 'stopped' && this.stoppedByUser) break
+      await new Promise((r) => setTimeout(r, ENSURE_POLL_INTERVAL_MS))
+    }
+
+    return this.snapshot(this.hasApiServer === false && this.apiPhase !== 'crashed' ? 'none' : this.apiPhase)
+  }
+
+  /**
+   * Ask the sidecar how it is. `ok` = `/__shogo/health` answered 2xx,
+   * `legacy` = an older `server.tsx` without that path but `/health` answers,
+   * `down` = nothing usable.
+   */
+  private async probeApiServer(port: number): Promise<'ok' | 'legacy' | 'down'> {
+    const base = `http://127.0.0.1:${port}`
+    try {
+      const resp = await fetch(`${base}${API_HEALTH_PATH}`, { signal: AbortSignal.timeout(2000) })
+      if (resp.ok) return 'ok'
+    } catch {
+      return 'down'
+    }
+    try {
+      const legacy = await fetch(`${base}/health`, { signal: AbortSignal.timeout(2000) })
+      return legacy.ok ? 'legacy' : 'down'
+    } catch {
+      return 'down'
+    }
+  }
+
+  /** Build an {@link EnsureApiServerResult} from current state, without starting anything. */
+  private snapshot(phase: EnsureApiServerPhase): EnsureApiServerResult {
+    return {
+      phase,
+      port: this.apiServerPort,
+      reloadedAt: this.apiReloadedAt,
+      routes: this.getActiveRoutes(),
+      routesSource: 'generated-files',
+      buildError: this.apiBuildError(),
+    }
   }
 
   /**

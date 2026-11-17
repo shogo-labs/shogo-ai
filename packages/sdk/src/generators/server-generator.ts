@@ -150,6 +150,32 @@ export function generateServer(config: ServerGeneratorConfig = {}): string {
     lines.push('')
   }
 
+  // Runtime introspection. The agent runtime's API proxy uses these to know
+  // whether this server is really up and which routes it really registered
+  // (custom routes included) instead of guessing from generated files.
+  // `/__shogo/*` sits outside the API base path so app routes cannot collide.
+  // Registered BEFORE the static catch-all so it can't swallow them; each
+  // handler reads `app.routes` at request time, so anything mounted later is
+  // still listed.
+  lines.push('// Runtime introspection (the agent runtime proxies these; never public)')
+  lines.push('const startedAt = new Date().toISOString()')
+  lines.push("app.get('/__shogo/health', (c) => c.json({ ok: true, startedAt, pid: process.pid }))")
+  lines.push("app.get('/__shogo/routes', (c) => {")
+  lines.push('  const seen = new Set<string>()')
+  lines.push('  const routes: { method: string; path: string }[] = []')
+  lines.push('  for (const route of app.routes) {')
+  lines.push('    const method = String(route.method).toUpperCase()')
+  lines.push("    if (method === 'ALL' || method === 'USE') continue")
+  lines.push("    if (route.path.startsWith('/__shogo')) continue")
+  lines.push('    const key = `${method} ${route.path}`')
+  lines.push('    if (seen.has(key)) continue')
+  lines.push('    seen.add(key)')
+  lines.push('    routes.push({ method, path: route.path })')
+  lines.push('  }')
+  lines.push('  return c.json({ routes })')
+  lines.push('})')
+  lines.push('')
+
   if (!skipStatic) {
     lines.push('// Serve static files in production')
     lines.push(`app.use('/*', serveStatic({ root: '${staticDir}' }))`)

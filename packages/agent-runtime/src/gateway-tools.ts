@@ -289,8 +289,16 @@ export interface ToolContext {
   fileStateCache?: FileStateCache
   /** Dynamic sub-agent registry and lifecycle manager */
   agentManager?: import('./agent-manager').AgentManager
-  /** Skill server manager — exposed so tools can sync/query the skill server */
-  skillServerManager?: import('./skill-server-manager').SkillServerManager
+  /**
+   * The API server (`server.tsx` + `PreviewManager`) for the project a tool is
+   * acting on: pass a project id, folder name or a file path inside that
+   * project, or nothing for this runtime's own (anchor) project.
+   *
+   * Resolving from the edited path is what makes a `custom-routes.ts` or
+   * `prisma/schema.prisma` edit in a MOUNTED project restart that project
+   * instead of the anchor.
+   */
+  resolveApiServer?: (pathOrProjectId?: string) => import('./preview-manager').PreviewManager
   /** Parent's fully rendered system prompt (for fork mode context sharing) */
   renderedSystemPrompt?: string
   /** Parent's current conversation history (for fork mode context sharing) */
@@ -3727,7 +3735,7 @@ function shouldLintCanvasApiContract(filePath: string): boolean {
  *
  * No-ops when:
  *   - The path isn't lint-eligible (see `shouldLintCanvasApiContract`).
- *   - There's no skill server (so we have no route list to compare to).
+ *   - There's no API server (so we have no route list to compare to).
  *   - All fetches resolve to known routes.
  *
  * This complements the workspace-wide scan that runs after schema syncs
@@ -3735,7 +3743,7 @@ function shouldLintCanvasApiContract(filePath: string): boolean {
  * this catches the specific fetch the agent just wrote.
  */
 function appendCanvasApiContractHint(ctx: ToolContext, filePath: string, content: string, base: Record<string, unknown>): void {
-  if (!ctx.skillServerManager) return
+  if (!ctx.resolveApiServer) return
   if (!shouldLintCanvasApiContract(filePath)) return
   // Cheap pre-check using includes() so we don't pay for the regex / route
   // lookup on every tool call (the vast majority of writes won't have
@@ -3744,7 +3752,7 @@ function appendCanvasApiContractHint(ctx: ToolContext, filePath: string, content
 
   let activeRoutes: string[] = []
   try {
-    activeRoutes = ctx.skillServerManager.getActiveRoutes()
+    activeRoutes = ctx.resolveApiServer().getActiveRoutes()
   } catch {
     return
   }
@@ -3806,7 +3814,7 @@ async function maybeSchemaSync(
   resolved: string,
   baseResult: Record<string, unknown>,
 ): Promise<Record<string, unknown> | null> {
-  if (!ctx.skillServerManager) return null
+  if (!ctx.resolveApiServer) return null
 
   const customRoutesResult = await maybeCustomRoutesSync(ctx, filePath, resolved, baseResult)
   if (customRoutesResult) return customRoutesResult
@@ -3821,19 +3829,28 @@ async function maybeSchemaSync(
   const content = existsSync(resolved) ? readFileSync(resolved, 'utf-8') : ''
   if (!/^model\s+\w+/m.test(content)) return null
 
+  // The project that owns the edited schema — in a workspace runtime that may
+  // be a mounted project, not the anchor.
+  const pm = ctx.resolveApiServer(resolved)
+
   try {
-    const syncResult = await ctx.skillServerManager.sync()
-    const routes = ctx.skillServerManager.getActiveRoutes()
+    const syncResult = await pm.sync()
+    const routesResult = await pm.fetchActiveRoutes()
+    const routes = routesResult.routes
     const activeRoutePaths = routes.map((r) => `/api/${r}`)
 
-    const orphaned = findOrphanedFetches(ctx.workspaceDir, routes)
+    // Orphan scan against the project that was just synced, not the anchor.
+    const projectDir = pm.projectDir
+    const orphaned = findOrphanedFetches(projectDir, routes)
 
     const result: Record<string, unknown> = {
       ...baseResult,
       apiServer: {
+        project: pm.projectId ?? undefined,
         synced: syncResult.ok,
         phase: syncResult.phase,
         activeRoutes: activeRoutePaths,
+        routesSource: routesResult.routesSource,
         ...(syncResult.error ? { error: syncResult.error } : {}),
       },
     }
@@ -3878,7 +3895,36 @@ async function maybeCustomRoutesSync(
     filePath === 'custom-routes.tsx' ||
     filePath.endsWith('/custom-routes.ts') ||
     filePath.endsWith('/custom-routes.tsx')
-  if (!isCustomRoutesEdit || !ctx.skillServerManager) return null
+  if (!isCustomRoutesEdit || !ctx.resolveApiServer) return null
+
+  // The project that owns the edited file — in a workspace runtime that may be
+  // a mounted project, whose sidecar is a different PreviewManager.
+  const pm = ctx.resolveApiServer(_resolved)
+  const projectRef = pm.projectId ?? undefined
+
+  /**
+   * After the restart, wait for the server to actually answer (or for the
+   * timeout to fire with whatever error it produced) and report where it
+   * stands — the agent should never have to follow up with `server_sync` or a
+   * build.log poll to learn whether its edit is live.
+   */
+  const report = async (extra: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const status = await pm.ensureApiServer()
+    return {
+      ...baseResult,
+      apiServer: {
+        project: projectRef,
+        serverRestarted: status.phase === 'healthy',
+        phase: status.phase,
+        url: pm.apiServerUrl,
+        routes: status.routes.map((r) => `/api/${r}`),
+        routesSource: status.routesSource,
+        reloadedAt: status.reloadedAt,
+        ...(status.buildError ? { buildError: status.buildError } : {}),
+        ...extra,
+      },
+    }
+  }
 
   // Drift heal: if `server.tsx` is on disk but missing the
   // `customRoutes` import/mount, the fast restart would just respawn
@@ -3886,48 +3932,37 @@ async function maybeCustomRoutesSync(
   // index.html with HTTP 200, silently masking the bug). Detect and
   // self-heal before restarting. See `server-tsx-drift.ts`.
   try {
-    const drift = checkServerTsxDrift(ctx.workspaceDir)
+    const drift = checkServerTsxDrift(pm.projectDir)
     if (drift.drifted) {
-      const heal = healServerTsxDrift(ctx.workspaceDir, drift)
+      const heal = healServerTsxDrift(pm.projectDir, drift)
       if (heal.mode === 'regenerate') {
         // SDK-generated stale file — full sync overwrites it via
         // `writeServerEntry()` in the project's `generate` script.
-        const syncResult = await ctx.skillServerManager.sync()
-        return {
-          ...baseResult,
-          apiServer: {
-            serverRestarted: true,
-            regenerated: true,
-            phase: syncResult.phase,
-            url: ctx.skillServerManager.url,
-            hint:
-              'server.tsx (SDK-generated) was stale and missing the custom-routes mount. ' +
-              'Regenerated from shogo.config.json — your custom routes are now live under /api/.',
-            ...(syncResult.error ? { error: syncResult.error } : {}),
-          },
-        }
+        const syncResult = await pm.sync()
+        return report({
+          regenerated: true,
+          hint:
+            'server.tsx (SDK-generated) was stale and missing the custom-routes mount. ' +
+            'Regenerated from shogo.config.json — your custom routes are now live under /api/.',
+          ...(syncResult.error ? { error: syncResult.error } : {}),
+        })
       }
       if (heal.mode === 'patched') {
         // Hand-edited file — patched in place, all other edits
         // preserved. Just restart with the (now correct) server.tsx.
-        await ctx.skillServerManager.restartApiServerOnly()
-        return {
-          ...baseResult,
-          apiServer: {
-            serverRestarted: true,
-            patched: true,
-            phase: ctx.skillServerManager.phase,
-            url: ctx.skillServerManager.url,
-            hint:
-              'server.tsx was missing the custom-routes import/mount. Inserted the two ' +
-              'required lines in place (other edits preserved). Restarted — routes are now live.',
-          },
-        }
+        await pm.restartApiServerOnly()
+        return report({
+          patched: true,
+          hint:
+            'server.tsx was missing the custom-routes import/mount. Inserted the two ' +
+            'required lines in place (other edits preserved). Restarted — routes are now live.',
+        })
       }
       if (heal.mode === 'failed') {
         return {
           ...baseResult,
           apiServer: {
+            project: projectRef,
             serverRestarted: false,
             error: `server.tsx is missing the custom-routes mount and self-heal failed: ${heal.reason}`,
             hint:
@@ -3949,22 +3984,17 @@ async function maybeCustomRoutesSync(
     // Fast path — no schema regeneration, no `prisma db push`. Custom
     // route changes don't affect the data model, so this typically
     // completes in well under a second.
-    await ctx.skillServerManager.restartApiServerOnly()
-    return {
-      ...baseResult,
-      apiServer: {
-        serverRestarted: true,
-        phase: ctx.skillServerManager.phase,
-        url: ctx.skillServerManager.url,
-        hint:
-          'custom-routes.ts changes are live. CRUD routes mounted by createAllRoutes() keep working ' +
-          'and your custom routes mount under /api/. Do NOT edit server.tsx — it is auto-generated.',
-      },
-    }
+    await pm.restartApiServerOnly()
+    return report({
+      hint:
+        'custom-routes.ts changes are live. CRUD routes mounted by createAllRoutes() keep working ' +
+        'and your custom routes mount under /api/. Do NOT edit server.tsx — it is auto-generated.',
+    })
   } catch (err: any) {
     return {
       ...baseResult,
       apiServer: {
+        project: projectRef,
         serverRestarted: false,
         error: err.message,
         hint: 'custom-routes.ts saved but restart failed — check the file for syntax errors.',
@@ -3998,37 +4028,84 @@ function maybeValidateQuickActions(
 // Server Sync Tool
 // ---------------------------------------------------------------------------
 
+/**
+ * `server_sync` — report AND fix the project API server. No new tool (see the
+ * channel's "extend the tool we have" rule): `mode` picks between today's
+ * regenerate+restart, a read-only status, and a sidecar-only restart.
+ */
 function createServerSyncTool(ctx: ToolContext): AgentTool {
   return {
     name: 'server_sync',
     description:
-      "Force the project's API server to regenerate routes from prisma/schema.prisma and restart. Use this when routes are returning 404 after a schema change, or to verify the server is healthy. Returns the current phase and list of active API routes.",
+      "Report and fix the project's API server (`server.tsx` + `custom-routes.ts`). " +
+      '`mode: "sync"` (default) regenerates routes from prisma/schema.prisma and restarts; ' +
+      '`mode: "status"` only reports phase, port, routes and the last error without changing anything; ' +
+      '`mode: "restart"` restarts just the server (no regenerate, no db push). ' +
+      'Pass `project` to target a mounted project instead of this one. ' +
+      'Returns ok, project, phase, routes (with routesSource), schemaModels, buildError and url.',
     label: 'Server Sync',
-    parameters: Type.Object({}),
-    execute: async () => {
-      if (!ctx.skillServerManager) {
+    parameters: Type.Object({
+      mode: Type.Optional(
+        Type.Union([Type.Literal('sync'), Type.Literal('status'), Type.Literal('restart')], {
+          description: 'sync (default) = regenerate + restart; status = report only; restart = restart the server only.',
+        }),
+      ),
+      project: Type.Optional(
+        Type.String({ description: 'Project id or folder name to act on. Defaults to this runtime\'s own project.' }),
+      ),
+    }),
+    execute: async (_id: string, rawParams: any) => {
+      const params = (rawParams ?? {}) as { mode?: 'sync' | 'status' | 'restart'; project?: string }
+      if (!ctx.resolveApiServer) {
         return textResult({
           ok: false,
           error: 'API server provider not attached',
         })
       }
 
+      let pm: import('./preview-manager').PreviewManager
       try {
-        const result = await ctx.skillServerManager.sync()
-        const routes = ctx.skillServerManager.getActiveRoutes()
-        const models = ctx.skillServerManager.getSchemaModels()
+        pm = ctx.resolveApiServer(params.project)
+      } catch (err: any) {
+        return textResult({ ok: false, error: err?.message ?? String(err) })
+      }
+
+      const mode = params.mode ?? 'sync'
+      const models = pm.getSchemaModels()
+      try {
+        let status: import('./preview-manager').EnsureApiServerResult
+        if (mode === 'status') {
+          status = await pm.apiServerStatus()
+        } else if (mode === 'restart') {
+          await pm.restartApiServerOnly()
+          status = await pm.ensureApiServer()
+        } else {
+          const result = await pm.sync()
+          status = await pm.ensureApiServer()
+          if (!result.ok && result.error && !status.buildError) {
+            status = { ...status, buildError: result.error }
+          }
+        }
         return textResult({
-          ok: result.ok,
-          phase: result.phase,
-          activeRoutes: routes.map((r) => `/api/${r}`),
+          ok: status.phase === 'healthy',
+          mode,
+          project: pm.projectId ?? undefined,
+          phase: status.phase,
+          port: status.port,
+          activeRoutes: status.routes.map((r) => `/api/${r}`),
+          routesSource: status.routesSource,
           schemaModels: models,
-          url: ctx.skillServerManager.url,
+          buildError: status.buildError ?? undefined,
+          url: pm.apiServerUrl,
         })
       } catch (err: any) {
         return textResult({
           ok: false,
+          mode,
+          project: pm.projectId ?? undefined,
           error: err.message,
-          phase: ctx.skillServerManager.phase,
+          phase: pm.apiServerPhase,
+          buildError: err.message,
         })
       }
     },

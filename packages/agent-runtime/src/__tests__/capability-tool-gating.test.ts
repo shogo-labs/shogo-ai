@@ -383,19 +383,32 @@ describe('filterSubagentOnlyTools', () => {
   test('main agent repairs a dead project server itself: server_sync from its own tool list returns the route table', async () => {
     const config = makeConfig()
     const ctx = makeCtx(config)
-    ctx.skillServerManager = {
+    const status = {
+      phase: 'healthy',
+      port: 3001,
+      reloadedAt: Date.now(),
+      routes: ['leads', 'notes'],
+      routesSource: 'server',
+      buildError: null,
+    }
+    ctx.resolveApiServer = (() => ({
       sync: async () => ({ ok: true, phase: 'healthy' }),
       getActiveRoutes: () => ['leads', 'notes'],
+      fetchActiveRoutes: async () => ({ routes: ['leads', 'notes'], routesSource: 'server' }),
       getSchemaModels: () => ['Lead', 'Note'],
-      url: 'http://localhost:0',
-      phase: 'healthy',
-    } as any
+      apiServerUrl: 'http://localhost:0',
+      apiServerPhase: 'healthy',
+      projectId: 'p1',
+      apiServerStatus: async () => status,
+      ensureApiServer: async () => status,
+    })) as any
     const tools = filterSubagentOnlyTools(filterDisabledCapabilityTools(createTools(ctx), config), config)
     const sync = tools.find(t => t.name === 'server_sync')!
     const r: any = (await sync.execute('c1', {} as any)).details
     expect(r.ok).toBe(true)
     expect(r.activeRoutes).toEqual(['/api/leads', '/api/notes'])
     expect(r.schemaModels).toEqual(['Lead', 'Note'])
+    expect(r.routesSource).toBe('server')
   })
 
   test('imageGenEnabled: false still removes the image tools from the main agent', () => {
