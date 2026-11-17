@@ -36,8 +36,7 @@ import { usePhoneLayout, usePhoneLayoutOverride } from "../../../lib/native-phon
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { useAgentImageSource } from "../../../lib/agent-image-source"
-import { fitChatImage } from "./image-sizing"
-import { useMeasuredWidth } from "./use-measured-width"
+import { CHAT_IMAGE_MAX_WIDTH, fitChatImage } from "./image-sizing"
 import { stripAskUserAnswerMarker } from "./askUserAnswers"
 import { stripBuildBriefMarker } from "./buildBrief"
 
@@ -157,7 +156,6 @@ function ImageThumbnail({
   height,
   mediaType,
   index,
-  containerWidth,
 }: {
   url: string
   /** Small preview to paint instead of the original, when one was stored. */
@@ -167,8 +165,6 @@ function ImageThumbnail({
   height?: number
   mediaType: string
   index: number
-  /** Width of the row the thumbnail sits in, so it fits the pane, not the window. */
-  containerWidth?: number | null
 }) {
   const [hasError, setHasError] = useState(false)
   const [showModal, setShowModal] = useState(false)
@@ -182,10 +178,17 @@ function ImageThumbnail({
   // were stored gets a fixed box that never resizes: measuring it would change
   // the content height after the first layout, which is what made a resumed
   // chat jump (SHO-407).
+  //
+  // It is deliberately *not* sized against the measured row width. That width
+  // arrives from `onLayout`, which on web is a ResizeObserver callback that runs
+  // after the first paint, so a box sized from it is wrong on the first frame
+  // and grows under the reader. Instead the box carries the widest it may be
+  // plus its aspect ratio, and `maxWidth: "100%"` lets the layout engine fit it
+  // to the row — width and height resolved together, in one pass, for any pane.
   const box = fitChatImage({
     naturalWidth: width,
     naturalHeight: height,
-    containerWidth,
+    containerWidth: CHAT_IMAGE_MAX_WIDTH,
   })
   const [contextMenu, setContextMenu] = useState<{
     x: number
@@ -249,7 +252,15 @@ function ImageThumbnail({
       >
         <View
           className="rounded-lg overflow-hidden border border-border/40 bg-muted/30"
-          style={{ width: box.width, height: box.height }}
+          // `maxWidth` fits the box to a pane narrower than its cap, and
+          // `aspectRatio` derives the height from whatever width the layout
+          // engine settles on — so the box is final on the first frame and an
+          // image load can never change the content height.
+          style={{
+            width: box.width,
+            maxWidth: "100%",
+            aspectRatio: box.width / box.height,
+          }}
         >
           {imageSource ? (
             <Image
@@ -485,9 +496,6 @@ export function MessageContent({
     isUser && content && !hasAttachments
       ? analyzeContent(content).isLong
       : false
-  // Attachments fit the width the message actually got — a split view or side
-  // pane is narrower than the window.
-  const attachmentRow = useMeasuredWidth()
 
   // For assistants we keep the original "transparent, padded" style.
   // For users we render full-width and let EditableUserMessage own
@@ -507,7 +515,7 @@ export function MessageContent({
       images.length > 0 || files.length > 0 ? (
         // A full-width wrapper so the row's width is the pane's even when the
         // bubble aligns its children to the end.
-        <View className="w-full" onLayout={attachmentRow.onLayout}>
+        <View className="w-full">
           <View
             className={cn(
               "flex-row flex-wrap gap-2",
@@ -527,7 +535,6 @@ export function MessageContent({
                 height={img.height}
                 mediaType={img.mediaType}
                 index={i}
-                containerWidth={attachmentRow.width}
               />
             ))}
             {files.map((file, i) => (
@@ -612,7 +619,7 @@ export function MessageContent({
         </MarkdownText>
       ) : null}
       {(images.length > 0 || files.length > 0) && (
-        <View onLayout={attachmentRow.onLayout}>
+        <View>
           <View className="flex-row flex-wrap gap-2">
             {images.map((img, i) => (
               <ImageThumbnail
@@ -627,7 +634,6 @@ export function MessageContent({
                 height={img.height}
                 mediaType={img.mediaType}
                 index={i}
-                containerWidth={attachmentRow.width}
               />
             ))}
             {files.map((file, i) => (
