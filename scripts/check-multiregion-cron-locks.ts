@@ -799,6 +799,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'Written when a user attaches a project to a workspace-scoped chat session (generated chat-session-project route). One user request per attach; the unique pair just dedupes a double-attach of the same project to the same session.',
   },
   {
+    key: 'ChatSession.directKey',
+    category: 'request_scoped',
+    reason:
+      'agent-chat.service.ts:openAgentChatSession find-or-creates the one chat a person has with an agent, keyed `a:<workspaceId>:<userId>:<projectId|ws>`, from a user-pinned request; a cross-region duplicate insert is caught and resolved to the row that won the index. The boot-time agent-DM migration writes the same key for the same person and agent.',
+  },
+  {
     key: 'Plan.(filename,projectId)',
     category: 'single_tenant_upsert',
     reason:

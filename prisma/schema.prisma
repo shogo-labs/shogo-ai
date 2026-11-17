@@ -1949,6 +1949,12 @@ model ChatSession {
   // Owner of a personal workspace-agent chat. Null for project chats,
   // scheduled/DM/Slack sessions, and chats created before ownership existed.
   createdByUserId       String?
+  // A person's chat with one agent, keyed
+  // `a:<workspaceId>:<userId>:<projectId|ws>` — the agent DM it replaces used
+  // `a:<userId>:<projectId|ws>`; the workspace is prefixed so the key stays
+  // unique for a person who belongs to several workspaces. Opening the chat
+  // again reuses the row (SHO-412).
+  directKey             String?
   phase                 String?
   claudeCodeSessionId   String?
   cachedMessageCount    Int         @default(0)
@@ -2003,6 +2009,8 @@ model ChatSession {
   @@index([workspaceId, createdByUserId, lastActiveAt])
   @@index([activeTurnHeartbeatAt])
   @@index([createdAt])
+  // One chat per person per agent per workspace (SHO-412).
+  @@unique([directKey])
   @@map("chat_sessions")
 }
 

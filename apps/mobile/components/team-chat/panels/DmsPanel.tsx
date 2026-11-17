@@ -1,20 +1,19 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Conversations with people and with agents, together. `variant="panel"` is
- * the compact desktop list; `variant="screen"` adds the row of recent faces
- * and roomier rows for the mobile DMs tab.
+ * Conversations with people. `variant="panel"` is the compact desktop list;
+ * `variant="screen"` adds the row of recent faces and roomier rows for the
+ * mobile DMs tab. A chat with an agent is a project chat, not a DM (SHO-412).
  */
 import { useMemo, useState } from 'react'
 import { Pressable, ScrollView, Text, View } from 'react-native'
 import { Plus } from 'lucide-react-native'
 import { Avatar, cn } from '@shogo/shared-ui/primitives'
-import { AgentMark } from '../../activity/ActivityFeed'
 import { ConversationRow, CountPill, PanelLink, PanelSection, attentionCount, rowTitle } from '../ConversationRows'
 import { PresenceDot } from '../PresenceDot'
 import { useTeamChatNav } from '../TeamChatSidebarProvider'
 import { resolveAvatarUrl } from '../../../lib/chat-attachment-url'
-import { DM_FILTERS, splitStarredDms, isAgentDm, recentContacts, type DmFilter } from '../../../lib/dm-list'
+import { DM_FILTERS, splitStarredDms, recentContacts, type DmFilter } from '../../../lib/dm-list'
 import { type ConversationSummary } from '../../../lib/team-chat-api'
 
 // In the sidebar the panel sits inside the sidebar's own scroll view.
@@ -69,7 +68,6 @@ export function DmsPanel({ variant = 'panel' }: { variant?: 'panel' | 'screen' }
           <Text className="px-3 py-4 text-xs text-muted-foreground">{filter === 'unreads' ? "You're all caught up." : 'No conversations yet.'}</Text>
         )}
         <PanelLink icon={Plus} label="New message" onPress={() => chat.startCreate('message')} />
-        <PanelLink icon={Plus} label="Message an agent" onPress={() => chat.startCreate('agent')} />
       </Rows>
     </View>
   )
@@ -82,11 +80,7 @@ function Contact({ conversation: c, workspaceId, onPress }: { conversation: Conv
   return (
     <Pressable onPress={() => onPress(c)} accessibilityRole="button" accessibilityLabel={`${rowTitle(c)}${unread ? `, ${unread} unread` : ''}`} className="w-14 items-center gap-1">
       <View>
-        {isAgentDm(c) ? (
-          <AgentMark size={48} />
-        ) : (
-          <Avatar fallback={name.slice(0, 1).toUpperCase()} src={peer?.type === 'user' ? resolveAvatarUrl(peer.image) : null} size="lg" />
-        )}
+        <Avatar fallback={name.slice(0, 1).toUpperCase()} src={peer?.type === 'user' ? resolveAvatarUrl(peer.image) : null} size="lg" />
         {peer?.type === 'user' && <PresenceDot userId={peer.id} workspaceId={workspaceId} badge size={12} />}
         {unread > 0 && (
           <View className="absolute -right-1 -top-1">

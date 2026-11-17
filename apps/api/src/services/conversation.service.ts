@@ -715,6 +715,7 @@ export async function getConversationForUser(conversationId: string, userId: str
   const access = await loadAccess(conversationId, userId)
   const members = await listMembers(access.conversation.workspaceId, conversationId)
   const docs = await docUpdatedAts([conversationId])
+  const movedToChatSessionId = await movedAgentDmChatSession(access.conversation)
   return serializeConversation(access.conversation, {
     hasDoc: docs.has(conversationId),
     docUpdatedAt: docs.get(conversationId) ?? null,
@@ -728,8 +729,26 @@ export async function getConversationForUser(conversationId: string, userId: str
     canManage: canManage(access),
     canDelete: deleteBlocker(access) === null,
     systemManaged: !!access.conversation.systemManagedBy,
+    movedToChatSessionId,
     members,
   })
+}
+
+/**
+ * An old `/c/<agentDmId>` link: the chat that DM became, so the client can
+ * redirect instead of showing a retired conversation (SHO-412).
+ */
+async function movedAgentDmChatSession(conversation: any): Promise<string | null> {
+  const dmKey = conversation?.dmKey
+  if (conversation?.kind !== 'dm' || typeof dmKey !== 'string' || !dmKey.startsWith('a:')) return null
+  const rest = dmKey.slice(2)
+  const sep = rest.lastIndexOf(':')
+  if (sep <= 0) return null
+  const personId = rest.slice(0, sep)
+  const target = rest.slice(sep + 1)
+  const directKey = `a:${conversation.workspaceId}:${personId}:${target}`
+  const session = await db.chatSession.findUnique({ where: { directKey }, select: { id: true } }).catch(() => null)
+  return session?.id ?? null
 }
 
 async function listMembers(workspaceId: string, conversationId: string) {

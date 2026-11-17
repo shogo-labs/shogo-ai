@@ -479,25 +479,16 @@ describe('@agent threads', () => {
     expect(seeded).toContain('summarize the invoices')
   })
 
-  test('the workspace agent gets a workspace session; agent DMs reply without an @mention', async () => {
+  test('a message to the workspace agent opens a workspace chat, not a DM', async () => {
     const dm = await call(seed.owner, 'POST', `/workspaces/${seed.workspaceId}/dms`, { agent: { projectId: null } })
-    expect(dm.json.conversation.kind).toBe('dm')
-    await call(seed.owner, 'POST', `/conversations/${dm.json.conversation.id}/messages`, { text: 'what is on my plate?' })
-    const reply = await waitFor(async () => {
-      const row = await db.conversationMessage.findFirst({
-        where: { conversationId: dm.json.conversation.id, authorType: 'agent', agentStatus: 'done' },
-      })
-      return row
-    })
-    expect(reply.threadRootId).toBeNull()
-    const session = await db.chatSession.findUnique({ where: { id: reply.agentSessionId } })
-    expect(session.contextType).toBe('workspace')
-    expect(session.workspaceId).toBe(seed.workspaceId)
-    expect(invocations[0].projectId).toBeNull()
-
-    const listed = (await call(seed.owner, 'GET', `/workspaces/${seed.workspaceId}/conversations`))
-      .json.conversations.find((c: any) => c.id === dm.json.conversation.id)
-    expect(listed.participants).toEqual([{ type: 'agent', projectId: null, name: 'Shogo' }])
+    // The agent-DM surface is gone: the client is told which chat to open (SHO-412).
+    expect(dm.status).toBe(410)
+    expect(dm.json.error.code).toBe('moved_to_project_chat')
+    const chat = await db.chatSession.findUnique({ where: { id: dm.json.chatSessionId } })
+    expect(chat.contextType).toBe('workspace')
+    expect(chat.workspaceId).toBe(seed.workspaceId)
+    expect(chat.createdByUserId).toBe(seed.owner)
+    expect(chat.inferredName).toBe('Shogo')
   })
 
   test('agent members with keyword triggers reply to matching top-level messages only', async () => {
@@ -577,9 +568,14 @@ describe('agent channel tools', () => {
       user: member.email, text: 'Can you approve the refund?',
     })
     expect(dm.status).toBe(201)
-    const convo = await call(seed.member, 'GET', `/conversations/${dm.json.message.conversationId}`)
-    expect(convo.status).toBe(200)
-    expect(convo.json.conversation.members.some((m: any) => m.type === 'agent' && m.projectId === seed.projectId)).toBe(true)
+    // An agent's message to a person lands in that person's chat with the agent
+    // — a project chat — not in a DM conversation (SHO-412).
+    const chat = await db.chatSession.findUnique({ where: { id: dm.json.message.conversationId } })
+    expect(chat.directKey).toBe(`a:${seed.workspaceId}:${seed.member}:${seed.projectId}`)
+    expect(chat.createdByUserId).toBe(seed.member)
+    const delivered = await db.chatMessage.findFirst({ where: { sessionId: chat.id, role: 'assistant' } })
+    expect(delivered.content).toBe('Can you approve the refund?')
+    expect(dm.json.message.url).toContain(`/project-chat/${seed.projectId}`)
 
     const delegated = await call(null, 'POST', `/internal/workspaces/${seed.workspaceId}/agent-channels/dm`, {
       user: member.email,

@@ -14,7 +14,7 @@ import { useAgentActivity } from '../../../hooks/useAgentActivity'
 import type { Mentionables } from '../../../lib/team-chat-api'
 import { agentWorkingOn } from '../../../lib/agent-directory'
 import { openAgentWork } from '../../../lib/open-active-chat'
-import { useOpenAgentDm } from '../../../lib/use-open-agent-dm'
+import { useOpenAgentChat } from '../../../lib/use-open-agent-chat'
 import { AgentAvatar } from '../AgentAvatar'
 import { AgentProfileCard } from '../AgentProfileCard'
 import { PanelLink, PanelSection } from '../ConversationRows'
@@ -32,45 +32,35 @@ export function AgentsPanel({ onNavPress }: { onNavPress?: () => void }) {
   const experience = useWorkspaceExperience()
   const activity = useAgentActivity({ light: true })
   const [profile, setProfile] = useState<Agent | null>(null)
-  const { openAgentDm, opening } = useOpenAgentDm(chat.workspaceId)
+  const { openAgentChat, opening } = useOpenAgentChat(chat.workspaceId)
   const [openingKey, setOpeningKey] = useState<string | null>(null)
   const agents = chat.mentionables?.agents ?? []
   const work = useMemo(() => agentWorkingOn(activity.tasks, activity.activeChats), [activity.tasks, activity.activeChats])
   if (!chat.enabled || !chat.workspaceId) return null
   const workspaceId = chat.workspaceId
 
-  const message = async (agent: Agent) => {
+  const openChat = async (agent: Agent) => {
     setOpeningKey(agent.key)
     try {
-      await openAgentDm(agent.projectId, { navigate: chat.openConversation })
+      await openAgentChat(agent.projectId, { wide: width >= 1024 })
+      onNavPress?.()
     } finally {
       setOpeningKey(null)
     }
   }
 
-  // The project pane sits beside a conversation, so it needs a wide screen.
-  const showInPane = async (projectId: string) => {
-    await openAgentDm(projectId, {
-      withProjectPane: true,
-      navigate: (conversation) => {
-        router.push(`/(app)/c/${encodeURIComponent(conversation.id)}?project=${encodeURIComponent(projectId)}` as any)
-        onNavPress?.()
-      },
-    })
-  }
-
   return (
     <View className="px-2" testID="agents-panel">
-      <PanelSection label="Agents" addLabel="Message an agent" onAdd={() => chat.startCreate('agent')}>
+      <PanelSection label="Agents">
         {agents.map((agent) => {
           const doing = agent.projectId ? work.get(agent.projectId) : undefined
           return (
             <View key={agent.key} className="flex-row items-center">
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={`Message ${agent.name}${doing ? `, ${doing.label}` : ''}`}
+                accessibilityLabel={`Open chat with ${agent.name}${doing ? `, ${doing.label}` : ''}`}
                 disabled={opening && openingKey === agent.key}
-                onPress={() => void message(agent)}
+                onPress={() => void openChat(agent)}
                 className={cn('min-w-0 flex-1 flex-row items-center gap-2.5 rounded-md py-1.5 active:bg-accent/50', phone ? 'px-1' : 'px-2', opening && openingKey === agent.key && 'opacity-60')}
               >
                 <View>
@@ -126,7 +116,6 @@ export function AgentsPanel({ onNavPress }: { onNavPress?: () => void }) {
           name={profile.name}
           iconUrl={profile.image}
           onClose={() => setProfile(null)}
-          onOpenProjectPane={width >= 1024 ? (projectId) => void showInPane(projectId) : undefined}
           onOpenChannel={(id) => {
             setProfile(null)
             router.push(`/(app)/c/${encodeURIComponent(id)}` as any)

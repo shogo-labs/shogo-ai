@@ -20,7 +20,7 @@ import { NewMessagePicker } from './NewMessagePicker'
 
 export function parseNewConversationMode(value: string | string[] | undefined): NewConversationMode {
   const mode = Array.isArray(value) ? value[0] : value
-  return mode === 'channel' || mode === 'agent' ? mode : 'message'
+  return mode === 'channel' ? mode : 'message'
 }
 
 export function NewConversationScreen({ mode }: { mode: NewConversationMode }) {
@@ -73,7 +73,6 @@ export function NewConversationScreen({ mode }: { mode: NewConversationMode }) {
             workspaceId={workspaceId}
             mentionables={mentionables}
             me={me}
-            initialFilter={mode === 'agent' ? 'agents' : 'all'}
             autoFocus
             className="min-h-0 flex-1"
             onCreated={created}

@@ -109,6 +109,8 @@ export interface ConversationDetail extends Omit<ConversationSummary, 'unreadCou
   canDelete?: boolean
   /** An agent system's manifest declares this channel, so it can't be deleted until it stops. */
   systemManaged?: boolean
+  /** An old agent DM: the chat it became, so the client redirects instead of showing it (SHO-412). */
+  movedToChatSessionId?: string | null
   members: ConversationMember[]
 }
 
@@ -924,9 +926,14 @@ export function teamChatApi() {
       return (await http.post<{ conversation: ConversationSummary }>(`${ws(workspaceId)}/dms`, { userIds })).data
         .conversation
     },
-    async openAgentDm(workspaceId: string, projectId: string | null) {
-      return (await http.post<{ conversation: ConversationSummary }>(`${ws(workspaceId)}/dms`, { agent: { projectId } }))
-        .data.conversation
+    /**
+     * The person's chat with an agent: a project chat for a project agent, a
+     * workspace chat for the workspace agent. Finds or creates it (SHO-412).
+     */
+    async openAgentChat(workspaceId: string, projectId: string | null) {
+      return (
+        await http.post<{ chatSessionId: string; projectId: string | null }>(`${ws(workspaceId)}/agent-chat`, { projectId })
+      ).data
     },
     /** The note-to-self conversation. Same endpoint: you are the only member. */
     async openSelfDm(workspaceId: string, userId: string) {

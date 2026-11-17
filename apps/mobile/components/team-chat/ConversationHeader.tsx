@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ActivityIndicator, Alert, Animated, Easing, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
-import { Archive, Bell, BellOff, Bot, Check, ChevronLeft, ChevronRight, FileText, FolderOpen, Hash, Lock, LogOut, MoreHorizontal, Paperclip, Pencil, PanelRight, Pin, Radio, Sparkles, Star, Trash2, UserCircle, UserPlus, Users, X } from 'lucide-react-native'
+import { Archive, Bell, BellOff, Check, ChevronLeft, ChevronRight, FileText, Hash, Lock, LogOut, MoreHorizontal, Paperclip, Pencil, Pin, Radio, Sparkles, Star, Trash2, UserPlus, Users, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { LiquidGlassBackdrop } from '../ui/LiquidGlassBackdrop'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
@@ -12,7 +12,6 @@ import { MarkdownText } from '../chat/MarkdownText'
 import { WebTooltip } from '../chat/WebTooltip'
 import {
   conversationTitle,
-  isAgentDm,
   teamChatApi,
   type CatchUpResult,
   type ChatMessage,
@@ -76,8 +75,6 @@ export interface ConversationHeaderProps {
   /** Phone: the channel's tabs, listed in the details panel instead of a strip under the header. */
   tabsMenu?: { items: ChannelTabItem[]; onAddBoard?: () => void }
   onBack?: () => void
-  /** Show the agent's project beside the conversation. Only passed on wide screens. */
-  onOpenProjectPane?: (projectId: string, name: string) => void
   onOpenFiles?: () => void
   /** Open the channel doc. Passed for channels that support one. */
   onOpenDoc?: () => void
@@ -94,7 +91,7 @@ function confirm(title: string, message: string): Promise<boolean> {
   )
 }
 
-export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, onDeleted, floating, onBack, onOpenProjectPane, onOpenFiles, onOpenDoc, onLayout, tabsMenu }: ConversationHeaderProps) {
+export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, onDeleted, floating, onBack, onOpenFiles, onOpenDoc, onLayout, tabsMenu }: ConversationHeaderProps) {
   const insets = useSafeAreaInsets()
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const router = useRouter()
@@ -162,7 +159,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
   const peerId = dmPeer?.type === 'user' && dmPeer.self !== true ? dmPeer.id : null
   const peerStatus = useUserStatus(conversation.workspaceId, peerId)
   const peerPresence = usePresence(conversation.workspaceId, peerId)
-  const Icon = conversation.kind === 'activity' ? Radio : conversation.kind === 'private' ? Lock : isChannel ? Hash : isAgentDm({ kind: conversation.kind, participants }) ? Bot : Users
+  const Icon = conversation.kind === 'activity' ? Radio : conversation.kind === 'private' ? Lock : isChannel ? Hash : Users
 
   const run = async (fn: () => Promise<unknown>) => {
     try {
@@ -186,32 +183,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     }
   }
 
-  const agentDm = isAgentDm({ kind: conversation.kind, participants })
-  const agentPeer = agentDm ? participants.find((p) => p.type === 'agent') : undefined
-  const agentProjectId = agentPeer?.type === 'agent' ? agentPeer.projectId : null
-  const agentName = agentPeer?.type === 'agent' ? agentPeer.name ?? 'Agent' : 'Agent'
-  const openProject = () => router.push({ pathname: '/(app)/projects/[id]', params: { id: agentProjectId! } } as any)
-
   const actions: HeaderAction[] = []
-  if (agentPeer) {
-    actions.push({
-      key: 'agent-profile',
-      label: 'View profile',
-      icon: (s) => <UserCircle size={s} className="text-muted-foreground" />,
-      onPress: () => router.push({ pathname: '/(app)/agents/[key]', params: { key: agentProjectId ?? 'ws' } } as any),
-    })
-  }
-  if (agentProjectId) {
-    actions.push({ key: 'open-project', label: 'Open project', icon: (s) => <FolderOpen size={s} className="text-muted-foreground" />, onPress: openProject })
-    if (onOpenProjectPane) {
-      actions.push({
-        key: 'project-pane',
-        label: 'Show in side panel',
-        icon: (s) => <PanelRight size={s} className="text-muted-foreground" />,
-        onPress: () => onOpenProjectPane(agentProjectId, agentName),
-      })
-    }
-  }
   if (onOpenDoc && floating && !tabsMenu) {
     actions.push({
       key: 'doc',
@@ -304,8 +276,6 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     </View>
   ) : selfPeer ? (
     <UserAvatar name={selfPeer.name} image={selfPeer.image} size={20} />
-  ) : agentPeer?.type === 'agent' ? (
-    <AgentAvatar name={agentName} projectId={agentProjectId} workspaceId={conversation.workspaceId} size={20} />
   ) : (
     <Icon size={16} className="text-muted-foreground" />
   )
@@ -496,11 +466,6 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
             style={{ opacity: chromeOpacity }}
             pointerEvents={panelMounted ? 'none' : 'box-none'}
           >
-            {agentProjectId ? (
-              <GlassButton label="Open project" onPress={openProject}>
-                <FolderOpen size={18} className="text-foreground" />
-              </GlassButton>
-            ) : null}
             <HuddleButton conversation={conversation} me={me} label={title} floating />
             <GlassButton label={catchUpAction.label} onPress={catchUpAction.onPress}>
               {catchUpAction.icon(18)}

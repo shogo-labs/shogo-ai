@@ -204,13 +204,16 @@ describe('media in an agent turn reply', () => {
     expect(row.mimeType).toBe('image/png')
   })
 
-  test('an image in a reply to an agent DM is published the same way', async () => {
+  test('an image in a reply to a legacy agent DM is published the same way', async () => {
     dispatcher.configureConversationAgentDispatcher({
       invoke: async () => answer('![](clips/wave.mp4)'),
       fetchWorkspaceFile: async () => new Response(new Uint8Array([4, 5]), { headers: { 'content-type': 'video/mp4' } }),
     })
-    const opened = await call('POST', `/workspaces/${seed.workspaceId}/dms`, { user: seed.member, body: { agent: { projectId: seed.projectId } } })
-    const id = opened.json.conversation.id as string
+    // The agent-DM surface is gone (SHO-412); a DM row can still exist until the
+    // boot-time migration moves it, and its replies must still publish media.
+    const service = await import('../services/conversation.service')
+    const dm = await service.openAgentConversation(seed.workspaceId, seed.member, { projectId: seed.projectId })
+    const id = dm.id as string
     const posted = await call('POST', `/conversations/${id}/messages`, { user: seed.member, body: { text: 'the cut, please' } })
     const reply = await settledReply({ conversationId: id, id: { not: posted.json.message.id } })
 
