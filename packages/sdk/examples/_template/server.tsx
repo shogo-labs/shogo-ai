@@ -32,6 +32,8 @@ app.get('/__shogo/routes', (c) => {
     const method = String(route.method).toUpperCase()
     if (method === 'ALL' || method === 'USE') continue
     if (route.path.startsWith('/__shogo')) continue
+    // Only the API surface — `/health` and the SPA catch-all are not API routes.
+    if (!route.path.startsWith('/api/')) continue
     const key = `${method} ${route.path}`
     if (seen.has(key)) continue
     seen.add(key)

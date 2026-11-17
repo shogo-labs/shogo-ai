@@ -167,6 +167,9 @@ export function generateServer(config: ServerGeneratorConfig = {}): string {
   lines.push('    const method = String(route.method).toUpperCase()')
   lines.push("    if (method === 'ALL' || method === 'USE') continue")
   lines.push("    if (route.path.startsWith('/__shogo')) continue")
+  // Only the API surface: `/health` and the SPA catch-all are real routes but
+  // not API routes, and the runtime reports this list as `/api/<path>`.
+  lines.push(`    if (!route.path.startsWith('${apiBasePath}'.replace(/\\/$/, '') + '/')) continue`)
   lines.push('    const key = `${method} ${route.path}`')
   lines.push('    if (seen.has(key)) continue')
   lines.push('    seen.add(key)')

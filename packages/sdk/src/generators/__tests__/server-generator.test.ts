@@ -197,6 +197,9 @@ describe('Server Generator', () => {
       expect(output).toContain('routes.push({ method, path: route.path })')
       // Its own endpoints are not part of the app's route table.
       expect(output).toContain("if (route.path.startsWith('/__shogo')) continue")
+      // Only the API surface: `/health` and the SPA catch-all are real routes
+      // but not API routes, and the runtime reports this list as `/api/<path>`.
+      expect(output).toContain("if (!route.path.startsWith('/api'.replace(/\\/$/, '') + '/')) continue")
     })
 
     it('registers them only after custom routes so custom routes are listed', () => {
