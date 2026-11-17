@@ -15,17 +15,24 @@ mock.module('../../services/billing.service', () => ({
 const { stampWorkspacePlan, buildPublishHostingStamp } = await import('../stamp-workspace-plan')
 
 const originalSubstrate = process.env.PUBLISH_SUBSTRATE
+// The desktop app exports SHOGO_LOCAL_MODE=true, so a plain `bun test` on a
+// desktop checkout would otherwise run every cloud case against the desktop
+// stamp. Pin it per test and restore it, like the other local-mode suites.
+const originalLocalMode = process.env.SHOGO_LOCAL_MODE
 
 beforeEach(() => {
   planImpl = async () => 'free'
   canPublishImpl = async () => false
   alwaysOnImpl = async () => 0
   delete process.env.PUBLISH_SUBSTRATE
+  delete process.env.SHOGO_LOCAL_MODE
 })
 
 afterEach(() => {
   if (originalSubstrate === undefined) delete process.env.PUBLISH_SUBSTRATE
   else process.env.PUBLISH_SUBSTRATE = originalSubstrate
+  if (originalLocalMode === undefined) delete process.env.SHOGO_LOCAL_MODE
+  else process.env.SHOGO_LOCAL_MODE = originalLocalMode
 })
 
 describe('stampWorkspacePlan', () => {
@@ -79,7 +86,8 @@ describe('buildPublishHostingStamp', () => {
       process.env.PUBLISH_SUBSTRATE = 'metal'
       expect(buildPublishHostingStamp('business', 5).substrate).toBe('desktop')
     } finally {
-      delete process.env.SHOGO_LOCAL_MODE
+      if (originalLocalMode === undefined) delete process.env.SHOGO_LOCAL_MODE
+      else process.env.SHOGO_LOCAL_MODE = originalLocalMode
     }
   })
 
