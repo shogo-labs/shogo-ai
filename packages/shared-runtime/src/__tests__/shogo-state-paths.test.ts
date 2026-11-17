@@ -285,6 +285,60 @@ describe('one exclude list for every git path (SHO-371)', () => {
     }
   })
 
+  test('a GitHub-connected repo never stages .shogo/memory-history, even after a checkpoint turn', async () => {
+    const dir = tmpRepo()
+    try {
+      // GitHub connect writes its block first; a checkpoint turn then writes the
+      // checkpoint block into the same exclude file.
+      ensureShogoGitHubExcludes(dir, quiet)
+      ensureShogoExcludes(dir, quiet)
+
+      const exclude = readFileSync(join(dir, '.git', 'info', 'exclude'), 'utf8')
+      expect(exclude).toContain('shogo github excludes')
+      expect(exclude).not.toContain('!.shogo/memory-history/')
+
+      mkdirSync(join(dir, '.shogo', 'memory-history'), { recursive: true })
+      mkdirSync(join(dir, '.shogo', 'run'), { recursive: true })
+      writeFileSync(join(dir, '.shogo', 'memory-history', '2026-11-17.md'), 'memory\n')
+      writeFileSync(join(dir, '.shogo', 'run', 'children.json'), '{}\n')
+      writeFileSync(join(dir, 'AGENTS.md'), 'user source\n')
+
+      await untrackShogoStatePaths(dir, { logger: quiet })
+      execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'pipe' })
+
+      const staged = execFileSync('git', ['diff', '--cached', '--name-only'], {
+        cwd: dir,
+        encoding: 'utf8',
+      })
+        .split('\n')
+        .filter(Boolean)
+      expect(staged.filter((p) => p.startsWith('.shogo/'))).toEqual([])
+      expect(staged).toContain('AGENTS.md')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('a checkpoint repo still tracks .shogo/memory-history', async () => {
+    const dir = tmpRepo()
+    try {
+      ensureShogoExcludes(dir, quiet)
+      mkdirSync(join(dir, '.shogo', 'memory-history'), { recursive: true })
+      writeFileSync(join(dir, '.shogo', 'memory-history', 'x.md'), 'memory\n')
+
+      await untrackShogoStatePaths(dir, { logger: quiet })
+      execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'pipe' })
+
+      const staged = execFileSync('git', ['diff', '--cached', '--name-only'], {
+        cwd: dir,
+        encoding: 'utf8',
+      })
+      expect(staged).toContain('.shogo/memory-history/x.md')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test('isShogoRuntimeSubtree keeps the user\'s own .shogo content', () => {
     expect(isShogoRuntimeSubtree('.shogo/run/children.json')).toBe(true)
     expect(isShogoRuntimeSubtree('.shogo/logs/build.log')).toBe(true)
