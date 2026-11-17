@@ -8,26 +8,19 @@
 -- overage on `firstPaidAt`, which `invoice.payment_succeeded` sets the first
 -- time a real (amount_paid > 0) invoice clears.
 --
--- Nullable and additive. Backfill so existing payers are unchanged on deploy:
---   * active / past_due subscriptions have been charged → currentPeriodStart.
---   * a workspace whose wallet has paid overage blocks has demonstrably paid,
---     even if its subscription status is not active/past_due.
+-- DDL only. `subscriptions` is a published table, so a backfill UPDATE here
+-- would write the same logical rows in every region — the SHO-344 outage shape
+-- (RUNBOOK §3, `bun run check:migration-ids`). The backfill is an idempotent,
+-- primary-region-only post-deploy step instead:
+--
+--   bun scripts/backfill-subscription-first-paid.ts            # dry run
+--   bun scripts/backfill-subscription-first-paid.ts --apply    # US primary only
+--
+-- It sets `firstPaidAt = currentPeriodStart` for active / past_due
+-- subscriptions and for workspaces whose wallet has paid overage blocks.
 -- Trialing and cancelled-trial rows stay NULL: their card has never been
--- charged, which is exactly the state the gate is meant to catch.
+-- charged, which is exactly the state the gate is meant to catch. Until it
+-- runs, existing payers are refused overage — so run it as part of the deploy.
 
 -- AlterTable
 ALTER TABLE "subscriptions" ADD COLUMN "firstPaidAt" TIMESTAMP(3);
-
--- Backfill: non-trialing subscriptions have been charged.
-UPDATE "subscriptions"
-SET "firstPaidAt" = "currentPeriodStart"
-WHERE "status" IN ('active', 'past_due');
-
--- Backfill: a workspace that has paid overage blocks has demonstrably paid.
-UPDATE "subscriptions" s
-SET "firstPaidAt" = s."currentPeriodStart"
-FROM "usage_wallets" w
-WHERE w."workspaceId" = s."workspaceId"
-  AND w."overagePaidBlocks" > 0
-  AND s."firstPaidAt" IS NULL
-  AND s."status" <> 'trialing';
