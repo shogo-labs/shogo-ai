@@ -61,9 +61,15 @@ function completedTurn(messageId: string, text: string): string {
 
 // ─── The loaded transcript ──────────────────────────────────────────────────
 
-/** A tool output as it is stored: long enough that 25 turns is ~700 KB. */
+/**
+ * A tool output as it is stored: long enough that 25 turns is ~700 KB.
+ *
+ * 800 lines, not 260: at 260 the whole fixture serialised to ~255 KB, under the
+ * `TRANSCRIPT_FLOOR_BYTES` the spec asserts on, so the precondition failed
+ * before the send was ever measured.
+ */
 const toolOutput = (index: number) =>
-  Array.from({ length: 260 }, (_, line) => `line ${line} of src/file-${index}.ts contents`).join("\n")
+  Array.from({ length: 800 }, (_, line) => `line ${line} of src/file-${index}.ts contents`).join("\n")
 
 function savedRow(
   id: string,
