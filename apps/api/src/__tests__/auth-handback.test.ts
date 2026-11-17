@@ -13,6 +13,8 @@
  */
 
 import { describe, expect, it } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { isNativeCallbackUrl, toNativeAuthHandback } from '../lib/auth-handback'
 
 const COOKIE_URL =
@@ -90,4 +92,26 @@ describe('toNativeAuthHandback', () => {
     expect(html).not.toContain('</script><script>alert(1)')
     expect(html).toContain('\\u003c/script>')
   })
+})
+
+/**
+ * The helper is only worth anything if the auth mount point actually calls it.
+ * Both servers mount `/api/auth/*` (the cloud monolith in `server.ts` and the
+ * desktop/local factory in `app/create-app.ts`), and a later refactor that
+ * drops the wrapper would silently restore the broken hand-back.
+ */
+describe('the auth mount point is wrapped', () => {
+  const MOUNTS = ['src/server.ts', 'src/app/create-app.ts']
+
+  for (const file of MOUNTS) {
+    it(`${file} hands /api/auth/* through toNativeAuthHandback`, () => {
+      const source = readFileSync(join(import.meta.dir, '..', '..', file), 'utf8')
+      const mount = source
+        .split('\n')
+        .find((line) => line.includes("'/api/auth/*'") && line.includes('auth.handler'))
+
+      expect(mount).toBeDefined()
+      expect(mount).toContain('toNativeAuthHandback(await auth.handler(')
+    })
+  }
 })
