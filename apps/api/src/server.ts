@@ -9038,6 +9038,27 @@ app.post('/api/webhooks/stripe', async (c) => {
         } catch (err: any) {
           console.error('[Webhook] Failed to mark trial ended:', err.message)
         }
+        // Invoice the sub-block overage remainder at subscription end. Without
+        // this it carries forward forever: `chargeOverageBlocks` defers while
+        // the sub is not active, and nothing else ever bills it. `final`
+        // ignores the row's status, so it works after the cancel above.
+        try {
+          const localSub = await prisma.subscription.findFirst({
+            where: { stripeSubscriptionId: subscription.id },
+            select: { workspaceId: true },
+          })
+          if (localSub?.workspaceId) {
+            const invoiced = await billingService.chargeOverage(localSub.workspaceId, 'final')
+            if (invoiced > 0) {
+              console.log('[Webhook] Final overage invoice at subscription end:', {
+                subscriptionId: subscription.id,
+                workspaceId: localSub.workspaceId,
+              })
+            }
+          }
+        } catch (err: any) {
+          console.error('[Webhook] Failed to invoice final overage:', err.message)
+        }
         try {
           const instanceSub = await instanceService.findInstanceSubscriptionByStripeId(subscription.id)
           if (instanceSub) {

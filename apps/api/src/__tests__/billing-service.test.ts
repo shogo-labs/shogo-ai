@@ -1383,6 +1383,108 @@ describe('chargeOverageBlocks', () => {
     expect(await billing.chargeOverageBlocks('ws-1')).toBe(0)
     expect(walletByWs.get('ws-1').overageBilledUsd).toBe(0)
   })
+
+  // ── SHO-408: cap / final partial invoices ──────────────────────────────
+
+  test('cap = block: invoices the unbilled amount just under the cap', async () => {
+    seedWallet('ws-1', {
+      overageAccumulatedUsd: 24.9996, overageBilledUsd: 0, overageHardLimitUsd: 25,
+    })
+    subsByWs.set('ws-1', [activeSub])
+    stripeInvoicesPayImpl = () => { throw new Error('card_declined') }
+
+    expect(await billing.chargeOverageBlocks('ws-1', { reason: 'cap' })).toBe(1)
+
+    const item = stripeCalls.find((c) => c.method === 'invoiceItems.create')!
+    expect(item.args[0].amount).toBe(2499)
+    expect(item.args[0].description).toBe('Usage overage ($24.99)')
+    expect(item.args[0].metadata).toMatchObject({ kind: 'overage_block', reason: 'cap', partial: 'true' })
+
+    const w = walletByWs.get('ws-1')
+    expect(w.overageBilledUsd).toBe(24.99)
+    expect(w.overageOutstandingUsd).toBe(24.99)
+    expect(w.overageOutstandingInvoiceId).toBe('in_1')
+
+    // Settling it clears the pause but does NOT advance the trust ladder.
+    expect(await billing.markOverageInvoicePaid('ws-1', 'in_1')).toBe(true)
+    expect(walletByWs.get('ws-1').overageOutstandingInvoiceId).toBeNull()
+    expect(walletByWs.get('ws-1').overagePaidBlocks).toBe(0)
+  })
+
+  test('cap < block: invoices the unbilled amount, and a second kick does not double-invoice', async () => {
+    seedWallet('ws-1', {
+      overageAccumulatedUsd: 9.98, overageBilledUsd: 0, overageHardLimitUsd: 10,
+    })
+    subsByWs.set('ws-1', [activeSub])
+    stripeInvoicesPayImpl = () => { throw new Error('card_declined') }
+
+    expect(await billing.chargeOverageBlocks('ws-1', { reason: 'cap' })).toBe(1)
+    expect(stripeCalls.find((c) => c.method === 'invoiceItems.create')!.args[0].amount).toBe(998)
+
+    stripeCalls.length = 0
+    expect(await billing.chargeOverageBlocks('ws-1', { reason: 'cap' })).toBe(0)
+    expect(stripeCalls.find((c) => c.method === 'invoices.create')).toBeUndefined()
+  })
+
+  test('cap > block: the full block still invoices as a block, then the tail at the cap', async () => {
+    seedWallet('ws-1', {
+      overageAccumulatedUsd: 39.99, overageBilledUsd: 0, overageHardLimitUsd: 40,
+    })
+    subsByWs.set('ws-1', [activeSub])
+
+    // The $25 block goes out through the normal path, unchanged.
+    expect(await billing.chargeOverageBlocks('ws-1')).toBe(1)
+    const blockItem = stripeCalls.find((c) => c.method === 'invoiceItems.create')!
+    expect(blockItem.args[0].amount).toBe(2500)
+    expect(blockItem.args[0].metadata).toMatchObject({ reason: 'block', partial: 'false' })
+    expect(walletByWs.get('ws-1').overagePaidBlocks).toBe(1)
+
+    // Then the $14.99 tail invoices at the cap.
+    stripeCalls.length = 0
+    expect(await billing.chargeOverageBlocks('ws-1', { reason: 'cap' })).toBe(1)
+    expect(stripeCalls.find((c) => c.method === 'invoiceItems.create')!.args[0].amount).toBe(1499)
+  })
+
+  test('final: invoices the remainder against a canceled subscription', async () => {
+    seedWallet('ws-1', { overageAccumulatedUsd: 5, overageBilledUsd: 0 })
+    subsByWs.set('ws-1', [{ ...activeSub, status: 'canceled' }])
+
+    expect(await billing.chargeOverageBlocks('ws-1', { reason: 'final' })).toBe(1)
+    const item = stripeCalls.find((c) => c.method === 'invoiceItems.create')!
+    expect(item.args[0].amount).toBe(500)
+    expect(item.args[0].metadata).toMatchObject({ reason: 'final', partial: 'true' })
+    expect(walletByWs.get('ws-1').overageBilledUsd).toBe(5)
+  })
+
+  test('final: a canceled subscription is not billed by the block path', async () => {
+    seedWallet('ws-1', { overageAccumulatedUsd: 60, overageBilledUsd: 0 })
+    subsByWs.set('ws-1', [{ ...activeSub, status: 'canceled' }])
+    expect(await billing.chargeOverageBlocks('ws-1')).toBe(0)
+    expect(stripeCalls.find((c) => c.method === 'invoices.create')).toBeUndefined()
+  })
+
+  test('remainder under the Stripe minimum is not invoiced and keeps carrying forward', async () => {
+    seedWallet('ws-1', {
+      overageAccumulatedUsd: 0.49, overageBilledUsd: 0, overageHardLimitUsd: 0.49,
+    })
+    subsByWs.set('ws-1', [activeSub])
+    expect(await billing.chargeOverageBlocks('ws-1', { reason: 'cap' })).toBe(0)
+    expect(stripeCalls.find((c) => c.method === 'invoices.create')).toBeUndefined()
+    expect(walletByWs.get('ws-1').overageBilledUsd).toBe(0)
+  })
+
+  test('a paid cap invoice leaves ~$0 to carry into the next period', async () => {
+    seedWallet('ws-1', {
+      overageAccumulatedUsd: 24.9996, overageBilledUsd: 0, overageHardLimitUsd: 25,
+    })
+    subsByWs.set('ws-1', [activeSub])
+    expect(await billing.chargeOverageBlocks('ws-1', { reason: 'cap' })).toBe(1)
+
+    await billing.allocateMonthlyIncluded('ws-1', 'pro', 1)
+    const w = walletByWs.get('ws-1')
+    expect(w.overageBilledUsd).toBe(0)
+    expect(w.overageAccumulatedUsd).toBeCloseTo(0.0096, 4)
+  })
 })
 
 describe('markOverageInvoicePaid / releaseOverageInvoice', () => {
@@ -1408,6 +1510,21 @@ describe('markOverageInvoicePaid / releaseOverageInvoice', () => {
     const w = walletByWs.get('ws-1')
     expect(w.overageOutstandingInvoiceId).toBeNull()
     expect(w.overagePaidBlocks).toBe(2)
+  })
+
+  test('a partial (cap / final) invoice settles without advancing the trust ladder', async () => {
+    seedWallet('ws-1', { overageOutstandingInvoiceId: 'in_p', overageOutstandingUsd: 0.5, overagePaidBlocks: 0 })
+    expect(await billing.markOverageInvoicePaid('ws-1', 'in_p')).toBe(true)
+    const w = walletByWs.get('ws-1')
+    expect(w.overageOutstandingInvoiceId).toBeNull()
+    expect(w.overageOutstandingUsd).toBe(0)
+    expect(w.overagePaidBlocks).toBe(0)
+  })
+
+  test('a cap invoice that happens to equal a full block still counts', async () => {
+    seedWallet('ws-1', { overageOutstandingInvoiceId: 'in_f', overageOutstandingUsd: 25, overagePaidBlocks: 0 })
+    expect(await billing.markOverageInvoicePaid('ws-1', 'in_f')).toBe(true)
+    expect(walletByWs.get('ws-1').overagePaidBlocks).toBe(1)
   })
 })
 
