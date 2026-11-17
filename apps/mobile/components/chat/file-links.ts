@@ -223,7 +223,20 @@ export function rewriteLocalFileLinks(markdown: string): string {
   return unmask(text, fences, "FENCE")
 }
 
-const MARKDOWN_LINK_RE = /(!?)\[([^\]\n]*)\]\(\s*(<[^>\n]+>|[^)\s]+)((?:\s+"[^"\n]*")?)\s*\)/g
+/**
+ * Link text, allowing one level of balanced brackets so `[see [SHO-1]](x)` is
+ * read as a link rather than stopping at the inner `]` (SHO-413).
+ */
+const LINK_LABEL = String.raw`(?:[^\[\]\n]|\[[^\[\]\n]*\])*`
+/**
+ * A markdown link. The target may be empty: `arr[0]()` parses as a link whose
+ * text is `0` and whose destination is nothing, which the hardener would print
+ * as `0 [blocked]`. A backslash-escaped `[` is not a link.
+ */
+const MARKDOWN_LINK_RE = new RegExp(
+  String.raw`(?<!\\)(!?)\[(${LINK_LABEL})\]\(\s*(<[^>\n]+>|[^)\s]*)((?:\s+"[^"\n]*")?)\s*\)`,
+  "g",
+)
 const SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i
 
 /**
@@ -275,6 +288,10 @@ export function resolveRelativeLinks(
     (full, image: string, label: string, target: string, title: string) => {
       if (image) return full
       const href = target.startsWith("<") ? target.slice(1, -1).trim() : target
+      // `arr[0]()` and `obj[Symbol.iterator]()` parse as a link with an empty
+      // target; the hardener would print `0 [blocked]`. Escape the bracket so
+      // the source reads exactly as it was typed.
+      if (!href) return `\\${full}`
       if (!isWorkspaceRelativeHref(href)) return full
 
       const bare = href.replace(/^\.\//, "")
