@@ -105,7 +105,7 @@ export const HOSTING_EVALS: AgentEval[] = [
 
   withMaxScore({
     id: 'hosting-free-backend-beginner',
-    name: 'Free hosting for a backend: preview now + Publish on Pro, never a competitor',
+    name: 'Free hosting for a backend: preview now + Publish on Business, never a competitor',
     category: 'code-agent',
     level: 2,
     initialMode: 'app',
