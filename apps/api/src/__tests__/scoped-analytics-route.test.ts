@@ -141,7 +141,7 @@ describe('workspace basic endpoints', () => {
   test('overview: 403 when not a member', async () => {
     const res = await call('GET', `/workspaces/${WS}/analytics/overview`)
     expect(res.status).toBe(403)
-    expect(res.body.error.code).toBe('forbidden')
+    expect(res.body.error.code).toBe('analytics_admin_only')
   })
 
   test('overview: 200 when member', async () => {
@@ -156,7 +156,7 @@ describe('workspace basic endpoints', () => {
     seedMember()
     const res = await call('GET', `/workspaces/${WS}/analytics/member-usage`)
     expect(res.status).toBe(200)
-    expect(svcSpies.getMemberUsageStats).toHaveBeenCalledWith(WS, { userId: undefined })
+    expect(svcSpies.getMemberUsageStats).toHaveBeenCalledWith(WS, {})
   })
 
   test('member-insights delegates period and returns the service result', async () => {
@@ -166,18 +166,19 @@ describe('workspace basic endpoints', () => {
     expect(svcSpies.getMemberInsights).toHaveBeenCalledWith(WS, '7d', { userId: undefined })
   })
 
-  test('non-admins are limited to their own member insights', async () => {
-    seedMember(WS, 'member')
-    const own = await call('GET', `/workspaces/${WS}/analytics/member-insights?userId=user_1`)
-    expect(own.status).toBe(200)
-    expect(svcSpies.getMemberInsights).toHaveBeenCalledWith(
-      WS,
-      '30d',
-      { userId: 'user_1' },
-    )
+  test('admins may narrow member insights to one member', async () => {
+    seedMember()
+    const res = await call('GET', `/workspaces/${WS}/analytics/member-insights?userId=user_2`)
+    expect(res.status).toBe(200)
+    expect(svcSpies.getMemberInsights).toHaveBeenCalledWith(WS, '30d', { userId: 'user_2' })
+  })
 
-    const other = await call('GET', `/workspaces/${WS}/analytics/member-insights?userId=user_2`)
-    expect(other.status).toBe(403)
+  test('members get analytics_admin_only, not their own slice', async () => {
+    seedMember(WS, 'member')
+    const res = await call('GET', `/workspaces/${WS}/analytics/member-insights?userId=user_1`)
+    expect(res.status).toBe(403)
+    expect(res.body.error.code).toBe('analytics_admin_only')
+    expect(svcSpies.getMemberInsights).not.toHaveBeenCalled()
   })
 
   test('usage-log: parses page/limit/userId/model query params', async () => {
@@ -232,13 +233,12 @@ describe('workspace basic endpoints', () => {
     )
   })
 
-  test('spend-timeseries: limits regular members to their own usage', async () => {
+  test('spend-timeseries: members are refused', async () => {
     seedMember(WS, 'member')
-    await call('GET', `/workspaces/${WS}/analytics/spend-timeseries?groupBy=model`)
-    expect(svcSpies.getSpendTimeseries.mock.calls[0]?.[0]).toEqual({
-      workspaceId: WS,
-      userId: 'user_1',
-    })
+    const res = await call('GET', `/workspaces/${WS}/analytics/spend-timeseries?groupBy=model`)
+    expect(res.status).toBe(403)
+    expect(res.body.error.code).toBe('analytics_admin_only')
+    expect(svcSpies.getSpendTimeseries).not.toHaveBeenCalled()
   })
 
   test('catch branch → 500 analytics_failed', async () => {
@@ -344,25 +344,31 @@ describe('advanced workspace endpoints', () => {
     expect(svcSpies.getGrowthTimeSeries).toHaveBeenCalledWith({ workspaceId: WS }, '7d')
   })
 
-  test('usage: passes when business plan, checks membership', async () => {
+  test('usage: 403 when not a member', async () => {
     isBusiness = true
     const res = await call('GET', `/workspaces/${WS}/analytics/usage`)
     expect(res.status).toBe(403)
-    expect(res.body.error.code).toBe('forbidden')
+    expect(res.body.error.code).toBe('analytics_admin_only')
   })
 
-  test('usage: limits regular members to their own analytics', async () => {
+  test('usage: members are refused even on a Business plan', async () => {
     isBusiness = true
     seedMember(WS, 'member')
     const res = await call('GET', `/workspaces/${WS}/analytics/usage`)
-    expect(res.status).toBe(200)
-    expect(svcSpies.getUsageAnalytics).toHaveBeenCalledWith(
-      { workspaceId: WS, userId: 'user_1' },
-      '30d',
-    )
+    expect(res.status).toBe(403)
+    expect(res.body.error.code).toBe('analytics_admin_only')
+    expect(svcSpies.getUsageAnalytics).not.toHaveBeenCalled()
   })
 
-  test('chat: business + member = 200', async () => {
+  test('usage: admins get the whole workspace', async () => {
+    isBusiness = true
+    seedMember()
+    const res = await call('GET', `/workspaces/${WS}/analytics/usage`)
+    expect(res.status).toBe(200)
+    expect(svcSpies.getUsageAnalytics).toHaveBeenCalledWith({ workspaceId: WS }, '30d')
+  })
+
+  test('chat: business + admin = 200', async () => {
     isBusiness = true
     seedMember()
     const res = await call('GET', `/workspaces/${WS}/analytics/chat?period=90d`)
@@ -378,15 +384,13 @@ describe('advanced workspace endpoints', () => {
     expect(svcSpies.getProjectAnalytics).toHaveBeenCalledWith({ workspaceId: WS })
   })
 
-  test('projects (workspace-scoped): non-admins only see projects they can read', async () => {
+  test('projects (workspace-scoped): members are refused', async () => {
     isBusiness = true
     seedMember(WS, 'member')
     const res = await call('GET', `/workspaces/${WS}/analytics/projects`)
-    expect(res.status).toBe(200)
-    expect(svcSpies.getProjectAnalytics).toHaveBeenCalledWith(
-      { workspaceId: WS },
-      { projectWhere: { AND: [{ workspaceId: WS }, { workspaceId: { in: [WS] }, visibility: 'workspace' }] } },
-    )
+    expect(res.status).toBe(403)
+    expect(res.body.error.code).toBe('analytics_admin_only')
+    expect(svcSpies.getProjectAnalytics).not.toHaveBeenCalled()
   })
 
   test('billing: 200 with business plan', async () => {
@@ -476,6 +480,16 @@ describe('project endpoints', () => {
     const res = await call('GET', `/projects/${PROJ}/analytics/chat`)
     expect(res.status).toBe(500)
     expect(res.body.error.code).toBe('analytics_failed')
+  })
+
+  test('every project route refuses a workspace member', async () => {
+    seedProject()
+    seedMember(WS, 'member')
+    for (const route of ['overview', 'chat', 'usage']) {
+      const res = await call('GET', `/projects/${PROJ}/analytics/${route}`)
+      expect(res.status).toBe(403)
+      expect(res.body.error.code).toBe('analytics_admin_only')
+    }
   })
 })
 

@@ -1576,6 +1576,12 @@ const PeopleTab = observer(function PeopleTab() {
   const http = useDomainHttp();
   const currentWorkspace = useActiveWorkspace();
   const toast = useToast();
+  const { can, workspaceRole } = usePermissions({
+    workspaceId: currentWorkspace?.id,
+  });
+  // Workspace analytics are owner/admin only; a member's People tab must not
+  // fire the two workspace-wide usage reads (they would only 403).
+  const canViewMemberAnalytics = can("workspace.analytics:read");
 
   const [subTab, setSubTab] = useState<PeopleSubTab>("all");
   const [search, setSearch] = useState("");
@@ -1649,20 +1655,22 @@ const PeopleTab = observer(function PeopleTab() {
           setUserMap(map);
         } catch {}
 
-        try {
-          const usage = await api.getMemberUsageStats(http, ws.id, {
-            period: memberUsagePeriod,
-          });
-          setMemberUsage(usage);
-        } catch {}
+        if (canViewMemberAnalytics) {
+          try {
+            const usage = await api.getMemberUsageStats(http, ws.id, {
+              period: memberUsagePeriod,
+            });
+            setMemberUsage(usage);
+          } catch {}
 
-        try {
-          const insights = await api.getMemberInsights(http, ws.id, {
-            period: memberUsagePeriod,
-          });
-          setMemberInsights(insights);
-        } catch {
-          setMemberInsights({ rows: [], total: 0 });
+          try {
+            const insights = await api.getMemberInsights(http, ws.id, {
+              period: memberUsagePeriod,
+            });
+            setMemberInsights(insights);
+          } catch {
+            setMemberInsights({ rows: [], total: 0 });
+          }
         }
       }
     } catch {}
@@ -1674,6 +1682,7 @@ const PeopleTab = observer(function PeopleTab() {
     http,
     currentWorkspace?.id,
     memberUsagePeriod,
+    canViewMemberAnalytics,
   ]);
 
   useEffect(() => {
@@ -1797,12 +1806,8 @@ const PeopleTab = observer(function PeopleTab() {
     }
   };
 
-  const { can, workspaceRole } = usePermissions({
-    workspaceId: currentWorkspace?.id,
-  });
   const canManageMembers = can("workspace.members:manage");
   const isOwner = workspaceRole === "owner";
-  const canViewMemberAnalytics = can("workspace.analytics:read");
   const canManageMember = (member: { role?: string; userId?: string }) =>
     canManageMemberRow(
       { canManageMembers, isOwner, isSelf: member.userId === user?.id },
@@ -3559,6 +3564,9 @@ function BillingTab() {
   const router = useRouter();
   const http = useDomainHttp();
   const workspace = useActiveWorkspace();
+  const { can } = usePermissions({ workspaceId: workspace?.id });
+  // Workspace analytics are owner/admin only; a member has no page to open.
+  const canViewAnalytics = can("workspace.analytics:read");
   const { subscription, effectiveBalance, usageWindows, refetchUsageWallet } =
     useBillingData(workspace?.id);
   const [instanceLabel, setInstanceLabel] = useState<string | null>(null);
@@ -3769,17 +3777,19 @@ function BillingTab() {
                 Manage Plan
               </Text>
             </Button>
-            <Button
-              variant="outline"
-              onPress={() =>
-                router.push("/(app)/analytics" as any)
-              }
-              className="flex-1"
-            >
-              <Text className="text-foreground font-medium">
-                View detailed usage
-              </Text>
-            </Button>
+            {canViewAnalytics ? (
+              <Button
+                variant="outline"
+                onPress={() =>
+                  router.push("/(app)/analytics" as any)
+                }
+                className="flex-1"
+              >
+                <Text className="text-foreground font-medium">
+                  View detailed usage
+                </Text>
+              </Button>
+            ) : null}
           </View>
         </CardContent>
       </Card>
@@ -4250,6 +4260,9 @@ export default observer(function SettingsPage({
   const workspaces = useWorkspaceCollection();
   const { features, localMode } = usePlatformConfig();
   const teamChat = useWorkspaceExperience().kind === "team";
+  const activeWorkspace = useActiveWorkspace();
+  const { can } = usePermissions({ workspaceId: activeWorkspace?.id });
+  const canViewAnalytics = can("workspace.analytics:read");
   const phoneTarget = phoneSettingsTarget(
     params as Record<string, string | string[] | undefined>,
     {
@@ -4258,6 +4271,7 @@ export default observer(function SettingsPage({
       platform: Platform.OS,
       isDesktop: IS_DESKTOP_CLIENT,
       teamChat,
+      canViewAnalytics,
     },
   );
 
@@ -4270,13 +4284,15 @@ export default observer(function SettingsPage({
   useEffect(() => {
     // The phone redirect already targets Analytics — never navigate twice.
     if (isPhoneSurface) return;
+    // Members have no analytics surface: leave them on Settings.
+    if (!canViewAnalytics) return;
     if (params.tab === "analytics" || params.tab === "costs") {
       router.replace({
         pathname: "/(app)/analytics",
         params: { view: params.tab === "costs" ? "costs" : "usage" },
       } as any);
     }
-  }, [isPhoneSurface, params.tab, router]);
+  }, [isPhoneSurface, params.tab, router, canViewAnalytics]);
 
   useEffect(() => {
     if (isPhoneSurface) return;
