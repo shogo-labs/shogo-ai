@@ -9,13 +9,16 @@
  * "git does something surprising", so a mock would prove nothing.
  */
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 
 import {
   buildShogoExcludeBlock,
+  buildShogoGitHubExcludeBlock,
+  ensureShogoGitHubExcludes,
+  isShogoRuntimeSubtree,
   stripShogoLfsRules,
   directorySizeBytes,
   ensureShogoExcludes,
@@ -246,5 +249,50 @@ describe('git dir resolution', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('one exclude list for every git path (SHO-371)', () => {
+  test('the GitHub block excludes all of .shogo, including memory history and the child ledger', () => {
+    const block = buildShogoGitHubExcludeBlock()
+    expect(block).toContain('.shogo/*')
+    expect(block).not.toContain('!.shogo/memory-history/')
+    expect(block).toContain('.tech-stack')
+    expect(block).toContain('prisma/dev.db')
+    // `.shogo/run/children.json` is covered by `.shogo/*` — the old hand-kept
+    // list had no `.shogo/run/` and pushed it into users' repositories.
+    expect(isShogoRuntimeState('.shogo/run/children.json')).toBe(true)
+  })
+
+  test('both managed blocks coexist in .git/info/exclude without clobbering each other', () => {
+    const dir = tmpRepo()
+    try {
+      writeFileSync(join(dir, '.git', 'info', 'exclude'), '# mine\n*.log\n')
+      expect(ensureShogoExcludes(dir, quiet)).toBe(true)
+      expect(ensureShogoGitHubExcludes(dir, quiet)).toBe(true)
+      // Idempotent: a second pass changes nothing.
+      expect(ensureShogoExcludes(dir, quiet)).toBe(false)
+      expect(ensureShogoGitHubExcludes(dir, quiet)).toBe(false)
+
+      const exclude = readFileSync(join(dir, '.git', 'info', 'exclude'), 'utf8')
+      expect(exclude).toContain('*.log')
+      expect(exclude).toContain('shogo checkpoint excludes')
+      expect(exclude).toContain('shogo github excludes')
+      expect(exclude.match(/shogo checkpoint excludes \(managed\) >>>/g)).toHaveLength(1)
+      expect(exclude.match(/shogo github excludes \(managed\) >>>/g)).toHaveLength(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('isShogoRuntimeSubtree keeps the user\'s own .shogo content', () => {
+    expect(isShogoRuntimeSubtree('.shogo/run/children.json')).toBe(true)
+    expect(isShogoRuntimeSubtree('.shogo/logs/build.log')).toBe(true)
+    expect(isShogoRuntimeSubtree('.shogo/sessions.db')).toBe(true)
+    expect(isShogoRuntimeSubtree('.tmp/x')).toBe(true)
+    expect(isShogoRuntimeSubtree('.shogo/skills/review/SKILL.md')).toBe(false)
+    expect(isShogoRuntimeSubtree('.shogo/agents/dev.md')).toBe(false)
+    expect(isShogoRuntimeSubtree('.shogo/memory-history/x.md')).toBe(false)
+    expect(isShogoRuntimeSubtree('prisma/dev.db')).toBe(false)
   })
 })

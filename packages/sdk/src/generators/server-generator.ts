@@ -108,7 +108,7 @@ export function generateServer(config: ServerGeneratorConfig = {}): string {
     lines.push("  c.res.headers.set('Access-Control-Allow-Origin', '*')")
     lines.push("  c.res.headers.set('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')")
     lines.push("  c.res.headers.set('Access-Control-Allow-Headers', 'Content-Type,Authorization')")
-    lines.push("  if (c.req.method === 'OPTIONS') return c.text('', 204)")
+    lines.push("  if (c.req.method === 'OPTIONS') return new Response(null, { status: 204 })")
     lines.push('  await next()')
     lines.push('})')
     lines.push('')
