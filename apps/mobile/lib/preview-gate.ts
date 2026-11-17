@@ -98,6 +98,38 @@ export function shouldStopPreviewPoll(status: PreviewStatusLike): boolean {
 }
 
 /**
+ * How long the canvas may sit on a loading state before it must show a real
+ * error and a Retry instead of spinning (SHO-406).
+ *
+ * The agent runtime / dev server never becoming reachable is a genuine
+ * failure, so it gets the longer window: a cold `bun install` + build + spawn
+ * legitimately takes 20-40s.
+ */
+export const BASE_TIMEOUT_MS = 60_000
+
+/**
+ * How long the canvas waits for the API sidecar after the dev server is
+ * already serving, before showing the app anyway.
+ *
+ * Deliberately shorter than {@link BASE_TIMEOUT_MS}: the app UI is up, only
+ * the sidecar is late, and blocking the user on it is worse than letting a
+ * few `/api/*` calls fail. Non-resetting — see `usePreviewGateTimers`.
+ */
+export const API_WAIT_TIMEOUT_MS = 20_000
+
+/** Human labels for the runtime's `phase` while the preview is coming up. */
+export const PHASE_LABELS: Record<string, string> = {
+  idle: 'Preparing environment...',
+  installing: 'Installing dependencies...',
+  'generating-prisma': 'Setting up database...',
+  'pushing-db': 'Initializing database...',
+  building: 'Building app...',
+  'starting-api': 'Starting API server...',
+  ready: 'Ready',
+  failed: 'Preview build failed',
+}
+
+/**
  * Whether the canvas iframe should be mounted.
  *
  * Requires the dev server to be reachable (`baseReady`) AND the API sidecar to
@@ -111,6 +143,98 @@ export function shouldShowCanvas(input: {
   timedOut: boolean
 }): boolean {
   return input.baseReady && (input.apiLatched || input.timedOut)
+}
+
+/**
+ * What the canvas should render right now.
+ *
+ * One gate for both the project screen's `CanvasPanel` and the phone's
+ * full-screen canvas surface (`ProjectCanvasSurface`). Before SHO-406 the
+ * surface had its own copy that could only ever leave the spinner on
+ * `running && apiReady !== false`, so a failed build, a 5xx status poll, a
+ * sidecar that never came up or a runtime that never resolved all left it on
+ * "Starting canvas…" forever.
+ */
+export type CanvasGate =
+  | 'waiting-runtime'
+  | 'starting'
+  | 'ready'
+  | 'failed'
+  | 'timed-out'
+  | 'no-project'
+
+export interface CanvasGateInput {
+  /** Resolved agent-proxy base. `null` while `/sandbox/url` has not answered. */
+  agentUrl: string | null | undefined
+  /** Runtime `phase` from `/preview/status`. */
+  phase?: string | null
+  /** Hydrate-aware `running` (see {@link resolveRunning}). */
+  running: boolean
+  apiReady: boolean
+  /** Whether this preview's API sidecar has ever been healthy (latched). */
+  apiLatched: boolean
+  /** Native loads the tokenized document without waiting on the status poll. */
+  nativeBaseReady?: boolean
+  /** {@link BASE_TIMEOUT_MS} elapsed without the dev server becoming reachable. */
+  baseTimedOut: boolean
+  /** {@link API_WAIT_TIMEOUT_MS} elapsed with the dev server up but no sidecar. */
+  apiWaitElapsed: boolean
+  /** `/preview/start` answered `mode: "no-project"`. */
+  noProject?: boolean
+}
+
+export function resolveCanvasGate(input: CanvasGateInput): CanvasGate {
+  if (input.noProject) return 'no-project'
+  if (isPreviewFailed({ phase: input.phase ?? undefined })) return 'failed'
+
+  const baseReady = !!input.nativeBaseReady || (!!input.agentUrl && input.running)
+  if (
+    shouldShowCanvas({
+      baseReady,
+      apiLatched: input.apiLatched,
+      timedOut: input.apiWaitElapsed,
+    })
+  ) {
+    return 'ready'
+  }
+
+  // Only a *not-yet-reachable* dev server can time out; once it is serving we
+  // are waiting on the sidecar, which has its own (shorter) fallback above.
+  if (!baseReady && input.baseTimedOut) return 'timed-out'
+  if (!input.agentUrl) return 'waiting-runtime'
+  return 'starting'
+}
+
+// ---------------------------------------------------------------------------
+// `/preview/start` retry policy (SHO-406)
+// ---------------------------------------------------------------------------
+
+/**
+ * How many times `/preview/start` is attempted before the canvas gives up and
+ * shows its Retry.
+ *
+ * A single fire-and-forget POST (the pre-SHO-406 behaviour) lost a failed
+ * start forever, so a runtime that was merely busy stayed on "Starting
+ * canvas…" until the user killed the app.
+ */
+export const START_MAX_ATTEMPTS = 3
+
+/** Backoff between `/preview/start` attempts, indexed by attempt - 1. */
+export const START_RETRY_DELAYS_MS = [2_000, 5_000, 10_000] as const
+
+/** Whether another `/preview/start` attempt is still allowed. */
+export function shouldAttemptPreviewStart(attempts: number): boolean {
+  return attempts < START_MAX_ATTEMPTS
+}
+
+/**
+ * Delay before the next `/preview/start` attempt, given how many have already
+ * been made. Clamps to the last entry so a raised {@link START_MAX_ATTEMPTS}
+ * cannot index past the schedule.
+ */
+export function nextPreviewStartDelayMs(attempts: number): number {
+  const index = Math.min(Math.max(attempts - 1, 0), START_RETRY_DELAYS_MS.length - 1)
+  return START_RETRY_DELAYS_MS[index]
 }
 
 /**

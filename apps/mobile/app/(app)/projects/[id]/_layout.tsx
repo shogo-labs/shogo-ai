@@ -93,9 +93,6 @@ import {
   useNativePhoneWindow,
 } from "../../../../lib/native-phone-layout";
 import {
-  resolveApiReady,
-  resolveRunning,
-  shouldStopPreviewPoll,
   shouldShowCanvas,
   isPreviewFailed,
   previewStatusPollBase,
@@ -109,8 +106,13 @@ import {
   previewRecoveryAttempts,
   recordPreviewRecovery,
   PREVIEW_ACTIVE_PING_MS,
+  PHASE_LABELS,
   type PreviewActivePing,
 } from "../../../../lib/preview-gate";
+import {
+  usePreviewGateTimers,
+  usePreviewPhase,
+} from "../../../../lib/use-preview-phase";
 import {
   decideAutoOpenPreview,
   previewAutoOpenTracker,
@@ -5504,31 +5506,13 @@ function CanvasPanel({
   // Native skips the `running` poll and loads the tokenized document instead.
   const baseReady = nativeBaseReady || (!!agentUrl && !!readyCanvasBaseUrl);
 
-  // Two independent fallbacks, deliberately kept separate:
-  //
-  //  - baseTimedOut: the agent runtime / dev server never became reachable
-  //    (a genuine failure) → surface the "Connection timed out" error + Retry.
-  //
-  //  - apiWaitElapsed: the dev server IS up but the API sidecar hasn't reported
-  //    healthy within a bounded window → show the app anyway rather than block.
-  //    This is intentionally NON-RESETTING. On a fresh project the sidecar only
-  //    goes healthy after a cold `bun install` + build + spawn, and during that
-  //    time the dev-server root can flip 404<->200 as `dist/` is rebuilt. The
-  //    previous single timer keyed on `baseReady`, so every flip restarted the
-  //    clock and the gate could hang on "Starting API server…" forever. We
-  //    start this timer once (on first base-ready) and never restart it.
-  const BASE_TIMEOUT_MS = 60_000;
-  const API_WAIT_TIMEOUT_MS = 20_000;
-  const [baseTimedOut, setBaseTimedOut] = useState(false);
-  useEffect(() => {
-    if (baseReady) {
-      setBaseTimedOut(false);
-      return;
-    }
-    setBaseTimedOut(false);
-    const timer = setTimeout(() => setBaseTimedOut(true), BASE_TIMEOUT_MS);
-    return () => clearTimeout(timer);
-  }, [baseReady]);
+  // Two independent fallbacks, deliberately kept separate — see
+  // `usePreviewGateTimers` for why the API-wait clock never restarts.
+  const { baseTimedOut, setBaseTimedOut, apiWaitElapsed } = usePreviewGateTimers({
+    baseReady,
+    apiLatched,
+    apiGateKey,
+  });
 
   // -------------------------------------------------------------------------
   // "Is this preview still alive?" (SHO-226)
@@ -5615,30 +5599,6 @@ function CanvasPanel({
       clearInterval(timer);
     };
   }, [canvasVisible, projectId, canvasBaseUrl, agentUrl, onRecover]);
-
-  const [apiWaitElapsed, setApiWaitElapsed] = useState(false);
-  const apiWaitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (apiLatched) return;
-    if (!baseReady) return;
-    // Start exactly once; do NOT restart on baseReady / phase oscillation.
-    if (apiWaitTimerRef.current) return;
-    apiWaitTimerRef.current = setTimeout(() => {
-      // Remember the fallback too, so remounting the panel doesn't make the
-      // user sit through the same wait again for this preview.
-      latchApiGate(apiGateKey);
-      setApiWaitElapsed(true);
-    }, API_WAIT_TIMEOUT_MS);
-  }, [baseReady, apiLatched, apiGateKey]);
-  useEffect(
-    () => () => {
-      if (apiWaitTimerRef.current) {
-        clearTimeout(apiWaitTimerRef.current);
-        apiWaitTimerRef.current = null;
-      }
-    },
-    []
-  );
 
   // Load the canvas once the dev server is reachable AND the sidecar is healthy
   // (latched). `apiWaitElapsed` is the bounded safety net so a slow cold start
@@ -5768,149 +5728,6 @@ function CanvasPanel({
 // ---------------------------------------------------------------------------
 // App Preview Panel — iframe (web) for APP project live preview
 // ---------------------------------------------------------------------------
-
-const PHASE_LABELS: Record<string, string> = {
-  idle: "Preparing environment...",
-  installing: "Installing dependencies...",
-  "generating-prisma": "Setting up database...",
-  "pushing-db": "Initializing database...",
-  building: "Building app...",
-  "starting-api": "Starting API server...",
-  ready: "Ready",
-  failed: "Preview build failed",
-};
-
-/**
- * Polls `${agentUrl}/preview/status` so callers can show the user *what*
- * the runtime is doing (installing deps, building, starting API, …)
- * rather than a generic spinner. Returns:
- *   phase          – PreviewManager phase string ('idle', 'installing', …)
- *   running        – true once the preview is serveable (note: a prebuilt
- *                    `dist/` flips this true *before* the API sidecar binds)
- *   apiReady       – true once the project's API sidecar is healthy, or the
- *                    project has no sidecar. The correct gate for loading the
- *                    app UI so its `/api/*` calls don't fire into a 503.
- *   apiServerPhase – sidecar phase ('idle' | 'starting' | 'healthy' | …) for
- *                    accurate labels while waiting.
- *
- * Polling stops once `running === true && apiReady === true` and resumes if
- * the status base changes (e.g. the user navigates to a different project).
- * We keep polling while `running` but `!apiReady` precisely because the
- * prebuilt-dist path reports `running` early — the API sidecar comes up
- * afterwards, and `apiReady` is what flips when it's actually responding.
- *
- * Reused by both the AppPreviewPanel and CanvasPanel so their "waiting"
- * states stay consistent and the previously misleading "Send a message
- * in the Chat tab to wake the agent" hint can be replaced with real,
- * accurate phase labels.
- */
-function usePreviewPhase(
-  agentUrl: string | null,
-  canvasBaseUrl?: string | null
-): {
-  phase: string;
-  running: boolean;
-  apiReady: boolean;
-  apiServerPhase: string;
-  /**
-   * Consecutive `/preview/status` poll failures (0 as soon as one succeeds).
-   * The canvas treats two in a row as "the runtime behind this preview is
-   * gone" and re-resolves (SHO-226).
-   */
-  statusErrors: number;
-} {
-  const [phase, setPhase] = useState<string>("idle");
-  const [running, setRunning] = useState<boolean>(false);
-  // Starts `false` (gate closed) and is reset to `false` on each navigation.
-  // Backwards-compat for older runtimes whose `/preview/status` predates the
-  // `apiReady` field is handled by `resolveApiReady` (absent → ready) so the
-  // gate degrades to the old `running`-only behaviour instead of hanging.
-  const [apiReady, setApiReady] = useState<boolean>(false);
-  const [apiServerPhase, setApiServerPhase] = useState<string>("idle");
-  const [statusErrors, setStatusErrors] = useState<number>(0);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const inFlightRef = useRef(false);
-  const kickedStartRef = useRef(false);
-  const statusBase = previewStatusPollBase(agentUrl, canvasBaseUrl);
-  const pollTimeoutMs = Platform.OS === "web" ? 5_000 : 20_000;
-
-  useEffect(() => {
-    // Reset on status-base change so consumers see a fresh "idle" phase on
-    // navigation instead of a stale `running=true` from the previous
-    // project.
-    setPhase("idle");
-    setRunning(false);
-    setApiReady(false);
-    setApiServerPhase("idle");
-    setStatusErrors(0);
-    kickedStartRef.current = false;
-
-    if (!statusBase) return;
-
-    let cancelled = false;
-    const poll = async () => {
-      if (inFlightRef.current) return;
-      inFlightRef.current = true;
-      try {
-        const resp = await agentFetch(`${statusBase}/preview/status`, {
-          signal: AbortSignal.timeout(pollTimeoutMs),
-        });
-        if (cancelled) return;
-        if (resp.ok) {
-          const data = await resp.json();
-          setStatusErrors(0);
-          if (data.phase) setPhase(data.phase);
-          if (data.apiServerPhase) setApiServerPhase(data.apiServerPhase);
-          setApiReady(resolveApiReady(data));
-          // `resolveRunning` folds in `hydrateRebuildPending`: a cold-miss
-          // assign's `data.running` reflects the warm-pool TEMPLATE until the
-          // post-hydrate rebuild finishes, and this is a one-way latch (never
-          // resets to false), so treating that as "running" would mount the
-          // canvas iframe against the template and never revisit it once the
-          // real content comes up. See preview-gate.ts for the full story.
-          if (resolveRunning(data)) setRunning(true);
-          if (!data.running && !kickedStartRef.current) {
-            kickedStartRef.current = true;
-            void agentFetch(`${statusBase}/preview/start`, {
-              method: "POST",
-            }).catch(() => {});
-          }
-          // Stop only once the preview is running AND the API is ready — the
-          // prebuilt-dist path reports `running` before the sidecar binds, so
-          // `running` alone would stop the poll too early.
-          if (shouldStopPreviewPoll(data)) {
-            if (pollRef.current) {
-              clearInterval(pollRef.current);
-              pollRef.current = null;
-            }
-          }
-        } else {
-          console.warn("[preview/status]", resp.status, statusBase);
-          setStatusErrors((n) => n + 1);
-        }
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn("[preview/status] poll failed", message);
-        if (!cancelled) setStatusErrors((n) => n + 1);
-      } finally {
-        inFlightRef.current = false;
-      }
-    };
-
-    poll();
-    pollRef.current = setInterval(poll, 3000);
-
-    return () => {
-      cancelled = true;
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
-  }, [statusBase, pollTimeoutMs]);
-
-  return { phase, running, apiReady, apiServerPhase, statusErrors };
-}
 
 function AppPreviewPanel({
   previewUrl,
