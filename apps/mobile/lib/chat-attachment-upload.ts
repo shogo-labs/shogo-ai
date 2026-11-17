@@ -23,9 +23,24 @@ import {
   readAsStringAsync,
 } from "expo-file-system/legacy"
 import { buildAgentWorkspaceUrl } from "./agent-workspace-url"
+import { createImagePreview, readImageSize } from "./chat-image-preview"
 
 /** Runtime route that accepts streamed attachment bytes. */
 export const CHAT_ATTACHMENT_UPLOAD_PATH = "/agent/chat/attachments"
+
+/**
+ * Where previews land inside the workspace. A dot-folder keeps them out of the
+ * user's file list and out of the agent's way, while still being served by the
+ * same download route as the original.
+ */
+export const CHAT_ATTACHMENT_PREVIEW_SUBDIR = ".previews"
+
+/**
+ * Ceiling on the size-and-preview step. It runs before the turn is sent, so a
+ * decoder that never answers must not hold the message: past this the image
+ * goes out without a stored size or preview, exactly as it did before.
+ */
+export const IMAGE_META_DEADLINE_MS = 3000
 
 /**
  * Images at or below this size still ride inline. Above it, uploading first
@@ -51,6 +66,25 @@ export interface UploadableAttachment {
    * so it is passed through untouched instead of being uploaded twice.
    */
   savedPath?: string
+  /** Pixel size of the original image, when the picker or a decode knew it. */
+  width?: number
+  height?: number
+  /** A small preview of the image, uploaded alongside the original. */
+  preview?: UploadablePreview
+  /**
+   * A preview that is already on the runtime (rebuilt from a persisted part on
+   * a resend), so it is reused instead of being made and uploaded again.
+   */
+  previewUrl?: string
+}
+
+/** The ≤640 px JPEG that a chat thumbnail paints instead of the original. */
+export interface UploadablePreview {
+  name: string
+  type: string
+  dataUrl?: string
+  uri?: string
+  file?: unknown
 }
 
 export interface UploadedAttachmentRef {
@@ -70,6 +104,14 @@ export interface OutgoingFilePart {
   name?: string
   /** Present only on an uploaded (reference) part. */
   savedPath?: string
+  /**
+   * Pixel size of the original. Stored on the part so a thumbnail can be its
+   * final size on the first frame instead of resizing once the image decodes.
+   */
+  width?: number
+  height?: number
+  /** Workspace URL of the small preview the thumbnail paints. */
+  previewUrl?: string
 }
 
 function estimateDataUrlBytes(dataUrl: string | undefined): number {
@@ -95,9 +137,11 @@ export function shouldUploadAttachmentFirst(file: UploadableAttachment): boolean
   return attachmentSize(file) > MAX_INLINE_IMAGE_BYTES
 }
 
-function uploadUrl(agentUrl: string, name: string): string {
+function uploadUrl(agentUrl: string, name: string, subdir?: string): string {
   const base = agentUrl.replace(/\/+$/, "")
-  return `${base}${CHAT_ATTACHMENT_UPLOAD_PATH}?name=${encodeURIComponent(name)}`
+  const params = [`name=${encodeURIComponent(name)}`]
+  if (subdir) params.push(`dir=${encodeURIComponent(subdir)}`)
+  return `${base}${CHAT_ATTACHMENT_UPLOAD_PATH}?${params.join("&")}`
 }
 
 function mediaTypeFor(file: UploadableAttachment): string {
@@ -191,10 +235,12 @@ export async function uploadChatAttachment(params: {
   fetchImpl?: typeof fetch
   /** Fraction of the bytes sent so far, 0…1. Called only when provided. */
   onProgress?: (fraction: number) => void
+  /** Workspace subfolder to land in. Defaults to the route's own (`files`). */
+  subdir?: string
 }): Promise<UploadedAttachmentRef> {
-  const { agentUrl, file, headers = {}, fetchImpl, onProgress } = params
+  const { agentUrl, file, headers = {}, fetchImpl, onProgress, subdir } = params
   const mediaType = mediaTypeFor(file)
-  const url = uploadUrl(agentUrl, file.name)
+  const url = uploadUrl(agentUrl, file.name, subdir)
   const authHeaders = { ...headers, "content-type": mediaType }
 
   let raw: string
@@ -260,6 +306,118 @@ export async function uploadChatAttachment(params: {
 }
 
 /**
+ * The size and preview of an outgoing image, or an empty object when neither
+ * could be produced.
+ *
+ * Both are best-effort by design: a photo whose bytes cannot be decoded, or a
+ * runtime that refuses the preview upload, must still send. The message then
+ * carries no `width`/`height`/`previewUrl` and the thumbnail falls back to its
+ * fixed box — exactly the behaviour before this existed.
+ */
+function withDeadline<T>(work: Promise<T>, fallback: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), IMAGE_META_DEADLINE_MS)
+    work.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      () => {
+        clearTimeout(timer)
+        resolve(fallback)
+      },
+    )
+  })
+}
+
+async function prepareImageMeta(
+  file: UploadableAttachment,
+  options: {
+    agentUrl?: string | null
+    headers?: Record<string, string>
+    fetchImpl?: typeof fetch
+  },
+): Promise<{ width?: number; height?: number; previewUrl?: string }> {
+  return withDeadline(prepareImageMetaUnbounded(file, options), {})
+}
+
+async function prepareImageMetaUnbounded(
+  file: UploadableAttachment,
+  options: {
+    agentUrl?: string | null
+    headers?: Record<string, string>
+    fetchImpl?: typeof fetch
+  },
+): Promise<{ width?: number; height?: number; previewUrl?: string }> {
+  const meta: { width?: number; height?: number; previewUrl?: string } = {}
+  const rememberSize = (size: { width: number; height: number } | null) => {
+    if (!size || !(size.width > 0) || !(size.height > 0)) return
+    meta.width = Math.round(size.width)
+    meta.height = Math.round(size.height)
+  }
+
+  // The picker usually knows the size already, which saves a decode.
+  if (file.width && file.height) {
+    rememberSize({ width: file.width, height: file.height })
+  }
+
+  // A resend rebuilt from a persisted part already has its preview on the
+  // runtime; making and uploading another one would be wasted work.
+  const storedPreview =
+    file.previewUrl && !file.previewUrl.startsWith("blob:")
+      ? file.previewUrl
+      : null
+  if (storedPreview) meta.previewUrl = storedPreview
+
+  if (!storedPreview && options.agentUrl) {
+    try {
+      const made = file.preview ? null : await createImagePreview(file)
+      const preview = file.preview ?? made
+      if (preview) {
+        // A preview we decoded ourselves also told us the original's size, so
+        // there is no second decode.
+        if (!meta.width && made) {
+          rememberSize({
+            width: made.sourceWidth,
+            height: made.sourceHeight,
+          })
+        }
+        const uploaded = await uploadChatAttachment({
+          agentUrl: options.agentUrl,
+          file: {
+            name: preview.name,
+            type: preview.type,
+            dataUrl: preview.dataUrl,
+            uri: preview.uri,
+          },
+          headers: options.headers,
+          fetchImpl: options.fetchImpl,
+          subdir: CHAT_ATTACHMENT_PREVIEW_SUBDIR,
+        })
+        meta.previewUrl = uploaded.url
+      }
+    } catch (err) {
+      // A preview is an optimisation. Losing it costs a full-size decode on
+      // resume; failing the send over it would cost the message.
+      console.warn(
+        `[ChatAttachments] Could not store a preview for "${file.name}":`,
+        err instanceof Error ? err.message : err,
+      )
+    }
+  }
+
+  if (!meta.width) {
+    try {
+      rememberSize(await readImageSize(file))
+    } catch {
+      /* no stored size — the thumbnail keeps its fixed box */
+    }
+  }
+
+  return meta
+}
+
+/**
  * Turn composer attachments into the file parts a chat turn carries.
  *
  * Large/non-image files become uploaded references; everything else keeps its
@@ -267,6 +425,10 @@ export async function uploadChatAttachment(params: {
  * bytes are still in hand (a tunnel transport, a flaky network on a small
  * file), and rethrows when they are not — sending a reference to a file that
  * never arrived would silently lose the attachment.
+ *
+ * Every image also gets its pixel size and a small preview stored on the part,
+ * so a thumbnail is its final size on the first frame and never decodes the
+ * original (SHO-407).
  */
 export async function prepareOutgoingFiles(
   files: UploadableAttachment[],
@@ -284,21 +446,35 @@ export async function prepareOutgoingFiles(
 
   for (const file of files) {
     const mediaType = mediaTypeFor(file)
-    const inline = (): OutgoingFilePart => ({
-      type: "file",
-      mediaType,
-      url: file.dataUrl ?? "",
-      ...(file.name ? { name: file.name } : {}),
+    const isImage = mediaType.startsWith("image/")
+    const meta = isImage
+      ? await prepareImageMeta(file, { agentUrl, headers, fetchImpl })
+      : {}
+    const withMeta = (part: OutgoingFilePart): OutgoingFilePart => ({
+      ...part,
+      ...(meta.width && meta.height
+        ? { width: meta.width, height: meta.height }
+        : {}),
+      ...(meta.previewUrl ? { previewUrl: meta.previewUrl } : {}),
     })
-
-    if (file.savedPath && file.dataUrl) {
-      parts.push({
+    const inline = (): OutgoingFilePart =>
+      withMeta({
         type: "file",
         mediaType,
-        url: file.dataUrl,
+        url: file.dataUrl ?? "",
         ...(file.name ? { name: file.name } : {}),
-        savedPath: file.savedPath,
       })
+
+    if (file.savedPath && file.dataUrl) {
+      parts.push(
+        withMeta({
+          type: "file",
+          mediaType,
+          url: file.dataUrl,
+          ...(file.name ? { name: file.name } : {}),
+          savedPath: file.savedPath,
+        }),
+      )
       continue
     }
 
@@ -317,13 +493,15 @@ export async function prepareOutgoingFiles(
           ? (fraction) => onUploadProgress(file.name, fraction)
           : undefined,
       })
-      parts.push({
-        type: "file",
-        mediaType: uploaded.mediaType,
-        url: uploaded.url,
-        name: uploaded.name,
-        savedPath: uploaded.savedPath,
-      })
+      parts.push(
+        withMeta({
+          type: "file",
+          mediaType: uploaded.mediaType,
+          url: uploaded.url,
+          name: uploaded.name,
+          savedPath: uploaded.savedPath,
+        }),
+      )
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       const fallback = await inlineFallback(file)

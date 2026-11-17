@@ -37,7 +37,6 @@ import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeCont
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { useAgentImageSource } from "../../../lib/agent-image-source"
 import { fitChatImage } from "./image-sizing"
-import { useNaturalImageSize } from "./image-natural-size"
 import { useMeasuredWidth } from "./use-measured-width"
 import { stripAskUserAnswerMarker } from "./askUserAnswers"
 import { stripBuildBriefMarker } from "./buildBrief"
@@ -56,6 +55,11 @@ export interface MessageContentProps {
 interface ImagePart {
   url: string
   mediaType: string
+  /** Pixel size stored with the part, so the box is final on the first frame. */
+  width?: number
+  height?: number
+  /** Small preview the thumbnail paints instead of the original. */
+  previewUrl?: string
 }
 
 interface FilePart {
@@ -115,6 +119,15 @@ function extractImageParts(message: UIMessage): ImagePart[] {
     .map((part) => ({
       url: part.url,
       mediaType: part.mediaType,
+      ...(typeof part.width === "number" && part.width > 0
+        ? { width: part.width }
+        : {}),
+      ...(typeof part.height === "number" && part.height > 0
+        ? { height: part.height }
+        : {}),
+      ...(typeof part.previewUrl === "string" && part.previewUrl
+        ? { previewUrl: part.previewUrl }
+        : {}),
     }))
 }
 
@@ -139,11 +152,19 @@ function extractFileParts(message: UIMessage): FilePart[] {
 
 function ImageThumbnail({
   url,
+  previewUrl,
+  width,
+  height,
   mediaType,
   index,
   containerWidth,
 }: {
   url: string
+  /** Small preview to paint instead of the original, when one was stored. */
+  previewUrl?: string
+  /** Stored pixel size of the original; absent on messages sent before SHO-407. */
+  width?: number
+  height?: number
   mediaType: string
   index: number
   /** Width of the row the thumbnail sits in, so it fits the pane, not the window. */
@@ -151,11 +172,19 @@ function ImageThumbnail({
 }) {
   const [hasError, setHasError] = useState(false)
   const [showModal, setShowModal] = useState(false)
-  const imageSource = useAgentImageSource(url)
-  const naturalSize = useNaturalImageSize(imageSource?.uri ?? url)
+  // A preview can outlive its usefulness (a workspace that was wiped) while the
+  // original is still served from chat-attachment storage. Falling back keeps
+  // the photo visible instead of leaving a broken box.
+  const [previewFailed, setPreviewFailed] = useState(false)
+  const displayUrl = previewUrl && !previewFailed ? previewUrl : url
+  const imageSource = useAgentImageSource(displayUrl)
+  // The box is decided from the stored size alone. A message sent before sizes
+  // were stored gets a fixed box that never resizes: measuring it would change
+  // the content height after the first layout, which is what made a resumed
+  // chat jump (SHO-407).
   const box = fitChatImage({
-    naturalWidth: naturalSize.size?.width,
-    naturalHeight: naturalSize.size?.height,
+    naturalWidth: width,
+    naturalHeight: height,
     containerWidth,
   })
   const [contextMenu, setContextMenu] = useState<{
@@ -183,6 +212,14 @@ function ImageThumbnail({
   const handleDownloadImage = useCallback(() => {
     void downloadImage(url, `image-attachment-${index + 1}`, mediaType)
   }, [index, mediaType, url])
+
+  const handleImageError = useCallback(() => {
+    if (previewUrl && !previewFailed) {
+      setPreviewFailed(true)
+      return
+    }
+    setHasError(true)
+  }, [previewFailed, previewUrl])
 
   if (hasError) {
     return (
@@ -219,8 +256,7 @@ function ImageThumbnail({
               source={imageSource}
               resizeMode={box.cropped ? "cover" : "contain"}
               accessibilityLabel={`Image attachment ${index + 1}`}
-              onError={() => setHasError(true)}
-              onLoad={naturalSize.onLoad}
+              onError={handleImageError}
               style={{ width: "100%", height: "100%" }}
             />
           ) : null}
@@ -482,6 +518,13 @@ export function MessageContent({
               <ImageThumbnail
                 key={`${message.id}-img-${i}`}
                 url={resolveChatAttachmentUrl(img.url)}
+                previewUrl={
+                  img.previewUrl
+                    ? resolveChatAttachmentUrl(img.previewUrl)
+                    : undefined
+                }
+                width={img.width}
+                height={img.height}
                 mediaType={img.mediaType}
                 index={i}
                 containerWidth={attachmentRow.width}
@@ -575,6 +618,13 @@ export function MessageContent({
               <ImageThumbnail
                 key={`${message.id}-img-${i}`}
                 url={resolveChatAttachmentUrl(img.url)}
+                previewUrl={
+                  img.previewUrl
+                    ? resolveChatAttachmentUrl(img.previewUrl)
+                    : undefined
+                }
+                width={img.width}
+                height={img.height}
                 mediaType={img.mediaType}
                 index={i}
                 containerWidth={attachmentRow.width}
