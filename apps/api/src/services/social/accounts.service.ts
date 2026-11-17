@@ -124,6 +124,32 @@ export function inAccountScope(
  * a connect that lands on an account owned by a different project is refused
  * rather than silently returning that project's row.
  */
+/**
+ * The one account a connect produced, when the caller knows it.
+ *
+ * A sync reconciles the whole profile, so it cannot tell which row the sign-in
+ * just created. The caller that *does* know — the OAuth return, or an agent
+ * that asked for a specific handle — names it here, and only that row is
+ * subject to the "already owned by another project" check.
+ */
+export interface SyncClaim {
+  /** Zernio's account id for the account the connect produced. */
+  accountId?: string
+  /** The handle the connect was expected to produce, when the id is unknown. */
+  username?: string
+}
+
+function claimsAccount(claim: SyncClaim | undefined, account: ZernioAccount): boolean {
+  if (!claim) return false
+  if (claim.accountId) return claim.accountId === account.id
+  if (claim.username) {
+    return claim.username.trim().toLowerCase() === (account.username ?? '').trim().toLowerCase()
+  }
+  // A claim that names nothing claims nothing: a bare "claim" would otherwise
+  // 409 on whichever other project's account the profile happens to hold.
+  return false
+}
+
 export async function upsertAccount(
   workspaceId: string,
   profileId: string,
@@ -193,7 +219,7 @@ export async function syncProfileAccounts(
     zernioProfileId: string
   },
   projectId?: string | null,
-  opts: { claim?: boolean } = {},
+  opts: { claim?: SyncClaim } = {},
 ): Promise<ZernioAccount[]> {
   const payload = await getSocialClient().request<any>({
     workspaceId: profile.workspaceId,
@@ -207,13 +233,16 @@ export async function syncProfileAccounts(
 
   for (const account of remote) {
     // A row this sync creates belongs to the caller's project; a row that
-    // already exists keeps its owner (see `upsertAccount`). `claim` is only set
-    // by the sync that completes a connect the caller just started — a routine
-    // refresh must not fail because the workspace holds another project's
-    // account.
+    // already exists keeps its owner (see `upsertAccount`).
+    //
+    // `claim` names **one** account — the one the connect produced — and only
+    // that row can raise `account_owned_elsewhere`. A sync reconciles the whole
+    // profile, so claiming every row would mean a workspace where two projects
+    // each own an account could never connect a third: the first other
+    // project's row would 409 the whole sync.
     await upsertAccount(profile.workspaceId, profile.id, account, {
       projectId,
-      claim: opts.claim,
+      claim: claimsAccount(opts.claim, account),
     })
   }
 
@@ -243,7 +272,7 @@ export async function syncAccounts(
   workspaceId: string,
   workspaceName: string,
   projectId?: string | null,
-  opts: { claim?: boolean } = {},
+  opts: { claim?: SyncClaim } = {},
 ): Promise<any[]> {
   const scope = await localScopeFor(workspaceId)
   const profile = await getProfile(workspaceId, scope)

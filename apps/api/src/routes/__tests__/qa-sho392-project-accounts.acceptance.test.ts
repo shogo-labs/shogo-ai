@@ -334,15 +334,51 @@ describe('a connect that lands on another project’s account is refused', () =>
     expect((await res.json()).account.projectId).toBe(projectA)
   })
 
-  test('a claiming sync refuses an account another project owns', async () => {
+  test('a sync that names another project’s account is refused', async () => {
+    providerAccounts = allThree()
+    const res = await request(`/api/workspaces/${workspaceId}/social/accounts/sync`, {
+      method: 'POST',
+      headers: { 'x-user': owner },
+      body: JSON.stringify({ projectId: projectA, claimAccountId: accountB.zernioAccountId }),
+    })
+    expect(res.status).toBe(409)
+    expect((await res.json()).error.code).toBe('account_owned_elsewhere')
+  })
+
+  test('a connect that produces a NEW account still lands, even though the profile holds another project’s', async () => {
+    // The regression this guards: claiming every row in the profile meant a
+    // workspace where two projects each own an account could never connect a
+    // third — the first other project's row 409'd the whole sync.
+    const fresh = `z_fresh2_${suffix}`
+    providerAccounts = [
+      ...allThree(),
+      { id: fresh, platform: 'instagram', username: 'third' },
+    ]
+    const res = await request(`/api/workspaces/${workspaceId}/social/accounts/sync`, {
+      method: 'POST',
+      headers: { 'x-user': owner },
+      body: JSON.stringify({ projectId: projectA, claimAccountId: fresh }),
+    })
+    expect(res.status).toBe(200)
+
+    const row = await db.socialAccount.findFirst({ where: { zernioAccountId: fresh } })
+    expect(row).toBeTruthy()
+    expect(row.projectId).toBe(projectA)
+    // And the other project's account was not touched.
+    const other = await db.socialAccount.findUnique({ where: { id: accountB.id } })
+    expect(other.projectId).toBe(projectB)
+  })
+
+  test('a claim that names nothing claims nothing', async () => {
+    // A bare `claim: true` used to 409 on whichever other project's account the
+    // profile happened to hold. It must be inert.
     providerAccounts = allThree()
     const res = await request(`/api/workspaces/${workspaceId}/social/accounts/sync`, {
       method: 'POST',
       headers: { 'x-user': owner },
       body: JSON.stringify({ projectId: projectA, claim: true }),
     })
-    expect(res.status).toBe(409)
-    expect((await res.json()).error.code).toBe('account_owned_elsewhere')
+    expect(res.status).toBe(200)
   })
 
   test('a routine sync does not claim, so it never fails on another project’s account', async () => {
@@ -359,5 +395,78 @@ describe('a connect that lands on another project’s account is refused', () =>
     expect(byUsername.engage).toBe(projectA)
     expect(byUsername.website).toBe(projectB)
     expect(byUsername.brand).toBeNull()
+  })
+})
+
+/**
+ * Messages and automation runs carry no account id — they hang off a
+ * conversation and an automation — so a project's dashboard used to count every
+ * other project's DMs and runs.
+ */
+describe('a project’s analytics counts only its own messages and runs', () => {
+  test('incoming/outgoing messages and automation runs are scoped', async () => {
+    const conversationOf = async (accountId: string) =>
+      db.socialConversation.findFirst({ where: { workspaceId, accountId } })
+
+    const automationOf = async (accountId: string) =>
+      db.socialAutomation.create({
+        data: {
+          workspaceId,
+          accountId,
+          platform: 'instagram',
+          name: `auto ${accountId.slice(0, 6)}`,
+          status: 'active',
+        },
+      })
+
+    const convA = await conversationOf(accountA.id)
+    const convB = await conversationOf(accountB.id)
+    const autoA = await automationOf(accountA.id)
+    const autoB = await automationOf(accountB.id)
+
+    const now = new Date()
+    for (const [conversationId, tag] of [
+      [convA.id, 'a'],
+      [convB.id, 'b'],
+    ] as const) {
+      for (const direction of ['incoming', 'outgoing']) {
+        await db.socialMessage.create({
+          data: {
+            workspaceId,
+            conversationId,
+            zernioMessageId: `msg_${tag}_${direction}_${suffix}`,
+            direction,
+            platform: 'instagram',
+            sentAt: now,
+          },
+        })
+      }
+    }
+    for (const [automationId, tag] of [
+      [autoA.id, 'a'],
+      [autoB.id, 'b'],
+    ] as const) {
+      await db.socialAutomationRun.create({
+        data: {
+          workspaceId,
+          automationId,
+          zernioExecutionId: `run_${tag}_${suffix}`,
+          status: 'completed',
+          startedAt: now,
+        },
+      })
+    }
+
+    const res = await request(`/api/internal/workspaces/${workspaceId}/social/analytics`, {
+      headers: agent(projectA),
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    // Project A owns one account with one incoming and one outgoing message and
+    // one run; project B's must not be counted.
+    expect(body.inbox.incoming).toBe(1)
+    expect(body.inbox.outgoing).toBe(1)
+    expect(body.engagement.automationRuns).toBe(1)
   })
 })

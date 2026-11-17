@@ -261,10 +261,13 @@ export function socialRoutes(config: SocialRoutesConfig): Hono {
       const projectId = await optionalProjectId(c, workspaceId, body.projectId)
       return c.json({
         accounts: await syncAccounts(workspaceId, await workspaceName(workspaceId), projectId, {
-          // Set only by the sync that completes a connect the caller just
-          // started, so a connect that lands on another project's account is
-          // refused instead of silently returning that row.
-          claim: body.claim === true,
+          // Only the sync that completes a connect names the account it
+          // produced, so only that row can be refused as another project's. A
+          // routine refresh names nothing and never fails.
+          claim: {
+            accountId: typeof body.claimAccountId === 'string' ? body.claimAccountId : undefined,
+            username: typeof body.claimUsername === 'string' ? body.claimUsername : undefined,
+          },
         }),
       })
     } catch (err) {

@@ -127,17 +127,11 @@ export default function SocialScreen() {
    * back is unscoped, because this screen shows every project's accounts.
    */
   const syncAccounts = useCallback(
-    async (stampProjectId?: string | null, claim = false): Promise<any[] | null> => {
+    async (stampProjectId?: string | null): Promise<any[] | null> => {
       try {
         await call('/accounts/sync', {
           method: 'POST',
-          body: {
-            ...(stampProjectId ? { projectId: stampProjectId } : {}),
-            // Only the sync that completes a connect claims: it makes a
-            // sign-in that lands on another project's account an error the
-            // person can see, instead of silently showing that account.
-            ...(claim ? { claim: true } : {}),
-          },
+          body: stampProjectId ? { projectId: stampProjectId } : {},
         })
       } catch (cause) {
         setNotice(errorMessage(cause, 'Could not refresh your connected accounts'))
@@ -159,7 +153,11 @@ export default function SocialScreen() {
       try {
         setError(null)
         const [synced, automationRes, analyticsRes, projectRes] = await Promise.all([
-          syncAccounts(connectProjectRef.current),
+          // A routine load stamps no project: the picker's last choice is not
+          // an instruction about accounts discovered later, and stamping it
+          // here would quietly move a newly seen account into whichever project
+          // was picked last. Only the sync that completes a connect passes one.
+          syncAccounts(),
           call('/automations?limit=50').catch(() => null),
           call('/analytics').catch(() => null),
           http
@@ -219,10 +217,12 @@ export default function SocialScreen() {
         await openAuthFlow(url, { preCreatedWindow: preWindow })
         // The sign-in happens in another window, so whatever came back is
         // already stale — reconcile before showing the list again. The project
-        // is passed so the account the sign-in created lands in it, and `claim`
-        // so a sign-in that landed on another project's account is reported
-        // rather than silently shown.
-        const synced = await syncAccounts(projectId, true)
+        // is passed so the account the sign-in created lands in it. The sync
+        // cannot name the account the sign-in produced (the landing page does
+        // not hand it back), so it claims nothing: a connect that landed on
+        // another project's account simply shows up under that project in the
+        // grouped list below, where it can be moved.
+        const synced = await syncAccounts(projectId)
         if (synced) setAccounts(synced)
       } catch (cause) {
         setNotice(errorMessage(cause, `Could not start the ${platform} sign-in`))
