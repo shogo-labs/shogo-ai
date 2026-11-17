@@ -193,6 +193,7 @@ export async function syncProfileAccounts(
     zernioProfileId: string
   },
   projectId?: string | null,
+  opts: { claim?: boolean } = {},
 ): Promise<ZernioAccount[]> {
   const payload = await getSocialClient().request<any>({
     workspaceId: profile.workspaceId,
@@ -206,8 +207,14 @@ export async function syncProfileAccounts(
 
   for (const account of remote) {
     // A row this sync creates belongs to the caller's project; a row that
-    // already exists keeps its owner (see `upsertAccount`).
-    await upsertAccount(profile.workspaceId, profile.id, account, { projectId })
+    // already exists keeps its owner (see `upsertAccount`). `claim` is only set
+    // by the sync that completes a connect the caller just started — a routine
+    // refresh must not fail because the workspace holds another project's
+    // account.
+    await upsertAccount(profile.workspaceId, profile.id, account, {
+      projectId,
+      claim: opts.claim,
+    })
   }
 
   const seen = new Set(remote.map((account) => account.id))
@@ -236,11 +243,12 @@ export async function syncAccounts(
   workspaceId: string,
   workspaceName: string,
   projectId?: string | null,
+  opts: { claim?: boolean } = {},
 ): Promise<any[]> {
   const scope = await localScopeFor(workspaceId)
   const profile = await getProfile(workspaceId, scope)
   if (!profile) return listAccounts(workspaceId, projectId)
-  await syncProfileAccounts(profile, projectId)
+  await syncProfileAccounts(profile, projectId, opts)
   return listAccounts(workspaceId, projectId)
 }
 

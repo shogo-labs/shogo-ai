@@ -60,6 +60,8 @@ let projectB = ''
 let accountA: any
 let accountB: any
 let sharedAccount: any
+/** What the fake Zernio profile reports. Set per test. */
+let providerAccounts: any[] = []
 
 beforeAll(async () => {
   const user = await db.user.create({ data: { name: 'owner', email: `sho392-${suffix}@example.com` } })
@@ -121,7 +123,7 @@ beforeAll(async () => {
   setSocialClient({
     mode: 'cloud',
     async request() {
-      return { accounts: [] }
+      return { accounts: providerAccounts }
     },
   })
 })
@@ -282,5 +284,80 @@ describe('moving an account changes who can use it, immediately', () => {
     })
     expect(res.status).toBe(400)
     expect((await res.json()).error.code).toBe('unknown_project')
+  })
+})
+
+/**
+ * The connect flow does not go through `completeConnect` in production — the
+ * landing page hands back to the app, which calls `POST /accounts/sync`. Both
+ * paths must therefore be able to refuse a sign-in that landed on an account
+ * another project already owns, and a routine refresh must not.
+ */
+describe('a connect that lands on another project’s account is refused', () => {
+  const allThree = () => [
+    { id: accountA.zernioAccountId, platform: 'instagram', username: 'engage' },
+    { id: accountB.zernioAccountId, platform: 'instagram', username: 'website' },
+    { id: sharedAccount.zernioAccountId, platform: 'instagram', username: 'brand' },
+  ]
+
+  test('POST /connect/complete forwards projectId, so the claim fires', async () => {
+    const res = await request(`/api/workspaces/${workspaceId}/social/connect/complete`, {
+      method: 'POST',
+      headers: { 'x-user': owner },
+      body: JSON.stringify({
+        platform: 'instagram',
+        accountId: accountB.zernioAccountId,
+        username: 'website',
+        projectId: projectA,
+      }),
+    })
+    expect(res.status).toBe(409)
+    expect((await res.json()).error.code).toBe('account_owned_elsewhere')
+
+    // The row was not reassigned.
+    const row = await db.socialAccount.findUnique({ where: { id: accountB.id } })
+    expect(row.projectId).toBe(projectB)
+  })
+
+  test('POST /connect/complete stamps the project on a brand-new account', async () => {
+    const res = await request(`/api/workspaces/${workspaceId}/social/connect/complete`, {
+      method: 'POST',
+      headers: { 'x-user': owner },
+      body: JSON.stringify({
+        platform: 'instagram',
+        accountId: `z_fresh_${suffix}`,
+        username: 'fresh',
+        projectId: projectA,
+      }),
+    })
+    expect(res.status).toBe(200)
+    expect((await res.json()).account.projectId).toBe(projectA)
+  })
+
+  test('a claiming sync refuses an account another project owns', async () => {
+    providerAccounts = allThree()
+    const res = await request(`/api/workspaces/${workspaceId}/social/accounts/sync`, {
+      method: 'POST',
+      headers: { 'x-user': owner },
+      body: JSON.stringify({ projectId: projectA, claim: true }),
+    })
+    expect(res.status).toBe(409)
+    expect((await res.json()).error.code).toBe('account_owned_elsewhere')
+  })
+
+  test('a routine sync does not claim, so it never fails on another project’s account', async () => {
+    providerAccounts = allThree()
+    const res = await request(`/api/workspaces/${workspaceId}/social/accounts/sync`, {
+      method: 'POST',
+      headers: { 'x-user': owner },
+      body: JSON.stringify({ projectId: projectA }),
+    })
+    expect(res.status).toBe(200)
+    // Every row kept its owner — a sync reconciles the profile, it does not move accounts.
+    const rows = await db.socialAccount.findMany({ where: { workspaceId } })
+    const byUsername = Object.fromEntries(rows.map((row: any) => [row.username, row.projectId]))
+    expect(byUsername.engage).toBe(projectA)
+    expect(byUsername.website).toBe(projectB)
+    expect(byUsername.brand).toBeNull()
   })
 })

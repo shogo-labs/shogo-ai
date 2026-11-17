@@ -260,7 +260,12 @@ export function socialRoutes(config: SocialRoutesConfig): Hono {
     try {
       const projectId = await optionalProjectId(c, workspaceId, body.projectId)
       return c.json({
-        accounts: await syncAccounts(workspaceId, await workspaceName(workspaceId), projectId),
+        accounts: await syncAccounts(workspaceId, await workspaceName(workspaceId), projectId, {
+          // Set only by the sync that completes a connect the caller just
+          // started, so a connect that lands on another project's account is
+          // refused instead of silently returning that row.
+          claim: body.claim === true,
+        }),
       })
     } catch (err) {
       return errorResponse(c, err)
@@ -386,6 +391,10 @@ export function socialRoutes(config: SocialRoutesConfig): Hono {
         accountId: requireString(body.accountId, 'accountId'),
         username: requireString(body.username, 'username'),
         displayName: typeof body.displayName === 'string' ? body.displayName : null,
+        // The project the connect was started for. Without this the claim check
+        // in `completeConnect` can never fire and a connect that lands on
+        // another project's account would silently return that row.
+        projectId: await optionalProjectId(c, workspaceId, body.projectId),
       })
       return c.json({ account })
     } catch (err) {
