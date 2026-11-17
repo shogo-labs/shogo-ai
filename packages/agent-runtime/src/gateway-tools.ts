@@ -10749,7 +10749,7 @@ async function socialInternalCall(
                 ? 'The social provider did not return a profile id. Retry once, then report it if it keeps happening.'
                 : code === 'social_not_configured'
                   ? 'Social is not configured on the server: the workspace owner has to set the provider key.'
-                  : code === 'account_out_of_scope' || code === 'profile_out_of_scope'
+                  : code === 'profile_out_of_scope'
                     ? 'That resource belongs to another workspace. Connect this workspace’s own account.'
                     : code === 'account_owned_elsewhere'
                       ? 'That account is connected to another project (or workspace) in this workspace. Disconnect it there first, or connect a different account.'
@@ -11695,7 +11695,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
             query.set('platform', platform)
           }
           const result = await socialInternalCall(ctx, 'GET', `/social/inbox?${query.toString()}`)
-          if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+          if (!result.ok) return textResult({ error: result.error, code: result.code, suggestion: result.suggestion })
           const conversations = Array.isArray(result.data?.conversations) ? result.data.conversations : []
           return textResult({
             kind,
