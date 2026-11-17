@@ -910,7 +910,10 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     return c.json({ activity: data })
   })
 
-  /** The records behind the summary: what this person sent, full text and ids. */
+  /**
+   * The records behind the summary: what this person sent, full text and ids.
+   * Channel messages only — DM and group-DM bodies are never exported.
+   */
   router.get('/workspaces/:workspaceId/member-activity/messages', async (c) => {
     const auth = await authorize(c)
     if (auth instanceof Response) return auth

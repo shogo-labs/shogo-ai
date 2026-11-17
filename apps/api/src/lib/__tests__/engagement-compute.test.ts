@@ -412,6 +412,25 @@ describe('computeRecentWork: what a person sent', () => {
     expect(long.label.endsWith('…')).toBe(true)
     expect(empty.label).toBe('(no text)')
   })
+
+  test('never surfaces a DM or group-DM body to anyone, including its author', () => {
+    const raw: RawActivity = {
+      ...emptyRaw(),
+      messages: [
+        { userId: 'u1', createdAt: at('2026-07-01T10:00:00Z'), id: 'dm1', conversationKind: 'dm', isPrivate: true, text: 'my private plan' },
+        { userId: 'u1', createdAt: at('2026-07-01T09:00:00Z'), id: 'gdm1', conversationKind: 'group_dm', isPrivate: true, text: 'group secret' },
+        // No `isPrivate`: the kind fallback must still hide it.
+        { userId: 'u1', createdAt: at('2026-07-01T07:00:00Z'), id: 'dm2', conversationKind: 'dm', text: 'fallback secret' },
+        { userId: 'u1', createdAt: at('2026-07-01T08:00:00Z'), id: 'ch1', conversationKind: 'public', isPrivate: false, text: 'shipped it' },
+      ],
+    }
+
+    // Private rows are dropped entirely, for every viewer. The same call is
+    // what the author's own profile uses, so this pins "not even its author".
+    expect(computeRecentWork(raw).map((r) => r.id)).toEqual(['ch1'])
+    expect(computeRecentWork(raw).some((r) => r.label.includes('private'))).toBe(false)
+    expect(computeRecentWork(raw).some((r) => r.label.includes('group secret'))).toBe(false)
+  })
 })
 
 describe('computeCards', () => {

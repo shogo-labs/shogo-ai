@@ -61,6 +61,13 @@ export interface MessageRow {
   id?: string
   conversationId?: string
   threadRootId?: string | null
+  /** `public` | `private` | `dm` | `group_dm` | `activity`. */
+  conversationKind?: string
+  /**
+   * A DM or group DM. Its body is private: analytics may count it, but the
+   * text is never surfaced to anyone (see `computeRecentWork`).
+   */
+  isPrivate?: boolean
   /** Full text of what the person sent; replies and agent output never appear here. */
   text?: string
   /** Absent on rows collected before audience classification existed: counted as a channel post. */
@@ -701,6 +708,13 @@ export function computeRecentWork(raw: RawActivity, limit = 10): RecentWorkItem[
     })
   }
   for (const m of raw.messages) {
+    // A DM/group-DM body is private. It is counted in totals but never shown
+    // here, to anyone — not even its author. The service also refuses to select
+    // DM text at all (see `collectActivity`), so this is a second guard. The
+    // kind fallback matters for any future caller that builds `MessageRow`s
+    // without the derived flag.
+    const isPrivate = m.isPrivate ?? (m.conversationKind === 'dm' || m.conversationKind === 'group_dm')
+    if (isPrivate) continue
     items.push({
       kind: 'message',
       at: m.createdAt.toISOString(),
