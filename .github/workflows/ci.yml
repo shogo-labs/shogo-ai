@@ -1156,14 +1156,14 @@ jobs:
             echo "::endgroup::"
           done
 
-      # SHO-308: publishing applies the app's schema and dev.db with the real
-      # Prisma CLI. A flag Prisma 7 rejects, or a schema the Postgres connector
-      # rejects, only shows up when the command runs against a database.
-      - name: Published schema apply (Postgres + Prisma CLI)
-        working-directory: packages/agent-runtime
+      # SHO-308: publishing pushes the app's schema and dev.db with the API's
+      # real Prisma CLI. A flag Prisma 7 rejects, or a schema the Postgres
+      # connector rejects, only shows up when the command runs against a database.
+      - name: Published schema push (Postgres + Prisma CLI)
+        working-directory: apps/api
         env:
           REQUIRE_PG_INTEGRATION: '1'
-        run: bun --no-env-file test src/__tests__/published-schema-apply.integration.test.ts
+        run: bun --no-env-file test src/services/__tests__/published-schema-push.integration.test.ts
 
       # SHO-311: the analytics rollups are one SQL statement per series, written
       # in two dialects. `test` runs the golden file on SQLite only, and a

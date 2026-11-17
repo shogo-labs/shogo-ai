@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 // nothing here reads it (the default dep is always overridden).
 mock.module('../../lib/prisma', () => ({ prisma: {} }))
 
-const { ensurePublishedImage } = await import('../published-build.service')
+const { ensurePublishedImage, fetchPublishedArtifact, jobPodsVerdict } = await import('../published-build.service')
 const { buildPublishedImageJob, buildJobName, buildLogTail, digestFromTerminationMessage } = await import(
   '../../lib/published-build-job'
 )
@@ -125,6 +125,120 @@ describe('ensurePublishedImage', () => {
     if (res.ok) return
     expect(res.code).toBe('artifact_missing')
     expect(res.message).toContain('no dist')
+  })
+
+  it('tells the artifact upload the app build already ran', async () => {
+    // The publish flow builds the app before it asks for an image; a second
+    // build there is a full Vite/Expo run the publish has just done.
+    const seen: Array<{ alreadyBuilt?: boolean }> = []
+    const res = await ensurePublishedImage(
+      { ...input, alreadyBuilt: true },
+      deps({
+        uploadArtifact: async (arg: { alreadyBuilt?: boolean }) => {
+          seen.push(arg)
+          return { url: 'https://s3.internal/acme/artifacts/abc.tar.gz' }
+        },
+      }),
+    )
+    expect(res.ok).toBe(true)
+    expect(seen).toHaveLength(1)
+    expect(seen[0].alreadyBuilt).toBe(true)
+  })
+
+  it('defaults to building when the caller did not build', async () => {
+    const seen: Array<{ alreadyBuilt?: boolean }> = []
+    await ensurePublishedImage(
+      input,
+      deps({
+        uploadArtifact: async (arg: { alreadyBuilt?: boolean }) => {
+          seen.push(arg)
+          return { url: 'https://s3.internal/acme/artifacts/abc.tar.gz' }
+        },
+      }),
+    )
+    expect(seen[0].alreadyBuilt).toBe(false)
+  })
+
+  // SHO-308, staging 2026-11-08: `/agent/dist-files?publish=true` deleted the
+  // staging dir `/agent/publish-artifact` reads, so every server-backed publish
+  // died with artifact_missing. The runtime is fixed, but a pod can still be
+  // running the old handler (metal rootfs lags the API), so the one safe
+  // fallback is a single rebuild and a single retry.
+  describe('fetchPublishedArtifact', () => {
+    const distNotFound = { ok: false as const, status: 404, body: '{"error":"dist_not_found"}' }
+
+    it('rebuilds once and retries once when the runtime lost its build output', async () => {
+      const calls: string[] = []
+      let requests = 0
+      const res = await fetchPublishedArtifact(
+        { projectId: 'proj-1', alreadyBuilt: true },
+        {
+          requestArtifact: async () => {
+            requests++
+            calls.push(`artifact:${requests}`)
+            return requests === 1 ? distNotFound : { ok: true as const, archive: 'Zm9v' }
+          },
+          rebuild: async () => {
+            calls.push('rebuild')
+            return { success: true }
+          },
+          log: () => {},
+        },
+      )
+      expect(res).toEqual({ archive: 'Zm9v' })
+      expect(calls).toEqual(['artifact:1', 'rebuild', 'artifact:2'])
+    })
+
+    it('does not rebuild when the caller had not built yet', async () => {
+      let rebuilt = 0
+      const res = await fetchPublishedArtifact(
+        { projectId: 'proj-1', alreadyBuilt: false },
+        {
+          requestArtifact: async () => distNotFound,
+          rebuild: async () => {
+            rebuilt++
+            return { success: true }
+          },
+          log: () => {},
+        },
+      )
+      expect('error' in res).toBe(true)
+      expect(rebuilt).toBe(0)
+    })
+
+    it('does not rebuild for a failure that is not a missing build output', async () => {
+      let rebuilt = 0
+      const res = await fetchPublishedArtifact(
+        { projectId: 'proj-1', alreadyBuilt: true },
+        {
+          requestArtifact: async () => ({ ok: false as const, status: 500, body: 'artifact_failed' }),
+          rebuild: async () => {
+            rebuilt++
+            return { success: true }
+          },
+          log: () => {},
+        },
+      )
+      expect('error' in res).toBe(true)
+      expect(rebuilt).toBe(0)
+    })
+
+    it('surfaces a failed rebuild instead of retrying into the same error', async () => {
+      let requests = 0
+      const res = await fetchPublishedArtifact(
+        { projectId: 'proj-1', alreadyBuilt: true },
+        {
+          requestArtifact: async () => {
+            requests++
+            return distNotFound
+          },
+          rebuild: async () => ({ success: false, error: 'vite exited 1' }),
+          log: () => {},
+        },
+      )
+      expect('error' in res && res.error).toContain('vite exited 1')
+      expect(requests).toBe(1)
+    })
   })
 
   it('pins the built digest onto the repository', async () => {
@@ -359,5 +473,36 @@ describe('buildLogTail', () => {
 
   it('is empty for an empty log rather than "undefined"', () => {
     expect(buildLogTail(null)).toBe('')
+  })
+})
+
+// SHO-308, staging 2026-11-08: the build pushed its image and exited 0, but the
+// API read the pod before the Job controller set `status.succeeded` and called
+// the build failed. A terminated pod is only a failure when it exited non-zero.
+describe('jobPodsVerdict', () => {
+  const pod = (phase: string, containers: any[], init: any[] = []) => ({
+    status: { phase, containerStatuses: containers, initContainerStatuses: init },
+  })
+  const exited = (exitCode: number) => ({ state: { terminated: { exitCode } } })
+
+  it('keeps waiting when the build exited 0 but the Job has not caught up', () => {
+    expect(jobPodsVerdict([pod('Succeeded', [exited(0)], [exited(0)])])).toBe('running')
+  })
+
+  it('keeps waiting while the build is still running or there is no pod yet', () => {
+    expect(jobPodsVerdict([pod('Running', [{ state: { running: {} } }], [exited(0)])])).toBe('running')
+    expect(jobPodsVerdict([])).toBe('running')
+  })
+
+  it('fails fast when the build container exited non-zero', () => {
+    expect(jobPodsVerdict([pod('Running', [exited(1)])])).toBe('failed')
+  })
+
+  it('fails fast when the artifact download init container exited non-zero', () => {
+    expect(jobPodsVerdict([pod('Pending', [{ state: { waiting: {} } }], [exited(22)])])).toBe('failed')
+  })
+
+  it('fails fast when the pod itself failed (evicted)', () => {
+    expect(jobPodsVerdict([pod('Failed', [])])).toBe('failed')
   })
 })

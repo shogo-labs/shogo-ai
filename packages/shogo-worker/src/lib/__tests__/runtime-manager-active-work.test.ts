@@ -142,6 +142,27 @@ describe('WorkerRuntimeManager active-work gating', () => {
     expect(gone).toEqual(['busy']);
   });
 
+  it('a runtime whose only task is a card watch is not busy, but one running a shell task is (SHO-399)', async () => {
+    // What the guest now reports: a card-watch mirror is a remote task, and
+    // `activeWorkCounts()` leaves remote entries out, so `activeTasks: 0` — the
+    // desktop eviction gate must read that as idle. A local shell task still
+    // counts, and must still keep the runtime (SHO-143).
+    let activity: Activity = { activeTurns: 0, activeTasks: 0, activeStreams: 0 };
+    const { port } = activityServer(() => activity);
+    const mgr = new WorkerRuntimeManager({ logger: SILENT });
+    insertSlot(mgr, 'card-watch-only', { agentPort: port });
+    insertSlot(mgr, 'shell-task', { agentPort: port });
+
+    expect(await mgr.hasActiveWork('card-watch-only')).toBe(false);
+
+    activity = { activeTurns: 0, activeTasks: 1, activeStreams: 0 };
+    expect(await mgr.hasActiveWork('shell-task')).toBe(true);
+    expect(await mgr.hasActiveWork('card-watch-only')).toBe(true);
+
+    activity = { activeTurns: 0, activeTasks: 0, activeStreams: 0 };
+    expect(await mgr.hasActiveWork('shell-task')).toBe(false);
+  });
+
   it('LRU cap skips busy runtimes and evicts the idle one', async () => {
     const busy = activityServer(() => ({ activeTasks: 1 }));
     const idle = activityServer(() => ({ activeTurns: 0, activeTasks: 0, activeStreams: 0 }));

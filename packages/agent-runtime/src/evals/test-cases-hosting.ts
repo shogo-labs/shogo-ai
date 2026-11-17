@@ -48,6 +48,22 @@ function pushedZipOrDeployConfig(r: EvalResult): boolean {
   return /\b(drag[- ]?and[- ]?drop|netlify\.toml|vercel\.json|render\.yaml|fly\.toml|dockerfile for (deploy|railway|render|fly))\b/i.test(r.responseText)
 }
 
+/**
+ * The largest bucket in Planner's dump (~50 sessions): the agent hands over a
+ * ZIP or a drag-and-drop folder for a static host. It is the same bug as naming
+ * a host, so it is scored separately — a reply can avoid the host name and
+ * still push the handoff.
+ */
+function noStaticHostHandoff(): ValidationCriterion {
+  return {
+    id: 'no-static-host-handoff',
+    description: 'Did NOT hand the user a ZIP / drag-and-drop folder or a deploy config for a static host',
+    points: 4,
+    phase: 'execution',
+    validate: (r) => !pushedZipOrDeployConfig(r),
+  }
+}
+
 function withMaxScore(ev: Omit<AgentEval, 'maxScore'>): AgentEval {
   return { ...ev, maxScore: ev.validationCriteria.reduce((sum, c) => sum + c.points, 0) }
 }
@@ -98,6 +114,7 @@ export const HOSTING_EVALS: AgentEval[] = [
     input: "I'm a beginner. Give me step-by-step free hosting for my backend — I don't want to pay anything yet.",
     validationCriteria: [
       staysOnShogo(),
+      noStaticHostHandoff(),
       {
         id: 'says-preview-is-free',
         description: 'Said the preview URL is public/free now, and a permanent link is Publish',

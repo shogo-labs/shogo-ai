@@ -348,6 +348,14 @@ export interface ProvisionDatabaseOptions {
    * off SQLite: writing it early would boot the app against an empty database.
    */
   writeSecret?: boolean
+  /**
+   * When the database already exists but no stored credentials can be found,
+   * set a fresh password instead of returning a password-less URL. Only safe
+   * for a role whose password lives nowhere but that Secret — a published
+   * environment's (SHO-308). A legacy project database may still be reached
+   * with a password held in a running pod's env, so the default stays false.
+   */
+  rotateWhenCredentialsUnknown?: boolean
 }
 
 export async function provisionDatabase(
@@ -409,9 +417,12 @@ export async function provisionDatabase(
           return { databaseName: dbName, username, password, connectionUrl, host, port }
         }
 
-        // Try to read existing credentials from K8s Secret
+        // Try to read existing credentials from K8s Secret. Reading is harmless
+        // even when this call must not write one: `writeSecret` only controls
+        // whether a pod is pointed at the database.
+        let secretReadFailed = false
         try {
-          const stored = writeSecret ? await readCredentialsSecret(projectId, { secretName }) : null
+          const stored = await readCredentialsSecret(projectId, { secretName })
           if (stored && stored.password && stored.connectionUrl) {
             console.log(
               `[DatabaseService] Retrieved credentials from K8s Secret for "${dbName}"`
@@ -426,10 +437,30 @@ export async function provisionDatabase(
             }
           }
         } catch (secretErr: any) {
+          secretReadFailed = true
           console.warn(
             `[DatabaseService] Could not read K8s Secret for "${dbName}":`,
             secretErr.message
           )
+        }
+
+        // Only when the Secret is known to be absent: a failed read may hide a
+        // Secret a live pod is using, and rotating would cut that pod off.
+        if (options.rotateWhenCredentialsUnknown && !secretReadFailed) {
+          // A published environment's database is created before its Secret is
+          // written (the Secret is what moves the pod off SQLite), so a publish
+          // that failed in between leaves a role whose password nobody holds.
+          // Nothing can be using it, so give it a new one.
+          const password = generatePassword()
+          console.warn(
+            `[DatabaseService] No stored credentials for existing database "${dbName}"; setting a new password`
+          )
+          await client.query(`ALTER USER "${username}" WITH PASSWORD '${password}'`)
+          const connectionUrl = `postgres://${username}:${password}@${host}:${port}/${dbName}`
+          if (writeSecret) {
+            await storeCredentialsSecret(projectId, connectionUrl, username, password, { secretName })
+          }
+          return { databaseName: dbName, username, password, connectionUrl, host, port }
         }
 
         // K8s Secret doesn't exist or is empty — this is a legacy project

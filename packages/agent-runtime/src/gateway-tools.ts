@@ -16,6 +16,7 @@ import { join, resolve, extname, dirname, relative, sep } from 'path'
 import { execSync } from '@shogo/shared-runtime/child-process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
+import { declareService, deriveServiceName, serviceTmpWarning, undeclareService } from './services-registry'
 import type { SessionTodo, SessionTodosSnapshot } from './plan-continuation'
 import { createProjectTools, resolveProjectRef } from './project-tools'
 import {
@@ -61,7 +62,7 @@ import { resolveProjectCredentialEnv } from './project-process-env'
 import { getHomeWatch, homeNotPersistedNote } from './home-state-watch'
 import { commandTargetsGateway, gatewayKillRefusal } from './gateway-self-protect'
 import { consumeExecCwdMarker, execCwdDirFor, newExecCwdMarker } from './exec-cwd'
-import { checkSelfDetach, selfDetachRefusal } from './exec-detach'
+import { checkSelfDetach, findSelfMatchingPattern, patternSelfMatchHint, selfDetachRefusal } from './exec-detach'
 import { findPolledTasks, type PollMatch } from './exec-poll'
 import { CommandRegistry, type CommandEntry } from './command-registry'
 import type { TaskEntry } from './task-registry'
@@ -124,8 +125,15 @@ import {
 import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { addQuickAction, validateQuickActions } from './quick-actions'
 import { withActionRules, withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, scratchPathForWrite, type PermissionEngine } from './permission-engine'
+import {
+  crossWorkspaceEnabled,
+  crossWorkspaceEnabledFor,
+  crossWorkspaceToolNames,
+  withCrossWorkspaceGate,
+  withCrossWorkspaceParam,
+} from './cross-workspace'
 import { assertAllowedPath as assertAllowedPathRaw, getRuntimeTrust } from './runtime-trust'
-import { isBinaryFilePath } from '@shogo/shared-runtime'
+import { isBinaryFilePath, isZernioSocialToolkit, normalizeToolkitName, zernioPlatformsFromQuery, type ZernioSocialToolkit } from '@shogo/shared-runtime'
 import { isShogoAgentEmail, withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
 import { missingCodePlanSections } from './plan-sections'
 
@@ -710,22 +718,57 @@ async function mountWorkspaceProject(
 
 function createListProjectsTool(ctx: ToolContext): AgentTool {
   const metal = isMetalRuntime()
+  const crossWorkspace = crossWorkspaceEnabled(ctx)
   return {
     name: 'list_projects',
     label: 'List Projects',
-    description: metal
-      ? 'List the projects you can access in this Shogo workspace. Other projects are not mounted here; ' +
-        'reach one with `connect_project` and the `project` parameter of the file and shell tools. ' +
-        'Use this when the request names a project ambiguously or asks about project availability.'
-      : 'List the projects you can access in this Shogo workspace and show which ones are currently mounted. ' +
-        'Use this before mounting when the request names a project ambiguously or asks about project availability.',
-    parameters: Type.Object({}),
-    execute: async () => {
+    description:
+      (metal
+        ? 'List the projects you can access in this Shogo workspace. Other projects are not mounted here; ' +
+          'reach one with `connect_project` and the `project` parameter of the file and shell tools. '
+        : 'List the projects you can access in this Shogo workspace and show which ones are currently mounted. ') +
+      'Use this before mounting when the request names a project ambiguously or asks about project availability.' +
+      (crossWorkspace
+        ? ' Pass workspaces: true to list every workspace this person belongs to (id, name, slug, kind, where it runs) — use it to resolve a workspace name for the `workspace` parameter of the board, chat, schedule and project tools, and to say which workspaces a report covered.'
+        : ''),
+    parameters: Type.Object(
+      crossWorkspace
+        ? {
+            workspaces: Type.Optional(
+              Type.Boolean({
+                description: 'List the workspaces this person belongs to instead of the projects in this one.',
+              }),
+            ),
+          }
+        : {},
+    ),
+    execute: async (_toolCallId, params: any) => {
       if (!workspaceMetaToolEnabled(ctx))
         return textResult({
           error: 'This tool is only available in a workspace runtime.',
         })
       const workspaceId = resolveWorkspaceId(ctx)
+      if (crossWorkspace && params?.workspaces === true) {
+        const { fetchCrossWorkspaceTargets } = await import('./internal-api')
+        const targets = await fetchCrossWorkspaceTargets(workspaceId!)
+        if (!targets.ok) {
+          return textResult({
+            error: targets.error ?? "Couldn't load the workspaces you belong to.",
+            code: targets.code ?? 'workspaces_unavailable',
+          })
+        }
+        return textResult({
+          workspaces: (targets.data?.workspaces ?? []).map((w) => ({
+            id: w.id,
+            name: w.name,
+            slug: w.slug,
+            kind: w.kind,
+            source: w.source,
+            reachable: w.reachable,
+            ...(w.unreachableReason ? { unreachable_reason: w.unreachableReason } : {}),
+          })),
+        })
+      }
       const qs = new URLSearchParams({
         ...(ctx.userId ? { userId: ctx.userId } : {}),
         ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
@@ -1617,7 +1660,12 @@ function taskOutputPath(ctx: ToolContext, entry: { outputFile?: string }): strin
   return ctx.commandRegistry?.displayPath(entry.outputFile) ?? entry.outputFile
 }
 
-function buildSoftTimeoutResult(ctx: ToolContext, entry: CommandEntry, softTimeoutMs: number | null): AgentToolResult<any> {
+function buildSoftTimeoutResult(
+  ctx: ToolContext,
+  entry: CommandEntry,
+  softTimeoutMs: number | null,
+  extra: Record<string, unknown> = {},
+): AgentToolResult<any> {
   const elapsedMs = Date.now() - entry.handle.startedAt
   return textResult({
     status: 'running',
@@ -1635,6 +1683,7 @@ function buildSoftTimeoutResult(ctx: ToolContext, entry: CommandEntry, softTimeo
         ? 'Started in the background. '
         : `Still running after ${Math.round(softTimeoutMs / 1000)}s; it keeps running in the background. `) +
       BACKGROUND_TASK_HINT,
+    ...extra,
   })
 }
 
@@ -1722,10 +1771,37 @@ function withSleepPollSteering(tool: AgentTool, ctx: ToolContext): AgentTool {
   }
 }
 
+/**
+ * Steer a `pgrep -f` / `pkill -f` that also matches its own shell (SHO-399).
+ *
+ * A warning, never a refusal: `pkill -f` is a legitimate way to target another
+ * process, and the pattern is only self-matching by accident. The command runs;
+ * the result carries the note so the agent can wait on the task instead of
+ * spinning, or break the self-match with the bracket trick.
+ */
+function withPatternSelfMatchSteering(tool: AgentTool): AgentTool {
+  const run = tool.execute
+  return {
+    ...tool,
+    execute: async (toolCallId, params, signal) => {
+      const result = await run(toolCallId, params, signal)
+      const command = (params as { command?: string })?.command ?? ''
+      const match = findSelfMatchingPattern(command)
+      if (!match) return result
+      const details = result?.details as Record<string, unknown> | undefined
+      // Nothing ran (refused, or stopped before spawn): a steering note about a
+      // command that never started only confuses the reader.
+      if (details && (details.error || details.ok === false)) return result
+      const taskId = typeof details?.task_id === 'string' ? details.task_id : undefined
+      return withSteering(result, { code: 'pattern_matches_itself', hint: patternSelfMatchHint(match, taskId) })
+    },
+  }
+}
+
 function createExecTool(ctx: ToolContext): AgentTool {
-  return withSleepPollSteering({
+  return withPatternSelfMatchSteering(withSleepPollSteering({
     name: 'exec',
-    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail${isSearchEnabled() ? ', and the \`search\` tool over grep/rg for finding code' : '; use rg (ripgrep) to find code'}. Tokens saved to .env are auto-loaded. Long-running commands become background tasks: set \`background: true\` to start one immediately (never detach it yourself with \`&\` or \`nohup\`; those are refused), and any command still running after \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}) is handed back as \`{ status: "running", task_id, output_file }\` while it keeps running.`,
+    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail${isSearchEnabled() ? ', and the \`search\` tool over grep/rg for finding code' : '; use rg (ripgrep) to find code'}. Tokens saved to .env are auto-loaded. Long-running commands become background tasks: set \`background: true\` to start one immediately (never detach it yourself with \`&\` or \`nohup\`; those are refused), and any command still running after \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}) is handed back as \`{ status: "running", task_id, output_file }\` while it keeps running. A background task is stopped after 6 h (env \`SHOGO_EXEC_BACKGROUND_MAX_MS\`); if the command is a long-running service rather than a job with an end, declare it with \`service: true\` — it is exempt from the cap and is restarted after a runtime restart or a VM recycle.`,
     label: 'Execute Command',
     parameters: Type.Object({
       command: Type.String({ description: 'Shell command to execute' }),
@@ -1741,12 +1817,32 @@ function createExecTool(ctx: ToolContext): AgentTool {
           description: 'Start as a background task and return immediately with a task_id (servers, watchers, long builds/tests).',
         }),
       ),
+      service: Type.Optional(
+        Type.Boolean({
+          description:
+            'With `background: true`: this is a long-running service, not a job. It is exempt from the 6 h cap ' +
+            'and is restarted automatically after a runtime restart or a VM recycle. Declared in `.shogo/services.json`; ' +
+            '`task_cancel` on it undeclares it.',
+        }),
+      ),
+      name: Type.Optional(
+        Type.String({ description: 'Service name (with `service: true`), used to match it across a restart. Defaults to the command.' }),
+      ),
     }),
     execute: async (_toolCallId, params, signal) => {
-      const { command, timeout = DEFAULT_EXEC_SOFT_TIMEOUT_MS, background = false } = params as {
+      const { command, timeout = DEFAULT_EXEC_SOFT_TIMEOUT_MS, background = false, service = false, name } = params as {
         command: string
         timeout?: number
         background?: boolean
+        service?: boolean
+        name?: string
+      }
+
+      if (service && !background) {
+        return textResult({
+          error: 'service: true needs background: true',
+          hint: 'A service keeps running after the tool call returns, so it is always a background task: exec({ command, background: true, service: true }).',
+        })
       }
       const attributedCommand = injectCommitTrailer(command, {
         ...process.env,
@@ -1922,12 +2018,36 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // completes within the soft timeout (defensive against races where the
       // model decided to wait while we were already returning).
       const registry = ctx.commandRegistry ?? new CommandRegistry()
-      const entry = registry.register(attributedCommand, handle, { cwd: currentCwd })
+      const serviceMeta = service
+        ? { name: (name && name.trim()) || deriveServiceName(attributedCommand) }
+        : undefined
+      const entry = registry.register(attributedCommand, handle, {
+        cwd: currentCwd,
+        service: !!serviceMeta,
+        name: serviceMeta?.name,
+      })
       // A shell task's thread is its own output file — the log the dock shows.
       entry.link = { kind: 'log', path: registry.displayPath(entry.outputFile) }
 
       if (background) {
         registry.markBackgrounded(entry.id)
+        if (serviceMeta && ctx.sessionId) {
+          // The declaration is what brings it back after a restart or a VM
+          // recycle; it lives in `.shogo/`, which is in the source backup.
+          declareService(ctx.workspaceDir, {
+            name: serviceMeta.name,
+            command,
+            cwd: currentCwd,
+            sessionId: ctx.sessionId,
+            declaredAt: Date.now(),
+          })
+          const tmpWarning = serviceTmpWarning(command)
+          const result = await buildSoftTimeoutResult(ctx, entry, null, {
+            service: serviceMeta.name,
+            ...(tmpWarning ? { warning: tmpWarning } : {}),
+          })
+          return result
+        }
         return buildSoftTimeoutResult(ctx, entry, null)
       }
 
@@ -1956,7 +2076,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
         await withDiskFullHint(completed),
       )
     },
-  }, ctx)
+  }, ctx))
 }
 
 /**
@@ -2899,6 +3019,9 @@ function createTaskListTool(ctx: ToolContext): AgentTool {
           // A stale row is one the restart ended, not one we cannot name.
           status: t.stale ? 'interrupted (runtime restarted)' : t.status,
           elapsed_ms: t.elapsedMs,
+          // A service is restarted after a restart or a recycle, and is not
+          // subject to the background-task cap.
+          ...(t.service ? { service: true, service_name: t.name } : {}),
           ...(registry.displayExistingPath(t.outputFile) ? { output_file: registry.displayExistingPath(t.outputFile) } : {}),
         })),
       })
@@ -2924,16 +3047,28 @@ function createTaskCancelTool(ctx: ToolContext): AgentTool {
       // is still running (SHO-144).
       const { survivors } = await registry.cancel(entry.id)
       const status = registry.get(entry.id)?.status ?? 'cancelled'
+      // Cancelling a service is how you undeclare it: otherwise the next boot
+      // would faithfully restart the thing you just stopped (SHO-399).
+      const undeclared = entry.service && entry.serviceName
+        ? undeclareService(ctx.workspaceDir, entry.serviceName)
+        : false
       if (survivors.length > 0) {
         return textResult({
           ok: false,
           task_id: entry.id,
           status: 'cancel_incomplete',
           survivors,
+          ...(entry.service ? { undeclared_service: entry.serviceName ?? null } : {}),
           hint: survivorHint(survivors),
         })
       }
-      return textResult({ ok: true, task_id: entry.id, status, survivors: [] })
+      return textResult({
+        ok: true,
+        task_id: entry.id,
+        status,
+        survivors: [],
+        ...(entry.service ? { undeclared_service: undeclared ? entry.serviceName ?? null : null } : {}),
+      })
     },
   }
 }
@@ -5234,7 +5369,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
     description: [
       'Host the whole app on Shogo: frontend, API and database, at `{subdomain}.shogo.one` or the user\'s domain. Use this whenever the user wants to host, deploy, launch or keep something running. For a single generated file, use `share_file` instead — never use publish to deliver a PDF, DOCX, ZIP, EXE, or other artifact.',
       'Shogo also serves the app on a domain the user already owns. NEVER stand up another host for it (no Cloudflare Pages, Vercel, Netlify) — use `domain_action` on this tool. When the user asks to point their own domain at their app ("set up mysite.com"), call `domain_action: "add"` with their domain, then create each returned DNS record EXACTLY as given. If you have DNS access (`cf`/`wrangler`/Route 53, or a token the user gave you), create the records yourself — DNS-only, never proxied — then call `domain_action: "verify"`. If you do not, give the user the records table and point them to Project → Settings → Publishing → Custom domain. `domain_action` never publishes.',
-      'First publish to a subdomain requires the Pro plan or higher. Say so when the user asks to publish/deploy, or if this call returns `plan_not_allowed` (then point them to Settings > Billing to upgrade) — but do not pitch an upgrade when the user only wants to share what you built: the preview URL is public and anyone can open it.',
+      'First publish to a subdomain requires the Business plan ($16/seat/month). Say so when the user asks to publish/deploy, or if this call returns `plan_not_allowed` (then point them to Settings > Billing to upgrade) — but do not pitch an upgrade when the user only wants to share what you built: the preview URL is public and anyone can open it.',
       'First publish: a subdomain is required. If the user already named a subdomain (e.g. "publish to foo" / "host it at foo.shogo.one"), HONOR IT VERBATIM — pass exactly what they asked for (only lowercased), do not rename, prettify, or substitute your own. Only when the user has NOT specified one should you propose a name (e.g. derived from the app/project name) and CONFIRM it before publishing, since this creates a publicly reachable site. If the tool returns `needs_subdomain`, ask the user to confirm a subdomain, then call again with it.',
       'Re-publish (already published): omit `subdomain` to redeploy the latest build to the existing live subdomain. Existing access-level/password settings are preserved unless you pass new ones.',
       'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds and that the scripts/stylesheets it references load — share THAT URL with the user. If it returns `brokenAssets`, the site renders blank: fix the asset paths and republish before telling the user it works.',
@@ -5522,7 +5657,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         }
         if (res.code === 'plan_not_allowed') {
           return textResult({
-            error: 'Publishing to a subdomain requires a Pro (or higher) plan. The chat now shows the user an Upgrade button. Tell them their work is saved and they can publish again once they upgrade; meanwhile they can use the preview URL.',
+            error: 'Publishing to a subdomain requires a Business (or higher) plan. The chat now shows the user an Upgrade button. Tell them their work is saved and they can publish again once they upgrade; meanwhile they can use the preview URL.',
             code: res.code,
           })
         }
@@ -6939,6 +7074,53 @@ function captureBrowserCall(
 
 const BROWSER_TOOL_IDLE_RELEASE_MS = 5 * 60 * 1000
 
+/**
+ * How long one browser action may take before the page is declared unresponsive.
+ *
+ * Playwright puts no timeout on `evaluate`/`title`/`$$eval`/`screenshot`, so on
+ * a page whose main thread is busy or frozen those calls never settle — and the
+ * tool, the sub-agent that called it, and that sub-agent's chat all hang with
+ * it (SHO-358). 30 s is far longer than a healthy action needs.
+ */
+export const DEFAULT_BROWSER_ACTION_TIMEOUT_MS = 30_000
+
+/** How long the frozen-page probe may take before the page is written off. */
+export const BROWSER_PAGE_PROBE_TIMEOUT_MS = 2_000
+
+/** Upper bound on closing a page/context that may itself be unresponsive. */
+const BROWSER_CLOSE_TIMEOUT_MS = 5_000
+
+/**
+ * A Playwright call that passed its deadline. Thrown out of the call site and
+ * turned into an actionable tool error by the tool's catch block: the tool
+ * probes the page, and closes it when the page has stopped answering.
+ */
+export class BrowserActionDeadlineError extends Error {
+  constructor(
+    readonly label: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`browser ${label} exceeded its ${timeoutMs}ms deadline`)
+    this.name = 'BrowserActionDeadlineError'
+  }
+}
+
+/** Resolve/reject `promise` within `ms`; never hangs, never throws late. */
+export async function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ms)
+        ;(timer as any)?.unref?.()
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 const browserToolDisposers = new WeakMap<AgentTool, () => Promise<void>>()
 
 /** Release the browser resources held by a tool from createBrowserTool (no-op otherwise). */
@@ -6981,6 +7163,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
   let browser: any = null
   let lease: BrowserLease | null = null
   let unregisterSessionCleanup: (() => void) | null = null
+  let unregisterInstanceCleanup: (() => void) | null = null
   let ensurePromise: Promise<any> | null = null
   let idleReleaseTimer: ReturnType<typeof setTimeout> | null = null
   let inFlightCalls = 0
@@ -7001,6 +7184,83 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
   const pagesWithLogListeners = new WeakSet<object>()
 
   scLog(`[screencast] createBrowserTool instanceId=${ctx.subagentInstanceId ?? '<none>'}`)
+
+  function actionTimeoutMs(action: string, waitMs: number): number {
+    const raw = Number(process.env.BROWSER_ACTION_TIMEOUT_MS)
+    if (Number.isFinite(raw) && raw > 0) return raw
+    // `wait_for` is waiting on purpose; its own wait plus a margin is the bound.
+    if (action === 'wait_for') return (waitMs || 10_000) + 5_000
+    return DEFAULT_BROWSER_ACTION_TIMEOUT_MS
+  }
+
+  /**
+   * Run one Playwright call under a deadline.
+   *
+   * A late settle is swallowed here so it cannot become an unhandled rejection;
+   * the caller gets `BrowserActionDeadlineError` and turns it into an
+   * actionable tool error.
+   */
+  function deadline<T>(label: string, call: () => Promise<T>, timeoutMs: number): Promise<T> {
+    const promise = Promise.resolve().then(call)
+    void promise.catch(() => {})
+    let timer: ReturnType<typeof setTimeout> | undefined
+    return new Promise<T>((resolve, reject) => {
+      timer = setTimeout(() => reject(new BrowserActionDeadlineError(label, timeoutMs)), timeoutMs)
+      ;(timer as any)?.unref?.()
+      promise.then(
+        (value) => {
+          if (timer) clearTimeout(timer)
+          resolve(value)
+        },
+        (err) => {
+          if (timer) clearTimeout(timer)
+          reject(err)
+        },
+      )
+    })
+  }
+
+  /** `locator.count()`, bounded, and 0 only for an ordinary failure (not a deadline). */
+  function countLocator(label: string, locator: any, timeoutMs: number): Promise<number> {
+    return deadline<number>(label, () => locator.count(), timeoutMs).catch((err: any) => {
+      if (err instanceof BrowserActionDeadlineError) throw err
+      return 0
+    })
+  }
+
+  /** Has the page's main thread answered a trivial script within the probe window? */
+  async function pageAnswersProbe(): Promise<boolean> {
+    const p = page
+    if (!p) return false
+    const raw = Number(process.env.BROWSER_PAGE_PROBE_TIMEOUT_MS)
+    const probeMs = Number.isFinite(raw) && raw > 0 ? raw : BROWSER_PAGE_PROBE_TIMEOUT_MS
+    const answered = await settleWithin(
+      Promise.resolve().then(() => p.evaluate('1')).then(() => true, () => false),
+      probeMs,
+    )
+    return answered === true
+  }
+
+  /**
+   * Turn a missed deadline into an error the model can act on: say which action
+   * stopped, whether the page still answers, and — when it does not — close the
+   * page so the pool slot, the CPU and the screencast are released and the next
+   * action opens a fresh page.
+   */
+  async function describeMissedDeadline(err: BrowserActionDeadlineError): Promise<Error> {
+    const seconds = Math.round(err.timeoutMs / 1000)
+    if (await pageAnswersProbe()) {
+      return new Error(
+        `\`${err.label}\` did not finish within ${seconds}s, but the page is still responding. ` +
+          'Try again, wait for it to finish loading, or use a smaller action (browser({ action: "text" }) instead of a full snapshot).',
+      )
+    }
+    await cleanup()
+    return new Error(
+      `The page stopped responding to \`${err.label}\` for ${seconds}s (its main thread is busy or frozen). ` +
+        'I closed it. Navigate again, or report the frozen page as a finding.',
+    )
+  }
 
   function pushLog(entry: Omit<BrowserLogEntry, 'ts'>) {
     const text = entry.text.length > BROWSER_LOG_TEXT_LIMIT ? `${entry.text.slice(0, BROWSER_LOG_TEXT_LIMIT)}…` : entry.text
@@ -7184,6 +7444,11 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         if (ctx.sessionId) {
           unregisterSessionCleanup = registerBrowserSessionCleanup(ctx.sessionId, () => cleanup())
         }
+        // A wedged sub-agent never reaches `runSubagent`'s `finally`, so cancel
+        // needs its own handle on this page/lease (SHO-358).
+        if (ctx.subagentInstanceId) {
+          unregisterInstanceCleanup = registerSubagentInstanceCleanup(ctx.subagentInstanceId, () => cleanup())
+        }
       }
       await preparePage(page)
       await ensureScreencast()
@@ -7192,6 +7457,9 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
       cleanupRelay()
       if (err instanceof BrowserPoolTimeoutError) throw err
       if (process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN) {
+        // A relay-reported protocol mismatch already names both versions and the
+        // fix; appending the generic "is it installed?" hint would bury it.
+        if (/protocol/i.test(err.message)) throw err
         throw new Error(
           `Failed to connect to browser via extension: ${err.message}. ` +
             'Make sure Chrome is running with the "Playwright MCP Bridge" extension installed, ' +
@@ -7239,13 +7507,17 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
       unregisterSessionCleanup()
       unregisterSessionCleanup = null
     }
+    if (unregisterInstanceCleanup) {
+      unregisterInstanceCleanup()
+      unregisterInstanceCleanup = null
+    }
     if (screencastStarted && cdpSession) {
-      try {
-        await cdpSession.send('Page.stopScreencast')
-      } catch {}
-      try {
-        await cdpSession.detach()
-      } catch {}
+      // Fire-and-forget: a frozen page never answers these, and closing the
+      // page/context below tears the session down anyway. Waiting here added
+      // 10 s to every cleanup of a frozen page (SHO-358).
+      const session = cdpSession
+      void settleWithin(session.send('Page.stopScreencast'), BROWSER_CLOSE_TIMEOUT_MS).catch(() => {})
+      void settleWithin(session.detach(), BROWSER_CLOSE_TIMEOUT_MS).catch(() => {})
     }
     cdpSession = null
     screencastStarted = false
@@ -7268,13 +7540,17 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
     isExtensionMode = false
     if (wasExtensionMode) {
       try {
-        if (currentBrowser) await currentBrowser.close()
+        if (currentBrowser) await settleWithin(currentBrowser.close(), BROWSER_CLOSE_TIMEOUT_MS)
       } catch {}
-    } else {
+    } else if (currentLease) {
+      // The lease owns the context, so releasing it closes the page too — and
+      // it frees the pool slot immediately instead of waiting on a frozen page
+      // that can make `close()` never settle (SHO-358).
+      await settleWithin(currentLease.release(), BROWSER_CLOSE_TIMEOUT_MS)
+    } else if (currentPage) {
       try {
-        if (currentPage) await currentPage.close()
+        await settleWithin(Promise.resolve().then(() => currentPage.close()), BROWSER_CLOSE_TIMEOUT_MS)
       } catch {}
-      if (currentLease) await currentLease.release()
     }
     cleanupRelay()
   }
@@ -7364,7 +7640,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         }),
       ),
     }),
-    execute: async (_toolCallId, params) => {
+    execute: async (_toolCallId, params, signal) => {
       const {
         action,
         url,
@@ -7391,6 +7667,9 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
 
       clearIdleRelease()
       inFlightCalls++
+      // An aborted turn must not leave a page (and its pool slot) behind.
+      const onTurnAbort = () => { void cleanup() }
+      signal?.addEventListener('abort', onTurnAbort, { once: true })
       try {
         if (action === 'close') {
           await cleanup()
@@ -7411,6 +7690,10 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         }
 
         const p = await ensureBrowser()
+        // Every page action gets this deadline: Playwright has none of its own
+        // for evaluate/title/screenshot, so a frozen main thread would hang here
+        // forever (SHO-358).
+        const actionTimeout = actionTimeoutMs(action, waitMs)
 
         switch (action) {
           case 'navigate': {
@@ -7440,16 +7723,20 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
               await p.waitForLoadState('networkidle', { timeout: 5000 })
             } catch {}
             if (waitMs > 0) await p.waitForTimeout(Math.min(waitMs, 5000))
-            const title = await p.title()
+            const title = await deadline('navigate', () => p.title(), actionTimeout)
             const pageUrl = p.url()
             return textResult({ ok: true, title, url: pageUrl })
           }
           case 'snapshot': {
-            const snapshot = (await p.evaluate(ACCESSIBILITY_SNAPSHOT_SCRIPT)) as { text: string; refCount: number }
+            const snapshot = (await deadline(
+              'snapshot',
+              () => p.evaluate(ACCESSIBILITY_SNAPSHOT_SCRIPT),
+              actionTimeout,
+            )) as { text: string; refCount: number }
             return textResult({
               snapshot: snapshot.text,
               url: p.url(),
-              title: await p.title(),
+              title: await deadline('snapshot', () => p.title(), actionTimeout),
               refCount: snapshot.refCount,
             })
           }
@@ -7465,7 +7752,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             try {
               await locator.click({ timeout: 10000 })
             } catch (clickErr: any) {
-              const found = await locator.count().catch(() => 0)
+              const found = await countLocator('click', locator, actionTimeout)
               if (found === 0)
                 return textResult({
                   error: staleTargetHint('click', ref, selector),
@@ -7489,7 +7776,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             try {
               await locator.fill(value, { timeout: 10000 })
             } catch (fillErr: any) {
-              const found = await locator.count().catch(() => 0)
+              const found = await countLocator('fill', locator, actionTimeout)
               if (found === 0)
                 return textResult({
                   error: staleTargetHint('fill', ref, selector),
@@ -7501,11 +7788,15 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
           }
           case 'extract': {
             if (!selector) return textResult({ error: 'selector is required for extract' })
-            const elements = await p.$$eval(selector, (els: Element[]) =>
-              els.map((el) => ({
-                text: el.textContent?.trim(),
-                html: el.outerHTML.substring(0, 500),
-              })),
+            const elements = await deadline<any[]>(
+              'extract',
+              () => p.$$eval(selector, (els: Element[]) =>
+                els.map((el) => ({
+                  text: el.textContent?.trim(),
+                  html: el.outerHTML.substring(0, 500),
+                })),
+              ),
+              actionTimeout,
             )
             return textResult({
               elements: elements.slice(0, 50),
@@ -7514,14 +7805,14 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             })
           }
           case 'text': {
-            const rawText = await p.evaluate(() => document.body.innerText)
+            const rawText = await deadline('text', () => p.evaluate(() => document.body.innerText), actionTimeout)
             const cleaned = typeof rawText === 'string' ? cleanPlainText(rawText) : rawText
             const truncated =
               typeof cleaned === 'string' && cleaned.length > 50000 ? cleaned.substring(0, 50000) + '\n[Truncated]' : cleaned
             return textResult({
               content: truncated,
               url: p.url(),
-              title: await p.title(),
+              title: await deadline('text', () => p.title(), actionTimeout),
             })
           }
           case 'screenshot': {
@@ -7541,10 +7832,14 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             screenshotCount += 1
             const runDir = resolveScreenshotRunDir(ctx.workspaceDir, ctx.subagentInstanceId)
             const screenshotPath = nextScreenshotFilePath(runDir, screenshotCount)
-            const buffer = await p.screenshot({
-              path: screenshotPath,
-              fullPage: false,
-            })
+            const buffer = await deadline<Buffer>(
+              'screenshot',
+              () => p.screenshot({
+                path: screenshotPath,
+                fullPage: false,
+              }),
+              actionTimeout,
+            )
             // Expose the path as workspace-relative so canvas data + markdown
             // reports can reference it portably.
             const relPath = relative(ctx.workspaceDir, screenshotPath)
@@ -7572,19 +7867,21 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
               })
             let result: unknown
             try {
-              result = await p.evaluate(value)
+              result = await deadline('evaluate', () => p.evaluate(value), actionTimeout)
             } catch (evalErr: any) {
+              if (evalErr instanceof BrowserActionDeadlineError) throw evalErr
               if (!EVALUATE_STATEMENT_SYNTAX_RE.test(evalErr?.message ?? '')) throw evalErr
               // The syntax error means nothing ran, so retrying is safe.
               const asBody = `(async () => {\n${value}\n})()`
               if (/(^|[;{}\n])\s*return\b/.test(value)) {
-                result = await p.evaluate(asBody)
+                result = await deadline('evaluate', () => p.evaluate(asBody), actionTimeout)
               } else {
                 try {
-                  result = await p.evaluate(`(async () => { return (\n${value}\n) })()`)
+                  result = await deadline('evaluate', () => p.evaluate(`(async () => { return (\n${value}\n) })()`), actionTimeout)
                 } catch (exprErr: any) {
+                  if (exprErr instanceof BrowserActionDeadlineError) throw exprErr
                   if (!/SyntaxError/i.test(exprErr?.message ?? '')) throw exprErr
-                  result = await p.evaluate(asBody)
+                  result = await deadline('evaluate', () => p.evaluate(asBody), actionTimeout)
                 }
               }
             }
@@ -7592,7 +7889,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
           }
           case 'viewport': {
             viewportSize = requestedViewport
-            await p.setViewportSize(viewportSize)
+            await deadline('viewport', () => p.setViewportSize(viewportSize), actionTimeout)
             return textResult({ ok: true, action: 'viewport', viewport: viewportSize, url: p.url() })
           }
           case 'console': {
@@ -7617,7 +7914,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
             try {
               await locator.selectOption(value, { timeout: 10000 })
             } catch (selectErr: any) {
-              const found = await locator.count().catch(() => 0)
+              const found = await countLocator('select', locator, actionTimeout)
               if (found === 0)
                 return textResult({
                   error: staleTargetHint('select', ref, selector),
@@ -7639,24 +7936,32 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
               if (locator) await locator.scrollIntoViewIfNeeded({ timeout: 5000 })
             } else {
               const distance = parseInt(value || '500', 10)
-              await p.evaluate((d: number) => window.scrollBy(0, d), distance)
+              await deadline('scroll', () => p.evaluate((d: number) => window.scrollBy(0, d), distance), actionTimeout)
             }
             return textResult({ ok: true, action: 'scroll' })
           }
           case 'wait_for': {
             if (!selector) return textResult({ error: 'selector is required for wait_for' })
-            await p.waitForSelector(selector, { timeout: waitMs || 10000 })
+            await deadline(
+              'wait_for',
+              () => p.waitForSelector(selector, { timeout: waitMs || 10000 }),
+              actionTimeout,
+            )
             return textResult({ ok: true, action: 'wait_for', selector })
           }
           default:
             return textResult({ error: `Unknown browser action: ${action}` })
         }
       } catch (err: any) {
+        if (err instanceof BrowserActionDeadlineError) {
+          return textResult({ error: (await describeMissedDeadline(err)).message, action })
+        }
         if (lease && (isDeadBrowserError(err?.message) || page?.isClosed?.())) {
           await cleanup()
         }
         return textResult({ error: `Browser error: ${err.message}`, action })
       } finally {
+        signal?.removeEventListener('abort', onTurnAbort)
         inFlightCalls--
         if (inFlightCalls === 0) scheduleIdleRelease()
       }
@@ -7941,6 +8246,31 @@ function createChannelListTool(ctx: ToolContext): AgentTool {
 // Integration Discovery Tools (unified search / connect / disconnect)
 // ---------------------------------------------------------------------------
 
+const ZERNIO_SOCIAL_LABELS: Record<ZernioSocialToolkit, string> = {
+  instagram: 'Instagram',
+  tiktok: 'TikTok',
+}
+
+/**
+ * The `search_integrations` row for a Zernio-connected platform. Instagram and
+ * TikTok are not Composio toolkits: the account is connected on the Social
+ * page, so the install command points at `social_media` instead of `connect`.
+ */
+function zernioSocialSearchResult(platform: ZernioSocialToolkit, capabilityOff: boolean) {
+  const label = ZERNIO_SOCIAL_LABELS[platform]
+  return {
+    name: `${label} (Zernio)`,
+    id: `social:${platform}`,
+    source: 'managed' as const,
+    provider: 'zernio',
+    description: `Connect ${platform === 'instagram' ? 'an' : 'a'} ${label} account for posting, comments and DMs. The person signs in on ${label}'s own page; no credentials.`,
+    installCommand: `social_media({ action: "connect", platform: "${platform}" })`,
+    ...(capabilityOff
+      ? { note: 'Turn on Social management (socialManagementEnabled) first' }
+      : {}),
+  }
+}
+
 /**
  * Unified search across managed OAuth integrations (Composio), bundled
  * skills, and MCP server catalog. Each result carries a `source` tag so
@@ -7952,7 +8282,8 @@ function createSearchIntegrationsTool(ctx: ToolContext): AgentTool {
     name: 'search_integrations',
     description:
       'Search for integrations by keyword. Returns managed OAuth integrations (Google, Slack, GitHub, etc.), bundled skills, and MCP protocol servers in one tagged list. Each result has a `source` tag (managed | skill | mcp). Pass `source` to filter to one backend.\n\n' +
-      'When results are empty: do NOT give up after one query. Retry with a different keyword first — try the integration\'s common name ("google calendar"), the underlying capability ("calendar", "events", "scheduling"), or a sibling provider ("gcal", "outlook"). Only conclude an integration does not exist after at least 2 different searches return empty.',
+      'When results are empty: do NOT give up after one query. Retry with a different keyword first — try the integration\'s common name ("google calendar"), the underlying capability ("calendar", "events", "scheduling"), or a sibling provider ("gcal", "outlook"). Only conclude an integration does not exist after at least 2 different searches return empty.\n\n' +
+      'Instagram and TikTok accounts connect through `social_media` (Zernio), not here.',
     label: 'Search Integrations',
     parameters: Type.Object({
       query: Type.String({
@@ -7975,6 +8306,11 @@ function createSearchIntegrationsTool(ctx: ToolContext): AgentTool {
       const results: Array<Record<string, any>> = []
 
       if (!source || source === 'managed') {
+        for (const platform of zernioPlatformsFromQuery(query)) {
+          results.push(
+            zernioSocialSearchResult(platform, ctx.config.socialManagementEnabled !== true),
+          )
+        }
         if (isComposioEnabled()) {
           try {
             const composioToolkits = await searchComposioToolkits(query)
@@ -8361,7 +8697,8 @@ function createConnectTool(ctx: ToolContext): AgentTool {
     description:
       'Install (connect) an integration so its tools become available. Auto-routes by name: tries Composio managed OAuth first (Google, Slack, GitHub, etc. — no credentials needed), falls back to the MCP catalog (postgres, etc.), then to a remote URL if provided. Files and shell commands are built in (read_file, write_file, edit_file, exec) — do not connect filesystem or computer-use. Use `source: "mcp"` to skip Composio. Use `skill:<name>` to install a bundled skill. Pair with search_integrations to discover names.\n\n' +
       'When to call connect vs. when not to: only call connect when the user has asked for an ACTION you can\'t perform without that integration (send a calendar invite, post to Slack, query a Postgres database, etc.). Do NOT call connect when the user is asking to "show", "list", "compare", "describe", or "preview" data you can already produce with `web`, `read_file`, or in-context information — installing an integration the user did not ask for forces them through an OAuth dance for no reason and is one of the most disliked agent behaviors. If you\'re unsure whether the user wants the action or just an explanation, ask one clarifying question via `ask_user` before calling connect.\n\n' +
-      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec (`gh issue list`, `gh issue create`, `gh pr list`, `gh pr create --repo <owner>/<repo> --base main --head <branch> --title "..." --body-file .tmp/pr-body.md`, `gh run list`). Opening a PR is normally `gh pr create` in exec after pushing the source branch; the `github_create_pr` tool is an optional alternative that opens the PR as the Shogo GitHub App and adds the standard footer. Either way end the body with the standard Made with Shogo footer and a `Card: <KEY>` line. To bring a repository into a project, use `github_connect`. If gh is not authenticated: for a project\'s repository, use `github_connect` (pass the user\'s token if they shared one); only for one-off work outside a project\'s repository, save the PAT to workspace `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
+      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec (`gh issue list`, `gh issue create`, `gh pr list`, `gh pr create --repo <owner>/<repo> --base main --head <branch> --title "..." --body-file .tmp/pr-body.md`, `gh run list`). Opening a PR is normally `gh pr create` in exec after pushing the source branch; the `github_create_pr` tool is an optional alternative that opens the PR as the Shogo GitHub App and adds the standard footer. Either way end the body with the standard Made with Shogo footer and a `Card: <KEY>` line. To bring a repository into a project, use `github_connect`. If gh is not authenticated: for a project\'s repository, use `github_connect` (pass the user\'s token if they shared one); only for one-off work outside a project\'s repository, save the PAT to workspace `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.\n\n' +
+      'Instagram and TikTok accounts connect through `social_media` (Zernio), not here.',
     label: 'Connect Integration',
     parameters: Type.Object({
       name: Type.String({
@@ -8402,6 +8739,28 @@ function createConnectTool(ctx: ToolContext): AgentTool {
       try {
         if (name.startsWith('skill:')) {
           return await connectSkill(ctx, name.slice(6))
+        }
+
+        // Instagram and TikTok accounts connect through Zernio (`social_media`),
+        // never Composio. Refuse before any OAuth starts, for both the plain
+        // toolkit name and the `social:<platform>` id search_integrations returns.
+        // An explicit MCP request (`source: "mcp"` or a `url`) is the person's
+        // own choice and is left alone.
+        const explicitMcp = source === 'mcp' || (source !== 'managed' && !!url)
+        const zernioName = name.startsWith('social:') ? name.slice('social:'.length) : name
+        if (!explicitMcp && isZernioSocialToolkit(zernioName)) {
+          const platform = normalizeToolkitName(zernioName) as ZernioSocialToolkit
+          const label = ZERNIO_SOCIAL_LABELS[platform]
+          return textResult({
+            redirect: true,
+            provider: 'zernio',
+            platform,
+            error: `${label} connects through Zernio, not Composio.`,
+            next: `social_media({ action: "connect", platform: "${platform}" })`,
+            ...(ctx.config.socialManagementEnabled !== true
+              ? { note: 'Turn on Social management (socialManagementEnabled) first' }
+              : {}),
+          })
         }
 
         if (!ctx.mcpClientManager) {
@@ -8500,7 +8859,14 @@ function createDisconnectTool(ctx: ToolContext): AgentTool {
 // Agent Orchestration Tools (agent_create, agent_spawn, agent_status, etc.)
 // ---------------------------------------------------------------------------
 
-import { AgentManager } from './agent-manager'
+import type { AgentManager } from './agent-manager'
+import {
+  registerSubagentInstanceCleanup,
+  subagentIdleTimeoutMs,
+  subagentMaxDurationMs,
+  synthesizeWaitResult,
+  waitForSubagentInstance,
+} from './subagent-watchdog'
 import type { ModelTierName, ForkContext } from './subagent'
 import { isInForkChild, buildForkDirective } from './subagent-prompts'
 
@@ -8621,7 +8987,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         }),
       ),
     }),
-    execute: async (toolCallId, params) => {
+    execute: async (toolCallId, params, signal) => {
       const {
         prompt,
         model_tier,
@@ -8687,7 +9053,11 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         const w = ctx.uiWriter
         const spawn = buildSpawnCallbacks(w, toolCallId)
         const forkDirective = buildForkDirective(prompt)
-        const result = await runSubagent(forkConfig, forkDirective, ctx, allToolsGetter(), spawn?.callbacks, { forkContext })
+        const result = await runSubagent(forkConfig, forkDirective, ctx, allToolsGetter(), spawn?.callbacks, {
+          forkContext,
+          // The parent turn's signal, so Stop ends a forked run too (SHO-358).
+          signal,
+        })
 
         const subModel = result.effectiveModelId || ctx.effectiveModel || ctx.config.model.name
         if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
@@ -8804,10 +9174,37 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         })
       }
 
-      // Synchronous: wait for completion
+      // Synchronous: wait for completion — but never forever. A sub-agent whose
+      // tool call never settles would otherwise pin this chat turn open for
+      // hours (prod: 18 h), unkillable by Stop (SHO-358).
       const inst = am.getInstance(instanceId)
       if (!inst) return textResult({ error: 'Instance lost' })
-      const result = await inst.promise
+      const outcome = await waitForSubagentInstance(inst, {
+        idleMs: subagentIdleTimeoutMs(),
+        maxMs: subagentMaxDurationMs(),
+        parentSignal: signal,
+      })
+      let result = outcome.kind === 'settled' ? outcome.result : synthesizeWaitResult({}, '')
+      if (outcome.kind !== 'settled') {
+        const partial = spawn?.getAccumulatedOutput()
+        const stoppedReason = outcome.kind === 'timeout'
+          ? `stopped after ${outcome.reason}`
+          : outcome.reason === 'parent-abort'
+            ? 'stopped because this turn was cancelled'
+            : 'stopped by a cancel request'
+        // End the instance's own loop too, and release whatever it holds
+        // (its browser page/lease, its screencast channel).
+        am.cancel(instanceId)
+        result = synthesizeWaitResult(
+          {
+            agentId: partial?.agentId ?? undefined,
+            effectiveModelId: partial?.model ?? undefined,
+            toolCalls: partial?.parts?.filter((p: any) => p?.type === 'tool').length ?? 0,
+            responseText: lastSubagentText(partial?.parts),
+          },
+          `The sub-agent ${stoppedReason}.`,
+        )
+      }
 
       if (w && (result.inputTokens > 0 || result.outputTokens > 0)) {
         const subModel = result.effectiveModelId || ctx.effectiveModel || ctx.config.model.name
@@ -8835,10 +9232,17 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
 
       const accumulated = spawn?.getAccumulatedOutput()
       const failed = inst.status === 'failed' || result.responseEmpty === true
+      // A watchdog/cancel end is its own outcome: the parent must be able to tell
+      // "it stopped" from "it failed" from "it finished" (SHO-358).
+      const status = outcome.kind === 'timeout'
+        ? 'timeout'
+        : outcome.kind === 'cancelled'
+          ? 'cancelled'
+          : inst.status
       return subagentToolResult({
         instance_id: instanceId,
         agent_id: result.agentId,
-        status: inst.status,
+        status,
         toolCalls: result.toolCalls,
         iterations: result.iterations,
         tokens: { input: result.inputTokens, output: result.outputTokens },
@@ -8877,6 +9281,20 @@ function withTaskOutput(
 }
 
 const MAX_SUBAGENT_RESPONSE_CHARS = 8000
+
+/**
+ * The sub-agent's own last words from its streamed parts, for a run that was
+ * stopped rather than finished — the partial report the parent can still use,
+ * instead of an empty string (SHO-358).
+ */
+export function lastSubagentText(parts: any[] | undefined): string {
+  if (!parts?.length) return ''
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const part = parts[i]
+    if (part?.type === 'text' && typeof part.text === 'string' && part.text.trim()) return part.text
+  }
+  return ''
+}
 
 export function capSubagentResponse(text: string): string {
   if (text.length <= MAX_SUBAGENT_RESPONSE_CHARS) return text
@@ -10569,6 +10987,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       `Actions: "profile" and "recent_posts" take a handle; ` +
       `"connect" takes a platform and returns a sign-in LINK to give the person — never ask for or accept a username, password or 2FA code; ` +
       `"accounts" lists the connected accounts and their ids; ` +
+      `"audio" searches Instagram's licensed music / original sounds for a connected Instagram account (omit query for trending) and returns audio ids to pass to "post" as \`audio\`; it needs the account connected with Facebook Login; ` +
       `"post" publishes or schedules one post to one or more accounts (content, account_ids, media, scheduled_for/publish_now/draft); ` +
       `"posts" lists posts, "calendar" the schedule and "analytics" the numbers; ` +
       `"delete" takes a post_id and removes a draft, a scheduled or failed post, or a published one — it unpublishes each target the provider can remove, and returns the ones the person has to remove in the Instagram / TikTok / Snapchat app with their links; ` +
@@ -10591,6 +11010,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
           Type.Literal('automate'),
           Type.Literal('connect'),
           Type.Literal('accounts'),
+          Type.Literal('audio'),
           Type.Literal('post'),
           Type.Literal('posts'),
           Type.Literal('delete'),
@@ -10599,7 +11019,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         ],
         {
           description:
-            'profile | recent_posts | inbox | reply | comment_reply | automate | connect | accounts | post | posts | delete | calendar | analytics',
+            'profile | recent_posts | inbox | reply | comment_reply | automate | connect | accounts | audio | post | posts | delete | calendar | analytics',
         },
       ),
       platform: Type.Optional(
@@ -10692,6 +11112,34 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
             'For action "post": JSON TikTok settings, e.g. {"privacyLevel":"PUBLIC_TO_EVERYONE","contentPreviewConfirmed":true,"expressConsentGiven":true} for a direct post. Omit it and the video goes to the creator\'s TikTok inbox as a draft (the safe default).',
         }),
       ),
+      audio: Type.Optional(
+        Type.String({
+          description:
+            'For action "post": JSON Instagram Reel track, e.g. {"audio_id":"1234567890","audio_volume":80,"video_volume":100}. Get audio_id from action "audio". Applies to every Instagram target; other platforms ignore it. The Instagram target must be a single video (a Reel) — an image, carousel or Story is refused.',
+        }),
+      ),
+      audio_type: Type.Optional(
+        Type.Union([Type.Literal('music'), Type.Literal('original_sound')], {
+          description: 'For action "audio": which half of the catalog to search. Defaults to music.',
+        }),
+      ),
+      query: Type.Optional(
+        Type.String({
+          description: 'For action "audio": what to search for. Omit it to get what is trending.',
+        }),
+      ),
+      audio_id: Type.Optional(
+        Type.String({
+          description:
+            'For action "audio": re-check one track id and refresh its preview URL (a track id is only good for about a day and a half). Omit it to search.',
+        }),
+      ),
+      login_method: Type.Optional(
+        Type.Union([Type.Literal('instagram_login'), Type.Literal('facebook_login')], {
+          description:
+            'For action "connect" with platform "instagram": how to sign in. "facebook_login" goes through the Facebook Page linked to the Instagram account and is the only way to use licensed music on Reels. Defaults to Instagram Login.',
+        }),
+      ),
       expected_username: Type.Optional(
         Type.String({
           description:
@@ -10746,6 +11194,11 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         post_id?: unknown
         allow_duplicate?: unknown
         tiktok?: unknown
+        audio?: unknown
+        audio_type?: unknown
+        query?: unknown
+        audio_id?: unknown
+        login_method?: unknown
         expected_username?: unknown
         force_reauth?: unknown
         status?: unknown
@@ -10769,6 +11222,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         'automate',
         'connect',
         'accounts',
+        'audio',
         'post',
         'posts',
         'delete',
@@ -10800,10 +11254,12 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
           })
         }
         const expected = String(params.expected_username ?? '').trim().replace(/^@+/, '')
+        const loginMethod = String(params.login_method ?? '').trim().toLowerCase()
         const result = await socialInternalCall(ctx, 'POST', '/social/connect', {
           platform,
           ...(expected ? { expectedUsername: expected } : {}),
           ...(params.force_reauth === true ? { forceReauth: true } : {}),
+          ...(loginMethod ? { loginMethod } : {}),
         })
         if (!result.ok) {
           return textResult({ error: result.error, code: result.code, suggestion: result.suggestion })
@@ -10817,7 +11273,9 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
             `Give the person this link and ask them to open it in a browser and sign in on ${platformLabel(platform)}'s own page. ` +
             `When they finish they land on a page saying the account is connected; run action "accounts" to see it. ` +
             (platform === 'instagram'
-              ? 'Instagram needs a professional (Business or Creator) account to publish — Instagram converts a personal one during sign-in.'
+              ? loginMethod === 'facebook_login'
+                ? 'They must pick the Facebook Page linked to their Instagram account — that is what makes licensed music on Reels available.'
+                : 'Instagram needs a professional (Business or Creator) account to publish — Instagram converts a personal one during sign-in.'
               : ''),
           never:
             'Never ask for, accept or store a username, password or 2FA code: Shogo never sees them, and this flow never needs them.',
@@ -10841,6 +11299,59 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
             active: account.isActive !== false,
             needs_reconnect: account.needsReconnect === true,
           })),
+        })
+      }
+
+      if (action === 'audio') {
+        const accountId = String(params.account_id ?? '').trim()
+        if (!accountId) {
+          return textResult({
+            error: 'account_id is required: run action "accounts" and pass the Instagram account_id.',
+          })
+        }
+        const audioId = String(params.audio_id ?? '').trim()
+        const query = new URLSearchParams()
+        if (!audioId) {
+          const audioType = String(params.audio_type ?? '').trim()
+          if (audioType) query.set('audioType', audioType)
+          const q = String(params.query ?? '').trim()
+          if (q) query.set('q', q)
+        }
+        const path = audioId
+          ? `/social/accounts/${encodeURIComponent(accountId)}/instagram/audio/${encodeURIComponent(audioId)}`
+          : `/social/accounts/${encodeURIComponent(accountId)}/instagram/audio${query.toString() ? `?${query.toString()}` : ''}`
+        const result = await socialInternalCall(ctx, 'GET', path)
+        if (!result.ok) {
+          return textResult({
+            error: result.error,
+            code: result.code,
+            suggestion:
+              result.code === 'instagram_audio_requires_facebook_login'
+                ? 'That account is on Instagram Login. Reconnect it with login_method "facebook_login" (through the Facebook Page linked to it), then search again.'
+                : result.code === 'not_instagram'
+                  ? 'Audio is Instagram-only: pass an Instagram account_id from action "accounts".'
+                  : result.suggestion,
+          })
+        }
+        const tracks: any[] = Array.isArray(result.data?.audio) ? result.data.audio : []
+        return textResult({
+          count: tracks.length,
+          audio: tracks.map((track: any) => ({
+            audio_id: track.audioId,
+            title: track.title,
+            audio_type: track.audioType,
+            duration_ms: track.durationMs,
+            artist: track.artist,
+            preview_url: track.downloadUrl,
+          })),
+          licensing: result.data?.licensing ?? null,
+          note: audioId
+            ? tracks.length
+              ? 'Track is still available; its preview URL is refreshed.'
+              : 'That track id is no longer in the catalog — search again and pick another.'
+            : tracks.length
+              ? 'Pass an audio_id to action "post" as audio: {"audio_id":"…","audio_volume":80,"video_volume":100}. The Instagram target must be a single video (a Reel).'
+              : 'No tracks came back. Try a different query, or audio_type "original_sound".',
         })
       }
 
@@ -10914,6 +11425,14 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
 
         const scheduledFor = String(params.scheduled_for ?? '').trim()
         const tiktok = parseJsonObject(params.tiktok)
+        const audioInput = parseJsonObject(params.audio)
+        const audio = audioInput
+          ? {
+              ...(audioInput.audio_id !== undefined ? { audioId: audioInput.audio_id } : {}),
+              ...(audioInput.audio_volume !== undefined ? { audioVolume: audioInput.audio_volume } : {}),
+              ...(audioInput.video_volume !== undefined ? { videoVolume: audioInput.video_volume } : {}),
+            }
+          : undefined
         const created = await socialInternalCall(ctx, 'POST', '/social/posts', {
           content,
           accountIds: targetIds,
@@ -10923,6 +11442,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
           ...(params.publish_now === true ? { publishNow: true } : {}),
           ...(isDraft ? { draft: true } : {}),
           ...(tiktok ? { tiktok } : {}),
+          ...(audio ? { audio } : {}),
           ...(params.allow_duplicate === true ? { allowDuplicate: true } : {}),
         })
         if (!created.ok) return textResult({ error: created.error, suggestion: created.suggestion })
@@ -11387,8 +11907,18 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     tools.push(...createWorkspaceAgentTools(ctx))
     tools.push(...createTriggerTools(ctx))
     // Meetings are private to the personal workspace; the API rejects team workspaces.
-    if (ctx.config.capabilityProfile === 'personal') tools.push(...createMeetingTools(ctx))
-    else {
+    if (ctx.config.capabilityProfile === 'personal') {
+      tools.push(...createMeetingTools(ctx))
+      // The person's Personal agent may also read — and, approved, run — their
+      // other workspaces (SHO-389). It has no boards or team chat of its own, so
+      // every one of these calls names its target with `workspace`; without the
+      // parameter they answer for the empty personal workspace.
+      if (crossWorkspaceEnabled(ctx)) {
+        tools.push(...createChannelTools(ctx))
+        if (!process.env.WORKSPACE_ANCHOR_PROJECT_ID) tools.push(...createAgentRunTools(ctx))
+        tools.push(...createBoardTools(ctx))
+      }
+    } else {
       tools.push(...createChannelTools(ctx))
       // A project-anchored runtime speaks as that project's agent, not the workspace agent.
       if (!process.env.WORKSPACE_ANCHOR_PROJECT_ID) tools.push(...createAgentRunTools(ctx))
@@ -11412,6 +11942,22 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
 
   if (extraTools) {
     tools.push(...extraTools)
+  }
+
+  // The Personal workspace agent may act in the person's other workspaces: the
+  // `workspace` parameter is registered on the tools that support it, and the
+  // gate resolves the target, asks for every write, and scopes the internal
+  // call underneath so every route below keeps one code path (SHO-389).
+  if (crossWorkspaceEnabled(ctx)) {
+    const crossWorkspaceId = resolveRuntimeIdentity().workspaceId || ctx.workspaceId || null
+    for (let i = 0; i < tools.length; i++) {
+      tools[i] = withCrossWorkspaceGate({
+        tool: withCrossWorkspaceParam(tools[i], ctx),
+        ctx,
+        workspaceId: crossWorkspaceId,
+        engine: pe ?? null,
+      })
+    }
   }
 
   // Every tool honours its per-tool action rule (run, ask first, block), even
@@ -12130,6 +12676,14 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
   const lookupsUsable = enabledSocialPlatforms(config).length > 0
   if (!lookupsUsable && config.socialManagementEnabled !== true) disabled.add('social_media')
 
+  // The Personal workspace agent's cross-workspace surface (SHO-389) is not
+  // "team tools it shouldn't have": every one of these calls names ANOTHER
+  // workspace, and the target workspace's own settings — not this empty
+  // personal one — decide what its boards and channels look like. So the
+  // personal profile keeps exactly the tools that take a `workspace`.
+  if (crossWorkspaceEnabledFor(config)) {
+    for (const n of crossWorkspaceToolNames()) disabled.delete(n)
+  }
   const memoryOff = config.memoryEnabled === false
   if (disabled.size === 0 && !memoryOff) return tools
   const kept = tools.filter((t) => {
@@ -12912,7 +13466,7 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
       }),
       model: Type.Optional(
         Type.String({
-          description: `AI model for this channel. Defaults to "auto". ${availableModelsHint()} Economy-tier models work on all plans; standard/premium require Pro.`,
+          description: `AI model for this channel. Defaults to "auto". ${availableModelsHint()} Economy-tier models work on all plans; standard/premium require Business.`,
         }),
       ),
     }),
@@ -12949,7 +13503,7 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
               }
               if (!access.hasAdvancedModelAccess) {
                 return textResult({
-                  error: `Model '${channelModel}' requires a Pro or higher subscription. Please use an economy-tier model or upgrade your plan.`,
+                  error: `Model '${channelModel}' requires a Business (or higher) subscription. Please use an economy-tier model or upgrade your plan.`,
                 })
               }
             }
@@ -12977,9 +13531,21 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
         }
       }
 
-      if (type === 'webchat' && !channelConfig.widgetSecret) {
-        const { randomUUID } = await import('crypto')
-        channelConfig.widgetSecret = randomUUID()
+      if (type === 'webchat') {
+        // Keep the key already saved in config.json so a reconnect does not
+        // break pages that are already embedding the widget (SHO-380).
+        const { existsSync, readFileSync } = await import('fs')
+        const { join } = await import('path')
+        const { resolveWebchatWidgetSecret } = await import('./channels/webchat-key')
+        const configPath = join(ctx.workspaceDir, 'config.json')
+        let savedWebchat: Record<string, string> | undefined
+        if (existsSync(configPath)) {
+          try {
+            const saved = JSON.parse(readFileSync(configPath, 'utf-8'))
+            savedWebchat = saved?.channels?.find((c: any) => c.type === 'webchat')?.config
+          } catch { /* ignore a malformed config; a fresh key is still correct */ }
+        }
+        channelConfig.widgetSecret = resolveWebchatWidgetSecret(channelConfig, savedWebchat)
       }
 
       try {

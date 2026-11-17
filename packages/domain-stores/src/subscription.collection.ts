@@ -80,6 +80,19 @@ export const SubscriptionCollection = types
     const pendingUpdates = new Map<string, any>()
     const pendingDeletes = new Set<string>()
     let latestLoadRequestId = 0
+    // The order local writes settled in, and the last one that settled for
+    // each id. A list response describes the server as it was when the
+    // request left, so any row whose own write settled after that point is
+    // owned by the write: applying the response would resurrect a deleted
+    // row or revert an edit the person just made. A mutation counter is
+    // exact where a clock is not (two writes can share a millisecond).
+    let writeSeq = 0
+    const lastWriteSeq = new Map<string, number>()
+    const ownedByWrite = (id: string, requestSeq: number) =>
+      pendingCreates.has(id) ||
+      pendingUpdates.has(id) ||
+      pendingDeletes.has(id) ||
+      (lastWriteSeq.get(id) ?? 0) > requestSeq
 
     return {
       /** Set loading state */
@@ -122,6 +135,7 @@ export const SubscriptionCollection = types
        */
       loadAll: flow(function* (filter?: Record<string, any>) {
         const requestId = ++latestLoadRequestId
+        const requestSeq = writeSeq
         self.isLoading = true
         self.error = null
 
@@ -148,6 +162,12 @@ export const SubscriptionCollection = types
               const id = transformed.id
               newIds.add(id)
 
+              // Keep the optimistic state of a row whose write is still
+              // in flight, or settled after this request left.
+              if (ownedByWrite(id, requestSeq)) {
+                continue
+              }
+
               const existing = self.items.get(id)
               if (existing) {
                 // Update existing item in place (preserves node reference)
@@ -170,7 +190,7 @@ export const SubscriptionCollection = types
             if (!hasFilter) {
               // Remove items that are no longer in an unfiltered response.
               for (const id of self.items.keys()) {
-                if (!newIds.has(id)) {
+                if (!newIds.has(id) && !ownedByWrite(id, requestSeq)) {
                   self.items.delete(id)
                 }
               }
@@ -180,7 +200,11 @@ export const SubscriptionCollection = types
               // shared collection.
               for (const id of self.items.keys()) {
                 const item = self.items.get(id)
-                if (item?.sessionId === filter.sessionId && !newIds.has(id)) {
+                if (
+                  item?.sessionId === filter.sessionId &&
+                  !newIds.has(id) &&
+                  !ownedByWrite(id, requestSeq)
+                ) {
                   self.items.delete(id)
                 }
               }
@@ -211,6 +235,7 @@ export const SubscriptionCollection = types
         const limit = pagination?.limit ?? 50
         const offset = pagination?.offset ?? 0
         const isFirstPage = offset === 0
+        const requestSeq = writeSeq
 
         if (isFirstPage) {
           self.isLoading = true
@@ -236,12 +261,19 @@ export const SubscriptionCollection = types
 
           if (response.data?.ok && response.data.items) {
             if (isFirstPage) {
-              self.items.clear()
+              // A refresh is not authoritative for a row a write owns: a
+              // delete or an update in flight has to survive it, the same
+              // way `loadAll` makes it survive a stale response.
+              for (const id of Array.from(self.items.keys())) {
+                if (ownedByWrite(id, requestSeq)) continue
+                self.items.delete(id)
+              }
             }
 
             for (const item of response.data.items) {
               const transformed = transformForMST(item)
               const id = transformed.id
+              if (ownedByWrite(id, requestSeq)) continue
               const existing = self.items.get(id)
               if (existing) {
                 applySnapshot(existing, transformed)
@@ -318,6 +350,7 @@ export const SubscriptionCollection = types
           // Replace temp with real item
           const realItem = transformForMST(response.data.data)
           pendingCreates.delete(tempId)
+          lastWriteSeq.set(realItem.id, ++writeSeq)
           self.items.delete(tempId)
           self.items.put(realItem)
 
@@ -371,6 +404,7 @@ export const SubscriptionCollection = types
           // Apply server response
           const serverData = transformForMST(response.data.data)
           pendingUpdates.delete(id)
+          lastWriteSeq.set(id, ++writeSeq)
           // `existing` was captured before the awaited PATCH. While the
           // request was in flight the node may have been detached/destroyed
           // (navigation, a collection reset/clear, or a concurrent delete) or
@@ -421,6 +455,7 @@ export const SubscriptionCollection = types
           yield env.http.delete(`${ENDPOINT}/${id}`)
 
           pendingDeletes.delete(id)
+          lastWriteSeq.set(id, ++writeSeq)
         } catch (error: any) {
           // Rollback
           pendingDeletes.delete(id)

@@ -20,6 +20,7 @@ import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-nati
 import { AlertTriangle, Boxes, RefreshCw, RotateCcw, Rocket, Trash2 } from 'lucide-react-native'
 import type { HttpClient } from '@shogo-ai/sdk'
 import { cn } from '@shogo/shared-ui/primitives'
+import { UPGRADE_PLAN_NAME } from '@/lib/billing-config'
 import {
   api,
   type PublishedEnvironmentMetrics,
@@ -225,7 +226,9 @@ export function DeploymentSection({ projectId, http, embedded = true }: Deployme
             icon={<Boxes size={14} />}
           />
           {caps?.staging === false && (
-            <Text className="text-xs text-neutral-500">Staging environments require the Pro plan or higher.</Text>
+            <Text className="text-xs text-neutral-500">
+              Staging environments require the {UPGRADE_PLAN_NAME} plan or higher.
+            </Text>
           )}
         </View>
       )}

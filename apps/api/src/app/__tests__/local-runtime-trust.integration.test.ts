@@ -34,6 +34,11 @@ const fakePrisma = {
   project: {
     findUnique: async ({ where }: { where: { id: string } }) => projects.get(where.id) ?? null,
   },
+  // The cross-workspace authorizer asks which instance owns a target (SHO-389).
+  // This desktop holds no cloud rows, so every target answers "not here".
+  workspace: {
+    findUnique: async () => null,
+  },
 }
 
 process.env.SHOGO_LOCAL_MODE = 'true'
@@ -193,9 +198,11 @@ describe('desktop local API ↔ agent-runtime folder trust', () => {
     const url = `${apiUrl}/api/internal/projects/${PROJECT_ID}/trust`
     expect((await fetch(url)).status).toBe(401)
     expect((await fetch(url, { headers: { 'x-runtime-token': 'wrt_v1_forged' } })).status).toBe(401)
+    // A valid token for a *different* workspace is refused as a cross-workspace
+    // call (403), not as a bad credential (SHO-389).
     expect(
       (await fetch(url, { headers: { 'x-runtime-token': deriveWorkspaceRuntimeToken(OTHER_WORKSPACE_ID) } })).status,
-    ).toBe(401)
+    ).toBe(403)
     expect(
       (await fetch(url, { headers: { 'x-runtime-token': deriveRuntimeToken('some-other-project') } })).status,
     ).toBe(401)

@@ -2,10 +2,13 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 export const ISLAND_MAX_FILES = 10
-export const ISLAND_MAX_FILE_SIZE = 100 * 1024 * 1024
-/** Project archives bypass the per-file limit (matching the composer), but
- * are read into memory and sent over IPC, so they still need a ceiling. */
-export const ISLAND_MAX_ARCHIVE_SIZE = 250 * 1024 * 1024
+/**
+ * The island is local mode, which resolves to a paid plan — so files and
+ * archives share the 500 MB paid ceiling (SHO-370). There is no separate
+ * archive limit any more.
+ */
+export const ISLAND_MAX_FILE_SIZE = 500 * 1024 * 1024
+export const ISLAND_MAX_ARCHIVE_SIZE = ISLAND_MAX_FILE_SIZE
 
 export function isIslandArchive(name: string, type = ''): boolean {
   const lowerName = name.toLowerCase()

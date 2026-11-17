@@ -55,7 +55,7 @@ const inlines = (bundle: string, repoPath: string) => bundle.includes(`// ${repo
 const EXTERNAL_PACKAGES = [
   'electron',
   'playwright-core',
-  '@playwright/mcp',
+  'ws',
   '@prisma/client',
   'prisma',
   'prisma-adapter-bun-sqlite',

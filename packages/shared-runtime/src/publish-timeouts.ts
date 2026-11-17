@@ -12,6 +12,11 @@ export const DEFAULT_PUBLISH_DOWNLOAD_TIMEOUT_MS = 60_000
 export const DEFAULT_PUBLISH_UPLOAD_TIMEOUT_MS = 60_000
 export const DEFAULT_PUBLISH_CONFIGURE_TIMEOUT_MS = 60_000
 export const DEFAULT_PUBLISH_CONFIGURE_TIMEOUT_METAL_MS = 150_000
+/**
+ * The per-commit image build a server-backed Knative publish runs *inside* the
+ * configure step. Its own budget, so the configure timeout can cover it.
+ */
+export const DEFAULT_PUBLISH_IMAGE_BUILD_TIMEOUT_MS = 900_000
 export const DEFAULT_PUBLISH_GIT_FLUSH_TIMEOUT_MS = 60_000
 /** Slack so the caller's abort fires after the API has returned its own timeout. */
 export const PUBLISH_REQUEST_SLACK_MS = 30_000
@@ -27,6 +32,7 @@ export interface PublishStepTimeouts {
   uploadMs: number
   configureMs: number
   configureMetalMs: number
+  imageBuildMs: number
   gitFlushMs: number
 }
 
@@ -37,6 +43,7 @@ export function publishStepTimeouts(env: NodeJS.ProcessEnv = process.env): Publi
     uploadMs: positiveMs(env.PUBLISH_UPLOAD_TIMEOUT_MS, DEFAULT_PUBLISH_UPLOAD_TIMEOUT_MS),
     configureMs: positiveMs(env.PUBLISH_CONFIGURE_TIMEOUT_MS, DEFAULT_PUBLISH_CONFIGURE_TIMEOUT_MS),
     configureMetalMs: positiveMs(env.PUBLISH_CONFIGURE_TIMEOUT_METAL_MS, DEFAULT_PUBLISH_CONFIGURE_TIMEOUT_METAL_MS),
+    imageBuildMs: positiveMs(env.PUBLISH_IMAGE_BUILD_TIMEOUT_MS, DEFAULT_PUBLISH_IMAGE_BUILD_TIMEOUT_MS),
     gitFlushMs: positiveMs(env.PUBLISH_GIT_FLUSH_TIMEOUT_MS, DEFAULT_PUBLISH_GIT_FLUSH_TIMEOUT_MS),
   }
 }
@@ -44,7 +51,8 @@ export function publishStepTimeouts(env: NodeJS.ProcessEnv = process.env): Publi
 /**
  * How long a caller should wait for POST /publish: two build attempts
  * (the retry joins the runtime's in-flight build), a download, an upload,
- * and the longer metal configure, plus slack.
+ * the longer metal configure, the per-commit image build that runs inside
+ * the configure step, plus slack.
  *
  * `PUBLISH_REQUEST_TIMEOUT_MS` wins when set. Otherwise the same step env
  * vars the API reads are summed, so an override set on both processes
@@ -54,5 +62,12 @@ export function publishRequestTimeoutMs(env: NodeJS.ProcessEnv = process.env): n
   const explicit = positiveMs(env.PUBLISH_REQUEST_TIMEOUT_MS, 0)
   if (env.PUBLISH_REQUEST_TIMEOUT_MS && explicit > 0) return explicit
   const steps = publishStepTimeouts(env)
-  return steps.buildMs * 2 + steps.downloadMs + steps.uploadMs + steps.configureMetalMs + PUBLISH_REQUEST_SLACK_MS
+  return (
+    steps.buildMs * 2
+    + steps.downloadMs
+    + steps.uploadMs
+    + steps.configureMetalMs
+    + steps.imageBuildMs
+    + PUBLISH_REQUEST_SLACK_MS
+  )
 }

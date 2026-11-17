@@ -82,6 +82,14 @@ describe('coding guide', () => {
       expect(guide).toMatch(/Do not answer a "free hosting" question with a competitor's name/)
       expect(guide).toMatch(/Never suggest moving hosts as the fix/)
       expect(guide).toContain('Read the **Publishing** line in the Account block')
+      // Desktop has no hosting pipeline: a static upload, and server-backed
+      // projects are refused — the section must say so instead of promising
+      // the cloud capabilities (QA round 1).
+      expect(guide).toContain('On desktop, Publish uploads a static build to Shogo Cloud')
+      expect(guide).toContain('syncing the project to Shogo Cloud and publishing it from there')
+      // The plan that unlocks a permanent URL is Business, not the retired Pro.
+      expect(guide).toContain('Publish on the Business plan')
+      expect(guide).not.toContain('Publish on Pro')
     }
   })
 

@@ -26,7 +26,7 @@
  */
 
 import type { ImageModelEntry, ModelOptionField, VideoModelEntry } from '@shogo/model-catalog'
-import { optionsForEndpoint } from '@shogo/model-catalog'
+import { lastFrameField, optionsForEndpoint } from '@shogo/model-catalog'
 
 export const HIGGSFIELD_DEFAULT_BASE = 'https://api.higgsfield.ai'
 
@@ -63,6 +63,10 @@ export type HiggsfieldErrorCode =
   | 'invalid_aspect_ratio'
   | 'audio_not_supported'
   | 'image_to_video_unsupported'
+  /** `end_image` on a model whose endpoint documents no last-frame field. */
+  | 'end_image_unsupported'
+  /** `end_image` without a start frame, or the same field twice. */
+  | 'invalid_end_image'
   | 'text_to_video_unsupported'
   | 'reference_images_unsupported'
   | 'blocked'
@@ -167,6 +171,12 @@ export interface HiggsfieldEstimate {
   rawUsd: number
   /** Credits the request will consume, when the vendor reports them. */
   credits?: number
+  /**
+   * How the number was arrived at: a quote from `/estimate` (`estimate`), or
+   * the endpoint's per-video-second rate card × the requested duration
+   * (`rate_card`). Absent on the plain `usd` parse, which is an estimate.
+   */
+  source?: 'estimate' | 'rate_card'
 }
 
 /**
@@ -182,11 +192,109 @@ export function parseHiggsfieldEstimate(body: unknown): HiggsfieldEstimate | nul
   return { rawUsd, ...(Number.isFinite(credits) ? { credits } : {}) }
 }
 
+/**
+ * Several video families no longer answer `/estimate` with a `usd` figure.
+ * They return a prose rate card:
+ *
+ *   Standard self-serve rates in USD per video second: 480p: $0.1177;
+ *   720p: $0.2647; 1080p: $0.6518. Total price = selected rate × output
+ *   duration in seconds.
+ *
+ * Read the per-resolution rates out of it. Returns null for anything else —
+ * notably the token-priced Marketing Studio card (`$30/1M`), which has no
+ * per-second rate to multiply.
+ */
+export function parseHiggsfieldRateCard(text: string | null | undefined): Record<string, number> | null {
+  if (!text || !/per\s+video\s+second/i.test(text)) return null
+  const rates: Record<string, number> = {}
+  for (const match of text.matchAll(/([0-9]+(?:\.[0-9]+)?\s*[kp])\s*:\s*\$\s*([0-9]+(?:\.[0-9]+)?)/gi)) {
+    const resolution = match[1].replace(/\s+/g, '').toLowerCase()
+    const usd = Number.parseFloat(match[2])
+    if (Number.isFinite(usd) && usd > 0) rates[resolution] = usd
+  }
+  return Object.keys(rates).length > 0 ? rates : null
+}
+
+/** The duration a rate card multiplies: the request's own, or the shot sum for a multi-shot run. */
+function rateCardSeconds(
+  input: Record<string, unknown>,
+  entry: MediaEntry | undefined,
+  endpoint: string,
+): number | undefined {
+  // Multi-shot requests bill the sum of their shots, not the top-level duration.
+  // Check this first: buildHiggsfieldVideoRequest sends BOTH duration and multi_prompt/multi_shots,
+  // so reading input.duration before this would always skip the shot sum.
+  for (const name of ['multi_prompt', 'multi_shots'] as const) {
+    const shots = input[name]
+    if (!Array.isArray(shots)) continue
+    let total = 0
+    let complete = true
+    for (const shot of shots) {
+      const seconds = Number((shot as { duration?: unknown } | null)?.duration)
+      if (!Number.isFinite(seconds) || seconds <= 0) {
+        complete = false
+        break
+      }
+      total += seconds
+    }
+    if (complete && total > 0) return total
+  }
+  const direct = Number(input.duration)
+  if (Number.isFinite(direct) && direct > 0) return direct
+  // Nothing sent: fall back to the endpoint's documented default duration.
+  if (entry) {
+    const documented = Number(optionFor(entry, endpoint, 'duration')?.default)
+    if (Number.isFinite(documented) && documented > 0) return documented
+  }
+  return undefined
+}
+
+function rateCardPrice(
+  rates: Record<string, number>,
+  input: Record<string, unknown>,
+  entry: MediaEntry | undefined,
+  endpoint: string,
+): HiggsfieldEstimate {
+  const offered = Object.keys(rates)
+  const name = entry?.displayName ?? 'This model'
+  const requested = typeof input.resolution === 'string' ? input.resolution.toLowerCase() : undefined
+  const fallback =
+    entry && 'defaultResolution' in entry ? entry.defaultResolution?.toLowerCase() : undefined
+  const resolution = requested ?? fallback ?? (offered.length === 1 ? offered[0] : undefined)
+  if (!resolution) {
+    throw new HiggsfieldError(
+      `${name} is priced per video second at ${offered.join(', ')}; pass a resolution so it can be priced.`,
+      'validation',
+    )
+  }
+  const rate = rates[resolution]
+  if (rate === undefined) {
+    throw new HiggsfieldError(
+      `${name} is priced at ${offered.join(', ')}; got ${input.resolution}.`,
+      'validation',
+    )
+  }
+  const seconds = rateCardSeconds(input, entry, endpoint)
+  if (seconds === undefined) {
+    throw new HiggsfieldError(
+      `${name} is priced per video second (${offered.join(', ')}: $${rate}) but no duration was requested, so there is no price to charge.`,
+      'validation',
+    )
+  }
+  return { rawUsd: rate * seconds, source: 'rate_card' }
+}
+
+export interface HiggsfieldEstimateContext {
+  /** The catalog entry, for a rate card's resolution and duration fallbacks. */
+  entry?: ImageModelEntry | VideoModelEntry
+}
+
 export async function higgsfieldEstimate(
   apiKey: string,
   endpoint: string,
   input: Record<string, unknown>,
   signal?: AbortSignal,
+  context: HiggsfieldEstimateContext = {},
 ): Promise<HiggsfieldEstimate> {
   const response = await fetch(`${higgsfieldBase()}/estimate/${endpoint}`, {
     method: 'POST',
@@ -197,17 +305,20 @@ export async function higgsfieldEstimate(
   if (!response.ok) await throwForResponse(response)
   const body = await response.json().catch(() => null)
   const estimate = parseHiggsfieldEstimate(body)
-  if (!estimate) {
+  if (estimate) return estimate
+  if ((body as { type?: string } | null)?.type === 'description') {
+    // Video endpoints answer with a per-video-second rate card; the price is
+    // that rate × the duration the request asks for.
+    const description = (body as { pricing_description?: string } | null)?.pricing_description
+    const rates = parseHiggsfieldRateCard(description)
+    if (rates) return rateCardPrice(rates, input, context.entry, endpoint)
     // Token-priced endpoints (Marketing Studio 2.5 Flare/Sunburst, Ads Studio)
     // answer with a rate-card description — `image output $30/1M` — instead of
     // an amount. There is no per-request figure to bill, so say that rather
     // than a generic "no estimate" the caller can only retry forever.
-    if ((body as { type?: string } | null)?.type === 'description') {
-      throw new HiggsfieldError('Higgsfield prices this model per token and returned no per-request amount', 'unavailable')
-    }
-    throw new HiggsfieldError('Higgsfield returned no usable price estimate', 'validation')
+    throw new HiggsfieldError('Higgsfield prices this model per token and returned no per-request amount', 'unavailable')
   }
-  return estimate
+  throw new HiggsfieldError('Higgsfield returned no usable price estimate', 'validation')
 }
 
 // -----------------------------------------------------------------------------
@@ -826,6 +937,8 @@ export interface HiggsfieldVideoParams {
   audio?: boolean
   /** Public URL of the first frame (image-to-video). */
   startImageUrl?: string
+  /** Public URL of the last frame: the clip interpolates from `startImageUrl` to it. */
+  endImageUrl?: string
   /** Public URLs of character/object references. */
   referenceUrls?: string[]
   /** Public URL of the clip a Genjutsu workflow edits. */
@@ -906,6 +1019,31 @@ export function buildHiggsfieldVideoRequest(
       fail(`${entry.displayName} does not take a start image on ${endpoint}.`, 'image_to_video_unsupported')
     }
     setField(entry, endpoint, input, imageField, params.startImageUrl)
+  }
+
+  if (params.endImageUrl) {
+    if (!params.startImageUrl) {
+      fail(
+        'end_image needs start_image: the clip animates from the first frame to the last.',
+        'invalid_end_image',
+      )
+    }
+    // The vendor decides the spelling (`end_image_url`, `last_image_url`,
+    // `last_frame_url`); the endpoint's own option table says which.
+    const lastField = lastFrameField(entry, endpoint)
+    if (!lastField) {
+      fail(
+        `${entry.displayName} takes no last frame on ${endpoint}.`,
+        'end_image_unsupported',
+      )
+    }
+    if (params.options && lastField in params.options) {
+      fail(
+        `end_image and options.${lastField} are the same field on ${entry.displayName}; pass only end_image.`,
+        'invalid_end_image',
+      )
+    }
+    setField(entry, endpoint, input, lastField, params.endImageUrl)
   }
 
   const references = params.referenceUrls ?? []

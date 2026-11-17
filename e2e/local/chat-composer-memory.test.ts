@@ -413,7 +413,7 @@ async function pickModel(
   await (await modelTrigger(page, name)).click({ force: true })
   const rows = page
     .locator('[data-testid^="model-option-"]')
-    .filter({ hasNot: page.getByText("requires Pro") })
+    .filter({ hasNot: page.getByText("requires Business") })
   await expect(rows.first()).toBeVisible({ timeout: 15_000 })
 
   const skipped: string[] = []

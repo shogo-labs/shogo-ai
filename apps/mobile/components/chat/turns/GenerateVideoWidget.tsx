@@ -90,21 +90,20 @@ export function GenerateVideoWidget({ tool }: GenerateVideoWidgetProps) {
 
   if (state === "failed") {
     return (
-      <View className="mx-3 my-1.5 rounded-xl border border-destructive/30 bg-destructive/5 p-3">
-        <View className="flex-row items-center gap-2">
-          <Clapperboard size={16} className="text-destructive" />
-          <Text className="flex-1 text-sm font-medium text-destructive">Video generation failed</Text>
-          <Pressable
-            onPress={handleRetry}
-            className="min-h-11 flex-row items-center gap-1 rounded-lg px-2 active:bg-destructive/10"
-            accessibilityRole="button"
-            accessibilityLabel="Try generating the video again"
-          >
-            <RefreshCw size={14} className="text-destructive" />
-            <Text className="text-xs font-medium text-destructive">Try again</Text>
-          </Pressable>
-        </View>
-        <Text className="mt-1 text-xs text-muted-foreground">{String(result?.error ?? "Unknown error")}</Text>
+      <View testID="generated-video-failed" className="mx-3 my-0.5 flex-row items-center gap-2 px-1">
+        <Clapperboard size={14} className="text-muted-foreground" />
+        <Text className="flex-1 text-xs text-muted-foreground" numberOfLines={2}>
+          Video not generated · {String(result?.error ?? "unknown error")}
+        </Text>
+        <Pressable
+          onPress={handleRetry}
+          className="min-h-11 flex-row items-center gap-1 rounded-lg px-2 active:bg-muted"
+          accessibilityRole="button"
+          accessibilityLabel="Try generating the video again"
+        >
+          <RefreshCw size={12} className="text-muted-foreground" />
+          <Text className="text-xs text-muted-foreground">Retry</Text>
+        </Pressable>
       </View>
     )
   }

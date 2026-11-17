@@ -244,6 +244,12 @@ apps/*/coverage/
 
 # Agent-local state (never commit)
 .shogo/
+# Shogo shell/runtime scratch that lands in the repo root, not inside .shogo/
+.shogo-cwd-*
+.shogo-runtime-version
+.memory-index.db
+.memory-index.db-shm
+.memory-index.db-wal
 config.json
 # ...except the persona template's own config.json (modelProvider/modelName/
 # heartbeat defaults for seedPersonalCompanionTemplate) — that's committed

@@ -2370,6 +2370,90 @@ export class KnativeProjectManager {
         throw error
       }
     }
+
+    if (environment === 'production') {
+      await this.syncPublishedCustomDomainMappings(subdomain, projectId)
+    }
+  }
+
+  /**
+   * DomainMappings for a published app's custom hostnames. The subdomain-router
+   * Worker runs in the custom-domains zone for those hosts and can only
+   * resolveOverride within that zone, so the request reaches Kourier with the
+   * custom hostname as its Host and needs its own mapping to published-{id}.
+   * Best-effort: never throws.
+   */
+  async syncPublishedCustomDomainMappings(subdomain: string, projectId: string): Promise<void> {
+    try {
+      const { prisma } = await import('./prisma')
+      const domains = await prisma.customDomain.findMany({
+        where: { projectId },
+        select: { hostname: true },
+      })
+      for (const d of domains) {
+        await this.createPublishedCustomDomainMapping(d.hostname, subdomain, projectId)
+      }
+    } catch (error: any) {
+      console.warn(
+        `[KnativeProjectManager] Custom-domain DomainMappings for ${subdomain} failed (non-fatal):`,
+        error?.message ?? error,
+      )
+    }
+  }
+
+  /** Map one custom hostname to the production published service. Idempotent. */
+  async createPublishedCustomDomainMapping(hostname: string, subdomain: string, projectId: string): Promise<void> {
+    const api = getCustomApi()
+    try {
+      await api.createNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: "v1beta1",
+        namespace: this.namespace,
+        plural: "domainmappings",
+        body: {
+          apiVersion: `${KNATIVE_GROUP}/v1beta1`,
+          kind: "DomainMapping",
+          metadata: {
+            name: hostname,
+            namespace: this.namespace,
+            labels: {
+              "app.kubernetes.io/part-of": "shogo",
+              "shogo.io/project": projectId,
+              // Distinct from `published-domain` so the orphan sweep, which
+              // derives a subdomain from those names, never sees these.
+              "shogo.io/component": "published-custom-domain",
+              "shogo.io/published-subdomain": subdomain,
+            },
+          },
+          spec: {
+            ref: {
+              name: publishedServiceName(projectId, 'production'),
+              kind: "Service",
+              apiVersion: `${KNATIVE_GROUP}/${KNATIVE_VERSION}`,
+            },
+          },
+        },
+      })
+      console.log(`[KnativeProjectManager] Created custom-domain DomainMapping: ${hostname} -> ${subdomain}`)
+    } catch (error: any) {
+      if (!isK8sAlreadyExists(error)) throw error
+    }
+  }
+
+  /** Remove one custom hostname's DomainMapping. Missing is fine. */
+  async deletePublishedCustomDomainMapping(hostname: string): Promise<void> {
+    const api = getCustomApi()
+    try {
+      await api.deleteNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: "v1beta1",
+        namespace: this.namespace,
+        plural: "domainmappings",
+        name: hostname,
+      })
+    } catch (error: any) {
+      if (!isK8sNotFound(error)) throw error
+    }
   }
 
   /**
@@ -2439,6 +2523,24 @@ export class KnativeProjectManager {
         console.error(`[KnativeProjectManager] Failed to delete published DomainMapping ${domainName}:`, error)
         throw error
       }
+    }
+
+    try {
+      const response = await api.listNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: "v1beta1",
+        namespace: this.namespace,
+        plural: "domainmappings",
+        labelSelector: `shogo.io/component=published-custom-domain,shogo.io/published-subdomain=${subdomain}`,
+      })
+      for (const item of ((response as any).items ?? []) as any[]) {
+        if (item.metadata?.name) await this.deletePublishedCustomDomainMapping(item.metadata.name)
+      }
+    } catch (error: any) {
+      console.warn(
+        `[KnativeProjectManager] Custom-domain DomainMapping cleanup for ${subdomain} failed (non-fatal):`,
+        error?.message ?? error,
+      )
     }
   }
 

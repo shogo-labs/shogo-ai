@@ -635,26 +635,28 @@ describe('publish verification checks the page assets load', () => {
 // Repro for two of the "latest issues" production pain points (AI Insights
 // digest, 2026-09-15..21): "hard refresh" advice appearing daily (148
 // assistant messages in the last 7 days on prod, per a read-only
-// `chat_messages` count) and a Pro-plan paywall surprise AFTER the agent
-// has already attempted to deploy (40 sessions/7d on prod where a Pro-plan
+// `chat_messages` count) and a paid-plan paywall surprise AFTER the agent
+// has already attempted to deploy (40 sessions/7d on prod where a plan
 // mention lands in the same assistant message as "publish" — i.e.
 // reactively, post-attempt, not disclosed upfront).
 //
 // The tool's own copy is the root cause for both: the description never
-// tells the agent about the Pro-plan gate before it tries to deploy, and
+// tells the agent about the paid-plan gate before it tries to deploy, and
 // the success `note` explicitly tells the user to "refresh once" — advice
 // that stopped being necessary once `serveDistResponse`/canvas-bridge.js
 // self-heal stale bundles (see static-asset-cache.test.ts /
 // canvas-bridge-stale-asset-recovery.test.ts) and that actively
 // contradicts the self-healing behavior.
 // ---------------------------------------------------------------------------
-describe('publish tool copy (Pro-plan disclosure + no hard-refresh advice)', () => {
-  test('the tool description discloses the Pro-plan requirement upfront, before any deploy attempt', () => {
+describe('publish tool copy (paid-plan disclosure + no hard-refresh advice)', () => {
+  test('the tool description discloses the Business-plan requirement upfront, before any deploy attempt', () => {
     const description = publishTool(baseCtx()).description
-    expect(description).toMatch(/\bpro\b.*\bplan\b/i)
+    expect(description).toMatch(/\bbusiness\b.*\bplan\b/i)
     // Must be actionable pre-attempt guidance, not just present anywhere —
-    // tie it to telling the user before/first, not merely mentioning "Pro".
+    // tie it to telling the user before/first, not merely mentioning the plan.
     expect(description).toMatch(/before|first publish|upfront|may (be on|need)/i)
+    // The retired Pro tier must not come back as the publish gate.
+    expect(description).not.toMatch(/\bpro\b.*\bplan\b/i)
   })
 
   test('the tool description says publish hosts the app server, and forbids outside API hosts', () => {

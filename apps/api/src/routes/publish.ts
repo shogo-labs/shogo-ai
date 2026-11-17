@@ -18,6 +18,7 @@
 import { Hono } from "hono"
 import { PutObjectCommand, CopyObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3"
 import { prisma } from "../lib/prisma"
+import { removePublishedCustomDomainMapping } from "../lib/published-custom-domain-mapping"
 import { deriveProjectRuntimeToken } from "../lib/project-runtime-token"
 import {
   PUBLISH_BUCKET,
@@ -554,11 +555,34 @@ export async function triggerBuildWithRetry(projectId: string): Promise<{ succes
   return triggerBuild(projectId)
 }
 
-export async function publishConfigureTimeoutMs(projectId: string): Promise<number> {
+/**
+ * The configure step's budget.
+ *
+ * A server-backed Knative publish builds the per-commit image *inside* this
+ * step (SHO-308 §2), and that build has its own budget. The configure timeout
+ * has to cover it: at 60s every server app died with `configure_timeout` while
+ * the image build was still running, and the publish was marked failed even
+ * though the build went on to succeed.
+ *
+ * `serverBacked` is passed in by the caller, which has already probed it, so a
+ * static publish keeps the short budget and still fails fast on a hang.
+ */
+export async function publishConfigureTimeoutMs(
+  projectId: string,
+  opts?: { serverBacked?: boolean },
+): Promise<number> {
   try {
     const { getPublishSubstrate } = await import("../lib/substrate/router")
     const substrate = await getPublishSubstrate(projectId)
     if (substrate.kind === 'metal') return PUBLISH_CONFIGURE_TIMEOUT_METAL_MS
+    if (opts?.serverBacked) {
+      const { shouldBuildPublishedImage, publishedImageBuildTimeoutMs } = await import(
+        "../lib/published-build-config"
+      )
+      if (shouldBuildPublishedImage('knative')) {
+        return PUBLISH_CONFIGURE_TIMEOUT_MS + publishedImageBuildTimeoutMs()
+      }
+    }
   } catch (err: any) {
     console.warn(`[Publish] Could not resolve publish substrate for ${projectId}: ${err?.message ?? err}`)
   }
@@ -566,22 +590,50 @@ export async function publishConfigureTimeoutMs(projectId: string): Promise<numb
 }
 
 /**
- * Download dist/ files from the runtime pod
+ * Whether this project's publish will build a per-commit image (SHO-308 §2).
+ *
+ * The publish flow needs to know *before* it downloads the build output: the
+ * download and the image build read the same staging directory, and only the
+ * last reader may delete it. Same predicate `configurePublishedService` uses to
+ * decide to build, so the two cannot disagree.
  */
-async function downloadDistFiles(projectId: string): Promise<Map<string, Buffer>> {
+export async function willBuildPublishedImage(projectId: string): Promise<boolean> {
+  try {
+    const { getPublishSubstrate } = await import("../lib/substrate/router")
+    const substrate = await getPublishSubstrate(projectId)
+    const { shouldBuildPublishedImage } = await import("../lib/published-build-config")
+    return shouldBuildPublishedImage(substrate.kind as "knative" | "metal")
+  } catch (err: any) {
+    console.warn(`[Publish] Could not resolve the image-build decision for ${projectId}: ${err?.message ?? err}`)
+    return false
+  }
+}
+
+/**
+ * Download dist/ files from the runtime pod.
+ *
+ * `keep` leaves the runtime's publish staging dir in place. A server-backed
+ * publish reads that directory twice — once here for the static bundle, once in
+ * `/agent/publish-artifact` for the image build context — and the first read used
+ * to delete it, so every server-backed publish failed with `artifact_missing`
+ * (SHO-308, staging, 2026-11-08). Static publishes keep the cleanup: nothing else
+ * will read it.
+ */
+async function downloadDistFiles(projectId: string, opts?: { keep?: boolean }): Promise<Map<string, Buffer>> {
   const { getProjectPodUrl } = await import("../lib/knative-project-manager")
   const podUrl = await getProjectPodUrl(projectId)
   const files = new Map<string, Buffer>()
 
-  console.log(`[Publish] Downloading dist files from ${podUrl}`)
+  console.log(`[Publish] Downloading dist files from ${podUrl}${opts?.keep ? ' (keeping the staging dir)' : ''}`)
 
   // Endpoint lives under the runtime-owned `/agent/*` namespace (auth-gated
   // via `x-runtime-token`). The previous `/api/dist-files` placement was
   // shadowed by the runtime's `app.all('/api/*')` user-app proxy, so every
   // publish before this fix either got a bare 404 (proxy's no-port branch)
   // or the user app's SPA fallback HTML (which then failed JSON parsing).
+  const keepQuery = opts?.keep ? '&keep=true' : ''
   const response = await fetch(
-    `${podUrl}/agent/dist-files?projectId=${encodeURIComponent(projectId)}&publish=true`,
+    `${podUrl}/agent/dist-files?projectId=${encodeURIComponent(projectId)}&publish=true${keepQuery}`,
     {
     headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
     signal: AbortSignal.timeout(PUBLISH_DOWNLOAD_TIMEOUT_MS),
@@ -913,6 +965,8 @@ async function configurePublishedService(
     serverBacked?: boolean
     environment?: "production" | "staging"
     allowDataLoss?: boolean
+    /** The caller already ran the app build for this publish. */
+    artifactAlreadyBuilt?: boolean
   },
 ): Promise<{ serverBacked: boolean }> {
   // An uploaded bundle (desktop publish) is static by construction: there is no
@@ -1001,6 +1055,7 @@ async function configurePublishedService(
         environmentId: environment.id,
         subdomain,
         commitSha,
+        alreadyBuilt: opts?.artifactAlreadyBuilt === true,
       })
       if (!image.ok) {
         // A publish must never ship a runtime it could not build: the ksvc
@@ -1309,7 +1364,7 @@ export async function publishProject(
           ok: false,
           status: 402,
           code: "plan_not_allowed",
-          message: "Publishing to a subdomain is available on Pro and higher plans. Upgrade to publish.",
+          message: "Publishing to a subdomain is available on the Business plan. Upgrade to publish.",
         }
       }
     }
@@ -1380,11 +1435,15 @@ export async function publishProject(
       await acquirePublishLock(projectId)
       try {
         let files: Map<string, Buffer>
+        // Probed once, before the download: whether an image build follows decides
+        // whether the download may delete the staging dir it shares with it.
+        let serverBacked: boolean
 
         if (fileSource.kind === 'uploaded') {
           // The caller already built the bundle; there is nothing to build or
           // download here, only to upload.
           files = fileSource.files
+          serverBacked = fileSource.serverBacked
         } else {
           // Step 1: Trigger build
           await setPublishStatus(projectId, 'building')
@@ -1394,9 +1453,17 @@ export async function publishProject(
             return { ok: false, status: 500, code: buildResult.code || "build_failed", message: buildResult.error || "Build failed" }
           }
 
+          // Step 1.5: probe once, here. The configure budget depends on it (a
+          // server app builds its image inside that step), and so does the
+          // download below: a server-backed publish reads the runtime's publish
+          // staging dir twice — once for the static bundle, once for the image
+          // build context — so the first read must not delete it.
+          serverBacked = await detectServerBacked(projectId)
+          const imageBuildFollows = serverBacked && (await willBuildPublishedImage(projectId))
+
           // Step 2: Download dist files
           try {
-            files = await downloadDistFiles(projectId)
+            files = await downloadDistFiles(projectId, { keep: imageBuildFollows })
           } catch (err: any) {
             console.error("[Publish] Failed to download dist files:", err)
             const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
@@ -1428,12 +1495,17 @@ export async function publishProject(
         // static nginx), its DomainMapping, and the SERVER_BACKED edge flag.
         await setPublishStatus(projectId, 'configuring')
         try {
-          const configureTimeoutMs = await publishConfigureTimeoutMs(projectId)
+          // `serverBacked` was probed before the download (step 1.5): the
+          // configure budget depends on it, and so did the download's cleanup.
+          const configureTimeoutMs = await publishConfigureTimeoutMs(projectId, { serverBacked })
           await withTimeout(
             configurePublishedService(projectId, subdomain, {
               alwaysOn,
               allowDataLoss: opts.allowDataLoss === true,
-              ...(fileSource.kind === 'uploaded' ? { serverBacked: fileSource.serverBacked } : {}),
+              serverBacked,
+              // The publish flow built the app in step 1, so the image build
+              // must not build it a second time.
+              artifactAlreadyBuilt: fileSource.kind !== 'uploaded',
             }),
             configureTimeoutMs,
             'Publish configure',
@@ -2206,6 +2278,7 @@ export async function deleteCustomDomain(projectId: string, domainId: string): P
         await deleteCustomHostname(member.cfCustomHostnameId)
       }
       await deleteHostnameMapping(member.hostname)
+      await removePublishedCustomDomainMapping(member.hostname)
     }
     const removedIds = groupRows.map((d) => d.id)
     await prisma.customDomain.deleteMany({ where: { id: { in: removedIds } } })
@@ -2631,7 +2704,7 @@ export function publishRoutes() {
             const code = gate.planAllows ? "slot_exhausted" : "plan_not_allowed"
             const message = gate.planAllows
               ? `You're using all ${gate.allowance} always-on apps on your plan. Upgrade or add a seat to add more.`
-              : "Always on is available on Pro and Business plans. Upgrade to enable it."
+              : "Always on is available on the Business plan. Upgrade to enable it."
             return c.json(
               { error: { code, message, allowance: gate.allowance, used: gate.used } },
               402,
@@ -2640,6 +2713,8 @@ export function publishRoutes() {
         }
 
         updates.publishedAlwaysOn = wantOn
+        const { setProductionAlwaysOn } = await import("../services/published-environments.service")
+        await setProductionAlwaysOn(projectId, wantOn)
 
         // Apply to the live runtime via the owning substrate (Knative min-scale,
         // or the metal published VM's always-on pin). Best-effort: the DB flag is

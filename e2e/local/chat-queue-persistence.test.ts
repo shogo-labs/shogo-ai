@@ -53,6 +53,17 @@ type QueueMockState = {
    * used to keep the pre-send echo in the transcript for a visible moment.
    */
   postDelayMs?: number
+  /**
+   * Park the next queue GET: the response is built from the rows as they are
+   * NOW and answered only once the spec releases it, so a delete or an edit
+   * that lands in between is answered with the copy the server had already read
+   * — the race the dock's 1.5s poll loses (SHO-356).
+   */
+  holdNextGet?: boolean
+  onGetSeen?: () => void
+  releaseGet?: () => void
+  /** Refuse the next PATCH the way the server does when it took the row. */
+  refusePatch?: boolean
 }
 
 function installQueueMock(page: Page, state: QueueMockState) {
@@ -80,10 +91,21 @@ function installQueueMock(page: Page, state: QueueMockState) {
       const resourceIndex = parts.indexOf("chat-queued-messages")
       const id = parts[resourceIndex + 1]
       if (request.method() === "GET") {
+        // Snapshot first, then (maybe) wait: the answer describes the server as
+        // it was when the request left, which is exactly what a poll in flight
+        // during a write returns.
+        const snapshot = state.rows.map((row) => ({ ...row }))
+        if (state.holdNextGet) {
+          state.holdNextGet = false
+          state.onGetSeen?.()
+          await new Promise<void>((resolve) => {
+            state.releaseGet = resolve
+          })
+        }
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ ok: true, items: state.rows, total: state.rows.length }),
+          body: JSON.stringify({ ok: true, items: snapshot, total: snapshot.length }),
         })
         return
       }
@@ -115,6 +137,27 @@ function installQueueMock(page: Page, state: QueueMockState) {
       if (!id) return route.continue()
       const index = state.rows.findIndex((row) => row.id === id)
       if (request.method() === "PATCH") {
+        if (state.refusePatch) {
+          state.refusePatch = false
+          await route.fulfill({
+            status: 404,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: { code: "not_found", message: "Queued message not found" },
+            }),
+          })
+          return
+        }
+        if (index === -1) {
+          await route.fulfill({
+            status: 404,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: { code: "not_found", message: "Queued message not found" },
+            }),
+          })
+          return
+        }
         Object.assign(state.rows[index], request.postDataJSON())
         await route.fulfill({
           status: 200,
@@ -124,7 +167,7 @@ function installQueueMock(page: Page, state: QueueMockState) {
         return
       }
       if (request.method() === "DELETE") {
-        state.rows.splice(index, 1)
+        if (index !== -1) state.rows.splice(index, 1)
         await route.fulfill({ status: 200, body: JSON.stringify({ ok: true }) })
         return
       }
@@ -653,5 +696,191 @@ test.describe("server-backed chat queue — local UI", () => {
     const tail = afterSubmit.slice(-8)
     expect(tail.filter((sample) => !sample.dock)).toEqual([])
     expect(tail.filter((sample) => sample.transcript > 0)).toEqual([])
+  })
+
+  /**
+   * AC1 (SHO-356). The dock reloads the queue every 1.5s while anything is
+   * queued. A poll that left before the DELETE landed comes back with the row,
+   * and the old code put it straight back — then read its second disappearance
+   * as the server having sent it, so the deleted message appeared in the
+   * transcript instead. The row must stay gone through at least three polls.
+   */
+  test("a delete sticks through a queue poll that was already in flight", async ({ page }) => {
+    const state: QueueMockState = {
+      rows: [],
+      mockChat: false,
+      holdNextChat: false,
+      nextRowId: 0,
+      nextReply: 0,
+    }
+    const { lead, alpha, beta } = prompts(`delete-poll-${Date.now().toString(36)}`)
+    await installQueueMock(page, state)
+    await openProject(page, page.request)
+    await holdATurnWith(page, state, lead)
+
+    await projectComposerInput(page).fill(alpha)
+    await page.keyboard.press("Enter")
+    await expect(queuedRow(page, alpha).first()).toBeVisible()
+    await projectComposerInput(page).fill(beta)
+    await page.keyboard.press("Enter")
+    await expect(queuedRow(page, beta).first()).toBeVisible()
+    await expect.poll(() => state.rows.length).toBe(2)
+
+    // Park the next poll: its answer is built from the queue as it is now.
+    const pollInFlight = new Promise<void>((resolve) => {
+      state.holdNextGet = true
+      state.onGetSeen = resolve
+    })
+    await pollInFlight
+
+    // Delete while that poll is out. The server applies the DELETE at once.
+    await queuedRow(page, alpha).first().getByLabel("Delete queued message").click()
+    await expect(queuedRow(page, alpha)).toHaveCount(0)
+    await expect.poll(() => state.rows.map((row) => row.content)).toEqual([beta])
+
+    // The stale poll now answers with the copy that still has alpha in it.
+    state.releaseGet?.()
+
+    // Three polls (4.5s) later it is still gone, and it was never painted as a
+    // message the server had sent.
+    await page.waitForTimeout(5_000)
+    await expect(queuedRow(page, alpha)).toHaveCount(0)
+    await expect.poll(() => transcriptCount(page, alpha)).toBe(0)
+    await expect.poll(() => state.rows.map((row) => row.content)).toEqual([beta])
+  })
+
+  /**
+   * AC2 (SHO-356). Edit used to delete the row and put its text back in the
+   * composer, so Send appended a *new* row at the end — and when the delete lost
+   * the race above, the old copy came back too. An edit now writes into the row
+   * it came from: same count, same position, new text, no new POST.
+   */
+  test("editing a queued message updates it in place instead of appending", async ({ page }) => {
+    const state: QueueMockState = {
+      rows: [],
+      mockChat: false,
+      holdNextChat: false,
+      nextRowId: 0,
+      nextReply: 0,
+    }
+    const stamp = Date.now().toString(36)
+    const { lead, alpha, beta } = prompts(`edit-in-place-${stamp}`)
+    const betaEdited = `edited queued prompt ${stamp}`
+    await installQueueMock(page, state)
+    await openProject(page, page.request)
+    await holdATurnWith(page, state, lead)
+
+    for (const prompt of [alpha, beta]) {
+      await projectComposerInput(page).fill(prompt)
+      await page.keyboard.press("Enter")
+      await expect(queuedRow(page, prompt).first()).toBeVisible()
+    }
+    await expect.poll(() => state.rows.length).toBe(2)
+    const createdRows = state.nextRowId
+
+    await queuedRow(page, beta).first().getByLabel("Edit queued message").click()
+    // The row stays in the dock while it is being edited.
+    await expect(queuedRow(page, beta).first()).toBeVisible()
+    await expect(page.getByText("Editing queued message", { exact: false }).first()).toBeVisible()
+    await expect(projectComposerInput(page)).toHaveValue(beta)
+    // Parked, so a turn ending now cannot send the text being replaced.
+    await expect.poll(() => state.rows[1]?.status).toBe("failed")
+
+    await projectComposerInput(page).fill(betaEdited)
+    await page.keyboard.press("Enter")
+
+    // Same two rows, the edited one in the same place, and nothing appended.
+    await expect.poll(() => state.rows.map((row) => row.content)).toEqual([alpha, betaEdited])
+    expect(state.nextRowId, "the edit created a new queued message").toBe(createdRows)
+    await expect(queuedRow(page, beta)).toHaveCount(0)
+    await expect(queuedRow(page, betaEdited).first()).toBeVisible()
+    await expect.poll(() => state.rows[1]?.status).toBe("pending")
+    await expect.poll(() => transcriptCount(page, betaEdited)).toBe(0)
+  })
+
+  /**
+   * AC3 (SHO-356). While a row is being edited, the end of the turn must not
+   * send it: it is parked as `failed` (the dispatcher only claims `pending`), so
+   * the next queued message runs instead. Cancel puts it back untouched.
+   */
+  test("an edit holds its row back from the turn-end drain, and cancel releases it", async ({ page }) => {
+    const state: QueueMockState = {
+      rows: [],
+      mockChat: false,
+      holdNextChat: false,
+      nextRowId: 0,
+      nextReply: 0,
+    }
+    const { lead, alpha, beta } = prompts(`edit-hold-${Date.now().toString(36)}`)
+    await installQueueMock(page, state)
+    await openProject(page, page.request)
+    await holdATurnWith(page, state, lead)
+
+    for (const prompt of [alpha, beta]) {
+      await projectComposerInput(page).fill(prompt)
+      await page.keyboard.press("Enter")
+      await expect(queuedRow(page, prompt).first()).toBeVisible()
+    }
+    await expect.poll(() => state.rows.length).toBe(2)
+
+    await queuedRow(page, alpha).first().getByLabel("Edit queued message").click()
+    await expect.poll(() => state.rows[0]?.status).toBe("failed")
+
+    // The turn ends. The server claims the next *pending* row — beta, not the
+    // one being edited.
+    state.releaseChat?.()
+    await waitForIdle(page)
+    state.rows.splice(1, 1)
+    await expect.poll(() => queuedRow(page, beta).count(), { timeout: 15_000 }).toBe(0)
+    await expect(queuedRow(page, alpha).first()).toBeVisible()
+    expect(state.rows.map((row) => row.content)).toEqual([alpha])
+    expect(state.rows[0]?.status).toBe("failed")
+
+    // Cancel leaves the text alone and puts the row back on the queue.
+    await page.getByLabel("Cancel editing queued message").click()
+    await expect.poll(() => state.rows[0]?.status).toBe("pending")
+    expect(state.rows[0]?.content).toBe(alpha)
+    await expect(queuedRow(page, alpha).first()).toBeVisible()
+  })
+
+  /**
+   * AC4 (SHO-356). A row the server took while the composer still showed it
+   * cannot be edited in place. The dock must say so and queue the edit as a new
+   * message — never leave a silent duplicate.
+   */
+  test("an edit the server refuses is reported and queued as a new message", async ({ page }) => {
+    const state: QueueMockState = {
+      rows: [],
+      mockChat: false,
+      holdNextChat: false,
+      nextRowId: 0,
+      nextReply: 0,
+    }
+    const stamp = Date.now().toString(36)
+    const { lead, alpha } = prompts(`edit-refused-${stamp}`)
+    const alphaEdited = `refused edit prompt ${stamp}`
+    await installQueueMock(page, state)
+    await openProject(page, page.request)
+    await holdATurnWith(page, state, lead)
+
+    await projectComposerInput(page).fill(alpha)
+    await page.keyboard.press("Enter")
+    await expect(queuedRow(page, alpha).first()).toBeVisible()
+    await expect.poll(() => state.rows.length).toBe(1)
+
+    await queuedRow(page, alpha).first().getByLabel("Edit queued message").click()
+    await expect.poll(() => state.rows[0]?.status).toBe("failed")
+
+    // The server has dropped the row: the PATCH answers 404.
+    state.refusePatch = true
+    await projectComposerInput(page).fill(alphaEdited)
+    await page.keyboard.press("Enter")
+
+    await expect(
+      page.getByText("already sent", { exact: false }).first(),
+      "the refusal was swallowed",
+    ).toBeVisible()
+    // The text is not lost: it is on the queue as a new row.
+    await expect.poll(() => state.rows.map((row) => row.content)).toContain(alphaEdited)
   })
 })

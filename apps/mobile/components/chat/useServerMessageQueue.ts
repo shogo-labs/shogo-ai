@@ -9,6 +9,7 @@ import type { ChatReference, FileAttachment } from "./ChatInput"
 import type { QueuedMessage } from "./ChatInput"
 import type { UIMessage } from "ai"
 import { queuedRowToUserMessage } from "./queued-user-message"
+import { EDITING_QUEUED_MESSAGE_ERROR } from "./queued-edit-marker"
 
 type QueueBody = Record<string, unknown> & { text?: string }
 
@@ -173,6 +174,33 @@ function wakeToQueuedMessage(wake: AgentWakeRow): QueuedMessage {
   }
 }
 
+/** The `parts` column for a queued message: its text, then its attachments. */
+function queueParts(content: string, files?: FileAttachment[]) {
+  return [
+    ...(content.trim() ? [{ type: "text", text: content.trim() }] : []),
+    ...(files ?? []).map((file) => ({
+      type: "file",
+      mediaType: file.type || "application/octet-stream",
+      url: file.dataUrl,
+      ...(file.name ? { name: file.name } : {}),
+    })),
+  ]
+}
+
+/** The `body` column: the send body with the text and references folded in. */
+function queueBody(input: {
+  body: QueueBody
+  content: string
+  references?: ChatReference[]
+}): QueueBody {
+  const content = input.content.trim()
+  return {
+    ...input.body,
+    text: input.body.text ?? content,
+    references: input.references ?? input.body.references,
+  }
+}
+
 export type ServerQueueEnqueueInput = {
   content: string
   files?: FileAttachment[]
@@ -199,6 +227,12 @@ export function useServerMessageQueue({
   const previousIdsRef = useRef<string[]>([])
   const previousRowsRef = useRef(new Map<string, RowSnapshot>())
   const userRemovedIdsRef = useRef(new Set<string>())
+  /**
+   * Creates in flight, by the `temp-` id their optimistic row was inserted
+   * under, resolving to the id the server assigned. A delete pressed on a row
+   * whose POST has not answered needs that id: there is nothing to delete yet.
+   */
+  const creatingIdsRef = useRef(new Map<string, Promise<string | undefined>>())
   const pendingTurnRef = useRef<{ userMessage?: UIMessage } | null>(null)
   /**
    * Rows this window enqueued, keyed by their server id, with the user message
@@ -372,6 +406,10 @@ export function useServerMessageQueue({
     pendingTurnRef.current = null
     enqueuedRef.current.clear()
     waitedRef.current.clear()
+    creatingIdsRef.current.clear()
+    // Session-scoped: an id shield that outlived this session would make a
+    // delete in the next one look like a dispatch.
+    userRemovedIdsRef.current.clear()
     for (const timer of sentTimersRef.current.values()) clearTimeout(timer)
     sentTimersRef.current.clear()
     setSentIds(new Set())
@@ -683,22 +721,8 @@ export function useServerMessageQueue({
   const enqueue = useCallback(
     async (input: ServerQueueEnqueueInput) => {
       if (!sessionId) throw new Error("No chat session selected")
-      const parts = [
-        ...(input.content.trim()
-          ? [{ type: "text", text: input.content.trim() }]
-          : []),
-        ...(input.files || []).map((file) => ({
-          type: "file",
-          mediaType: file.type || "application/octet-stream",
-          url: file.dataUrl,
-          ...(file.name ? { name: file.name } : {}),
-        })),
-      ]
-      const body = {
-        ...input.body,
-        text: input.body.text ?? input.content.trim(),
-        references: input.references ?? input.body.references,
-      }
+      const parts = queueParts(input.content, input.files)
+      const body = queueBody(input)
       // Enrichment runs alongside the create, not before it: the row has to be
       // on the dock at once, and the enriched text is patched into the row's
       // body afterwards. The server reads `body.text` when it dispatches the
@@ -708,14 +732,37 @@ export function useServerMessageQueue({
       const enriching = input.enrich?.()
       let created: IChatQueuedMessage | undefined
       creatingRef.current += 1
+      const before = new Set(collection.all.map((row) => row.id))
       try {
-        created = (await collection.create({
+        const creating = collection.create({
           sessionId,
           userId: "",
           content: input.content.trim(),
           parts: JSON.stringify(parts),
           body: JSON.stringify(body),
-        } as any)) as IChatQueuedMessage | undefined
+        } as any) as Promise<IChatQueuedMessage | undefined>
+        // `create` puts the optimistic row in the store before its POST leaves,
+        // so the row id the dock is showing right now is readable here. It is
+        // the only handle on a create that has not answered yet, and a delete
+        // pressed on that row needs it: the server has no such id, and
+        // `DELETE /temp-…` would only put the row back.
+        const tempId = collection.all.find(
+          (row) =>
+            !before.has(row.id) && row.id.startsWith(OPTIMISTIC_ID_PREFIX),
+        )?.id
+        if (tempId) {
+          creatingIdsRef.current.set(
+            tempId,
+            creating
+              .then((row) =>
+                row && !row.id.startsWith(OPTIMISTIC_ID_PREFIX)
+                  ? row.id
+                  : undefined,
+              )
+              .catch(() => undefined),
+          )
+        }
+        created = await creating
       } finally {
         creatingRef.current -= 1
       }
@@ -748,7 +795,13 @@ export function useServerMessageQueue({
     [collection, sessionId],
   )
 
-  const remove = useCallback(
+  /**
+   * Delete a row that exists on the server. The id is shielded from the
+   * row-diff below until the diff sees the row gone: a poll can still answer
+   * with the row it read before the DELETE landed, and that reappearance must
+   * never be read as the server having started the turn.
+   */
+  const removePersisted = useCallback(
     async (id: string) => {
       userRemovedIdsRef.current.add(id)
       // Delete is the only other way a row this window enqueued disappears, so
@@ -765,11 +818,93 @@ export function useServerMessageQueue({
           setTrackedCount((count) => count + 1)
         }
         throw error
-      } finally {
-        setTimeout(() => userRemovedIdsRef.current.delete(id), 0)
       }
     },
     [collection, untrack],
+  )
+
+  const remove = useCallback(
+    async (id: string) => {
+      // A `temp-` row exists only in this window: its POST has not answered, so
+      // the server has no row to delete and `DELETE /temp-…` is a 404 that puts
+      // it back. Take the optimistic row off the dock now and delete the real
+      // row as soon as the create hands over its id.
+      if (id.startsWith(OPTIMISTIC_ID_PREFIX)) {
+        const creating = creatingIdsRef.current.get(id)
+        collection.removeItem(id)
+        const realId = creating ? await creating : undefined
+        creatingIdsRef.current.delete(id)
+        if (!realId) return
+        return removePersisted(realId)
+      }
+      return removePersisted(id)
+    },
+    [collection, removePersisted],
+  )
+
+  /**
+   * Change a row that is already queued, in place.
+   *
+   * The row keeps its `position`, so the message stays where the person put it
+   * in the queue, and it goes back to `pending` in the same PATCH that writes
+   * the new text: that is what releases the edit hold (see `holdForEdit`) and
+   * lets the server dispatch it when the session is idle.
+   */
+  const edit = useCallback(
+    async (id: string, input: Omit<ServerQueueEnqueueInput, "body"> & { body: QueueBody }) => {
+      if (!sessionId) throw new Error("No chat session selected")
+      const content = input.content.trim()
+      const parts = queueParts(content, input.files)
+      // The new text always wins over whatever the row's body carried before.
+      const body = { ...queueBody(input), text: content }
+      await collection.update(id, {
+        content,
+        parts: JSON.stringify(parts),
+        body: JSON.stringify(body),
+        status: "pending",
+      } as any)
+      const enriching = input.enrich?.()
+      if (enriching) {
+        void enriching
+          .then(async (text) => {
+            const enriched = text?.trim()
+            if (!enriched || enriched === content) return
+            await collection.update(id, {
+              body: JSON.stringify({ ...body, text: enriched }),
+            })
+          })
+          .catch((error) => {
+            console.warn("[ChatQueue] Enrichment failed for an edited message:", error)
+          })
+      }
+      return content
+    },
+    [collection, sessionId],
+  )
+
+  /**
+   * Stop the turn-end drain from sending a row while it is being edited, using
+   * only the statuses the queue already has: the dispatcher claims `pending`
+   * rows, so a row parked as `failed` is skipped and the next pending row runs.
+   * The marker in `error` is what the dock renders as "Editing" instead of a
+   * dispatch failure.
+   */
+  const holdForEdit = useCallback(
+    async (id: string) => {
+      await collection.update(id, {
+        status: "failed",
+        error: EDITING_QUEUED_MESSAGE_ERROR,
+      } as any)
+    },
+    [collection],
+  )
+
+  /** Release an edit hold without changing anything: the row goes back to pending. */
+  const releaseEdit = useCallback(
+    async (id: string) => {
+      await collection.update(id, { status: "pending" } as any)
+    },
+    [collection],
   )
 
   const update = useCallback(
@@ -893,6 +1028,9 @@ export function useServerMessageQueue({
     pendingUserMessages,
     enqueue,
     remove,
+    edit,
+    holdForEdit,
+    releaseEdit,
     update,
     reorder,
     sendNow,

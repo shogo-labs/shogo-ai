@@ -25,6 +25,7 @@ type Project = {
 
 let projectRow: Project | null = null
 const updateCalls: any[] = []
+let productionEnv: { id: string; minReplicas: number; maxReplicas: number } | null = null
 
 const prismaApi = {
   project: {
@@ -36,6 +37,13 @@ const prismaApi = {
       updateCalls.push({ where, data })
       if (projectRow && projectRow.id === where.id) Object.assign(projectRow, data)
       return { ...projectRow }
+    },
+  },
+  publishedEnvironment: {
+    findUnique: async () => (productionEnv ? { ...productionEnv } : null),
+    update: async ({ data }: any) => {
+      Object.assign(productionEnv!, data)
+      return { ...productionEnv }
     },
   },
 }
@@ -98,6 +106,7 @@ beforeEach(() => {
     publishedAt: new Date(),
   }
   updateCalls.length = 0
+  productionEnv = { id: 'env-1', minReplicas: 0, maxReplicas: 1 }
   minScaleCalls.length = 0
   gateResult = { allowed: true, planAllows: true, allowance: 1, used: 0 }
 })
@@ -145,16 +154,20 @@ describe('PATCH always-on enforcement', () => {
     expect(body.alwaysOn).toBe(true)
     expect(projectRow?.publishedAlwaysOn).toBe(true)
     expect(minScaleCalls).toEqual([{ projectId: 'p1', minScale: 1 }])
+    // Persisted on the environment row too, or the next publish puts 0 back.
+    expect(productionEnv?.minReplicas).toBe(1)
   })
 
   it('disables: persists false and flips min-scale to 0 (no entitlement check)', async () => {
     projectRow!.publishedAlwaysOn = true
+    productionEnv!.minReplicas = 1
     const res = await patch({ alwaysOn: false })
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.alwaysOn).toBe(false)
     expect(projectRow?.publishedAlwaysOn).toBe(false)
     expect(minScaleCalls).toEqual([{ projectId: 'p1', minScale: 0 }])
+    expect(productionEnv?.minReplicas).toBe(0)
   })
 
   it('404s when the project is not published', async () => {

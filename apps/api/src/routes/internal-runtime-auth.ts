@@ -137,6 +137,43 @@ export async function authenticateRuntimeToken(
 export type InternalAuthenticate = (c: Context, projectId?: string) => Promise<InternalIdentity | null>
 
 /**
+ * Why a route refused, in the shape the runtime can act on. `code` is the
+ * contract (`cross_workspace_forbidden`, `approval_required`, …); the message
+ * says which of the four conditions failed, so nobody has to guess (SHO-389).
+ */
+export interface ScopeDenial {
+  ok: false
+  /** 502 for a target this instance cannot reach (`cloud_unreachable`). */
+  status: 401 | 403 | 502
+  code: string
+  message: string
+}
+
+export type ScopeAllowance = { ok: true; identity: InternalIdentity; userId: string | null }
+
+/** Context slot the authorizers leave a structured refusal in. */
+export const SCOPE_DENIAL_KEY = 'internalScopeDenial'
+
+/** Context slot an allowed call leaves the requester in (cross-workspace only). */
+export const SCOPE_ALLOWANCE_KEY = 'internalScopeAllowance'
+
+/**
+ * The person a cross-workspace call is made for, or null for a call in the
+ * runtime's own workspace. Board and chat writes attribute the row to them.
+ */
+export function scopeRequesterUserId(c: Context): string | null {
+  const allowance = (c as any).get?.(SCOPE_ALLOWANCE_KEY) as ScopeAllowance | undefined
+  return allowance?.userId ?? null
+}
+
+/** The response for a refused scope call: the structured 403, else a plain 401. */
+export function scopeDenied(c: Context): Response {
+  const denial = (c as any).get?.(SCOPE_DENIAL_KEY) as ScopeDenial | undefined
+  if (!denial) return c.json({ error: 'Unauthorized' }, 401)
+  return c.json({ error: { code: denial.code, message: denial.message } }, denial.status)
+}
+
+/**
  * Scope checks layered on an `authenticate` strategy: SA + runtime token in
  * the cloud (`internal-auth.ts`), runtime token only on desktop.
  */
@@ -153,38 +190,206 @@ export function createInternalAuthorizers(authenticate: InternalAuthenticate) {
    * A runtime token is a project/workspace capability, not a cluster credential:
    * without this check any pod could write analytics rows against an arbitrary
    * `workspaceId`. SA callers are cluster-internal and stay unrestricted.
+   *
+   * A **different** workspace is allowed only for the person's Personal
+   * workspace agent, and a write only with a per-call approval — see
+   * `authorizeCrossWorkspace`. The boolean stays the same shape so the routes
+   * that only branch on yes/no keep working; a refusal also leaves its reason
+   * on the context for `scopeDenied(c)`.
    */
   async function authorizeWorkspaceScope(
     c: Context,
     workspaceId: string | null,
     projectId?: string,
+    opts: { write?: boolean } = {},
   ): Promise<boolean> {
-    const identity = await authenticate(c, projectId)
-    if (!identity) return false
-    if (identity.kind === 'sa') return true
-    if (!workspaceId) {
-      logAuthReject(`workspace_scope_required identity=${identity.kind}`, projectId)
-      return false
+    const result = await authorizeCrossWorkspace(c, workspaceId, projectId, opts)
+    if (result.ok) {
+      try {
+        ;(c as any).set?.(SCOPE_ALLOWANCE_KEY, result)
+      } catch {
+        /* a plain test stub without set() */
+      }
+      return true
     }
-
-    if (identity.kind === 'workspace') {
-      if (identity.workspaceId === workspaceId) return true
-      logAuthReject(
-        `workspace_scope_mismatch tokenWorkspace=${identity.workspaceId} body=${workspaceId}`,
-        projectId,
-      )
-      return false
+    try {
+      ;(c as any).set?.(SCOPE_DENIAL_KEY, result)
+    } catch {
+      /* a plain test stub without set() — the boolean still carries the answer */
     }
-
-    const { resolveProjectWorkspaceId } = await import('../lib/project-runtime-token')
-    const tokenWorkspaceId = await resolveProjectWorkspaceId(identity.projectId)
-    if (tokenWorkspaceId && tokenWorkspaceId === workspaceId) return true
-    logAuthReject(
-      `workspace_scope_mismatch tokenProject=${identity.projectId} ` +
-        `tokenWorkspace=${tokenWorkspaceId ?? 'none'} body=${workspaceId}`,
-      projectId,
-    )
+    logAuthReject(`${result.code}${result.message ? ` ${result.message}` : ''}`, projectId)
     return false
+  }
+
+  /**
+   * The one authorizer for every route that acts in a workspace (SHO-389).
+   *
+   * Same-workspace calls answer exactly as they always have. A call to another
+   * workspace is allowed when **all** of these hold:
+   *
+   *   1. the token is a `workspace` token whose workspace is `kind: personal`;
+   *   2. `X-Requester-Ticket` verifies in that workspace and its user owns it;
+   *   3. that user is a member of the target with the permission the route
+   *      needs (read, or write);
+   *   4. for a write, `X-Cross-Workspace-Approval` names an approved, unspent
+   *      approval whose target, tool and args-hash match this request.
+   *
+   * Anything else is a `cross_workspace_forbidden` whose message names the
+   * condition that failed — never an empty 200.
+   *
+   * `opts.write` defaults to "anything that is not a GET/HEAD", which is the
+   * same line every agent tool's read/write pair falls on. A route that reads
+   * through a POST passes `write: false`.
+   */
+  async function authorizeCrossWorkspace(
+    c: Context,
+    workspaceId: string | null,
+    projectId?: string,
+    opts: { write?: boolean } = {},
+  ): Promise<ScopeAllowance | ScopeDenial> {
+    const identity = await authenticate(c, projectId)
+    if (!identity) {
+      return { ok: false, status: 401, code: 'unauthorized', message: 'Unauthorized' }
+    }
+    if (identity.kind === 'sa') return { ok: true, identity, userId: null }
+    if (!workspaceId) {
+      return {
+        ok: false,
+        status: 403,
+        code: 'workspace_scope_required',
+        message: 'This call must name the workspace it acts in.',
+      }
+    }
+
+    const tokenWorkspaceId =
+      identity.kind === 'workspace'
+        ? identity.workspaceId
+        : await (await import('../lib/project-runtime-token')).resolveProjectWorkspaceId(identity.projectId)
+
+    if (tokenWorkspaceId === workspaceId) {
+      // A call relayed here by the person's desktop (device key) names the person
+      // it was made for, so a cross-workspace write stays attributed to them on
+      // the side that runs it.
+      const { relayedCrossWorkspaceRequester } = await import('../lib/cross-workspace')
+      const relayedFor = await relayedCrossWorkspaceRequester(c as any)
+      const sameWorkspace: ScopeAllowance = { ok: true, identity, userId: relayedFor }
+      try {
+        ;(c as any).set?.(SCOPE_ALLOWANCE_KEY, sameWorkspace)
+      } catch {
+        /* a plain test stub without set() */
+      }
+      return sameWorkspace
+    }
+
+    const cross = await authorizeCrossWorkspaceTarget(c, { identity, tokenWorkspaceId, targetWorkspaceId: workspaceId, write: opts.write })
+    if (cross.ok) {
+      try {
+        ;(c as any).set?.(SCOPE_ALLOWANCE_KEY, cross)
+      } catch {
+        /* a plain test stub without set() */
+      }
+    }
+    return cross
+  }
+
+  async function authorizeCrossWorkspaceTarget(
+    c: Context,
+    input: {
+      identity: InternalIdentity
+      tokenWorkspaceId: string | null
+      targetWorkspaceId: string
+      write?: boolean
+    },
+  ): Promise<ScopeAllowance | ScopeDenial> {
+    const { identity, tokenWorkspaceId, targetWorkspaceId } = input
+    const write = input.write ?? (c.req.method !== 'GET' && c.req.method !== 'HEAD')
+    const forbidden = (code: string, message: string): ScopeDenial => ({ ok: false, status: 403, code, message })
+
+    const { prisma } = await import('../lib/prisma')
+    const db = prisma as any
+    const caller = tokenWorkspaceId
+      ? await db.workspace
+          .findUnique({ where: { id: tokenWorkspaceId }, select: { kind: true, personalOwnerId: true } })
+          .catch(() => null)
+      : null
+
+    if (identity.kind !== 'workspace' || !caller) {
+      return forbidden(
+        'cross_workspace_forbidden',
+        'Only the Personal workspace agent may act in another workspace. A project agent is limited to its own workspace.',
+      )
+    }
+    if (caller.kind !== 'personal') {
+      return forbidden(
+        'cross_workspace_forbidden',
+        'Only the Personal workspace agent may act in another workspace; this is a team workspace.',
+      )
+    }
+
+    const { REQUESTER_TICKET_HEADER, verifyRequesterTicketInWorkspace } = await import('../lib/requester-ticket')
+    const ticket = await verifyRequesterTicketInWorkspace(c.req.header(REQUESTER_TICKET_HEADER), tokenWorkspaceId!)
+    if (!ticket) {
+      return forbidden(
+        'requester_ticket_required',
+        "This call can't be attributed to a person: no valid requester ticket for the Personal workspace. Start the turn from that person's chat.",
+      )
+    }
+    if (caller.personalOwnerId !== ticket.userId) {
+      return forbidden(
+        'not_personal_owner',
+        "This call is for a person who doesn't own that Personal workspace, so it can't act in another workspace.",
+      )
+    }
+
+    const { resolveTargetHome, targetAccessAllows, targetWorkspaceAccess } = await import('../lib/cross-workspace')
+    const home = await resolveTargetHome(targetWorkspaceId)
+    if (home.kind === 'unreachable') {
+      const status = home.code === 'cloud_signed_out' ? 401 : home.code === 'not_a_member' ? 403 : 502
+      return { ok: false, status, code: home.code, message: home.message }
+    }
+    // A cloud workspace on a signed-in desktop has no local rows to read, so its
+    // membership proof is the per-workspace key the cloud issued (it only issues
+    // one for a workspace the person is in); the cloud re-checks its own rows
+    // when it runs the call. Everywhere else the membership is here to read.
+    if (home.kind !== 'cloud') {
+      const access = await targetWorkspaceAccess(ticket.userId, targetWorkspaceId)
+      if (!targetAccessAllows(access, write)) {
+        return forbidden(
+          'not_a_member',
+          `You are not a member of the target workspace (or your role there can't ${write ? 'change' : 'read'} it), so this call was refused. Only workspaces you belong to are reachable.`,
+        )
+      }
+    }
+
+    let approvalId: string | null = null
+    if (write) {
+      const {
+        CROSS_WORKSPACE_APPROVAL_HEADER,
+        CROSS_WORKSPACE_TOOL_HEADER,
+        CROSS_WORKSPACE_ARGS_HEADER,
+        spendCrossWorkspaceApproval,
+      } = await import('../lib/cross-workspace')
+      approvalId = c.req.header(CROSS_WORKSPACE_APPROVAL_HEADER) ?? null
+      const spent = await spendCrossWorkspaceApproval({
+        approvalId,
+        targetWorkspaceId,
+        tool: c.req.header(CROSS_WORKSPACE_TOOL_HEADER),
+        argsHash: c.req.header(CROSS_WORKSPACE_ARGS_HEADER),
+      })
+      if (!spent.ok) return spent as ScopeDenial
+    }
+
+    const { recordCrossWorkspaceCall } = await import('../lib/cross-workspace')
+    await recordCrossWorkspaceCall({
+      callerWorkspaceId: tokenWorkspaceId!,
+      targetWorkspaceId,
+      tool: c.req.header('X-Cross-Workspace-Tool') ?? `${c.req.method} ${c.req.path}`,
+      userId: ticket.userId,
+      write,
+      approvalId,
+    })
+
+    return { ok: true, identity, userId: ticket.userId }
   }
 
   /**
@@ -205,5 +410,12 @@ export function createInternalAuthorizers(authenticate: InternalAuthenticate) {
     return identity
   }
 
-  return { validateAuth, authorizeWorkspaceScope, authorizeWorkspaceRuntimeRequest }
+  return {
+    validateAuth,
+    authorizeWorkspaceScope,
+    authorizeWorkspaceRuntimeRequest,
+    authorizeCrossWorkspace,
+    /** The cross-workspace half alone, for routes that already know the target. */
+    authorizeCrossWorkspaceTarget,
+  }
 }

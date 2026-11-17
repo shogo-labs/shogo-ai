@@ -53,7 +53,7 @@ export interface RegisteredStream {
   /** Abort the model call behind this turn (best effort). */
   abort: () => void
   /** Force the turn's buffer closed with a synthesized terminal frame. */
-  reap: (reason: string) => void
+  reap: (reason: string, status?: 'failed' | 'aborted') => void
 }
 
 export interface StreamRegistryOptions {
@@ -176,5 +176,62 @@ export class StreamRegistry {
   /** Drop every entry without touching buffers (shutdown). */
   clear(): void {
     this.streams.clear()
+  }
+
+  /**
+   * Force-close every stream of one session, whatever it is doing.
+   *
+   * For an explicit user Stop only. `reapOrphans` deliberately leaves a locked
+   * or still-progressing turn alone — that is right for a long tool call, and
+   * wrong for a person who pressed Stop: the turn writes a progress frame every
+   * 15 s, so its buffer never goes quiet and the orphan TTL never fires (prod:
+   * a chat stuck 18 h). A Stop overrides both rules.
+   */
+  forceReapSession(
+    sessionId: string,
+    reason: string,
+    status: 'failed' | 'aborted' = 'aborted',
+    onlyTurnIds?: ReadonlySet<string>,
+  ): string[] {
+    const reaped: string[] = []
+    for (const entry of [...this.streams.values()]) {
+      if (entry.sessionId !== sessionId) continue
+      // A turn started after the Stop (the user's next message) must survive.
+      if (onlyTurnIds && !onlyTurnIds.has(entry.turnId)) continue
+      this.log(
+        `[agent-runtime] force-reaped stream turnId=${entry.turnId} session=${sessionId} after Stop — ` +
+          'writing the terminal frame so the chat is no longer busy',
+      )
+      this.streams.delete(entry.turnId)
+      try {
+        entry.abort()
+      } catch (err: any) {
+        console.warn(`[agent-runtime] abort of stopped stream ${entry.turnId} failed: ${err?.message ?? err}`)
+      }
+      try {
+        entry.reap(reason, status)
+      } catch (err: any) {
+        console.warn(`[agent-runtime] close of stopped stream ${entry.turnId} failed: ${err?.message ?? err}`)
+      }
+      reaped.push(entry.turnId)
+    }
+    return reaped
+  }
+
+  /** Whether this session still has a live turn in the registry. */
+  hasSession(sessionId: string): boolean {
+    for (const entry of this.streams.values()) {
+      if (entry.sessionId === sessionId) return true
+    }
+    return false
+  }
+
+  /** The turn ids currently streaming for one session. */
+  turnIdsFor(sessionId: string): string[] {
+    const ids: string[] = []
+    for (const entry of this.streams.values()) {
+      if (entry.sessionId === sessionId) ids.push(entry.turnId)
+    }
+    return ids
   }
 }

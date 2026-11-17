@@ -2,45 +2,32 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * The row a reopened chat shows while it rejoins a turn that is still running
- * (SHO-297).
+ * (SHO-297, SHO-366).
  *
- * It stands where the reply goes, under that turn's prompt, using the same
- * three-dot working treatment as a live turn — so the chat reads as "still
- * working" instead of frozen on the half-written reply from when the person
- * left. It is replaced by the resume snapshot the moment the window attaches.
+ * It sits under everything the chat has received so far — the half-written
+ * reply included — so what the person read stays on screen and the row reads
+ * as "more is coming" under it, rather than standing in the reply's place. The
+ * words carry the same left → right shimmer as "Planning next moves" so the two
+ * status lines look the same. It is replaced by the resume snapshot the moment
+ * the window attaches.
  */
-import { View, Text } from "react-native"
-import { Motion } from "@legendapp/motion"
+import { View } from "react-native"
+import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
+import { NATIVE_ACTIVITY_ROW } from "../NativeActivitySheet"
+import { ShimmerLabel } from "./ShimmerLabel"
 
-const DOT_DURATION = 600
+const LABEL = "Rejoining live reply…"
 
 export function RejoinRow() {
+  const nativePhone = useIsNativePhoneLayout()
   return (
     <View
       testID="chat-rejoining-row"
       accessibilityLabel="Rejoining live reply"
       aria-busy={true}
-      className="flex-row items-center gap-2 p-2"
+      className={nativePhone ? NATIVE_ACTIVITY_ROW : "pt-1 pb-2"}
     >
-      <View className="flex-row items-center gap-1.5">
-        {[0, 1, 2].map((i) => (
-          <Motion.View
-            key={i}
-            initial={{ y: 0 }}
-            animate={{ y: -4 }}
-            transition={{
-              type: "timing",
-              duration: DOT_DURATION,
-              easing: "easeInOut",
-              delay: i * 150,
-              repeat: Infinity,
-              repeatReverse: true,
-            }}
-            className="w-2 h-2 rounded-full bg-muted-foreground/60"
-          />
-        ))}
-      </View>
-      <Text className="text-xs text-muted-foreground">Rejoining live reply…</Text>
+      <ShimmerLabel label={LABEL} />
     </View>
   )
 }

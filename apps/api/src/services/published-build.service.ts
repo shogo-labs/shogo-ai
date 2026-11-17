@@ -34,7 +34,7 @@ import { prisma } from '../lib/prisma'
 import {
   publishedBuildPollIntervalMs,
   publishedBuildSetup,
-  publishedBuildTimeoutMs,
+  publishedImageBuildTimeoutMs,
   type PublishedBuildConfig,
 } from '../lib/published-build-config'
 import {
@@ -80,6 +80,13 @@ export interface EnsurePublishedImageInput {
   subdomain: string
   commitSha: string
   createdBy?: string | null
+  /**
+   * The caller already ran the app build for this publish, so the runtime's
+   * publish staging dir is current. Skips the redundant build inside
+   * `uploadArtifact` — a second full Vite/Expo build that the publish step
+   * before this one has just done.
+   */
+  alreadyBuilt?: boolean
   /** Test seam: skip the poll delay. */
   pollIntervalMs?: number
   timeoutMs?: number
@@ -93,7 +100,7 @@ export interface EnsurePublishedImageInput {
 export interface PublishedBuildDeps {
   config: () => { ok: boolean; config: PublishedBuildConfig | null; missing: string[] }
   findReusableImage: (input: { projectId: string; commitSha: string }) => Promise<{ imageRef: string; imageDigest: string } | null>
-  uploadArtifact: (input: { projectId: string; subdomain: string; commitSha: string }) => Promise<{ url: string } | { error: string }>
+  uploadArtifact: (input: { projectId: string; subdomain: string; commitSha: string; alreadyBuilt?: boolean }) => Promise<{ url: string } | { error: string }>
   createJob: (job: BuildKitJobObject) => Promise<void>
   readJob: (name: string, namespace: string) => Promise<{
     status: 'running' | 'succeeded' | 'failed'
@@ -150,6 +157,7 @@ export async function ensurePublishedImage(
     projectId: input.projectId,
     subdomain: input.subdomain,
     commitSha,
+    alreadyBuilt: input.alreadyBuilt === true,
   })
   if ('error' in artifact) {
     return {
@@ -171,7 +179,7 @@ export async function ensurePublishedImage(
     builderImage: config.builderImage,
     dockerfile: publishedDockerfile(),
     dockerfileName: PUBLISHED_DOCKERFILE_NAME,
-    activeDeadlineSeconds: Math.ceil((input.timeoutMs ?? publishedBuildTimeoutMs()) / 1000),
+    activeDeadlineSeconds: Math.ceil((input.timeoutMs ?? publishedImageBuildTimeoutMs()) / 1000),
   })
 
   // A Job name that already exists is either a previous attempt that timed out
@@ -202,7 +210,7 @@ export async function ensurePublishedImage(
     }
   }
 
-  const timeoutMs = input.timeoutMs ?? publishedBuildTimeoutMs()
+  const timeoutMs = input.timeoutMs ?? publishedImageBuildTimeoutMs()
   const pollMs = input.pollIntervalMs ?? publishedBuildPollIntervalMs()
   const deadline = Date.now() + timeoutMs
   let last: Awaited<ReturnType<PublishedBuildDeps['readJob']>> | null = null
@@ -320,6 +328,57 @@ async function findReusableImage(input: {
 }
 
 /**
+ * Read the build context from the runtime, with the one fallback that is safe.
+ *
+ * `alreadyBuilt` means the publish flow already ran the app build, so the
+ * runtime's publish staging dir should be current. It is not always there:
+ * older runtimes ignore `keep=true` and delete the dir after `/agent/dist-files`
+ * (the bug that broke every server-backed staging publish on 2026-11-08), and a
+ * metal rootfs lags the API, so a pod can be running the old handler. In that
+ * one case — `dist_not_found` on an artifact we expected to exist — rebuild once
+ * and retry once. No other fallback: a real build failure must surface as one.
+ */
+export interface ArtifactFetchDeps {
+  requestArtifact: (
+    projectId: string,
+  ) => Promise<{ ok: true; archive: string } | { ok: false; status: number; body: string }>
+  rebuild: (projectId: string) => Promise<{ success: boolean; error?: string }>
+  log: (message: string) => void
+}
+
+function isDistNotFound(result: { ok: false; status: number; body: string }): boolean {
+  return result.status === 404 && result.body.includes('dist_not_found')
+}
+
+function describeArtifactFailure(result: { status: number; body: string }): string {
+  return `artifact request failed: ${result.status} ${result.body.slice(0, 200)}`
+}
+
+export async function fetchPublishedArtifact(
+  input: { projectId: string; alreadyBuilt?: boolean },
+  deps: ArtifactFetchDeps,
+): Promise<{ archive: string } | { error: string }> {
+  const first = await deps.requestArtifact(input.projectId)
+  if (first.ok) return { archive: first.archive }
+
+  if (input.alreadyBuilt === true && isDistNotFound(first)) {
+    deps.log(
+      `[PublishedBuild] ${input.projectId}: the runtime has no publish build output after the app build ` +
+        '(an older runtime deleted it) — rebuilding once',
+    )
+    const rebuilt = await deps.rebuild(input.projectId)
+    if (!rebuilt.success) {
+      return { error: `the publish build failed on retry: ${rebuilt.error ?? 'unknown error'}` }
+    }
+    const second = await deps.requestArtifact(input.projectId)
+    if (second.ok) return { archive: second.archive }
+    return { error: describeArtifactFailure(second) }
+  }
+
+  return { error: describeArtifactFailure(first) }
+}
+
+/**
  * Pull the commit's build context from the editing runtime and put it in the
  * publish bucket, then hand the Job a presigned GET.
  *
@@ -335,26 +394,49 @@ async function uploadPublishedArtifact(input: {
   projectId: string
   subdomain: string
   commitSha: string
+  alreadyBuilt?: boolean
 }): Promise<{ url: string } | { error: string }> {
   try {
-    const { triggerBuildWithRetry } = await import('../routes/publish')
-    const built = await triggerBuildWithRetry(input.projectId)
-    if (!built.success) return { error: built.error ?? 'the publish build failed' }
+    // The publish flow builds the app before it gets here, so the runtime's
+    // publish staging dir is already current. Only the redeploy/cutover paths,
+    // which never ran a build, need one.
+    if (!input.alreadyBuilt) {
+      const { triggerBuildWithRetry } = await import('../routes/publish')
+      const built = await triggerBuildWithRetry(input.projectId)
+      if (!built.success) return { error: built.error ?? 'the publish build failed' }
+    }
 
     const { getProjectPodUrl } = await import('../lib/knative-project-manager')
     const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
     const podUrl = await getProjectPodUrl(input.projectId)
-    const res = await fetch(`${podUrl}/agent/publish-artifact?projectId=${encodeURIComponent(input.projectId)}`, {
-      headers: { 'x-runtime-token': await deriveProjectRuntimeToken(input.projectId) },
-      signal: AbortSignal.timeout(180_000),
-    })
-    if (!res.ok) {
-      const body = await res.text().catch(() => '')
-      return { error: `artifact request failed: ${res.status} ${body.slice(0, 200)}` }
+    const requestArtifact = async (projectId: string) => {
+      const res = await fetch(`${podUrl}/agent/publish-artifact?projectId=${encodeURIComponent(projectId)}`, {
+        headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
+        signal: AbortSignal.timeout(180_000),
+      })
+      if (!res.ok) {
+        const body = await res.text().catch(() => '')
+        return { ok: false as const, status: res.status, body }
+      }
+      const body = (await res.json()) as { archive?: string; message?: string }
+      if (!body.archive) return { ok: false as const, status: res.status, body: body.message ?? 'no archive' }
+      return { ok: true as const, archive: body.archive }
     }
-    const body = (await res.json()) as { archive?: string; message?: string }
-    if (!body.archive) return { error: body.message ?? 'the runtime returned no archive' }
-    const bytes = Buffer.from(body.archive, 'base64')
+
+    const artifact = await fetchPublishedArtifact(
+      { projectId: input.projectId, alreadyBuilt: input.alreadyBuilt },
+      {
+        requestArtifact,
+        rebuild: async (projectId) => {
+          const { triggerBuildWithRetry } = await import('../routes/publish')
+          return triggerBuildWithRetry(projectId)
+        },
+        log: (message) => console.log(message),
+      },
+    )
+    if ('error' in artifact) return { error: artifact.error }
+
+    const bytes = Buffer.from(artifact.archive, 'base64')
     if (bytes.length === 0) return { error: 'artifact tarball was empty' }
 
     const bucket = (process.env.PUBLISH_BUCKET || '').trim()
@@ -443,19 +525,32 @@ async function readJobStatus(
     return { status: 'failed', message: failureReason(job), logTail: await podLogTail(core, namespace, name) }
   }
 
-  // A pod that is gone (evicted) while the Job reports nothing is a failure:
-  // without it the API would wait out the whole timeout for a build that
-  // cannot finish.
   const pods = await core.listNamespacedPod({ namespace, labelSelector: `job-name=${name}` })
-  const items = (pods as any)?.items ?? []
-  if (items.length === 0) return { status: 'running' }
-  const terminated = items.some((pod: any) =>
-    (pod.status?.containerStatuses ?? []).some((c: any) => c.state?.terminated),
-  )
-  if (terminated) {
+  if (jobPodsVerdict((pods as any)?.items ?? []) === 'failed') {
     return { status: 'failed', message: failureReason(job), logTail: await podLogTail(core, namespace, name) }
   }
   return { status: 'running' }
+}
+
+/**
+ * What the build pods say while the Job itself reports neither outcome.
+ *
+ * A container that exited non-zero (or was killed or evicted) is a failure, so
+ * the API does not wait out the whole timeout for a build that cannot finish.
+ * A clean exit is not: the Job controller sets `status.succeeded` a moment
+ * after the pod terminates, and reading that gap as a failure threw away a
+ * build whose image had already been pushed (SHO-308, staging, 2026-11-08).
+ */
+export function jobPodsVerdict(pods: any[]): 'running' | 'failed' {
+  for (const pod of pods) {
+    if (pod?.status?.phase === 'Failed') return 'failed'
+    const statuses = [...(pod?.status?.initContainerStatuses ?? []), ...(pod?.status?.containerStatuses ?? [])]
+    for (const c of statuses) {
+      const exitCode = c?.state?.terminated?.exitCode
+      if (typeof exitCode === 'number' && exitCode !== 0) return 'failed'
+    }
+  }
+  return 'running'
 }
 
 function failureReason(job: any): string | null {

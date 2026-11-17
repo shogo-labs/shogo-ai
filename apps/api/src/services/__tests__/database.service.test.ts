@@ -488,6 +488,55 @@ describe('provisionDatabase — existing database (no forceReset)', () => {
   })
 })
 
+describe('provisionDatabase — rotateWhenCredentialsUnknown (published environments)', () => {
+  // A published environment's role is created before its Secret exists (the
+  // Secret is what moves the pod off SQLite). A publish that failed in between
+  // left a role whose password nobody holds; the next publish must give it a new
+  // one rather than hand the schema push a password-less URL (SHO-308, P1000 on
+  // staging).
+  it('sets a new password when the database exists and no Secret does', async () => {
+    nextQueryResults = [
+      { rows: [] }, // lock
+      { rows: [{ '?column?': 1 }] }, // exists
+      { rows: [] }, // ALTER USER
+      { rows: [] }, // unlock
+    ]
+    readSecretImpl = async () => { throw set404Response() }
+    const out = await svc.provisionDatabase(UUID_A, { writeSecret: false, rotateWhenCredentialsUnknown: true })
+    expect(out.password.length).toBeGreaterThan(0)
+    expect(out.connectionUrl).toContain(`${dbNameA}:${out.password}@`)
+    expect(queryLog.some((q) => q.sql.includes(`ALTER USER "${dbNameA}" WITH PASSWORD`))).toBe(true)
+  })
+
+  it('reuses stored credentials when the Secret exists, even without writeSecret', async () => {
+    nextQueryResults = [{ rows: [] }, { rows: [{ '?column?': 1 }] }, { rows: [] }]
+    readSecretImpl = async () => ({
+      data: {
+        'database-url': Buffer.from('postgres://u:stored@h:5432/db').toString('base64'),
+        username: Buffer.from('u').toString('base64'),
+        password: Buffer.from('stored').toString('base64'),
+      },
+    })
+    const out = await svc.provisionDatabase(UUID_A, { writeSecret: false, rotateWhenCredentialsUnknown: true })
+    expect(out.password).toBe('stored')
+    expect(queryLog.some((q) => q.sql.includes('ALTER USER'))).toBe(false)
+  })
+
+  it('never rotates when the Secret could not be read', async () => {
+    nextQueryResults = [{ rows: [] }, { rows: [{ '?column?': 1 }] }, { rows: [] }]
+    readSecretImpl = async () => { throw new Error('cluster offline') }
+    const origWarn = console.warn
+    console.warn = () => {}
+    try {
+      const out = await svc.provisionDatabase(UUID_A, { writeSecret: false, rotateWhenCredentialsUnknown: true })
+      expect(out.password).toBe('')
+      expect(queryLog.some((q) => q.sql.includes('ALTER USER'))).toBe(false)
+    } finally {
+      console.warn = origWarn
+    }
+  })
+})
+
 describe('provisionDatabase — forcePasswordReset', () => {
   it('rotates the PG password and updates the K8s Secret', async () => {
     nextQueryResults = [

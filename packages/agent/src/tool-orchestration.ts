@@ -203,12 +203,61 @@ export interface OrchestrationState {
 }
 
 /**
+ * A tool call's rejection when the turn is aborted mid-call.
+ *
+ * `AbortSignal` is only a request: a tool that ignores its signal (a Playwright
+ * call on a frozen page never settles) would keep the whole turn — and its chat
+ * — blocked forever. Every tool goes through this wrapper, so that is the one
+ * place where an abort actually ends the call.
+ */
+export function abortedToolError(toolName: string): Error {
+  const err = new Error(`Tool call "${toolName}" was aborted before it finished.`)
+  err.name = 'AbortError'
+  return err
+}
+
+/**
+ * Run `start()` and reject as soon as `signal` aborts, whatever the call does.
+ * A call that settles after the abort is already handled (its rejection is
+ * attached here), so it can never surface as an unhandled rejection.
+ *
+ * `start` is a thunk so an already-aborted turn never starts the work at all.
+ */
+export function raceWithAbort<T>(
+  start: () => Promise<T> | T,
+  signal?: AbortSignal,
+  toolName = 'tool',
+): Promise<T> {
+  if (signal?.aborted) return Promise.reject(abortedToolError(toolName))
+  const promise = Promise.resolve().then(start)
+  if (!signal) return promise
+  void promise.catch(() => {})
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortedToolError(toolName))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (err) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(err)
+      },
+    )
+  })
+}
+
+/**
  * Wrap a single tool with orchestration (semaphore + optional write mutex).
  *
  * The wrapped `execute` also enforces the empty-argument guard: a required
  * string argument that is missing or blank rejects the call before it runs.
  * The required-string list comes from the tool's own schema, so every tool is
  * covered without tool-specific code.
+ *
+ * It also races `tool.execute` against the turn's abort signal, so a tool that
+ * ignores its signal still releases the semaphore and the write mutex (SHO-358).
  */
 function wrapSingleTool(
   tool: AgentTool,
@@ -235,7 +284,11 @@ function wrapSingleTool(
         assertRequiredArgsPresent(params)
         await semaphore.acquire()
         try {
-          return await tool.execute(toolCallId, params, signal, onUpdate)
+          return await raceWithAbort(
+            () => tool.execute(toolCallId, params, signal, onUpdate),
+            signal,
+            tool.name,
+          )
         } finally {
           semaphore.release()
         }
@@ -255,7 +308,11 @@ function wrapSingleTool(
       await semaphore.acquire()
       await writeMutex.acquire()
       try {
-        return await tool.execute(toolCallId, params, signal, onUpdate)
+        return await raceWithAbort(
+          () => tool.execute(toolCallId, params, signal, onUpdate),
+          signal,
+          tool.name,
+        )
       } finally {
         writeMutex.release()
         semaphore.release()

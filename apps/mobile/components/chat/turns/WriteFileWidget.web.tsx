@@ -240,8 +240,12 @@ export const WriteFileWidget = memo(function WriteFileWidget({
                     </Text>
                   ))}
                 </View>
-                {/* Syntax-highlighted code */}
-                <View className="flex-1 px-2 py-1.5 overflow-x-auto">
+                {/* Syntax-highlighted code. `overflow-y-clip` keeps the
+                    horizontal scroller from also becoming a vertical one
+                    (SHO-365): a `visible` axis next to `overflow-x: auto`
+                    computes to `auto`, and the block then holds the wheel for
+                    the pixel its last line overflows by. */}
+                <View className="flex-1 px-2 py-1.5 overflow-x-auto overflow-y-clip">
                   <HighlightedCode code={shownCode} language={language} />
                 </View>
               </View>

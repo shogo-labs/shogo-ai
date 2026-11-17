@@ -22,6 +22,7 @@ import {
   ChevronDown,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { UPGRADE_PLAN_NAME } from '@/lib/billing-config'
 import { Switch } from '@/components/ui/switch'
 import { useRouter } from 'expo-router'
 import { agentFetch } from '../../../lib/agent-fetch'
@@ -763,7 +764,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
               icon={<Activity size={14} className="text-muted-foreground" />}
               badge={
                 !localMode && !isPaidPlan
-                  ? 'Pro'
+                  ? UPGRADE_PLAN_NAME
                   : hbConfig
                     ? hbConfig.heartbeatEnabled ? 'Active' : 'Off'
                     : status.heartbeat.enabled ? 'Active' : 'Off'

@@ -161,6 +161,38 @@ describe('argv construction', () => {
     expect(fake.calls.find((c) => c.args.includes('push'))).toBeUndefined()
   })
 
+  test('checkpoint commits the working tree, reports what it carried, and never pushes (SHO-399)', async () => {
+    const sync = mkSync()
+    fake.queueResponse('diff', { exitCode: 1 })
+    fake.queueResponse('diff', { exitCode: 0, stdout: 'src/a.ts\nnotes/b.txt\n' })
+    fake.queueResponse('commit', { exitCode: 0 })
+    fake.queueResponse('rev-parse', { exitCode: 0, stdout: 'abc123\n' })
+
+    const out = await sync.checkpoint()
+
+    expect(out).toEqual({ committed: true, sha: 'abc123', files: 2 })
+    expect(fake.calls.find((c) => c.args.includes('push'))).toBeUndefined()
+  })
+
+  test('checkpoint on an already-clean tree commits nothing and still reports HEAD (SHO-399)', async () => {
+    const sync = mkSync()
+    fake.queueResponse('diff', { exitCode: 0 })
+    fake.queueResponse('rev-parse', { exitCode: 0, stdout: 'head1\n' })
+
+    expect(await sync.checkpoint()).toEqual({ committed: false, sha: 'head1', files: 0 })
+    expect(fake.calls.find((c) => c.args.includes('commit'))).toBeUndefined()
+  })
+
+  test('a checkpoint failure throws, so the caller aborts instead of losing the tree (SHO-399)', async () => {
+    const sync = mkSync()
+    fake.queueResponse('diff', { exitCode: 2, stderr: 'fatal: index.lock exists' })
+
+    await expect(sync.checkpoint()).rejects.toThrow(/git diff exited 2/)
+    // Not a durability failure it should answer with backoff: the caller owns
+    // the decision, and a recycle retry is what re-runs it.
+    expect(sync.consecutiveFailures).toBe(0)
+  })
+
   test('pushes a HEAD the agent committed itself even though nothing is staged', async () => {
     const sync = mkSync()
     fake.queueResponse('diff', { exitCode: 0 })

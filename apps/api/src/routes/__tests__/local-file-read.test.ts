@@ -37,11 +37,14 @@ function appWithSession(authenticated: boolean) {
   return app
 }
 
-function get(path: string, authenticated = true) {
+function get(path: string, authenticated = true, init?: RequestInit) {
   return appWithSession(authenticated).request(
     `http://localhost/api/local-files?path=${encodeURIComponent(path)}`,
+    init,
   )
 }
+
+const RANGE_BODY = Array.from({ length: 100 }, (_, index) => String(index % 10)).join('')
 
 beforeAll(() => {
   workspacesDir = mkdtempSync(join(tmpdir(), 'local-file-read-'))
@@ -54,6 +57,8 @@ beforeAll(() => {
   writeFileSync(join(workspacesDir, 'proj-a', 'out', 'index.html'), '<script>alert(1)</script>')
   writeFileSync(join(workspacesDir, 'proj-a', 'out', 'diagram.svg'), '<svg/>')
   writeFileSync(join(workspacesDir, 'proj-a', 'out', 'blob.bin'), 'opaque')
+  // A known 100-byte body, so a ranged read can be asserted byte by byte.
+  writeFileSync(join(workspacesDir, 'proj-a', 'out', 'clip.mp4'), RANGE_BODY)
   writeFileSync(join(outsideDir, 'secret.txt'), 'nope')
   symlinkSync(outsideDir, join(workspacesDir, 'proj-a', 'escape'))
   writeFileSync(join(externalDir, 'linked.txt'), 'linked project file')
@@ -144,5 +149,47 @@ describe('GET /api/local-files', () => {
   it('answers 400 when path is missing', async () => {
     const res = await appWithSession(true).request('http://localhost/api/local-files')
     expect(res.status).toBe(400)
+  })
+})
+
+/**
+ * The viewer points a `<video>` at this route, and a media element only starts
+ * (and seeks) by asking for byte ranges. Reading the whole file into memory and
+ * answering 200 made every video download in full first (SHO-387).
+ */
+describe('GET /api/local-files with a Range', () => {
+  const clip = () => join(workspacesDir, 'proj-a', 'out', 'clip.mp4')
+
+  it('advertises ranges and serves the whole file without one', async () => {
+    const res = await get(clip())
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('accept-ranges')).toBe('bytes')
+    expect(res.headers.get('content-length')).toBe('100')
+    expect(await res.text()).toBe(RANGE_BODY)
+  })
+
+  it('answers a byte range with 206 and its content-range', async () => {
+    const res = await get(clip(), true, { headers: { range: 'bytes=0-9' } })
+
+    expect(res.status).toBe(206)
+    expect(res.headers.get('content-range')).toBe('bytes 0-9/100')
+    expect(res.headers.get('content-length')).toBe('10')
+    expect(await res.text()).toBe('0123456789')
+  })
+
+  it('answers a suffix range with the final bytes', async () => {
+    const res = await get(clip(), true, { headers: { range: 'bytes=-5' } })
+
+    expect(res.status).toBe(206)
+    expect(res.headers.get('content-range')).toBe('bytes 95-99/100')
+    expect(await res.text()).toBe('56789')
+  })
+
+  it('answers a range past the end with 416 and the file size', async () => {
+    const res = await get(clip(), true, { headers: { range: 'bytes=200-' } })
+
+    expect(res.status).toBe(416)
+    expect(res.headers.get('content-range')).toBe('bytes */100')
   })
 })

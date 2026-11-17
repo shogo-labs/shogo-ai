@@ -112,6 +112,7 @@ process.env.COMPOSIO_API_KEY = 'test-composio-key'
 
 // In-memory fake Composio connected-accounts store, seeded per test.
 let fakeAccounts: Array<{ id: string; userId: string; toolkitSlug: string; status: string }> = []
+let fakeToolkits: Array<{ slug: string; name: string }> = []
 let deleteCalls: string[] = []
 let authorizeCalls: Array<{ userId: string; toolkit: string }> = []
 
@@ -131,7 +132,7 @@ class FakeComposio {
       fakeAccounts = fakeAccounts.filter((a) => a.id !== id)
     },
   }
-  toolkits = { get: async () => [] }
+  toolkits = { get: async () => fakeToolkits }
   create = async (userId: string, _opts?: any) => ({
     authorize: async (toolkit: string, _opts?: any) => {
       authorizeCalls.push({ userId, toolkit })
@@ -259,5 +260,81 @@ describe('integrations routes — disconnect/connect prune sibling accounts (rep
     )
     expect(del.status).toBe(200)
     expect(deleteCalls).toContain('conn-ws')
+  })
+})
+
+// =============================================================================
+// SHO-379: Instagram and TikTok connect through Zernio (the Social page), not
+// Composio. The provider list must not offer them as Composio toolkits, and
+// /connect must refuse them before any OAuth starts.
+// =============================================================================
+
+describe('integrations routes — Instagram/TikTok are Zernio, not Composio (SHO-379)', () => {
+  beforeEach(() => {
+    fakeAccounts = []
+    fakeToolkits = [
+      { slug: 'slack', name: 'Slack' },
+      { slug: 'metaads', name: 'Meta Ads' },
+      { slug: 'instagram', name: 'Instagram' },
+      { slug: 'tiktok', name: 'TikTok' },
+    ]
+    deleteCalls = []
+    authorizeCalls = []
+  })
+
+  test('GET /integrations/providers drops instagram/tiktok and returns socialProviders for both', async () => {
+    const app = buildIntegrationsApp({ userId: PRUNE_USER, workspaceId: PRUNE_WORKSPACE })
+    const res = await app.fetch(new Request('http://localhost/api/integrations/providers'))
+    expect(res.status).toBe(200)
+
+    const body = (await res.json()) as {
+      data: Array<{ toolkit: string }>
+      socialProviders: Array<{ toolkit: string; provider: string; href: string }>
+    }
+    const slugs = body.data.map((p) => p.toolkit)
+    expect(slugs).toContain('slack')
+    expect(slugs).toContain('metaads')
+    expect(slugs).not.toContain('instagram')
+    expect(slugs).not.toContain('tiktok')
+
+    expect(body.socialProviders.map((p) => p.toolkit).sort()).toEqual(['instagram', 'tiktok'])
+    for (const p of body.socialProviders) {
+      expect(p.provider).toBe('zernio')
+      expect(p.href).toBe('/social')
+    }
+  })
+
+  test.each(['instagram', 'Instagram', 'tik-tok', 'tiktok'])(
+    'POST /integrations/connect { toolkit: %s } returns 409 social_provider_zernio and starts no OAuth',
+    async (toolkit) => {
+      const app = buildIntegrationsApp({ userId: PRUNE_USER, workspaceId: PRUNE_WORKSPACE })
+      const res = await app.fetch(
+        new Request('http://localhost/api/integrations/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ toolkit, projectId: PRUNE_PROJECT }),
+        }),
+      )
+      expect(res.status).toBe(409)
+      const body = (await res.json()) as { code: string; href: string }
+      expect(body.code).toBe('social_provider_zernio')
+      expect(body.href).toBe('/social')
+      expect(authorizeCalls).toHaveLength(0)
+      expect(deleteCalls).toHaveLength(0)
+    },
+  )
+
+  test('POST /integrations/connect { toolkit: "metaads" } still goes through Composio', async () => {
+    const app = buildIntegrationsApp({ userId: PRUNE_USER, workspaceId: PRUNE_WORKSPACE })
+    const res = await app.fetch(
+      new Request('http://localhost/api/integrations/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ toolkit: 'metaads', projectId: PRUNE_PROJECT }),
+      }),
+    )
+    expect(res.status).toBe(200)
+    expect(authorizeCalls).toHaveLength(1)
+    expect(authorizeCalls[0]?.toolkit).toBe('metaads')
   })
 })

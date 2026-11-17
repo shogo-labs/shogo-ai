@@ -12,17 +12,33 @@ import { isPublishMetalAuthoritative } from "./publish-substrate-config"
  * itself — no prompt edit.
  */
 export interface PublishHostingStamp {
-  substrate: 'metal' | 'knative'
+  substrate: 'metal' | 'knative' | 'desktop'
   alwaysOn: boolean
   /** `null` = unlimited. */
   maxReplicas: number | null
   staging: boolean
 }
 
+/**
+ * Desktop (`SHOGO_LOCAL_MODE`) has no hosting pipeline of its own: a publish
+ * builds the bundle locally and uploads it to Shogo Cloud as a **static** site
+ * (`services/local-publish.service.ts`), and a server-backed project is refused
+ * with `server_backed_requires_cloud_project`. So none of the cloud
+ * capabilities are true there, and the stamp must say so — otherwise the agent
+ * promises always-on, replicas and staging on a machine that has none of them
+ * (QA round 1 on SHO-362).
+ */
+function isDesktopMode(): boolean {
+  return process.env.SHOGO_LOCAL_MODE === 'true'
+}
+
 export function buildPublishHostingStamp(
   planId: string | null | undefined,
   alwaysOnAllowance: number,
 ): PublishHostingStamp {
+  if (isDesktopMode()) {
+    return { substrate: 'desktop', alwaysOn: false, maxReplicas: 1, staging: false }
+  }
   const substrate = isPublishMetalAuthoritative() ? 'metal' : 'knative'
   const caps = getPublishedPlanCaps(planId)
   return {

@@ -20,8 +20,12 @@
  * "Vercel can't run a backend") — see SHO-362.
  */
 export interface PublishHosting {
-  /** Where published apps are provisioned. Metal runs one instance, no staging. */
-  substrate: 'metal' | 'knative'
+  /**
+   * Where published apps are provisioned. Metal runs one instance, no staging;
+   * desktop has no hosting pipeline at all (a static build uploaded to Shogo
+   * Cloud, and server-backed projects are refused).
+   */
+  substrate: 'metal' | 'knative' | 'desktop'
   /** The plan has at least one always-on slot, so a published app can stay awake. */
   alwaysOn: boolean
   /** Replica ceiling per environment; `null` = unlimited. */
@@ -71,7 +75,7 @@ export function parseAccountContext(body: Record<string, unknown>): AccountConte
 export function parsePublishHosting(raw: unknown): PublishHosting | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
   const r = raw as Record<string, unknown>
-  if (r.substrate !== 'metal' && r.substrate !== 'knative') return undefined
+  if (r.substrate !== 'metal' && r.substrate !== 'knative' && r.substrate !== 'desktop') return undefined
   if (typeof r.alwaysOn !== 'boolean' || typeof r.staging !== 'boolean') return undefined
   const maxReplicas = r.maxReplicas
   if (maxReplicas !== null && (typeof maxReplicas !== 'number' || !Number.isFinite(maxReplicas) || maxReplicas < 1)) {
@@ -82,6 +86,13 @@ export function parsePublishHosting(raw: unknown): PublishHosting | undefined {
 
 /** One sentence of what hosting does here, from the stamp — never more than it says. */
 export function describePublishHosting(h: PublishHosting): string {
+  // Desktop has no hosting pipeline: a publish builds the site locally and
+  // uploads a static bundle to Shogo Cloud, and a server-backed project is
+  // refused outright. None of the cloud capabilities apply, so say that
+  // instead of rendering numbers that are false on this machine.
+  if (h.substrate === 'desktop') {
+    return 'static hosting only — the desktop builds the site and uploads it to Shogo Cloud; no server, no database, no always-on, no replicas and no staging. A project with `server.tsx` / `custom-routes.ts` has to be synced to Shogo Cloud and published there'
+  }
   const parts = ['full-stack hosting — the frontend, its server and its database — on a `*.shogo.one` URL or a domain the user owns']
   parts.push(h.alwaysOn ? 'always-on available' : 'no always-on on this plan, so a published app can sleep when idle')
   if (h.substrate === 'metal' || h.maxReplicas === 1) parts.push('one instance (no replicas)')

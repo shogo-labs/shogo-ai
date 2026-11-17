@@ -19,6 +19,7 @@ import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { createBufferedTurns, type PipelineCallHooks, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
 import { StreamRegistry, DEFAULT_STREAM_ORPHAN_TTL_MS } from './stream-registry'
+import { guestBusy } from './runtime-busy'
 import { describeTurn } from './turn-status'
 import { RepoAdoptGate, isWorkspaceNeutralRequest } from './repo-adopt-gate'
 import { shouldFlushGitBeforeExport } from './git-export-policy'
@@ -938,7 +939,7 @@ const { app, state, logTiming } = await createRuntimeApp({
     // pin is what stopped an expired AI-proxy token from ever refreshing on
     // metal (SHO-348).
     const liveStreams = streamRegistry.liveCount()
-    const busy = work.turns + work.tasks + liveStreams > 0
+    const busy = guestBusy({ turns: work.turns, tasks: work.tasks, liveStreams })
     return {
       activeSessions: stats.length,
       lastActivityAt: lastSessionActivity,
@@ -1475,6 +1476,17 @@ app.get('/agent/status', (c) => {
     channels: [],
     skills: [],
   }
+  // The owner-only status view carries the webchat widget key so the Channels
+  // panel can render a working embed snippet. The public
+  // `/agent/channels/webchat/health` must never include it (SHO-380).
+  const webchat = agentGateway?.getChannel('webchat') as WebChatAdapter | undefined
+  const webchatKey = webchat?.getWidgetSecret()
+  if (webchatKey && Array.isArray((status as any).channels)) {
+    const entry = (status as any).channels.find((ch: any) => ch.type === 'webchat')
+    if (entry) {
+      entry.metadata = { ...(entry.metadata ?? {}), widgetKey: webchatKey }
+    }
+  }
   return c.json(status)
 })
 
@@ -1751,7 +1763,7 @@ app.post('/agent/channels/connect', async (c) => {
         if (accessRes.ok) {
           const access = await accessRes.json() as { hasAdvancedModelAccess?: boolean }
           if (!access.hasAdvancedModelAccess) {
-            return c.json({ error: 'Advanced model requires a Pro or higher subscription. Use "basic" or upgrade your plan.' }, 403)
+            return c.json({ error: 'Advanced model requires a Business (or higher) subscription. Use "basic" or upgrade your plan.' }, 403)
           }
         }
       } catch {
@@ -1773,6 +1785,13 @@ app.post('/agent/channels/connect', async (c) => {
     }
 
     fileConfig.channels = fileConfig.channels || []
+    if (type === 'webchat') {
+      // Keep the key already saved in config.json so a reconnect does not
+      // break pages that are already embedding the widget (SHO-380).
+      const { resolveWebchatWidgetSecret } = await import('./channels/webchat-key')
+      const savedWebchat = fileConfig.channels.find((ch: any) => ch.type === 'webchat')?.config
+      channelConfig.widgetSecret = resolveWebchatWidgetSecret(channelConfig, savedWebchat)
+    }
     const channelEntry = { type, config: channelConfig, model: channelModel }
     const existing = fileConfig.channels.findIndex((ch: any) => ch.type === type)
     if (existing >= 0) {
@@ -1785,7 +1804,12 @@ app.post('/agent/channels/connect', async (c) => {
 
     writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
 
-    return c.json({ ok: true, type, message: `${type} channel connected` })
+    return c.json({
+      ok: true,
+      type,
+      message: `${type} channel connected`,
+      ...(type === 'webchat' ? { widgetKey: channelConfig.widgetSecret } : {}),
+    })
   } catch (error: any) {
     return c.json({ error: error.message || `Failed to connect ${type}` }, 500)
   }
@@ -1819,7 +1843,7 @@ app.patch('/agent/channels/:type/model', async (c) => {
         if (accessRes.ok) {
           const access = await accessRes.json() as { hasAdvancedModelAccess?: boolean }
           if (!access.hasAdvancedModelAccess) {
-            return c.json({ error: `Model '${model}' requires a Pro or higher subscription.` }, 403)
+            return c.json({ error: `Model '${model}' requires a Business (or higher) subscription.` }, 403)
           }
         }
       } catch {
@@ -2743,8 +2767,46 @@ app.post('/agent/stop', async (c) => {
   // the floor and causing project-chat's auto-resume to return 204 (which it
   // bills as a $0 stop-or-crash partial — see the comment in
   // `apps/api/src/routes/project-chat.ts`).
+  //
+  // But the wind-down is only a *preference*: when a tool call ignores the
+  // abort (a browser `snapshot` on a frozen page), the loop never returns and
+  // the turn stays `active` forever — prod had a chat stuck 18 h, and neither
+  // this route nor `/agent/subagents/:id/stop` could end it (SHO-358). So after
+  // a grace period the turn is force-reaped: terminal frame written, buffer
+  // completed, no longer reported as busy.
+  scheduleStopReap(stopSessionKey)
   return c.json({ stopped: aborted, cancelledSubagents })
 })
+
+/**
+ * Force-reap a stopped session's turn if it is still streaming after the grace
+ * period. Reads the registry at fire time, so a clean wind-down (the normal
+ * case, ~ms) leaves this a no-op.
+ */
+function scheduleStopReap(sessionKey: string): void {
+  // Only the turn(s) live at Stop time: a message sent right after Stop starts a
+  // new turn on the same session, and that one must not be reaped.
+  const stoppedTurnIds = new Set(streamRegistry.turnIdsFor(sessionKey))
+  if (stoppedTurnIds.size === 0) return
+  const timer = setTimeout(() => {
+    try {
+      streamRegistry.forceReapSession(
+        sessionKey,
+        'the turn was stopped and did not wind down within the grace period (a tool call was still running)',
+        'aborted',
+        stoppedTurnIds,
+      )
+    } catch (err: any) {
+      console.warn('[agent-runtime] stop reap failed:', err?.message ?? err)
+    }
+  }, STOP_REAP_GRACE_MS)
+  ;(timer as any)?.unref?.()
+}
+
+/** How long a stopped turn may take to wind down on its own before it is reaped. */
+const STOP_REAP_GRACE_MS = Number(process.env.STOP_REAP_GRACE_MS) > 0
+  ? Number(process.env.STOP_REAP_GRACE_MS)
+  : 10_000
 
 // Cancel a single running subagent by AgentManager instance id
 app.post('/agent/subagents/:instanceId/stop', async (c) => {
@@ -2759,7 +2821,8 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 // Preview Manager (app mode — lazy init)
 // ---------------------------------------------------------------------------
 
-import { PreviewManager, PUBLISH_STAGING_DIR, publishedBootPlan } from './preview-manager'
+import { PreviewManager, publishedBootPlan } from './preview-manager'
+import { handleDistFiles, handlePublishArtifact, type PublishEndpointDeps } from './publish-endpoints'
 import { installRuntimeJobGuard } from './process-tree'
 import { cleanupStagingOutput } from './build-output-commit'
 import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
@@ -3783,6 +3846,122 @@ app.post('/pool/quiesce', async (c) => {
   console.log(`[pool/quiesce] ${JSON.stringify(projects)}`)
   return c.json({ ok: true, projects })
 })
+
+/**
+ * Stop every local background task because the host is replacing this VM for a
+ * release. The host calls this before it destroys the VM so each task settles
+ * `interrupted` with the real reason, and a task the agent was told about in the
+ * background carries its outcome to the owner's chat across the restart
+ * (SHO-399). `.tmp/` is not part of the backup, so a task whose files lived
+ * there is told that in the same breath.
+ */
+app.post('/pool/stop-background-tasks', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const reason = typeof body?.reason === 'string' && body.reason.trim()
+    ? body.reason.trim()
+    : 'this runtime moved to the new release'
+  const tmp = droppedTmp()
+  const note = tmp ? `${describeTmp(tmp)} is not kept across a recycle — move the script and its env file into the project` : undefined
+  const stopped = agentGateway?.stopBackgroundTasksForRelease?.({ reason, ...(note ? { note } : {}) }) ?? 0
+  console.log(`[pool/stop-background-tasks] stopped ${stopped} task(s): ${reason}${tmp ? ` (${describeTmp(tmp)} dropped)` : ''}`)
+  return c.json({ ok: true, stopped, reason, tmpDropped: !!note, ...(tmp ? { tmp } : {}) })
+})
+
+/**
+ * Take a checkpoint commit of the live working tree because the host is about
+ * to back up the repo and destroy this VM (SHO-399).
+ *
+ * The host's repo backup bundles the commits that already exist; it does not
+ * commit anything itself, and the last turn-complete auto-commit may be hours
+ * old (no turn ran in between). Anything edited since then used to go with the
+ * VM. This is the same committer the turn-complete path uses, awaited, and it
+ * reports failure instead of swallowing it — a recycle with no checkpoint is a
+ * recycle that loses the agent's work, so the host aborts rather than proceeds.
+ *
+ * 404-able: a guest older than this route simply 404s and the host falls back
+ * to the export's own best-effort flush.
+ */
+app.post('/pool/checkpoint-commit', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const destinationDir = resolvePoolWorkspaceDir(body?.dir)
+  // Measured here as well as on stop-background-tasks: a manual `/recycle` of
+  // an idle runtime stops no tasks, but `.tmp/` is dropped all the same.
+  const tmp = droppedTmp()
+  await gitLayerReady
+  if (!gitSyncInstance || destinationDir !== WORKSPACE_DIR) {
+    return c.json({ ok: true, committed: false, sha: '', files: 0, skipped: 'no-git-sync', ...(tmp ? { tmp } : {}) })
+  }
+  try {
+    const result = await gitSyncInstance.checkpoint()
+    console.log(
+      `[pool/checkpoint-commit] ${result.committed ? `committed ${result.files} file(s) at ${result.sha.slice(0, 12)}` : 'working tree already committed'}` +
+        `${tmp ? ` (.tmp/ ${describeTmp(tmp)} will be dropped)` : ''}`,
+    )
+    return c.json({ ok: true, ...result, ...(tmp ? { tmp } : {}) })
+  } catch (err: any) {
+    console.error('[pool/checkpoint-commit] failed:', err?.message ?? err)
+    return c.json({ ok: false, error: err?.message ?? 'checkpoint commit failed', code: 'checkpoint-failed' }, 500)
+  }
+})
+
+/** What `.tmp/` holds that this recycle will not carry over. */
+export interface DroppedTmp {
+  files: number
+  bytes: number
+  /** Top-level entry names, capped — what the owner chat is told it lost. */
+  entries: string[]
+}
+
+/** How many top-level `.tmp/` names travel in the notice. */
+const TMP_ENTRIES_CAP = 10
+
+/**
+ * Measure `.tmp/`, so the chat that owns this runtime is told *what* it is
+ * about to lose rather than only that something was lost (SHO-399). Bounded:
+ * a 3.6 GB folder of build output is reported by size and by its top-level
+ * names, not by walking forever.
+ */
+function droppedTmp(): DroppedTmp | undefined {
+  try {
+    const root = join(WORKSPACE_DIR, '.tmp')
+    let files = 0
+    let bytes = 0
+    const walk = (dir: string, depth: number): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (files >= 5000) return
+        const p = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          if (depth < 4) walk(p, depth + 1)
+          continue
+        }
+        files += 1
+        try {
+          bytes += statSync(p).size
+        } catch { /* vanished mid-walk */ }
+      }
+    }
+    walk(root, 0)
+    if (files === 0) return undefined
+    let entries: string[] = []
+    try {
+      entries = readdirSync(root, { withFileTypes: true })
+        .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
+        .sort()
+        .slice(0, TMP_ENTRIES_CAP)
+    } catch { /* top level unreadable mid-walk */ }
+    return { files, bytes, entries }
+  } catch {
+    return undefined
+  }
+}
+
+function describeTmp(tmp: DroppedTmp): string {
+  const size = tmp.bytes >= 1 << 30
+    ? `${(tmp.bytes / (1 << 30)).toFixed(1)} GB`
+    : `${Math.max(1, Math.round(tmp.bytes / 1024))} KB`
+  const names = tmp.entries.length ? `: ${tmp.entries.join(', ')}` : ''
+  return `.tmp/ (${tmp.files} file${tmp.files === 1 ? '' : 's'}, ${size}${names})`
+}
 
 // Workspace-drive maintenance for a live grow (SHO-349) — see workspace-drive.ts.
 // The host freezes the guest around its ftruncate + PATCH /drives, then thaws
@@ -6115,151 +6294,18 @@ function getProjectPreviewManager(projectId?: string): PreviewManager | null {
   return getPreviewManager()
 }
 
-// Recursively collect every file under `dist/` as `{ path, content (base64) }`.
-// Consumed by apps/api/src/routes/publish.ts -> downloadDistFiles() to upload
-// the build output to the published-apps S3 bucket.
-//
-// Lives under `/agent/*`, NOT `/api/*`. The `/api/*` namespace is owned by
-// the user app's sidecar Hono server (see code-agent-prompt.ts) and the
-// runtime mounts `app.all('/api/*', ...)` higher up to proxy every `/api/*`
-// request to it. The original placement at `/api/dist-files` (commit
-// 2f9b326d) was registered after that proxy and shadowed from day one —
-// every publish hit either the proxy's `if (!port) return c.notFound()`
-// branch (404) or got the user app's SPA fallback (200 + index.html, which
-// the publisher then failed to JSON-parse). `/agent/*` is the
-// runtime-owned namespace, is auth-gated by `authPrefixes` so callers must
-// send `x-runtime-token`, and is in the SPA catch-all skip-list — so this
-// endpoint is no longer reachable as a userland route.
-const PUBLISH_DIST_MAX_FILE_SIZE = 50 * 1024 * 1024
-
-function collectPublishDistFiles(dir: string, baseDir: string): Array<{ path: string; content: string }> {
-  const out: Array<{ path: string; content: string }> = []
-  if (!existsSync(dir)) return out
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (isMacOSJunkName(entry.name)) continue
-    const fullPath = join(dir, entry.name)
-    const relPath = fullPath.slice(baseDir.length + 1).replace(/\\/g, '/')
-    if (entry.isDirectory()) {
-      out.push(...collectPublishDistFiles(fullPath, baseDir))
-    } else if (entry.isFile()) {
-      try {
-        const stat = statSync(fullPath)
-        if (stat.size > PUBLISH_DIST_MAX_FILE_SIZE) continue
-        out.push({
-          path: relPath,
-          content: readFileSync(fullPath).toString('base64'),
-        })
-      } catch {
-        // skip unreadable files
-      }
-    }
-  }
-  return out
+// The two publish endpoints live in `publish-endpoints.ts` so a test can drive
+// the real handlers against a real directory. They share one staging dir, and
+// the bug that shipped when they were inline here was exactly that interaction:
+// `dist-files` deleted the directory `publish-artifact` needed next.
+const publishEndpointDeps: PublishEndpointDeps = {
+  projectDir: (projectId) => getProjectWorkspaceDir(projectId),
+  outputRoot: (projectId, projectDir) => getProjectPreviewManager(projectId)?.bundlerCwd ?? projectDir,
 }
 
-app.get('/agent/dist-files', (c) => {
-  const projectId = c.req.query('projectId')
-  const publishBuild = c.req.query('publish') === 'true'
-  const projectDir = getProjectWorkspaceDir(projectId)
-  if (!projectDir) {
-    return c.json({ error: 'project_not_attached', message: 'Project is not attached to this runtime' }, 404)
-  }
-  // Publish builds are written under the PreviewManager's bundler cwd, which
-  // is `<projectDir>/project` for legacy-layout workspaces.
-  const outputRoot = publishBuild
-    ? getProjectPreviewManager(projectId)?.bundlerCwd ?? projectDir
-    : projectDir
-  const distDir = join(outputRoot, publishBuild ? PUBLISH_STAGING_DIR : 'dist')
-  if (!existsSync(distDir)) {
-    return c.json(
-      { error: 'dist_not_found', message: 'No dist/ directory — run a build first' },
-      404,
-    )
-  }
-  const files = collectPublishDistFiles(distDir, distDir)
-  if (publishBuild) {
-    cleanupStagingOutput(outputRoot, PUBLISH_STAGING_DIR)
-  }
-  return c.json(files)
-})
+app.get('/agent/dist-files', (c) => handleDistFiles(c, publishEndpointDeps))
 
-/**
- * The build context a published image is built from (SHO-308 §2), as a gzipped
- * tar, base64-encoded.
- *
- * Publishing used to build on boot: the pod hydrated source and then ran
- * `bun install`, `prisma generate` and a Vite build before it could answer.
- * Now the image is built once per commit, in a BuildKit Job, from this
- * artifact — so a published pod only has to start. What goes in it:
- *
- *   - the project's source at its current commit, minus `node_modules`, `.git`
- *     and the caches a build regenerates anyway;
- *   - the root-based `dist/` that `buildForPublish()` just produced, since a
- *     published bundle must be served from `/` rather than `/p/<id>/`.
- *
- * Called by `apps/api/src/services/published-build.service.ts` right after
- * `POST /agent/publish-build`, under the runtime-owned `/agent/*` namespace
- * (so `x-runtime-token` gated like `/agent/dist-files`).
- */
-app.get('/agent/publish-artifact', async (c) => {
-  const projectId = c.req.query('projectId')
-  const projectDir = getProjectWorkspaceDir(projectId)
-  if (!projectDir) {
-    return c.json({ error: 'project_not_attached', message: 'Project is not attached to this runtime' }, 404)
-  }
-  const outputRoot = getProjectPreviewManager(projectId)?.bundlerCwd ?? projectDir
-  const stagingDir = join(outputRoot, PUBLISH_STAGING_DIR)
-  if (!existsSync(stagingDir)) {
-    return c.json(
-      { error: 'dist_not_found', message: 'No publish build output — run /agent/publish-build first' },
-      404,
-    )
-  }
-
-  // What may enter the image is decided in one place, and it is exercised by
-  // `publish-artifact-filter.test.ts`: matching only the first path segment let
-  // a nested `apps/*/node_modules` (and `.env` files) into the context, which
-  // `COPY . /app` lays down *before* `bun install`.
-  const filter = createPublishedArtifactFilter({
-    projectDir,
-    stagingDirName: PUBLISH_STAGING_DIR,
-  })
-
-  const { cp, mkdtemp, readFile, rm } = await import('fs/promises')
-  const os = await import('os')
-  const tar = await import('tar')
-  const tmpDir = await mkdtemp(join(os.tmpdir(), 'shogo-publish-artifact-'))
-  const contextDir = join(tmpDir, 'context')
-  const archivePath = join(tmpDir, 'artifact.tar.gz')
-  try {
-    // Fold the WAL back into the DB before copying it. Otherwise the tarball
-    // would skip `-wal` (see publish-artifact-filter) and lose the writes it
-    // still holds — a published app booting with a DB that is behind its own
-    // last write.
-    for (const rel of ['prisma/dev.db', 'dev.db']) {
-      const dbPath = join(projectDir, rel)
-      if (!existsSync(dbPath)) continue
-      try {
-        const { Database } = await import('bun:sqlite')
-        const db = new Database(dbPath, { readonly: false })
-        db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
-        db.close()
-      } catch (err: any) {
-        console.warn(`[agent-runtime] publish-artifact: checkpoint of ${rel} failed: ${err?.message ?? err}`)
-      }
-    }
-    await cp(projectDir, contextDir, { recursive: true, filter })
-    await cp(stagingDir, join(contextDir, 'dist'), { recursive: true })
-    await tar.create({ gzip: true, file: archivePath, cwd: contextDir, portable: true }, ['.'])
-    const buf = await readFile(archivePath)
-    cleanupStagingOutput(outputRoot, PUBLISH_STAGING_DIR)
-    return c.json({ archive: buf.toString('base64'), bytes: buf.length })
-  } catch (err: any) {
-    return c.json({ error: 'artifact_failed', message: err?.message ?? String(err) }, 500)
-  } finally {
-    await rm(tmpDir, { recursive: true, force: true }).catch(() => {})
-  }
-})
+app.get('/agent/publish-artifact', (c) => handlePublishArtifact(c, publishEndpointDeps))
 
 /**
  * Build the requested project for publishing. Workspace previews need a
@@ -6404,21 +6450,23 @@ app.get('/agent/server-info', (c) => {
 })
 
 /**
- * Apply the project's Prisma schema to its published Postgres database, and
- * optionally load `prisma/dev.db` into it (SHO-308 §1).
+ * Read what the project's published database is built from (SHO-308 §1).
  *
- * Called by the publish flow (apps/api/src/services/published-schema.service.ts)
- * with the environment's *direct* connection string — never the pooled one,
- * because `prisma db push` issues DDL and takes session locks.
+ * Called by the publish flow (apps/api/src/services/published-schema.service.ts).
+ * The runtime never connects to the published database: the API pushes the
+ * schema and loads the seed from inside the cluster, because a runtime can run on
+ * a host outside the cluster network (metal), and the database credential must
+ * not enter a sandbox that runs user code.
  *
  * Two modes:
  *   `{ mode: "describe" }` returns the Postgres schema the app would get, its
- *   hash and its warnings, without touching anything — that is what the API
- *   classifies against the schema the environment already has.
- *   `{ mode: "apply", databaseUrl, seed }` pushes it.
+ *   hash and its warnings — what the API classifies against the schema the
+ *   environment already has.
+ *   `{ mode: "export", seed, expectedHash }` returns the same schema plus, when
+ *   `seed` is true, `prisma/dev.db` as seed SQL.
  *
- * An `expectedHash` on an apply refuses a schema that changed since the describe
- * call, so what the API classified is what gets applied.
+ * An `expectedHash` on an export refuses a schema that changed since the
+ * describe call, so what the API classified is what gets pushed.
  *
  * Lives under `/agent/*` (auth-gated by `x-runtime-token`, and skipped by the
  * SPA catch-all) like the other publish endpoints.
@@ -6430,8 +6478,7 @@ app.post('/agent/published-schema', async (c) => {
   }
 
   let body: {
-    mode?: 'describe' | 'apply'
-    databaseUrl?: string
+    mode?: 'describe' | 'export'
     seed?: boolean
     expectedHash?: string
   }
@@ -6441,9 +6488,10 @@ app.post('/agent/published-schema', async (c) => {
     return c.json({ ok: false, code: 'invalid_body', message: 'Expected a JSON body' }, 400)
   }
 
-  const { applyPublishedSchema, resolvePublishSchema } = await import('./published-schema-apply')
+  const { exportPublishedSchema, resolvePublishSchema } = await import('./published-schema-export')
+  const mode = body.mode ?? 'describe'
 
-  if ((body.mode ?? 'describe') === 'describe') {
+  if (mode === 'describe') {
     let resolved
     try {
       resolved = resolvePublishSchema(projectDir)
@@ -6465,35 +6513,41 @@ app.post('/agent/published-schema', async (c) => {
     })
   }
 
-  if (!body.databaseUrl || !/^postgres(ql)?:\/\//.test(body.databaseUrl)) {
+  if (mode !== 'export') {
     return c.json(
-      { ok: false, code: 'invalid_database_url', message: 'apply needs a postgres:// databaseUrl' },
+      {
+        ok: false,
+        code: 'unsupported_mode',
+        message: `Unknown mode "${String(mode)}". The runtime no longer applies schemas itself; use "describe" or "export".`,
+      },
       400,
     )
   }
-  if (body.expectedHash) {
-    const current = resolvePublishSchema(projectDir)
-    if (!current || current.hash !== body.expectedHash) {
-      return c.json(
-        {
-          ok: false,
-          code: 'schema_changed',
-          message: 'prisma/schema.prisma changed while publishing; publish again',
-        },
-        409,
-      )
-    }
-  }
 
-  const result = await applyPublishedSchema({
-    projectDir,
-    databaseUrl: body.databaseUrl,
-    seed: body.seed === true,
-  })
+  const result = await exportPublishedSchema(projectDir, { seed: body.seed === true })
   if (!result.ok) {
-    return c.json({ ok: false, code: result.code, message: result.message }, 400)
+    return c.json({ ok: false, code: result.code, message: result.message }, result.status as 400 | 413)
   }
-  return c.json({ ok: true, hash: result.hash, warnings: result.warnings, seeded: result.seeded })
+  if (body.expectedHash && result.schema.hash !== body.expectedHash) {
+    return c.json(
+      {
+        ok: false,
+        code: 'schema_changed',
+        message: 'prisma/schema.prisma changed while publishing; publish again',
+      },
+      409,
+    )
+  }
+  return c.json({
+    ok: true,
+    schema: {
+      content: result.schema.content,
+      hash: result.schema.hash,
+      warnings: result.schema.warnings,
+      transformed: result.schema.transformed,
+    },
+    seed: result.seed,
+  })
 })
 
 /**

@@ -48,3 +48,8 @@ This product includes or depends on the following third-party software:
 - Gluestack UI (MIT License) - https://gluestack.io
 - @mariozechner/pi-agent-core (MIT License) - https://www.npmjs.com/package/@mariozechner/pi-agent-core
 - @mariozechner/pi-ai (MIT License) - https://www.npmjs.com/package/@mariozechner/pi-ai
+- Playwright (Apache 2.0) - https://playwright.dev
+  The Playwright extension relay protocol (packages/agent-runtime/src/browser-relay.cjs)
+  is derived from microsoft/playwright packages/playwright-core/src/tools/mcp/
+  (cdpRelay.ts, cdpRelayV2.ts, browserModel.ts, protocol.ts).
+  Copyright (c) Microsoft Corporation. Licensed under the Apache License, Version 2.0.

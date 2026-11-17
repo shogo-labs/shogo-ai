@@ -100,6 +100,31 @@ export function useTeamChatEvents(workspaceId: string | null | undefined, onEven
   return state
 }
 
+/**
+ * The id the server gave this workspace's realtime connection (the `ready`
+ * frame's `userId`) — the identity it stamps on the user's own events. Null
+ * until the first `ready`. Unlike `useWorkspaceUser`, this comes from the
+ * connection itself, so it matches even when the socket's account differs from
+ * `useAuth()` or auth has not loaded yet.
+ */
+export function useTeamChatSelfUserId(workspaceId: string | null | undefined): string | null {
+  const [selfUserId, setSelfUserId] = useState<string | null>(null)
+  useEffect(() => {
+    if (!workspaceId) {
+      setSelfUserId(null)
+      return
+    }
+    const { connection, release } = acquireTeamChatConnection(workspaceId)
+    setSelfUserId(connection.selfUserId)
+    const offSelf = connection.onSelfUserId(setSelfUserId)
+    return () => {
+      offSelf()
+      release()
+    }
+  }, [workspaceId])
+  return selfUserId
+}
+
 export function sendTyping(workspaceId: string, conversationId: string, threadRootId: string | null = null): void {
   connections.get(workspaceId)?.connection.sendTyping(conversationId, threadRootId)
 }

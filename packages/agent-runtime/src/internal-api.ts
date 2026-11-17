@@ -3,6 +3,7 @@
 import { existsSync, readFileSync } from 'fs'
 import { publishRequestTimeoutMs } from '@shogo/shared-runtime/publish-timeouts'
 import { requesterTicketHeaders } from './credential-scope'
+import { crossWorkspaceHeaders } from './cross-workspace-scope'
 import type { TaskLink } from './task-registry'
 
 const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
@@ -110,7 +111,46 @@ export function getInternalHeaders(): Record<string, string> {
     headers['x-runtime-token'] = process.env.RUNTIME_AUTH_SECRET
   }
 
-  return { ...headers, ...requesterTicketHeaders() }
+  return { ...headers, ...requesterTicketHeaders(), ...crossWorkspaceHeaders() }
+}
+
+export interface CrossWorkspaceTargetSummary {
+  id: string
+  name: string
+  slug: string | null
+  kind: 'personal' | 'team'
+  source: 'local' | 'cloud' | 'desktop'
+  reachable: boolean
+  unreachableReason?: 'cloud_signed_out' | 'cloud_unreachable' | 'desktop_hosted'
+}
+
+/** Every workspace the person behind this turn can reach (SHO-389). */
+export async function fetchCrossWorkspaceTargets(
+  workspaceId: string,
+): Promise<CheckpointCallResult<{ workspaces: CrossWorkspaceTargetSummary[] }>> {
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/cross-workspace/targets`, {
+    method: 'GET',
+  })
+}
+
+/**
+ * Record an approval the person just gave, and get the id the write spends.
+ * The API decides which side runs the write and mints it there.
+ */
+export async function mintCrossWorkspaceApproval(input: {
+  workspaceId: string
+  targetWorkspaceId: string
+  tool: string
+  argsHash: string
+}): Promise<CheckpointCallResult<{ approvalId: string }>> {
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(input.workspaceId)}/cross-workspace/approvals`, {
+    method: 'POST',
+    body: JSON.stringify({
+      targetWorkspaceId: input.targetWorkspaceId,
+      tool: input.tool,
+      argsHash: input.argsHash,
+    }),
+  })
 }
 
 /**

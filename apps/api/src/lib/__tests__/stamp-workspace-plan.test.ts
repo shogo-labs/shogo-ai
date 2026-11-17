@@ -66,6 +66,23 @@ describe('buildPublishHostingStamp', () => {
     expect(buildPublishHostingStamp('business', 5)).toEqual({ substrate: 'metal', alwaysOn: true, maxReplicas: 1, staging: false })
   })
 
+  // QA round 1: local mode returned `Infinity` for the always-on allowance and
+  // an unset PUBLISH_SUBSTRATE, so desktop advertised "always-on; up to 5
+  // replicas; staging available" while desktop publish is a static upload that
+  // refuses server.tsx outright. Desktop must claim none of it.
+  test('desktop claims no cloud capability, whatever the plan or allowance says', () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    try {
+      expect(buildPublishHostingStamp('pro', Infinity)).toEqual({ substrate: 'desktop', alwaysOn: false, maxReplicas: 1, staging: false })
+      expect(buildPublishHostingStamp('business', 5)).toEqual({ substrate: 'desktop', alwaysOn: false, maxReplicas: 1, staging: false })
+      // Even with the metal escape hatch set, desktop is still desktop.
+      process.env.PUBLISH_SUBSTRATE = 'metal'
+      expect(buildPublishHostingStamp('business', 5).substrate).toBe('desktop')
+    } finally {
+      delete process.env.SHOGO_LOCAL_MODE
+    }
+  })
+
   test('an unknown plan falls back to the free caps rather than to unbounded', () => {
     expect(buildPublishHostingStamp('mystery', 0)).toEqual({ substrate: 'knative', alwaysOn: false, maxReplicas: 1, staging: false })
   })

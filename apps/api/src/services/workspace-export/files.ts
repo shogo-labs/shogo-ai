@@ -108,6 +108,27 @@ export const isExcludedRelPath = (relPath: string): boolean => {
 export type SkippedFile = { path: string; reason: string }
 
 /**
+ * Fold a SQLite database's `-wal` back into the file before it is read.
+ * Archives skip the `-wal` sidecar (EXCLUDED_FILE_PATTERNS) and project
+ * databases default to WAL, so without this an export would carry a database
+ * that is missing its latest writes.
+ */
+export function checkpointSqliteWal(dbPath: string): void {
+  if (!existsSync(`${dbPath}-wal`)) return
+  try {
+    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite')
+    const db = new Database(dbPath)
+    try {
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    } finally {
+      db.close()
+    }
+  } catch (err: any) {
+    console.warn(`[workspace-export] WAL checkpoint of ${dbPath} failed: ${err?.message ?? err}`)
+  }
+}
+
+/**
  * Recursively collect `dir` into `relPath -> bytes`.
  *
  * Symlinks are followed only when their realpath stays inside `baseDir`, so a
@@ -175,6 +196,7 @@ export function collectWorkspaceFiles(
         continue
       }
       try {
+        if (fullPath.endsWith('.db')) checkpointSqliteWal(fullPath)
         const stat = statSync(fullPath)
         if (stat.size > MAX_FILE_SIZE) {
           skipped.push({ path: relPath, reason: `size>${MAX_FILE_SIZE}` })
@@ -478,6 +500,7 @@ export function collectWorkspaceRootFiles(
         continue
       }
       try {
+        if (fullPath.endsWith('.db')) checkpointSqliteWal(fullPath)
         const stat = statSync(fullPath)
         if (stat.size > MAX_FILE_SIZE) {
           skipped.push({ path: relPath, reason: `size>${MAX_FILE_SIZE}` })

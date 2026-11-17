@@ -143,3 +143,34 @@ describe('collectWorkspaceRootFiles', () => {
     expect(isExcludedRelPath('db.sqlite-wal')).toBe(true)
   })
 })
+
+describe('collectWorkspaceFiles and WAL databases', () => {
+  test('a WAL database is exported with its latest writes, not the stale main file', async () => {
+    const { Database } = await import('bun:sqlite')
+    const { collectWorkspaceFiles } = await import('../files')
+    const projectDir = join(workspaces, 'p1')
+    mkdirSync(join(projectDir, 'prisma'), { recursive: true })
+    const dbPath = join(projectDir, 'prisma', 'dev.db')
+
+    // Hold a connection open with auto-checkpoint off so the write stays in
+    // `-wal` — the state a running preview server leaves the file in.
+    const live = new Database(dbPath)
+    live.exec('PRAGMA journal_mode = WAL')
+    live.exec('PRAGMA wal_autocheckpoint = 0')
+    live.exec('CREATE TABLE t (x INTEGER)')
+    live.exec('INSERT INTO t VALUES (42)')
+
+    const files = collectWorkspaceFiles(projectDir, projectDir)
+    live.close()
+
+    expect(files['prisma/dev.db-wal']).toBeUndefined()
+    const copy = join(root, 'exported.db')
+    writeFileSync(copy, files['prisma/dev.db'])
+    const exported = new Database(copy)
+    try {
+      expect(exported.query('SELECT x FROM t').get()).toEqual({ x: 42 })
+    } finally {
+      exported.close()
+    }
+  })
+})

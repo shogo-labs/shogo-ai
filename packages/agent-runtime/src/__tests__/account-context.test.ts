@@ -123,6 +123,22 @@ describe('buildAccountContextPrompt', () => {
     expect(out).toContain('unlimited replicas')
   })
 
+  // QA round 1: desktop advertised the cloud capabilities. It has none of them
+  // — a desktop publish is a static upload, and a server-backed project is
+  // refused with `server_backed_requires_cloud_project`.
+  test('a desktop stamp says static-only and claims no cloud capability', () => {
+    const out = buildAccountContextPrompt({
+      planId: 'pro',
+      publishHosting: { substrate: 'desktop', alwaysOn: false, maxReplicas: 1, staging: false },
+    })!
+    expect(out).toContain('static hosting only')
+    expect(out).toContain('no server, no database, no always-on, no replicas and no staging')
+    expect(out).toContain('synced to Shogo Cloud')
+    expect(out).not.toMatch(/up to \d+ replicas/)
+    expect(out).not.toContain('staging available')
+    expect(out).not.toContain('always-on available')
+  })
+
   test('drops a malformed hosting stamp rather than rendering a half-truth', () => {
     expect(parseAccountContext({ publishHosting: { substrate: 'lambda', alwaysOn: true, maxReplicas: 5, staging: true } }).publishHosting)
       .toBeUndefined()

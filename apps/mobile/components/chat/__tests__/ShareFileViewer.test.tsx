@@ -148,12 +148,19 @@ describe("a file the API serves", () => {
     expect(document.querySelector('[data-rn-shim="share-file-download"]')).toBeTruthy()
   })
 
-  test("plays a video the server labelled octet-stream", async () => {
-    const created = stubBlobUrl()
-    respondWith("fake-mp4-bytes", {
-      status: 200,
-      headers: { "content-type": "application/octet-stream" },
-    })
+  test("streams a video from its link instead of buffering it to a blob", async () => {
+    const blobs = stubBlobUrl()
+    const requests: Array<{ url: string; range: string | null }> = []
+    globalThis.fetch = mock(async (input: any, init?: RequestInit) => {
+      requests.push({
+        url: String(input),
+        range: new Headers((init?.headers as Record<string, string>) ?? {}).get("range"),
+      })
+      return new Response(null, {
+        status: 206,
+        headers: { "content-type": "video/mp4", "content-range": "bytes 0-0/1572864" },
+      })
+    }) as unknown as typeof fetch
 
     const { container } = render(
       <ShareFileView target={{ ...target, name: "clip.mp4", href: "/api/f/mp4" }} />,
@@ -164,14 +171,25 @@ describe("a file the API serves", () => {
       expect(node).toBeTruthy()
       return node!
     })
-    expect(video.getAttribute("src")).toBe("blob:shared-1")
-    expect(created.length).toBe(1)
-    expect(created[0]!.type).toBe("video/mp4")
+    // The element fetches the link itself, so it starts on the first range and
+    // seeks with one — nothing was downloaded up front.
+    expect(video.getAttribute("src")).toEndWith("/api/f/mp4")
+    expect(blobs.length).toBe(0)
+    // One one-byte probe, only to keep the error/size UX.
+    expect(requests.length).toBe(1)
+    expect(requests[0]!.range).toBe("bytes=0-0")
+    expect(document.body.textContent).toContain("1.5 MB")
   })
 
-  test("plays audio in an <audio controls>", async () => {
+  test("streams audio in an <audio controls> from its link", async () => {
     stubBlobUrl()
-    respondWith("fake-mp3-bytes", { status: 200, headers: { "content-type": "audio/mpeg" } })
+    globalThis.fetch = mock(
+      async () =>
+        new Response(null, {
+          status: 206,
+          headers: { "content-type": "audio/mpeg", "content-range": "bytes 0-0/4096" },
+        }),
+    ) as unknown as typeof fetch
 
     const { container } = render(
       <ShareFileView target={{ ...target, name: "voice.mp3", href: "/api/f/mp3" }} />,
@@ -182,7 +200,28 @@ describe("a file the API serves", () => {
       expect(node).toBeTruthy()
       return node!
     })
-    expect(audio.getAttribute("src")).toBe("blob:shared-1")
+    expect(audio.getAttribute("src")).toEndWith("/api/f/mp3")
+  })
+
+  test("a dead video link still shows the API's code, not a broken player", async () => {
+    globalThis.fetch = mock(
+      async () =>
+        new Response(JSON.stringify({ error: { code: "expired", message: "This download link has expired" } }), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        }),
+    ) as unknown as typeof fetch
+
+    render(<ShareFileView target={{ ...target, name: "clip.mp4", href: "/api/f/gone" }} />)
+
+    const error = await waitFor(() => {
+      const node = document.querySelector('[data-rn-shim="share-file-error"]')
+      expect(node).toBeTruthy()
+      return node!
+    })
+    expect(error.textContent).toBe("Link expired — ask for a new one")
+    expect(document.querySelector("video")).toBeNull()
+    expect(document.querySelector('[data-rn-shim="share-file-retry"]')).toBeTruthy()
   })
 
   test("a Markdown file opens on Preview with a Source toggle", async () => {

@@ -194,6 +194,16 @@ export interface SpawnGitFn {
   }>
 }
 
+/** What {@link GitWorkspaceSync.checkpoint} committed, if anything (SHO-399). */
+export interface CheckpointResult {
+  /** True when the commit created a new commit (the tree had staged changes). */
+  committed: boolean
+  /** HEAD after the commit, or '' for an unborn repo. */
+  sha: string
+  /** How many paths the commit carried. */
+  files: number
+}
+
 /** What `onPark` is told when the sync gives up retrying for a while. */
 export interface SyncParkInfo {
   /** First line of the failure that parked it. */
@@ -442,6 +452,40 @@ export class GitWorkspaceSync {
   }
 
   /**
+   * Commit the working tree now and report what landed — synchronously, and
+   * NOT best-effort: a failure throws.
+   *
+   * This is the durability step a caller may not skip. A metal recycle
+   * destroys the VM after backing up the durable repo, so anything the last
+   * turn's auto-commit did not capture is gone with it; the host calls this
+   * before it exports the repo and aborts the recycle instead of dropping the
+   * agent's edits (SHO-399). Liveness/backoff state is left alone: a
+   * checkpoint that succeeds while a push is failing must not look like a push
+   * success, and its own failure must not park the sync.
+   */
+  async checkpoint(): Promise<CheckpointResult> {
+    const commitEnv: NodeJS.ProcessEnv = {
+      GIT_AUTHOR_NAME: this.cfg.authorName,
+      GIT_AUTHOR_EMAIL: this.cfg.authorEmail,
+      GIT_COMMITTER_NAME: this.cfg.authorName,
+      GIT_COMMITTER_EMAIL: this.cfg.authorEmail,
+    }
+    if (this.shuttingDown) {
+      throw new Error('git sync is shutting down')
+    }
+    // Wait out an in-flight push: it stages and commits from the same tree, and
+    // the caller exports the repo straight after this returns.
+    while (this.isPushing) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    if (isRepairInProgress(this.cfg.workspaceDir)) {
+      throw new Error('checkpoint repo is being repaired')
+    }
+    const { hasChanges, sha, files } = await this.commitWorkingTree(commitEnv, { countFiles: true })
+    return { committed: hasChanges, sha, files }
+  }
+
+  /**
    * Stop starting new cycles and wait for an in-flight one to finish. Used
    * while `.git` is swapped out from under the sync (host repo hydrate);
    * triggers that arrive meanwhile run once on {@link resume}.
@@ -519,6 +563,89 @@ export class GitWorkspaceSync {
     }
   }
 
+  /**
+   * Stage the working tree (respecting `.gitignore`) and commit it, returning
+   * whether that created a commit and the resulting HEAD. Shared by the
+   * per-turn push cycle and {@link checkpoint}: one committer, so a recycle
+   * checkpoint and a turn-complete auto-commit can never disagree about what
+   * "the tree" means (SHO-399).
+   */
+  private async commitWorkingTree(
+    commitEnv: NodeJS.ProcessEnv,
+    opts: { countFiles?: boolean } = {},
+  ): Promise<{ hasChanges: boolean; sha: string; files: number }> {
+    const { logger, spawnGit, workspaceDir } = this.cfg
+
+    // Shogo's own runtime state (`.shogo/sessions.db`, `-wal`, logs, `.tmp/`,
+    // `.shogo-cwd-*`) is never source. Ignore rules do not apply to a path that
+    // is already tracked, so this pass is what stops a repo seeded before
+    // SHO-105 from re-staging its live databases forever — and it clears a
+    // stale `.git/index.lock` that would otherwise fail every subsequent stage.
+    const untrackedState = await prepareCheckpointRepo(workspaceDir, { logger })
+    if (untrackedState > 0) {
+      logger.log(`[GitWorkspaceSync] untracked ${untrackedState} Shogo runtime-state path(s)`)
+    }
+
+    // LFS hook: track newly-introduced large files before staging so the
+    // clean filter writes pointers, not raw bytes. Best-effort — never let
+    // it block the commit/push.
+    if (this.cfg.beforeStage) {
+      try {
+        await this.cfg.beforeStage()
+      } catch (hookErr: any) {
+        logger.warn(`[GitWorkspaceSync] beforeStage hook threw: ${hookErr?.message ?? hookErr}`)
+      }
+    }
+
+    // A path whose segment is a reserved Windows device name (`nul`,
+    // `aux.txt`, `sub/CON`) can never be indexed on Windows, where `git add`
+    // exits 128 and the whole backup stops (SHO-180). It cannot be checked
+    // out there either, so skip it on every platform — desktop and cloud stay
+    // on one code path — and name it once so the user can delete it.
+    const reserved = await this.reservedUntrackedPaths(spawnGit, workspaceDir, commitEnv)
+    for (const p of reserved) this.warnReservedPath(p)
+
+    // Stage everything (respects `.gitignore`, skips the reserved names).
+    const excludes = [
+      ...(await excludePathspecs(
+        this.cfg.stageExcludes,
+        async (p) => (await spawnGit(['check-ignore', '-q', '--', p], workspaceDir, commitEnv)).exitCode === 0,
+      )),
+      ...reserved.map((p) => `:(exclude,literal)${p}`),
+    ]
+    await this.stageAll(spawnGit, excludes, workspaceDir, commitEnv)
+
+    // `git diff --cached --quiet` exits 0 when nothing is staged, 1 when
+    // there is; anything else (e.g. dubious ownership) is an error.
+    const diff = await spawnGit(['diff', '--cached', '--quiet'], workspaceDir, commitEnv)
+    if (diff.exitCode !== 0 && diff.exitCode !== 1) {
+      throw new Error(`git diff exited ${diff.exitCode}: ${(diff.stderr || '').slice(0, 500)}`)
+    }
+    const hasChanges = diff.exitCode === 1
+
+    let files = 0
+    if (hasChanges && opts.countFiles) {
+      const staged = await spawnGit(['diff', '--cached', '--name-only'], workspaceDir, commitEnv)
+      if (staged.exitCode === 0) {
+        files = staged.stdout.split('\n').filter((line) => line.trim() !== '').length
+      }
+    }
+
+    if (hasChanges) {
+      const message = `auto: ${new Date().toISOString()}`
+      await this.runGit(
+        spawnGit,
+        withShogoCommitTrailer(['commit', '-m', message, '--no-verify'], commitEnv),
+        workspaceDir,
+        commitEnv,
+      )
+    }
+
+    const head = await spawnGit(['rev-parse', 'HEAD'], workspaceDir, commitEnv)
+    const sha = head.exitCode === 0 ? head.stdout.trim() : ''
+    return { hasChanges, sha, files }
+  }
+
   private async attemptPush(): Promise<void> {
     const { logger, spawnGit, workspaceDir, branch } = this.cfg
     const url = buildGitUrl(this.cfg.cloudApiUrl, this.cfg.projectId)
@@ -539,69 +666,12 @@ export class GitWorkspaceSync {
         return
       }
 
-      // Shogo's own runtime state (`.shogo/sessions.db`, `-wal`, logs, `.tmp/`,
-      // `.shogo-cwd-*`) is never source. Ignore rules do not apply to a path that
-      // is already tracked, so this pass is what stops a repo seeded before
-      // SHO-105 from re-staging its live databases forever — and it clears a
-      // stale `.git/index.lock` that would otherwise fail every subsequent stage.
-      const untrackedState = await prepareCheckpointRepo(workspaceDir, { logger })
-      if (untrackedState > 0) {
-        logger.log(`[GitWorkspaceSync] untracked ${untrackedState} Shogo runtime-state path(s)`)
-      }
-
-      // LFS hook: track newly-introduced large files before staging so the
-      // clean filter writes pointers, not raw bytes. Best-effort — never let
-      // it block the commit/push.
-      if (this.cfg.beforeStage) {
-        try {
-          await this.cfg.beforeStage()
-        } catch (hookErr: any) {
-          logger.warn(`[GitWorkspaceSync] beforeStage hook threw: ${hookErr?.message ?? hookErr}`)
-        }
-      }
-
-      // A path whose segment is a reserved Windows device name (`nul`,
-      // `aux.txt`, `sub/CON`) can never be indexed on Windows, where `git add`
-      // exits 128 and the whole backup stops (SHO-180). It cannot be checked
-      // out there either, so skip it on every platform — desktop and cloud stay
-      // on one code path — and name it once so the user can delete it.
-      const reserved = await this.reservedUntrackedPaths(spawnGit, workspaceDir, commitEnv)
-      for (const p of reserved) this.warnReservedPath(p)
-
-      // Stage everything (respects `.gitignore`, skips the reserved names).
-      const excludes = [
-        ...(await excludePathspecs(
-          this.cfg.stageExcludes,
-          async (p) => (await spawnGit(['check-ignore', '-q', '--', p], workspaceDir, commitEnv)).exitCode === 0,
-        )),
-        ...reserved.map((p) => `:(exclude,literal)${p}`),
-      ]
-      await this.stageAll(spawnGit, excludes, workspaceDir, commitEnv)
-
-      // `git diff --cached --quiet` exits 0 when nothing is staged, 1 when
-      // there is; anything else (e.g. dubious ownership) is an error.
-      const diff = await spawnGit(['diff', '--cached', '--quiet'], workspaceDir, commitEnv)
-      if (diff.exitCode !== 0 && diff.exitCode !== 1) {
-        throw new Error(`git diff exited ${diff.exitCode}: ${(diff.stderr || '').slice(0, 500)}`)
-      }
-      const hasChanges = diff.exitCode === 1
-
-      if (hasChanges) {
-        const message = `auto: ${new Date().toISOString()}`
-        await this.runGit(
-          spawnGit,
-          withShogoCommitTrailer(['commit', '-m', message, '--no-verify'], commitEnv),
-          workspaceDir,
-          commitEnv,
-        )
-      }
+      const { hasChanges, sha } = await this.commitWorkingTree(commitEnv)
 
       // A clean tree can still hold commits that never reached durable
       // storage: the agent (or user) can `git commit` from the shell, which
       // leaves nothing staged for us. Compare HEAD to the last sha we made
       // durable and run the durability step whenever it moved.
-      const head = await spawnGit(['rev-parse', 'HEAD'], workspaceDir, commitEnv)
-      const sha = head.exitCode === 0 ? head.stdout.trim() : ''
       if (!hasChanges && (!sha || sha === this._lastDurableSha)) {
         // Nothing new (or an unborn HEAD) — nothing to persist.
         return

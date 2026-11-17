@@ -231,6 +231,9 @@ test.describe("Desktop + Shogo Cloud workspaces", () => {
 
   test("typing and presence work in the cloud workspace", async ({ browser }) => {
     const mate = await teammateSocket(browser, teammate.api, team.id)
+    // A second connection of the *owner*, to prove the typist's own event does
+    // reach this user's sockets (the server broadcasts to the whole workspace).
+    const own = await teammateSocket(browser, owner.api, team.id)
     try {
       await page.goto(`/c/${generalId}`)
       const composer = page.getByLabel("Message", { exact: true }).first()
@@ -254,6 +257,15 @@ test.describe("Desktop + Shogo Cloud workspaces", () => {
         expect(frames.some((f) => f.type === "typing" && f.userId === owner.id && f.conversationId === generalId)).toBe(true)
       }).toPass({ timeout: 10_000 })
 
+      // The owner's own typing reaches the owner's other connection...
+      await expect(async () => {
+        const frames = await own.frames()
+        expect(frames.some((f) => f.type === "typing" && f.userId === owner.id && f.conversationId === generalId)).toBe(true)
+      }).toPass({ timeout: 10_000 })
+
+      // ...yet the desktop never shows the typist their own name (SHO-367).
+      await expect(page.getByText("is typing", { exact: false })).toHaveCount(0)
+
       // Teammate typing shows on the desktop.
       await expect(async () => {
         await mate.send({ type: "typing", conversationId: generalId })
@@ -264,6 +276,7 @@ test.describe("Desktop + Shogo Cloud workspaces", () => {
       await mate.close()
       await expect(online).toHaveCount(1, { timeout: 15_000 })
     } finally {
+      await own.close()
       await mate.close()
     }
   })

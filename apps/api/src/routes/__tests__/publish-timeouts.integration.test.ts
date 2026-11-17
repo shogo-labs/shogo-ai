@@ -91,4 +91,22 @@ describe('publish build timeout and retry', () => {
     substrate.kind = 'knative'
     expect(await publishConfigureTimeoutMs('proj-1')).toBe(Number(process.env.PUBLISH_CONFIGURE_TIMEOUT_MS) || 60_000)
   })
+
+  test('a server-backed knative publish gets the image build budget on top of configure', async () => {
+    // The image build runs inside the configure step, so a 60s configure
+    // timeout killed every server app while its build was still running.
+    const previous = process.env.PUBLISH_BUILD_IMAGES
+    process.env.PUBLISH_BUILD_IMAGES = 'on'
+    try {
+      substrate.kind = 'knative'
+      const configure = Number(process.env.PUBLISH_CONFIGURE_TIMEOUT_MS) || 60_000
+      const imageBuild = Number(process.env.PUBLISH_IMAGE_BUILD_TIMEOUT_MS) || 900_000
+      expect(await publishConfigureTimeoutMs('proj-1', { serverBacked: true })).toBe(configure + imageBuild)
+      // A static publish keeps the short budget so a hang still fails fast.
+      expect(await publishConfigureTimeoutMs('proj-1', { serverBacked: false })).toBe(configure)
+    } finally {
+      if (previous === undefined) delete process.env.PUBLISH_BUILD_IMAGES
+      else process.env.PUBLISH_BUILD_IMAGES = previous
+    }
+  })
 })

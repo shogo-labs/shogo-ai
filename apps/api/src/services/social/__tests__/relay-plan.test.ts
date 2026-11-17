@@ -219,6 +219,61 @@ describe('relay scoping', () => {
     })
   })
 
+  test('a Facebook Login connect forwards loginMethod, and only the two literals', () => {
+    const facebook = plan({
+      path: '/connect/instagram',
+      query: { redirect_url: 'https://app.example/cb', loginMethod: 'facebook_login' },
+    })
+    expect((facebook as any).query).toEqual({
+      profileId: 'zernio_profile_1',
+      redirect_url: 'https://app.example/cb',
+      loginMethod: 'facebook_login',
+    })
+
+    const instagram = plan({ path: '/connect/instagram', query: { loginMethod: 'instagram_login' } })
+    expect((instagram as any).query.loginMethod).toBe('instagram_login')
+
+    // Anything else is dropped rather than carried into the provider's OAuth state.
+    const bogus = plan({ path: '/connect/instagram', query: { loginMethod: 'password' } })
+    expect((bogus as any).query.loginMethod).toBeUndefined()
+  })
+
+  test('the Instagram audio catalog is relayed for the caller’s own account only', () => {
+    const search = plan({
+      path: '/accounts/zernio_ig/instagram/audio',
+      query: { audioType: 'music', q: 'lofi', profileId: 'someone_else' },
+    })
+    expect(search).toMatchObject({
+      kind: 'forward',
+      path: '/accounts/zernio_ig/instagram/audio',
+      query: { audioType: 'music', q: 'lofi' },
+      verifyAccountId: 'zernio_ig',
+    })
+
+    const one = plan({ path: '/accounts/zernio_ig/instagram/audio/1234567890' })
+    expect(one).toMatchObject({
+      kind: 'forward',
+      path: '/accounts/zernio_ig/instagram/audio/1234567890',
+      verifyAccountId: 'zernio_ig',
+    })
+  })
+
+  test('audio is a read: a write on it is refused, and a scope with no profile is told so', () => {
+    expect(plan({ method: 'POST', path: '/accounts/zernio_ig/instagram/audio' })).toMatchObject({
+      kind: 'deny',
+      status: 405,
+    })
+    expect(plan({ method: 'DELETE', path: '/accounts/zernio_ig/instagram/audio/1' })).toMatchObject({
+      kind: 'deny',
+      status: 405,
+    })
+    expect(plan({ path: '/accounts/zernio_ig/instagram/audio', profile: null })).toMatchObject({
+      kind: 'deny',
+      status: 412,
+      code: 'social_profile_missing',
+    })
+  })
+
   test('unsupported methods never reach the provider', () => {
     expect(plan({ method: 'PUT', path: '/posts' })).toMatchObject({
       kind: 'deny',

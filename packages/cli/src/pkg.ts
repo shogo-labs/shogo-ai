@@ -25,6 +25,7 @@
 import { execSync as nodeExecSync, spawn, type StdioOptions } from './child-process'
 import { existsSync, readlinkSync, lstatSync } from 'node:fs'
 import { isAbsolute, join, resolve as resolvePath, dirname } from 'node:path'
+import { ensureSqliteWal, pushedSqliteFiles } from './sqlite-wal'
 
 export interface PkgInstallOptions {
   timeout?: number
@@ -607,6 +608,7 @@ export class PlatformPackageManager {
       stdio: opts?.stdio,
       env: opts?.env,
     })
+    defaultProjectDbToWal(cwd, opts?.env)
   }
 
   // Async siblings of the prisma wrappers above. Use these from any
@@ -632,6 +634,20 @@ export class PlatformPackageManager {
       stdio: opts?.stdio,
       env: opts?.env,
     })
+    defaultProjectDbToWal(cwd, opts?.env)
+  }
+}
+
+/**
+ * After a push, put the project's SQLite database in WAL mode (see
+ * `sqlite-wal.ts`). Never throws: the push already succeeded.
+ */
+function defaultProjectDbToWal(cwd: string, env?: NodeJS.ProcessEnv): void {
+  for (const dbPath of pushedSqliteFiles(cwd, env)) {
+    const result = ensureSqliteWal(dbPath)
+    if (result === 'missing') continue
+    if (result === 'failed') console.warn(`[pkg] could not switch ${dbPath} to WAL; it stays in its current journal mode`)
+    return
   }
 }
 

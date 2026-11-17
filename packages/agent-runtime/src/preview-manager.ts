@@ -2865,7 +2865,14 @@ export class PreviewManager {
       )
     }
 
-    this._phase = 'installing'
+    // Only surface 'installing' to observers when the preview isn't already
+    // serving. The publish path (`buildForPublish`) re-runs installDepsIfNeeded
+    // after the project is live; changing the phase there permanently strands
+    // the canvas on "Installing dependencies…" because the publish path never
+    // resets it back to 'ready'. Projects that add a package then trigger a
+    // publish were reliably hit by this — the guard on line 2573 uses the same
+    // pattern for the restart path.
+    if (!this.started) this._phase = 'installing'
     this.lastInstallError = null
     const t0 = Date.now()
     try {

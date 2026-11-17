@@ -59,6 +59,12 @@ export interface AgentBoardAuthContext {
   workspaceId: string
   /** Set when a project-scoped token pins the agent. */
   projectId?: string
+  /**
+   * The person a cross-workspace call is made for (SHO-389). Set only when the
+   * Personal workspace agent is acting in that person's other workspace, so a
+   * card it creates or moves there is attributed to them.
+   */
+  userId?: string
 }
 
 export interface AgentBoardRoutesConfig {
@@ -601,7 +607,9 @@ export function agentBoardRoutes(config: AgentBoardRoutesConfig): Hono {
     const actor: BoardActor = {
       agentRef: agentRefFor(projectId),
       sessionId: strOr(body?.sessionId) ?? strOr(c.req.query('sessionId')) ?? null,
-      userId: strOr(body?.onBehalfOfUserId) ?? null,
+      // A cross-workspace call is made for a person; their own id wins over
+      // anything the (foreign) runtime could have claimed.
+      userId: auth.userId ?? strOr(body?.onBehalfOfUserId) ?? null,
     }
     const viewer: BoardViewer = { kind: 'agent', projectId }
     return { auth, projectId, actor, viewer }

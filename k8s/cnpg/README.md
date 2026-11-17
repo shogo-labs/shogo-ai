@@ -31,7 +31,7 @@ See `docs/runbooks/published-postgres.md` for the deploy order.
   and Secret), `apps/api/src/services/published-schema.service.ts` (schema push,
   destructive-change guard, seed)
 - Pooler: `projects-pg-pooler-rw` (transaction mode). Published pods connect
-  through it; `prisma db push` and the seed load use the primary directly
+  through it; `prisma db push` and the seed load run from the API against the primary directly
 
 ## Services Created
 

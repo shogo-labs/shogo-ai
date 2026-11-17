@@ -62,11 +62,13 @@ import {
   deletePost,
   disconnectAccount,
   ensureProfile,
+  getInstagramAudio,
   getPost,
   getProfile,
   listAccounts,
   listPosts,
   presignMedia,
+  searchInstagramAudio,
   socialMode,
   syncAccounts,
   updatePost,
@@ -250,8 +252,50 @@ export function socialRoutes(config: SocialRoutesConfig): Hono {
         forceReauth: body.forceReauth,
         expectedUsername: body.expectedUsername,
         reconnectAccountId: body.reconnectAccountId,
+        loginMethod: body.loginMethod,
       })
       return c.json(result)
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  /**
+   * Instagram's licensed music / original-sound catalog for one connected
+   * account. A read, so it is not metered; it needs the account connected with
+   * Facebook Login, and Zernio's refusal is passed through as its own code.
+   */
+  router.get('/workspaces/:workspaceId/social/accounts/:accountId/instagram/audio', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const userId = await requireMember(c, workspaceId)
+    if (userId instanceof Response) return userId
+    try {
+      return c.json(
+        await searchInstagramAudio({
+          workspaceId,
+          accountId: c.req.param('accountId'),
+          audioType: c.req.query('audioType'),
+          q: c.req.query('q'),
+        }),
+      )
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  /** Re-check one track id and refresh its (short-lived) preview URL. */
+  router.get('/workspaces/:workspaceId/social/accounts/:accountId/instagram/audio/:audioId', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const userId = await requireMember(c, workspaceId)
+    if (userId instanceof Response) return userId
+    try {
+      return c.json(
+        await getInstagramAudio({
+          workspaceId,
+          accountId: c.req.param('accountId'),
+          audioId: c.req.param('audioId'),
+        }),
+      )
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -339,6 +383,7 @@ export function socialRoutes(config: SocialRoutesConfig): Hono {
         draft: body.draft === true,
         tags: body.tags,
         tiktok: body.tiktok,
+        audio: body.audio,
         allowDuplicate: body.allowDuplicate === true,
         createdByUserId: userId,
       })
@@ -667,6 +712,42 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
           forceReauth: body.forceReauth,
           expectedUsername: body.expectedUsername,
           reconnectAccountId: body.reconnectAccountId,
+          loginMethod: body.loginMethod,
+        }),
+      )
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  // The agent searches the same catalog a person would: same service, same
+  // normalisation, so a tool result cannot drift from the API's.
+  router.get('/workspaces/:workspaceId/social/accounts/:accountId/instagram/audio', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    try {
+      return c.json(
+        await searchInstagramAudio({
+          workspaceId: auth.workspaceId,
+          accountId: c.req.param('accountId'),
+          audioType: c.req.query('audioType'),
+          q: c.req.query('q'),
+        }),
+      )
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  router.get('/workspaces/:workspaceId/social/accounts/:accountId/instagram/audio/:audioId', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    try {
+      return c.json(
+        await getInstagramAudio({
+          workspaceId: auth.workspaceId,
+          accountId: c.req.param('accountId'),
+          audioId: c.req.param('audioId'),
         }),
       )
     } catch (err) {
@@ -720,6 +801,7 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
         draft: body.draft === true,
         tags: body.tags,
         tiktok: body.tiktok,
+        audio: body.audio,
         allowDuplicate: body.allowDuplicate === true,
       })
       return c.json({ post }, 201)

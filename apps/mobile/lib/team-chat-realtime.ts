@@ -48,6 +48,8 @@ const SOCKET_RETRY_WHILE_FALLBACK_MS = 60_000
 export class TeamChatConnection {
   private listeners = new Set<Listener>()
   private stateListeners = new Set<StateListener>()
+  private selfUserIdListeners = new Set<(userId: string | null) => void>()
+  private _selfUserId: string | null = null
   private socket: SocketLike | null = null
   private source: EventSourceLike | null = null
   private pingTimer: unknown = null
@@ -62,6 +64,20 @@ export class TeamChatConnection {
 
   get state(): RealtimeState {
     return this._state
+  }
+
+  /**
+   * The id the server itself gave this connection (the `ready` frame's
+   * `userId`), i.e. the id it stamps on this connection's own events. Null
+   * until the first `ready`.
+   */
+  get selfUserId(): string | null {
+    return this._selfUserId
+  }
+
+  onSelfUserId(listener: (userId: string | null) => void): () => void {
+    this.selfUserIdListeners.add(listener)
+    return () => this.selfUserIdListeners.delete(listener)
   }
 
   start(): void {
@@ -138,7 +154,20 @@ export class TeamChatConnection {
     }
     if (!event || typeof (event as { type?: unknown }).type !== 'string') return
     if ((event as { type: string }).type === 'pong') return
+    if (event.type === 'ready') this.setSelfUserId(typeof event.userId === 'string' && event.userId ? event.userId : null)
     this.emit(event)
+  }
+
+  private setSelfUserId(userId: string | null): void {
+    if (userId === this._selfUserId) return
+    this._selfUserId = userId
+    for (const listener of Array.from(this.selfUserIdListeners)) {
+      try {
+        listener(userId)
+      } catch (err) {
+        console.error('[TeamChat] selfUserId listener failed', err)
+      }
+    }
   }
 
   private connectSocket(): void {

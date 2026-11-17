@@ -103,6 +103,11 @@ mock.module('../../lib/warm-pool-controller', () => ({
 
 mock.module('../../lib/prisma', () => ({
   prisma: {
+    // The cross-workspace authorizer asks which instance owns a target
+    // (SHO-389). Nothing is hosted here, so every target answers "not here".
+    workspace: {
+      findUnique: async () => null,
+    },
     project: {
       findFirst: async () => {
         if (store.prismaProjectThrow) throw store.prismaProjectThrow
@@ -705,7 +710,7 @@ describe('POST /agent-cost-metrics', () => {
       expect(res.status).toBe(200)
     })
 
-    test('401 when a project token belongs to a different workspace', async () => {
+    test('403 when a project token belongs to a different workspace', async () => {
       delete process.env.SHOGO_LOCAL_MODE
       store.podIdentity = null
       store.runtimeVerify = { ok: true, projectId: 'proj-1' }
@@ -714,11 +719,14 @@ describe('POST /agent-cost-metrics', () => {
         method: 'POST', headers: { 'x-runtime-token': 'rt', ...JSON_H },
         body: JSON.stringify({ workspaceId: 'ws-someone-else', projectId: 'proj-1', agentType: 't', model: 'm' }),
       })
-      expect(res.status).toBe(401)
+      // A valid token for another workspace is a cross-workspace refusal, not a
+      // bad credential (SHO-389).
+      expect(res.status).toBe(403)
+      expect((await res.json()).error.code).toBe('cross_workspace_forbidden')
       expect(store.recordedMetric).toBeNull()
     })
 
-    test('401 when a workspace token targets another workspace', async () => {
+    test('403 when a workspace token targets another workspace', async () => {
       delete process.env.SHOGO_LOCAL_MODE
       store.podIdentity = null
       store.runtimeVerify = { ok: false, reason: 'malformed' }
@@ -727,7 +735,8 @@ describe('POST /agent-cost-metrics', () => {
         method: 'POST', headers: { 'x-runtime-token': 'wrt', ...JSON_H },
         body: JSON.stringify({ workspaceId: 'ws-2', agentType: 't', model: 'm' }),
       })
-      expect(res.status).toBe(401)
+      expect(res.status).toBe(403)
+      expect((await res.json()).error.code).toBe('cross_workspace_forbidden')
       expect(store.recordedMetric).toBeNull()
     })
 
@@ -1467,7 +1476,7 @@ describe('POST /workspaces/:workspaceId/shared-files', () => {
     }
   })
 
-  test('401 for another workspace token or a project token', async () => {
+  test('403 for another workspace token, 401 for a project token', async () => {
     store.podIdentity = null
     store.runtimeVerify = { ok: false, reason: 'malformed' }
     store.workspaceVerify = { ok: true, workspaceId: 'ws-other' }
@@ -1476,7 +1485,9 @@ describe('POST /workspaces/:workspaceId/shared-files', () => {
       headers: { 'x-runtime-token': 'wrt', ...JSON_H },
       body: JSON.stringify({ path: 'exports/summary.xlsx' }),
     })
-    expect(otherWorkspace.status).toBe(401)
+    // A workspace token for another workspace is refused as a cross-workspace
+    // call (SHO-389); a project token that cannot be verified is still a 401.
+    expect(otherWorkspace.status).toBe(403)
 
     store.runtimeVerify = { ok: true, projectId: 'proj-x' }
     store.workspaceVerify = null

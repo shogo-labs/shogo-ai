@@ -42,7 +42,9 @@ let envUpdates: any[]
 let ensureCalls: Array<{ environment: string; exposeToPod: boolean }>
 let runtimeCalls: Array<{ mode: string; databaseUrl?: string; seed?: boolean; expectedHash?: string }>
 let runtimeDescribe: any
-let runtimeApply: { ok: boolean; status: number; data: any }
+let runtimeExport: { ok: boolean; status: number; data: any }
+let pushCalls: Array<{ schema: string; seedSql: string | null; databaseUrl: string }>
+let pushResult: { ok: true } | { ok: false; code: 'schema_push_failed' | 'seed_failed'; message: string }
 
 function resetEnv() {
   envRow = {
@@ -62,7 +64,17 @@ function resetEnv() {
     status: 200,
     data: { ok: true, schema: { content: POSTGRES_SCHEMA, hash: 'hash-1', warnings: [] } },
   }
-  runtimeApply = { ok: true, status: 200, data: { ok: true, hash: 'hash-1', warnings: [], seeded: { tables: 1, rows: 3 } } }
+  runtimeExport = {
+    ok: true,
+    status: 200,
+    data: {
+      ok: true,
+      schema: { content: POSTGRES_SCHEMA, hash: 'hash-1', warnings: [] },
+      seed: { sql: 'BEGIN; INSERT INTO "User" VALUES (1); COMMIT;', tables: 1, rows: 3 },
+    },
+  }
+  pushCalls = []
+  pushResult = { ok: true }
 }
 
 resetEnv()
@@ -102,6 +114,13 @@ mock.module('../published-database.service', () => ({
   },
 }))
 
+mock.module('../published-schema-push', () => ({
+  pushPublishedSchema: async (input: { schema: string; seedSql: string | null; databaseUrl: string }) => {
+    pushCalls.push(input)
+    return pushResult
+  },
+}))
+
 mock.module('../../lib/knative-project-manager', () => ({
   getProjectPodUrl: async () => 'http://pod.internal',
 }))
@@ -114,7 +133,7 @@ const realFetch = globalThis.fetch
 globalThis.fetch = (async (_url: any, init: any) => {
   const body = JSON.parse(String(init?.body ?? '{}'))
   runtimeCalls.push(body)
-  const result = body.mode === 'apply' ? runtimeApply : runtimeDescribe
+  const result = body.mode === 'export' ? runtimeExport : runtimeDescribe
   return new Response(JSON.stringify(result.data), { status: result.status })
 }) as typeof fetch
 
@@ -137,14 +156,23 @@ describe('prepareEnvironmentDatabase', () => {
       expect(res.value.schemaHash).toBe('hash-1')
     }
 
-    // Describe, then apply — the apply carries the hash the describe returned, so
-    // the runtime can refuse a schema that changed mid-publish.
-    expect(runtimeCalls.map((call) => call.mode)).toEqual(['describe', 'apply'])
-    const apply = runtimeCalls[1]!
-    expect(apply.expectedHash).toBe('hash-1')
-    expect(apply.seed).toBe(true)
-    // DDL runs against the primary, never the pooler.
-    expect(apply.databaseUrl).toContain('projects-pg-rw')
+    // Describe, then export — the export carries the hash the describe returned,
+    // so the runtime can refuse a schema that changed mid-publish.
+    expect(runtimeCalls.map((call) => call.mode)).toEqual(['describe', 'export'])
+    const exportCall = runtimeCalls[1]!
+    expect(exportCall.expectedHash).toBe('hash-1')
+    expect(exportCall.seed).toBe(true)
+    // The runtime may sit outside the cluster and runs user code: it is never
+    // handed a database credential.
+    for (const call of runtimeCalls) expect(call.databaseUrl).toBeUndefined()
+
+    // The API pushes what the runtime exported, against the primary (DDL never
+    // runs through the pooler).
+    expect(pushCalls).toHaveLength(1)
+    expect(pushCalls[0]!.schema).toBe(POSTGRES_SCHEMA)
+    expect(pushCalls[0]!.seedSql).toContain('INSERT INTO "User"')
+    expect(pushCalls[0]!.databaseUrl).toContain('projects-pg-rw')
+    expect(pushCalls[0]!.databaseUrl).not.toContain('pooler')
 
     // The Secret is written last: it is what makes a pod read Postgres.
     expect(ensureCalls).toEqual([
@@ -223,20 +251,17 @@ model User {
 
     const res = await prepareEnvironmentDatabase(PROJECT, 'production', { allowDataLoss: true })
     expect(res.ok).toBe(true)
-    expect(runtimeCalls.map((call) => call.mode)).toEqual(['describe', 'apply'])
+    expect(runtimeCalls.map((call) => call.mode)).toEqual(['describe', 'export'])
     // Accepting data loss accepts the dropped column; it must NOT re-seed. A seed
     // is a plain INSERT with the seeded ids into a database that already has rows,
     // so it would fail on a duplicate key *after* the drop had been applied —
     // leaving the column gone and the publish reporting seed_failed.
     expect(runtimeCalls[1]!.seed).toBe(false)
+    expect(pushCalls[0]!.seedSql).toBeNull()
   })
 
-  it('surfaces a runtime push failure as schema_push_failed and does not expose the database', async () => {
-    runtimeApply = {
-      ok: false,
-      status: 400,
-      data: { ok: false, code: 'schema_push_failed', message: 'relation "User" already exists' },
-    }
+  it('surfaces a push failure as schema_push_failed and does not expose the database', async () => {
+    pushResult = { ok: false, code: 'schema_push_failed', message: 'relation "User" already exists' }
 
     const res = await prepareEnvironmentDatabase(PROJECT, 'production')
     expect(res.ok).toBe(false)
@@ -246,6 +271,23 @@ model User {
     }
     expect(ensureCalls.some((call) => call.exposeToPod)).toBe(false)
     expect(envUpdates).toHaveLength(0)
+  })
+
+  it('passes a runtime refusal through without pushing anything', async () => {
+    runtimeExport = {
+      ok: false,
+      status: 409,
+      data: { ok: false, code: 'schema_changed', message: 'prisma/schema.prisma changed while publishing; publish again' },
+    }
+
+    const res = await prepareEnvironmentDatabase(PROJECT, 'production')
+    expect(res.ok).toBe(false)
+    if (!res.ok) {
+      expect(res.code).toBe('schema_changed')
+      expect(res.status).toBe(409)
+    }
+    expect(pushCalls).toHaveLength(0)
+    expect(ensureCalls.some((call) => call.exposeToPod)).toBe(false)
   })
 
   it('is a no-op in local/desktop mode: nothing to provision, nothing to push', async () => {

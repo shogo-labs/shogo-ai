@@ -105,6 +105,31 @@ describe('TeamChatConnection', () => {
     expect(sources[0].closed).toBe(true)
   })
 
+  test('records the userId from every ready frame on both transports', () => {
+    const { connection, sockets, runNextTimer } = harness()
+    const seen: Array<string | null> = []
+    connection.onSelfUserId((id) => seen.push(id))
+    expect(connection.selfUserId).toBeNull()
+    connection.start()
+    sockets[0].receive({ type: 'ready', workspaceId: 'w1', userId: 'u1' })
+    expect(connection.selfUserId).toBe('u1')
+
+    sockets[0].drop()
+    runNextTimer()
+    sockets[1].receive({ type: 'ready', workspaceId: 'w1', userId: 'u2' })
+    expect(connection.selfUserId).toBe('u2')
+    expect(seen).toEqual(['u1', 'u2'])
+
+    const fallback = harness()
+    fallback.connection.start()
+    fallback.sockets[0].drop()
+    fallback.runNextTimer()
+    fallback.sockets[1].drop()
+    expect(fallback.sources).toHaveLength(1)
+    fallback.sources[0].receive({ type: 'ready', workspaceId: 'w1', userId: 'u3' })
+    expect(fallback.connection.selfUserId).toBe('u3')
+  })
+
   test('stop closes everything and cancels retries', () => {
     const { connection, sockets, timers } = harness()
     connection.start()

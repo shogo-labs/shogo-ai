@@ -398,6 +398,10 @@ export interface ChatInputProps {
     direction: "up" | "down"
   ) => void;
   onEditQueuedMessage?: (messageId: string) => void;
+  /** The queued row the composer is editing, if any (SHO-356). */
+  queuedEditingId?: string | null;
+  /** Why a queue action was refused, per row id, shown on the row. */
+  queuedMessageErrors?: Record<string, string>;
   onSendQueuedMessageNow?: (messageId: string) => void;
   /** Send a team-chat wake now (its own queue, its own route). The dock's row
    *  awaits this so the server's refusal is shown on the row itself. */
@@ -566,6 +570,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   onRemoveQueuedMessage,
   onReorderQueuedMessage,
   onEditQueuedMessage,
+  queuedEditingId,
+  queuedMessageErrors,
   onSendQueuedMessageNow,
   onSendAgentWakeNow,
   onRemoveAgentWake,
@@ -687,6 +693,16 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     onReferenceDrop: (refs, skipped) => referenceDropRef.current(refs, skipped),
   });
   const fileSizeLimit = maxFileSizeBytes ?? MAX_FILE_SIZE;
+  // A Free workspace is capped below the paid ceiling (SHO-370). When a pick is
+  // refused for size on that plan, show the server's free-plan wording and an
+  // Upgrade link instead of only the bare "exceeds …MB limit" line.
+  const attachmentCapMb = Math.round(fileSizeLimit / (1024 * 1024));
+  const paidAttachmentCapMb = Math.round(MAX_FILE_SIZE / (1024 * 1024));
+  const showAttachmentUpgrade =
+    fileSizeLimit < MAX_FILE_SIZE &&
+    !!onUpgradeClick &&
+    !!fileError &&
+    fileError.includes(`exceeds ${attachmentCapMb}MB limit`);
   const uploadPercent = uploadStatus
     ? Math.max(0, Math.min(100, Math.round(uploadStatus.fraction * 100)))
     : 0;
@@ -1440,7 +1456,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       input.removeAttribute("capture");
       input.multiple = true;
     } else if (action === "library") {
-      input.setAttribute("accept", "image/*");
+      // The same row offers photos and videos on every surface (SHO-386).
+      input.setAttribute("accept", "image/*,video/*");
       input.removeAttribute("capture");
       input.multiple = true;
     } else {
@@ -2019,7 +2036,22 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
 
       {/* Error message */}
       {fileError && (
-        <Text className="text-sm text-destructive mb-2">{fileError}</Text>
+        <View className="mb-2">
+          <Text className="text-sm text-destructive">{fileError}</Text>
+          {showAttachmentUpgrade ? (
+            <Text className="text-sm text-destructive">
+              {`Free workspaces can attach files up to ${attachmentCapMb} MB. `}
+              <Text
+                className="underline"
+                onPress={onUpgradeClick}
+                accessibilityRole="link"
+              >
+                Upgrade
+              </Text>
+              {` to Basic or higher for up to ${paidAttachmentCapMb} MB.`}
+            </Text>
+          ) : null}
+        </View>
       )}
 
       {voiceInput.error && (
@@ -2044,6 +2076,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
           itself lives in QueueDockPanel. */}
       <QueueDockPanel
         queuedMessages={queuedMessages}
+        editingId={queuedEditingId ?? null}
+        messageErrors={queuedMessageErrors}
         onRemoveQueuedMessage={onRemoveQueuedMessage}
         onReorderQueuedMessage={onReorderQueuedMessage}
         onEditQueuedMessage={onEditQueuedMessage}
