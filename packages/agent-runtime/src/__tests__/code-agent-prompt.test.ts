@@ -88,8 +88,8 @@ describe('coding guide', () => {
       expect(guide).toContain('On desktop, Publish uploads a static build to Shogo Cloud')
       expect(guide).toContain('syncing the project to Shogo Cloud and publishing it from there')
       // The plan that unlocks a permanent URL is Business, not the retired Pro.
-      expect(guide).toContain('Publish on the Business plan')
-      expect(guide).not.toContain('Publish on Pro')
+      expect(guide).toContain('requires the Business plan')
+      expect(guide).not.toMatch(/requires the Pro\b/)
     }
   })
 
