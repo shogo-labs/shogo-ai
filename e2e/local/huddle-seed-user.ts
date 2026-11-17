@@ -2,9 +2,10 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Adds a second person to the local stack's team workspace, for specs that
- * need two people (huddles). Local mode refuses a second sign-up, so this
- * writes the user and an email/password credential straight to the database;
- * signing in then goes through Better Auth as usual.
+ * need two people (huddles, and the team-nav seed's person-to-person DM).
+ * Local mode refuses a second sign-up, so this writes the user and an
+ * email/password credential straight to the database; signing in then goes
+ * through Better Auth as usual.
  *
  *   DATABASE_URL=file:… bun --no-env-file e2e/local/huddle-seed-user.ts <email> <password> <name>
  *

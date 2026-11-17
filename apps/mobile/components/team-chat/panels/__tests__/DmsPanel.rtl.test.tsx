@@ -18,7 +18,6 @@ mock.module("react-native", () =>
 )
 mock.module("@shogo/shared-ui/primitives", () => ({ cn: (...args: unknown[]) => args.filter(Boolean).join(" "), Avatar: () => createElement("span") }))
 mock.module("lucide-react-native", () => ({ Plus: () => createElement("span") }))
-mock.module(resolve(import.meta.dir, "../../../activity/ActivityFeed"), () => ({ AgentMark: () => createElement("span") }))
 mock.module(resolve(import.meta.dir, "../../PresenceDot"), () => ({ PresenceDot: () => createElement("span") }))
 mock.module(resolve(import.meta.dir, "../../ConversationRows"), () => ({
   ConversationRow: ({ conversation }: any) => createElement("div", { "data-testid": `row-${conversation.id}` }),
@@ -33,7 +32,6 @@ mock.module(resolve(import.meta.dir, "../../TeamChatSidebarProvider"), () => ({ 
 const { DmsPanel } = await import("../DmsPanel")
 
 const person = (id: string) => ({ type: "user", id, name: id, image: null })
-const agent = (projectId: string) => ({ type: "agent", projectId, name: projectId })
 
 function convo(over: any = {}) {
   return {
@@ -94,18 +92,18 @@ describe("DmsPanel", () => {
 
   test("the active chip narrows the Starred group too", () => {
     chat.list = [
-      convo({ id: "ana", starred: true, participants: [person("ana")] }),
-      convo({ id: "bot", starred: true, participants: [agent("p1")] }),
+      convo({ id: "ana", starred: true, unreadCount: 2, participants: [person("ana")] }),
+      convo({ id: "bo", starred: true, unreadCount: 0, participants: [person("bo")] }),
     ]
     render(createElement(DmsPanel, {}))
 
     expect(screen.getByTestId("row-ana")).toBeTruthy()
-    expect(screen.getByTestId("row-bot")).toBeTruthy()
+    expect(screen.getByTestId("row-bo")).toBeTruthy()
 
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }))
+    fireEvent.click(screen.getByRole("button", { name: "Unreads" }))
 
-    expect(screen.getByTestId("row-bot")).toBeTruthy()
-    expect(screen.queryByTestId("row-ana")).toBeNull()
+    expect(screen.getByTestId("row-ana")).toBeTruthy()
+    expect(screen.queryByTestId("row-bo")).toBeNull()
   })
 
   test("keeps the empty message when a starred row is filtered out of every group", () => {

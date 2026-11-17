@@ -109,7 +109,7 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(page.getByTestId("dms-screen")).toBeVisible()
     await expect(tab(page, "DMs")).toHaveAttribute("aria-selected", "true")
 
-    const row = page.getByTestId("dms-screen").getByRole("link", { name: new RegExp(`^${seed.dmAgent}`) })
+    const row = page.getByTestId("dms-screen").getByRole("link", { name: new RegExp(`^${seed.dmPeer}`) })
     await expect(row).toBeVisible({ timeout: 30_000 })
     await expect(row).toContainText("flaky checkout tests")
 
@@ -182,7 +182,7 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(page).toHaveURL(/\/account/)
   })
 
-  test("New message is a full screen with people and agents, not a dialog", async ({ page }) => {
+  test("New message is a full screen with people, not a dialog", async ({ page }) => {
     await tab(page, "DMs").click()
     await page.getByRole("button", { name: "Create", exact: true }).click()
     await page.getByRole("menuitem", { name: "New message" }).click()
@@ -194,31 +194,25 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(dock(page)).not.toBeVisible()
 
     const picker = page.getByTestId("new-message-picker")
-    await expect(picker.getByRole("button", { name: `${seed.idleAgent}, agent` })).toBeVisible({ timeout: 30_000 })
-    // The local workspace has one member, so only the agents section is populated;
-    // people rows are covered by new-message-picker.rtl.test.tsx.
-    await expect(picker.getByRole("tab", { name: "People" })).toBeVisible()
+    // Agents are not in the picker: a chat with an agent is a project chat, and
+    // the Agents tab is where you start one (SHO-412).
+    await expect(picker.getByRole("button", { name: seed.dmPeer })).toBeVisible({ timeout: 30_000 })
+    await expect(picker.getByRole("button", { name: `${seed.idleAgent}, agent` })).toHaveCount(0)
 
-    // An agent opens its DM straight away.
-    await picker.getByRole("button", { name: `${seed.idleAgent}, agent` }).click()
-    await expect(page).toHaveURL(/\/c\/(?!new)[^/]+/, { timeout: 30_000 })
+    // A person opens their DM straight away.
+    await picker.getByRole("button", { name: seed.dmPeer }).click()
+    await expect(page).toHaveURL(new RegExp(`/c/${seed.dmId}`), { timeout: 30_000 })
     await expect(page.getByTestId("new-conversation-screen")).not.toBeVisible()
   })
 
-  test("Message an agent from DMs opens the same screen on the agents list", async ({ page }) => {
-    await tab(page, "DMs").click()
-    await page.getByTestId("dms-screen").getByText("Message an agent", { exact: true }).click()
-    await expect(page).toHaveURL(/\/c\/new\?mode=agent/)
-    await expect(page.getByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "true")
-    await expect(page.getByTestId("new-message-picker").getByRole("button", { name: `${seed.idleAgent}, agent` })).toBeVisible({ timeout: 30_000 })
-  })
-
-  test("a project has a Message agent button that opens the agent's DM", async ({ page }) => {
+  test("a project has a Message agent button that opens the project chat", async ({ page }) => {
     await page.goto(`/projects/${seed.dmAgentProjectId}`)
     const message = page.getByTestId("project-message-agent").or(page.getByRole("button", { name: "Message agent" })).first()
     await expect(message).toBeVisible({ timeout: 60_000 })
     await message.click()
-    await expect(page).toHaveURL(new RegExp(`/c/${seed.dmId}`), { timeout: 30_000 })
+    // A chat with an agent is a project chat now, not a DM (SHO-412).
+    await expect(page).toHaveURL(new RegExp(`/project-chat/${seed.dmAgentProjectId}`), { timeout: 30_000 })
+    await expect(page).toHaveURL(/chatSessionId=/, { timeout: 30_000 })
   })
 
   test("the floating + leads with agents", async ({ page }) => {

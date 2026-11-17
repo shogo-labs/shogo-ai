@@ -188,7 +188,7 @@ test.describe("Team workspace: desktop rail and panels", () => {
 
     await tab(page, "DMs").click()
     await expect(panel(page, "dms-panel")).toBeVisible()
-    await expect(page.getByRole("link", { name: new RegExp(`^${seed.dmAgent}`) })).toBeVisible()
+    await expect(page.getByRole("link", { name: new RegExp(`^${seed.dmPeer}`) })).toBeVisible()
     await expect(page.getByRole("button", { name: "Unreads", exact: true })).toBeVisible()
 
     await tab(page, "Agents").click()
@@ -207,15 +207,18 @@ test.describe("Team workspace: desktop rail and panels", () => {
     await expect(panel(page, "more-panel").getByRole("link", { name: "Tasks" })).toHaveCount(0)
   })
 
-  test("DM filters separate people from agents", async () => {
+  test("DM filters narrow the list to unreads and to people", async () => {
     await tab(page, "DMs").click()
-    const agentRow = page.getByRole("link", { name: new RegExp(`^${seed.dmAgent}`) })
-    await page.getByRole("button", { name: "Agents", exact: true }).click()
-    await expect(agentRow).toBeVisible()
+    const peerRow = page.getByRole("link", { name: new RegExp(`^${seed.dmPeer}`) })
+    // A chat with an agent is a project chat, so the DMs tab has no Agents chip
+    // and no agent rows (SHO-412).
+    await expect(page.getByRole("button", { name: "Agents", exact: true })).toHaveCount(0)
     await page.getByRole("button", { name: "People", exact: true }).click()
-    await expect(agentRow).toHaveCount(0)
+    await expect(peerRow).toBeVisible()
+    await page.getByRole("button", { name: "Unreads", exact: true }).click()
+    await expect(peerRow).toBeVisible()
     await page.getByRole("button", { name: "All", exact: true }).click()
-    await expect(agentRow).toBeVisible()
+    await expect(peerRow).toBeVisible()
   })
 
   test("selecting the active tab again hides the panel and shows it again", async () => {
@@ -247,15 +250,16 @@ test.describe("Team workspace: desktop rail and panels", () => {
     await expect(page.getByText(seed.dmReply, { exact: false }).first()).toBeVisible({ timeout: 30_000 })
     // The DMs tab is already active (route sync), so its panel is open; clicking would collapse it.
     await expect(tab(page, "DMs")).toHaveAttribute("aria-selected", "true", { timeout: 30_000 })
-    await expect(page.getByRole("link", { name: new RegExp(`^${seed.dmAgent}$`) })).toBeVisible({ timeout: 30_000 })
-    await expect(page.getByRole("link", { name: `${seed.dmAgent}, unread` })).toHaveCount(0)
+    await expect(page.getByRole("link", { name: new RegExp(`^${seed.dmPeer}$`) })).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByRole("link", { name: `${seed.dmPeer}, unread` })).toHaveCount(0)
   })
 
-  test("the Agents tab messages an agent and opens its profile", async () => {
+  test("the Agents tab opens a chat with an agent and its profile", async () => {
     await tab(page, "Agents").click()
     await page.getByRole("button", { name: `Message ${seed.idleAgent}` }).click()
-    await expect(page).toHaveURL(/\/c\/[^/?]+/, { timeout: 30_000 })
-    await expect(tab(page, "DMs")).toHaveAttribute("aria-selected", "true", { timeout: 30_000 })
+    // A chat with an agent is a project chat now, not a DM (SHO-412).
+    await expect(page).toHaveURL(new RegExp(`/projects/${seed.idleAgentProjectId}`), { timeout: 30_000 })
+    await expect(page).toHaveURL(/chatSessionId=/, { timeout: 30_000 })
 
     await tab(page, "Agents").click()
     await page.getByRole("button", { name: `${seed.dmAgent} profile` }).click()
@@ -301,7 +305,10 @@ test.describe("Team workspace: desktop rail and panels", () => {
     const picker = page.getByTestId("new-message-picker")
     await expect(picker).toBeVisible()
     await expect(picker.getByText("People", { exact: true }).first()).toBeVisible()
-    await expect(picker.getByRole("button", { name: `${seed.idleAgent}, agent` })).toBeVisible({ timeout: 30_000 })
+    // Agents are not in the picker: a chat with an agent is a project chat, and
+    // the Agents tab is where you start one (SHO-412).
+    await expect(picker.getByRole("button", { name: `${seed.dmPeer}` })).toBeVisible({ timeout: 30_000 })
+    await expect(picker.getByRole("button", { name: `${seed.idleAgent}, agent` })).toHaveCount(0)
     await page.getByLabel("Close", { exact: true }).click()
 
     await rail(page).getByRole("button", { name: "Create", exact: true }).click()

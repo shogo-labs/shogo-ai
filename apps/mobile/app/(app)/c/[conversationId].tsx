@@ -120,6 +120,10 @@ export default function ConversationScreen() {
   const workspaceId = conversation?.workspaceId ?? workspace?.id ?? null
   const mentionables = useMentionables(workspaceId)
   const sidePane = width >= THREAD_SIDE_PANE_MIN_WIDTH
+  // `load` must stay keyed on the conversation id alone: it clears the screen
+  // before fetching, so re-running it on a resize would blank the timeline.
+  const sidePaneRef = useRef(sidePane)
+  sidePaneRef.current = sidePane
   const maxPaneWidth = width - MAIN_TIMELINE_MIN
   const threadPane = useSidePaneWidth({
     storageKey: 'shogo.teamChat.threadPaneWidth',
@@ -171,7 +175,7 @@ export default function ConversationScreen() {
       // An old agent DM: it is a project chat with that agent now (SHO-412).
       if (detail.movedToChatSessionId) {
         const projectId = (detail.members ?? []).find((m) => m.type === 'agent')?.projectId ?? null
-        router.replace(agentChatRoute({ projectId, sessionId: detail.movedToChatSessionId, wide: sidePane }) as never)
+        router.replace(agentChatRoute({ projectId, sessionId: detail.movedToChatSessionId, wide: sidePaneRef.current }) as never)
         return
       }
       setConversation(detail)
@@ -179,7 +183,7 @@ export default function ConversationScreen() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not open this conversation')
     }
-  }, [conversationId, router, sidePane])
+  }, [conversationId])
 
   useEffect(() => {
     setConversation(null)
