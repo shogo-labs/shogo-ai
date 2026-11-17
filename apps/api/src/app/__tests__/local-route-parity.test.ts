@@ -73,6 +73,7 @@ const REQUIRED_LOCAL_ROUTES = [
   'POST /api/workspaces/:workspaceId/social/accounts/sync',
   'POST /api/workspaces/:workspaceId/social/connect',
   'POST /api/workspaces/:workspaceId/social/connect/complete',
+  'PATCH /api/workspaces/:workspaceId/social/accounts/:accountId',
   'DELETE /api/workspaces/:workspaceId/social/accounts/:accountId',
   'GET /api/workspaces/:workspaceId/social/posts',
   'POST /api/workspaces/:workspaceId/social/posts',

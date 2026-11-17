@@ -15,7 +15,7 @@
  * `socialMediaEnabled` and are not on this screen.
  */
 
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
@@ -87,6 +87,11 @@ export default function SocialScreen() {
   const [error, setError] = useState<string | null>(null)
 
   const [accounts, setAccounts] = useState<any[]>([])
+  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([])
+  const [connectProjectId, setConnectProjectId] = useState<string | null>(null)
+  // Read by `load` and `connectAccount` without making them depend on the
+  // picker: a focus-triggered sync must stamp the same project the connect did.
+  const connectProjectRef = useRef<string | null>(null)
   const [automations, setAutomations] = useState<any[]>([])
   const [analytics, setAnalytics] = useState<any | null>(null)
   const [calendar, setCalendar] = useState<any[]>([])
@@ -110,25 +115,32 @@ export default function SocialScreen() {
   )
 
   /**
-   * Ask the provider what this workspace now has connected, then fall back to
-   * the rows we already hold. A connect that finished in the browser writes
-   * nothing locally until something syncs, so the sync is what makes a
-   * just-connected account appear; when the sync itself cannot run (no Shogo
-   * Cloud on desktop) its plain-language reason is worth showing.
+   * Ask the provider what this workspace now has connected, then read the full
+   * list back.
+   *
+   * `stampProjectId` is the project a **newly discovered** account belongs to:
+   * the connect flow passes the project the person picked, so the account lands
+   * in that project instead of becoming workspace-shared. The list that comes
+   * back is unscoped, because this screen shows every project's accounts.
    */
-  const syncAccounts = useCallback(async (): Promise<any[] | null> => {
-    try {
-      const res = await call('/accounts/sync', { method: 'POST' })
-      if (Array.isArray(res?.accounts)) return res.accounts
-    } catch (cause) {
-      setNotice(errorMessage(cause, 'Could not refresh your connected accounts'))
-    }
-    try {
-      const res = await call('/accounts')
-      if (Array.isArray(res?.accounts)) return res.accounts
-    } catch {}
-    return null
-  }, [call])
+  const syncAccounts = useCallback(
+    async (stampProjectId?: string | null): Promise<any[] | null> => {
+      try {
+        await call('/accounts/sync', {
+          method: 'POST',
+          body: stampProjectId ? { projectId: stampProjectId } : {},
+        })
+      } catch (cause) {
+        setNotice(errorMessage(cause, 'Could not refresh your connected accounts'))
+      }
+      try {
+        const res = await call('/accounts')
+        if (Array.isArray(res?.accounts)) return res.accounts
+      } catch {}
+      return null
+    },
+    [call],
+  )
 
   const load = useCallback(
     async (refresh = false) => {
@@ -137,14 +149,23 @@ export default function SocialScreen() {
       else setLoading(true)
       try {
         setError(null)
-        const [synced, automationRes, analyticsRes] = await Promise.all([
-          syncAccounts(),
+        const [synced, automationRes, analyticsRes, projectRes] = await Promise.all([
+          syncAccounts(connectProjectRef.current),
           call('/automations?limit=50').catch(() => null),
           call('/analytics').catch(() => null),
+          http
+            .request<any>(`/api/projects?workspaceId=${encodeURIComponent(workspaceId)}`)
+            .catch(() => null),
         ])
         if (synced) setAccounts(synced)
         setAutomations(Array.isArray(automationRes?.automations) ? automationRes.automations : [])
         setAnalytics(analyticsRes ?? null)
+        const projectItems = Array.isArray(projectRes?.items) ? projectRes.items : []
+        setProjects(
+          projectItems
+            .filter((project: any) => project?.id)
+            .map((project: any) => ({ id: String(project.id), name: String(project.name ?? 'Project') })),
+        )
       } catch (cause) {
         setError(errorMessage(cause, 'Could not load your social accounts'))
       } finally {
@@ -152,7 +173,7 @@ export default function SocialScreen() {
         setRefreshing(false)
       }
     },
-    [call, syncAccounts, workspaceId],
+    [call, http, syncAccounts, workspaceId],
   )
 
   /**
@@ -172,6 +193,7 @@ export default function SocialScreen() {
       if (connecting) return
       setConnecting(reconnectAccountId ?? platform)
       setNotice(null)
+      const projectId = connectProjectRef.current
       const preWindow = Platform.OS === 'web' ? preCreateAuthWindow() : null
       try {
         const res = await call('/connect', {
@@ -180,14 +202,16 @@ export default function SocialScreen() {
             platform,
             ...(reconnectAccountId ? { reconnectAccountId } : {}),
             ...(loginMethod ? { loginMethod } : {}),
+            ...(projectId ? { projectId } : {}),
           },
         })
         const url = typeof res?.url === 'string' ? res.url.trim() : ''
         if (!url) throw new Error('The platform did not return a sign-in link. Try again in a moment.')
         await openAuthFlow(url, { preCreatedWindow: preWindow })
         // The sign-in happens in another window, so whatever came back is
-        // already stale — reconcile before showing the list again.
-        const synced = await syncAccounts()
+        // already stale — reconcile before showing the list again. The project
+        // is passed so the account the sign-in created lands in it.
+        const synced = await syncAccounts(projectId)
         if (synced) setAccounts(synced)
       } catch (cause) {
         setNotice(errorMessage(cause, `Could not start the ${platform} sign-in`))
@@ -204,6 +228,26 @@ export default function SocialScreen() {
       }
     },
     [call, connecting, syncAccounts],
+  )
+
+  /** The project a new connect belongs to. `null` = workspace-shared. */
+  const selectProject = useCallback((projectId: string | null) => {
+    connectProjectRef.current = projectId
+    setConnectProjectId(projectId)
+  }, [])
+
+  /** Move an account between projects, or back to shared. No provider call. */
+  const moveAccount = useCallback(
+    async (accountId: string, projectId: string | null) => {
+      try {
+        await call(`/accounts/${accountId}`, { method: 'PATCH', body: { projectId } })
+        const res = await call('/accounts')
+        if (Array.isArray(res?.accounts)) setAccounts(res.accounts)
+      } catch (cause) {
+        setNotice(errorMessage(cause, 'Could not move that account'))
+      }
+    },
+    [call],
   )
 
   const loadTab = useCallback(
@@ -297,6 +341,10 @@ export default function SocialScreen() {
               analytics={analytics}
               connecting={connecting}
               onConnect={connectAccount}
+              projects={projects}
+              connectProjectId={connectProjectId}
+              onSelectProject={selectProject}
+              onMove={moveAccount}
             />
           ) : null}
           {tab === 'compose' ? <ComposeTab accounts={accounts} call={call} onSent={() => void load(true)} /> : null}

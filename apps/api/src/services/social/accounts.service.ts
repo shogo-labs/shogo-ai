@@ -63,18 +63,73 @@ export function normalizeZernioAccount(raw: any): ZernioAccount | null {
   }
 }
 
-export async function listAccounts(workspaceId: string): Promise<any[]> {
+export async function listAccounts(workspaceId: string, projectId?: string | null): Promise<any[]> {
   return db.socialAccount.findMany({
-    where: { workspaceId },
+    where: accountScope(workspaceId, projectId),
     orderBy: [{ isActive: 'desc' }, { platform: 'asc' }, { username: 'asc' }],
   })
 }
 
 /**
+ * The accounts a caller may use.
+ *
+ * A **project** caller sees the accounts it owns plus the workspace-shared ones
+ * (`projectId: null`). The **workspace agent** and the **Social page** pass no
+ * project and see everything. Every reader goes through this instead of a bare
+ * `{ workspaceId }`, so a project's agent can never post to, read the inbox of,
+ * or automate another project's account.
+ */
+export function accountScope(workspaceId: string, projectId?: string | null): Record<string, unknown> {
+  if (!projectId) return { workspaceId }
+  return { workspaceId, OR: [{ projectId }, { projectId: null }] }
+}
+
+/**
+ * The account ids a caller may use, or `null` when it may use every account in
+ * the workspace. Inbox threads, comments and automations hang off an account, so
+ * this is how they are scoped without repeating the query in each service.
+ */
+export async function scopedAccountIds(
+  workspaceId: string,
+  projectId?: string | null,
+): Promise<string[] | null> {
+  if (!projectId) return null
+  const rows = await db.socialAccount.findMany({
+    where: accountScope(workspaceId, projectId),
+    select: { id: true },
+  })
+  return rows.map((row: any) => row.id as string)
+}
+
+/**
+ * Whether one already-fetched row is visible to a caller scoped to `projectId`.
+ * Used where a query is simpler as `{ workspaceId, id }` and the scope is a
+ * one-row check, so no caller has to build a nested `AND`.
+ */
+export function inAccountScope(
+  row: { projectId?: string | null },
+  projectId?: string | null,
+): boolean {
+  if (!projectId) return true
+  return !row.projectId || row.projectId === projectId
+}
+
+/**
  * Upsert one account row from a provider payload. Used by sync, the connect
  * redirect and (later) `account.connected` webhooks, so re-running it is safe.
+ *
+ * `projectId` is the owner to stamp on a **new** row. An existing row keeps its
+ * owner: a sync reconciles the whole profile, so it must not be able to move an
+ * account another project already owns. `claim` is the explicit-connect case —
+ * a connect that lands on an account owned by a different project is refused
+ * rather than silently returning that project's row.
  */
-export async function upsertAccount(workspaceId: string, profileId: string, account: ZernioAccount) {
+export async function upsertAccount(
+  workspaceId: string,
+  profileId: string,
+  account: ZernioAccount,
+  opts: { projectId?: string | null; claim?: boolean } = {},
+) {
   const existing = await db.socialAccount.findUnique({ where: { zernioAccountId: account.id } })
   const health = {
     isActive: true,
@@ -88,6 +143,13 @@ export async function upsertAccount(workspaceId: string, profileId: string, acco
         409,
         'account_owned_elsewhere',
         'That account is already connected to another workspace.',
+      )
+    }
+    if (opts.claim && opts.projectId && existing.projectId && existing.projectId !== opts.projectId) {
+      throw new SocialError(
+        409,
+        'account_owned_elsewhere',
+        'That account is connected to another project in this workspace.',
       )
     }
     return db.socialAccount.update({
@@ -104,6 +166,7 @@ export async function upsertAccount(workspaceId: string, profileId: string, acco
   return db.socialAccount.create({
     data: {
       workspaceId,
+      projectId: opts.projectId ?? null,
       profileId,
       zernioAccountId: account.id,
       platform: account.platform,
@@ -123,11 +186,14 @@ export async function upsertAccount(workspaceId: string, profileId: string, acco
  * a desktop that connected and then never synced — is still billed, and a stale
  * local row must not be able to hide it from the sweep.
  */
-export async function syncProfileAccounts(profile: {
-  id: string
-  workspaceId: string
-  zernioProfileId: string
-}): Promise<ZernioAccount[]> {
+export async function syncProfileAccounts(
+  profile: {
+    id: string
+    workspaceId: string
+    zernioProfileId: string
+  },
+  projectId?: string | null,
+): Promise<ZernioAccount[]> {
   const payload = await getSocialClient().request<any>({
     workspaceId: profile.workspaceId,
     method: 'GET',
@@ -139,7 +205,9 @@ export async function syncProfileAccounts(profile: {
     .filter((account): account is ZernioAccount => !!account)
 
   for (const account of remote) {
-    await upsertAccount(profile.workspaceId, profile.id, account)
+    // A row this sync creates belongs to the caller's project; a row that
+    // already exists keeps its owner (see `upsertAccount`).
+    await upsertAccount(profile.workspaceId, profile.id, account, { projectId })
   }
 
   const seen = new Set(remote.map((account) => account.id))
@@ -164,12 +232,16 @@ export async function syncProfileAccounts(profile: {
  * mean creating a profile for a workspace that has never connected anything,
  * and a brand-new workspace has zero of both. Only a connect creates a profile.
  */
-export async function syncAccounts(workspaceId: string, workspaceName: string): Promise<any[]> {
+export async function syncAccounts(
+  workspaceId: string,
+  workspaceName: string,
+  projectId?: string | null,
+): Promise<any[]> {
   const scope = await localScopeFor(workspaceId)
   const profile = await getProfile(workspaceId, scope)
-  if (!profile) return listAccounts(workspaceId)
-  await syncProfileAccounts(profile)
-  return listAccounts(workspaceId)
+  if (!profile) return listAccounts(workspaceId, projectId)
+  await syncProfileAccounts(profile, projectId)
+  return listAccounts(workspaceId, projectId)
 }
 
 /**
@@ -187,14 +259,18 @@ function expectedHandle(raw: unknown): string {
  * so a caller may pass either that or one of our row ids and this resolves it —
  * an id we cannot find in this workspace is refused rather than forwarded.
  */
-async function reconnectTarget(workspaceId: string, raw: unknown): Promise<string | undefined> {
+async function reconnectTarget(
+  workspaceId: string,
+  raw: unknown,
+  projectId?: string | null,
+): Promise<string | undefined> {
   if (typeof raw !== 'string' || !raw.trim()) return undefined
   const value = raw.trim()
   const row = await db.socialAccount.findFirst({
     where: { workspaceId, OR: [{ id: value }, { zernioAccountId: value }] },
-    select: { zernioAccountId: true },
+    select: { zernioAccountId: true, projectId: true },
   })
-  if (!row) {
+  if (!row || !inAccountScope(row, projectId)) {
     throw new SocialError(400, 'unknown_account', 'That account does not belong to this workspace.')
   }
   return row.zernioAccountId as string
@@ -231,6 +307,24 @@ export function parseLoginMethod(platform: string, raw: unknown): InstagramLogin
 }
 
 /**
+ * Carry the owning project through the OAuth round trip as our own param on the
+ * redirect URL. Zernio keeps unknown params, so the return page (and anything
+ * that later reads the callback) can tell which project the connect was for.
+ * The row itself is stamped by the sync that follows, which is the only path
+ * that can prove whose workspace the account belongs to.
+ */
+function withProjectParam(redirectUrl: string, projectId?: string | null): string {
+  if (!projectId) return redirectUrl
+  try {
+    const url = new URL(redirectUrl)
+    url.searchParams.set('projectId', projectId)
+    return url.toString()
+  } catch {
+    return redirectUrl
+  }
+}
+
+/**
  * The URL to send the user to so Zernio can run the platform's OAuth and land
  * back on `redirectUrl` with `accountId` + `username`.
  *
@@ -250,6 +344,8 @@ export async function connectUrl(args: {
   expectedUsername?: unknown
   reconnectAccountId?: unknown
   loginMethod?: unknown
+  /** The project the account will belong to. `null`/omitted = workspace-shared. */
+  projectId?: string | null
 }): Promise<{ url: string; platform: string; profileId: string }> {
   const platform = parsePlatform(args.platform)
   const profile = await ensureProfile(args.workspaceId, args.workspaceName)
@@ -263,19 +359,35 @@ export async function connectUrl(args: {
   })
   await assertSocialBudget(args.workspaceId, projectedConnectRawUsd(activeAccounts))
 
+  const reconnect = await reconnectTarget(args.workspaceId, args.reconnectAccountId, args.projectId)
+
+  // A second Instagram connect must not silently re-land on the account that is
+  // already signed in on the device: Instagram Login reuses it, the callback
+  // brings back the same `accountId`, and `upsertAccount` updates that row — so
+  // the person sees their "new" account refused or replaced. Defaulting
+  // `forceReauth` on makes Instagram show its own login page, from the UI, the
+  // agent tool and the relay alike. A reconnect is the one case that *wants* the
+  // existing account, so it is left alone.
+  const forceReauth =
+    args.forceReauth === true ||
+    (platform === 'instagram' &&
+      !reconnect &&
+      (await db.socialAccount.count({
+        where: { workspaceId: args.workspaceId, platform: 'instagram', isActive: true },
+      })) > 0)
+
   const query: Record<string, string> = {
     profileId: profile.zernioProfileId,
-    redirect_url: args.redirectUrl,
+    redirect_url: withProjectParam(args.redirectUrl, args.projectId),
   }
   // Instagram Login only; Zernio ignores it elsewhere, and sending it to a
   // platform that does not understand it is a param its OAuth state would carry
   // for nothing (X caps that state at 500 characters).
-  if (platform === 'instagram' && args.forceReauth === true) query.forceReauth = 'true'
+  if (platform === 'instagram' && forceReauth) query.forceReauth = 'true'
   const loginMethod = parseLoginMethod(platform, args.loginMethod)
   if (loginMethod) query.loginMethod = loginMethod
   const handle = expectedHandle(args.expectedUsername)
   if (handle) query.expectedUsername = handle
-  const reconnect = await reconnectTarget(args.workspaceId, args.reconnectAccountId)
   if (reconnect) query.reconnectAccountId = reconnect
 
   const payload = await getSocialClient().request<any>({
@@ -313,6 +425,7 @@ export async function completeConnect(args: {
   accountId: string
   username: string
   displayName?: string | null
+  projectId?: string | null
 }): Promise<any> {
   const platform = parsePlatform(args.platform)
   const profile = await ensureProfile(args.workspaceId, args.workspaceName)
@@ -325,13 +438,24 @@ export async function completeConnect(args: {
   if (!account) {
     throw new SocialError(400, 'invalid_account', 'accountId and username are required')
   }
-  return upsertAccount(args.workspaceId, profile.id, account)
+  // `claim`: this is an explicit connect, so landing on an account another
+  // project already owns is refused instead of quietly returning that row.
+  return upsertAccount(args.workspaceId, profile.id, account, {
+    projectId: args.projectId ?? null,
+    claim: true,
+  })
 }
 
 /** Remove the account at Zernio (stops the per-account charge) and retire the row. */
-export async function disconnectAccount(workspaceId: string, accountRowId: string): Promise<any> {
+export async function disconnectAccount(
+  workspaceId: string,
+  accountRowId: string,
+  projectId?: string | null,
+): Promise<any> {
   const row = await db.socialAccount.findFirst({ where: { id: accountRowId, workspaceId } })
-  if (!row) throw new SocialError(404, 'account_not_found', 'Account not found')
+  if (!row || !inAccountScope(row, projectId)) {
+    throw new SocialError(404, 'account_not_found', 'Account not found')
+  }
 
   if (row.isActive) {
     await getSocialClient().request({
@@ -344,5 +468,24 @@ export async function disconnectAccount(workspaceId: string, accountRowId: strin
   return db.socialAccount.update({
     where: { id: row.id },
     data: { isActive: false, tokenHealthy: false, needsReconnect: false, lastHealthAt: new Date() },
+  })
+}
+
+/**
+ * Move an account between projects, or back to workspace-shared (`null`).
+ *
+ * No provider call: the Zernio account does not move, only who may use it. The
+ * caller has already checked that `projectId` is a project of this workspace.
+ */
+export async function moveAccount(
+  workspaceId: string,
+  accountRowId: string,
+  projectId: string | null,
+): Promise<any> {
+  const row = await db.socialAccount.findFirst({ where: { id: accountRowId, workspaceId } })
+  if (!row) throw new SocialError(404, 'account_not_found', 'Account not found')
+  return db.socialAccount.update({
+    where: { id: row.id },
+    data: { projectId: projectId ?? null },
   })
 }
