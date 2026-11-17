@@ -1293,6 +1293,9 @@ model Subscription {
   billingInterval      String
   currentPeriodStart   DateTime
   currentPeriodEnd     DateTime
+  // When this subscription's card first paid a real (amount_paid > 0) invoice.
+  // Null while trialing. See prisma/schema.prisma for full semantics.
+  firstPaidAt          DateTime?
   cancelAtPeriodEnd    Boolean  @default(false)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt

@@ -7754,14 +7754,18 @@ function planDisplayName(planId: string): string {
   return planId.charAt(0).toUpperCase() + planId.slice(1)
 }
 
-/** Fire-and-forget: the trial checkout was cancelled as a duplicate; tell the owner. */
-function notifyTrialBlocked(workspaceId: string, planId: string): void {
+/**
+ * Fire-and-forget: the trial checkout was cancelled (duplicate card/user, or a
+ * prepaid card); tell the owner why.
+ */
+function notifyTrialBlocked(workspaceId: string, planId: string, reason: string | null): void {
   workspaceOwnerContact(workspaceId)
     .then((owner) => owner && sendTrialUnavailableEmail({
       to: owner.email,
       workspaceName: owner.workspaceName,
       planName: planDisplayName(planId),
       dashboardUrl: `${getFrontendUrl()}/billing`,
+      reason,
     }))
     .catch((err: any) => console.error('[Webhook] trial-unavailable email failed:', err?.message ?? err))
 }
@@ -7972,6 +7976,10 @@ app.get('/api/billing/workspace-plan', async (c) => {
       // has since expired — surface a reactivate prompt instead of "enable
       // usage-based pricing".
       paidTier: overageStatus.paidTier,
+      // Whether the card has paid a real invoice. A trialing workspace is a
+      // paid tier but has never been charged, so overage is not trusted yet —
+      // surface this so the UI can explain why on-demand usage is paused.
+      overageTrusted: overageStatus.overageTrusted,
       overageHardLimitUsd: wallet?.overageHardLimitUsd ?? null,
       overageAccumulatedUsd: wallet?.overageAccumulatedUsd ?? 0,
       // Current overage block: the most unpaid overage the workspace can
@@ -8888,8 +8896,9 @@ app.post('/api/webhooks/stripe', async (c) => {
               })
               if (trialOutcome === 'blocked' || trialOutcome === 'already_blocked') {
                 if (trialOutcome === 'blocked') {
-                  console.warn('[Webhook] Trial blocked (card or account already used a trial):', wsId)
-                  notifyTrialBlocked(wsId, metaPlanId)
+                  const reason = await trialService.getTrialBlockStatus(wsId)
+                  console.warn('[Webhook] Trial blocked:', wsId, reason)
+                  notifyTrialBlocked(wsId, metaPlanId, reason)
                 }
                 break
               }
@@ -9144,8 +9153,9 @@ app.post('/api/webhooks/stripe', async (c) => {
               })
               if (trialOutcome === 'blocked' || trialOutcome === 'already_blocked') {
                 if (trialOutcome === 'blocked') {
-                  console.warn('[Webhook] Trial blocked (card or account already used a trial):', workspaceId)
-                  notifyTrialBlocked(workspaceId, planId)
+                  const reason = await trialService.getTrialBlockStatus(workspaceId)
+                  console.warn('[Webhook] Trial blocked:', workspaceId, reason)
+                  notifyTrialBlocked(workspaceId, planId, reason)
                 }
                 break
               }
@@ -9235,6 +9245,18 @@ app.post('/api/webhooks/stripe', async (c) => {
             console.log('[Webhook] Overage invoice paid:', { workspaceId: overageWorkspaceId, invoiceId: invoice.id, settled })
           } catch (err: any) {
             console.error('[Webhook] Failed to settle overage invoice:', err.message)
+          }
+        }
+        // The card has now paid a real invoice, so overage is trusted from here
+        // on (SHO-409). A trial's $0 invoices never set this.
+        if (customerId) {
+          try {
+            const count = await billingService.markSubscriptionFirstPaid(customerId, invoice.amount_paid ?? 0)
+            if (count > 0) {
+              console.log('[Webhook] Marked subscription firstPaidAt:', { customerId, count })
+            }
+          } catch (err: any) {
+            console.error('[Webhook] Failed to set firstPaidAt:', err?.message ?? err)
           }
         }
         if (customerId && subscriptionId) {

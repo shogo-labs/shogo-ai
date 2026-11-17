@@ -1614,6 +1614,13 @@ model Subscription {
   billingInterval      BillingInterval
   currentPeriodStart   DateTime
   currentPeriodEnd     DateTime
+  // When this subscription's card first paid a real (amount_paid > 0) invoice.
+  // Null while trialing: a trial's first invoice is $0, so the card has never
+  // been charged. Overage is gated on this (`resolveEffectivePlan`'s
+  // `overageTrusted`) so the first real charge on a card is never our overage
+  // block invoice — the fraud trials of Nov 2026 all failed exactly there.
+  // Set from `invoice.payment_succeeded`; never cleared by `syncFromStripe`.
+  firstPaidAt          DateTime?
   cancelAtPeriodEnd    Boolean            @default(false)
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
