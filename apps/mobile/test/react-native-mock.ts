@@ -132,6 +132,9 @@ export const reactNativeMockBase = {
   Text: passthroughHost('span'),
   TextInput: passthroughHost('input'),
   ScrollView: passthroughHost('div'),
+  // Pull-to-refresh renders nothing on its own; a screen that uses it only
+  // needs the export to exist so the module graph links.
+  RefreshControl: () => null,
   Pressable: passthroughHost('button'),
   TouchableOpacity: passthroughHost('button'),
   TouchableHighlight: passthroughHost('button'),

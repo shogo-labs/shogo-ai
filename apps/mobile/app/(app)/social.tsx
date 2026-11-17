@@ -109,7 +109,10 @@ export default function SocialScreen() {
         method: (init?.method ?? 'GET') as any,
         ...(init?.body ? { body: init.body } : {}),
       })
-      return res as any
+      // `request` resolves to `{ data, status, headers }`, not the body. Every
+      // caller below reads the body directly (`res.accounts`, `res.messages`),
+      // so returning the wrapper left every list on this screen empty.
+      return res.data
     },
     [base, http],
   )
@@ -166,7 +169,7 @@ export default function SocialScreen() {
         if (synced) setAccounts(synced)
         setAutomations(Array.isArray(automationRes?.automations) ? automationRes.automations : [])
         setAnalytics(analyticsRes ?? null)
-        const projectItems = Array.isArray(projectRes?.items) ? projectRes.items : []
+        const projectItems = Array.isArray(projectRes?.data?.items) ? projectRes.data.items : []
         setProjects(
           projectItems
             .filter((project: any) => project?.id)
@@ -468,6 +471,8 @@ function AccountsTab({
               <Pressable
                 key={target.id ?? 'shared'}
                 disabled={!!connecting}
+                accessibilityRole="button"
+                accessibilityLabel={`Connect for ${target.name}`}
                 onPress={() => onSelectProject(target.id)}
                 className={`px-2.5 py-1 rounded-full border ${
                   selected ? 'bg-primary border-primary' : 'border-border'
@@ -579,6 +584,8 @@ function AccountsTab({
                         <Pressable
                           key={target.id ?? 'shared'}
                           disabled={!!connecting}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Move @${account.username} to ${target.name}`}
                           onPress={() => onMove(account.id, target.id)}
                           className="px-2 py-1 rounded-full border border-border"
                         >
