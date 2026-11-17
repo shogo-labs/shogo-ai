@@ -2099,7 +2099,11 @@ const PeopleTab = observer(function PeopleTab() {
 
       {filteredMembers.map((member: any) => {
         const isCurrentUser = member.userId === user?.id;
-        const canSeeInsight = canViewMemberAnalytics || isCurrentUser;
+        // The workspace usage columns come from the admin-only endpoints, so a
+        // member sees a dash for every row — including their own, whose real
+        // numbers live in Profile → Usage (`/me/analytics/*`). Rendering "0%"
+        // from an unfetched table would be a wrong number, not a hidden one.
+        const canSeeInsight = canViewMemberAnalytics;
         const canEditMember = canManageMember(member);
         const insight = memberInsightMap.get(member.userId);
         const avatarColor = ROLE_COLORS[member.role] || "bg-primary";

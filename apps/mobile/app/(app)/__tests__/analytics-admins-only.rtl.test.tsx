@@ -35,8 +35,9 @@ mock.module('../../../hooks/useActiveWorkspace', () => ({
 }))
 
 let permissions = new Set<string>()
+let permissionsLoading = false
 mock.module('../../../hooks/usePermissions', () => ({
-  usePermissions: () => ({ can: (p: string) => permissions.has(p) }),
+  usePermissions: () => ({ can: (p: string) => permissions.has(p), loading: permissionsLoading }),
 }))
 
 // The four panels each fetch on mount; a member must never reach them.
@@ -70,6 +71,7 @@ const { default: AnalyticsScreen } = await import('../analytics')
 
 beforeEach(() => {
   permissions = new Set()
+  permissionsLoading = false
   panelRenders.usage = 0
   panelRenders.channels = 0
   panelRenders.heartbeats = 0
@@ -85,6 +87,15 @@ describe('Analytics screen', () => {
     expect(screen.getByText('Workspace admins only')).toBeTruthy()
     expect(screen.getByText('Ask a workspace owner or admin for access.')).toBeTruthy()
     expect(screen.queryByText('Usage')).toBeNull()
+    expect(panelRenders).toEqual({ usage: 0, channels: 0, heartbeats: 0, costs: 0 })
+  })
+
+  test('an admin is not told they are not an admin while permissions load', () => {
+    permissionsLoading = true
+    render(createElement(AnalyticsScreen))
+
+    expect(screen.queryByText('Workspace admins only')).toBeNull()
+    expect(document.querySelector('[data-rn-shim="analytics-loading"]')).toBeTruthy()
     expect(panelRenders).toEqual({ usage: 0, channels: 0, heartbeats: 0, costs: 0 })
   })
 

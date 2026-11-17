@@ -7,7 +7,7 @@
  * `?view=usage|channels|heartbeats|costs` selects the segment on open.
  */
 import { useState } from "react";
-import { Pressable, View } from "react-native";
+import { ActivityIndicator, Pressable, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { BarChart3 } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
@@ -40,7 +40,7 @@ export default function AnalyticsScreen() {
   const params = useLocalSearchParams<{ view?: string }>();
   const router = useRouter();
   const workspace = useActiveWorkspace();
-  const { can } = usePermissions({ workspaceId: workspace?.id });
+  const { can, loading } = usePermissions({ workspaceId: workspace?.id });
   // Workspace analytics are owner/admin only on the server; a member who lands
   // here (a stale link, a deep link) gets the empty state and no fetch at all.
   const isAdmin = can("workspace.analytics:read");
@@ -48,6 +48,18 @@ export default function AnalyticsScreen() {
   const [view, setView] = useState<AnalyticsView>(
     isAnalyticsView(params.view) ? params.view : "usage"
   );
+
+  // `can()` is false until the permissions land, so an admin opening a deep
+  // link would otherwise be told they are not an admin. Wait for the answer.
+  if (loading) {
+    return (
+      <TabScreen title="Analytics" back testID="analytics-screen">
+        <View className="flex-1 items-center justify-center" testID="analytics-loading">
+          <ActivityIndicator />
+        </View>
+      </TabScreen>
+    );
+  }
 
   if (!isAdmin) {
     return (
