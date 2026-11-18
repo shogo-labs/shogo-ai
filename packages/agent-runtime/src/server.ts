@@ -41,6 +41,10 @@ import {
 } from 'fs'
 import { hydrateWorkspaceMembers, type MemberSync } from './workspace-hydration'
 import {
+  getWorkspaceRootSecretsSync,
+  type WorkspaceRootSecretSync,
+} from './workspace-secrets-sync'
+import {
   resolveMemberTechStackId,
   applyMemberTechStackMarker,
   memberHasProjectSource,
@@ -515,6 +519,13 @@ let publishedDataSyncInstance: PublishedDataSync | null = null
  * member and flush them all on shutdown. Empty for single-project runtimes.
  */
 let workspaceMemberSyncs: Map<string, import('@shogo/shared-runtime').S3Sync> = new Map()
+
+/**
+ * Keeps the workspace root's `.env*` in the API's encrypted store (SHO-384).
+ * Null unless the API attached one — desktop and metal runtimes keep their root
+ * on disk (desktop) or in the home archive (metal).
+ */
+let workspaceRootSecretSync: WorkspaceRootSecretSync | null = null
 
 /**
  * Whether real Git LFS is active for this pod. Scoped to `git_only` (the
@@ -7500,6 +7511,19 @@ async function initializeEssentials(): Promise<void> {
     }
   }
 
+  // The workspace root's `.env*` (SHO-384). Restored HERE, after the member
+  // hydrate and the git bootstrap above — both replace whole directory trees,
+  // so a `.env` restored earlier would be gone before the agent ever ran. The
+  // edit path then keeps the stored copy current: an interval, plus a flush on
+  // shutdown. Null on desktop (no store configured — the root is real files
+  // there) and on metal (the host-mediated home archive already carries them).
+  workspaceRootSecretSync = getWorkspaceRootSecretsSync()
+  if (workspaceRootSecretSync) {
+    await workspaceRootSecretSync.restore()
+    workspaceRootSecretSync.start()
+    logTiming('Workspace root secrets: API store attached')
+  }
+
   // Ensure workspace has node_modules. This no longer blocks boot: the install
   // runs in the background (`startWorkspaceDepsInstall`) so the gateway can
   // start and accept the first chat message while deps install. Deps-dependent
@@ -8008,6 +8032,22 @@ async function gracefulShutdown(signal: string): Promise<void> {
     }
   } catch (err: any) {
     console.error(`[agent-runtime] Cloud sync flush error during shutdown:`, err.message)
+  }
+
+  // The root's `.env*` first: it lives in the API's encrypted store, not in any
+  // member's archive, and it is the smallest write of the shutdown. Ordered
+  // ahead of the member flushes so a slow archive cannot eat its budget.
+  if (workspaceRootSecretSync) {
+    try {
+      const flushed = await workspaceRootSecretSync.flush()
+      if (flushed?.stored) {
+        console.log(`[agent-runtime] Workspace root secrets saved (${flushed.files} .env file(s))`)
+      }
+    } catch (err: any) {
+      console.error('[agent-runtime] Workspace root secrets flush failed:', err?.message ?? err)
+    } finally {
+      workspaceRootSecretSync.stop()
+    }
   }
 
   // Flush every workspace member's S3 sync (cloud workspace runtime). Each

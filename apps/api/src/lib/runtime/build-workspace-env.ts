@@ -48,6 +48,7 @@ import { isDockerTechStack } from '../../../../../packages/core/src/tech-stack-r
 import { resolveAgentModelEnv } from './agent-model-defaults'
 import { deriveWorkspaceRuntimeToken } from '../workspace-runtime-token'
 import { HOME_STATE_KEY_PURPOSE, HOME_STATE_KEY_VERSION } from './home-state-key'
+import { workspaceRuntimeKey } from '@shogo/shared-runtime/workspace-root-secrets'
 import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { parseProjectSettings } from '../project-settings'
@@ -474,8 +475,14 @@ export async function buildWorkspaceEnv(
   // archive (`<runtimeKey>/home-state.enc`), the key and the AAD all name the
   // same runtime. HOME_STATE_ID is needed because a workspace bind sets the
   // guest's PROJECT_ID to its first member, not to the runtime key.
+  //
+  // The same archive carries the root's `.env*` on metal (SHO-382). A cloud pod
+  // cannot use it: nothing in front of it holds the key and encrypts the blob,
+  // and under `git_only` it has no object-store credentials of its own. It gets
+  // the API-side store instead (SHO-384, below) — the runtime key is the same
+  // string either way, so the two substrates name one runtime identically.
   if (opts.forMetal) {
-    const homeStateId = opts.anchorProjectId ? `ws:proj:${opts.anchorProjectId}` : `ws:${workspaceId}`
+    const homeStateId = workspaceRuntimeKey({ workspaceId, anchorProjectId: opts.anchorProjectId })
     const { deriveProjectKey, isSecretCryptoConfigured } = await import('../secret-crypto')
     if (isSecretCryptoConfigured()) {
       env.HOME_STATE_KEY = deriveProjectKey(HOME_STATE_KEY_PURPOSE, homeStateId).toString('base64')
@@ -483,6 +490,26 @@ export async function buildWorkspaceEnv(
       env.HOME_STATE_ID = homeStateId
     } else {
       console.warn(`[${prefix}] SECRETS_ENCRYPTION_KEY unset — home-directory persistence disabled for ${homeStateId}`)
+    }
+  }
+
+  // Workspace-root `.env*` durability for CLOUD workspace runtimes (SHO-384).
+  //
+  // A cloud `ws:` runtime rebuilds its root from `git archive HEAD`, and git
+  // ignores `.env*` — so the tokens an agent saved at the root were gone after
+  // every cold boot. The API now holds them, sealed with a key derived from the
+  // runtime key, and the runtime pulls them once after its hydrate and pushes
+  // changes back. In-cluster only: a desktop workspace root is a real directory
+  // that is never rebuilt, so the runtime keeps reading its own disk and this
+  // flag stays unset (one code path, no cloud-only branch inside the runtime).
+  if (!opts.forMetal && process.env.SYSTEM_NAMESPACE && process.env.SHOGO_LOCAL_MODE !== 'true') {
+    const { isSecretCryptoConfigured } = await import('../secret-crypto')
+    if (isSecretCryptoConfigured()) {
+      env.SHOGO_WORKSPACE_SECRET_STORE = 'rest'
+    } else {
+      console.warn(
+        `[${prefix}] SECRETS_ENCRYPTION_KEY unset — workspace-root .env persistence disabled for workspace ${workspaceId}`,
+      )
     }
   }
 
