@@ -11,10 +11,10 @@
  * `onAuthError` fires with `session_missing` when it is not.
  */
 
-import { afterAll, afterEach, describe, expect, it } from 'bun:test'
+import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { installHappyDom, restoreHappyDom } from '../../hooks/__tests__/happy-dom-setup.ts'
-import { AuthProvider, useAuth, type AuthErrorContext } from '../AuthProvider'
+import { AuthProvider, MIN_NATIVE_OAUTH_SHEET_MS, useAuth, type AuthErrorContext } from '../AuthProvider'
 
 installHappyDom()
 
@@ -27,6 +27,24 @@ afterEach(async () => {
 })
 
 const USER = { id: 'user-1', email: 'user@example.com', name: 'User One' }
+
+/**
+ * The provider times the native sheet with `Date.now()`. This clock stands in
+ * for the wall time the sheet was open: the fake client advances it, so a test
+ * can say "the sheet was up for 300 ms" without waiting 300 ms.
+ */
+let now = 0
+let nowSpy: { mockRestore: () => void } | undefined
+
+beforeEach(() => {
+  now = 1_000_000
+  nowSpy = spyOn(Date, 'now').mockImplementation(() => now) as any
+})
+
+afterEach(() => {
+  nowSpy?.mockRestore()
+  nowSpy = undefined
+})
 
 /**
  * Stands in for the Expo client plugin: `signIn.social` resolves with the
@@ -43,6 +61,11 @@ function fakeAuthClient(opts: {
   redirect?: boolean
   /** Hold every social call until the test releases it. */
   gate?: Promise<void>
+  /**
+   * How long the browser sheet stays up, in ms. Defaults to a round trip a
+   * person actually finished; `300` is the App Review crawler's dismissal.
+   */
+  sheetMs?: number
 }) {
   const state = { cookieStored: opts.cookieStored, sessionReads: 0, socialCalls: 0 }
   return {
@@ -55,6 +78,7 @@ function fakeAuthClient(opts: {
       social: async () => {
         state.socialCalls += 1
         if (opts.gate) await opts.gate
+        now += opts.sheetMs ?? 12_000
         if (opts.socialThrows) throw opts.socialThrows
         if (opts.socialError) return { data: null, error: opts.socialError }
         // A successful round trip: the browser closed, no user in the payload.
@@ -78,9 +102,10 @@ async function renderProvider(
   onAuthError?: (error: unknown, context: AuthErrorContext) => void,
   props: { socialSignInNavigatesPage?: boolean } = {},
 ) {
-  const seen: { user: unknown; isLoading: boolean; signInWithGoogle: () => Promise<void>; signInWithApple: (p: any) => Promise<void>; signIn: (e: string, p: string) => Promise<void> } = {
+  const seen: { user: unknown; isLoading: boolean; error: string | null; signInWithGoogle: () => Promise<void>; signInWithApple: (p: any) => Promise<void>; signIn: (e: string, p: string) => Promise<void> } = {
     user: undefined,
     isLoading: true,
+    error: null,
     signInWithGoogle: async () => {},
     signInWithApple: async () => {},
     signIn: async () => {},
@@ -89,6 +114,7 @@ async function renderProvider(
     const auth = useAuth()
     seen.user = auth.user
     seen.isLoading = auth.isLoading
+    seen.error = auth.error
     seen.signInWithGoogle = auth.signInWithGoogle as any
     seen.signInWithApple = auth.signInWithApple as any
     seen.signIn = auth.signIn
@@ -149,6 +175,42 @@ describe('Google sign-in hand-back', () => {
 
     expect(errors).toHaveLength(1)
     expect(errors[0].context).toEqual({ provider: 'google', stage: 'sign_in' })
+  })
+
+  /**
+   * The iOS events SHO-430 was carded for carry `session_missing` with a 0.3 s
+   * wait between the POST and the `get-session`. That gap is the whole sheet
+   * round trip, so the sheet was dismissed — `ASWebAuthenticationSession`
+   * resolves `{ type: 'cancel' }`, the Expo plugin returns from its `onSuccess`
+   * hook without touching the response, and `signIn.social` resolves as if the
+   * hand-back had run. A dismissal is not a broken hand-back, and it must not
+   * reach Sentry as one.
+   */
+  it('treats a sub-second native round trip as a dismissal: no report, told to try again', async () => {
+    const errors: Array<{ error: unknown; context: AuthErrorContext }> = []
+    const client = fakeAuthClient({ cookieStored: false, sheetMs: 300 })
+    const probe = await renderProvider(client, (error, context) => errors.push({ error, context }))
+    const readsAfterMount = client.state.sessionReads
+
+    await act(async () => { await probe.signInWithGoogle() })
+
+    expect(errors).toEqual([])
+    expect(probe.user).toBeNull()
+    // Nothing to read a session for: the round trip never happened.
+    expect(client.state.sessionReads).toBe(readsAfterMount)
+    expect(probe.error).toContain('closed before it finished')
+  })
+
+  it('reports session_missing only once the sheet stayed up, and says so on screen', async () => {
+    const errors: Array<{ error: unknown; context: AuthErrorContext }> = []
+    const client = fakeAuthClient({ cookieStored: false, sheetMs: MIN_NATIVE_OAUTH_SHEET_MS + 1 })
+    const probe = await renderProvider(client, (error, context) => errors.push({ error, context }))
+
+    await act(async () => { await probe.signInWithGoogle() })
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0].context).toEqual({ provider: 'google', stage: 'session_missing' })
+    expect(probe.error).toContain('without a session')
   })
 })
 
@@ -274,6 +336,20 @@ describe('Apple sign-in', () => {
 
     expect(errors).toHaveLength(1)
     expect(errors[0].context).toEqual({ provider: 'apple', stage: 'session_missing' })
+    expect(probe.error).toContain('without a session')
+  })
+
+  it('reports a rejected exchange exactly once', async () => {
+    const errors: Array<{ error: unknown; context: AuthErrorContext }> = []
+    const client = fakeAuthClient({ cookieStored: false, socialError: { message: 'invalid_grant' } })
+    const probe = await renderProvider(client, (error, context) => errors.push({ error, context }))
+
+    await act(async () => { await probe.signInWithApple({ idToken: 'token' }).catch(() => {}) })
+
+    // Pre-existing on main: the error branch reported, then rethrew into the
+    // catch, which reported the same failure again (SHO-430 QA round 1).
+    expect(errors).toHaveLength(1)
+    expect(errors[0].context).toEqual({ provider: 'apple', stage: 'sign_in' })
   })
 })
 
