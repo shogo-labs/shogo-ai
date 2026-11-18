@@ -192,8 +192,8 @@ test.describe("Team workspace: desktop rail and panels", () => {
     await expect(page.getByRole("button", { name: "Unreads", exact: true })).toBeVisible()
 
     await tab(page, "Agents").click()
-    await expect(page.getByRole("button", { name: `Message ${seed.dmAgent}` })).toBeVisible()
-    await expect(page.getByRole("button", { name: `Message ${seed.idleAgent}` })).toBeVisible()
+    await expect(page.getByRole("button", { name: `Open chat with ${seed.dmAgent}` })).toBeVisible()
+    await expect(page.getByRole("button", { name: `Open chat with ${seed.idleAgent}` })).toBeVisible()
 
     await tab(page, "Projects").click()
     await expect(page.getByText(seed.idleAgent).first()).toBeVisible()
@@ -223,12 +223,12 @@ test.describe("Team workspace: desktop rail and panels", () => {
 
   test("selecting the active tab again hides the panel and shows it again", async () => {
     await tab(page, "Agents").click()
-    await expect(page.getByRole("button", { name: `Message ${seed.idleAgent}` })).toBeVisible()
+    await expect(page.getByRole("button", { name: `Open chat with ${seed.idleAgent}` })).toBeVisible()
     await tab(page, "Agents").click()
-    await expect(page.getByRole("button", { name: `Message ${seed.idleAgent}` })).toHaveCount(0)
+    await expect(page.getByRole("button", { name: `Open chat with ${seed.idleAgent}` })).toHaveCount(0)
     await expect(rail(page)).toBeVisible()
     await tab(page, "Agents").click()
-    await expect(page.getByRole("button", { name: `Message ${seed.idleAgent}` })).toBeVisible()
+    await expect(page.getByRole("button", { name: `Open chat with ${seed.idleAgent}` })).toBeVisible()
   })
 
   test("opening a conversation selects its tab, and the tab follows the route on reload", async () => {
@@ -256,7 +256,7 @@ test.describe("Team workspace: desktop rail and panels", () => {
 
   test("the Agents tab opens a chat with an agent and its profile", async () => {
     await tab(page, "Agents").click()
-    await page.getByRole("button", { name: `Message ${seed.idleAgent}` }).click()
+    await page.getByRole("button", { name: `Open chat with ${seed.idleAgent}` }).click()
     // A chat with an agent is a project chat now, not a DM (SHO-412).
     await expect(page).toHaveURL(new RegExp(`/projects/${seed.idleAgentProjectId}`), { timeout: 30_000 })
     await expect(page).toHaveURL(/chatSessionId=/, { timeout: 30_000 })
