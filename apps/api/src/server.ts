@@ -14,7 +14,6 @@ import { fileURLToPath } from 'url'
 import { readdir, stat, mkdir, appendFile } from 'fs/promises'
 import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync, readFileSync, realpathSync } from 'fs'
 import { auth } from './auth'
-import type { PaidInstanceSize } from './config/stripe-prices'
 import { resolveSubscriptionContext, selectPlanItem } from './services/stripe-subscription-sync.service'
 import { resolveCheckoutPriceId, normalizeCheckoutPlanId } from './services/stripe-price-lookup.service'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
@@ -34,6 +33,7 @@ import { workspaceRootRoutes } from './routes/workspace-root'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { workspaceExportRoutes } from './routes/workspace-export'
 import { workspaceMoveRoutes } from './routes/workspace-moves'
+import { computeUsageRoutes } from './routes/compute-usage'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
 import { conversationRoutes } from './routes/conversations'
 import { workBoardRoutes } from './routes/work-boards'
@@ -260,9 +260,6 @@ const SUPPORTED_CURRENCIES: any = cloud.SUPPORTED_CURRENCIES ?? []
 const getExchangeRates: any = cloud.getExchangeRates ?? (async () => ({}))
 const convertPrice: any = cloud.convertPrice ?? ((value: unknown) => value)
 const buildRegionalPlans: any = cloud.buildRegionalPlans ?? (() => [])
-const INSTANCE_SIZES: any = cloud.INSTANCE_SIZES ?? {}
-const INSTANCE_SIZE_ORDER: any = cloud.INSTANCE_SIZE_ORDER ?? []
-const getInstanceDisplayPrice: any = cloud.getInstanceDisplayPrice ?? (() => undefined)
 const sendPlanUpgradedEmail: any = cloud.sendPlanUpgradedEmail ?? (async () => {})
 const sendTrialEndingEmail: any = cloud.sendTrialEndingEmail ?? (async () => {})
 const sendTrialUnavailableEmail: any = cloud.sendTrialUnavailableEmail ?? (async () => {})
@@ -1696,6 +1693,9 @@ app.route('/api', cliAuthRoutes())
 
 // Remote Control — Instance registry, tunnel proxy, audit trail, push subscriptions
 app.route('/api', instanceRoutes())
+// Workspace compute usage (SHO-424): metered microVM time × machine size,
+// billed as `vm_compute`. Owner/admin sees the split, a member the total.
+app.route('/api', computeUsageRoutes())
 // A paired desktop's own workspaces, owner-only (`/api/machines…`).
 app.route('/api', machineRoutes())
 app.route('/api', remoteAuditRoutes())
@@ -8683,19 +8683,14 @@ app.get('/api/billing/regional-pricing', async (c) => {
 })
 
 // =============================================================================
-// Instance size add-on routes
+// Instance size routes
+//
+// The sizes are no longer a purchasable add-on (SHO-424): they remain the
+// admin-set CAP on what a workspace may run at once (pooled memory budget in
+// lib/workspace-compute-budget.ts) and the label the settings page shows. The
+// webhook below still resolves a size from an in-flight legacy checkout, so a
+// subscription created before the switch still lands on a real tier.
 // =============================================================================
-
-function resolvePaidInstanceSizeFromCheckoutBody(raw: string): PaidInstanceSize | null {
-  const legacy: Record<string, PaidInstanceSize> = {
-    basic: 'small',
-    pro: 'medium',
-    business: 'large',
-  }
-  if (legacy[raw]) return legacy[raw]
-  const paid: readonly string[] = ['small', 'medium', 'large', 'xlarge']
-  return paid.includes(raw) ? (raw as PaidInstanceSize) : null
-}
 
 function resolveInstanceSizeFromStripeMetadata(raw: string): InstanceSizeName | null {
   const legacy: Record<string, InstanceSizeName> = {
@@ -8709,70 +8704,22 @@ function resolveInstanceSizeFromStripeMetadata(raw: string): InstanceSizeName | 
   return all.includes(raw) ? (raw as InstanceSizeName) : null
 }
 
+// Instance sizes are no longer sold (SHO-424, Russell 2026-11-18): compute is
+// billed on the VM time a workspace actually uses (vcpu-hour + GiB-hour, agent
+// and app time only) instead of a flat monthly size. The route is kept as an
+// explicit 410 rather than deleted so an old client — a cached web bundle, a
+// desktop build — gets a truthful answer instead of a 404 it might retry.
 app.post('/api/billing/instance-checkout', async (c) => {
-  try {
-    if (!stripe) {
-      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
-    }
-
-    const body = await c.req.json()
-    const rawSize = body.instanceSize ?? body.capacityTier
-    const { workspaceId, billingInterval, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
-
-    if (!workspaceId || !rawSize || !billingInterval) {
-      return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
-    }
-
-    const instanceSize = resolvePaidInstanceSizeFromCheckoutBody(String(rawSize))
-    if (!instanceSize) {
-      return c.json({ error: { code: 'invalid_tier', message: 'Invalid instance size' } }, 400)
-    }
-
-    if (!await verifyWorkspaceMembership(c, workspaceId)) {
-      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
-    }
-
-    const priceId = getInstancePriceId(instanceSize, billingInterval as 'monthly' | 'annual')
-    if (!priceId) {
-      return c.json({ error: { code: 'invalid_plan', message: `No instance price found for ${instanceSize} ${billingInterval}` } }, 400)
-    }
-
-    const auth = c.get('auth') as any
-    const userEmail = auth?.email
-
-    const metadata: Record<string, string> = {
-      workspaceId,
-      instanceSize,
-      billingInterval,
-      checkoutType: 'instance',
-    }
-
-    const frontendUrl = getFrontendUrl()
-    const successUrl = clientSuccessUrl
-      || `${frontendUrl}/?workspace=${workspaceId}&instance_checkout=success&session_id={CHECKOUT_SESSION_ID}`
-    const cancelUrl = clientCancelUrl
-      || `${frontendUrl}/?workspace=${workspaceId}&instance_checkout=canceled`
-
-    const userIdForAffiliate = (c.get('auth') as any)?.userId as string | undefined
-    const affiliateOverrides = await affiliateCheckoutOverrides(userIdForAffiliate)
-    const sessionMetadata = { ...metadata, ...(affiliateOverrides.metadata ?? {}) }
-
-    const session = await stripe.checkout.sessions.create({
-      mode: 'subscription',
-      line_items: [{ price: priceId, quantity: 1 }],
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-      metadata: sessionMetadata,
-      ...(userEmail && { customer_email: userEmail }),
-      ...(affiliateOverrides.customer_creation && { customer_creation: affiliateOverrides.customer_creation }),
-      ...(affiliateOverrides.subscription_data && { subscription_data: affiliateOverrides.subscription_data }),
-    })
-
-    return c.json({ sessionId: session.id, url: session.url }, 200)
-  } catch (error: any) {
-    console.error('[Instance] Checkout error:', error)
-    return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
-  }
+  return c.json(
+    {
+      error: {
+        code: 'instance_sizes_retired',
+        message:
+          'Instance sizes are no longer sold. Compute is billed on the VM time a workspace uses — see Settings → Compute for the current period.',
+      },
+    },
+    410,
+  )
 })
 
 app.post('/api/billing/instance-portal', async (c) => {
@@ -8931,12 +8878,6 @@ app.get('/api/workspaces/:id/instance', async (c) => {
             cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
           }
         : null,
-      sizes: INSTANCE_SIZE_ORDER.map((t: any) => ({
-        name: t,
-        ...INSTANCE_SIZES[t],
-        displayPriceMonthly: getInstanceDisplayPrice(t, 'monthly'),
-        displayPriceAnnual: getInstanceDisplayPrice(t, 'annual'),
-      })),
     })
   } catch (error: any) {
     console.error('[Instance] Get instance error:', error)
@@ -11203,6 +11144,22 @@ setTimeout(async () => {
         '[PublishedUsage] failed to schedule meter/biller (non-fatal):',
         err?.message ?? err,
       )
+    }
+  })()
+}
+
+// Workspace compute billing (SHO-424): prices every closed hour of metal VM
+// running time (size × time, agent/app time only — the idle tail is free) into
+// one `consumeUsage` per workspace-hour. Shadow mode by default: it fills
+// `VmUsageHour.chargedUsd` and logs the total without charging until
+// VM_BILLING_MODE=enforce.
+{
+  ;(async () => {
+    try {
+      const { startVmUsageBillCron } = await import('./jobs/vm-usage-bill')
+      startVmUsageBillCron()
+    } catch (err: any) {
+      console.error('[VmUsageBill] failed to schedule biller (non-fatal):', err?.message ?? err)
     }
   })()
 }
