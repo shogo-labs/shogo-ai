@@ -306,9 +306,9 @@ test.describe("Team workspace: desktop rail and panels", () => {
     await expect(picker).toBeVisible()
     await expect(picker.getByText("People", { exact: true }).first()).toBeVisible()
     // Agents are not in the picker: a chat with an agent is a project chat, and
-    // the Agents tab is where you start one (SHO-412).
-    await expect(picker.getByRole("button", { name: `${seed.dmPeer}` })).toBeVisible({ timeout: 30_000 })
-    await expect(picker.getByRole("button", { name: `${seed.idleAgent}, agent` })).toHaveCount(0)
+    // the Agents tab is where you start one (SHO-412). People are checkboxes.
+    await expect(picker.getByRole("checkbox", { name: seed.dmPeer })).toBeVisible({ timeout: 30_000 })
+    await expect(picker.getByRole("checkbox", { name: seed.idleAgent })).toHaveCount(0)
     await page.getByLabel("Close", { exact: true }).click()
 
     await rail(page).getByRole("button", { name: "Create", exact: true }).click()

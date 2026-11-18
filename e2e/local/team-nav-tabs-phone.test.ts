@@ -196,11 +196,14 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     const picker = page.getByTestId("new-message-picker")
     // Agents are not in the picker: a chat with an agent is a project chat, and
     // the Agents tab is where you start one (SHO-412).
-    await expect(picker.getByRole("button", { name: seed.dmPeer })).toBeVisible({ timeout: 30_000 })
-    await expect(picker.getByRole("button", { name: `${seed.idleAgent}, agent` })).toHaveCount(0)
+    // People are checkboxes (the picker also starts group messages and
+    // huddles), so a person is checked and then "Start message" opens the DM.
+    const person = picker.getByRole("checkbox", { name: seed.dmPeer })
+    await expect(person).toBeVisible({ timeout: 30_000 })
+    await expect(picker.getByRole("checkbox", { name: seed.idleAgent })).toHaveCount(0)
 
-    // A person opens their DM straight away.
-    await picker.getByRole("button", { name: seed.dmPeer }).click()
+    await person.click()
+    await picker.getByRole("button", { name: "Start message" }).click()
     await expect(page).toHaveURL(new RegExp(`/c/${seed.dmId}`), { timeout: 30_000 })
     await expect(page.getByTestId("new-conversation-screen")).not.toBeVisible()
   })
