@@ -16,7 +16,6 @@ import {
   Pressable,
   Modal,
   ActivityIndicator,
-  Linking,
   Platform,
   StyleSheet,
   useWindowDimensions,
@@ -168,6 +167,7 @@ import { useNotificationPermission } from "../../lib/notifications/useNotificati
 import type { NotificationPermissionState } from "../../lib/notifications/chat-notifier";
 import { useRequireBiometricApproval } from "../../lib/approval-lock";
 import { useDualPlan } from "../../lib/dual-plan-preference";
+import { openExternalLink } from "../../lib/open-external-link";
 
 const latestAnnouncedRelease = whatsNewCatalog.find((release) => release.announce);
 
@@ -2415,7 +2415,7 @@ const PeopleTab = observer(function PeopleTab() {
     if (typeof window !== "undefined") {
       window.open(url, "_blank", "noopener");
     } else {
-      Linking.openURL(url);
+      openExternalLink(url);
     }
   };
 
@@ -4110,7 +4110,7 @@ export function WorkspaceAccountActions({
             <Pressable
               accessibilityRole="link"
               accessibilityLabel="Open documentation"
-              onPress={() => void Linking.openURL(DOCS_URL)}
+              onPress={() => void openExternalLink(DOCS_URL)}
               className={cn(
                 sidebar
                   ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
@@ -4123,7 +4123,7 @@ export function WorkspaceAccountActions({
             <Pressable
               accessibilityRole="link"
               accessibilityLabel="Open What's New"
-              onPress={() => void Linking.openURL(CHANGELOG_URL)}
+              onPress={() => void openExternalLink(CHANGELOG_URL)}
               className={cn(
                 sidebar
                   ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
@@ -4409,7 +4409,7 @@ export default observer(function SettingsPage({
                 </Text>
               </View>
               <Pressable
-                onPress={() => Linking.openURL(DOCS_URL)}
+                onPress={() => openExternalLink(DOCS_URL)}
                 className="flex-row items-center gap-1.5 rounded-lg px-2 py-1.5 active:bg-muted"
               >
                 <ExternalLink size={14} className="text-muted-foreground" />

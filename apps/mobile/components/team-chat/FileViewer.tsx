@@ -16,7 +16,7 @@
  * such, rather than as an opaque chip that only offers a download.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { ActivityIndicator, Image, Linking, Platform, Pressable, ScrollView, Text, View } from 'react-native'
+import { ActivityIndicator, Image, Platform, Pressable, ScrollView, Text, View } from 'react-native'
 import { AlertCircle, ClipboardCopy, Download, ExternalLink } from 'lucide-react-native'
 import { attachmentDownloadUrl, downloadAttachment } from '../../lib/attachment-download'
 import { formatFileSize } from '../../lib/composer-attachments'
@@ -32,6 +32,7 @@ import { useResolvedTheme } from '../../contexts/theme'
 import { FileContentView, viewerPathKey } from '../files/FileContentView'
 import { fileViewKind } from '../files/file-view-kind'
 import { VoiceNotePlayer } from './VoiceNotePlayer'
+import { openExternalLink } from '../../lib/open-external-link';
 
 const api = teamChatApi()
 
@@ -340,7 +341,7 @@ function OpenInBrowser({ url }: { url: string }) {
     <Pressable
       onPress={() => {
         if (Platform.OS === 'web') window.open(url, '_blank', 'noopener,noreferrer')
-        else void Linking.openURL(url).catch(() => {})
+        else void openExternalLink(url)
       }}
       accessibilityRole="button"
       accessibilityLabel="Open in browser"

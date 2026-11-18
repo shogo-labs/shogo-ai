@@ -17,7 +17,6 @@ import {
   ScrollView,
   Pressable,
   TextInput,
-  Linking,
   Platform,
   Alert,
   useWindowDimensions,
@@ -87,6 +86,7 @@ import {
   Skeleton,
   cn,
 } from '@shogo/shared-ui/primitives'
+import { openExternalLink } from '../../lib/open-external-link';
 
 // ─── Rolling usage-window bar ──────────────────────────────
 
@@ -728,7 +728,7 @@ export default observer(function BillingPage() {
       // iOS: route to native App Store subscriptions screen (Apple requirement).
       if (Platform.OS === 'ios') {
         try {
-          await Linking.openURL(APP_STORE_SUBSCRIPTIONS_URL)
+          await openExternalLink(APP_STORE_SUBSCRIPTIONS_URL)
         } catch (err) {
           console.warn('[Billing] failed to open App Store subscriptions:', err)
         } finally {
@@ -1271,7 +1271,7 @@ export default observer(function BillingPage() {
               <View className="hidden lg:block lg:min-h-[76px]" />
 
               <Pressable
-                onPress={() => Linking.openURL('mailto:sales@shogo.ai')}
+                onPress={() => openExternalLink('mailto:sales@shogo.ai')}
                 className="w-full items-center justify-center py-3 rounded-md border border-border active:bg-muted"
               >
                 <Text className="text-sm font-medium text-foreground">Book a demo</Text>
@@ -1320,7 +1320,7 @@ export default observer(function BillingPage() {
             </Pressable>
             <Pressable
               accessibilityRole="link"
-              onPress={() => Linking.openURL(APP_STORE_SUBSCRIPTIONS_URL)}
+              onPress={() => openExternalLink(APP_STORE_SUBSCRIPTIONS_URL)}
             >
               <Text className="text-xs text-primary underline">Manage subscription</Text>
             </Pressable>

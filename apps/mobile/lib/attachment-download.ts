@@ -17,7 +17,8 @@
  * bytes, write them into app storage, then present the share sheet.
  */
 
-import { InteractionManager, Linking, Platform } from 'react-native'
+import { InteractionManager, Platform } from 'react-native'
+import { openExternalLink } from "./open-external-link";
 
 /** `?dl=1` on a capability URL, keeping the token it already carries. */
 export function attachmentDownloadUrl(url: string): string {
@@ -93,6 +94,6 @@ export async function downloadAttachment(url: string, name: string): Promise<voi
   } catch {
     // The share sheet needs the file on disk; when that fails the link still
     // hands the file to the browser or the OS, which is better than nothing.
-    await Linking.openURL(href).catch(() => undefined)
+    await openExternalLink(href)
   }
 }

@@ -8,6 +8,13 @@ import { createReactNativeMock } from '../../../test/react-native-mock'
 
 const opened: string[] = []
 
+// The card hands the connect URL to the shared opener (SHO-436); the opener's
+// own behaviour is covered by lib/__tests__/open-external-link.test.ts.
+mock.module('../../../lib/open-external-link', () => ({
+  openExternalLink: async (url: string) => { opened.push(url) },
+  isOpenableUrl: () => true,
+}))
+
 mock.module('react-native', () =>
   createReactNativeMock({
     Platform: { OS: 'web', select: (s: any) => s.web ?? s.default },
@@ -15,7 +22,6 @@ mock.module('react-native', () =>
       createElement('div', { role: 'button', 'aria-label': accessibilityLabel, onClick: onPress }, children),
     Text: ({ children }: any) => createElement('span', null, children),
     View: ({ children }: any) => createElement('div', null, children),
-    Linking: { openURL: async (url: string) => { opened.push(url) } },
   } as any),
 )
 

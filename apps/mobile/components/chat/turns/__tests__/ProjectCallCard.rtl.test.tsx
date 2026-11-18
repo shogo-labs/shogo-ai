@@ -45,10 +45,16 @@ const ViewHost = React.forwardRef<HTMLElement, Record<string, unknown>>(function
   return React.createElement("div", { ...props, "data-testid": testID, ref }, children as React.ReactNode)
 })
 
+// The card hands the link to the shared opener (SHO-436); the opener's own
+// behaviour is covered by lib/__tests__/open-external-link.test.ts.
 const openURL = mock(async (_url: string) => {})
+mock.module('../../../../lib/open-external-link', () => ({
+  openExternalLink: openURL,
+  isOpenableUrl: () => true,
+}))
 mock.module(
   "react-native",
-  () => createReactNativeMock({ Pressable: Host, Text: TextHost, View: ViewHost, Linking: { openURL, canOpenURL: async () => false, addEventListener: () => ({ remove: () => {} }) } }),
+  () => createReactNativeMock({ Pressable: Host, Text: TextHost, View: ViewHost, Linking: { openURL: async () => {}, canOpenURL: async () => false, addEventListener: () => ({ remove: () => {} }) } }),
 )
 mock.module("@shogo/shared-ui/primitives", () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(" "),

@@ -21,7 +21,6 @@ import {
   ScrollView,
   ActivityIndicator,
   Platform,
-  Linking,
 } from 'react-native'
 import * as ExpoLinking from 'expo-linking'
 import { useLocalSearchParams, useRouter } from 'expo-router'
@@ -60,6 +59,7 @@ import {
   TextInput,
   useAccountSheetIcons,
 } from './account-sheet-chrome'
+import { openExternalLink } from '../../lib/open-external-link';
 
 const LOG_PREFIX = '[IntegrationsTab]'
 
@@ -491,7 +491,7 @@ export function IntegrationsTab() {
               <Pressable
                 onPress={() =>
                   workspaceId &&
-                  Linking.openURL(
+                  openExternalLink(
                     `${API_URL}/api/integrations/slack/install?workspaceId=${encodeURIComponent(workspaceId)}`,
                   )
                 }
