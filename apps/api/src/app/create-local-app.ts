@@ -16,6 +16,7 @@ import { localThumbnailRoutes } from '../routes/local-thumbnail'
 import { localProjectMetadataRoutes } from '../routes/local-project-metadata'
 import { localHeartbeatRoutes } from '../routes/local-heartbeat'
 import { localFilesRoutes } from '../routes/local-files'
+import { slidesViewerRoutes } from '../routes/slides-viewer'
 import { externalPreviewRoutes } from '../routes/external-preview'
 import { projectExportImportRoutes } from '../routes/project-export-import'
 import { projectChatRoutes } from '../routes/project-chat'
@@ -162,6 +163,9 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', localProjectMetadataRoutes())
   app.route('/api', localHeartbeatRoutes())
   app.route('/api', localFilesRoutes({ workspacesDir }))
+  // The slides viewer page (SHO-426). Mounted here as well as in the cloud
+  // composer so a deck previews the same on desktop as it does in the browser.
+  app.route('/api/viewers', slidesViewerRoutes())
   app.route('/api/projects', externalPreviewRoutes())
   // Project export (.shogo / source .zip) and import. The slim-local refactor
   // moved this behind the cloud-only lazy island in server.ts, so desktop

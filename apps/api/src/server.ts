@@ -26,6 +26,7 @@ import * as workspaceModelsService from './services/workspace-models.service'
 import { REGION_ID, REGION_LABEL, REGION_PEERS, getPeer } from './lib/region'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
+import { slidesViewerRoutes } from './routes/slides-viewer'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { pinChatToHomeRegion, pinProjectRoutesToHomeRegion } from './lib/chat-region-pin'
 import { RuntimeNotInHomeRegionError, runtimeNotInHomeRegionResponse } from './lib/runtime-home-region-guard'
@@ -678,6 +679,17 @@ app.use('/api/preview/:projectId/render/*', previewFrameStrip)
 app.use('/api/preview/:projectId/ports/:port/render', previewFrameStrip)
 app.use('/api/preview/:projectId/ports/:port/render/*', previewFrameStrip)
 
+// The slides viewer is framed by every file host, and on desktop the app and
+// the API are different origins (app :8081, API :8002), so SAMEORIGIN would
+// block it there while cloud (same origin) never noticed. Strip the framing
+// headers on the way out of secureHeaders, the same way the preview proxy
+// does (SHO-426).
+app.use('/api/viewers/slides', async (c, next) => {
+  await next()
+  c.res.headers.delete('X-Frame-Options')
+  c.res.headers.delete('Cross-Origin-Opener-Policy')
+})
+
 // Security headers — X-Content-Type-Options, X-Frame-Options, etc.
 app.use('*', secureHeaders({
   xFrameOptions: 'SAMEORIGIN',
@@ -1037,6 +1049,11 @@ app.get('/api/integrations/callback', (c) => {
 </body></html>`
   return c.html(html)
 })
+
+// The slides viewer page: a static, sandboxed document every file host frames
+// to render a PowerPoint deck (SHO-426). Same code for cloud and the desktop
+// local API, so the two can never drift.
+app.route('/api/viewers', slidesViewerRoutes())
 
 // Platform config (tells frontend about local mode, enabled features, etc.)
 app.get('/api/config', async (c) => {

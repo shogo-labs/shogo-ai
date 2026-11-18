@@ -34,6 +34,9 @@ export function createApp(options: CreateAppOptions): Hono {
     '/api/marketplace',
     '/api/tech-stacks',
     '/api/platform/visible-models',
+    // The slides viewer is a static, sandboxed page (no tenant data, no
+    // network) that every file host frames to render a deck (SHO-426).
+    '/api/viewers/slides',
   ]
 
   app.use('*', secureHeaders({
@@ -42,6 +45,15 @@ export function createApp(options: CreateAppOptions): Hono {
     crossOriginOpenerPolicy: 'same-origin-allow-popups',
     crossOriginResourcePolicy: 'cross-origin',
   }))
+  // The slides viewer is framed by every file host, and locally the app and
+  // the API are different origins (app :8081, API :8002), so SAMEORIGIN above
+  // would block the frame. Strip it on the way out, before secureHeaders()
+  // stamps the response (SHO-426).
+  app.use('/api/viewers/slides', async (c, next) => {
+    await next()
+    c.res.headers.delete('X-Frame-Options')
+    c.res.headers.delete('Cross-Origin-Opener-Policy')
+  })
   app.use('*', bodyLimit({ maxSize: 500 * 1024 * 1024 }))
   app.use('/*', cors({
     origin: (origin) => {
