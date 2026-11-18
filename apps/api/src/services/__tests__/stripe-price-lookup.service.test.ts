@@ -18,9 +18,10 @@ import {
   normalizeCheckoutPlanId,
   priceLookupKeyFor,
   resolveCheckoutPriceId,
+  resolveInstanceCheckoutPriceId,
   type StripePriceLookupClient,
 } from '../stripe-price-lookup.service'
-import type { PlanType } from '../../config/stripe-prices'
+import { INSTANCE_PRICES_STAGING, type PlanType } from '../../config/stripe-prices'
 
 /** A Stripe client that answers every lookup key with a deterministic id. */
 function fakeStripe(): StripePriceLookupClient & { lookups: string[] } {
@@ -72,5 +73,31 @@ describe('a pro checkout resolves the Business price', () => {
     expect(priceId).toBe('price_for_business_seat_monthly_v2')
     expect(stripe.lookups).not.toContain('shogo_pro_monthly_v2')
     expect(stripe.lookups).toContain('business_seat_monthly_v2')
+  })
+})
+
+describe('instance-size checkout prices', () => {
+  test('a configured size resolves to its static id without a Stripe call', async () => {
+    const stripe = fakeStripe()
+    const priceId = await resolveInstanceCheckoutPriceId(stripe, 'large', 'monthly')
+    expect(priceId).toMatch(/^price_/)
+    expect(stripe.lookups).toEqual([])
+  })
+
+  test('a Stripe failure resolves to null instead of throwing a 500', async () => {
+    const stripe: StripePriceLookupClient = {
+      prices: {
+        async list() {
+          throw new Error('stripe down')
+        },
+      },
+    }
+    const saved = INSTANCE_PRICES_STAGING.large.monthly
+    INSTANCE_PRICES_STAGING.large.monthly = ''
+    try {
+      expect(await resolveInstanceCheckoutPriceId(stripe, 'large', 'monthly')).toBeNull()
+    } finally {
+      INSTANCE_PRICES_STAGING.large.monthly = saved
+    }
   })
 })

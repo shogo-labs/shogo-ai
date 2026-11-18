@@ -16,7 +16,7 @@ import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync, readFileSync, rea
 import { auth } from './auth'
 import type { PaidInstanceSize } from './config/stripe-prices'
 import { resolveSubscriptionContext, selectPlanItem } from './services/stripe-subscription-sync.service'
-import { resolveCheckoutPriceId, normalizeCheckoutPlanId } from './services/stripe-price-lookup.service'
+import { resolveCheckoutPriceId, resolveInstanceCheckoutPriceId, normalizeCheckoutPlanId } from './services/stripe-price-lookup.service'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import type { InstanceSizeName } from './config/instance-sizes'
 import * as workspaceService from './services/workspace.service'
@@ -248,7 +248,6 @@ const storageService: any = cloud.storageService ?? {}
 const nodeMetricsService: any = cloud.nodeMetricsService ?? { getWorkspaceMetrics: async () => null }
 const affiliateService: any = cloud.affiliateService ?? {}
 const getPriceId: any = cloud.getPriceId ?? (() => undefined)
-const getInstancePriceId: any = cloud.getInstancePriceId ?? (() => undefined)
 const getCurrencyForCountry: any = cloud.getCurrencyForCountry ?? (() => undefined)
 const formatPrice: any = cloud.formatPrice ?? ((value: unknown) => String(value))
 const SUPPORTED_CURRENCIES: any = cloud.SUPPORTED_CURRENCIES ?? []
@@ -8530,9 +8529,21 @@ app.post('/api/billing/instance-checkout', async (c) => {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
 
-    const priceId = getInstancePriceId(instanceSize, billingInterval as 'monthly' | 'annual')
+    const priceId = await resolveInstanceCheckoutPriceId(stripe, instanceSize, billingInterval as 'monthly' | 'annual')
     if (!priceId) {
-      return c.json({ error: { code: 'invalid_plan', message: `No instance price found for ${instanceSize} ${billingInterval}` } }, 400)
+      // A size with no price in this Stripe account is a configuration gap, not
+      // a server fault: say so instead of sending a made-up id to Stripe (which
+      // surfaced as a 500 "No such price: 'price_instance_large_monthly_live'").
+      console.error(`[Instance] no Stripe price for ${instanceSize} ${billingInterval}`)
+      return c.json(
+        {
+          error: {
+            code: 'price_not_configured',
+            message: `The ${instanceSize} ${billingInterval} plan is not available for purchase right now.`,
+          },
+        },
+        503,
+      )
     }
 
     const auth = c.get('auth') as any

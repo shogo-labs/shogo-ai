@@ -428,11 +428,26 @@ export const INSTANCE_PRICES_STAGING: InstancePriceConfig = {
 }
 
 export const INSTANCE_PRICES_PRODUCTION: InstancePriceConfig = {
-  small: { monthly: "price_instance_small_monthly_live", annual: "price_instance_small_annual_live" },
-  medium: { monthly: "price_instance_medium_monthly_live", annual: "price_instance_medium_annual_live" },
-  large: { monthly: "price_instance_large_monthly_live", annual: "price_instance_large_annual_live" },
-  xlarge: { monthly: "price_instance_xlarge_monthly_live", annual: "price_instance_xlarge_annual_live" },
+  small: { monthly: "price_1Uc8CKADDMNd95Ggq4VAMnw2", annual: "price_1Uc8CKADDMNd95GgRs6w963k" },
+  medium: { monthly: "price_1Uc8CKADDMNd95GgzjgSgEiW", annual: "price_1Uc8CLADDMNd95Ggnm26whg4" },
+  large: { monthly: "price_1Uc8CLADDMNd95GgO37cVpEj", annual: "price_1Uc8CLADDMNd95GgzLJAAemp" },
+  xlarge: { monthly: "price_1Uc8CMADDMNd95Gg0y2wBZSW", annual: "price_1Uc8CMADDMNd95GgNUM2ATap" },
 }
+
+/**
+ * `lookup_key`s of the instance-size prices, created by
+ * `scripts/create-instance-prices.ts`. Same contract as the plan prices: a
+ * static id is used when configured, otherwise the id is resolved by key at
+ * checkout time, so a missing/renamed price can never be sent to Stripe as a
+ * literal string (which is what produced `No such price:
+ * 'price_instance_large_monthly_live'` in production).
+ */
+export const INSTANCE_PRICE_LOOKUP_KEYS = {
+  small: { monthly: "instance_small_monthly", annual: "instance_small_annual" },
+  medium: { monthly: "instance_medium_monthly", annual: "instance_medium_annual" },
+  large: { monthly: "instance_large_monthly", annual: "instance_large_annual" },
+  xlarge: { monthly: "instance_xlarge_monthly", annual: "instance_xlarge_annual" },
+} as const satisfies InstancePriceConfig
 
 export function getInstancePrices(): InstancePriceConfig {
   const isProduction = process.env.NODE_ENV === "production"
@@ -445,6 +460,30 @@ export function getInstancePriceId(
 ): string | null {
   const prices = getInstancePrices()
   return prices[size]?.[billingInterval] || null
+}
+
+export function getInstancePriceLookupKey(
+  size: PaidInstanceSize,
+  billingInterval: BillingInterval
+): string | null {
+  return INSTANCE_PRICE_LOOKUP_KEYS[size]?.[billingInterval] || null
+}
+
+/**
+ * The price id to charge for an instance size: the configured id when there is
+ * one, otherwise the id behind its `lookup_key`. `null` means the price is not
+ * configured in this Stripe account at all — the caller must refuse the
+ * checkout instead of sending a made-up id.
+ */
+export async function resolveInstancePriceId(
+  size: PaidInstanceSize,
+  billingInterval: BillingInterval,
+  lookup: (lookupKey: string) => Promise<string | null>,
+): Promise<string | null> {
+  const configured = getInstancePriceId(size, billingInterval)
+  if (configured) return configured
+  const key = getInstancePriceLookupKey(size, billingInterval)
+  return key ? lookup(key) : null
 }
 
 // =============================================================================

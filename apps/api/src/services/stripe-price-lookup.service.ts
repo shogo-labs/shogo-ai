@@ -16,7 +16,9 @@
 import {
   getPriceLookupKey,
   resolvePlanPriceId,
+  resolveInstancePriceId,
   type BillingInterval,
+  type PaidInstanceSize,
   type PlanType,
 } from '../config/stripe-prices'
 
@@ -78,6 +80,27 @@ export async function resolveCheckoutPriceId(
 
 export function priceLookupKeyFor(plan: PlanType, interval: BillingInterval): string {
   return getPriceLookupKey(plan, interval)
+}
+
+/**
+ * The price id for an instance-size Checkout session, or `null` when that size
+ * has no price in this Stripe account. Same contract as
+ * `resolveCheckoutPriceId`: a caller must refuse the checkout rather than send
+ * an id Stripe does not know.
+ */
+export async function resolveInstanceCheckoutPriceId(
+  stripe: StripePriceLookupClient,
+  size: PaidInstanceSize,
+  interval: BillingInterval,
+): Promise<string | null> {
+  try {
+    return await resolveInstancePriceId(size, interval, (key) =>
+      lookupPriceIdByLookupKey(stripe, key),
+    )
+  } catch (err: any) {
+    console.error('[billing] instance price resolution failed:', err?.message ?? err)
+    return null
+  }
 }
 
 /**
