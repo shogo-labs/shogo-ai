@@ -95,7 +95,7 @@ export function ComputePanel() {
     )
   }
 
-  if (failed || !data) {
+  if (failed || !data || !data.totals || !data.fleet) {
     return (
       <View className="rounded-xl border border-border bg-card p-4 gap-1">
         <Text className="text-sm font-semibold text-foreground">Compute</Text>
@@ -107,7 +107,13 @@ export function ComputePanel() {
   }
 
   const shadow = data.mode === 'shadow'
-  const missingMeter = data.reconciliation.hostsMissingMeter
+  // A partial payload must not blank the whole analytics screen: this renders
+  // inside a page with no error boundary, and every one of these blocks is
+  // optional in the sense that its absence is a fact to show, not a crash.
+  const reconciliation = data.reconciliation ?? { hostsReportingUsage: 0, hostsMissingMeter: [] }
+  const missingMeter = reconciliation.hostsMissingMeter ?? []
+  const byCause = data.byCause ?? []
+  const topWorkspaces = data.topWorkspaces ?? []
 
   return (
     <View className="gap-3">
@@ -135,10 +141,10 @@ export function ComputePanel() {
         <Tile label="Running now" value={String(data.fleet.assignedNow)} sub={`${data.fleet.livenessNow?.agentActive ?? 0} agent · ${data.fleet.livenessNow?.appActive ?? 0} app · ${data.fleet.livenessNow?.idleTail ?? 0} idle`} />
       </View>
 
-      {data.byCause.length > 0 && (
+      {byCause.length > 0 && (
         <View className="rounded-xl border border-border bg-card p-3 gap-1">
           <Text className="text-xs font-semibold text-foreground mb-1">By cause</Text>
-          {data.byCause.map((c) => (
+          {byCause.map((c) => (
             <View key={c.cause} className="flex-row items-center justify-between">
               <Text className="text-xs text-muted-foreground flex-1 mr-2">{CAUSE_LABEL[c.cause] ?? c.cause}</Text>
               <Text className="text-xs text-muted-foreground mr-3">{hrs(c.vmHours)}</Text>
@@ -148,10 +154,10 @@ export function ComputePanel() {
         </View>
       )}
 
-      {data.topWorkspaces.length > 0 && (
+      {topWorkspaces.length > 0 && (
         <View className="rounded-xl border border-border bg-card p-3 gap-1">
           <Text className="text-xs font-semibold text-foreground mb-1">Top workspaces (MTD)</Text>
-          {data.topWorkspaces.slice(0, 10).map((w) => (
+          {topWorkspaces.slice(0, 10).map((w) => (
             <View key={w.workspaceId} className="flex-row items-center justify-between">
               <Text className="text-xs text-foreground flex-1 mr-2" numberOfLines={1}>{w.name}</Text>
               <Text className="text-xs text-muted-foreground mr-3">{hrs(w.vmHours)}</Text>
@@ -176,7 +182,7 @@ export function ComputePanel() {
           <Text className="text-xs font-semibold text-foreground">Meter coverage</Text>
         </View>
         <Text className="text-xs text-muted-foreground">
-          {data.reconciliation.hostsReportingUsage} host(s) reported usage in the last 72h.{' '}
+          {reconciliation.hostsReportingUsage} host(s) reported usage in the last 72h.{' '}
           {missingMeter.length === 0
             ? 'Every host with assigned VMs is reporting — ingested hours should track the fleet.'
             : `${missingMeter.length} host(s) are running VMs but reporting nothing: ${missingMeter.join(', ')}. Their hours are invisible to billing until they heartbeat a meter.`}

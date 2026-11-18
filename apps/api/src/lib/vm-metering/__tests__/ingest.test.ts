@@ -153,7 +153,7 @@ const fakePrisma: any = {
 
 mock.module('../../../lib/prisma', () => ({ prisma: fakePrisma }))
 
-const { diffCounters, ingestMetalMeters, resolveRuntimeKeys, truncateToHour } = await import('../ingest')
+const { advanceCounter, ingestMetalMeters, resolveRuntimeKeys, truncateToHour } = await import('../ingest')
 
 const HOST = 'metal-us-1'
 const T0 = Date.UTC(2026, 10, 18, 10, 15, 0)
@@ -252,6 +252,18 @@ describe('ingestMetalMeters', () => {
     await ingestMetalMeters({ hostId: HOST, payload: payload({ agentMs: 5_000 }), now: new Date(T0 + 60_000) })
 
     expect(totalSeconds().agent).toBe(65)
+  })
+
+  it('re-baselines the cursor on a restart so later heartbeats bill their own delta', async () => {
+    // 60 s, the agent restarts and reports 5 s, then a legitimate 30 s more.
+    await ingestMetalMeters({ hostId: HOST, payload: payload({ agentMs: 60_000 }), now: new Date(T0) })
+    await ingestMetalMeters({ hostId: HOST, payload: payload({ agentMs: 5_000 }), now: new Date(T0 + 60_000) })
+    await ingestMetalMeters({ hostId: HOST, payload: payload({ agentMs: 35_000 }), now: new Date(T0 + 90_000) })
+
+    // 60 + 5 + 30. An accumulating cursor would read the last 35 s as a second
+    // reset and bill 100 s — and keep over-billing for the process's lifetime.
+    expect(totalSeconds().agent).toBe(95)
+    expect(cursors[0].agentMs).toBe(35_000)
   })
 
   it('keeps the sub-second remainder in the cursor', async () => {
@@ -361,18 +373,32 @@ describe('ingestMetalMeters', () => {
   })
 })
 
-describe('diffCounters', () => {
+describe('advanceCounter', () => {
   it('treats a missing cursor as zero', () => {
-    expect(diffCounters(null, { agentMs: 100, appMs: 200, idleMs: 300 })).toEqual({
-      agentMs: 100,
-      appMs: 200,
-      idleMs: 300,
-    })
+    expect(advanceCounter(null, 1_500)).toEqual({ seconds: 1, cursorMs: 1_000 })
+    expect(advanceCounter(undefined, 1_500)).toEqual({ seconds: 1, cursorMs: 1_000 })
   })
 
-  it('never returns a negative delta', () => {
-    const d = diffCounters({ agentMs: 5_000, appMs: 5_000, idleMs: 5_000 }, { agentMs: 1_000, appMs: 0, idleMs: 10 })
-    expect(d).toEqual({ agentMs: 1_000, appMs: 0, idleMs: 10 })
+  it('keeps the sub-second remainder in the cursor', () => {
+    // 1.5 s billed as 1 s, cursor at 1 s: the 0.5 s is not lost, it rides along.
+    expect(advanceCounter(0, 1_500)).toEqual({ seconds: 1, cursorMs: 1_000 })
+    expect(advanceCounter(1_000, 2_200)).toEqual({ seconds: 1, cursorMs: 2_000 })
+  })
+
+  it('re-baselines the cursor when the counter goes backwards (agent restart)', () => {
+    // 60 s billed, then the process restarted and reports 5 s of new time.
+    const restart = advanceCounter(60_000, 5_000)
+    expect(restart).toEqual({ seconds: 5, cursorMs: 5_000 })
+    // The point of the re-baseline: the NEXT legitimate heartbeat is above the
+    // new cursor, so it bills its own delta instead of being read as another
+    // reset and re-billing everything.
+    expect(advanceCounter(restart.cursorMs, 35_000)).toEqual({ seconds: 30, cursorMs: 35_000 })
+  })
+
+  it('never returns a negative number of seconds', () => {
+    const d = advanceCounter(5_000, 0)
+    expect(d.seconds).toBe(0)
+    expect(d.cursorMs).toBe(0)
   })
 })
 

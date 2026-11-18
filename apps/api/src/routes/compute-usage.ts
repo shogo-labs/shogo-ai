@@ -473,7 +473,11 @@ export async function adminComputeSummary(params: { now?: Date; hostMonthlyUsd?:
       estimatedUsd: roundUsd(v.usd),
       notBilledUsd: roundUsd(v.freeUsd),
     })),
-    reconciliation: reconcile(),
+    // `reconcile()` reads the fleet view, so it must be awaited — an un-awaited
+    // promise serialises to `{}` and the panel then throws on
+    // `reconciliation.hostsMissingMeter.length`, taking the whole admin
+    // analytics screen down with it.
+    reconciliation: await reconcile(),
   }
 }
 

@@ -268,19 +268,21 @@ async function ingestOneVm(
 
   for (let attempt = 1; attempt <= CAS_ATTEMPTS; attempt++) {
     const cursor = await prisma.vmMeterCursor.findUnique({ where: key })
-    const delta = diffCounters(cursor, row)
     // `VmUsageHour` stores whole seconds, so only whole seconds advance the
     // cursor: the sub-second remainder stays in it and is metered by the next
     // heartbeat. Without that, a 30 s heartbeat at 29.6 s of counted time would
     // drop 0.4 s every tick — a slow, silent under-bill.
-    const agentSec = Math.floor(delta.agentMs / 1000)
-    const appSec = Math.floor(delta.appMs / 1000)
-    const idleSec = Math.floor(delta.idleMs / 1000)
+    const agent = advanceCounter(cursor?.agentMs, row.agentMs)
+    const app = advanceCounter(cursor?.appMs, row.appMs)
+    const idle = advanceCounter(cursor?.idleMs, row.idleMs)
+    const agentSec = agent.seconds
+    const appSec = app.seconds
+    const idleSec = idle.seconds
     const total = agentSec + appSec + idleSec
     const nextCounters = {
-      agentMs: (cursor?.agentMs ?? 0) + agentSec * 1000,
-      appMs: (cursor?.appMs ?? 0) + appSec * 1000,
-      idleMs: (cursor?.idleMs ?? 0) + idleSec * 1000,
+      agentMs: agent.cursorMs,
+      appMs: app.cursorMs,
+      idleMs: idle.cursorMs,
     }
 
     const wrote = await prisma.$transaction(async (tx) => {
@@ -368,24 +370,35 @@ async function ingestOneVm(
 }
 
 /**
- * Counters are cumulative. A negative difference means the agent restarted (its
- * counters live in memory) — take the new value as the delta rather than
- * subtracting, so a restart records the time since it came back and never a
- * negative charge.
+ * Advance ONE cumulative counter: how many whole seconds to bill now, and where
+ * the cursor lands afterwards.
+ *
+ * Counters are cumulative, so the normal case is `reported - cursor`. A counter
+ * that goes BACKWARDS means the agent restarted (its counters live in memory and
+ * began again at zero): the reported value is ALL new time, so it is billed in
+ * full AND the cursor RE-BASELINES to it.
+ *
+ * That re-baseline is the whole subtlety. Adding the post-restart value to the
+ * old cursor (the obvious reading of "delta = the new value") leaves a cursor
+ * larger than anything the young process can report, so every following
+ * heartbeat is below it, reads as another reset, and is billed in full again —
+ * compounding for as long as the process stays up. Metal agents restart on every
+ * deploy, so that path is the common one, not an edge case.
+ *
+ * The sub-second remainder is kept by truncating to a whole second: the fractional
+ * part stays in the cursor and is billed by a later tick rather than dropped.
  */
-export function diffCounters(
-  cursor: { agentMs: number; appMs: number; idleMs: number } | null,
-  row: { agentMs: number; appMs: number; idleMs: number },
-): MeterDelta {
-  const one = (prev: number | undefined, next: number): number => {
-    const p = prev ?? 0
-    return next >= p ? next - p : next
+export function advanceCounter(
+  prevMs: number | null | undefined,
+  reportedMs: number,
+): { seconds: number; cursorMs: number } {
+  const prev = prevMs ?? 0
+  if (reportedMs < prev) {
+    return { seconds: Math.floor(reportedMs / 1000), cursorMs: Math.floor(reportedMs / 1000) * 1000 }
   }
-  return {
-    agentMs: one(cursor?.agentMs, row.agentMs),
-    appMs: one(cursor?.appMs, row.appMs),
-    idleMs: one(cursor?.idleMs, row.idleMs),
-  }
+  const deltaMs = reportedMs - prev
+  const seconds = Math.floor(deltaMs / 1000)
+  return { seconds, cursorMs: prev + seconds * 1000 }
 }
 
 async function advanceCursor(
