@@ -414,6 +414,21 @@ jobs:
         if: needs.prelude.outputs.verified != 'true'
         run: bun run check:whats-new
 
+      - name: Check generated domain-stores match the Prisma schema
+        if: needs.prelude.outputs.verified != 'true'
+        # `packages/domain-stores/src/{*.model,*.types,*.collection}.ts` are
+        # generated from prisma/schema.prisma, tracked in git, and written by
+        # `bun install`'s postinstall. Adding a schema field without committing
+        # the regenerated output leaves the next person's `bun install` with a
+        # dirty tree they did not cause (SHO-412 left `ChatSession.directKey`
+        # out, SHO-415). Nothing else reads these files against the schema, so
+        # without this check the drift is silent and permanent.
+        #
+        # The script regenerates the output in memory — it never writes — and
+        # diffs it against the committed files, so it cannot itself create the
+        # drift it is looking for.
+        run: bun run check:domain-stores
+
       - name: Check multi-region cron locks + unique-key classification
         if: needs.prelude.outputs.verified != 'true'
         # Guards against the 2026-05-21 analytics_digests poison-pill class
