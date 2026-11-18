@@ -34,6 +34,29 @@ export interface DownloadToCacheOptions {
 }
 
 /**
+ * Where a written file lands: the cache (evictable, re-downloadable) or the
+ * documents directory (an export the user asked to keep).
+ */
+export type WriteDirectory = 'cache' | 'document'
+
+export interface WriteBlobOptions {
+  name: string
+  /** `document` for a file the user keeps, `cache` for a transient one. */
+  directory?: WriteDirectory
+  /** Reuse an existing file of the same name instead of adding a timestamp. */
+  overwrite?: boolean
+}
+
+export interface ShareCachedFileOptions {
+  /** What the OS should think the file is (a ZIP's UTI decides the sheet). */
+  mimeType?: string
+  /** iOS uniform type identifier, e.g. `public.zip-archive`. */
+  UTI?: string
+  /** Title the sheet shows instead of the default. */
+  dialogTitle?: string
+}
+
+/**
  * The leaf name to write, made safe for a filesystem path.
  *
  * The name arrives from a chat message, so it can carry a path from another
@@ -84,6 +107,33 @@ export async function downloadFileToCache(
 }
 
 /**
+ * Write a `Blob` the app already holds into app storage and return its URI.
+ *
+ * A project export arrives as a `Blob` (a POST with options and a password is
+ * not something a downloader can stream), so the bytes are already in memory —
+ * but they used to be copied *four* more times before reaching disk: an
+ * `ArrayBuffer`, a `Uint8Array` view, a binary string built one byte at a time
+ * and a base64 string a third larger. A multi-megabyte project ZIP is the
+ * biggest file the app ever writes (SHO-434), and the per-byte concat alone is
+ * quadratic.
+ *
+ * `File.write` takes the `Uint8Array` straight to the native side, so the only
+ * copy left is the one the `Blob` API requires.
+ */
+export async function writeBlobToFile(
+  blob: Blob,
+  options: WriteBlobOptions,
+): Promise<string> {
+  const { File, Paths } = await import('expo-file-system')
+  const dir = options.directory === 'document' ? Paths.document : Paths.cache
+  const name = safeCacheFileName(options.name)
+  const file = new File(dir, options.overwrite ? name : `${Date.now()}-${name}`)
+  if (file.exists) file.delete()
+  file.write(new Uint8Array(await blob.arrayBuffer()))
+  return file.uri
+}
+
+/**
  * Present a downloaded file through the OS share / save sheet.
  *
  * iOS falls back to React Native's own `Share` when the share extension
@@ -93,6 +143,7 @@ export async function downloadFileToCache(
 export async function shareCachedFile(
   fileUri: string,
   name: string,
+  options: ShareCachedFileOptions = {},
 ): Promise<void> {
   const { InteractionManager, Platform, Share } = await import('react-native')
   // Let the screen settle before the OS presents its sheet.
@@ -110,7 +161,11 @@ export async function shareCachedFile(
 
   const Sharing = await import('expo-sharing')
   try {
-    await Sharing.shareAsync(fileUri, { dialogTitle: `Download ${name}` })
+    await Sharing.shareAsync(fileUri, {
+      dialogTitle: options.dialogTitle ?? `Download ${name}`,
+      ...(options.mimeType ? { mimeType: options.mimeType } : {}),
+      ...(options.UTI ? { UTI: options.UTI } : {}),
+    })
   } catch (shareError: unknown) {
     if (Platform.OS !== 'ios') throw shareError
     await Share.share({ url: fileUri, title: name })

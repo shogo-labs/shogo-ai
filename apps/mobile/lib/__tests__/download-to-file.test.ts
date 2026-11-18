@@ -19,6 +19,7 @@ interface DownloadCall {
 let calls: DownloadCall[] = []
 let deleted: string[] = []
 let status = 200
+let writes: { uri: string; bytes: unknown }[] = []
 
 mock.module('expo-file-system/legacy', () => ({
   cacheDirectory: 'file:///cache/',
@@ -35,13 +36,38 @@ mock.module('expo-file-system/legacy', () => ({
   },
 }))
 
-const { downloadFileToCache, safeCacheFileName } = await import('../download-to-file')
+// expo-file-system 57's `File`/`Paths`: the write path for bytes the app
+// already holds (a project export blob). The mock records what reached disk so
+// a test can prove base64 was never involved (SHO-434).
+mock.module('expo-file-system', () => {
+  class FakeFile {
+    uri: string
+    exists = false
+    constructor(...parts: unknown[]) {
+      this.uri = parts.map((part) => String(part)).join('/')
+    }
+    delete() {
+      this.exists = false
+    }
+    write(content: unknown) {
+      writes.push({ uri: this.uri, bytes: content })
+    }
+  }
+  return {
+    File: FakeFile,
+    Paths: { cache: 'file:///cache', document: 'file:///documents' },
+  }
+})
+
+const { downloadFileToCache, safeCacheFileName, shareCachedFile, writeBlobToFile } =
+  await import('../download-to-file')
 
 const fetched: unknown[] = []
 
 beforeEach(() => {
   calls = []
   deleted = []
+  writes = []
   fetched.length = 0
   status = 200
   globalThis.fetch = (async (...args: unknown[]) => {
@@ -80,6 +106,38 @@ describe('streaming a download to disk', () => {
       name: 'guide.pdf',
     })
     expect(calls[0]!.headers).toBeUndefined()
+  })
+})
+
+describe('writing a blob the app already holds', () => {
+  test('hands its bytes to the native write, never base64', async () => {
+    const blob = new Blob([new Uint8Array([1, 2, 3, 4])], { type: 'application/zip' })
+
+    const uri = await writeBlobToFile(blob, { name: 'project.zip', directory: 'document' })
+
+    expect(writes).toHaveLength(1)
+    expect(writes[0]!.bytes).toBeInstanceOf(Uint8Array)
+    expect(Array.from(writes[0]!.bytes as Uint8Array)).toEqual([1, 2, 3, 4])
+    // The export belongs in the user's documents, not the evictable cache.
+    expect(uri.startsWith('file:///documents/')).toBe(true)
+    expect(uri.endsWith('-project.zip')).toBe(true)
+    expect(fetched).toHaveLength(0)
+  })
+
+  test('a name from the server cannot walk out of the directory', async () => {
+    await writeBlobToFile(new Blob([new Uint8Array([0])]), {
+      name: '../../evil.zip',
+      directory: 'cache',
+    })
+    expect(writes[0]!.uri).toBe('file:///cache/' + writes[0]!.uri.split('/').pop())
+    expect(writes[0]!.uri.endsWith('-evil.zip')).toBe(true)
+  })
+
+  test('overwrite reuses the same name instead of adding a second file', async () => {
+    const blob = new Blob([new Uint8Array([1])])
+    const first = await writeBlobToFile(blob, { name: 'export.zip', overwrite: true })
+    const second = await writeBlobToFile(blob, { name: 'export.zip', overwrite: true })
+    expect(second).toBe(first)
   })
 })
 

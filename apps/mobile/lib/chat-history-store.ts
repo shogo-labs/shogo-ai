@@ -192,8 +192,16 @@ const KIND_NAMES: Record<ChatHistoryKind, string> = {
   boot: 'boot',
 }
 
+/**
+ * What one entry costs on the heap, for the LRU's byte budget.
+ *
+ * Measured with the structural walk in `message-bytes`, not `JSON.stringify`:
+ * this runs for every mirrored entry on every write, and the entry that matters
+ * most is exactly the photo-heavy one whose serialisation would allocate
+ * megabytes just to be measured (SHO-434).
+ */
 function sizeOf(entry: ChatHistoryEntry): number {
-  return JSON.stringify(entry).length
+  return 64 + transcriptBytes(entry?.messages ?? [])
 }
 
 function openDb(): Promise<IDBDatabase | null> {

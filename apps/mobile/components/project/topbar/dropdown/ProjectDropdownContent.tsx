@@ -8,6 +8,10 @@ import { useRouter } from "expo-router";
 import type { UsageWindows } from "@shogo/shared-app/hooks";
 import type { UsageOverageContext } from "../../../../lib/billing-config";
 import { api } from "../../../../lib/api";
+import {
+  shareCachedFile,
+  writeBlobToFile,
+} from "../../../../lib/download-to-file";
 import { NATIVE_PHONE_SHEET_FADE_MS } from "../../../../lib/native-phone-layout";
 import { NativePhoneSheet } from "../../../phone/NativePhoneSheet";
 import { ProjectExportModal } from "../../ProjectExportModal";
@@ -114,24 +118,17 @@ export function ProjectDropdownContent({
           document.body.removeChild(a);
           URL.revokeObjectURL(url);
         } else if (Platform.OS !== "web") {
-          const { documentDirectory, writeAsStringAsync, EncodingType } =
-            await import("expo-file-system/legacy");
-          const Sharing = await import("expo-sharing");
-          const dir = documentDirectory;
-          if (!dir) throw new Error("Could not access app storage");
-          const fileUri = `${dir}${filename}`;
-          const arrayBuf = await blob.arrayBuffer();
-          const bytes = new Uint8Array(arrayBuf);
-          let binary = "";
-          for (let i = 0; i < bytes.length; i++)
-            binary += String.fromCharCode(bytes[i]);
-          const base64 = btoa(binary);
-          await writeAsStringAsync(fileUri, base64, {
-            encoding: EncodingType.Base64,
+          // Bytes straight to disk (SHO-434). The old path re-read the whole
+          // blob, concatenated it a byte at a time into a binary string and
+          // base64d that — a project ZIP is the largest file the app writes.
+          const fileUri = await writeBlobToFile(blob, {
+            name: filename,
+            directory: "document",
+            overwrite: true,
           });
-          await Sharing.shareAsync(fileUri, {
+          await shareCachedFile(fileUri, filename, {
             mimeType: "application/zip",
-            UTI: "public.zip-archive" as any,
+            UTI: "public.zip-archive",
             dialogTitle: "Export Project",
           });
         }

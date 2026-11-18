@@ -96,6 +96,9 @@ function evictUntilWithinBudget(keep: string): void {
     const overBytes = total > bytes
     if (!overCount && !overBytes) break
     sessionMessageCache.delete(sessionId)
+    // Its thumbs go with it: the map is keyed by chat and lives as long as the
+    // transcript does, so an evicted chat must not leave a row behind.
+    sessionFeedbackCache.delete(sessionId)
     total -= entry.bytes
   }
 }
@@ -144,7 +147,17 @@ export function writeSessionFeedbackCache(
   sessionId: string,
   feedback: Record<string, 'up' | 'down'>,
 ): void {
+  // Re-insert so the map's own order is the use order.
+  sessionFeedbackCache.delete(sessionId)
   sessionFeedbackCache.set(sessionId, feedback)
+  // The thumbs are small, but they are still a per-chat map that would
+  // otherwise live for the whole session; twice the transcript allowance leaves
+  // room for a chat whose transcript was just evicted and is about to return.
+  const cap = Math.max(1, limits().sessions * 2)
+  for (const oldest of sessionFeedbackCache.keys()) {
+    if (sessionFeedbackCache.size <= cap) break
+    sessionFeedbackCache.delete(oldest)
+  }
 }
 
 /**
