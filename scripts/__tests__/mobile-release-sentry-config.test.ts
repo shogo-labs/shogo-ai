@@ -166,10 +166,42 @@ describe('SHO-433 · the Android sourcemap upload cannot silently do nothing', (
     const exits = lines.flatMap((l, i) => (l.trim() === 'exit 0' ? [i] : []))
     expect(exits).toHaveLength(1)
     expect(exits[0]).toBeLessThan(lines.findIndex((l) => l.includes('sourcemaps upload')))
-    expect(body).toContain('|| fail_upload "sourcemaps inject failed"')
     expect(body).toContain('|| fail_upload "sourcemaps upload failed')
-    expect(body).toContain('fail_upload "expo export:embed exited $EXPORT_RC"')
     expect(body).toContain('fail_upload "SENTRY_AUTH_TOKEN is not configured"')
+    expect(body).toContain('fail_upload "no shipped bundle at $BUNDLE')
+    expect(body).toContain('fail_upload "no composed source map at $COMPOSED')
+    expect(body).toContain('but release $EXPO_PUBLIC_BUILD_HASH has no uploaded files')
+  })
+
+  it('uploads the artifacts RN 0.86 actually writes, not a path it never creates', () => {
+    const body = upload()
+    // `@react-native/gradle-plugin` TaskConfiguration.kt sets these three dirs
+    // for `createBundleReleaseJsAndAssets`; BundleHermesCTask fills them in.
+    expect(body).toContain('generated/assets/react/release/index.android.bundle"')
+    expect(body).toContain('generated/sourcemaps/react/release/index.android.bundle.map"')
+    expect(body).toContain('intermediates/sourcemaps/react/release/index.android.bundle.packager.map"')
+    // The lookups that matched nothing and left the upload pointing at a
+    // packager map (JS-text columns against Hermes bytecode = wrong lines).
+    expect(body).not.toContain('.hbc.map')
+    expect(body).not.toContain('createBundleReleaseJsAndAssets*')
+    expect(body).not.toContain('compose-source-maps.js')
+    // Nothing is re-bundled after the build: the shipped bundle is uploaded.
+    expect(body).not.toContain('expo export:embed')
+  })
+
+  it('moves the debug id onto the composed map instead of injecting into bytecode', () => {
+    const body = upload()
+    expect(body).toContain('scripts/copy-debugid.js')
+    expect(body).toContain('scripts/has-sourcemap-debugid.js')
+    // `sourcemaps inject` rewrites Hermes bytecode into a stub (SHO-290) and
+    // would replace the id the shipped bundle already carries.
+    expect(body).not.toContain('sourcemaps inject')
+    expect(body).toContain('--url-prefix "app:///"')
+    // Hermes bytecode carries the id where the CLI cannot read it.
+    expect(body).toContain('--debug-id-reference')
+    expect(body).toContain('--strict')
+    expect(body).toContain('--bundle "$OUT/index.android.bundle"')
+    expect(body).toContain('--bundle-sourcemap "$OUT/index.android.bundle.map"')
   })
 })
 
@@ -197,15 +229,23 @@ describe('SHO-433 · a release that shipped blind can still be symbolicated', ()
   it('uploads under the release/dist the events report', () => {
     expect(upload()).toContain('--release "$RELEASE"')
     expect(upload()).toContain('--dist "$SENTRY_DIST"')
+    expect(upload()).toContain('--debug-id-reference')
   })
 
-  it('refuses a map that cannot match the shipped Hermes bytecode', () => {
+  it('uploads the bundle + RN composed map from the same Gradle run', () => {
     const body = upload()
-    expect(body).toContain('no index.android.bundle.hbc.map')
+    expect(body).toContain('generated/assets/react/release/index.android.bundle"')
+    expect(body).toContain('generated/sourcemaps/react/release/index.android.bundle.map"')
+    expect(body).toContain('createBundleReleaseJsAndAssets')
     // No fallback to the raw packager map: its columns are JS text offsets, so
     // uploading it for a Hermes release would map confidently-wrong lines.
+    expect(body).not.toContain('.hbc.map')
     expect(body).not.toContain('cp "$PACKAGER_MAP" "$OUT/index.android.bundle.map"')
-    expect(body).toContain('compose-source-maps.js')
+  })
+
+  it('pins its actions, like every other workflow', () => {
+    expect(backfillYaml).not.toMatch(/uses:\s*\S+@v[0-9]+\s*$/m)
+    expect(backfillYaml).toContain('actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd')
   })
 
   it('proves the upload landed and never succeeds silently', () => {
