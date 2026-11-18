@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ActivityIndicator, Alert, Animated, Easing, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
-import { Archive, Bell, BellOff, Check, ChevronLeft, ChevronRight, FileText, Hash, Lock, LogOut, MoreHorizontal, Paperclip, Pencil, Pin, Radio, Sparkles, Star, Trash2, UserPlus, Users, X } from 'lucide-react-native'
+import { Archive, Bell, BellOff, Check, ChevronLeft, ChevronRight, FileText, Filter, Hash, Lock, LogOut, MoreHorizontal, Paperclip, Pencil, Pin, Radio, Sparkles, Star, Trash2, UserPlus, Users, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { LiquidGlassBackdrop } from '../ui/LiquidGlassBackdrop'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
@@ -21,6 +21,7 @@ import {
   type Participant,
 } from '../../lib/team-chat-api'
 import { mentionNames, renderMentionsMarkdown } from '../../lib/team-chat-state'
+import { memberFromKey } from '../../lib/member-messages'
 import { useUserStatus } from '../../hooks/useChatPrefs'
 import { usePresence } from '../../hooks/usePresence'
 import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
@@ -78,6 +79,8 @@ export interface ConversationHeaderProps {
   onOpenFiles?: () => void
   /** Open the channel doc. Passed for channels that support one. */
   onOpenDoc?: () => void
+  /** Open "Messages from <member>" for one member (`user:<id>` / `agent:<id>`). */
+  onOpenMemberMessages?: (from: string) => void
   onLayout?: (event: LayoutChangeEvent) => void
 }
 
@@ -91,7 +94,7 @@ function confirm(title: string, message: string): Promise<boolean> {
   )
 }
 
-export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, onDeleted, floating, onBack, onOpenFiles, onOpenDoc, onLayout, tabsMenu }: ConversationHeaderProps) {
+export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, onDeleted, floating, onBack, onOpenFiles, onOpenDoc, onOpenMemberMessages, onLayout, tabsMenu }: ConversationHeaderProps) {
   const insets = useSafeAreaInsets()
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const router = useRouter()
@@ -222,6 +225,21 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
   }
   if (onOpenFiles && conversation.kind !== 'activity') {
     actions.push({ key: 'files', label: 'Files', icon: (s) => <Paperclip size={s} className="text-muted-foreground" />, onPress: onOpenFiles })
+  }
+  // "Filter by member" opens the pane on you when you are in the channel, so
+  // the switcher is already showing a list; otherwise on the first member.
+  const defaultMemberFrom = (() => {
+    const mine = conversation.members.find((m) => m.type === 'user' && m.userId === me)
+    const first = mine ?? conversation.members[0]
+    return first ? memberFromKey(first) : null
+  })()
+  if (onOpenMemberMessages && defaultMemberFrom && conversation.kind !== 'activity') {
+    actions.push({
+      key: 'member-messages',
+      label: 'Filter by member',
+      icon: (s) => <Filter size={s} className="text-muted-foreground" />,
+      onPress: () => onOpenMemberMessages(defaultMemberFrom),
+    })
   }
   actions.push({
     key: 'catchup',
@@ -389,6 +407,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
           mentionables={mentionables}
           onClose={() => setMembersOpen(false)}
           onChanged={onChanged}
+          onOpenMemberMessages={onOpenMemberMessages}
         />
       )}
     </>
@@ -1000,11 +1019,13 @@ function MembersModal({
   mentionables,
   onClose,
   onChanged,
+  onOpenMemberMessages,
 }: {
   conversation: ConversationDetail
   mentionables: Mentionables | null
   onClose: () => void
   onChanged: () => void
+  onOpenMemberMessages?: (from: string) => void
 }) {
   const [filter, setFilter] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -1048,6 +1069,20 @@ function MembersModal({
                   {m.name ?? 'Agent'}
                   {m.type === 'agent' ? <Text className="text-xs text-muted-foreground">{`  replies on ${m.agentTrigger}`}</Text> : null}
                 </Text>
+                {onOpenMemberMessages ? (
+                  <Pressable
+                    onPress={() => {
+                      onClose()
+                      onOpenMemberMessages(memberFromKey(m))
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Messages from ${m.name ?? 'Agent'}`}
+                    testID={`member-messages-open-${memberFromKey(m)}`}
+                    className="rounded-md px-1.5 py-0.5 active:bg-muted"
+                  >
+                    <Text className="text-xs text-primary">Messages</Text>
+                  </Pressable>
+                ) : null}
                 {conversation.canManage && (
                   <Pressable onPress={() => act(() => api.removeMember(conversation.id, m.id))} accessibilityLabel={`Remove ${m.name ?? 'agent'}`}>
                     <Text className="text-xs text-destructive">Remove</Text>

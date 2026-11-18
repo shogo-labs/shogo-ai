@@ -1216,6 +1216,11 @@ export function teamChatApi() {
         limit?: number
         /** Delta read: only rows whose `updatedAt` moved since this instant (SHO-260). */
         changedSince?: string
+        /**
+         * One member's messages — top-level posts and thread replies — newest
+         * first (SHO-419). `agent:ws` is the workspace agent.
+         */
+        from?: string
       } = {},
     ): Promise<MessagePage> {
       const q = new URLSearchParams()
@@ -1224,6 +1229,7 @@ export function teamChatApi() {
       if (opts.threadRootId) q.set('threadRootId', opts.threadRootId)
       if (opts.limit) q.set('limit', String(opts.limit))
       if (opts.changedSince) q.set('changedSince', opts.changedSince)
+      if (opts.from) q.set('from', opts.from)
       return (await http.get<MessagePage>(`${conv(id)}/messages?${q}`)).data
     },
     async post(
