@@ -12,7 +12,7 @@
  * maps controller results onto the substrate contract.
  */
 
-import type { ProjectSubstrate, PublishOpts, PublishResult, Resources, RuntimeStatus, RuntimeSummary, WakeOpts } from './types'
+import type { ProjectSubstrate, PublishOpts, PublishResult, ResizeOutcome, Resources, RuntimeStatus, RuntimeSummary, WakeOpts } from './types'
 import { SubstrateUnsupportedError as OpUnsupportedError } from './types'
 import { getMetalWarmPoolController, workspaceRuntimeKey, type StopResult } from '../metal-warm-pool-controller'
 
@@ -31,7 +31,8 @@ export interface MetalBackend {
   getProjectStatus(projectId: string): Promise<{ exists: boolean; ready: boolean; replicas: number; url?: string }>
   stopProject(projectId: string): Promise<StopResult>
   destroyProject(projectId: string): Promise<void>
-  resizeProject(projectId: string, resources: { cpu?: string; memory?: string; disk?: string; minScale?: number }): Promise<void>
+  resizeProject(projectId: string, resources: { cpu?: string; memory?: string; disk?: string; minScale?: number }): Promise<ResizeOutcome[]>
+  resizeWorkspaceRuntime(workspaceId: string, resources: { disk?: string }): Promise<ResizeOutcome[]>
   listProjects(): Promise<RuntimeSummary[]>
   // --- published site (published:{id} microVM) ---
   getMetalPublishedUrl(projectId: string, subdomain: string, opts?: { alwaysOn?: boolean }): Promise<{ url: string; hostId?: string; region?: string }>
@@ -102,16 +103,23 @@ export class MetalSubstrate implements ProjectSubstrate {
     return this.backend.listProjects()
   }
 
-  async resize(projectId: string, resources: Resources): Promise<void> {
+  async resize(projectId: string, resources: Resources): Promise<ResizeOutcome[]> {
     // Firecracker can't hot-change vCPU/RAM: the controller pushes the always-on
     // flag live to the owning host and the new size lands on the next cold
     // boot/resume (the assign env, derived from the tier, is re-read then).
-    await this.backend.resizeProject(projectRuntimeKey(projectId), {
+    return this.backend.resizeProject(projectRuntimeKey(projectId), {
       cpu: resources.cpu,
       memory: resources.memory,
       disk: resources.disk,
       minScale: resources.minScale,
     })
+  }
+
+  async resizeWorkspaceRuntime(
+    workspaceId: string,
+    resources: { disk?: string },
+  ): Promise<ResizeOutcome[]> {
+    return this.backend.resizeWorkspaceRuntime(workspaceId, resources)
   }
 
   // --- publishing surface --------------------------------------------------

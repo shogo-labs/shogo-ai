@@ -96,21 +96,17 @@ describe('GET /workspaces/:id/analytics/engagement', () => {
     expect(engagementSpies.getEngagementStats).not.toHaveBeenCalled()
   })
 
-  test('a member sees only themselves', async () => {
-    const { status } = await get(path())
-    expect(status).toBe(200)
-    expect(engagementSpies.getEngagementStats.mock.calls[0][0]).toEqual({ workspaceId: WS, userId: 'user_1' })
-  })
-
-  test('a member cannot request another member', async () => {
-    const { status } = await get(path('?userId=admin_1'))
+  test('a member is refused: workspace analytics are admin-only', async () => {
+    const { status, body } = await get(path())
     expect(status).toBe(403)
+    expect(body.error.code).toBe('analytics_admin_only')
     expect(engagementSpies.getEngagementStats).not.toHaveBeenCalled()
   })
 
-  test('a member may request their own id explicitly', async () => {
-    const { status } = await get(path('?userId=user_1'))
-    expect(status).toBe(200)
+  test('a member cannot request another member either', async () => {
+    const { status } = await get(path('?userId=admin_1'))
+    expect(status).toBe(403)
+    expect(engagementSpies.getEngagementStats).not.toHaveBeenCalled()
   })
 
   test.each(['admin_1', 'owner_1'])('%s can view the whole workspace', async (who) => {
@@ -134,6 +130,7 @@ describe('GET /workspaces/:id/analytics/engagement', () => {
   })
 
   test('service failures surface as analytics_failed', async () => {
+    currentUserId = 'admin_1'
     engagementSpies.getEngagementStats.mockImplementationOnce(async () => { throw new Error('boom') })
     const { status, body } = await get(path())
     expect(status).toBe(500)

@@ -5,6 +5,7 @@ import {
   Boxes,
   Building2,
   CreditCard,
+  HardDrive,
   Laptop,
   MessageSquare,
   Monitor,
@@ -27,6 +28,7 @@ export type SettingsTabId =
   | "integrations"
   | "automations"
   | "data"
+  | "disk"
   | "remote-control"
   | "account"
   | "security"
@@ -66,6 +68,7 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
   { id: "integrations", label: "Integrations", Icon: Plug, group: "settings" },
   { id: "automations", label: "Automations", Icon: Zap, group: "settings" },
   { id: "data", label: "Backup & export", Icon: Server, group: "settings" },
+  { id: "disk", label: "Disk", Icon: HardDrive, group: "settings" },
   {
     id: "remote-control",
     label: "Remote Control",

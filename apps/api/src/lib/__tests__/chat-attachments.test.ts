@@ -86,6 +86,33 @@ describe('chat attachments', () => {
     expect(sends.some((command) => command instanceof PutObjectCommand)).toBe(true)
   })
 
+  it('keeps the stored size and preview on an externalised image part', async () => {
+    // A thumbnail is its final size on the first frame only because these ride
+    // along with the part through persistence (SHO-407).
+    const dataUrl = 'data:image/png;base64,aGVsbG8='
+    const result = await externalizeMessageAttachments(
+      'session-1',
+      JSON.stringify([
+        {
+          type: 'file',
+          mediaType: 'image/png',
+          url: dataUrl,
+          name: 'a.png',
+          width: 4000,
+          height: 3000,
+          previewUrl: '/agent/workspace/download/.previews/a-preview.jpg',
+        },
+      ]),
+      null,
+    )
+
+    const part = JSON.parse(result.parts!).at(0)
+    expect(part.url).toStartWith('/api/chat-attachments/')
+    expect(part.width).toBe(4000)
+    expect(part.height).toBe(3000)
+    expect(part.previewUrl).toBe('/agent/workspace/download/.previews/a-preview.jpg')
+  })
+
   it('keeps inline data when object storage is unavailable', async () => {
     failPut = true
     const dataUrl = 'data:application/pdf;base64,aGVsbG8='

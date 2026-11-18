@@ -287,5 +287,31 @@ describe('Template System', () => {
       // Server-generated URLs remain intact in the href
       expect(html).toContain('href="https://app.example.com/accept"')
     })
+
+    // SHO-409: the prepaid-card explanation only reaches the owner if the
+    // template actually declares `reason`/`reasonMessage`. A missing template
+    // throws templateNotFound and the email is silently dropped.
+    test('trial-unavailable template renders the prepaid reason', () => {
+      const { subject, html } = registry.render('trial-unavailable', {
+        workspaceName: 'Acme',
+        planName: 'Pro',
+        dashboardUrl: 'https://app.example.com/billing',
+        reason: 'blocked_prepaid_card',
+        reasonMessage: "Free trials need a debit or credit card — prepaid cards can't start a trial.",
+      })
+      expect(subject).toContain('Acme')
+      expect(html).toContain("prepaid cards can&#39;t start a trial")
+      expect(html).toContain('Nothing was charged')
+      expect(html).toContain('href="https://app.example.com/billing"')
+    })
+
+    test('trial-unavailable template falls back to the duplicate-trial reason', () => {
+      const { html } = registry.render('trial-unavailable', {
+        workspaceName: 'Acme',
+        planName: 'Pro',
+        dashboardUrl: 'https://app.example.com/billing',
+      })
+      expect(html).toContain('already used a free trial')
+    })
   })
 })

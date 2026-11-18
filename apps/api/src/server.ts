@@ -19,6 +19,8 @@ import { resolveSubscriptionContext, selectPlanItem } from './services/stripe-su
 import { resolveCheckoutPriceId, normalizeCheckoutPlanId } from './services/stripe-price-lookup.service'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import type { InstanceSizeName } from './config/instance-sizes'
+import { resolveWorkspaceDiskMiB, workspaceDiskIncludedGiB } from './config/instance-sizes'
+import { diskAddonMonthlyUsd } from './config/disk-pricing'
 import * as workspaceService from './services/workspace.service'
 import * as workspaceModelsService from './services/workspace-models.service'
 import { REGION_ID, REGION_LABEL, REGION_PEERS, getPeer } from './lib/region'
@@ -206,6 +208,8 @@ import {
   instanceMinScale,
   planDiskChange,
   readRuntimeDiskUsage,
+  readWorkspaceRuntimeDiskUsage,
+  resolveDiskAddonEligibility,
 } from './services/project-disk.service'
 import {
   describeProjectMachine,
@@ -4218,6 +4222,7 @@ app.get('/api/projects/:projectId/disk', async (c) => {
   }
   const instanceSize = (project.workspace?.instanceSize ?? 'micro') as InstanceSizeName
   const substrate = await projectDiskSubstrate(projectId)
+  const eligibility = await resolveDiskAddonEligibility(workspaceId)
   // Never wake a VM just to measure it: a stopped project answers with the
   // size only, and the panel says usage appears while the project is running.
   const usage = substrate === 'metal' ? await readRuntimeDiskUsage(projectId, workspaceId) : null
@@ -4227,6 +4232,8 @@ app.get('/api/projects/:projectId/disk', async (c) => {
       requestedGiB: project.workspaceDiskGiB,
       instanceSize,
       substrate,
+      canBuyAddon: eligibility.canBuyAddon,
+      buyBlockedReason: eligibility.buyBlockedReason,
       usage,
     }),
   )
@@ -4269,9 +4276,41 @@ app.put('/api/projects/:projectId/disk', async (c) => {
     return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
   }
   const instanceSize = (project.workspace?.instanceSize ?? 'micro') as InstanceSizeName
-  const plan = planDiskChange(body.sizeGiB, instanceSize)
+  const eligibility = await resolveDiskAddonEligibility(workspaceId)
+  const currentEffectiveGiB = resolveWorkspaceDiskMiB(project.workspaceDiskGiB, instanceSize) / 1024
+  const plan = planDiskChange(body.sizeGiB, instanceSize, {
+    canBuyAddon: eligibility.canBuyAddon,
+    currentEffectiveGiB,
+  })
   if (!plan.ok) {
     return c.json({ error: { code: plan.code, message: plan.message } }, plan.status)
+  }
+
+  // Wallet pre-flight: growing the add-on must be affordable for a month. A
+  // shrink is refused above, so the delta is never negative. Local mode has no
+  // wallet and no charge.
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+    const includedGiB = workspaceDiskIncludedGiB(instanceSize)
+    const newAddonGiB = Math.max(0, plan.sizeGiB - includedGiB)
+    const currentAddonGiB = Math.max(0, currentEffectiveGiB - includedGiB)
+    const deltaMonthlyUsd = diskAddonMonthlyUsd(newAddonGiB) - diskAddonMonthlyUsd(currentAddonGiB)
+    if (deltaMonthlyUsd > 0) {
+      const { getUsdBalance } = await import('./lib/voice-cost')
+      const balance = await getUsdBalance(workspaceId).catch(() => 0)
+      if (balance < deltaMonthlyUsd) {
+        return c.json(
+          {
+            error: {
+              code: 'usage_limit_reached',
+              message: `Not enough available usage to buy ${newAddonGiB} GiB of extra disk. It costs $${deltaMonthlyUsd.toFixed(2)}/mo. Add funds or upgrade your plan.`,
+              requiredUsd: deltaMonthlyUsd,
+              availableUsd: balance,
+            },
+          },
+          402,
+        )
+      }
+    }
   }
 
   await prisma.project.update({
@@ -4287,10 +4326,17 @@ app.put('/api/projects/:projectId/disk', async (c) => {
   if (substrate === 'metal') {
     try {
       const { resizeProjectRuntime } = await import('./lib/substrate/router')
-      await resizeProjectRuntime(projectId, {
+      const outcomes = await resizeProjectRuntime(projectId, {
         disk: `${plan.sizeGiB}Gi`,
         minScale: instanceMinScale(instanceSize),
       })
+      // A live runtime that answered 'unsupported' (or whose host call failed)
+      // never saw the new size — report it instead of a silent 200 (SHO-401).
+      const failed = (outcomes ?? []).find((o) => o.error || o.disk === 'unsupported')
+      if (failed) {
+        growError = failed.error ?? `the live runtime did not grow (${failed.disk})`
+        console.warn(`[ProjectDisk] live grow for ${projectId} did not apply:`, growError)
+      }
     } catch (err: any) {
       growError = err?.message ?? String(err)
       console.warn(`[ProjectDisk] live grow for ${projectId} failed:`, growError)
@@ -4303,9 +4349,164 @@ app.put('/api/projects/:projectId/disk', async (c) => {
       requestedGiB: plan.sizeGiB,
       instanceSize,
       substrate,
+      canBuyAddon: eligibility.canBuyAddon,
+      buyBlockedReason: eligibility.buyBlockedReason,
       usage,
     }),
     // The column is saved either way; a failed live grow retries on next open.
+    ...(growError ? { growError } : {}),
+  })
+})
+
+// =============================================================================
+// Workspace-runtime disk (SHO-401), for Settings → Workspace → Disk.
+//
+// A bare `ws:<workspaceId>` runtime has its own workspace drive, sized by
+// Workspace.runtimeDiskGiB (falling back to the largest member project's
+// setting). Only these routes write it — the generic workspace PATCH drops it
+// (see generated/workspace.hooks.ts). Owner/admin only, like the project route.
+// =============================================================================
+
+async function workspaceDiskSubstrate(): Promise<'local' | 'metal' | 'knative'> {
+  if (process.env.SHOGO_LOCAL_MODE === 'true' || !process.env.KUBERNETES_SERVICE_HOST) return 'local'
+  try {
+    const { isMetalEnabled } = await import('./lib/metal-eligibility')
+    return isMetalEnabled() ? 'metal' : 'knative'
+  } catch {
+    return 'knative'
+  }
+}
+
+app.get('/api/workspaces/:workspaceId/disk', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const access = await loadAccess({ userId, via: 'session' as const }, { workspaceId })
+  if (!access.exists) {
+    return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+  }
+  if (!access.permissions.has('workspace:read')) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
+  }
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { runtimeDiskGiB: true, instanceSize: true },
+  })
+  if (!workspace) {
+    return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+  }
+  const instanceSize = (workspace.instanceSize ?? 'micro') as InstanceSizeName
+  const substrate = await workspaceDiskSubstrate()
+  const eligibility = await resolveDiskAddonEligibility(workspaceId)
+  const usage = substrate === 'metal' ? await readWorkspaceRuntimeDiskUsage(workspaceId) : null
+  return c.json(
+    describeProjectDisk({
+      requestedGiB: workspace.runtimeDiskGiB,
+      instanceSize,
+      substrate,
+      canBuyAddon: eligibility.canBuyAddon,
+      buyBlockedReason: eligibility.buyBlockedReason,
+      usage,
+    }),
+  )
+})
+
+app.put('/api/workspaces/:workspaceId/disk', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const access = await loadAccess({ userId, via: 'session' as const }, { workspaceId })
+  if (!access.exists) {
+    return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+  }
+  // Raising disk is a spend decision: workspace owners/admins only.
+  if (!governsAllProjects(access.workspaceRole)) {
+    return c.json(
+      { error: { code: 'forbidden', message: 'Only workspace owners and admins can change disk size' } },
+      403,
+    )
+  }
+  const body = await c.req
+    .json<{ sizeGiB?: number | string }>()
+    .catch(() => ({}) as { sizeGiB?: number | string })
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { runtimeDiskGiB: true, instanceSize: true },
+  })
+  if (!workspace) {
+    return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+  }
+  const instanceSize = (workspace.instanceSize ?? 'micro') as InstanceSizeName
+  const eligibility = await resolveDiskAddonEligibility(workspaceId)
+  const currentEffectiveGiB = resolveWorkspaceDiskMiB(workspace.runtimeDiskGiB, instanceSize) / 1024
+  const plan = planDiskChange(body.sizeGiB, instanceSize, {
+    canBuyAddon: eligibility.canBuyAddon,
+    currentEffectiveGiB,
+  })
+  if (!plan.ok) {
+    return c.json({ error: { code: plan.code, message: plan.message } }, plan.status)
+  }
+
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+    const includedGiB = workspaceDiskIncludedGiB(instanceSize)
+    const newAddonGiB = Math.max(0, plan.sizeGiB - includedGiB)
+    const currentAddonGiB = Math.max(0, currentEffectiveGiB - includedGiB)
+    const deltaMonthlyUsd = diskAddonMonthlyUsd(newAddonGiB) - diskAddonMonthlyUsd(currentAddonGiB)
+    if (deltaMonthlyUsd > 0) {
+      const { getUsdBalance } = await import('./lib/voice-cost')
+      const balance = await getUsdBalance(workspaceId).catch(() => 0)
+      if (balance < deltaMonthlyUsd) {
+        return c.json(
+          {
+            error: {
+              code: 'usage_limit_reached',
+              message: `Not enough available usage to buy ${newAddonGiB} GiB of extra disk. It costs $${deltaMonthlyUsd.toFixed(2)}/mo. Add funds or upgrade your plan.`,
+              requiredUsd: deltaMonthlyUsd,
+              availableUsd: balance,
+            },
+          },
+          402,
+        )
+      }
+    }
+  }
+
+  await prisma.workspace.update({
+    where: { id: workspaceId },
+    data: { runtimeDiskGiB: plan.sizeGiB },
+  })
+
+  const substrate = await workspaceDiskSubstrate()
+  let growError: string | undefined
+  if (substrate === 'metal') {
+    try {
+      const { resizeWorkspaceRuntime } = await import('./lib/substrate/router')
+      const outcomes = await resizeWorkspaceRuntime(workspaceId, { disk: `${plan.sizeGiB}Gi` })
+      const failed = outcomes.find((o) => o.error || o.disk === 'unsupported')
+      if (failed) {
+        growError = failed.error ?? `the live runtime did not grow (${failed.disk})`
+        console.warn(`[WorkspaceDisk] live grow for ${workspaceId} did not apply:`, growError)
+      }
+    } catch (err: any) {
+      growError = err?.message ?? String(err)
+      console.warn(`[WorkspaceDisk] live grow for ${workspaceId} failed:`, growError)
+    }
+  }
+
+  const usage = substrate === 'metal' ? await readWorkspaceRuntimeDiskUsage(workspaceId) : null
+  return c.json({
+    ...describeProjectDisk({
+      requestedGiB: plan.sizeGiB,
+      instanceSize,
+      substrate,
+      canBuyAddon: eligibility.canBuyAddon,
+      buyBlockedReason: eligibility.buyBlockedReason,
+      usage,
+    }),
     ...(growError ? { growError } : {}),
   })
 })
@@ -7754,14 +7955,18 @@ function planDisplayName(planId: string): string {
   return planId.charAt(0).toUpperCase() + planId.slice(1)
 }
 
-/** Fire-and-forget: the trial checkout was cancelled as a duplicate; tell the owner. */
-function notifyTrialBlocked(workspaceId: string, planId: string): void {
+/**
+ * Fire-and-forget: the trial checkout was cancelled (duplicate card/user, or a
+ * prepaid card); tell the owner why.
+ */
+function notifyTrialBlocked(workspaceId: string, planId: string, reason: string | null): void {
   workspaceOwnerContact(workspaceId)
     .then((owner) => owner && sendTrialUnavailableEmail({
       to: owner.email,
       workspaceName: owner.workspaceName,
       planName: planDisplayName(planId),
       dashboardUrl: `${getFrontendUrl()}/billing`,
+      reason,
     }))
     .catch((err: any) => console.error('[Webhook] trial-unavailable email failed:', err?.message ?? err))
 }
@@ -7972,6 +8177,10 @@ app.get('/api/billing/workspace-plan', async (c) => {
       // has since expired — surface a reactivate prompt instead of "enable
       // usage-based pricing".
       paidTier: overageStatus.paidTier,
+      // Whether the card has paid a real invoice. A trialing workspace is a
+      // paid tier but has never been charged, so overage is not trusted yet —
+      // surface this so the UI can explain why on-demand usage is paused.
+      overageTrusted: overageStatus.overageTrusted,
       overageHardLimitUsd: wallet?.overageHardLimitUsd ?? null,
       overageAccumulatedUsd: wallet?.overageAccumulatedUsd ?? 0,
       // Current overage block: the most unpaid overage the workspace can
@@ -8888,8 +9097,9 @@ app.post('/api/webhooks/stripe', async (c) => {
               })
               if (trialOutcome === 'blocked' || trialOutcome === 'already_blocked') {
                 if (trialOutcome === 'blocked') {
-                  console.warn('[Webhook] Trial blocked (card or account already used a trial):', wsId)
-                  notifyTrialBlocked(wsId, metaPlanId)
+                  const reason = await trialService.getTrialBlockStatus(wsId)
+                  console.warn('[Webhook] Trial blocked:', wsId, reason)
+                  notifyTrialBlocked(wsId, metaPlanId, reason)
                 }
                 break
               }
@@ -9038,6 +9248,27 @@ app.post('/api/webhooks/stripe', async (c) => {
         } catch (err: any) {
           console.error('[Webhook] Failed to mark trial ended:', err.message)
         }
+        // Invoice the sub-block overage remainder at subscription end. Without
+        // this it carries forward forever: `chargeOverageBlocks` defers while
+        // the sub is not active, and nothing else ever bills it. `final`
+        // ignores the row's status, so it works after the cancel above.
+        try {
+          const localSub = await prisma.subscription.findFirst({
+            where: { stripeSubscriptionId: subscription.id },
+            select: { workspaceId: true },
+          })
+          if (localSub?.workspaceId) {
+            const invoiced = await billingService.chargeOverage(localSub.workspaceId, 'final')
+            if (invoiced > 0) {
+              console.log('[Webhook] Final overage invoice at subscription end:', {
+                subscriptionId: subscription.id,
+                workspaceId: localSub.workspaceId,
+              })
+            }
+          }
+        } catch (err: any) {
+          console.error('[Webhook] Failed to invoice final overage:', err.message)
+        }
         try {
           const instanceSub = await instanceService.findInstanceSubscriptionByStripeId(subscription.id)
           if (instanceSub) {
@@ -9144,8 +9375,9 @@ app.post('/api/webhooks/stripe', async (c) => {
               })
               if (trialOutcome === 'blocked' || trialOutcome === 'already_blocked') {
                 if (trialOutcome === 'blocked') {
-                  console.warn('[Webhook] Trial blocked (card or account already used a trial):', workspaceId)
-                  notifyTrialBlocked(workspaceId, planId)
+                  const reason = await trialService.getTrialBlockStatus(workspaceId)
+                  console.warn('[Webhook] Trial blocked:', workspaceId, reason)
+                  notifyTrialBlocked(workspaceId, planId, reason)
                 }
                 break
               }
@@ -9235,6 +9467,18 @@ app.post('/api/webhooks/stripe', async (c) => {
             console.log('[Webhook] Overage invoice paid:', { workspaceId: overageWorkspaceId, invoiceId: invoice.id, settled })
           } catch (err: any) {
             console.error('[Webhook] Failed to settle overage invoice:', err.message)
+          }
+        }
+        // The card has now paid a real invoice, so overage is trusted from here
+        // on (SHO-409). A trial's $0 invoices never set this.
+        if (customerId) {
+          try {
+            const count = await billingService.markSubscriptionFirstPaid(customerId, invoice.amount_paid ?? 0)
+            if (count > 0) {
+              console.log('[Webhook] Marked subscription firstPaidAt:', { customerId, count })
+            }
+          } catch (err: any) {
+            console.error('[Webhook] Failed to set firstPaidAt:', err?.message ?? err)
           }
         }
         if (customerId && subscriptionId) {
@@ -10834,6 +11078,20 @@ setTimeout(async () => {
         '[SocialAccountMonthly] failed to schedule the account meter (non-fatal):',
         err?.message ?? err,
       )
+    }
+  })()
+}
+
+// Disk add-on daily meter — `disk_addon` (SHO-401). Charges workspace drive
+// above the tier's included GiB once per UTC day, home-region partitioned, with
+// a per-workspace watermark so a rerun is a no-op. Local mode is a no-op.
+{
+  ;(async () => {
+    try {
+      const { startDiskAddonDailyCron } = await import('./jobs/disk-addon-daily')
+      startDiskAddonDailyCron()
+    } catch (err: any) {
+      console.error('[DiskAddon] failed to schedule the disk add-on meter (non-fatal):', err?.message ?? err)
     }
   })()
 }

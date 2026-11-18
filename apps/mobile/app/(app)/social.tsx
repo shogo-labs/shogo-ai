@@ -15,7 +15,7 @@
  * `socialMediaEnabled` and are not on this screen.
  */
 
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
@@ -87,6 +87,11 @@ export default function SocialScreen() {
   const [error, setError] = useState<string | null>(null)
 
   const [accounts, setAccounts] = useState<any[]>([])
+  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([])
+  const [connectProjectId, setConnectProjectId] = useState<string | null>(null)
+  // Read by `load` and `connectAccount` without making them depend on the
+  // picker: a focus-triggered sync must stamp the same project the connect did.
+  const connectProjectRef = useRef<string | null>(null)
   const [automations, setAutomations] = useState<any[]>([])
   const [analytics, setAnalytics] = useState<any | null>(null)
   const [calendar, setCalendar] = useState<any[]>([])
@@ -104,31 +109,41 @@ export default function SocialScreen() {
         method: (init?.method ?? 'GET') as any,
         ...(init?.body ? { body: init.body } : {}),
       })
-      return res as any
+      // `request` resolves to `{ data, status, headers }`, not the body. Every
+      // caller below reads the body directly (`res.accounts`, `res.messages`),
+      // so returning the wrapper left every list on this screen empty.
+      return res.data
     },
     [base, http],
   )
 
   /**
-   * Ask the provider what this workspace now has connected, then fall back to
-   * the rows we already hold. A connect that finished in the browser writes
-   * nothing locally until something syncs, so the sync is what makes a
-   * just-connected account appear; when the sync itself cannot run (no Shogo
-   * Cloud on desktop) its plain-language reason is worth showing.
+   * Ask the provider what this workspace now has connected, then read the full
+   * list back.
+   *
+   * `stampProjectId` is the project a **newly discovered** account belongs to:
+   * the connect flow passes the project the person picked, so the account lands
+   * in that project instead of becoming workspace-shared. The list that comes
+   * back is unscoped, because this screen shows every project's accounts.
    */
-  const syncAccounts = useCallback(async (): Promise<any[] | null> => {
-    try {
-      const res = await call('/accounts/sync', { method: 'POST' })
-      if (Array.isArray(res?.accounts)) return res.accounts
-    } catch (cause) {
-      setNotice(errorMessage(cause, 'Could not refresh your connected accounts'))
-    }
-    try {
-      const res = await call('/accounts')
-      if (Array.isArray(res?.accounts)) return res.accounts
-    } catch {}
-    return null
-  }, [call])
+  const syncAccounts = useCallback(
+    async (stampProjectId?: string | null): Promise<any[] | null> => {
+      try {
+        await call('/accounts/sync', {
+          method: 'POST',
+          body: stampProjectId ? { projectId: stampProjectId } : {},
+        })
+      } catch (cause) {
+        setNotice(errorMessage(cause, 'Could not refresh your connected accounts'))
+      }
+      try {
+        const res = await call('/accounts')
+        if (Array.isArray(res?.accounts)) return res.accounts
+      } catch {}
+      return null
+    },
+    [call],
+  )
 
   const load = useCallback(
     async (refresh = false) => {
@@ -137,14 +152,27 @@ export default function SocialScreen() {
       else setLoading(true)
       try {
         setError(null)
-        const [synced, automationRes, analyticsRes] = await Promise.all([
+        const [synced, automationRes, analyticsRes, projectRes] = await Promise.all([
+          // A routine load stamps no project: the picker's last choice is not
+          // an instruction about accounts discovered later, and stamping it
+          // here would quietly move a newly seen account into whichever project
+          // was picked last. Only the sync that completes a connect passes one.
           syncAccounts(),
           call('/automations?limit=50').catch(() => null),
           call('/analytics').catch(() => null),
+          http
+            .request<any>(`/api/projects?workspaceId=${encodeURIComponent(workspaceId)}`)
+            .catch(() => null),
         ])
         if (synced) setAccounts(synced)
         setAutomations(Array.isArray(automationRes?.automations) ? automationRes.automations : [])
         setAnalytics(analyticsRes ?? null)
+        const projectItems = Array.isArray(projectRes?.data?.items) ? projectRes.data.items : []
+        setProjects(
+          projectItems
+            .filter((project: any) => project?.id)
+            .map((project: any) => ({ id: String(project.id), name: String(project.name ?? 'Project') })),
+        )
       } catch (cause) {
         setError(errorMessage(cause, 'Could not load your social accounts'))
       } finally {
@@ -152,7 +180,7 @@ export default function SocialScreen() {
         setRefreshing(false)
       }
     },
-    [call, syncAccounts, workspaceId],
+    [call, http, syncAccounts, workspaceId],
   )
 
   /**
@@ -172,6 +200,7 @@ export default function SocialScreen() {
       if (connecting) return
       setConnecting(reconnectAccountId ?? platform)
       setNotice(null)
+      const projectId = connectProjectRef.current
       const preWindow = Platform.OS === 'web' ? preCreateAuthWindow() : null
       try {
         const res = await call('/connect', {
@@ -180,14 +209,20 @@ export default function SocialScreen() {
             platform,
             ...(reconnectAccountId ? { reconnectAccountId } : {}),
             ...(loginMethod ? { loginMethod } : {}),
+            ...(projectId ? { projectId } : {}),
           },
         })
         const url = typeof res?.url === 'string' ? res.url.trim() : ''
         if (!url) throw new Error('The platform did not return a sign-in link. Try again in a moment.')
         await openAuthFlow(url, { preCreatedWindow: preWindow })
         // The sign-in happens in another window, so whatever came back is
-        // already stale — reconcile before showing the list again.
-        const synced = await syncAccounts()
+        // already stale — reconcile before showing the list again. The project
+        // is passed so the account the sign-in created lands in it. The sync
+        // cannot name the account the sign-in produced (the landing page does
+        // not hand it back), so it claims nothing: a connect that landed on
+        // another project's account simply shows up under that project in the
+        // grouped list below, where it can be moved.
+        const synced = await syncAccounts(projectId)
         if (synced) setAccounts(synced)
       } catch (cause) {
         setNotice(errorMessage(cause, `Could not start the ${platform} sign-in`))
@@ -204,6 +239,26 @@ export default function SocialScreen() {
       }
     },
     [call, connecting, syncAccounts],
+  )
+
+  /** The project a new connect belongs to. `null` = workspace-shared. */
+  const selectProject = useCallback((projectId: string | null) => {
+    connectProjectRef.current = projectId
+    setConnectProjectId(projectId)
+  }, [])
+
+  /** Move an account between projects, or back to shared. No provider call. */
+  const moveAccount = useCallback(
+    async (accountId: string, projectId: string | null) => {
+      try {
+        await call(`/accounts/${accountId}`, { method: 'PATCH', body: { projectId } })
+        const res = await call('/accounts')
+        if (Array.isArray(res?.accounts)) setAccounts(res.accounts)
+      } catch (cause) {
+        setNotice(errorMessage(cause, 'Could not move that account'))
+      }
+    },
+    [call],
   )
 
   const loadTab = useCallback(
@@ -297,6 +352,10 @@ export default function SocialScreen() {
               analytics={analytics}
               connecting={connecting}
               onConnect={connectAccount}
+              projects={projects}
+              connectProjectId={connectProjectId}
+              onSelectProject={selectProject}
+              onMove={moveAccount}
             />
           ) : null}
           {tab === 'compose' ? <ComposeTab accounts={accounts} call={call} onSent={() => void load(true)} /> : null}
@@ -361,18 +420,76 @@ function AccountsTab({
   analytics,
   connecting,
   onConnect,
+  projects,
+  connectProjectId,
+  onSelectProject,
+  onMove,
 }: {
   accounts: any[]
   analytics: any | null
   /** The platform or account id whose sign-in is currently being opened. */
   connecting: string | null
   onConnect: (platform: string, reconnectAccountId?: string, loginMethod?: string) => void
+  /** The workspace's projects, so a connect can be aimed at one of them. */
+  projects: Array<{ id: string; name: string }>
+  /** The project a new connect belongs to. `null` = shared with the workspace. */
+  connectProjectId: string | null
+  onSelectProject: (projectId: string | null) => void
+  /** Move an account between projects, or back to shared. No provider call. */
+  onMove: (accountId: string, projectId: string | null) => void
 }) {
+  // `null` is a real target ("shared with the workspace"), so the picker is
+  // built from one list rather than a project list plus a special case.
+  const targets: Array<{ id: string | null; name: string }> = [
+    { id: null, name: 'Workspace (shared)' },
+    ...projects,
+  ]
+
+  // Group by owner so "which project is this account for" is answerable at a
+  // glance. Shared first, then the workspace's projects in their own order, and
+  // anything pointing at a project this screen cannot see last.
+  const groups: Array<{ key: string; label: string; rows: any[] }> = []
+  const shared = accounts.filter((account) => !account.projectId)
+  if (shared.length) groups.push({ key: 'shared', label: 'Shared with the workspace', rows: shared })
+  for (const project of projects) {
+    const rows = accounts.filter((account) => account.projectId === project.id)
+    if (rows.length) groups.push({ key: project.id, label: project.name, rows })
+  }
+  const known = new Set(projects.map((project) => project.id))
+  const orphans = accounts.filter((account) => account.projectId && !known.has(account.projectId))
+  if (orphans.length) groups.push({ key: 'other', label: 'Other projects', rows: orphans })
+
   return (
     <>
       <Card>
         <Text className="text-foreground font-medium">Connect an account</Text>
-        <View className="flex-row flex-wrap gap-2 mt-1">
+        <Text className="text-xs text-muted-foreground mt-1">Connect for</Text>
+        <View className="flex-row flex-wrap gap-1.5 mt-1">
+          {targets.map((target) => {
+            const selected = (connectProjectId ?? null) === target.id
+            return (
+              <Pressable
+                key={target.id ?? 'shared'}
+                disabled={!!connecting}
+                accessibilityRole="button"
+                accessibilityLabel={`Connect for ${target.name}`}
+                onPress={() => onSelectProject(target.id)}
+                className={`px-2.5 py-1 rounded-full border ${
+                  selected ? 'bg-primary border-primary' : 'border-border'
+                }`}
+              >
+                <Text
+                  className={`text-[11px] ${
+                    selected ? 'text-primary-foreground' : 'text-muted-foreground'
+                  }`}
+                >
+                  {target.name}
+                </Text>
+              </Pressable>
+            )
+          })}
+        </View>
+        <View className="flex-row flex-wrap gap-2 mt-2">
           {CONNECTABLE.map((entry) => {
             const Icon = entry.icon
             const busy = connecting === entry.platform
@@ -435,54 +552,81 @@ function AccountsTab({
           </Text>
         </Card>
       ) : (
-        accounts.map((account) => {
-          const needsAttention = !account.isActive || account.needsReconnect
-          const busy = connecting === account.id || connecting === account.platform
-          const Icon =
-            CONNECTABLE.find((entry) => entry.platform === account.platform)?.icon ?? Instagram
-          return (
-            <Card key={account.id}>
-              <View className="flex-row items-center gap-2">
-                <Icon size={16} className="text-muted-foreground" />
-                <Text className="text-foreground font-medium flex-1">
-                  {account.platform} @{account.username}
-                </Text>
-              </View>
-              <Text className="text-xs text-muted-foreground">
-                {account.isActive ? 'Connected' : 'Needs reconnecting'}
-                {account.needsReconnect ? ' — token expired' : ''}
-              </Text>
-              {needsAttention ? (
-                <View className="flex-row flex-wrap gap-2 mt-1">
-                  <Pressable
-                    disabled={!!connecting}
-                    onPress={() => onConnect(account.platform, account.id)}
-                    className="flex-row items-center gap-1.5 self-start px-2.5 py-1.5 rounded-lg border border-border"
-                  >
-                    {busy ? (
-                      <ActivityIndicator size="small" />
-                    ) : (
-                      <RefreshCw size={12} className="text-foreground" />
-                    )}
-                    <Text className="text-xs font-medium text-foreground">Reconnect</Text>
-                  </Pressable>
-                  {account.platform === 'instagram' ? (
-                    <Pressable
-                      disabled={!!connecting}
-                      onPress={() => onConnect('instagram', account.id, 'facebook_login')}
-                      className="flex-row items-center gap-1.5 self-start px-2.5 py-1.5 rounded-lg border border-border"
-                    >
-                      <Facebook size={12} className="text-foreground" />
-                      <Text className="text-xs font-medium text-foreground">
-                        Reconnect with Facebook (music on Reels)
-                      </Text>
-                    </Pressable>
+        groups.map((group) => (
+          <View key={group.key} className="gap-2">
+            <Text className="text-[11px] uppercase tracking-wide text-muted-foreground mt-1">
+              {group.label}
+            </Text>
+            {group.rows.map((account) => {
+              const needsAttention = !account.isActive || account.needsReconnect
+              const busy = connecting === account.id || connecting === account.platform
+              const Icon =
+                CONNECTABLE.find((entry) => entry.platform === account.platform)?.icon ?? Instagram
+              // Every target except the one it is already in — a "move" to where
+              // it already is would be a no-op the person cannot see.
+              const moves = targets.filter((target) => target.id !== (account.projectId ?? null))
+              return (
+                <Card key={account.id}>
+                  <View className="flex-row items-center gap-2">
+                    <Icon size={16} className="text-muted-foreground" />
+                    <Text className="text-foreground font-medium flex-1">
+                      {account.platform} @{account.username}
+                    </Text>
+                  </View>
+                  <Text className="text-xs text-muted-foreground">
+                    {account.isActive ? 'Connected' : 'Needs reconnecting'}
+                    {account.needsReconnect ? ' — token expired' : ''}
+                  </Text>
+                  {moves.length ? (
+                    <View className="flex-row flex-wrap items-center gap-1.5 mt-1">
+                      <Text className="text-[11px] text-muted-foreground">Move to</Text>
+                      {moves.map((target) => (
+                        <Pressable
+                          key={target.id ?? 'shared'}
+                          disabled={!!connecting}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Move @${account.username} to ${target.name}`}
+                          onPress={() => onMove(account.id, target.id)}
+                          className="px-2 py-1 rounded-full border border-border"
+                        >
+                          <Text className="text-[11px] text-muted-foreground">{target.name}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
                   ) : null}
-                </View>
-              ) : null}
-            </Card>
-          )
-        })
+                  {needsAttention ? (
+                    <View className="flex-row flex-wrap gap-2 mt-1">
+                      <Pressable
+                        disabled={!!connecting}
+                        onPress={() => onConnect(account.platform, account.id)}
+                        className="flex-row items-center gap-1.5 self-start px-2.5 py-1.5 rounded-lg border border-border"
+                      >
+                        {busy ? (
+                          <ActivityIndicator size="small" />
+                        ) : (
+                          <RefreshCw size={12} className="text-foreground" />
+                        )}
+                        <Text className="text-xs font-medium text-foreground">Reconnect</Text>
+                      </Pressable>
+                      {account.platform === 'instagram' ? (
+                        <Pressable
+                          disabled={!!connecting}
+                          onPress={() => onConnect('instagram', account.id, 'facebook_login')}
+                          className="flex-row items-center gap-1.5 self-start px-2.5 py-1.5 rounded-lg border border-border"
+                        >
+                          <Facebook size={12} className="text-foreground" />
+                          <Text className="text-xs font-medium text-foreground">
+                            Reconnect with Facebook (music on Reels)
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  ) : null}
+                </Card>
+              )
+            })}
+          </View>
+        ))
       )}
 
       {analytics?.engagement ? (

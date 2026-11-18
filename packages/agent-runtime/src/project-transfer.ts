@@ -34,9 +34,12 @@ import { deriveApiUrl, getInternalHeaders } from './internal-api'
 import { isWithinRoot } from './path-boundary'
 import { RemoteToolError } from './remote-tools'
 import { assertAllowedPath } from './runtime-trust'
+import {
+  TRANSFER_MAX_ARCHIVE_BASE64_CHARS,
+  TRANSFER_MAX_ARCHIVE_BYTES,
+} from '@shogo/shared-runtime/project-transfer-limits'
 
-/** Compressed archive cap. Base64 adds a third on the wire. */
-export const TRANSFER_MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
+export { TRANSFER_MAX_ARCHIVE_BASE64_CHARS, TRANSFER_MAX_ARCHIVE_BYTES }
 export const TRANSFER_MAX_RAW_BYTES = 200 * 1024 * 1024
 export const TRANSFER_MAX_FILES = 5_000
 
@@ -341,7 +344,7 @@ export async function importArchive(
   const destAbs = resolve(root, destRel)
   if (!isWithinRoot(root, destAbs)) throw new TransferError('dest is outside the project root', 400, 'outside_root')
 
-  if (body.archive.length > Math.ceil((TRANSFER_MAX_ARCHIVE_BYTES * 4) / 3) + 4) {
+  if (body.archive.length > TRANSFER_MAX_ARCHIVE_BASE64_CHARS) {
     throw new TransferError('Archive exceeds the transfer size limit', 413, 'too_large')
   }
   const archive = Buffer.from(body.archive, 'base64')

@@ -2869,6 +2869,7 @@ export async function getActiveUsersTimeseries(
 
 export interface QualityTimeseriesPoint {
   date: string
+  /** Prompt-cache hit rate as a percentage (0-100), like every other rate here. */
   cacheHitRatio: number
   costPerMessage: number
   costPerActiveUser: number
@@ -3028,7 +3029,9 @@ export async function getQualityTimeseries(
     const activeUsers = a?.activeUsers ?? 0
     days.push({
       date: key,
-      cacheHitRatio: a ? promptCacheHitRatio(a.cached, a.input, a.cacheWrite) : 0,
+      // `promptCacheHitRatio` is a 0-1 fraction (per-model rows and the
+      // cache-efficiency eval report it that way); this series is 0-100.
+      cacheHitRatio: a ? 100 * promptCacheHitRatio(a.cached, a.input, a.cacheWrite) : 0,
       // A hosting hour is not a message cost: the per-message figure stays on
       // chat spend, while cost per active user is everything the user costs.
       costPerMessage: a && a.messages > 0 ? a.chatSpend / a.messages : 0,

@@ -33,6 +33,7 @@ import {
   type RootDiskScalars,
   type StagedRootfsReport,
 } from './metal-placement-registry'
+import type { ResizeOutcome } from './substrate/types'
 import { idleDirective, idlePolicyConfig, type IdleDirective, type IdleTier } from './metal-idle-policy'
 import { reportWake } from './wake-capture'
 import {
@@ -1661,31 +1662,75 @@ export class MetalWarmPoolController {
   async resizeProject(
     projectId: string,
     resources: { cpu?: string; memory?: string; disk?: string; minScale?: number },
-  ): Promise<void> {
+  ): Promise<ResizeOutcome[]> {
     const alwaysOn = (resources.minScale ?? 0) >= 1
     const workspaceDriveMiB = diskStringToMiB(resources.disk)
     // Both keys a live runtime can be registered under: Studio opens a project
     // as its anchored workspace runtime (`ws:proj:<id>`), and a bare project id
     // is what an older/plain assign used. Either may be the live one.
     const keys = [...new Set([projectId, workspaceRuntimeKey('', projectId)])]
-    await Promise.all(
-      keys.map(async (key) => {
+    return Promise.all(
+      keys.map(async (key): Promise<ResizeOutcome> => {
         const host = await this.hostForProject(key)
-        if (!host) return
-        await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/resize`, {
-          method: 'POST',
-          headers: this.agentHeaders(),
-          body: JSON.stringify({
-            projectId: key,
-            alwaysOn,
-            ...(workspaceDriveMiB !== undefined ? { workspaceDriveMiB } : {}),
-          }),
-          signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
-        }).catch((err) =>
-          console.warn(`[MetalPool] resize ${key} on ${host.hostId} failed: ${(err as any)?.message ?? err}`),
-        )
+        if (!host) return { key }
+        try {
+          const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/resize`, {
+            method: 'POST',
+            headers: this.agentHeaders(),
+            body: JSON.stringify({
+              projectId: key,
+              alwaysOn,
+              ...(workspaceDriveMiB !== undefined ? { workspaceDriveMiB } : {}),
+            }),
+            signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
+          })
+          const body: any = await res.json().catch(() => ({}))
+          if (!res.ok) {
+            return { key, error: body?.error ?? `host answered ${res.status}` }
+          }
+          // The host reports the drive grow result per key; 'unsupported' means
+          // the live VM never saw the new size (SHO-401).
+          return { key, ...(body?.disk !== undefined ? { disk: body.disk } : {}) }
+        } catch (err: any) {
+          const message = err?.message ?? String(err)
+          console.warn(`[MetalPool] resize ${key} on ${host.hostId} failed: ${message}`)
+          return { key, error: message }
+        }
       }),
     )
+  }
+
+  /**
+   * Grow a bare `ws:<workspaceId>` workspace runtime's drive live (SHO-401).
+   * The workspace runtime is keyed by workspace, not by any project, so
+   * `resizeProject` never reaches it. Returns the host's grow result.
+   */
+  async resizeWorkspaceRuntime(
+    workspaceId: string,
+    resources: { disk?: string },
+  ): Promise<ResizeOutcome[]> {
+    const key = workspaceRuntimeKey(workspaceId)
+    const workspaceDriveMiB = diskStringToMiB(resources.disk)
+    const host = await this.hostForProject(key)
+    if (!host) return [{ key }]
+    try {
+      const res = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}/resize`, {
+        method: 'POST',
+        headers: this.agentHeaders(),
+        body: JSON.stringify({
+          projectId: key,
+          ...(workspaceDriveMiB !== undefined ? { workspaceDriveMiB } : {}),
+        }),
+        signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
+      })
+      const body: any = await res.json().catch(() => ({}))
+      if (!res.ok) return [{ key, error: body?.error ?? `host answered ${res.status}` }]
+      return [{ key, ...(body?.disk !== undefined ? { disk: body.disk } : {}) }]
+    } catch (err: any) {
+      const message = err?.message ?? String(err)
+      console.warn(`[MetalPool] resize ${key} on ${host.hostId} failed: ${message}`)
+      return [{ key, error: message }]
+    }
   }
 
   /**

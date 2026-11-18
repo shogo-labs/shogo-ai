@@ -6,6 +6,7 @@ import { describe, expect, mock, test } from "bun:test"
 import { fireEvent, render, screen } from "@testing-library/react"
 import { createElement } from "react"
 import { createReactNativeMock } from "../../../../test/react-native-mock"
+import * as lucideStub from "../../../../test/stubs/lucide-react-native"
 
 mock.module("react-native", () =>
   createReactNativeMock({
@@ -35,6 +36,10 @@ mock.module("lucide-react-native", () => {
       return createElement("span", { "data-icon": name })
     }
   return {
+    // Every icon the app imports must resolve, not just the ones this test
+    // asserts on: `lib/settings-tabs.ts` is in the AccountMenu import graph and
+    // a hand-enumerated list breaks the whole file the moment it gains an icon.
+    ...lucideStub,
     Check: Icon("Check"),
     ChevronDown: Icon("ChevronDown"),
     ChevronRight: Icon("ChevronRight"),

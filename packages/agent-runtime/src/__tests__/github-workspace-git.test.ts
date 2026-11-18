@@ -176,8 +176,9 @@ describe('push and pull', () => {
     expect(result).toMatchObject({ ok: true, commits: 1 })
     git(seed, 'pull', '-q', 'origin', 'main')
     expect(readFileSync(join(seed, 'edited.md'), 'utf8')).toBe('agent edit\n')
-    expect(existsSync(join(seed, '.shogo', 'STACK.md'))).toBe(true)
-    for (const runtimeFile of ['.tech-stack', '.shogo/logs/build.log', '.shogo/build-output.json', 'prisma/dev.db', 'prisma/dev.db-journal']) {
+    // `.shogo/*` is Shogo's own state — including the generated stack doc — and
+    // never belongs in the user's repository (SHO-371: one shared exclude list).
+    for (const runtimeFile of ['.tech-stack', '.shogo/STACK.md', '.shogo/logs/build.log', '.shogo/build-output.json', 'prisma/dev.db', 'prisma/dev.db-journal']) {
       expect(existsSync(join(seed, runtimeFile))).toBe(false)
     }
     expect(await runGitHubWorkspaceOp(WS, op('push'))).toMatchObject({ ok: true, commits: 0 })
@@ -296,5 +297,57 @@ describe('detachMemberFromRootRepo', () => {
     expect(existsSync(join(member, 'index.html'))).toBe(true)
     git(WS, 'add', '-A')
     expect(git(WS, 'ls-files', '--stage', 'proj-1')).toBe('')
+  })
+})
+
+describe('runtime state never reaches the user repo (SHO-371)', () => {
+  test('the module keeps no exclude list of its own', () => {
+    const source = readFileSync(join(import.meta.dir, '..', 'github-workspace-git.ts'), 'utf8')
+    // One list, in @shogo/shared-runtime/shogo-state-paths. A local copy is how
+    // `.shogo/run/children.json` got pushed into users' repositories.
+    expect(source).not.toContain('SHOGO_RUNTIME_EXCLUDES')
+    expect(source).not.toContain('ensureRuntimeExcludes')
+    expect(source).toContain('ensureShogoGitHubExcludes')
+    expect(source).toContain('untrackShogoStatePaths')
+  })
+
+  test('a push untracks .shogo/run/children.json that an earlier commit already tracked', async () => {
+    const { seed } = makeRemote()
+    await runGitHubWorkspaceOp(WS, op('connect'))
+    expect(git(WS, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('main')
+
+    // Simulate a repo that already pushed runtime state before the fix.
+    mkdirSync(join(WS, '.shogo', 'run'), { recursive: true })
+    writeFileSync(join(WS, '.shogo', 'run', 'children.json'), '{"children":[]}\n')
+    git(WS, 'add', '-f', '.shogo/run/children.json')
+    git(WS, 'commit', '-q', '-m', 'leaked runtime state')
+    git(WS, 'push', '-q', 'origin', 'main')
+    expect(git(WS, 'ls-files', '.shogo/run/children.json')).toBe('.shogo/run/children.json')
+
+    // The next Shogo commit drops it from the index and never re-adds it.
+    writeFileSync(join(WS, 'index.html'), '<div id="root"></div>\n')
+    const result = await runGitHubWorkspaceOp(WS, op('push'))
+    expect(result.ok).toBe(true)
+
+    expect(git(WS, 'ls-files', '.shogo/run/children.json')).toBe('')
+    expect(existsSync(join(WS, '.shogo', 'run', 'children.json'))).toBe(true)
+    expect(git(seed, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('.shogo/run/children.json')
+  })
+
+  test('the user .gitignore is byte-identical before and after a push', async () => {
+    makeRemote()
+    await runGitHubWorkspaceOp(WS, op('connect'))
+    const gitignore = join(WS, '.gitignore')
+    writeFileSync(gitignore, 'node_modules\ndist\n')
+    git(WS, 'add', '.gitignore')
+    git(WS, 'commit', '-q', '-m', 'gitignore')
+    const before = readFileSync(gitignore, 'utf8')
+
+    writeFileSync(join(WS, 'index.html'), '<div id="root"></div>\n')
+    await runGitHubWorkspaceOp(WS, op('push'))
+
+    expect(readFileSync(gitignore, 'utf8')).toBe(before)
+    // The rules went into .git/info/exclude instead.
+    expect(readFileSync(join(WS, '.git', 'info', 'exclude'), 'utf8')).toContain('.shogo/*')
   })
 })

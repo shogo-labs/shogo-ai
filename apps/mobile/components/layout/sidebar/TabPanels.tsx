@@ -11,6 +11,7 @@ import { BarChart3, Bookmark, ChevronRight, FileText, KanbanSquare, ListTodo, Se
 import { cn } from '@shogo/shared-ui/primitives'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
+import { usePermissions } from '../../../hooks/usePermissions'
 import { useDomainHttp } from '../../../contexts/domain'
 // Leaf import: the `@shogo/shared-app` barrel also loads the domain SDK.
 import { TASKS_NAV_HIDDEN } from '../../../../../packages/shared-app/src/hooks/useWorkspaceExperience'
@@ -73,6 +74,7 @@ export function MorePanel({ onNavPress, variant = 'panel' }: { onNavPress?: () =
   const { features } = usePlatformConfig()
   const http = useDomainHttp()
   const workspace = useActiveWorkspace()
+  const { can } = usePermissions({ workspaceId: workspace?.id })
   const [social, setSocial] = useState(false)
 
   // Social management is a capability, not a consequence of having connected an
@@ -100,7 +102,7 @@ export function MorePanel({ onNavPress, variant = 'panel' }: { onNavPress?: () =
     }
   }, [http, workspace?.id])
 
-  const items = moreItems({ kind: experience.kind, marketplace: !!features.marketplace && experience.showMarketplace, workBoards: !!features.workBoards, social })
+  const items = moreItems({ kind: experience.kind, marketplace: !!features.marketplace && experience.showMarketplace, workBoards: !!features.workBoards, social, analytics: can('workspace.analytics:read') })
   const screen = variant === 'screen'
   return (
     <View className={cn(screen ? 'px-2' : 'px-2 pt-1')} testID="more-panel">

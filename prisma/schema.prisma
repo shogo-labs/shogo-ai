@@ -245,6 +245,15 @@ model Workspace {
   // See `services/workspace-move/`. Null for a workspace that was never moved.
   movedToWorkspaceId String?
   movedAt            DateTime?
+  // Workspace-runtime workspace-drive size (GiB) for a bare `ws:<id>` runtime
+  // (SHO-401). Null = never set; the runtime then sizes to the largest member
+  // project's `workspaceDiskGiB`. Route-only: only PUT /api/workspaces/:id/disk
+  // writes it (the generic workspace PATCH drops it, like Project.workspaceDiskGiB).
+  runtimeDiskGiB Int?
+  // The UTC day through which the disk add-on has been billed (SHO-401). The
+  // daily `disk_addon` job advances it in the same transaction as the debit, so
+  // a rerun the same day charges nothing.
+  diskAddonBilledThrough DateTime?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -1614,6 +1623,13 @@ model Subscription {
   billingInterval      BillingInterval
   currentPeriodStart   DateTime
   currentPeriodEnd     DateTime
+  // When this subscription's card first paid a real (amount_paid > 0) invoice.
+  // Null while trialing: a trial's first invoice is $0, so the card has never
+  // been charged. Overage is gated on this (`resolveEffectivePlan`'s
+  // `overageTrusted`) so the first real charge on a card is never our overage
+  // block invoice — the fraud trials of Nov 2026 all failed exactly there.
+  // Set from `invoice.payment_succeeded`; never cleared by `syncFromStripe`.
+  firstPaidAt          DateTime?
   cancelAtPeriodEnd    Boolean            @default(false)
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
@@ -5524,6 +5540,13 @@ model SocialProfile {
 model SocialAccount {
   id              String    @id @default(uuid())
   workspaceId     String
+  /// The project that owns this account. `null` = shared with the whole
+  /// workspace, so every project's agent may use it. Deliberately not a
+  /// relation: the cloud keeps mirror rows for accounts a desktop connected
+  /// through the relay, and those carry local project ids the cloud has no
+  /// `Project` row for. Project delete sets this to `null` (the account
+  /// becomes shared) rather than deleting the row or the Zernio account.
+  projectId       String?
   profileId       String
   zernioAccountId String    @unique
   /// instagram | facebook | tiktok | x | threads | linkedin | youtube | ...
@@ -5551,6 +5574,7 @@ model SocialAccount {
 
   @@unique([workspaceId, platform, username])
   @@index([workspaceId, platform])
+  @@index([workspaceId, projectId])
   @@map("social_accounts")
 }
 

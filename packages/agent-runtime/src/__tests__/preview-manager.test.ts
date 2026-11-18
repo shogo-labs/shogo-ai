@@ -427,7 +427,7 @@ describe('PreviewManager', () => {
   })
 
   // --- API server port resolution ------------------------------------------
-  // Pre-merge, the project backend was a separate `SkillServerManager` whose
+  // Pre-merge, the project backend was a separate skill-server shim whose
   // port was resolved per-instance from `SKILL_SERVER_PORT` (with a 4100
   // default). Local Shogo-managed workers, the VM harness, and the docker
   // eval-worker all rely on injecting that port to dynamically assign one

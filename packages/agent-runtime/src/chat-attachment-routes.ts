@@ -47,6 +47,25 @@ function headerSafeName(raw: string | undefined): string | undefined {
   return trimmed === '' ? undefined : trimmed
 }
 
+/**
+ * A workspace subfolder an upload may be routed into, or null when the value
+ * is not a plain relative path.
+ *
+ * Previews land in `.previews/` so they stay out of the user's file list. The
+ * value comes from the client, so it is held to a single relative segment
+ * chain: no absolute path, no `..`, no backslashes.
+ */
+export function normalizeAttachmentSubdir(raw: string | undefined): string | null {
+  const value = headerSafeName(raw)
+  if (!value) return null
+  if (value.startsWith('/') || value.startsWith('\\')) return null
+  if (value.includes('\\')) return null
+  const segments = value.split('/').filter((segment) => segment !== '')
+  if (segments.length === 0) return null
+  if (segments.some((segment) => segment === '.' || segment === '..')) return null
+  return segments.join('/')
+}
+
 export function chatAttachmentRoutes(opts: ChatAttachmentRoutesOptions): Hono {
   const app = new Hono()
   const log = opts.log ?? ((msg: string) => console.log(msg))
@@ -62,6 +81,23 @@ export function chatAttachmentRoutes(opts: ChatAttachmentRoutesOptions): Hono {
       )
     }
     const mediaType = headerSafeName(c.req.header('content-type')) || 'application/octet-stream'
+
+    // A preview is uploaded into a subfolder so it never shows up in the
+    // user's file list. Anything that is not a plain relative path is refused
+    // rather than silently landing somewhere else.
+    const rawDir = c.req.query('dir')
+    const subdir = rawDir === undefined ? undefined : normalizeAttachmentSubdir(rawDir)
+    if (rawDir !== undefined && !subdir) {
+      return c.json(
+        {
+          error: {
+            code: 'attachment_dir_invalid',
+            message: 'Pass a relative subfolder as ?dir=<folder>',
+          },
+        },
+        400,
+      )
+    }
 
     // The API proxy sets the plan-gated cap (SHO-370) so a chunked body with no
     // `content-length` is still cut off on the real byte count. It can only
@@ -92,7 +128,7 @@ export function chatAttachmentRoutes(opts: ChatAttachmentRoutesOptions): Hono {
         mediaType,
         body: c.req.raw.body,
         maxBytes: effectiveMaxBytes,
-        filesSubdir: opts.filesSubdir,
+        filesSubdir: subdir ?? opts.filesSubdir,
       })
       try {
         opts.onFileWritten?.(saved)

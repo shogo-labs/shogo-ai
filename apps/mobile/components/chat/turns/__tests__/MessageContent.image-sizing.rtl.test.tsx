@@ -5,6 +5,17 @@
  * screenshot grows until the max height stops it, a narrow pane (a split view,
  * a side panel) shrinks it instead of overflowing, and a small image keeps its
  * own pixels.
+ *
+ * The box is decided from the size stored on the part, so it is final on the
+ * first frame. It is expressed as a cap plus an aspect ratio — `width` is the
+ * widest the box may be, `maxWidth: "100%"` fits it to the row, and
+ * `aspectRatio` derives the height from whatever width the layout engine
+ * settles on. Nothing here reads a measured width: `onLayout` on web is a
+ * ResizeObserver callback that runs after the first paint, so a box sized from
+ * it was wrong on the first frame and grew under the reader, which is what made
+ * a resumed chat jump (SHO-407).
+ *
+ * A message sent before sizes were stored gets a fixed box that never resizes.
  */
 
 import { describe, expect, mock, test } from 'bun:test'
@@ -15,7 +26,7 @@ import { createReactNativeMock } from '../../../../test/react-native-mock'
 /** Layout and load handlers the shims captured, so a test can report sizes. */
 const layoutHandlers = new WeakMap<Element, (event: unknown) => void>()
 const imageLoadHandlers = new WeakMap<Element, (event: unknown) => void>()
-/** `Image.getSize` requests: on web this is the only size that survives. */
+/** `Image.getSize` requests: a thumbnail must never make one. */
 const imageGetSizeRequests: { uri: string; success: (width: number, height: number) => void }[] = []
 
 const flatten = (style: unknown) =>
@@ -47,11 +58,12 @@ mock.module('react-native', () =>
       )
     }),
     Image: (() => {
-      const shim = forwardRef(function LayoutImage({ children, onLoad, testID, style, resizeMode, accessibilityLabel, ...props }: any, ref: any) {
+      const shim = forwardRef(function LayoutImage({ children, onLoad, testID, style, resizeMode, accessibilityLabel, source, ...props }: any, ref: any) {
         return createElement(
           'img',
           {
             ...props,
+            src: source?.uri,
             style: flatten(style),
             alt: accessibilityLabel,
             'data-resize-mode': resizeMode,
@@ -61,8 +73,8 @@ mock.module('react-native', () =>
           children,
         )
       })
-      // react-native-web measures through a retained <img>, because the load
-      // event has no usable size by the time it is delivered.
+      // react-native-web measures through a retained <img>. A thumbnail with a
+      // stored size must not ask, and a legacy one must not either.
       ;(shim as any).getSize = (uri: string, success: (width: number, height: number) => void) => {
         imageGetSizeRequests.push({ uri, success })
       }
@@ -81,107 +93,160 @@ mock.module('../../FileViewerModal', () => ({ FileViewerModal: () => null }))
 mock.module('../../VideoPreviewModal', () => ({ VideoPreviewModal: () => null }))
 mock.module('expo-router', () => ({ useRouter: () => ({ push: () => {} }) }))
 mock.module('expo-clipboard', () => ({ setStringAsync: async () => {} }))
+// The loader is covered by its own test; here it only has to hand the URL
+// straight through so the sizing is observable synchronously.
+mock.module('../../../../lib/agent-image-source', () => ({
+  useAgentImageSource: (uri: string | null) => (uri ? { uri } : null),
+  getAgentImageSource: (uri: string) => ({ uri }),
+  createAgentImageSource: (uri: string) => ({ uri }),
+  needsAgentImageLoad: () => false,
+}))
 
 const { MessageContent } = await import('../MessageContent')
 
-const message = (name: string) => ({
+const message = (part: Record<string, unknown>) => ({
   id: 'm1',
   role: 'user',
-  parts: [{ type: 'file', mediaType: 'image/png', url: `/api/files/${name}` }],
+  parts: [{ type: 'file', mediaType: 'image/png', url: '/api/files/shot', ...part }],
 })
 
-function renderImage() {
-  const { container } = render(createElement(MessageContent, { message: message('shot') as any }))
+function renderImage(part: Record<string, unknown> = {}) {
+  const { container } = render(createElement(MessageContent, { message: message(part) as any }))
   const img = container.querySelector('img') as HTMLImageElement
   expect(img).toBeTruthy()
   return img
 }
 
-/** The column the image sits in reports its width the way a layout pass would. */
-function reportColumnWidth(img: Element, width: number) {
-  let node: Element | null = img
-  while (node && !layoutHandlers.has(node)) node = node.parentElement
-  const handler = node && layoutHandlers.get(node)
-  if (!handler) throw new Error('no measured container above the image')
-  act(() => handler({ nativeEvent: { layout: { width, height: 200 } } }))
-}
-
 /** The box the image fills: it, not the <img>, carries the fitted size. */
 const previewBox = (img: Element) => img.parentElement as HTMLElement
 
-/** An image reports its natural size once it loads; attachments carry none. */
-function reportImageSize(
-  img: Element,
-  width: number,
-  height: number,
-  shape: 'native' | 'web' | 'nulled' = 'native',
-) {
-  const handler = imageLoadHandlers.get(img)
-  if (!handler) throw new Error('the image registered no onLoad')
-  // Native hands the size over in `nativeEvent.source`; a DOM load event carries
-  // it on its target, which on web is already nulled after `decode()`.
-  const event =
-    shape === 'nulled'
-      ? { nativeEvent: { type: 'load', target: null } }
-      : shape === 'web'
-        ? { nativeEvent: { type: 'load', target: { naturalWidth: width, naturalHeight: height } } }
-        : { nativeEvent: { source: { width, height, uri: '' } } }
-  act(() => handler(event))
+/** The box's style, as the layout engine would read it. */
+const boxStyle = (img: Element) => {
+  const style = previewBox(img).style
+  // The DOM normalises `aspect-ratio: 1.777` to `1.777 / 1`.
+  const [ratio] = style.aspectRatio.split('/')
+  return {
+    width: style.width,
+    maxWidth: style.maxWidth,
+    aspectRatio: Number(ratio),
+  }
 }
 
-/** What `Image.getSize` answers, the measurement that works on web. */
-function reportGetSize(uriPart: string, width: number, height: number) {
-  const request = [...imageGetSizeRequests].reverse().find((entry) => entry.uri.includes(uriPart))
-  if (!request) throw new Error(`no Image.getSize request matching ${uriPart}`)
-  act(() => request.success(width, height))
+/**
+ * The image finishes loading. The thumbnail deliberately registers no `onLoad`
+ * — nothing about a load may change the box — so this only fires the DOM event
+ * a real `<img>` would and lets the test assert the box did not move.
+ */
+function reportImageSize(img: Element) {
+  act(() => {
+    img.dispatchEvent(new Event('load'))
+  })
+}
+
+/** Every ancestor that would report a layout pass, so a test can prove none does. */
+function measuredAncestors(img: Element): Element[] {
+  const found: Element[] = []
+  let node: Element | null = img.parentElement
+  while (node) {
+    if (layoutHandlers.has(node)) found.push(node)
+    node = node.parentElement
+  }
+  return found
 }
 
 describe('agent chat image attachments', () => {
-  test('a wide screenshot fills the column instead of a fixed thumbnail', () => {
-    const img = renderImage()
-    reportColumnWidth(img, 900)
-    reportImageSize(img, 1600, 900)
+  test('a wide screenshot is capped by the max height, not a fixed thumbnail', () => {
+    const img = renderImage({ width: 1600, height: 900 })
 
-    expect(previewBox(img).style.width).toBe('462px')
-    expect(previewBox(img).style.height).toBe('260px')
+    // 1600×900 is height-capped at 260, which gives 462 wide.
+    expect(boxStyle(img)).toEqual({
+      width: '462px',
+      maxWidth: '100%',
+      aspectRatio: 462 / 260,
+    })
   })
 
-  test('it shrinks with a narrow pane rather than overflowing it', () => {
-    const img = renderImage()
-    reportColumnWidth(img, 320)
-    reportImageSize(img, 1600, 900)
+  test('a narrow pane fits the box without a layout pass', () => {
+    const img = renderImage({ width: 1600, height: 900 })
 
-    expect(previewBox(img).style.width).toBe('320px')
-    expect(previewBox(img).style.height).toBe('180px')
+    // The cap is the widest the box may be; `maxWidth` and `aspectRatio` let
+    // the layout engine shrink it to the row and keep the height right, in the
+    // same pass. Nothing here waits for a measurement.
+    expect(boxStyle(img).maxWidth).toBe('100%')
+    expect(boxStyle(img).aspectRatio).toBeCloseTo(462 / 260, 6)
+    expect(measuredAncestors(img)).toEqual([])
   })
 
   test('a small image is not upscaled past its own pixels', () => {
-    const img = renderImage()
-    reportColumnWidth(img, 900)
-    reportImageSize(img, 120, 80)
+    const img = renderImage({ width: 120, height: 80 })
 
-    expect(previewBox(img).style.width).toBe('120px')
-    expect(previewBox(img).style.height).toBe('80px')
+    expect(boxStyle(img)).toEqual({
+      width: '120px',
+      maxWidth: '100%',
+      aspectRatio: 120 / 80,
+    })
   })
 
-  test('before anything is measured it keeps the old 220px preview', () => {
-    const img = renderImage()
+  test('a stored size makes the box final on the first frame', () => {
+    const img = renderImage({ width: 1600, height: 900 })
 
-    expect(previewBox(img).style.width).toBe('220px')
-    expect(previewBox(img).style.height).toBe('165px')
+    // Already the final size, before the image has loaded at all.
+    expect(boxStyle(img).width).toBe('462px')
+    expect(boxStyle(img).aspectRatio).toBeCloseTo(462 / 260, 6)
   })
 
-  test('web sizes an attachment with no stored dimensions from Image.getSize', () => {
+  test('an image load with a known size does not change the box', () => {
+    const img = renderImage({ width: 1600, height: 900 })
+    const before = boxStyle(img)
+
+    reportImageSize(img)
+
+    // A stable box is what keeps `onContentSizeChange` from firing, which is
+    // what used to queue a scroll to the end for every photo on resume.
+    expect(boxStyle(img)).toEqual(before)
+  })
+
+  test('a legacy part with no stored size keeps a fixed box that never resizes', () => {
     const img = renderImage()
-    reportColumnWidth(img, 900)
+    const before = boxStyle(img)
+    // The 4:3 fallback aspect, height-capped at 260.
+    expect(before.width).toBe('347px')
+    expect(before.aspectRatio).toBeCloseTo(347 / 260, 6)
 
-    // The web load event arrives after `decode()` with a nulled target.
-    reportImageSize(img, 0, 0, 'nulled')
-    expect(previewBox(img).style.width).toBe('347px')
+    reportImageSize(img)
 
-    reportGetSize('shot', 1600, 900)
+    expect(boxStyle(img)).toEqual(before)
+  })
 
-    expect(previewBox(img).style.width).toBe('462px')
-    expect(previewBox(img).style.height).toBe('260px')
+  /**
+   * SHO-407 AC2: the box is final on the first frame, before any layout pass.
+   *
+   * The attachment row used to report its width from `onLayout`, which on web
+   * is a ResizeObserver callback — it runs *after* the first paint. So the
+   * first frame was sized against a fallback and every photo grew once the row
+   * reported, which is the content growth that left a resumed chat above its
+   * bottom (measured: 1530px on a 12-photo chat).
+   */
+  test('the box is already final before the attachment row is measured', () => {
+    const img = renderImage({ width: 1600, height: 900 })
+    const firstFrame = boxStyle(img)
+
+    // Nothing above the image reports a layout pass at all, so there is no
+    // later frame in which the box could change.
+    expect(measuredAncestors(img)).toEqual([])
+    expect(boxStyle(img)).toEqual(firstFrame)
+  })
+
+  test('a thumbnail never asks Image.getSize for the original', () => {
+    const img = renderImage()
+    reportImageSize(img)
+
+    expect(imageGetSizeRequests).toHaveLength(0)
+  })
+
+  test('the thumbnail paints the stored preview, not the original', () => {
+    const img = renderImage({ width: 1600, height: 900, previewUrl: '/agent/workspace/download/.previews/shot-preview.jpg' })
+
+    expect(img.getAttribute('src')).toContain('.previews/shot-preview.jpg')
   })
 })

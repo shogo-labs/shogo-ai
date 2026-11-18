@@ -98,7 +98,7 @@ beforeEach(() => {
 
 afterEach(() => { delete process.env.SHOGO_LOCAL_MODE })
 
-const seedMember = (workspaceId = WS, role = 'member') => {
+const seedMember = (workspaceId = WS, role = 'admin') => {
   members.push({ userId: 'user_1', workspaceId, role })
 }
 const seedProject = (id = PROJ, workspaceId = WS) => { projects.set(id, { workspaceId }) }
@@ -124,9 +124,9 @@ describe('requireBusinessPlan: 403 plan_required on every gated endpoint', () =>
   }
 })
 
-// ─── workspace membership 403 on every business-gated endpoint ─────────
+// ─── non-member 403 on every business-gated endpoint ───────────────────
 
-describe('workspace membership: 403 forbidden after plan check passes', () => {
+describe('non-member: 403 analytics_admin_only before the plan check', () => {
   const gated: Array<[string, string]> = [
     ['growth',   `/workspaces/${WS}/analytics/growth`],
     ['usage',    `/workspaces/${WS}/analytics/usage`],
@@ -135,12 +135,12 @@ describe('workspace membership: 403 forbidden after plan check passes', () => {
     ['billing',  `/workspaces/${WS}/analytics/billing`],
   ]
   for (const [name, path] of gated) {
-    test(`${name}: 403 forbidden when user is not a workspace member`, async () => {
+    test(`${name}: 403 analytics_admin_only when user is not a workspace member`, async () => {
       isBusiness = true
       // intentionally no seedMember()
       const { status, body } = await call('GET', path)
       expect(status).toBe(403)
-      expect(body.error.code).toBe('forbidden')
+      expect(body.error.code).toBe('analytics_admin_only')
     })
   }
 })
@@ -272,11 +272,11 @@ describe('usage-log query parameter parsing edges', () => {
     expect(Number.isNaN(opts.limit)).toBe(true)
   })
 
-  test('userId defaults to the authenticated member when not supplied', async () => {
+  test('userId is forwarded only when supplied (admins see the whole workspace)', async () => {
     seedMember()
     await call('GET', `/workspaces/${WS}/analytics/usage-log`)
     const [, , opts] = svcSpies.getUsageLog.mock.calls[0]!
-    expect(opts.userId).toBe('user_1')
+    expect(opts.userId).toBeUndefined()
     expect(opts.model).toBeUndefined()
   })
 })

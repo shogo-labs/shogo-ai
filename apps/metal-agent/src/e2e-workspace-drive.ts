@@ -252,7 +252,16 @@ async function main() {
       await driveOp(h.agentUrl, 'freeze')
       frozen = true
       grown = drives.grow(h.workspaceDrive, growToMiB)
-      if (grown) await new FcApi(h.socketPath).patchDrive('workspace', h.workspaceDrive)
+      if (grown) {
+        // The PATCH body must carry `drive_id` (SHO-401): Firecracker 400s with
+        // "missing field drive_id" otherwise, which is exactly the bug that made
+        // every live grow fail. A 400 here means the body regressed.
+        try {
+          await new FcApi(h.socketPath).patchDrive('workspace', h.workspaceDrive)
+        } catch (err: any) {
+          fail(`PATCH /drives/workspace failed (drive_id missing from the body?): ${err?.message ?? err}`)
+        }
+      }
     } finally {
       if (frozen) await driveOp(h.agentUrl, 'thaw')
     }
