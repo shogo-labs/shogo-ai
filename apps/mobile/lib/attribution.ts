@@ -21,8 +21,60 @@ export interface Attribution {
   landingPage?: string
 }
 
+const PENDING_PROMPT_KEY = 'shogo_pending_prompt'
+const PENDING_PROMPT_MAX_AGE_MS = 24 * 60 * 60 * 1000
+const PENDING_PROMPT_MAX_CHARS = 4000
+const UTM_COOKIE = '__shogo_utm'
+const UTM_COOKIE_MAX_AGE_S = 30 * 24 * 60 * 60
+
+/**
+ * A funnel page on shogo.ai hands the visitor over with `?prompt=` (e.g. the
+ * six hooks the try-it just wrote). Keep it through signup and email
+ * verification; the home composer takes it once with {@link takePendingPrompt}.
+ */
+export function capturePendingPrompt(search: string): void {
+  const prompt = new URLSearchParams(search).get('prompt')?.trim()
+  if (!prompt) return
+  safeSetItem(
+    PENDING_PROMPT_KEY,
+    JSON.stringify({ text: prompt.slice(0, PENDING_PROMPT_MAX_CHARS), at: Date.now() }),
+  )
+}
+
+/** The handed-over prompt, once; null when none or older than a day. */
+export function takePendingPrompt(now = Date.now()): string | null {
+  const raw = safeGetItem(PENDING_PROMPT_KEY)
+  if (!raw) return null
+  safeRemoveItem(PENDING_PROMPT_KEY)
+  try {
+    const parsed = JSON.parse(raw) as { text?: unknown; at?: unknown }
+    if (typeof parsed.text !== 'string' || !parsed.text.trim()) return null
+    if (typeof parsed.at === 'number' && now - parsed.at > PENDING_PROMPT_MAX_AGE_MS) return null
+    return parsed.text
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The signup POST is read server-side from the `__shogo_utm` cookie
+ * (`apps/api/src/lib/signup-attribution.ts`). An ad can land straight on the
+ * studio, so write it here too — on `.shogo.ai`, and never over a cookie the
+ * marketing site already set (first touch wins).
+ */
+export function writeUtmCookie(data: Attribution & { funnel?: string; fbclid?: string }, hostname: string): boolean {
+  if (typeof document === 'undefined') return false
+  if (!/(^|\.)shogo\.ai$/.test(hostname)) return false
+  if (!data.utmSource && !data.utmCampaign && !data.utmContent && !data.fbclid && !data.funnel) return false
+  if (document.cookie.split(';').some((c) => c.trim().startsWith(`${UTM_COOKIE}=`))) return false
+  const value = encodeURIComponent(JSON.stringify(data))
+  document.cookie = `${UTM_COOKIE}=${value}; Domain=.shogo.ai; Path=/; Max-Age=${UTM_COOKIE_MAX_AGE_S}; SameSite=Lax; Secure`
+  return true
+}
+
 export function captureAttribution(): void {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return
+  capturePendingPrompt(window.location.search)
   if (safeGetItem(STORAGE_KEY)) return
 
   const params = new URLSearchParams(window.location.search)
@@ -37,6 +89,14 @@ export function captureAttribution(): void {
   }
 
   safeSetItem(STORAGE_KEY, JSON.stringify(data))
+  writeUtmCookie(
+    {
+      ...data,
+      funnel: params.get('funnel') || undefined,
+      fbclid: params.get('fbclid') || undefined,
+    },
+    window.location.hostname,
+  )
 }
 
 export function getStoredAttribution(): Attribution | null {

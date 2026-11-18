@@ -630,6 +630,24 @@ export function adminRoutes(): Hono {
     }
   })
 
+  // Paid-acquisition funnel by ad (Meta funnel plan, 2026-11-18).
+  router.get('/analytics/acquisition', async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
+      const excludeInternal = url.searchParams.get('excludeInternal') !== 'false'
+      const data = await cachedAnalytics(
+        'acquisition',
+        `period=${period}&excludeInternal=${excludeInternal}`,
+        () => analytics.getAcquisitionFunnel(period, excludeInternal),
+      )
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Acquisition funnel error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
   // --------------------------------------------------------------------------
   // User Activity Table
   // --------------------------------------------------------------------------

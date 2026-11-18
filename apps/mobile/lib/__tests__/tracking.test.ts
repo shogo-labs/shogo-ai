@@ -12,14 +12,16 @@ mock.module('react-native', () => ({
   Platform: { OS: 'web' },
 }))
 
-const { trackPurchase } = await import('../tracking')
+const { trackPurchase, trackLogin, trackSignUp } = await import('../tracking')
 
 let gtagCalls: unknown[][] = []
+let fbqCalls: unknown[][] = []
 
 beforeEach(() => {
   gtagCalls = []
   window.gtag = (...args: unknown[]) => { gtagCalls.push(args) }
-  window.fbq = () => {}
+  fbqCalls = []
+  window.fbq = (...args: unknown[]) => { fbqCalls.push(args) }
 })
 
 function purchasePayload() {
@@ -60,5 +62,25 @@ describe('trackPurchase', () => {
   test('omits value when billing interval is unknown', () => {
     trackPurchase({ planId: 'pro', sessionId: 'cs_789' })
     expect(purchasePayload()?.value).toBeUndefined()
+  })
+})
+
+describe('Meta events on auth', () => {
+  test('a sign-in never fires Meta Lead (Lead is reserved for funnel results)', () => {
+    trackLogin('google')
+    expect(fbqCalls).toHaveLength(0)
+    expect(gtagCalls.some((c) => c[1] === 'login')).toBe(true)
+  })
+
+  test('sign-up uses signup_<userId> so the server CAPI twin dedupes', () => {
+    trackSignUp('email', 'user-42')
+    const call = fbqCalls.find((c) => c[1] === 'CompleteRegistration')
+    expect(call?.[3]).toEqual({ eventID: 'signup_user-42' })
+  })
+
+  test('without a user id it still fires, with a generated id', () => {
+    trackSignUp('email')
+    const call = fbqCalls.find((c) => c[1] === 'CompleteRegistration')
+    expect((call?.[3] as any).eventID).toMatch(/^signup_\d+_\d+$/)
   })
 })

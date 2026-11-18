@@ -2933,7 +2933,7 @@ function resolveUsageMemberId(tokenPayload: {
  */
 const INTERNAL_USAGE_TAG_HEADER = 'x-shogo-usage-tag'
 /** Allowlisted internal usage tags the server may request via the header. */
-const INTERNAL_USAGE_TAGS = new Set<string>(['title_generation', 'analytics_digest'])
+const INTERNAL_USAGE_TAGS = new Set<string>(['title_generation', 'analytics_digest', 'funnel_try'])
 
 /**
  * Sentinel `projectId` values that never correspond to a real `Project` row:

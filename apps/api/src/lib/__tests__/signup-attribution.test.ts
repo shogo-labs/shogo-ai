@@ -20,6 +20,8 @@ const {
   parseUtmCookie,
   attributionFromCookieHeader,
   recordSignupAttribution,
+  metaIdsFromCookieHeader,
+  signupEventId,
 } = await import('../signup-attribution')
 
 beforeEach(() => {
@@ -40,7 +42,16 @@ describe('parseUtmCookie', () => {
       utmTerm: null,
       referrer: null,
       landingPage: '/pricing',
+      funnel: null,
+      fbclid: null,
     })
+  })
+
+  test('keeps the funnel id and the Meta click id the funnel pages store', () => {
+    const parsed = parseUtmCookie(JSON.stringify({ utmSource: 'meta', funnel: 'f1', fbclid: 'IwAR123' }))
+    expect(parsed.funnel).toBe('f1')
+    expect(parsed.fbclid).toBe('IwAR123')
+    expect(parseUtmCookie('utm_source=meta&funnel=f3&fbclid=abc').funnel).toBe('f3')
   })
 
   test('accepts snake_case keys and a plain query string', () => {
@@ -103,5 +114,63 @@ describe('recordSignupAttribution', () => {
     await expect(
       recordSignupAttribution({ userId: 'user-3', cookieHeader: '', method: 'credential' }),
     ).resolves.toBeNull()
+  })
+})
+
+describe('Meta Conversions API at signup', () => {
+  const realFetch = globalThis.fetch
+  const env = { ...process.env }
+
+  test('stores the browser ids and sends CompleteRegistration with the browser twin\'s event id', async () => {
+    process.env.META_PIXEL_ID = '1606779090556329'
+    process.env.META_CAPI_TOKEN = 'test-token'
+    process.env.META_TEST_EVENT_CODE = 'TEST123'
+    const sent: any[] = []
+    globalThis.fetch = mock(async (_url: any, init: any) => {
+      sent.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ events_received: 1 }), { status: 200 })
+    }) as any
+    try {
+      const cookie = [
+        `__shogo_utm=${encodeURIComponent(JSON.stringify({ utmSource: 'meta', utmContent: 'ad-7', funnel: 'f1', landingPage: '/for/meta-ads' }))}`,
+        '_fbp=fb.1.1700000000000.111',
+        '_fbc=fb.1.1700000000000.IwAR9',
+      ].join('; ')
+      await recordSignupAttribution({
+        userId: 'user-meta',
+        cookieHeader: cookie,
+        method: 'credential',
+        email: 'New@Example.com',
+        clientIp: '203.0.113.9',
+        userAgent: 'Mozilla/5.0',
+      })
+      const row = (upsert.mock.calls[0]![0] as any).create
+      expect(row.funnel).toBe('f1')
+      expect(row.fbp).toBe('fb.1.1700000000000.111')
+      expect(row.fbc).toBe('fb.1.1700000000000.IwAR9')
+      expect(row.clientIp).toBe('203.0.113.9')
+
+      await new Promise((r) => setTimeout(r, 0))
+      expect(sent).toHaveLength(1)
+      const event = sent[0].data[0]
+      expect(event.event_name).toBe('CompleteRegistration')
+      expect(event.event_id).toBe(signupEventId('user-meta'))
+      expect(event.event_id).toBe('signup_user-meta')
+      expect(event.event_source_url).toBe('https://shogo.ai/for/meta-ads')
+      expect(event.user_data.fbc).toBe('fb.1.1700000000000.IwAR9')
+      expect(event.user_data.em[0]).toHaveLength(64)
+      expect(event.custom_data.funnel).toBe('f1')
+      expect(sent[0].test_event_code).toBe('TEST123')
+    } finally {
+      globalThis.fetch = realFetch
+      process.env = env
+    }
+  })
+
+  test('builds _fbc from a kept fbclid when the Pixel never set one', () => {
+    const ids = metaIdsFromCookieHeader('_fbp=fb.1.1.2', 'IwARclick')
+    expect(ids.fbp).toBe('fb.1.1.2')
+    expect(ids.fbc).toMatch(/^fb\.1\.\d+\.IwARclick$/)
+    expect(metaIdsFromCookieHeader('', null)).toEqual({ fbp: null, fbc: null })
   })
 })

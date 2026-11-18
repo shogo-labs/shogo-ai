@@ -464,7 +464,7 @@ function AppLayoutInner() {
           ? Date.now() - new Date(user.createdAt).getTime()
           : Infinity;
         if (accountAge < 60_000) {
-          trackSignUp(pending as "google");
+          trackSignUp(pending as "google", user.id);
         } else {
           trackLogin(pending as "google");
         }

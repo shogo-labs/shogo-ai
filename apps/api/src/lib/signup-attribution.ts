@@ -17,6 +17,29 @@
  */
 import { prisma } from './prisma'
 import { deriveSourceTag } from '../services/analytics.service'
+import { fbcFrom, sendMetaEvent } from './meta-capi'
+
+/** Shared with the browser Pixel (`trackSignUp`) so Meta dedupes the pair. */
+export function signupEventId(userId: string): string {
+  return `signup_${userId}`
+}
+
+/** `_fbp` / `_fbc` as the Pixel wrote them on `.shogo.ai`; `_fbc` rebuilt from a kept `fbclid`. */
+export function metaIdsFromCookieHeader(
+  cookieHeader: string | null | undefined,
+  fbclid?: string | null,
+): { fbp: string | null; fbc: string | null } {
+  const header = cookieHeader ?? ''
+  return {
+    fbp: parseCookieHeader(header, '_fbp'),
+    fbc: fbcFrom(parseCookieHeader(header, '_fbc'), fbclid),
+  }
+}
+
+function absoluteLandingUrl(landingPage: string): string {
+  if (/^https?:\/\//.test(landingPage)) return landingPage
+  return `https://shogo.ai${landingPage.startsWith('/') ? '' : '/'}${landingPage}`
+}
 
 /** The UTM payload the marketing site (or the app) stores in `__shogo_utm`. */
 export interface UtmCookie {
@@ -27,6 +50,10 @@ export interface UtmCookie {
   utmTerm?: string | null
   referrer?: string | null
   landingPage?: string | null
+  /** Funnel id (`f1`…`f6`) set by the shogo.ai funnel pages. */
+  funnel?: string | null
+  /** Meta click id from the ad's landing URL, kept until signup. */
+  fbclid?: string | null
 }
 
 export function parseCookieHeader(header: string, name: string): string | null {
@@ -69,6 +96,8 @@ export function parseUtmCookie(value: string | null): UtmCookie {
         utmTerm: pick('utmTerm') ?? pick('utm_term'),
         referrer: pick('referrer') ?? pick('referrer_url'),
         landingPage: pick('landingPage') ?? pick('landing_page'),
+        funnel: pick('funnel'),
+        fbclid: pick('fbclid'),
       }
     } catch {
       return {}
@@ -88,6 +117,8 @@ export function parseUtmCookie(value: string | null): UtmCookie {
     else if (key === 'utm_term') out.utmTerm = val
     else if (key === 'referrer') out.referrer = val
     else if (key === 'landing_page') out.landingPage = val
+    else if (key === 'funnel') out.funnel = val
+    else if (key === 'fbclid') out.fbclid = val
   }
   return out
 }
@@ -106,6 +137,10 @@ export interface RecordSignupAttributionInput {
   cookieHeader?: string | null
   /** Auth provider: `google`, `credential`, `email`, … */
   method?: string | null
+  /** For the Conversions API: who signed up, and from which client. */
+  email?: string | null
+  clientIp?: string | null
+  userAgent?: string | null
 }
 
 /**
@@ -122,6 +157,7 @@ export async function recordSignupAttribution(
 ): Promise<string | null> {
   try {
     const utm = attributionFromCookieHeader(input.cookieHeader)
+    const meta = metaIdsFromCookieHeader(input.cookieHeader, utm.fbclid)
     const sourceTag = deriveSourceTag({
       utmSource: utm.utmSource ?? null,
       utmMedium: utm.utmMedium ?? null,
@@ -142,9 +178,36 @@ export async function recordSignupAttribution(
         landingPage: utm.landingPage ?? null,
         signupMethod: input.method ?? null,
         sourceTag,
+        funnel: utm.funnel ?? null,
+        fbp: meta.fbp,
+        fbc: meta.fbc,
+        clientIp: input.clientIp ?? null,
+        userAgent: input.userAgent ?? null,
       },
       update: {},
     })
+
+    // Server twin of the browser's `CompleteRegistration` (same event id, so
+    // Meta keeps one). Fire-and-forget: a slow Graph API must not slow signup.
+    void sendMetaEvent({
+      name: 'CompleteRegistration',
+      eventId: signupEventId(input.userId),
+      user: {
+        email: input.email,
+        externalId: input.userId,
+        fbp: meta.fbp,
+        fbc: meta.fbc,
+        clientIp: input.clientIp,
+        userAgent: input.userAgent,
+      },
+      sourceUrl: utm.landingPage ? absoluteLandingUrl(utm.landingPage) : null,
+      customData: {
+        content_name: input.method ?? 'unknown',
+        status: true,
+        ...(utm.funnel ? { funnel: utm.funnel } : {}),
+        ...(utm.utmContent ? { utm_content: utm.utmContent } : {}),
+      },
+    }).catch(() => {})
     return sourceTag
   } catch (error: any) {
     console.warn('[Attribution] signup attribution write failed:', error?.message ?? error)

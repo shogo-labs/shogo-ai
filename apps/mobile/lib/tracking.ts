@@ -29,8 +29,13 @@ function gtag(...args: unknown[]) {
   window.gtag?.(...args)
 }
 
-export function trackSignUp(method: 'email' | 'google' | 'apple') {
-  const eventId = generateEventId('signup')
+/**
+ * `userId` makes the event id `signup_<userId>`, the id the API's Conversions
+ * API twin uses (`signupEventId` in `apps/api/src/lib/signup-attribution.ts`),
+ * so Meta keeps one of the pair.
+ */
+export function trackSignUp(method: 'email' | 'google' | 'apple', userId?: string | null) {
+  const eventId = userId ? `signup_${userId}` : generateEventId('signup')
 
   fbq('track', 'CompleteRegistration', {
     content_name: method,
@@ -40,11 +45,12 @@ export function trackSignUp(method: 'email' | 'google' | 'apple') {
   gtag('event', 'sign_up', { method })
 }
 
+/**
+ * GA only. Firing Meta `Lead` here made every returning sign-in a "lead", so
+ * the event Meta optimizes on meant nothing; `Lead` is now sent only when a
+ * shogo.ai funnel hands a visitor their free result.
+ */
 export function trackLogin(method: 'email' | 'google' | 'apple') {
-  fbq('track', 'Lead', {
-    content_name: method,
-  })
-
   gtag('event', 'login', { method })
 }
 

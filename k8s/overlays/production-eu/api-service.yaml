@@ -424,6 +424,33 @@ spec:
                   name: api-secrets
                   key: SECRETS_ENCRYPTION_KEY
                   optional: true
+            # Meta funnel tracking (2026-11-18): Conversions API + the shogo.ai
+            # funnel bridge. All optional: unset = CAPI calls are no-ops and
+            # /api/funnel/* answers 503. Staging also sets META_TEST_EVENT_CODE.
+            - name: META_PIXEL_ID
+              valueFrom:
+                secretKeyRef:
+                  name: meta-funnel-config
+                  key: META_PIXEL_ID
+                  optional: true
+            - name: META_CAPI_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: meta-funnel-config
+                  key: META_CAPI_TOKEN
+                  optional: true
+            - name: META_TEST_EVENT_CODE
+              valueFrom:
+                secretKeyRef:
+                  name: meta-funnel-config
+                  key: META_TEST_EVENT_CODE
+                  optional: true
+            - name: SHOGO_FUNNEL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: meta-funnel-config
+                  key: SHOGO_FUNNEL_KEY
+                  optional: true
             - name: STRIPE_SECRET_KEY
               valueFrom:
                 secretKeyRef:
