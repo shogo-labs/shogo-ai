@@ -48,6 +48,11 @@ export const ERROR_CODE_MESSAGES: Record<string, string> = {
   // An on-demand usage block is invoiced but unpaid (declined card, or the
   // bank requires the customer to confirm the charge).
   overage_payment_pending: "Your latest on-demand usage charge hasn't been paid yet. Pay or confirm the open invoice in Billing settings to continue.",
+  // The account itself is held: a high-risk signup that has not verified its
+  // email, or one that verified and is still clustered. A held account gets no
+  // free allowance at all (see `lib/signup-trust.ts` in the API).
+  email_verification_required: "Verify your email to start using AI. Check your inbox for the verification link, or resend it from Settings.",
+  account_review_required: "Your account is under review. Contact support if you think this is a mistake.",
   // Overage is on and the plan is paid, but the card has never been charged
   // (a trialing subscription whose first invoice is $0). Overage starts after
   // the first real payment.
@@ -276,6 +281,8 @@ export type UsageLimitCode =
   | 'entitlement_expired'
   | 'overage_cap_reached'
   | 'overage_payment_pending'
+  | 'email_verification_required'
+  | 'account_review_required'
   | 'overage_requires_payment'
 
 const USAGE_LIMIT_CODES: Record<string, UsageLimitCode> = {
@@ -284,6 +291,8 @@ const USAGE_LIMIT_CODES: Record<string, UsageLimitCode> = {
   entitlement_expired: 'entitlement_expired',
   overage_cap_reached: 'overage_cap_reached',
   overage_payment_pending: 'overage_payment_pending',
+  email_verification_required: 'email_verification_required',
+  account_review_required: 'account_review_required',
   overage_requires_payment: 'overage_requires_payment',
 }
 

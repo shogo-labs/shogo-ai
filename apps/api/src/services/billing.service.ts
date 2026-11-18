@@ -48,6 +48,7 @@ import {
 } from '../config/instance-sizes';
 import { getMinimumInstanceSize } from '@shogo/shared-runtime';
 import { usageLimitErrorPayload, type BalanceCheck, type UsageBlockReason } from './usage-limits';
+import { getBillingWorkspaceTrustHold, SIGNUP_TRUST_MESSAGES } from '../lib/signup-trust';
 import { recordLocalUsage } from './billing-local';
 import { invalidateAnalyticsCache } from '../lib/analytics-cache';
 import { invalidateAgentReplyCapacity } from './agent-reply-capacity';
@@ -1022,7 +1023,6 @@ export async function checkUsageBalance(
   const fiveRoom = limits.fiveHourUsd - five.used;
   const weekRoom = limits.weeklyUsd - week.used;
   const windowRoom = Math.min(fiveRoom, weekRoom);
-  if (windowRoom >= minimumRequiredUsd) return { ok: true };
 
   // The window that actually blocks, for the refusal log.
   const bindingWindow: UsageWindowKind = fiveRoom <= weekRoom ? 'five_hour' : 'weekly';
@@ -1040,6 +1040,17 @@ export async function checkUsageBalance(
     });
     return { ok: false, reason };
   };
+
+  // A held signup gets no free allowance at all (SHO-416): the included
+  // windows and the promo credit are for real users. Checked before the window
+  // room so a fresh bot account is refused on its first call, not after it has
+  // drained a window. Paid tiers are never held — a held account can't have one.
+  if (!paidTier) {
+    const hold = await getBillingWorkspaceTrustHold(billingWorkspaceId, memberId);
+    if (hold) return refuse(hold);
+  }
+
+  if (windowRoom >= minimumRequiredUsd) return { ok: true };
 
   // Windows exhausted — unexpired signup promo credit is next. Which models it
   // can pay for is the plan's model-tier gate in ai-proxy (economy on Free and
@@ -1447,6 +1458,11 @@ async function _consumeUsageTransaction(
   // the UsageEvent below is still attributed to the real `workspaceId`.
   const billingWorkspaceId = params.billingWorkspaceId ?? workspaceId
 
+  // Resolved before the transaction: one cached lookup, and a held account must
+  // not open a wallet or write a usage row (SHO-416). Whether it applies still
+  // depends on `paidTier`, which only the meter inside the transaction knows.
+  const trustHold = await getBillingWorkspaceTrustHold(billingWorkspaceId, memberId)
+
   return prisma.$transaction(async (tx) => {
     let wallet = await tx.usageWallet.findUnique({
       where: { workspaceId: billingWorkspaceId },
@@ -1480,6 +1496,25 @@ async function _consumeUsageTransaction(
       wallet,
     })
     const { limits, paidTier, overageTrusted, seat, counters, scope } = meter
+
+    // A held signup gets no free allowance (SHO-416). Paid tiers are never
+    // held, so this only ever refuses the free windows and promo credit.
+    if (!paidTier && trustHold) {
+      logUsageRefused({
+        workspaceId,
+        billingWorkspaceId,
+        memberId,
+        scope,
+        seatId: seat?.id ?? null,
+        reason: trustHold,
+      })
+      return {
+        success: false,
+        error: SIGNUP_TRUST_MESSAGES[trustHold],
+        reason: trustHold,
+        remainingIncludedUsd: 0,
+      }
+    }
 
     // Which wallet pays for promo spend if a window is exhausted. Usually this
     // one; a personal workspace falls back to the owner's signup credit, which
