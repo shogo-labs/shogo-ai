@@ -301,6 +301,37 @@ describe('migrating existing agent DMs', () => {
     expect(chat).toBeNull()
   })
 
+  test('a chat the person already opened keeps the transcript in its original order', async () => {
+    const project = await db.project.create({ data: { name: 'Order Bot', workspaceId: seed.workspaceId } })
+    const dm = await service.openAgentConversation(seed.workspaceId, seed.owner, { projectId: project.id })
+    await db.conversationMessage.create({
+      data: {
+        conversationId: dm.id,
+        workspaceId: seed.workspaceId,
+        seq: 1,
+        authorType: 'user',
+        authorUserId: seed.owner,
+        text: 'from the old DM',
+        createdAt: new Date('2026-01-01T00:00:00Z'),
+      },
+    })
+
+    // The person opened the chat before the migration reached the DM, so it
+    // already holds a message newer than the transcript being copied in.
+    const opened = await agentChat.openAgentChatSession(seed.workspaceId, seed.owner, project.id)
+    await db.chatMessage.create({
+      data: { sessionId: opened.id, role: 'user', content: 'typed after opening' },
+    })
+
+    await agentChat.migrateAgentDmsToProjectChat()
+
+    const rows = await db.chatMessage.findMany({
+      where: { sessionId: opened.id },
+      orderBy: { createdAt: 'asc' },
+    })
+    expect(rows.map((m: any) => m.content)).toEqual(['from the old DM', 'typed after opening'])
+  })
+
   test('running it again changes nothing', async () => {
     const before = await db.chatSession.count()
     const beforeMessages = await db.chatMessage.count()
