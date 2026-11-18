@@ -27,8 +27,12 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { api, signIn, teamWorkspaceId } from "./team-nav-seed"
 
-/** Enough messages that the transcript is taller than a 720px pane. */
-const MESSAGES = 24
+/**
+ * Enough messages that the transcript is taller than a 720px pane by more than
+ * `MessageList`'s `JUMP_OFFSET` (800px): the jump-to-latest pill only appears
+ * once the reader is that far from the newest message.
+ */
+const MESSAGES = 40
 
 let seeder: Page
 let workspaceId: string
@@ -187,10 +191,17 @@ test.describe("SHO-439: the wide transcript runs under the composer", () => {
       .toBeGreaterThan(80)
 
     // Away from the newest message, so the jump pill is up — and it has to sit
-    // above the composer, not on it (`bottom: insets.bottom + 12`).
-    await page.mouse.wheel(0, -240)
+    // above the composer, not on it (`bottom: insets.bottom + 12`). The pill
+    // only mounts past `JUMP_OFFSET` (800px), so wheel until it does rather
+    // than guess a total.
     const pill = page.getByLabel("Jump to latest message")
-    await expect(pill).toBeVisible({ timeout: 15_000 })
+    let raised = await pill.isVisible().catch(() => false)
+    for (let i = 0; i < 8 && !raised; i += 1) {
+      await page.mouse.wheel(0, -400)
+      await page.waitForTimeout(150)
+      raised = await pill.isVisible().catch(() => false)
+    }
+    expect(raised, "scrolling away from the newest message raises the jump pill").toBe(true)
     const pillBox = await pill.boundingBox()
     const inputTop = await page
       .getByLabel("Message", { exact: true })
