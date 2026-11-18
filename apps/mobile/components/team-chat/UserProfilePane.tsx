@@ -29,10 +29,11 @@ export function UserProfilePane({
   onOpenMemberMessages?: (from: string) => void
   onClose: () => void
 }) {
+  // Activity channels are left out on purpose: they post-filter `canSeeMessage`
+  // after the page is taken, so a filtered page can come back short. The header
+  // action is hidden there for the same reason.
   const channel =
-    conversation && (conversation.kind === 'public' || conversation.kind === 'private' || conversation.kind === 'activity')
-      ? conversation
-      : null
+    conversation && (conversation.kind === 'public' || conversation.kind === 'private') ? conversation : null
   return (
     <View className="flex-1">
       <View className="flex-row items-center gap-2 border-b border-border px-4 py-2.5">

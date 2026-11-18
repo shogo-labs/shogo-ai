@@ -292,7 +292,7 @@ export default function ConversationScreen() {
    */
   const openMemberMessages = useCallback(
     (from: string) =>
-      router.setParams({ from, files: undefined, doc: undefined, thread: undefined, project: undefined, card: undefined, profile: undefined } as any),
+      router.setParams({ from, files: undefined, doc: undefined, thread: undefined, project: undefined, card: undefined, profile: undefined, file: undefined } as any),
     [router],
   )
   const closeMemberMessages = useCallback(() => router.setParams({ from: undefined } as any), [router])

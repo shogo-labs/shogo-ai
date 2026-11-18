@@ -1180,6 +1180,15 @@ jobs:
         working-directory: apps/api
         run: bun --no-env-file test src/__tests__/analytics-rollups.golden.test.ts
 
+      # SHO-419: the "messages from <member>" filter is raw SQL in two dialects
+      # too — `json_extract` with `?` placeholders on SQLite, `->>` with `$n` on
+      # Postgres — and the agent half only exists in that statement. `test` runs
+      # this file on SQLite; here it runs on Postgres, which is the half the
+      # cloud reads.
+      - name: Member message filter (Postgres)
+        working-directory: apps/api
+        run: bun --no-env-file test src/__tests__/conversation-member-messages.integration.test.ts
+
       # SHO-39: the tracked-call store has to behave identically on both
       # tracks. The `test` job runs this same file on SQLite; here it runs on
       # Postgres, which is the half an API restart in the cloud depends on.

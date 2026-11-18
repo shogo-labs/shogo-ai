@@ -76,9 +76,11 @@ export function resolvePanes(input: PaneInputs): PaneVisibility {
   const showProfilePane = sidePane && !!profilePaneId
   // One member's messages take the pane like the files list does, and the whole
   // screen on a narrow layout. A profile shown over it wins, as it does over a
-  // thread.
-  const showMemberPane = sidePane && !!memberFrom && !showProfilePane && !showDocPane && !showFilesPane
-  const showMemberFull = !sidePane && !!memberFrom
+  // thread, and so does a file opened from chat — a deep link can carry both
+  // `?file=` and `?from=`, and they must not share the column.
+  const showMemberPane =
+    sidePane && !!memberFrom && !showProfilePane && !showDocPane && !showFilesPane && !showFilePane
+  const showMemberFull = !sidePane && !!memberFrom && !showDocFull && !showFilesFull && !showFileFull
   const showCardPane =
     !!cardId && !showDocFull && !showFilesFull && !showFileFull && !showFilePane && !showMemberPane && !showMemberFull
   const showProjectPane =

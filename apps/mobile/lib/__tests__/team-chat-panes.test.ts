@@ -148,4 +148,56 @@ describe('resolvePanes', () => {
     expect(panes({ memberFrom: 'user:u-ada', docOpen: true }).showMemberPane).toBe(false)
     expect(panes({ memberFrom: 'user:u-ada', filesOpen: true }).showMemberPane).toBe(false)
   })
+
+  test('a file opened from chat steps in front of the member list, on both layouts', () => {
+    // A deep link can carry `?file=` and `?from=` together; they share one
+    // column, so the file wins and the member list stays out of the way.
+    const wide = panes({ memberFrom: 'user:u-ada', fileOpen: true })
+    expect(wide.showFilePane).toBe(true)
+    expect(wide.showMemberPane).toBe(false)
+
+    const narrow = panes({ sidePane: false, memberFrom: 'user:u-ada', fileOpen: true })
+    expect(narrow.showFileFull).toBe(true)
+    expect(narrow.showMemberFull).toBe(false)
+    expect(narrow.showMain).toBe(false)
+  })
+
+  test('the member list never shares the column with another pane', () => {
+    for (const sidePane of [false, true])
+      for (const threadRootId of [null, 'm-1'])
+        for (const projectPaneId of [null, 'proj-1'])
+          for (const filesOpen of [false, true])
+            for (const docOpen of [false, true])
+              for (const cardId of [null, 'card-1'])
+                for (const profilePaneId of [null, 'u-ana'])
+                  for (const fileOpen of [false, true]) {
+                    const p = resolvePanes({
+                      sidePane,
+                      threadRootId,
+                      projectPaneId,
+                      filesOpen,
+                      docOpen,
+                      cardId,
+                      profilePaneId,
+                      fileOpen,
+                      memberFrom: 'user:u-ada',
+                    })
+                    if (!p.showMemberPane && !p.showMemberFull) continue
+                    const others = [
+                      p.showDocPane,
+                      p.showDocFull,
+                      p.showFilesPane,
+                      p.showFilesFull,
+                      p.showCardPane,
+                      p.showProfilePane,
+                      p.showProjectPane,
+                      p.showThreadPane,
+                      p.showFilePane,
+                      p.showFileFull,
+                    ]
+                    expect({ sidePane, threadRootId, projectPaneId, filesOpen, docOpen, cardId, profilePaneId, fileOpen, others }).toMatchObject({
+                      others: [false, false, false, false, false, false, false, false, false, false],
+                    })
+                  }
+  })
 })
