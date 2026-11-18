@@ -268,6 +268,8 @@ export async function sendTrialUnavailableEmail(params: {
   /** Override the subject/heading (the Solo Founder refund reuses this template). */
   subjectLine?: string
   heading?: string
+  /** Override what the body says happened to the money. */
+  chargeLine?: string
   /** Override the explanation body. */
   reasonMessage?: string
 }): Promise<{ success: boolean; error?: string }> {
@@ -288,6 +290,13 @@ export async function sendTrialUnavailableEmail(params: {
       ? { subjectLine: params.subjectLine }
       : { subjectLine: `Your ${params.workspaceName} trial could not be started` }),
     ...(params.heading ? { heading: params.heading } : {}),
+    chargeLine:
+      params.chargeLine ??
+      (params.reason === 'solo_founder_prepaid'
+        // The offer charged the card and then refunded it, so the trial copy
+        // ("nothing was charged") would contradict the paragraph above it.
+        ? 'We charged your card and refunded it in full.'
+        : 'Nothing was charged.'),
   })
 }
 
