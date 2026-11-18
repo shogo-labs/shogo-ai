@@ -98,6 +98,18 @@ export const BLOCKED_EMAIL_DOMAINS: ReadonlySet<string> = new Set([
   'archifun.com',
   'sssonar.com',
   'mapsguy.com',
+  // API-key farm, 2026-11-18: ~1,600 accounts in an hour, each signing up,
+  // minting a key named `shogo-farm-account-NNNN` and testing it once.
+  'euploading.com',
+  'arizarouter.dev',
+  'kalcer.dev',
+  'jublin.dev',
+  'gyukopo.dev',
+  'zekon.dev',
+  'dombasu.dev',
+  'rexhot.com',
+  'kasturi.cloud',
+  'satukataku.com',
 ])
 
 /**
