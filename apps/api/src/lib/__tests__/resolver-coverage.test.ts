@@ -117,6 +117,8 @@ const EXEMPT: Record<string, string> = {
   storageUsage: 'Counter table written via workspace-scoped usage routes — resolved by path workspaceId.',
   subagentModelOverride: 'Mutated via workspace/project-scoped routes — resolved by path params.',
   trialRedemption: 'Written only by the signed Stripe webhook (/api/webhooks/stripe, skipped by the router) alongside the subscription and usage wallet rows the same event updates (services/trial.service.ts); never mutated via REST.',
+  courseEnrollment:
+    'SHO-428: written by the signed Stripe webhook (/api/webhooks/stripe, skipped by the router) and by the buyer\'s return trip /api/billing/verify-checkout (path workspaceId), read by /api/billing/solo-founder (workspaceId in the query), and its `progress` is a side effect of the work-item move that already resolved its board\'s workspace. Never mutated via a standalone /api/<resource>/:id route.',
   userGroup: 'Mutated via workspace-scoped user-group routes — resolved by path workspaceId.',
   userIntegrationGrant: 'Mutated via /api/projects/:projectId/integrations/:provider/connect (path projectId), /api/me/integrations (the user\'s own rows), /api/workspaces/:workspaceId/integrations/:provider/my-access/agents/:projectId (path workspaceId), and the GitHub OAuth callback (projectId from signed state).',
   userIntegrationWorkspaceGrant: 'Mutated via /api/workspaces/:workspaceId/integrations/:provider/my-access (path workspaceId), /api/projects/:projectId/integrations/:provider/connect (path projectId; the grant is for that project\'s workspace), and DELETE /api/me/integrations/:provider (revokes the user\'s own rows).',
