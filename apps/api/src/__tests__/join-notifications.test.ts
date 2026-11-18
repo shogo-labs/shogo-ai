@@ -113,17 +113,18 @@ describe('accepting a workspace invitation', () => {
     })
 
     // The client accepts like this (domain-actions.acceptInvitation): the
-    // invitation flips to accepted first, then the member row is created.
-    const accepted = await db.invitation.update({
-      where: { id: invitation.id },
-      data: { status: 'accepted' },
-    })
+    // member row is created first, then the invitation flips to accepted — a
+    // refused join must leave the invite pending (SHO-422).
     const ctx = { prisma: db, userId: world.invitee.id } as any
-    await invitationHooks.afterUpdate?.(accepted, ctx)
     const member = await db.member.create({
       data: { userId: world.invitee.id, workspaceId: world.workspace.id, role: 'member' },
     })
     await memberHooks.afterCreate?.(member, ctx)
+    const accepted = await db.invitation.update({
+      where: { id: invitation.id },
+      data: { status: 'accepted' },
+    })
+    await invitationHooks.afterUpdate?.(accepted, ctx)
 
     // The member hook hands the notification to a detached import, so wait for
     // it to land instead of assuming it ran inline.

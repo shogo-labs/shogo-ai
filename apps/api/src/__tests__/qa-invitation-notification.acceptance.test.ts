@@ -18,23 +18,39 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { setupChannelsTestDb } from './helpers/channels-test-db'
 import { INVITATION_ACCEPT_PATH } from '../lib/invitation-path'
+import * as realEmailService from '../services/email.service'
 
 const { dir } = setupChannelsTestDb()
 
 const emails: any[] = []
 const pushes: any[] = []
 
-mock.module('../services/email.service', () => ({
-  sendInvitationEmail: async (params: any) => {
-    emails.push({ kind: 'workspace', ...params })
-    return { success: true }
-  },
-  sendProjectInviteEmail: async (params: any) => {
-    emails.push({ kind: 'project', ...params })
-    return { success: true }
-  },
-  sendInviteAcceptedEmail: async () => ({ success: true }),
-}))
+mock.module('../services/email.service', () => {
+  // Stub every sender the real module exports, not only the three this spec
+  // records. SHO-422 widened the import graph (invitation.hooks →
+  // billing.service → billing-alerts.service → here), and a missing export
+  // crashed the whole suite. Deriving the names from the real module means a
+  // sender added later is stubbed too: nothing in this file can send real mail.
+  const senders: Record<string, any> = {}
+  for (const [name, value] of Object.entries(realEmailService)) {
+    senders[name] =
+      typeof value === 'function' && name.startsWith('send')
+        ? async () => ({ success: true })
+        : value
+  }
+  return {
+    ...senders,
+    sendInvitationEmail: async (params: any) => {
+      emails.push({ kind: 'workspace', ...params })
+      return { success: true }
+    },
+    sendProjectInviteEmail: async (params: any) => {
+      emails.push({ kind: 'project', ...params })
+      return { success: true }
+    },
+    sendInviteAcceptedEmail: async () => ({ success: true }),
+  }
+})
 mock.module('../lib/push-notifications', () => ({
   sendPushToUser: async (userId: string, payload: any) => {
     pushes.push({ userId, ...payload })

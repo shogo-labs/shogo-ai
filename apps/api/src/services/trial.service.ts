@@ -81,6 +81,11 @@ export async function trialEligibility(params: {
         { workspaceId: params.workspaceId },
         ...(params.userId ? [{ userId: params.userId }] : []),
       ],
+      // A seat-limit block is not a used trial (SHO-422): the workspace never
+      // got a trial, it was refused for asking for more seats than a trial
+      // allows. The owner is told to retry with <= TRIAL_MAX_SEATS, so that row
+      // must not lock them out of doing exactly that.
+      status: { not: TRIAL_STATUS.blockedSeatLimit },
     },
     select: { id: true },
   })

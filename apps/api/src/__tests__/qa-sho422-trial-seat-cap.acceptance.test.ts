@@ -36,6 +36,22 @@ delete process.env.SHOGO_LOCAL_MODE
 
 const billing = await import('../services/billing.service')
 const { memberHooks } = await import('../generated/member.hooks')
+const memberRoutes = await import('../generated/member.routes')
+const { Hono } = await import('hono')
+
+memberRoutes.setPrisma(db)
+memberRoutes.setMemberHooks(memberHooks)
+
+/** The generated `/api/members` router, with `auth` injected the way the app does. */
+function membersApp(userId: string) {
+  const app = new Hono()
+  app.use('*', async (c: any, next: any) => {
+    c.set('auth', { userId })
+    await next()
+  })
+  app.route('/api/members', memberRoutes.createMemberRoutes())
+  return app
+}
 
 const DAY = 24 * 60 * 60 * 1000
 
@@ -153,6 +169,51 @@ describe('AC2: a trialing workspace refuses a seat at the cap', () => {
       code: 'trial_seat_limit',
       maxSeats: TRIAL_MAX_SEATS,
     })
+  })
+
+  // AC2 says 409, and that is the HTTP status the generated route picks from
+  // the hook's error code (`hookErrorStatus`). A 400 here is a bug in the
+  // generator's status map, not in the guard.
+  test('POST /api/members answers 409, not 400, at the cap', async () => {
+    const world = await seedWorld({ seats: TRIAL_MAX_SEATS, status: 'trialing' })
+    const invitee = await newUser()
+
+    const res = await membersApp(world.ownerId).request('/api/members', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userId: invitee.id, workspaceId: world.workspaceId, role: 'member' }),
+    })
+
+    expect(res.status).toBe(409)
+    const body: any = await res.json()
+    expect(body.error?.code).toBe('trial_seat_limit')
+    expect(await countMembers(world.workspaceId)).toBe(TRIAL_MAX_SEATS)
+  })
+
+  test('a refused join leaves the invitation pending, so the invitee can retry', async () => {
+    // The client used to flip the invitation to accepted *before* creating the
+    // member, so a 409 burned the invitee's only link (QA round 1).
+    const world = await seedWorld({ seats: TRIAL_MAX_SEATS, status: 'trialing' })
+    const invitee = await newUser()
+    const invitation = await db.invitation.create({
+      data: {
+        email: invitee.email,
+        workspaceId: world.workspaceId,
+        role: 'member',
+        invitedBy: world.ownerId,
+        expiresAt: new Date(Date.now() + 7 * DAY),
+      },
+    })
+
+    const res = await membersApp(world.ownerId).request('/api/members', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userId: invitee.id, workspaceId: world.workspaceId, role: 'member' }),
+    })
+    expect(res.status).toBe(409)
+
+    const after = await db.invitation.findUnique({ where: { id: invitation.id } })
+    expect(after?.status).toBe('pending')
   })
 
   test('a join below the cap is allowed', async () => {

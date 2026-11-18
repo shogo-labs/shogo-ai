@@ -215,6 +215,27 @@ describe('trialEligibility', () => {
     })
   })
 
+  // A seat-limit block is not a trial that was used. The owner is told to
+  // "start the trial again with 5 seats or fewer", so the row must not lock
+  // them out of the retry it asks for (SHO-422, QA round 1).
+  test('a blocked_seat_limit row does not burn the trial', async () => {
+    redemptions.push({ userId: 'u-1', workspaceId: 'ws-1', status: 'blocked_seat_limit' })
+    expect(await trial.trialEligibility({ userId: 'u-1', workspaceId: 'ws-1', planId: 'business' })).toEqual({
+      eligible: true,
+    })
+  })
+
+  test('the other block reasons still burn the trial', async () => {
+    for (const status of ['blocked_duplicate_card', 'blocked_duplicate_user', 'blocked_prepaid_card']) {
+      redemptions.length = 0
+      redemptions.push({ userId: 'u-1', workspaceId: 'ws-1', status })
+      expect(await trial.trialEligibility({ userId: 'u-1', workspaceId: 'ws-1', planId: 'business' })).toEqual({
+        eligible: false,
+        reason: 'already_used',
+      })
+    }
+  })
+
   test('a high-risk signup goes to review and gets no trial', async () => {
     assessments.set('u-1', { band: 'high' })
     expect(await trial.trialEligibility({ userId: 'u-1', workspaceId: 'ws-1', planId: 'business' })).toEqual({
