@@ -183,3 +183,58 @@ describe('the migration is idempotent', () => {
     expect(await db.chatMessage.count()).toBe(beforeMessages)
   })
 })
+
+describe('the migration leaves bridged DMs alone', () => {
+  test('a Slack DM is not migrated, archived or logged as a failure', async () => {
+    const bridged = await db.conversation.create({
+      data: { workspaceId: seed.workspaceId, kind: 'dm', dmKey: 'a:ext:slack:D_OWNER' },
+    })
+    await db.conversationMessage.create({
+      data: {
+        conversationId: bridged.id,
+        workspaceId: seed.workspaceId,
+        seq: 1,
+        authorType: 'user',
+        authorUserId: seed.owner,
+        text: 'hello from slack',
+      },
+    })
+
+    const summary = await agentChat.migrateAgentDmsToProjectChat()
+
+    // `a:ext:<provider>:<channelId>` is a bridged DM, not an agent DM: the
+    // migration must not count it, must not try to build a chat for it, and
+    // must leave the conversation live so the bridge keeps working.
+    expect(summary.conversations).toBe(0)
+    expect(summary.skipped).toBe(0)
+    const after = await db.conversation.findUnique({ where: { id: bridged.id } })
+    expect(after.archivedAt).toBeNull()
+    expect(await db.chatSession.count({ where: { directKey: { contains: 'ext:slack' } } })).toBe(0)
+  })
+})
+
+describe('a DM whose chat already exists', () => {
+  test('keeps its transcript instead of being archived empty', async () => {
+    const project = await db.project.create({ data: { name: 'Race Bot', workspaceId: seed.workspaceId } })
+    const dm = await service.openAgentConversation(seed.workspaceId, seed.owner, { projectId: project.id })
+    await db.conversationMessage.create({
+      data: {
+        conversationId: dm.id,
+        workspaceId: seed.workspaceId,
+        seq: 1,
+        authorType: 'user',
+        authorUserId: seed.owner,
+        text: 'the history I care about',
+      },
+    })
+
+    // The person taps "Open chat" (or an agent messages them) before the boot
+    // migration reaches this DM, so the chat exists and is still empty.
+    const opened = await agentChat.openAgentChatSession(seed.workspaceId, seed.owner, project.id)
+
+    await agentChat.migrateAgentDmsToProjectChat()
+
+    const messages = await db.chatMessage.findMany({ where: { sessionId: opened.id } })
+    expect(messages.map((m: any) => m.content)).toContain('the history I care about')
+  })
+})
