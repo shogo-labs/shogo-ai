@@ -47,23 +47,26 @@ function mk() {
 }
 
 /**
- * Faithful mirror of server.ts `app.all('/api/*')` lines 4165-4216 INCLUDING
- * the self-heal fix: when the sidecar is `crashed`, an incoming request kicks
- * off `maybeRecoverApiServer()` before deciding the response. The 3s grace
- * poll is omitted (it only delays the same outcome); the recovery trigger is
- * the behavior we assert.
+ * Faithful mirror of server.ts `app.all('/api/*')` INCLUDING the SHO-403
+ * fix: both proxies now call `PreviewManager.ensureApiServer()` (idle,
+ * stopped and crashed all self-heal) instead of only reviving `crashed` and
+ * soaking a 3s grace window. The proxy then answers 404 when the project has
+ * no API server at all, 503 with `phase` + `buildError` when it could not be
+ * brought up, and proxies the bound port otherwise.
  */
 async function proxyApiDecision(
   pm: PreviewManager,
   fetchImpl: (url: string) => Promise<Response> = fetch,
 ): Promise<{ status: number; body: any }> {
-  let port = pm.apiServerPort
-  if (port == null && pm.apiServerPhase === 'crashed') {
-    pm.maybeRecoverApiServer()
-  }
-  port = pm.apiServerPort
+  const result = await pm.ensureApiServer({ timeoutMs: 500 })
+  const port = result.port ?? pm.apiServerPort
   if (port == null) {
-    return { status: 503, body: { error: 'API server not ready', phase: pm.apiServerPhase } }
+    const body: any = {
+      error: result.phase === 'none' ? 'No API server for this project' : 'API server not ready',
+      phase: result.phase,
+    }
+    if (result.buildError) body.buildError = result.buildError
+    return { status: result.phase === 'none' ? 404 : 503, body }
   }
   try {
     const res = await fetchImpl(`http://127.0.0.1:${port}/api/x`)
@@ -156,6 +159,7 @@ describe('REPRO #2 — API proxy 503 after crash-beyond-recovery', () => {
     // the proxied fetch reject the way a dead/mid-crash socket does (ECONNREFUSED).
     m.apiServerProcess = { killed: false, kill: () => {} }
     m.apiListening = true
+    m.apiPhase = 'healthy'
     expect(m.apiServerPort).not.toBeNull()
 
     const res = await proxyApiDecision(m, async () => {
