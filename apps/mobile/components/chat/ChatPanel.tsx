@@ -41,6 +41,7 @@ import {
   Alert,
   AppState,
   Dimensions,
+  Linking,
   View,
   Text,
   Pressable,
@@ -75,6 +76,7 @@ import {
 } from "./optimistic-echo"
 import { usePersistedMessageIds } from "./use-persisted-message-ids"
 import { usageLimitNoticeFor } from "./usage-limit-notice"
+import { getAuthUserSnapshot } from "../../contexts/auth"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import {
   extractTextContent,
@@ -1329,6 +1331,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const handleStartTrialClick = useCallback(() => {
     router.push("/(app)/billing?trial=business" as any)
   }, [router])
+
+  // A held account (SHO-416) is told to verify, not to pay. The email comes
+  // from the auth snapshot so this stays a plain callback (no extra hook).
+  const handleVerifyEmailClick = useCallback(() => {
+    const email = getAuthUserSnapshot()?.email
+    router.push(
+      (email
+        ? { pathname: "/(auth)/verify-email", params: { email } }
+        : { pathname: "/(auth)/verify-email" }) as any,
+    )
+  }, [router])
+
+  const handleContactSupportClick = useCallback(() => {
+    void Linking.openURL("mailto:support@shogo.ai?subject=Account%20under%20review").catch(() => {})
+  }, [])
 
   // Panel state
   const [internalIsCollapsed, setInternalIsCollapsed] = useState(false)
@@ -9972,7 +9989,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
             onPress={
               usageLimitView.primaryLabel === "Start free trial"
                 ? handleStartTrialClick
-                : handleUpgradeClick
+                : usageLimitView.primaryLabel === "Verify email"
+                  ? handleVerifyEmailClick
+                  : usageLimitView.primaryLabel === "Contact support"
+                    ? handleContactSupportClick
+                    : handleUpgradeClick
             }
             accessibilityRole="button"
             accessibilityLabel={
@@ -9980,7 +10001,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 ? "Start the 7-day free Business trial"
                 : usageLimitView.primaryLabel === "Upgrade"
                   ? "Upgrade plan"
-                  : "Open billing settings"
+                  : usageLimitView.primaryLabel === "Verify email"
+                    ? "Verify your email"
+                    : usageLimitView.primaryLabel === "Contact support"
+                      ? "Contact support"
+                      : "Open billing settings"
             }
             className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1"
           >
@@ -10015,7 +10040,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
         </Text>
       ),
     }
-  }, [usageLimitView, handleUpgradeClick, handleStartTrialClick, handleSendMessage, handleRetry])
+  }, [
+    usageLimitView,
+    handleUpgradeClick,
+    handleStartTrialClick,
+    handleVerifyEmailClick,
+    handleContactSupportClick,
+    handleSendMessage,
+    handleRetry,
+  ])
   useDockPanel(usageLimitDockDescriptor, chatDockStore)
 
   const toolErrorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {

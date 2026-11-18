@@ -25,6 +25,9 @@ import { getFrontendUrl } from "./lib/cloud-urls"
 import { homeRegionForNewUser } from "./lib/region"
 import { E2E_BOOTSTRAP_HEADER, isE2eBootstrapRequest } from "./lib/e2e-bootstrap-secret"
 import { isBlockedEmailDomain } from "./services/signup-risk-scoring"
+import { checkSignupRateLimit, checkVerificationEmailRateLimit } from "./lib/signup-rate-limit"
+import { invalidateSignupTrustHold, getSignupTrustHold } from "./lib/signup-trust"
+import { getSharedRedis } from "./lib/tunnel-redis"
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 const LOAD_TEST_SECRET = process.env.LOAD_TEST_SECRET
@@ -239,6 +242,122 @@ const projectAuthPlugin: BetterAuthPlugin = {
   },
 }
 
+/**
+ * Cluster-wide signup limits (SHO-416).
+ *
+ * Better Auth's own `customRules` limiter keeps its counters in process
+ * memory, so `/sign-up/email`'s 3-per-10s was really per pod, and it keys on
+ * the raw address — the Nov 17 farm spread 1,108 signups over 10 IPv6 /64s.
+ * This hook counts in the shared Redis, keyed by IP prefix, with a daily cap.
+ * See `lib/signup-rate-limit.ts` for the numbers and where they come from.
+ */
+const signupRateLimitPlugin: BetterAuthPlugin = {
+  id: "shogo-signup-rate-limit",
+  hooks: {
+    before: [
+      {
+        matcher(ctx) {
+          return ctx.path === "/sign-up/email"
+        },
+        handler: createAuthMiddleware(async (ctx) => {
+          const request = ctx.request as Request | undefined
+          const verdict = await checkSignupRateLimit(ctx.headers ?? request?.headers ?? null, {
+            bypass: request ? isLoadTestBypass(request) : false,
+          })
+          if (verdict.allowed) return
+          throw new APIError(
+            "TOO_MANY_REQUESTS",
+            {
+              code: "SIGNUP_RATE_LIMITED",
+              message: "Too many sign-ups from this network. Please try again later.",
+            },
+            { "Retry-After": String(verdict.retryAfterSeconds) },
+          )
+        }),
+      },
+      {
+        matcher(ctx) {
+          return ctx.path === "/send-verification-email"
+        },
+        handler: createAuthMiddleware(async (ctx) => {
+          const request = ctx.request as Request | undefined
+          const email = (ctx.body as { email?: unknown })?.email
+          const verdict = await checkVerificationEmailRateLimit(
+            ctx.headers ?? request?.headers ?? null,
+            typeof email === "string" ? email : "",
+            { bypass: request ? isLoadTestBypass(request) : false },
+          )
+          if (verdict.allowed) return
+          throw new APIError(
+            "TOO_MANY_REQUESTS",
+            {
+              code: "SIGNUP_RATE_LIMITED",
+              message: "Too many verification emails requested. Please try again later.",
+            },
+            { "Retry-After": String(verdict.retryAfterSeconds) },
+          )
+        }),
+      },
+    ],
+  },
+}
+
+/** True when Better Auth is sending the automatic verification email from sign-up. */
+function isSignUpRequest(request: Request | undefined): boolean {
+  if (!request?.url) return false
+  try {
+    return new URL(request.url).pathname.endsWith('/sign-up/email')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether this signup is held, for the purpose of skipping the automatic
+ * verification email. Fails open: a lookup error must never stop a real user
+ * from receiving their verification link.
+ */
+async function isHeldSignupForAutomaticEmail(user: { id?: string; email: string }): Promise<boolean> {
+  if (isLocalMode || !user.id) return false
+  try {
+    return (await getSignupTrustHold(user.id)) !== null
+  } catch (err) {
+    console.error('[signup-trust] hold lookup failed for verification email', err)
+    return false
+  }
+}
+
+/**
+ * The onboarding a held signup was skipped for, sent once the hold lifts.
+ * Callers only reach this when the account was held and the hold is now gone,
+ * so a repeat verification of an already-released account sends nothing.
+ */
+async function sendDeferredSignupOnboarding(userId: string): Promise<void> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true, name: true },
+  })
+  if (!user) return
+  const baseUrl = getFrontendUrl()
+  sendWelcomeEmail({
+    to: user.email,
+    name: user.name || 'User',
+    loginUrl: `${baseUrl}/sign-in`,
+  }).catch((err: unknown) => {
+    console.error(`Welcome email failed for ${user.email}:`, err)
+  })
+  identifyUser(userId, {
+    email: user.email,
+    firstName: user.name?.split(' ')[0] || undefined,
+    lastName: user.name?.split(' ').slice(1).join(' ') || undefined,
+    plan: 'free',
+    createdAt: new Date().toISOString(),
+  }).catch((err: unknown) => console.error('[Loops] identify failed:', err))
+  trackEvent(userId, 'signup', { email: user.email }).catch((err: unknown) =>
+    console.error('[Loops] signup event failed:', err),
+  )
+}
+
 export const auth = betterAuth({
   // Base URL for OAuth callbacks - must match Google's authorized redirect URIs
   baseURL: getBaseURL(),
@@ -364,7 +483,18 @@ export const auth = betterAuth({
   emailVerification: {
     sendOnSignUp: true,
     autoSignInAfterVerification: true,
-    sendVerificationEmail: async ({ user, url }: { user: { email: string; name?: string | null }; url: string }) => {
+    sendVerificationEmail: async (
+      { user, url }: { user: { id?: string; email: string; name?: string | null }; url: string },
+      request?: Request,
+    ) => {
+      // A held signup gets no *automatic* verification email (SHO-416): the farm
+      // sent ~3k of them to bot inboxes and Loops started returning 429s. A
+      // resend through `/send-verification-email` still goes out, so a real
+      // person can verify from the in-app CTA; that path is rate limited.
+      if (isSignUpRequest(request) && (await isHeldSignupForAutomaticEmail(user))) {
+        console.log(`[Auth] Skipped the sign-up verification email for a held account (${user.email})`)
+        return
+      }
       const result = (await sendEmailVerificationEmail({
         to: user.email,
         name: user.name ?? undefined,
@@ -389,9 +519,30 @@ export const auth = betterAuth({
       try {
         // Lazy: keeps billing out of the auth module graph at startup.
         const { releaseSignupCreditOnVerification } = await import('./services/signup-credit.service')
+        const { prisma: db } = await import('./lib/prisma')
+        // Read the band *before* the re-score: a high band here means the
+        // account was held, which is what decides whether the onboarding we
+        // skipped at signup is owed now.
+        const before = await db.signupRiskAssessment.findUnique({
+          where: { userId: user.id },
+          select: { band: true, reviewDecision: true },
+        })
+        const wasHeld = before?.band === 'high' && before.reviewDecision !== 'approved'
+
         const outcome = await releaseSignupCreditOnVerification({ userId: user.id })
         if (outcome.released) {
           console.log(`[signup-credit] released $${outcome.amountUsd} for user ${user.id} (band ${outcome.band})`)
+        }
+        // The hold is read live, so dropping the cached answer is all it takes
+        // for the next request to see the new state.
+        invalidateSignupTrustHold(user.id)
+
+        // Onboarding that was skipped at signup goes out now, and only when the
+        // hold actually lifted — a second verification of an already-released
+        // account sees a non-high band and sends nothing.
+        const holdLifted = outcome.reason === 'released' || outcome.reason === 'rescored_below_high'
+        if (wasHeld && holdLifted) {
+          await sendDeferredSignupOnboarding(user.id)
         }
       } catch (err) {
         console.error('[signup-credit] verification release failed', err)
@@ -473,12 +624,42 @@ export const auth = betterAuth({
     return origins
   },
 
-  plugins: [expo(), projectAuthPlugin],
+  plugins: [expo(), projectAuthPlugin, signupRateLimitPlugin],
 
   rateLimit: {
     window: 60,
     max: 1000,
     enabled: process.env.NODE_ENV === 'production',
+    // Better Auth's default store is process memory, so every rule below was
+    // really "per pod" (8 API pods in prod). Point it at the shared Redis we
+    // already run for the tunnel relay; `getSharedRedis()` returns null on
+    // desktop and during a Redis outage, and the limiter then falls back to
+    // its own memory store. Deliberately NOT `secondaryStorage`: that would
+    // move sessions into Redis too.
+    customStorage: {
+      async get(key: string) {
+        const redis = getSharedRedis()
+        if (!redis) return null
+        const raw = await redis.get(`auth:rl:${key}`).catch(() => null)
+        if (!raw) return null
+        try {
+          return JSON.parse(raw) as { key: string; count: number; lastRequest: number }
+        } catch {
+          return null
+        }
+      },
+      async set(key: string, value: { key: string; count: number; lastRequest: number }) {
+        const redis = getSharedRedis()
+        if (!redis) return
+        // The limiter re-reads and rewrites the row on every request, so the
+        // TTL only has to outlive the longest configured window (60s default,
+        // 10s for the auth rules). A day is cheap insurance against a stale
+        // row pinning a counter.
+        await redis
+          .set(`auth:rl:${key}`, JSON.stringify(value), 'EX', 86_400)
+          .catch(() => {})
+      },
+    },
     customRules: {
       "/sign-in/email": async (request) => {
         if (isLoadTestBypass(request)) return false
@@ -709,6 +890,11 @@ export const auth = betterAuth({
           // Signup risk assessment + initial promo credit (cloud only). Runs after
           // the team workspace exists, since the credit lives on that wallet.
           // Best-effort: a failure here must never block the signup itself.
+          //
+          // `heldSignup` also decides whether the onboarding below goes out now
+          // or waits for verification (SHO-416): the farm sent ~3k welcome and
+          // verification emails to bot inboxes, and Loops started returning 429s.
+          let heldSignup = false
           if (!isLocalMode) {
             try {
               const { assessNewSignup } = await import('./services/signup-risk.service')
@@ -721,14 +907,26 @@ export const auth = betterAuth({
                 headers: ctx?.request?.headers ?? ctx?.headers ?? null,
               })
               await applyInitialSignupCredit({ userId: user.id, result: risk })
-              trackEvent(user.id, 'signup_risk_scored', {
-                band: risk.band,
-                decision: risk.decision,
-                score: risk.score,
-              }).catch(() => {})
+              heldSignup = risk.band === 'high' && !user.emailVerified
+              if (!heldSignup) {
+                trackEvent(user.id, 'signup_risk_scored', {
+                  band: risk.band,
+                  decision: risk.decision,
+                  score: risk.score,
+                }).catch(() => {})
+              }
             } catch (err) {
+              // An assessment failure leaves the account unheld, so the emails
+              // below go out exactly as they did before this gate existed.
               console.error(`[signup-risk] assessment failed for ${user.email}`, err)
             }
+          }
+
+          if (heldSignup) {
+            // Onboarding is deferred to `afterEmailVerification`, which sends it
+            // once the hold lifts.
+            console.log(`[signup-trust] deferred onboarding for a held signup (${user.email})`)
+            return
           }
 
           // FIRE-AND-FORGET: Send welcome email (non-blocking)

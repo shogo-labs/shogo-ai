@@ -22,6 +22,10 @@
  *   - `overage_payment_pending`: overage is active, but the current overage
  *     block is invoiced and unpaid (or due to be invoiced). Overage resumes
  *     once that invoice is paid.
+ *   - `email_verification_required` / `account_review_required`: the account
+ *     itself is held (a high-risk signup that has not verified, or one that
+ *     verified and is still clustered). A held account gets no free allowance
+ *     at all — see `lib/signup-trust.ts`. Paid tiers are never held.
  *   - `usage_limit_reached`: the generic case — no overage configured at
  *     all (or an uncapped/free wallet was never found), so the window is
  *     just the hard stop.
@@ -30,6 +34,8 @@ export type UsageBlockReason =
   | 'entitlement_expired'
   | 'overage_cap_reached'
   | 'overage_payment_pending'
+  | 'email_verification_required'
+  | 'account_review_required'
   | 'usage_limit_reached'
 
 export interface BalanceCheck {
@@ -64,6 +70,17 @@ export function usageLimitErrorPayload(reason: UsageBlockReason | undefined): { 
         code: 'overage_payment_pending',
         message:
           "Your latest on-demand usage charge hasn't been paid yet. Pay or confirm the open invoice in Billing settings to continue.",
+      }
+    case 'email_verification_required':
+      return {
+        code: 'email_verification_required',
+        message:
+          'Verify your email to start using AI. Check your inbox for the verification link, or resend it from Settings.',
+      }
+    case 'account_review_required':
+      return {
+        code: 'account_review_required',
+        message: 'Your account is under review. Contact support if you think this is a mistake.',
       }
     default:
       return {

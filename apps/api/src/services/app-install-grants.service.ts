@@ -191,6 +191,11 @@ export async function syncInstallSubscriptions(input: {
 /** Mint the install token: an `app` ApiKey carrying the grant's scopes. Returns the bearer and its encrypted copy. */
 async function mintInstallToken(input: { installId: string; workspaceId: string; userId: string; appName: string; scopes: string[] }) {
   const { generateApiKey } = await import('../lib/api-keys-mint')
+  const { getSignupTrustHold, SignupTrustHoldError } = await import('../lib/signup-trust')
+  // An app install mints a real credential, so a held signup must not get one
+  // (SHO-416) — same rule as POST /api-keys.
+  const hold = await getSignupTrustHold(input.userId)
+  if (hold) throw new SignupTrustHoldError(hold)
   const { fullKey, keyHash, keyPrefix } = await generateApiKey()
   await db.apiKey.create({
     data: {
