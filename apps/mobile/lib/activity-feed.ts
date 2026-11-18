@@ -7,7 +7,7 @@
  * Everything here is pure. `useActivityFeed` feeds it, `ActivityFeed` renders
  * it.
  */
-import type { ActiveChatTurn, AgentTask } from './api'
+import type { ActiveChatTurn, AgentTask, PersonalWorkspaceActivity } from './api'
 import { readableAgentTaskError, taskStatusLabel } from './agent-task-ui'
 import { conversationLabel } from './team-chat-nav'
 import type { InboxItem, SentMessage } from './team-chat-api'
@@ -232,6 +232,32 @@ export function canStopRunningChat(
 ): boolean {
   if (chat.canStop === false) return false
   return !!(chat.messageId || chat.chatSessionId)
+}
+
+/**
+ * The run behind a `chat_turn` activity item, in the shape `/active-chats`
+ * returns, so every surface (Activity feed, Activity screen, companion
+ * Activity) names, times and stops a run with the same helpers instead of
+ * each rendering the raw stored session name.
+ */
+export function chatFromActivityItem(item: PersonalWorkspaceActivity): ActiveChatTurn {
+  return {
+    chatSessionId: item.chatSessionId ?? '',
+    turnId: item.turnId ?? item.id,
+    sessionName: item.sessionName ?? '',
+    isPrimary: item.isPrimary ?? false,
+    projectId: item.projectId ?? null,
+    projectName: item.projectName ?? null,
+    projectHidden: item.projectHidden ?? false,
+    startedAt: item.startedAt ?? item.createdAt,
+    agentName: item.agentName ?? null,
+    card: item.card ?? null,
+    canStop: item.canStop,
+    messageId: item.messageId ?? null,
+    conversationId: item.conversationId ?? null,
+    conversationName: item.conversationName ?? null,
+    threadRootId: item.threadRootId ?? null,
+  }
 }
 
 /**

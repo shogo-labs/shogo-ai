@@ -107,6 +107,44 @@ describe('buildAgentRows', () => {
     expect(rows[0]).toMatchObject({ state: 'running', detail: 'Fix login', chatSessionId: 's9' })
   })
 
+  test('a channel-woken chat shows what it is doing, not the stored `#channel: @agent` prefix', () => {
+    // Home renders this line (and puts it in the row's accessibility label).
+    // A reply woken in a channel has no AgentTask, so the row is this detail —
+    // it used to be the raw session name, the string in Russell's screenshot.
+    const rows = buildAgentRows({
+      agents: [agent('p1')],
+      tasks: [],
+      activeChats: [{
+        projectId: 'p1',
+        sessionName: '#shogo-dev: @agent fix SHO-421 on your branch',
+        startedAt: iso(2),
+        chatSessionId: 's9',
+        agentName: 'Shogo Dev 3',
+      } as any],
+      approvals: [],
+      now: NOW,
+    })
+    expect(rows[0].detail).toBe('fix SHO-421 on your branch')
+  })
+
+  test('a card thread is named by its card on Home too', () => {
+    const rows = buildAgentRows({
+      agents: [agent('p1')],
+      tasks: [],
+      activeChats: [{
+        projectId: 'p1',
+        sessionName: '#shogo-dev: fix SHO-421 on your branch',
+        startedAt: iso(2),
+        chatSessionId: 's9',
+        agentName: 'Shogo Dev 3',
+        card: { key: 'SHO-421', title: 'Boot standalone without PROJECT_ID' },
+      } as any],
+      approvals: [],
+      now: NOW,
+    })
+    expect(rows[0].detail).toBe('SHO-421 · Boot standalone without PROJECT_ID')
+  })
+
   test('a recent failure is shown; an old one is not', () => {
     const rows = buildAgentRows({
       agents: [agent('p1'), agent('p2')],

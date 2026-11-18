@@ -4,7 +4,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { ActiveChatTurn, AgentTask } from '../api'
 import type { InboxItem, SentMessage } from '../team-chat-api'
-import { ACTIVITY_FILTERS, activityBadge, buildFeed, canStopRunningChat, chatEntry, groupFeed, inboxEntry, matchesFilter, relativeTime, sectionFor, sentEntry, taskEntry, type ActivityEntry } from '../activity-feed'
+import { ACTIVITY_FILTERS, activityBadge, buildFeed, canStopRunningChat, chatEntry, chatFromActivityItem, chatTitle, groupFeed, inboxEntry, matchesFilter, relativeTime, sectionFor, sentEntry, taskEntry, type ActivityEntry } from '../activity-feed'
 
 const NOW = Date.parse('2026-10-01T12:00:00Z')
 const ago = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString()
@@ -187,6 +187,42 @@ describe('running chats', () => {
     expect(canStopRunningChat(running({ canStop: false }))).toBe(false)
     expect(canStopRunningChat({ chatSessionId: 's1' })).toBe(true)
     expect(canStopRunningChat({ chatSessionId: '' })).toBe(false)
+  })
+
+  test('a chat_turn activity item renders as the same row, not the stored name', () => {
+    // What `/workspaces/:id/activity` returns for a live reply: the companion
+    // Activity screen reads this instead of the raw `#channel: @agent …`.
+    const chat = chatFromActivityItem({
+      type: 'chat_turn',
+      id: 's1:t1',
+      chatSessionId: 's1',
+      turnId: 't1',
+      sessionName: '#shogo-dev: @agent fix SHO-421 on your branch',
+      startedAt: ago(4),
+      createdAt: ago(4),
+      agentName: 'Shogo Dev 3',
+      projectId: 'proj-1',
+      projectName: 'Shogo Dev 3',
+      conversationName: 'shogo-dev',
+      messageId: 'msg-1',
+      threadRootId: 'thread-1',
+      canStop: true,
+    })
+    expect(chatTitle(chat)).toBe('fix SHO-421 on your branch')
+    expect(chatEntry(chat, NOW).context).toBe('Shogo Dev 3 · #shogo-dev · 4m')
+    expect(canStopRunningChat(chat)).toBe(true)
+  })
+
+  test('a chat_turn with no metadata still names its session', () => {
+    const chat = chatFromActivityItem({
+      type: 'chat_turn',
+      id: 's2:t2',
+      chatSessionId: 's2',
+      sessionName: 'Fix login',
+      createdAt: ago(1),
+    })
+    expect(chatTitle(chat)).toBe('Fix login')
+    expect(chat.startedAt).toBe(ago(1))
   })
 })
 

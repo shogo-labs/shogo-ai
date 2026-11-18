@@ -53,6 +53,8 @@ mock.module('../lib/prisma', () => ({
   },
 }))
 
+const activityCalls: unknown[] = []
+
 mock.module('../services/workspace-agent.service', () => ({
   createGoal: async () => ({ id: 'goal-1', title: 'Habit tracker', status: 'active' }),
   createGoalEvent: async () => ({ id: 'event-1', kind: 'progress', message: 'Started' }),
@@ -75,7 +77,10 @@ mock.module('../services/workspace-agent.service', () => ({
     goalId === 'goal-1' ? { id: 'goal-1', title: 'Habit tracker', events: [], agentTasks: [] } : null,
   listGoals: async () => [{ id: 'goal-1', title: 'Habit tracker', status: 'active' }],
   listGoalEvents: async () => [{ id: 'event-1', kind: 'progress', message: 'Started' }],
-  listWorkspaceActivity: async () => [{ type: 'goal_event', id: 'event-1' }],
+  listWorkspaceActivity: async (_workspaceId: string, _limit: number, opts: unknown) => {
+    activityCalls.push(opts)
+    return [{ type: 'goal_event', id: 'event-1' }]
+  },
   resolveGoalEventApproval: async (
     _workspaceId: string,
     goalId: string,
@@ -272,6 +277,9 @@ describe('workspace agent routes (session-authorized mount)', () => {
     const activity = await appFor('user-1').request('/api/workspaces/workspace-1/activity')
     expect(activity.status).toBe(200)
     expect(await activity.json()).toMatchObject({ activity: [{ id: 'event-1' }] })
+    // The live chat rows it embeds are scoped to the viewer, so a viewer gets
+    // `canStop: false` and no stop button on the companion Activity screen.
+    expect(activityCalls.at(-1)).toEqual({ viewerUserId: 'user-1' })
   })
 
   test('creates goals and goal events', async () => {
