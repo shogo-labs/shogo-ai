@@ -19,6 +19,7 @@
  * `resolveHistoryPaint`'s job, not this module's.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { messageBytesOf, transcriptBytes } from './message-bytes'
 
 /**
  * `boot` is not a transcript: it is the few bytes that let a chat open with no
@@ -43,12 +44,33 @@ export interface ChatHistoryLimits {
   chats: number
   /** How many messages one slice keeps. */
   messages: number
+  /**
+   * How many bytes one slice may hold (SHO-434).
+   *
+   * The message count stopped bounding anything once a message could carry an
+   * image as an inline base64 URL: fifty of those is twenty megabytes, and the
+   * open that reads it parses the whole slice on the JS thread at once — an
+   * Android `OutOfMemoryError` with ~1 MB free, or the iOS RAM watchdog killing
+   * the app for the spike. When a slice is over budget its oldest messages are
+   * dropped, and `hasMoreOlder` says so, exactly as the count cap already does.
+   */
+  bytes: number
 }
 
-const WEB_LIMITS: ChatHistoryLimits = { chats: 100, messages: 300 }
-const NATIVE_LIMITS: ChatHistoryLimits = { chats: 20, messages: 50 }
+const WEB_LIMITS: ChatHistoryLimits = {
+  chats: 100,
+  messages: 300,
+  bytes: 32 * 1024 * 1024,
+}
+const NATIVE_LIMITS: ChatHistoryLimits = {
+  chats: 20,
+  messages: 50,
+  bytes: 8 * 1024 * 1024,
+}
 /** Rough ceiling for the whole web store before the oldest chats are dropped. */
 const WEB_BUDGET_BYTES = 100 * 1024 * 1024
+/** The same ceiling for the native store, where the heap is far smaller. */
+const NATIVE_BUDGET_BYTES = 32 * 1024 * 1024
 const SKEW_MS = 5_000
 
 /**
@@ -62,6 +84,11 @@ export function isWebChatHistorySurface(): boolean {
 
 export function chatHistoryLimits(): ChatHistoryLimits {
   return isWebChatHistorySurface() ? WEB_LIMITS : NATIVE_LIMITS
+}
+
+/** The whole-store ceiling for this surface, in bytes. */
+export function chatHistoryBudgetBytes(): number {
+  return isWebChatHistorySurface() ? WEB_BUDGET_BYTES : NATIVE_BUDGET_BYTES
 }
 
 /**
@@ -458,6 +485,27 @@ function trim(messages: any[], limit: number): any[] {
   return messages.slice(messages.length - limit)
 }
 
+/**
+ * Keep the newest messages that fit in `budget` bytes, always keeping the last
+ * one (the newest row — and the live reply while a turn is streaming).
+ *
+ * Counted with the cheap structural walk in `message-bytes`, not
+ * `JSON.stringify`: a photo-heavy slice is exactly the one being measured, and
+ * serialising it to find out it is too big would allocate the thing we are
+ * trying to avoid.
+ */
+export function trimToBudget(messages: any[], budget: number): any[] {
+  if (budget <= 0 || messages.length <= 1) return messages
+  let total = transcriptBytes(messages)
+  if (total <= budget) return messages
+  let from = 0
+  while (total > budget && messages.length - from > 1) {
+    total -= messageBytesOf(messages[from])
+    from += 1
+  }
+  return from ? messages.slice(from) : messages
+}
+
 export async function writeChatHistory(
   kind: ChatHistoryKind,
   key: string,
@@ -465,11 +513,12 @@ export async function writeChatHistory(
 ): Promise<void> {
   if (!entry.messages.length) return
   const limits = chatHistoryLimits()
+  const byCount = trim(entry.messages, limits.messages)
+  const kept = trimToBudget(byCount, limits.bytes)
   const trimmed: ChatHistoryEntry = {
     ...entry,
-    messages: trim(entry.messages, limits.messages),
-    hasMoreOlder:
-      entry.hasMoreOlder || entry.messages.length > limits.messages,
+    messages: kept,
+    hasMoreOlder: entry.hasMoreOlder || kept.length < entry.messages.length,
     savedAt: Date.now(),
   }
   memoryMirror.set(mirrorId(kind, key), trimmed)
@@ -483,7 +532,7 @@ export async function writeChatHistory(
   // The mirror is what a revisit paints from, so the cap has to hold there
   // too: an entry the backend dropped must stop answering `readChatHistory`.
   // LRU across both kinds, plus a byte budget so one giant transcript cannot
-  // fill the browser's origin quota.
+  // fill the browser's origin quota — or, on native, the phone's heap.
   const rows = Array.from(memoryMirror.entries()).map(([id, stored]) => ({
     id,
     savedAt: stored.savedAt,
@@ -491,8 +540,9 @@ export async function writeChatHistory(
   }))
   let bytes = rows.reduce((n, row) => n + row.bytes, 0)
   let count = rows.length
+  const budget = chatHistoryBudgetBytes()
   for (const stale of [...rows].sort((a, b) => a.savedAt - b.savedAt)) {
-    if (count <= limits.chats && bytes <= WEB_BUDGET_BYTES) break
+    if (count <= limits.chats && bytes <= budget) break
     const sep = stale.id.indexOf(':')
     memoryMirror.delete(stale.id)
     await target
