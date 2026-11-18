@@ -129,7 +129,7 @@ function PendingInvitationsSection({
   onClose: () => void;
 }) {
   const density = densityFor(isNative);
-  const { pendingInvites, processingInvite, acceptInvite, declineInvite } = invitations;
+  const { pendingInvites, processingInvite, acceptInvite, declineInvite, acceptError } = invitations;
 
   // No domain store above means Accept/Decline have nothing to join with, so
   // show no block at all rather than a dead one.
@@ -224,6 +224,14 @@ function PendingInvitationsSection({
           </View>
         );
       })}
+      {/* Hook-level, not per-invite: the refusal is about the workspace's seat
+          count, so it belongs once below the list rather than repeated under
+          every pending row. */}
+      {acceptError ? (
+        <Text className={cn("px-4 pb-1 text-destructive", density.text.caption)}>
+          {acceptError}
+        </Text>
+      ) : null}
     </View>
   );
 }

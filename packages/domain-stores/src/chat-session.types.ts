@@ -16,6 +16,7 @@ export interface ChatSessionType {
   contextId?: string
   workspaceId?: string
   createdByUserId?: string
+  directKey?: string
   phase?: string
   claudeCodeSessionId?: string
   cachedMessageCount: number
@@ -44,6 +45,7 @@ export interface ChatSessionCreateInput {
   contextId?: string
   workspaceId?: string
   createdByUserId?: string
+  directKey?: string
   phase?: string
   claudeCodeSessionId?: string
   cachedMessageCount?: number
@@ -70,6 +72,7 @@ export interface ChatSessionUpdateInput {
   contextId?: string
   workspaceId?: string
   createdByUserId?: string
+  directKey?: string
   phase?: string
   claudeCodeSessionId?: string
   cachedMessageCount?: number

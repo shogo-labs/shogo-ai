@@ -48,12 +48,12 @@ import {
   listMessages,
   loadAccess,
   markRead,
-  openAgentConversation,
   openDirectConversation,
   postMessage,
   removeMember,
   requirePost,
   normalizeLinkPreviewOptOuts,
+  parseFromParam,
   serializeConversation,
   setAttachmentUrlBuilder,
   setReaction,
@@ -427,11 +427,45 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       const agent = body.agent && typeof body.agent === 'object'
         ? { projectId: typeof body.agent.projectId === 'string' ? body.agent.projectId : null }
         : null
-      if (agent) await assertAgentInWorkspace(auth.workspaceId, agent, auth.userId)
-      const conversation = agent
-        ? await openAgentConversation(auth.workspaceId, auth.userId, agent)
-        : await openDirectConversation(auth.workspaceId, auth.userId, Array.isArray(body.userIds) ? body.userIds : [])
+      if (agent) {
+        // An agent DM is a project chat with that agent now (SHO-412). Older
+        // clients get the chat to open instead of a DM.
+        await assertAgentInWorkspace(auth.workspaceId, agent, auth.userId)
+        const { openAgentChatSession } = await import('../services/agent-chat.service')
+        const chat = await openAgentChatSession(auth.workspaceId, auth.userId, agent.projectId)
+        return c.json(
+          {
+            error: {
+              code: 'moved_to_project_chat',
+              message: 'A message to an agent is a project chat with that agent now.',
+            },
+            chatSessionId: chat.id,
+            projectId: agent.projectId,
+          },
+          410,
+        )
+      }
+      const conversation = await openDirectConversation(auth.workspaceId, auth.userId, Array.isArray(body.userIds) ? body.userIds : [])
       return c.json({ conversation: await getConversationForUser(conversation.id, auth.userId) })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  /**
+   * The person's chat with an agent: a project chat for a project agent, a
+   * workspace chat for the workspace agent. Finds or creates it (SHO-412).
+   */
+  router.post('/workspaces/:workspaceId/agent-chat', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    const body = await readJson(c)
+    const projectId = typeof body.projectId === 'string' && body.projectId.trim() ? body.projectId.trim() : null
+    try {
+      await assertAgentInWorkspace(auth.workspaceId, { projectId }, auth.userId)
+      const { openAgentChatSession } = await import('../services/agent-chat.service')
+      const chat = await openAgentChatSession(auth.workspaceId, auth.userId, projectId)
+      return c.json({ chatSessionId: chat.id, projectId })
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -732,6 +766,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         limit: numberParam(c.req.query('limit')),
         threadRootId: c.req.query('threadRootId') || undefined,
         changedSince: isoDateParam(c.req.query('changedSince')),
+        from: parseFromParam(c.req.query('from')),
       }))
     } catch (err) {
       return errorResponse(c, err)
@@ -1267,21 +1302,15 @@ export function textContains(q: string) {
 }
 
 /**
- * The conversation an agent names: a channel name (with or without `#`), a
- * conversation id, or `@person` (an email or user id) for its DM with them.
- * Null when it doesn't exist or the agent can't see it.
+ * The conversation an agent names: a channel name (with or without `#`), or a
+ * conversation id. Null when it doesn't exist or the agent can't see it.
+ *
+ * `@person` no longer resolves: an agent's message to a person is that
+ * person's chat with the agent, not a DM conversation (SHO-412). Agents reach
+ * people through `team_chat_dm`.
  */
 export async function resolveAgentConversation(workspaceId: string, channel: string, projectId: string | null) {
-  if (channel.startsWith('@')) {
-    const who = channel.slice(1).trim()
-    if (!who) return null
-    const member = await db.member.findFirst({
-      where: { workspaceId, projectId: null, OR: [{ userId: who }, { user: { email: who.toLowerCase() } }] },
-      select: { userId: true },
-    })
-    if (!member) return null
-    return db.conversation.findFirst({ where: { workspaceId, dmKey: `a:${member.userId}:${projectId ?? 'ws'}` } })
-  }
+  if (channel.startsWith('@')) return null
   channel = channel.replace(/^#/, '')
   const byId = await db.conversation.findUnique({ where: { id: channel } }).catch(() => null)
   const conversation = byId && byId.workspaceId === workspaceId
@@ -1859,23 +1888,40 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     if (!member) return c.json({ error: { code: 'not_found', message: 'No workspace member matches that user' } }, 404)
     try {
       const onBehalfOfUserId = typeof body.onBehalfOfUserId === 'string' ? body.onBehalfOfUserId.trim() : ''
-      let conversation
-      let onBehalfOf: { userId: string; name: string } | undefined
-      if (onBehalfOfUserId && onBehalfOfUserId !== member.userId) {
-        const requester = await db.member.findFirst({
-          where: { workspaceId: auth.workspaceId, projectId: null, userId: onBehalfOfUserId },
-          select: { userId: true, user: { select: { name: true, email: true } } },
+      if (!onBehalfOfUserId || onBehalfOfUserId === member.userId) {
+        // An agent writing to a person lands in that person's chat with the
+        // agent — a project chat (a workspace chat for the workspace agent) —
+        // and pushes a notification (SHO-412).
+        const { deliverAgentDirectMessage } = await import('../services/agent-chat.service')
+        const delivered = await deliverAgentDirectMessage({
+          workspaceId: auth.workspaceId,
+          userId: member.userId,
+          projectId,
+          text: String(body.text ?? ''),
+          sessionId: typeof body.sessionId === 'string' ? body.sessionId : null,
         })
-        if (!requester) {
-          return c.json({ error: { code: 'not_found', message: 'The requester is not a member of this workspace' } }, 404)
-        }
-        conversation = await openDirectConversation(auth.workspaceId, requester.userId, [member.userId])
-        onBehalfOf = {
-          userId: requester.userId,
-          name: requester.user.name || requester.user.email,
-        }
-      } else {
-        conversation = await openAgentConversation(auth.workspaceId, member.userId, { projectId })
+        return c.json({
+          message: {
+            id: delivered.messageId,
+            conversationId: delivered.chatSessionId,
+            url: projectId
+              ? `${getFrontendUrl()}/project-chat/${encodeURIComponent(projectId)}?chatSessionId=${encodeURIComponent(delivered.chatSessionId)}`
+              : `${getFrontendUrl()}/agent?chatSessionId=${encodeURIComponent(delivered.chatSessionId)}`,
+          },
+        }, 201)
+      }
+
+      const requester = await db.member.findFirst({
+        where: { workspaceId: auth.workspaceId, projectId: null, userId: onBehalfOfUserId },
+        select: { userId: true, user: { select: { name: true, email: true } } },
+      })
+      if (!requester) {
+        return c.json({ error: { code: 'not_found', message: 'The requester is not a member of this workspace' } }, 404)
+      }
+      const conversation = await openDirectConversation(auth.workspaceId, requester.userId, [member.userId])
+      const onBehalfOf = {
+        userId: requester.userId,
+        name: requester.user.name || requester.user.email,
       }
       const result = await postAgentMessage({
         conversationId: conversation.id,
@@ -1883,7 +1929,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
         text: String(body.text ?? ''),
         agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
         agentChain: await postChain(auth.workspaceId, projectId, body, null),
-        ...(onBehalfOf ? { blocks: { onBehalfOf } } : {}),
+        blocks: { onBehalfOf },
       })
       void afterMessagePosted(result, { actorUserId: null, origin: 'agent' })
       return c.json({

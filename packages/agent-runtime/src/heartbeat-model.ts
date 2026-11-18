@@ -23,9 +23,10 @@
  */
 
 import { agentModelAliasForConfig } from './agent-model-config'
+import { pinnedAgentModel } from '@shogo/shared-runtime/standalone'
 
 /** Where a tick's model came from. Logged on every tick. */
-export type HeartbeatModelSource = 'agent_config' | 'runtime_config' | 'platform_default'
+export type HeartbeatModelSource = 'pinned' | 'agent_config' | 'runtime_config' | 'platform_default'
 
 export interface HeartbeatModelChoice {
   /** A concrete model id — never `auto`. */
@@ -73,6 +74,10 @@ function concreteProvider(provider: unknown): string | undefined {
 }
 
 export function resolveHeartbeatModel(input: ResolveHeartbeatModelInput): HeartbeatModelChoice {
+  // `AGENT_MODEL` pins every model pick in the process, heartbeats included.
+  const pin = pinnedAgentModel()
+  if (pin) return { id: pin.id, provider: pin.provider, source: 'pinned' }
+
   const configured = concreteAlias(input.agentModelName)
   if (configured) {
     return { id: configured, provider: concreteProvider(input.agentModelProvider), source: 'agent_config' }

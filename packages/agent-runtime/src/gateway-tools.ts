@@ -135,6 +135,7 @@ import {
 } from './cross-workspace'
 import { assertAllowedPath as assertAllowedPathRaw, getRuntimeTrust } from './runtime-trust'
 import { isBinaryFilePath, isZernioSocialToolkit, normalizeToolkitName, zernioPlatformsFromQuery, type ZernioSocialToolkit } from '@shogo/shared-runtime'
+import { isStandalone } from '@shogo/shared-runtime/standalone'
 import { isShogoAgentEmail, withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
 import { missingCodePlanSections } from './plan-sections'
 
@@ -5467,7 +5468,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
   return {
     name: 'publish',
     description: [
-      'Publish the web app to a public, persistent URL at `{subdomain}.shogo.one`. Use this for hosting or permanently sharing the web app. For a single generated file, use `share_file` instead — never use publish to deliver a PDF, DOCX, ZIP, EXE, or other artifact.',
+      'Host the whole app on Shogo: frontend, API and database, at `{subdomain}.shogo.one` or the user\'s domain. Use this whenever the user wants to host, deploy, launch or keep something running. For a single generated file, use `share_file` instead — never use publish to deliver a PDF, DOCX, ZIP, EXE, or other artifact.',
       'Shogo also serves the app on a domain the user already owns. NEVER stand up another host for it (no Cloudflare Pages, Vercel, Netlify) — use `domain_action` on this tool. When the user asks to point their own domain at their app ("set up mysite.com"), call `domain_action: "add"` with their domain, then create each returned DNS record EXACTLY as given. If you have DNS access (`cf`/`wrangler`/Route 53, or a token the user gave you), create the records yourself — DNS-only, never proxied — then call `domain_action: "verify"`. If you do not, give the user the records table and point them to Project → Settings → Publishing → Custom domain. `domain_action` never publishes.',
       'First publish to a subdomain requires the Business plan ($16/seat/month). Say so when the user asks to publish/deploy, or if this call returns `plan_not_allowed` (then point them to Settings > Billing to upgrade) — but do not pitch an upgrade when the user only wants to share what you built: the preview URL is public and anyone can open it.',
       'First publish: a subdomain is required. If the user already named a subdomain (e.g. "publish to foo" / "host it at foo.shogo.one"), HONOR IT VERBATIM — pass exactly what they asked for (only lowercased), do not rename, prettify, or substitute your own. Only when the user has NOT specified one should you propose a name (e.g. derived from the app/project name) and CONFIRM it before publishing, since this creates a publicly reachable site. If the tool returns `needs_subdomain`, ask the user to confirm a subdomain, then call again with it.',
@@ -5475,7 +5476,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds and that the scripts/stylesheets it references load — share THAT URL with the user. If it returns `brokenAssets`, the site renders blank: fix the asset paths and republish before telling the user it works.',
       'The runtime auto-recovers from stale bundles on its own (self-healing reload + no-store HTML), so never tell the user to hard-refresh or clear their cache. Distinguish the stable preview URL from the published URL first; if the published site is still stale after ~30s, republish instead of asking the user to refresh.',
       'In a workspace runtime, pass `project_id` for the mounted project to publish. It defaults to the current project, the workspace anchor, or the only attached project.',
-      'Published apps run on Knative and scale past one instance. `publish` deploys the WHOLE app — the built frontend AND its server (`server.tsx` / `custom-routes.ts`) with its database — on Shogo\'s own hosting, with `/api/*` served on the same `{subdomain}.shogo.one` domain (and on custom domains). Shogo hosts and runs all of it, so NEVER suggest or set up an outside host for the API or database (Render, Fly, Railway, Heroku, a VPS), and never propose splitting the app into a static site plus a separately hosted backend. Pass `environment: \"staging\"` to deploy to the optional staging site (`{subdomain}--staging.shogo.one`) for load testing and debugging; `promote` then ships staging\'s exact image to production with no rebuild.',
+      '`publish` deploys the WHOLE app — the built frontend AND its server (`server.tsx` / `custom-routes.ts`) with its database — on Shogo\'s own hosting, with `/api/*` served on the same `{subdomain}.shogo.one` domain (and on custom domains). Shogo runs and operates all of it, so NEVER suggest or set up an outside host for the API or database (Render, Fly, Railway, Heroku, a VPS), and never propose splitting the app into a static site plus a separately hosted backend. Hosting capabilities are per-workspace: read the **Publishing** line in the Account block for replicas, always-on and whether staging exists — never promise more than it says. When it does say staging is available, pass `environment: "staging"` to deploy to `{subdomain}--staging.shogo.one` for load testing and debugging; `promote` then ships staging\'s exact image to production with no rebuild.',
       'For anything other than a deploy — checking replicas/latency/cost, tailing logs, changing scale, rolling back, redeploying, promoting, creating or deleting staging — pass `ops_action` instead of publishing. An ops action NEVER builds or publishes new code. Get the user\'s confirmation before: raising max replicas or size (real money), rollback, promote to production, and deleting an environment.',
       'Custom domains: `domain_action` lists/adds/checks/removes the project\'s own domains and returns every DNS record verbatim. Set `domain_action` and it does NOT publish. Actions: "list", "add" (needs `domain`), "verify", "make_primary", "remove". Only remove a domain when the user explicitly asked to remove it.',
       'Native apps: pass `target: "ios"` / `"android"` (or `"native"` for both) to ship an Expo project to the App Store / Google Play instead of the web. It builds a test app and runs the project\'s Maestro flows first, and only builds for the store if they pass — so a broken flow costs nothing. Paid plans only (`plan_not_allowed` → point to Settings > Billing).',
@@ -12795,13 +12796,103 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
     for (const n of crossWorkspaceToolNames()) disabled.delete(n)
   }
   const memoryOff = config.memoryEnabled === false
-  if (disabled.size === 0 && !memoryOff) return tools
-  const kept = tools.filter((t) => {
+  const gated = applyStandaloneToolGates(tools)
+  if (disabled.size === 0 && !memoryOff) return gated
+  const kept = gated.filter((t) => {
     if (disabled.has(t.name)) return false
     if (memoryOff && t.name.startsWith('memory_')) return false
     return true
   })
-  return kept.length === tools.length ? tools : kept
+  return kept.length === gated.length ? gated : kept
+}
+
+/**
+ * Tools that only work with the Shogo platform behind them: media generation
+ * and transcription (the AI proxy), managed integrations (Composio), channels,
+ * team chat / boards / triggers, cross-project orchestration, publishing and
+ * GitHub. A standalone runtime has no Shogo API, so these cannot do anything.
+ *
+ * They stay in the tool list on purpose — the agent can see them and explain
+ * why they are unavailable — but calling one returns a clear result instead of
+ * dialling a service that does not exist (SHO-418).
+ */
+export const STANDALONE_UNAVAILABLE_TOOLS = new Set<string>([
+  ...IMAGE_TOOL_NAMES,
+  ...MUSIC_TOOL_NAMES,
+  ...THREE_D_TOOL_NAMES,
+  'generate_video',
+  'list_media_models',
+  'transcribe_audio',
+  ...TOOL_GROUP_MAP.messaging,
+  ...TOOL_GROUP_MAP.integrations,
+  ...WORK_TOOL_GROUPS.team_chat,
+  ...WORK_TOOL_GROUPS.boards,
+  ...WORK_TOOL_GROUPS.board_admin,
+  ...WORK_TOOL_GROUPS.triggers,
+  ...WORK_TOOL_GROUPS.problems,
+  'social_media',
+  'notify_user',
+  'share_file',
+  'project_list',
+  'project_create',
+  'project_attach',
+  'project_detach',
+  'project_configure',
+  'capabilities_configure',
+  'project_call',
+  'system_apply',
+  'connect_project',
+  'list_projects',
+  'list_models',
+  'publish',
+  'preview_project',
+  'chat_handoff',
+  'team_create',
+  'team_delete',
+  'team_task_create',
+  'team_task_get',
+  'team_task_list',
+  'team_task_update',
+  'send_team_message',
+  'member_activity',
+  'fetch_chat_files',
+  'team_chat_doc_read',
+  'team_chat_doc_update',
+  'team_chat_question_secret',
+  'github_create_pr',
+  'github_merge_pr',
+  'github_connect',
+  'goal_create',
+  'goal_update',
+  'goal_log',
+  'goal_list',
+  'schedule_create',
+  'schedule_list',
+  'schedule_update',
+  'schedule_delete',
+  'set_status',
+  'agent_profile_get',
+  'agent_profile_set',
+])
+
+/**
+ * Replace the `execute` of every platform-only tool with a clear
+ * "not available in standalone mode" result. No-op off the flag.
+ */
+export function applyStandaloneToolGates(tools: AgentTool[]): AgentTool[] {
+  if (!isStandalone()) return tools
+  return tools.map((tool) => {
+    if (!STANDALONE_UNAVAILABLE_TOOLS.has(tool.name)) return tool
+    return {
+      ...tool,
+      execute: async () =>
+        textResult(
+          `${tool.name} is not available in standalone mode: it needs the Shogo platform, and this ` +
+            `runtime has no Shogo API. Use the local tools instead (exec, read_file, write_file, ` +
+            `edit_file, web, browser).`,
+        ),
+    }
+  })
 }
 
 /**

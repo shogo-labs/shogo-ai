@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Pick who to message: teammates and agents in one searchable list.
+ * Pick who to message: teammates in one searchable list.
  *
- * - Tapping an agent opens the DM straight away (agent DMs are one-to-one).
- * - Teammates are multi-selected and started together, so a group message is
- *   just several people checked.
+ * Teammates are multi-selected and started together, so a group message is
+ * just several people checked. Agents are not here: a chat with an agent is a
+ * project chat, opened from the agent's profile or the agents panel (SHO-412).
  *
  * Rendered inside `NewConversationModal` on wide screens and inside the
  * full-screen `/c/new` route on phones.
@@ -16,11 +16,10 @@ import { Check, Headphones } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { huddleMediaSupported, joinHuddleCall } from '../../lib/huddle-call'
 import { teamChatApi, type ConversationSummary, type Mentionables } from '../../lib/team-chat-api'
-import { AgentAvatar } from './AgentAvatar'
 import { PresenceDot } from './PresenceDot'
 import { UserAvatar } from './UserAvatar'
 
-export type NewMessageFilter = 'all' | 'people' | 'agents'
+export type NewMessageFilter = 'all' | 'people'
 
 export interface NewMessagePickerProps {
   workspaceId: string
@@ -39,7 +38,6 @@ export interface NewMessagePickerProps {
 const FILTERS: Array<{ id: NewMessageFilter; label: string }> = [
   { id: 'all', label: 'All' },
   { id: 'people', label: 'People' },
-  { id: 'agents', label: 'Agents' },
 ]
 
 export function filterRecipients(mentionables: Mentionables | null, me: string | null, query: string) {
@@ -47,13 +45,10 @@ export function filterRecipients(mentionables: Mentionables | null, me: string |
   const all = mentionables?.people ?? []
   const matches = (p: { name: string; email: string }) => !q || p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q)
   const people = all.filter((p) => p.id !== me && matches(p))
-  const agents = (mentionables?.agents ?? []).filter(
-    (a) => !q || a.name.toLowerCase().includes(q) || (a.description ?? '').toLowerCase().includes(q),
-  )
   // Yourself, listed apart from People: it's not a teammate to pick, it's the
   // note-to-self conversation.
   const mine = all.find((p) => p.id === me)
-  return { people, agents, selfRecipient: mine && matches(mine) ? mine : null }
+  return { people, selfRecipient: mine && matches(mine) ? mine : null }
 }
 
 export function NewMessagePicker({
@@ -72,10 +67,8 @@ export function NewMessagePicker({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const { people, agents, selfRecipient } = filterRecipients(mentionables, me, query)
-  const showPeople = filter !== 'agents'
-  const showAgents = filter !== 'people'
-  const showSelf = showPeople && !!selfRecipient
+  const { people, selfRecipient } = filterRecipients(mentionables, me, query)
+  const showSelf = !!selfRecipient
 
   const submit = async (fn: () => Promise<ConversationSummary>) => {
     if (busy) return
@@ -106,7 +99,7 @@ export function NewMessagePicker({
     })
 
   const toggle = (id: string) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))
-  const empty = (!showPeople || (!people.length && !showSelf)) && (!showAgents || !agents.length)
+  const empty = !people.length && !showSelf
 
   return (
     <View className={className} testID="new-message-picker">
@@ -114,9 +107,9 @@ export function NewMessagePicker({
         value={query}
         onChangeText={setQuery}
         autoFocus={autoFocus}
-        placeholder="Search people and agents"
+        placeholder="Search people"
         placeholderTextColor="#8a8a8a"
-        accessibilityLabel="Search people and agents"
+        accessibilityLabel="Search people"
         className="mb-2 rounded-md border border-border px-3 py-2.5 text-base text-foreground"
       />
 
@@ -157,7 +150,7 @@ export function NewMessagePicker({
           </>
         )}
 
-        {showPeople && people.length > 0 && (
+        {people.length > 0 && (
           <>
             {filter === 'all' && <SectionLabel>People</SectionLabel>}
             {people.map((p) => {
@@ -187,31 +180,9 @@ export function NewMessagePicker({
           </>
         )}
 
-        {showAgents && agents.length > 0 && (
-          <>
-            {filter === 'all' && <SectionLabel>Agents</SectionLabel>}
-            {agents.map((a) => (
-              <Pressable
-                key={a.key}
-                accessibilityRole="button"
-                accessibilityLabel={`${a.name}, agent`}
-                disabled={busy}
-                onPress={() => void submit(() => teamChatApi().openAgentDm(workspaceId, a.projectId))}
-                className="min-h-12 flex-row items-center gap-3 rounded-md px-2 py-2 active:bg-muted hover:bg-muted"
-              >
-                <AgentAvatar name={a.name} projectId={a.projectId} workspaceId={workspaceId} iconUrl={a.image} size={26} />
-                <View className="min-w-0 flex-1">
-                  <Text className="text-sm text-foreground" numberOfLines={1}>{a.name}</Text>
-                  {a.description ? <Text className="text-xs text-muted-foreground" numberOfLines={1}>{a.description}</Text> : null}
-                </View>
-              </Pressable>
-            ))}
-          </>
-        )}
-
         {empty && (
           <Text className="px-2 py-4 text-sm text-muted-foreground">
-            {filter === 'agents' ? 'No agents match.' : filter === 'people' ? 'No teammates match.' : 'No people or agents match.'}
+            No teammates match.
           </Text>
         )}
       </ScrollView>

@@ -96,6 +96,9 @@ function LocalLinkBridge() {
 
   const [status, setStatus] = useState<Status>('checking-auth')
   const [error, setError] = useState<string | null>(null)
+  // A held signup (SHO-416) is refused a device key until it verifies. The API
+  // says so in the message; this flag adds the button that gets them there.
+  const [needsVerification, setNeedsVerification] = useState(false)
   const [callbackUrl, setCallbackUrl] = useState<string | null>(null)
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([])
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
@@ -153,6 +156,8 @@ function LocalLinkBridge() {
       console.error('[LocalLink] Failed to mint device key:', err)
       mintedRef.current = false
       setStatus('error')
+      const code = (err as { details?: { error?: { code?: string } } })?.details?.error?.code
+      setNeedsVerification(code === 'email_verification_required')
       setError(
         err instanceof Error
           ? err.message
@@ -339,6 +344,14 @@ function LocalLinkBridge() {
             <Text className="text-sm text-destructive text-center">
               {error || 'Something went wrong.'}
             </Text>
+            {needsVerification && (
+              <Button
+                onPress={() => router.push('/(auth)/verify-email' as any)}
+                className="w-full"
+              >
+                Verify email
+              </Button>
+            )}
             <Button
               variant="outline"
               onPress={() => {
@@ -346,6 +359,7 @@ function LocalLinkBridge() {
                 workspacesLoadedRef.current = false
                 setStatus('checking-auth')
                 setError(null)
+                setNeedsVerification(false)
               }}
               className="w-full"
             >

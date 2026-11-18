@@ -22,6 +22,8 @@ export interface UserType {
   buddyLook?: string
   homeRegion?: string
   emailCanonical?: string
+  firstCapHitAt?: Date
+  firstPreviewSeenAt?: Date
   createdAt: Date
   updatedAt: Date
 }
@@ -39,6 +41,8 @@ export interface UserCreateInput {
   buddyLook?: string
   homeRegion?: string
   emailCanonical?: string
+  firstCapHitAt?: Date
+  firstPreviewSeenAt?: Date
 }
 
 export interface UserUpdateInput {
@@ -54,4 +58,6 @@ export interface UserUpdateInput {
   buddyLook?: string
   homeRegion?: string
   emailCanonical?: string
+  firstCapHitAt?: Date
+  firstPreviewSeenAt?: Date
 }

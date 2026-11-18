@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Team chat home: browse and join channels, start DMs and agent DMs.
+ * Team chat home: browse and join channels, start DMs.
  */
 import { useMemo, useState } from 'react'
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { useRouter } from 'expo-router'
-import { Bot, Hash, Lock, MessageSquarePlus, Plus, Radio, Search } from 'lucide-react-native'
+import { Hash, Lock, MessageSquarePlus, Plus, Radio, Search } from 'lucide-react-native'
 import { useWorkspaceInView } from '../../../hooks/useWorkspaceInView'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { teamChatApi, type ConversationSummary } from '../../../lib/team-chat-api'
@@ -75,7 +75,6 @@ export default function TeamChatHome() {
       <View className="mt-5 flex-row flex-wrap gap-2">
         <ActionButton icon={Plus} label="Create channel" onPress={() => startCreate('channel')} primary />
         <ActionButton icon={MessageSquarePlus} label="New message" onPress={() => startCreate('message')} />
-        <ActionButton icon={Bot} label="Message an agent" onPress={() => startCreate('agent')} />
       </View>
 
       <View className="mt-6 flex-row items-center rounded-md border border-border px-3">

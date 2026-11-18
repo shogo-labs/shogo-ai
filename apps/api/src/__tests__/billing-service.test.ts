@@ -9,6 +9,7 @@
 
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
 import * as realStripePrices from '../config/stripe-prices'
+import * as realUsagePlans from '../config/usage-plans'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 delete process.env.SHOGO_LOCAL_MODE
@@ -23,6 +24,9 @@ let grantsByWs = new Map<string, any[]>()
 let membersByWs = new Map<string, any[]>()
 let usageEvents: any[] = []
 let billingAccountsByWs = new Map<string, any>()
+// SHO-416: the signup trust gate reads these two.
+let assessmentsByUser = new Map<string, any>()
+let usersById = new Map<string, any>()
 
 // Hooks let individual tests inject behavior (errors, etc.)
 let walletUpdateHook: ((args: any) => any) | null = null
@@ -154,13 +158,15 @@ const mockPrisma: any = {
       const all = wsIds.flatMap((id: string) => membersByWs.get(id) ?? [])
       return all.filter((m: any) => (args.where.projectId === null ? m.projectId == null : true))
     },
-    // Per-seat rolling windows live on the Member row (SHO-312).
+    // Per-seat rolling windows live on the Member row (SHO-312). `role` is
+    // honoured so the SHO-416 owner lookup can be exercised.
     findFirst: async (args: any) => {
       const all = membersByWs.get(args.where.workspaceId) ?? []
       return (
         all.find(
           (m: any) =>
-            m.userId === args.where.userId &&
+            (args.where.userId === undefined || m.userId === args.where.userId) &&
+            (args.where.role === undefined || m.role === args.where.role) &&
             (args.where.projectId === null ? m.projectId == null : true),
         ) ?? null
       )
@@ -179,6 +185,13 @@ const mockPrisma: any = {
     // are never any children.
     findUnique: async () => null,
     findMany: async () => [],
+  },
+  // SHO-416: the signup trust gate's two reads.
+  signupRiskAssessment: {
+    findUnique: async (args: any) => assessmentsByUser.get(args.where.userId) ?? null,
+  },
+  user: {
+    findUnique: async (args: any) => usersById.get(args.where.id) ?? null,
   },
   billingAccount: {
     findUnique: async (args: any) => billingAccountsByWs.get(args.where.workspaceId) ?? null,
@@ -201,6 +214,11 @@ const mockPrisma: any = {
 mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))
 
 mock.module('../config/usage-plans', () => ({
+  // Inherit the real module first: this mock exists to pin the numbers the
+  // billing tests assert on, not to enumerate every export. Spreading it means
+  // a new constant (like TRIAL_MAX_SEATS in SHO-422) is inherited instead of
+  // crashing every suite that loads this file.
+  ...realUsagePlans,
   FREE_DAILY_INCLUDED_USD: 1,
   MONTHLY_DAILY_CAP_USD: 30,
   FIVE_HOUR_MS: 5 * 60 * 60 * 1000,
@@ -445,6 +463,7 @@ class FakeStripe {
 mock.module('stripe', () => ({ default: FakeStripe }))
 
 const billing = await import('../services/billing.service')
+const { _clearSignupTrustCacheForTests } = await import('../lib/signup-trust')
 
 beforeEach(() => {
   walletByWs.clear()
@@ -452,6 +471,9 @@ beforeEach(() => {
   grantsByWs.clear()
   membersByWs.clear()
   billingAccountsByWs.clear()
+  assessmentsByUser.clear()
+  usersById.clear()
+  _clearSignupTrustCacheForTests()
   usageEvents = []
   stripeCalls.length = 0
   walletUpdateHook = null
@@ -1849,5 +1871,105 @@ describe('setUsageBasedPricing', () => {
     expect(w.overageEnabled).toBe(false)
     expect(w.overageHardLimitUsd).toBeNull()
     expect(w.monthlyIncludedUsd).toBe(20)
+  })
+})
+
+// ────────────────────────────────────────────────────────────────────
+// SHO-416 — a held signup gets no free allowance
+// ────────────────────────────────────────────────────────────────────
+
+describe('SHO-416 signup trust hold', () => {
+  const HIGH = { band: 'high', reviewDecision: null, signals: { provider: 'credential' } }
+
+  /** A free-plan wallet with plenty of room — the farm's shape. */
+  function seedFreeWithRoom(ws: string) {
+    seedWallet(ws, { dailyIncludedUsd: 1, monthlyIncludedUsd: 0 })
+  }
+
+  test('checkUsageBalance refuses a held caller even with the whole window free', async () => {
+    seedFreeWithRoom('ws-held')
+    assessmentsByUser.set('user-held', HIGH)
+    usersById.set('user-held', { emailVerified: false })
+
+    const res = await billing.checkUsageBalance('ws-held', 0.001, 'user-held')
+    expect(res).toEqual({ ok: false, reason: 'email_verification_required' })
+  })
+
+  test('checkUsageBalance refuses a clean caller on a wallet whose owner is held', async () => {
+    seedFreeWithRoom('ws-owned')
+    membersByWs.set('ws-owned', [
+      { id: 'mem-owner', userId: 'user-owner', workspaceId: 'ws-owned', projectId: null, role: 'owner' },
+    ])
+    assessmentsByUser.set('user-owner', HIGH)
+    usersById.set('user-owner', { emailVerified: false })
+
+    const res = await billing.checkUsageBalance('ws-owned', 0.001, 'user-clean')
+    expect(res).toEqual({ ok: false, reason: 'email_verification_required' })
+  })
+
+  test('consumeUsage refuses a held caller and writes no usage row', async () => {
+    seedFreeWithRoom('ws-held')
+    assessmentsByUser.set('user-held', HIGH)
+    usersById.set('user-held', { emailVerified: false })
+
+    const res = await billing.consumeUsage({
+      workspaceId: 'ws-held', projectId: null, memberId: 'user-held',
+      actionType: 'chat', billedUsd: 0.01,
+    })
+    expect(res.success).toBe(false)
+    expect(res.reason).toBe('email_verification_required')
+    expect(res.error).toContain('Verify your email')
+    expect(usageEvents.length).toBe(0)
+    expect(walletByWs.get('ws-held').weeklyUsedUsd ?? 0).toBe(0)
+  })
+
+  test('a verified-but-still-clustered account is refused with account_review_required', async () => {
+    seedFreeWithRoom('ws-held')
+    assessmentsByUser.set('user-held', HIGH)
+    usersById.set('user-held', { emailVerified: true })
+
+    const res = await billing.consumeUsage({
+      workspaceId: 'ws-held', projectId: null, memberId: 'user-held',
+      actionType: 'chat', billedUsd: 0.01,
+    })
+    expect(res.success).toBe(false)
+    expect(res.reason).toBe('account_review_required')
+  })
+
+  test('a paid tier is never held', async () => {
+    seedWallet('ws-paid')
+    subsByWs.set('ws-paid', [
+      { id: 's-paid', workspaceId: 'ws-paid', status: 'active', planId: 'pro', seats: 1, stripeCustomerId: 'cus_1' },
+    ])
+    assessmentsByUser.set('user-held', HIGH)
+    usersById.set('user-held', { emailVerified: false })
+
+    expect((await billing.checkUsageBalance('ws-paid', 0.001, 'user-held')).ok).toBe(true)
+    const res = await billing.consumeUsage({
+      workspaceId: 'ws-paid', projectId: null, memberId: 'user-held',
+      actionType: 'chat', billedUsd: 0.01,
+    })
+    expect(res.success).toBe(true)
+  })
+
+  test('a low-band account keeps its free allowance', async () => {
+    seedFreeWithRoom('ws-low')
+    assessmentsByUser.set('user-low', { band: 'low', reviewDecision: null, signals: { provider: 'credential' } })
+    usersById.set('user-low', { emailVerified: false })
+
+    expect((await billing.checkUsageBalance('ws-low', 0.001, 'user-low')).ok).toBe(true)
+    const res = await billing.consumeUsage({
+      workspaceId: 'ws-low', projectId: null, memberId: 'user-low',
+      actionType: 'chat', billedUsd: 0.01,
+    })
+    expect(res.success).toBe(true)
+  })
+
+  test('an admin approval releases the hold', async () => {
+    seedFreeWithRoom('ws-held')
+    assessmentsByUser.set('user-held', { ...HIGH, reviewDecision: 'approved' })
+    usersById.set('user-held', { emailVerified: false })
+
+    expect((await billing.checkUsageBalance('ws-held', 0.001, 'user-held')).ok).toBe(true)
   })
 })

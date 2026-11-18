@@ -9,6 +9,7 @@ import { auth } from '../auth'
 import { authMiddleware, requireAuth, requireProjectAccess, isProjectReservedTopLevelPath } from '../middleware/auth'
 import { rateLimiter } from '../middleware/rate-limit'
 import { deployedAppVersionOrUnknown } from '../lib/app-version'
+import { toNativeAuthHandback } from '../lib/auth-handback'
 import type { ApiProfile } from './profile'
 
 export interface CreateAppOptions {
@@ -77,7 +78,7 @@ export function createApp(options: CreateAppOptions): Hono {
     skipPrefixes: ['/api/ai/', '/api/health', '/api/local/'],
   }))
   app.use('/api/*', authMiddleware)
-  app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
+  app.on(['GET', 'POST'], '/api/auth/*', async (c) => toNativeAuthHandback(await auth.handler(c.req.raw)))
   app.use('/api/*', async (c, next) => {
     const path = new URL(c.req.url).pathname
     if (publicPrefixes.some((prefix) => path.startsWith(prefix))) return next()

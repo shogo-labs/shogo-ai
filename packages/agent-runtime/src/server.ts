@@ -105,6 +105,9 @@ import {
   checkGitUsable,
   type CloudSyncMode,
   wrapSseStreamWithKeepalive,
+  assertStandaloneEnv,
+  isStandalone,
+  pinnedAgentModel,
 } from '@shogo/shared-runtime'
 import { traceStream } from '@shogo/shared-runtime/stream-trace'
 import {
@@ -271,6 +274,20 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 // =============================================================================
 // Configuration
 // =============================================================================
+
+// Standalone mode (`SHOGO_STANDALONE=1`): a partner runs this runtime on its own
+// cluster with no Shogo API behind it. Validate the contract before anything
+// else reads the env, so a misconfigured pod fails once with one message naming
+// every missing variable instead of booting into a half-working state.
+if (isStandalone()) {
+  assertStandaloneEnv()
+  if (!process.env.PROJECT_ID) process.env.PROJECT_ID = 'standalone'
+  const pin = pinnedAgentModel()
+  console.log(
+    `[agent-runtime] standalone mode: no Shogo API, model pinned to ${pin?.provider}:${pin?.id}, ` +
+      `project=${process.env.PROJECT_ID}`,
+  )
+}
 
 let WORKSPACE_DIR = process.env.WORKSPACE_DIR || process.env.AGENT_DIR || process.env.PROJECT_DIR || '/app/workspace'
 if (applyGitSafeDirectoryEnv()) {
@@ -6240,6 +6257,7 @@ import {
   CANVAS_BRIDGE_URL,
   loadCanvasBridgeSource,
 } from './canvas-bridge'
+import { injectPreviewBasePath, previewBasePath, stripPreviewBasePath } from './preview-base-path'
 
 const CANVAS_BRIDGE_SOURCE = loadCanvasBridgeSource()
 
@@ -6275,6 +6293,15 @@ function injectCanvasBridge(html: string): string {
     return html.slice(0, htmlClose) + CANVAS_BRIDGE_SCRIPT_TAG + html.slice(htmlClose)
   }
   return html + CANVAS_BRIDGE_SCRIPT_TAG
+}
+
+/**
+ * Every HTML document the runtime serves goes through here: the canvas bridge
+ * (appended before `</body>`) and, when `PREVIEW_BASE_PATH` is set, the
+ * base-path shim (injected into `<head>` so it runs before any app script).
+ */
+function injectRuntimeHtml(html: string): string {
+  return injectPreviewBasePath(injectCanvasBridge(html), previewBasePath())
 }
 
 // =============================================================================
@@ -6886,7 +6913,7 @@ function serveDistResponse(
     const ext = extname(resolvedFile).toLowerCase()
     const mime = STATIC_MIME[ext] || 'application/octet-stream'
     if (ext === '.html') {
-      const html = injectCanvasBridge(readFileSync(resolvedFile, 'utf-8'))
+      const html = injectRuntimeHtml(readFileSync(resolvedFile, 'utf-8'))
       return new Response(html, {
         headers: {
           'Content-Type': mime,
@@ -6924,7 +6951,7 @@ function serveDistResponse(
   // SPA fallback
   const indexPath = join(distDir, 'index.html')
   if (existsSync(indexPath)) {
-    const html = injectCanvasBridge(readFileSync(indexPath, 'utf-8'))
+    const html = injectRuntimeHtml(readFileSync(indexPath, 'utf-8'))
     return new Response(html, {
       headers: {
         'Content-Type': 'text/html',
@@ -8186,6 +8213,18 @@ export default {
   port: PORT,
   hostname: HOST,
   fetch: async (req: Request, server: any) => {
+    // `PREVIEW_BASE_PATH`: accept requests that still carry the prefix, so the
+    // runtime works whether or not the ingress strips it. Rewriting here (the
+    // one entry point) covers `/api/*`, assets and SPA routes at once.
+    const base = previewBasePath()
+    if (base) {
+      const incoming = new URL(req.url)
+      const stripped = stripPreviewBasePath(incoming.pathname, base)
+      if (stripped !== null) {
+        incoming.pathname = stripped
+        req = new Request(incoming.toString(), req)
+      }
+    }
     const url = new URL(req.url)
     // Hot-path bypass for /health: respond directly without going through
     // Hono's router. On Windows we observed a ~7s freeze during Bun's

@@ -1449,7 +1449,8 @@ describe('deriveApiUrl fallback paths (L311-319)', () => {
 
   test('L319: namespace fallback — uses shogo-system when no URL env vars', async () => {
     const { app } = await buildApp({
-      env: { SHOGO_API_URL: undefined, API_URL: undefined, AI_PROXY_URL: undefined },
+      // The ClusterIP fallback only applies inside a cluster (SHO-418).
+      env: { SHOGO_API_URL: undefined, API_URL: undefined, AI_PROXY_URL: undefined, KUBERNETES_SERVICE_HOST: '10.0.0.1' },
     })
     fetchImpl = async () => ({
       ok: true, status: 200,
@@ -1571,6 +1572,10 @@ describe('deriveApiUrl invalid AI_PROXY_URL (L317)', () => {
         API_URL: undefined,
         AI_PROXY_URL: 'not-a-valid-url!!!',
         AI_PROXY_TOKEN: 'test-proxy-token',
+        // The ClusterIP fallback only applies inside a cluster (SHO-418): the
+        // name cannot resolve anywhere else, so the resolver returns null
+        // there instead of handing callers an ENOTFOUND.
+        KUBERNETES_SERVICE_HOST: '10.0.0.1',
       },
     })
     fetchImpl = async () => ({

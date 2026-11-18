@@ -75,6 +75,7 @@ import {
   type IDomainStore,
 } from "../../contexts/domain";
 import { useDomainActions } from "@shogo/shared-app/domain";
+import { formatApiError } from "@shogo/shared-app/chat";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { usePooledWorkspaceCreation } from "../../hooks/usePooledWorkspaceCreation";
@@ -3119,9 +3120,9 @@ function InviteMembersModal({
       setRole("member");
       onClose();
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to send invitation"
-      );
+      // The API's refusal (e.g. `trial_seat_limit`) is the only thing that
+      // explains why the invite did not go out.
+      setError(formatApiError(err));
     } finally {
       setIsSubmitting(false);
     }

@@ -2164,61 +2164,6 @@ describe('agent profile links', () => {
   })
 })
 
-describe('ConversationHeader agent DMs', () => {
-  const dm = (projectId: string | null, overrides: Record<string, unknown> = {}): any => ({
-    id: 'dm1', workspaceId: 'ws', kind: 'dm', name: null, slug: null, topic: null, lastSeq: 0, lastMessageAt: null,
-    archivedAt: null, createdAt: '2026-09-29T10:00:00.000Z', joined: true, starred: false, muted: false, notifyLevel: 'default',
-    lastReadSeq: 0, canPost: true, canReply: true, canManage: false,
-    members: [
-      { id: 'm1', type: 'user', userId: 'u-me', name: 'Me' },
-      { id: 'm2', type: 'agent', projectId, name: 'Billing Bot', agentTrigger: 'mention' },
-    ],
-    ...overrides,
-  })
-  const header = (conversation: any, extra: Record<string, unknown> = {}) =>
-    render(<ConversationHeader conversation={conversation} mentionables={null} me="u-me" onChanged={() => {}} onLeft={() => {}} {...extra} />)
-
-  test('a project agent DM links to the profile and project, and the side panel when there is room', () => {
-    routed.length = 0
-    const pane = mock(() => {})
-    header(dm('proj-1'), { onOpenProjectPane: pane })
-    expect(shims('buddy').length).toBeGreaterThan(0)
-    fireEvent.click(screen.getByLabelText('Open project'))
-    fireEvent.click(screen.getByLabelText('View profile'))
-    fireEvent.click(screen.getByLabelText('Show in side panel'))
-    expect(routed).toEqual([
-      { pathname: '/(app)/projects/[id]', params: { id: 'proj-1' } },
-      { pathname: '/(app)/agents/[key]', params: { key: 'proj-1' } },
-    ])
-    expect(pane).toHaveBeenCalledWith('proj-1', 'Billing Bot')
-  })
-
-  test('no side panel action without a handler', () => {
-    header(dm('proj-1'))
-    expect(screen.getByLabelText('Open project')).toBeTruthy()
-    expect(screen.queryByLabelText('Show in side panel')).toBeNull()
-  })
-
-  test('the workspace agent has a profile but no project; people DMs have neither', () => {
-    header(dm(null), { onOpenProjectPane: mock(() => {}) })
-    expect(screen.getByLabelText('View profile')).toBeTruthy()
-    expect(screen.queryByLabelText('Open project')).toBeNull()
-    expect(screen.queryByLabelText('Show in side panel')).toBeNull()
-    cleanup()
-
-    header(dm('proj-1', { members: [{ id: 'm1', type: 'user', userId: 'u-me', name: 'Me' }, { id: 'm3', type: 'user', userId: 'u-ana', name: 'Ana' }] }), { onOpenProjectPane: mock(() => {}) })
-    expect(screen.queryByLabelText('View profile')).toBeNull()
-    expect(screen.queryByLabelText('Open project')).toBeNull()
-  })
-
-  test('the phone header puts Open project beside Catch me up', () => {
-    routed.length = 0
-    header(dm('proj-1'), { floating: true, onBack: () => {} })
-    fireEvent.click(screen.getAllByLabelText('Open project')[0])
-    expect(routed).toEqual([{ pathname: '/(app)/projects/[id]', params: { id: 'proj-1' } }])
-  })
-})
-
 describe('#activity filters', () => {
   test('picking agents hides every other agent\'s lines', () => {
     activityTimeline.messages = [

@@ -208,11 +208,9 @@ describe('agent file routes', () => {
     expect(json.files[0].url).toBeUndefined()
   })
 
-  test('scopes to one conversation by slug, #slug, id or @person', async () => {
+  test('scopes to one conversation by slug, #slug or id', async () => {
     expect(names((await agent('/files?conversation=%23money')).json.files)).toEqual(['q3-revenue.csv'])
     expect(names((await agent(`/files?conversation=${agentDmId}`)).json.files)).toEqual(['brief.txt'])
-    const ownerEmail = (await db.user.findUnique({ where: { id: seed.owner } })).email
-    expect(names((await agent(`/files?conversation=${encodeURIComponent(`@${ownerEmail}`)}`)).json.files)).toEqual(['brief.txt'])
   })
 
   test('conversations it can’t see are not found', async () => {

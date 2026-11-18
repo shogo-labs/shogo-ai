@@ -128,7 +128,12 @@ mock.module('../signup-risk.service', () => ({
   recordSignupRiskAssessment: async (params: { userId: string; decision?: string; result: any }) => {
     recorded.push({ userId: params.userId, decision: params.decision ?? params.result.decision })
     const a = assessments.get(params.userId)
-    if (a) a.decision = params.decision ?? params.result.decision
+    if (a) {
+      a.decision = params.decision ?? params.result.decision
+      // The real writer stores the new band/score; the trust hold reads them.
+      a.band = params.result.band
+      a.score = params.result.score
+    }
   },
 }))
 
@@ -282,6 +287,54 @@ describe('releaseSignupCreditOnVerification', () => {
   test('no assessment row: nothing happens', async () => {
     const out = await credit.releaseSignupCreditOnVerification({ userId: 'u-1' })
     expect(out).toEqual({ released: false, reason: 'no_assessment' })
+  })
+
+  // ─── SHO-416: a high-band account is re-scored on verification ───────────
+  // It was never credit-eligible (`no_credit`), so the re-score exists only to
+  // lift — or confirm — the trust hold. Credit must not move either way.
+
+  function seedHighBand() {
+    const high = scoreSignupRisk({ ...CLEAN, ipLinkedAccounts: 3, burstSignups: 1, emailVerified: false })
+    expect(high.band).toBe('high')
+    assessments.set('u-1', {
+      userId: 'u-1',
+      decision: CREDIT_DECISIONS.none,
+      band: 'high',
+      score: high.score,
+      signals: { provider: 'credential', allowlisted: false },
+      ip: '203.0.113.9',
+      ipPrefix: null,
+      deviceId: null,
+      emailCanonical: 'alice@company.io',
+      country: 'US',
+    })
+  }
+
+  test('a high-band account that re-scores below high lifts the hold and grants no credit', async () => {
+    seedHighBand()
+    riskState.features = { ...CLEAN }
+
+    const out = await credit.releaseSignupCreditOnVerification({ userId: 'u-1' })
+    expect(out.released).toBe(false)
+    expect(out.reason).toBe('rescored_below_high')
+    expect(out.band).not.toBe('high')
+    // The band is recorded, so the trust hold now resolves to null.
+    expect(assessments.get('u-1')!.band).not.toBe('high')
+    // Credit rules are unchanged: still `no_credit`, no wallet write.
+    expect(assessments.get('u-1')!.decision).toBe(CREDIT_DECISIONS.none)
+    expect(wallets.get('ws-1')?.promoCreditUsd ?? 0).toBe(0)
+  })
+
+  test('a high-band account that stays high keeps the hold and grants no credit', async () => {
+    seedHighBand()
+    riskState.features = { ...CLEAN, ipLinkedAccounts: 3, burstSignups: 1 }
+
+    const out = await credit.releaseSignupCreditOnVerification({ userId: 'u-1' })
+    expect(out.released).toBe(false)
+    expect(out.reason).toBe('rescored_high_risk')
+    expect(assessments.get('u-1')!.band).toBe('high')
+    expect(assessments.get('u-1')!.decision).toBe(CREDIT_DECISIONS.none)
+    expect(wallets.get('ws-1')?.promoCreditUsd ?? 0).toBe(0)
   })
 })
 

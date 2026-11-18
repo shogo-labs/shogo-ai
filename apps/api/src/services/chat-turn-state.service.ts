@@ -33,6 +33,12 @@ export type ActiveChatTurn = {
   projectName: string | null
   projectHidden: boolean
   startedAt: Date
+  /** The agent running this turn: the project agent, or the workspace agent. */
+  agentName?: string
+  /** The card whose thread the reply is posted in, when the thread is one. */
+  card?: { key: string; title: string }
+  /** False when the viewer may not stop this reply (a workspace viewer). */
+  canStop?: boolean
   /** Present when the turn is an agent reply posted into team chat. */
   conversationId?: string
   threadRootId?: string | null
@@ -375,7 +381,7 @@ export async function sweepDeadTurnsOnLocalBoot(): Promise<number> {
  */
 export async function listActiveChatTurns(
   workspaceId: string,
-  opts: { staleAfterMs?: number } = {},
+  opts: { staleAfterMs?: number; viewerUserId?: string } = {},
 ): Promise<ActiveChatTurn[]> {
   const staleAfterMs = opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS
   const heartbeatAfter = new Date(Date.now() - staleAfterMs)
@@ -408,9 +414,20 @@ export async function listActiveChatTurns(
 
   const live = sessions.filter((session) => session.activeTurnId && session.activeTurnStartedAt)
   const replies = await conversationReplies(live.map((session) => session.id))
+  // Everything a row needs beyond the session itself, in a fixed number of
+  // queries however many runs are live: the cards behind their threads, the
+  // workspace agent's name (only chats with no project show it) and whether
+  // this viewer may stop them.
+  const [cards, workspaceAgentName, viewerRole] = await Promise.all([
+    cardsForThreads([...replies.values()].map((reply) => reply.threadRootId)),
+    live.some((session) => !session.project) ? workspaceAgentNameFor(workspaceId) : null,
+    opts.viewerUserId ? viewerRoleFor(workspaceId, opts.viewerUserId) : null,
+  ])
+  const canStop = viewerRole === null ? undefined : viewerRole !== 'viewer'
 
   return live.map((session) => {
     const reply = replies.get(session.id)
+    const card = reply?.threadRootId ? cards.get(reply.threadRootId) : undefined
     return {
       chatSessionId: session.id,
       turnId: session.activeTurnId!,
@@ -420,6 +437,9 @@ export async function listActiveChatTurns(
       projectName: session.project?.name ?? null,
       projectHidden: session.project?.hidden ?? false,
       startedAt: session.activeTurnStartedAt!,
+      ...(session.project?.name || workspaceAgentName ? { agentName: session.project?.name ?? workspaceAgentName! } : {}),
+      ...(card ? { card } : {}),
+      ...(canStop === undefined ? {} : { canStop }),
       ...(reply
         ? {
             conversationId: reply.conversationId,
@@ -431,6 +451,43 @@ export async function listActiveChatTurns(
         : {}),
     }
   })
+}
+
+/**
+ * The card each reply thread belongs to, in one query for every live reply.
+ * A thread with more than one card (a reopened or split card) reads as its
+ * newest one.
+ */
+async function cardsForThreads(threadRootIds: Array<string | null>): Promise<Map<string, { key: string; title: string }>> {
+  const roots = [...new Set(threadRootIds.filter((id): id is string => !!id))]
+  const byRoot = new Map<string, { key: string; title: string }>()
+  if (!roots.length) return byRoot
+  const rows = await prisma.workItem.findMany({
+    where: { threadRootMessageId: { in: roots } },
+    select: { threadRootMessageId: true, key: true, title: true },
+    orderBy: { createdAt: 'desc' },
+  })
+  for (const row of rows) {
+    if (!row.threadRootMessageId || byRoot.has(row.threadRootMessageId)) continue
+    byRoot.set(row.threadRootMessageId, { key: row.key, title: row.title })
+  }
+  return byRoot
+}
+
+/** The workspace agent's own name, for the turns whose agent has no project. */
+async function workspaceAgentNameFor(workspaceId: string): Promise<string> {
+  const profile = await prisma.workspaceAgentProfile
+    .findUnique({ where: { workspaceId }, select: { name: true } })
+    .catch(() => null)
+  return profile?.name || 'Shogo'
+}
+
+/** The viewer's workspace role: a viewer may read a channel but not stop its agents. */
+async function viewerRoleFor(workspaceId: string, userId: string): Promise<string | null> {
+  const member = await prisma.member
+    .findFirst({ where: { workspaceId, userId, projectId: null }, select: { role: true } })
+    .catch(() => null)
+  return member?.role ?? null
 }
 
 /**

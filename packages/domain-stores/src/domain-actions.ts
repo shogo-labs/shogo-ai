@@ -259,16 +259,20 @@ export function createDomainActions(store: IDomainStore) {
         throw new Error("Invitation not found")
       }
 
-      await store.invitationCollection.update(invitationId, {
-        status: "accepted",
-      })
-
+      // Create the membership first, then consume the invitation. A refused
+      // join (409 `trial_seat_limit`, SHO-422) must leave the invitation
+      // pending: flipping it to accepted before the member exists burns the
+      // invitee's only link and blocks the retry the error message asks for.
       await store.memberCollection.create({
         userId,
         workspaceId: data.workspaceId,
         role: data.role as any,
         isBillingAdmin: false,
         ...(data.projectId ? { projectId: data.projectId } : {}),
+      })
+
+      await store.invitationCollection.update(invitationId, {
+        status: "accepted",
       })
 
       return data

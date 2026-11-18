@@ -311,10 +311,13 @@ describe('what the session stores for a dispatch', () => {
     expect(saved.text).toBe(prompts.filter((p) => p.sessionId === first.agentSessionId)[1]?.prompt)
   })
 
-  test('an agent direct message has no channel name and no thread', async () => {
-    const opened = await call(seed.member, 'POST', `/workspaces/${seed.workspaceId}/dms`, { agent: { projectId: builder } })
-    expect(opened.status).toBe(200)
-    const id = opened.json.conversation.id as string
+  test('a legacy agent direct message has no channel name and no thread', async () => {
+    // The agent-DM surface is gone (SHO-412): a DM row can still exist until the
+    // boot-time migration moves it into a project chat, and its dispatch payload
+    // must stay the same until then.
+    const service = await import('../services/conversation.service')
+    const dm = await service.openAgentConversation(seed.workspaceId, seed.member, { projectId: builder })
+    const id = dm.id as string
     const posted = await call(seed.member, 'POST', `/conversations/${id}/messages`, { text: 'hello there' })
     const reply = await waitFor(async () => {
       const row = await db.conversationMessage.findFirst({

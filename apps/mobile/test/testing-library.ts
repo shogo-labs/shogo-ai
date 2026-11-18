@@ -66,6 +66,15 @@ mock.module(require.resolve('lucide-react-native'), () => lucideStub)
 // all.
 mock.module('react-native-svg', () => svgStub)
 
+// `@sentry/react-native` cannot be evaluated under happy-dom: its graph reaches
+// Flow-typed React Native internals and evaluates `Easing.in(Easing.quad)` at
+// load time. `contexts/auth.tsx` reports auth failures to Sentry (SHO-414) and
+// is reachable from `hooks/useWorkspaceUser`, so an unstubbed copy failed every
+// suite whose graph touched auth. Tests that assert on a report override this
+// with their own spy.
+import * as sentryStub from './stubs/sentry-react-native'
+mock.module('@sentry/react-native', () => sentryStub)
+
 // `expo-secure-store` and the better-auth Expo plugin trigger native
 // module resolution at module-load time. Tests don't exercise auth, so
 // stub them out to avoid pulling in `expo-modules-core` etc.

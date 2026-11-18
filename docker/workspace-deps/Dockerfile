@@ -48,10 +48,14 @@ RUN set -eu; \
 # git for fetch-external-skills.ts. Even on ARM-native runners, some
 # packages (e.g. better-sqlite3 for non-aligned bun versions) still build
 # from source.
+# node-gyp is pinned: Debian trixie's `nodejs` is 20.19.2, and node-gyp 13.x
+# requires ^22.22.2 || ^24.15.0 || >=26.0.0 — an unpinned install pulls 13.1 on
+# a cold build and crashes better-sqlite3's install ("reading 'bind'" in
+# undici). 12.4.0 is the newest release whose engines.node accepts 20.19.2.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         python3 make g++ nodejs npm git curl ca-certificates && \
-    npm install -g node-gyp && \
+    npm install -g node-gyp@12.4.0 && \
     rm -rf /var/lib/apt/lists/*
 
 # Match downstream uid 1001 ownership so COPY --from=workspace-deps preserves

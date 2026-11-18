@@ -38,6 +38,7 @@ import {
 import { verifyRuntimeToken } from '../lib/runtime-token'
 import { resolveApiKey } from './api-keys'
 import { resolveApiKeyForRequest } from '../lib/api-key-request'
+import { getSignupTrustHold, SignupTrustHoldError } from '../lib/signup-trust'
 import { getDbRoutingConfigSync, getMergedModelEntrySync, type ModelUpstreamFallback } from '../services/model-registry.service'
 import {
   allowedAutoTiers,
@@ -4650,6 +4651,11 @@ export function aiProxyRoutes() {
         deviceAppVersion ? { deviceAppVersion } : undefined,
       )
       if (!resolved) return null
+      // A key minted before the trust gate still stops working while its user
+      // is held (SHO-416). Thrown, not `null`: a held key is not a bad
+      // credential, and the client needs the code to show a verify CTA.
+      const hold = await getSignupTrustHold(resolved.userId)
+      if (hold) throw new SignupTrustHoldError(hold)
       return {
         projectId: 'api-key',
         workspaceId: resolved.workspaceId,
@@ -5642,6 +5648,9 @@ export function aiProxyRoutes() {
         deviceAppVersion ? { deviceAppVersion } : undefined,
       )
       if (!resolved) return null
+      // Same trust gate as the OpenAI-compatible path (SHO-416).
+      const hold = await getSignupTrustHold(resolved.userId)
+      if (hold) throw new SignupTrustHoldError(hold)
       return {
         projectId: 'api-key',
         workspaceId: resolved.workspaceId,

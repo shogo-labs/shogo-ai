@@ -11,6 +11,9 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import type { AuthClient } from './client'
 import { signupFetchOptions } from './signup-device-id'
+import { EmailNotVerifiedError, shouldReportAuthError, toAuthRequestError } from './auth-error'
+
+export { EmailNotVerifiedError } from './auth-error'
 
 export interface AuthUser {
   id: string
@@ -22,13 +25,6 @@ export interface AuthUser {
 
 export interface SignUpResult {
   requiresVerification: boolean
-}
-
-export class EmailNotVerifiedError extends Error {
-  constructor(message = 'Email is not verified') {
-    super(message)
-    this.name = 'EmailNotVerifiedError'
-  }
 }
 
 export interface AuthContextValue {
@@ -101,9 +97,28 @@ function getFrontendOrigin(): string {
   return ''
 }
 
+/** Which sign-in path failed, and at which step. */
+export interface AuthErrorContext {
+  provider: 'google' | 'apple' | 'email'
+  /**
+   * `sign_in` / `sign_up`: the provider call itself failed.
+   * `session_missing`: the provider call reported success but the session
+   * cookie never made it to the device, so `getSession()` still has no user.
+   * That case used to be silent — it is the one that hid SHO-414.
+   */
+  stage: 'sign_in' | 'sign_up' | 'session_missing'
+}
+
 export interface AuthProviderProps {
   authClient: AuthClient
   children: ReactNode
+  /**
+   * Called for every auth failure, including the silent ones. The provider
+   * stays free of any error-reporting dependency; the host app decides what to
+   * do with it (the mobile app forwards it to Sentry). Never receives
+   * passwords, tokens or cookie values.
+   */
+  onAuthError?: (error: unknown, context: AuthErrorContext) => void
   /**
    * Called after a successful sign-out, before `user` is cleared. Use this
    * to clear any app-local, non-user-scoped caches (e.g. a persisted
@@ -114,7 +129,7 @@ export interface AuthProviderProps {
   onSignOut?: () => void
 }
 
-export function AuthProvider({ authClient, children, onSignOut }: AuthProviderProps) {
+export function AuthProvider({ authClient, children, onSignOut, onAuthError }: AuthProviderProps) {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -140,18 +155,23 @@ export function AuthProvider({ authClient, children, onSignOut }: AuthProviderPr
         if (err.status === 403) {
           throw new EmailNotVerifiedError(err.message || 'Email is not verified')
         }
-        throw new Error(err.message || 'Sign in failed')
+        throw toAuthRequestError(err, 'Sign in failed')
       }
       if (data?.user) setUser(data.user as AuthUser)
     } catch (e: any) {
       if (e instanceof EmailNotVerifiedError) throw e
       const msg = e.message || 'Sign in failed'
       setError(msg)
+      // A wrong password (401) or any other expected rejection is the API
+      // working as designed — only faults and network failures reach Sentry.
+      if (shouldReportAuthError(e)) {
+        onAuthError?.(e, { provider: 'email', stage: 'sign_in' })
+      }
       throw e
     } finally {
       setIsLoading(false)
     }
-  }, [authClient])
+  }, [authClient, onAuthError])
 
   const handleSignUp = useCallback(async (
     name: string,
@@ -169,7 +189,7 @@ export function AuthProvider({ authClient, children, onSignOut }: AuthProviderPr
         name, email, password,
         callbackURL,
       }, signupFetchOptions())
-      if (err) throw new Error(err.message || 'Sign up failed')
+      if (err) throw toAuthRequestError(err, 'Sign up failed')
       const hasSession = !!(data as any)?.session || !!(data as any)?.token
       if (hasSession && data?.user) {
         setUser(data.user as AuthUser)
@@ -178,11 +198,16 @@ export function AuthProvider({ authClient, children, onSignOut }: AuthProviderPr
     } catch (e: any) {
       const msg = e.message || 'Sign up failed'
       setError(msg)
+      // A blocked throwaway domain (422 SIGNUP_BLOCKED) or an existing account
+      // is an expected answer the form shows — not something to report.
+      if (shouldReportAuthError(e)) {
+        onAuthError?.(e, { provider: 'email', stage: 'sign_up' })
+      }
       throw e
     } finally {
       setIsLoading(false)
     }
-  }, [authClient])
+  }, [authClient, onAuthError])
 
   const handleSignInWithGoogle = useCallback(async (opts?: { callbackURL?: string }) => {
     setError(null)
@@ -204,6 +229,7 @@ export function AuthProvider({ authClient, children, onSignOut }: AuthProviderPr
       if (result?.error) {
         console.error('[Auth] Google sign-in error:', result.error)
         setError(result.error.message || 'Google sign-in failed')
+        onAuthError?.(result.error, { provider: 'google', stage: 'sign_in' })
         return
       }
       if (result?.data?.user) {
@@ -213,12 +239,22 @@ export function AuthProvider({ authClient, children, onSignOut }: AuthProviderPr
       // Fallback: re-fetch session (expo plugin stores token in SecureStore
       // but the promise may not return user data directly)
       const { data } = await authClient.getSession()
-      if (data?.user) setUser(data.user as AuthUser)
+      if (data?.user) {
+        setUser(data.user as AuthUser)
+        return
+      }
+      // The provider round trip reported success but no session reached the
+      // device. Nothing throws here, so without this the failure is invisible.
+      onAuthError?.(
+        new Error('Google sign-in completed without a session'),
+        { provider: 'google', stage: 'session_missing' },
+      )
     } catch (e: any) {
       console.error('[Auth] Google sign-in exception:', e)
       setError(e.message || 'Google sign-in failed')
+      onAuthError?.(e, { provider: 'google', stage: 'sign_in' })
     }
-  }, [authClient])
+  }, [authClient, onAuthError])
 
   const handleSignInWithApple = useCallback(async ({ idToken, nonce }: { idToken: string; nonce?: string }) => {
     setError(null)
@@ -235,6 +271,7 @@ export function AuthProvider({ authClient, children, onSignOut }: AuthProviderPr
       if (result?.error) {
         const msg = result.error.message || 'Apple sign-in failed'
         setError(msg)
+        onAuthError?.(result.error, { provider: 'apple', stage: 'sign_in' })
         throw new Error(msg)
       }
       if (result?.data?.user) {
@@ -242,14 +279,22 @@ export function AuthProvider({ authClient, children, onSignOut }: AuthProviderPr
         return
       }
       const { data } = await authClient.getSession()
-      if (data?.user) setUser(data.user as AuthUser)
+      if (data?.user) {
+        setUser(data.user as AuthUser)
+        return
+      }
+      onAuthError?.(
+        new Error('Apple sign-in completed without a session'),
+        { provider: 'apple', stage: 'session_missing' },
+      )
     } catch (e: any) {
       setError(e?.message || 'Apple sign-in failed')
+      onAuthError?.(e, { provider: 'apple', stage: 'sign_in' })
       throw e
     } finally {
       setIsLoading(false)
     }
-  }, [authClient])
+  }, [authClient, onAuthError])
 
   const handleSignOut = useCallback(async () => {
     try {

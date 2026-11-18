@@ -12,10 +12,10 @@ import { NewChannelForm } from './NewChannelForm'
 import { NewMessagePicker } from './NewMessagePicker'
 
 /**
- * `message` lists people and agents together. `agent` is the same picker with
- * agents listed first, for entry points that are specifically "message an agent".
+ * `message` lists teammates. A chat with an agent is a project chat, opened
+ * from the agent's profile or the agents panel (SHO-412).
  */
-export type NewConversationMode = 'channel' | 'message' | 'agent'
+export type NewConversationMode = 'channel' | 'message'
 
 export interface NewConversationModalProps {
   workspaceId: string
@@ -29,7 +29,6 @@ export interface NewConversationModalProps {
 export const NEW_CONVERSATION_TITLES: Record<NewConversationMode, string> = {
   channel: 'Create a channel',
   message: 'New message',
-  agent: 'New message',
 }
 
 export function NewConversationModal({ workspaceId, mode, mentionables, me, onClose, onCreated }: NewConversationModalProps) {
@@ -51,7 +50,6 @@ export function NewConversationModal({ workspaceId, mode, mentionables, me, onCl
               workspaceId={workspaceId}
               mentionables={mentionables}
               me={me}
-              initialFilter={mode === 'agent' ? 'agents' : 'all'}
               autoFocus
               listClassName="max-h-80"
               onCreated={onCreated}

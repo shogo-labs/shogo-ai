@@ -358,10 +358,12 @@ export function createDmUserTool(ctx: ToolContext): AgentTool {
     name: 'team_chat_dm',
     label: 'Message a Teammate',
     description:
-      'Send a direct message to a workspace member (by email or user id) as yourself. Use to ask someone a ' +
-      'question, escalate, hand off work, or deliver a result to a specific person. If the person who asked ' +
-      'you wants the message sent for them, set for_requester to true; that posts in the requester and ' +
-      'recipient\'s shared DM and labels it as sent on their behalf.',
+      'Send a message to a workspace member (by email or user id) as yourself. It lands in that person\'s ' +
+      'chat with you — a project chat for a project agent, a workspace chat for the workspace agent — and ' +
+      'pushes a notification. Use to ask someone a question, escalate, hand off work, or deliver a result ' +
+      'to a specific person. If the person who asked you wants the message sent for them, set ' +
+      'for_requester to true; that posts in the requester and recipient\'s shared DM and labels it as sent ' +
+      'on their behalf.',
     parameters: Type.Object({
       user: Type.String({ description: 'Email address or user id of the teammate.' }),
       text: Type.String({ description: 'Markdown message text.' }),
