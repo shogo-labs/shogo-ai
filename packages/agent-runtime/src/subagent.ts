@@ -20,6 +20,7 @@ import { isSearchEnabled } from './search-flag'
 import { MEDIA_TOOL_NAMES } from './media-tool-names'
 import type { ToolContext } from './gateway-tools'
 import { createBrowserTool, createReadGuideTool, disposeBrowserTool, textResult } from './gateway-tools'
+import { pinnedAgentModel } from '@shogo/shared-runtime'
 
 // ---------------------------------------------------------------------------
 // Core gateway tool names — anything NOT in this set is a dynamic/installed
@@ -626,6 +627,9 @@ export function resolveModelTier(
   parentModel: string,
   autoTierOverride?: AutoTierOverride,
 ): string {
+  // `AGENT_MODEL` pins every model pick, so a tier request cannot escape it.
+  const pin = pinnedAgentModel()
+  if (pin) return pin.id
   if (!tier || tier === 'default') return parentModel
   const autoTier = tier === 'fast' ? 'economy' : tier === 'capable' ? 'premium' : undefined
   if (!autoTier) return parentModel
@@ -763,10 +767,16 @@ export async function resolveSubagentModel(
 ): Promise<{
   model: string
   provider: string | undefined
-  source: 'explicit' | 'project' | 'workspace' | 'experiment' | 'builtin'
+  source: 'pinned' | 'explicit' | 'project' | 'workspace' | 'experiment' | 'builtin'
   experimentId?: string
   experimentVariant?: 'A' | 'B'
 }> {
+  // `AGENT_MODEL` outranks every rung of the ladder below — including a
+  // caller's explicit `--model` and a built-in subagent's own default — so a
+  // standalone runtime can never reach a model its one endpoint does not serve.
+  const pin = pinnedAgentModel()
+  if (pin) return { model: pin.id, provider: pin.provider, source: 'pinned' }
+
   if (configModel) {
     return {
       model: configModel,
@@ -1033,7 +1043,7 @@ export async function runSubagent(
   let resolvedOverride: {
     model: string
     provider: string | undefined
-    source: 'explicit' | 'project' | 'workspace' | 'experiment' | 'builtin'
+    source: 'pinned' | 'explicit' | 'project' | 'workspace' | 'experiment' | 'builtin'
     experimentId?: string
     experimentVariant?: 'A' | 'B'
   } | null = null

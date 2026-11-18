@@ -18,6 +18,7 @@ import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, type Dirent
 import { readdir as readdirAsync, readFile as readFileAsync, stat as statAsync } from 'fs/promises'
 import { join, extname } from 'path'
 import OpenAI from 'openai'
+import { isStandalone } from '@shogo/shared-runtime'
 
 // Yield to the event loop every N file-system ops during the workspace
 // scan so Bun.serve's `fetch` handler (chat proxy, /health, …) can
@@ -248,6 +249,7 @@ export class IndexEngine {
   private chunkOverlap: number
   private openai: OpenAI | null = null
   private embeddingsEnabled: boolean
+  private embeddingModel: string = EMBEDDING_MODEL
   private vecExtensionLoaded: boolean = false
   private indexing: Promise<any> | null = null
   private consecutiveEmbeddingFailures = 0
@@ -279,7 +281,16 @@ export class IndexEngine {
     const proxyToken = process.env.AI_PROXY_TOKEN
     const effectiveKey = directKey || proxyToken
 
-    if (config.enableEmbeddings && effectiveKey && this.vecExtensionLoaded) {
+    // Standalone runtimes have no Shogo proxy to embed through, and the
+    // partner's `OPENAI_API_KEY` belongs to their chat endpoint — not to an
+    // embeddings API. So embeddings stay off there unless the partner names
+    // the embedding model their endpoint serves (`AGENT_EMBEDDING_MODEL`);
+    // memory and the index fall back to FTS.
+    const configuredEmbeddingModel = process.env.AGENT_EMBEDDING_MODEL?.trim()
+    const embeddingsAllowed = !isStandalone() || Boolean(configuredEmbeddingModel)
+    if (configuredEmbeddingModel) this.embeddingModel = configuredEmbeddingModel
+
+    if (config.enableEmbeddings && effectiveKey && this.vecExtensionLoaded && embeddingsAllowed) {
       this.openai = new OpenAI({
         apiKey: effectiveKey,
         baseURL: process.env.OPENAI_BASE_URL || (
@@ -535,7 +546,7 @@ export class IndexEngine {
 
       try {
         const response = await this.openai.embeddings.create({
-          model: EMBEDDING_MODEL,
+          model: this.embeddingModel,
           input: batch,
           dimensions: EMBEDDING_DIMENSIONS,
         })
@@ -734,7 +745,7 @@ export class IndexEngine {
 
       if (!queryEmbedding) {
         const response = await this.openai.embeddings.create({
-          model: EMBEDDING_MODEL,
+          model: this.embeddingModel,
           input: [query],
           dimensions: EMBEDDING_DIMENSIONS,
         })

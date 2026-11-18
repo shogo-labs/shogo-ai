@@ -121,7 +121,7 @@ import { refreshAvailableModels, getAvailableModels } from './available-models'
 import { mergeAgentModelIntoConfig, type AgentModelSnapshot } from './agent-model-config'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
-import { WorkspaceLSPManager, resolveBin, WorktreeManager, notifyProxyAuthFailure } from '@shogo/shared-runtime'
+import { WorkspaceLSPManager, resolveBin, WorktreeManager, notifyProxyAuthFailure, pinnedAgentModel } from '@shogo/shared-runtime'
 import type { MergeResult as WorktreeMergeResult, WorktreeStatus } from '@shogo/shared-runtime'
 import {
   isForeignWorkspaceDir,
@@ -351,6 +351,8 @@ export function isEmptyTurnResult(result: {
  * connected to a cloud that predates the setting.
  */
 export function resolveSummarizerModel(raw: string | undefined): { id: string; provider: string } {
+  const pin = pinnedAgentModel()
+  if (pin) return { id: pin.id, provider: pin.provider }
   if (!raw) return FALLBACK_SUMMARIZER_MODEL
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>
@@ -484,6 +486,23 @@ export function selectCrossFamilyFallback(opts: {
  */
 function resolveModelAlias(modelId: string): string {
   return resolveModelId(modelId)
+}
+
+/**
+ * The model alias a turn sends: the session override, else `config.json`'s
+ * model — unless `AGENT_MODEL` pins the process.
+ *
+ * A pin wins over both, and because a pinned id is never `auto` it also skips
+ * the Auto router, so a standalone runtime with one endpoint can never route
+ * itself onto a model that endpoint does not serve (SHO-418).
+ */
+export function resolveTurnModelAliasFor(
+  modelOverride: string | undefined,
+  configModelName: string,
+): string {
+  const pin = pinnedAgentModel()
+  if (pin) return pin.id
+  return modelOverride || configModelName
 }
 
 /**
@@ -1661,7 +1680,7 @@ export class AgentGateway {
    * survives) cannot disagree with the turn itself.
    */
   private resolveTurnModelAlias(modelOverride: string | undefined): string {
-    return modelOverride || this.config.model.name
+    return resolveTurnModelAliasFor(modelOverride, this.config.model.name)
   }
 
   /**
@@ -3640,7 +3659,10 @@ export class AgentGateway {
       // whole pipeline to Hoshi 2.0. Honor the API server's native provider
       // hint when present; otherwise infer from the RESOLVED id.
       modelId = resolveModelAlias(effectiveAlias)
-      provider = session.modelProvider ?? inferProviderFromModel(modelId, this.config.model.provider)
+      const pin = pinnedAgentModel()
+      provider = pin
+        ? pin.provider
+        : (session.modelProvider ?? inferProviderFromModel(modelId, this.config.model.provider))
       console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider}${session.modelProvider ? ' (hint)' : ''} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
     }
 

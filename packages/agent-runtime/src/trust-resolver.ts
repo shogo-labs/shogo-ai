@@ -43,6 +43,7 @@
 
 import { existsSync } from 'fs'
 
+import { isStandalone } from '@shogo/shared-runtime'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 
 /** Same path internal-api.ts uses to detect a Kubernetes service account. */
@@ -174,6 +175,15 @@ export function initTrustResolver(args: InitArgs): void {
   state.initialized = state.isWorkspaceRuntime && state.rootGroups.length === 0
   state.lastRefreshAt = null
   state.inFlight = null
+
+  // A standalone runtime serves the partner's own workspace on the partner's
+  // own cluster. There is no platform to ask and nothing to gate, so trust is
+  // static: seeded `trusted` and never refreshed (SHO-418).
+  if (isStandalone()) {
+    state.trustLevel = 'trusted'
+    state.initialized = true
+    state.lastRefreshAt = Date.now()
+  }
 }
 
 /** Sync read of the most recent resolved trust + folder configuration. */
@@ -230,6 +240,16 @@ export function isTrustResolverInitialized(): boolean {
  */
 export async function refreshTrust(): Promise<void> {
   if (state.inFlight) return state.inFlight
+
+  // Standalone: statically trusted, and there is no API to ask. Returning here
+  // is what keeps the per-turn refresh from dialling a Shogo service that does
+  // not exist on the partner's cluster (SHO-418).
+  if (isStandalone()) {
+    state.trustLevel = 'trusted'
+    state.initialized = true
+    state.lastRefreshAt = Date.now()
+    return
+  }
 
   // Workspace (merged-root) runtimes: the merged root is statically trusted
   // and there is no single runtime project to read trust for (the synthetic

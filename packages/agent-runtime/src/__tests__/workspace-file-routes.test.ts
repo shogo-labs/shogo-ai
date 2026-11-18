@@ -397,6 +397,59 @@ describe('native rename and recursive delete (IDE path space)', () => {
   })
 })
 
+describe('documented file-API shapes (SHO-418)', () => {
+  test('text round-trip reports a byte count, not a UTF-16 length', async () => {
+    const text = 'héllo — 世界\n'
+    const put = await request('/agent/workspace/files/notes/unicode.txt', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: text }),
+    })
+    expect(put.status).toBe(200)
+    const putBody = (await put.json()) as { bytes: number; encoding: string }
+    expect(putBody.encoding).toBe('utf-8')
+    expect(putBody.bytes).toBe(Buffer.byteLength(text, 'utf-8'))
+    // The bug this pins: `content.length` counts UTF-16 units, so a non-ASCII
+    // string reported fewer bytes than the file actually holds.
+    expect(putBody.bytes).toBeGreaterThan(text.length)
+
+    const get = await request('/agent/workspace/files/notes/unicode.txt')
+    expect(get.status).toBe(200)
+    const getBody = (await get.json()) as { path: string; content: string; encoding: string; bytes: number }
+    expect(getBody).toEqual({
+      path: 'notes/unicode.txt',
+      content: text,
+      encoding: 'utf-8',
+      bytes: Buffer.byteLength(text, 'utf-8'),
+    })
+  })
+
+  test('base64 round-trip returns contentBase64 and the raw byte count', async () => {
+    const raw = Buffer.from([0x00, 0x01, 0x02, 0xff, 0xfe])
+    const put = await request('/agent/workspace/files/notes/blob.bin', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ contentBase64: raw.toString('base64') }),
+    })
+    expect(put.status).toBe(200)
+    expect((await put.json()) as { ok: boolean; path: string; bytes: number; encoding: string }).toEqual({
+      ok: true,
+      path: 'notes/blob.bin',
+      bytes: raw.length,
+      encoding: 'base64',
+    })
+
+    const get = await request('/agent/workspace/files/notes/blob.bin')
+    const body = (await get.json()) as { path: string; contentBase64: string; encoding: string; bytes: number }
+    expect(body).toEqual({
+      path: 'notes/blob.bin',
+      contentBase64: raw.toString('base64'),
+      encoding: 'base64',
+      bytes: raw.length,
+    })
+  })
+})
+
 describe('resolveWithinRoot', () => {
   test('rejects a sibling directory whose name extends the root', () => {
     expect(resolveWithinRoot(merged, '../merged-evil/secret.txt')).toBeNull()

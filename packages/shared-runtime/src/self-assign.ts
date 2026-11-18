@@ -26,6 +26,7 @@
 
 import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
+import { resolveApiUrl } from './standalone'
 
 export const POOL_ASSIGNMENT_MARKER = '.shogo-pool-assignment'
 
@@ -125,32 +126,18 @@ export function readSAToken(): string | null {
 }
 
 /**
- * Resolve the Shogo API base URL the runtime should talk to. Looks at
- * SHOGO_API_URL / API_URL explicit overrides, falls back to deriving from
- * AI_PROXY_URL (stripping the `/api/ai/v1` suffix), and finally constructs
- * an in-cluster ClusterIP-style URL from SYSTEM_NAMESPACE.
+ * Resolve the Shogo API base URL the runtime should talk to.
+ *
+ * Delegates to the one shared resolver (`./standalone`): `SHOGO_API_URL` /
+ * `API_URL` explicit overrides, then the host of `AI_PROXY_URL`, then the
+ * in-cluster ClusterIP inside Kubernetes, and `null` when there is no API at
+ * all (standalone mode, or a local install with nothing configured).
  *
  * Exported so the token-refresh loop hits the same endpoint self-assign
  * uses on boot.
  */
 export function deriveApiUrl(): string | null {
-  if (process.env.SHOGO_API_URL) return process.env.SHOGO_API_URL
-  if (process.env.API_URL) return process.env.API_URL
-
-  // Derive from AI_PROXY_URL: http://api.ns.svc.cluster.local/api/ai/v1 -> http://api.ns.svc.cluster.local
-  const proxyUrl = process.env.AI_PROXY_URL
-  if (proxyUrl) {
-    try {
-      const url = new URL(proxyUrl)
-      return `${url.protocol}//${url.host}`
-    } catch {
-      // Invalid URL
-    }
-  }
-
-  // Fallback using system namespace
-  const systemNs = process.env.SYSTEM_NAMESPACE || 'shogo-system'
-  return `http://api.${systemNs}.svc.cluster.local`
+  return resolveApiUrl()
 }
 
 function readAssignmentMarker(workDir?: string): string | null {
