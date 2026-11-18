@@ -25,6 +25,13 @@ Best for internal team usage on your own cloud or Kubernetes cluster.
 
 Best for fully local, offline-first use. See `apps/desktop/README.md`.
 
+### 4. Standalone agent runtime (embedding one runtime)
+
+If you only need the agent runtime — one per session, on your own cluster, with
+no Shogo API behind it — see [STANDALONE_RUNTIME.md](./STANDALONE_RUNTIME.md).
+That document is the partner contract: the published multi-arch image, the
+`SHOGO_STANDALONE=1` mode, `AGENT_MODEL` pinning, and the HTTP surface.
+
 ## Minimum Requirements
 
 - Bun

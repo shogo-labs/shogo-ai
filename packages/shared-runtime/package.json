@@ -25,7 +25,8 @@
     "./published-database": "./src/published-database.ts",
     "./published-schema": "./src/published-schema.ts",
     "./byte-range": "./src/byte-range.ts",
-    "./published-image-ref": "./src/published-image-ref.ts"
+    "./published-image-ref": "./src/published-image-ref.ts",
+    "./standalone": "./src/standalone.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

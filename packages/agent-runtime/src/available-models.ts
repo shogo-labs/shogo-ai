@@ -16,6 +16,7 @@
 
 import { AUTO_MODEL_ID, buildAutoTierMap, type ModelTierMap } from './model-router'
 import { isAutoModel } from '@shogo/model-catalog'
+import { pinnedAgentModel } from '@shogo/shared-runtime/standalone'
 
 export interface AvailableModel {
   id: string
@@ -106,6 +107,9 @@ export async function refreshAvailableModels(opts: { force?: boolean } = {}): Pr
  * defaults, the same map `auto` routes through.
  */
 export function resolveAutoTierModelId(tier: keyof ModelTierMap): string {
+  // `AGENT_MODEL` pins every model pick, so an Auto tier resolves to it too.
+  const pin = pinnedAgentModel()
+  if (pin) return pin.id
   const raw = process.env.AGENT_AUTO_TIER_MAP
   if (raw) {
     try {

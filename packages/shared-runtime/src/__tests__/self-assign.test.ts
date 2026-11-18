@@ -322,8 +322,14 @@ describe('self-assign gap coverage', () => {
 
   test('DA:140 — deriveApiUrl catch fires for unparseable AI_PROXY_URL', async () => {
     process.env.AI_PROXY_URL = 'not a valid url'
+    // The ClusterIP fallback only applies inside a cluster (SHO-418).
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
     const { deriveApiUrl } = await import('../self-assign')
-    expect(deriveApiUrl()).toContain('test-system')
+    try {
+      expect(deriveApiUrl()).toContain('test-system')
+    } finally {
+      delete process.env.KUBERNETES_SERVICE_HOST
+    }
   })
 
   test('DA:160,161 — readAssignmentMarker returns valid project from marker file', async () => {

@@ -261,6 +261,20 @@ export {
 } from './self-assign'
 
 export {
+  assertStandaloneEnv,
+  isInKubernetes,
+  isStandalone,
+  isTruthyEnv,
+  logNoApiUrlOnce,
+  logStandaloneOnce,
+  parseAgentModelPin,
+  pinnedAgentModel,
+  resolveApiUrl,
+  StandaloneConfigError,
+  type AgentModelPin,
+} from './standalone'
+
+export {
   createRuntimeApp,
   type RuntimeAppConfig,
   type RuntimeState,

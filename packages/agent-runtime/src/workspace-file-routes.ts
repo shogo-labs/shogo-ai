@@ -238,7 +238,7 @@ export function workspaceFileRoutes(config: WorkspaceFileRoutesConfig) {
 
     const content = buf.toString('utf-8')
     return c.json(
-      { path: subPath, content, encoding: 'utf-8', bytes: content.length },
+      { path: subPath, content, encoding: 'utf-8', bytes: Buffer.byteLength(content, 'utf-8') },
       200,
       { ETag: etag },
     )
@@ -304,7 +304,7 @@ export function workspaceFileRoutes(config: WorkspaceFileRoutesConfig) {
     return c.json({
       ok: true,
       path: subPath,
-      bytes: body.content.length,
+      bytes: Buffer.byteLength(body.content, 'utf-8'),
       encoding: 'utf-8',
     })
   })
