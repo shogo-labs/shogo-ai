@@ -1101,6 +1101,13 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'Rows are written only by jobs/published-usage.ts, and runPublishedUsageCollect samples only environments whose workspace is homed in the writing region (homeRegionWorkspaceWhere), so the two regions write disjoint (environmentId, minute) sets — the peer never inserts a key the other one already has. Within a region the advisory lock plus the per-region PlatformSetting claim let exactly one pod write each minute. runPublishedUsageBill bills and stamps billedAt only on its own region\'s environments.',
     writer: 'runPublishedUsageCollect',
   },
+  // --- workspace root secrets (SHO-384) ------------------------------------
+  {
+    key: 'WorkspaceRootSecret.runtimeKey',
+    category: 'single_tenant_upsert',
+    reason:
+      'One sealed blob per runtime (`ws:<workspaceId>` or `ws:proj:<anchorProjectId>`), upserted by that runtime\'s own internal PUT. A runtime is homed to one region with its workspace, so the writer for a given key is always the same region and a retry updates the same row instead of duplicating it.',
+  },
   // --- workspace compute (SHO-424) ----------------------------------------
   {
     key: 'VmUsageHour.(cause,hostId,hour,memMiB,projectId,vcpus,workspaceId)',

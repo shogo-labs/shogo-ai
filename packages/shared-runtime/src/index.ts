@@ -26,6 +26,31 @@ export {
 } from './workspace-root-sync'
 
 export {
+  WORKSPACE_ROOT_SECRETS_VERSION,
+  WORKSPACE_ROOT_SECRETS_MAX_BYTES,
+  WORKSPACE_ROOT_SECRETS_MAX_PAYLOAD_BYTES,
+  WORKSPACE_ROOT_SECRETS_MAX_FILES,
+  WORKSPACE_ROOT_SECRETS_MAX_SLOTS,
+  WORKSPACE_ROOT_SECRET_MAX_FILE_BYTES,
+  WORKSPACE_SECRET_SLOT_ROOT,
+  applyWorkspaceSecretSlot,
+  collectWorkspaceSecretSlot,
+  emptyWorkspaceRootSecrets,
+  flushWorkspaceRootSecrets,
+  isWorkspaceSecretFile,
+  isWorkspaceSecretSlot,
+  restoreWorkspaceRootSecrets,
+  staleWorkspaceSecretNames,
+  validateWorkspaceRootSecrets,
+  workspaceRuntimeKey,
+  workspaceSecretsTag,
+  type WorkspaceRootSecrets,
+  type WorkspaceRootSecretsTransport,
+  type WorkspaceSecretFile,
+  type WorkspaceSecretSlot,
+} from './workspace-root-secrets'
+
+export {
   ZERNIO_SOCIAL_TOOLKITS,
   isZernioSocialToolkit,
   normalizeToolkitName,
