@@ -8573,6 +8573,27 @@ app.post('/api/billing/verify-checkout', async (c) => {
       ? stripeSubscription.current_period_end * 1000
       : now + (30 * 24 * 60 * 60 * 1000)
 
+    // The buyer's return trip provisions the same subscription the webhooks do,
+    // so the prepaid refusal has to hold here too (SHO-428) — otherwise landing
+    // back in the app would buy the year the webhook just refunded.
+    if (session.metadata?.offer === soloFounderService.SOLO_FOUNDER_OFFER) {
+      const refusal = await soloFounderService.refuseIfPrepaidOffer({
+        stripe,
+        workspaceId,
+        userId: (c.get('auth') as any)?.userId ?? session.metadata?.userId ?? null,
+        subscriptionId: stripeSubscription.id,
+        purchasedAt: new Date((session.created || Math.floor(Date.now() / 1000)) * 1000),
+      })
+      if (refusal.refused) {
+        return c.json({
+          error: {
+            code: 'prepaid_refused',
+            message: 'That card cannot be used for this offer. The payment was refunded in full and your plan is still Free.',
+          },
+        }, 402)
+      }
+    }
+
     await billingService.syncFromStripe({
       stripeSubscriptionId: stripeSubscription.id,
       stripeCustomerId: session.customer as string,
@@ -9228,16 +9249,20 @@ app.post('/api/webhooks/stripe', async (c) => {
         })
         const wsId = resolved?.workspaceId
         const metaPlanId = resolved?.planId
-        // A Solo Founder subscription whose card was refused as prepaid was
-        // cancelled and refunded by `checkout.session.completed`. This event
-        // can arrive after that, so it must not provision the plan the refund
-        // just undid (SHO-428).
-        if (subscription.metadata?.offer === soloFounderService.SOLO_FOUNDER_OFFER) {
-          const rejected = await prisma.courseEnrollment.findFirst({
-            where: { stripeSubscriptionId: subscription.id, status: 'rejected_prepaid' },
-            select: { id: true },
+        // Solo Founder (SHO-428): a prepaid card is refused here as well as in
+        // `checkout.session.completed`, because Stripe may deliver this event
+        // first. Without this the plan and its allowance would be provisioned
+        // before the refusal that follows. The call is idempotent, so whichever
+        // event comes second finds the refusal already recorded and provisions
+        // nothing.
+        if (wsId && subscription.metadata?.offer === soloFounderService.SOLO_FOUNDER_OFFER) {
+          const refusal = await soloFounderService.refuseIfPrepaidOffer({
+            stripe,
+            workspaceId: wsId,
+            userId: subscription.metadata?.userId ?? null,
+            subscriptionId: subscription.id,
           })
-          if (rejected) {
+          if (refusal.refused) {
             console.log('[Webhook] Solo Founder prepaid subscription left unprovisioned:', subscription.id)
             break
           }
@@ -9529,26 +9554,14 @@ app.post('/api/webhooks/stripe', async (c) => {
             // first invoice in full, write a rejected enrollment, tell the
             // owner, and leave the workspace exactly as it was.
             if (session.metadata?.offer === soloFounderService.SOLO_FOUNDER_OFFER) {
-              const card = await trialService.readSubscriptionCard(stripe, stripeSubscription.id)
-              if (card?.funding === 'prepaid') {
-                console.warn('[Webhook] Solo Founder prepaid card refused:', { workspaceId, subscriptionId: stripeSubscription.id })
-                const refusal = await soloFounderService.rejectPrepaidPurchase({
-                  stripe,
-                  workspaceId,
-                  userId: session.metadata?.userId ?? null,
-                  subscriptionId: stripeSubscription.id,
-                })
-                void workspaceOwnerContact(workspaceId)
-                  .then((owner) => owner && sendTrialUnavailableEmail({
-                    to: owner.email,
-                    workspaceName: owner.workspaceName,
-                    planName: 'Business',
-                    dashboardUrl: `${getFrontendUrl()}/billing?offer=solo-founder`,
-                    reason: 'solo_founder_prepaid',
-                    subjectLine: 'Your Solo Founder purchase was refunded',
-                    heading: 'We refunded your Solo Founder purchase',
-                  }))
-                  .catch((err: any) => console.error('[Webhook] Solo Founder refund email failed:', err?.message ?? err))
+              const refusal = await soloFounderService.refuseIfPrepaidOffer({
+                stripe,
+                workspaceId,
+                userId: session.metadata?.userId ?? null,
+                subscriptionId: stripeSubscription.id,
+                purchasedAt: new Date((session.created || Math.floor(Date.now() / 1000)) * 1000),
+              })
+              if (refusal.refused) {
                 console.log('[Webhook] Solo Founder prepaid purchase refunded:', { workspaceId, refundId: refusal.refundId })
                 break
               }

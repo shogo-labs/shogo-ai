@@ -34,6 +34,9 @@ import { lookupPriceIdByLookupKey } from './stripe-price-lookup.service'
 import { applySystemPack, type PackBindings } from './system-apply.service'
 import { createWorkItem, resolveBoard } from './work-boards.service'
 import * as billingService from './billing.service'
+import { readSubscriptionCard } from './trial.service'
+import { sendTrialUnavailableEmail } from './email.service'
+import { getFrontendUrl } from '../lib/cloud-urls'
 
 /** `metadata.offer` value that marks a checkout, subscription and coupon as this offer. */
 export const SOLO_FOUNDER_OFFER = 'solo_founder'
@@ -600,6 +603,76 @@ export async function retryInstallIfNeeded(params: { userId: string; workspaceId
     await installEnrollment(enrollment.id)
   }
   return getOfferState(params)
+}
+
+/**
+ * Decide the prepaid question the same way from either Stripe event.
+ *
+ * `checkout.session.completed` and `customer.subscription.created` both fire for
+ * one purchase and either can arrive first, so "is this a prepaid card" must
+ * not live in only one of them: the subscription event would provision the plan
+ * and its allowance before the other had a chance to refuse.
+ *
+ * Idempotent. A second delivery finds the `rejected_prepaid` enrollment and
+ * returns without cancelling or refunding twice.
+ */
+export async function refuseIfPrepaidOffer(params: {
+  stripe: Stripe
+  workspaceId: string
+  userId?: string | null
+  subscriptionId: string
+  purchasedAt?: Date
+}): Promise<{ refused: boolean; refundId: string | null }> {
+  const already = await prisma.courseEnrollment.findFirst({
+    where: { stripeSubscriptionId: params.subscriptionId, status: 'rejected_prepaid' },
+    select: { id: true },
+  })
+  if (already) return { refused: true, refundId: null }
+
+  const card = await readSubscriptionCard(params.stripe, params.subscriptionId)
+  if (card?.funding !== 'prepaid') return { refused: false, refundId: null }
+
+  console.warn('[SoloFounder] prepaid card refused:', { workspaceId: params.workspaceId, subscriptionId: params.subscriptionId })
+  const refusal = await rejectPrepaidPurchase({
+    stripe: params.stripe,
+    workspaceId: params.workspaceId,
+    userId: params.userId ?? null,
+    subscriptionId: params.subscriptionId,
+    purchasedAt: params.purchasedAt,
+  })
+  await notifyPrepaidRefusal(params.workspaceId, params.userId ?? null)
+  return { refused: true, refundId: refusal.refundId }
+}
+
+/** Tell the owner the charge is back on their card, and that nothing was bought. */
+async function notifyPrepaidRefusal(workspaceId: string, userId: string | null): Promise<void> {
+  try {
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: {
+        name: true,
+        members: {
+          where: { role: 'owner', projectId: null, ...(userId ? { userId } : {}) },
+          select: { user: { select: { email: true } } },
+          orderBy: { createdAt: 'asc' },
+          take: 1,
+        },
+      },
+    })
+    const email = workspace?.members?.[0]?.user?.email
+    if (!email || !workspace) return
+    await sendTrialUnavailableEmail({
+      to: email,
+      workspaceName: workspace.name,
+      planName: 'Business',
+      dashboardUrl: `${getFrontendUrl()}/billing?offer=solo-founder`,
+      reason: 'solo_founder_prepaid',
+      subjectLine: 'Your Solo Founder purchase was refunded',
+      heading: 'We refunded your Solo Founder purchase',
+    })
+  } catch (err: any) {
+    console.error('[SoloFounder] prepaid refund email failed:', err?.message ?? err)
+  }
 }
 
 /**

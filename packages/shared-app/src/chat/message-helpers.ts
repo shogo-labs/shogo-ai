@@ -66,6 +66,9 @@ export const ERROR_CODE_MESSAGES: Record<string, string> = {
   invalid_promo_code: "That promo code is not valid for this offer. Check the code, or leave it empty to get the standard first-year price.",
   risk_review: 'This purchase needs a review before it can go through. Contact support and we will sort it out.',
   price_not_provisioned: 'The offer is not available for purchase yet. We have been alerted — please try again shortly.',
+  // The purchase went through, then the card turned out to be prepaid: the
+  // subscription is cancelled and the charge refunded in full.
+  prepaid_refused: 'That card cannot be used for this offer. Nothing was charged — the payment was refunded in full and your plan is still Free.',
   internal_error: 'Something went wrong on our end. Please try again.',
   shutting_down: 'A server update is in progress. Please retry in a few seconds.',
   offline: 'Your machine is offline. Reconnect it, or continue in the cloud.',

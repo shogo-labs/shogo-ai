@@ -17,7 +17,7 @@ import { seedWorkspace, setupChannelsTestDb, type SeededWorkspace } from './help
 const { dir } = setupChannelsTestDb()
 
 const { prisma } = await import('../lib/prisma')
-const { enroll, getOfferState } = await import('../services/solo-founder.service')
+const { enroll, getOfferState, refuseIfPrepaidOffer } = await import('../services/solo-founder.service')
 const { COURSE_LESSONS, SOLO_FOUNDER_OS_CHANNELS } = await import('../config/solo-founder-course')
 
 const db = prisma as any
@@ -123,4 +123,74 @@ describe('enroll() on SQLite (desktop parity)', () => {
     expect(b.status).toBe('fulfilled')
     expect(await db.courseEnrollment.count({ where: { userId: other.owner } })).toBe(1)
   })
+
+  test('a prepaid card is refused from either event, and refunded once', async () => {
+    const ws = await seedWorkspace(db)
+    const stripe = fakeStripe('prepaid')
+    const args = {
+      stripe: stripe as any,
+      workspaceId: ws.workspaceId,
+      userId: ws.owner,
+      subscriptionId: 'sub_test_prepaid',
+    }
+
+    // `customer.subscription.created` may land first: the refusal has to hold
+    // without `checkout.session.completed` ever having run.
+    const first = await refuseIfPrepaidOffer(args)
+    expect(first.refused).toBe(true)
+    expect(first.refundId).toBe('re_test_1')
+    expect(stripe.calls).toEqual({ retrieve: 1, cancel: 1, refund: 1 })
+
+    const enrollment = await db.courseEnrollment.findFirst({
+      where: { stripeSubscriptionId: 'sub_test_prepaid' },
+    })
+    expect(enrollment.status).toBe('rejected_prepaid')
+    expect(enrollment.installStatus).toBe('failed')
+
+    // The sibling event arrives: nothing is cancelled or refunded twice.
+    const second = await refuseIfPrepaidOffer(args)
+    expect(second.refused).toBe(true)
+    expect(stripe.calls).toEqual({ retrieve: 1, cancel: 1, refund: 1 })
+  })
+
+  test('a normal card is not refused', async () => {
+    const ws = await seedWorkspace(db)
+    const stripe = fakeStripe('credit')
+    const out = await refuseIfPrepaidOffer({
+      stripe: stripe as any,
+      workspaceId: ws.workspaceId,
+      userId: ws.owner,
+      subscriptionId: 'sub_test_credit',
+    })
+    expect(out.refused).toBe(false)
+    expect(stripe.calls).toEqual({ retrieve: 1, cancel: 0, refund: 0 })
+    expect(await db.courseEnrollment.count({ where: { userId: ws.owner } })).toBe(0)
+  })
 })
+
+/** Just enough Stripe for the prepaid refusal: one card, one invoice, one refund. */
+function fakeStripe(funding: 'prepaid' | 'credit') {
+  const calls = { retrieve: 0, cancel: 0, refund: 0 }
+  return {
+    calls,
+    subscriptions: {
+      retrieve: async (id: string) => {
+        calls.retrieve++
+        return { id, default_payment_method: { type: 'card', card: { funding, last4: '4242', brand: 'visa', fingerprint: 'fp_test' } } }
+      },
+      cancel: async (id: string) => {
+        calls.cancel++
+        return { id, status: 'canceled' }
+      },
+    },
+    invoices: {
+      list: async () => ({ data: [{ id: 'in_test_1', charge: 'ch_test_1' }] }),
+    },
+    refunds: {
+      create: async () => {
+        calls.refund++
+        return { id: 're_test_1' }
+      },
+    },
+  }
+}
