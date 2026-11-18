@@ -9,6 +9,8 @@ let walletFindUniqueImpl: (args: any) => Promise<any> = async () => null
 // usage-cost (transitively imported) pulls in @shogo/model-catalog. Stub
 // it so this test doesn't depend on the SDK being built.
 mock.module('@shogo/model-catalog', () => ({
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
   MODEL_DOLLAR_COSTS: { sonnet: { inputPerMillion: 3, outputPerMillion: 15, cacheWritePerMillion: 3.75, cachedInputPerMillion: 0.3 } },
   getModelTier: () => 'pro',
   getModelBillingModel: () => 'sonnet',

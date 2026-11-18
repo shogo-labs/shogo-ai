@@ -32,6 +32,8 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 
 mock.module('@shogo/model-catalog', () => ({
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
   getMaxOutputTokens: () => 8192,
 }))
 

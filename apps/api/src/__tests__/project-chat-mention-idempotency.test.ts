@@ -22,6 +22,8 @@ const sessions = new Map<string, any>()
 const queued: any[] = []
 
 mock.module('@shogo/model-catalog', () => ({
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
   getModelTier: (_modelId: string) => 'standard',
   resolveModelId: (mode: string) => mode || 'claude-haiku-4-5',
   MODEL_CATALOG: {},

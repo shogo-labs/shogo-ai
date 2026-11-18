@@ -37,6 +37,8 @@ mock.module('../../services/analytics.service', () => ({
 // override must be followed (not silently swapped for a static Anthropic id).
 let mockBasicModel = 'claude-haiku-4-5-20251001'
 mock.module('@shogo/model-catalog', () => ({
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
   getMaxOutputTokens: (_: string) => 4096,
   resolveAgentModeDefault: (mode: string) =>
     mode === 'basic' ? mockBasicModel : 'claude-sonnet-4-6',

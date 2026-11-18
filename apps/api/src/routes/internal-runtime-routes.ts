@@ -3643,12 +3643,16 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ error: { code: 'bad_request', message: 'args must be an object' } }, 400)
     }
     const tool = body.tool.trim()
+    // The target project's own permission is the gate: `project:read` for a
+    // read-only tool, `project:update` for a mutating one. This is not a
+    // paired-desktop command, so it must not also require
+    // `instance.commands:run` — that ability is for running commands on the
+    // caller's own machine, and requiring it here locked read-only viewers out
+    // of reading files in projects they can see (SHO-353).
     const denied = await enforceProjectPermission(
       c, authz.identity, authz.workspaceId, projectId, remoteToolPermission(tool),
     )
     if (denied) return denied
-    const abilityDenied = await enforceWorkspaceAbility(c, authz.identity, authz.workspaceId, 'instance.commands:run')
-    if (abilityDenied) return abilityDenied
 
     const callerProjectId =
       authz.identity.kind === 'project'
