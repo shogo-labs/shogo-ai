@@ -76,16 +76,19 @@ import {
 } from "./optimistic-echo"
 import { usePersistedMessageIds } from "./use-persisted-message-ids"
 import { usageLimitNoticeFor } from "./usage-limit-notice"
-import { getAuthUserSnapshot } from "../../contexts/auth"
+import { useAuthOptional, getAuthUserSnapshot } from "../../contexts/auth"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import {
   extractTextContent,
   formatErrorMessage,
   isTunnelDisconnectError,
   isClientNetworkFailure,
+  isChatUnauthorizedError,
   formatToolName,
   getToolCategory,
   ERROR_CODE_MESSAGES,
+  CHAT_SESSION_EXPIRED_MESSAGE,
+  SHOGO_TELEMETRY_TAG,
   buildChatStreamErrorReport,
   isReactUpdateDepthError,
 } from "@shogo/shared-app/chat"
@@ -190,6 +193,7 @@ import {
   messageTurnKey,
   replayTurnMessage,
   withResumeReplayReset,
+  type Reauthorize,
   type ReplayTurnStart,
 } from "./resume-replay-transport"
 import { resolveRejoinView } from "./rejoin-view"
@@ -1334,6 +1338,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const handleStartTrialClick = useCallback(() => {
     router.push("/(app)/billing?trial=business" as any)
   }, [router])
+
+  // A refused session is only actionable as a sign-in. Handing it to the auth
+  // provider — whose cleared user is what makes the app shell route a
+  // signed-out person to the sign-in screen — keeps this panel from having to
+  // know that route (SHO-431). `useAuthOptional` because the panel also renders
+  // inside popover portals that sit above the provider tree.
+  const refreshSession = useAuthOptional()?.refreshSession
+  const handleSignInAgain = useCallback(() => {
+    setSessionExpired(false)
+    void refreshSession?.()
+  }, [refreshSession])
 
   // A held account (SHO-416) is told to verify, not to pay. The email comes
   // from the auth snapshot so this stays a plain callback (no extra hook).
@@ -2576,6 +2591,36 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // render instead of only when one of the other transport inputs changes.
   const getClientTurnId = useCallback(() => pendingClientTurnIdRef.current, [])
 
+  // Re-establishing a session the API just refused (SHO-431).
+  //
+  // `getSession` revalidates against the API, refreshes the cookie cache and —
+  // on native — rewrites the stored cookie that `nativeHeaders` reads from, so
+  // the retried request carries a fresh credential. `disableCookieCache` is
+  // what makes the answer authoritative: replaying the cache that just got us
+  // a 401 would report "signed in" and retry with the same dead credential.
+  //
+  // Behind a ref because `chatTransport` is memoized on `transportConfig`
+  // alone; a changing callback identity would tear down `useChat`'s transport
+  // mid-chat.
+  const reauthorizeChatRef = useRef<Reauthorize>(async () => false)
+  const reauthorizeChat = useCallback(async (): Promise<boolean> => {
+    // A direct-to-runtime request carries no platform session to refresh: a
+    // 401 there is the runtime's own token, not the person's sign-in.
+    if (localAgentUrl) return false
+    try {
+      const { data } = await authClient.getSession({
+        query: { disableCookieCache: true },
+      })
+      return Boolean(data?.user)
+    } catch (err) {
+      console.warn("[ChatPanel] session refresh after a 401 failed:", err)
+      return false
+    }
+  }, [localAgentUrl])
+  useEffect(() => {
+    reauthorizeChatRef.current = reauthorizeChat
+  }, [reauthorizeChat])
+
   const transportConfig = useChatTransportConfig({
     apiBaseUrl: API_URL!,
     projectId,
@@ -2610,6 +2655,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             new DefaultChatTransport(transportConfig),
             (start) => beforeResumeReplayRef.current(start),
             (message) => applyResumeSnapshotRef.current(message),
+            () => reauthorizeChatRef.current(),
           )
         : undefined,
     [transportConfig],
@@ -2646,7 +2692,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     messages: (cachedMessagesRef.current as UIMessage[] | null) ?? undefined,
     resume: false,
     experimental_throttle: 50,
-    onError: (err) => {
+    onError: async (err) => {
       // Stream failures are recoverable UI state: the retry affordance below
       // handles them. React Native treats console.error as a development
       // exception and opens LogBox over the conversation, so retain a visible
@@ -2664,6 +2710,39 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // separate "stuck with no error" case (`chat_stall_watchdog_tripped`).
       if (isReactUpdateDepthError(err)) {
         renderDepthErrorTurnIdRef.current = currentTurnIdRef.current
+      }
+      // A session refusal is not a stream defect: it never reached the runtime,
+      // and the transport already asked for a fresh session and replayed the
+      // request once (resume-replay-transport.ts). Getting here means the
+      // person really is signed out, so prompt for a sign-in and file the event
+      // under its own fingerprint — keeping it out of the generic stream-error
+      // issue is what lets that issue's rate actually fall (SHO-431).
+      if (isChatUnauthorizedError(err)) {
+        setSessionExpired(true)
+        let sessionAfterRefresh = false
+        try {
+          const { data } = await authClient.getSession()
+          sessionAfterRefresh = Boolean(data?.user)
+        } catch {
+          sessionAfterRefresh = false
+        }
+        Sentry.captureException(err, {
+          level: "warning",
+          tags: {
+            [SHOGO_TELEMETRY_TAG]: "chat_session_expired",
+            projectId: projectId ?? "(none)",
+            chatSessionId: currentSessionIdRef.current ?? "(none)",
+          },
+          extra: {
+            // The one fact that separates a real expiry from a credential that
+            // never reached the device: after the refused send, does the client
+            // still hold a session the API will honour?
+            sessionAfterRefresh,
+            lastSeq: turnLastSeqRef.current,
+          },
+          fingerprint: ["chat_session_expired"],
+        })
+        return
       }
       try {
         const report = buildChatStreamErrorReport(err, {
@@ -4318,6 +4397,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
   } | null>(null)
   const [errorBannerExpanded, setErrorBannerExpanded] = useState(false)
   const [errorDismissed, setErrorDismissed] = useState(false)
+  // Set when the API refused a send because the session was gone and asking
+  // for a fresh one did not bring it back (SHO-431). Drives the sign-in prompt
+  // in place of the generic error banner, so a signed-out person gets a way
+  // back in instead of an error they cannot act on.
+  const [sessionExpired, setSessionExpired] = useState(false)
   const [tunnelReconnecting, setTunnelReconnecting] = useState(false)
   // Non-null while the runtime's agent loop is "parked" waiting for internet
   // connectivity to return (see `data-connectivity-wait` handling in
@@ -4360,6 +4444,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       return "Connection to desktop instance lost. Reconnecting\u2026"
     if (isTunnelError)
       return "Connection to desktop instance lost. Tap Reconnect to retry."
+    if (sessionExpired) return CHAT_SESSION_EXPIRED_MESSAGE
     if (streamAutoRecovering)
       return "Connection interrupted. Reconnecting\u2026"
     return (
@@ -4371,6 +4456,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     isTunnelError,
     tunnelReconnecting,
     streamAutoRecovering,
+    sessionExpired,
   ])
   useEffect(() => {
     setErrorBannerExpanded(false)
@@ -7093,9 +7179,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // (`setOptimisticUserInput`) that already ran before this is called. The
   // user row itself is written by the chat route, idempotently on the
   // message id, so a retried POST cannot duplicate it (SHO-274).
-  // Non-network failures (auth, usage limit,
-  // 5xx, etc. — the server DID respond) still propagate normally so the
-  // existing error banner handles them.
+  // Non-network failures (usage limit, 5xx, etc. — the server DID respond)
+  // still propagate normally so the existing error banner handles them.
+  //
+  // A refused session is the exception: it is reported to the caller instead of
+  // thrown. `handleInputSubmit` does not await this, so a throw would surface
+  // only as an unhandled rejection carrying the raw error envelope — which is
+  // exactly what filled Sentry (SHO-431).
   const deliverMessage = useCallback(
     async (
       messagePayload: {
@@ -7109,7 +7199,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       },
       bodyExtra: Record<string, unknown>,
       opts?: { queuedId?: string },
-    ) => {
+    ): Promise<{ sessionExpired: true } | void> => {
       const clientTurnId =
         typeof bodyExtra.clientTurnId === "string"
           ? bodyExtra.clientTurnId
@@ -7119,7 +7209,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
       try {
         await sendMessage(messagePayload, { body: bodyExtra })
       } catch (err) {
-        if (!isClientNetworkFailure(err)) throw err
+        if (!isClientNetworkFailure(err)) {
+          // The transport already refreshed the session and replayed the
+          // request once (resume-replay-transport.ts), so a refusal here means
+          // the person really is signed out. Say so, and hand the caller the
+          // text to put back in the composer.
+          if (isChatUnauthorizedError(err)) {
+            console.warn("[ChatPanel] Send refused — the session is gone:", err)
+            setSessionExpired(true)
+            return { sessionExpired: true }
+          }
+          throw err
+        }
 
         console.warn(
           "[ChatPanel] Send failed on a network error — queueing for automatic retry once back online:",
@@ -7185,6 +7286,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       releaseStopSnapshot()
       stoppedTurnIdRef.current = null
       setEmptyResponseError(null)
+      setSessionExpired(false)
       setErrorDismissed(false)
       userInitiatedStopRef.current = false
 
@@ -7397,7 +7499,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // This window is starting a turn: any reconcile still retrying for the
         // previous one must not paint over it (SHO-325).
         turnGenerationRef.current += 1
-        await deliverMessage(messagePayload, bodyExtra)
+        const outcome = await deliverMessage(messagePayload, bodyExtra)
+        if (outcome?.sessionExpired) {
+          // The send never reached the server, so its row was never written and
+          // the bubble above is this window's only copy. Put the text back in
+          // the composer so signing in again does not cost the person the
+          // message they already typed (SHO-431). The original `trimmedContent`
+          // is restored, not `messagePayload.text`, which may carry injected
+          // workspace context (`enrichMessage`).
+          setRestoreDraftRequest({
+            nonce: Date.now(),
+            content: trimmedContent,
+            files: files && files.length > 0 ? files : undefined,
+            focus: false,
+          })
+        }
       } catch (err) {
         console.error("[ChatPanel] Failed to send message:", err)
         throw err
@@ -7499,11 +7615,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // and set the optimistic bubble on the FIRST attempt; re-running it
         // here would duplicate both. `deliverMessage` re-queues (doesn't
         // throw) on a repeat network failure, so this "succeeds" either way.
-        await deliverMessage(
+        const outcome = await deliverMessage(
           nextMessage.offlineRetry.messagePayload,
           nextMessage.offlineRetry.bodyExtra,
           { queuedId: nextMessage.id },
         )
+        if (outcome?.sessionExpired) {
+          // Same rule as a first attempt: the refusal cost the person their
+          // message, so put the queued text back where they can re-send it
+          // after signing in (SHO-431).
+          setRestoreDraftRequest({
+            nonce: Date.now(),
+            content: nextMessage.content,
+            files: nextMessage.files,
+            focus: false,
+          })
+        }
         // An offline retry that fails again never starts a real stream, so
         // the `isStreaming` falling-edge effect below will never fire for
         // it — reset here so the next online-restored tick can pick the
@@ -10363,6 +10490,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const errorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (usageLimitView?.variant === "blocked") return null
     if (!(
+      sessionExpired ||
       ((error || emptyResponseError) && !errorDismissed) ||
       streamAutoRecovering
     ))
@@ -10371,7 +10499,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
       id: "error",
       kind: "status",
       order: 16,
-      title: isTunnelError ? "Connection lost" : "Error",
+      title: sessionExpired
+        ? "Session expired"
+        : isTunnelError
+          ? "Connection lost"
+          : "Error",
       icon: AlertCircle,
       accent: "warning",
       defaultExpanded: true,
@@ -10379,8 +10511,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
         setEmptyResponseError(null)
         setErrorDismissed(true)
       },
-      headerActions:
-        tunnelReconnecting || streamAutoRecovering ? (
+      headerActions: sessionExpired ? (
+        <Pressable
+          onPress={handleSignInAgain}
+          accessibilityRole="button"
+          accessibilityLabel="Sign in again to continue this conversation"
+          className="rounded-md border border-destructive/30 px-2 py-1"
+        >
+          <Text className="text-xs font-medium text-destructive">Sign in</Text>
+        </Pressable>
+      ) : tunnelReconnecting || streamAutoRecovering ? (
           <Text
             className={cn(
               "text-xs font-medium",
@@ -10500,10 +10640,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
     streamAutoRecovering,
     isTunnelError,
     tunnelReconnecting,
+    sessionExpired,
     errorBannerExpanded,
     errorBannerText,
     errorBannerNeedsReadMore,
     handleRetry,
+    handleSignInAgain,
     clearActiveInstance,
     usageLimitView,
   ])
