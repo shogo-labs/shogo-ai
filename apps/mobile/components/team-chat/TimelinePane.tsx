@@ -689,10 +689,14 @@ export function TimelinePane(props: TimelinePaneProps) {
           {runningDock}
         </View>
         {/* The slot keeps its height so the composer never jumps, but it draws
-            nothing until someone types — and then only a pill behind the text. */}
+            nothing until someone types — and then only a pill behind the text.
+            The pill's own vertical padding is taken back out of the layout
+            (`-my-1`): the slot reserves 20px of content and a padded one-line
+            pill is 24px, which would grow the footer by 4px and move both the
+            composer and the transcript the moment someone starts typing. */}
         <View pointerEvents="box-none" className="min-h-[30px] justify-end pb-2.5" style={typingColumnStyle} testID="typing-slot">
           {typingRow ? (
-            <View className="self-start rounded-full bg-background/90 px-2.5 py-1">{typingRow}</View>
+            <View className="-my-1 self-start rounded-full bg-background/90 px-2.5 py-1">{typingRow}</View>
           ) : null}
         </View>
         {!showComposer ? (

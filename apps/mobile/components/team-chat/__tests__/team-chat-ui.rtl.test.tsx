@@ -2396,6 +2396,27 @@ describe('running agents in a channel', () => {
     expect(slot.textContent).toContain('Pat is typing')
     expect(slot.querySelector('[class*="bg-background/90"]')).not.toBeNull()
   })
+
+  test('the typing pill cannot grow the slot it sits in', () => {
+    renderChannel()
+    const empty = shim('typing-slot')!
+    expect(empty.textContent).toBe('')
+
+    cleanup()
+    typingUsers.push({ id: 'pat', name: 'Pat' })
+    renderChannel()
+    const filled = shim('typing-slot')!
+    expect(filled.textContent).toContain('Pat is typing')
+
+    // Same box either way — the footer, and the composer under it, measure the
+    // same height, so #1776's "the composer never jumps" still holds.
+    expect(filled.className).toBe(empty.className)
+    // The pill's 1-unit vertical padding is cancelled in layout, so its 24px
+    // stays inside the 20px the 30px slot reserves below its 10px gap.
+    const pill = filled.querySelector('[class*="bg-background/90"]') as HTMLElement
+    expect(pill.className.split(' ')).toContain('-my-1')
+    expect(pill.className.split(' ')).toContain('py-1')
+  })
 })
 
 describe('MessageRow image attachments', () => {
