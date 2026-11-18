@@ -213,8 +213,10 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     const message = page.getByTestId("project-message-agent").or(page.getByRole("button", { name: "Message agent" })).first()
     await expect(message).toBeVisible({ timeout: 60_000 })
     await message.click()
-    // A chat with an agent is a project chat now, not a DM (SHO-412).
-    await expect(page).toHaveURL(new RegExp(`/project-chat/${seed.dmAgentProjectId}`), { timeout: 30_000 })
+    // A chat with an agent is a project chat now, not a DM (SHO-412). From a
+    // project's own header the chat opens beside the project (`wide`), so the
+    // route is the project with the session, not `/project-chat/<id>`.
+    await expect(page).toHaveURL(new RegExp(`/projects/${seed.dmAgentProjectId}`), { timeout: 30_000 })
     await expect(page).toHaveURL(/chatSessionId=/, { timeout: 30_000 })
   })
 
