@@ -167,6 +167,32 @@ export async function buildCheckoutTrialFields(params: {
   }
 }
 
+/**
+ * The payment card behind a subscription, read through its default payment
+ * method. Shared by the trial dedupe (one trial per card) and the Solo Founder
+ * prepaid check (SHO-428) so both read the same field the same way.
+ *
+ * Returns `null` when the subscription has no attached card — the caller
+ * decides whether that is a block or a warning.
+ */
+export async function readSubscriptionCard(
+  stripe: Stripe,
+  subscriptionId: string,
+): Promise<{ fingerprint: string | null; funding: string | null; brand: string | null; last4: string | null } | null> {
+  const sub = await stripe.subscriptions.retrieve(subscriptionId, {
+    expand: ['default_payment_method'],
+  })
+  const pm = sub.default_payment_method
+  const card = pm && typeof pm === 'object' && pm.type === 'card' ? pm.card : null
+  if (!card) return null
+  return {
+    fingerprint: card.fingerprint ?? null,
+    funding: card.funding ?? null,
+    brand: card.brand ?? null,
+    last4: card.last4 ?? null,
+  }
+}
+
 function isUniqueConstraintError(err: unknown): boolean {
   return (err as { code?: string } | null)?.code === 'P2002'
 }
@@ -214,11 +240,7 @@ export async function recordTrialStart(params: {
     return blockTrial(params, userId, TRIAL_STATUS.blockedDuplicateUser, sameUser.workspaceId)
   }
 
-  const sub = await params.stripe.subscriptions.retrieve(params.subscriptionId, {
-    expand: ['default_payment_method'],
-  })
-  const pm = sub.default_payment_method
-  const card = pm && typeof pm === 'object' && pm.type === 'card' ? pm.card : null
+  const card = await readSubscriptionCard(params.stripe, params.subscriptionId)
   const fingerprint = card?.fingerprint ?? null
   if (!fingerprint) {
     console.warn('[trial] trial started without a card fingerprint; card dedupe skipped', {

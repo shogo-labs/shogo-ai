@@ -260,19 +260,34 @@ export async function sendTrialUnavailableEmail(params: {
   workspaceName: string
   planName: string
   dashboardUrl: string
-  /** `blocked_duplicate_card` | `blocked_duplicate_user` | `blocked_prepaid_card` | null */
+  /**
+   * `blocked_duplicate_card` | `blocked_duplicate_user` | `blocked_prepaid_card`
+   * for a trial, `solo_founder_prepaid` for a refunded Solo Founder purchase.
+   */
   reason?: string | null
+  /** Override the subject/heading (the Solo Founder refund reuses this template). */
+  subjectLine?: string
+  heading?: string
+  /** Override the explanation body. */
+  reasonMessage?: string
 }): Promise<{ success: boolean; error?: string }> {
   const reasonMessage =
-    params.reason === 'blocked_prepaid_card'
-      ? "Free trials need a debit or credit card — prepaid cards can't start a trial. You can still upgrade with this card, or start the trial with a different card."
-      : "This card or account has already used a free trial. You can still subscribe without a trial."
+    params.reasonMessage ??
+    (params.reason === 'solo_founder_prepaid'
+      ? "Prepaid cards can't be used for the Solo Founder offer, so we cancelled the subscription and refunded your payment in full. You can buy it again with a credit or debit card."
+      : params.reason === 'blocked_prepaid_card'
+        ? "Free trials need a debit or credit card — prepaid cards can't start a trial. You can still upgrade with this card, or start the trial with a different card."
+        : 'This card or account has already used a free trial. You can still subscribe without a trial.')
   return sendTemplateEmail('trial-unavailable', params.to, {
     workspaceName: params.workspaceName,
     planName: params.planName,
     dashboardUrl: params.dashboardUrl,
     reason: params.reason ?? null,
     reasonMessage,
+    ...(params.subjectLine
+      ? { subjectLine: params.subjectLine }
+      : { subjectLine: `Your ${params.workspaceName} trial could not be started` }),
+    ...(params.heading ? { heading: params.heading } : {}),
   })
 }
 

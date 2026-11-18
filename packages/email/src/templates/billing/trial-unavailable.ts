@@ -17,12 +17,15 @@ export const trialUnavailableTemplate: EmailTemplate<{
   dashboardUrl: string
   reason?: string | null
   reasonMessage?: string
+  /** Subject and heading overrides: the Solo Founder path reuses this template for a refund. */
+  subjectLine?: string
+  heading?: string
   appName: string
 }> = {
   name: 'trial-unavailable',
-  subject: 'Your {{workspaceName}} trial could not be started',
+  subject: '{{subjectLine}}',
   html: wrapInLayout(`
-    <h1 class="email-h1">We couldn't start your free trial</h1>
+    <h1 class="email-h1">{{heading}}</h1>
     <p class="email-text">
       We cancelled the trial checkout for <strong>{{workspaceName}}</strong>
       ({{planName}} plan). <strong>Nothing was charged.</strong>
@@ -36,6 +39,8 @@ export const trialUnavailableTemplate: EmailTemplate<{
   `),
   defaults: {
     appName: EMAIL_CONSTANTS.APP_NAME,
+    subjectLine: 'We could not start your free trial',
+    heading: "We couldn't start your free trial",
     reasonMessage: 'This card or account has already used a free trial. You can still subscribe without a trial.',
   },
 }

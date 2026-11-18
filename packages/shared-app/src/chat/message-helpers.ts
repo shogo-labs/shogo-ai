@@ -58,6 +58,14 @@ export const ERROR_CODE_MESSAGES: Record<string, string> = {
   // the first real payment.
   overage_requires_payment: "On-demand usage starts after your first payment. Your trial includes your plan's usage limits and promo credit — add or verify a payment method to enable on-demand usage now.",
   session_expired: 'Your session has expired. Please refresh the page.',
+  // The $99 Solo Founder offer (SHO-428) refuses a purchase for a reason the
+  // buyer can act on. These codes come from /api/billing/checkout and are shown
+  // on the Billing panel by code, never as a generic failure.
+  offer_not_eligible: 'This workspace already has a paid subscription. The Solo Founder offer is for a Free workspace — cancel first, or use another workspace.',
+  already_enrolled: 'You already own the Solo Founder course. Open #course to keep going.',
+  invalid_promo_code: "That promo code is not valid for this offer. Check the code, or leave it empty to get the standard first-year price.",
+  risk_review: 'This purchase needs a review before it can go through. Contact support and we will sort it out.',
+  price_not_provisioned: 'The offer is not available for purchase yet. We have been alerted — please try again shortly.',
   internal_error: 'Something went wrong on our end. Please try again.',
   shutting_down: 'A server update is in progress. Please retry in a few seconds.',
   offline: 'Your machine is offline. Reconnect it, or continue in the cloud.',

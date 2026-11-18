@@ -37,6 +37,7 @@ import {
 import { useAuth } from '../../contexts/auth'
 import { useWorkspaceCollection, useDomainHttp } from '../../contexts/domain'
 import { api } from '../../lib/api'
+import { checkoutRedirectBase, completeNativeCheckout, redirectToCheckout } from '../../lib/stripe-checkout'
 import { clearPendingLicenseCode } from '../../lib/pending-license'
 import { purchaseSubscription, finishPurchase, restorePurchases, initIapListeners, IapError, APP_STORE_SUBSCRIPTIONS_URL } from '../../lib/iap'
 import type { IapPurchaseResult } from '../../lib/iap'
@@ -61,6 +62,7 @@ import {
   getUsageLimitNotice,
 } from '../../lib/billing-config'
 import { SeatCounter } from '../../components/billing/SeatCounter'
+import { SoloFounderCard } from '../../components/billing/SoloFounderCard'
 import { BillingHistory } from '../../components/billing/BillingHistory'
 import { useToast, Toast, ToastTitle, ToastDescription } from '../../components/ui/toast'
 import { FeatureList } from '../../components/billing/FeatureList'
@@ -492,9 +494,7 @@ export default observer(function BillingPage() {
         return
       }
 
-      const redirectBase = isNative
-        ? ExpoLinking.createURL('billing')
-        : (typeof window !== 'undefined' ? window.location.origin : undefined)
+      const redirectBase = checkoutRedirectBase()
       console.log('[Billing] checkout start', { planId, seats: safeSeats, billingInterval, isNative, redirectBase })
       trackInitiateCheckout({ planId, billingInterval, seats: safeSeats, workspaceId: currentWorkspace.id })
 
@@ -516,41 +516,15 @@ export default observer(function BillingPage() {
 
       if (data.url) {
         if (!isNative) {
-          window.location.href = data.url
+          redirectToCheckout(data.url)
         } else {
-          const scheme = ExpoLinking.createURL('')
-          console.log('[Billing] opening auth session, scheme prefix:', scheme)
-          const result = await WebBrowser.openAuthSessionAsync(data.url, scheme)
-          console.log('[Billing] auth session result:', { type: result.type, url: 'url' in result ? result.url : undefined })
-
-          if (result.type === 'success' && 'url' in result && result.url) {
-            try {
-              const qs = result.url.split('?')[1] || ''
-              const params = new URLSearchParams(qs)
-              const checkout = params.get('checkout')
-              const sessionId = params.get('session_id')
-              console.log('[Billing] parsed redirect params:', { checkout, sessionId })
-
-              if (sessionId) {
-                console.log('[Billing] verifying checkout session...')
-                try {
-                  const verifyResult = await api.verifyCheckout(http, sessionId)
-                  console.log('[Billing] verify result:', verifyResult)
-                  if (checkout === 'success') {
-                    trackPurchase({ planId: verifyResult.planId, billingInterval: verifyResult.billingInterval ?? billingInterval, seats: verifyResult.seats ?? safeSeats, value: verifyResult.amountPaid, currency: verifyResult.currency, workspaceId: currentWorkspace?.id, sessionId })
-                  }
-                } catch (verifyErr) {
-                  console.warn('[Billing] verify failed (webhook will handle):', verifyErr)
-                }
-              }
-
-              console.log('[Billing] refetching billing data...')
-              refetchSubscription()
-              refetchUsageWallet()
-            } catch (parseErr) {
-              console.warn('[Billing] error parsing redirect URL:', parseErr)
-            }
+          const { checkout, sessionId, verifiedCheckout } = await completeNativeCheckout(http, data.url)
+          if (checkout === 'success' && sessionId && verifiedCheckout) {
+            trackPurchase({ planId: verifiedCheckout.planId, billingInterval: verifiedCheckout.billingInterval ?? billingInterval, seats: verifiedCheckout.seats ?? safeSeats, value: verifiedCheckout.amountPaid, currency: verifiedCheckout.currency, workspaceId: currentWorkspace?.id, sessionId })
           }
+          console.log('[Billing] refetching billing data...')
+          refetchSubscription()
+          refetchUsageWallet()
         }
       }
     } catch (e) {
@@ -702,6 +676,18 @@ export default observer(function BillingPage() {
           </Text>
         </View>
       </View>
+
+      {/* The $99 Solo Founder offer: only for a Free workspace. iOS never shows
+          the buy panel, and the card says so itself on any native build. */}
+      {!subscription && (
+        <SoloFounderCard
+          workspaceId={currentWorkspace.id}
+          onPurchased={() => {
+            refetchSubscription()
+            refetchUsageWallet()
+          }}
+        />
+      )}
 
       {/* Signup credit + free trial status */}
       {(promoCredit && (promoCredit.availableUsd > 0 || promoCredit.pendingVerificationUsd > 0)) || trialEndsAt ? (

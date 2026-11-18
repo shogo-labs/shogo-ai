@@ -480,6 +480,7 @@ export async function applySystemPack(args: ApplyPackArgs): Promise<ApplyPackRes
             fieldsSchema: board.fields,
             postToChannel: board.postToChannel,
             requiresHumanReview: board.requiresHumanReview,
+            templateId: board.templateId,
             defaultAssigneeAgentRef: board.defaultAgent === 'workspace' ? 'workspace' : board.defaultAgent ? `project:${bindings.projects[board.defaultAgent] ?? ''}` : null,
             systemManagedBy: systemProjectId,
             managedBy: 'manifest',
