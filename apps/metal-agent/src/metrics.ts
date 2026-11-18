@@ -226,6 +226,15 @@ export const M = {
   idleSuspendedByTier: 'metal_idle_suspended_by_tier_total',
   idleReapDeferred: 'metal_idle_reap_deferred_total',
   idleWindowMs: 'metal_idle_window_ms',
+  // VMs the reaper would have suspended if their guest did not report busy:
+  // assigned, not always-on, `busy` true, and no user activity for the current
+  // idle window. A non-zero gauge is the "reports busy, does nothing" tail that
+  // held ~12% of US capacity on 2026-11-18.
+  busyIdleVms: 'metal_busy_idle_vms',
+  // Suspends/retires driven by METAL_BUSY_IDLE_CEILING_MS — a guest that kept
+  // reporting busy past the ceiling with no user activity. Counted on top of
+  // `idleSuspendedByTier`.
+  busyIdleCeilingSuspended: 'metal_busy_idle_ceiling_suspended_total',
   // Source backups taken mid-residency (pool.exportAllSource), separate from
   // the one every suspend takes.
   sourceBackupPeriodic: 'metal_source_backup_periodic_total',
