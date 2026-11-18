@@ -278,6 +278,44 @@ describe('buildWorkspaceEnv', () => {
       process.env.SECRETS_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64')
       expect((await buildWorkspaceEnv('ws-1', [], seams as any)).HOME_STATE_KEY).toBeUndefined()
     })
+
+    describe('cloud workspace-root secret store (SHO-384)', () => {
+      const savedNs = process.env.SYSTEM_NAMESPACE
+      const savedLocalMode = process.env.SHOGO_LOCAL_MODE
+      beforeEach(() => {
+        // The desktop/local flag and the cluster namespace are mutually
+        // exclusive in production; a dev shell can have both exported.
+        delete process.env.SHOGO_LOCAL_MODE
+      })
+      afterEach(() => {
+        if (savedNs === undefined) delete process.env.SYSTEM_NAMESPACE
+        else process.env.SYSTEM_NAMESPACE = savedNs
+        if (savedLocalMode === undefined) delete process.env.SHOGO_LOCAL_MODE
+        else process.env.SHOGO_LOCAL_MODE = savedLocalMode
+      })
+
+      it('an in-cluster workspace runtime gets the API-side store', async () => {
+        process.env.SECRETS_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64')
+        process.env.SYSTEM_NAMESPACE = 'shogo-system'
+        const env = await buildWorkspaceEnv('ws-1', ['p1'], seams as any)
+        expect(env.SHOGO_WORKSPACE_SECRET_STORE).toBe('rest')
+        // The metal path is unchanged: the home archive carries them there.
+        const metal = await buildWorkspaceEnv('ws-1', ['p1'], { ...seams, forMetal: true } as any)
+        expect(metal.SHOGO_WORKSPACE_SECRET_STORE).toBeUndefined()
+      })
+
+      it('no store outside the cluster, so a desktop root stays its own files', async () => {
+        process.env.SECRETS_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64')
+        delete process.env.SYSTEM_NAMESPACE
+        expect((await buildWorkspaceEnv('ws-1', [], seams as any)).SHOGO_WORKSPACE_SECRET_STORE).toBeUndefined()
+      })
+
+      it('no store without a master key to seal it with', async () => {
+        delete process.env.SECRETS_ENCRYPTION_KEY
+        process.env.SYSTEM_NAMESPACE = 'shogo-system'
+        expect((await buildWorkspaceEnv('ws-1', [], seams as any)).SHOGO_WORKSPACE_SECRET_STORE).toBeUndefined()
+      })
+    })
   })
 
   describe('metal single-runtime invariant', () => {
