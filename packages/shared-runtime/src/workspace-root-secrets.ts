@@ -49,7 +49,8 @@ export const WORKSPACE_ROOT_SECRETS_MAX_BYTES = 1024 * 1024
 export const WORKSPACE_ROOT_SECRETS_MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
 
 /** Names that hold a project's local tokens. Committed templates are not secrets. */
-const WORKSPACE_SECRET_NAMES = new Set<string>(['.env', '.env.local'])
+const WORKSPACE_SECRET_NAMES_LIST: readonly string[] = ['.env', '.env.local']
+const WORKSPACE_SECRET_NAMES = new Set<string>(WORKSPACE_SECRET_NAMES_LIST)
 const WORKSPACE_SECRET_TEMPLATE_SUFFIXES = ['.example', '.sample', '.template']
 
 /**
@@ -61,6 +62,22 @@ export function isWorkspaceSecretFile(name: string): boolean {
   if (!name.startsWith('.env.')) return false
   return !WORKSPACE_SECRET_TEMPLATE_SUFFIXES.some((suffix) => name.endsWith(suffix))
 }
+
+/**
+ * gitignore rules for the names {@link isWorkspaceSecretFile} calls secrets.
+ *
+ * Derived from the same template list rather than written out by hand: the
+ * durable repo and the secrets store disagreeing about what a `.env` is is how
+ * `.env.production` ended up staged by `git add -A` while the archive treated
+ * it as a secret (SHO-384 QA round 1). Everything `.env*` is ignored and only
+ * the committed templates are re-included.
+ */
+export const WORKSPACE_SECRET_GITIGNORE_LINES: readonly string[] = [
+  '# a .env holds tokens; only the committed templates are source',
+  ...WORKSPACE_SECRET_NAMES_LIST.flatMap((name) => [name, `${name}.*`]),
+  ...WORKSPACE_SECRET_TEMPLATE_SUFFIXES.map((suffix) => `!.env${suffix}`),
+  ...WORKSPACE_SECRET_TEMPLATE_SUFFIXES.map((suffix) => `!.env.*${suffix}`),
+]
 
 /** A slot that can name a project folder without escaping the workspace. */
 const SLOT_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
@@ -114,6 +131,21 @@ export function staleWorkspaceSecretNames(live: string[], incoming: Iterable<str
 
 function decodeError(name: string): Error {
   return new Error(`workspace secret ${name} is not valid base64`)
+}
+
+/**
+ * Decode a payload's base64 content, or null when it is not base64 at all.
+ *
+ * `Buffer.from(x, 'base64')` never throws: it skips invalid characters and
+ * returns whatever prefix it managed, so a malformed `.env` would validate and
+ * then restore as an empty file. Round-tripping the decode is the only way to
+ * tell the two apart.
+ */
+export function decodeWorkspaceSecretContent(content: string): Buffer | null {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(content)) return null
+  if (content.length % 4 !== 0) return null
+  const buf = Buffer.from(content, 'base64')
+  return buf.toString('base64') === content ? buf : null
 }
 
 /**
@@ -182,12 +214,8 @@ export function applyWorkspaceSecretSlot(
   const bytes = new Map<string, Buffer>()
   for (const file of slot.files) {
     if (!isWorkspaceSecretFile(file.name)) continue
-    let buf: Buffer
-    try {
-      buf = Buffer.from(file.content, 'base64')
-    } catch {
-      throw decodeError(file.name)
-    }
+    const buf = decodeWorkspaceSecretContent(file.content)
+    if (!buf) throw decodeError(file.name)
     if (buf.byteLength > WORKSPACE_ROOT_SECRET_MAX_FILE_BYTES) continue
     incoming.add(file.name)
     bytes.set(file.name, buf)
@@ -296,12 +324,8 @@ export function validateWorkspaceRootSecrets(value: unknown): string | null {
       if (seenNames.has(file.name)) return `slot ${slot.slot} repeats ${file.name}`
       seenNames.add(file.name)
       if (typeof file.content !== 'string') return `${file.name} has no content`
-      let buf: Buffer
-      try {
-        buf = Buffer.from(file.content, 'base64')
-      } catch {
-        return decodeError(file.name).message
-      }
+      const buf = decodeWorkspaceSecretContent(file.content)
+      if (!buf) return decodeError(file.name).message
       if (buf.byteLength > WORKSPACE_ROOT_SECRET_MAX_FILE_BYTES) return `${file.name} is too large`
       totalBytes += buf.byteLength
       files += 1

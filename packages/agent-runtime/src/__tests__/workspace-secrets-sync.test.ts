@@ -113,6 +113,7 @@ describe('cold boot', () => {
     const { transport } = memoryTransport()
 
     const first = createWorkspaceRootSecretsSync(config(root), { transport, log: () => {} })
+    await first.restore()
     expect((await first.flush())?.stored).toBe(true)
 
     // A cold boot: the durable repo rebuilds the tracked tree and nothing else.
@@ -136,6 +137,7 @@ describe('cold boot', () => {
     writeFileSync(join(root, '.env.production'), 'DROP=1\n')
     const { transport } = memoryTransport()
     const sync = createWorkspaceRootSecretsSync(config(root), { transport, log: () => {} })
+    await sync.restore()
     await sync.flush()
 
     // The agent removes one of them; the export that follows records its absence.
@@ -155,6 +157,7 @@ describe('cold boot', () => {
     writeFileSync(join(root, '.env'), 'GONE=1\n')
     const { transport, peek } = memoryTransport()
     const sync = createWorkspaceRootSecretsSync(config(root), { transport, log: () => {} })
+    await sync.restore()
     await sync.flush()
     unlinkSync(join(root, '.env'))
     await sync.flush()
@@ -173,6 +176,7 @@ describe('cold boot', () => {
     writeFileSync(join(root, '.env'), 'A=1\n')
     const { transport, calls } = memoryTransport()
     const sync = createWorkspaceRootSecretsSync(config(root), { transport, log: () => {} })
+    await sync.restore()
     await sync.flush()
     const second = await sync.flush()
     expect(second?.stored).toBe(false)
@@ -182,6 +186,57 @@ describe('cold boot', () => {
     writeFileSync(join(root, '.env'), 'A=2\n')
     expect((await sync.flush())?.stored).toBe(true)
     expect(calls).toHaveLength(2)
+  })
+
+  test('a failed restore never lets the rebuilt root overwrite the stored copy', async () => {
+    const root = dir()
+    writeFileSync(join(root, '.env'), 'TOKEN=keep-me\n')
+    const mem = memoryTransport()
+    const sync = createWorkspaceRootSecretsSync(config(root), { transport: mem.transport, log: () => {} })
+    await sync.restore()
+    await sync.flush()
+    const seeded = mem.peek()!
+    expect(seeded.secrets.slots[0]!.files).toHaveLength(1)
+
+    // A cold boot: the tree is rebuilt from `git archive HEAD`, so there is no
+    // `.env` on disk, and the API is down when the runtime comes up.
+    unlinkSync(join(root, '.env'))
+    let apiDown = true
+    const flaky: WorkspaceRootSecretsTransport = {
+      async pull() {
+        if (apiDown) throw new Error('root-secrets GET HTTP 503')
+        return mem.transport.pull()
+      },
+      push: (secrets, opts) => mem.transport.push(secrets, opts),
+    }
+    const cold = createWorkspaceRootSecretsSync(config(root), { transport: flaky, log: () => {} })
+
+    expect(await cold.restore()).toBeNull()
+    // This is the destructive half: exporting here would store the rebuilt
+    // root's empty set over the user's only copy of the tokens.
+    expect(await cold.flush()).toBeNull()
+    expect(mem.peek()).toEqual(seeded)
+    expect(mem.calls).toHaveLength(1)
+
+    // The interval keeps retrying the restore, and once the API answers the
+    // tokens are back and the export is a no-op again.
+    apiDown = false
+    expect((await cold.restore())?.restored).toEqual(['root/.env'])
+    expect(readFileSync(join(root, '.env'), 'utf8')).toBe('TOKEN=keep-me\n')
+    expect((await cold.flush())?.stored).toBe(false)
+    expect(mem.peek()).toEqual(seeded)
+  })
+
+  test('a brand-new runtime with nothing stored is allowed to export', async () => {
+    const root = dir()
+    writeFileSync(join(root, '.env'), 'FIRST=1\n')
+    const mem = memoryTransport()
+    const sync = createWorkspaceRootSecretsSync(config(root), { transport: mem.transport, log: () => {} })
+    // A 204 resolves as a successful, empty pull — there is nothing to protect.
+    expect(await sync.restore()).not.toBeNull()
+    const pushed = await sync.flush()
+    expect(pushed?.stored).toBe(true)
+    expect(pushed?.files).toBe(1)
   })
 
   test('a slot the runtime does not serve is skipped, not written anywhere', async () => {

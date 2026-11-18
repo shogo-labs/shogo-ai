@@ -6,14 +6,17 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   WORKSPACE_ROOT_SECRETS_VERSION,
+  WORKSPACE_SECRET_GITIGNORE_LINES,
   WORKSPACE_SECRET_SLOT_ROOT,
   applyWorkspaceSecretSlot,
   collectWorkspaceSecretSlot,
+  decodeWorkspaceSecretContent,
   emptyWorkspaceRootSecrets,
   isWorkspaceSecretFile,
   staleWorkspaceSecretNames,
@@ -21,6 +24,7 @@ import {
   workspaceRuntimeKey,
   workspaceSecretsTag,
 } from '../workspace-root-secrets'
+import { DEFAULT_WORKSPACE_GITIGNORE } from '../repo-store'
 
 function root(prefix = 'ws-root-'): string {
   return mkdtempSync(join(tmpdir(), prefix))
@@ -36,6 +40,53 @@ describe('isWorkspaceSecretFile', () => {
     expect(isWorkspaceSecretFile('env')).toBe(false)
     expect(isWorkspaceSecretFile('.envrc')).toBe(false)
     expect(isWorkspaceSecretFile('package.json')).toBe(false)
+  })
+
+  test("the workspace's own .gitignore keeps every secret out of git and the templates in", () => {
+    // The SHO-384 QA round-1 failure: the classifier called `.env.production` a
+    // secret while `DEFAULT_WORKSPACE_GITIGNORE` let `git add -A` stage it, so
+    // plaintext tokens reached the durable repo the next cold boot rebuilds from.
+    // Real git, because "is this staged" is the only question that matters.
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+    const repo = root('ws-gitignore-')
+    git(repo, 'init', '-q', '-b', 'main')
+    git(repo, 'config', 'user.name', 'Shogo Agent')
+    git(repo, 'config', 'user.email', 'agent@shogo.ai')
+    writeFileSync(join(repo, '.gitignore'), DEFAULT_WORKSPACE_GITIGNORE)
+
+    const secrets = ['.env', '.env.local', '.env.production', '.env.development', '.env.staging', '.env.test']
+    const templates = ['.env.example', '.env.sample', '.env.template', '.env.production.example']
+    for (const name of [...secrets, ...templates]) writeFileSync(join(repo, name), 'TOKEN=1\n')
+    for (const name of secrets) expect(isWorkspaceSecretFile(name)).toBe(true)
+    for (const name of templates) expect(isWorkspaceSecretFile(name)).toBe(false)
+
+    git(repo, 'add', '-A')
+    const staged = git(repo, 'diff', '--cached', '--name-only').split('\n').filter(Boolean).sort()
+    // `.gitignore` itself is source; the six secrets must not be in the list.
+    expect(staged).toEqual(['.gitignore', ...templates].sort())
+  })
+
+  test('the ignore rules are derived from the name rule, so they cannot drift', () => {
+    const rules = new Set(WORKSPACE_SECRET_GITIGNORE_LINES)
+    expect(rules.has('.env')).toBe(true)
+    expect(rules.has('.env.*')).toBe(true)
+    for (const suffix of ['.example', '.sample', '.template']) {
+      expect(rules.has(`!.env${suffix}`)).toBe(true)
+      expect(rules.has(`!.env.*${suffix}`)).toBe(true)
+    }
+  })
+})
+
+describe('decodeWorkspaceSecretContent', () => {
+  test('round-trips real base64 and refuses what Buffer.from would silently accept', () => {
+    const encoded = Buffer.from('A=1\n').toString('base64')
+    expect(decodeWorkspaceSecretContent(encoded)?.toString()).toBe('A=1\n')
+    expect(decodeWorkspaceSecretContent('')).toEqual(Buffer.alloc(0))
+    // `Buffer.from` never throws: each of these would decode to '' or a prefix.
+    for (const bad of ['not base64!', 'QUJD=', 'QQ', 'A=1']) {
+      expect(decodeWorkspaceSecretContent(bad)).toBeNull()
+    }
   })
 })
 

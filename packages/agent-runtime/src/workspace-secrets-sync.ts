@@ -14,6 +14,10 @@
  *     would be replaced by either of those.
  *   - {@link start} then re-exports on an interval and on shutdown, so an edit
  *     survives `SIGTERM` and, mostly, a hard kill.
+ *   - Nothing is exported until a restore has succeeded in this process. The
+ *     rebuilt root has no `.env*`, so exporting first would store an empty set
+ *     over the only copy — and a single 5xx at boot is enough to make that
+ *     happen. While unpulled, the interval retries the restore instead.
  *
  * The file semantics (replace, prune, 0600) are the shared one in
  * `@shogo/shared-runtime/workspace-root-secrets`, which is also what the metal
@@ -145,9 +149,13 @@ export function createWorkspaceRootSecretsTransport(
 export interface WorkspaceRootSecretSync {
   /** Pull the stored set into the live roots. Safe to call once, after the tree is final. */
   restore(): Promise<{ restored: string[]; removed: string[]; skippedSlots: string[] } | null>
-  /** Push the live set. `stored: false` when nothing changed. */
+  /**
+   * Push the live set. `stored: false` when nothing changed, and null — without
+   * touching the store — when no restore has succeeded yet, or when one is
+   * still failing.
+   */
   flush(): Promise<{ stored: boolean; files: number } | null>
-  /** Push on an interval; returns the stop function. */
+  /** Push on an interval, retrying a failed restore while there has not been one. */
   start(): () => void
   stop(): void
 }
@@ -166,10 +174,24 @@ export function createWorkspaceRootSecretsSync(
   let lastTag: string | null = null
   let timer: ReturnType<typeof setInterval> | null = null
   let running = false
+  let restoring = false
+  /**
+   * Whether a pull has succeeded in this process. Exporting before that would
+   * be destructive, not merely redundant: a cold boot rebuilds the root from
+   * the durable repo, which has no `.env*`, so the first flush would store an
+   * empty set over the only copy that exists. One 5xx at boot is enough to get
+   * there, which is why this is a gate and not a warning.
+   */
+  let pulled = false
 
   async function restore() {
+    if (restoring) return null
+    restoring = true
     try {
       const result = await restoreWorkspaceRootSecrets({ transport, roots: cfg.roots, log })
+      // A 204 ("nothing stored") resolves empty and still counts: a brand-new
+      // runtime has nothing to lose and must be allowed to export.
+      pulled = true
       if (result.restored.length || result.removed.length) {
         log(
           `[workspace-secrets] restored ${result.restored.length} .env file(s)` +
@@ -178,12 +200,19 @@ export function createWorkspaceRootSecretsSync(
       }
       return result
     } catch (err: any) {
+      pulled = false
       console.warn('[workspace-secrets] restore failed:', err?.message ?? err)
       return null
+    } finally {
+      restoring = false
     }
   }
 
   async function flush() {
+    if (!pulled) {
+      console.warn('[workspace-secrets] not exporting: no successful restore yet this process')
+      return null
+    }
     if (running) return null
     running = true
     try {
@@ -206,6 +235,15 @@ export function createWorkspaceRootSecretsSync(
   function start(): () => void {
     stop()
     timer = setInterval(() => {
+      // Until the store has been read once, the interval's job is the restore,
+      // not the export: retrying costs one request and keeps the stored copy
+      // alive across an API restart at boot.
+      if (!pulled) {
+        void restore().then(() => {
+          if (pulled) void flush()
+        })
+        return
+      }
       void flush()
     }, cfg.intervalMs)
     // Never hold the process open for a sync of a handful of files.

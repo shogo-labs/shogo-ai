@@ -259,6 +259,7 @@ model Workspace {
   socialComments         SocialComment[]
   socialAutomations      SocialAutomation[]
   socialAutomationRuns   SocialAutomationRun[]
+  rootSecrets            WorkspaceRootSecret[]
 
   @@index([parentWorkspaceId])
   @@index([machineInstanceId])
@@ -5070,6 +5071,9 @@ model WorkspaceRootSecret {
   id         String   @id @default(uuid())
   /// `ws:<workspaceId>` for a merged workspace runtime, `ws:proj:<anchor>` for a project-anchored one.
   runtimeKey String   @unique
+  /// The owning workspace, so deleting it drops the blob. The key can be a
+  /// project-anchored one, so it cannot be read back out of `runtimeKey`.
+  workspaceId String
   /// Content fingerprint of the payload, so an unchanged runtime skips the upload.
   tag        String
   /// `v1:<iv>:<authTag>:<ciphertext>`, base64. AAD is the runtime key.
@@ -5079,5 +5083,8 @@ model WorkspaceRootSecret {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
   @@map("workspace_root_secrets")
 }

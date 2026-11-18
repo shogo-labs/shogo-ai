@@ -3349,7 +3349,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (!body) return c.json({ error: { code: 'bad_request', message: 'A JSON payload is required' } }, 400)
     const { writeRootSecrets, RootSecretsTooLargeError } = await import('../lib/runtime/root-secrets')
     try {
-      const result = await writeRootSecrets(resolved.runtimeKey, body)
+      const result = await writeRootSecrets({ runtimeKey: resolved.runtimeKey, workspaceId }, body)
       return c.json({ ok: true, ...result })
     } catch (err: any) {
       if (err instanceof RootSecretsTooLargeError) {

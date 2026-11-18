@@ -18,7 +18,6 @@ process.env.SECRETS_ENCRYPTION_KEY = randomBytes(32).toString('base64')
 const {
   WORKSPACE_ROOT_SECRETS_KEY_PURPOSE,
   RootSecretsDecryptError,
-  deleteRootSecrets,
   openRootSecrets,
   readRootSecrets,
   sealRootSecrets,
@@ -44,8 +43,13 @@ function payload(entries: Record<string, string>, slot = 'root') {
   }
 }
 
+/** Every row needs an owning workspace, because the row cascades with it. */
+let ws = ''
+const scope = (runtimeKey: string) => ({ runtimeKey, workspaceId: ws })
+
 afterAll(async () => {
   await prisma.workspaceRootSecret.deleteMany({})
+  await prisma.workspace.delete({ where: { id: ws } }).catch(() => {})
   await prisma.$disconnect().catch(() => {})
   const { rmSync } = await import('node:fs')
   rmSync(dir, { recursive: true, force: true })
@@ -85,7 +89,7 @@ describe('seal / open', () => {
 
 describe('store', () => {
   test('writes a row whose ciphertext holds none of the plaintext', async () => {
-    await writeRootSecrets('ws:store-1', payload({ '.env': 'TOKEN=abc123\n' }))
+    await writeRootSecrets(scope('ws:store-1'), payload({ '.env': 'TOKEN=abc123\n' }))
     const row = await prisma.workspaceRootSecret.findUnique({ where: { runtimeKey: 'ws:store-1' } })
     expect(row).not.toBeNull()
     expect(row!.ciphertext).not.toContain('TOKEN')
@@ -95,41 +99,59 @@ describe('store', () => {
     const stored = await readRootSecrets('ws:store-1')
     expect(stored?.secrets.slots[0]!.files[0]!.name).toBe('.env')
     expect(Buffer.from(stored!.secrets.slots[0]!.files[0]!.content, 'base64').toString()).toBe('TOKEN=abc123\n')
-    await deleteRootSecrets('ws:store-1')
   })
 
   test('an unchanged payload writes nothing, a changed one replaces the row', async () => {
-    const first = await writeRootSecrets('ws:store-2', payload({ '.env': 'A=1\n' }))
+    const first = await writeRootSecrets(scope('ws:store-2'), payload({ '.env': 'A=1\n' }))
     expect(first.stored).toBe(true)
     const before = await prisma.workspaceRootSecret.findUnique({ where: { runtimeKey: 'ws:store-2' } })
 
-    const again = await writeRootSecrets('ws:store-2', payload({ '.env': 'A=1\n' }))
+    const again = await writeRootSecrets(scope('ws:store-2'), payload({ '.env': 'A=1\n' }))
     expect(again.stored).toBe(false)
     expect(again.tag).toBe(first.tag)
     const afterNoop = await prisma.workspaceRootSecret.findUnique({ where: { runtimeKey: 'ws:store-2' } })
     expect(afterNoop!.updatedAt.getTime()).toBe(before!.updatedAt.getTime())
 
-    const changed = await writeRootSecrets('ws:store-2', payload({ '.env': 'A=2\n' }))
+    const changed = await writeRootSecrets(scope('ws:store-2'), payload({ '.env': 'A=2\n' }))
     expect(changed.stored).toBe(true)
     expect(changed.tag).not.toBe(first.tag)
     const rows = await prisma.workspaceRootSecret.count({ where: { runtimeKey: 'ws:store-2' } })
     expect(rows).toBe(1)
-    await deleteRootSecrets('ws:store-2')
   })
 
   test('an empty slot is stored as a real, readable payload (a deleted .env stays deleted)', async () => {
-    await writeRootSecrets('ws:store-3', payload({ '.env': 'A=1\n' }))
-    await writeRootSecrets('ws:store-3', { version: 1, slots: [{ slot: 'root', files: [] }] })
+    await writeRootSecrets(scope('ws:store-3'), payload({ '.env': 'A=1\n' }))
+    await writeRootSecrets(scope('ws:store-3'), { version: 1, slots: [{ slot: 'root', files: [] }] })
     const stored = await readRootSecrets('ws:store-3')
     expect(stored!.secrets.slots).toEqual([{ slot: 'root', files: [] }])
-    await deleteRootSecrets('ws:store-3')
   })
 
   test('refuses a payload that names a non-secret file', async () => {
     await expect(
-      writeRootSecrets('ws:store-4', payload({ 'MEMORY.md': 'hi' })),
+      writeRootSecrets(scope('ws:store-4'), payload({ 'MEMORY.md': 'hi' })),
     ).rejects.toThrow('non-secret file name')
     expect(await readRootSecrets('ws:store-4')).toBeNull()
+  })
+
+  test('refuses content that is not base64 instead of storing an empty .env', async () => {
+    const notBase64 = {
+      version: 1 as const,
+      slots: [{ slot: 'root', files: [{ name: '.env', content: 'not base64!', mode: 0o600, mtimeMs: 0 }] }],
+    }
+    await expect(writeRootSecrets(scope('ws:store-5'), notBase64)).rejects.toThrow('not valid base64')
+    // `Buffer.from(x, 'base64')` would have accepted this and stored a 0-byte
+    // `.env`, which restores as an empty file on the next cold boot.
+    expect(await readRootSecrets('ws:store-5')).toBeNull()
+  })
+
+  test('the row cascades away with its workspace', async () => {
+    const doomed = await prisma.workspace.create({
+      data: { name: 'Doomed', slug: `doomed-${crypto.randomUUID().slice(0, 8)}`, kind: 'team' },
+    })
+    await writeRootSecrets({ runtimeKey: `ws:${doomed.id}`, workspaceId: doomed.id }, payload({ '.env': 'A=1\n' }))
+    expect(await prisma.workspaceRootSecret.count({ where: { workspaceId: doomed.id } })).toBe(1)
+    await prisma.workspace.delete({ where: { id: doomed.id } })
+    expect(await prisma.workspaceRootSecret.count({ where: { workspaceId: doomed.id } })).toBe(0)
   })
 
   test('a runtime that never exported reads null instead of inventing one', async () => {
@@ -137,7 +159,11 @@ describe('store', () => {
   })
 })
 
-beforeAll(() => {
+beforeAll(async () => {
+  const created = await prisma.workspace.create({
+    data: { name: 'Secrets store', slug: `secrets-store-${crypto.randomUUID().slice(0, 8)}`, kind: 'team' },
+  })
+  ws = created.id
   // The table the migrations created must be the one Prisma knows.
   expect(prisma.workspaceRootSecret).toBeDefined()
 })

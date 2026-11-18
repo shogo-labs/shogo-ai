@@ -144,10 +144,12 @@ export interface WriteRootSecretsResult {
  * roots it already knows.
  */
 export async function writeRootSecrets(
-  runtimeKey: string,
+  scope: { runtimeKey: string; workspaceId: string },
   payload: unknown,
 ): Promise<WriteRootSecretsResult> {
+  const { runtimeKey, workspaceId } = scope
   if (!runtimeKey) throw new Error('writeRootSecrets requires a runtimeKey')
+  if (!workspaceId) throw new Error('writeRootSecrets requires a workspaceId')
   const invalid = validateWorkspaceRootSecrets(payload)
   if (invalid) throw new Error(invalid)
   const secrets = payload as WorkspaceRootSecrets
@@ -164,14 +166,16 @@ export async function writeRootSecrets(
   const size = Buffer.byteLength(JSON.stringify(secrets), 'utf8')
   await prisma.workspaceRootSecret.upsert({
     where: { runtimeKey },
-    create: { runtimeKey, tag, ciphertext, size },
-    update: { tag, ciphertext, size },
+    create: { runtimeKey, workspaceId, tag, ciphertext, size },
+    update: { workspaceId, tag, ciphertext, size },
   })
   return { stored: true, tag }
 }
 
-/** Drop a runtime's stored secrets (workspace delete, or a torn-down runtime). */
-export async function deleteRootSecrets(runtimeKey: string): Promise<void> {
-  const { prisma } = await import('../prisma')
-  await prisma.workspaceRootSecret.deleteMany({ where: { runtimeKey } })
-}
+/**
+ * There is deliberately no `deleteRootSecrets(runtimeKey)` here. The row
+ * carries its `workspaceId` and cascades, so workspace delete drops it on every
+ * path (CRUD route, admin route, desktop local route, a workspace merge)
+ * without a call site to remember. A runtime that stops is not a reason to
+ * delete its blob — that is exactly what the next cold boot restores from.
+ */

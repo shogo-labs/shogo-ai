@@ -15,6 +15,7 @@
 CREATE TABLE "workspace_root_secrets" (
     "id" TEXT NOT NULL,
     "runtimeKey" TEXT NOT NULL,
+    "workspaceId" TEXT NOT NULL,
     "tag" TEXT NOT NULL,
     "ciphertext" TEXT NOT NULL,
     "size" INTEGER NOT NULL,
@@ -26,3 +27,13 @@ CREATE TABLE "workspace_root_secrets" (
 
 -- CreateIndex
 CREATE UNIQUE INDEX "workspace_root_secrets_runtimeKey_key" ON "workspace_root_secrets"("runtimeKey");
+
+-- CreateIndex
+CREATE INDEX "workspace_root_secrets_workspaceId_idx" ON "workspace_root_secrets"("workspaceId");
+
+-- AddForeignKey
+-- The row belongs to the workspace, so every delete path (the CRUD route, the
+-- admin route, the desktop local route, a workspace merge) drops the sealed
+-- blob with it. A project-anchored runtime key (`ws:proj:<anchor>`) cannot be
+-- turned back into a workspace id, so the owner is recorded rather than parsed.
+ALTER TABLE "workspace_root_secrets" ADD CONSTRAINT "workspace_root_secrets_workspaceId_fkey" FOREIGN KEY ("workspaceId") REFERENCES "workspaces"("id") ON DELETE CASCADE ON UPDATE CASCADE;
