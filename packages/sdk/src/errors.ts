@@ -14,6 +14,8 @@ export type ShogoErrorCode =
   | 'CONFLICT'
   | 'RATE_LIMITED'
   | 'SERVER_ERROR'
+  // Billing-specific
+  | 'TRIAL_SEAT_LIMIT'
   // Auth-specific
   | 'AUTH_INVALID_CREDENTIALS'
   | 'AUTH_USER_EXISTS'
@@ -25,6 +27,14 @@ export type ShogoErrorCode =
   | 'DB_ENTITY_NOT_FOUND'
   | 'DB_QUERY_ERROR'
   | 'DB_CONSTRAINT_VIOLATION'
+
+/**
+ * Server error codes the SDK promotes to a typed `ShogoErrorCode`. Anything not
+ * listed here falls back to the HTTP status mapping in `fromStatus`.
+ */
+const SERVER_ERROR_CODES: Record<string, ShogoErrorCode> = {
+  trial_seat_limit: 'TRIAL_SEAT_LIMIT',
+}
 
 export class ShogoError extends Error {
   readonly code: ShogoErrorCode
@@ -60,7 +70,13 @@ export class ShogoError extends Error {
       500: 'SERVER_ERROR',
     }
 
-    const code = codeMap[status] || 'UNKNOWN'
+    // A route that refuses for a specific, actionable reason sends its own code
+    // in `{ error: { code } }`. Keep it instead of flattening to the status code,
+    // so callers can branch on the reason rather than parse the message.
+    const serverCode = (details as { error?: { code?: unknown } } | null | undefined)?.error?.code
+    const mapped = typeof serverCode === 'string' ? SERVER_ERROR_CODES[serverCode] : undefined
+
+    const code = mapped ?? codeMap[status] ?? 'UNKNOWN'
     const defaultMessage = message || `Request failed with status ${status}`
 
     return new ShogoError(defaultMessage, code, status, details)

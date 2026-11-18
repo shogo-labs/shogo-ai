@@ -165,7 +165,7 @@ import { resetCloudKeyState } from './lib/cloud-key-state'
 import { userProfileRoutes } from './routes/local-user'
 import { localCloudBillingRoutes } from './routes/local-cloud-billing'
 import { adminSignupRiskRoutes } from './routes/admin-signup-risk'
-import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, getChatAttachmentCap, getMonthlyIncludedForPlanAndPrice, promoCreditAvailableUsd } from './config/usage-plans'
+import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, TRIAL_MAX_SEATS, TRIAL_SEAT_LIMIT_CODE, getChatAttachmentCap, getMonthlyIncludedForPlanAndPrice, promoCreditAvailableUsd, trialSeatLimitMessage } from './config/usage-plans'
 import { meetingRoutes } from './routes/meetings'
 import { localProjectsRoutes } from './routes/local-projects'
 import { projectAttachmentRoutes } from './routes/project-attachments'
@@ -7972,6 +7972,20 @@ function notifyTrialBlocked(workspaceId: string, planId: string, reason: string 
     .catch((err: any) => console.error('[Webhook] trial-unavailable email failed:', err?.message ?? err))
 }
 
+/**
+ * The 400 body for a trial checkout that asked for more seats than a trial may
+ * hold (SHO-422). One code, one message, on both checkout routes.
+ */
+function trialSeatLimitResponse(c: any) {
+  return c.json({
+    error: {
+      code: TRIAL_SEAT_LIMIT_CODE,
+      message: trialSeatLimitMessage(TRIAL_MAX_SEATS),
+      maxSeats: TRIAL_MAX_SEATS,
+    },
+  }, 400)
+}
+
 app.post('/api/billing/checkout', async (c) => {
   try {
     if (!stripe) {
@@ -8004,6 +8018,11 @@ app.post('/api/billing/checkout', async (c) => {
     }
     // Basic is single-user, always 1 seat. Business defaults to 1, can be more.
     const seats = checkoutPlanId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
+
+    // A trial never holds more than TRIAL_MAX_SEATS seats (SHO-422). Refuse
+    // rather than quietly charging them: they asked for a trial, and a paid
+    // checkout is a different decision. Paid checkouts keep any seat count.
+    if (wantsTrial && seats > TRIAL_MAX_SEATS) return trialSeatLimitResponse(c)
 
     // Resolved from the configured id, or by `lookup_key` when the v2.5.0
     // price's id has not been deployed as an env var yet (SHO-339). Never
@@ -8058,6 +8077,8 @@ app.post('/api/billing/checkout', async (c) => {
 
     return c.json({ sessionId: session.id, url: session.url }, 200)
   } catch (error: any) {
+    // The second seat check in `buildCheckoutTrialFields` (SHO-422).
+    if (error?.code === TRIAL_SEAT_LIMIT_CODE) return trialSeatLimitResponse(c)
     console.error('[Billing] Checkout error:', error)
     return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
   }
@@ -8212,6 +8233,9 @@ app.get('/api/billing/workspace-plan', async (c) => {
       // Free = 100 MB per chat attachment; Basic+ = 500 MB.
       limits: {
         chatAttachmentBytes: getChatAttachmentCap(sub?.planId ?? effective),
+        // Most seats a trial may hold (SHO-422), so the client never hardcodes
+        // the number: the trial button disables above it.
+        trialMaxSeats: TRIAL_MAX_SEATS,
       },
     })
   } catch (error: any) {
@@ -8271,6 +8295,11 @@ app.post('/api/billing/workspace-checkout', async (c) => {
     }
     const seats = checkoutPlanId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
 
+    // A trial never holds more than TRIAL_MAX_SEATS seats (SHO-422). Checked
+    // before `createPaidWorkspace` so a refused trial leaves no orphan
+    // workspace behind.
+    if (wantsTrial && seats > TRIAL_MAX_SEATS) return trialSeatLimitResponse(c)
+
     const priceId = await resolveCheckoutPriceId(stripe, checkoutPlanId as 'basic' | 'pro' | 'business', billingInterval as 'monthly' | 'annual')
     if (!priceId) {
       return c.json({ error: { code: 'price_not_provisioned', message: `The ${checkoutPlanId} ${billingInterval} price has not been created in Stripe yet` } }, 503)
@@ -8326,6 +8355,8 @@ app.post('/api/billing/workspace-checkout', async (c) => {
 
     return c.json({ sessionId: session.id, url: session.url, workspaceId: newWorkspaceId }, 200)
   } catch (error: any) {
+    // The second seat check in `buildCheckoutTrialFields` (SHO-422).
+    if (error?.code === TRIAL_SEAT_LIMIT_CODE) return trialSeatLimitResponse(c)
     console.error('[Billing] Workspace checkout error:', error)
     return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
   }
@@ -8462,6 +8493,27 @@ app.post('/api/billing/verify-checkout', async (c) => {
       current_period_end?: number
     }
 
+    // Trial seat cap (SHO-422): a session opened before the deploy, or one made
+    // in the Stripe dashboard, can arrive here with more seats than a trial may
+    // hold. Block it like any other refused trial and report the refusal.
+    if (stripeSubscription.status === 'trialing') {
+      const cap = await trialService.enforceTrialSeatCap({
+        stripe,
+        event: 'created',
+        workspaceId,
+        planId,
+        subscriptionId: stripeSubscription.id,
+        stripeCustomerId: session.customer as string,
+        seats,
+        seatItemId: selectPlanItem(stripeSubscription as any)?.id ?? null,
+      })
+      if (cap.action === 'blocked') {
+        console.warn('[Billing] Trial blocked over the seat cap:', workspaceId, seats)
+        notifyTrialBlocked(workspaceId, planId, 'blocked_seat_limit')
+      }
+      if (cap.action !== 'none') return trialSeatLimitResponse(c)
+    }
+
     const now = Date.now()
     const currentPeriodStart = stripeSubscription.current_period_start
       ? stripeSubscription.current_period_start * 1000
@@ -8582,6 +8634,71 @@ app.post('/api/billing/portal', async (c) => {
     return c.json({ url: session.url }, 200)
   } catch (error: any) {
     console.error('[Billing] Portal error:', error)
+    return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+/**
+ * End a free trial and pay now (SHO-422).
+ *
+ * A trial is capped at `TRIAL_MAX_SEATS` seats, so the way to buy more is to
+ * end the trial and start the paid plan. Stripe charges the subscription
+ * immediately; the existing `invoice.payment_succeeded` path does the
+ * trial -> paid conversion (`markTrialConverted`, monthly allocation). If the
+ * charge fails the subscription goes `past_due`/`incomplete` per Stripe and
+ * this route says so — it never reports success it did not get.
+ *
+ * Owners and billing admins only. No agent tool: this is a billing-page action.
+ */
+app.post('/api/billing/end-trial', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+
+    const auth = c.get('auth') as any
+    const userId = auth?.userId
+    if (!userId) return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+
+    const url = new URL(c.req.url)
+    const body = await c.req.json().catch(() => ({} as any))
+    const workspaceId = url.searchParams.get('workspaceId') ?? body?.workspaceId
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+
+    const member = await prisma.member.findFirst({
+      where: { workspaceId, userId, projectId: null },
+      select: { role: true, isBillingAdmin: true },
+    })
+    if (!billingService.canManageBilling(member)) {
+      return c.json({ error: { code: 'forbidden', message: 'Only owners and billing admins can end a trial' } }, 403)
+    }
+
+    const billingWorkspaceId = await billingService.resolveBillingWorkspaceId(workspaceId)
+    const sub = await prisma.subscription.findFirst({
+      where: { workspaceId: billingWorkspaceId, status: 'trialing' },
+      select: { stripeSubscriptionId: true },
+    })
+    if (!sub) {
+      return c.json({ error: { code: 'not_trialing', message: 'This workspace is not on a free trial.' } }, 409)
+    }
+
+    const { status, latestInvoiceStatus } = await trialService.endTrialNow({
+      stripe,
+      stripeSubscriptionId: sub.stripeSubscriptionId,
+    })
+
+    console.log('[Billing] Trial ended by owner:', {
+      workspaceId: billingWorkspaceId,
+      subscriptionId: sub.stripeSubscriptionId,
+      status,
+      latestInvoiceStatus,
+    })
+
+    return c.json({ ok: true, status, latestInvoiceStatus }, 200)
+  } catch (error: any) {
+    console.error('[Billing] End-trial error:', error)
     return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
   }
 })
@@ -9023,7 +9140,7 @@ app.post('/api/webhooks/stripe', async (c) => {
         const metaPlanId = resolved?.planId
         if (wsId && metaPlanId) {
           try {
-            const quantity = resolved.seats
+            let quantity = resolved.seats
             const billingInterval = (subscription.metadata?.billingInterval as 'monthly' | 'annual') || 'monthly'
 
             // Free trial: enforce one trial per card/user before provisioning.
@@ -9046,6 +9163,30 @@ app.post('/api/webhooks/stripe', async (c) => {
                 break
               }
             }
+
+            // Trial seat cap (SHO-422). A trialing subscription never holds more
+            // than TRIAL_MAX_SEATS seats: `created` over the cap is blocked like
+            // any other refused trial, `updated` over it is clamped back.
+            if (subscription.status === 'trialing') {
+              const cap = await trialService.enforceTrialSeatCap({
+                stripe,
+                event: event.type === 'customer.subscription.created' ? 'created' : 'updated',
+                workspaceId: wsId,
+                planId: metaPlanId,
+                subscriptionId: subscription.id,
+                stripeCustomerId: subscription.customer as string,
+                seats: quantity,
+                seatItemId: selectPlanItem(subscription as any)?.id ?? null,
+              })
+              if (cap.action === 'blocked') {
+                console.warn('[Webhook] Trial blocked over the seat cap:', wsId, quantity)
+                notifyTrialBlocked(wsId, metaPlanId, 'blocked_seat_limit')
+                break
+              }
+              if (cap.action === 'already_blocked') break
+              if (cap.action === 'clamped') quantity = cap.seats
+            }
+
             const now = Date.now()
             const currentPeriodStart = subscription.current_period_start
               ? subscription.current_period_start * 1000
@@ -9323,6 +9464,25 @@ app.post('/api/webhooks/stripe', async (c) => {
                 }
                 break
               }
+              // Trial seat cap (SHO-422): a session opened before the deploy, or
+              // one made in the Stripe dashboard, can still arrive with 123
+              // seats. Block it like any other refused trial — no wallet.
+              const cap = await trialService.enforceTrialSeatCap({
+                stripe,
+                event: 'created',
+                workspaceId,
+                planId,
+                subscriptionId: stripeSubscription.id,
+                stripeCustomerId: session.customer as string,
+                seats: checkoutSeats,
+                seatItemId: planItem?.id ?? null,
+              })
+              if (cap.action === 'blocked') {
+                console.warn('[Webhook] Trial blocked over the seat cap:', workspaceId, checkoutSeats)
+                notifyTrialBlocked(workspaceId, planId, 'blocked_seat_limit')
+                break
+              }
+              if (cap.action === 'already_blocked') break
             }
 
             await billingService.syncFromStripe({
