@@ -138,7 +138,7 @@ import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import {
   isLiveTurnOtherThan,
   probeChatTurn,
-  probeChatTurnStatus,
+  probeChatTurnBounded,
   type ChatTurnSnapshot,
   type ChatTurnStatus,
 } from "./probe-turn-status"
@@ -5217,7 +5217,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           .filter((p) => p.notify && !p.stale && !isFinishedProcess(p))
           .map((p) => p.id ?? p.runId)
       },
-      probeTurn: () => {
+      probeTurn: async () => {
         const turnUrl = buildChatTurnUrl(
           API_URL!,
           projectId,
@@ -5225,12 +5225,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
           currentSessionId,
           chatWorkspaceId,
         )
-        return probeChatTurnStatus({
-          url: turnUrl,
-          fetch: expoFetch,
-          headers: nativeHeaders ? nativeHeaders() : undefined,
-          credentials: Platform.OS === "web" ? "include" : undefined,
-        })
+        return (
+          await probeChatTurnBounded({
+            url: turnUrl,
+            fetch: expoFetch,
+            headers: nativeHeaders ? nativeHeaders() : undefined,
+            credentials: Platform.OS === "web" ? "include" : undefined,
+          })
+        ).status
       },
       // Reload first: the live stream carries only the reply, and the wake's
       // `[Task update]` row has to be in place for it to attach to.
@@ -5295,7 +5297,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }
 
     void pollForLateTurn({
-      probe: () => {
+      probe: async () => {
         const turnUrl = buildChatTurnUrl(
           API_URL!,
           projectId,
@@ -5303,12 +5305,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
           currentSessionId,
           chatWorkspaceId,
         )
-        return probeChatTurnStatus({
-          url: turnUrl,
-          fetch: expoFetch,
-          headers: nativeHeaders ? nativeHeaders() : undefined,
-          credentials: Platform.OS === "web" ? "include" : undefined,
-        })
+        return (
+          await probeChatTurnBounded({
+            url: turnUrl,
+            fetch: expoFetch,
+            headers: nativeHeaders ? nativeHeaders() : undefined,
+            credentials: Platform.OS === "web" ? "include" : undefined,
+          })
+        ).status
       },
       attach: () => guardedAutoResumeStream("live-turn-probe"),
       reload: refreshPersistedResponse,
@@ -7777,7 +7781,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         let snapshot: ChatTurnSnapshot | null = null
         try {
           if (probeUrl) {
-            snapshot = await probeChatTurn({
+            snapshot = await probeChatTurnBounded({
               url: probeUrl,
               fetch: expoFetch,
               headers: nativeHeaders ? nativeHeaders() : undefined,
@@ -7790,10 +7794,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
           stallTripProbeRef.current = false
         }
 
-        // The world may have moved on while the probe was in flight.
+        // The world may have moved on while the probe was in flight. A probe
+        // answers about ONE turn: if turn A finished during the probe and a
+        // queued send already started turn B, A's terminal answer must not
+        // `stop()` B — the session check alone let that through.
         if (
           !isStreamingRef.current ||
-          currentSessionIdRef.current !== stalledSessionId
+          currentSessionIdRef.current !== stalledSessionId ||
+          currentTurnIdRef.current !== stalledTurnId
         ) {
           return
         }
@@ -8913,12 +8921,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
             currentSessionId,
             chatWorkspaceId,
           )
-          turnStatus = await probeChatTurnStatus({
-            url: turnUrl,
-            fetch: expoFetch,
-            headers: nativeHeaders ? nativeHeaders() : undefined,
-            credentials: Platform.OS === "web" ? "include" : undefined,
-          })
+          turnStatus = (
+            await probeChatTurnBounded({
+              url: turnUrl,
+              fetch: expoFetch,
+              headers: nativeHeaders ? nativeHeaders() : undefined,
+              credentials: Platform.OS === "web" ? "include" : undefined,
+            })
+          ).status
         } catch {
           turnStatus = "unknown"
         }
@@ -9019,7 +9029,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               recoverySessionId,
               chatWorkspaceId,
             )
-            snapshot = await probeChatTurn({
+            snapshot = await probeChatTurnBounded({
               url: turnUrl,
               fetch: expoFetch,
               headers: nativeHeaders ? nativeHeaders() : undefined,

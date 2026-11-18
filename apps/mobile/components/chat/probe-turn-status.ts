@@ -25,6 +25,8 @@
  * already represented in the history we just loaded — no need to replay.
  */
 
+import { STALL_PROBE_TIMEOUT_MS } from "../../lib/chat-stall-watchdog"
+
 /**
  * Snapshot status as exposed by the runtime's `/agent/chat/:id/turn` route
  * (forwarded by the API's `/projects/:projectId/chat/:chatSessionId/turn`).
@@ -144,6 +146,35 @@ export async function probeChatTurnStatus(
   opts: ProbeTurnStatusOptions,
 ): Promise<ChatTurnStatus> {
   return (await probeChatTurn(opts)).status
+}
+
+/**
+ * The probe every stall/recovery path must use: `probeChatTurn` with a hard
+ * upper bound on how long the caller can wait.
+ *
+ * Without a bound a half-open socket never settles the fetch, and the caller
+ * cannot distinguish "the runtime is slow" from "this request will never come
+ * back": the watchdog's in-flight latch stays taken (every 15 s tick returns
+ * early) and the recovery loop sits inside its "recovering" state forever —
+ * the exact "nothing comes back" the probe exists to prevent. An abort reads
+ * as `answered: false`, which every caller already handles as "the runtime
+ * said nothing".
+ *
+ * `opts.signal` wins when the caller passes one (it owns the lifetime), and
+ * the timer is always cleared so a fast probe leaves nothing behind.
+ */
+export async function probeChatTurnBounded(
+  opts: ProbeTurnStatusOptions,
+  timeoutMs: number = STALL_PROBE_TIMEOUT_MS,
+): Promise<ChatTurnSnapshot> {
+  if (opts.signal) return probeChatTurn(opts)
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await probeChatTurn({ ...opts, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 const UNKNOWN_TURN: ChatTurnSnapshot = { status: "unknown", turnId: null, answered: false }

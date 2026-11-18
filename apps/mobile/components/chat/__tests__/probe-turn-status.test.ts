@@ -20,6 +20,7 @@ import {
   isLiveTurnOtherThan,
   normalizeTurnStatus,
   probeChatTurn,
+  probeChatTurnBounded,
   probeChatTurnStatus,
   shouldAttachLiveStream,
   type ChatTurnStatus,
@@ -225,31 +226,43 @@ describe("probeChatTurn", () => {
 describe("isLiveTurnOtherThan", () => {
   test("the turn Stop cancelled is not a turn to wait for", () => {
     expect(
-      isLiveTurnOtherThan({ status: "active", turnId: "turn-1" }, "turn-1"),
+      isLiveTurnOtherThan(
+        { status: "active", turnId: "turn-1", answered: true },
+        "turn-1",
+      ),
     ).toBe(false)
   })
 
   test("another live turn still holds a send back", () => {
     expect(
-      isLiveTurnOtherThan({ status: "active", turnId: "turn-2" }, "turn-1"),
+      isLiveTurnOtherThan(
+        { status: "active", turnId: "turn-2", answered: true },
+        "turn-1",
+      ),
     ).toBe(true)
   })
 
   test("a finished turn never holds a send back", () => {
     for (const status of ["completed", "failed", "aborted", "unknown"] as const) {
-      expect(isLiveTurnOtherThan({ status, turnId: "turn-2" }, "turn-1")).toBe(
-        false,
-      )
+      expect(
+        isLiveTurnOtherThan({ status, turnId: "turn-2", answered: true }, "turn-1"),
+      ).toBe(false)
     }
   })
 
   test("falls back to the status when either id is missing", () => {
-    expect(isLiveTurnOtherThan({ status: "active", turnId: null }, "turn-1")).toBe(
-      true,
-    )
-    expect(isLiveTurnOtherThan({ status: "active", turnId: "turn-2" }, null)).toBe(
-      true,
-    )
+    expect(
+      isLiveTurnOtherThan(
+        { status: "active", turnId: null, answered: true },
+        "turn-1",
+      ),
+    ).toBe(true)
+    expect(
+      isLiveTurnOtherThan(
+        { status: "active", turnId: "turn-2", answered: true },
+        null,
+      ),
+    ).toBe(true)
   })
 })
 
@@ -297,5 +310,53 @@ describe("probeChatTurnStatus retries", () => {
     const fetch = flakyFetch(5, "throw", 200, { status: "active" })
     expect(await probeChatTurnStatus({ url: "http://x/turn", fetch, signal: controller.signal, retryDelaysMs: [1, 1] })).toBe("unknown")
     expect(fetch.calls()).toBe(1)
+  })
+})
+
+describe("probeChatTurnBounded", () => {
+  /**
+   * A socket that is half-open: the request never settles on its own. This is
+   * what left the stall watchdog's in-flight latch taken forever and parked the
+   * recovery loop inside "recovering" (Sentry REACT-5Z / ANDROID-V).
+   */
+  function hungFetch() {
+    const fn = ((_url: string, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal
+        const fail = () => reject(new Error("The operation was aborted"))
+        // Real fetch rejects at once for a signal that is already aborted;
+        // waiting for the event would hang the test, not the probe.
+        if (signal?.aborted) fail()
+        else signal?.addEventListener("abort", fail)
+      })) as unknown as typeof globalThis.fetch
+    return fn
+  }
+
+  test("a fetch that never settles resolves as unanswered within the bound", async () => {
+    const started = Date.now()
+    const snapshot = await probeChatTurnBounded({ url: "http://x/turn", fetch: hungFetch() }, 20)
+    expect(snapshot).toEqual({ status: "unknown", turnId: null, answered: false })
+    expect(Date.now() - started).toBeLessThan(2_000)
+  })
+
+  test("a probe the caller bounds itself is left alone", async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const snapshot = await probeChatTurnBounded(
+      { url: "http://x/turn", fetch: hungFetch(), signal: controller.signal },
+      60_000,
+    )
+    expect(snapshot.answered).toBe(false)
+  })
+
+  test("a normal answer passes through unchanged", async () => {
+    const fetch = (async () =>
+      ({ ok: true, status: 200, async json() { return { status: "active", turnId: "turn-1" } } }) as any
+    ) as unknown as typeof globalThis.fetch
+    expect(await probeChatTurnBounded({ url: "http://x/turn", fetch }, 20)).toEqual({
+      status: "active",
+      turnId: "turn-1",
+      answered: true,
+    })
   })
 })
