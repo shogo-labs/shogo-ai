@@ -278,10 +278,12 @@ describe('Apple sign-in', () => {
 })
 
 describe('email sign-in', () => {
-  it('reports a failed sign-in with the email provider tag', async () => {
+  it('reports a server fault with the email provider tag', async () => {
     const errors: Array<{ error: unknown; context: AuthErrorContext }> = []
     const client = fakeAuthClient({ cookieStored: false })
-    client.signIn.email = async () => ({ data: null, error: { message: 'Invalid password', status: 401 } })
+    // A 5xx is a fault. An expected rejection (401 wrong password, 422 blocked
+    // sign-up) is not and must stay out of `onAuthError` — see auth-error.test.tsx.
+    client.signIn.email = async () => ({ data: null, error: { message: 'Internal server error', status: 500 } })
     const probe = await renderProvider(client, (error, context) => errors.push({ error, context }))
 
     await act(async () => { await probe.signIn('user@example.com', 'nope').catch(() => {}) })

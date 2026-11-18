@@ -7,7 +7,7 @@
  * Everything here is pure. `useActivityFeed` feeds it, `ActivityFeed` renders
  * it.
  */
-import type { ActiveChatTurn, AgentTask } from './api'
+import type { ActiveChatTurn, AgentTask, PersonalWorkspaceActivity } from './api'
 import { readableAgentTaskError, taskStatusLabel } from './agent-task-ui'
 import { conversationLabel } from './team-chat-nav'
 import type { InboxItem, SentMessage } from './team-chat-api'
@@ -153,17 +153,110 @@ export function taskEntry(task: AgentTask, now = Date.now()): ActivityEntry {
   }
 }
 
-export function chatEntry(chat: ActiveChatTurn): ActivityEntry {
+export function chatEntry(chat: ActiveChatTurn, now = Date.now()): ActivityEntry {
+  const agent = chat.agentName?.trim() || null
+  const where = chat.conversationName
+    ? `#${chat.conversationName}`
+    : chat.projectHidden
+      ? 'Companion'
+      : chat.projectName || 'Workspace chat'
+  // Who is running, where, and for how long: the part that tells two runs of
+  // the same agent apart. The old fixed sentence said nothing and repeated the
+  // section header instead.
+  const second = [agent, where, elapsedLabel(chat.startedAt, now)]
+    .filter((part): part is string => !!part)
+    .join(' · ')
   return {
     id: `chat:${chat.chatSessionId}:${chat.turnId}`,
     source: 'agent',
     kind: 'chat',
-    title: chat.sessionName,
-    context: chat.projectHidden ? 'Companion' : chat.projectName || 'Workspace chat',
-    preview: 'An agent is responding in this chat.',
+    title: chatTitle(chat),
+    context: second,
+    preview: '',
     at: time(chat.startedAt),
     unread: false,
     agent: { state: 'running', chat },
+  }
+}
+
+/** `#shogo-dev: ` in front of every channel session's stored name. */
+const SESSION_CHANNEL_RE = /^#[^:\n]{1,80}:\s*/
+/** Old sessions stored the unresolved mention token as the literal `@agent`. */
+const GENERIC_AGENT_RE = /^@agent\s+/i
+
+/**
+ * What a run is called on one line. A card thread reads as its card; anything
+ * else drops the channel prefix and the tag that woke the agent, which are the
+ * same on every run in that thread and used to fill the row on their own.
+ */
+export function chatTitle(chat: Pick<ActiveChatTurn, 'sessionName' | 'agentName' | 'card'>): string {
+  const card = chat.card
+  if (card?.key) return card.title ? `${card.key} · ${card.title}` : card.key
+  const stored = (chat.sessionName ?? '').trim()
+  const withoutChannel = stored.replace(SESSION_CHANNEL_RE, '').trim()
+  const agent = chat.agentName?.trim()
+  let rest = withoutChannel
+  if (agent && rest.toLowerCase().startsWith(`@${agent.toLowerCase()}`)) rest = rest.slice(agent.length + 1).trim()
+  rest = rest.replace(GENERIC_AGENT_RE, '').trim()
+  return rest || withoutChannel || stored || 'Chat'
+}
+
+/** How long work has been running, in the shape the Activity cards use. */
+export function elapsedLabel(from: string | null | undefined, now = Date.now()): string {
+  const epoch = time(from)
+  if (!epoch) return '—'
+  const minutes = Math.max(0, Math.floor((now - epoch) / 60_000))
+  if (minutes < 1) return '<1m'
+  if (minutes < 60) return `${minutes}m`
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+}
+
+/** The agent a row belongs to, so two runs of one agent can sit together. */
+function agentOf(entry: ActivityEntry): string {
+  return (entry.agent?.chat?.agentName ?? entry.agent?.task?.projectName ?? '').trim()
+}
+
+/**
+ * Running chats in reading order: one agent's runs together, each newest
+ * first. The Activity cards use the same order as the feed's strip.
+ */
+export function sortRunningChats(chats: ActiveChatTurn[]): ActiveChatTurn[] {
+  return [...chats].sort(
+    (a, b) => (a.agentName ?? '').trim().localeCompare((b.agentName ?? '').trim()) || time(b.startedAt) - time(a.startedAt),
+  )
+}
+
+/** Whether a running row offers a stop: never for a viewer, and only for a real run. */
+export function canStopRunningChat(
+  chat: Pick<ActiveChatTurn, 'canStop' | 'messageId' | 'chatSessionId'>,
+): boolean {
+  if (chat.canStop === false) return false
+  return !!(chat.messageId || chat.chatSessionId)
+}
+
+/**
+ * The run behind a `chat_turn` activity item, in the shape `/active-chats`
+ * returns, so every surface (Activity feed, Activity screen, companion
+ * Activity) names, times and stops a run with the same helpers instead of
+ * each rendering the raw stored session name.
+ */
+export function chatFromActivityItem(item: PersonalWorkspaceActivity): ActiveChatTurn {
+  return {
+    chatSessionId: item.chatSessionId ?? '',
+    turnId: item.turnId ?? item.id,
+    sessionName: item.sessionName ?? '',
+    isPrimary: item.isPrimary ?? false,
+    projectId: item.projectId ?? null,
+    projectName: item.projectName ?? null,
+    projectHidden: item.projectHidden ?? false,
+    startedAt: item.startedAt ?? item.createdAt,
+    agentName: item.agentName ?? null,
+    card: item.card ?? null,
+    canStop: item.canStop,
+    messageId: item.messageId ?? null,
+    conversationId: item.conversationId ?? null,
+    conversationName: item.conversationName ?? null,
+    threadRootId: item.threadRootId ?? null,
   }
 }
 
@@ -212,17 +305,22 @@ export function buildFeed({ inbox, tasks, activeChats, sent = [], filter = 'all'
   const all = [
     ...inbox.map(inboxEntry),
     ...tasks.map((t) => taskEntry(t, now)),
-    ...activeChats.map(chatEntry),
+    ...activeChats.map((chat) => chatEntry(chat, now)),
     ...sent.map(sentEntry),
   ]
   const shown = all.filter((e) => matchesFilter(e, filter) && (!unreadOnly || e.unread))
   const isRunning = (e: ActivityEntry) => e.agent?.state === 'running' || e.agent?.state === 'queued'
   const byTime = (a: ActivityEntry, b: ActivityEntry) => b.at - a.at
+  // Running work is a status, not an event, so the strip is ordered for
+  // reading rather than by recency: one agent's runs next to each other, each
+  // newest first, so two runs of the same agent differ by title and elapsed.
+  const byAgentThenTime = (a: ActivityEntry, b: ActivityEntry) =>
+    agentOf(a).localeCompare(agentOf(b)) || b.at - a.at
   return {
     // Work in progress is a status, not an event, so it never sits among the
     // history. Unread-only hides it too: running work has nothing to read. Sent
     // is not mail either — what you sent is the whole list.
-    running: unreadOnly || filter === 'sent' ? [] : shown.filter(isRunning).sort(byTime),
+    running: unreadOnly || filter === 'sent' ? [] : shown.filter(isRunning).sort(byAgentThenTime),
     entries: shown.filter((e) => !isRunning(e)).sort(byTime),
   }
 }
