@@ -26,11 +26,13 @@ export const TRIAL_STATUS = {
   ended: 'ended',
   blockedDuplicateCard: 'blocked_duplicate_card',
   blockedDuplicateUser: 'blocked_duplicate_user',
+  blockedPrepaidCard: 'blocked_prepaid_card',
 } as const
 
 const BLOCKED_STATUSES: readonly string[] = [
   TRIAL_STATUS.blockedDuplicateCard,
   TRIAL_STATUS.blockedDuplicateUser,
+  TRIAL_STATUS.blockedPrepaidCard,
 ]
 
 export interface TrialEligibility {
@@ -100,6 +102,7 @@ export function trialCheckoutParams(
 ): {
   payment_method_collection?: 'always'
   payment_method_types?: Stripe.Checkout.SessionCreateParams.PaymentMethodType[]
+  payment_method_options?: Stripe.Checkout.SessionCreateParams.PaymentMethodOptions
   subscription_data?: Partial<Stripe.Checkout.SessionCreateParams.SubscriptionData>
   metadata?: Record<string, string>
 } {
@@ -107,6 +110,11 @@ export function trialCheckoutParams(
   return {
     payment_method_collection: 'always',
     payment_method_types: ['card'],
+    // Make the issuer authenticate the cardholder whenever the card supports
+    // 3D Secure. Fake numbers (`incorrect_number`) and stolen cards fail at
+    // checkout instead of at our first overage invoice. Trial checkouts only;
+    // paid checkouts are unchanged.
+    payment_method_options: { card: { request_three_d_secure: 'any' } },
     subscription_data: {
       trial_period_days: trialDays,
       trial_settings: { end_behavior: { missing_payment_method: 'cancel' } },
@@ -138,6 +146,7 @@ export async function buildCheckoutTrialFields(params: {
   subscription_data?: Record<string, unknown>
   payment_method_collection?: 'always'
   payment_method_types?: Stripe.Checkout.SessionCreateParams.PaymentMethodType[]
+  payment_method_options?: Stripe.Checkout.SessionCreateParams.PaymentMethodOptions
 }> {
   const { affiliate } = params
   const eligible = params.wantsTrial
@@ -154,6 +163,7 @@ export async function buildCheckoutTrialFields(params: {
     ...(subscriptionData && { subscription_data: subscriptionData }),
     ...(trial.payment_method_collection && { payment_method_collection: trial.payment_method_collection }),
     ...(trial.payment_method_types && { payment_method_types: trial.payment_method_types }),
+    ...(trial.payment_method_options && { payment_method_options: trial.payment_method_options }),
   }
 }
 
@@ -208,13 +218,21 @@ export async function recordTrialStart(params: {
     expand: ['default_payment_method'],
   })
   const pm = sub.default_payment_method
-  const fingerprint =
-    pm && typeof pm === 'object' && pm.type === 'card' ? (pm.card?.fingerprint ?? null) : null
+  const card = pm && typeof pm === 'object' && pm.type === 'card' ? pm.card : null
+  const fingerprint = card?.fingerprint ?? null
   if (!fingerprint) {
     console.warn('[trial] trial started without a card fingerprint; card dedupe skipped', {
       workspaceId: params.workspaceId,
       subscriptionId: params.subscriptionId,
     })
+  }
+
+  // Prepaid cards can't start a trial: they carry no recoverable balance, so a
+  // trial that runs up overage on one is uncollectable (the KZ prepaid card in
+  // the Nov 2026 fraud batch). Checkout can't filter by funding type, so this
+  // is enforced here. Prepaid stays allowed for normal paid checkout.
+  if (card?.funding === 'prepaid') {
+    return blockTrial(params, userId, TRIAL_STATUS.blockedPrepaidCard, null)
   }
 
   if (fingerprint) {
@@ -265,7 +283,10 @@ async function blockTrial(
     stripeCustomerId: string
   },
   userId: string,
-  status: typeof TRIAL_STATUS.blockedDuplicateCard | typeof TRIAL_STATUS.blockedDuplicateUser,
+  status:
+    | typeof TRIAL_STATUS.blockedDuplicateCard
+    | typeof TRIAL_STATUS.blockedDuplicateUser
+    | typeof TRIAL_STATUS.blockedPrepaidCard,
   matchedWorkspaceId: string | null,
 ): Promise<'blocked'> {
   await params.stripe.subscriptions.cancel(params.subscriptionId)
@@ -282,12 +303,25 @@ async function blockTrial(
     },
     update: { status, stripeSubscriptionId: params.subscriptionId },
   })
-  console.warn('[trial] blocked duplicate trial', {
+  console.warn('[trial] blocked trial', {
     status,
     workspaceId: params.workspaceId,
     matchedWorkspaceId,
   })
   return 'blocked'
+}
+
+/**
+ * The status written for a blocked trial (`blocked_duplicate_card`,
+ * `blocked_duplicate_user`, `blocked_prepaid_card`), or null. `recordTrialStart`
+ * returns only `'blocked'`; the webhook reads this to tell the owner *why*.
+ */
+export async function getTrialBlockStatus(workspaceId: string): Promise<string | null> {
+  const row = await prisma.trialRedemption.findUnique({
+    where: { workspaceId },
+    select: { status: true },
+  })
+  return row?.status ?? null
 }
 
 async function workspaceOwnerUserId(workspaceId: string): Promise<string | null> {

@@ -53,6 +53,10 @@ export const ERROR_CODE_MESSAGES: Record<string, string> = {
   // free allowance at all (see `lib/signup-trust.ts` in the API).
   email_verification_required: "Verify your email to start using AI. Check your inbox for the verification link, or resend it from Settings.",
   account_review_required: "Your account is under review. Contact support if you think this is a mistake.",
+  // Overage is on and the plan is paid, but the card has never been charged
+  // (a trialing subscription whose first invoice is $0). Overage starts after
+  // the first real payment.
+  overage_requires_payment: "On-demand usage starts after your first payment. Your trial includes your plan's usage limits and promo credit — add or verify a payment method to enable on-demand usage now.",
   session_expired: 'Your session has expired. Please refresh the page.',
   internal_error: 'Something went wrong on our end. Please try again.',
   shutting_down: 'A server update is in progress. Please retry in a few seconds.',
@@ -279,6 +283,7 @@ export type UsageLimitCode =
   | 'overage_payment_pending'
   | 'email_verification_required'
   | 'account_review_required'
+  | 'overage_requires_payment'
 
 const USAGE_LIMIT_CODES: Record<string, UsageLimitCode> = {
   usage_limit_reached: 'usage_limit_reached',
@@ -288,6 +293,7 @@ const USAGE_LIMIT_CODES: Record<string, UsageLimitCode> = {
   overage_payment_pending: 'overage_payment_pending',
   email_verification_required: 'email_verification_required',
   account_review_required: 'account_review_required',
+  overage_requires_payment: 'overage_requires_payment',
 }
 
 /**

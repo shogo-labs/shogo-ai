@@ -6009,7 +6009,59 @@ export class MetalWarmPool {
     const target = Math.min(Math.floor(targetMiB), cap)
     if (!(target > 0)) return 'unchanged'
     const fromMiB = this.driveProvisioner.sizeMiB(path)
-    if (fromMiB >= target) return 'unchanged'
+    if (fromMiB >= target) {
+      // The file is already big enough — but the guest may never have seen it.
+      // A grow whose PATCH /drives failed (SHO-401) leaves the file grown and
+      // the guest at the old size, and every later open would otherwise answer
+      // 'unchanged' forever. Compare against what the guest actually mounts and
+      // converge when it is clearly behind.
+      const guest = await this.guestDriveUsage(a)
+      if (!guest) return 'unchanged'
+      const guestMiB = Math.floor(guest.totalBytes / (1024 * 1024))
+      if (!this.guestIsBehind(fromMiB, guestMiB)) return 'unchanged'
+      return this.driveLock.run(a.handle.id, async () => {
+        const currentFile = this.driveProvisioner.sizeMiB(path)
+        const nowGuest = await this.guestDriveUsage(a)
+        if (!nowGuest) return 'unchanged'
+        const nowGuestMiB = Math.floor(nowGuest.totalBytes / (1024 * 1024))
+        if (!this.guestIsBehind(currentFile, nowGuestMiB)) return 'unchanged'
+
+        const t0 = Date.now()
+        let frozen = false
+        try {
+          const freeze = await this.guestDriveOp(a, 'freeze')
+          if (freeze === 'unsupported') {
+            console.warn(`[pool] guest for ${a.projectId} has no /pool/workspace-drive — not converging the drive`)
+            return 'unsupported'
+          }
+          frozen = true
+          // No ftruncate: the file is already the right size. Just tell the VM
+          // its backing file changed, then let it resize the filesystem.
+          await new FcApi(a.handle.socketPath).patchDrive('workspace', path)
+          await this.guestDriveOp(a, 'thaw')
+          frozen = false
+          await this.guestDriveOp(a, 'resize')
+          metrics.inc(`${M.workspaceDriveGrow}{result="converged"}`)
+          metrics.gauge(M.workspaceDriveGrowMs, Date.now() - t0)
+          console.log(
+            `[pool] converged workspace drive for ${a.projectId} ${nowGuestMiB}MiB → ${currentFile}MiB ` +
+              `(guest was behind the file, ${Date.now() - t0}ms)`,
+          )
+          return { fromMiB: nowGuestMiB, toMiB: currentFile }
+        } catch (err: any) {
+          metrics.inc(`${M.workspaceDriveGrow}{result="error"}`)
+          console.error(
+            `[pool] workspace-drive converge for ${a.projectId} to ${currentFile}MiB failed:`,
+            err?.message ?? err,
+          )
+          throw err
+        } finally {
+          if (frozen) {
+            await this.guestDriveOp(a, 'thaw').catch(() => {})
+          }
+        }
+      })
+    }
 
     return this.driveLock.run(a.handle.id, async () => {
       // Re-read inside the lock: a queued grow may have already done the work.
@@ -6056,6 +6108,35 @@ export class MetalWarmPool {
         }
       }
     })
+  }
+
+  /**
+   * True when the guest's mounted filesystem is clearly smaller than the
+   * backing file — i.e. a grow the VM never saw. ext4 metadata makes the guest
+   * total a little under the file size, so only a shortfall of more than 5% or
+   * 1 GiB counts (SHO-401).
+   */
+  private guestIsBehind(fileMiB: number, guestMiB: number): boolean {
+    const shortMiB = fileMiB - guestMiB
+    return shortMiB > Math.max(0.05 * fileMiB, 1024)
+  }
+
+  /** GET /pool/workspace-drive on the guest — the size the VM actually mounts. */
+  private async guestDriveUsage(
+    a: AssignedVm,
+  ): Promise<{ usedBytes: number; totalBytes: number } | null> {
+    try {
+      const res = await fetch(`${a.handle.agentUrl}/pool/workspace-drive`, {
+        headers: { ...(a.runtimeToken ? { Authorization: `Bearer ${a.runtimeToken}` } : {}) },
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!res.ok) return null
+      const body = (await res.json().catch(() => ({}))) as { usedBytes?: number; totalBytes?: number }
+      if (typeof body.usedBytes !== 'number' || typeof body.totalBytes !== 'number') return null
+      return { usedBytes: body.usedBytes, totalBytes: body.totalBytes }
+    } catch {
+      return null
+    }
   }
 
   /** POST /pool/workspace-drive on the guest. `'unsupported'` on 404/409. */

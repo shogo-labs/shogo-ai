@@ -67,6 +67,7 @@ import {
   getProfile,
   listAccounts,
   listPosts,
+  moveAccount,
   presignMedia,
   searchInstagramAudio,
   socialMode,
@@ -119,6 +120,27 @@ function requireString(raw: unknown, field: string): string {
   const value = typeof raw === 'string' ? raw.trim() : ''
   if (!value) throw new SocialError(400, 'invalid_body', `${field} is required`)
   return value
+}
+
+/**
+ * The project a social call is scoped to, or `null` for the whole workspace.
+ *
+ * A project id that is not one of this workspace's projects is refused rather
+ * than silently treated as "shared": a typo must not quietly widen what an
+ * account is visible to.
+ */
+async function optionalProjectId(c: any, workspaceId: string, raw: unknown): Promise<string | null> {
+  if (raw === undefined || raw === null || raw === '') return null
+  const value = typeof raw === 'string' ? raw.trim() : ''
+  if (!value) return null
+  const project = await db.project.findFirst({
+    where: { id: value, workspaceId },
+    select: { id: true },
+  })
+  if (!project) {
+    throw new SocialError(400, 'unknown_project', 'That project is not part of this workspace.')
+  }
+  return project.id as string
 }
 
 /**
@@ -222,15 +244,49 @@ export function socialRoutes(config: SocialRoutesConfig): Hono {
     const workspaceId = c.req.param('workspaceId')
     const userId = await requireMember(c, workspaceId)
     if (userId instanceof Response) return userId
-    return c.json({ accounts: await listAccounts(workspaceId) })
+    try {
+      const projectId = await optionalProjectId(c, workspaceId, c.req.query('projectId'))
+      return c.json({ accounts: await listAccounts(workspaceId, projectId) })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
   })
 
   router.post('/workspaces/:workspaceId/social/accounts/sync', async (c) => {
     const workspaceId = c.req.param('workspaceId')
     const userId = await requireMember(c, workspaceId)
     if (userId instanceof Response) return userId
+    const body = await readJson(c)
     try {
-      return c.json({ accounts: await syncAccounts(workspaceId, await workspaceName(workspaceId)) })
+      const projectId = await optionalProjectId(c, workspaceId, body.projectId)
+      return c.json({
+        accounts: await syncAccounts(workspaceId, await workspaceName(workspaceId), projectId, {
+          // Only the sync that completes a connect names the account it
+          // produced, so only that row can be refused as another project's. A
+          // routine refresh names nothing and never fails.
+          claim: {
+            accountId: typeof body.claimAccountId === 'string' ? body.claimAccountId : undefined,
+            username: typeof body.claimUsername === 'string' ? body.claimUsername : undefined,
+          },
+        }),
+      })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  /**
+   * Move an account between projects, or back to workspace-shared (`null`).
+   * No provider call — the Zernio account does not move, only who may use it.
+   */
+  router.patch('/workspaces/:workspaceId/social/accounts/:accountId', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const userId = await requireMember(c, workspaceId)
+    if (userId instanceof Response) return userId
+    const body = await readJson(c)
+    try {
+      const projectId = await optionalProjectId(c, workspaceId, body.projectId)
+      return c.json({ account: await moveAccount(workspaceId, c.req.param('accountId'), projectId) })
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -242,6 +298,7 @@ export function socialRoutes(config: SocialRoutesConfig): Hono {
     if (userId instanceof Response) return userId
     const body = await readJson(c)
     try {
+      const projectId = await optionalProjectId(c, workspaceId, body.projectId)
       const result = await connectUrl({
         workspaceId,
         workspaceName: await workspaceName(workspaceId),
@@ -253,6 +310,7 @@ export function socialRoutes(config: SocialRoutesConfig): Hono {
         expectedUsername: body.expectedUsername,
         reconnectAccountId: body.reconnectAccountId,
         loginMethod: body.loginMethod,
+        projectId,
       })
       return c.json(result)
     } catch (err) {
@@ -336,6 +394,10 @@ export function socialRoutes(config: SocialRoutesConfig): Hono {
         accountId: requireString(body.accountId, 'accountId'),
         username: requireString(body.username, 'username'),
         displayName: typeof body.displayName === 'string' ? body.displayName : null,
+        // The project the connect was started for. Without this the claim check
+        // in `completeConnect` can never fire and a connect that lands on
+        // another project's account would silently return that row.
+        projectId: await optionalProjectId(c, workspaceId, body.projectId),
       })
       return c.json({ account })
     } catch (err) {
@@ -678,19 +740,28 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
   router.get('/workspaces/:workspaceId/social/accounts', async (c) => {
     const auth = await authorize(c)
     if (auth instanceof Response) return auth
-    return c.json({ accounts: await listAccounts(auth.workspaceId) })
+    return c.json({ accounts: await listAccounts(auth.workspaceId, auth.projectId) })
   })
 
   /**
    * Reconcile with the provider. The agent runs this before listing accounts
    * because a connect that finished in a browser writes nothing locally until
    * something syncs — without it a just-connected account looks absent.
+   *
+   * The caller's project is what a newly discovered account is stamped with, so
+   * a connect started from this project's agent lands in this project.
    */
   router.post('/workspaces/:workspaceId/social/accounts/sync', async (c) => {
     const auth = await authorize(c)
     if (auth instanceof Response) return auth
     try {
-      return c.json({ accounts: await syncAccounts(auth.workspaceId, await workspaceName(auth.workspaceId)) })
+      return c.json({
+        accounts: await syncAccounts(
+          auth.workspaceId,
+          await workspaceName(auth.workspaceId),
+          auth.projectId,
+        ),
+      })
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -713,6 +784,7 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
           expectedUsername: body.expectedUsername,
           reconnectAccountId: body.reconnectAccountId,
           loginMethod: body.loginMethod,
+          projectId: auth.projectId,
         }),
       )
     } catch (err) {
@@ -791,19 +863,24 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
     if (auth instanceof Response) return auth
     const body = await readJson(c)
     try {
-      const post = await createPost(auth.workspaceId, await workspaceName(auth.workspaceId), {
-        content: body.content,
-        accountIds: body.accountIds,
-        variants: body.variants && typeof body.variants === 'object' ? body.variants : undefined,
-        mediaUrls: body.mediaUrls,
-        scheduledFor: body.scheduledFor,
-        publishNow: body.publishNow === true,
-        draft: body.draft === true,
-        tags: body.tags,
-        tiktok: body.tiktok,
-        audio: body.audio,
-        allowDuplicate: body.allowDuplicate === true,
-      })
+      const post = await createPost(
+        auth.workspaceId,
+        await workspaceName(auth.workspaceId),
+        {
+          content: body.content,
+          accountIds: body.accountIds,
+          variants: body.variants && typeof body.variants === 'object' ? body.variants : undefined,
+          mediaUrls: body.mediaUrls,
+          scheduledFor: body.scheduledFor,
+          publishNow: body.publishNow === true,
+          draft: body.draft === true,
+          tags: body.tags,
+          tiktok: body.tiktok,
+          audio: body.audio,
+          allowDuplicate: body.allowDuplicate === true,
+        },
+        auth.projectId,
+      )
       return c.json({ post }, 201)
     } catch (err) {
       return errorResponse(c, err)
@@ -841,7 +918,7 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
     const auth = await authorize(c)
     if (auth instanceof Response) return auth
     try {
-      return c.json(await socialAnalytics(auth.workspaceId, analyticsRange(c)))
+      return c.json(await socialAnalytics(auth.workspaceId, analyticsRange(c), auth.projectId))
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -852,12 +929,16 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
   router.get('/workspaces/:workspaceId/social/inbox', async (c) => {
     const auth = await authorize(c)
     if (auth instanceof Response) return auth
-    const conversations = await listConversations(auth.workspaceId, {
-      status: c.req.query('status') ?? null,
-      platform: c.req.query('platform') ?? null,
-      unreadOnly: c.req.query('unread') === 'true' || c.req.query('unread') === '1',
-      limit: Number(c.req.query('limit') ?? 20),
-    })
+    const conversations = await listConversations(
+      auth.workspaceId,
+      {
+        status: c.req.query('status') ?? null,
+        platform: c.req.query('platform') ?? null,
+        unreadOnly: c.req.query('unread') === 'true' || c.req.query('unread') === '1',
+        limit: Number(c.req.query('limit') ?? 20),
+      },
+      auth.projectId,
+    )
     const unread = conversations.reduce((total: number, row: any) => total + (row.unreadCount ?? 0), 0)
     return c.json({ conversations, unread })
   })
@@ -867,7 +948,12 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
     if (auth instanceof Response) return auth
     try {
       return c.json(
-        await getConversation(auth.workspaceId, c.req.param('conversationId'), conversationWindow(c)),
+        await getConversation(
+          auth.workspaceId,
+          c.req.param('conversationId'),
+          conversationWindow(c),
+          auth.projectId,
+        ),
       )
     } catch (err) {
       return errorResponse(c, err)
@@ -881,10 +967,15 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
     try {
       return c.json(
         {
-          reply: await replyToConversation(auth.workspaceId, c.req.param('conversationId'), {
-            text: body.text,
-            idempotencyKey: body.idempotencyKey ?? c.req.header('idempotency-key') ?? null,
-          }),
+          reply: await replyToConversation(
+            auth.workspaceId,
+            c.req.param('conversationId'),
+            {
+              text: body.text,
+              idempotencyKey: body.idempotencyKey ?? c.req.header('idempotency-key') ?? null,
+            },
+            auth.projectId,
+          ),
         },
         201,
       )
@@ -897,11 +988,15 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
     const auth = await authorize(c)
     if (auth instanceof Response) return auth
     return c.json({
-      comments: await listComments(auth.workspaceId, {
-        platform: c.req.query('platform') ?? null,
-        status: c.req.query('status') ?? null,
-        limit: Number(c.req.query('limit') ?? 20),
-      }),
+      comments: await listComments(
+        auth.workspaceId,
+        {
+          platform: c.req.query('platform') ?? null,
+          status: c.req.query('status') ?? null,
+          limit: Number(c.req.query('limit') ?? 20),
+        },
+        auth.projectId,
+      ),
     })
   })
 
@@ -912,10 +1007,15 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
     try {
       return c.json(
         {
-          reply: await replyToComment(auth.workspaceId, c.req.param('commentId'), {
-            text: body.text,
-            idempotencyKey: body.idempotencyKey ?? c.req.header('idempotency-key') ?? null,
-          }),
+          reply: await replyToComment(
+            auth.workspaceId,
+            c.req.param('commentId'),
+            {
+              text: body.text,
+              idempotencyKey: body.idempotencyKey ?? c.req.header('idempotency-key') ?? null,
+            },
+            auth.projectId,
+          ),
         },
         201,
       )
@@ -928,11 +1028,15 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
     const auth = await authorize(c)
     if (auth instanceof Response) return auth
     return c.json({
-      automations: await listAutomations(auth.workspaceId, {
-        status: c.req.query('status') ?? null,
-        kind: c.req.query('kind') ?? null,
-        limit: Number(c.req.query('limit') ?? 50),
-      }),
+      automations: await listAutomations(
+        auth.workspaceId,
+        {
+          status: c.req.query('status') ?? null,
+          kind: c.req.query('kind') ?? null,
+          limit: Number(c.req.query('limit') ?? 50),
+        },
+        auth.projectId,
+      ),
     })
   })
 
@@ -941,7 +1045,10 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
     if (auth instanceof Response) return auth
     const body = await readJson(c)
     try {
-      return c.json({ automation: await createAutomation(auth.workspaceId, body) }, 201)
+      return c.json(
+        { automation: await createAutomation(auth.workspaceId, body, auth.projectId) },
+        201,
+      )
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -957,6 +1064,7 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
           auth.workspaceId,
           c.req.param('automationId'),
           body.status,
+          auth.projectId,
         ),
       })
     } catch (err) {
@@ -968,7 +1076,7 @@ export function agentSocialRoutes(config: AgentSocialRoutesConfig): Hono {
     const auth = await authorize(c)
     if (auth instanceof Response) return auth
     try {
-      await deleteAutomation(auth.workspaceId, c.req.param('automationId'))
+      await deleteAutomation(auth.workspaceId, c.req.param('automationId'), auth.projectId)
       return c.json({ ok: true })
     } catch (err) {
       return errorResponse(c, err)

@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { computeReclaimMiB } from './fc-api'
+import { computeReclaimMiB, FcApi } from './fc-api'
 
 describe('computeReclaimMiB', () => {
   test('reclaims available memory while leaving the floor as headroom', () => {
@@ -54,5 +54,29 @@ describe('computeReclaimMiB', () => {
     expect(
       computeReclaimMiB({ configuredMiB: 4096, availableMiB: 4096, floorMiB: 512 }),
     ).toBe(3584)
+  })
+})
+
+describe('FcApi.patchDrive', () => {
+  test('sends drive_id in the PATCH body (SHO-401)', async () => {
+    const realFetch = globalThis.fetch
+    let captured: { method?: string; path?: string; body?: any } = {}
+    globalThis.fetch = (async (url: any, init: any = {}) => {
+      captured = {
+        method: init.method,
+        path: String(url).replace(/^http:\/\/localhost/, ''),
+        body: init.body ? JSON.parse(init.body) : undefined,
+      }
+      return new Response(null, { status: 204 })
+    }) as any
+    try {
+      await new FcApi('/tmp/fake.sock').patchDrive('workspace', '/var/lib/shogo/vm1.ws.ext4')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+    expect(captured.method).toBe('PATCH')
+    expect(captured.path).toBe('/drives/workspace')
+    // Firecracker 400s with "missing field drive_id" without this.
+    expect(captured.body).toEqual({ drive_id: 'workspace', path_on_host: '/var/lib/shogo/vm1.ws.ext4' })
   })
 })

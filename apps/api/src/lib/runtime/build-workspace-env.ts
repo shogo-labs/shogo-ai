@@ -93,6 +93,8 @@ export interface BuildWorkspaceEnvOpts {
     profileName?: string | null
     agentProfile?: { name?: string | null } | null
     composioScope?: string | null
+    instanceSize?: string | null
+    runtimeDiskGiB?: number | null
   } | null>
   _loadProjectWorkspaceIds?: (projectIds: string[]) => Promise<Map<string, string>>
   _getProjectOwnerUserId?: (projectId: string) => Promise<string | undefined>
@@ -188,6 +190,7 @@ export async function buildWorkspaceEnv(
   // Workspace identity carries the base agent persona; per-project
   // AGENTS.md/MEMORY.md layering happens runtime-side (Phase 2b).
   let workspaceInstanceSize: InstanceSizeName = 'micro'
+  let workspaceRuntimeDiskGiB: number | null = null
   try {
     const loadWorkspace =
       opts._loadWorkspace ??
@@ -200,18 +203,22 @@ export async function buildWorkspaceEnv(
             kind: true,
             composioScope: true,
             instanceSize: true,
+            runtimeDiskGiB: true,
             agentProfile: { select: { name: true } },
           } as any,
         })) as {
           name?: string | null
           kind?: string | null
+          profileName?: string | null
           composioScope?: string | null
           instanceSize?: string | null
+          runtimeDiskGiB?: number | null
           agentProfile?: { name?: string | null } | null
         } | null
       })
     const ws = await loadWorkspace(workspaceId)
     if (ws?.instanceSize) workspaceInstanceSize = ws.instanceSize as InstanceSizeName
+    if (typeof ws?.runtimeDiskGiB === 'number') workspaceRuntimeDiskGiB = ws.runtimeDiskGiB
     const { normalizeWorkspaceKind } = await import('../../services/workspace.service')
     env.WORKSPACE_KIND = normalizeWorkspaceKind(ws?.kind)
     const profileName = ws?.profileName || ws?.agentProfile?.name
@@ -313,6 +320,11 @@ export async function buildWorkspaceEnv(
         requestedDiskGiB = largest((r) => r.workspaceDiskGiB)
         requestedMemMiB = largest((r) => r.vmMemoryMiB)
         requestedVcpus = largest((r) => r.vmVcpus)
+      }
+      // A bare `ws:<id>` runtime has its own disk setting (SHO-401): the
+      // workspace's runtimeDiskGiB wins over the largest member's request.
+      if (!opts.anchorProjectId && typeof workspaceRuntimeDiskGiB === 'number') {
+        requestedDiskGiB = Math.max(requestedDiskGiB ?? 0, workspaceRuntimeDiskGiB)
       }
       env.SHOGO_VM_DISK_MIB = String(resolveWorkspaceDiskMiB(requestedDiskGiB, workspaceInstanceSize))
       // Picked machine size (Project.vmMemoryMiB), the largest member's. The

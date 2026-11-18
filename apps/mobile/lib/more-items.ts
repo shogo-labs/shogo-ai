@@ -14,11 +14,12 @@ export interface MoreItem {
   href: string
 }
 
-export function moreItems(opts: { kind: 'personal' | 'team'; marketplace: boolean; canvasesHidden?: boolean; tasksHidden?: boolean; workBoards?: boolean; social?: boolean }): MoreItem[] {
-  // Usage and cost optimizer: every workspace kind, local included.
-  const items: MoreItem[] = [
-    { id: 'analytics', icon: 'analytics', title: 'Analytics', subtitle: 'Workspace usage and the cost optimizer', href: '/(app)/analytics' },
-  ]
+export function moreItems(opts: { kind: 'personal' | 'team'; marketplace: boolean; canvasesHidden?: boolean; tasksHidden?: boolean; workBoards?: boolean; social?: boolean; analytics?: boolean }): MoreItem[] {
+  // Usage and cost optimizer: workspace owners/admins only, local included.
+  const items: MoreItem[] = []
+  if (opts.analytics ?? true) {
+    items.push({ id: 'analytics', icon: 'analytics', title: 'Analytics', subtitle: 'Workspace usage and the cost optimizer', href: '/(app)/analytics' })
+  }
   if (opts.kind === 'team') {
     if (opts.workBoards) items.push({ id: 'work', icon: 'work', title: 'My work', subtitle: 'Your cards across every board', href: '/(app)/work' })
     if (!(opts.tasksHidden ?? TASKS_NAV_HIDDEN)) items.push({ id: 'tasks', icon: 'tasks', title: 'Tasks', subtitle: 'Work assigned to you and to your agents', href: '/(app)/tasks' })

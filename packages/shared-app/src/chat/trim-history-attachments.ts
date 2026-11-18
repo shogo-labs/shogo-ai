@@ -36,7 +36,8 @@ interface AnyPart {
   [key: string]: unknown
 }
 
-interface AnyMessage {
+/** The shape either helper rewrites: a message whose parts may hold files. */
+export interface ChatHistoryMessage {
   role?: string
   parts?: AnyPart[]
   [key: string]: unknown
@@ -67,7 +68,7 @@ function stubNote(part: AnyPart): string {
  * attachments become stubs. Returns the same array when nothing changes, so a
  * transcript with no legacy attachments costs nothing.
  */
-export function trimLegacyInlineAttachments<M extends AnyMessage>(
+export function trimLegacyInlineAttachments<M extends ChatHistoryMessage>(
   messages: M[],
   options: {
     keepImageBytes?: number

@@ -26,6 +26,9 @@
  *     itself is held (a high-risk signup that has not verified, or one that
  *     verified and is still clustered). A held account gets no free allowance
  *     at all — see `lib/signup-trust.ts`. Paid tiers are never held.
+ *   - `overage_requires_payment`: overage is on and the plan is paid, but the
+ *     card has never been charged (a trialing subscription whose first invoice
+ *     is $0). Overage starts after the first real payment.
  *   - `usage_limit_reached`: the generic case — no overage configured at
  *     all (or an uncapped/free wallet was never found), so the window is
  *     just the hard stop.
@@ -36,6 +39,7 @@ export type UsageBlockReason =
   | 'overage_payment_pending'
   | 'email_verification_required'
   | 'account_review_required'
+  | 'overage_requires_payment'
   | 'usage_limit_reached'
 
 export interface BalanceCheck {
@@ -81,6 +85,12 @@ export function usageLimitErrorPayload(reason: UsageBlockReason | undefined): { 
       return {
         code: 'account_review_required',
         message: 'Your account is under review. Contact support if you think this is a mistake.',
+      }
+    case 'overage_requires_payment':
+      return {
+        code: 'overage_requires_payment',
+        message:
+          "On-demand usage starts after your first payment. Your trial includes your plan's usage limits and promo credit — add or verify a payment method to enable on-demand usage now.",
       }
     default:
       return {

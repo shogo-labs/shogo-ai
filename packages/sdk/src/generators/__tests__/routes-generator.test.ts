@@ -38,6 +38,16 @@ const mockWorkspaceModel: PrismaModel = {
   ],
 }
 
+const mockProjectWithRelationModel: PrismaModel = {
+  name: 'Project',
+  dbName: null,
+  fields: [
+    { name: 'id', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: true, isUnique: true, hasDefaultValue: true },
+    { name: 'name', kind: 'scalar', type: 'String', isRequired: true, isList: false, isId: false, isUnique: false, hasDefaultValue: false },
+    { name: 'tasks', kind: 'object', type: 'Task', isRequired: true, isList: true, isId: false, isUnique: false, hasDefaultValue: false },
+  ],
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -145,7 +155,6 @@ describe('Routes Generator', () => {
 
         expect(result!.code).toContain('if (result?.data) {')
         expect(result!.code).toContain('where = result.data.where || where')
-        expect(result!.code).toContain('include = result.data.include || include')
         expect(result!.code).toContain('orderBy = result.data.orderBy || orderBy')
       })
 
@@ -154,8 +163,21 @@ describe('Routes Generator', () => {
 
         expect(result!.code).toContain('prisma.project.findMany({')
         expect(result!.code).toContain('where,')
-        expect(result!.code).toContain('include,')
         expect(result!.code).toContain('orderBy,')
+      })
+
+      it('should omit `include` for a model without relations', () => {
+        // `include?: never` on a relation-free model, so passing anything at
+        // all is a TS2322. Models with relations keep it.
+        const noRelations = generateModelRoutes(mockProjectModel)!
+        expect(noRelations.code).not.toContain('let include')
+        expect(noRelations.code).not.toContain('include = result.data.include')
+        expect(noRelations.code).not.toContain('          include,')
+
+        const withRelations = generateModelRoutes(mockProjectWithRelationModel)!
+        expect(withRelations.code).toContain('let include: any = undefined')
+        expect(withRelations.code).toContain('include = result.data.include || include')
+        expect(withRelations.code).toContain('          include,')
       })
 
       it('should support pagination', () => {
@@ -238,7 +260,7 @@ describe('Routes Generator', () => {
         // route MUST pipe through it instead of forwarding `body` raw.
         const result = generateModelRoutes(mockProjectModel)
 
-        expect(result!.code).toContain('const picked = pickWritableFields(body)')
+        expect(result!.code).toContain('pickWritableFields<Prisma.ProjectUncheckedCreateInput>(body)')
         expect(result!.code).toContain('if (!picked.ok) {')
         expect(result!.code).toContain('return sendJson(c, { error: picked.error }, 400)')
         expect(result!.code).toContain('prisma.project.create({')
@@ -689,7 +711,7 @@ describe('Routes Generator', () => {
     // is dependency-free (only references its own constants) so this is safe.
 
     function extractPickWritableFields(source: string): (body: unknown) => any {
-      const matchHelper = source.match(/function pickWritableFields\(body: any\): WriteBodyResult \{[\s\S]*?\n\}/)
+      const matchHelper = source.match(/function pickWritableFields<T>\(body: any\): WriteBodyResult<T> \{[\s\S]*?\n\}/)
       if (!matchHelper) throw new Error('pickWritableFields not found in generated source')
       const matchScalars = source.match(/const WRITABLE_SCALAR_FIELDS = (\[[^\]]*\] as const)/)
       const matchRelations = source.match(/const RELATION_FIELDS = (\[[^\]]*\] as const)/)
@@ -699,7 +721,9 @@ describe('Routes Generator', () => {
       // works. Order matters: strip `: any` LAST so `: any[]` doesn't get
       // mangled (it isn't used today, but defensive).
       const helperJs = matchHelper[0]
-        .replace(/: WriteBodyResult/g, '')
+        .replace(/function pickWritableFields<T>/g, 'function pickWritableFields')
+        .replace(/: WriteBodyResult<T>/g, '')
+        .replace(/data as T/g, 'data')
         .replace(/: Record<string, unknown>/g, '')
         .replace(/\(body: any\)/g, '(body)')
       const scalarsJs = matchScalars[1].replace(' as const', '')

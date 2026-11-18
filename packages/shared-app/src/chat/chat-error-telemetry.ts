@@ -87,6 +87,7 @@ const EXPECTED_PATTERNS = [
   /\boverage_payment_pending\b/i,
   /\bemail_verification_required\b/i,
   /\baccount_review_required\b/i,
+  /\boverage_requires_payment\b/i,
   /usage limit reached/i,
   /usage-based pricing/i,
   /sending messages too quickly/i,
@@ -95,6 +96,7 @@ const EXPECTED_PATTERNS = [
   /usage charge hasn't been paid/i,
   /verify your email to start using ai/i,
   /your account is under review/i,
+  /on-demand usage starts after your first payment/i,
 ]
 
 // Stream-decoding failures thrown by the AI SDK's SSE/JSON reader

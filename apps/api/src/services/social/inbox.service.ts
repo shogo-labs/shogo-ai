@@ -25,6 +25,7 @@
 
 import { prisma } from '../../lib/prisma'
 import { SocialError, getSocialClient } from './client'
+import { inAccountScope, scopedAccountIds } from './accounts.service'
 import { ensureProfile } from './profiles.service'
 import { zernioId } from './provider-ids'
 import { meterOutboundMessage } from './usage.service'
@@ -493,8 +494,25 @@ function clampLimit(raw: number | undefined, fallback: number, max: number): num
   return Math.min(Math.floor(value), max)
 }
 
-export async function listConversations(workspaceId: string, input: ListConversationsInput = {}) {
-  const where: Record<string, unknown> = { workspaceId }
+/**
+ * Restrict an inbox query to the accounts a caller may use. A project's agent
+ * sees only its own accounts' threads and comments (plus the workspace-shared
+ * ones); the workspace agent and the Social page see everything.
+ */
+async function accountScopeFilter(
+  workspaceId: string,
+  projectId?: string | null,
+): Promise<Record<string, unknown>> {
+  const ids = await scopedAccountIds(workspaceId, projectId)
+  return ids === null ? {} : { accountId: { in: ids } }
+}
+
+export async function listConversations(
+  workspaceId: string,
+  input: ListConversationsInput = {},
+  projectId?: string | null,
+) {
+  const where: Record<string, unknown> = { workspaceId, ...(await accountScopeFilter(workspaceId, projectId)) }
   if (input.status) where.status = input.status
   if (input.platform) where.platform = input.platform
   if (input.unreadOnly) where.unreadCount = { gt: 0 }
@@ -530,12 +548,17 @@ export async function getConversation(
   workspaceId: string,
   conversationId: string,
   window: number | ConversationWindow = {},
+  projectId?: string | null,
 ): Promise<ConversationView> {
   const options: ConversationWindow = typeof window === 'number' ? { messageLimit: window } : window
   const limit = clampLimit(options.messageLimit, 100, 200)
 
   const conversation = await db.socialConversation.findFirst({
-    where: { workspaceId, id: conversationId },
+    where: {
+      workspaceId,
+      id: conversationId,
+      ...(await accountScopeFilter(workspaceId, projectId)),
+    },
   })
   if (!conversation) throw new SocialError(404, 'conversation_not_found', 'No such conversation')
 
@@ -591,9 +614,13 @@ async function readAnchor(workspaceId: string, conversationId: string): Promise<
 }
 
 /** Local read marker. The thread's provider-side unread is left to the app. */
-export async function markConversationRead(workspaceId: string, conversationId: string) {
+export async function markConversationRead(
+  workspaceId: string,
+  conversationId: string,
+  projectId?: string | null,
+) {
   const conversation = await db.socialConversation.findFirst({
-    where: { workspaceId, id: conversationId },
+    where: { workspaceId, id: conversationId, ...(await accountScopeFilter(workspaceId, projectId)) },
     select: { id: true },
   })
   if (!conversation) throw new SocialError(404, 'conversation_not_found', 'No such conversation')
@@ -612,8 +639,12 @@ export interface ListCommentsInput {
   includeOwn?: boolean
 }
 
-export async function listComments(workspaceId: string, input: ListCommentsInput = {}) {
-  const where: Record<string, unknown> = { workspaceId }
+export async function listComments(
+  workspaceId: string,
+  input: ListCommentsInput = {},
+  projectId?: string | null,
+) {
+  const where: Record<string, unknown> = { workspaceId, ...(await accountScopeFilter(workspaceId, projectId)) }
   if (input.platform) where.platform = input.platform
   if (input.status) where.status = input.status
   if (!input.includeOwn) where.isOwn = false
@@ -624,14 +655,16 @@ export async function listComments(workspaceId: string, input: ListCommentsInput
   })
 }
 
-export async function getComment(workspaceId: string, commentId: string) {
-  const comment = await db.socialComment.findFirst({ where: { workspaceId, id: commentId } })
+export async function getComment(workspaceId: string, commentId: string, projectId?: string | null) {
+  const comment = await db.socialComment.findFirst({
+    where: { workspaceId, id: commentId, ...(await accountScopeFilter(workspaceId, projectId)) },
+  })
   if (!comment) throw new SocialError(404, 'comment_not_found', 'No such comment')
   return comment
 }
 
-export async function markCommentRead(workspaceId: string, commentId: string) {
-  const comment = await getComment(workspaceId, commentId)
+export async function markCommentRead(workspaceId: string, commentId: string, projectId?: string | null) {
+  const comment = await getComment(workspaceId, commentId, projectId)
   if (comment.status !== 'new') return comment
   return db.socialComment.update({ where: { id: comment.id }, data: { status: 'read' } })
 }
@@ -662,19 +695,25 @@ export interface ReplyInput {
  * `message.delivered` / `message.failed`, which land on the same row through
  * `ingestSocialEvent`.
  */
-export async function replyToConversation(workspaceId: string, conversationId: string, input: ReplyInput) {
+export async function replyToConversation(
+  workspaceId: string,
+  conversationId: string,
+  input: ReplyInput,
+  projectId?: string | null,
+) {
   const text = typeof input.text === 'string' ? input.text.trim() : ''
   if (!text) throw new SocialError(400, 'empty_message', 'A reply needs text')
   if (text.length > 9_000) throw new SocialError(400, 'message_too_long', 'Keep a DM under 9,000 characters')
 
   const conversation = await db.socialConversation.findFirst({
-    where: { workspaceId, id: conversationId },
+    where: { workspaceId, id: conversationId, ...(await accountScopeFilter(workspaceId, projectId)) },
   })
   if (!conversation) throw new SocialError(404, 'conversation_not_found', 'No such conversation')
 
-  const account = conversation.accountId
+  const candidate = conversation.accountId
     ? await db.socialAccount.findFirst({ where: { workspaceId, id: conversation.accountId } })
     : null
+  const account = candidate && inAccountScope(candidate, projectId) ? candidate : null
   if (!account) {
     throw new SocialError(
       409,
@@ -742,11 +781,16 @@ export async function replyToConversation(workspaceId: string, conversationId: s
  * `commentId` makes it a reply to that comment; without it the reply lands on
  * the post.
  */
-export async function replyToComment(workspaceId: string, commentId: string, input: ReplyInput) {
+export async function replyToComment(
+  workspaceId: string,
+  commentId: string,
+  input: ReplyInput,
+  projectId?: string | null,
+) {
   const text = typeof input.text === 'string' ? input.text.trim() : ''
   if (!text) throw new SocialError(400, 'empty_message', 'A reply needs text')
 
-  const comment = await getComment(workspaceId, commentId)
+  const comment = await getComment(workspaceId, commentId, projectId)
   if (comment.isOwn) {
     throw new SocialError(409, 'comment_is_own', 'That comment was written by the connected account')
   }
@@ -754,9 +798,10 @@ export async function replyToComment(workspaceId: string, commentId: string, inp
   // Answer from the account the comment arrived on. Guessing a same-platform
   // account would reply as a different brand's handle, which is worse than
   // telling the caller to sync first.
-  const account = comment.accountId
+  const candidate = comment.accountId
     ? await db.socialAccount.findFirst({ where: { workspaceId, id: comment.accountId } })
     : null
+  const account = candidate && inAccountScope(candidate, projectId) ? candidate : null
   if (!account) {
     throw new SocialError(
       409,

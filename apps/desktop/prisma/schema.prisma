@@ -107,6 +107,13 @@ model Workspace {
   slug        String   @unique
   description String?
   ssoSettings String?
+  // Workspace-runtime workspace-drive size (GiB) for a bare `ws:<id>` runtime
+  // (SHO-401). Unused on desktop (a local runtime uses the machine's own disk);
+  // kept for schema parity with the cloud track.
+  runtimeDiskGiB Int?
+  // UTC day through which the disk add-on has been billed. Unused on desktop
+  // (local mode has no billing job); kept for schema parity.
+  diskAddonBilledThrough DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -557,6 +564,9 @@ model Subscription {
   billingInterval      String
   currentPeriodStart   DateTime
   currentPeriodEnd     DateTime
+  // When this subscription's card first paid a real (amount_paid > 0) invoice.
+  // Null while trialing. See prisma/schema.prisma for full semantics.
+  firstPaidAt          DateTime?
   cancelAtPeriodEnd    Boolean  @default(false)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt

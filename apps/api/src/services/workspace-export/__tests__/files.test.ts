@@ -174,3 +174,33 @@ describe('collectWorkspaceFiles and WAL databases', () => {
     }
   })
 })
+
+describe('Shogo runtime state never travels in an archive (SHO-371)', () => {
+  test('drops .shogo/run, .shogo/logs and .tmp but keeps the user\'s own .shogo content', () => {
+    const workspaceRoot = join(rootsDir, 'ws_1')
+    write(join(workspaceRoot, 'AGENTS.md'), 'agents')
+    write(join(workspaceRoot, '.shogo/skills/review/SKILL.md'), 'skill')
+    write(join(workspaceRoot, '.shogo/agents/dev.md'), 'agent')
+    write(join(workspaceRoot, '.shogo/memory-history/2026-10-18.md'), 'memory')
+    write(join(workspaceRoot, '.shogo/run/children.json'), '{"children":[]}')
+    write(join(workspaceRoot, '.shogo/logs/build.log'), 'log')
+    write(join(workspaceRoot, '.shogo/build-output.json'), '{}')
+    write(join(workspaceRoot, '.shogo/sessions.db'), 'sqlite')
+    write(join(workspaceRoot, '.tmp/scratch.txt'), 'scratch')
+
+    const files = collectWorkspaceRootFiles(workspaceRoot, [], [], new Set(), workspaces)
+    expect(Object.keys(files).sort()).toEqual([
+      '.shogo/agents/dev.md',
+      '.shogo/memory-history/2026-10-18.md',
+      '.shogo/skills/review/SKILL.md',
+      'AGENTS.md',
+    ])
+  })
+
+  test('a project database is data, not runtime state', () => {
+    expect(isExcludedRelPath('prisma/dev.db')).toBe(false)
+    expect(isExcludedRelPath('.shogo/sessions.db')).toBe(true)
+    expect(isExcludedRelPath('.shogo/run/children.json')).toBe(true)
+    expect(isExcludedRelPath('.shogo/skills/review/SKILL.md')).toBe(false)
+  })
+})

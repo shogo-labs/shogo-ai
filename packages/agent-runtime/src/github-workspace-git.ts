@@ -10,6 +10,7 @@
  */
 import { execFile } from '@shogo/shared-runtime/child-process'
 import { getShogoAgentEmail, getShogoAgentName } from '@shogo/shared-runtime/agent-attribution'
+import { ensureShogoGitHubExcludes, untrackShogoStatePaths } from '@shogo/shared-runtime/shogo-state-paths'
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -47,30 +48,12 @@ export interface GitHubWorkspaceOpResult {
 }
 
 /**
- * Shogo runtime state that is never project source. Listed in the clone's
- * `.git/info/exclude` so it stays out of the user's repository without
- * editing their `.gitignore`.
+ * Shogo runtime state that is never project source. The list lives in
+ * `@shogo/shared-runtime/shogo-state-paths` (SHO-371) so checkpoints, GitHub
+ * connect/commit and export all read the same rules — this module used to keep
+ * its own copy, which drifted and pushed `.shogo/run/children.json` into users'
+ * repositories.
  */
-export const SHOGO_RUNTIME_EXCLUDES = [
-  '.tech-stack',
-  '.shogo/local/',
-  '.shogo/logs/',
-  '.shogo/tasks/',
-  '.shogo/install-marker',
-  '.shogo/build-output*',
-  '.shogo/vite-watch.pid',
-  '.shogo/vite.watch.config.ts',
-  '.shogo-pool-assignment',
-  'node_modules/',
-  'chat-files/',
-  'dist.staging/',
-  'dist.publish.staging/',
-  '.tmp/',
-  // The dev database is backed up separately as project data, and a restore
-  // can drop it into any project, including ones that don't use Prisma.
-  'prisma/dev.db',
-  'prisma/dev.db-*',
-]
 
 const OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/
 const REPO_RE = /^[A-Za-z0-9._-]{1,100}$/
@@ -159,19 +142,20 @@ const SAVE_IDENTITY = {
   GIT_COMMITTER_EMAIL: getShogoAgentEmail(),
 }
 
-function ensureRuntimeExcludes(cwd: string): void {
-  const infoDir = join(cwd, '.git', 'info')
-  const excludePath = join(infoDir, 'exclude')
-  mkdirSync(infoDir, { recursive: true })
-  const existing = existsSync(excludePath) ? readFileSync(excludePath, 'utf-8').split('\n').map((l) => l.trim()) : []
-  const missing = SHOGO_RUNTIME_EXCLUDES.filter((p) => !existing.includes(p))
-  if (!missing.length) return
-  const lead = existing.length && existing[existing.length - 1] !== '' ? '\n' : ''
-  appendFileSync(excludePath, `${lead}# Shogo runtime state\n${missing.join('\n')}\n`)
+/**
+ * Install the shared exclude block and drop any runtime state that is already
+ * tracked. The untrack pass is what cleans up a repo that pushed
+ * `.shogo/run/children.json` or `.shogo/build-output*` before this fix: it is a
+ * normal `git rm --cached` staged into the next commit, never a force-push.
+ */
+async function prepareRepoForCommit(cwd: string): Promise<void> {
+  ensureShogoGitHubExcludes(cwd)
+  await untrackShogoStatePaths(cwd)
 }
 
 /** Commit uncommitted files; returns true when it made a commit. */
 async function commitPendingWork(cwd: string, message: string): Promise<boolean> {
+  await prepareRepoForCommit(cwd)
   const status = await gitOk(cwd, ['status', '--porcelain'])
   if (!status) return false
   await gitOk(cwd, ['add', '-A'])
@@ -187,7 +171,7 @@ async function countCommits(cwd: string, range: string): Promise<number> {
 async function connect(cwd: string, input: GitHubWorkspaceOpInput, env: Record<string, string>): Promise<GitHubWorkspaceOpResult> {
   const remoteBranch = input.defaultBranch || 'main'
   await ensureRepo(cwd, remoteBranch)
-  ensureRuntimeExcludes(cwd)
+  ensureShogoGitHubExcludes(cwd)
   await setOrigin(cwd, githubRemoteUrl(input.repoOwner, input.repoName))
   await gitOk(cwd, ['fetch', '--prune', 'origin'], env)
   await commitPendingWork(cwd, 'Save workspace before connecting GitHub')
@@ -237,7 +221,7 @@ async function connect(cwd: string, input: GitHubWorkspaceOpInput, env: Record<s
 async function push(cwd: string, env: Record<string, string>): Promise<GitHubWorkspaceOpResult> {
   const branch = await currentBranch(cwd)
   if (!branch) return { ok: false, error: 'HEAD is detached; check out a branch before pushing.' }
-  ensureRuntimeExcludes(cwd)
+  ensureShogoGitHubExcludes(cwd)
   await commitPendingWork(cwd, 'Update from Shogo')
   await gitOk(cwd, ['fetch', 'origin'], env)
   const remoteRef = `refs/remotes/origin/${branch}`
@@ -248,7 +232,7 @@ async function push(cwd: string, env: Record<string, string>): Promise<GitHubWor
 
 /** Save pending edits on the current branch, then switch to `branch`, tracking it on GitHub. */
 async function checkout(cwd: string, branch: string, env: Record<string, string>): Promise<GitHubWorkspaceOpResult> {
-  ensureRuntimeExcludes(cwd)
+  ensureShogoGitHubExcludes(cwd)
   await gitOk(cwd, ['fetch', '--prune', 'origin'], env)
   const from = await currentBranch(cwd)
   if (from === branch) return { ok: true, branch, sha: await revParse(cwd, 'HEAD') }
@@ -268,7 +252,7 @@ async function checkout(cwd: string, branch: string, env: Record<string, string>
 
 async function pull(cwd: string, input: GitHubWorkspaceOpInput, env: Record<string, string>): Promise<GitHubWorkspaceOpResult> {
   const branch = (await currentBranch(cwd)) || input.defaultBranch || 'main'
-  ensureRuntimeExcludes(cwd)
+  ensureShogoGitHubExcludes(cwd)
   const before = await revParse(cwd, 'HEAD')
   await gitOk(cwd, ['pull', '--rebase', '--autostash', 'origin', branch], env)
   const remoteRef = `refs/remotes/origin/${branch}`

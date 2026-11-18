@@ -270,7 +270,11 @@ export function ImagePreviewModal({
   const activeUrl = activeItem?.url ?? url
   const activeTitle = activeItem?.title ?? title
   const activeAlt = activeItem?.alt ?? alt
-  const imageSource = useAgentImageSource(activeUrl)
+  // Only load the full-size image once the viewer is open. Every thumbnail
+  // renders one of these, so loading it unconditionally fetched the original
+  // for every photo in the chat — the exact request AC3 says must not happen
+  // until the modal opens (SHO-407).
+  const imageSource = useAgentImageSource(visible ? activeUrl : null)
   const isPhone = Platform.OS !== "web" && width < 600
   const hasGallery = !!gallery && gallery.length > 1
 

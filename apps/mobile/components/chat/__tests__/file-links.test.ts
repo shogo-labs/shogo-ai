@@ -214,6 +214,37 @@ describe("resolveRelativeLinks", () => {
     )
     expect(resolveRelativeLinks("no links here", { fileLinks: true })).toBe("no links here")
   })
+
+  test("escapes a link with an empty target so code reads as typed", () => {
+    // `arr[0]()` parses as a link whose text is `0` and whose destination is
+    // nothing; the hardener printed `0 [blocked]` (SHO-413).
+    expect(resolveRelativeLinks("arr[0]()", { fileLinks: true })).toBe("arr\\[0]()")
+    expect(resolveRelativeLinks("obj[Symbol.iterator]()", { fileLinks: true })).toBe(
+      "obj\\[Symbol.iterator]()",
+    )
+    expect(resolveRelativeLinks("[x]()", { fileLinks: false })).toBe("\\[x]()")
+    expect(resolveRelativeLinks("[x]( )", { fileLinks: true })).toBe("\\[x]( )")
+  })
+
+  test("leaves an already-escaped bracket alone", () => {
+    expect(resolveRelativeLinks("arr\\[0]()", { fileLinks: true })).toBe("arr\\[0]()")
+  })
+
+  test("does not escape an empty target inside code", () => {
+    const code = "use `arr[0]()` here"
+    expect(resolveRelativeLinks(code, { fileLinks: true })).toBe(code)
+    const fenced = ["```", "arr[0]()", "```"].join("\n")
+    expect(resolveRelativeLinks(fenced, { fileLinks: true })).toBe(fenced)
+  })
+
+  test("resolves a link whose text contains one level of brackets", () => {
+    expect(resolveRelativeLinks("[see [SHO-1]](plans/x.md)", { fileLinks: true })).toBe(
+      "[see [SHO-1]](/shogo-file?path=plans%2Fx.md)",
+    )
+    expect(resolveRelativeLinks("[see [SHO-1]](plans/x.md)", { fileLinks: false })).toBe(
+      "see [SHO-1]",
+    )
+  })
 })
 
 describe("linkifyBareUrls", () => {

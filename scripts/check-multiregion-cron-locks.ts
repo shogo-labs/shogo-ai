@@ -262,6 +262,13 @@ const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
       'Each region refills only the workspaces it is the home-writer for (homeRegionWorkspaceWhere(): workspace.homeRegion === REGION_ID, plus null-homeRegion rows on the primary — the same ownership rule the home-region write router uses). usage_wallets is deliberately excluded from shogo_all_pub (see k8s/cnpg/logical-replication/exclude-region-local-tables.sql), so a wallet exists only in its home region; partitioning keeps every region\'s write set disjoint, which is exactly the guarantee the removed global lock used to provide. All request/webhook wallet writes are home-routed by the billing service (routeWalletProvision / consumeUsage), and the lazy first-call refill inside consumeUsage is home-routed too, so workspace.homeRegion is the sole writer-identity for usage_wallets.',
     partitionKeyColumn: 'Workspace.homeRegion',
   },
+  {
+    fn: 'runDiskAddonDaily',
+    file: 'apps/api/src/jobs/disk-addon-daily.ts',
+    reason:
+      'Each region meters only the workspaces it is the home-writer for (homeRegionWorkspaceWhere()). Both rows it writes — the usage_wallets debit and the Workspace.diskAddonBilledThrough watermark — are home-region rows (usage_wallets is excluded from shogo_all_pub), so the per-region write sets are disjoint and a global lock would only serialize peers over rows they cannot see. claimRegionPeriod de-duplicates the pods inside one region.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
 ]
 
 interface UniqueKeyRule {

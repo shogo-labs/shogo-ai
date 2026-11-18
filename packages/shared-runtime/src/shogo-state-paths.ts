@@ -63,6 +63,46 @@ export const SHOGO_EXCLUDE_LINES: readonly string[] = [
   '*.db-journal',
 ]
 
+/**
+ * Marker lines around the managed block written into a *user's own* repo (a
+ * GitHub-connected project). Distinct from the checkpoint markers so both
+ * blocks can coexist in one `.git/info/exclude` without overwriting each other.
+ */
+export const SHOGO_GITHUB_EXCLUDE_HEADER = '# >>> shogo github excludes (managed) >>>'
+export const SHOGO_GITHUB_EXCLUDE_FOOTER = '# <<< shogo github excludes (managed) <<<'
+
+/**
+ * Rules for a GitHub-connected project's `.git/info/exclude`.
+ *
+ * Same predicate as {@link SHOGO_EXCLUDE_LINES}, with two differences that only
+ * make sense in someone else's repository:
+ *   - `.shogo/memory-history/` is excluded too. It is agent memory the user can
+ *     inspect in a checkpoint, but it is Shogo's, not their source.
+ *   - per-machine project state (`.tech-stack`, pool assignment, `chat-files/`,
+ *     staging builds, the dev database) is listed explicitly.
+ *
+ * This is the ONLY list a git path may use (SHO-371). `github-workspace-git.ts`
+ * used to keep its own copy and it drifted: it had no `.shogo/run/`, so
+ * `children.json` was committed and pushed into users' repos.
+ */
+export const SHOGO_GITHUB_EXCLUDE_LINES: readonly string[] = [
+  '.shogo/*',
+  '.shogo-cwd-*',
+  '.tmp/',
+  '*.db',
+  '*.db-wal',
+  '*.db-shm',
+  '*.db-journal',
+  '.tech-stack',
+  '.shogo-pool-assignment',
+  'node_modules/',
+  'chat-files/',
+  'dist.staging/',
+  'dist.publish.staging/',
+  'prisma/dev.db',
+  'prisma/dev.db-*',
+]
+
 /** Suffixes that only ever belong to a live or transient database file. */
 const DB_SUFFIXES = ['.db', '.db-wal', '.db-shm', '.db-journal'] as const
 
@@ -79,10 +119,55 @@ export function toPosixPath(p: string): string {
 }
 
 /**
- * True when `relPath` (repo-relative, either separator) is Shogo runtime state
- * that must never be committed, tracked or LFS-stored.
+ * `.shogo/` subtrees that are Shogo runtime state rather than user content.
+ *
+ * Export and publish use {@link isShogoRuntimeSubtree} instead of the full
+ * predicate: an archive must carry `.shogo/skills`, `.shogo/agents` and
+ * `.shogo/memory-history` (the user's own content) but never logs, the child
+ * ledger, task output or build markers.
  */
-export function isShogoRuntimeState(relPath: string): boolean {
+export const SHOGO_RUNTIME_SUBTREES: readonly string[] = [
+  '.shogo/run/',
+  '.shogo/logs/',
+  '.shogo/tasks/',
+  '.shogo/local/',
+  '.shogo/plans/',
+  '.shogo/screenshots/',
+  '.shogo/reports/',
+  '.shogo/install-marker',
+  '.shogo/build-output',
+  '.shogo/vite-watch.pid',
+  '.shogo/vite.watch.config.ts',
+]
+
+/**
+ * True when `relPath` is Shogo runtime state that must not travel in an archive
+ * or a published image — but which leaves the user's own `.shogo/` content
+ * (skills, agents, memory history) and their project database alone.
+ */
+export function isShogoRuntimeSubtree(relPath: string): boolean {
+  const rel = toPosixPath(relPath).replace(/^\.\//, '').replace(/^\/+/, '')
+  if (!rel) return false
+
+  if (rel.startsWith('.tmp/')) return true
+
+  const base = rel.slice(rel.lastIndexOf('/') + 1)
+  if (base.startsWith('.shogo-cwd-')) return true
+  if (!rel.startsWith('.shogo/')) return false
+
+  // A live database under `.shogo/` is runtime state; a project's own database
+  // elsewhere is data the archive must carry.
+  const lower = base.toLowerCase()
+  if (DB_SUFFIXES.some((suffix) => lower.endsWith(suffix))) return true
+
+  return SHOGO_RUNTIME_SUBTREES.some((p) => rel === p || rel.startsWith(p))
+}
+
+/**
+ * The path half of {@link isShogoRuntimeState}: Shogo's own directories, without
+ * the live-database rule.
+ */
+export function isShogoStatePath(relPath: string): boolean {
   const rel = toPosixPath(relPath).replace(/^\.\//, '').replace(/^\/+/, '')
   if (!rel) return false
 
@@ -90,7 +175,20 @@ export function isShogoRuntimeState(relPath: string): boolean {
   if (rel.startsWith('.tmp/')) return true
 
   const base = rel.slice(rel.lastIndexOf('/') + 1)
-  if (base.startsWith('.shogo-cwd-')) return true
+  return base.startsWith('.shogo-cwd-')
+}
+
+/**
+ * True when `relPath` (repo-relative, either separator) is Shogo runtime state
+ * that must never be committed, tracked or LFS-stored.
+ */
+export function isShogoRuntimeState(relPath: string): boolean {
+  if (isShogoStatePath(relPath)) return true
+
+  const rel = toPosixPath(relPath).replace(/^\.\//, '').replace(/^\/+/, '')
+  if (!rel) return false
+
+  const base = rel.slice(rel.lastIndexOf('/') + 1)
   const lower = base.toLowerCase()
   return DB_SUFFIXES.some((suffix) => lower.endsWith(suffix))
 }
@@ -279,16 +377,41 @@ export function acquireRepairLock(repoDir: string): (() => void) | null {
 // .git/info/exclude
 // ---------------------------------------------------------------------------
 
-/** The managed block, exactly as it is written to `.git/info/exclude`. */
-export function buildShogoExcludeBlock(): string {
-  return [SHOGO_EXCLUDE_HEADER, ...SHOGO_EXCLUDE_LINES, SHOGO_EXCLUDE_FOOTER].join('\n')
+/**
+ * The managed block, exactly as it is written to `.git/info/exclude`.
+ *
+ * `includeMemoryHistory` is false in a GitHub-connected project: there
+ * `.shogo/memory-history/` is Shogo's state, not the user's source, and the
+ * GitHub block already excludes it. Both blocks share one exclude file, so a
+ * `!.shogo/memory-history/` here would re-include the path the GitHub block
+ * hides (SHO-371).
+ */
+export function buildShogoExcludeBlock(
+  opts: { includeMemoryHistory?: boolean } = {},
+): string {
+  const includeMemoryHistory = opts.includeMemoryHistory ?? true
+  const lines = includeMemoryHistory
+    ? SHOGO_EXCLUDE_LINES
+    : SHOGO_EXCLUDE_LINES.filter((line) => line !== `!${SHOGO_MEMORY_HISTORY_PREFIX}`)
+  return [SHOGO_EXCLUDE_HEADER, ...lines, SHOGO_EXCLUDE_FOOTER].join('\n')
+}
+
+/** The managed block for a GitHub-connected project's `.git/info/exclude`. */
+export function buildShogoGitHubExcludeBlock(): string {
+  return [SHOGO_GITHUB_EXCLUDE_HEADER, ...SHOGO_GITHUB_EXCLUDE_LINES, SHOGO_GITHUB_EXCLUDE_FOOTER].join('\n')
 }
 
 /**
- * Write (or refresh) the managed exclude block in `<repo>/.git/info/exclude`,
- * preserving anything outside the markers. Returns true when the file changed.
+ * Write (or refresh) one managed block in `<repo>/.git/info/exclude`, preserving
+ * everything outside its markers — including the other managed block.
  */
-export function ensureShogoExcludes(repoDir: string, log: Logger = console): boolean {
+function writeManagedExcludeBlock(
+  repoDir: string,
+  header: string,
+  footer: string,
+  block: string,
+  log: Logger,
+): boolean {
   const gitDir = resolveGitDir(repoDir)
   if (!gitDir) return false
   const infoDir = join(gitDir, 'info')
@@ -300,16 +423,18 @@ export function ensureShogoExcludes(repoDir: string, log: Logger = console): boo
     existing = ''
   }
 
-  const start = existing.indexOf(SHOGO_EXCLUDE_HEADER)
-  let stripped = existing
+  const start = existing.indexOf(header)
+  let next: string
   if (start !== -1) {
-    const end = existing.indexOf(SHOGO_EXCLUDE_FOOTER, start)
-    stripped = end === -1
-      ? existing.slice(0, start)
-      : existing.slice(0, start) + existing.slice(end + SHOGO_EXCLUDE_FOOTER.length)
+    // Replace in place so two managed blocks keep a stable order and a second
+    // pass is a no-op (otherwise alternating writers rewrite the file forever).
+    const end = existing.indexOf(footer, start)
+    const tail = end === -1 ? '' : existing.slice(end + footer.length)
+    next = existing.slice(0, start) + block + tail
+  } else {
+    const rest = existing.replace(/\n{3,}/g, '\n\n').trim()
+    next = [rest, block].filter(Boolean).join('\n\n') + '\n'
   }
-  const rest = stripped.replace(/\n{3,}/g, '\n\n').trim()
-  const next = [rest, buildShogoExcludeBlock()].filter(Boolean).join('\n\n') + '\n'
   if (next === existing) return false
 
   try {
@@ -320,6 +445,59 @@ export function ensureShogoExcludes(repoDir: string, log: Logger = console): boo
     log.warn(`[shogo-state] could not write ${excludePath}: ${err?.message ?? err}`)
     return false
   }
+}
+
+/**
+ * True when `<repo>/.git/info/exclude` already carries the GitHub managed block,
+ * i.e. this repo is a GitHub-connected project. In that case
+ * `.shogo/memory-history/` is Shogo's state and must not be re-included or
+ * re-staged (SHO-371).
+ */
+export function hasShogoGitHubExcludes(repoDir: string): boolean {
+  const gitDir = resolveGitDir(repoDir)
+  if (!gitDir) return false
+  try {
+    return readFileSync(join(gitDir, 'info', 'exclude'), 'utf-8').includes(
+      SHOGO_GITHUB_EXCLUDE_HEADER,
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Write (or refresh) the checkpoint exclude block in `<repo>/.git/info/exclude`,
+ * preserving anything outside the markers. Returns true when the file changed.
+ */
+export function ensureShogoExcludes(repoDir: string, log: Logger = console): boolean {
+  return writeManagedExcludeBlock(
+    repoDir,
+    SHOGO_EXCLUDE_HEADER,
+    SHOGO_EXCLUDE_FOOTER,
+    buildShogoExcludeBlock({ includeMemoryHistory: !hasShogoGitHubExcludes(repoDir) }),
+    log,
+  )
+}
+
+/**
+ * Write (or refresh) the GitHub exclude block in `<repo>/.git/info/exclude`.
+ * Never touches the user's `.gitignore`. Returns true when the file changed.
+ *
+ * Also refreshes the checkpoint block in the same pass: once the GitHub block
+ * exists, the checkpoint block must drop its `!.shogo/memory-history/`
+ * re-inclusion, and waiting for the next turn would leave one turn where memory
+ * history is staged into the user's repo (SHO-371).
+ */
+export function ensureShogoGitHubExcludes(repoDir: string, log: Logger = console): boolean {
+  const changed = writeManagedExcludeBlock(
+    repoDir,
+    SHOGO_GITHUB_EXCLUDE_HEADER,
+    SHOGO_GITHUB_EXCLUDE_FOOTER,
+    buildShogoGitHubExcludeBlock(),
+    log,
+  )
+  const checkpointChanged = ensureShogoExcludes(repoDir, log)
+  return changed || checkpointChanged
 }
 
 // ---------------------------------------------------------------------------
@@ -397,7 +575,14 @@ export async function untrackShogoStatePaths(
     if (listed.exitCode !== 0 || !listed.stdout) return { removed: 0, paths: [] }
 
     const tracked = listed.stdout.split('\0').filter(Boolean)
-    const doomed = tracked.filter((p) => isShogoRuntimeState(p))
+    // In a GitHub-connected project `.shogo/memory-history/` is Shogo's state,
+    // not the user's source, so it is untracked there too (SHO-371).
+    const githubConnected = hasShogoGitHubExcludes(repoDir)
+    const doomed = tracked.filter(
+      (p) =>
+        isShogoRuntimeState(p) ||
+        (githubConnected && p.startsWith(SHOGO_MEMORY_HISTORY_PREFIX)),
+    )
     if (doomed.length === 0) return { removed: 0, paths: [] }
 
     evictStaleGitLock(repoDir, STALE_LOCK_MS, log)
@@ -420,10 +605,12 @@ export async function untrackShogoStatePaths(
     // Keep the exception in the index so `.shogo/memory-history/**` stays tracked
     // even where `.git/info/exclude`'s `!.shogo/memory-history/` re-inclusion is
     // not applied (an exclude file cannot resurrect a path an ignore rule hides).
+    // A GitHub-connected repo has no such exception: memory history is Shogo's
+    // state there, so re-adding it would push it into the user's repo (SHO-371).
     if (!opts.env) {
       stripShogoLfsRules(repoDir, log)
     }
-    if (!opts.env && existsSync(join(repoDir, '.shogo', 'memory-history'))) {
+    if (!opts.env && !githubConnected && existsSync(join(repoDir, '.shogo', 'memory-history'))) {
       await run(repoDir, ['add', '-A', '--', SHOGO_MEMORY_HISTORY_PREFIX], env)
     }
 
