@@ -236,6 +236,11 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   UserIdentityLink: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },
   UserIntegrationConnection: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },
   Verification: { decision: 'exclude', reason: 'Instance catalog or global configuration, identical on every restore.' },
+  // SHO-424: compute metering. Both are the arithmetic behind a wallet charge,
+  // recomputable from the metal heartbeats that produced them; neither is
+  // content, and neither means anything on another instance.
+  VmMeterCursor: { decision: 'exclude', reason: 'SHO-424 compute metering: a read-modify-write guard holding the last-counted (agentMs, appMs, idleMs) triple for a VM on a specific metal host. Restoring it would carry counters for hosts that no longer exist, which can suppress or double-count future charges.' },
+  VmUsageHour: { decision: 'exclude', reason: 'Money and metering, not content — the counted seconds behind consumeUsage, recomputable from the heartbeats that reported them.' },
   VoiceCallMeter: { decision: 'exclude', reason: 'Money and metering, not content. Also carries payment-processor ids; StorageUsage is recomputable.' },
   WorkItemSubscription: { decision: 'exclude', reason: 'One device or one person\'s ephemeral state, meaningless on restore.' },
   WorkspaceEvent: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },
