@@ -17,6 +17,7 @@ export {
   getAuthUserSnapshot,
   EmailNotVerifiedError,
   type AuthProviderProps,
+  type AuthErrorContext,
   type AuthContextValue,
   type AuthUser,
   type SignUpResult,

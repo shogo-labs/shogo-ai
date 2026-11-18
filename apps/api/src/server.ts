@@ -194,6 +194,7 @@ import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
 import { isMidCutoverStatus } from './services/published-cutover.service'
 import { deployedAppVersionOrUnknown } from './lib/app-version'
+import { toNativeAuthHandback } from './lib/auth-handback'
 // Auth middleware for generated routes
 import {
   authMiddleware,
@@ -927,7 +928,7 @@ app.use('/api/*', homeRegionWriteProxy)
 
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
-app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
+app.on(['GET', 'POST'], '/api/auth/*', async (c) => toNativeAuthHandback(await auth.handler(c.req.raw)))
 
 // Health check — includes Redis status for multi-pod deployments.
 // When tunnel-redis is in a degraded state (init completed but publisher

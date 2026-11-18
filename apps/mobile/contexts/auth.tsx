@@ -8,7 +8,8 @@
  */
 
 import type { ReactNode } from 'react'
-import { AuthProvider as SharedAuthProvider, useAuth } from '@shogo/shared-app/auth'
+import * as Sentry from '@sentry/react-native'
+import { AuthProvider as SharedAuthProvider, useAuth, type AuthErrorContext } from '@shogo/shared-app/auth'
 import { authClient } from '../lib/auth-client'
 import { clearActiveWorkspaceId } from '../lib/workspace-store'
 import { clearTeamChatCache } from '../lib/team-chat-cache'
@@ -32,6 +33,21 @@ function onSignOut(): void {
   clearChatPanelMessageCache()
 }
 
+/**
+ * Every auth failure reaches Sentry, including the silent ones. Before this,
+ * `AuthProvider` swallowed errors into UI state / `console.error`, so a broken
+ * OAuth hand-back produced no event at all (SHO-414). Only the provider and
+ * stage are attached — never a password, token or cookie value.
+ */
+function reportAuthError(error: unknown, context: AuthErrorContext): void {
+  Sentry.captureException(error, {
+    tags: {
+      'auth.provider': context.provider,
+      'auth.stage': context.stage,
+    },
+  })
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     // `shogo:active-workspace-id` is a bare, unscoped-by-user cache key.
@@ -41,7 +57,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // 400/403s with "Access denied to this workspace" until they manually
     // switch workspaces. See `lib/workspace-store.ts`. Cached team chat
     // messages are removed too so they don't outlive the session.
-    <SharedAuthProvider authClient={authClient} onSignOut={onSignOut}>
+    <SharedAuthProvider authClient={authClient} onSignOut={onSignOut} onAuthError={reportAuthError}>
       {children}
     </SharedAuthProvider>
   )

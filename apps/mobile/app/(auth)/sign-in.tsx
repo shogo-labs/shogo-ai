@@ -11,6 +11,7 @@ import { trackSignUp, trackLogin } from '../../lib/tracking'
 import { discardPendingSignupAttribution, flushSignupAttribution, queueSignupAttribution } from '../../lib/attribution'
 import { api, createHttpClient, API_URL } from '../../lib/api'
 import { getPasswordResetRedirectUrl } from '../../lib/password-reset-redirect'
+import { resolveAuthCallbackUrl } from '../../lib/auth-callback-url'
 import { LoginScreen } from '@shogo/shared-ui/screens'
 import { LoginShowcase } from '../../components/auth/LoginShowcase'
 import { EnvironmentVersionTrigger } from '../../components/settings/EnvironmentPicker'
@@ -50,11 +51,9 @@ export default function SignInScreen() {
    * and stranding the desktop app on "Waiting for browser…".
    */
   const resolveCallbackUrl = (): string => {
-    const path = resolveNext()
-    if (typeof window !== 'undefined' && window.location?.origin) {
-      return `${window.location.origin}${path}`
-    }
-    return path
+    const origin =
+      typeof window !== 'undefined' && window.location?.origin ? window.location.origin : null
+    return resolveAuthCallbackUrl(resolveNext(), origin)
   }
 
   /**
