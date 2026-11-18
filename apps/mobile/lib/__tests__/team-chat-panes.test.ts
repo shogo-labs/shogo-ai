@@ -122,4 +122,30 @@ describe('resolvePanes', () => {
     expect(doc.showDocPane).toBe(true)
     expect(doc.showFilePane).toBe(false)
   })
+
+  test('one member’s messages take the pane, and the whole screen on a narrow layout', () => {
+    const wide = panes({ memberFrom: 'user:u-ada', threadRootId: 'm-1' })
+    expect(wide.showMemberPane).toBe(true)
+    expect(wide.showThreadPane).toBe(false)
+    expect(wide.showMain).toBe(true)
+
+    const narrow = panes({ sidePane: false, memberFrom: 'user:u-ada' })
+    expect(narrow.showMemberFull).toBe(true)
+    expect(narrow.showMemberPane).toBe(false)
+    expect(narrow.showMain).toBe(false)
+  })
+
+  test('a profile shown over the member list wins, and closing it brings the list back', () => {
+    const withProfile = panes({ memberFrom: 'user:u-ada', profilePaneId: 'u-ana' })
+    expect(withProfile.showProfilePane).toBe(true)
+    expect(withProfile.showMemberPane).toBe(false)
+
+    const closed = panes({ memberFrom: 'user:u-ada' })
+    expect(closed.showMemberPane).toBe(true)
+  })
+
+  test('a doc or the files list steps in front of the member list', () => {
+    expect(panes({ memberFrom: 'user:u-ada', docOpen: true }).showMemberPane).toBe(false)
+    expect(panes({ memberFrom: 'user:u-ada', filesOpen: true }).showMemberPane).toBe(false)
+  })
 })
