@@ -155,25 +155,28 @@ jobs:
 
           # Same pairing as android.yml: `--debug-id-reference` is what makes a
           # Hermes bytecode bundle resolve (the CLI cannot read the id from it).
+          # Exit status is the proof (`--strict` fails on an unuploadable map,
+          # `--wait-for` fails when the server cannot process the artifact
+          # bundle). `sentry-cli releases files` does not exist in CLI 3.x, and
+          # 3.x uploads through the artifact-bundle API, so it could never list
+          # these files either.
           $SENTRY_CLI sourcemaps upload \
             --bundle "$OUT/index.android.bundle" \
             --bundle-sourcemap "$OUT/index.android.bundle.map" \
             --debug-id-reference --strict \
+            --wait-for 300 \
             --release "$RELEASE" \
             --dist "$SENTRY_DIST" \
             --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" \
             --url-prefix "app:///" \
             || fail "sourcemaps upload failed"
 
-          UPLOADED=$($SENTRY_CLI releases files "$RELEASE" list 2>/dev/null | grep -c 'index.android.bundle' || true)
-          [ "${UPLOADED:-0}" -gt 0 ] || fail "sentry-cli reported success but release $RELEASE has no uploaded files"
-
           {
             echo "### Symbolicated Android release \`$RELEASE\` (dist \`$SENTRY_DIST\`)"
             echo ""
             echo "- bundle: \`index.android.bundle\` (Hermes bytecode, as shipped)"
             echo "- map: RN's composed \`index.android.bundle.map\`, debug id \`$DEBUG_ID\`"
-            echo "- release files now on the release: $UPLOADED"
+            echo "- upload: `--strict --wait-for 300`, accepted by the server"
             echo ""
             echo "Events already stored for this release symbolicate on read — reload the issue."
           } >> "$GITHUB_STEP_SUMMARY"

@@ -680,20 +680,26 @@ jobs:
           # `--debug-id-reference` is required because the bundle is Hermes
           # bytecode: the CLI cannot read the id out of it, so without the flag
           # it emits no reference and the event never resolves.
+          # The exit status of this call *is* the proof: `--strict` fails when a
+          # source map cannot be uploaded, and `--wait-for` fails when the server
+          # rejects or cannot process the artifact bundle. Do not follow it with
+          # `sentry-cli releases files <release> list` — that subcommand does not
+          # exist in the CLI 3.x releases command (only
+          # archive/delete/finalize/info/list/new/propose-version/restore/
+          # set-commits), and since 3.x uploads through the chunk-upload /
+          # artifact-bundle API the legacy release-files endpoint would not list
+          # them either. A post-upload probe that always reports "nothing here"
+          # fails every release build *after* a successful upload.
           $SENTRY_CLI sourcemaps upload \
             --bundle "$OUT/index.android.bundle" \
             --bundle-sourcemap "$OUT/index.android.bundle.map" \
             --debug-id-reference --strict \
+            --wait-for 300 \
             --release "$EXPO_PUBLIC_BUILD_HASH" \
             --dist android \
             --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" \
             --url-prefix "app:///" \
             || fail_upload "sourcemaps upload failed (release=$EXPO_PUBLIC_BUILD_HASH, dist=android)"
-
-          # An upload that exits 0 but attaches nothing is the exact failure this
-          # step exists to prevent, so prove the release gained the files.
-          UPLOADED=$($SENTRY_CLI releases files "$EXPO_PUBLIC_BUILD_HASH" list 2>/dev/null | grep -c 'index.android.bundle' || true)
-          [ "${UPLOADED:-0}" -gt 0 ] || fail_upload "sentry-cli reported success but release $EXPO_PUBLIC_BUILD_HASH has no uploaded files"
 
           {
             echo "## Sentry sourcemap upload (Android)"

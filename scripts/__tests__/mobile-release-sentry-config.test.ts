@@ -170,7 +170,17 @@ describe('SHO-433 · the Android sourcemap upload cannot silently do nothing', (
     expect(body).toContain('fail_upload "SENTRY_AUTH_TOKEN is not configured"')
     expect(body).toContain('fail_upload "no shipped bundle at $BUNDLE')
     expect(body).toContain('fail_upload "no composed source map at $COMPOSED')
-    expect(body).toContain('but release $EXPO_PUBLIC_BUILD_HASH has no uploaded files')
+  })
+
+  it('proves the upload with exit status, not a subcommand that does not exist', () => {
+    const body = upload()
+    // `sentry-cli releases files` is gone in CLI 3.x (and 3.x uploads through
+    // the artifact-bundle API), so probing for the files after a good upload
+    // reported 0 and failed every release build.
+    expect(body).not.toContain('UPLOADED=$(')
+    expect(body).not.toMatch(/^\s*\$?SENTRY_CLI releases files/m)
+    expect(body).toContain('--strict')
+    expect(body).toContain('--wait-for 300')
   })
 
   it('uploads the artifacts RN 0.86 actually writes, not a path it never creates', () => {
@@ -250,8 +260,10 @@ describe('SHO-433 · a release that shipped blind can still be symbolicated', ()
 
   it('proves the upload landed and never succeeds silently', () => {
     const body = upload()
-    expect(body).toContain('releases files "$RELEASE" list')
-    expect(body).toContain('-gt 0')
+    // Exit status only: `--strict` + `--wait-for` are what CLI 3.x offers.
+    expect(body).not.toContain('UPLOADED=$(')
+    expect(body).toContain('--wait-for 300')
+    expect(body).toContain('--strict')
     // Every failure ends non-zero: no "continue anyway" path here.
     expect(body.split('\n').filter((l) => l.trim() === 'exit 0')).toHaveLength(0)
     expect(body).toContain('is_real_cli $SENTRY_CLI || fail "no working sentry-cli"')
