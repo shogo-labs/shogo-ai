@@ -21,6 +21,9 @@ mock.module('streamdown', () => ({
     return createElement('div', null, children)
   },
   defaultUrlTransform: (url: string) => url,
+  // MarkdownText.web builds its rehype chain from this at module scope
+  // (SHO-413); the stub renderer below ignores the result.
+  defaultRehypePlugins: {},
 }))
 
 const { MarkdownText } = await import('../MarkdownText.web')
