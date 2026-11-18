@@ -12,6 +12,15 @@
 const fs = require('fs')
 const path = require('path')
 
+const {
+  LANDSCAPE_OVERLAY_HTML,
+  LANDSCAPE_OVERLAY_ID,
+  PHONE_GUARD_STYLE_ID,
+  PHONE_VIEWPORT_GUARD_CSS,
+  ZOOM_GUARD_ATTRIBUTE,
+  ZOOM_GUARD_SCRIPT,
+} = require('./web-shell-guards')
+
 const HTML_PATH = path.resolve(__dirname, '..', 'dist', 'index.html')
 const GA4_ID = process.env.EXPO_PUBLIC_GA4_ID || ''
 const FB_PIXEL_ID = process.env.EXPO_PUBLIC_FB_PIXEL_ID || ''
@@ -45,6 +54,14 @@ if (!html.includes('data-shogo-theme-bootstrap')) {
   snippets = THEME_BOOTSTRAP_SCRIPT + snippets
 }
 
+// Pinch-zoom / auto-zoom guard (SHO-405). `+html.tsx` carries the same script
+// (from scripts/web-shell-guards.js) for the dev server, but Expo's "single"
+// export strips <script> tags from that file, so the deployed shell needs it
+// re-injected here. First in <head> so it runs before the app boots.
+if (!html.includes(ZOOM_GUARD_ATTRIBUTE)) {
+  snippets = `<script ${ZOOM_GUARD_ATTRIBUTE}>${ZOOM_GUARD_SCRIPT}</script>` + snippets
+}
+
 html = html.replace(/<html([^>]*)>/, (_tag, attrs) => {
   let nextAttrs = attrs
   if (!/\btranslate=/.test(nextAttrs)) nextAttrs += ' translate="no"'
@@ -66,6 +83,18 @@ if (!html.includes(RUNTIME_ENV_MARKER)) {
 
 if (!html.includes('name="google" content="notranslate"')) {
   html = html.replace('</head>', `${GOOGLE_NOTRANSLATE_META}</head>`)
+}
+
+// The rest of the phone shell guard (SHO-405): the CSS rules and the landscape
+// rotate prompt. `+html.tsx` renders both from scripts/web-shell-guards.js, and
+// the "single" export has been known to drop `+html.tsx` customizations, so
+// whatever did not survive the export is put back here.
+if (!html.includes(PHONE_GUARD_STYLE_ID)) {
+  html = html.replace('</head>', `<style id="${PHONE_GUARD_STYLE_ID}">${PHONE_VIEWPORT_GUARD_CSS}</style></head>`)
+}
+
+if (!html.includes(`id="${LANDSCAPE_OVERLAY_ID}"`)) {
+  html = html.replace(/<body([^>]*)>/, (tag) => `${tag}${LANDSCAPE_OVERLAY_HTML}`)
 }
 
 if (snippets) {

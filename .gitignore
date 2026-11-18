@@ -155,6 +155,8 @@ apps/mobile/ios/
 *.png
 !apps/mobile/assets/*.png
 !apps/desktop/resources/icon.png
+# PWA install icons the web manifest points at (/manifest.json, SHO-405).
+!apps/mobile/public/icon-*.png
 tests/
 
 .dynamic-app-runtimes/
