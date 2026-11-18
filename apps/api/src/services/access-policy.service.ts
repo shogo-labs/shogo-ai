@@ -794,7 +794,47 @@ export async function requestAccess(input: {
       subject: JSON.stringify({ reason }),
     },
   })) as AuditRowLike
+  await announceAccessRequest(input.workspaceId, input.userId, permission, modelId, reason)
   return toAccessRequestRow(row)
+}
+
+/**
+ * Tell the workspace where admins already look. The decision itself is the
+ * admin queue (`GET /access/requests` + the Settings → Access screen), not a
+ * button on this message: an access grant is a policy write, and it belongs
+ * with the other policy writes. Best-effort — a missing activity channel or a
+ * failed post must not lose the request.
+ */
+async function announceAccessRequest(
+  workspaceId: string,
+  userId: string,
+  permission: string | null,
+  modelId: string | null,
+  reason: string | null,
+): Promise<void> {
+  try {
+    const channel = (await prisma.conversation.findFirst({
+      where: { workspaceId, slug: 'activity' },
+      select: { id: true },
+    })) as { id: string } | null
+    if (!channel) return
+
+    const user = (await prisma.user.findUnique({
+      where: { id: userId },
+      select: { name: true, email: true },
+    })) as { name: string | null; email: string | null } | null
+    const who = user?.name || user?.email || 'A member'
+    const what = permission ? `the "${permission}" ability` : `the ${modelId} model`
+
+    const { postMessage } = await import('./conversation.service')
+    await postMessage({
+      conversationId: channel.id,
+      text: `${who} asked for ${what}.${reason ? `\n\n"${reason}"` : ''}\n\nA workspace admin can approve or deny it in Settings → Access.`,
+      authorType: 'system',
+    })
+  } catch (err) {
+    console.warn('[access] request announcement failed:', (err as Error).message)
+  }
 }
 
 /**
