@@ -134,25 +134,24 @@ describe('GET /workspaces/:workspaceId/analytics/dashboard', () => {
     expect(body.data.chat).toEqual({ totalSessions: 3 })
   })
 
-  test('a member is scoped to their own rows, and cannot name another member', async () => {
+  test('a member is refused: workspace analytics are admin-only', async () => {
     members = [{ userId: 'user_1', workspaceId: WS, role: 'member' }]
 
     const own = await call(`/workspaces/${WS}/analytics/dashboard`)
-    expect(own.status).toBe(200)
-    expect((svcSpies.getUsageDashboard.mock.calls[0] as any[])[0]).toEqual({ workspaceId: WS, userId: 'user_1' })
-    // Members have no chat analytics permission either: same Business gate.
-    expect(own.body.data.chat).toEqual({ totalSessions: 3 })
+    expect(own.status).toBe(403)
+    expect(own.body.error.code).toBe('analytics_admin_only')
+    expect(svcSpies.getUsageDashboard).not.toHaveBeenCalled()
 
     const other = await call(`/workspaces/${WS}/analytics/dashboard?userId=user_2`)
     expect(other.status).toBe(403)
-    expect(other.body.error.code).toBe('forbidden')
+    expect(other.body.error.code).toBe('analytics_admin_only')
   })
 
-  test('a non-member gets 403 forbidden', async () => {
+  test('a non-member gets 403 analytics_admin_only', async () => {
     members = []
     const { status, body } = await call(`/workspaces/${WS}/analytics/dashboard`)
     expect(status).toBe(403)
-    expect(body.error.code).toBe('forbidden')
+    expect(body.error.code).toBe('analytics_admin_only')
     expect(svcSpies.getUsageDashboard).not.toHaveBeenCalled()
   })
 

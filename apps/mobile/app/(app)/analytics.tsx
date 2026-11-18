@@ -7,14 +7,16 @@
  * `?view=usage|channels|heartbeats|costs` selects the segment on open.
  */
 import { useState } from "react";
-import { Pressable, View } from "react-native";
-import { useLocalSearchParams } from "expo-router";
+import { ActivityIndicator, Pressable, View } from "react-native";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { BarChart3 } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import {
   TabScreen,
   TabScreenScrollView,
 } from "../../components/layout/TabScreenHeader";
 import { Text } from "../../components/settings/account-sheet-chrome";
+import { Button, ButtonText } from "../../components/ui/button";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
 import { usePermissions } from "../../hooks/usePermissions";
 import { WorkspaceUsagePanel } from "../../components/analytics/WorkspaceUsagePanel";
@@ -36,24 +38,56 @@ const isAnalyticsView = (value: unknown): value is AnalyticsView =>
 
 export default function AnalyticsScreen() {
   const params = useLocalSearchParams<{ view?: string }>();
+  const router = useRouter();
   const workspace = useActiveWorkspace();
-  const { can } = usePermissions({ workspaceId: workspace?.id });
-  // The server gates per-channel activity to owners/admins, so members never
-  // get a tab that would only 403.
-  const showChannels = can("workspace.analytics:read");
-  const views = VIEWS.filter((item) => item.id !== "channels" || showChannels);
+  const { can, loading } = usePermissions({ workspaceId: workspace?.id });
+  // Workspace analytics are owner/admin only on the server; a member who lands
+  // here (a stale link, a deep link) gets the empty state and no fetch at all.
+  const isAdmin = can("workspace.analytics:read");
 
   const [view, setView] = useState<AnalyticsView>(
     isAnalyticsView(params.view) ? params.view : "usage"
   );
-  const activeView: AnalyticsView =
-    view === "channels" && !showChannels ? "usage" : view;
+
+  // `can()` is false until the permissions land, so an admin opening a deep
+  // link would otherwise be told they are not an admin. Wait for the answer.
+  if (loading) {
+    return (
+      <TabScreen title="Analytics" back testID="analytics-screen">
+        <View className="flex-1 items-center justify-center" testID="analytics-loading">
+          <ActivityIndicator />
+        </View>
+      </TabScreen>
+    );
+  }
+
+  if (!isAdmin) {
+    return (
+      <TabScreen title="Analytics" back testID="analytics-screen">
+        <View
+          className="flex-1 items-center justify-center gap-3 px-8"
+          testID="analytics-admins-only"
+        >
+          <BarChart3 size={32} className="text-muted-foreground" />
+          <Text className="text-center text-base font-semibold text-foreground">
+            Workspace admins only
+          </Text>
+          <Text className="text-center text-sm text-muted-foreground">
+            Ask a workspace owner or admin for access.
+          </Text>
+          <Button variant="outline" onPress={() => router.back()}>
+            <ButtonText>Back</ButtonText>
+          </Button>
+        </View>
+      </TabScreen>
+    );
+  }
 
   return (
     <TabScreen title="Analytics" back testID="analytics-screen">
       <View className="flex-row flex-wrap gap-2 px-4 pb-3">
-        {views.map((item) => {
-          const active = activeView === item.id;
+        {VIEWS.map((item) => {
+          const active = view === item.id;
           return (
             <Pressable
               key={item.id}
@@ -79,11 +113,11 @@ export default function AnalyticsScreen() {
         })}
       </View>
       <TabScreenScrollView contentContainerClassName="px-4 pb-36">
-        {activeView === "usage" ? (
+        {view === "usage" ? (
           <WorkspaceUsagePanel />
-        ) : activeView === "channels" ? (
+        ) : view === "channels" ? (
           <WorkspaceChannelsPanel />
-        ) : activeView === "heartbeats" ? (
+        ) : view === "heartbeats" ? (
           <WorkspaceHeartbeatsPanel />
         ) : (
           <WorkspaceCostPanel />
