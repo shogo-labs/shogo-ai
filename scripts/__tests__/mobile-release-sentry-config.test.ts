@@ -172,3 +172,48 @@ describe('SHO-433 · the Android sourcemap upload cannot silently do nothing', (
     expect(body).toContain('fail_upload "SENTRY_AUTH_TOKEN is not configured"')
   })
 })
+
+describe('SHO-433 · a release that shipped blind can still be symbolicated', () => {
+  // The releases built before the upload worked have no artifacts at all, so
+  // their stored events stay `index.android.bundle:1` until a map is uploaded
+  // for them. Sentry symbolicates on read, so backfilling that map is what
+  // makes ANDROID-11 readable without shipping a new build.
+  const backfillYaml = code('.github/workflows/symbolicate-android-release.yml')
+  const upload = () => step(backfillYaml, 'Upload sourcemaps for ${{ inputs.release }}')
+
+  it('is a manual dispatch that names the release and dist to backfill', () => {
+    expect(backfillYaml).toContain('workflow_dispatch:')
+    expect(backfillYaml).toMatch(/release:[\s\S]{0,400}required: true/)
+    expect(backfillYaml).toMatch(/dist:[\s\S]{0,400}default: android/)
+  })
+
+  it('builds the ref that shipped, not whatever HEAD is now', () => {
+    expect(backfillYaml).toContain('ref: ${{ inputs.ref || inputs.release }}')
+    expect(backfillYaml).toContain('EXPO_PUBLIC_BUILD_HASH: ${{ inputs.release }}')
+    // The inlined API URL is part of the bundle: a different one shifts it.
+    expect(backfillYaml).toContain('EXPO_PUBLIC_API_URL: ${{ inputs.environment')
+  })
+
+  it('uploads under the release/dist the events report', () => {
+    expect(upload()).toContain('--release "$RELEASE"')
+    expect(upload()).toContain('--dist "$SENTRY_DIST"')
+  })
+
+  it('refuses a map that cannot match the shipped Hermes bytecode', () => {
+    const body = upload()
+    expect(body).toContain('no index.android.bundle.hbc.map')
+    // No fallback to the raw packager map: its columns are JS text offsets, so
+    // uploading it for a Hermes release would map confidently-wrong lines.
+    expect(body).not.toContain('cp "$PACKAGER_MAP" "$OUT/index.android.bundle.map"')
+    expect(body).toContain('compose-source-maps.js')
+  })
+
+  it('proves the upload landed and never succeeds silently', () => {
+    const body = upload()
+    expect(body).toContain('releases files "$RELEASE" list')
+    expect(body).toContain('-gt 0')
+    // Every failure ends non-zero: no "continue anyway" path here.
+    expect(body.split('\n').filter((l) => l.trim() === 'exit 0')).toHaveLength(0)
+    expect(body).toContain('is_real_cli $SENTRY_CLI || fail "no working sentry-cli"')
+  })
+})

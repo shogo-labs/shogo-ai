@@ -603,6 +603,11 @@ jobs:
           EXPO_PUBLIC_SENTRY_DSN_ANDROID: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_ANDROID }}
           EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
           SENTRY_UPLOAD_REQUIRED: ${{ startsWith(github.ref, 'refs/tags/') || needs.check-fingerprint.outputs.environment == 'production' }}
+          # The CLI repair below is a `bun install` at the repo root, so it can
+          # run @vscode/ripgrep's postinstall — which needs an authenticated
+          # token or it flakes with a shared-quota 403
+          # (`scripts/check-ci-bun-install-token.ts`).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -u
           fail_upload() {
