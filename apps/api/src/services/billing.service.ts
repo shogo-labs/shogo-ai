@@ -852,18 +852,26 @@ export async function getOverageStatus(
   /** Whether the workspace currently has a live paid entitlement (active
    * Stripe subscription or unexpired paid-tier grant) backing overage. */
   paidTier: boolean
-  /** `overageEnabled && paidTier` — whether overage will actually apply
-   * the next time a rolling window is exhausted. This is the value the UI
-   * should treat as "is on-demand usage on". */
+  /** Whether the card has paid a real invoice. A trialing subscription is a
+   * paid tier but has never been charged, so overage is not trusted yet. */
+  overageTrusted: boolean
+  /** `overageEnabled && paidTier && overageTrusted` — whether overage will
+   * actually apply the next time a rolling window is exhausted. This is the
+   * value the UI should treat as "is on-demand usage on". */
   overageActive: boolean
 }> {
   const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId)
-  const [wallet, { paidTier }] = await Promise.all([
+  const [wallet, { paidTier, overageTrusted }] = await Promise.all([
     prisma.usageWallet.findUnique({ where: { workspaceId: billingWorkspaceId } }),
     resolveEffectivePlan(prisma, billingWorkspaceId, now),
   ])
   const overageEnabled = wallet?.overageEnabled ?? false
-  return { overageEnabled, paidTier, overageActive: overageEnabled && paidTier }
+  return {
+    overageEnabled,
+    paidTier,
+    overageTrusted,
+    overageActive: overageEnabled && paidTier && overageTrusted,
+  }
 }
 
 /**
@@ -1004,7 +1012,7 @@ export async function checkUsageBalance(
     now,
     wallet,
   });
-  const { limits, paidTier, counters, scope, seat } = meter;
+  const { limits, paidTier, overageTrusted, counters, scope, seat } = meter;
 
   // Uncapped plan (enterprise): always has balance.
   if (limits == null) return { ok: true };
@@ -1047,6 +1055,12 @@ export async function checkUsageBalance(
     healStaleOverageFlag(billingWorkspaceId);
     return refuse('entitlement_expired');
   }
+  // A trialing subscription is a paid tier but its card has never been charged
+  // (a trial's first invoice is $0). Do not let overage become the first real
+  // charge on that card — the fraud trials of Nov 2026 all failed there. The
+  // user's `overageEnabled` setting is left alone: it switches on by itself
+  // once `firstPaidAt` is set by the first paid invoice.
+  if (!overageTrusted) return refuse('overage_requires_payment');
   if (wallet.overageOutstandingInvoiceId) {
     reconcileOutstandingOverage(billingWorkspaceId, wallet.overageOutstandingInvoiceId).catch((err) =>
       console.error('[billing] failed to reconcile outstanding overage invoice:', err),
@@ -1465,7 +1479,7 @@ async function _consumeUsageTransaction(
       now,
       wallet,
     })
-    const { limits, paidTier, seat, counters, scope } = meter
+    const { limits, paidTier, overageTrusted, seat, counters, scope } = meter
 
     // Which wallet pays for promo spend if a window is exhausted. Usually this
     // one; a personal workspace falls back to the owner's signup credit, which
@@ -1533,7 +1547,7 @@ async function _consumeUsageTransaction(
         // an expired grant / lapsed subscription falls through to the hard
         // "Usage limit reached" branch instead of metering unbillable usage.
         const overageDue = Math.max(0, billedUsd - promoAvailableUsd);
-        const overageApplies = wallet.overageEnabled && paidTier;
+        const overageApplies = wallet.overageEnabled && paidTier && overageTrusted;
         let overageBlock: 'overage_payment_pending' | 'overage_cap_reached' | null = null;
         if (overageApplies && overageDue > 0) {
           if (wallet.overageOutstandingInvoiceId) {
@@ -1617,6 +1631,10 @@ async function _consumeUsageTransaction(
           // Prisma's own row cache both do), so reading `overageEnabled`
           // after the write would always see the just-cleared `false`.
           const isStaleOverageFlag = wallet.overageEnabled && !paidTier;
+          // Overage is on and the plan is paid, but the card has never been
+          // charged (a trial). Refuse without clearing the flag: the user's
+          // setting stays and switches on by itself after the first payment.
+          const requiresPayment = wallet.overageEnabled && paidTier && !overageTrusted;
           if (isStaleOverageFlag) {
             // When the flag is stale (entitlement lapsed) clear it in the
             // same transaction so the wallet snapshot returned to clients
@@ -1628,7 +1646,9 @@ async function _consumeUsageTransaction(
           }
           const reason: UsageBlockReason = isStaleOverageFlag
             ? 'entitlement_expired'
-            : 'usage_limit_reached'
+            : requiresPayment
+              ? 'overage_requires_payment'
+              : 'usage_limit_reached'
           logUsageRefused({
             workspaceId,
             billingWorkspaceId,
@@ -1875,6 +1895,19 @@ interface EffectivePlan {
    */
   paidTier: boolean
   /**
+   * Whether the card behind this workspace has ever paid a real invoice
+   * (`Subscription.firstPaidAt != null`). Overage is gated on this in addition
+   * to `paidTier`: a trialing subscription counts as a paid tier, but its first
+   * invoice is $0, so the card has never been charged. Without this gate the
+   * first real charge on a trial card is our overage block invoice — which is
+   * exactly what the fraud trials of Nov 2026 exploited (~$370 lost).
+   *
+   * `true` when there is no subscription at all: a grant-only paid workspace
+   * keeps today's behaviour (it is already capped at
+   * `GRANT_ONLY_OVERAGE_HARD_LIMIT_USD`).
+   */
+  overageTrusted: boolean
+  /**
    * Entitled seats: paid Stripe seats plus granted free seats, min 1. This is
    * the multiplier for the pooled allowance that seatless usage meters
    * against (SHO-343). Always 1 on the free tier, which keeps its single
@@ -1923,7 +1956,7 @@ async function resolveEffectivePlan(
   const [sub, grant] = await Promise.all([
     tx.subscription.findFirst({
       where: { workspaceId, status: { in: ['active', 'trialing'] } },
-      select: { planId: true, seats: true, stripePriceId: true },
+      select: { planId: true, seats: true, stripePriceId: true, firstPaidAt: true },
     }),
     getActiveGrantsForWorkspace(workspaceId, now),
   ])
@@ -1955,7 +1988,13 @@ async function resolveEffectivePlan(
     ? Math.max(1, (sub?.seats ?? 0) + (grant.freeSeats ?? 0))
     : 1
 
-  return { limits, paidTier, seatCount }
+  // Overage is only trusted once the card has paid a real invoice. A trialing
+  // subscription is a paid tier but has never been charged (its first invoice
+  // is $0), so it must not fall through to overage. No subscription at all
+  // (grant-only) keeps today's behaviour.
+  const overageTrusted = sub ? sub.firstPaidAt != null : true
+
+  return { limits, paidTier, overageTrusted, seatCount }
 }
 
 /** Which counters a request is metered against. */
@@ -1973,6 +2012,8 @@ interface Meter {
   /** Limits for the counters in `counters`; `null` = uncapped. */
   limits: WindowLimits | null
   paidTier: boolean
+  /** Whether the card has paid a real invoice — see `EffectivePlan`. */
+  overageTrusted: boolean
   /** The member row the debit writes to, when the request has a seat. */
   seat: SeatWindowCounters | null
   counters: MeterCounters
@@ -2012,7 +2053,7 @@ async function resolveMeter(
     weeklyWindowStart: null,
     weeklyUsedUsd: 0,
   }
-  const { limits: perSeatLimits, paidTier, seatCount } = await resolveEffectivePlan(
+  const { limits: perSeatLimits, paidTier, overageTrusted, seatCount } = await resolveEffectivePlan(
     client,
     opts.billingWorkspaceId,
     opts.now,
@@ -2022,10 +2063,10 @@ async function resolveMeter(
     : null
 
   if (seat) {
-    return { limits: perSeatLimits, paidTier, seat, counters: seat, scope: 'seat' }
+    return { limits: perSeatLimits, paidTier, overageTrusted, seat, counters: seat, scope: 'seat' }
   }
   if (!paidTier) {
-    return { limits: perSeatLimits, paidTier, seat: null, counters: wallet, scope: 'free' }
+    return { limits: perSeatLimits, paidTier, overageTrusted, seat: null, counters: wallet, scope: 'free' }
   }
   return {
     limits:
@@ -2036,6 +2077,7 @@ async function resolveMeter(
             weeklyUsd: perSeatLimits.weeklyUsd * seatCount,
           },
     paidTier,
+    overageTrusted,
     seat: null,
     counters: wallet,
     scope: 'pooled',
@@ -2141,10 +2183,18 @@ export async function chargeOverageBlocks(
     where: reason === 'final'
       ? { workspaceId }
       : { workspaceId, status: { in: ['active', 'trialing'] } },
-    select: { stripeCustomerId: true, stripeSubscriptionId: true },
+    select: { stripeCustomerId: true, stripeSubscriptionId: true, firstPaidAt: true },
   })
   if (!sub?.stripeCustomerId) {
     console.warn(`[billing] no Stripe customer for workspace ${workspaceId}; deferring overage charge (${reason})`)
+    return 0
+  }
+  // Belt-and-braces with the `overageTrusted` gate: never let an overage block
+  // be the first real charge on a card. A trialing subscription has never been
+  // charged (its first invoice is $0), so an overage invoice here would be the
+  // first thing the card sees — and for the fraud trials of Nov 2026 it failed.
+  if (sub.firstPaidAt == null) {
+    console.warn(`[billing] workspace ${workspaceId} has no paid invoice yet; deferring overage block charge`)
     return 0
   }
 
@@ -2482,6 +2532,24 @@ export async function syncFromStripe(data: {
   // A new plan changes the agent-reply ceiling, and the queue must not wait out its cache.
   invalidateAgentReplyCapacity(data.workspaceId);
   return subscription;
+}
+
+/**
+ * Record that a customer's card has paid a real invoice (SHO-409). Called from
+ * `invoice.payment_succeeded`; a $0 trial invoice must never call it. Idempotent
+ * under webhook retries: only rows still null are touched, so a re-subscribe on
+ * the same customer keeps the paid history. Returns the number of rows updated.
+ */
+export async function markSubscriptionFirstPaid(
+  stripeCustomerId: string,
+  amountPaidCents: number,
+): Promise<number> {
+  if (!stripeCustomerId || amountPaidCents <= 0) return 0
+  const res = await prisma.subscription.updateMany({
+    where: { stripeCustomerId, firstPaidAt: null },
+    data: { firstPaidAt: new Date() },
+  })
+  return res.count
 }
 
 /**

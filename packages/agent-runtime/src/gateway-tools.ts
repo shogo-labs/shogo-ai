@@ -10749,11 +10749,13 @@ async function socialInternalCall(
                 ? 'The social provider did not return a profile id. Retry once, then report it if it keeps happening.'
                 : code === 'social_not_configured'
                   ? 'Social is not configured on the server: the workspace owner has to set the provider key.'
-                  : code === 'account_out_of_scope' || code === 'profile_out_of_scope'
+                  : code === 'profile_out_of_scope'
                     ? 'That resource belongs to another workspace. Connect this workspace’s own account.'
                     : code === 'account_owned_elsewhere'
-                      ? 'Disconnect that account from the other workspace first, then connect it here.'
-                      : response.status === 409
+                      ? 'That account is connected to another project (or workspace) in this workspace. Disconnect it there first, or connect a different account.'
+                      : code === 'account_out_of_scope'
+                        ? 'That account belongs to another project. Run action "accounts" to see the ones this project may use.'
+                        : response.status === 409
                         ? 'Connect the account, then run action "inbox" with kind "dms" or "comments" to sync first.'
                         : undefined,
       }
@@ -10986,7 +10988,9 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       `Enabled lookup platforms: ${platformList}. ` +
       `Actions: "profile" and "recent_posts" take a handle; ` +
       `"connect" takes a platform and returns a sign-in LINK to give the person — never ask for or accept a username, password or 2FA code; ` +
-      `"accounts" lists the connected accounts and their ids; ` +
+      `the account it creates belongs to this project, so another project's agent cannot see or post to it (a workspace-shared account is usable by every project); ` +
+      `to add a second account on a platform that is already connected, pass expected_username — Instagram always shows its own login page for a new connect, so the person can pick the account to add; ` +
+      `"accounts" lists the connected accounts and their ids, marking each one "project" (this project's) or "shared" (the whole workspace); ` +
       `"audio" searches Instagram's licensed music / original sounds for a connected Instagram account (omit query for trending) and returns audio ids to pass to "post" as \`audio\`; it needs the account connected with Facebook Login; ` +
       `"post" publishes or schedules one post to one or more accounts (content, account_ids, media, scheduled_for/publish_now/draft); ` +
       `"posts" lists posts, "calendar" the schedule and "analytics" the numbers; ` +
@@ -11149,7 +11153,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       force_reauth: Type.Optional(
         Type.Boolean({
           description:
-            'For action "connect": Instagram only. Show Instagram\'s own login page instead of reusing whichever account is already signed in on the device.',
+            'For action "connect": Instagram only. Show Instagram\'s own login page instead of reusing whichever account is already signed in on the device. Already the default for a new Instagram connect when the workspace has one, so you rarely need it.',
         }),
       ),
       status: Type.Optional(
@@ -11298,6 +11302,9 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
             username: account.username,
             active: account.isActive !== false,
             needs_reconnect: account.needsReconnect === true,
+            // `project` = this project's own account; `shared` = connected at the
+            // workspace level, so every project's agent may use it.
+            owner: account.projectId ? 'project' : 'shared',
           })),
         })
       }
@@ -11688,7 +11695,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
             query.set('platform', platform)
           }
           const result = await socialInternalCall(ctx, 'GET', `/social/inbox?${query.toString()}`)
-          if (!result.ok) return textResult({ error: result.error, suggestion: result.suggestion })
+          if (!result.ok) return textResult({ error: result.error, code: result.code, suggestion: result.suggestion })
           const conversations = Array.isArray(result.data?.conversations) ? result.data.conversations : []
           return textResult({
             kind,

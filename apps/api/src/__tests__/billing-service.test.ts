@@ -90,7 +90,18 @@ const subscriptionStore = {
     const subs = subsByWs.get(args.where.workspaceId) ?? []
     const statusIn: string[] | undefined = args.where.status?.in
     const filtered = statusIn ? subs.filter((s: any) => statusIn.includes(s.status)) : subs
-    return filtered[0] ?? null
+    const s = filtered[0] ?? null
+    if (!s) return null
+    // Mirror the migration's backfill: an active/past_due row that predates
+    // `firstPaidAt` has been charged, so it reads as paid. A trialing row stays
+    // null. Tests that need an untrusted active row set `firstPaidAt: null`.
+    const firstPaidAt =
+      s.firstPaidAt !== undefined
+        ? s.firstPaidAt
+        : s.status === 'active' || s.status === 'past_due'
+          ? (s.currentPeriodStart ?? s.createdAt ?? new Date())
+          : null
+    return { ...s, firstPaidAt }
   },
   findMany: async (args: any) => subsByWs.get(args.where.workspaceId) ?? [],
   update: async (args: any) => {
@@ -1477,13 +1488,25 @@ describe('chargeOverageBlocks', () => {
 
   test('final: invoices the remainder against a canceled subscription', async () => {
     seedWallet('ws-1', { overageAccumulatedUsd: 5, overageBilledUsd: 0 })
-    subsByWs.set('ws-1', [{ ...activeSub, status: 'canceled' }])
+    subsByWs.set('ws-1', [{ ...activeSub, status: 'canceled', firstPaidAt: new Date('2026-10-01') }])
 
     expect(await billing.chargeOverageBlocks('ws-1', { reason: 'final' })).toBe(1)
     const item = stripeCalls.find((c) => c.method === 'invoiceItems.create')!
     expect(item.args[0].amount).toBe(500)
     expect(item.args[0].metadata).toMatchObject({ reason: 'final', partial: 'true' })
     expect(walletByWs.get('ws-1').overageBilledUsd).toBe(5)
+  })
+
+  // SHO-409's rule holds on the way out too: a subscription that never paid a
+  // real invoice must not get its remainder charged at cancellation, or the
+  // final invoice becomes the first thing the card sees — the Nov 2026 fraud.
+  test('final: a canceled subscription that never paid is not charged', async () => {
+    seedWallet('ws-1', { overageAccumulatedUsd: 5, overageBilledUsd: 0 })
+    subsByWs.set('ws-1', [{ ...activeSub, status: 'canceled', firstPaidAt: null }])
+
+    expect(await billing.chargeOverageBlocks('ws-1', { reason: 'final' })).toBe(0)
+    expect(stripeCalls.find((c) => c.method === 'invoiceItems.create')).toBeUndefined()
+    expect(walletByWs.get('ws-1').overageBilledUsd).toBe(0)
   })
 
   test('final: a canceled subscription is not billed by the block path', async () => {

@@ -8,6 +8,7 @@
  * packages/agent-runtime/src/gateway-tools.ts.
  */
 import type { Permission } from '@shogo/authz'
+import { TRANSFER_MAX_ARCHIVE_BASE64_CHARS } from '@shogo/shared-runtime/project-transfer-limits'
 
 export const REMOTE_READONLY_TOOLS: readonly string[] = ['read_file', 'search', 'exec_list', 'exec_wait', 'share_file']
 
@@ -21,7 +22,8 @@ export function remoteToolPermission(tool: string): Permission {
 
 /**
  * `POST /api/internal/projects/:id/files/import` (`copy_to_project`): the
- * 25 MB compressed archive cap in packages/agent-runtime/src/project-transfer.ts,
- * as base64 characters.
+ * compressed archive cap from `@shogo/shared-runtime/project-transfer-limits`
+ * — the same constant the agent runtime packs and imports against — as base64
+ * characters.
  */
-export const REMOTE_IMPORT_MAX_BASE64_CHARS = Math.ceil((25 * 1024 * 1024 * 4) / 3) + 4
+export const REMOTE_IMPORT_MAX_BASE64_CHARS = TRANSFER_MAX_ARCHIVE_BASE64_CHARS

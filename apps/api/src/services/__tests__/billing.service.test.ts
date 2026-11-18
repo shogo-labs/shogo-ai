@@ -21,6 +21,8 @@ type Sub = {
   currentPeriodEnd: Date
   cancelAtPeriodEnd: boolean
   createdAt: Date
+  /** Set once the card has paid a real invoice; null while trialing. */
+  firstPaidAt?: Date | null
 }
 type Wallet = {
   workspaceId: string
@@ -112,9 +114,22 @@ const prismaApi = {
       if (orderBy?.createdAt === 'desc') candidates = [...candidates].sort((a, b) => +b.createdAt - +a.createdAt)
       const s = candidates[0]
       if (!s) return null
-      if (!select) return s
+      // Mirror the migration's backfill: an active/past_due row that predates
+      // `firstPaidAt` has been charged, so it reads as paid. A trialing row
+      // stays null (its first invoice is $0). Tests that need an untrusted
+      // active row set `firstPaidAt: null` explicitly.
+      const firstPaidAt =
+        s.firstPaidAt !== undefined
+          ? s.firstPaidAt
+          : s.status === 'active' || s.status === 'past_due'
+            ? (s.currentPeriodStart ?? s.createdAt ?? new Date())
+            : null
+      if (!select) return { ...s, firstPaidAt }
       const out: any = {}
-      for (const k of Object.keys(select)) if (select[k]) out[k] = (s as any)[k]
+      for (const k of Object.keys(select)) {
+        if (!select[k]) continue
+        out[k] = k === 'firstPaidAt' ? firstPaidAt : (s as any)[k]
+      }
       return out
     },
     findMany: async ({ where, orderBy }: any) => {
@@ -139,6 +154,18 @@ const prismaApi = {
         if (s) { Object.assign(s, data); return s }
       }
       throw new Error('sub not found')
+    },
+    updateMany: async ({ where, data }: any) => {
+      let count = 0
+      for (const arr of subs.values()) {
+        for (const s of arr) {
+          if (where.stripeCustomerId !== undefined && s.stripeCustomerId !== where.stripeCustomerId) continue
+          if (where.firstPaidAt === null && s.firstPaidAt != null) continue
+          Object.assign(s, data)
+          count++
+        }
+      }
+      return { count }
     },
   },
   usageWallet: {
@@ -732,6 +759,18 @@ function setPlan(planId: string, seats = 1, workspaceId = 'w1') {
   subs.set(workspaceId, [s])
 }
 
+// A trialing subscription: a paid tier whose card has never been charged
+// (`firstPaidAt` null). Overage must not apply to it (SHO-409).
+function setTrialPlan(planId: string, seats = 1, workspaceId = 'w1') {
+  const s: Sub = {
+    id: `sub_trial_${planId}`, workspaceId, stripeSubscriptionId: `stripe_trial_${planId}`,
+    stripeCustomerId: 'cus_trial', planId, seats, status: 'trialing',
+    billingInterval: 'monthly', currentPeriodStart: today, currentPeriodEnd: today,
+    cancelAtPeriodEnd: false, createdAt: today, firstPaidAt: null,
+  }
+  subs.set(workspaceId, [s])
+}
+
 const now0 = () => new Date()
 
 describe('hasBalance (rolling windows)', () => {
@@ -942,7 +981,7 @@ describe('getOverageStatus', () => {
   it('overageActive is true only when both overageEnabled and paidTier are true', async () => {
     setPlan('pro')
     wallets.set('w1', freshWallet({ overageEnabled: true }))
-    expect(await billing.getOverageStatus('w1')).toEqual({ overageEnabled: true, paidTier: true, overageActive: true })
+    expect(await billing.getOverageStatus('w1')).toEqual({ overageEnabled: true, paidTier: true, overageTrusted: true, overageActive: true })
   })
 
   // This is exactly the client-visible symptom of the bug: the raw wallet
@@ -951,13 +990,95 @@ describe('getOverageStatus', () => {
   // would show on-demand usage as enabled while every request is blocked.
   it('overageActive is false when overageEnabled is true but there is no live paid entitlement', async () => {
     wallets.set('w1', freshWallet({ overageEnabled: true }))
-    expect(await billing.getOverageStatus('w1')).toEqual({ overageEnabled: true, paidTier: false, overageActive: false })
+    expect(await billing.getOverageStatus('w1')).toEqual({ overageEnabled: true, paidTier: false, overageTrusted: true, overageActive: false })
   })
 
   it('overageActive is false when overageEnabled is false, regardless of paidTier', async () => {
     setPlan('pro')
     wallets.set('w1', freshWallet({ overageEnabled: false }))
-    expect(await billing.getOverageStatus('w1')).toEqual({ overageEnabled: false, paidTier: true, overageActive: false })
+    expect(await billing.getOverageStatus('w1')).toEqual({ overageEnabled: false, paidTier: true, overageTrusted: true, overageActive: false })
+  })
+})
+
+describe('overage requires a paid invoice (SHO-409)', () => {
+  const exhausted = {
+    overageEnabled: true, overageHardLimitUsd: null,
+    fiveHourWindowStart: now0(), fiveHourUsedUsd: 50,
+    weeklyWindowStart: now0(), weeklyUsedUsd: 50,
+  }
+
+  it('checkUsageBalance refuses a trialing workspace with overage_requires_payment', async () => {
+    setTrialPlan('pro')
+    wallets.set('w1', freshWallet(exhausted))
+    expect(await billing.checkUsageBalance('w1', 1)).toEqual({ ok: false, reason: 'overage_requires_payment' })
+  })
+
+  it('consumeUsage refuses a trialing workspace, records no overage, and keeps the toggle on', async () => {
+    setTrialPlan('pro')
+    wallets.set('w1', freshWallet(exhausted))
+    const r = await billing.consumeUsage({
+      workspaceId: 'w1', projectId: null, memberId: 'u1',
+      actionType: 'chat_message', billedUsd: 5,
+    })
+    expect(r.success).toBe(false)
+    expect(r.reason).toBe('overage_requires_payment')
+    const w = wallets.get('w1')!
+    expect(w.overageAccumulatedUsd).toBe(0)
+    // The user's setting is not healed away — it switches on after payment.
+    expect(w.overageEnabled).toBe(true)
+  })
+
+  it('chargeOverageBlocks returns 0 and creates no invoice for a trialing workspace', async () => {
+    setTrialPlan('pro')
+    wallets.set('w1', freshWallet({
+      overageEnabled: true, overageHardLimitUsd: null,
+      overageAccumulatedUsd: 30, overageBilledUsd: 0,
+    }))
+    const before = stripeCalls.length
+    expect(await billing.chargeOverageBlocks('w1')).toBe(0)
+    expect(stripeCalls.length).toBe(before)
+  })
+
+  it('overage applies once firstPaidAt is set (the card has paid)', async () => {
+    setPlan('pro') // active sub, backfilled firstPaidAt
+    wallets.set('w1', freshWallet(exhausted))
+    const r = await billing.consumeUsage({
+      workspaceId: 'w1', projectId: null, memberId: 'u1',
+      actionType: 'chat_message', billedUsd: 5,
+    })
+    expect(r.success).toBe(true)
+    expect(r.source).toBe('overage')
+    expect(wallets.get('w1')!.overageAccumulatedUsd).toBe(5)
+  })
+
+  it('getOverageStatus reports overageActive false for a trialing workspace', async () => {
+    setTrialPlan('pro')
+    wallets.set('w1', freshWallet({ overageEnabled: true }))
+    expect(await billing.getOverageStatus('w1')).toEqual({
+      overageEnabled: true, paidTier: true, overageTrusted: false, overageActive: false,
+    })
+  })
+})
+
+describe('markSubscriptionFirstPaid (SHO-409)', () => {
+  it('sets firstPaidAt on a null row for a real payment', async () => {
+    setTrialPlan('pro')
+    expect(await billing.markSubscriptionFirstPaid('cus_trial', 2500)).toBe(1)
+    expect(subs.get('w1')![0].firstPaidAt).toBeInstanceOf(Date)
+  })
+
+  it('does nothing for a $0 invoice (a trial invoice)', async () => {
+    setTrialPlan('pro')
+    expect(await billing.markSubscriptionFirstPaid('cus_trial', 0)).toBe(0)
+    expect(subs.get('w1')![0].firstPaidAt).toBeNull()
+  })
+
+  it('is idempotent: a second payment does not move an already-set firstPaidAt', async () => {
+    setTrialPlan('pro')
+    await billing.markSubscriptionFirstPaid('cus_trial', 2500)
+    const first = subs.get('w1')![0].firstPaidAt
+    expect(await billing.markSubscriptionFirstPaid('cus_trial', 2500)).toBe(0)
+    expect(subs.get('w1')![0].firstPaidAt).toBe(first)
   })
 })
 

@@ -22,6 +22,9 @@
  *   - `overage_payment_pending`: overage is active, but the current overage
  *     block is invoiced and unpaid (or due to be invoiced). Overage resumes
  *     once that invoice is paid.
+ *   - `overage_requires_payment`: overage is on and the plan is paid, but the
+ *     card has never been charged (a trialing subscription whose first invoice
+ *     is $0). Overage starts after the first real payment.
  *   - `usage_limit_reached`: the generic case — no overage configured at
  *     all (or an uncapped/free wallet was never found), so the window is
  *     just the hard stop.
@@ -30,6 +33,7 @@ export type UsageBlockReason =
   | 'entitlement_expired'
   | 'overage_cap_reached'
   | 'overage_payment_pending'
+  | 'overage_requires_payment'
   | 'usage_limit_reached'
 
 export interface BalanceCheck {
@@ -64,6 +68,12 @@ export function usageLimitErrorPayload(reason: UsageBlockReason | undefined): { 
         code: 'overage_payment_pending',
         message:
           "Your latest on-demand usage charge hasn't been paid yet. Pay or confirm the open invoice in Billing settings to continue.",
+      }
+    case 'overage_requires_payment':
+      return {
+        code: 'overage_requires_payment',
+        message:
+          "On-demand usage starts after your first payment. Your trial includes your plan's usage limits and promo credit — add or verify a payment method to enable on-demand usage now.",
       }
     default:
       return {

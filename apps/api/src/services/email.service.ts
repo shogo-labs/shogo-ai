@@ -251,19 +251,28 @@ export async function sendTrialEndingEmail(params: {
 
 /**
  * Tell the owner their trial checkout was cancelled because the card or account
- * already used a free trial, so they can subscribe without one. Nothing was
- * charged. Requires a `trial-unavailable` template on the email provider.
+ * already used a free trial, or because the card is prepaid, so they can
+ * subscribe without one. Nothing was charged. Requires a `trial-unavailable`
+ * template on the email provider; `reason`/`reasonMessage` let it explain why.
  */
 export async function sendTrialUnavailableEmail(params: {
   to: string
   workspaceName: string
   planName: string
   dashboardUrl: string
+  /** `blocked_duplicate_card` | `blocked_duplicate_user` | `blocked_prepaid_card` | null */
+  reason?: string | null
 }): Promise<{ success: boolean; error?: string }> {
+  const reasonMessage =
+    params.reason === 'blocked_prepaid_card'
+      ? "Free trials need a debit or credit card — prepaid cards can't start a trial. You can still upgrade with this card, or start the trial with a different card."
+      : "This card or account has already used a free trial. You can still subscribe without a trial."
   return sendTemplateEmail('trial-unavailable', params.to, {
     workspaceName: params.workspaceName,
     planName: params.planName,
     dashboardUrl: params.dashboardUrl,
+    reason: params.reason ?? null,
+    reasonMessage,
   })
 }
 
