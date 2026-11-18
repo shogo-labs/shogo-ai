@@ -16,7 +16,7 @@
 
 import { AUTO_MODEL_ID, buildAutoTierMap, type ModelTierMap } from './model-router'
 import { isAutoModel } from '@shogo/model-catalog'
-import { pinnedAgentModel } from '@shogo/shared-runtime'
+import { pinnedAgentModel } from '@shogo/shared-runtime/standalone'
 
 export interface AvailableModel {
   id: string

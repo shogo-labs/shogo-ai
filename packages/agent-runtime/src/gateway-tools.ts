@@ -133,7 +133,8 @@ import {
   withCrossWorkspaceParam,
 } from './cross-workspace'
 import { assertAllowedPath as assertAllowedPathRaw, getRuntimeTrust } from './runtime-trust'
-import { isBinaryFilePath, isZernioSocialToolkit, normalizeToolkitName, zernioPlatformsFromQuery, isStandalone, type ZernioSocialToolkit } from '@shogo/shared-runtime'
+import { isBinaryFilePath, isZernioSocialToolkit, normalizeToolkitName, zernioPlatformsFromQuery, type ZernioSocialToolkit } from '@shogo/shared-runtime'
+import { isStandalone } from '@shogo/shared-runtime/standalone'
 import { isShogoAgentEmail, withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
 import { missingCodePlanSections } from './plan-sections'
 

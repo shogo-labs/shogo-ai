@@ -20,7 +20,7 @@ import { isSearchEnabled } from './search-flag'
 import { MEDIA_TOOL_NAMES } from './media-tool-names'
 import type { ToolContext } from './gateway-tools'
 import { createBrowserTool, createReadGuideTool, disposeBrowserTool, textResult } from './gateway-tools'
-import { pinnedAgentModel } from '@shogo/shared-runtime'
+import { pinnedAgentModel } from '@shogo/shared-runtime/standalone'
 
 // ---------------------------------------------------------------------------
 // Core gateway tool names — anything NOT in this set is a dynamic/installed

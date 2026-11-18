@@ -121,7 +121,8 @@ import { refreshAvailableModels, getAvailableModels } from './available-models'
 import { mergeAgentModelIntoConfig, type AgentModelSnapshot } from './agent-model-config'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
-import { WorkspaceLSPManager, resolveBin, WorktreeManager, notifyProxyAuthFailure, pinnedAgentModel } from '@shogo/shared-runtime'
+import { WorkspaceLSPManager, resolveBin, WorktreeManager, notifyProxyAuthFailure } from '@shogo/shared-runtime'
+import { pinnedAgentModel } from '@shogo/shared-runtime/standalone'
 import type { MergeResult as WorktreeMergeResult, WorktreeStatus } from '@shogo/shared-runtime'
 import {
   isForeignWorkspaceDir,

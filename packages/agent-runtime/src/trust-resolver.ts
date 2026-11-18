@@ -43,7 +43,7 @@
 
 import { existsSync } from 'fs'
 
-import { isStandalone } from '@shogo/shared-runtime'
+import { isStandalone } from '@shogo/shared-runtime/standalone'
 import { deriveApiUrl, getInternalHeaders } from './internal-api'
 
 /** Same path internal-api.ts uses to detect a Kubernetes service account. */

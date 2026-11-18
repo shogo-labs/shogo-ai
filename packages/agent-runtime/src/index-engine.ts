@@ -18,7 +18,7 @@ import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, type Dirent
 import { readdir as readdirAsync, readFile as readFileAsync, stat as statAsync } from 'fs/promises'
 import { join, extname } from 'path'
 import OpenAI from 'openai'
-import { isStandalone } from '@shogo/shared-runtime'
+import { isStandalone } from '@shogo/shared-runtime/standalone'
 
 // Yield to the event loop every N file-system ops during the workspace
 // scan so Bun.serve's `fetch` handler (chat proxy, /health, …) can

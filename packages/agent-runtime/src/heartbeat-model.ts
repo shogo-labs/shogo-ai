@@ -23,7 +23,7 @@
  */
 
 import { agentModelAliasForConfig } from './agent-model-config'
-import { pinnedAgentModel } from '@shogo/shared-runtime'
+import { pinnedAgentModel } from '@shogo/shared-runtime/standalone'
 
 /** Where a tick's model came from. Logged on every tick. */
 export type HeartbeatModelSource = 'pinned' | 'agent_config' | 'runtime_config' | 'platform_default'
