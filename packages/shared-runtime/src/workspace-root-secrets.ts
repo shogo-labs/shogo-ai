@@ -26,7 +26,11 @@
  */
 
 import { createHash } from 'node:crypto'
-import { chmodSync, mkdirSync, readdirSync, readFileSync, lstatSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+// Namespace rather than named imports: this module is imported by pure builder
+// code (`build-workspace-env`) and by suites that stub `fs` with the two calls
+// they need. A named import makes those link failures; this binds the module
+// itself, so `fs` is only touched when a slot is actually read or written.
+import * as fs from 'node:fs'
 import { join, resolve } from 'node:path'
 
 /** Slot name for the runtime's own workspace root. */
@@ -162,7 +166,7 @@ export function collectWorkspaceSecretSlot(
   const skipped: string[] = []
   let names: string[] = []
   try {
-    names = readdirSync(dir).sort()
+    names = fs.readdirSync(dir).sort()
   } catch {
     return { slot: { slot, files }, skipped }
   }
@@ -171,7 +175,7 @@ export function collectWorkspaceSecretSlot(
     const abs = join(dir, name)
     let st
     try {
-      st = lstatSync(abs)
+      st = fs.lstatSync(abs)
     } catch {
       continue
     }
@@ -187,7 +191,7 @@ export function collectWorkspaceSecretSlot(
     }
     files.push({
       name,
-      content: readFileSync(abs).toString('base64'),
+      content: fs.readFileSync(abs).toString('base64'),
       mode: 0o600,
       mtimeMs: Math.round(st.mtimeMs),
     })
@@ -221,20 +225,20 @@ export function applyWorkspaceSecretSlot(
     bytes.set(file.name, buf)
   }
 
-  mkdirSync(dir, { recursive: true })
+  fs.mkdirSync(dir, { recursive: true })
 
   if (opts.prune !== false) {
     let live: string[] = []
     try {
-      live = readdirSync(dir)
+      live = fs.readdirSync(dir)
     } catch {
       live = []
     }
     for (const name of staleWorkspaceSecretNames(live, incoming)) {
       try {
-        const st = lstatSync(join(dir, name))
+        const st = fs.lstatSync(join(dir, name))
         if (!st.isFile() && !st.isSymbolicLink()) continue
-        rmSync(join(dir, name), { force: true })
+        fs.rmSync(join(dir, name), { force: true })
         removed.push(name)
       } catch {
         /* already gone */
@@ -246,14 +250,14 @@ export function applyWorkspaceSecretSlot(
     const target = join(dir, name)
     // Replace rather than merge: a `.env` restored on top of a live one would
     // keep every line the archive does not carry, including a deleted key.
-    rmSync(target, { force: true })
-    writeFileSync(target, buf, { mode: 0o600 })
-    chmodSync(target, 0o600)
+    fs.rmSync(target, { force: true })
+    fs.writeFileSync(target, buf, { mode: 0o600 })
+    fs.chmodSync(target, 0o600)
     const file = slot.files.find((f) => f.name === name)
     if (file && Number.isFinite(file.mtimeMs) && file.mtimeMs > 0) {
       const seconds = file.mtimeMs / 1000
       try {
-        utimesSync(target, seconds, seconds)
+        fs.utimesSync(target, seconds, seconds)
       } catch {
         /* timestamps are cosmetic */
       }
