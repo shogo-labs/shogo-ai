@@ -210,12 +210,18 @@ describe('listGeneratedFiles', () => {
 })
 
 describe('wired check', () => {
-  test('passes against this checkout in its default HEAD mode', () => {
-    const result = spawnSync('bun', ['scripts/check-domain-stores-drift.ts'], {
+  test('runs end to end against this checkout', () => {
+    // Deliberately `--working-tree`, not the CI default: this test must not
+    // assert anything about the state of the checkout's HEAD. "Schema edited,
+    // output regenerated, not committed yet" is a normal mid-work state, and
+    // asserting the commit is current would turn `bun run test` red there for
+    // everyone. What this covers is the wiring — config found, generator runs,
+    // 63 files compared — while the mode mechanics are pinned above.
+    const result = spawnSync('bun', ['scripts/check-domain-stores-drift.ts', '--working-tree'], {
       cwd: REPO_ROOT,
       encoding: 'utf-8',
     })
-    expect(result.stderr).not.toContain('is stale for prisma/schema.prisma')
+    expect(result.stdout).toContain('in sync — 63 generated files match prisma/schema.prisma (working-tree)')
     expect(result.status).toBe(0)
   }, 60_000)
 })
