@@ -187,7 +187,7 @@ The runtime reads 176 environment variables. This table is generated from the so
 | `COMPOSIO_MAX_RESULT_CHARS` | ignored | — | — |
 | `COMPOSIO_NOTFOUND_RETRY_DELAY_MS` | ignored | — | — |
 | `COMPOSIO_USER_SCOPE` | ignored | — | — |
-| `DATABASE_URL` | optional | `file:./skill.db` | — |
+| `DATABASE_URL` | optional | `file:./prisma/dev.db` | — |
 | `DEBUG_SCREENCAST` | optional | — | — |
 | `ELEVENLABS_API_KEY` | optional | — | — |
 | `GITHUB_TOKEN` | optional | — | — |

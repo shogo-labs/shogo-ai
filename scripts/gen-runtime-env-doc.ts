@@ -119,7 +119,11 @@ const PURPOSE: Record<string, string> = {
 }
 
 function walk(dir: string, out: string[]): void {
-  for (const entry of readdirSync(dir)) {
+  // Sorted, because `extractDefault` takes the first file that spells a
+  // fallback and two variables (`DATABASE_URL`, `WORKSPACE_ID`) spell more than
+  // one. `readdirSync` order follows the directory's on-disk order, so without
+  // this the rendered table — and the drift test — depends on the filesystem.
+  for (const entry of readdirSync(dir).sort()) {
     const full = join(dir, entry)
     if (statSync(full).isDirectory()) {
       if (SKIP_DIRS.has(entry)) continue
