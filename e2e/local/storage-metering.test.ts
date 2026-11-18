@@ -145,6 +145,26 @@ test.describe("workspace storage endpoint", () => {
     expect(body.month.mode).toBe("shadow")
   })
 
+  test("a super admin gets the platform summary", async () => {
+    // Local mode promotes every user it creates to `super_admin`, so this is the
+    // privileged half of the same gate (the member case below is the refusal).
+    const res = await api(page, "GET", "/api/admin/storage")
+
+    expect(res.status).toBe(200)
+    const body = (res.json?.data ?? res.json) as Record<string, any>
+    expect(typeof body.buckets?.measuredBytes).toBe("number")
+    expect(typeof body.buckets?.workspaces).toBe("number")
+    expect(typeof body.categories).toBe("object")
+    expect(typeof body.billableBytes).toBe("number")
+    expect(typeof body.overheadBytes).toBe("number")
+    expect(Array.isArray(body.unmeasured)).toBe(true)
+    expect(Array.isArray(body.topByBytes)).toBe(true)
+    expect(Array.isArray(body.topByOverage)).toBe(true)
+    expect(typeof body.month.gbMonths).toBe("number")
+    expect(typeof body.month.shadowUsd).toBe("number")
+    expect(body.month.mode).toBe("shadow")
+  })
+
   test("a plain member gets the total only, never the breakdown", async ({ browser }) => {
     seedMember()
     const workspaceId = await teamWorkspaceId(page)
