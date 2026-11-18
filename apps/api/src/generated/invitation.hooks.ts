@@ -15,6 +15,8 @@ import { getFrontendUrl } from "../lib/cloud-urls"
 import { canAssignProjectRole, canAssignWorkspaceRole, isWorkspaceRole, toProjectRole } from "@shogo/authz"
 import type { Principal } from "../lib/authz"
 import { hookAccess, hookCan, hookRequire } from "../lib/authz/hooks"
+import { assertTrialSeatRoom } from "../services/billing.service"
+import { trialSeatLimitMessage } from "../config/usage-plans"
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -266,6 +268,18 @@ export const invitationHooks: InvitationHooks = {
 
     if (!(await canManageInvite(ctx, { workspaceId: input.workspaceId, projectId }, input.role))) {
       return { ok: false, error: { code: "forbidden", message: "You cannot invite with this role" } }
+    }
+
+    // A trialing workspace never holds more than TRIAL_MAX_SEATS seats
+    // (SHO-422). Refuse the invite here so the owner hears about it when they
+    // invite, not when the invitee hits a wall. Acceptance is re-checked in
+    // `member.hooks.beforeCreate` (pending invites created before the cap).
+    // Project guests do not use a seat.
+    if (!projectId) {
+      const room = await assertTrialSeatRoom(input.workspaceId)
+      if (!room.ok) {
+        return { ok: false, error: { code: room.code!, message: trialSeatLimitMessage(room.maxSeats) } }
+      }
     }
 
     if (!input.expiresAt) {

@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock, setSystemTime } from 'bun:test'
 import * as realStripePrices from '../../config/stripe-prices'
-import { SOLO_FOUNDER_OVERAGE_CAP_USD } from '../../config/usage-plans'
+import { SOLO_FOUNDER_OVERAGE_CAP_USD, TRIAL_MAX_SEATS } from '../../config/usage-plans'
 
 // ============================================================================
 // In-memory prisma mock
@@ -1608,6 +1608,121 @@ describe('syncSeatsFromMembership', () => {
     } finally {
       stripeSubscriptionsRetrieve = orig
     }
+  })
+  it('clamps a trialing subscription to TRIAL_MAX_SEATS', async () => {
+    subs.set('w1', [{
+      id: 's1', workspaceId: 'w1', stripeSubscriptionId: 's', stripeCustomerId: 'c',
+      planId: 'pro', seats: 1, status: 'trialing', billingInterval: 'monthly',
+      currentPeriodStart: today, currentPeriodEnd: today, cancelAtPeriodEnd: false, createdAt: today,
+    }])
+    for (let i = 1; i <= TRIAL_MAX_SEATS + 3; i++) {
+      members.push({ workspaceId: 'w1', userId: `u${i}`, projectId: null })
+    }
+    const r = await billing.syncSeatsFromMembership('w1')
+    expect(r.ok).toBe(true)
+    expect(r.seats).toBe(TRIAL_MAX_SEATS)
+    expect(subs.get('w1')?.[0].seats).toBe(TRIAL_MAX_SEATS)
+  })
+  it('does not clamp an active subscription', async () => {
+    subs.set('w1', [{
+      id: 's1', workspaceId: 'w1', stripeSubscriptionId: 's', stripeCustomerId: 'c',
+      planId: 'pro', seats: 1, status: 'active', billingInterval: 'monthly',
+      currentPeriodStart: today, currentPeriodEnd: today, cancelAtPeriodEnd: false, createdAt: today,
+    }])
+    for (let i = 1; i <= TRIAL_MAX_SEATS + 3; i++) {
+      members.push({ workspaceId: 'w1', userId: `u${i}`, projectId: null })
+    }
+    const r = await billing.syncSeatsFromMembership('w1')
+    expect(r.seats).toBe(TRIAL_MAX_SEATS + 3)
+  })
+})
+
+// ============================================================================
+// assertTrialSeatRoom — the trial seat cap (SHO-422)
+// ============================================================================
+
+function seedTrial(workspaceId: string, status = 'trialing') {
+  subs.set(workspaceId, [{
+    id: `s_${workspaceId}`, workspaceId, stripeSubscriptionId: 's', stripeCustomerId: 'c',
+    planId: 'pro', seats: 1, status, billingInterval: 'monthly',
+    currentPeriodStart: today, currentPeriodEnd: today, cancelAtPeriodEnd: false, createdAt: today,
+  }])
+}
+
+function seedMembers(workspaceId: string, count: number) {
+  for (let i = 1; i <= count; i++) {
+    members.push({ workspaceId, userId: `${workspaceId}_u${i}`, projectId: null })
+  }
+}
+
+describe('assertTrialSeatRoom', () => {
+  it('allows any seat count when the workspace is not trialing', async () => {
+    seedTrial('w1', 'active')
+    seedMembers('w1', TRIAL_MAX_SEATS + 5)
+    expect(await billing.assertTrialSeatRoom('w1')).toEqual({ ok: true })
+  })
+
+  it('allows any seat count with no subscription at all', async () => {
+    seedMembers('w1', TRIAL_MAX_SEATS + 5)
+    expect(await billing.assertTrialSeatRoom('w1')).toEqual({ ok: true })
+  })
+
+  it('allows the join that lands exactly on the cap', async () => {
+    seedTrial('w1')
+    seedMembers('w1', TRIAL_MAX_SEATS - 1)
+    expect(await billing.assertTrialSeatRoom('w1')).toEqual({ ok: true })
+  })
+
+  it('refuses the join that would exceed the cap', async () => {
+    seedTrial('w1')
+    seedMembers('w1', TRIAL_MAX_SEATS)
+    expect(await billing.assertTrialSeatRoom('w1')).toEqual({
+      ok: false,
+      code: 'trial_seat_limit',
+      maxSeats: TRIAL_MAX_SEATS,
+    })
+  })
+
+  it('refuses a multi-seat add that would exceed the cap', async () => {
+    seedTrial('w1')
+    seedMembers('w1', TRIAL_MAX_SEATS - 1)
+    expect((await billing.assertTrialSeatRoom('w1', 2)).ok).toBe(false)
+  })
+
+  it('counts granted free seats against the cap', async () => {
+    seedTrial('w1')
+    seedMembers('w1', TRIAL_MAX_SEATS + 1)
+    grants.set('w1', [{
+      id: 'g1', workspaceId: 'w1', freeSeats: 2, monthlyIncludedUsd: 0, planId: null,
+      startsAt: new Date(today.getTime() - 86_400_000), expiresAt: null,
+    }])
+    expect(await billing.assertTrialSeatRoom('w1')).toEqual({ ok: true })
+  })
+
+  it('counts a child workspace against the parent trial', async () => {
+    workspaces.set('parent', { id: 'parent', name: 'Parent', slug: 'parent', parentWorkspaceId: null })
+    workspaces.set('child', { id: 'child', name: 'Child', slug: 'child', parentWorkspaceId: 'parent' })
+    seedTrial('parent')
+    seedMembers('parent', TRIAL_MAX_SEATS)
+    expect((await billing.assertTrialSeatRoom('child')).ok).toBe(false)
+  })
+})
+
+describe('canManageBilling', () => {
+  it('allows the owner', () => {
+    expect(billing.canManageBilling({ role: 'owner', isBillingAdmin: false })).toBe(true)
+  })
+  it('allows an admin', () => {
+    expect(billing.canManageBilling({ role: 'admin', isBillingAdmin: false })).toBe(true)
+  })
+  it('allows a member granted billing admin', () => {
+    expect(billing.canManageBilling({ role: 'member', isBillingAdmin: true })).toBe(true)
+  })
+  it('refuses a plain member', () => {
+    expect(billing.canManageBilling({ role: 'member', isBillingAdmin: false })).toBe(false)
+  })
+  it('refuses a non-member', () => {
+    expect(billing.canManageBilling(null)).toBe(false)
   })
 })
 

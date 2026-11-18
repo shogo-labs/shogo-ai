@@ -3,6 +3,7 @@
 
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import * as realStripePrices from '../config/stripe-prices'
+import * as realUsagePlans from '../config/usage-plans'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 process.env.SHOGO_LOCAL_MODE = 'true'
@@ -24,6 +25,9 @@ mock.module('../lib/prisma', () => withPrismaExports({
 }))
 
 mock.module('../config/usage-plans', () => ({
+  // Inherit the real module: this mock pins the numbers, it does not own the
+  // export list — a new constant must not crash the suite (SHO-422).
+  ...realUsagePlans,
   FREE_DAILY_INCLUDED_USD: 1,
   MONTHLY_DAILY_CAP_USD: 30,
   FIVE_HOUR_MS: 5 * 60 * 60 * 1000,

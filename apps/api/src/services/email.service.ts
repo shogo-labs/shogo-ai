@@ -9,6 +9,7 @@
 
 import { createEmail, createEmailOptional, type IEmailService } from '@shogo-ai/sdk/email/server'
 import { renderPriceChangeEmail, type PriceChangeEmailParams } from './email-templates/price-change'
+import { TRIAL_MAX_SEATS } from '../config/usage-plans'
 
 const APP_NAME = process.env.APP_NAME || 'Shogo'
 
@@ -251,9 +252,10 @@ export async function sendTrialEndingEmail(params: {
 
 /**
  * Tell the owner their trial checkout was cancelled because the card or account
- * already used a free trial, or because the card is prepaid, so they can
- * subscribe without one. Nothing was charged. Requires a `trial-unavailable`
- * template on the email provider; `reason`/`reasonMessage` let it explain why.
+ * already used a free trial, because the card is prepaid, or because it asked
+ * for more seats than a trial may hold, so they can subscribe without one.
+ * Nothing was charged. Requires a `trial-unavailable` template on the email
+ * provider; `reason`/`reasonMessage` let it explain why.
  */
 export async function sendTrialUnavailableEmail(params: {
   to: string
@@ -262,7 +264,8 @@ export async function sendTrialUnavailableEmail(params: {
   dashboardUrl: string
   /**
    * `blocked_duplicate_card` | `blocked_duplicate_user` | `blocked_prepaid_card`
-   * for a trial, `solo_founder_prepaid` for a refunded Solo Founder purchase.
+   * | `blocked_seat_limit` for a trial, `solo_founder_prepaid` for a refunded
+   * Solo Founder purchase.
    */
   reason?: string | null
   /** Override the subject/heading (the Solo Founder refund reuses this template). */
@@ -279,7 +282,9 @@ export async function sendTrialUnavailableEmail(params: {
       ? "Prepaid cards can't be used for the Solo Founder offer, so we cancelled the subscription and refunded your payment in full. You can buy it again with a credit or debit card."
       : params.reason === 'blocked_prepaid_card'
         ? "Free trials need a debit or credit card — prepaid cards can't start a trial. You can still upgrade with this card, or start the trial with a different card."
-        : 'This card or account has already used a free trial. You can still subscribe without a trial.')
+        : params.reason === 'blocked_seat_limit'
+          ? `Free trials include up to ${TRIAL_MAX_SEATS} seats. Start a paid plan to add more, or start the trial again with ${TRIAL_MAX_SEATS} seats or fewer.`
+          : 'This card or account has already used a free trial. You can still subscribe without a trial.')
   return sendTemplateEmail('trial-unavailable', params.to, {
     workspaceName: params.workspaceName,
     planName: params.planName,

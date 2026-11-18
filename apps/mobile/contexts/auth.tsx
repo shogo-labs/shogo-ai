@@ -9,7 +9,7 @@
 
 import type { ReactNode } from 'react'
 import * as Sentry from '@sentry/react-native'
-import { AuthProvider as SharedAuthProvider, useAuth, type AuthErrorContext } from '@shogo/shared-app/auth'
+import { AuthProvider as SharedAuthProvider, useAuth, AuthRequestError, type AuthErrorContext } from '@shogo/shared-app/auth'
 import { authClient } from '../lib/auth-client'
 import { clearActiveWorkspaceId } from '../lib/workspace-store'
 import { clearTeamChatCache } from '../lib/team-chat-cache'
@@ -34,18 +34,23 @@ function onSignOut(): void {
 }
 
 /**
- * Every auth failure reaches Sentry, including the silent ones. Before this,
- * `AuthProvider` swallowed errors into UI state / `console.error`, so a broken
- * OAuth hand-back produced no event at all (SHO-414). Only the provider and
- * stage are attached — never a password, token or cookie value.
+ * The auth failures that reach here are the ones the shared provider judged
+ * worth reporting (`shouldReportAuthError`: no status, or 5xx). A blocked
+ * sign-up domain, a wrong password or an existing account is not one of them —
+ * they are the API working as designed. Only the provider, stage, status and
+ * API code are attached; never a password, token or cookie value (SHO-414,
+ * SHO-429).
  */
 function reportAuthError(error: unknown, context: AuthErrorContext): void {
-  Sentry.captureException(error, {
-    tags: {
-      'auth.provider': context.provider,
-      'auth.stage': context.stage,
-    },
-  })
+  const tags: Record<string, string> = {
+    'auth.provider': context.provider,
+    'auth.stage': context.stage,
+  }
+  if (error instanceof AuthRequestError) {
+    if (error.status !== undefined) tags['auth.status'] = String(error.status)
+    if (error.code) tags['auth.code'] = error.code
+  }
+  Sentry.captureException(error, { tags })
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {

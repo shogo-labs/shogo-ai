@@ -9,6 +9,7 @@ import {
   formatToolName,
   getToolCategory,
   ERROR_CODE_MESSAGES,
+  fillErrorCodeMessage,
   parseTaskUpdates,
   parseUsageLimitError,
   projectCallOf,
@@ -107,6 +108,11 @@ describe('ERROR_CODE_MESSAGES', () => {
 
   it('overage_cap_reached message references the spending cap', () => {
     expect(ERROR_CODE_MESSAGES.overage_cap_reached).toMatch(/spending cap/i)
+  })
+
+  it('trial_seat_limit names the cap and the way out', () => {
+    expect(ERROR_CODE_MESSAGES.trial_seat_limit).toMatch(/end your trial/i)
+    expect(fillErrorCodeMessage('trial_seat_limit', { maxSeats: 5 })).toMatch(/5 seats/i)
   })
 })
 
