@@ -8971,11 +8971,22 @@ app.get('/api/workspaces/:id/storage', async (c) => {
   try {
     const workspaceId = c.req.param('id')
 
-    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+    const userId = await verifyWorkspaceMembership(c, workspaceId)
+    if (!userId) {
       return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
     }
 
-    const storage = await storageService.getStorageUsage(workspaceId)
+    // Owner/admin (and a billing admin) get the full picture: category
+    // breakdown, real per-project bytes, history and the month-to-date
+    // estimate. A plain member keeps the total-only view — the breakdown names
+    // every project in the workspace, including ones they cannot open (SHO-423).
+    const access = await getAccess(c, { workspaceId })
+    const detail =
+      access.workspaceRole === 'owner' ||
+      access.workspaceRole === 'admin' ||
+      access.permissions.has('workspace.billing:manage')
+
+    const storage = await storageService.getStorageUsage(workspaceId, { detail })
     if (!storage) {
       return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
     }
@@ -11099,6 +11110,21 @@ setTimeout(async () => {
       startDiskAddonDailyCron()
     } catch (err: any) {
       console.error('[DiskAddon] failed to schedule the disk add-on meter (non-fatal):', err?.message ?? err)
+    }
+  })()
+}
+
+// Storage bill — `storage` (SHO-423). Turns each completed day of
+// `StorageUsageDaily` into a GB-month charge above the tier allowance, once per
+// UTC day, home-region partitioned, idempotent through `billedAt`. Shadow mode
+// (the default) records the charge without debiting. Local mode is a no-op.
+{
+  ;(async () => {
+    try {
+      const { startStorageUsageBillCron } = await import('./jobs/storage-usage-bill')
+      startStorageUsageBillCron()
+    } catch (err: any) {
+      console.error('[StorageBill] failed to schedule the storage meter (non-fatal):', err?.message ?? err)
     }
   })()
 }

@@ -10,6 +10,11 @@
 -- work lands and they can safely rejoin the mesh. See
 -- docs/runbooks/usage-wallet-single-writer-plan.md.
 --
+-- `storage_usage_daily` (SHO-423) is the same byte counter at day granularity:
+-- each region measures and bills only the workspaces it homes, so publishing it
+-- would let a peer's stale copy overwrite the day's peak — and its
+-- `(workspaceId, day)` unique is poison-pill-shaped for the same reason.
+--
 -- `proxy_turns` summarizes LLM traffic served by the local region. The raw
 -- captures it points at live only in that region's bucket, and /api/ai/* is
 -- not home-region routed, so the rows are kept (and pruned) where they were
@@ -43,7 +48,7 @@ DO $$
 DECLARE
   -- `device_version_events` rejoined the mesh (SHO-142): random ids +
   -- (region, deviceId, version) key, so it is published on purpose again.
-  region_local text[] := ARRAY['storage_usage', 'usage_wallets', 'proxy_turns'];
+  region_local text[] := ARRAY['storage_usage', 'storage_usage_daily', 'usage_wallets', 'proxy_turns'];
   is_schema_pub boolean;
   t text;
 BEGIN

@@ -33,6 +33,7 @@ import {
   getContentAnalytics,
 } from '../services/affiliate-content.service'
 import { prisma } from '../lib/prisma'
+import * as storageService from '../services/storage.service'
 import { RAW_REGION_ID } from '../lib/region'
 import { analyticsCacheKey, withAnalyticsCache } from '../lib/analytics-cache'
 
@@ -1747,6 +1748,99 @@ export function adminRoutes(): Hono {
     } catch (error: any) {
       console.error('[Admin] Set admin access error:', error)
       return c.json({ error: { code: 'admin_access_failed', message: error.message } }, 500)
+    }
+  })
+
+  // ==========================================================================
+  // Storage metering (SHO-423)
+  //
+  // Read-only views over `storage_usage` / `storage_usage_daily` — no S3 calls,
+  // so opening the page never triggers a sweep. The blanket super_admin gate on
+  // /api/admin/* applies; there is no delegable scope for storage.
+  // ==========================================================================
+
+  /**
+   * GET /api/admin/storage
+   *
+   * Default (`view=platform`): platform totals by category, billable vs
+   * overhead, top workspaces by bytes and by over-allowance bytes, month-to-date
+   * shadow/real revenue, last pass time and the namespaces it could not measure.
+   *
+   * `?view=workspaces` — paged, searchable, sortable workspace list with each
+   * workspace's storage numbers (the workspace directory's Storage column).
+   *
+   * `?workspaceId=<id>` — one workspace's breakdown + history, for the detail
+   * page (same shape the workspace's own settings gets).
+   */
+  router.get('/storage', async (c) => {
+    try {
+      const url = new URL(c.req.url)
+      const view = url.searchParams.get('view') || 'platform'
+      const workspaceId = url.searchParams.get('workspaceId')
+
+      if (workspaceId) {
+        const storage = await storageService.getStorageUsage(workspaceId, { detail: true })
+        if (!storage) {
+          return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+        }
+        return c.json({ ok: true, data: storage })
+      }
+
+      if (view === 'workspaces') {
+        const data = await storageService.listWorkspaceStorage({
+          page: parseInt(url.searchParams.get('page') || '1', 10),
+          limit: parseInt(url.searchParams.get('limit') || '20', 10),
+          search: url.searchParams.get('search') || undefined,
+          instanceSize: url.searchParams.get('instanceSize') || undefined,
+          sort: (url.searchParams.get('sort') as any) || 'bytes',
+          order: (url.searchParams.get('order') as any) || 'desc',
+        })
+        return c.json({ ok: true, data })
+      }
+
+      const limit = parseInt(url.searchParams.get('limit') || '50', 10)
+      const data = await storageService.getPlatformStorageSummary(Number.isFinite(limit) ? limit : 50)
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Storage summary error:', error)
+      return c.json({ error: { code: 'storage_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
+   * POST /api/admin/workspaces/:id/storage/recalculate
+   *
+   * Measure one workspace now. Skips the fleet pass's freshness gate (that is
+   * the point) but takes the same advisory lock, so it cannot interleave with a
+   * pass writing the same row.
+   */
+  router.post('/workspaces/:id/storage/recalculate', async (c) => {
+    try {
+      const workspaceId = c.req.param('id')
+      const workspace = await prisma.workspace.findUnique({
+        where: { id: workspaceId },
+        select: { id: true },
+      })
+      if (!workspace) {
+        return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+      }
+
+      const result = await storageService.recalculateWorkspaceStorageNow(workspaceId)
+      if (result.status === 'locked') {
+        return c.json(
+          {
+            error: {
+              code: 'locked',
+              message: 'A storage pass is already running; try again in a moment.',
+            },
+          },
+          409,
+        )
+      }
+      return c.json({ ok: true, data: result.measurement })
+    } catch (error: any) {
+      console.error('[Admin] Storage recalculate error:', error)
+      return c.json({ error: { code: 'storage_failed', message: error.message } }, 500)
     }
   })
 
