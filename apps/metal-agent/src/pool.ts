@@ -421,9 +421,14 @@ export interface ProjectStatus {
   assignedAt?: number
   lastRealActivityAt?: number
   realIdleMs?: number
+  /** Wall-clock of the last real user request, and how long ago that was. */
+  lastUserActivityAt?: number
+  userIdleMs?: number
   activeStreams?: number
   /** The guest's own verdict on whether real agent work is running. */
   busy?: boolean
+  /** Reports busy, but no user activity for longer than the busy-idle ceiling. */
+  busyIdle?: boolean
   /** Rootfs the running guest booted from (assigned) or the local snapshot was taken on (suspended). */
   snapshotRootfsIdentity?: string
   /** A pre-warmed snapshot on the staged rootfs is held for this key (see `stagedSuspended`). */
@@ -481,6 +486,21 @@ export interface AssignedVm {
    * first request.
    */
   lastRealActivityAt?: number
+  /**
+   * Wall-clock (ms) of the last time a PERSON used this VM, on a clock that only
+   * real user requests move. `lastRealActivityAt` cannot serve this purpose: it
+   * is stamped on every poll where the guest reports busy, so a guest stuck
+   * reporting `busy: true` always looks freshly active and a ceiling on it would
+   * never fire.
+   *
+   * Advances only where the guest's per-class signals advance — an app request,
+   * an agent turn, or (for a legacy guest) the catch-all. It does NOT move on
+   * `vmBusy`, `lastTouchedAt`, `touch()`, or a failed poll. Seeded to `now` at
+   * assign/resume, and corrected from the guest's own report on the first
+   * baselining poll so a host restart does not hand a 47h-idle VM another
+   * ceiling (see `reapIdle`).
+   */
+  lastUserActivityAt?: number
   /** Wall-clock of the last periodic source backup (in memory only; see exportAllSource). */
   lastPeriodicSourceBackupAt?: number
   /**
@@ -1562,6 +1582,10 @@ export class MetalWarmPool {
         // adopted VM on its original assignedAt would suspend the live set on
         // every rolling deploy.
         lastRealActivityAt: Date.now(),
+        // Same fresh seed, but the first baselining poll corrects it from the
+        // guest's own report — otherwise every metal-agent deploy would hand a
+        // VM that has been idle for days another full busy-idle ceiling.
+        lastUserActivityAt: Date.now(),
         restoredFrom: e.restoredFrom,
         bootRootfsIdentity: e.bootRootfsIdentity,
         workspaceOrigin: e.workspaceOrigin,
@@ -2260,6 +2284,7 @@ export class MetalWarmPool {
       repoHydratePending: true,
       lastTouchedAt: now,
       lastRealActivityAt: now,
+      lastUserActivityAt: now,
       // Warm VMs never outlive the agent process (prepareForRestart kills
       // them), so this one booted from the image this process was started on.
       bootRootfsIdentity: stagedIdentity ?? this.classRootfsIdentity(vm.handle.vmClass),
@@ -5347,6 +5372,7 @@ export class MetalWarmPool {
       assignedAt: now,
       lastTouchedAt: now,
       lastRealActivityAt: now,
+      lastUserActivityAt: now,
       restoredFrom: { vmstate: s.snapshot.snapshotPath, mem: s.snapshot.memFilePath },
       // The restored guest runs the image its snapshot was taken on (already
       // gated fresh above); unstamped legacy snapshots count as current.
@@ -5562,6 +5588,9 @@ export class MetalWarmPool {
           if (this.vmBusy(a)) {
             a.lastTouchedAt = now // an active turn is activity
             a.lastRealActivityAt = now
+            // Deliberately NOT lastUserActivityAt: a guest that wrongly reports
+            // busy would then look freshly used forever, and the busy-idle
+            // ceiling could never fire (SHO-420).
           }
           // Did the catch-all counter move since the previous poll? Captured
           // before we overwrite it, because the legacy fallback below needs it.
@@ -5590,6 +5619,15 @@ export class MetalWarmPool {
           // VM a fresh window on every agent restart.
           const baselining = reportsPerClass && a.perClassActivity !== true
           if (reportsPerClass) a.perClassActivity = true
+          if (baselining) {
+            // First look at this guest after a host restart: adopt seeded
+            // lastUserActivityAt to `now`, which would hand a VM that has been
+            // idle for days another full busy-idle ceiling on every deploy.
+            // Take the guest's own last user request instead. Guest clock skew
+            // is seconds; the ceiling is hours.
+            const reported = [appAt, agentAt].filter((t): t is number => typeof t === 'number')
+            if (reported.length) a.lastUserActivityAt = Math.min(now, Math.max(...reported))
+          }
 
           if (typeof appAt === 'number') {
             const advanced = appAt > (a.lastAppRequestAt ?? 0)
@@ -5597,6 +5635,7 @@ export class MetalWarmPool {
             if (advanced && !baselining) {
               a.lastTouchedAt = now
               a.lastRealActivityAt = now // an end user hit the app
+              a.lastUserActivityAt = now
             }
           }
           if (typeof agentAt === 'number') {
@@ -5605,6 +5644,7 @@ export class MetalWarmPool {
             if (advanced && !baselining) {
               a.lastTouchedAt = now
               a.lastRealActivityAt = now // someone talked to the agent
+              a.lastUserActivityAt = now
             }
           }
           if (typeof body.appRequestCount === 'number') a.appRequestCount = body.appRequestCount
@@ -5623,6 +5663,7 @@ export class MetalWarmPool {
           // best available proxy for a user and must keep the VM alive.
           if (!a.perClassActivity && catchAllAdvanced) {
             a.lastRealActivityAt = now
+            a.lastUserActivityAt = now
           }
         } catch {
           a.lastTouchedAt = now // fail open: never evict on missing data
@@ -5707,6 +5748,26 @@ export class MetalWarmPool {
   }
 
   /**
+   * Whether this VM is past the busy-idle ceiling: it reports busy, but no
+   * person has used it for `busyIdleCeilingMs`. This is the escape hatch for a
+   * guest that wrongly reports `busy: true` (or leaks `activeStreams`) — it
+   * would otherwise never be idle-suspended, never rotate onto a fixed image,
+   * and hold host RAM forever (SHO-420).
+   *
+   * Deliberately excluded:
+   *   - `alwaysOn` VMs (paid, never idle-suspended).
+   *   - guests without per-class activity: their only signal is the catch-all,
+   *     which our own export sweeps move, so idle cannot be told from used.
+   *   - `busyIdleCeilingMs <= 0` (operator disabled it).
+   */
+  private pastBusyIdleCeiling(a: AssignedVm, now = Date.now()): boolean {
+    const ceiling = this.cfg.busyIdleCeilingMs
+    if (!(ceiling > 0)) return false
+    if (a.alwaysOn || a.perClassActivity !== true) return false
+    return now - (a.lastUserActivityAt ?? a.assignedAt) >= ceiling
+  }
+
+  /**
    * Suspend assigned VMs that have been idle past the threshold. Driven by the
    * reaper timer in server.ts. Returns the projectIds that were suspended.
    */
@@ -5714,7 +5775,10 @@ export class MetalWarmPool {
     idleMs = this.cfg.idleSuspendMs,
     opts: { maxPerPass?: number; tier?: string; retired?: string[] } = {},
   ): Promise<string[]> {
-    if (idleMs <= 0) return []
+    if (idleMs <= 0) {
+      metrics.gauge(M.busyIdleVms, 0)
+      return []
+    }
     const now = Date.now()
     const idleFor = (a: AssignedVm) => now - (a.lastRealActivityAt ?? a.assignedAt)
     // Always-on projects (paid tiers) are never idle-suspended — the parity for
@@ -5727,9 +5791,25 @@ export class MetalWarmPool {
     // external request bumping lastTouchedAt, so also skip any VM the last
     // activity poll saw mid-stream — never snapshot away an active agent
     // message. (The reaper timer polls activity immediately before this.)
+    //
+    // The second clause is the busy-idle ceiling: a VM whose guest keeps
+    // reporting busy but which no person has used for hours is suspended
+    // anyway, overriding `busy`, `activeStreams`, `activeTurns` and tasks.
     const stale = [...this.assigned.values()]
-      .filter((a) => !a.alwaysOn && idleFor(a) >= idleMs && !this.vmBusy(a))
+      .filter(
+        (a) =>
+          !a.alwaysOn &&
+          ((idleFor(a) >= idleMs && !this.vmBusy(a)) || this.pastBusyIdleCeiling(a, now)),
+      )
       .sort((x, y) => idleFor(y) - idleFor(x))
+    // VMs the reaper would have suspended if their guest did not report busy.
+    metrics.gauge(
+      M.busyIdleVms,
+      [...this.assigned.values()].filter(
+        (a) => !a.alwaysOn && this.vmBusy(a) && now - (a.lastUserActivityAt ?? a.assignedAt) >= idleMs,
+      ).length,
+    )
+    for (const id of this.busyIdleCeilingLogged) if (!this.assigned.has(id)) this.busyIdleCeilingLogged.delete(id)
     const cap = opts.maxPerPass ?? this.cfg.reapMaxPerPass ?? 0
     if (cap > 0 && stale.length > cap) {
       metrics.inc(M.idleReapDeferred, stale.length - cap)
@@ -5737,11 +5817,23 @@ export class MetalWarmPool {
     }
     const done: string[] = []
     for (const a of stale) {
+      const byCeiling = this.pastBusyIdleCeiling(a, now)
+      if (byCeiling && !this.busyIdleCeilingLogged.has(a.projectId)) {
+        this.busyIdleCeilingLogged.add(a.projectId)
+        const hours = (ms: number) => (ms / 3_600_000).toFixed(1)
+        console.warn(
+          `[pool] busy-idle ceiling: suspending ${a.projectId} — reports busy ` +
+            `(busy=${a.busy}, activeStreams=${a.activeStreams ?? 0}, activeTurns=${a.activeTurns}) ` +
+            `but no user activity for ${hours(now - (a.lastUserActivityAt ?? a.assignedAt))}h ` +
+            `(ceiling ${hours(this.cfg.busyIdleCeilingMs)}h)`,
+        )
+      }
       try {
         const outcome = await this.suspendOrRetire(a.projectId)
         if (outcome.kind === 'retired') opts.retired?.push(a.projectId)
         else done.push(a.projectId)
         metrics.inc(`${M.idleSuspendedByTier}{tier="${opts.tier ?? 'static'}"}`)
+        if (byCeiling) metrics.inc(M.busyIdleCeilingSuspended)
       } catch (err: any) {
         console.error(`[pool] idle-suspend failed for ${a.projectId}:`, err?.message ?? err)
       }
@@ -5818,6 +5910,8 @@ export class MetalWarmPool {
   private staleSince = new Map<string, number>()
   /** A rotation that aborted (a backup failed) waits until then: each attempt re-runs every backup. */
   private rotateRetryAt = new Map<string, number>()
+  /** VMs already reported by the busy-idle ceiling, so a failed suspend logs once, not every pass. */
+  private busyIdleCeilingLogged = new Set<string>()
 
   /**
    * Tear down a tracked VM: drop it from the assigned map + adopt-on-restart
@@ -7136,8 +7230,11 @@ export class MetalWarmPool {
         assignedAt: a.assignedAt,
         lastRealActivityAt: a.lastRealActivityAt ?? a.assignedAt,
         realIdleMs: now - (a.lastRealActivityAt ?? a.assignedAt),
+        lastUserActivityAt: a.lastUserActivityAt ?? a.assignedAt,
+        userIdleMs: now - (a.lastUserActivityAt ?? a.assignedAt),
         activeStreams: a.activeStreams ?? 0,
         busy: this.vmBusy(a),
+        busyIdle: this.vmBusy(a) && this.pastBusyIdleCeiling(a, now),
         snapshotRootfsIdentity: this.bootRootfsIdentity(a),
         ...(staged ? { stagedSnapshotIdentity: staged.rootfsIdentity } : {}),
       }
@@ -7185,6 +7282,7 @@ export class MetalWarmPool {
     return {
       store: this.store.kind,
       idleSuspendMs: this.cfg.idleSuspendMs,
+      busyIdleCeilingMs: this.cfg.busyIdleCeilingMs,
       rootfsCow: this.cfg.rootfsCow,
       disk: this.disk(),
       cache: { localCount: this.suspended.size, stagedCount: this.stagedSuspended.size, localBytes: this.cacheBytes() },
@@ -7213,11 +7311,17 @@ export class MetalWarmPool {
         // What reapIdle actually compares against idleSuspendMs. Diverges from
         // idleMs by however much routing polls / fail-open have touched the VM.
         realIdleMs: now - (a.lastRealActivityAt ?? a.assignedAt),
+        // The clock the busy-idle ceiling reads: only real user requests move it,
+        // so a guest stuck reporting busy cannot keep it fresh.
+        userIdleMs: now - (a.lastUserActivityAt ?? a.assignedAt),
         // Per-class liveness (see AssignedVm). `*IdleMs: null` = no request of
         // that class observed yet; `busy` (or `activeStreams>0` for an older
         // guest) = an agent turn in flight.
         activeStreams: a.activeStreams ?? 0,
         busy: this.vmBusy(a),
+        // Reports busy, but no user activity past the ceiling: the reaper will
+        // suspend it on its next pass.
+        busyIdle: this.vmBusy(a) && this.pastBusyIdleCeiling(a, now),
         appIdleMs: a.lastAppRequestAt ? now - a.lastAppRequestAt : null,
         appRequestCount: a.appRequestCount ?? 0,
         agentIdleMs: a.lastAgentRequestAt ? now - a.lastAgentRequestAt : null,
