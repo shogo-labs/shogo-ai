@@ -6494,6 +6494,7 @@ model MailMessage {
 
   @@unique([mailboxId, rfcMessageId])
   @@unique([conversationMessageId])
+  @@index([mailboxId, direction, createdAt])
   @@index([workspaceId, direction, createdAt])
   @@index([status, sendAfter])
   @@index([providerMessageId])

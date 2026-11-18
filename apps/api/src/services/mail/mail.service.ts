@@ -15,6 +15,7 @@ import { prisma } from '../../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../../lib/region'
 import { buildConversationFileKey, loadConversationFileBytes, putConversationFile } from '../../lib/conversation-files'
 import * as billingService from '../billing.service'
+import { getSignupTrustHold, SIGNUP_TRUST_MESSAGES } from '../../lib/signup-trust'
 import {
   ConversationError,
   MAX_MESSAGE_CHARS,
@@ -68,7 +69,7 @@ import { getMailProvider, MailProviderError, sharedMailDomain, type DeliveryEven
 const db = prisma as any
 
 export class MailError extends Error {
-  constructor(public status: 400 | 403 | 404 | 409 | 413 | 429 | 502 | 503, public code: string, message: string) {
+  constructor(public status: 400 | 402 | 403 | 404 | 409 | 413 | 429 | 502 | 503, public code: string, message: string) {
     super(message)
   }
 }
@@ -293,6 +294,20 @@ async function mailboxForAgent(workspaceId: string, projectId: string | null, re
   return hit
 }
 
+/**
+ * The person sending (or approving an agent's draft) must have a verified
+ * email and no signup-trust hold. Local mode has no signups, so it skips this.
+ */
+async function assertSenderVerified(userId: string) {
+  if (process.env.SHOGO_LOCAL_MODE === 'true') return
+  const user = await db.user.findUnique({ where: { id: userId }, select: { emailVerified: true } })
+  if (user?.emailVerified !== true) {
+    throw new MailError(403, 'email_verification_required', 'Verify your email before sending mail. Check your inbox for the link, or resend it from Settings.')
+  }
+  const hold = await getSignupTrustHold(userId)
+  if (hold) throw new MailError(403, hold, SIGNUP_TRUST_MESSAGES[hold])
+}
+
 // ─── Limits and usage ────────────────────────────────────────────────────────
 
 export async function limitsFor(workspaceId: string): Promise<MailLimits> {
@@ -319,8 +334,11 @@ export async function recipientsSentSince(workspaceId: string, since: Date, excl
   return n
 }
 
+export const PAID_PLAN_REQUIRED_MESSAGE = 'Sending email needs a paid plan. This workspace can receive mail; upgrade in Settings → Billing to send.'
+
 async function assertWithinDailyLimit(workspaceId: string, recipients: number, excludeMailId?: string) {
   const limits = await limitsFor(workspaceId)
+  if (!limits.canSend) throw new MailError(402, 'paid_plan_required', PAID_PLAN_REQUIRED_MESSAGE)
   const used = await recipientsSentSince(workspaceId, new Date(Date.now() - 24 * 60 * 60_000), excludeMailId)
   if (used + recipients > limits.dailySend) {
     throw new MailError(429, 'daily_limit', `Daily sending limit reached: ${used} of ${limits.dailySend} recipients in the last 24 hours`)
@@ -791,7 +809,11 @@ async function queueOutbound(args: QueueArgs) {
   if (!body) throw new MailError(400, 'empty', 'The email is empty')
   if (body.length > MAX_MESSAGE_CHARS - 2_100) throw new MailError(413, 'too_long', 'The email is too long')
   const subject = args.subject.trim().slice(0, 998) || '(no subject)'
-  if (actor.kind === 'user') await assertWithinDailyLimit(mailbox.workspaceId, total)
+  if (!limits.canSend) throw new MailError(402, 'paid_plan_required', PAID_PLAN_REQUIRED_MESSAGE)
+  if (actor.kind === 'user') {
+    await assertSenderVerified(actor.userId)
+    await assertWithinDailyLimit(mailbox.workspaceId, total)
+  }
 
   // v1: every agent email waits for a person; people get an undo window.
   const agentWrote = actor.kind === 'agent'
@@ -977,6 +999,7 @@ export async function approveMail(mailId: string, userId: string, input: { text?
     throw new MailError(409, 'not_pending', 'This email is not waiting for approval')
   }
   const recipientsCount = readAddressJson(mail.toList).length + readAddressJson(mail.ccList).length + readAddressJson(mail.bccList).length
+  await assertSenderVerified(userId)
   await assertWithinDailyLimit(mail.workspaceId, recipientsCount)
   const data: Record<string, unknown> = {
     status: 'scheduled',
@@ -1406,9 +1429,37 @@ async function ingestInto(
   const visible = thread.category === 'important' || thread.category === 'feed'
   if (!input.quiet && visible) {
     void afterMessagePosted(posted, { actorUserId: null, origin: 'bot' })
-    if (!auto && !bulk && thread.category === 'important') await wakeAgents(mailbox, posted, thread, ruled.agentRefs)
+    const wantsAgent = (mailbox.kind === 'agent' && mailbox.agentRef) || ruled.agentRefs.length > 0
+    if (!auto && !bulk && thread.category === 'important' && wantsAgent) {
+      const blocked = await agentWakeBlocked(mailbox, row, input.auth ?? null, now)
+      if (blocked) console.warn(`[Mail] not waking agents for ${mailbox.address}: ${blocked}`)
+      else await wakeAgents(mailbox, posted, thread, ruled.agentRefs)
+    }
   }
   return true
+}
+
+/** Inbound mail that may wake an agent per sender per hour, and per mailbox per day. */
+export const AGENT_WAKES_PER_SENDER_PER_HOUR = 5
+export const AGENT_WAKES_PER_MAILBOX_PER_DAY = 200
+
+/**
+ * Anyone on the internet can write to an agent's address, and every wake is an
+ * agent run the workspace pays for. Mail that failed DMARC (a forged sender)
+ * never wakes one, and a sender or mailbox over its budget waits for a person.
+ * The email itself is still delivered to the mailbox either way.
+ */
+async function agentWakeBlocked(mailbox: any, mail: any, auth: { dmarc?: string } | null, now: Date): Promise<string | null> {
+  if (auth?.dmarc && /^fail/i.test(auth.dmarc)) return 'sender failed DMARC'
+  const bySender = await db.mailMessage.count({
+    where: { mailboxId: mailbox.id, direction: 'inbound', fromAddress: mail.fromAddress, createdAt: { gte: new Date(now.getTime() - 60 * 60_000) } },
+  })
+  if (bySender > AGENT_WAKES_PER_SENDER_PER_HOUR) return `over ${AGENT_WAKES_PER_SENDER_PER_HOUR} emails an hour from ${mail.fromAddress}`
+  const byMailbox = await db.mailMessage.count({
+    where: { mailboxId: mailbox.id, direction: 'inbound', createdAt: { gte: new Date(now.getTime() - 24 * 60 * 60_000) } },
+  })
+  if (byMailbox > AGENT_WAKES_PER_MAILBOX_PER_DAY) return `over ${AGENT_WAKES_PER_MAILBOX_PER_DAY} emails a day`
+  return null
 }
 
 async function applyRules(mailbox: any, thread: any, mail: any, ctx: { bulk: boolean; hasAttachment: boolean; isNewThread: boolean }) {

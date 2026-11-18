@@ -810,6 +810,14 @@ export function EmailSettingsTab() {
           </Text>
         </View>
       ) : null}
+      {overview.limits?.canSend === false ? (
+        <View className="mt-3 flex-row items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3" testID="mail-receive-only-banner">
+          <AlertTriangle size={14} className="text-amber-600" />
+          <Text className="min-w-0 flex-1 text-xs text-amber-800 dark:text-amber-300">
+            This workspace can receive email. Sending needs a paid plan and a verified email; upgrade in Settings → Billing.
+          </Text>
+        </View>
+      ) : null}
       {paused.map((d) => (
         <View key={d.id} className="mt-3 flex-row items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3" testID="mail-paused-banner">
           <AlertTriangle size={14} className="text-destructive" />

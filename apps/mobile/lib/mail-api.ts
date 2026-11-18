@@ -137,10 +137,13 @@ export interface Mailbox {
 }
 
 export interface MailLimits {
+  plan?: 'free' | 'paid'
+  /** False on a free cloud workspace: it receives mail but cannot send. */
+  canSend?: boolean
   dailySend?: number
   perMailboxDaily?: number
   recipientsPerMessage?: number
-  [key: string]: number | undefined
+  [key: string]: number | string | boolean | undefined
 }
 
 export interface MailUsage {

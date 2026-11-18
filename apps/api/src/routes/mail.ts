@@ -68,10 +68,17 @@ function htmlHeaders(images: boolean): Record<string, string> {
  * The policy also goes in a meta tag, because the app shows the HTML through
  * `srcdoc`, where response headers do not apply; and links open in a new tab,
  * never inside the frame.
+ *
+ * The policy is the very first thing in the document. Inserting it after a
+ * `<head>` match could land it after content the sender put first (or inside
+ * a `<header>`), where browsers ignore it and remote images load. The
+ * sender's own `http-equiv` metas (refresh, a looser policy) are removed: a
+ * refresh would navigate the phone's WebView, which hands it to the browser.
  */
-function prepareHtml(html: string, images: boolean): string {
+export function prepareHtml(html: string, images: boolean): string {
   const head = `<meta http-equiv="Content-Security-Policy" content="${htmlPolicy(images).replace(/"/g, '&quot;')}"><meta name="referrer" content="no-referrer"><base target="_blank">`
-  return /<head[^>]*>/i.test(html) ? html.replace(/<head([^>]*)>/i, `<head$1>${head}`) : `${head}${html}`
+  const body = html.replace(/<meta\b[^>]*\bhttp-equiv\b[^>]*>/gi, '').replace(/<base\b[^>]*>/gi, '')
+  return `${head}${body}`
 }
 
 export function mailRoutes(config: MailRoutesConfig): Hono {

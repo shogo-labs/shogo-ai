@@ -12,6 +12,7 @@ import { ImapFlow } from 'imapflow'
 import nodemailer from 'nodemailer'
 import { prisma } from '../../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../../lib/region'
+import { resolvePublicHost, UnsafeUrlError } from '../../lib/safe-fetch'
 import { decryptSecret, encryptSecret, isSecretCryptoConfigured } from '../../lib/secret-crypto'
 import { getWorkspaceRole, loadAccess } from '../conversation.service'
 import { formatAddress, isValidAddress, normalizeAddress, readJson } from './codec'
@@ -44,6 +45,8 @@ interface SyncCursor {
 }
 
 const HOST_RE = /^(?=.{1,253}$)[a-z0-9.-]+$/i
+const IMAP_PORTS = new Set([993, 143])
+const SMTP_PORTS = new Set([465, 587, 25, 2525])
 
 /** Hosts an account may point at: public names only, never this machine or a private network. */
 function assertPublicHost(host: string) {
@@ -53,17 +56,48 @@ function assertPublicHost(host: string) {
   }
 }
 
+/**
+ * The name check above is not enough on its own: a public name can point at a
+ * private address. Resolve it, refuse private addresses, and connect to the
+ * address we checked (TLS still verifies the name).
+ */
+export async function publicAddressFor(host: string): Promise<string> {
+  assertPublicHost(host)
+  try {
+    return await resolvePublicHost(host)
+  } catch (err) {
+    if (err instanceof UnsafeUrlError) {
+      throw new MailError(400, 'invalid_host', `${host} does not resolve to a public mail server`)
+    }
+    throw err
+  }
+}
+
+/** What a person may see about a failed sign-in: never the raw socket error (it would map the network). */
+export function describeMailError(err: unknown, host: string): string {
+  const e = err as any
+  if (e instanceof MailError) return e.message
+  const code = Number(e?.responseCode ?? 0)
+  if (e?.authenticationFailed || code === 535 || code === 534 || e?.code === 'EAUTH') {
+    return `${host} rejected the username or password. For Gmail and Outlook, use an app password.`
+  }
+  if (e?.code === 'ETIMEDOUT' || /timeout/i.test(String(e?.message ?? ''))) return `Timed out connecting to ${host}`
+  return `Could not connect to ${host}. Check the host, port and TLS setting.`
+}
+
 function credentialsFrom(input: Record<string, unknown>): AccountCredentials {
   const str = (k: string) => (typeof input[k] === 'string' ? (input[k] as string).trim() : '')
-  const port = (k: string, fallback: number) => {
+  const port = (k: string, fallback: number, allowed: Set<number>, label: string) => {
+    if (input[k] === undefined || input[k] === null || input[k] === '') return fallback
     const n = Number(input[k])
-    return Number.isInteger(n) && n > 0 && n < 65536 ? n : fallback
+    if (!allowed.has(n)) throw new MailError(400, 'invalid_port', `${label} port must be one of ${[...allowed].join(', ')}`)
+    return n
   }
   const creds = {
     imapHost: str('imapHost'),
-    imapPort: port('imapPort', 993),
+    imapPort: port('imapPort', 993, IMAP_PORTS, 'IMAP'),
     smtpHost: str('smtpHost'),
-    smtpPort: port('smtpPort', 465),
+    smtpPort: port('smtpPort', 465, SMTP_PORTS, 'SMTP'),
     username: str('username') || str('address'),
     password: typeof input.password === 'string' ? input.password : '',
     tls: input.tls !== false,
@@ -76,9 +110,13 @@ function credentialsFrom(input: Record<string, unknown>): AccountCredentials {
   return creds
 }
 
-function imapClient(c: AccountCredentials) {
+/** Checked on every connect, not only when the account is saved: DNS can change afterwards. */
+async function imapClient(c: AccountCredentials) {
+  if (!IMAP_PORTS.has(c.imapPort)) throw new MailError(400, 'invalid_port', 'IMAP port not allowed')
+  const address = await publicAddressFor(c.imapHost)
   return new ImapFlow({
-    host: c.imapHost,
+    host: address,
+    servername: c.imapHost,
     port: c.imapPort,
     secure: c.tls,
     auth: { user: c.username, pass: c.password },
@@ -89,15 +127,18 @@ function imapClient(c: AccountCredentials) {
   } as any)
 }
 
-function smtpTransport(c: AccountCredentials) {
+async function smtpTransport(c: AccountCredentials) {
+  if (!SMTP_PORTS.has(c.smtpPort)) throw new MailError(400, 'invalid_port', 'SMTP port not allowed')
+  const address = await publicAddressFor(c.smtpHost)
   return nodemailer.createTransport({
-    host: c.smtpHost,
+    host: address,
     port: c.smtpPort,
     secure: c.smtpPort === 465,
     requireTLS: c.smtpPort !== 465,
+    tls: { servername: c.smtpHost },
     auth: { user: c.username, pass: c.password },
     connectionTimeout: CONNECT_TIMEOUT_MS,
-  })
+  } as any)
 }
 
 function decrypt(row: any): AccountCredentials {
@@ -119,17 +160,17 @@ export async function connectAccount(mailboxId: string, userId: string, input: R
   const creds = credentialsFrom(input)
 
   // Prove both sides work before saving anything.
-  const imap = imapClient(creds)
   try {
+    const imap = await imapClient(creds)
     await imap.connect()
     await imap.logout()
   } catch (err) {
-    throw new MailError(400, 'imap_failed', `Could not sign in to ${creds.imapHost}: ${(err as Error).message}. For Gmail and Outlook, use an app password.`)
+    throw new MailError(400, 'imap_failed', describeMailError(err, creds.imapHost))
   }
   try {
-    await smtpTransport(creds).verify()
+    await (await smtpTransport(creds)).verify()
   } catch (err) {
-    throw new MailError(400, 'smtp_failed', `Could not sign in to ${creds.smtpHost}: ${(err as Error).message}`)
+    throw new MailError(400, 'smtp_failed', describeMailError(err, creds.smtpHost))
   }
 
   const provider = /gmail\.com$/i.test(creds.imapHost) ? 'gmail' : /outlook|office365/i.test(creds.imapHost) ? 'microsoft' : 'imap'
@@ -179,9 +220,10 @@ export async function syncAccount(accountId: string): Promise<number> {
   if (!row || row.status === 'paused') return 0
   const creds = decrypt(row)
   const cursor = readJson<SyncCursor>(row.syncCursor, {})
-  const imap = imapClient(creds)
+  let imap: ImapFlow | null = null
   let imported = 0
   try {
+    imap = await imapClient(creds)
     await imap.connect()
     const lock = await imap.getMailboxLock('INBOX')
     try {
@@ -215,8 +257,8 @@ export async function syncAccount(accountId: string): Promise<number> {
     }
     await imap.logout()
   } catch (err) {
-    await db.mailAccount.update({ where: { id: row.id }, data: { lastSyncAt: new Date(), lastError: (err as Error).message.slice(0, 500), status: 'error' } })
-    try { imap.close() } catch {}
+    await db.mailAccount.update({ where: { id: row.id }, data: { lastSyncAt: new Date(), lastError: describeMailError(err, creds.imapHost).slice(0, 500), status: 'error' } })
+    try { imap?.close() } catch {}
   }
   return imported
 }
@@ -225,7 +267,7 @@ export async function syncAccount(accountId: string): Promise<number> {
 export async function sendViaAccount(account: any, email: OutboundEmail): Promise<{ providerMessageId: string }> {
   const creds = decrypt(account)
   try {
-    const info = await smtpTransport(creds).sendMail({
+    const info = await (await smtpTransport(creds)).sendMail({
       from: formatAddress({ address: account.address, name: email.from.name }),
       to: email.to.map(formatAddress),
       cc: email.cc.map(formatAddress),
@@ -240,6 +282,7 @@ export async function sendViaAccount(account: any, email: OutboundEmail): Promis
     })
     return { providerMessageId: String(info.messageId ?? email.messageId) }
   } catch (err: any) {
+    if (err instanceof MailError) throw new MailProviderError(err.message, 400, false)
     const code = Number(err?.responseCode ?? 0)
     throw new MailProviderError(String(err?.message ?? 'SMTP send failed'), code || undefined, !code || code >= 400 && code < 500)
   }

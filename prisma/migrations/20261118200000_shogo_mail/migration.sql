@@ -212,6 +212,9 @@ CREATE INDEX "mail_threads_assigneeUserId_status_idx" ON "mail_threads"("assigne
 CREATE UNIQUE INDEX "mail_threads_rootMessageId_key" ON "mail_threads"("rootMessageId");
 
 -- CreateIndex
+CREATE INDEX "mail_messages_mailboxId_direction_createdAt_idx" ON "mail_messages"("mailboxId", "direction", "createdAt");
+
+-- CreateIndex
 CREATE INDEX "mail_messages_workspaceId_direction_createdAt_idx" ON "mail_messages"("workspaceId", "direction", "createdAt");
 
 -- CreateIndex

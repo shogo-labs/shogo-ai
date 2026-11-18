@@ -52,7 +52,12 @@ email thread lives in team chat next to channels, boards and agents.
   picks it up. `POST …/messages/:id/undo` cancels it before then.
 - Agents: an agent reply is **always** `pending_approval` in v1 (Russell,
   2026-11-18). A person approves (optionally editing) or discards it.
-- Limits are Gmail-like, per workspace per rolling 24 h (see `mail-limits.ts`).
+- Who may send (cloud, Russell 2026-11-18): a **paid** workspace, and a person
+  whose email is verified with no signup-trust hold. Free workspaces receive
+  mail but cannot send (`402 paid_plan_required`); an unverified sender gets
+  `403 email_verification_required`. Local mode sends freely.
+- Limits are per workspace per rolling 24 h (see `limits.ts`): paid is 2,000
+  recipients a day and 500 per message.
   Hard bounces and complaints add a suppression; a domain whose bounce or
   complaint rate crosses the line has sending paused until an admin resumes it.
 
@@ -83,7 +88,7 @@ email thread lives in team chat next to channels, boards and agents.
 | GET/POST | `/mailboxes/:mailboxId/rules` | rule body | `{ rules }` / `{ rule }` |
 | PATCH/DELETE | `/rules/:ruleId` | | `{ rule }` / `{ ok }` |
 | GET | `/mailboxes/:mailboxId/export` | | `application/mbox` |
-| POST | `/mailboxes/:mailboxId/accounts` | `{ address, imapHost, imapPort, smtpHost, smtpPort, username, password, tls? }` | `{ account }` |
+| POST | `/mailboxes/:mailboxId/accounts` | `{ address, imapHost, imapPort, smtpHost, smtpPort, username, password, tls? }` (IMAP 993/143, SMTP 465/587/25/2525; hosts must resolve to public addresses, and every connect goes to the address that was checked) | `{ account }` |
 | POST | `/accounts/:accountId/sync` | | `{ account, imported }` |
 | DELETE | `/accounts/:accountId` | | `{ ok }` |
 | GET | `/by-conversation/:conversationId` | | `{ mailbox \| null }` |
@@ -105,7 +110,10 @@ first email; later replies follow the thread. `agentRef` wakes that agent
 call `/api/internal/workspaces/:id/agent-mail/*`. An agent sees its own agent
 mailboxes and any mailbox whose conversation it is a member of. Inbound mail
 reaches an agent's prompt labelled as external content, never instructions;
-auto-replies and bulk mail never wake it.
+auto-replies and bulk mail never wake it. Every wake is a paid agent run that
+anyone on the internet can trigger, so mail that failed DMARC never wakes an
+agent, and one sender wakes it at most 5 times an hour (200 a day per mailbox).
+Over the budget the email is still delivered for a person to handle.
 
 ## Background work
 

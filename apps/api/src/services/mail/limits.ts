@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Gmail-like sending limits, per workspace per rolling 24 hours. Free mirrors
- * a personal Gmail account (500 recipients a day, 100 per message); paid
- * mirrors Google Workspace (2,000 a day, 500 per message). Recipients count,
- * not messages: one email to 40 people uses 40.
+ * Sending limits, per workspace per rolling 24 hours. Free workspaces receive
+ * mail but do not send it on the cloud (Russell, 2026-11-18): a free signup
+ * sending from the shared domain is the cheapest way to burn its reputation
+ * for everyone. Paid mirrors Google Workspace (2,000 recipients a day, 500 per
+ * message). Recipients count, not messages: one email to 40 people uses 40.
+ * Local mode is unlimited and always sends.
  *
  * Bounce and complaint lines follow what mailbox providers enforce on bulk
  * senders: past 5% hard bounces or 0.3% complaints over the last 200 sends,
@@ -15,6 +17,8 @@ import { normalizePlanId } from '../../config/usage-plans'
 
 export interface MailLimits {
   plan: 'free' | 'paid'
+  /** Whether this plan may send at all (free is receive-only). */
+  canSend: boolean
   /** Recipients per rolling 24 h, across the workspace. */
   dailySend: number
   recipientsPerMessage: number
@@ -25,7 +29,8 @@ export interface MailLimits {
 
 export const FREE_MAIL_LIMITS: MailLimits = {
   plan: 'free',
-  dailySend: 500,
+  canSend: false,
+  dailySend: 0,
   recipientsPerMessage: 100,
   maxMailboxes: 10,
   maxCustomDomains: 1,
@@ -34,6 +39,7 @@ export const FREE_MAIL_LIMITS: MailLimits = {
 
 export const PAID_MAIL_LIMITS: MailLimits = {
   plan: 'paid',
+  canSend: true,
   dailySend: 2000,
   recipientsPerMessage: 500,
   maxMailboxes: 200,
