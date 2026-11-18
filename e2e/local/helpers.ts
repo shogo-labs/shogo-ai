@@ -70,7 +70,12 @@ export async function openTeamHome(page: Page, timeout = 30_000): Promise<void> 
   }, LOCAL_API_BASE)
   if (!teamId) throw new Error("local stack has no team workspace")
 
+  // This tab's own selection is what the app reads (SHO-390): `sessionStorage`
+  // wins over the shared `localStorage` default, so writing only the latter
+  // leaves a tab that already has a workspace on it exactly where it was.
   await page.evaluate((id) => {
+    sessionStorage.setItem("shogo:active-workspace-id", id)
+    sessionStorage.setItem("shogo:active-workspace-kind", "team")
     localStorage.setItem("shogo:active-workspace-id", id)
     localStorage.setItem("shogo:active-workspace-kind", "team")
   }, teamId)

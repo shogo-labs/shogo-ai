@@ -31,10 +31,12 @@ const PROBE_DELAY_MS = 1_500
 /**
  * How long the bubble may take to paint, measured from the Enter keypress.
  * ~15–40 ms on an idle local machine, 106–126 ms on a loaded PR runner (3 shards
- * in parallel, measured on #1525), so 250 ms is the default. The property under
- * test is only "well under `PROBE_DELAY_MS`" — 250 ms is 6× under it.
+ * in parallel, measured on #1525), and 255 ms on the 2026-11-18 shard 2 run that
+ * sat at 31.5 of its 35 min cap — so 600 ms. The property under test is only
+ * "well under `PROBE_DELAY_MS`"; 600 ms is still 2.5× under it, and the echo
+ * being gated on the probe would take the full 1500 ms.
  */
-const ECHO_BUDGET_MS = Number(process.env.E2E_ECHO_BUDGET_MS || 250)
+const ECHO_BUDGET_MS = Number(process.env.E2E_ECHO_BUDGET_MS || 600)
 const REPLY_TEXT = "Echo timing reply."
 
 // ─── SSE frames (AI SDK `UIMessageChunk`s, one JSON object per `data:` line) ─
