@@ -35,10 +35,16 @@ export function agentDmKey(userId: string, projectId: string | null): string {
   return `a:${userId}:${projectId ?? 'ws'}`
 }
 
-/** Split an agent DM's `dmKey` back into the person and the agent. */
+/**
+ * Split an agent DM's `dmKey` back into the person and the agent.
+ *
+ * Bridged Slack/Google DMs share the `a:` prefix (`a:ext:<provider>:<channelId>`)
+ * but are not agent DMs — they belong to the bridge and must be left alone.
+ */
 export function parseAgentDmKey(dmKey: string): { userId: string; projectId: string | null } | null {
   if (!dmKey.startsWith('a:')) return null
   const rest = dmKey.slice(2)
+  if (rest.startsWith('ext:')) return null
   const sep = rest.lastIndexOf(':')
   if (sep <= 0) return null
   const userId = rest.slice(0, sep)
@@ -176,6 +182,10 @@ export async function migrateAgentDmsToProjectChat(): Promise<MigrationSummary> 
       where: {
         kind: 'dm',
         dmKey: { startsWith: 'a:' },
+        // `a:ext:<provider>:<channelId>` is a bridged Slack/Google DM, not an
+        // agent DM. It has no project to build a chat for, so migrating it
+        // would fail on the project FK and retry on every boot.
+        NOT: { dmKey: { startsWith: 'a:ext:' } },
         archivedAt: null,
         ...(home ? { workspace: home } : {}),
         ...(cursor ? { id: { gt: cursor } } : {}),
@@ -213,15 +223,6 @@ async function migrateOne(
   const { userId, projectId } = parsed
   const directKey = agentDirectKey(conversation.workspaceId, userId, projectId)
 
-  const existing = await db.chatSession.findUnique({ where: { directKey }, select: { id: true } })
-  if (existing) {
-    // Already migrated (or the person has since opened the chat): just retire
-    // the DM so it stops showing up.
-    await archiveConversation(conversation.id)
-    summary.skipped++
-    return
-  }
-
   const messages: any[] = await db.conversationMessage.findMany({
     where: {
       conversationId: conversation.id,
@@ -233,6 +234,7 @@ async function migrateOne(
       id: true,
       authorType: true,
       text: true,
+      createdAt: true,
       agentSessionId: true,
       attachments: { select: { id: true, name: true, mimeType: true } },
     },
@@ -244,19 +246,29 @@ async function migrateOne(
     return
   }
 
-  const name = await agentDisplayName(conversation.workspaceId, projectId)
-  const session = await db.chatSession.create({
-    data: {
-      inferredName: name.slice(0, 120),
-      directKey,
-      createdByUserId: userId,
-      ...(projectId
-        ? { contextType: 'project', contextId: projectId }
-        : { contextType: 'workspace', workspaceId: conversation.workspaceId }),
-    },
-    select: { id: true },
-  })
-  summary.sessionsCreated++
+  // The person may already have this chat — they tapped "Open chat", or an
+  // agent messaged them, before the boot migration reached this DM. Copy the
+  // transcript into it: archiving the DM here would drop their history.
+  const existing = await db.chatSession.findUnique({ where: { directKey }, select: { id: true } })
+  let sessionId: string
+  if (existing) {
+    sessionId = existing.id
+  } else {
+    const name = await agentDisplayName(conversation.workspaceId, projectId)
+    const session = await db.chatSession.create({
+      data: {
+        inferredName: name.slice(0, 120),
+        directKey,
+        createdByUserId: userId,
+        ...(projectId
+          ? { contextType: 'project', contextId: projectId }
+          : { contextType: 'workspace', workspaceId: conversation.workspaceId }),
+      },
+      select: { id: true },
+    })
+    sessionId = session.id
+    summary.sessionsCreated++
+  }
 
   for (const message of messages) {
     const text = String(message.text ?? '')
@@ -272,10 +284,13 @@ async function migrateOne(
     }
     await db.chatMessage.create({
       data: {
-        sessionId: session.id,
+        sessionId,
         role: message.authorType === 'agent' ? 'assistant' : 'user',
         content: text,
         parts: JSON.stringify(parts),
+        // Keep the original time so the transcript sorts into place even when
+        // the chat already holds newer messages.
+        createdAt: message.createdAt,
         ...(message.authorType === 'user' ? { authorUserId: userId } : {}),
       },
     })
