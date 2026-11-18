@@ -677,6 +677,13 @@ jobs:
           # Left in the shards it was never reached: shard 3 hit its 40m cap
           # before the file started, so AC1's e2e proof ran nowhere (SHO-122).
           - { name: 'E2E (chat send body size)', spec: 'chat-send-body-size' }
+          # slides-preview (SHO-426) shares the chat mock and needs no model: it
+          # renders a real 3-slide deck in a sandboxed frame from the team-chat
+          # viewer and from a `share_file` chip. Own entry, not a place in the
+          # shards — shard 3 has hit its 35 min cap in both runs since the spec
+          # landed, so the file was never reached and proved nothing (SHO-122);
+          # alone it measures ~3 min on a booted stack.
+          - { name: 'E2E (slides preview)', spec: 'slides-preview' }
     permissions:
       contents: read
     # 35, not 60: a wedged E2E job holds the whole merge queue for the length
