@@ -175,7 +175,7 @@ function WorkspaceRow({
           numberOfLines={1}
         >
           {formatBytes(totalBytes)}
-          {allowanceBytes > 0 ? (
+          {isWide && allowanceBytes > 0 ? (
             <Text className="text-muted-foreground"> / {formatBytes(allowanceBytes)}</Text>
           ) : null}
         </Text>
