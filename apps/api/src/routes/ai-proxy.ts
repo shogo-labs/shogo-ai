@@ -41,6 +41,7 @@ import { resolveApiKeyForRequest } from '../lib/api-key-request'
 import { getDbRoutingConfigSync, getMergedModelEntrySync, type ModelUpstreamFallback } from '../services/model-registry.service'
 import {
   allowedAutoTiers,
+  checkModelAccess,
   getEffectiveAccess,
   isModelAllowedFor,
   recordAccessEvent,
@@ -2917,7 +2918,14 @@ export { buildUsageLimitInfo }
  * for multiple API pods and for schedule runs. The acting user is stamped on
  * the payload once per request by `stampActingUser`.
  */
-function resolveUsageMemberId(tokenPayload: {
+/**
+ * The metering seat for a proxied request: the person the call acts for.
+ *
+ * Exported for the RBAC tests (AC4): the whole point of the change is that two
+ * people in one project resolve to two different seats, so the test drives this
+ * function rather than a copy of it.
+ */
+export function resolveUsageMemberId(tokenPayload: {
   projectId: string
   userId?: string | null
   actingUserId?: string
@@ -2950,46 +2958,28 @@ async function stampActingUser(c: any, payload: ProxyTokenPayload): Promise<void
  * The model gate for one proxied request (SHO-417). Returns a denial response
  * when the acting person may not use `modelId`, or `null` to proceed.
  *
- * In `shadow` mode the call proceeds and a `shadow_denied` row is written, so
- * an admin can tune policies before enforcing. `auto` is not exempt: callers
- * pass the concrete model `auto` resolved to.
+ * The decision itself is `checkModelAccess` in the policy service — this only
+ * shapes the OpenAI-style 403 the proxy's callers expect. `auto` is not exempt:
+ * callers pass the concrete model `auto` resolved to.
  */
-async function enforceModelAccess(
+export async function enforceModelAccess(
   c: any,
   tokenPayload: ProxyTokenPayload,
   modelId: string,
 ): Promise<Response | null> {
   const userId = resolveUsageMemberId(tokenPayload)
   if (!userId) return null
-  const access = await getEffectiveAccess(tokenPayload.workspaceId, userId)
-  if (!access) return null
-  if (await isModelAllowedFor(tokenPayload.workspaceId, userId, modelId)) return null
-
-  const mode = await getRbacMode()
-  await recordAccessEvent({
-    workspaceId: tokenPayload.workspaceId,
-    kind: mode === 'on' ? 'denied' : 'shadow_denied',
+  const decision = await checkModelAccess(tokenPayload.workspaceId, userId, modelId, {
+    projectId: tokenPayload.projectId,
     actorUserId: tokenPayload.userId ?? null,
-    onBehalfOfUserId: userId,
-    modelId,
-    permission: 'models:use_all',
-    detail: { projectId: tokenPayload.projectId, mode, role: access.role },
   })
-  if (mode !== 'on') {
-    console.warn('[rbac] shadow-deny model', {
-      workspaceId: tokenPayload.workspaceId,
-      userId,
-      modelId,
-      role: access.role,
-    })
-    return null
-  }
+  if (decision.allowed) return null
   return c.json(
     {
       error: {
-        message: `Your role can't use ${modelId}. Ask a workspace admin for access.`,
+        message: decision.message,
         type: 'permission_error',
-        code: 'model_not_allowed',
+        code: decision.code,
       },
     },
     403,

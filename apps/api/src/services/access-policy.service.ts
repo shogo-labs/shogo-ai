@@ -36,6 +36,7 @@ import {
 } from '@shogo/authz'
 import { prisma } from '../lib/prisma'
 import { getPodId, getSharedRedis } from '../lib/tunnel-redis'
+import { getRbacMode } from '../lib/authz/mode'
 import { getMergedCatalogSync } from './model-registry.service'
 import { getAllowedModelIds } from './workspace-models.service'
 import { getAgentDefaultModel } from './workspace-agent.service'
@@ -272,6 +273,46 @@ export async function isModelAllowedFor(
     return access.ceiling === null || access.ceiling.has(modelId)
   }
   return isModelInGrant(access.models, model, access.ceiling)
+}
+
+/**
+ * The model gate for one request, as a decision rather than a response.
+ *
+ * `allowed: false` means the acting person may not use `modelId` and the caller
+ * should refuse with `code`. In `shadow` mode the decision is `allowed: true`
+ * and a `shadow_denied` row is written, so an admin can tune policies before
+ * enforcing. A caller with no effective access (a non-member, a stale id) is
+ * not gated here — the membership check upstream already refused them.
+ */
+export async function checkModelAccess(
+  workspaceId: string,
+  userId: string,
+  modelId: string,
+  context: { projectId?: string | null; actorUserId?: string | null } = {},
+): Promise<{ allowed: true } | { allowed: false; code: 'model_not_allowed'; message: string }> {
+  const access = await getEffectiveAccess(workspaceId, userId)
+  if (!access) return { allowed: true }
+  if (await isModelAllowedFor(workspaceId, userId, modelId)) return { allowed: true }
+
+  const mode = await getRbacMode()
+  await recordAccessEvent({
+    workspaceId,
+    kind: mode === 'on' ? 'denied' : 'shadow_denied',
+    actorUserId: context.actorUserId ?? null,
+    onBehalfOfUserId: userId,
+    modelId,
+    permission: 'models:use_all',
+    detail: { projectId: context.projectId ?? null, mode, role: access.role },
+  })
+  if (mode !== 'on') {
+    console.warn('[rbac] shadow-deny model', { workspaceId, userId, modelId, role: access.role })
+    return { allowed: true }
+  }
+  return {
+    allowed: false,
+    code: 'model_not_allowed',
+    message: `Your role can't use ${modelId}. Ask a workspace admin for access.`,
+  }
 }
 
 function isModelInGrant(grant: ModelGrant, model: ModelInfo, ceiling: ReadonlySet<string> | null): boolean {
