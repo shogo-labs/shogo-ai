@@ -125,6 +125,7 @@ import {
 import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { addQuickAction, validateQuickActions } from './quick-actions'
 import { withActionRules, withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, scratchPathForWrite, type PermissionEngine } from './permission-engine'
+import { applyAbilityGate } from './access-gate'
 import {
   crossWorkspaceEnabled,
   crossWorkspaceEnabledFor,
@@ -274,6 +275,12 @@ export interface ToolContext {
   userId?: string
   /** API-signed proof of who started this turn; forwarded when a tool acts as the requester. */
   requesterTicket?: string
+  /**
+   * The acting person's workspace abilities for this turn (SHO-417), fetched
+   * once at turn start. `null`/absent means "unknown" and the tool gate lets
+   * everything through — the server still refuses a denied call.
+   */
+  abilities?: ReadonlySet<string> | null
   /** File watcher — notified when src/ files are written/edited/deleted to trigger rebuilds */
   canvasFileWatcher?: import('./canvas-file-watcher').CanvasFileWatcher
   /** Permission engine for local-mode security guardrails */
@@ -12071,7 +12078,10 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     if (HIDDEN_LEGACY_TOOLS.has(tool.name)) markHiddenTool(tool)
   }
 
-  return tools
+  // SHO-417: hide the tools this person may not use, and gate the rest so a
+  // direct call answers `ability_not_allowed`. Applied last, so the subagent
+  // tool getter above sees the same filtered list.
+  return applyAbilityGate(tools, ctx.abilities ?? null)
 }
 
 /**

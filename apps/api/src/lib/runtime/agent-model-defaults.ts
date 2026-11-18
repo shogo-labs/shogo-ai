@@ -192,6 +192,25 @@ export async function resolveAutoTierModel(
   return (await resolveEffectiveAgentModelDefaults(workspaceId)).autoTiers[tier]
 }
 
+/**
+ * Narrow an Auto tier map to the models one person may use (SHO-417). Every
+ * tier maps to an allowed model, so `resolveAutoDowngrade` can only ever walk
+ * inside the person's effective set — the 2026-11-18 case (auto → haiku →
+ * gpt-5.4-nano with a one-model allow-list) cannot leave it.
+ */
+export function narrowAutoTiersForUser(
+  defaults: AgentModelDefaults,
+  allowedTierIds: Record<string, string> | null,
+): AgentModelDefaults {
+  if (!allowedTierIds) return defaults
+  const autoTiers = { ...defaults.autoTiers }
+  for (const tier of AUTO_TIERS) {
+    const id = allowedTierIds[tier]
+    if (id && id !== autoTiers[tier]?.id) autoTiers[tier] = resolveModelEntry(id)
+  }
+  return { ...defaults, autoTiers }
+}
+
 export function serializeAutoTierMapEnv(
   autoTiers: Partial<Record<AgentModelTier, AgentModelEntry>>,
 ): string | undefined {

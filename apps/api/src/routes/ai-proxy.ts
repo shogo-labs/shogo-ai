@@ -39,7 +39,14 @@ import { verifyRuntimeToken } from '../lib/runtime-token'
 import { resolveApiKey } from './api-keys'
 import { resolveApiKeyForRequest } from '../lib/api-key-request'
 import { getDbRoutingConfigSync, getMergedModelEntrySync, type ModelUpstreamFallback } from '../services/model-registry.service'
-import { isModelVisibleForWorkspace } from '../services/workspace-models.service'
+import {
+  allowedAutoTiers,
+  getEffectiveAccess,
+  isModelAllowedFor,
+  recordAccessEvent,
+} from '../services/access-policy.service'
+import { REQUESTER_TICKET_HEADER, verifyRequesterTicketInWorkspace } from '../lib/requester-ticket'
+import { getRbacMode } from '../lib/authz/mode'
 import { isModelAccessibleForWorkspace } from '../lib/model-access'
 import { getNativeProviderApiKeySync } from '../services/provider-credentials.service'
 import {
@@ -401,17 +408,17 @@ export function resolveModelApiKey(modelConfig: ModelConfig): string | null {
 }
 
 /**
- * OpenAI-shaped 403 for a model the workspace admin has hidden. Used on the
- * local path and before forwarding to Shogo Cloud, so a forwarded call can't
- * skip this workspace's allowlist.
+ * OpenAI-shaped 403 for a model the acting person may not use (SHO-417). The
+ * code is `model_not_allowed` so the app can say "ask an admin" instead of
+ * showing a raw provider error.
  */
 function modelNotVisibleResponse(c: any, model: string) {
   return c.json(
     {
       error: {
-        message: `Model '${model}' is not available for this workspace. A workspace admin has restricted the available models.`,
-        type: 'invalid_request_error',
-        code: 'model_not_visible',
+        message: `Model '${model}' is not available for you. Ask a workspace admin for access.`,
+        type: 'permission_error',
+        code: 'model_not_allowed',
       },
     },
     403
@@ -2891,7 +2898,6 @@ function normalizeThinkingForModel(parsed: any, apiModel: string): void {
 import { generateLyriaMusic } from '../lib/lyria'
 import { calculateUsageCost, calculateMusicUsageCost, proxyModelToBillingModel, getModelTier } from '../lib/usage-cost'
 import * as billingService from '../services/billing-runtime'
-import { getProjectUser } from '../lib/project-user-context'
 import { accumulateUsage, accumulateImageUsage, accumulateVideoUsage, accumulate3dUsage, accumulateMusicUsage, getPendingBilledUsd, hasActiveSession } from '../lib/proxy-billing-session-runtime'
 import { placeHold as placeMediaHold, releaseHold as releaseMediaHold, sumHolds as sumMediaHolds, withSpendLock as withMediaSpendLock } from '../lib/media-spend-hold'
 import { isShogoCloudForwarding } from '../lib/cloud-forwarding'
@@ -2902,15 +2908,172 @@ export { buildUsageLimitInfo }
 /**
  * The seat a proxied request meters against. The live AI allowance is per
  * member (SHO-312), so the balance preflight must resolve the same identity the
- * UsageEvent is attributed to: the project's bound user when there is one, else
- * the token's user. `undefined` means there is no seat (internal usage) and the
- * workspace's free allowance applies.
+ * UsageEvent is attributed to: the person the request acts for (SHO-417),
+ * else the token's user. `undefined` means there is no seat (internal usage)
+ * and the workspace's free allowance applies.
+ *
+ * `getProjectUser` is deliberately gone: it was an in-memory "last person who
+ * chatted in this project" guess, wrong for concurrent people in one project,
+ * for multiple API pods and for schedule runs. The acting user is stamped on
+ * the payload once per request by `stampActingUser`.
  */
 function resolveUsageMemberId(tokenPayload: {
   projectId: string
   userId?: string | null
+  actingUserId?: string
 }): string | undefined {
-  return getProjectUser(tokenPayload.projectId) || tokenPayload.userId || undefined
+  return tokenPayload.actingUserId || tokenPayload.userId || undefined
+}
+
+/**
+ * Resolve the person a proxied request acts for and stamp it on the payload.
+ *
+ * A valid requester ticket wins — the runtime sends it on LLM calls too, so a
+ * turn started by person A in a project whose token belongs to person B is
+ * still A's turn. Without a ticket the token's user is the actor (a direct
+ * SDK call, a schedule run, a heartbeat). Never falls back to the workspace
+ * owner.
+ */
+async function stampActingUser(c: any, payload: ProxyTokenPayload): Promise<void> {
+  try {
+    const ticket = await verifyRequesterTicketInWorkspace(
+      c.req.header(REQUESTER_TICKET_HEADER),
+      payload.workspaceId,
+    )
+    payload.actingUserId = ticket?.userId || payload.userId || undefined
+  } catch {
+    payload.actingUserId = payload.userId || undefined
+  }
+}
+
+/**
+ * The model gate for one proxied request (SHO-417). Returns a denial response
+ * when the acting person may not use `modelId`, or `null` to proceed.
+ *
+ * In `shadow` mode the call proceeds and a `shadow_denied` row is written, so
+ * an admin can tune policies before enforcing. `auto` is not exempt: callers
+ * pass the concrete model `auto` resolved to.
+ */
+async function enforceModelAccess(
+  c: any,
+  tokenPayload: ProxyTokenPayload,
+  modelId: string,
+): Promise<Response | null> {
+  const userId = resolveUsageMemberId(tokenPayload)
+  if (!userId) return null
+  const access = await getEffectiveAccess(tokenPayload.workspaceId, userId)
+  if (!access) return null
+  if (await isModelAllowedFor(tokenPayload.workspaceId, userId, modelId)) return null
+
+  const mode = await getRbacMode()
+  await recordAccessEvent({
+    workspaceId: tokenPayload.workspaceId,
+    kind: mode === 'on' ? 'denied' : 'shadow_denied',
+    actorUserId: tokenPayload.userId ?? null,
+    onBehalfOfUserId: userId,
+    modelId,
+    permission: 'models:use_all',
+    detail: { projectId: tokenPayload.projectId, mode, role: access.role },
+  })
+  if (mode !== 'on') {
+    console.warn('[rbac] shadow-deny model', {
+      workspaceId: tokenPayload.workspaceId,
+      userId,
+      modelId,
+      role: access.role,
+    })
+    return null
+  }
+  return c.json(
+    {
+      error: {
+        message: `Your role can't use ${modelId}. Ask a workspace admin for access.`,
+        type: 'permission_error',
+        code: 'model_not_allowed',
+      },
+    },
+    403,
+  )
+}
+
+/**
+ * Spend cap and rate limit for the acting person (SHO-417), checked in the same
+ * preflight as the balance check. Caps are an admin ceiling *under* the plan's
+ * per-seat allowance, never above it. Returns a denial response or `null`.
+ */
+async function enforceSpendAndRate(
+  c: any,
+  tokenPayload: ProxyTokenPayload,
+): Promise<Response | null> {
+  const userId = resolveUsageMemberId(tokenPayload)
+  if (!userId) return null
+  const access = await getEffectiveAccess(tokenPayload.workspaceId, userId)
+  if (!access) return null
+
+  if (access.requestsPerHour != null) {
+    const since = new Date(Date.now() - 60 * 60 * 1000)
+    const count = await prisma.usageEvent.count({
+      where: { workspaceId: tokenPayload.workspaceId, memberId: userId, createdAt: { gte: since } },
+    })
+    if (count >= access.requestsPerHour) {
+      await recordAccessEvent({
+        workspaceId: tokenPayload.workspaceId,
+        kind: 'denied',
+        actorUserId: tokenPayload.userId ?? null,
+        onBehalfOfUserId: userId,
+        permission: 'models:use_all',
+        detail: { reason: 'rate_limited', limit: access.requestsPerHour, count },
+      })
+      return c.json(
+        {
+          error: {
+            message: `Rate limit reached (${access.requestsPerHour}/hour). Try again later or ask a workspace admin.`,
+            type: 'permission_error',
+            code: 'rate_limited',
+            retryAfterSeconds: 60,
+          },
+        },
+        429,
+      )
+    }
+  }
+
+  if (access.spendCapUsd != null) {
+    const windowStart = spendWindowStart(access.spendPeriod)
+    const spent = await prisma.usageEvent.aggregate({
+      where: { workspaceId: tokenPayload.workspaceId, memberId: userId, createdAt: { gte: windowStart } },
+      _sum: { billedUsd: true },
+    })
+    const used = Number(spent._sum.billedUsd ?? 0)
+    if (used >= access.spendCapUsd) {
+      await recordAccessEvent({
+        workspaceId: tokenPayload.workspaceId,
+        kind: 'denied',
+        actorUserId: tokenPayload.userId ?? null,
+        onBehalfOfUserId: userId,
+        permission: 'models:use_all',
+        detail: { reason: 'spend_cap_reached', cap: access.spendCapUsd, used, period: access.spendPeriod },
+      })
+      return c.json(
+        {
+          error: {
+            message: `You've reached your $${access.spendCapUsd} ${access.spendPeriod ?? 'month'} spend cap. Ask a workspace admin to raise it.`,
+            type: 'permission_error',
+            code: 'spend_cap_reached',
+          },
+        },
+        402,
+      )
+    }
+  }
+  return null
+}
+
+function spendWindowStart(period: 'day' | 'week' | 'month' | null): Date {
+  const now = new Date()
+  if (period === 'day') return new Date(now.getTime() - 24 * 60 * 60 * 1000)
+  if (period === 'week') return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+  return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
 }
 
 /**
@@ -3043,7 +3206,7 @@ export async function recordUsage(
       // Record the model the cost was actually priced as (the real id for a
       // DB-priced model), not the collapsed bucket — Hoshi is not Haiku.
       const recordedModel = pricedAs ?? billingModel
-      const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
+      const billingUserId = resolveUsageMemberId(tokenPayload) || 'system'
       await prisma.usageEvent.create({
         data: {
           workspaceId: tokenPayload.workspaceId,
@@ -3092,7 +3255,7 @@ export async function recordUsage(
     // Record the model the cost was actually priced as (the real id for a
     // DB-priced model), not the collapsed bucket — Hoshi is not Haiku.
     const recordedModel = pricedAs ?? billingModel
-    const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
+    const billingUserId = resolveUsageMemberId(tokenPayload) || 'system'
     if (billingUserId === 'system') {
       console.warn(`[AI Proxy] ⚠️ No real userId for project ${tokenPayload.projectId} — billing as 'system'. Token userId: ${tokenPayload.userId}`)
     }
@@ -3528,7 +3691,7 @@ async function recordMediaUsage(tokenPayload: ProxyTokenPayload, charge: MediaCh
     const billingProjectId = isNonProjectSentinel(tokenPayload.projectId)
       ? null
       : (tokenPayload.projectId || null)
-    const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
+    const billingUserId = resolveUsageMemberId(tokenPayload) || 'system'
 
     // If a billing session is open for this project, fold the USD into the
     // session so the chat turn produces a single `chat_message` wallet debit
@@ -4144,7 +4307,7 @@ export async function recordTranscriptionUsage(
     const billingProjectId = isNonProjectSentinel(tokenPayload.projectId)
       ? null
       : (tokenPayload.projectId || null)
-    const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
+    const billingUserId = resolveUsageMemberId(tokenPayload) || 'system'
 
     const result = await billingService.consumeUsage({
       workspaceId: tokenPayload.workspaceId,
@@ -4460,6 +4623,7 @@ export function aiProxyRoutes() {
    */
   async function validateProxyAuth(c: any): Promise<ProxyTokenPayload | null> {
     const payload = await validateProxyAuthImpl(c)
+    if (payload) await stampActingUser(c, payload)
     touchRuntimeFor(payload)
     return payload
   }
@@ -4752,9 +4916,8 @@ export function aiProxyRoutes() {
     // When Shogo Cloud key is configured, forward everything to the cloud
     if (isShogoCloudForwarding()) {
       try {
-        if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, request.model))) {
-          return modelNotVisibleResponse(c, request.model)
-        }
+        const denied = await enforceModelAccess(c, tokenPayload, request.model)
+        if (denied) return denied
         console.log(`[AI Proxy] Forwarding to Shogo Cloud: ${request.model} (stream: ${!!request.stream})`)
         return await forwardChatCompletionsToCloud(c, request, c.req.raw.signal)
       } catch (error: any) {
@@ -4775,6 +4938,8 @@ export function aiProxyRoutes() {
     // and for internal, non-billable completions). An already-admitted chat turn
     // that is still in flight is never re-gated mid-message (see isTurnInFlight).
     if (!isLocalDev && !internalUsage && !(await isTurnInFlight(c, tokenPayload))) {
+      const accessDenied = await enforceSpendAndRate(c, tokenPayload)
+      if (accessDenied) return accessDenied
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId, 0.001, resolveUsageMemberId(tokenPayload))
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
@@ -4900,12 +5065,12 @@ export function aiProxyRoutes() {
         }
       }
 
-      // Enforce workspace model visibility: a workspace admin may restrict the
-      // team to a subset of platform-visible models. Hidden models are blocked
-      // here too, so a member can't bypass the picker via a direct API call.
-      if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, request.model))) {
-        return modelNotVisibleResponse(c, request.model)
-      }
+      // Enforce the acting person's model grant (SHO-417): the workspace
+      // ceiling narrowed by their role, groups and own policy. A denied model
+      // is blocked here too, so a member can't bypass the picker via a direct
+      // API call. `auto` is not exempt — `request.model` is already concrete.
+      const modelDenied = await enforceModelAccess(c, tokenPayload, request.model)
+      if (modelDenied) return modelDenied
 
       // Enforce model tier: free/basic users can only use economy-tier models.
       // Local LLMs and BYOK OpenRouter calls are user-paid, so no tier check
@@ -5090,9 +5255,8 @@ export function aiProxyRoutes() {
     // reasoning (Responses API) to work in cloud-proxy mode.
     if (isShogoCloudForwarding()) {
       try {
-        if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, body?.model))) {
-          return modelNotVisibleResponse(c, body?.model)
-        }
+        const denied = await enforceModelAccess(c, tokenPayload, body?.model)
+        if (denied) return denied
         console.log(`[AI Proxy] Forwarding Responses API to Shogo Cloud: ${body?.model} (stream: ${!!body?.stream})`)
         return await forwardResponsesToCloud(c, body, c.req.raw.signal)
       } catch (error: any) {
@@ -5106,6 +5270,8 @@ export function aiProxyRoutes() {
     const internalUsage = resolveInternalUsage(c, tokenPayload)
 
     if (!isLocalDev && !internalUsage && !(await isTurnInFlight(c, tokenPayload))) {
+      const accessDenied = await enforceSpendAndRate(c, tokenPayload)
+      if (accessDenied) return accessDenied
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId, 0.001, resolveUsageMemberId(tokenPayload))
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
@@ -5165,9 +5331,8 @@ export function aiProxyRoutes() {
         )
       }
 
-      if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
-        return modelNotVisibleResponse(c, requestedModel)
-      }
+      const responsesDenied = await enforceModelAccess(c, tokenPayload, resolvedModel)
+      if (responsesDenied) return responsesDenied
 
       const apiKey = getProviderApiKey(modelConfig.provider)
       if (!apiKey) {
@@ -5455,6 +5620,7 @@ export function aiProxyRoutes() {
    */
   async function validateAnthropicAuth(c: any): Promise<ProxyTokenPayload | null> {
     const payload = await validateAnthropicAuthImpl(c)
+    if (payload) await stampActingUser(c, payload)
     touchRuntimeFor(payload)
     return payload
   }
@@ -5518,11 +5684,9 @@ export function aiProxyRoutes() {
         let forwardedModel: string | undefined
         try { forwardedModel = JSON.parse(body)?.model } catch { /* cloud reports malformed bodies */ }
         const { resolvedModel: forwardedResolved, isLocal: forwardedIsLocal } = await resolveRequestModel(forwardedModel || 'advanced', tokenPayload.workspaceId)
-        if (!forwardedIsLocal && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, forwardedResolved))) {
-          return c.json(
-            { type: 'error', error: { type: 'invalid_request_error', message: `Model '${forwardedResolved}' is not available for this workspace. A workspace admin has restricted the available models.` } },
-            403
-          )
+        if (!forwardedIsLocal) {
+          const forwardedDenied = await enforceModelAccess(c, tokenPayload, forwardedResolved)
+          if (forwardedDenied) return forwardedDenied
         }
         const headers: Record<string, string> = {}
         for (const [key, value] of Object.entries(c.req.header())) {
@@ -5550,6 +5714,8 @@ export function aiProxyRoutes() {
     // Pre-check usage balance (skip in local dev and for internal usage). An
     // already-admitted chat turn still in flight is never re-gated mid-message.
     if (!isLocalDev && !internalUsage && !(await isTurnInFlight(c, tokenPayload))) {
+      const accessDenied = await enforceSpendAndRate(c, tokenPayload)
+      if (accessDenied) return accessDenied
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId, 0.001, resolveUsageMemberId(tokenPayload))
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
@@ -5577,12 +5743,10 @@ export function aiProxyRoutes() {
       console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
       const resolvedModelConfig = resolveModel(resolvedModel)
 
-      // Enforce workspace model visibility (see chat/completions for rationale).
-      if (!isLocal && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
-        return c.json(
-          { type: 'error', error: { type: 'invalid_request_error', message: `Model '${resolvedModel}' is not available for this workspace. A workspace admin has restricted the available models.` } },
-          403
-        )
+      // Enforce the acting person's model grant (see chat/completions for rationale).
+      if (!isLocal) {
+        const anthropicDenied = await enforceModelAccess(c, tokenPayload, resolvedModel)
+        if (anthropicDenied) return anthropicDenied
       }
 
       // Enforce model tier: free/basic users can only use economy-tier models.

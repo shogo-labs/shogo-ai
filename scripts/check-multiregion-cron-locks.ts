@@ -512,6 +512,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'workspace-models.service.ts setAllowedModelIds deletes+recreates a workspace\'s allowlist in one transaction from an owner/admin PUT request; per-workspace, not a global/cron writer.',
   },
   {
+    key: 'AccessPolicy.(subjectId,subjectType,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'One policy per subject per workspace, upserted by access-policy.service.ts from an owner/admin PUT in the workspace home region; a cross-region duplicate needs a failover mid-write and the upsert is idempotent.',
+  },
+  {
     key: 'GitHubConnection.projectId',
     category: 'single_tenant_upsert',
     reason: 'github.service.ts:309 upserts on projectId from a user request.',

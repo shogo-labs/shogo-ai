@@ -295,6 +295,8 @@ model Workspace {
   chatSessions           ChatSession[]
   plans                  Plan[]
   modelVisibility        WorkspaceModelVisibility[]
+  accessPolicies         AccessPolicy[]
+  accessAuditEvents      AccessAuditEvent[]
   agentProfile           WorkspaceAgentProfile?
   goals                  Goal[]
   proxyTurns             ProxyTurn[]
@@ -2859,6 +2861,72 @@ model WorkspaceModelVisibility {
   @@unique([workspaceId, modelId])
   @@index([workspaceId])
   @@map("workspace_model_visibility")
+}
+
+// ============================================================================
+// Workspace RBAC (SHO-417)
+//
+// Admins decide which models and which agent abilities each role, group and
+// member can use. `AccessPolicy` is the grant; the resolver in
+// `apps/api/src/services/access-policy.service.ts` unions the member's role,
+// group and own rows and intersects the result with the workspace ceiling
+// (`WorkspaceModelVisibility`). Grants only add, so there is no precedence.
+// ============================================================================
+
+model AccessPolicy {
+  id          String @id @default(uuid())
+  workspaceId String
+  /// `role` | `group` | `member`
+  subjectType String
+  /// Role name, `UserGroup.id`, or `User.id` — polymorphic, so no FK.
+  subjectId   String
+  /// Ability names (`ABILITY_PERMISSIONS`). Null on a role row = the built-in
+  /// default for that role; null on a group/member row = adds nothing.
+  abilities   Json?
+  /// Model tiers (`economy` | `standard` | `premium`). Null with `modelIds`
+  /// null = everything under the ceiling.
+  modelTiers  Json?
+  /// Explicit model ids, unioned with `modelTiers`.
+  modelIds    Json?
+  defaultModelId  String?
+  spendCapUsd     Float?
+  /// `day` | `week` | `month`
+  spendPeriod     String?
+  requestsPerHour Int?
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, subjectType, subjectId])
+  @@index([workspaceId])
+  @@map("access_policies")
+}
+
+/// One generic audit table for policy changes, denials and model downgrades.
+/// Retention: rows older than 90 days are deleted by the cleanup cron.
+model AccessAuditEvent {
+  id               String   @id @default(uuid())
+  workspaceId      String
+  /// Who made the request (the person, when there is one).
+  actorUserId      String?
+  /// Who the agent was acting for, when that differs from `actorUserId`.
+  onBehalfOfUserId String?
+  /// `policy.changed` | `denied` | `shadow_denied` | `model.downgraded` |
+  /// `access.requested` | `access.granted`
+  kind             String
+  permission       String?
+  modelId          String?
+  subject          Json?
+  detail           Json?
+  createdAt        DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, kind, createdAt])
+  @@map("access_audit_events")
 }
 
 // ============================================================================

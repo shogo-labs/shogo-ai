@@ -2901,6 +2901,43 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   })
 
   /**
+   * GET /api/internal/workspaces/:workspaceId/access/effective
+   *
+   * The acting person's effective access in this workspace: the ability set the
+   * runtime's tool gate filters on, plus the model grant and limits the settings
+   * UI explains. `abilities: null` means "unknown" — no person behind the turn,
+   * or a caller that is not a member — and the runtime treats that as "allow
+   * everything", because the server still refuses each call on its own.
+   */
+  app.get('/workspaces/:workspaceId/access/effective', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const authz = await authorizeLifecycleWorkspace(c, workspaceId)
+    if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+    const actor = await resolveAgentActor(c, authz.identity, { workspaceId })
+    if (!actor?.principal.userId || actor.unscoped) {
+      return c.json({ workspaceId, abilities: null, reason: 'no_actor' })
+    }
+    const { getEffectiveAccess } = await import('../services/access-policy.service')
+    const access = await getEffectiveAccess(workspaceId, actor.principal.userId)
+    if (!access) return c.json({ workspaceId, abilities: null, reason: 'not_a_member' })
+    return c.json({
+      workspaceId,
+      userId: access.userId,
+      role: access.role,
+      abilities: [...access.abilities],
+      models: {
+        tiers: access.models.tiers ? [...access.models.tiers] : null,
+        ids: access.models.ids ? [...access.models.ids] : null,
+      },
+      defaultModelId: access.defaultModelId,
+      spendCapUsd: access.spendCapUsd,
+      spendPeriod: access.spendPeriod,
+      requestsPerHour: access.requestsPerHour,
+      reasons: access.reasons,
+    })
+  })
+
+  /**
    * POST /api/internal/projects/:projectId/agent-call
    *   body: { message, runId?, sessionId?, wait?, timeoutMs?, callerProjectId? }
    *

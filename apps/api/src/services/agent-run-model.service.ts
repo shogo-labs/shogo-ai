@@ -13,6 +13,8 @@ import { getAgentDefaultModel } from './workspace-agent.service'
 import { isModelVisibleForWorkspace } from './workspace-models.service'
 import { isModelAccessibleForWorkspace } from '../lib/model-access'
 import { getMergedModelEntrySync, resolveModelLabel } from './model-registry.service'
+import { recordAccessEvent, resolveRunModelFor } from './access-policy.service'
+import { getRbacMode } from '../lib/authz/mode'
 
 const db = prisma as any
 
@@ -55,6 +57,67 @@ export async function resolveAgentRunModel(projectId: string | null, workspaceId
   // it must not name a model the run will never use (SHO-145, SHO-264).
   if (workspaceId && !(await isModelAccessibleForWorkspace(workspaceId, name))) return AUTO_MODEL_ID
   return name
+}
+
+export interface RunModelResolution {
+  model: string
+  /**
+   * Set when the agent's configured model is outside the acting person's
+   * effective set and the run was moved to their default model for this run
+   * only (SHO-417, Russell 2026-11-18). The runtime states it in the reply.
+   */
+  downgrade: { from: string; to: string } | null
+}
+
+/**
+ * The model a run should use for one person, with the run-start downgrade
+ * applied.
+ *
+ * When the agent's configured model is outside the acting person's effective
+ * set, the run uses that person's default model **for this run only** — the
+ * agent's saved config is untouched. In `shadow` mode the run keeps the
+ * configured model and only an audit row is written, so an admin can see what
+ * would have happened before enforcing.
+ *
+ * `null` when the person has no allowed model at all: the caller fails the run
+ * with `model_not_allowed` and "ask an admin".
+ */
+export async function resolveAgentRunModelFor(
+  projectId: string | null,
+  workspaceId: string | undefined,
+  actingUserId: string | null | undefined,
+): Promise<RunModelResolution | null> {
+  const configured = await resolveAgentRunModel(projectId, workspaceId)
+  if (!workspaceId || !actingUserId) return { model: configured, downgrade: null }
+
+  const resolved = await resolveRunModelFor(workspaceId, actingUserId, configured)
+  if (!resolved) return null
+  if (!resolved.downgrade) return { model: resolved.model, downgrade: null }
+
+  const mode = await getRbacMode()
+  await recordAccessEvent({
+    workspaceId,
+    kind: mode === 'on' ? 'model.downgraded' : 'shadow_denied',
+    onBehalfOfUserId: actingUserId,
+    modelId: resolved.downgrade.from,
+    detail: {
+      from: resolved.downgrade.from,
+      to: resolved.downgrade.to,
+      projectId,
+      mode,
+      reason: 'agent_model_above_actor',
+    },
+  })
+  if (mode !== 'on') {
+    console.warn('[rbac] shadow-deny run model', {
+      workspaceId,
+      userId: actingUserId,
+      from: resolved.downgrade.from,
+      to: resolved.downgrade.to,
+    })
+    return { model: configured, downgrade: null }
+  }
+  return { model: resolved.model, downgrade: resolved.downgrade }
 }
 
 /**

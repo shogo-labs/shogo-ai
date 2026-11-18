@@ -134,6 +134,7 @@ import {
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
 import { deriveApiUrl, fetchReachableChats, fetchWorkspacePause, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, postInterruptedResume, projectScopedId, runtimeServesProjectId, type SessionWakeState, type WorkspaceAgentsPause } from './internal-api'
+import { fetchEffectiveAbilities } from './access-gate'
 import { buildWorkspaceRootConflictContext, currentWorkspaceRootSync } from './workspace-root-sync'
 import {
   createToolProfile,
@@ -3701,6 +3702,9 @@ export class AgentGateway {
 
     const commandRegistry = sessionId ? this.getOrCreateCommandRegistry(sessionId) : undefined
     const persistedProgressMessages = new Set<Message>()
+    // SHO-417: the acting person's abilities for this turn, fetched once. A
+    // denied tool is hidden from the model; the server refuses it anyway.
+    const abilities = await fetchEffectiveAbilities(requesterTicket)
     const toolContext: ToolContext = {
       workspaceDir: sessionWorkspaceDir,
       channels: this.channels,
@@ -3724,6 +3728,7 @@ export class AgentGateway {
       permissionEngine: this.permissionEngine ?? undefined,
       userId: this.currentUserId,
       requesterTicket,
+      abilities,
       aiProxyUrl: process.env.AI_PROXY_URL,
       aiProxyToken: process.env.AI_PROXY_TOKEN,
       uiWriter,
@@ -4851,9 +4856,14 @@ export class AgentGateway {
         sessionId !== 'chat' &&
         sessionId !== 'default' &&
         sessionId !== 'webhook'
-      const extraHeaders: Record<string, string> | undefined = isRealChatSession
-        ? { 'x-chat-session-id': sessionId }
-        : undefined
+      const extraHeaders: Record<string, string> | undefined = {
+        ...(isRealChatSession ? { 'x-chat-session-id': sessionId } : {}),
+        // SHO-417: the person this turn acts for, on the LLM call itself. The
+        // proxy resolves the acting user from this ticket, so a turn started by
+        // person A in a project whose token belongs to person B is still A's
+        // turn — for the model gate and for per-seat billing alike.
+        ...(requesterTicket ? { 'X-Requester-Ticket': requesterTicket } : {}),
+      }
 
       // Mid-turn summarization (SHO-96). pi-agent-core drives the tool loop, so
       // `transformContext` is the only point we control between tool calls —

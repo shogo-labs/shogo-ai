@@ -8,18 +8,31 @@
 
 import { describe, expect, test } from 'bun:test'
 import {
+  ABILITY_PERMISSIONS,
   ALL_PERMISSIONS,
+  WORKSPACE_ROLE_DEFAULT_ABILITIES,
+  allowedModels,
   canAssignProjectRole,
   canAssignWorkspaceRole,
   canManageProjectMember,
   canManageWorkspaceMember,
   canManageWorkspaceOwner,
   governsAllProjects,
+  highestTierAllowed,
+  isModelAllowed,
   permissionList,
+  resolveAbilities,
   resolveAccess,
+  resolveDefaultModelId,
+  resolveLimits,
+  resolveModelGrant,
+  resolvePolicy,
   toProjectRole,
   type AccessFacts,
+  type AccessPolicyRow,
+  type ModelInfo,
   type Permission,
+  type WorkspaceRole,
 } from '../index'
 
 const WS_OWNER: Permission[] = [
@@ -27,13 +40,29 @@ const WS_OWNER: Permission[] = [
   'workspace.members:manage', 'workspace.owners:manage', 'workspace.billing:manage',
   'workspace.settings:manage', 'workspace.api_keys:manage', 'workspace.analytics:read',
   'workspace:export', 'workspace:move', 'project:create',
+  'agent.exec:use', 'agent.browser:use', 'agent.media:generate', 'agent.channels:send',
+  'agent.social:post', 'agent:create', 'schedule:manage', 'trigger:manage', 'system:apply',
+  'agent.approvals:decide', 'integrations:connect', 'project.files:share_public',
+  'project.secrets:read', 'instance.commands:run', 'channels.private:create',
+  'boards:manage', 'members.activity:read', 'models:use_all',
 ]
 const WS_ADMIN: Permission[] = [
   'workspace:read', 'workspace:update', 'workspace.members:read', 'workspace.members:manage',
   'workspace.settings:manage', 'workspace.api_keys:manage', 'workspace.analytics:read',
   'workspace:export', 'workspace:move', 'project:create',
+  'agent.exec:use', 'agent.browser:use', 'agent.media:generate', 'agent.channels:send',
+  'agent.social:post', 'agent:create', 'schedule:manage', 'trigger:manage', 'system:apply',
+  'agent.approvals:decide', 'integrations:connect', 'project.files:share_public',
+  'project.secrets:read', 'instance.commands:run', 'channels.private:create',
+  'boards:manage', 'members.activity:read', 'models:use_all',
 ]
-const WS_MEMBER: Permission[] = ['workspace:read', 'workspace.members:read', 'project:create']
+const WS_MEMBER: Permission[] = [
+  'workspace:read', 'workspace.members:read', 'project:create',
+  'agent.exec:use', 'agent.browser:use', 'agent.media:generate', 'agent.channels:send',
+  'agent.social:post', 'agent:create', 'schedule:manage', 'trigger:manage',
+  'integrations:connect', 'project.files:share_public', 'channels.private:create',
+  'boards:manage', 'instance.commands:run',
+]
 const WS_VIEWER: Permission[] = ['workspace:read', 'workspace.members:read']
 
 const P_ADMIN: Permission[] = [
@@ -236,5 +265,227 @@ describe('managing existing members', () => {
     expect(canManageProjectMember(proj('owner', null), 'admin')).toBe(true)
     expect(canManageProjectMember(proj(null, 'admin'), null)).toBe(true)
     expect(canManageProjectMember(proj(null, 'member'), null)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// SHO-417: per-role / group / member abilities and the model ceiling
+// ---------------------------------------------------------------------------
+
+const CATALOG: ModelInfo[] = [
+  { id: 'haiku', tier: 'economy' },
+  { id: 'sonnet', tier: 'standard' },
+  { id: 'opus', tier: 'premium' },
+  { id: 'gpt-nano', tier: 'economy' },
+]
+
+const policy = (row: Partial<AccessPolicyRow> & Pick<AccessPolicyRow, 'subjectType' | 'subjectId'>): AccessPolicyRow => row
+
+describe('abilities: every role × ability pair', () => {
+  const roles: WorkspaceRole[] = ['owner', 'admin', 'member', 'viewer']
+
+  // Spelled out literally, never derived from the role maps.
+  const expected: Record<WorkspaceRole, Permission[]> = {
+    owner: [...ABILITY_PERMISSIONS],
+    admin: [...ABILITY_PERMISSIONS],
+    member: [
+      'agent.exec:use', 'agent.browser:use', 'agent.media:generate', 'agent.channels:send',
+      'agent.social:post', 'agent:create', 'schedule:manage', 'trigger:manage',
+      'integrations:connect', 'project.files:share_public', 'channels.private:create',
+      'boards:manage', 'instance.commands:run',
+    ],
+    viewer: [],
+  }
+
+  for (const role of roles) {
+    for (const ability of ABILITY_PERMISSIONS) {
+      test(`${role} × ${ability}`, () => {
+        const abilities = resolveAbilities(role, [])
+        expect(abilities.has(ability)).toBe(expected[role].includes(ability))
+      })
+    }
+  }
+
+  test('a role with no policy row matches the built-in default', () => {
+    for (const role of roles) {
+      const expectedAbilities = expected[role]
+        .filter((p) => (ABILITY_PERMISSIONS as readonly string[]).includes(p))
+        .sort()
+      expect([...WORKSPACE_ROLE_DEFAULT_ABILITIES[role]].sort() as string[]).toEqual(expectedAbilities)
+    }
+  })
+
+  test('a role policy replaces the role default, and cannot remove base permissions', () => {
+    const abilities = resolveAbilities('member', [
+      policy({ subjectType: 'role', subjectId: 'member', abilities: ['agent.exec:use'] }),
+    ])
+    expect(abilities.has('agent.exec:use')).toBe(true)
+    expect(abilities.has('agent.browser:use')).toBe(false)
+    expect(abilities.has('schedule:manage')).toBe(false)
+    // Base permissions survive a narrowed role policy.
+    expect(abilities.has('workspace:read')).toBe(true)
+    expect(abilities.has('project:create')).toBe(true)
+  })
+
+  test('a group policy adds to the role grant', () => {
+    const abilities = resolveAbilities('member', [
+      policy({ subjectType: 'role', subjectId: 'member', abilities: ['agent.exec:use'] }),
+      policy({ subjectType: 'group', subjectId: 'g-ml', abilities: ['agent.media:generate'] }),
+    ])
+    expect(abilities.has('agent.exec:use')).toBe(true)
+    expect(abilities.has('agent.media:generate')).toBe(true)
+    expect(abilities.has('agent.browser:use')).toBe(false)
+  })
+
+  test('a member policy adds to the role and group grants', () => {
+    const abilities = resolveAbilities('viewer', [
+      policy({ subjectType: 'member', subjectId: 'u1', abilities: ['agent.exec:use'] }),
+    ])
+    expect(abilities.has('agent.exec:use')).toBe(true)
+    expect(abilities.has('agent.browser:use')).toBe(false)
+  })
+
+  test('an unknown ability name in a policy row is ignored', () => {
+    const abilities = resolveAbilities('viewer', [
+      policy({ subjectType: 'member', subjectId: 'u1', abilities: ['agent.exec:use', 'root:everything'] }),
+    ])
+    expect(abilities.has('agent.exec:use')).toBe(true)
+    expect(abilities.has('root:everything' as Permission)).toBe(false)
+  })
+})
+
+describe('models: grants, ceiling and default', () => {
+  const ceiling = new Set(['haiku', 'sonnet', 'opus'])
+
+  test('no policy rows = everything under the ceiling', () => {
+    const grant = resolveModelGrant('member', [])
+    expect(allowedModels(grant, ceiling, CATALOG).map((m) => m.id)).toEqual(['haiku', 'sonnet', 'opus'])
+  })
+
+  test('a role policy naming a tier narrows the role', () => {
+    const grant = resolveModelGrant('member', [
+      policy({ subjectType: 'role', subjectId: 'member', modelTiers: ['standard'] }),
+    ])
+    expect(allowedModels(grant, ceiling, CATALOG).map((m) => m.id)).toEqual(['sonnet'])
+  })
+
+  test('a group policy lifts a member above their role', () => {
+    const grant = resolveModelGrant('member', [
+      policy({ subjectType: 'role', subjectId: 'member', modelTiers: ['standard'] }),
+      policy({ subjectType: 'group', subjectId: 'g-ml', modelTiers: ['premium'] }),
+    ])
+    expect(allowedModels(grant, ceiling, CATALOG).map((m) => m.id)).toEqual(['sonnet', 'opus'])
+  })
+
+  test('a member policy can name a single model id', () => {
+    const grant = resolveModelGrant('viewer', [
+      policy({ subjectType: 'role', subjectId: 'viewer', modelTiers: ['economy'] }),
+      policy({ subjectType: 'member', subjectId: 'u1', modelIds: ['sonnet'] }),
+    ])
+    expect(allowedModels(grant, ceiling, CATALOG).map((m) => m.id)).toEqual(['haiku', 'sonnet'])
+  })
+
+  test('the ceiling always wins: a grant cannot widen it', () => {
+    const narrowCeiling = new Set(['haiku'])
+    const grant = resolveModelGrant('owner', [])
+    expect(allowedModels(grant, narrowCeiling, CATALOG).map((m) => m.id)).toEqual(['haiku'])
+    expect(isModelAllowed(grant, { id: 'opus', tier: 'premium' }, narrowCeiling)).toBe(false)
+  })
+
+  test('a new premium model joins every policy that grants premium', () => {
+    const grant = resolveModelGrant('member', [
+      policy({ subjectType: 'role', subjectId: 'member', modelTiers: ['premium'] }),
+    ])
+    expect(isModelAllowed(grant, { id: 'opus-5', tier: 'premium' }, null)).toBe(true)
+  })
+
+  test('default model: member policy, then group, then role, then workspace, then highest tier', () => {
+    const base = { role: 'member' as const, ceiling, catalog: CATALOG }
+    const grant = resolveModelGrant('member', [])
+    expect(
+      resolveDefaultModelId({
+        ...base,
+        grant,
+        policies: [policy({ subjectType: 'member', subjectId: 'u1', defaultModelId: 'haiku' })],
+        workspaceDefaultModelId: 'sonnet',
+      }),
+    ).toBe('haiku')
+    expect(
+      resolveDefaultModelId({
+        ...base,
+        grant,
+        policies: [policy({ subjectType: 'group', subjectId: 'g', defaultModelId: 'sonnet' })],
+        workspaceDefaultModelId: 'haiku',
+      }),
+    ).toBe('sonnet')
+    expect(
+      resolveDefaultModelId({
+        ...base,
+        grant,
+        policies: [policy({ subjectType: 'role', subjectId: 'member', defaultModelId: 'haiku' })],
+        workspaceDefaultModelId: 'sonnet',
+      }),
+    ).toBe('haiku')
+    expect(
+      resolveDefaultModelId({ ...base, grant, policies: [], workspaceDefaultModelId: 'sonnet' }),
+    ).toBe('sonnet')
+    // Nothing named: the highest tier the member may use.
+    expect(resolveDefaultModelId({ ...base, grant, policies: [] })).toBe('opus')
+  })
+
+  test('a default outside the effective set is ignored', () => {
+    const grant = resolveModelGrant('member', [
+      policy({ subjectType: 'role', subjectId: 'member', modelTiers: ['economy'] }),
+    ])
+    expect(
+      resolveDefaultModelId({
+        role: 'member',
+        policies: [policy({ subjectType: 'member', subjectId: 'u1', defaultModelId: 'opus' })],
+        grant,
+        ceiling,
+        catalog: CATALOG,
+      }),
+    ).toBe('haiku')
+  })
+
+  test('highestTierAllowed is null when nothing is allowed', () => {
+    const grant = resolveModelGrant('member', [
+      policy({ subjectType: 'role', subjectId: 'member', modelTiers: ['premium'] }),
+    ])
+    expect(highestTierAllowed(grant, new Set(['haiku']), CATALOG)).toBeNull()
+  })
+})
+
+describe('limits', () => {
+  test('the tightest cap and rate limit win, and the period follows the cap', () => {
+    const limits = resolveLimits([
+      policy({ subjectType: 'role', subjectId: 'member', spendCapUsd: 50, spendPeriod: 'month', requestsPerHour: 100 }),
+      policy({ subjectType: 'group', subjectId: 'g', spendCapUsd: 20, spendPeriod: 'week' }),
+      policy({ subjectType: 'member', subjectId: 'u1', requestsPerHour: 10 }),
+    ])
+    expect(limits).toEqual({ spendCapUsd: 20, spendPeriod: 'week', requestsPerHour: 10 })
+  })
+
+  test('no caps = no limits', () => {
+    expect(resolveLimits([])).toEqual({ spendCapUsd: null, spendPeriod: null, requestsPerHour: null })
+  })
+})
+
+describe('resolvePolicy', () => {
+  test('composes abilities, models, default and limits in one call', () => {
+    const effective = resolvePolicy({
+      role: 'member',
+      policies: [
+        policy({ subjectType: 'role', subjectId: 'member', abilities: ['agent.exec:use'], modelTiers: ['standard'] }),
+        policy({ subjectType: 'group', subjectId: 'g-ml', modelTiers: ['premium'], defaultModelId: 'opus' }),
+      ],
+      ceiling: new Set(['haiku', 'sonnet', 'opus']),
+      catalog: CATALOG,
+      reasons: ['role Editor', 'group @ml'],
+    })
+    expect(effective.abilities.has('agent.exec:use')).toBe(true)
+    expect(effective.abilities.has('agent.browser:use')).toBe(false)
+    expect(effective.defaultModelId).toBe('opus')
+    expect(effective.reasons).toEqual(['role Editor', 'group @ml'])
   })
 })

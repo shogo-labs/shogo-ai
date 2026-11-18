@@ -5,7 +5,8 @@ import type { Context } from 'hono'
 import type { AuthContext } from '../../middleware/auth'
 import { prisma } from '../prisma'
 import { loadAccess } from '../authz'
-import { resolveEffectiveAgentModelDefaults } from './agent-model-defaults'
+import { resolveEffectiveAgentModelDefaults, narrowAutoTiersForUser } from './agent-model-defaults'
+import { allowedAutoTiers } from '../../services/access-policy.service'
 
 type RouteError = {
   status: 401 | 403 | 404
@@ -83,7 +84,15 @@ export function createAgentModelDefaultsRoute(
       if (!('workspaceId' in resolution)) {
         return c.json(resolution.body, resolution.status)
       }
-      return c.json(await resolveDefaults(resolution.workspaceId))
+      const defaults = await resolveDefaults(resolution.workspaceId)
+      // SHO-417: the Auto tier map this person's runtime gets only ever names
+      // models they may use, so an auto fallback can't leave their grant.
+      if (!auth.userId) return c.json(defaults)
+      const configured = Object.fromEntries(
+        Object.entries(defaults.autoTiers).map(([tier, entry]) => [tier, entry.id]),
+      )
+      const allowed = await allowedAutoTiers(resolution.workspaceId, auth.userId, configured)
+      return c.json(narrowAutoTiersForUser(defaults, allowed))
     } catch (err: any) {
       console.error('[AgentModels] Failed to resolve cloud defaults:', err?.message || err)
       return c.json({ error: { code: 'internal_error', message: 'Unable to resolve agent model defaults' } }, 500)

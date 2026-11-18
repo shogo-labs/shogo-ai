@@ -228,6 +228,7 @@ import {
 import { startWorkspaceRootSync } from './workspace-root-sync'
 import { seedEmptyChatSession } from './file-attachment-utils'
 import { parseHistorySeed, seedEmptySessionFromHistory } from './history-seed'
+import { modelDowngradeNotice, parseModelDowngrade } from './model-downgrade'
 import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
 import { WebhookAdapter } from './channels/webhook'
@@ -2187,6 +2188,10 @@ app.post('/agent/chat', async (c) => {
   // session override so the Account prompt line names the model this turn
   // actually sends (SHO-145).
   const modelDisplayName = (body.modelDisplayName as string | undefined) || undefined
+  // SHO-417: the API moved this run off the agent's configured model because it
+  // is above the person the run acts for. The reply says so in code, before the
+  // model writes anything — never by asking the model to mention it.
+  const modelDowngrade = parseModelDowngrade(body.modelDowngrade)
   const confirmedPlan = body.confirmedPlan || undefined
   const dualPlan = body.dualPlan === true
   // Which surface this chat belongs to. The API proxy stamps it (workspace
@@ -2222,6 +2227,16 @@ app.post('/agent/chat', async (c) => {
     console.log(`[AgentChat] Session ${chatSessionKey} free after ${waitedMs}ms`)
   }
   const turn = bufferedTurns.start(chatSessionKey, async (writer) => {
+    if (modelDowngrade) {
+      const noticeId = `text-${Date.now()}-downgrade`
+      writer.write({ type: 'text-start', id: noticeId } as any)
+      writer.write({
+        type: 'text-delta',
+        id: noticeId,
+        delta: modelDowngradeNotice(modelDowngrade),
+      } as any)
+      writer.write({ type: 'text-end', id: noticeId } as any)
+    }
     await agentGateway!.processChatMessageStream(userText || '', writer, {
       modelOverride,
       modelProvider,
