@@ -17,6 +17,10 @@ export interface MemberType {
   isBillingAdmin: boolean
   createdAt: Date
   updatedAt: Date
+  fiveHourWindowStart?: Date
+  fiveHourUsedUsd: number
+  weeklyWindowStart?: Date
+  weeklyUsedUsd: number
 }
 
 export interface MemberCreateInput {
@@ -25,6 +29,10 @@ export interface MemberCreateInput {
   workspaceId?: string
   projectId?: string
   isBillingAdmin?: boolean
+  fiveHourWindowStart?: Date
+  fiveHourUsedUsd?: number
+  weeklyWindowStart?: Date
+  weeklyUsedUsd?: number
 }
 
 export interface MemberUpdateInput {
@@ -33,4 +41,8 @@ export interface MemberUpdateInput {
   workspaceId?: string
   projectId?: string
   isBillingAdmin?: boolean
+  fiveHourWindowStart?: Date
+  fiveHourUsedUsd?: number
+  weeklyWindowStart?: Date
+  weeklyUsedUsd?: number
 }

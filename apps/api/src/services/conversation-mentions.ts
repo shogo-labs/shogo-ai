@@ -114,6 +114,19 @@ export interface MentionNames {
   workspaceAgentName?: string
 }
 
+/**
+ * The text after the mention that woke `target`: a message to an agent in a
+ * channel opens with the agent's own tag, and everywhere a run is named by the
+ * message (the session label) that tag would repeat the agent's name and hide
+ * the part that differs between two runs.
+ */
+export function stripLeadingAgentMention(text: string, target: AgentTarget): string {
+  const token = agentMentionToken(target.projectId)
+  let rest = text.replace(/^\s+/, '')
+  while (rest.startsWith(token)) rest = rest.slice(token.length).replace(/^\s+/, '')
+  return rest
+}
+
 /** Replace tokens with readable `@Name` / `#channel` text. */
 export function renderMentionsAsText(text: string, names: MentionNames = {}): string {
   return text.replace(ANY_TOKEN_RE, (token, userId, projectId, broadcast, conversationId, groupId, chatId) => {

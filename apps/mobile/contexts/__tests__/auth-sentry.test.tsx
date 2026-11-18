@@ -28,6 +28,8 @@ mock.module('@sentry/react-native', () => ({
 // Stands in for the shared provider: it reports one failure on mount, exactly
 // as the real one does when the OAuth hand-back leaves no session behind.
 const realSharedAuth = await import('@shogo/shared-app/auth')
+// Tests that care about the payload swap in the error the provider reports.
+let nextError: unknown = new Error('no user after sign-in')
 mock.module('@shogo/shared-app/auth', () => ({
   ...realSharedAuth,
   AuthProvider: ({
@@ -38,7 +40,7 @@ mock.module('@shogo/shared-app/auth', () => ({
     onAuthError?: (error: unknown, context: { provider: string; stage: string }) => void
   }) => {
     useEffect(() => {
-      onAuthError?.(new Error('no user after sign-in'), {
+      onAuthError?.(nextError, {
         provider: 'google',
         stage: 'session_missing',
       })
@@ -51,6 +53,7 @@ const { AuthProvider } = await import('../auth')
 
 afterEach(() => {
   captured.length = 0
+  nextError = new Error('no user after sign-in')
   cleanup()
 })
 
@@ -78,5 +81,27 @@ describe('mobile AuthProvider → Sentry', () => {
     )
 
     expect(Object.keys(captured[0].options)).toEqual(['tags'])
+  })
+
+  test('tags a reported request error with its status and API code', () => {
+    // Only faults reach Sentry (SHO-429), so the 5xx's status and code are
+    // what makes the remaining issues triageable.
+    nextError = new realSharedAuth.AuthRequestError('database is down', {
+      status: 500,
+      code: 'INTERNAL_SERVER_ERROR',
+    })
+    render(
+      <AuthProvider>
+        <div>app</div>
+      </AuthProvider>,
+    )
+
+    expect(captured).toHaveLength(1)
+    expect(captured[0].options.tags).toEqual({
+      'auth.provider': 'google',
+      'auth.stage': 'session_missing',
+      'auth.status': '500',
+      'auth.code': 'INTERNAL_SERVER_ERROR',
+    })
   })
 })

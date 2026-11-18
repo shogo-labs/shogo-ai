@@ -1108,6 +1108,21 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'One sealed blob per runtime (`ws:<workspaceId>` or `ws:proj:<anchorProjectId>`), upserted by that runtime\'s own internal PUT. A runtime is homed to one region with its workspace, so the writer for a given key is always the same region and a retry updates the same row instead of duplicating it.',
   },
+  // --- workspace compute (SHO-424) ----------------------------------------
+  {
+    key: 'VmUsageHour.(cause,hostId,hour,memMiB,projectId,vcpus,workspaceId)',
+    category: 'request_scoped',
+    reason:
+      'Inserted only by the metal register heartbeat (/api/internal/metal -> lib/vm-metering/ingest.ts), and `hostId` is in the key: a metal host heartbeats to exactly one region, so in steady state only that region writes a given key and the peer never has one to collide with. The hourly biller only UPDATEs rows it already read (stamping billedAt/chargedUsd by id) and is globally locked, so it cannot insert a duplicate. Residual risk, acknowledged rather than solved: a heartbeat RETRIED into the peer region inside the replication window would insert the same tuple under a different id and halt the apply worker on this unique. The fix is to pin host->region at ingest (reject a heartbeat for a host homed elsewhere) rather than to exclude the table — these rows have to stay fleet-visible, because the biller and the admin panel read the hours of a workspace regardless of which region produced them.',
+    writer: 'ingestMetalMeters',
+  },
+  {
+    key: 'VmMeterCursor.(assignedAt,hostId,vmId)',
+    category: 'request_scoped',
+    reason:
+      'Per-VM ingest cursor, written only by the metal register heartbeat, keyed by the same hostId that makes VmUsageHour region-disjoint. Within a region the delta is applied with a compare-and-swap on the (agentMs, appMs, idleMs) triple in the same transaction as the usage row, so two pods ingesting one host cannot both charge the same seconds; a losing insert is caught as P2002 and treated as the peer having got there first. Same residual as VmUsageHour: a heartbeat retried across regions inside the replication window could collide. Excluding this table (the proxy_turns precedent for host-local state) is the escape hatch if that ever bites, but exclusion would re-bill a whole VM lifetime if a host were rehomed, so it stays published.',
+    writer: 'ingestMetalMeters',
+  },
 ]
 
 // ===========================================================================

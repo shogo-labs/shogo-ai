@@ -9,6 +9,7 @@
 
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
 import * as realStripePrices from '../config/stripe-prices'
+import * as realUsagePlans from '../config/usage-plans'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 delete process.env.SHOGO_LOCAL_MODE
@@ -213,6 +214,11 @@ const mockPrisma: any = {
 mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))
 
 mock.module('../config/usage-plans', () => ({
+  // Inherit the real module first: this mock exists to pin the numbers the
+  // billing tests assert on, not to enumerate every export. Spreading it means
+  // a new constant (like TRIAL_MAX_SEATS in SHO-422) is inherited instead of
+  // crashing every suite that loads this file.
+  ...realUsagePlans,
   FREE_DAILY_INCLUDED_USD: 1,
   MONTHLY_DAILY_CAP_USD: 30,
   FIVE_HOUR_MS: 5 * 60 * 60 * 1000,
