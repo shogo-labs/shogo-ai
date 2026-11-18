@@ -135,7 +135,7 @@ describe('parseSlidesViewerMessage', () => {
 
 describe('fetchSlidesBytes', () => {
   const response = (body: Uint8Array, headers: Record<string, string> = {}, status = 200) =>
-    new Response(body, { status, headers }) as unknown as Response
+    new Response(body as unknown as BodyInit, { status, headers }) as unknown as Response
 
   test('returns the bytes of a good response', async () => {
     const fetchImpl = (async () => response(new Uint8Array([1, 2, 3]))) as unknown as typeof fetch

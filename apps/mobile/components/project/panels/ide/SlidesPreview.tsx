@@ -88,15 +88,14 @@ export function SlidesPreview({
   }, [onError])
 
   // Nothing arrives within the cap: stop waiting rather than spin forever.
+  // The effect re-runs on every status change, so its cleanup clears this timer
+  // the moment the frame reports `rendered` — no state read is needed in here.
   useEffect(() => {
     if (state.status !== 'loading') return
     const timer = setTimeout(() => {
-      setState((current) => {
-        if (current.status !== 'loading') return current
-        const message = `Could not render ${name} within ${SLIDES_RENDER_TIMEOUT_MS / 1000}s.`
-        onError?.(message)
-        return { status: 'error', message }
-      })
+      const message = `Could not render ${name} within ${SLIDES_RENDER_TIMEOUT_MS / 1000}s.`
+      setState({ status: 'error', message })
+      onError?.(message)
     }, SLIDES_RENDER_TIMEOUT_MS)
     return () => clearTimeout(timer)
   }, [state.status, name, onError])

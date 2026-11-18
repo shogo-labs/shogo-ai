@@ -39,21 +39,22 @@ export function createApp(options: CreateAppOptions): Hono {
     '/api/viewers/slides',
   ]
 
+  // The slides viewer is framed by every file host, and locally the app and
+  // the API are different origins (app :8081, API :8002), so SAMEORIGIN below
+  // would block the frame. Registered before secureHeaders so it wraps it and
+  // can remove the header on the way back out of the middleware onion
+  // (SHO-426).
+  app.use('/api/viewers/slides', async (c, next) => {
+    await next()
+    c.res.headers.delete('X-Frame-Options')
+    c.res.headers.delete('Cross-Origin-Opener-Policy')
+  })
   app.use('*', secureHeaders({
     xFrameOptions: 'SAMEORIGIN',
     xContentTypeOptions: 'nosniff',
     crossOriginOpenerPolicy: 'same-origin-allow-popups',
     crossOriginResourcePolicy: 'cross-origin',
   }))
-  // The slides viewer is framed by every file host, and locally the app and
-  // the API are different origins (app :8081, API :8002), so SAMEORIGIN above
-  // would block the frame. Strip it on the way out, before secureHeaders()
-  // stamps the response (SHO-426).
-  app.use('/api/viewers/slides', async (c, next) => {
-    await next()
-    c.res.headers.delete('X-Frame-Options')
-    c.res.headers.delete('Cross-Origin-Opener-Policy')
-  })
   app.use('*', bodyLimit({ maxSize: 500 * 1024 * 1024 }))
   app.use('/*', cors({
     origin: (origin) => {
