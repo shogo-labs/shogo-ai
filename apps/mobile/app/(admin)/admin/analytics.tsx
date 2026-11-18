@@ -184,6 +184,35 @@ function formatStorageBytes(bytes: number | null | undefined): string {
 }
 
 /**
+ * A rolling deploy can hand us an older pod's answer (or a mock's `{ ok: true }`),
+ * so never trust that a truthy payload is a summary: every field below is read
+ * unconditionally, and a missing `month` used to throw inside render.
+ */
+function isStorageSummary(
+  data: StorageSummaryData | null | undefined,
+): data is StorageSummaryData {
+  if (!data || typeof data !== 'object') return false
+  const { month, buckets, categories } = data
+  return (
+    !!month &&
+    typeof month.mode === 'string' &&
+    typeof month.gbMonths === 'number' &&
+    typeof month.shadowUsd === 'number' &&
+    typeof month.chargedUsd === 'number' &&
+    !!buckets &&
+    typeof buckets.measuredBytes === 'number' &&
+    typeof buckets.workspaces === 'number' &&
+    !!categories &&
+    typeof categories === 'object' &&
+    typeof data.billableBytes === 'number' &&
+    typeof data.overheadBytes === 'number' &&
+    Array.isArray(data.unmeasured) &&
+    Array.isArray(data.topByBytes) &&
+    Array.isArray(data.topByOverage)
+  )
+}
+
+/**
  * Platform S3 footprint (SHO-423): what every workspace's bytes add up to by
  * category, how much of it is billable vs our own overhead, and the month's
  * shadow revenue. Read-only — it never triggers a measurement pass.
@@ -207,7 +236,7 @@ function StorageSection({
       </View>
     )
   }
-  if (!data) {
+  if (!isStorageSummary(data)) {
     return (
       <View className="rounded-xl border border-border bg-card p-4">
         <Text className="text-sm text-muted-foreground">Storage data unavailable.</Text>

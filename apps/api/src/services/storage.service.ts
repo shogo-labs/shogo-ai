@@ -370,10 +370,18 @@ export async function measureStorageForWorkspaces(
       where: { projectId: { in: projectIds } },
       select: { subdomain: true, projectId: true },
     })) as Array<{ subdomain: string; projectId: string }>
-    const subdomainWorkspace = new Map<string, string>()
+    // Keyed by subdomain so a published bundle lands on BOTH its workspace and
+    // its project: the Settings "By project" list has to reconcile with the
+    // "Published sites" category row (SHO-423 QA round 1).
+    const subdomainEntries = new Map<string, { workspaceId: string; projectId: string }>()
     for (const environment of environments) {
       const workspaceId = projectWorkspace.get(environment.projectId)
-      if (workspaceId) subdomainWorkspace.set(environment.subdomain, workspaceId)
+      if (workspaceId) {
+        subdomainEntries.set(environment.subdomain, {
+          workspaceId,
+          projectId: environment.projectId,
+        })
+      }
     }
 
     const buckets: Array<{ id: string; bucket: string }> = []
@@ -388,8 +396,14 @@ export async function measureStorageForWorkspaces(
         const objects = await listAllObjectsInS3('', publishTarget)
         for (const object of objects) {
           const subdomain = object.relativePath.split('/')[0]
-          const workspaceId = subdomain ? subdomainWorkspace.get(subdomain) : undefined
-          addObject(accumulators.get(workspaceId ?? ''), 'published', object.size || 0)
+          const owner = subdomain ? subdomainEntries.get(subdomain) : undefined
+          if (!owner) continue
+          addObject(
+            accumulators.get(owner.workspaceId),
+            'published',
+            object.size || 0,
+            owner.projectId,
+          )
         }
       } catch (error: any) {
         console.error(`[Storage] Failed to list ${id}:`, error?.message ?? error)

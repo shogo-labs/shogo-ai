@@ -534,6 +534,49 @@ describe('calculateWorkspaceStorageUsage', () => {
     expect(updateArgs.data.totalBytes).toBe(BigInt(900))
   })
 
+  test('published bundles count per subdomain and land on their project too', async () => {
+    process.env.PUBLISH_BUCKET = 'shogo-publish'
+    findManyWs.mockImplementation(async () => [
+      { id: 'ws_pub', instanceSize: 'small', personalOwnerId: null },
+    ])
+    findManyProject.mockImplementation(async () => [{ id: 'p_live', workspaceId: 'ws_pub' }])
+    findManyPublishedEnvironment.mockImplementation(async () => [
+      { subdomain: 'demo-abc123', projectId: 'p_live' },
+    ])
+    objects.set('p_live/', [{ relativePath: 'src/a.ts', size: 100 }])
+    // The publish bucket keys every object by subdomain.
+    objects.set('', [{ relativePath: 'demo-abc123/index.html', size: 400 }])
+
+    const result = await calculateWorkspaceStorageUsage('ws_pub')
+
+    expect(result.categories.published).toBe(400)
+    expect(result.totalBytes).toBe(500)
+    // The project list has to reconcile with the "Published sites" row, so the
+    // bundle is attributed to the project that owns the subdomain.
+    expect(result.projects).toEqual([
+      {
+        projectId: 'p_live',
+        bytes: 500,
+        categories: expect.objectContaining({ project_files: 100, published: 400 }),
+      },
+    ])
+  })
+
+  test('a published subdomain with no owning project is not counted', async () => {
+    process.env.PUBLISH_BUCKET = 'shogo-publish'
+    findManyWs.mockImplementation(async () => [
+      { id: 'ws_orphan', instanceSize: 'small', personalOwnerId: null },
+    ])
+    findManyProject.mockImplementation(async () => [])
+    findManyPublishedEnvironment.mockImplementation(async () => [])
+    objects.set('', [{ relativePath: 'someone-else/index.html', size: 900 }])
+
+    const result = await calculateWorkspaceStorageUsage('ws_orphan')
+
+    expect(result.totalBytes).toBe(0)
+    expect(result.categories.published).toBe(0)
+  })
+
   test('a workspace deleted mid-pass reports zeros and writes nothing', async () => {
     findManyWs.mockImplementation(async () => [])
     const result = await calculateWorkspaceStorageUsage('ws_gone')

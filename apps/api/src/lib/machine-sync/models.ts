@@ -164,6 +164,9 @@ const NEVER_BILLING = [
   'UsageEvent',
   'InstanceSubscription',
   'StorageUsage',
+  // Money/metering, never synced: each region measures and bills only the
+  // workspaces it homes, so a peer's copy would just overwrite the day's peak.
+  'StorageUsageDaily',
   'VoiceCallMeter',
   'LiveSessionMeter',
   'AgentCostMetric',

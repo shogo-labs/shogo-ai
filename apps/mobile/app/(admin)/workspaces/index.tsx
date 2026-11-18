@@ -24,6 +24,7 @@ import {
   Building2,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   Users,
   FolderKanban,
   CreditCard,
@@ -36,20 +37,21 @@ import { SegmentedFilter } from "../../../components/phone/SegmentedFilter"
 const API_BASE = `${API_URL}/api/admin`
 
 interface AdminWorkspace {
-  id: string
+  workspaceId: string
   name: string
   slug: string
-  description: string | null
   instanceSize: string
   createdAt: string
-  updatedAt: string
-  _count: {
-    projects: number
+  counts: {
     members: number
+    projects: number
     subscriptions: number
-    apiKeys: number
-    meetings: number
-    instances: number
+  }
+  storage: {
+    totalBytes: number
+    billableBytes: number
+    allowanceBytes: number
+    percentUsed: number
   }
 }
 
@@ -58,6 +60,23 @@ interface WorkspacesResponse {
   total: number
   page: number
   limit: number
+}
+
+/** `storage.service.listWorkspaceStorage` sort keys. */
+type WorkspaceSort = 'created' | 'bytes' | 'overage' | 'name'
+
+function formatBytes(input: number | string | null | undefined): string {
+  if (input == null) return '0 B'
+  const n = typeof input === 'string' ? Number(input) : input
+  if (!Number.isFinite(n) || n <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let i = 0
+  let v = n
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i += 1
+  }
+  return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`
 }
 
 async function fetchAdminJson<T>(path: string, params?: Record<string, string>): Promise<T | null> {
@@ -90,6 +109,8 @@ function WorkspaceRow({
   isWide: boolean
 }) {
   const sizeStyle = INSTANCE_SIZE_COLORS[workspace.instanceSize] ?? INSTANCE_SIZE_COLORS.micro
+  const { totalBytes, billableBytes, allowanceBytes, percentUsed } = workspace.storage
+  const overBytes = allowanceBytes > 0 ? Math.max(0, billableBytes - allowanceBytes) : 0
 
   return (
     <Pressable
@@ -103,7 +124,7 @@ function WorkspaceRow({
         <Building2 size={16} className="text-primary" />
       </View>
 
-      <View className={cn('min-w-0 mr-2', isWide ? 'w-[280px]' : 'flex-1')}>
+      <View className={cn('min-w-0 mr-2', isWide ? 'w-[240px]' : 'flex-1')}>
         <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
           {workspace.name}
         </Text>
@@ -122,7 +143,7 @@ function WorkspaceRow({
         <View className="flex-row items-center gap-1 w-[70px] justify-center mr-3">
           <Users size={10} className="text-muted-foreground" />
           <Text className="text-xs text-muted-foreground">
-            {workspace._count.members}
+            {workspace.counts.members}
           </Text>
         </View>
       )}
@@ -131,7 +152,7 @@ function WorkspaceRow({
         <View className="flex-row items-center gap-1 w-[70px] justify-center mr-3">
           <FolderKanban size={10} className="text-muted-foreground" />
           <Text className="text-xs text-muted-foreground">
-            {workspace._count.projects}
+            {workspace.counts.projects}
           </Text>
         </View>
       )}
@@ -140,18 +161,48 @@ function WorkspaceRow({
         <View className="flex-row items-center gap-1 w-[70px] justify-center mr-3">
           <CreditCard size={10} className="text-muted-foreground" />
           <Text className="text-xs text-muted-foreground">
-            {workspace._count.subscriptions}
+            {workspace.counts.subscriptions}
           </Text>
         </View>
       )}
 
+      <View className={cn(isWide ? 'w-[170px] mr-3' : 'items-end mr-2')}>
+        <Text
+          className={cn(
+            'text-xs',
+            overBytes > 0 ? 'text-orange-600 dark:text-orange-400' : 'text-foreground',
+          )}
+          numberOfLines={1}
+        >
+          {formatBytes(totalBytes)}
+          {allowanceBytes > 0 ? (
+            <Text className="text-muted-foreground"> / {formatBytes(allowanceBytes)}</Text>
+          ) : null}
+        </Text>
+        {overBytes > 0 ? (
+          <Text className="text-[10px] text-orange-600 dark:text-orange-400">
+            +{formatBytes(overBytes)} over
+          </Text>
+        ) : isWide && allowanceBytes > 0 ? (
+          <View className="h-1 mt-1 bg-muted rounded-full overflow-hidden">
+            <View
+              className={cn(
+                'h-full rounded-full',
+                percentUsed > 90 ? 'bg-destructive' : percentUsed > 70 ? 'bg-amber-500' : 'bg-primary',
+              )}
+              style={{ width: `${Math.max(percentUsed, 2)}%` }}
+            />
+          </View>
+        ) : null}
+      </View>
+
       {!isWide && (
         <View className="flex-row items-center gap-2 mr-2">
           <Text className="text-xs text-muted-foreground">
-            {workspace._count.members}m
+            {workspace.counts.members}m
           </Text>
           <Text className="text-xs text-muted-foreground">
-            {workspace._count.projects}p
+            {workspace.counts.projects}p
           </Text>
         </View>
       )}
@@ -184,6 +235,9 @@ function WorkspacesListHeader({
   setPage,
   sizeFilter,
   setSizeFilter,
+  sort,
+  order,
+  onSortStorage,
 }: {
   isWide: boolean
   data: WorkspacesResponse | null
@@ -192,6 +246,9 @@ function WorkspacesListHeader({
   setPage: (v: number) => void
   sizeFilter: string
   setSizeFilter: (v: string) => void
+  sort: WorkspaceSort
+  order: 'asc' | 'desc'
+  onSortStorage: () => void
 }) {
   return (
     <View className="gap-4 p-3 pb-2">
@@ -251,7 +308,7 @@ function WorkspacesListHeader({
         )}
       >
         <View className="w-9 mr-3" />
-        <Text className={cn('text-xs font-medium text-muted-foreground', isWide ? 'w-[280px]' : 'flex-1')}>
+        <Text className={cn('text-xs font-medium text-muted-foreground', isWide ? 'w-[240px]' : 'flex-1')}>
           Workspace
         </Text>
         <Text className="text-xs font-medium text-muted-foreground mr-3">Size</Text>
@@ -270,6 +327,21 @@ function WorkspacesListHeader({
             Subs
           </Text>
         )}
+        <Pressable
+          onPress={onSortStorage}
+          className={cn('flex-row items-center gap-1 mr-3', isWide ? 'w-[170px]' : 'justify-end')}
+        >
+          <Text className={cn('text-xs font-medium', sort === 'bytes' ? 'text-foreground' : 'text-muted-foreground')}>
+            Storage
+          </Text>
+          {sort === 'bytes' && (
+            <ChevronDown
+              size={12}
+              className="text-muted-foreground"
+              style={order === 'asc' ? { transform: [{ rotate: '180deg' }] } : undefined}
+            />
+          )}
+        </Pressable>
         <Text className={cn('text-xs font-medium text-muted-foreground', isWide ? 'w-[90px] text-right ml-auto' : 'flex-shrink-0')}>
           Created
         </Text>
@@ -342,23 +414,37 @@ export default function AdminWorkspacesPage() {
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [sizeFilter, setSizeFilter] = useState<string>('')
+  const [sort, setSort] = useState<WorkspaceSort>('created')
+  const [order, setOrder] = useState<'asc' | 'desc'>('desc')
   const [data, setData] = useState<WorkspacesResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
 
   const loadWorkspaces = useCallback(async () => {
     const params: Record<string, string> = {
+      view: 'workspaces',
       page: String(page),
       limit: '20',
+      sort,
+      order,
     }
     if (search) params.search = search
     if (sizeFilter) params.instanceSize = sizeFilter
 
-    const result = await fetchAdminJson<WorkspacesResponse>('/workspaces', params)
+    // `listWorkspaceStorage` pages and sorts in SQL (or sorts the page for the
+    // byte keys), so it is the only source of the Storage column.
+    const result = await fetchAdminJson<WorkspacesResponse>('/storage', params)
     setData(result)
     setLoading(false)
     setRefreshing(false)
-  }, [page, search, sizeFilter])
+  }, [page, search, sizeFilter, sort, order])
+
+  // Clicking "Storage" sorts by bytes, then flips the direction on each click.
+  const onSortStorage = useCallback(() => {
+    setSort('bytes')
+    setOrder((prev) => (sort === 'bytes' ? (prev === 'desc' ? 'asc' : 'desc') : 'desc'))
+    setPage(1)
+  }, [sort])
 
   useEffect(() => {
     setLoading(true)
@@ -378,7 +464,7 @@ export default function AdminWorkspacesPage() {
         <View className="flex-1 overflow-hidden rounded-2xl border border-border/70 bg-card">
           <FlatList
           data={data?.workspaces ?? []}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item) => item.workspaceId}
           ListHeaderComponent={
             <WorkspacesListHeader
               isWide={isWide}
@@ -388,6 +474,9 @@ export default function AdminWorkspacesPage() {
               setPage={setPage}
               sizeFilter={sizeFilter}
               setSizeFilter={setSizeFilter}
+              sort={sort}
+              order={order}
+              onSortStorage={onSortStorage}
             />
           }
           ListFooterComponent={
@@ -406,7 +495,7 @@ export default function AdminWorkspacesPage() {
             <WorkspaceRow
               workspace={item}
               isWide={isWide}
-              onPress={() => router.push(`/(admin)/workspaces/${item.id}` as any)}
+              onPress={() => router.push(`/(admin)/workspaces/${item.workspaceId}` as any)}
             />
           )}
           contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 24) }}
