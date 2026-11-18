@@ -111,6 +111,8 @@ class FakeRedis {
 mock.module('ioredis', () => ({ default: FakeRedis }))
 
 const tr = await import('../tunnel-redis')
+const { REMOTE_IMPORT_MAX_BASE64_CHARS } = await import('../remote-tool-policy')
+const { TRANSFER_MAX_ARCHIVE_BASE64_CHARS } = await import('@shogo/shared-runtime/project-transfer-limits')
 
 // initPromise inside the module is memoized after the first init and is
 // never cleared on success — meaning shutdown()+init() in beforeEach does
@@ -847,5 +849,65 @@ describe('coverage closer: isTunnelConnectedAnywhere error path', () => {
       console.warn = origWarn
     }
     expect(warns.some((w) => /isTunnelConnectedAnywhere failed/.test(String(w[0])))).toBe(true)
+  })
+})
+
+describe('relay payload cap (SHO-410)', () => {
+  const ourChannel = () => `tunnel:pod:${tr.getPodId()}:request`
+
+  /** Publish one logical payload as chunk frames, the way publishFrame splits it. */
+  function publishChunked(payload: string, chunkBytes: number) {
+    const id = `t${Math.random().toString(36).slice(2, 8)}`
+    const parts: string[] = []
+    for (let offset = 0; offset < payload.length; offset += chunkBytes) {
+      parts.push(payload.slice(offset, offset + chunkBytes))
+    }
+    for (let seq = 0; seq < parts.length; seq++) {
+      pub().publish(ourChannel(), JSON.stringify({ relayChunk: { id, seq, total: parts.length, data: parts[seq] } }))
+    }
+    return parts.length
+  }
+
+  /** A probe request padded to `bodyChars`, so a dispatch is visible as one reply. */
+  function probePayload(bodyChars: number): string {
+    return JSON.stringify({
+      relayId: 'r-big',
+      instanceId: '__probe__',
+      replyPod: tr.getPodId(),
+      request: { type: 'request', requestId: 'q-big', method: 'POST', path: '/p', body: 'A'.repeat(bodyChars) },
+    })
+  }
+
+  function repliesSince(before: number) {
+    return pub().publishLog.slice(before).filter((f) => !f.message.startsWith('{"relayChunk"'))
+  }
+
+  it('reassembles a payload the size of a 100 MB archive and dispatches it once', async () => {
+    const payload = probePayload(TRANSFER_MAX_ARCHIVE_BASE64_CHARS)
+    // Over the old 64 MB relay cap, which is what silently dropped it before.
+    expect(payload.length).toBeGreaterThan(64 * 1024 * 1024)
+    expect(payload.length).toBeLessThan(tr.RELAY_CHUNK_MAX_BYTES)
+
+    const before = pub().publishLog.length
+    publishChunked(payload, 256 * 1024)
+
+    const replies = repliesSince(before)
+    expect(replies).toHaveLength(1)
+    expect(JSON.parse(replies[0]!.message).response.status).toBe(200)
+  })
+
+  it('still drops a payload over the relay cap', async () => {
+    const payload = probePayload(tr.RELAY_CHUNK_MAX_BYTES)
+    expect(payload.length).toBeGreaterThan(tr.RELAY_CHUNK_MAX_BYTES)
+
+    const before = pub().publishLog.length
+    publishChunked(payload, Math.ceil(payload.length / 2))
+
+    expect(repliesSince(before)).toHaveLength(0)
+  })
+
+  it('the copy cap is defined once and the relay carries it', () => {
+    expect(REMOTE_IMPORT_MAX_BASE64_CHARS).toBe(TRANSFER_MAX_ARCHIVE_BASE64_CHARS)
+    expect(tr.RELAY_CHUNK_MAX_BYTES).toBeGreaterThan(TRANSFER_MAX_ARCHIVE_BASE64_CHARS)
   })
 })

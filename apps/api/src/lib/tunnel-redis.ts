@@ -13,6 +13,7 @@
  */
 
 import type Redis from 'ioredis'
+import { TRANSFER_MAX_ARCHIVE_BASE64_CHARS } from '@shogo/shared-runtime/project-transfer-limits'
 import { RELAY_TIMEOUT_MS } from './tunnel-timeouts'
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
@@ -576,9 +577,21 @@ const pendingRelayChunks = new Map<
   { parts: string[]; received: number; total: number; bytes: number; startedAt: number }
 >()
 
-/** A partial payload never worth reassembling — drop it rather than grow. */
+/**
+ * A partial payload never worth reassembling — drop it rather than grow.
+ * Sized from the `copy_to_project` archive cap: the base64 of a full-size
+ * archive plus headroom for the JSON envelope and the other request fields, so
+ * raising the transfer cap moves the relay with it (SHO-410). `entry.bytes`
+ * counts string length, which is the right unit for base64.
+ */
 const RELAY_CHUNK_TTL_MS = 60_000
-const RELAY_CHUNK_MAX_BYTES = 64 * 1024 * 1024
+const RELAY_ENVELOPE_HEADROOM_BYTES = 20 * 1024 * 1024
+export const RELAY_CHUNK_MAX_BYTES = TRANSFER_MAX_ARCHIVE_BASE64_CHARS + RELAY_ENVELOPE_HEADROOM_BYTES
+
+/** Parts a frame may arrive in: enough for the byte cap at the current chunk size. */
+function maxRelayChunkParts(): number {
+  return Math.ceil(RELAY_CHUNK_MAX_BYTES / relayChunkBytes) + 16
+}
 
 interface RelayChunkFrame {
   relayChunk: { id: string; seq: number; total: number; data: string }
@@ -629,7 +642,7 @@ function acceptRelayChunk(channel: string, frame: RelayChunkFrame): string | und
 
   let entry = pendingRelayChunks.get(key)
   if (!entry) {
-    if (total > 4096) return null
+    if (total > maxRelayChunkParts()) return null
     entry = { parts: new Array(total).fill(undefined as unknown as string), received: 0, total, bytes: 0, startedAt: now }
     pendingRelayChunks.set(key, entry)
   }
