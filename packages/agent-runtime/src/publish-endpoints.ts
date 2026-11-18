@@ -38,6 +38,7 @@ import { isMacOSJunkName } from '@shogo/shared-runtime'
 import { cleanupStagingOutput } from './build-output-commit'
 import { createPublishedArtifactFilter } from './publish-artifact-filter'
 import { PUBLISH_STAGING_DIR } from './preview-manager'
+import { spoolPath, spooledFileResponse, sweepSpool } from './spool'
 
 /** What the handlers need from the runtime that owns them. */
 export interface PublishEndpointDeps {
@@ -180,5 +181,61 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
     return c.json({ error: 'artifact_failed', message: err?.message ?? String(err) }, 500)
   } finally {
     await rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+/** What `/agent/publish-source` needs from the runtime that owns it. */
+export interface PublishSourceDeps {
+  /** The project's workspace dir, or null when it is not attached to this runtime. */
+  projectDir(projectId?: string): string | null
+  /**
+   * Pack the project's working tree into a gzipped tar at `destPath`, in the
+   * same layout as `project-src.tar.gz`. Null when there is nothing to pack.
+   */
+  packSource(projectDir: string, projectId: string, destPath: string): Promise<{ bytes: number } | null>
+}
+
+/**
+ * `GET /agent/publish-source?projectId=…`
+ *
+ * The project's source exactly as it is now, for a server-backed publish that
+ * boots the shared runtime image (no per-commit image). The API stores it as
+ * `{subdomain}/source.tar.gz` in the published-data bucket before the published
+ * service rolls, and the published pod hydrates from that first.
+ *
+ * Without it the published pod hydrated from the editing runtime's last backup.
+ * A metal runtime only writes that backup when it stops or suspends, so every
+ * publish from a long-lived runtime shipped fresh static files on top of stale
+ * server code — and a security fix in `server.tsx` never went live.
+ *
+ * Same file set as the durable backup, `.env` included: the published server
+ * reads its secrets from it today, and the archive goes to a private bucket,
+ * never into an image layer.
+ */
+export async function handlePublishSource(c: Context, deps: PublishSourceDeps): Promise<Response> {
+  const projectId = c.req.query('projectId') ?? ''
+  const projectDir = deps.projectDir(projectId || undefined)
+  if (!projectDir) {
+    return c.json({ error: 'project_not_attached', message: 'Project is not attached to this runtime' }, 404)
+  }
+  sweepSpool()
+  const tmp = spoolPath('publish-source.tar.gz')
+  let handedOff = false
+  try {
+    const packed = await deps.packSource(projectDir, projectId, tmp)
+    if (!packed) {
+      return c.json({ error: 'source_empty', message: 'The project has no source files to publish' }, 404)
+    }
+    const res = await spooledFileResponse(tmp, { 'Content-Type': 'application/gzip' }, { signal: c.req.raw.signal })
+    handedOff = true
+    return res
+  } catch (err: any) {
+    console.error('[agent-runtime] publish-source failed:', err?.message ?? err)
+    return c.json({ error: 'source_pack_failed', message: err?.message ?? String(err) }, 500)
+  } finally {
+    if (!handedOff) {
+      const { rm } = await import('fs/promises')
+      await rm(tmp, { force: true }).catch(() => {})
+    }
   }
 }

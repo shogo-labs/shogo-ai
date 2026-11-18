@@ -35,9 +35,14 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { createHash } from 'crypto'
 import * as tar from 'tar'
+import { PUBLISHED_SOURCE_KEY } from './published-source'
 
 /** Object key (under the subdomain prefix) holding the writable-state archive. */
 const ARCHIVE_KEY = 'data.tar.gz'
+
+// A metal runtime only refreshes `project-src.tar.gz` when it stops, so the
+// published pod reads the source the publish pinned instead (see published-source.ts).
+export { PUBLISHED_SOURCE_KEY } from './published-source'
 
 /** Default debounce for the watcher-triggered flush (ms). */
 const FLUSH_DEBOUNCE_MS = 4000
@@ -139,36 +144,54 @@ export class PublishedDataSync {
    * Returns false (no error) when the archive does not exist yet.
    */
   async restore(): Promise<boolean> {
+    const buf = await this.extractObject(this.archiveKey, 'writable state')
+    if (buf === 'missing') {
+      console.log(`[PublishedDataSync] No existing archive at ${this.archiveKey} — using source seed`)
+      return false
+    }
+    if (!buf) return false
+    this.lastUploadHash = createHash('sha256').update(buf).digest('hex')
+    return true
+  }
+
+  /**
+   * Extract the source pinned by the publish (`{prefix}/source.tar.gz`) into the
+   * workspace. Returns false when there is none (a site published before the
+   * pin existed), so the caller falls back to the durable repo / project archive.
+   */
+  async restoreSource(): Promise<boolean> {
+    const buf = await this.extractObject(`${this.prefix}/${PUBLISHED_SOURCE_KEY}`, 'published source')
+    if (buf === 'missing') {
+      console.warn(`[PublishedDataSync] No pinned source at ${this.prefix}/${PUBLISHED_SOURCE_KEY} — falling back`)
+      return false
+    }
+    return buf !== null
+  }
+
+  private async extractObject(key: string, label: string): Promise<Buffer | 'missing' | null> {
     let tmpDir: string | null = null
     try {
-      const res = await this.client.send(
-        new GetObjectCommand({ Bucket: this.bucket, Key: this.archiveKey }),
-      )
-      const bytes = await res.Body!.transformToByteArray()
-      const buf = Buffer.from(bytes)
-      this.lastUploadHash = createHash('sha256').update(buf).digest('hex')
+      const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }))
+      const buf = Buffer.from(await res.Body!.transformToByteArray())
 
       tmpDir = await mkdtemp(join(tmpdir(), 'shogo-pubdata-'))
-      const archivePath = join(tmpDir, ARCHIVE_KEY)
+      const archivePath = join(tmpDir, 'archive.tar.gz')
       await writeFile(archivePath, buf)
 
       if (!existsSync(this.localDir)) mkdirSync(this.localDir, { recursive: true })
       await tar.extract({ file: archivePath, cwd: this.localDir })
 
-      console.log(`[PublishedDataSync] Restored writable state (${buf.length} bytes) from ${this.archiveKey}`)
-      return true
+      console.log(`[PublishedDataSync] Restored ${label} (${buf.length} bytes) from ${key}`)
+      return buf
     } catch (err: any) {
       const code = err?.name || err?.Code || err?.$metadata?.httpStatusCode
       const notFound =
         err?.name === 'NoSuchKey' ||
         err?.Code === 'NoSuchKey' ||
         err?.$metadata?.httpStatusCode === 404
-      if (notFound) {
-        console.log(`[PublishedDataSync] No existing archive at ${this.archiveKey} — using source seed`)
-        return false
-      }
-      console.warn(`[PublishedDataSync] restore() failed (${code}):`, err?.message ?? err)
-      return false
+      if (notFound) return 'missing'
+      console.warn(`[PublishedDataSync] restoring ${label} from ${key} failed (${code}):`, err?.message ?? err)
+      return null
     } finally {
       if (tmpDir) await rm(tmpDir, { recursive: true, force: true }).catch(() => {})
     }

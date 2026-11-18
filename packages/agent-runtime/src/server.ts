@@ -2822,7 +2822,12 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 // ---------------------------------------------------------------------------
 
 import { PreviewManager, publishedBootPlan } from './preview-manager'
-import { handleDistFiles, handlePublishArtifact, type PublishEndpointDeps } from './publish-endpoints'
+import {
+  handleDistFiles,
+  handlePublishArtifact,
+  handlePublishSource,
+  type PublishEndpointDeps,
+} from './publish-endpoints'
 import { installRuntimeJobGuard } from './process-tree'
 import { cleanupStagingOutput } from './build-output-commit'
 import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
@@ -6307,6 +6312,25 @@ app.get('/agent/dist-files', (c) => handleDistFiles(c, publishEndpointDeps))
 
 app.get('/agent/publish-artifact', (c) => handlePublishArtifact(c, publishEndpointDeps))
 
+app.get('/agent/publish-source', (c) =>
+  handlePublishSource(c, {
+    projectDir: publishEndpointDeps.projectDir,
+    packSource: async (dir, projectId, destPath) => {
+      // The same packer as the durable backup (`/pool/export`), so the published
+      // pod gets the file set it has always hydrated — only current.
+      const sync =
+        (dir === WORKSPACE_DIR ? s3SyncInstance : null) ??
+        createS3SyncForProject(dir, projectId || process.env.PROJECT_ID || '', {
+          watchEnabled: false,
+          syncInterval: 0,
+          suppressProjectArchive: true,
+        })
+      if (!sync) throw new Error('S3 sync is not configured on this runtime, so it cannot pack the source')
+      return sync.packProjectArchive(destPath)
+    },
+  }),
+)
+
 /**
  * Build the requested project for publishing. Workspace previews need a
  * `/p/<projectId>/` Vite base, but published artifacts are served from the
@@ -7775,18 +7799,27 @@ async function initializePublished(): Promise<void> {
   // cost the image exists to remove. The writable-state overlay below still
   // runs: the image is the commit, the overlay is what users have written since.
   const boot = publishedBootPlan()
+  publishedDataSyncInstance = createPublishedDataSyncFromEnv(WORKSPACE_DIR)
 
   if (boot.hydrateSource) {
     // 1. Seed template files (idempotent) so a brand-new emptyDir has the base
-    //    layout; git/S3 hydration below overlays the real published app.
+    //    layout; the hydration below overlays the real published app.
     ensureWorkspaceFiles()
 
-    // 2. Hydrate source read-only. Prefer the durable git repo (carries the
-    //    published tag + the builder's seed DB); fall back to the S3 project
-    //    archive. We deliberately do NOT start any source uploader/watcher —
-    //    published source is immutable for the life of the pod.
+    // 2. Hydrate source read-only. Prefer the source the publish pinned
+    //    (`{subdomain}/source.tar.gz`, written by the API from the editing
+    //    runtime right before this revision rolled), then the durable git repo,
+    //    then the S3 project archive. The last two are only as fresh as the
+    //    editing runtime's last backup — a metal runtime refreshes them when it
+    //    stops — so a site published before the pin existed can still serve
+    //    old server code from them. We deliberately do NOT start any source
+    //    uploader/watcher — published source is immutable for the life of the pod.
     let hydrated = false
-    const repoCfg = repoStoreConfigFromEnv()
+    if (publishedDataSyncInstance) {
+      hydrated = await publishedDataSyncInstance.restoreSource()
+      if (hydrated) logTiming('Published mode: source restored from the publish-pinned archive')
+    }
+    const repoCfg = hydrated ? null : repoStoreConfigFromEnv()
     if (repoCfg) {
       try {
         const res = await restoreRepoFromStore(WORKSPACE_DIR, repoCfg)
@@ -7794,6 +7827,8 @@ async function initializePublished(): Promise<void> {
         if (hydrated) {
           await checkoutPublishedTag(PUBLISHED_SUBDOMAIN)
           logTiming('Published mode: source restored from git repo store')
+        } else {
+          console.warn(`[agent-runtime] Published mode: no durable git repo (${res.reason ?? 'not restored'})`)
         }
       } catch (err: any) {
         console.error('[agent-runtime] Published mode: git restore failed:', err?.message ?? err)
@@ -7823,8 +7858,7 @@ async function initializePublished(): Promise<void> {
   }
 
   // 3. Overlay durable writable state (end-user writes accumulated since the
-  //    last cold start). Absent on first boot — the git seed DB is used then.
-  publishedDataSyncInstance = createPublishedDataSyncFromEnv(WORKSPACE_DIR)
+  //    last cold start). Absent on first boot — the seed DB in the source is used then.
   if (publishedDataSyncInstance) {
     await publishedDataSyncInstance.restore()
   }

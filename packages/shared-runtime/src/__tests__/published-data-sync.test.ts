@@ -11,7 +11,8 @@
 // no-op when there's nothing writable to archive) with the S3 client stubbed.
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs'
+import * as tar from 'tar'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { PublishedDataSync, createPublishedDataSyncFromEnv } from '../published-data-sync'
@@ -132,6 +133,86 @@ describe('PublishedDataSync.restore', () => {
       }
       const restored = await sync.restore()
       expect(restored).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('PublishedDataSync.restoreSource', () => {
+  /** A stub client serving `objects` by key; anything else is NoSuchKey. */
+  function stubClient(objects: Record<string, Buffer>, seen: string[]) {
+    return {
+      send: async (cmd: any) => {
+        const key = cmd.input.Key as string
+        seen.push(key)
+        const body = objects[key]
+        if (!body) {
+          const err: any = new Error('not found')
+          err.name = 'NoSuchKey'
+          throw err
+        }
+        return { Body: { transformToByteArray: async () => new Uint8Array(body) } }
+      },
+    }
+  }
+
+  async function tarOf(files: Record<string, string>): Promise<Buffer> {
+    const src = mkdtempSync(join(tmpdir(), 'pubsrc-src-'))
+    try {
+      for (const [rel, content] of Object.entries(files)) {
+        mkdirSync(join(src, rel, '..'), { recursive: true })
+        writeFileSync(join(src, rel), content)
+      }
+      const out = join(src, '..', `${Math.random().toString(36).slice(2)}.tar.gz`)
+      await tar.create({ gzip: true, file: out, cwd: src, portable: true }, Object.keys(files))
+      const buf = readFileSync(out)
+      rmSync(out, { force: true })
+      return buf
+    } finally {
+      rmSync(src, { recursive: true, force: true })
+    }
+  }
+
+  test('extracts the publish-pinned source from {subdomain}/source.tar.gz', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pubsrc-'))
+    try {
+      writeFileSync(join(dir, 'server.tsx'), 'stale\n')
+      const seen: string[] = []
+      const sync = new PublishedDataSync({ bucket: 'b', prefix: 'kif-crm', localDir: dir }) as any
+      sync.client = stubClient(
+        { 'kif-crm/source.tar.gz': await tarOf({ 'server.tsx': 'fresh\n', 'auth-routes.ts': 'x\n' }) },
+        seen,
+      )
+      expect(await sync.restoreSource()).toBe(true)
+      expect(seen).toEqual(['kif-crm/source.tar.gz'])
+      expect(readFileSync(join(dir, 'server.tsx'), 'utf8')).toBe('fresh\n')
+      expect(readFileSync(join(dir, 'auth-routes.ts'), 'utf8')).toBe('x\n')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('returns false when nothing was pinned, so boot falls back to the durable backups', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pubsrc-missing-'))
+    try {
+      const sync = new PublishedDataSync({ bucket: 'b', prefix: 'kif-crm', localDir: dir }) as any
+      sync.client = stubClient({}, [])
+      expect(await sync.restoreSource()).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('the writable-state restore still reads data.tar.gz', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pubsrc-data-'))
+    try {
+      const seen: string[] = []
+      const sync = new PublishedDataSync({ bucket: 'b', prefix: 'kif-crm', localDir: dir }) as any
+      sync.client = stubClient({ 'kif-crm/data.tar.gz': await tarOf({ 'prisma/dev.db': 'db' }) }, seen)
+      expect(await sync.restore()).toBe(true)
+      expect(seen).toEqual(['kif-crm/data.tar.gz'])
+      expect(readFileSync(join(dir, 'prisma/dev.db'), 'utf8')).toBe('db')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
