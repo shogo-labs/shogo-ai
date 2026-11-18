@@ -23,7 +23,7 @@ mock.module('@shogo/shared-ui/primitives', () => ({ cn: (...args: unknown[]) => 
 mock.module('lucide-react-native', () => {
   const Icon = () => createElement('span')
   return {
-    Bell: Icon, Bot: Icon, ChevronDown: Icon, ChevronRight: Icon, Hash: Icon, Keyboard: Icon, Lock: Icon,
+    Bell: Icon, Bot: Icon, ChevronDown: Icon, ChevronRight: Icon, Hash: Icon, Keyboard: Icon, Lock: Icon, Mail: Icon,
     NotebookText: Icon, Pencil: Icon, Plus: Icon, Radio: Icon, Search: Icon, Users: Icon,
   }
 })

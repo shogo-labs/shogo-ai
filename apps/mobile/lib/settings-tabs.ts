@@ -7,6 +7,7 @@ import {
   CreditCard,
   HardDrive,
   Laptop,
+  Mail,
   MessageSquare,
   Monitor,
   Paintbrush,
@@ -24,6 +25,7 @@ export type SettingsTabId =
   | "workspace"
   | "people"
   | "chat"
+  | "email"
   | "models"
   | "integrations"
   | "automations"
@@ -64,6 +66,7 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
     cloudOnly: true,
   },
   { id: "chat", label: "Chat", Icon: MessageSquare, group: "settings" },
+  { id: "email", label: "Mail", Icon: Mail, group: "settings" },
   { id: "models", label: "Models", Icon: Boxes, group: "settings" },
   { id: "integrations", label: "Integrations", Icon: Plug, group: "settings" },
   { id: "automations", label: "Automations", Icon: Zap, group: "settings" },
@@ -147,7 +150,7 @@ export function visibleSettingsTabs({
   teamChat?: boolean;
 } = {}): SettingsTabDefinition[] {
   return SETTINGS_TABS.filter((tab) => {
-    if (tab.id === "chat") return teamChat;
+    if (tab.id === "chat" || tab.id === "email") return teamChat;
     if (tab.id === "compute") return showBilling && platform !== "ios";
     // Desktop-only tabs that also need the local API (computer use, local apps).
     if (tab.desktopOnly && tab.localOnly) return isDesktop && localMode;

@@ -62,6 +62,7 @@ import {
 } from "../../components/settings/account-sheet-chrome";
 import { AppearanceTab } from "../../components/settings/AppearanceTab";
 import { ChatPreferencesTab } from "../../components/settings/ChatPreferencesTab";
+import { EmailSettingsTab } from "../../components/settings/EmailSettingsTab";
 import { CreateWorkspaceModal } from "../../components/layout/sidebar/CreateWorkspaceModal";
 import { useAuth } from "../../contexts/auth";
 import {
@@ -206,6 +207,7 @@ const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
   workspace: "Building2",
   people: "Users",
   chat: "MessageSquare",
+  email: "Mail",
   models: "Boxes",
   integrations: "Plug",
   automations: "Zap",
@@ -247,6 +249,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
   "workspace",
   "people",
   "chat",
+  "email",
   "models",
   "integrations",
   "automations",
@@ -261,6 +264,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
 const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
   "workspace",
   "chat",
+  "email",
   "models",
   "integrations",
   "automations",
@@ -289,7 +293,7 @@ function TabBar({
 }) {
   const icons = useSettingsIcons();
   const items = (showBilling && !localMode ? MOBILE_NAV_ITEMS : LOCAL_NAV_ITEMS).filter(
-    (item) => item.id !== "chat" || teamChat,
+    (item) => (item.id !== "chat" && item.id !== "email") || teamChat,
   );
   return (
     <ScrollView
@@ -370,7 +374,7 @@ function SettingsSidebar({
 
   const workspaceItems: SidebarItem[] = [
     ...(!(localMode || !showBilling) ? [tabItem("people")] : []),
-    ...(teamChat ? [tabItem("chat")] : []),
+    ...(teamChat ? [tabItem("chat"), tabItem("email")] : []),
     tabItem("models"),
     tabItem("integrations"),
     tabItem("automations"),
@@ -4248,6 +4252,7 @@ export const SettingsContent = observer(function SettingsContent({
       {activeTab === "disk" && <WorkspaceDiskTab />}
       {activeTab === "people" && !isLocal && <PeopleTab />}
       {activeTab === "chat" && <ChatPreferencesTab highlightSection={section} />}
+      {activeTab === "email" && <EmailSettingsTab />}
       {activeTab === "models" && <WorkspaceModelsTab />}
       {activeTab === "integrations" && <IntegrationsTab />}
       {activeTab === "automations" && (
@@ -4347,7 +4352,7 @@ export default observer(function SettingsPage({
     if (isPhoneSurface) return;
     const isLocal = localMode || !features.billing;
     if (activeTab === "people" && isLocal) setActiveTab("workspace");
-    if (activeTab === "chat" && !teamChat) setActiveTab("workspace");
+    if ((activeTab === "chat" || activeTab === "email") && !teamChat) setActiveTab("workspace");
     if (activeTab === "compute" && (isLocal || HIDE_COMPUTE_PURCHASES_ON_IOS))
       setActiveTab("workspace");
     if (activeTab === "updates" && !IS_DESKTOP_CLIENT)

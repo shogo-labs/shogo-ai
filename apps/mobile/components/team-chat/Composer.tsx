@@ -76,6 +76,11 @@ export interface ComposerProps {
   channelMemberIds?: Set<string> | null
   /** Channels this reader can see, for typing `#` to reference one. */
   channels?: ChannelCandidateSource[] | null
+  /**
+   * Takes over "Send later" (text only). Without it a scheduled message is a
+   * team message; a mail thread's Reply mode schedules the email instead.
+   */
+  onSendLater?: (input: SendInput, at: Date) => Promise<void>
 }
 
 export interface ComposerHandle {
@@ -98,7 +103,7 @@ function MentionIcon({ candidate, workspaceId }: { candidate: MentionCandidate; 
 }
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(props, ref) {
-  const { workspaceId, conversationId, threadRootId = null, mentionables, me, onSend, onEditLast } = props
+  const { workspaceId, conversationId, threadRootId = null, mentionables, me, onSend, onEditLast, onSendLater } = props
   const inputRef = useRef<ChatInputHandle>(null)
   const phoneLayout = useComposerLayoutMode({ prominent: true }).useProminentComposer
   const chrome = usePhoneChromeOverlay()
@@ -264,6 +269,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             return
           }
           try {
+            if (onSendLater) {
+              await onSendLater({ text: wire }, sendAt)
+              setNotice(`Scheduled for ${formatWhen(sendAt.toISOString())}.`)
+              return
+            }
             await api.schedule(conversationId, { text: wire, sendAt: sendAt.toISOString(), threadRootId, alsoSentToChannel: toChannel })
             setNotice(`Scheduled for ${formatWhen(sendAt.toISOString())}. Manage it in Later.`)
           } catch (err: any) {
@@ -301,15 +311,20 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         } catch {}
         // Only carry the field when the sender actually declined something, so
         // an ordinary message keeps the shape it always had.
-        await onSend({
-          text: wire,
-          attachmentIds,
-          alsoSentToChannel: toChannel,
-          ...(linkPreviewsOff.length ? { linkPreviewsOff } : {}),
-        })
+        try {
+          await onSend({
+            text: wire,
+            attachmentIds,
+            alsoSentToChannel: toChannel,
+            ...(linkPreviewsOff.length ? { linkPreviewsOff } : {}),
+          })
+        } catch (err: any) {
+          setError(err?.message ?? 'Could not send')
+          putBack()
+        }
       })()
     },
-    [picksFrom, threadRootId, alsoToChannel, saveDraft, draftKey, workspaceId, conversationId, onSend],
+    [picksFrom, threadRootId, alsoToChannel, saveDraft, draftKey, workspaceId, conversationId, onSend, onSendLater],
   )
 
   const sendLater = useCallback((at: Date) => {
