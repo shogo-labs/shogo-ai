@@ -20,7 +20,12 @@ import { expect, type Page } from "@playwright/test"
 import { LOCAL_API_BASE } from "./helpers"
 
 const REPO = resolve(__dirname, "../..")
-const DATABASE_URL = process.env.E2E_LOCAL_DATABASE_URL || `file:${resolve(REPO, "test-results/e2e-local.db")}`
+// Same resolution as `playwright.config.ts`'s `localDbPath`: the seed has to
+// write to the database the stack booted, and `E2E_LOCAL_DB` is how a run picks
+// a different one.
+const DATABASE_URL =
+  process.env.E2E_LOCAL_DATABASE_URL ||
+  `file:${resolve(REPO, process.env.E2E_LOCAL_DB || "test-results/e2e-local.db")}`
 const PEER = { email: "team-nav-peer@example.com", password: "team-nav-peer-pass", name: "Bea Partner" }
 
 export const SCRIPT_PATH =

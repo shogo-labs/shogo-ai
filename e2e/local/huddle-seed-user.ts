@@ -12,7 +12,15 @@
  * Prints `{ userId, workspaceId }`.
  */
 import { resolve } from "path"
-import { prisma } from "../../apps/api/src/lib/prisma"
+
+// The API's Prisma client picks SQLite or Postgres at module load from
+// SHOGO_LOCAL_MODE, and this script only ever writes to the local stack's
+// SQLite file. It has to be set before the import: a caller that passes
+// DATABASE_URL but not SHOGO_LOCAL_MODE — the Playwright runner, whose env is
+// not the webServer's — otherwise builds the Postgres client and dies with
+// ECONNREFUSED on the first query.
+process.env.SHOGO_LOCAL_MODE = "true"
+const { prisma } = await import("../../apps/api/src/lib/prisma")
 
 // better-auth is the API's dependency, not the e2e package's.
 const { hashPassword } = await import(Bun.resolveSync("better-auth/crypto", resolve(import.meta.dir, "../../apps/api")))
