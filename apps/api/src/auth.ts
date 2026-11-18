@@ -632,10 +632,12 @@ export const auth = betterAuth({
     enabled: process.env.NODE_ENV === 'production',
     // Better Auth's default store is process memory, so every rule below was
     // really "per pod" (8 API pods in prod). Point it at the shared Redis we
-    // already run for the tunnel relay; `getSharedRedis()` returns null on
-    // desktop and during a Redis outage, and the limiter then falls back to
-    // its own memory store. Deliberately NOT `secondaryStorage`: that would
-    // move sessions into Redis too.
+    // already run for the tunnel relay. `getSharedRedis()` returns null on
+    // desktop and during a Redis outage, and a null `get` reads as a fresh
+    // window — so these rules fail open while Redis is down. The signup
+    // limiter in `lib/signup-rate-limit.ts` keeps its own in-process fallback,
+    // so sign-ups stay bounded either way. Deliberately NOT `secondaryStorage`:
+    // that would move sessions into Redis too.
     customStorage: {
       async get(key: string) {
         const redis = getSharedRedis()
