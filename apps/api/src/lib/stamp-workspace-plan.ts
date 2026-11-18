@@ -67,19 +67,33 @@ export async function stampWorkspacePlan(
   parsedBody: { planId?: unknown; canPublishSubdomain?: unknown; publishHosting?: unknown },
   workspaceId: string,
 ): Promise<void> {
+  let planId: string | null | undefined
   try {
-    const [planId, canPublish, alwaysOnAllowance] = await Promise.all([
+    const [effectivePlanId, canPublish] = await Promise.all([
       billingService.getEffectivePlanId(workspaceId),
       billingService.canPublishSubdomain(workspaceId),
-      billingService.getAlwaysOnAllowanceForWorkspace(workspaceId),
     ])
-    parsedBody.planId = planId
+    planId = effectivePlanId
+    parsedBody.planId = effectivePlanId
     parsedBody.canPublishSubdomain = canPublish
-    parsedBody.publishHosting = buildPublishHostingStamp(planId, alwaysOnAllowance)
   } catch (err: any) {
     delete parsedBody.planId
     delete parsedBody.canPublishSubdomain
-    delete parsedBody.publishHosting
     console.warn(`[stampWorkspacePlan] plan lookup failed for ${workspaceId}:`, err?.message ?? err)
+  }
+
+  // The hosting line is additive, so it gets its own try: the always-on
+  // allowance reads subscriptions and grants, and a failure there must not
+  // strip `planId` / `canPublishSubdomain` from a turn that was otherwise
+  // stamped fine. Sequential, not `Promise.all` — when both lookups reject,
+  // the loser of the race is an unhandled rejection that bun reports as a
+  // failed test in every suite that mocks a partial prisma.
+  try {
+    const effectivePlanId = planId ?? (await billingService.getEffectivePlanId(workspaceId))
+    const alwaysOnAllowance = await billingService.getAlwaysOnAllowanceForWorkspace(workspaceId)
+    parsedBody.publishHosting = buildPublishHostingStamp(effectivePlanId, alwaysOnAllowance)
+  } catch (err: any) {
+    delete parsedBody.publishHosting
+    console.warn(`[stampWorkspacePlan] hosting lookup failed for ${workspaceId}:`, err?.message ?? err)
   }
 }

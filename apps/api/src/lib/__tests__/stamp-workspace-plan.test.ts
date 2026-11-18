@@ -55,6 +55,18 @@ describe('stampWorkspacePlan', () => {
     expect('canPublishSubdomain' in body).toBe(false)
     expect('publishHosting' in body).toBe(false)
   })
+
+  // The always-on allowance reads subscriptions and grants, so it can fail on
+  // its own (a partial prisma mock, a billing hiccup). The hosting line is
+  // additive: losing it must not strip the plan fields the chat already uses —
+  // that regression turned 8 workspace-chat tests red on PR #1969.
+  test('a failing hosting lookup keeps the plan fields and only drops the hosting line', async () => {
+    alwaysOnImpl = async () => { throw new Error('subscription lookup failed') }
+    const body: any = {}
+    await stampWorkspacePlan(body, 'ws-1')
+    expect(body).toEqual({ planId: 'free', canPublishSubdomain: false })
+    expect('publishHosting' in body).toBe(false)
+  })
 })
 
 // The stamp is what lets the agent say "up to 5 replicas" / "staging available"
