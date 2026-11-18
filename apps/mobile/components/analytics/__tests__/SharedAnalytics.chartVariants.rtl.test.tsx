@@ -32,8 +32,16 @@ mock.module('../../lib/visible-models', () => ({
 
 mock.module('../StackedAreaChart', () => ({
   STACKED_PALETTE: ['#1', '#2', '#3', '#4', '#5', '#6', '#7', '#8', '#9'],
-  StackedAreaChart: ({ variant }: any) =>
-    createElement('div', { 'data-testid': 'stacked-chart', 'data-variant': variant ?? 'area' }),
+  // Exposes the formatted first value so a test can assert the units the chart
+  // actually prints (a 0-1 fraction would read "0.8%", not "80%").
+  StackedAreaChart: ({ variant, days, series, formatY }: any) => {
+    const first = days?.[0]?.values?.[series?.[0]?.id]
+    return createElement('div', {
+      'data-testid': 'stacked-chart',
+      'data-variant': variant ?? 'area',
+      'data-format': formatY && first !== undefined ? formatY(first) : undefined,
+    })
+  },
 }))
 
 const {
@@ -122,17 +130,22 @@ describe('chart variants', () => {
         data={[
           {
             date: '2026-07-07',
-            cacheHitRatio: 0.8,
+            // The daily series reports rates as percentages (0-100), so 80 is
+            // an 80% cache-hit day — not a 0.8 fraction.
+            cacheHitRatio: 80,
             costPerMessage: 0.02,
             costPerActiveUser: 0.4,
-            agentEscalatedRate: 0.1,
-            agentLoopRate: 0.05,
-            agentMaxTurnsRate: 0.02,
+            agentEscalatedRate: 10,
+            agentLoopRate: 5,
+            agentMaxTurnsRate: 2,
           },
         ]}
       />,
     )
-    expect(screen.getAllByTestId('stacked-chart').every((el) => el.getAttribute('data-variant') === 'area')).toBe(true)
+    const charts = screen.getAllByTestId('stacked-chart')
+    expect(charts.every((el) => el.getAttribute('data-variant') === 'area')).toBe(true)
+    // The "Cache hit" line is selected by default and must read 80%, not 0.8%.
+    expect(charts[charts.length - 1].getAttribute('data-format')).toBe('80%')
   })
 
   test('a single-metric trend honours kind: counts are bars, rates are lines', () => {
