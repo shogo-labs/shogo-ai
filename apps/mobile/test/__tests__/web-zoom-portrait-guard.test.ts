@@ -86,11 +86,15 @@ describe('SHO-405 the exported shell starts out unguarded', () => {
 describe('SHO-405 the post-export step guards the shell that actually ships', () => {
   const patched = runInjector(exportedShell)
 
-  test('the viewport meta is replaced with the strict one, in place', () => {
+  test('the viewport meta is replaced in place, with no global zoom lock', () => {
     expect(count(patched, 'name="viewport"')).toBe(1)
+    // The export's own meta has no `viewport-fit=cover`, so this proves the in-place swap.
+    expect(exportedShell).not.toContain('viewport-fit=cover')
     expect(patched).toContain(`content="${VIEWPORT_META_CONTENT}"`)
-    expect(patched).not.toContain('content="width=device-width, initial-scale=1, shrink-to-fit=no"')
-    expect(patched.indexOf('maximum-scale=1')).toBeLessThan(patched.indexOf('</head>'))
+    // `maximum-scale` / `user-scalable` are global: they would also lock real
+    // pinch on iPad-sized Blink tablets. The phone lock is the gated CSS + script.
+    expect(patched).not.toContain('maximum-scale')
+    expect(patched).not.toContain('user-scalable=no')
   })
 
   test('the manifest link is added, so the portrait PWA lock is live', () => {
@@ -124,6 +128,14 @@ describe('SHO-405 the post-export step guards the shell that actually ships', ()
 })
 
 describe('SHO-405 phones only: iPads and desktops keep their zoom', () => {
+  test('the viewport meta is not the phone lock, so tablets keep real pinch', () => {
+    // Measured with CDP `Input.synthesizePinchGesture` (see the e2e spec): with
+    // these two tokens an iPad stayed at visualViewport.scale 1, without them it
+    // reaches 2, and the phone stays at 1 either way.
+    expect(VIEWPORT_META_CONTENT).not.toContain('maximum-scale')
+    expect(VIEWPORT_META_CONTENT).not.toContain('user-scalable')
+  })
+
   test('the phone gate is bounded by viewport size, not just touch', () => {
     expect(PHONE_MEDIA_QUERY).toContain('(pointer: coarse)')
     expect(PHONE_MEDIA_QUERY).toContain('(max-width: 600px)')

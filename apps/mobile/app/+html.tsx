@@ -26,11 +26,11 @@ export default function Root({ children }: PropsWithChildren) {
         <meta charSet="utf-8" />
         <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
         <meta name="google" content="notranslate" />
-        {/* No pinch / no double-tap zoom on phones (SHO-405). iOS Safari has
-            ignored user-scalable/maximum-scale for *pinch* since iOS 10 — that
-            one is stopped by the guard script below — but it still honours
-            maximum-scale=1 for input-focus auto-zoom, which the
-            16px-minimum input rule further down also prevents. */}
+        {/* Phone zoom is stopped by the phone-scoped CSS and script below, not by
+            the viewport meta (SHO-405). This meta is global: `maximum-scale=1` /
+            `user-scalable=no` would also lock real pinch on iPad-sized Blink
+            tablets, and iOS has ignored them for pinch since iOS 10 anyway. */}
+
         <meta name="viewport" content={VIEWPORT_META_CONTENT} />
         <link rel="manifest" href="/manifest.json" />
         <link rel="icon" href={`/favicon.ico?v=${encodeURIComponent(buildHash)}`} />

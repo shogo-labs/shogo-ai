@@ -10,13 +10,15 @@
  * does with them, and that needs no session.
  *
  * At a real phone viewport with touch emulated:
- * - pinch (two-finger `touchmove`, iOS `gesturestart`) and ctrl+wheel are
- *   cancelled, while a one-finger scroll is not;
+ * - a real pinch (CDP `Input.synthesizePinchGesture`, measured on
+ *   `visualViewport.scale`) does not zoom, `gesturestart` and ctrl+wheel are
+ *   cancelled, and a one-finger scroll still works;
  * - a focused input is at least 16px, so iOS never auto-zooms it;
  * - a landscape phone is covered by the rotate prompt.
  * Everywhere that is not a phone — iPad in both orientations, a touch laptop, a
- * desktop browser — none of that applies, so pinch/browser zoom and type sizes
- * are untouched.
+ * desktop browser — none of that applies and a real pinch does zoom, which is
+ * why the viewport meta carries no `maximum-scale`/`user-scalable` (that meta is
+ * global and would lock Blink tablets too).
  */
 
 import { expect, test, type Browser, type Page } from "@playwright/test"
@@ -131,6 +133,20 @@ function zoomProbe(page: Page) {
   })
 }
 
+/** Real pinch through CDP, then the zoom factor the browser ended up at. */
+async function pinchScale(page: Page, viewport: { width: number; height: number }, hasTouch: boolean) {
+  const client = await page.context().newCDPSession(page)
+  await client.send("Input.synthesizePinchGesture", {
+    x: Math.round(viewport.width / 2),
+    y: Math.round(viewport.height / 2),
+    scaleFactor: 2,
+    relativeSpeed: 800,
+    gestureSourceType: hasTouch ? "touch" : "mouse",
+  })
+  await page.waitForTimeout(400)
+  return page.evaluate(() => window.visualViewport?.scale ?? 1)
+}
+
 function computedStyles(page: Page) {
   return page.evaluate(() => ({
     touchAction: getComputedStyle(document.documentElement).touchAction,
@@ -158,8 +174,21 @@ test.describe("a phone can't zoom", () => {
       expect(styles.touchAction).toBe("pan-x pan-y")
       expect(styles.input).toBe("16px")
       expect(styles.textarea).toBe("16px")
-      expect(styles.viewport).toContain("user-scalable=no")
+      // The lock is the gated CSS + script, never the (global) viewport meta.
+      expect(styles.viewport).not.toContain("maximum-scale")
+      expect(styles.viewport).not.toContain("user-scalable")
     })
+  })
+
+  test("a real pinch does not zoom the page, in either orientation", async ({ browser }) => {
+    for (const viewport of [
+      { width: 393, height: 852 },
+      { width: 852, height: 393 },
+    ]) {
+      await withViewport(browser, phone(viewport.width, viewport.height), async (page) => {
+        expect(await pinchScale(page, viewport, true)).toBeCloseTo(1, 2)
+      })
+    }
   })
 
   test("it still holds in landscape, where the gate matches on height", async ({ browser }) => {
@@ -204,6 +233,8 @@ test.describe("everything that is not a phone keeps its zoom", () => {
         const styles = await computedStyles(page)
         expect(styles.input).toBe("12px")
         expect(styles.touchAction).toBe("auto")
+        // The real pinch the global viewport meta used to eat.
+        expect(await pinchScale(page, viewport, true)).toBeGreaterThan(1.9)
       })
     })
   }
@@ -225,6 +256,7 @@ test.describe("everything that is not a phone keeps its zoom", () => {
         return event.defaultPrevented
       })
       expect(wheel).toBe(false)
+      expect(await pinchScale(page, { width: 1440, height: 900 }, false)).toBeGreaterThan(1.9)
     })
   })
 })

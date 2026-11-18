@@ -27,12 +27,19 @@
 const PHONE_MEDIA_QUERY = '(pointer: coarse) and (max-width: 600px), (pointer: coarse) and (max-height: 500px)'
 
 /**
- * `content` for the viewport meta. iOS honours `maximum-scale`/`user-scalable`
- * for input-focus zoom (not for pinch, which the script below handles);
+ * `content` for the viewport meta.
+ *
+ * Deliberately **not** `maximum-scale=1` / `user-scalable=no`: this meta is
+ * global, so those two tokens would also block real pinch at tablet size in
+ * Blink (measured with CDP `Input.synthesizePinchGesture`: an iPad stayed at
+ * `visualViewport.scale` 1 with them and reached 2 without them, while the
+ * phone stayed at 1 either way because {@link PHONE_VIEWPORT_GUARD_CSS} and
+ * {@link ZOOM_GUARD_SCRIPT} already hold it). The phone lock therefore lives
+ * only in the gated CSS + script, and tablets keep their pinch zoom.
  * `viewport-fit=cover` keeps the notch layout; `shrink-to-fit=no` is iOS 9 legacy.
  */
 const VIEWPORT_META_CONTENT =
-  'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, shrink-to-fit=no, viewport-fit=cover'
+  'width=device-width, initial-scale=1, shrink-to-fit=no, viewport-fit=cover'
 
 /** Attribute used both as the marker that the guard is already present and as the script's data attribute. */
 const ZOOM_GUARD_ATTRIBUTE = 'data-shogo-zoom-guard'
