@@ -8588,7 +8588,11 @@ app.post('/api/billing/verify-checkout', async (c) => {
         return c.json({
           error: {
             code: 'prepaid_refused',
-            message: 'That card cannot be used for this offer. The payment was refunded in full and your plan is still Free.',
+            // Only claim the money is back when it actually is. A refund that
+            // did not go through is recorded and retried by the next delivery.
+            message: refusal.refundId
+              ? 'That card cannot be used for this offer. The payment was refunded in full and your plan is still Free.'
+              : 'That card cannot be used for this offer, so your plan is still Free. The refund has not completed yet — it is retried automatically, and it will appear on your statement once it does.',
           },
         }, 402)
       }
@@ -9562,7 +9566,11 @@ app.post('/api/webhooks/stripe', async (c) => {
                 purchasedAt: new Date((session.created || Math.floor(Date.now() / 1000)) * 1000),
               })
               if (refusal.refused) {
-                console.log('[Webhook] Solo Founder prepaid purchase refunded:', { workspaceId, refundId: refusal.refundId })
+                console.log('[Webhook] Solo Founder prepaid purchase refused:', {
+                  workspaceId,
+                  refunded: !!refusal.refundId,
+                  refundId: refusal.refundId,
+                })
                 break
               }
             }

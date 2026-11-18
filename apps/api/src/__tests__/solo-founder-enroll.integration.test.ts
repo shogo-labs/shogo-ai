@@ -10,14 +10,26 @@
  *   bun test apps/api/src/__tests__/solo-founder-enroll.integration.test.ts
  */
 
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, describe, expect, test, mock } from 'bun:test'
 import { rmSync } from 'fs'
 import { seedWorkspace, setupChannelsTestDb, type SeededWorkspace } from './helpers/channels-test-db'
 
 const { dir } = setupChannelsTestDb()
 
+// The refusal mails the owner only when the money actually went back, so the
+// test needs to see the mail. Everything else in the module stays real.
+const realEmailService = await import('../services/email.service')
+const sentEmails: any[] = []
+mock.module('../services/email.service', () => ({
+  ...realEmailService,
+  sendTrialUnavailableEmail: async (params: any) => {
+    sentEmails.push(params)
+    return { success: true }
+  },
+}))
+
 const { prisma } = await import('../lib/prisma')
-const { enroll, getOfferState, refuseIfPrepaidOffer } = await import('../services/solo-founder.service')
+const { enroll, getOfferState, refuseIfPrepaidOffer, PREPAID_REFUSAL_ERRORS } = await import('../services/solo-founder.service')
 const { COURSE_LESSONS, SOLO_FOUNDER_OS_CHANNELS } = await import('../config/solo-founder-course')
 
 const db = prisma as any
@@ -27,7 +39,12 @@ beforeAll(async () => {
   seed = await seedWorkspace(db)
 })
 
+beforeEach(() => {
+  sentEmails.length = 0
+})
+
 afterAll(async () => {
+  mock.module('../services/email.service', () => realEmailService)
   await (prisma as any).$disconnect?.()
   rmSync(dir, { recursive: true, force: true })
 })
@@ -166,10 +183,89 @@ describe('enroll() on SQLite (desktop parity)', () => {
     expect(stripe.calls).toEqual({ retrieve: 1, cancel: 0, refund: 0 })
     expect(await db.courseEnrollment.count({ where: { userId: ws.owner } })).toBe(0)
   })
+
+  // QA round 2: the refusal used to record `prepaid_card` whatever the refund
+  // did, so a refund that never happened was recorded as done, the owner was
+  // told the money was back, and nothing retried it.
+  test('a refund that fails is recorded as owed, not as done, and is not emailed', async () => {
+    const ws = await seedWorkspace(db)
+    const stripe = fakeStripe('prepaid', { refundThrows: true })
+    const out = await refuseIfPrepaidOffer({
+      stripe: stripe as any,
+      workspaceId: ws.workspaceId,
+      userId: ws.owner,
+      subscriptionId: 'sub_refund_fail',
+    })
+
+    expect(out.refused).toBe(true)
+    expect(out.refundId).toBeNull()
+
+    const enrollment = await db.courseEnrollment.findFirst({
+      where: { stripeSubscriptionId: 'sub_refund_fail' },
+    })
+    expect(enrollment.status).toBe('rejected_prepaid')
+    expect(enrollment.installStatus).toBe('failed')
+    expect(enrollment.installError).toBe(PREPAID_REFUSAL_ERRORS.refundFailed)
+    // "We charged your card and refunded it in full" must not be sent when it
+    // is not true.
+    expect(sentEmails).toHaveLength(0)
+  })
+
+  test('a later delivery retries the refund and never cancels twice', async () => {
+    const ws = await seedWorkspace(db)
+    const failing = fakeStripe('prepaid', { refundThrows: true })
+    const args = {
+      workspaceId: ws.workspaceId,
+      userId: ws.owner,
+      subscriptionId: 'sub_refund_retry',
+    }
+
+    const first = await refuseIfPrepaidOffer({ ...args, stripe: failing as any })
+    expect(first.refundId).toBeNull()
+    expect(failing.calls).toEqual({ retrieve: 1, cancel: 1, refund: 1 })
+    expect(sentEmails).toHaveLength(0)
+
+    // The next delivery (the sibling webhook, or the buyer's return trip) finds
+    // the row saying the money did not go back and sends only the refund.
+    const working = fakeStripe('prepaid')
+    const retry = await refuseIfPrepaidOffer({ ...args, stripe: working as any })
+    expect(retry.refused).toBe(true)
+    expect(retry.refundId).toBe('re_test_1')
+    // No second cancel, and no second card read: the subscription is already
+    // cancelled, so its payment method is not the question any more.
+    expect(working.calls).toEqual({ retrieve: 0, cancel: 0, refund: 1 })
+    expect(sentEmails).toHaveLength(1)
+
+    const enrollment = await db.courseEnrollment.findFirst({
+      where: { stripeSubscriptionId: 'sub_refund_retry' },
+    })
+    expect(enrollment.installError).toBe(PREPAID_REFUSAL_ERRORS.refunded)
+    expect(await db.courseEnrollment.count({ where: { stripeSubscriptionId: 'sub_refund_retry' } })).toBe(1)
+  })
+
+  test('two concurrent deliveries cancel, refund and email once', async () => {
+    const ws = await seedWorkspace(db)
+    const stripe = fakeStripe('prepaid')
+    const args = {
+      stripe: stripe as any,
+      workspaceId: ws.workspaceId,
+      userId: ws.owner,
+      subscriptionId: 'sub_refund_race',
+    }
+
+    const [a, b] = await Promise.all([refuseIfPrepaidOffer(args), refuseIfPrepaidOffer(args)])
+    expect(a.refused).toBe(true)
+    expect(b.refused).toBe(true)
+    expect(stripe.calls).toEqual({ retrieve: 1, cancel: 1, refund: 1 })
+    expect(sentEmails).toHaveLength(1)
+  })
 })
 
 /** Just enough Stripe for the prepaid refusal: one card, one invoice, one refund. */
-function fakeStripe(funding: 'prepaid' | 'credit') {
+function fakeStripe(
+  funding: 'prepaid' | 'credit',
+  options: { refundThrows?: boolean; noCharge?: boolean } = {},
+) {
   const calls = { retrieve: 0, cancel: 0, refund: 0 }
   return {
     calls,
@@ -184,11 +280,14 @@ function fakeStripe(funding: 'prepaid' | 'credit') {
       },
     },
     invoices: {
-      list: async () => ({ data: [{ id: 'in_test_1', charge: 'ch_test_1' }] }),
+      list: async () => ({
+        data: [{ id: 'in_test_1', charge: options.noCharge ? null : 'ch_test_1', payment_intent: null }],
+      }),
     },
     refunds: {
       create: async () => {
         calls.refund++
+        if (options.refundThrows) throw new Error('refund declined by issuer')
         return { id: 're_test_1' }
       },
     },

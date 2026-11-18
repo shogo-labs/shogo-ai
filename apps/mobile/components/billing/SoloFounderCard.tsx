@@ -26,7 +26,7 @@ import { api, type SoloFounderState } from '../../lib/api'
 import { checkoutRedirectBase, completeNativeCheckout, redirectToCheckout } from '../../lib/stripe-checkout'
 
 /** The offer is sold through Stripe Checkout, which store billing rules keep off iOS and Android. */
-const WEB_BILLING_URL = 'https://app.shogo.ai/billing?offer=solo-founder'
+const WEB_BILLING_URL = `${process.env.EXPO_PUBLIC_WEB_URL ?? 'https://studio.shogo.ai'}/billing?offer=solo-founder`
 
 /**
  * Turn a checkout failure into something a buyer can act on. The server sends

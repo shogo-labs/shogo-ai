@@ -613,34 +613,88 @@ export async function retryInstallIfNeeded(params: { userId: string; workspaceId
  * not live in only one of them: the subscription event would provision the plan
  * and its allowance before the other had a chance to refuse.
  *
- * Idempotent. A second delivery finds the `rejected_prepaid` enrollment and
- * returns without cancelling or refunding twice.
+ * Two Stripe events for one subscription can also land at the same moment, so
+ * the refusal is single-flight per subscription (as `installEnrollment` is per
+ * enrollment): the second caller joins the first run instead of cancelling,
+ * refunding and emailing a second time.
+ *
+ * Idempotent, but not by short-circuiting on the row alone. A `rejected_prepaid`
+ * row whose `installError` says the refund failed is not "done": Stripe's refund
+ * can fail after the cancel succeeded (the invoice has not settled yet, or
+ * `refunds.create` throws), and that money has to go back. Those rows are
+ * retried as a refund on the next delivery, never re-cancelled.
  */
-export async function refuseIfPrepaidOffer(params: {
+export const PREPAID_REFUSAL_ERRORS = {
+  /** Refused and the money is back on the card. */
+  refunded: 'prepaid_card',
+  /** Refused, and the refund did not happen — a later delivery retries it. */
+  refundFailed: 'refund_failed',
+} as const
+
+type PrepaidRefusal = { refused: boolean; refundId: string | null }
+
+const refusalsInFlight = new Map<string, Promise<PrepaidRefusal>>()
+
+export function refuseIfPrepaidOffer(params: {
   stripe: Stripe
   workspaceId: string
   userId?: string | null
   subscriptionId: string
   purchasedAt?: Date
-}): Promise<{ refused: boolean; refundId: string | null }> {
-  const already = await prisma.courseEnrollment.findFirst({
+}): Promise<PrepaidRefusal> {
+  const running = refusalsInFlight.get(params.subscriptionId)
+  if (running) return running
+  const run = runPrepaidRefusal(params).finally(() => refusalsInFlight.delete(params.subscriptionId))
+  refusalsInFlight.set(params.subscriptionId, run)
+  return run
+}
+
+async function runPrepaidRefusal(params: {
+  stripe: Stripe
+  workspaceId: string
+  userId?: string | null
+  subscriptionId: string
+  purchasedAt?: Date
+}): Promise<PrepaidRefusal> {
+  const existing = await prisma.courseEnrollment.findFirst({
     where: { stripeSubscriptionId: params.subscriptionId, status: 'rejected_prepaid' },
-    select: { id: true },
+    select: { id: true, installError: true },
   })
-  if (already) return { refused: true, refundId: null }
+  const refundOwed = existing?.installError === PREPAID_REFUSAL_ERRORS.refundFailed
+  if (existing && !refundOwed) return { refused: true, refundId: null }
 
-  const card = await readSubscriptionCard(params.stripe, params.subscriptionId)
-  if (card?.funding !== 'prepaid') return { refused: false, refundId: null }
+  // A refund that is owed needs no second card check: the subscription was
+  // cancelled on the first pass, so its payment method is no longer readable.
+  if (!refundOwed) {
+    const card = await readSubscriptionCard(params.stripe, params.subscriptionId)
+    if (card?.funding !== 'prepaid') return { refused: false, refundId: null }
+    console.warn('[SoloFounder] prepaid card refused:', { workspaceId: params.workspaceId, subscriptionId: params.subscriptionId })
+  } else {
+    console.warn('[SoloFounder] retrying the refund for a refused prepaid purchase:', {
+      workspaceId: params.workspaceId,
+      subscriptionId: params.subscriptionId,
+    })
+  }
 
-  console.warn('[SoloFounder] prepaid card refused:', { workspaceId: params.workspaceId, subscriptionId: params.subscriptionId })
   const refusal = await rejectPrepaidPurchase({
     stripe: params.stripe,
     workspaceId: params.workspaceId,
     userId: params.userId ?? null,
     subscriptionId: params.subscriptionId,
     purchasedAt: params.purchasedAt,
+    refundOnly: refundOwed,
   })
-  await notifyPrepaidRefusal(params.workspaceId, params.userId ?? null)
+
+  if (refusal.refunded) {
+    await notifyPrepaidRefusal(params.workspaceId, params.userId ?? null)
+  } else {
+    // Never mail "we refunded it" when the money did not move. The row says so,
+    // so the next delivery (or the buyer's return trip) retries the refund.
+    console.error('[SoloFounder] prepaid refund failed; left unrefunded for a retry:', {
+      workspaceId: params.workspaceId,
+      subscriptionId: params.subscriptionId,
+    })
+  }
   return { refused: true, refundId: refusal.refundId }
 }
 
@@ -682,6 +736,12 @@ async function notifyPrepaidRefusal(workspaceId: string, userId: string | null):
  * refund the first invoice in full (the $99 the buyer was charged a moment ago),
  * then record what happened. Callers skip `syncFromStripe` and the allocation, so
  * the workspace stays Free and nothing is installed.
+ *
+ * `refundOnly` is the retry: the subscription is already cancelled, so it is not
+ * cancelled twice — only the refund that failed is attempted again.
+ *
+ * The recorded `installError` is the record of whether the money came back, not
+ * of the refusal, because only one of those can leave a buyer out of pocket.
  */
 export async function rejectPrepaidPurchase(params: {
   stripe: Pick<Stripe, 'subscriptions' | 'invoices' | 'refunds'>
@@ -689,15 +749,21 @@ export async function rejectPrepaidPurchase(params: {
   userId: string | null
   subscriptionId: string
   purchasedAt?: Date
+  refundOnly?: boolean
 }): Promise<{ refunded: boolean; refundId: string | null }> {
   const purchasedAt = params.purchasedAt ?? new Date()
-  try {
-    await params.stripe.subscriptions.cancel(params.subscriptionId)
-  } catch (err: any) {
-    console.error('[SoloFounder] could not cancel prepaid subscription:', err?.message ?? err)
+  if (!params.refundOnly) {
+    try {
+      await params.stripe.subscriptions.cancel(params.subscriptionId)
+    } catch (err: any) {
+      console.error('[SoloFounder] could not cancel prepaid subscription:', err?.message ?? err)
+    }
   }
 
   const refund = await refundFirstInvoice(params.stripe, params.subscriptionId)
+  const installError = refund
+    ? PREPAID_REFUSAL_ERRORS.refunded
+    : PREPAID_REFUSAL_ERRORS.refundFailed
 
   const ownerUserId = params.userId
     ?? (await prisma.member.findFirst({
@@ -718,13 +784,13 @@ export async function rejectPrepaidPurchase(params: {
         status: 'rejected_prepaid',
         purchasedAt,
         installStatus: 'failed',
-        installError: 'prepaid_card',
+        installError,
       },
       update: {
         status: 'rejected_prepaid',
         stripeSubscriptionId: params.subscriptionId,
         installStatus: 'failed',
-        installError: 'prepaid_card',
+        installError,
       },
     })
   } else {
