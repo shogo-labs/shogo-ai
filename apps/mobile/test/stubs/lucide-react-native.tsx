@@ -118,6 +118,7 @@ export {
   Icon as CloudUpload,
   Icon as Code,
   Icon as Code2,
+  Icon as Calculator,
   Icon as Coins,
   Icon as Compass,
   Icon as Columns2,
