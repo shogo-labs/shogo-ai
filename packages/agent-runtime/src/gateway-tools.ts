@@ -227,6 +227,7 @@ import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { isMemoryFilePath, memoryShrinkGuard, snapshotMemoryFile } from './memory-history'
 import { scanAndFixFile as scanFileForHardcodedPorts, type PortFix, type PortWarning } from './lint-hardcoded-ports'
+import { scanFileForLayoutWarnings, type LayoutWarning } from './lint-layout'
 import { FileStateCache } from './file-state-cache'
 import { enforceImageSizeLimit, MAX_IMAGE_BASE64_BYTES, MAX_VIDEO_INLINE_BYTES } from './image-size-guard'
 import { injectCommitTrailer } from './git-attribution'
@@ -3555,6 +3556,18 @@ async function attachEditDiagnostics(ctx: ToolContext, filePath: string, resolve
   try {
     if (!LINTABLE_EXTENSION_RE.test(filePath)) return
     if (filePath.endsWith('.d.ts') || filePath.endsWith('.pyi')) return
+
+    // Layout warnings do not need the LSP, so they are attached even when it is
+    // still starting (SHO-371 part D).
+    try {
+      const layoutWarnings = scanFileForLayoutWarnings(filePath, readFileSync(resolved, 'utf-8'))
+      if (layoutWarnings.length > 0) {
+        base.layoutWarnings = layoutWarnings.slice(0, 5).map((w) => `Line ${w.line}: ${w.message}`)
+      }
+    } catch {
+      /* best-effort */
+    }
+
     const lsp = ctx.getLspManager?.() ?? ctx.lspManager
     if (!lsp || !lsp.isRunning()) return
 
@@ -14382,7 +14395,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_lints',
     description:
-      'Check files for errors (TypeScript type errors, Python type errors, undefined references, syntax issues) and canvas runtime errors (compile/render failures from the live preview). Returns diagnostics from language servers plus any recent canvas runtime errors. Supports .ts, .tsx, .js, .jsx, and .py files. Use after writing or editing code files to catch mistakes. Omit `path` to auto-lint the files you edited this turn (falls back to all tracked files if you have not edited anything yet).',
+      'Check files for errors (TypeScript type errors, Python type errors, undefined references, syntax issues) and canvas runtime errors (compile/render failures from the live preview). Returns diagnostics from language servers plus any recent canvas runtime errors. Supports .ts, .tsx, .js, .jsx, and .py files. Use after writing or editing code files to catch mistakes. Omit `path` to auto-lint the files you edited this turn (falls back to all tracked files if you have not edited anything yet). Also returns non-fatal `layoutWarnings` for JSX/TSX that will overflow a 390px canvas: a bare `grid-cols-3`+ with no responsive sibling, or a fixed-width sidebar (`w-48`…`w-80`) in a `flex h-screen` shell with no `flex-col md:flex-row`.',
     label: 'Read Lints',
     parameters: Type.Object({
       path: Type.Optional(
@@ -14479,6 +14492,10 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         warnings: PortWarning[]
       }> = []
       const portErrorsByFile = new Map<string, string[]>()
+      // Layout warnings (SHO-371 part D): a bare `grid-cols-3+` or a fixed-width
+      // sidebar in a `flex h-screen` shell. Warnings only — they never make the
+      // result `ok: false`.
+      const layoutWarningsByFile: Array<{ path: string; warnings: LayoutWarning[] }> = []
 
       for (const uri of urisToScan) {
         if (!uri.startsWith('file://')) continue
@@ -14504,6 +14521,10 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         }
 
         const scan = scanFileForHardcodedPorts(relPath, content)
+        const layoutWarnings = scanFileForLayoutWarnings(relPath, content)
+        if (layoutWarnings.length > 0) {
+          layoutWarningsByFile.push({ path: relPath, warnings: layoutWarnings })
+        }
         if (scan.newContent !== undefined) {
           try {
             writeFileSync(absPath, scan.newContent, 'utf-8')
@@ -14535,6 +14556,13 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         ...(portFixesByFile.length > 0 ? { port_fixes: portFixesByFile } : {}),
         ...(portWarningsByFile.length > 0 ? { port_warnings: portWarningsByFile } : {}),
       }
+      const layoutMeta = layoutWarningsByFile.length > 0
+        ? {
+            layoutWarnings: layoutWarningsByFile,
+            layoutHint:
+              'Layout warnings only — nothing is broken. A bare `grid-cols-3+` or a fixed-width sidebar in a `flex h-screen` shell overflows a 390px canvas. Add a breakpoint (`grid-cols-1 sm:grid-cols-3`, `flex flex-col md:flex-row`) or keep `grid-cols-2` if 2-up is intended.',
+          }
+        : {}
       const fixesHint =
         portFixesByFile.length > 0
           ? (() => {
@@ -14549,6 +14577,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
             ok: false,
             ...scopeMeta,
             ...portMeta,
+            ...layoutMeta,
             runtimeErrors,
             hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.',
             causeBreakdown: { runtime: runtimeErrors.length },
@@ -14558,6 +14587,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
           ok: true,
           ...scopeMeta,
           ...portMeta,
+          ...layoutMeta,
           ...(fixesHint ? { hint: fixesHint } : {}),
           message: filePath
             ? `No errors in ${filePath}`
@@ -14637,6 +14667,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
             ok: false,
             ...scopeMeta,
             ...portMeta,
+            ...layoutMeta,
             runtimeErrors,
             hint: 'Canvas runtime errors detected. Check your canvas code for the issues above.',
             causeBreakdown: { runtime: runtimeErrors.length },
@@ -14646,6 +14677,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
           ok: true,
           ...scopeMeta,
           ...portMeta,
+          ...layoutMeta,
           ...(fixesHint ? { hint: fixesHint } : {}),
           message: filePath
             ? `No errors in ${filePath}`
@@ -14664,6 +14696,7 @@ function createReadLintsTool(ctx: ToolContext): AgentTool {
         ok: allOk,
         ...scopeMeta,
         ...portMeta,
+        ...layoutMeta,
         files,
         ...(Object.keys(causeCounts).length > 0 ? { causeBreakdown: causeCounts } : {}),
         ...(runtimeErrors ? { runtimeErrors } : {}),

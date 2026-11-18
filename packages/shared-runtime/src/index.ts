@@ -171,6 +171,9 @@ export {
 
 export {
   isShogoRuntimeState,
+  isShogoStatePath,
+  isShogoRuntimeSubtree,
+  SHOGO_RUNTIME_SUBTREES,
   toPosixPath,
   directorySizeBytes,
   resolveGitDir,
@@ -179,7 +182,9 @@ export {
   isRepairInProgress,
   acquireRepairLock,
   buildShogoExcludeBlock,
+  buildShogoGitHubExcludeBlock,
   ensureShogoExcludes,
+  ensureShogoGitHubExcludes,
   untrackShogoStatePaths,
   prepareCheckpointRepo,
   stripShogoLfsRules,
@@ -187,6 +192,9 @@ export {
   SHOGO_EXCLUDE_HEADER,
   SHOGO_EXCLUDE_FOOTER,
   SHOGO_EXCLUDE_LINES,
+  SHOGO_GITHUB_EXCLUDE_HEADER,
+  SHOGO_GITHUB_EXCLUDE_FOOTER,
+  SHOGO_GITHUB_EXCLUDE_LINES,
   type UntrackResult,
 } from './shogo-state-paths'
 
