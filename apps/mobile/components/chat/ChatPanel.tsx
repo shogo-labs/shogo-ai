@@ -201,6 +201,7 @@ import {
   shouldUploadAttachmentFirst,
   type OutgoingFilePart,
 } from "../../lib/chat-attachment-upload"
+import { decideContentSizeChange } from "../../lib/chat-scroll-follow"
 import { releasePreviewUrl } from "../../lib/composer-attachments"
 import { transcriptKeyboardDismissMode } from "../../lib/composer-keyboard-dismiss"
 import { usePlatformConfig } from "../../lib/platform-config"
@@ -1519,6 +1520,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const stickToBottomRef = useRef(true)
   const isLoadingOlderRef = useRef(false)
   const contentHeightBeforeLoadRef = useRef(0)
+  /**
+   * False until the transcript's first layout for the current session has
+   * finished. A resumed chat mounts its whole turn window at once, so that
+   * first layout is the only one that has to land at the true bottom; every
+   * later height change is real growth and follows normally (SHO-407).
+   */
+  const initialLayoutSettledRef = useRef(false)
   const prevDisplayLengthRef = useRef(0)
   /** Web only: debounce timer for near-top load-older (see LOAD_OLDER_WEB_DEBOUNCE_MS). */
   const loadOlderWebDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -1567,14 +1575,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const pendingScrollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastScrollTimeRef = useRef(0)
   const SCROLL_THROTTLE_MS = 300
-  /**
-   * Minimum positive `onContentSizeChange` delta that triggers an
-   * auto-follow on native. Filters out spring-jitter (≤3px) and
-   * contractions (negative delta, e.g. a thinking widget closing) so
-   * the parent ScrollView only chases real new content. See the long
-   * comment at the call site (~line 4220).
-   */
-  const AUTOSCROLL_MIN_DELTA_PX = 4
   /** Duration of the programmatic-scroll guard window (ms). Must comfortably
    * exceed the time between a scrollTo* call and the resulting onScroll event. */
   const PROGRAMMATIC_SCROLL_GUARD_MS = 250
@@ -6985,6 +6985,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
     stickToBottomRef.current = true
     setIsFollowing(true)
     prevDisplayLengthRef.current = 0
+    initialLayoutSettledRef.current = false
+    contentHeightBeforeLoadRef.current = 0
   }, [currentSessionId])
 
   useEffect(() => {
@@ -8697,6 +8699,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       name: p.name ?? p.filename ?? "file",
       type: p.mediaType ?? extractMediaType(p.url),
       ...(typeof p.savedPath === "string" ? { savedPath: p.savedPath } : {}),
+      ...(typeof p.width === "number" ? { width: p.width } : {}),
+      ...(typeof p.height === "number" ? { height: p.height } : {}),
+      ...(typeof p.previewUrl === "string" ? { previewUrl: p.previewUrl } : {}),
     }))
     const files: FileAttachment[] | undefined =
       cachedFiles && cachedFiles.length > 0
@@ -9069,6 +9074,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
               name: p.name ?? p.filename ?? "file",
               type: p.mediaType ?? extractMediaType(p.url),
               ...(typeof p.savedPath === "string" ? { savedPath: p.savedPath } : {}),
+              ...(typeof p.width === "number" ? { width: p.width } : {}),
+              ...(typeof p.height === "number" ? { height: p.height } : {}),
+              ...(typeof p.previewUrl === "string" ? { previewUrl: p.previewUrl } : {}),
             }))
           : undefined
       if (!content && !files) return
@@ -10445,40 +10453,50 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   }}
                   onContentSizeChange={(_w, h) => {
                     setHasScrollableTranscript(h > messagesAreaHeight + 1)
-                    if (isLoadingOlderRef.current) {
-                      const delta = h - contentHeightBeforeLoadRef.current
-                      if (delta > 0 && contentHeightBeforeLoadRef.current > 0) {
+                    const wasLoadingOlder = isLoadingOlderRef.current
+                    const action = decideContentSizeChange({
+                      initialLayoutSettled: initialLayoutSettledRef.current,
+                      isLoadingOlder: isLoadingOlderRef.current,
+                      isNative,
+                      stickToBottom: stickToBottomRef.current,
+                      previousHeight: contentHeightBeforeLoadRef.current,
+                      nextHeight: h,
+                    })
+                    if (action.kind === "settle-initial-layout") {
+                      // The first layout of a chat is the whole turn window
+                      // mounting at once. Land at the true bottom in one
+                      // non-animated jump: the follow path would animate down
+                      // through every intermediate height, which is the
+                      // "pulled down several times" jump on resume (SHO-407).
+                      initialLayoutSettledRef.current = true
+                      if (action.scrollToEnd && shouldFollowBottom()) {
                         markProgrammaticScroll()
-                        scrollViewRef.current?.scrollTo({
-                          y: delta,
-                          animated: false,
-                        })
+                        scrollViewRef.current?.scrollToEnd({ animated: false })
                       }
+                    } else if (action.kind === "anchor-load-older") {
+                      markProgrammaticScroll()
+                      scrollViewRef.current?.scrollTo({
+                        y: action.delta,
+                        animated: false,
+                      })
+                    } else if (action.kind === "follow-growth") {
+                      // Only real growth follows. The height springs inside
+                      // ThinkingWidget / CollapsibleToolGroup fire
+                      // onContentSizeChange continuously during their 500ms
+                      // re-target (and on widget close, the chat *contracts*),
+                      // and an image that resized after loading used to do the
+                      // same — every one of those queued a fresh
+                      // throttledScrollToEnd.
+                      setTimeout(() => throttledScrollToEnd(), 200)
+                    }
+                    if (wasLoadingOlder) {
                       // Reset after a frame so the scroll offset takes effect
-                      // before onScroll can re-trigger loading
+                      // before onScroll can re-trigger loading. This runs even
+                      // when the page did not grow, or the flag would stay set
+                      // and the next "load earlier" would never anchor.
                       requestAnimationFrame(() => {
                         isLoadingOlderRef.current = false
                       })
-                    } else if (
-                      isNative &&
-                      stickToBottomRef.current &&
-                      contentHeightBeforeLoadRef.current > 0
-                    ) {
-                      // Only follow real growth. The height springs inside
-                      // ThinkingWidget / CollapsibleToolGroup fire
-                      // onContentSizeChange continuously during their 500ms
-                      // re-target (and on widget close, the chat *contracts*).
-                      // Without this gate every spring frame queued a fresh
-                      // throttledScrollToEnd, which was the "the whole screen
-                      // scrolls" symptom that accompanied widgets animating
-                      // open/closed. AUTOSCROLL_MIN_DELTA_PX is set just
-                      // above sub-pixel jitter (≤3px) but well below a single
-                      // line of new text (~16-20px) or a fresh tool widget
-                      // appearing, so token streaming still follows.
-                      const delta = h - contentHeightBeforeLoadRef.current
-                      if (delta >= AUTOSCROLL_MIN_DELTA_PX) {
-                        setTimeout(() => throttledScrollToEnd(), 200)
-                      }
                     }
                     contentHeightBeforeLoadRef.current = h
                   }}

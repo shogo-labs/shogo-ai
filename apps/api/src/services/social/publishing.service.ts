@@ -13,6 +13,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { prisma } from '../../lib/prisma'
 import { CREATE_POST_TIMEOUT_MS, SocialError, getSocialClient } from './client'
+import { inAccountScope } from './accounts.service'
 import { ensureProfile } from './profiles.service'
 import { zernioId } from './provider-ids'
 import { assertSocialBudget, meterXPost, projectedPublishRawUsd } from './usage.service'
@@ -219,13 +220,25 @@ export function postIdempotencyKey(
   return createHash('sha256').update(canonical).digest('hex')
 }
 
-async function loadAccounts(workspaceId: string, accountIds: string[]) {
-  const accounts = await db.socialAccount.findMany({
+async function loadAccounts(workspaceId: string, accountIds: string[], projectId?: string | null) {
+  const rows = await db.socialAccount.findMany({
     where: { workspaceId, id: { in: accountIds } },
   })
+  const accounts = rows.filter((account: any) => inAccountScope(account, projectId))
   const found = new Map(accounts.map((account: any) => [account.id, account]))
   const missing = accountIds.filter((id) => !found.has(id))
   if (missing.length) {
+    // An id that exists in the workspace but not in this caller's scope is a
+    // different failure from a typo: the account is real, it just belongs to
+    // another project.
+    const elsewhere = rows.some((account: any) => missing.includes(account.id))
+    if (elsewhere) {
+      throw new SocialError(
+        403,
+        'account_out_of_scope',
+        'That account belongs to another project in this workspace.',
+      )
+    }
     throw new SocialError(400, 'unknown_account', `Unknown account(s): ${missing.join(', ')}`)
   }
   const inactive = accounts.filter((account: any) => !account.isActive)
@@ -370,7 +383,12 @@ async function findRecentDuplicate(
   return null
 }
 
-export async function createPost(workspaceId: string, workspaceName: string, input: CreatePostInput) {
+export async function createPost(
+  workspaceId: string,
+  workspaceName: string,
+  input: CreatePostInput,
+  projectId?: string | null,
+) {
   const content = typeof input.content === 'string' ? input.content.trim() : ''
   const mediaUrls = stringList(input.mediaUrls, 'mediaUrls')
   const tags = stringList(input.tags, 'tags')
@@ -392,7 +410,7 @@ export async function createPost(workspaceId: string, workspaceName: string, inp
   }
 
   const variants = input.variants && typeof input.variants === 'object' ? input.variants : {}
-  const accounts = accountIds.length ? await loadAccounts(workspaceId, accountIds) : []
+  const accounts = accountIds.length ? await loadAccounts(workspaceId, accountIds, projectId) : []
   const audio = parseAudioConfiguration(input.audio)
 
   // Instagram and TikTok have no text-only post. Refusing here costs nothing;

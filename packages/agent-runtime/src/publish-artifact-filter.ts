@@ -11,6 +11,8 @@
  * `bun install`, and it let `.env` files (real secrets) ride into the image.
  */
 
+import { isShogoRuntimeSubtree } from '@shogo/shared-runtime/shogo-state-paths'
+
 /** Root-relative paths that never belong in the image. */
 const SKIP_AT_ROOT = new Set(['node_modules', '.git', '.shogo', 'dist', '.tmp'])
 
@@ -51,6 +53,9 @@ export function createPublishedArtifactFilter(
     const rel = src.slice(prefix.length)
     if (!rel) return true
     if (SKIP_SUFFIX.test(rel)) return false
+    // Shogo's own runtime state, at any depth, from the shared predicate
+    // (SHO-371) — a nested `.shogo/` or `.shogo-cwd-*` must not reach the image.
+    if (isShogoRuntimeSubtree(rel)) return false
 
     const segments = rel.split(/[\\/]/).filter(Boolean)
     if (segments.length === 0) return true

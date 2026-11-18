@@ -44,6 +44,7 @@ import { isMetalEnabled } from '../lib/metal-eligibility'
 import { projectPreviewUrl } from '../lib/project-preview-url'
 import { rememberPreviewRegion } from '../lib/cloudflare-preview-region-kv'
 import { REMOTE_IMPORT_MAX_BASE64_CHARS, remoteToolPermission } from '../lib/remote-tool-policy'
+import { TRANSFER_MAX_ARCHIVE_BYTES } from '@shogo/shared-runtime/project-transfer-limits'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { getWorkspaceKind } from '../services/workspace.service'
 import { getRuntimeManager } from '../lib/runtime/manager'
@@ -3616,7 +3617,8 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ error: { code: 'bad_request', message: 'archive (base64 tar.gz) is required' } }, 400)
     }
     if (body.archive.length > REMOTE_IMPORT_MAX_BASE64_CHARS) {
-      return c.json({ error: { code: 'too_large', message: 'The archive exceeds the 25 MB transfer limit.' } }, 413)
+      const limitMb = Math.round(TRANSFER_MAX_ARCHIVE_BYTES / 1024 / 1024)
+      return c.json({ error: { code: 'too_large', message: `The archive exceeds the ${limitMb} MB transfer limit.` } }, 413)
     }
     if (body.dest !== undefined && typeof body.dest !== 'string') {
       return c.json({ error: { code: 'bad_request', message: 'dest must be a string' } }, 400)

@@ -22,6 +22,11 @@ mock.module('../lib/authz', () => ({
   getAccess: async () => ({ permissions, exists: true }),
   principalOf: () => ({ userId: currentUserId, via: 'session' }),
   can: async (_c: any, permission: string, scope: any) => {
+    // The route's admin gate reads the permission set directly; the per-row
+    // `project:update` checks are what `canCalls` records.
+    if (permission === 'workspace.analytics:read') {
+      return permissions.has('workspace.analytics:read')
+    }
     canCalls.push({ permission, projectId: scope?.projectId })
     return canResult
   },
@@ -138,30 +143,16 @@ describe('GET /workspaces/:id/analytics/heartbeats', () => {
     expect(getWorkspaceHeartbeats.mock.calls[1][1].period).toBe('24h')
   })
 
-  test('a member is narrowed to their own projects and only gets rows they may edit', async () => {
+  test('a member is refused: workspace analytics are admin-only', async () => {
     currentUserId = 'user_1'
     permissions = new Set(['workspace:read'])
-    canResult = false
 
     const { status, body } = await get(path())
 
-    expect(status).toBe(200)
-    // Same rule as `member-usage`: the report is scoped, not workspace-wide.
-    expect(getWorkspaceHeartbeats.mock.calls[0][1].projectWhere).toBe(MEMBER_PROJECT_WHERE)
-    expect(passedProjectWhere).toBe(MEMBER_PROJECT_WHERE)
-    // A viewer still sees the rows, but no "Turn off" action.
-    expect(body.data.agents.map((a: any) => a.canEdit)).toEqual([false, false])
-    expect(canCalls.map((call) => call.permission)).toEqual(['project:update', 'project:update'])
-    expect(canCalls.map((call) => call.projectId)).toEqual(['p_1', 'p_2'])
-  })
-
-  test('a member who can edit their project gets the action on that row only', async () => {
-    currentUserId = 'user_1'
-    permissions = new Set(['workspace:read'])
-    canResult = true
-
-    const { body } = await get(path())
-    expect(body.data.agents.map((a: any) => a.canEdit)).toEqual([true, true])
+    expect(status).toBe(403)
+    expect(body.error.code).toBe('analytics_admin_only')
+    expect(getWorkspaceHeartbeats).not.toHaveBeenCalled()
+    expect(canCalls).toHaveLength(0)
   })
 
   test('a non-member is refused and the report is never built', async () => {
@@ -170,7 +161,7 @@ describe('GET /workspaces/:id/analytics/heartbeats', () => {
 
     const { status, body } = await get(path())
     expect(status).toBe(403)
-    expect(body.error.code).toBe('forbidden')
+    expect(body.error.code).toBe('analytics_admin_only')
     expect(getWorkspaceHeartbeats).not.toHaveBeenCalled()
   })
 

@@ -18,6 +18,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test"
 import { fireEvent, render, screen } from "@testing-library/react"
 import { createElement } from "react"
 import { createReactNativeMock } from "../../../../test/react-native-mock"
+import * as lucideStub from "../../../../test/stubs/lucide-react-native"
 
 mock.module("react-native", () =>
   createReactNativeMock({
@@ -44,7 +45,12 @@ mock.module("@shogo/shared-ui/primitives", () => ({
 
 mock.module("lucide-react-native", () => {
   const Icon = (name: string) => () => createElement("span", { "data-icon": name })
-  return Object.fromEntries(
+  return {
+    // Every icon the app imports must resolve, not just the ones this test
+    // asserts on: `lib/settings-tabs.ts` is in the AccountMenu import graph and
+    // a hand-enumerated list breaks the whole file the moment it gains an icon.
+    ...lucideStub,
+    ...Object.fromEntries(
     [
       "Check",
       "ChevronDown",
@@ -81,7 +87,8 @@ mock.module("lucide-react-native", () => {
       "Sun",
       "User",
     ].map((name) => [name, Icon(name)]),
-  )
+    ),
+  }
 })
 
 /** The popover renders its content inline so a test can reach the workspace list. */

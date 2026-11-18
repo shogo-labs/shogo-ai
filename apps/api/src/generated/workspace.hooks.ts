@@ -20,6 +20,14 @@ const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 6)
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
 /**
+ * Fields only a dedicated route may write. `runtimeDiskGiB` is plan-limited
+ * (and may be billed), so it goes through PUT /api/workspaces/:id/disk, which
+ * validates the workspace role and the ceiling (SHO-401). `diskAddonBilledThrough`
+ * is the billing job's watermark and must never be set by a client.
+ */
+const ROUTE_ONLY_FIELDS = ['runtimeDiskGiB', 'diskAddonBilledThrough'] as const
+
+/**
  * Validate a request to create a "child" workspace under `parentWorkspaceId`.
  *
  * Child workspaces are free and pool the parent's plan/wallet/seats. They are
@@ -334,6 +342,11 @@ export const workspaceHooks: WorkspaceHooks = {
           message: "trainingDataMode must be default, enabled, or disabled",
         },
       }
+    }
+
+    // Route-only fields: only PUT /api/workspaces/:id/disk may write these.
+    for (const field of ROUTE_ONLY_FIELDS) {
+      if (input[field] !== undefined) delete input[field]
     }
 
     return { ok: true }

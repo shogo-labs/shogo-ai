@@ -5,7 +5,7 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { chatAttachmentRoutes } from '../chat-attachment-routes'
+import { chatAttachmentRoutes, normalizeAttachmentSubdir } from '../chat-attachment-routes'
 
 async function withWorkspace<T>(fn: (workspaceDir: string) => Promise<T>): Promise<T> {
   const workspaceDir = mkdtempSync(join(tmpdir(), 'shogo-chat-attachment-test-'))
@@ -23,8 +23,12 @@ function upload(
   name: string | undefined,
   body: BodyInit | null,
   headers: Record<string, string> = {},
+  dir?: string,
 ) {
-  const query = name === undefined ? '' : `?name=${encodeURIComponent(name)}`
+  const params: string[] = []
+  if (name !== undefined) params.push(`name=${encodeURIComponent(name)}`)
+  if (dir !== undefined) params.push(`dir=${encodeURIComponent(dir)}`)
+  const query = params.length > 0 ? `?${params.join('&')}` : ''
   return app.request(`/agent/chat/attachments${query}`, {
     method: 'PUT',
     body,
@@ -179,5 +183,51 @@ describe('PUT /agent/chat/attachments', () => {
       expect(res.status).toBe(200)
       expect(seen).toEqual(['files/doc.md'])
     })
+  })
+
+  test('routes a preview into the subfolder the client asked for', async () => {
+    await withWorkspace(async (workspaceDir) => {
+      const app = chatAttachmentRoutes({ workspaceDir, ...silent })
+      const res = await upload(app, 'a-preview.jpg', 'jpegbytes', { 'content-type': 'image/jpeg' }, '.previews')
+
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { savedPath: string }
+      expect(body.savedPath).toBe('.previews/a-preview.jpg')
+      expect(readFileSync(join(workspaceDir, '.previews', 'a-preview.jpg'), 'utf-8')).toBe('jpegbytes')
+      // The user's file list stays clean.
+      expect(existsSync(join(workspaceDir, 'files', 'a-preview.jpg'))).toBe(false)
+    })
+  })
+
+  test('refuses a subfolder that is not a plain relative path', async () => {
+    await withWorkspace(async (workspaceDir) => {
+      const app = chatAttachmentRoutes({ workspaceDir, ...silent })
+
+      for (const dir of ['../escape', '/etc', 'a/../../b', 'a\\b']) {
+        const res = await upload(app, 'a-preview.jpg', 'jpegbytes', { 'content-type': 'image/jpeg' }, dir)
+        expect(res.status).toBe(400)
+        const body = (await res.json()) as { error: { code: string } }
+        expect(body.error.code).toBe('attachment_dir_invalid')
+      }
+      expect(existsSync(join(workspaceDir, 'a-preview.jpg'))).toBe(false)
+    })
+  })
+})
+
+describe('normalizeAttachmentSubdir', () => {
+  test('accepts a plain relative folder', () => {
+    expect(normalizeAttachmentSubdir('.previews')).toBe('.previews')
+    expect(normalizeAttachmentSubdir('a/b')).toBe('a/b')
+    expect(normalizeAttachmentSubdir('a//b/')).toBe('a/b')
+  })
+
+  test('rejects anything that could escape the workspace', () => {
+    expect(normalizeAttachmentSubdir(undefined)).toBeNull()
+    expect(normalizeAttachmentSubdir('')).toBeNull()
+    expect(normalizeAttachmentSubdir('/abs')).toBeNull()
+    expect(normalizeAttachmentSubdir('../up')).toBeNull()
+    expect(normalizeAttachmentSubdir('a/../b')).toBeNull()
+    expect(normalizeAttachmentSubdir('a\\b')).toBeNull()
+    expect(normalizeAttachmentSubdir('./')).toBeNull()
   })
 })

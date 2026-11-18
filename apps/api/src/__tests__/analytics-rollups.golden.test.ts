@@ -229,8 +229,9 @@ describe('getQualityTimeseries', () => {
     const series = await analytics.getQualityTimeseries({ workspaceId }, '30d')
     const byDate = new Map(series.map((point) => [point.date, point]))
 
-    // 50 of 100 input tokens were cached on each active day.
-    expect(byDate.get(dayKey(dayB))!.cacheHitRatio).toBeCloseTo(50 / 150, 6)
+    // 50 of 150 prompt tokens were cached on each active day, reported as a
+    // percentage (0-100) like the other rates in this point — not a fraction.
+    expect(byDate.get(dayKey(dayB))!.cacheHitRatio).toBeCloseTo((100 * 50) / 150, 6)
     // Three events on dayB (two of them), spend 1.0 over 2 messages.
     expect(byDate.get(dayKey(dayB))!.costPerMessage).toBeCloseTo(1 / 2, 6)
     // Two distinct active members on dayB.

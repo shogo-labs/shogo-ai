@@ -770,17 +770,29 @@ export interface PublishedEnvironmentMetrics {
   projectionUsd: number
 }
 
-/** `GET/PUT /api/projects/:id/disk` (SHO-349). */
+/** `GET/PUT /api/projects/:id/disk` and `/api/workspaces/:id/disk` (SHO-349, SHO-401). */
 export interface ProjectDiskState {
   /** What the project asked for; null = never set (fleet default). */
   requestedGiB: number | null
-  /** The size in force, clamped to the tier ceiling. */
+  /** The size in force, clamped to the ceiling. */
   effectiveGiB: number
   defaultGiB: number
-  /** Largest size this workspace's tier may ask for. */
+  /** GiB this tier includes before the paid add-on. */
+  includedGiB: number
+  /** Largest size this workspace may ask for (200 when it can buy the add-on). */
   maxGiB: number
+  /** GiB above the tier's included amount — the part that is billed. */
+  addonGiB: number
+  /** USD per GiB-month for the add-on. */
+  pricePerGiBMonthUsd: number
+  /** Monthly price of the current add-on GiB. */
+  addonMonthlyUsd: number
   canIncrease: boolean
-  reason?: string
+  reason?: 'plan_ceiling' | 'plan_required'
+  /** True when this workspace may buy disk above what its tier includes. */
+  canBuyAddon: boolean
+  /** Why not, when `canBuyAddon` is false. */
+  buyBlockedReason?: 'plan_required' | 'usage_limit_reached'
   /** Live usage from the guest; null while the project isn't running. */
   usage: { usedBytes: number; totalBytes: number; measuredAt: string } | null
   substrate: 'metal' | 'knative' | 'local'
@@ -1470,6 +1482,21 @@ export const api = {
   async updateProjectDisk(http: HttpClient, projectId: string, sizeGiB: number) {
     const res = await http.put<ProjectDiskState & { growError?: string }>(
       `/api/projects/${projectId}/disk`,
+      { sizeGiB },
+    )
+    return res.data
+  },
+
+  /** Workspace-runtime drive size + live usage (SHO-401, Settings → Workspace → Disk). */
+  async getWorkspaceDisk(http: HttpClient, workspaceId: string) {
+    const res = await http.get<ProjectDiskState>(`/api/workspaces/${workspaceId}/disk`)
+    return res.data
+  },
+
+  /** Ask for a bigger workspace-runtime drive. Errors carry the server's message. */
+  async updateWorkspaceDisk(http: HttpClient, workspaceId: string, sizeGiB: number) {
+    const res = await http.put<ProjectDiskState & { growError?: string }>(
+      `/api/workspaces/${workspaceId}/disk`,
       { sizeGiB },
     )
     return res.data

@@ -17,6 +17,7 @@
  */
 
 import { prisma } from '../../lib/prisma'
+import { scopedAccountIds } from './accounts.service'
 import { socialUsageSummary, type SocialUsageSummary } from './usage.service'
 
 const db = prisma as any
@@ -82,6 +83,7 @@ function groupTally(
 export async function socialAnalytics(
   workspaceId: string,
   opts: { from: Date; to: Date },
+  projectId?: string | null,
 ): Promise<SocialAnalytics> {
   const from = opts.from
   const to = opts.to
@@ -94,36 +96,50 @@ export async function socialAnalytics(
 
   const inRange = { gte: from, lte: to }
 
+  // A project's agent sees the numbers for the accounts it may use; the
+  // workspace agent and the Social page see the whole workspace. Everything
+  // that hangs off an account is filtered by its id, and a post is counted when
+  // one of its targets is in scope.
+  const accountIds = await scopedAccountIds(workspaceId, projectId)
+  const accountFilter = accountIds === null ? {} : { accountId: { in: accountIds } }
+  const postFilter = accountIds === null ? {} : { targets: { some: { accountId: { in: accountIds } } } }
+  // Messages and automation runs hang off a conversation / an automation rather
+  // than carrying an account id, so they need the relation to be scoped too —
+  // otherwise a project's dashboard counts every other project's DMs and runs.
+  const messageFilter =
+    accountIds === null ? {} : { conversation: { accountId: { in: accountIds } } }
+  const runFilter = accountIds === null ? {} : { automation: { accountId: { in: accountIds } } }
+
   const [postGroups, targetGroups, commentGroups, conversations, unreadAgg, incoming, outgoing, accountGroups] =
     await Promise.all([
       db.socialPost.groupBy({
         by: ['status'],
-        where: { workspaceId, createdAt: inRange },
+        where: { workspaceId, createdAt: inRange, ...postFilter },
         _count: { _all: true },
       }),
       db.socialPostTarget.groupBy({
         by: ['platform', 'status'],
-        where: { post: { workspaceId, createdAt: inRange } },
+        where: { post: { workspaceId, createdAt: inRange }, ...accountFilter },
         _count: { _all: true },
       }),
       db.socialComment.groupBy({
         by: ['status'],
-        where: { workspaceId, occurredAt: inRange },
+        where: { workspaceId, occurredAt: inRange, ...accountFilter },
         _count: { _all: true },
       }),
-      db.socialConversation.count({ where: { workspaceId } }),
-      db.socialConversation.aggregate({ where: { workspaceId }, _sum: { unreadCount: true } }),
-      db.socialMessage.count({ where: { workspaceId, direction: 'incoming', sentAt: inRange } }),
-      db.socialMessage.count({ where: { workspaceId, direction: 'outgoing', sentAt: inRange } }),
+      db.socialConversation.count({ where: { workspaceId, ...accountFilter } }),
+      db.socialConversation.aggregate({ where: { workspaceId, ...accountFilter }, _sum: { unreadCount: true } }),
+      db.socialMessage.count({ where: { workspaceId, direction: 'incoming', sentAt: inRange, ...messageFilter } }),
+      db.socialMessage.count({ where: { workspaceId, direction: 'outgoing', sentAt: inRange, ...messageFilter } }),
       db.socialAccount.groupBy({
         by: ['platform', 'isActive'],
-        where: { workspaceId },
+        where: { workspaceId, ...(accountIds === null ? {} : { id: { in: accountIds } }) },
         _count: { _all: true },
       }),
     ])
 
   const unreadThreads = await db.socialConversation.count({
-    where: { workspaceId, unreadCount: { gt: 0 } },
+    where: { workspaceId, unreadCount: { gt: 0 }, ...accountFilter },
   })
 
   const postStatus = groupTally(postGroups, 'status')
@@ -153,16 +169,21 @@ export async function socialAnalytics(
     }
   }
   const needsReconnect = await db.socialAccount.count({
-    where: { workspaceId, isActive: true, needsReconnect: true },
+    where: {
+      workspaceId,
+      isActive: true,
+      needsReconnect: true,
+      ...(accountIds === null ? {} : { id: { in: accountIds } }),
+    },
   })
 
   // Automation runs are counted from one row per provider execution, so the
   // window is a real range question rather than a lifetime counter.
   const [automationRuns, failedRuns, automationsActive, automationsPaused] = await Promise.all([
-    db.socialAutomationRun.count({ where: { workspaceId, startedAt: inRange } }),
-    db.socialAutomationRun.count({ where: { workspaceId, startedAt: inRange, status: 'failed' } }),
-    db.socialAutomation.count({ where: { workspaceId, status: 'active' } }),
-    db.socialAutomation.count({ where: { workspaceId, status: 'paused' } }),
+    db.socialAutomationRun.count({ where: { workspaceId, startedAt: inRange, ...runFilter } }),
+    db.socialAutomationRun.count({ where: { workspaceId, startedAt: inRange, status: 'failed', ...runFilter } }),
+    db.socialAutomation.count({ where: { workspaceId, status: 'active', ...accountFilter } }),
+    db.socialAutomation.count({ where: { workspaceId, status: 'paused', ...accountFilter } }),
   ])
 
   return {

@@ -52,6 +52,7 @@ import { usePlatformConfig } from '../../lib/platform-config'
 import { useIsNativePhoneLayout } from '../../lib/native-phone-layout'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { usePermissions } from '../../hooks/usePermissions'
 import { useConversationList, useMentionables, useMyUserId } from '../../hooks/useTeamChat'
 import { conversationTitle, isSelfDm, teamChatApi, type ConversationSummary } from '../../lib/team-chat-api'
 
@@ -171,6 +172,8 @@ export const CommandPalette = observer(function CommandPalette({
   const isNativePhone = useIsNativePhoneLayout()
   const projects = useProjectCollection()
   const { localMode, features } = usePlatformConfig()
+  const workspace = useActiveWorkspace()
+  const { can } = usePermissions({ workspaceId: workspace?.id })
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const inputRef = useRef<TextInput>(null)
@@ -260,7 +263,7 @@ export const CommandPalette = observer(function CommandPalette({
         category: 'settings',
         keywords: ['members', 'team', 'invite'],
       },
-      !localMode && {
+      !localMode && can('workspace.analytics:read') && {
         id: 'settings-analytics',
         label: 'Workspace Analytics',
         description: 'View usage metrics and spend',
@@ -287,7 +290,7 @@ export const CommandPalette = observer(function CommandPalette({
     }
 
     return items
-  }, [projects?.all, localMode, features.marketplace, isNativePhone])
+  }, [projects?.all, localMode, features.marketplace, isNativePhone, can])
 
   const chatCommands = useChatCommands(query, visible)
 

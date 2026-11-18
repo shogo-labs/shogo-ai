@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import {
+  TRANSFER_MAX_ARCHIVE_BASE64_CHARS,
   TRANSFER_MAX_ARCHIVE_BYTES,
   TransferError,
   executeRemoteImport,
@@ -92,6 +93,11 @@ afterEach(() => {
 })
 
 describe('packPaths + importArchive', () => {
+  test('the archive cap is 100 MB and its base64 form follows it (SHO-410)', () => {
+    expect(TRANSFER_MAX_ARCHIVE_BYTES).toBe(100 * 1024 * 1024)
+    expect(TRANSFER_MAX_ARCHIVE_BASE64_CHARS).toBe(Math.ceil((TRANSFER_MAX_ARCHIVE_BYTES * 4) / 3) + 4)
+  })
+
   test('round-trips binary files and nested folders, cp -r style, with a sha256 manifest', async () => {
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x10, 0x00])
     mkdirSync(join(src, 'site/public/cab2/img'), { recursive: true })
@@ -201,8 +207,15 @@ describe('packPaths + importArchive', () => {
     await expectTransferError(importArchive(dst, { archive: 'aGk=', dest: '/etc' }), 400, 'bad_request')
     await expectTransferError(importArchive(dst, { archive: 'aGk=', dest: '../elsewhere' }), 400, 'outside_root')
     await expectTransferError(importArchive(dst, { archive: Buffer.from('not a tarball').toString('base64') }), 400, 'bad_archive')
-    const huge = 'A'.repeat(Math.ceil((TRANSFER_MAX_ARCHIVE_BYTES * 4) / 3) + 8)
+    const huge = 'A'.repeat(TRANSFER_MAX_ARCHIVE_BASE64_CHARS + 8)
     await expectTransferError(importArchive(dst, { archive: huge }), 413, 'too_large')
+    // Between the old 25 MB cap and the new one: past the size check, refused
+    // only because the bytes are not a tarball (SHO-410). Non-zero bytes, since
+    // a run of zeros is a valid empty tar.
+    const betweenCaps = Buffer.alloc(26 * 1024 * 1024, 0x41).toString('base64')
+    expect(betweenCaps.length).toBeGreaterThan(Math.ceil((25 * 1024 * 1024 * 4) / 3) + 4)
+    expect(betweenCaps.length).toBeLessThan(TRANSFER_MAX_ARCHIVE_BASE64_CHARS)
+    await expectTransferError(importArchive(dst, { archive: betweenCaps }), 400, 'bad_archive')
   })
 
   test('a read-only target root refuses the import', async () => {

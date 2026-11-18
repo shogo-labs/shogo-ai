@@ -37,37 +37,53 @@ afterAll(() => {
   if (existsSync(ROOT)) rmSync(ROOT, { recursive: true, force: true })
 })
 
-describe('skill-server getter chain', () => {
+describe('api-server getter chain', () => {
   test('returns the configured port even when API server has not booted', () => {
     const ws = makeWs('skill-port')
     const gw = new AgentGateway(ws, 'p1')
-    const port = gw.getSkillServerPort()
+    const port = gw.getApiServerPort()
     expect(port === null || typeof port === 'number').toBe(true)
   })
   test('returns the current phase string', () => {
     const ws = makeWs('skill-phase')
     const gw = new AgentGateway(ws, 'p1')
-    expect(typeof gw.getSkillServerPhase()).toBe('string')
+    expect(typeof gw.getApiServerPhase()).toBe('string')
   })
-  test('getActiveRoutes returns an array', () => {
+  test('getActiveRoutes returns an array', async () => {
     const ws = makeWs('skill-routes')
     const gw = new AgentGateway(ws, 'p1')
-    expect(Array.isArray(gw.getSkillServerActiveRoutes())).toBe(true)
+    expect(Array.isArray(await gw.getApiServerActiveRoutes())).toBe(true)
   })
   test('getSchemaModels returns an array', () => {
     const ws = makeWs('skill-models')
     const gw = new AgentGateway(ws, 'p1')
-    expect(Array.isArray(gw.getSkillServerSchemaModels())).toBe(true)
+    expect(Array.isArray(gw.getApiServerSchemaModels())).toBe(true)
   })
-  test('attachApiServer stashes the PreviewManager on this.previewManager and delegates to skillServerManager', () => {
+  test('attachApiServer stashes the PreviewManager and the ApiServerHost', () => {
     const ws = makeWs('skill-attach')
     const gw = new AgentGateway(ws, 'p1')
-    let attached: any = null
-    ;(gw as any).skillServerManager.attach = (pm: any) => { attached = pm }
+    const fakePm = { depsReady: Promise.resolve(true), apiServerPhase: 'healthy' } as any
+    const otherPm = { apiServerPhase: 'idle' } as any
+    const host = { resolve: (ref?: string) => (ref ? otherPm : fakePm), all: () => [fakePm] }
+    gw.attachApiServer(fakePm, host)
+    expect((gw as any).previewManager).toBe(fakePm)
+    expect(gw.resolveApiServerTarget()).toBe(fakePm)
+    // A named project resolves through the host — that is what makes a tool
+    // editing a mounted project's file act on that project.
+    expect(gw.resolveApiServerTarget('other')).toBe(otherPm)
+  })
+  test('resolveApiServerTarget falls back to the anchor without a host', () => {
+    const ws = makeWs('skill-attach-anchor')
+    const gw = new AgentGateway(ws, 'p1')
     const fakePm = { depsReady: Promise.resolve(true) } as any
     gw.attachApiServer(fakePm)
-    expect(attached).toBe(fakePm)
-    expect((gw as any).previewManager).toBe(fakePm)
+    expect(gw.resolveApiServerTarget()).toBe(fakePm)
+    expect(gw.resolveApiServerTarget('other')).toBe(fakePm)
+  })
+  test('resolveApiServerTarget throws instead of guessing when nothing is attached', () => {
+    const ws = makeWs('skill-attach-none')
+    const gw = new AgentGateway(ws, 'p1')
+    expect(() => gw.resolveApiServerTarget()).toThrow('API server provider not attached')
   })
 })
 

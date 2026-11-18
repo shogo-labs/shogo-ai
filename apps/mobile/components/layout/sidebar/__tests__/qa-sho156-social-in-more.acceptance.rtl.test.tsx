@@ -59,6 +59,9 @@ mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
 mock.module(resolve(import.meta.dir, "../../../../hooks/useActiveWorkspace"), () => ({
   useActiveWorkspace: () => ({ id: "ws-1" }),
 }))
+mock.module(resolve(import.meta.dir, "../../../../hooks/usePermissions"), () => ({
+  usePermissions: () => ({ can: (p: string) => p === "workspace.analytics:read" }),
+}))
 mock.module(resolve(import.meta.dir, "../../../team-chat/TeamChatSidebarProvider"), () => ({
   useTeamChatNav: () => ({ enabled: false, list: [], counts: {} }),
 }))

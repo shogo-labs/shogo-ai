@@ -11,7 +11,7 @@ import React, {
   type ReactNode,
 } from "react"
 import { useWindowDimensions } from "react-native"
-import { Streamdown, defaultUrlTransform } from "streamdown"
+import { Streamdown, defaultRehypePlugins, defaultUrlTransform } from "streamdown"
 import "streamdown/styles.css"
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext"
 import { usePhoneLayoutOverride } from "../../lib/native-phone-layout"
@@ -60,6 +60,31 @@ export interface MarkdownTextProps {
 }
 
 const linkSafetyOff = { enabled: false as const }
+
+type RehypePlugins = NonNullable<React.ComponentProps<typeof Streamdown>["rehypePlugins"]>
+
+/**
+ * Streamdown's own rehype chain, with the hardener's block policy set to
+ * `text-only` (SHO-413).
+ *
+ * `rehype-harden` defaults to `"indicator"`, which replaces a link it refuses
+ * to open with `<span title="Blocked URL: …">text [blocked]</span>` and a
+ * refused image with `[Image blocked: …]`. Chat should never show either: a
+ * refused link renders as its own text and stays non-clickable, and a refused
+ * image renders as its alt text. Every other plugin and option is Streamdown's
+ * default, so `javascript:`/`data:`/`file:` are still neutralised. Built once
+ * at module scope so the memoised parser sees a stable list.
+ */
+const rehypePlugins: RehypePlugins = Object.entries(defaultRehypePlugins).map(
+  ([name, plugin]) => {
+    if (name !== "harden" || !Array.isArray(plugin)) return plugin
+    const [harden, options] = plugin as [unknown, Record<string, unknown>]
+    return [
+      harden,
+      { ...options, linkBlockPolicy: "text-only", imageBlockPolicy: "text-only" },
+    ] as unknown as RehypePlugins[number]
+  },
+)
 
 /**
  * The file index reaches the links through context, not through the
@@ -285,6 +310,7 @@ export const MarkdownText = memo(
           linkSafety={linkSafetyOff}
           controls={false}
           components={components}
+          rehypePlugins={rehypePlugins}
           urlTransform={(url, key, node) =>
             url.startsWith(FILE_HREF_PREFIX) ||
             url.startsWith(IMAGE_SRC_PREFIX) ||

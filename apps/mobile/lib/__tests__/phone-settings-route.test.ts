@@ -66,6 +66,18 @@ describe('phoneSettingsTarget', () => {
     })
   })
 
+  test('a member has no analytics surface, so those links land on the Account home', () => {
+    const options = { ...CLOUD_ANDROID, canViewAnalytics: false }
+    expect(phoneSettingsTarget({ tab: 'analytics' }, options)).toEqual({
+      pathname: '/(app)/account',
+      params: {},
+    })
+    expect(phoneSettingsTarget({ tab: 'costs', workspace: 'w1' }, options)).toEqual({
+      pathname: '/(app)/account',
+      params: { workspace: 'w1' },
+    })
+  })
+
   test('unavailable tabs degrade to the Workspace tab, never a blank sheet', () => {
     for (const tab of ['updates', 'computer-files', 'bogus-tab']) {
       expect(phoneSettingsTarget({ tab }, CLOUD_ANDROID).params.tab).toBe(

@@ -17,7 +17,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { SessionManager } from '../session-manager'
 import { SqliteSessionPersistence } from '../sqlite-session-persistence'
-import { parseHistorySeed } from '../history-seed'
+import { parseHistorySeed, seedEmptySessionFromHistory } from '../history-seed'
 import type { AssistantMessage, UserMessage } from '@mariozechner/pi-ai'
 
 const CANARY = 'canary-overnight-context-9f3c'
@@ -257,5 +257,92 @@ describe('the guarantee cannot be undone by one careless call', () => {
     const source = read('../gateway.ts')
     const body = functionBody(source, 'async processChatMessageStream(')
     expect(body).toContain('await this.sessionManager.getOrCreateAsync(sessionId)')
+  })
+})
+
+/**
+ * SHO-402: an app send now posts only the new message, so `historySeed` is the
+ * normal path for a cold or evicted runtime — not just for server-initiated
+ * wakes. These pin both halves of that contract: an empty session is restored,
+ * a warm one is left alone.
+ */
+describe('a one-message turn seeds an empty session and never a warm one', () => {
+  function fakeSession(initial: { messages?: number; summary?: string | null } = {}) {
+    const state = {
+      messages: initial.messages ?? 0,
+      summary: initial.summary ?? null,
+      appended: [] as string[],
+    }
+    const session = {
+      messageCount: () => state.messages,
+      appendSeed: (messages: { role: string; text: string }[]) => {
+        // A real append only lands on an empty session; the guard is here too,
+        // so a double seed would show up as duplicate turns rather than a pass.
+        if (state.messages > 0) return 0
+        state.appended.push(...messages.map((m) => m.text))
+        state.messages += messages.length
+        return messages.length
+      },
+      currentSummary: () => state.summary,
+      setSummary: (value: string) => {
+        state.summary = value
+      },
+    }
+    return { state, session }
+  }
+
+  const seed = parseHistorySeed({
+    summary: 'Earlier: the user asked about the parser.',
+    messages: [
+      { role: 'user', text: 'what did I ask you two messages ago?' },
+      { role: 'assistant', text: 'You asked about the parser.' },
+    ],
+  })!
+
+  test('an empty session gets the conversation back before the turn runs', () => {
+    const { state, session } = fakeSession()
+    const result = seedEmptySessionFromHistory(seed, session)
+    expect(result).toEqual({ restored: 2, summary: true })
+    expect(state.appended).toEqual([
+      'what did I ask you two messages ago?',
+      'You asked about the parser.',
+    ])
+    expect(state.messages).toBe(2)
+    expect(state.summary).toContain('the parser')
+  })
+
+  test('a warm session is not seeded a second time', () => {
+    // Two turns already ran in this runtime: seeding again would replay them.
+    const { state, session } = fakeSession({ messages: 4, summary: 'runtime copy' })
+    const result = seedEmptySessionFromHistory(seed, session)
+    expect(result).toEqual({ restored: 0, summary: false })
+    expect(state.messages).toBe(4)
+    expect(state.appended).toEqual([])
+    // …and the runtime's own summary is never overwritten from the seed.
+    expect(state.summary).toBe('runtime copy')
+  })
+
+  test('the durable summary wins only when it covers more', () => {
+    const shorter = fakeSession({ summary: 'So far: the parser.' })
+    seedEmptySessionFromHistory(seed, shorter.session)
+    expect(shorter.state.summary).toContain('the user asked about the parser')
+
+    const longer = fakeSession({
+      summary: 'A much longer runtime account of everything that happened in this chat, folded already.',
+    })
+    seedEmptySessionFromHistory(seed, longer.session)
+    expect(longer.state.summary).toContain('A much longer runtime account')
+  })
+
+  test('a turn with no seed is unaffected', () => {
+    const { state, session } = fakeSession()
+    expect(seedEmptySessionFromHistory(null, session)).toEqual({ restored: 0, summary: false })
+    expect(state.messages).toBe(0)
+  })
+
+  test('the chat route routes every one-message turn through the seed', () => {
+    const source = require('fs').readFileSync(join(import.meta.dir, '../server.ts'), 'utf8') as string
+    expect(source).toContain('seedEmptySessionFromHistory(seed')
+    expect(source).toContain('if (allMessages.length <= 1)')
   })
 })

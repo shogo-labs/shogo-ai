@@ -534,6 +534,20 @@ export const projectHooks: ProjectHooks = {
         console.warn(`[project.afterDelete] substrate teardown for ${id} failed:`, err?.message ?? err)
       }
     }
+    // A connected social account outlives the project that connected it: the
+    // Zernio account still exists and the workspace still pays for it, so the
+    // row is kept and becomes workspace-shared (`projectId = null`) instead of
+    // being deleted or left pointing at a project that no longer exists. Runs
+    // after the row is gone, so a failed delete never un-scopes anything.
+    try {
+      const { prisma } = await import('../lib/prisma')
+      await prisma.socialAccount.updateMany({
+        where: { projectId: id },
+        data: { projectId: null },
+      })
+    } catch (err: any) {
+      console.warn(`[project.afterDelete] social account un-scoping for ${id} failed:`, err?.message ?? err)
+    }
     // Task logs live outside the project tree, on host-backed storage
     // (`<workspacesDir>/.shogo-state/<projectId>`, written by
     // packages/agent-runtime/src/task-log-durability.ts). Nothing can restore

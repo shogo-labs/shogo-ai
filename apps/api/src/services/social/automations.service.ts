@@ -28,6 +28,7 @@
 
 import { prisma } from '../../lib/prisma'
 import { SocialError, getSocialClient } from './client'
+import { inAccountScope, scopedAccountIds } from './accounts.service'
 import { ensureProfile, workspaceName } from './profiles.service'
 import { zernioId } from './provider-ids'
 
@@ -325,13 +326,15 @@ function providerStatus(payload: any): string | null {
 export async function createAutomation(
   workspaceId: string,
   input: CreateAutomationInput,
+  projectId?: string | null,
 ): Promise<any> {
   const accountId = optionalText(input.accountId)
   if (!accountId) throw invalid('accountId is required: an automation runs on one account.')
   const name = optionalText(input.name)
   if (!name) throw invalid('name is required.')
 
-  const account = await db.socialAccount.findFirst({ where: { id: accountId, workspaceId } })
+  const candidate = await db.socialAccount.findFirst({ where: { workspaceId, id: accountId } })
+  const account = candidate && inAccountScope(candidate, projectId) ? candidate : null
   if (!account) throw new SocialError(404, 'account_not_found', 'Account not found')
   if (!account.isActive) {
     throw new SocialError(409, 'account_inactive', 'Reconnect that account before automating it.')
@@ -450,11 +453,25 @@ export async function storeAutomation(args: {
   })
 }
 
+/**
+ * Restrict an automation query to the accounts a caller may use. An automation
+ * runs on one account, so a project's agent must not see or touch another
+ * project's.
+ */
+async function automationScope(
+  workspaceId: string,
+  projectId?: string | null,
+): Promise<Record<string, unknown>> {
+  const ids = await scopedAccountIds(workspaceId, projectId)
+  return ids === null ? {} : { accountId: { in: ids } }
+}
+
 export async function listAutomations(
   workspaceId: string,
   opts: { status?: string | null; kind?: string | null; limit?: number } = {},
+  projectId?: string | null,
 ): Promise<Record<string, unknown>[]> {
-  const where: Record<string, unknown> = { workspaceId }
+  const where: Record<string, unknown> = { workspaceId, ...(await automationScope(workspaceId, projectId)) }
   if (opts.status) where.status = opts.status
   if (opts.kind) where.kind = opts.kind
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200)
@@ -466,8 +483,14 @@ export async function listAutomations(
   return rows.map(presentAutomation)
 }
 
-export async function getAutomation(workspaceId: string, automationId: string): Promise<any> {
-  const row = await db.socialAutomation.findFirst({ where: { id: automationId, workspaceId } })
+export async function getAutomation(
+  workspaceId: string,
+  automationId: string,
+  projectId?: string | null,
+): Promise<any> {
+  const row = await db.socialAutomation.findFirst({
+    where: { id: automationId, workspaceId, ...(await automationScope(workspaceId, projectId)) },
+  })
   if (!row) throw new SocialError(404, 'automation_not_found', 'Automation not found')
   const runs = await db.socialAutomationRun.findMany({
     where: { automationId: row.id },
@@ -494,12 +517,15 @@ export async function setAutomationStatus(
   workspaceId: string,
   automationId: string,
   rawStatus: unknown,
+  projectId?: string | null,
 ): Promise<any> {
   const status = typeof rawStatus === 'string' ? rawStatus.trim().toLowerCase() : ''
   if (status !== 'active' && status !== 'paused') {
     throw invalid('status must be active or paused')
   }
-  const row = await db.socialAutomation.findFirst({ where: { id: automationId, workspaceId } })
+  const row = await db.socialAutomation.findFirst({
+    where: { id: automationId, workspaceId, ...(await automationScope(workspaceId, projectId)) },
+  })
   if (!row) throw new SocialError(404, 'automation_not_found', 'Automation not found')
   if (!row.zernioResourceId) {
     throw new SocialError(409, 'automation_unlinked', 'That automation has no provider id to update.')
@@ -526,8 +552,14 @@ export async function setAutomationStatus(
 }
 
 /** Delete at the provider first: an automation left running keeps sending DMs. */
-export async function deleteAutomation(workspaceId: string, automationId: string): Promise<void> {
-  const row = await db.socialAutomation.findFirst({ where: { id: automationId, workspaceId } })
+export async function deleteAutomation(
+  workspaceId: string,
+  automationId: string,
+  projectId?: string | null,
+): Promise<void> {
+  const row = await db.socialAutomation.findFirst({
+    where: { id: automationId, workspaceId, ...(await automationScope(workspaceId, projectId)) },
+  })
   if (!row) throw new SocialError(404, 'automation_not_found', 'Automation not found')
   if (row.zernioResourceId) {
     const path =

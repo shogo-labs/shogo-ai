@@ -182,6 +182,40 @@ describe('Server Generator', () => {
     })
   })
 
+  describe('runtime introspection (SHO-403)', () => {
+    const output = generateServer({ customRoutesPath: './custom-routes' })
+
+    it('mounts /__shogo/health and /__shogo/routes outside the API base path', () => {
+      expect(output).toContain("app.get('/__shogo/health'")
+      expect(output).toContain("app.get('/__shogo/routes'")
+      expect(output).not.toContain("app.get('/api/__shogo")
+    })
+
+    it('lists the real Hono route table, de-duplicated, at request time', () => {
+      expect(output).toContain('for (const route of app.routes)')
+      expect(output).toContain('if (seen.has(key)) continue')
+      expect(output).toContain('routes.push({ method, path: route.path })')
+      // Its own endpoints are not part of the app's route table.
+      expect(output).toContain("if (route.path.startsWith('/__shogo')) continue")
+      // Only the API surface: `/health` and the SPA catch-all are real routes
+      // but not API routes, and the runtime reports this list as `/api/<path>`.
+      expect(output).toContain("if (!route.path.startsWith('/api'.replace(/\\/$/, '') + '/')) continue")
+    })
+
+    it('registers them only after custom routes so custom routes are listed', () => {
+      const customIdx = output.indexOf("app.route('/api', customRoutes)")
+      const routesIdx = output.indexOf("app.get('/__shogo/routes'")
+      expect(customIdx).toBeGreaterThan(-1)
+      expect(routesIdx).toBeGreaterThan(customIdx)
+    })
+
+    it('registers them BEFORE the static catch-all so it cannot swallow them', () => {
+      const healthIdx = output.indexOf("app.get('/__shogo/health'")
+      const staticIdx = output.indexOf("app.get('*', serveStatic")
+      expect(staticIdx).toBeGreaterThan(healthIdx)
+    })
+  })
+
   describe('tools disabled', () => {
     const output = generateServer({ tools: false })
 
