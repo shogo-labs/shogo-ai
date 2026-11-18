@@ -11,6 +11,9 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import type { AuthClient } from './client'
 import { signupFetchOptions } from './signup-device-id'
+import { EmailNotVerifiedError, shouldReportAuthError, toAuthRequestError } from './auth-error'
+
+export { EmailNotVerifiedError } from './auth-error'
 
 export interface AuthUser {
   id: string
@@ -22,13 +25,6 @@ export interface AuthUser {
 
 export interface SignUpResult {
   requiresVerification: boolean
-}
-
-export class EmailNotVerifiedError extends Error {
-  constructor(message = 'Email is not verified') {
-    super(message)
-    this.name = 'EmailNotVerifiedError'
-  }
 }
 
 export interface AuthContextValue {
@@ -159,14 +155,18 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError }: A
         if (err.status === 403) {
           throw new EmailNotVerifiedError(err.message || 'Email is not verified')
         }
-        throw new Error(err.message || 'Sign in failed')
+        throw toAuthRequestError(err, 'Sign in failed')
       }
       if (data?.user) setUser(data.user as AuthUser)
     } catch (e: any) {
       if (e instanceof EmailNotVerifiedError) throw e
       const msg = e.message || 'Sign in failed'
       setError(msg)
-      onAuthError?.(e, { provider: 'email', stage: 'sign_in' })
+      // A wrong password (401) or any other expected rejection is the API
+      // working as designed — only faults and network failures reach Sentry.
+      if (shouldReportAuthError(e)) {
+        onAuthError?.(e, { provider: 'email', stage: 'sign_in' })
+      }
       throw e
     } finally {
       setIsLoading(false)
@@ -189,7 +189,7 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError }: A
         name, email, password,
         callbackURL,
       }, signupFetchOptions())
-      if (err) throw new Error(err.message || 'Sign up failed')
+      if (err) throw toAuthRequestError(err, 'Sign up failed')
       const hasSession = !!(data as any)?.session || !!(data as any)?.token
       if (hasSession && data?.user) {
         setUser(data.user as AuthUser)
@@ -198,7 +198,11 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError }: A
     } catch (e: any) {
       const msg = e.message || 'Sign up failed'
       setError(msg)
-      onAuthError?.(e, { provider: 'email', stage: 'sign_up' })
+      // A blocked throwaway domain (422 SIGNUP_BLOCKED) or an existing account
+      // is an expected answer the form shows — not something to report.
+      if (shouldReportAuthError(e)) {
+        onAuthError?.(e, { provider: 'email', stage: 'sign_up' })
+      }
       throw e
     } finally {
       setIsLoading(false)
