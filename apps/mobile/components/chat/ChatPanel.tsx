@@ -114,6 +114,12 @@ import {
   useSDKHttpOptional,
 } from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
+import {
+  refusalIsFor,
+  refusedSendFor,
+  withoutRefusedSend,
+  type RefusedSend,
+} from "./session-refusal"
 import { resolveHistoryPaint, resolveLiveTurnAttach } from "./history-paint"
 import { mergeTranscriptRows, sortTranscriptRows } from "./transcript-merge"
 import { assistantRowsAtSend, findTurnReplyRow, shouldPaintReconciledHistory } from "./reconcile-reply-row"
@@ -2603,6 +2609,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // alone; a changing callback identity would tear down `useChat`'s transport
   // mid-chat.
   const reauthorizeChatRef = useRef<Reauthorize>(async () => false)
+  // What the last refresh actually established, kept for the refused-session
+  // report: a second `getSession()` would answer from the 120 s cookie cache
+  // (apps/api/src/auth.ts) and could claim "signed in" right after a refusal —
+  // the one fact that separates a genuine expiry from a credential the device
+  // never had (SHO-431). Reset for every send in `deliverMessage`.
+  const sessionRefreshRef = useRef<{ ok: boolean } | null>(null)
+  // The send the API refused, recorded by `onError` because the SDK resolves a
+  // refused send instead of throwing it (see session-refusal.ts).
+  const refusedSendRef = useRef<RefusedSend | null>(null)
   const reauthorizeChat = useCallback(async (): Promise<boolean> => {
     // A direct-to-runtime request carries no platform session to refresh: a
     // 401 there is the runtime's own token, not the person's sign-in.
@@ -2611,9 +2626,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       const { data } = await authClient.getSession({
         query: { disableCookieCache: true },
       })
-      return Boolean(data?.user)
+      const ok = Boolean(data?.user)
+      sessionRefreshRef.current = { ok }
+      return ok
     } catch (err) {
       console.warn("[ChatPanel] session refresh after a 401 failed:", err)
+      sessionRefreshRef.current = { ok: false }
       return false
     }
   }, [localAgentUrl])
@@ -2718,14 +2736,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // under its own fingerprint — keeping it out of the generic stream-error
       // issue is what lets that issue's rate actually fall (SHO-431).
       if (isChatUnauthorizedError(err)) {
+        // Recorded before anything is awaited: this callback is where the SDK
+        // delivers a refused send (it resolves the send itself, see
+        // session-refusal.ts), and the send path reads this back to put the
+        // person's text in the composer. `setSessionExpired` alone was not
+        // enough — with no throw to catch, the restore never ran (QA round 1).
+        refusedSendRef.current = refusedSendFor(pendingClientTurnIdRef.current)
         setSessionExpired(true)
-        let sessionAfterRefresh = false
-        try {
-          const { data } = await authClient.getSession()
-          sessionAfterRefresh = Boolean(data?.user)
-        } catch {
-          sessionAfterRefresh = false
-        }
         Sentry.captureException(err, {
           level: "warning",
           tags: {
@@ -2735,9 +2752,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
           },
           extra: {
             // The one fact that separates a real expiry from a credential that
-            // never reached the device: after the refused send, does the client
-            // still hold a session the API will honour?
-            sessionAfterRefresh,
+            // never reached the device: after the one refresh the transport
+            // made, does this client hold a session the API will honour? Read
+            // from that refresh's authoritative answer, not a cached one.
+            sessionAfterRefresh: sessionRefreshRef.current?.ok ?? false,
             lastSeq: turnLastSeqRef.current,
           },
           fingerprint: ["chat_session_expired"],
@@ -7179,13 +7197,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // (`setOptimisticUserInput`) that already ran before this is called. The
   // user row itself is written by the chat route, idempotently on the
   // message id, so a retried POST cannot duplicate it (SHO-274).
-  // Non-network failures (usage limit, 5xx, etc. — the server DID respond)
-  // still propagate normally so the existing error banner handles them.
   //
-  // A refused session is the exception: it is reported to the caller instead of
-  // thrown. `handleInputSubmit` does not await this, so a throw would surface
-  // only as an unhandled rejection carrying the raw error envelope — which is
-  // exactly what filled Sentry (SHO-431).
+  // Almost nothing the request can do reaches the `catch`: `Chat.sendMessage`
+  // reports a transport failure to `onError`, sets the status to "error" (which
+  // is what paints the banner) and resolves. The catch only sees a failure
+  // raised before the request is on the wire.
+  //
+  // A refused session is the case that needed more than a banner: it is
+  // detected from what `onError` recorded, not from a throw, and the text is
+  // handed back through the return value so the caller can put it in the
+  // composer. `handleInputSubmit` does not await this, so a throw here would
+  // only have produced an unhandled rejection carrying the raw error envelope —
+  // which is exactly what filled Sentry (SHO-431).
   const deliverMessage = useCallback(
     async (
       messagePayload: {
@@ -7206,14 +7229,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
           : undefined
       pendingClientTurnIdRef.current = clientTurnId
       joinedStreamRef.current = false
+      // Both describe THIS request: the refresh the transport may ask for, and
+      // the refusal `onError` may report. Nothing from an earlier send carries
+      // over.
+      sessionRefreshRef.current = null
+      refusedSendRef.current = null
       try {
         await sendMessage(messagePayload, { body: bodyExtra })
+        // A refused send got here by resolving too, so ask what `onError` saw.
+        // The turn id keeps a refusal that landed after the person moved on
+        // from restoring this send's text.
+        if (refusalIsFor(refusedSendRef.current, clientTurnId)) {
+          return { sessionExpired: true }
+        }
       } catch (err) {
         if (!isClientNetworkFailure(err)) {
-          // The transport already refreshed the session and replayed the
-          // request once (resume-replay-transport.ts), so a refusal here means
-          // the person really is signed out. Say so, and hand the caller the
-          // text to put back in the composer.
+          // A 401 does not come through here any more (the SDK reports it to
+          // `onError` above). Kept as the guard for an SDK that starts
+          // rethrowing again: report it the same way rather than letting the
+          // envelope reach the person.
           if (isChatUnauthorizedError(err)) {
             console.warn("[ChatPanel] Send refused — the session is gone:", err)
             setSessionExpired(true)
@@ -7507,6 +7541,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
           // message they already typed (SHO-431). The original `trimmedContent`
           // is restored, not `messagePayload.text`, which may carry injected
           // workspace context (`enrichMessage`).
+          //
+          // The bubble goes with it: `sendMessage` appended the message before
+          // the request went out, and with the text back in the composer a
+          // bubble for a message that was never sent is the same message twice
+          // (and cannot survive the next history paint anyway).
+          clearOptimisticEcho(trimmedContent)
+          setMessages((current) => withoutRefusedSend(current))
           setRestoreDraftRequest({
             nonce: Date.now(),
             content: trimmedContent,
@@ -7544,6 +7585,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       maybeAutoNameSession,
       releaseStopSnapshot,
       showOptimisticEcho,
+      clearOptimisticEcho,
+      setMessages,
       sessionMessages,
     ],
   )
@@ -7623,7 +7666,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
         if (outcome?.sessionExpired) {
           // Same rule as a first attempt: the refusal cost the person their
           // message, so put the queued text back where they can re-send it
-          // after signing in (SHO-431).
+          // after signing in (SHO-431) — and drop the bubble the redelivery
+          // pushed, so the text exists in one place only.
+          clearOptimisticEcho(nextMessage.content)
+          setMessages((current) => withoutRefusedSend(current))
           setRestoreDraftRequest({
             nonce: Date.now(),
             content: nextMessage.content,
@@ -7656,6 +7702,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
     currentSessionId,
     editingQueuedId,
     messageQueue,
+    clearOptimisticEcho,
+    setMessages,
   ])
 
   // Process queue when streaming completes

@@ -61,9 +61,11 @@ export const ERROR_CODE_MESSAGES: Record<string, string> = {
   // Same refusal as `session_expired`, but raised by the API's auth gate with
   // the code it actually sends. Native has no page to refresh, so the copy
   // asks for a sign-in, and it is the exact string `ChatPanel` renders for a
-  // send refused mid-conversation (SHO-431).
+  // send refused mid-conversation (SHO-431). It promises the message is kept
+  // because the panel puts it back in the composer — say so only if that
+  // restore actually ran.
   unauthorized:
-    'Your session has expired. Sign in again to continue — your message is saved.',
+    'Your session has expired. Sign in again to continue — we kept your message.',
   internal_error: 'Something went wrong on our end. Please try again.',
   shutting_down: 'A server update is in progress. Please retry in a few seconds.',
   offline: 'Your machine is offline. Reconnect it, or continue in the cloud.',

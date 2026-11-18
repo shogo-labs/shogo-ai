@@ -86,4 +86,12 @@ describe('session-refused copy', () => {
     expect(rendered).not.toContain('{')
     expect(rendered).not.toContain('unauthorized')
   })
+
+  it('promises only what the panel can actually keep — the message', () => {
+    // QA round 1 on SHO-431: the copy claimed the message "is saved" while the
+    // restore it depends on never ran. It now says the message was kept, which
+    // is what putting it back in the composer means.
+    expect(CHAT_SESSION_EXPIRED_MESSAGE).toContain('kept your message')
+    expect(CHAT_SESSION_EXPIRED_MESSAGE).not.toContain('saved')
+  })
 })
