@@ -27,12 +27,23 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { api, signIn, teamWorkspaceId } from "./team-nav-seed"
 
+/** `MessageList`'s `JUMP_OFFSET`: the jump-to-latest pill mounts past this. */
+const JUMP_OFFSET = 800
+
 /**
- * Enough messages that the transcript is taller than a 720px pane by more than
- * `MessageList`'s `JUMP_OFFSET` (800px): the jump-to-latest pill only appears
- * once the reader is that far from the newest message.
+ * Enough messages — each several paragraphs tall — that a 720px pane can be
+ * scrolled more than `JUMP_OFFSET` away from the newest message. Count alone is
+ * not enough: one-line rows leave less than 800px of scroll on a 720px pane, so
+ * the pill never mounts and the assertion fails for want of content.
  */
 const MESSAGES = 40
+
+const seedText = (i: number) =>
+  [
+    `overlay message ${i} of ${MESSAGES} for ${suffix}`,
+    `Second paragraph of seeded message ${i}.`,
+    `Third paragraph keeps row ${i} tall enough to scroll past the jump offset.`,
+  ].join("\n\n")
 
 let seeder: Page
 let workspaceId: string
@@ -102,7 +113,7 @@ test.describe("SHO-439: the wide transcript runs under the composer", () => {
 
     for (let i = 1; i <= MESSAGES; i += 1) {
       await api(seeder, "POST", `/api/conversations/${channelId}/messages`, {
-        text: `overlay message ${i} of ${MESSAGES} for ${suffix}`,
+        text: seedText(i),
       })
     }
     newest = `newest over the composer ${suffix}`
@@ -141,9 +152,21 @@ test.describe("SHO-439: the wide transcript runs under the composer", () => {
     )
 
     const composer = page.getByLabel("Message", { exact: true }).last()
+    // The list settles at the newest message a tick after the first paint, so
+    // measure until its position stops moving rather than on the first frame.
+    await expect
+      .poll(
+        async () => {
+          const composerTop = await composer.evaluate((element) => element.getBoundingClientRect().top)
+          const newestBottom = await newestMessage(page).evaluate((element) => element.getBoundingClientRect().bottom)
+          return newestBottom < composerTop - 2
+        },
+        { timeout: 15_000, message: "the newest message settles above the composer" },
+      )
+      .toBe(true)
+
     const composerTop = await composer.evaluate((element) => element.getBoundingClientRect().top)
     const newestBottom = await newestMessage(page).evaluate((element) => element.getBoundingClientRect().bottom)
-    expect(newestBottom, "the newest message is not hidden behind the composer").toBeLessThan(composerTop - 2)
     // It sits just above the footer, where it did before — no bigger gap.
     expect(newestBottom, "the newest message sits just above the composer").toBeGreaterThan(composerTop - 140)
   })
@@ -192,16 +215,26 @@ test.describe("SHO-439: the wide transcript runs under the composer", () => {
 
     // Away from the newest message, so the jump pill is up — and it has to sit
     // above the composer, not on it (`bottom: insets.bottom + 12`). The pill
-    // only mounts past `JUMP_OFFSET` (800px), so wheel until it does rather
-    // than guess a total.
+    // only mounts past `JUMP_OFFSET`, so wheel until it does, and report how far
+    // the list actually got when it doesn't: that is what says whether the
+    // seeded thread was too short.
     const pill = page.getByLabel("Jump to latest message")
     let raised = await pill.isVisible().catch(() => false)
-    for (let i = 0; i < 8 && !raised; i += 1) {
+    let box = (await transcript(newestMessage(page)))!
+    for (let i = 0; i < 14 && !raised && box.scrollTop < box.scrollHeight - box.clientHeight - 1; i += 1) {
       await page.mouse.wheel(0, -400)
-      await page.waitForTimeout(150)
+      await page.waitForTimeout(120)
+      box = (await transcript(newestMessage(page)))!
       raised = await pill.isVisible().catch(() => false)
     }
-    expect(raised, "scrolling away from the newest message raises the jump pill").toBe(true)
+    raised ||= await pill
+      .waitFor({ state: "visible", timeout: 3_000 })
+      .then(() => true)
+      .catch(() => false)
+    expect(
+      raised,
+      `scrolling away from the newest message raises the jump pill (scrollTop ${box.scrollTop} of ${box.scrollHeight - box.clientHeight}, needs > ${JUMP_OFFSET})`,
+    ).toBe(true)
     const pillBox = await pill.boundingBox()
     const inputTop = await page
       .getByLabel("Message", { exact: true })
