@@ -14,6 +14,7 @@
  */
 import { expect, test, type Page } from "@playwright/test"
 import { api, teamWorkspaceId } from "./team-nav-seed"
+import { writeActiveWorkspaceSelection } from "./helpers"
 
 const WIDE = { width: 1440, height: 900 }
 const PHONE = { width: 390, height: 844 }
@@ -48,10 +49,9 @@ async function useTeamWorkspace(page: Page): Promise<string> {
     .first()
     .waitFor({ state: "visible", timeout: 60_000 })
   const teamId = await teamWorkspaceId(page)
-  await page.evaluate((id) => {
-    localStorage.setItem("shogo:active-workspace-id", id)
-    localStorage.setItem("shogo:active-workspace-kind", "team")
-  }, teamId)
+  // Both stores: this tab has already booted, so its own `sessionStorage`
+  // selection is what the app reads and the shared default alone moves nothing.
+  await page.evaluate(writeActiveWorkspaceSelection, [teamId, "team"] as const)
   return teamId
 }
 
@@ -112,10 +112,7 @@ test.describe("Chat preferences are Settings → Chat", () => {
     }, process.env.E2E_API_URL || "http://localhost:8002")
     test.skip(!personalId, "local stack has no personal workspace")
 
-    await page.evaluate((id) => {
-      localStorage.setItem("shogo:active-workspace-id", id as string)
-      localStorage.setItem("shogo:active-workspace-kind", "personal")
-    }, personalId)
+    await page.evaluate(writeActiveWorkspaceSelection, [personalId!, "personal"] as const)
 
     await page.goto("/c/settings")
     await page.waitForLoadState("networkidle")

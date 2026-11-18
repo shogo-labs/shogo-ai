@@ -5,6 +5,36 @@ import type { Locator, Page } from "@playwright/test"
 export const LOCAL_API_BASE = process.env.E2E_API_URL || process.env.STAGING_API_URL || "http://localhost:8002"
 
 /**
+ * Write a workspace selection into a document's two stores.
+ *
+ * `localStorage` is only the default a brand-new tab starts from; a tab keeps
+ * its own selection in `sessionStorage` and that wins over the shared value
+ * (SHO-390). A seed that writes the shared key alone therefore moves nothing in
+ * a tab that has already picked a workspace — which is why the apps' own
+ * switcher writes both. The kind is the `{ id, kind }` JSON that
+ * `readCachedWorkspaceKind` parses back.
+ *
+ * Page-function: called through `page.evaluate(...)`, or serialised into an
+ * `addInitScript`, so it must stay self-contained.
+ */
+export function writeActiveWorkspaceSelection([id, kind]: readonly [string, "team" | "personal"]): void {
+  const cached = JSON.stringify({ id, kind })
+  for (const store of [window.sessionStorage, window.localStorage]) {
+    store.setItem("shogo:active-workspace-id", id)
+    store.setItem("shogo:active-workspace-kind", cached)
+  }
+}
+
+/** Put the loaded page's tab on `id`, in both stores. Reload to apply it. */
+export async function setActiveWorkspace(
+  page: Page,
+  id: string,
+  kind: "team" | "personal" = "team",
+): Promise<void> {
+  await page.evaluate(writeActiveWorkspaceSelection, [id, kind] as const)
+}
+
+/**
  * What is painted on top of an element's own centre, or `null` when nothing is.
  * Occlusion is invisible to `toBeVisible()` — a covered element still has a box —
  * so this asks the browser for the paint stack instead.
@@ -73,12 +103,7 @@ export async function openTeamHome(page: Page, timeout = 30_000): Promise<void> 
   // This tab's own selection is what the app reads (SHO-390): `sessionStorage`
   // wins over the shared `localStorage` default, so writing only the latter
   // leaves a tab that already has a workspace on it exactly where it was.
-  await page.evaluate((id) => {
-    sessionStorage.setItem("shogo:active-workspace-id", id)
-    sessionStorage.setItem("shogo:active-workspace-kind", "team")
-    localStorage.setItem("shogo:active-workspace-id", id)
-    localStorage.setItem("shogo:active-workspace-kind", "team")
-  }, teamId)
+  await page.evaluate(writeActiveWorkspaceSelection, [teamId, "team"] as const)
   await page.goto("/home")
   await page.getByText("What are we building", { exact: false }).first().waitFor({ state: "visible", timeout })
 }

@@ -21,7 +21,7 @@
  * browser page on the cloud origin with its own team chat socket.
  */
 import { expect, request, test, type APIRequestContext, type Browser, type Locator, type Page } from "@playwright/test"
-import { LOCAL_API_BASE, openTeamHome } from "./helpers"
+import { LOCAL_API_BASE, openTeamHome, writeActiveWorkspaceSelection } from "./helpers"
 
 const CLOUD = process.env.E2E_CLOUD_URL
 const suffix = Date.now().toString(36)
@@ -132,10 +132,9 @@ test.describe("Desktop + Shogo Cloud workspaces", () => {
       return ((await res.json()).items as Array<{ id: string; name: string; kind: string }>).find((w) => w.kind === "personal")!
     }, LOCAL_API_BASE)
     localPersonalName = local.name
-    await page.evaluate((id) => {
-      localStorage.setItem("shogo:active-workspace-id", id)
-      localStorage.setItem("shogo:active-workspace-kind", JSON.stringify({ id, kind: "personal" }))
-    }, local.id)
+    // Both stores: the tab has already booted, so its own `sessionStorage`
+    // selection wins over the shared default.
+    await page.evaluate(writeActiveWorkspaceSelection, [local.id, "personal"] as const)
 
     const signIn = await json(
       await page.request.put(`${LOCAL_API_BASE}/api/local/shogo-key`, { data: { key: poll.key, workspaces: poll.workspaces } }),
