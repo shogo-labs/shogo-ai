@@ -227,7 +227,7 @@ import {
 } from './workspace-members'
 import { startWorkspaceRootSync } from './workspace-root-sync'
 import { seedEmptyChatSession } from './file-attachment-utils'
-import { parseHistorySeed } from './history-seed'
+import { parseHistorySeed, seedEmptySessionFromHistory } from './history-seed'
 import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
 import { WebhookAdapter } from './channels/webhook'
@@ -2148,39 +2148,31 @@ app.post('/agent/chat', async (c) => {
       console.log(`[AgentRuntime][chat] seeded ${seeded} history message(s) for session ${chatSessionKey}`)
     }
   }
-  // A server-initiated turn (background-task wake, queued message, scheduled
-  // run, team-chat dispatch) carries exactly one message, so the block above
-  // never runs and a session with no local copy starts from the wake note
-  // alone. The API sends the conversation it already stores as `historySeed`
-  // for exactly that case (SHO-137).
+  // A one-message turn is the normal shape of an app send now: the client posts
+  // only the message being sent, and the API attaches the conversation it
+  // already stores as `historySeed` (SHO-402). The seed is applied only to a
+  // session that holds nothing — a warm session is never re-seeded (SHO-137).
   if (allMessages.length <= 1) {
     const seed = parseHistorySeed(body.historySeed)
-    const restored = seed && (sessionManager.get(chatSessionKey)?.messages.length ?? 0) === 0
-    if (seed && restored) {
-      const seeded = seedEmptyChatSession(
-        sessionManager,
-        chatSessionKey,
-        seed.messages.map((m) => ({ role: m.role, parts: [{ type: 'text', text: m.text }] })),
-        { label: 'chat_history' },
+    const { restored, summary } = seedEmptySessionFromHistory(seed, {
+      messageCount: () => sessionManager.get(chatSessionKey)?.messages.length ?? 0,
+      appendSeed: (messages) =>
+        seedEmptyChatSession(
+          sessionManager,
+          chatSessionKey,
+          messages.map((m) => ({ role: m.role, parts: [{ type: 'text', text: m.text }] })),
+          { label: 'chat_history' },
+        ),
+      currentSummary: () => sessionManager.get(chatSessionKey)?.compactedSummary ?? null,
+      setSummary: (value) => {
+        sessionManager.setCompactedSummary(chatSessionKey, value, { replace: true })
+      },
+    })
+    if (restored > 0 || summary) {
+      console.log(
+        `[AgentRuntime][chat] restored ${restored} message(s) and ${summary ? 'a summary' : 'no summary'} ` +
+          `from historySeed for session ${chatSessionKey}`,
       )
-      if (seed.summary) {
-        // The durable summary must win over a runtime copy that covers less.
-        // The runtime has no watermark of its own (its counts are not the
-        // API's `ChatMessage` counts), so the comparable signal is coverage:
-        // a longer durable block folds more of the conversation. Every runtime
-        // compaction is also written back to the API, so it is never the older
-        // copy for long (SHO-137 round 3, R4).
-        const runtimeSummary = sessionManager.get(chatSessionKey)?.compactedSummary ?? null
-        sessionManager.setCompactedSummary(chatSessionKey, seed.summary, {
-          replace: !runtimeSummary || seed.summary.trim().length > runtimeSummary.trim().length,
-        })
-      }
-      if (seeded > 0 || seed.summary) {
-        console.log(
-          `[AgentRuntime][chat] restored ${seeded} message(s) and ${seed.summary ? 'a summary' : 'no summary'} ` +
-            `from historySeed for session ${chatSessionKey}`,
-        )
-      }
     }
   }
 
