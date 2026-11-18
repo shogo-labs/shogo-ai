@@ -462,7 +462,9 @@ unless you add `?recursive=true`.
 **Scope.** By default paths are resolved against the merged workspace root.
 `?scope=project` resolves them against the project's own root instead — the path
 space your IDE shows. Use the default unless you are addressing a file inside
-the project directory specifically.
+the project directory specifically. In standalone mode the root is
+`$WORKSPACE_DIR` and `?scope=project` resolves to that same folder, so the two
+scopes are equivalent.
 
 `/agent/files/:filename` is a different, narrower route: it serves the runtime's
 own config files (`AGENTS.md`, `MEMORY.md`, …), not project files.
