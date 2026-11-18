@@ -60,6 +60,7 @@ import {
   getPlanDisplayName,
   getWindowDisplays,
   getUsageLimitNotice,
+  trialSeatsExceedCap,
 } from '../../lib/billing-config'
 import { SeatCounter } from '../../components/billing/SeatCounter'
 import { BillingHistory } from '../../components/billing/BillingHistory'
@@ -471,7 +472,7 @@ export default observer(function BillingPage() {
   // is the gate; this only stops the button offering a checkout it would
   // refuse. `trialMaxSeats` comes from workspace-plan, so nothing here
   // hardcodes the number, and the copy is the one shared message.
-  const trialSeatLimitReached = trialMaxSeats != null && businessSeats > trialMaxSeats
+  const trialSeatLimitReached = trialSeatsExceedCap(businessSeats, trialMaxSeats)
   const trialSeatLimitHint = trialSeatLimitReached
     ? fillErrorCodeMessage('trial_seat_limit', { maxSeats: trialMaxSeats })
     : null
