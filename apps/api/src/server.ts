@@ -17,7 +17,6 @@ import { auth } from './auth'
 import type { PaidInstanceSize } from './config/stripe-prices'
 import { resolveSubscriptionContext, selectPlanItem } from './services/stripe-subscription-sync.service'
 import { resolveCheckoutPriceId, normalizeCheckoutPlanId } from './services/stripe-price-lookup.service'
-import * as soloFounderService from './services/solo-founder.service'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import type { InstanceSizeName } from './config/instance-sizes'
 import { resolveWorkspaceDiskMiB, workspaceDiskIncludedGiB } from './config/instance-sizes'
@@ -269,6 +268,7 @@ const sendTrialEndingEmail: any = cloud.sendTrialEndingEmail ?? (async () => {})
 const sendTrialUnavailableEmail: any = cloud.sendTrialUnavailableEmail ?? (async () => {})
 const trialService: any = cloud.trialService ?? {}
 const signupCreditService: any = cloud.signupCreditService ?? {}
+const soloFounderService: any = cloud.soloFounderService ?? {}
 const sendInvitationEmail: any = cloud.sendInvitationEmail ?? (async () => {})
 const sendProjectInviteEmail: any = cloud.sendProjectInviteEmail ?? (async () => {})
 const sendMemberRemovedEmail: any = cloud.sendMemberRemovedEmail ?? (async () => {})
@@ -8086,7 +8086,7 @@ app.post('/api/billing/checkout', async (c) => {
         try {
           const promotion = await soloFounderService.resolveOfferPromotionCode(stripe, String(promoCode))
           discount = { promotion_code: promotion.promotionCodeId }
-        } catch (err) {
+        } catch (err: any) {
           if (err instanceof soloFounderService.InvalidPromoCodeError) {
             return c.json({ error: { code: 'invalid_promo_code', message: err.message } }, 400)
           }

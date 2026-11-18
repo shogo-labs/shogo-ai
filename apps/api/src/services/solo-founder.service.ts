@@ -281,22 +281,44 @@ export async function enroll(input: EnrollInput): Promise<EnrollResult> {
       },
     })
   } else {
-    const row = await prisma.courseEnrollment.create({
-      data: {
-        courseId: SOLO_FOUNDER_COURSE_ID,
-        userId: input.userId,
-        workspaceId: input.workspaceId,
-        source: input.source,
-        stripeCheckoutSessionId: input.stripeCheckoutSessionId ?? null,
-        stripeSubscriptionId: input.stripeSubscriptionId ?? null,
-        status: 'active',
-        purchasedAt,
-        installStatus: 'pending',
-      },
-      select: { id: true },
-    })
-    enrollmentId = row.id
-    created = true
+    try {
+      const row = await prisma.courseEnrollment.create({
+        data: {
+          courseId: SOLO_FOUNDER_COURSE_ID,
+          userId: input.userId,
+          workspaceId: input.workspaceId,
+          source: input.source,
+          stripeCheckoutSessionId: input.stripeCheckoutSessionId ?? null,
+          stripeSubscriptionId: input.stripeSubscriptionId ?? null,
+          status: 'active',
+          purchasedAt,
+          installStatus: 'pending',
+        },
+        select: { id: true },
+      })
+      enrollmentId = row.id
+      created = true
+    } catch (err: any) {
+      // `checkout.session.completed` and `customer.subscription.created` land
+      // together and both miss the lookup above; the unique (userId, courseId)
+      // key picks the winner, and the loser adopts its row.
+      if (err?.code !== 'P2002') throw err
+      const raced = await prisma.courseEnrollment.findFirst({
+        where: { userId: input.userId, courseId: SOLO_FOUNDER_COURSE_ID },
+        select: { id: true, installStatus: true },
+      })
+      if (!raced) throw err
+      enrollmentId = raced.id
+      await prisma.courseEnrollment.update({
+        where: { id: raced.id },
+        data: {
+          workspaceId: input.workspaceId,
+          source: input.source,
+          ...(input.stripeCheckoutSessionId ? { stripeCheckoutSessionId: input.stripeCheckoutSessionId } : {}),
+          ...(input.stripeSubscriptionId ? { stripeSubscriptionId: input.stripeSubscriptionId } : {}),
+        },
+      })
+    }
   }
 
   await applyDefaultOverageCap(input.workspaceId).catch((err: any) =>
@@ -367,8 +389,22 @@ export interface InstallResult {
  * bindings are passed back in), and lesson cards are matched on their
  * `lessonId` field, so a retried or replayed install updates rather than
  * creating a second set of channels, boards, agents or cards.
+ *
+ * Two Stripe events (or a panel retry beside a webhook) can arrive for one
+ * enrollment at the same moment; the second call joins the first run instead of
+ * applying the pack a second time.
  */
-export async function installEnrollment(enrollmentId: string, opts: { defer?: boolean } = {}): Promise<InstallResult> {
+const installsInFlight = new Map<string, Promise<InstallResult>>()
+
+export function installEnrollment(enrollmentId: string): Promise<InstallResult> {
+  const running = installsInFlight.get(enrollmentId)
+  if (running) return running
+  const run = runInstall(enrollmentId).finally(() => installsInFlight.delete(enrollmentId))
+  installsInFlight.set(enrollmentId, run)
+  return run
+}
+
+async function runInstall(enrollmentId: string): Promise<InstallResult> {
   const enrollment = await prisma.courseEnrollment.findUnique({
     where: { id: enrollmentId },
     select: {
