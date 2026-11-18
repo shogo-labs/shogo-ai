@@ -907,6 +907,28 @@ describe('checkUsageBalance', () => {
     expect(await billing.checkUsageBalance('w1', 5)).toEqual({ ok: false, reason: 'overage_cap_reached' })
   })
 
+  // SHO-408: a cap at or below the block size used to carry the remainder
+  // forward forever. The refusal now kicks a partial invoice for it.
+  it('kicks a cap invoice for the unbilled remainder when the spend cap is reached', async () => {
+    process.env.STRIPE_SECRET_KEY = 'sk_test'
+    setPlan('pro')
+    wallets.set('w1', freshWallet({
+      overageEnabled: true, overageHardLimitUsd: 10, overageAccumulatedUsd: 9.98,
+      fiveHourWindowStart: now0(), fiveHourUsedUsd: 50,
+      weeklyWindowStart: now0(), weeklyUsedUsd: 50,
+    }))
+    expect(await billing.checkUsageBalance('w1', 5)).toEqual({ ok: false, reason: 'overage_cap_reached' })
+
+    // The kick is fire-and-forget; give its chain of awaits a few ticks.
+    for (let i = 0; i < 20 && !stripeCalls.some((c) => c.method === 'invoiceItems.create'); i++) {
+      await new Promise((r) => setTimeout(r, 0))
+    }
+    const item = stripeCalls.find((c) => c.method === 'invoiceItems.create')
+    expect(item?.args[0].amount).toBe(998)
+    expect(item?.args[0].metadata).toMatchObject({ reason: 'cap', partial: 'true' })
+    expect(wallets.get('w1')!.overageBilledUsd).toBe(9.98)
+  })
+
   // The core regression: `overageEnabled: true` (the user's on-demand toggle
   // reads as "on") but the grant backing it expired, so `paidTier` is false.
   it('reason "entitlement_expired" when overageEnabled is true but the paid grant has expired, and self-heals the flag', async () => {
