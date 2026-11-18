@@ -33,9 +33,9 @@ const CEILING_MS = 10 * IDLE_MS
 const HOUR = 3_600_000
 
 class TestPool extends MetalWarmPool {
-  suspended: string[] = []
+  suspendedIds: string[] = []
   override async suspend(projectId: string): Promise<any> {
-    this.suspended.push(projectId)
+    this.suspendedIds.push(projectId)
     ;(this as any).assigned.delete(projectId)
     return { projectId }
   }
@@ -243,13 +243,15 @@ describe('busy-idle ceiling', () => {
   test('a VM adopted after a restart is past the ceiling on the first reaper pass', async () => {
     const pool = makePool(dir)
     const now = Date.now()
-    // adopt() seeds lastUserActivityAt to `now`; the guest's own report is the
-    // truth, and it says nobody has used this VM for 48h.
+    // adopt() seeds lastUserActivityAt to `now` and flags the VM for a baseline
+    // correction; the guest's own report is the truth, and it says nobody has
+    // used this VM for 48h.
     const a = pool.seed('adopted', {
       assignedAt: now,
       lastTouchedAt: now,
       lastRealActivityAt: now,
       lastUserActivityAt: now,
+      needsUserActivityBaseline: true,
     })
 
     globalThis.fetch = (() =>
@@ -273,6 +275,44 @@ describe('busy-idle ceiling', () => {
     expect(a.perClassActivity).toBe(true)
     expect(a.lastUserActivityAt).toBe(now - 48 * HOUR)
     expect(await pool.reapIdle(IDLE_MS)).toEqual(['adopted'])
+  })
+
+  test('a VM resumed from an old snapshot is NOT suspended on the first pass', async () => {
+    const pool = makePool(dir)
+    const now = Date.now()
+    // resume() builds a fresh AssignedVm with perClassActivity undefined and
+    // seeds lastUserActivityAt to `now` — the resume IS the user action. The
+    // snapshot's frozen timestamps are history, and the reaper polls then reaps
+    // in the same tick, so correcting from them would suspend the VM the moment
+    // it came back (QA round 1).
+    const a = pool.seed('resumed', {
+      assignedAt: now,
+      lastTouchedAt: now,
+      lastRealActivityAt: now,
+      lastUserActivityAt: now,
+    })
+
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            lastRequestAt: 1,
+            activeStreams: 2,
+            busy: true,
+            activeTurns: 1,
+            liveStreams: 2,
+            lastAppRequestAt: now - 48 * HOUR,
+            lastAgentRequestAt: now - 48 * HOUR,
+          }),
+          { status: 200 },
+        ),
+      )) as any
+    await pool.pollActivity()
+
+    expect(a.perClassActivity).toBe(true)
+    expect(a.lastUserActivityAt).toBe(now)
+    expect(await pool.reapIdle(IDLE_MS)).toEqual([])
+    expect(pool.peek('resumed')).toBeDefined()
   })
 
   test('a fresh assign with no guest history keeps its full ceiling', async () => {

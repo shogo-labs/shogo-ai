@@ -501,6 +501,19 @@ export interface AssignedVm {
    * ceiling (see `reapIdle`).
    */
   lastUserActivityAt?: number
+  /**
+   * Set only by `adopt()`: this VM's real-activity history did not survive the
+   * host restart, so `lastUserActivityAt` was seeded to `now` and the first
+   * per-class report must correct it from the guest's own clock.
+   *
+   * Deliberately NOT set by assign or resume. Both are a user action happening
+   * right now, so `now` is the truth; correcting a resume from the snapshot's
+   * frozen `lastAppRequestAt`/`lastAgentRequestAt` would suspend a VM the
+   * moment it came back, because the reaper polls and reaps in the same tick
+   * and the page load that triggered the resume only bumps `lastAppRequestAt`
+   * for `/api/*` (SHO-420 QA round 1).
+   */
+  needsUserActivityBaseline?: boolean
   /** Wall-clock of the last periodic source backup (in memory only; see exportAllSource). */
   lastPeriodicSourceBackupAt?: number
   /**
@@ -1584,8 +1597,11 @@ export class MetalWarmPool {
         lastRealActivityAt: Date.now(),
         // Same fresh seed, but the first baselining poll corrects it from the
         // guest's own report — otherwise every metal-agent deploy would hand a
-        // VM that has been idle for days another full busy-idle ceiling.
+        // VM that has been idle for days another full busy-idle ceiling. Only
+        // adopt needs that correction: assign and resume are a user action
+        // happening now, so their `now` seed is already the truth.
         lastUserActivityAt: Date.now(),
+        needsUserActivityBaseline: true,
         restoredFrom: e.restoredFrom,
         bootRootfsIdentity: e.bootRootfsIdentity,
         workspaceOrigin: e.workspaceOrigin,
@@ -5619,15 +5635,20 @@ export class MetalWarmPool {
           // VM a fresh window on every agent restart.
           const baselining = reportsPerClass && a.perClassActivity !== true
           if (reportsPerClass) a.perClassActivity = true
-          if (baselining) {
-            // First look at this guest after a host restart: adopt seeded
-            // lastUserActivityAt to `now`, which would hand a VM that has been
-            // idle for days another full busy-idle ceiling on every deploy.
-            // Take the guest's own last user request instead. Guest clock skew
-            // is seconds; the ceiling is hours.
+          if (baselining && a.needsUserActivityBaseline) {
+            // Only an ADOPTED VM needs this. The registry does not carry the
+            // guest's real-activity history across a restart, so adopt seeded
+            // lastUserActivityAt to `now`; without this correction every deploy
+            // would hand a VM that has been idle for days another full ceiling.
+            // A fresh assign or a resume is a user action happening now, so its
+            // `now` seed is already the truth — correcting it from the
+            // snapshot's frozen timestamps would suspend the VM on the very
+            // first reaper pass after it came back (SHO-420 QA round 1).
+            // Guest clock skew is seconds; the ceiling is hours.
             const reported = [appAt, agentAt].filter((t): t is number => typeof t === 'number')
             if (reported.length) a.lastUserActivityAt = Math.min(now, Math.max(...reported))
           }
+          if (reportsPerClass) a.needsUserActivityBaseline = false
 
           if (typeof appAt === 'number') {
             const advanced = appAt > (a.lastAppRequestAt ?? 0)
