@@ -17,7 +17,13 @@
 
 import type Stripe from 'stripe'
 import { prisma } from '../lib/prisma'
-import { TRIAL_ELIGIBLE_PLANS, TRIAL_PERIOD_DAYS } from '../config/usage-plans'
+import {
+  TRIAL_ELIGIBLE_PLANS,
+  TRIAL_MAX_SEATS,
+  TRIAL_PERIOD_DAYS,
+  TRIAL_SEAT_LIMIT_CODE,
+  trialSeatLimitMessage,
+} from '../config/usage-plans'
 
 /** Values stored on `trial_redemptions.status`. */
 export const TRIAL_STATUS = {
@@ -27,13 +33,28 @@ export const TRIAL_STATUS = {
   blockedDuplicateCard: 'blocked_duplicate_card',
   blockedDuplicateUser: 'blocked_duplicate_user',
   blockedPrepaidCard: 'blocked_prepaid_card',
+  blockedSeatLimit: 'blocked_seat_limit',
 } as const
 
 const BLOCKED_STATUSES: readonly string[] = [
   TRIAL_STATUS.blockedDuplicateCard,
   TRIAL_STATUS.blockedDuplicateUser,
   TRIAL_STATUS.blockedPrepaidCard,
+  TRIAL_STATUS.blockedSeatLimit,
 ]
+
+/**
+ * A trial checkout asked for more seats than a trial may hold. Thrown by
+ * `buildCheckoutTrialFields` as a second check behind the routes' own gate, so
+ * a future caller cannot skip it; the routes map it to a 400.
+ */
+export class TrialSeatLimitError extends Error {
+  readonly code = TRIAL_SEAT_LIMIT_CODE
+  constructor(readonly seats: number, readonly maxSeats: number = TRIAL_MAX_SEATS) {
+    super(trialSeatLimitMessage(maxSeats))
+    this.name = 'TrialSeatLimitError'
+  }
+}
 
 export interface TrialEligibility {
   eligible: boolean
@@ -151,6 +172,13 @@ export async function buildCheckoutTrialFields(params: {
   const { affiliate } = params
   const eligible = params.wantsTrial
     && (await trialEligibility({ userId: params.userId, workspaceId: params.workspaceId, planId: params.planId })).eligible
+  // Second check behind the routes' own gate (SHO-422): a trial may never be
+  // opened above `TRIAL_MAX_SEATS`, so a future caller cannot skip it. A paid
+  // checkout keeps any seat count.
+  if (eligible) {
+    const seats = Math.max(1, Math.floor(Number(params.metadata?.seats) || 1))
+    if (seats > TRIAL_MAX_SEATS) throw new TrialSeatLimitError(seats)
+  }
   const trial = trialCheckoutParams(eligible ? TRIAL_PERIOD_DAYS : 0, {
     ...params.metadata,
     ...(affiliate.subscription_data?.metadata ?? {}),
@@ -286,10 +314,17 @@ async function blockTrial(
   status:
     | typeof TRIAL_STATUS.blockedDuplicateCard
     | typeof TRIAL_STATUS.blockedDuplicateUser
-    | typeof TRIAL_STATUS.blockedPrepaidCard,
+    | typeof TRIAL_STATUS.blockedPrepaidCard
+    | typeof TRIAL_STATUS.blockedSeatLimit,
   matchedWorkspaceId: string | null,
 ): Promise<'blocked'> {
-  await params.stripe.subscriptions.cancel(params.subscriptionId)
+  try {
+    await params.stripe.subscriptions.cancel(params.subscriptionId)
+  } catch (err: any) {
+    // Already cancelled — a re-delivered event, or the other of the two events
+    // Stripe fires for one checkout. The block still has to be recorded.
+    console.warn('[trial] cancel failed while blocking:', err?.message ?? err)
+  }
   await prisma.trialRedemption.upsert({
     where: { workspaceId: params.workspaceId },
     create: {
@@ -313,8 +348,9 @@ async function blockTrial(
 
 /**
  * The status written for a blocked trial (`blocked_duplicate_card`,
- * `blocked_duplicate_user`, `blocked_prepaid_card`), or null. `recordTrialStart`
- * returns only `'blocked'`; the webhook reads this to tell the owner *why*.
+ * `blocked_duplicate_user`, `blocked_prepaid_card`, `blocked_seat_limit`), or
+ * null. `recordTrialStart` returns only `'blocked'`; the webhook reads this to
+ * tell the owner *why*.
  */
 export async function getTrialBlockStatus(workspaceId: string): Promise<string | null> {
   const row = await prisma.trialRedemption.findUnique({
@@ -322,6 +358,114 @@ export async function getTrialBlockStatus(workspaceId: string): Promise<string |
     select: { status: true },
   })
   return row?.status ?? null
+}
+
+/**
+ * Cancel a trial that was created with more than `TRIAL_MAX_SEATS` seats and
+ * record why (SHO-422). Same shape as a duplicate-card block: no invoice, no
+ * proration, no wallet — the caller must not allocate one.
+ *
+ * This is the case we actually hit: a checkout session opened before the cap
+ * existed, or a subscription made in the Stripe dashboard, arrives here with
+ * 123 seats. Returns `'already_blocked'` for a re-delivered event so the owner
+ * is emailed once.
+ */
+export async function blockTrialForSeatLimit(params: {
+  stripe: Stripe
+  workspaceId: string
+  planId: string
+  subscriptionId: string
+  stripeCustomerId: string
+}): Promise<'blocked' | 'already_blocked'> {
+  const existing = await prisma.trialRedemption.findUnique({
+    where: { workspaceId: params.workspaceId },
+    select: { stripeSubscriptionId: true, status: true },
+  })
+  if (existing?.stripeSubscriptionId === params.subscriptionId
+    && existing.status === TRIAL_STATUS.blockedSeatLimit) {
+    return 'already_blocked'
+  }
+  const userId = await workspaceOwnerUserId(params.workspaceId)
+  if (!userId) throw new Error(`[trial] no owner user for workspace ${params.workspaceId}`)
+  await blockTrial(params, userId, TRIAL_STATUS.blockedSeatLimit, null)
+  return 'blocked'
+}
+
+export type TrialSeatCapOutcome =
+  | { action: 'none' }
+  | { action: 'clamped'; seats: number }
+  | { action: 'blocked' }
+  | { action: 'already_blocked' }
+
+/**
+ * Enforce the trial seat cap on a subscription that is already `trialing`
+ * (SHO-422). One function for every Stripe path, so the webhook, the checkout
+ * completion and `verify-checkout` cannot drift:
+ *
+ * - `created` over the cap: block the trial (cancel, record, no wallet).
+ * - `updated` over the cap: put the seat item back to the cap with no
+ *   proration, and report the capped quantity so the DB syncs to it rather
+ *   than to Stripe's raised one.
+ *
+ * `seats` at or under the cap is a no-op.
+ */
+export async function enforceTrialSeatCap(params: {
+  stripe: Stripe
+  /** `created` blocks an over-cap trial; `updated` clamps it back. */
+  event: 'created' | 'updated'
+  workspaceId: string
+  planId: string
+  subscriptionId: string
+  stripeCustomerId: string
+  seats: number
+  /** The licensed (plan) item, so `updated` can reset its quantity. */
+  seatItemId: string | null
+}): Promise<TrialSeatCapOutcome> {
+  if (params.seats <= TRIAL_MAX_SEATS) return { action: 'none' }
+
+  if (params.event === 'created') {
+    const outcome = await blockTrialForSeatLimit(params)
+    return { action: outcome }
+  }
+
+  if (params.seatItemId) {
+    await params.stripe.subscriptionItems.update(params.seatItemId, {
+      quantity: TRIAL_MAX_SEATS,
+      proration_behavior: 'none',
+    })
+  }
+  console.warn('[trial] seat cap: reset quantity', {
+    workspaceId: params.workspaceId,
+    from: params.seats,
+    to: TRIAL_MAX_SEATS,
+  })
+  return { action: 'clamped', seats: TRIAL_MAX_SEATS }
+}
+
+/**
+ * End a trial now and charge the card (SHO-422). Returns Stripe's status after
+ * the change and the status of the invoice it created, so the caller can tell
+ * "paid" from "open" instead of reporting a success it did not get.
+ *
+ * The trial -> paid conversion itself is the existing `invoice.payment_succeeded`
+ * path (`markTrialConverted` + monthly allocation), not this function.
+ */
+export async function endTrialNow(params: {
+  stripe: Stripe
+  stripeSubscriptionId: string
+}): Promise<{ status: string; latestInvoiceStatus: string | null }> {
+  const updated = await params.stripe.subscriptions.update(params.stripeSubscriptionId, {
+    trial_end: 'now',
+    proration_behavior: 'none',
+    expand: ['latest_invoice'],
+  }) as Stripe.Subscription & { latest_invoice?: any }
+  const latestInvoice = updated.latest_invoice
+  return {
+    status: updated.status,
+    latestInvoiceStatus: latestInvoice && typeof latestInvoice === 'object'
+      ? (latestInvoice.status ?? null)
+      : null,
+  }
 }
 
 async function workspaceOwnerUserId(workspaceId: string): Promise<string | null> {

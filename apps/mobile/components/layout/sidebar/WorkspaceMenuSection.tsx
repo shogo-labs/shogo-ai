@@ -129,7 +129,7 @@ function PendingInvitationsSection({
   onClose: () => void;
 }) {
   const density = densityFor(isNative);
-  const { pendingInvites, processingInvite, acceptInvite, declineInvite } = invitations;
+  const { pendingInvites, processingInvite, acceptInvite, declineInvite, acceptError } = invitations;
 
   // No domain store above means Accept/Decline have nothing to join with, so
   // show no block at all rather than a dead one.
@@ -175,6 +175,11 @@ function PendingInvitationsSection({
             <Text className={cn("mt-0.5 text-muted-foreground", density.text.caption)}>
               {expired ? "Expired invitation. Ask for a new invite to join." : "Invited to join this workspace"}
             </Text>
+            {acceptError ? (
+              <Text className={cn("mt-1 text-destructive", density.text.caption)}>
+                {acceptError}
+              </Text>
+            ) : null}
             <View className="mt-2 flex-row gap-2">
               <Pressable
                 disabled={expired || busy}

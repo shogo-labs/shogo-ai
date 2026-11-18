@@ -929,6 +929,20 @@ export const api = {
     return res.data
   },
 
+  /**
+   * POST /api/billing/end-trial — end a free trial and pay now (SHO-422).
+   * Owners and billing admins only. `status` is Stripe's subscription status
+   * after the change; `latestInvoiceStatus` says whether the charge went
+   * through (`paid`) or is still open (`open`/`draft`).
+   */
+  async endTrial(http: HttpClient, workspaceId: string) {
+    const res = await http.post<{ ok?: boolean; status?: string; latestInvoiceStatus?: string | null }>(
+      `/api/billing/end-trial?workspaceId=${encodeURIComponent(workspaceId)}`,
+      {},
+    )
+    return res.data
+  },
+
   /** GET /api/billing/invoices — recent Stripe invoices for the workspace. */
   async listInvoices(http: HttpClient, workspaceId: string, limit = 12) {
     const res = await http.get<{ ok?: boolean; invoices?: BillingInvoice[] }>(

@@ -61,6 +61,55 @@ export const ERROR_CODE_MESSAGES: Record<string, string> = {
   internal_error: 'Something went wrong on our end. Please try again.',
   shutting_down: 'A server update is in progress. Please retry in a few seconds.',
   offline: 'Your machine is offline. Reconnect it, or continue in the cloud.',
+  // A trialing subscription never holds more than `maxSeats` seats (SHO-422):
+  // the card is not charged until the trial ends, so a large trial is a large
+  // charge to a card we cannot collect on. `{maxSeats}` is filled from the
+  // error payload (`error.maxSeats`), so the client never hardcodes the number.
+  trial_seat_limit: 'Free trials include up to {maxSeats} seats. To add more, end your trial and start your paid plan in Billing.',
+}
+
+/**
+ * The message for `code`, with `{placeholder}`s filled from `params`. Returns
+ * null when a placeholder has no value, so the caller can fall back to the
+ * server's own message instead of showing a raw `{maxSeats}`.
+ */
+export function fillErrorCodeMessage(
+  code: string,
+  params?: Record<string, unknown> | null,
+): string | null {
+  const template = ERROR_CODE_MESSAGES[code]
+  if (!template) return null
+  let missing = false
+  const filled = template.replace(/\{(\w+)\}/g, (_match, key: string) => {
+    const value = params?.[key]
+    if (value === undefined || value === null || value === '') {
+      missing = true
+      return ''
+    }
+    return String(value)
+  })
+  return missing ? null : filled
+}
+
+/**
+ * The user-facing message for an error thrown by the SDK's `HttpClient`
+ * (`ShogoError`): the friendly text for a known `error.code`, else the
+ * server's own message, else the error's message. Use this instead of
+ * `err.message` so a coded refusal reads the same on every surface.
+ */
+export function formatApiError(err: unknown): string {
+  const e = err as { message?: string; details?: any } | null | undefined
+  const apiError = e?.details?.error
+  if (apiError && typeof apiError === 'object') {
+    if (typeof apiError.code === 'string') {
+      const filled = fillErrorCodeMessage(apiError.code, apiError)
+      if (filled) return filled
+    }
+    if (typeof apiError.message === 'string' && apiError.message) {
+      return stripInternalErrorMarkers(apiError.message)
+    }
+  }
+  return e?.message || 'Something went wrong. Please try again.'
 }
 
 /**
@@ -322,6 +371,13 @@ export function formatErrorMessage(rawMessage: string): string {
   try {
     const parsed = JSON.parse(cleaned)
     if (parsed?.error?.code && ERROR_CODE_MESSAGES[parsed.error.code]) {
+      // A template with an unfilled placeholder falls back to the server's own
+      // message, which always carries the value.
+      const filled = fillErrorCodeMessage(parsed.error.code, parsed.error)
+      if (filled) return filled
+      if (typeof parsed.error.message === 'string' && parsed.error.message) {
+        return stripInternalErrorMarkers(parsed.error.message)
+      }
       return ERROR_CODE_MESSAGES[parsed.error.code]
     }
     if (parsed?.error?.message) {

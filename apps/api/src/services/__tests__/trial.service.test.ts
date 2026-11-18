@@ -328,3 +328,55 @@ describe('trial status transitions', () => {
     expect(redemptions[1].status).toBe('converted')
   })
 })
+
+describe('endTrialNow', () => {
+  function stripeDouble(update: (id: string, params: any) => any) {
+    const calls: Array<{ id: string; params: any }> = []
+    return {
+      calls,
+      stripe: {
+        subscriptions: {
+          update: async (id: string, params: any) => {
+            calls.push({ id, params })
+            return update(id, params)
+          },
+        },
+      } as any,
+    }
+  }
+
+  test('ends the trial now and reports the invoice status', async () => {
+    const { calls, stripe: s } = stripeDouble(() => ({
+      id: 'sub_1',
+      status: 'active',
+      latest_invoice: { id: 'in_1', status: 'paid' },
+    }))
+    const result = await trial.endTrialNow({ stripe: s, stripeSubscriptionId: 'sub_1' })
+    expect(result).toEqual({ status: 'active', latestInvoiceStatus: 'paid' })
+    expect(calls).toHaveLength(1)
+    expect(calls[0].id).toBe('sub_1')
+    expect(calls[0].params.trial_end).toBe('now')
+    expect(calls[0].params.proration_behavior).toBe('none')
+    expect(calls[0].params.expand).toEqual(['latest_invoice'])
+  })
+
+  test('reports an open invoice instead of claiming the charge went through', async () => {
+    const { stripe: s } = stripeDouble(() => ({
+      id: 'sub_1',
+      status: 'past_due',
+      latest_invoice: { id: 'in_1', status: 'open' },
+    }))
+    const result = await trial.endTrialNow({ stripe: s, stripeSubscriptionId: 'sub_1' })
+    expect(result).toEqual({ status: 'past_due', latestInvoiceStatus: 'open' })
+  })
+
+  test('reports a null invoice status when Stripe returns an unexpanded id', async () => {
+    const { stripe: s } = stripeDouble(() => ({
+      id: 'sub_1',
+      status: 'active',
+      latest_invoice: 'in_1',
+    }))
+    const result = await trial.endTrialNow({ stripe: s, stripeSubscriptionId: 'sub_1' })
+    expect(result.latestInvoiceStatus).toBeNull()
+  })
+})

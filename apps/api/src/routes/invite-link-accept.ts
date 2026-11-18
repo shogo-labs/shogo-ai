@@ -10,6 +10,8 @@
 import { Hono } from 'hono'
 import { isWorkspaceRole, toProjectRole } from '@shogo/authz'
 import { prisma } from '../lib/prisma'
+import { assertTrialSeatRoom } from '../services/billing.service'
+import { trialSeatLimitMessage } from '../config/usage-plans'
 
 export interface InviteLinkAccepted {
   link: { id: string; role: string; createdBy: string | null; projectId: string | null; workspaceId: string | null }
@@ -67,6 +69,16 @@ export function inviteLinkAcceptRoutes(config: InviteLinkAcceptConfig): Hono {
           workspaceId,
           role: isWorkspaceRole(link.role) && link.role !== 'owner' ? link.role : 'member',
         }
+
+    // A trialing workspace never holds more than TRIAL_MAX_SEATS seats
+    // (SHO-422). A workspace link created before the cap still has to be
+    // refused here; project guests do not use a seat.
+    if (!link.projectId) {
+      const room = await assertTrialSeatRoom(workspaceId)
+      if (!room.ok) {
+        return c.json({ error: trialSeatLimitMessage(room.maxSeats), code: room.code }, 409)
+      }
+    }
 
     let member
     try {

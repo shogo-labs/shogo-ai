@@ -117,6 +117,11 @@ export interface BillingDataState {
   trialEligible: boolean
   /** When the current trial ends (ISO), only while `status === 'trialing'`. */
   trialEndsAt: string | null
+  /**
+   * Most seats a free trial may hold (SHO-422), from the server so the client
+   * never hardcodes it. Undefined until workspace-plan resolves.
+   */
+  trialMaxSeats: number | undefined
   /** An invoiced-but-unpaid overage block; overage stays paused until paid. */
   overagePayment: OveragePaymentPending | null
   /**
@@ -176,6 +181,8 @@ export function useBillingData(
   // resolves; callers fall back to the paid cap so a slow fetch never blocks.
   const [chatAttachmentBytes, setChatAttachmentBytes] = useState<number | undefined>(undefined)
   const [trial, setTrial] = useState<{ eligible: boolean; endsAt: string | null }>({ eligible: false, endsAt: null })
+  // Most seats a trial may hold (SHO-422). `undefined` until the plan resolves.
+  const [trialMaxSeats, setTrialMaxSeats] = useState<number | undefined>(undefined)
   // `null` = not yet loaded. Kept separate from `effectivePlan` so callers
   // can distinguish "still loading" from "definitely not paid" and avoid a
   // flash of "entitlement expired" before the first fetch resolves.
@@ -203,7 +210,7 @@ export function useBillingData(
           source?: PlanSource
           usageWindows?: UsageWindows
           promoCredit?: PromoCreditView
-          limits?: { chatAttachmentBytes?: number }
+          limits?: { chatAttachmentBytes?: number; trialMaxSeats?: number }
           trialEligible?: boolean
           trialEndsAt?: string | null
           paidTier?: boolean
@@ -225,6 +232,9 @@ export function useBillingData(
             if (data.promoCredit) setPromoCredit(data.promoCredit as PromoCreditView)
             if (typeof data.limits?.chatAttachmentBytes === "number") {
               setChatAttachmentBytes(data.limits.chatAttachmentBytes)
+            }
+            if (typeof data.limits?.trialMaxSeats === "number") {
+              setTrialMaxSeats(data.limits.trialMaxSeats)
             }
             setTrial({ eligible: !!data.trialEligible, endsAt: data.trialEndsAt ?? null })
             if (typeof data.paidTier === "boolean") setPaidTier(data.paidTier)
@@ -451,5 +461,6 @@ export function useBillingData(
     chatAttachmentBytes: chatAttachmentBytes ?? DEFAULT_CHAT_ATTACHMENT_BYTES,
     trialEligible: trial.eligible,
     trialEndsAt: trial.endsAt,
+    trialMaxSeats,
   }
 }

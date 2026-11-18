@@ -10,7 +10,7 @@
  * - Basic / Business / Enterprise plan cards with included-USD selectors
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   View,
   Text,
@@ -19,6 +19,7 @@ import {
   TextInput,
   Linking,
   Platform,
+  Alert,
   useWindowDimensions,
 } from 'react-native'
 import * as WebBrowser from 'expo-web-browser'
@@ -65,6 +66,18 @@ import { BillingHistory } from '../../components/billing/BillingHistory'
 import { useToast, Toast, ToastTitle, ToastDescription } from '../../components/ui/toast'
 import { FeatureList } from '../../components/billing/FeatureList'
 import { UsageWindowBar } from '../../components/billing/UsageWindows'
+import { formatApiError, fillErrorCodeMessage } from '@shogo/shared-app/chat'
+import {
+  AlertDialog,
+  AlertDialogBackdrop,
+  AlertDialogBody,
+  AlertDialogContent,
+  AlertDialogFooter,
+  AlertDialogHeader,
+} from '../../components/ui/alert-dialog'
+import { Heading } from '../../components/ui/heading'
+import { Text as UIText } from '../../components/ui/text'
+import { Button as UIButton, ButtonText } from '../../components/ui/button'
 import {
   Card,
   CardContent,
@@ -95,17 +108,31 @@ function relativeUsageCopy(planId: string): string {
 
 // ─── Main Page ─────────────────────────────────────────────
 
-function StartTrialButton({ onPress, disabled }: { onPress: () => void; disabled: boolean }) {
+function StartTrialButton({
+  onPress,
+  disabled,
+  hint,
+}: {
+  onPress: () => void
+  disabled: boolean
+  /** Shown under the button when the trial cannot be started (e.g. seat cap). */
+  hint?: string | null
+}) {
   return (
     <View className="gap-1">
       <Pressable
         onPress={onPress}
         disabled={disabled}
-        className="w-full items-center justify-center py-3 rounded-md bg-primary active:bg-primary/80"
+        className={cn(
+          'w-full items-center justify-center py-3 rounded-md bg-primary active:bg-primary/80',
+          disabled && 'opacity-50',
+        )}
       >
         <Text className="text-sm font-medium text-primary-foreground">Start 7-day free trial</Text>
       </Pressable>
-      <Text className="text-xs text-center text-muted-foreground">$0 today. Card required; cancel anytime.</Text>
+      <Text className="text-xs text-center text-muted-foreground">
+        {hint ?? '$0 today. Card required; cancel anytime.'}
+      </Text>
     </View>
   )
 }
@@ -149,6 +176,7 @@ export default observer(function BillingPage() {
     promoCredit,
     trialEligible,
     trialEndsAt,
+    trialMaxSeats,
   } = useBillingData(currentWorkspace?.id)
   // A grant-conferred plan has no Stripe customer / portal, so hide
   // "Manage" / Stripe-only affordances and let "Free Plan"-style copy
@@ -180,6 +208,9 @@ export default observer(function BillingPage() {
   const [businessSeats, setBusinessSeats] = useState(1)
   const [isCheckoutLoading, setIsCheckoutLoading] = useState(false)
   const [isPortalLoading, setIsPortalLoading] = useState(false)
+  const [isEndTrialLoading, setIsEndTrialLoading] = useState(false)
+  const [endTrialConfirmOpen, setEndTrialConfirmOpen] = useState(false)
+  const endTrialConfirmResolve = useRef<((confirmed: boolean) => void) | null>(null)
   const [regionalPricing, setRegionalPricing] = useState<RegionalPricingResponse | null>(null)
   const [isRestoreLoading, setIsRestoreLoading] = useState(false)
   const [licenseCode, setLicenseCode] = useState('')
@@ -436,6 +467,76 @@ export default observer(function BillingPage() {
   const fmtBillingDate = (iso: string) =>
     new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 
+  // A trial never holds more than `trialMaxSeats` seats (SHO-422). The server
+  // is the gate; this only stops the button offering a checkout it would
+  // refuse. `trialMaxSeats` comes from workspace-plan, so nothing here
+  // hardcodes the number, and the copy is the one shared message.
+  const trialSeatLimitReached = trialMaxSeats != null && businessSeats > trialMaxSeats
+  const trialSeatLimitHint = trialSeatLimitReached
+    ? fillErrorCodeMessage('trial_seat_limit', { maxSeats: trialMaxSeats })
+    : null
+
+  // What the card is charged if the trial ends now: the plan's price for the
+  // seats already on the subscription, at the subscription's own interval.
+  const endTrialAmount = useMemo(() => {
+    const planKey: 'basic' | 'business' = (subscription?.planId ?? '').toLowerCase().startsWith('business')
+      ? 'business'
+      : 'basic'
+    const seats = Math.max(1, subscription?.seats ?? 1)
+    const pricing = PLAN_PRICING[planKey]
+    return subscription?.billingInterval === 'annual'
+      ? fmtAnnualPrice(pricing.annual * seats, planKey)
+      : fmtPrice(pricing.monthly * seats, planKey)
+  }, [subscription?.planId, subscription?.seats, subscription?.billingInterval, fmtAnnualPrice, fmtPrice])
+
+  const requestEndTrialConfirm = useCallback((): Promise<boolean> => {
+    const body = `You'll be charged ${endTrialAmount} today for ${planName} and the trial ends immediately. You can add more seats once the plan is paid.`
+    if (Platform.OS !== 'web') {
+      return new Promise((resolve) => {
+        Alert.alert(
+          'End trial and pay now?',
+          body,
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'End trial and pay', onPress: () => resolve(true) },
+          ],
+          { onDismiss: () => resolve(false) },
+        )
+      })
+    }
+    return new Promise((resolve) => {
+      endTrialConfirmResolve.current = resolve
+      setEndTrialConfirmOpen(true)
+    })
+  }, [endTrialAmount, planName])
+
+  const handleEndTrial = useCallback(async () => {
+    if (!currentWorkspace?.id) return
+    const confirmed = await requestEndTrialConfirm()
+    if (!confirmed) return
+    setIsEndTrialLoading(true)
+    try {
+      const result = await api.endTrial(http, currentWorkspace.id)
+      refetchSubscription()
+      refetchUsageWallet()
+      if (result?.latestInvoiceStatus === 'paid') {
+        showIapToast('success', "Trial ended — you're on the paid plan", 'Your card was charged. You can add more seats now.')
+      } else {
+        showIapToast('info', 'Trial ended', 'Your first invoice is open. Pay it in Billing to finish switching to the paid plan.')
+      }
+    } catch (e) {
+      showIapToast('error', 'Could not end the trial', formatApiError(e))
+    } finally {
+      setIsEndTrialLoading(false)
+    }
+  }, [currentWorkspace?.id, http, requestEndTrialConfirm, refetchSubscription, refetchUsageWallet, showIapToast])
+
+  const closeEndTrialConfirm = useCallback((confirmed: boolean) => {
+    endTrialConfirmResolve.current?.(confirmed)
+    endTrialConfirmResolve.current = null
+    setEndTrialConfirmOpen(false)
+  }, [])
+
   const handleCheckout = useCallback(async (planType: 'business' | 'basic', seats: number, opts?: { trial?: boolean }) => {
     if (!currentWorkspace?.id) return
     setIsCheckoutLoading(true)
@@ -554,11 +655,14 @@ export default observer(function BillingPage() {
         }
       }
     } catch (e) {
+      // Never swallow: the API's refusal (e.g. `trial_seat_limit`) is the only
+      // thing that tells the user why the checkout did not open.
       console.warn('[Billing] checkout failed:', e)
+      showIapToast('error', 'Could not start checkout', formatApiError(e))
     } finally {
       setIsCheckoutLoading(false)
     }
-  }, [http, currentWorkspace?.id, billingInterval, user?.email, router, refetchSubscription, refetchUsageWallet])
+  }, [http, currentWorkspace?.id, billingInterval, user?.email, router, refetchSubscription, refetchUsageWallet, showIapToast])
 
   // The usage notice's "Start free trial" CTA lands here with `?trial=business`:
   // take them straight to Stripe's trial checkout for the Business plan rather
@@ -568,6 +672,8 @@ export default observer(function BillingPage() {
     if (trialParam !== 'business') return
     if (isBillingLoading || !currentWorkspace?.id) return
     if (!trialEligible || hasStripeSubscription) return
+    // Above the trial seat cap the server would refuse it (SHO-422).
+    if (trialSeatLimitReached) return
     if (autoTrialStartedRef.current) return
     autoTrialStartedRef.current = true
     void handleCheckout('business', businessSeats, { trial: true })
@@ -577,6 +683,7 @@ export default observer(function BillingPage() {
     currentWorkspace?.id,
     trialEligible,
     hasStripeSubscription,
+    trialSeatLimitReached,
     businessSeats,
     handleCheckout,
   ])
@@ -669,6 +776,7 @@ export default observer(function BillingPage() {
   const annualPill = nativeActivePill(billingInterval === 'annual', { backgroundClass: 'bg-primary' })
 
   return (
+    <>
     <ScrollView
       className="flex-1 bg-background"
       contentContainerStyle={{
@@ -719,9 +827,26 @@ export default observer(function BillingPage() {
               </Text>
             )}
             {trialEndsAt && (
-              <Text className="text-sm text-muted-foreground">
-                Free trial ends {fmtBillingDate(trialEndsAt)}. Cancel anytime before then and you won't be charged.
-              </Text>
+              <View className="gap-2">
+                <Text className="text-sm text-muted-foreground">
+                  Free trial ends {fmtBillingDate(trialEndsAt)}. Cancel anytime before then and you won't be charged.
+                </Text>
+                {/* A trial is capped at `trialMaxSeats` seats, so the way to buy
+                    more is to end it and pay now (SHO-422). */}
+                <Pressable
+                  onPress={handleEndTrial}
+                  disabled={isEndTrialLoading}
+                  className={cn(
+                    'self-start rounded-md border border-border bg-background px-3 py-2 active:bg-muted',
+                    isEndTrialLoading && 'opacity-50',
+                  )}
+                  testID="end-trial-button"
+                >
+                  <Text className="text-sm font-medium text-foreground">
+                    {isEndTrialLoading ? 'Ending trial…' : 'End trial and pay now'}
+                  </Text>
+                </Pressable>
+              </View>
             )}
           </CardContent>
         </Card>
@@ -1065,7 +1190,8 @@ export default observer(function BillingPage() {
               {trialEligible && !hasStripeSubscription && (
                 <StartTrialButton
                   onPress={() => handleCheckout('business', businessSeats, { trial: true })}
-                  disabled={isCheckoutLoading}
+                  disabled={isCheckoutLoading || trialSeatLimitReached}
+                  hint={trialSeatLimitHint}
                 />
               )}
               <Pressable
@@ -1171,6 +1297,35 @@ export default observer(function BillingPage() {
 
       </View>
     </ScrollView>
+
+    {/* Web confirm for "End trial and pay now" (SHO-422). Native uses
+        `Alert.alert` with the same copy, so the action always has friction. */}
+    {Platform.OS === 'web' && (
+      <AlertDialog isOpen={endTrialConfirmOpen} onClose={() => closeEndTrialConfirm(false)} size="sm">
+        <AlertDialogBackdrop />
+        <AlertDialogContent testID="end-trial-confirm">
+          <AlertDialogHeader>
+            <Heading size="md" className="text-typography-950">
+              End trial and pay now?
+            </Heading>
+          </AlertDialogHeader>
+          <AlertDialogBody className="mb-4 mt-3">
+            <UIText size="sm" className="text-typography-700">
+              {`You'll be charged ${endTrialAmount} today for ${planName} and the trial ends immediately. You can add more seats once the plan is paid.`}
+            </UIText>
+          </AlertDialogBody>
+          <AlertDialogFooter>
+            <UIButton variant="outline" action="secondary" onPress={() => closeEndTrialConfirm(false)} accessibilityLabel="Cancel">
+              <ButtonText>Cancel</ButtonText>
+            </UIButton>
+            <UIButton action="primary" onPress={() => closeEndTrialConfirm(true)} accessibilityLabel="End trial and pay">
+              <ButtonText>End trial and pay</ButtonText>
+            </UIButton>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    )}
+  </>
   )
 })
 
