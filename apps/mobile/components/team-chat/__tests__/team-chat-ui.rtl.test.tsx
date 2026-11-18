@@ -111,7 +111,7 @@ mock.module('react-native', () =>
         onKeyDown: (e: any) => onKeyPress?.({ nativeEvent: { key: e.key, shiftKey: e.shiftKey }, preventDefault: () => e.preventDefault() }),
       })
     }),
-    FlatList: forwardRef(function List({ data, renderItem, keyExtractor, ListEmptyComponent, ListFooterComponent, onViewableItemsChanged }: any, ref: any) {
+    FlatList: forwardRef(function List({ data, renderItem, keyExtractor, ListEmptyComponent, ListFooterComponent, contentContainerStyle, onViewableItemsChanged }: any, ref: any) {
       // The list's own scroll node, as react-native-web reports it — where its
       // native `wheel` listener lives.
       const scroller = useRef<HTMLDivElement | null>(null)
@@ -127,7 +127,7 @@ mock.module('react-native', () =>
       }))
       return createElement(
         'div',
-        { ref: scroller, 'data-scroll-node': 'true' },
+        { ref: scroller, 'data-scroll-node': 'true', 'data-content-padding-top': contentContainerStyle?.paddingTop },
         data.length
           ? data.map((item: any, index: number) => createElement(Fragment, { key: keyExtractor ? keyExtractor(item, index) : index }, renderItem({ item, index })))
           : ListEmptyComponent,
@@ -2334,6 +2334,67 @@ describe('running agents in a channel', () => {
     const footer = shim('floating-composer')
     expect(footer).toBeTruthy()
     expect(footer!.querySelector('[data-rn-shim="running-agents-dock"]')).not.toBeNull()
+    // The wide overlay is the other branch's; a phone must not get both.
+    expect(shim('composer-footer')).toBeNull()
+  })
+
+  /** What a layout pass on the footer reports, once it has been measured. */
+  const reportFooterHeight = (height: number) => {
+    const footer = shim('composer-footer') as Element
+    const handler = layoutHandlers.get(footer)
+    if (!handler) throw new Error('the composer footer registered no onLayout')
+    act(() => handler({ nativeEvent: { layout: { width: 900, height } } }))
+  }
+
+  /** The list's visual bottom padding — `paddingTop`, because the list is inverted. */
+  const listBottomInset = () => {
+    const scroller = document.querySelector('[data-scroll-node="true"]') as HTMLElement
+    return Number(scroller.dataset.contentPaddingTop) - 8
+  }
+
+  test('the wide pane lays the composer over the transcript instead of under it', () => {
+    renderChannel()
+    const footer = shim('composer-footer')
+    expect(footer).toBeTruthy()
+    // The composer lives inside the overlay, so it is what the list scrolls behind.
+    expect(footer!.contains(document.querySelector('textarea[aria-label="Message"]'))).toBe(true)
+    // Nothing is pulled up until the pane has measured the footer.
+    expect(parseFloat(footer!.style.marginTop)).toBe(0)
+    expect(listBottomInset()).toBe(0)
+
+    reportFooterHeight(120)
+
+    expect(parseFloat(shim('composer-footer')!.style.marginTop)).toBe(-120)
+    // The list keeps its newest message clear of the footer, as it did before.
+    expect(listBottomInset()).toBe(120)
+  })
+
+  test('a taller footer — a running agent docked — re-insets the list', () => {
+    activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
+    renderChannel()
+    reportFooterHeight(96)
+    expect(listBottomInset()).toBe(96)
+    reportFooterHeight(140)
+    expect(listBottomInset()).toBe(140)
+    expect(shim('composer-footer')!.querySelector('[data-rn-shim="running-agents-dock"]')).not.toBeNull()
+  })
+
+  test('the wide footer reserves the typing slot but draws nothing in it', () => {
+    renderChannel()
+    const slot = shim('typing-slot')
+    expect(slot).toBeTruthy()
+    // The height that keeps the composer from jumping, and no backing of its own.
+    expect(slot!.className).toContain('min-h-[30px]')
+    expect(slot!.className).not.toContain('bg-')
+    expect(slot!.textContent).toBe('')
+  })
+
+  test('a typing line over a scrolled message gets a backing of its own', () => {
+    typingUsers.push({ id: 'pat', name: 'Pat' })
+    renderChannel()
+    const slot = shim('typing-slot')!
+    expect(slot.textContent).toContain('Pat is typing')
+    expect(slot.querySelector('[class*="bg-background/90"]')).not.toBeNull()
   })
 })
 
