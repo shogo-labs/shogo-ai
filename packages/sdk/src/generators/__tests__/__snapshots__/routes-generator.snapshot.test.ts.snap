@@ -93,7 +93,7 @@ function buildContext(c: any, body?: any) {
 /**
  * HTTP status for a hook rejection. Hooks signal authorization failures
  * with \`unauthorized\` / \`forbidden\` / \`not_found\` codes, and state
- * conflicts with \`already_member\` / \`last_owner\`.
+ * conflicts with \`already_member\` / \`last_owner\` / \`trial_seat_limit\`.
  */
 function hookErrorStatus(error: { code?: string } | undefined): number {
   switch (error?.code) {
@@ -101,7 +101,8 @@ function hookErrorStatus(error: { code?: string } | undefined): number {
     case "forbidden": return 403
     case "not_found": return 404
     case "already_member":
-    case "last_owner": return 409
+    case "last_owner":
+    case "trial_seat_limit": return 409
     default: return 400
   }
 }

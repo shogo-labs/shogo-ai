@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
+import { chatTitle } from './activity-feed'
 import type { ActiveChatTurn, AgentTask } from './api'
 
 /**
@@ -20,7 +21,7 @@ export interface AgentWork {
 }
 
 type TaskLike = Pick<AgentTask, 'projectId' | 'status' | 'title' | 'startedAt' | 'chatSessionId'>
-type ChatLike = Pick<ActiveChatTurn, 'projectId' | 'sessionName' | 'chatSessionId' | 'isPrimary'> &
+type ChatLike = Pick<ActiveChatTurn, 'projectId' | 'sessionName' | 'agentName' | 'card' | 'chatSessionId' | 'isPrimary'> &
   Partial<Pick<ActiveChatTurn, 'conversationId' | 'threadRootId' | 'messageId' | 'conversationName' | 'conversationKind'>>
 
 /**
@@ -77,9 +78,12 @@ function workFromChat(chat: ChatLike): AgentWork {
       },
     }
   }
+  // A stored `#channel: @agent …` name reads as noise here too; `chatTitle`
+  // gives the card or the cleaned command, the same line the Activity rows use.
+  const title = chatTitle(chat)
   return {
-    label: `Working on ${chat.sessionName}`,
-    place: chat.sessionName,
+    label: `Working on ${title}`,
+    place: title,
     relation: 'on',
     target: {
       kind: 'session',

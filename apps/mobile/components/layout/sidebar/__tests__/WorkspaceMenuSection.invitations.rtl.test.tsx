@@ -214,4 +214,33 @@ describe("WorkspaceMenuSection pending invitations", () => {
     await Promise.resolve()
     expect(screen.queryByText("Pending invitations")).toBeNull()
   })
+
+  // The refusal is about the workspace, not one invitation, so it belongs once
+  // under the list — not repeated under every pending row (QA round 1).
+  test("a refused accept shows the message once, below the list", async () => {
+    const seatLimitMessage =
+      "Free trials include up to 5 seats. To add more, end your trial and start your paid plan in Billing."
+    acceptInvitation.mockImplementationOnce(async () => {
+      throw Object.assign(new Error(seatLimitMessage), {
+        code: "TRIAL_SEAT_LIMIT",
+        status: 409,
+        details: { error: { code: "trial_seat_limit", message: seatLimitMessage } },
+      })
+    })
+    invitations = [
+      { id: "inv-1", workspaceId: "ws-a", role: "member", projectId: null, status: "pending", workspace: { name: "Gamma" } },
+      { id: "inv-3", workspaceId: "ws-b", role: "member", projectId: null, status: "pending", workspace: { name: "Delta" } },
+    ]
+    const { container } = renderSection()
+
+    fireEvent.click(await screen.findByLabelText("Accept invitation to Gamma"))
+
+    await waitFor(() => expect(screen.getAllByText(seatLimitMessage)).toHaveLength(1))
+    // Both rows are still there — a refusal must consume nothing.
+    expect(screen.getByText("Gamma")).toBeTruthy()
+    expect(screen.getByText("Delta")).toBeTruthy()
+    // And the message sits after the last row, not between them.
+    const html = container.innerHTML
+    expect(html.indexOf(seatLimitMessage)).toBeGreaterThan(html.lastIndexOf("Delta"))
+  })
 })

@@ -49,6 +49,7 @@ import {
 } from '../../../components/analytics/SharedAnalytics'
 import { API_BASE, fetchAdminJson, AnalyticsHeader } from '../_analytics-shared'
 import { usePanelSequence, SUPERSEDED } from '../_panel-sequence'
+import { ComputePanel } from '../../../components/analytics/ComputePanel'
 
 // =============================================================================
 // Marketing-specific types
@@ -643,6 +644,12 @@ export default function AdminMarketingAnalyticsPage() {
         <View className="mb-5">
           <SectionLabel title="Storage" detail="Platform S3 footprint and month-to-date billing" />
           <StorageSection data={storage.data} loading={storage.loading} />
+        </View>
+
+        {/* Compute (SHO-424) */}
+        <View className="mb-5">
+          <SectionLabel title="Compute" detail="Fleet VM hours, billing and host cost" />
+          <ComputePanel />
         </View>
 
         {/* AI Insights */}

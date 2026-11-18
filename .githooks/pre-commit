@@ -109,6 +109,23 @@ if printf '%s\n' "$staged_files" | grep -qxE "${CLOUD_SCHEMA}|${LOCAL_SCHEMA}"; 
   fi
 fi
 
+# A schema change also changes the generated MST stores in
+# `packages/domain-stores/src`, which are tracked files. Regenerate them in
+# the same commit or the next `bun install` (postinstall runs the generator)
+# hands whoever runs it a dirty tree they did not cause — that is how SHO-412
+# lost `ChatSession.directKey` and how SHO-415 came to exist. The check
+# regenerates in memory and compares against the staged content, so it is
+# exact and never writes to the tree.
+if printf '%s\n' "$staged_files" | grep -qxE "${CLOUD_SCHEMA}|${LOCAL_SCHEMA}"; then
+  if command -v bun >/dev/null 2>&1; then
+    if ! bun scripts/check-domain-stores-drift.ts --staged --quiet; then
+      rc=1
+    fi
+  else
+    echo "[pre-commit] WARN: bun not on PATH — skipping domain-stores check."
+  fi
+fi
+
 # When a desktop SQLite migration is added or changed, replay the full
 # history from scratch. Catches the failure mode where a migration is
 # shipped without its prerequisite — e.g. an ALTER TABLE for which no

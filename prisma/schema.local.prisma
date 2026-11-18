@@ -4880,6 +4880,73 @@ model PublishedUsageMinute {
   @@map("published_usage_minutes")
 }
 
+// ── VM compute metering (SHO-424) ───────────────────────────────────────────
+// What a workspace actually ran, hour by hour: microVM running time × the
+// machine size the HOST booted, split by why the VM was alive (a person using
+// the app, an agent turn, or the idle-suspend tail) and by why it was started.
+// Ingested from each host's heartbeat (lib/vm-metering/ingest.ts), priced and
+// charged by jobs/vm-usage-bill.ts.
+//
+// `hostId` is part of every key on purpose: a host reports to exactly one
+// region, so including it keeps the two regions' write sets disjoint and
+// logical replication never sees an insert_exists conflict (SHO-344/345).
+// `projectId` is `""` (not NULL) for a workspace-level VM: a NULL would make
+// the @@unique below non-total in Postgres, and two replicas could each insert
+// the "same" row instead of incrementing one.
+model VmUsageHour {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  /// "" for a `ws:<workspaceId>` runtime that belongs to no single project.
+  projectId    String    @default("")
+  /// Truncated to the hour (UTC).
+  hour         DateTime
+  hostId       String
+  /// CPU count the host actually booted (not the tier, not the env accounting).
+  vcpus        Int
+  /// MiB the host actually booted.
+  memMiB       Int
+  /// user_open | agent_wake | schedule | published | rewarm | prewarm
+  cause        String    @default("user_open")
+  agentSeconds Int       @default(0)
+  appSeconds   Int       @default(0)
+  idleSeconds  Int       @default(0)
+  /// What this row was charged, in USD. Filled in shadow mode too, so the
+  /// estimate and the eventual real charge come from one number.
+  chargedUsd   Float?
+  /// Set once the hourly job has charged this row. It only reads rows where
+  /// this is null, so a rerun never double-charges.
+  billedAt     DateTime?
+
+  @@unique([workspaceId, projectId, hour, hostId, vcpus, memMiB, cause])
+  @@index([workspaceId, hour])
+  @@index([billedAt])
+  @@index([hour])
+  @@map("vm_usage_hours")
+}
+
+/// Per-VM ingestion cursor: the cumulative counters already turned into
+/// `VmUsageHour` rows, so a heartbeat is a delta and a replay adds nothing.
+/// Keyed by the VM's identity (host + vmId + assignment epoch): a resumed or
+/// re-assigned VM is a NEW series, never a continuation.
+model VmMeterCursor {
+  id         String   @id @default(cuid())
+  hostId     String
+  vmId       String
+  /// Epoch ms of the assignment, as the agent reported it.
+  assignedAt BigInt
+  agentMs    Int      @default(0)
+  appMs      Int      @default(0)
+  idleMs     Int      @default(0)
+  /// Last counter that was turned into usage; kept so a stale cursor is
+  /// prunable without guessing (see pruneClosedMeters' server-side twin).
+  lastSeenAt DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([hostId, vmId, assignedAt])
+  @@index([lastSeenAt])
+  @@map("vm_meter_cursors")
+}
+
 // ── Native release (SHO-323) [desktop / SQLite track] ────────────────────────────────────────────────
 // Shipping an Expo project to the App Store / Google Play. These rows are the
 // *Shogo* side of a release: the EAS project it maps to, the customer's store

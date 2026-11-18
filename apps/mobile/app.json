@@ -3,7 +3,7 @@
     "name": "Shogo",
     "slug": "shogo",
     "version": "2.4.11",
-    "orientation": "default",
+    "orientation": "portrait",
     "icon": "./assets/shogo-icon.png",
     "scheme": "shogo",
     "userInterfaceStyle": "automatic",
@@ -11,7 +11,13 @@
       "supportsTablet": true,
       "bundleIdentifier": "ai.shogo.app",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "UISupportedInterfaceOrientations~ipad": [
+          "UIInterfaceOrientationPortrait",
+          "UIInterfaceOrientationPortraitUpsideDown",
+          "UIInterfaceOrientationLandscapeLeft",
+          "UIInterfaceOrientationLandscapeRight"
+        ]
       },
       "scheme": "shogo"
     },

@@ -193,6 +193,16 @@ const NEVER_BILLING = [
   // SHO-323: the monthly Updates charge, same shape (consumeUsage's input).
   'NativeUsageMonth',
   'NativeBuild', // per-build EAS state and the charge attached to it
+  // SHO-424: compute metering. `VmUsageHour` counts a metal VM's seconds per
+  // workspace/project/cause and is the input to consumeUsage, so like the two
+  // groups above it is the cloud's own accounting. `VmMeterCursor` is the
+  // read-modify-write guard in front of it — the (agentMs, appMs, idleMs) triple
+  // is compared and swapped so two pods of the ingesting region cannot charge
+  // the same seconds twice; a synced copy would hand that guard to a second
+  // writer. Both are produced by metal heartbeats against a host a desktop does
+  // not run, so its copies of these tables correctly stay empty.
+  'VmUsageHour',
+  'VmMeterCursor',
 ] as const
 
 const NEVER_CLOUD_PLATFORM = [

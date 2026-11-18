@@ -1,40 +1,24 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { View, Text, Pressable, Platform } from 'react-native'
-import * as WebBrowser from 'expo-web-browser'
-import * as ExpoLinking from 'expo-linking'
-import {
-  Server,
-  Cpu,
-  HardDrive,
-  BarChart3,
-  TrendingUp,
-  TrendingDown,
-} from 'lucide-react-native'
+import { useState, useEffect } from 'react'
+import { View, Text, Pressable } from 'react-native'
+import { Server, Cpu, HardDrive, BarChart3 } from 'lucide-react-native'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainHttp } from '../../contexts/domain'
-import { useBillingData } from '@shogo/shared-app/hooks'
 import { api } from '../../lib/api'
-import { openWebAppSession } from '../../lib/openWebAppSession'
 import {
-  INSTANCE_SIZES,
   getInstanceSize,
   formatStorageBytes,
   formatCpuPercent,
   formatMemoryGb,
   type InstanceSizeName,
 } from '../../lib/instance-config'
-import { InstanceComparisonTable } from './InstanceComparisonTable'
+import { ComputeUsageSection } from './ComputeUsageSection'
 import {
   Card,
   CardContent,
   Badge,
-  Button,
-  Alert,
-  AlertTitle,
-  AlertDescription,
   Skeleton,
   cn,
 } from '@shogo/shared-ui/primitives'
@@ -45,23 +29,11 @@ export function ComputeTab() {
   const http = useDomainHttp()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
-  const { subscription } = useBillingData(workspaceId)
-
   const [instance, setInstance] = useState<any>(null)
   const [metrics, setMetrics] = useState<any>(null)
   const [storage, setStorage] = useState<any>(null)
   const [metricsPeriod, setMetricsPeriod] = useState<MetricsPeriod>('24h')
   const [isLoading, setIsLoading] = useState(true)
-  const [isCheckoutLoading, setIsCheckoutLoading] = useState(false)
-  const [billingInterval, setBillingInterval] = useState<'monthly' | 'annual'>('monthly')
-
-  const tableSectionRef = useRef<View>(null)
-
-  const handleManageComputeOnWeb = useCallback(() => {
-    openWebAppSession('/settings?tab=compute').catch((err) =>
-      console.warn('[Compute] failed to open web compute settings:', err),
-    )
-  }, [])
 
   useEffect(() => {
     if (!workspaceId) return
@@ -81,44 +53,6 @@ export function ComputeTab() {
     })
     return () => { cancelled = true }
   }, [workspaceId, http, metricsPeriod])
-
-  const handleInstanceCheckout = useCallback(async (size: InstanceSizeName) => {
-    if (!workspaceId || size === 'micro') return
-    if (Platform.OS === 'ios') {
-      console.warn('[Compute] Instance Stripe checkout is disabled on iOS for App Store compliance.')
-      return
-    }
-    setIsCheckoutLoading(true)
-    try {
-      const isNative = Platform.OS !== 'web'
-      const redirectBase = isNative
-        ? ExpoLinking.createURL('settings')
-        : (typeof window !== 'undefined' ? window.location.origin : undefined)
-
-      const data = await api.createInstanceCheckout(http, {
-        workspaceId,
-        instanceSize: size,
-        billingInterval,
-        ...(redirectBase && {
-          successUrl: `${redirectBase}/?workspace=${workspaceId}&instance_checkout=success&session_id={CHECKOUT_SESSION_ID}`,
-          cancelUrl: `${redirectBase}/?workspace=${workspaceId}&instance_checkout=canceled`,
-        }),
-      })
-
-      if (data.url) {
-        if (!isNative) {
-          window.location.href = data.url
-        } else {
-          const scheme = ExpoLinking.createURL('')
-          await WebBrowser.openAuthSessionAsync(data.url, scheme)
-        }
-      }
-    } catch (e) {
-      console.warn('[Compute] checkout failed:', e)
-    } finally {
-      setIsCheckoutLoading(false)
-    }
-  }, [http, workspaceId, billingInterval])
 
   if (!workspaceId) {
     return (
@@ -157,17 +91,10 @@ export function ComputeTab() {
       <View>
         <Text className="text-lg font-bold text-foreground mb-1">Compute</Text>
         <Text className="text-xs text-muted-foreground">
-          Manage your workspace instance size and monitor resource usage.
+          What this workspace has run and what it costs. Compute is billed on the machine time you use — there is no
+          size to buy.
         </Text>
       </View>
-
-      {/* Resize recommendation */}
-      <ResizeRecommendation
-        currentSize={currentSize}
-        cpuPercent={cpuPercent}
-        memoryPercent={memoryPercent}
-        isDedicated={currentSpec.dedicated}
-      />
 
       {/* Current Instance Card */}
       <Card>
@@ -238,79 +165,12 @@ export function ComputeTab() {
           cpuPercent={cpuPercent}
           memoryPercent={memoryPercent}
         />
-      ) : !currentSpec.dedicated ? (
-        <Card className="border-dashed border-primary/30">
-          <CardContent className="p-4 items-center gap-2">
-            <BarChart3 size={24} className="text-primary" />
-            <Text className="text-sm font-medium text-foreground text-center">
-              Upgrade to a dedicated instance for detailed resource metrics.
-            </Text>
-          </CardContent>
-        </Card>
       ) : null}
 
-      {Platform.OS === 'ios' ? (
-        <Card>
-          <CardContent className="p-4 gap-3">
-            <View className="gap-1">
-              <Text className="text-sm font-semibold text-foreground">Instance resizing</Text>
-              <Text className="text-xs text-muted-foreground">
-                Instance size changes are managed from your web account.
-              </Text>
-            </View>
-            <Button variant="outline" onPress={handleManageComputeOnWeb}>
-              <Text className="text-foreground font-medium text-sm">Resize on the web</Text>
-            </Button>
-          </CardContent>
-        </Card>
-      ) : (
-        <>
-          {/* Billing interval toggle */}
-          <View className="flex-row items-center justify-between mt-2">
-            <Text className="text-base font-semibold text-foreground">Instance Sizes</Text>
-            <View className="flex-row border border-border rounded-lg bg-muted/60 p-0.5">
-              <Pressable
-                onPress={() => setBillingInterval('monthly')}
-                className={cn(
-                  'px-3 py-1.5 rounded-md',
-                  billingInterval === 'monthly' && 'bg-primary',
-                )}
-              >
-                <Text className={cn(
-                  'text-xs font-medium',
-                  billingInterval === 'monthly' ? 'text-primary-foreground' : 'text-foreground',
-                )}>
-                  Monthly
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setBillingInterval('annual')}
-                className={cn(
-                  'px-3 py-1.5 rounded-md',
-                  billingInterval === 'annual' && 'bg-primary',
-                )}
-              >
-                <Text className={cn(
-                  'text-xs font-medium',
-                  billingInterval === 'annual' ? 'text-primary-foreground' : 'text-foreground',
-                )}>
-                  Annual
-                </Text>
-              </Pressable>
-            </View>
-          </View>
-
-          {/* Instance Comparison Table */}
-          <View ref={tableSectionRef}>
-            <InstanceComparisonTable
-              currentSize={currentSize}
-              billingInterval={billingInterval}
-              onSelectSize={handleInstanceCheckout}
-              isCheckoutLoading={isCheckoutLoading}
-            />
-          </View>
-        </>
-      )}
+      {/* Metered compute: what this workspace actually ran and what it costs
+          (SHO-424). Replaces the instance-size purchase cards — sizes are no
+          longer sold, compute is billed on VM time. */}
+      <ComputeUsageSection />
     </View>
   )
 }
@@ -614,60 +474,5 @@ function StorageDetailCard({ storage }: { storage: any }) {
         )}
       </CardContent>
     </Card>
-  )
-}
-
-// ─── Resize Recommendation ──────────────────────────────────────────────────
-
-function ResizeRecommendation({
-  currentSize,
-  cpuPercent,
-  memoryPercent,
-  isDedicated,
-}: {
-  currentSize: InstanceSizeName
-  cpuPercent: number
-  memoryPercent: number
-  isDedicated: boolean
-}) {
-  if (!isDedicated) return null
-
-  const currentIdx = INSTANCE_SIZES.findIndex((s) => s.name === currentSize)
-  const shouldUpgrade = cpuPercent > 75 || memoryPercent > 75
-  const shouldDowngrade = cpuPercent < 20 && memoryPercent < 20 && currentIdx > 1
-
-  if (!shouldUpgrade && !shouldDowngrade) return null
-
-  if (shouldUpgrade) {
-    const nextSize = currentIdx < INSTANCE_SIZES.length - 1
-      ? INSTANCE_SIZES[currentIdx + 1]
-      : null
-
-    return (
-      <Alert>
-        <TrendingUp size={16} className="text-amber-500" />
-        <AlertTitle>High resource usage detected</AlertTitle>
-        <AlertDescription>
-          {cpuPercent > 75 && memoryPercent > 75
-            ? `CPU (${cpuPercent.toFixed(0)}%) and memory (${memoryPercent.toFixed(0)}%) are both above 75%.`
-            : cpuPercent > 75
-              ? `CPU usage is at ${cpuPercent.toFixed(0)}%.`
-              : `Memory usage is at ${memoryPercent.toFixed(0)}%.`}
-          {nextSize ? ` Consider upgrading to ${nextSize.label} for better performance.` : ' You are on the largest available instance.'}
-        </AlertDescription>
-      </Alert>
-    )
-  }
-
-  const prevSize = INSTANCE_SIZES[currentIdx - 1]
-  return (
-    <Alert>
-      <TrendingDown size={16} className="text-blue-500" />
-      <AlertTitle>Instance may be over-provisioned</AlertTitle>
-      <AlertDescription>
-        CPU ({cpuPercent.toFixed(0)}%) and memory ({memoryPercent.toFixed(0)}%) are both under 20%.
-        You could save by downgrading to {prevSize.label}.
-      </AlertDescription>
-    </Alert>
   )
 }

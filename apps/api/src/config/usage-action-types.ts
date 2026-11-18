@@ -47,6 +47,10 @@ export const BILLED_USAGE_ACTION_TYPES = {
   ai_live_session_minutes: 'voice',
   voice_media_usage: 'voice',
   published_hosting: 'hosting',
+  // Workspace compute: microVM running time × the machine size it booted
+  // (SHO-424). Hosting, because that is what it is — the box the workspace ran
+  // on — and the dashboard already groups hosting separately from model spend.
+  vm_compute: 'hosting',
   // Workspace drive above the tier's included GiB (SHO-401).
   disk_addon: 'storage',
   // S3 bytes above the tier's storage allowance, billed as GB-months (SHO-423).

@@ -140,6 +140,19 @@ export interface WorkspaceActivityItem {
   projectHidden?: boolean
   startedAt?: string
   /**
+   * The chat-row fields a `chat_turn` item carries so every surface can render
+   * it with the same helpers the Activity feed uses (`chatTitle`,
+   * `elapsedLabel`, `canStopRunningChat`) instead of showing the raw stored
+   * session name and a fixed sentence.
+   */
+  agentName?: string | null
+  card?: { key: string; title: string } | null
+  canStop?: boolean
+  messageId?: string | null
+  conversationId?: string | null
+  conversationName?: string | null
+  threadRootId?: string | null
+  /**
    * Free-form per-event detail. For `kind: 'approval'` goal events, an
    * unresolved approval has no `metadata.resolvedAt` — see
    * `isApprovalPending` in the API's `workspace-agent.service.ts` (the
@@ -160,6 +173,12 @@ export interface WorkspaceActiveChat {
   projectName: string | null
   projectHidden: boolean
   startedAt: string
+  /** The agent running this turn: the project agent, or the workspace agent. */
+  agentName?: string | null
+  /** The card whose thread the reply is posted in, when the thread is one. */
+  card?: { key: string; title: string } | null
+  /** False when the viewer may not stop this reply (a workspace viewer). */
+  canStop?: boolean
   /**
    * Set when this turn is an agent reply inside team chat. The client uses it
    * to open that channel or thread instead of a separate project session.

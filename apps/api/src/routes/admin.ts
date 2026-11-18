@@ -77,6 +77,9 @@ export function adminRoutes(): Hono {
   router.use('/analytics/infra-current', requireSuperAdmin)
   router.use('/analytics/infra-history', requireSuperAdmin)
   router.use('/heartbeats', requireSuperAdmin)
+  // Fleet compute metering (SHO-424). Super-admin only: it exposes every
+  // workspace's running hours and what the platform pays for them.
+  router.use('/compute', requireSuperAdmin)
   router.use('/heartbeats/*', requireSuperAdmin)
   // Affiliate program management (creator approval, rate/CPM overrides,
   // payouts) is delegable to the creators:write scope. Must also be deferred
@@ -514,6 +517,24 @@ export function adminRoutes(): Hono {
   /**
    * GET /analytics/infra-current - Latest snapshot + live warm pool status
    */
+  /**
+   * Fleet VM compute (SHO-424): hours by state and cause, billable vs platform
+   * overhead, the top workspaces, month-to-date revenue (shadow or real)
+   * against the host bill, and the meter-coverage reconciliation line.
+   */
+  router.get('/compute', async (c) => {
+    try {
+      const { adminComputeSummary } = await import('./compute-usage')
+      const data = await adminComputeSummary()
+      // `{ ok, data }` like the rest of this router — the admin app's
+      // fetchAdminJson unwraps `.data`.
+      return c.json({ ok: true, data })
+    } catch (err: any) {
+      console.error('[Admin] compute summary failed:', err)
+      return c.json({ error: { code: 'internal_error', message: err?.message ?? 'failed' } }, 500)
+    }
+  })
+
   router.get('/analytics/infra-current', async (c) => {
     try {
       const latest = await prisma.infraSnapshot.findFirst({

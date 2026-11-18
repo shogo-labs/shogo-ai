@@ -44,6 +44,19 @@ describe('agentWorkingOn', () => {
     expect(map.get('p2')?.label).toBe('Working on Task B')
   })
 
+  test('a channel-woken session is named by what it is doing, not its stored prefix', () => {
+    const map = agentWorkingOn(
+      [],
+      [chat({
+        projectId: 'p1',
+        chatSessionId: 's1',
+        sessionName: '#shogo-dev: @agent fix SHO-421 on your branch',
+        agentName: 'Shogo Dev 3',
+      })],
+    )
+    expect(map.get('p1')).toMatchObject({ label: 'Working on fix SHO-421 on your branch', place: 'fix SHO-421 on your branch' })
+  })
+
   test('a channel reply opens that channel instead of the backing session', () => {
     const map = agentWorkingOn(
       [],
