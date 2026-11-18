@@ -1,24 +1,21 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * The DMs tab: conversations with people and with agents in one list, newest
- * first, with chips to narrow it.
+ * The DMs tab: conversations with people, newest first, with chips to narrow
+ * it. A chat with an agent is a project chat, not a DM (SHO-412).
  */
 import type { ConversationSummary } from './team-chat-api'
 import { isSelfDm } from './team-chat-api'
 
-export type DmFilter = 'all' | 'unreads' | 'people' | 'agents'
+export type DmFilter = 'all' | 'unreads' | 'people'
 
 export const DM_FILTERS: Array<{ id: DmFilter; label: string }> = [
   { id: 'all', label: 'All' },
   { id: 'unreads', label: 'Unreads' },
   { id: 'people', label: 'People' },
-  { id: 'agents', label: 'Agents' },
 ]
 
 export const isDirect = (c: Pick<ConversationSummary, 'kind'>): boolean => c.kind === 'dm' || c.kind === 'group_dm'
-
-export const isAgentDm = (c: Pick<ConversationSummary, 'participants'>): boolean => (c.participants ?? []).some((p) => p.type === 'agent')
 
 const at = (c: ConversationSummary) => (c.lastMessageAt ? Date.parse(c.lastMessageAt) : 0)
 
@@ -35,9 +32,7 @@ export function filterDms(list: ConversationSummary[], filter: DmFilter): Conver
     case 'unreads':
       return dms.filter((c) => !c.muted && c.unreadCount > 0)
     case 'people':
-      return dms.filter((c) => !isAgentDm(c))
-    case 'agents':
-      return dms.filter(isAgentDm)
+      return dms
   }
 }
 

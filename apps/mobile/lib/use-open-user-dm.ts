@@ -5,7 +5,7 @@
  *
  * Every place that offers "Message <person>" — a profile panel, a member list,
  * the new-message picker — goes through here so they all land on the same
- * `/c/[conversationId]` thread. The agent equivalent is `useOpenAgentDm`.
+ * `/c/[conversationId]` thread. The agent equivalent is `useOpenAgentChat` (a project chat with the agent).
  */
 import { useCallback, useRef, useState } from 'react'
 import { useRouter } from 'expo-router'

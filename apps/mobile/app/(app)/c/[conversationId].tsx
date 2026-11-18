@@ -22,7 +22,7 @@ import { ActivityIndicator, AppState, KeyboardAvoidingView, Platform, Pressable,
 import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type ConversationFile } from '../../../lib/team-chat-api'
-import { openConversationTarget, setThreadFocus, sessionRoute } from '../../../lib/team-chat-nav'
+import { agentChatRoute, openConversationTarget, setThreadFocus, sessionRoute } from '../../../lib/team-chat-nav'
 import { resolvePanes } from '../../../lib/team-chat-panes'
 import { useTeamChatEvents } from '../../../lib/team-chat-connection'
 import {
@@ -120,6 +120,10 @@ export default function ConversationScreen() {
   const workspaceId = conversation?.workspaceId ?? workspace?.id ?? null
   const mentionables = useMentionables(workspaceId)
   const sidePane = width >= THREAD_SIDE_PANE_MIN_WIDTH
+  // `load` must stay keyed on the conversation id alone: it clears the screen
+  // before fetching, so re-running it on a resize would blank the timeline.
+  const sidePaneRef = useRef(sidePane)
+  sidePaneRef.current = sidePane
   const maxPaneWidth = width - MAIN_TIMELINE_MIN
   const threadPane = useSidePaneWidth({
     storageKey: 'shogo.teamChat.threadPaneWidth',
@@ -167,7 +171,14 @@ export default function ConversationScreen() {
   const load = useCallback(async () => {
     if (!conversationId) return
     try {
-      setConversation(await api.get(conversationId))
+      const detail = await api.get(conversationId)
+      // An old agent DM: it is a project chat with that agent now (SHO-412).
+      if (detail.movedToChatSessionId) {
+        const projectId = (detail.members ?? []).find((m) => m.type === 'agent')?.projectId ?? null
+        router.replace(agentChatRoute({ projectId, sessionId: detail.movedToChatSessionId, wide: sidePaneRef.current }) as never)
+        return
+      }
+      setConversation(detail)
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not open this conversation')
@@ -425,7 +436,6 @@ export default function ConversationScreen() {
       onDeleted={() => router.replace('/(app)/c' as any)}
       floating={floating}
       onBack={goBack}
-      onOpenProjectPane={openProjectPaneCb}
       onOpenFiles={openFiles}
       onOpenDoc={supportsDoc ? openDoc : undefined}
       onLayout={floating ? (e) => setHeaderHeight(Math.round(e.nativeEvent.layout.height)) : undefined}

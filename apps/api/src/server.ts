@@ -11033,6 +11033,12 @@ setTimeout(async () => {
   }
 }, 15_000)
 
+// Move every existing agent DM into a project chat, once (SHO-412). Each
+// workspace migrates only in its homeRegion; the worker defers itself.
+import('./services/agent-chat.service')
+  .then(({ startAgentDmMigration }) => startAgentDmMigration())
+  .catch((err: any) => console.error('[AgentDmMigration] Failed to start (non-fatal):', err?.message ?? err))
+
 // The hidden LiveKit fallback for huddle notes. It runs in this process (rtc-node
 // works under Bun, in the API and in the desktop's API), and is a no-op when
 // LiveKit is not configured, so cloud and desktop take the same path.

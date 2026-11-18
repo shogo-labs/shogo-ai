@@ -150,7 +150,7 @@ import { ProjectTopBar } from "../../../../components/project/ProjectTopBar";
 import { ProjectSurfaceHeader } from "../../../../components/project/ProjectSurfaceHeader";
 import { SessionBreadcrumb } from "../../../../components/team-chat/SessionBreadcrumb";
 import { useTeamChatNav } from "../../../../components/team-chat/TeamChatSidebarProvider";
-import { useOpenAgentDm } from "../../../../lib/use-open-agent-dm";
+import { useOpenAgentChat } from "../../../../lib/use-open-agent-chat";
 import { PanelErrorBoundary } from "../../../../components/project/panels/PanelErrorBoundary";
 import {
   ChannelsPanel,
@@ -511,8 +511,8 @@ export default observer(function ProjectLayout() {
   // "Message agent": the project is an agent in the workspace's team chat, so
   // from here you can jump to a DM with it (the same thread as the DMs tab).
   const teamChat = useTeamChatNav();
-  const { openAgentDm: openProjectAgentDm } =
-    useOpenAgentDm(project?.workspaceId ?? teamChat.workspaceId);
+  const { openAgentChat: openProjectAgentChat } =
+    useOpenAgentChat(project?.workspaceId ?? teamChat.workspaceId);
 
   const { features } = usePlatformConfig();
   const billingData = useBillingData(
@@ -3860,7 +3860,7 @@ export default observer(function ProjectLayout() {
     chatSessionsOpen: enableNativePhoneChatPicker && narrowChatPickerOpen,
     onMessageAgent:
       teamChat.enabled && projectId && !isIdeChatEmbed
-        ? () => void openProjectAgentDm(projectId)
+        ? () => void openProjectAgentChat(projectId, { wide: true })
         : undefined,
     onNewChat: isChatFullscreen ? handleCreateNewSession : undefined,
     onRenameChat: isChatFullscreen ? handleRenameChatSession : undefined,

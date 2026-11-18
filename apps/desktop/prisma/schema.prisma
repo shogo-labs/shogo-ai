@@ -641,6 +641,9 @@ model ChatSession {
   // Owner of a personal workspace-agent chat. Null for project chats and
   // chats created before ownership existed.
   createdByUserId     String?
+  // A person's chat with one agent, keyed
+  // `a:<workspaceId>:<userId>:<projectId|ws>` (SHO-412).
+  directKey           String?
   isPrimary           Boolean  @default(false)
   phase               String?
   claudeCodeSessionId String?
@@ -665,6 +668,8 @@ model ChatSession {
   @@index([contextType, contextId])
   @@index([activeTurnHeartbeatAt])
   @@index([createdByUserId])
+  // One chat per person per agent per workspace (SHO-412).
+  @@unique([directKey])
   @@map("chat_sessions")
 }
 

@@ -29,6 +29,7 @@ export const ChatSessionModel = types
     contextId: types.optional(types.string, ""),
     workspaceId: types.optional(types.string, ""),
     createdByUserId: types.optional(types.string, ""),
+    directKey: types.optional(types.string, ""),
     phase: types.optional(types.string, ""),
     claudeCodeSessionId: types.optional(types.string, ""),
     cachedMessageCount: types.optional(types.number, 0),
