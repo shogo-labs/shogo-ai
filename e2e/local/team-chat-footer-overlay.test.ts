@@ -144,7 +144,9 @@ test.describe("SHO-439: the wide transcript runs under the composer", () => {
     expect(newestBottom, "the newest message sits just above the composer").toBeGreaterThan(composerTop - 140)
   })
 
-  test("the empty band above the input passes a wheel gesture through to the transcript", async ({ page }) => {
+  test("the empty band above the input passes a wheel through, and the jump pill clears the composer", async ({
+    page,
+  }) => {
     await openChannel(page)
 
     const slot = page.getByTestId("typing-slot")
@@ -183,25 +185,21 @@ test.describe("SHO-439: the wide transcript runs under the composer", () => {
     await expect
       .poll(async () => (await transcript(newestMessage(page)))!.scrollTop, { timeout: 10_000 })
       .toBeGreaterThan(80)
-  })
 
-  test("the jump-to-latest pill sits above the composer", async ({ page }) => {
-    await openChannel(page)
-
-    const composerBox = await page.getByLabel("Message", { exact: true }).last().boundingBox()
-    expect(composerBox, "the composer is laid out").not.toBeNull()
-
-    // Scroll well up from the newest message, over the transcript itself.
-    await page.mouse.move(640, 320)
-    for (let i = 0; i < 6; i += 1) await page.mouse.wheel(0, -600)
-
+    // Away from the newest message, so the jump pill is up — and it has to sit
+    // above the composer, not on it (`bottom: insets.bottom + 12`).
+    await page.mouse.wheel(0, -240)
     const pill = page.getByLabel("Jump to latest message")
-    await expect(pill).toBeVisible()
+    await expect(pill).toBeVisible({ timeout: 15_000 })
     const pillBox = await pill.boundingBox()
+    const inputTop = await page
+      .getByLabel("Message", { exact: true })
+      .last()
+      .evaluate((element) => element.getBoundingClientRect().top)
     expect(pillBox, "the jump pill is laid out").not.toBeNull()
     expect(
       pillBox!.y + pillBox!.height,
-      "the jump pill clears the composer instead of sitting on it",
-    ).toBeLessThan(composerBox!.y)
+      `the jump pill clears the composer (pill ${JSON.stringify(pillBox)}, input top ${inputTop})`,
+    ).toBeLessThan(inputTop)
   })
 })
