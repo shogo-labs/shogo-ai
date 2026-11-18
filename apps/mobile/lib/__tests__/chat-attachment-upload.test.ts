@@ -32,7 +32,34 @@ mock.module('expo-file-system/legacy', () => ({
   },
 }))
 
+/** What the image helpers answer; each test sets these. */
+let imageSizeResult: { width: number; height: number } | null = null
+let previewResult: {
+  dataUrl?: string
+  uri?: string
+  width: number
+  height: number
+  name: string
+  type: string
+} | null = null
+const previewCalls: string[] = []
+
+mock.module('../chat-image-preview', () => ({
+  PREVIEW_MAX_EDGE: 640,
+  PREVIEW_JPEG_QUALITY: 0.7,
+  previewSize: (width?: number, height?: number) => (width && height ? { width, height } : null),
+  readImageSize: async (source: { name: string }) => {
+    previewCalls.push(`size:${source.name}`)
+    return imageSizeResult
+  },
+  createImagePreview: async (source: { name: string }) => {
+    previewCalls.push(`preview:${source.name}`)
+    return previewResult
+  },
+}))
+
 const {
+  CHAT_ATTACHMENT_PREVIEW_SUBDIR,
   MAX_INLINE_IMAGE_BYTES,
   prepareOutgoingFiles,
   shouldUploadAttachmentFirst,
@@ -152,6 +179,9 @@ describe('prepareOutgoingFiles', () => {
   beforeEach(() => {
     seen.length = 0
     uploadCalls.length = 0
+    previewCalls.length = 0
+    imageSizeResult = null
+    previewResult = null
     uploadResult = { status: 200, body: JSON.stringify({ savedPath: 'files/notes.txt' }) }
   })
 
@@ -248,6 +278,121 @@ describe('prepareOutgoingFiles', () => {
 
     expect(parts[0].url).toBe(dataUrl)
     expect(seen).toHaveLength(0)
+  })
+
+  test('stores the pixel size and a preview on an inline image part', async () => {
+    imageSizeResult = { width: 4000, height: 3000 }
+    previewResult = {
+      dataUrl: 'data:image/jpeg;base64,cHJldmlldw==',
+      width: 640,
+      height: 480,
+      name: 'a-preview.jpg',
+      type: 'image/jpeg',
+    }
+    const dataUrl = tinyPngDataUrl()
+
+    const parts = await prepareOutgoingFiles(
+      [{ name: 'a.png', type: 'image/png', dataUrl, size: 4 }],
+      { agentUrl: AGENT_URL, fetchImpl },
+    )
+
+    expect(parts[0]).toMatchObject({
+      type: 'file',
+      mediaType: 'image/png',
+      url: dataUrl,
+      width: 4000,
+      height: 3000,
+    })
+    // The mocked route answers with `files/notes.txt`; what matters here is
+    // that the preview's own upload carried the subfolder.
+    expect(parts[0].previewUrl).toBe(
+      `${AGENT_URL}/agent/workspace/download/files/notes.txt`,
+    )
+    // The preview goes to its own subfolder so it never shows up in the file list.
+    expect(seen[0].url).toBe(
+      `${AGENT_URL}/agent/chat/attachments?name=a-preview.jpg&dir=${encodeURIComponent(CHAT_ATTACHMENT_PREVIEW_SUBDIR)}`,
+    )
+  })
+
+  test('uses the size the picker already knew instead of decoding again', async () => {
+    const parts = await prepareOutgoingFiles(
+      [{ name: 'a.png', type: 'image/png', dataUrl: tinyPngDataUrl(), size: 4, width: 800, height: 600 }],
+      { agentUrl: AGENT_URL, fetchImpl },
+    )
+
+    expect(parts[0]).toMatchObject({ width: 800, height: 600 })
+    expect(previewCalls).not.toContain('size:a.png')
+  })
+
+  test('a preview that cannot be made still sends the image', async () => {
+    imageSizeResult = { width: 4000, height: 3000 }
+    previewResult = null
+
+    const parts = await prepareOutgoingFiles(
+      [{ name: 'a.png', type: 'image/png', dataUrl: tinyPngDataUrl(), size: 4 }],
+      { agentUrl: AGENT_URL, fetchImpl },
+    )
+
+    expect(parts[0].previewUrl).toBeUndefined()
+    expect(parts[0]).toMatchObject({ width: 4000, height: 3000 })
+    expect(parts[0].url.startsWith('data:')).toBe(true)
+  })
+
+  test('a preview upload that fails still sends the image', async () => {
+    imageSizeResult = { width: 4000, height: 3000 }
+    previewResult = {
+      dataUrl: 'data:image/jpeg;base64,cHJldmlldw==',
+      width: 640,
+      height: 480,
+      name: 'a-preview.jpg',
+      type: 'image/jpeg',
+    }
+    const failing = (async () =>
+      new Response(JSON.stringify({ error: { message: 'runtime unreachable' } }), {
+        status: 502,
+      })) as unknown as typeof fetch
+
+    const parts = await prepareOutgoingFiles(
+      [{ name: 'a.png', type: 'image/png', dataUrl: tinyPngDataUrl(), size: 4 }],
+      { agentUrl: AGENT_URL, fetchImpl: failing },
+    )
+
+    expect(parts[0].previewUrl).toBeUndefined()
+    expect(parts[0].url.startsWith('data:')).toBe(true)
+  })
+
+  test('reuses a preview that is already on the runtime', async () => {
+    const previewUrl = `${AGENT_URL}/agent/workspace/download/.previews/a-preview.jpg`
+
+    const parts = await prepareOutgoingFiles(
+      [
+        {
+          name: 'a.png',
+          type: 'image/png',
+          dataUrl: tinyPngDataUrl(),
+          size: 4,
+          width: 800,
+          height: 600,
+          previewUrl,
+        },
+      ],
+      { agentUrl: AGENT_URL, fetchImpl },
+    )
+
+    expect(parts[0].previewUrl).toBe(previewUrl)
+    expect(previewCalls).toHaveLength(0)
+    expect(seen).toHaveLength(0)
+  })
+
+  test('a non-image attachment gets no size or preview', async () => {
+    const parts = await prepareOutgoingFiles(
+      [{ name: 'notes.txt', type: 'text/plain', dataUrl: 'data:text/plain;base64,aGk=', size: 2 }],
+      { agentUrl: AGENT_URL, fetchImpl },
+    )
+
+    expect(parts[0].width).toBeUndefined()
+    expect(parts[0].previewUrl).toBeUndefined()
+    expect(previewCalls).toHaveLength(0)
   })
 
   test('passes an already-uploaded reference through instead of uploading it twice', async () => {

@@ -34,11 +34,22 @@ export type OptimisticEchoFile = {
   previewUrl?: string
   name?: string
   type?: string
+  /** Pixel size of the original, when it is known before the send. */
+  width?: number
+  height?: number
+  /** Small preview to paint instead of the full-size source, when one exists. */
+  previewDataUrl?: string
 }
 
 /** What the echo's file part points at, or null when there is nothing to show. */
 export function optimisticFileUrl(file: OptimisticEchoFile): string | null {
-  return file.dataUrl || file.previewUrl || file.uri || null
+  return (
+    file.previewDataUrl ||
+    file.dataUrl ||
+    file.previewUrl ||
+    file.uri ||
+    null
+  )
 }
 
 export type OptimisticEchoInput = {
@@ -79,6 +90,11 @@ export function buildOptimisticUserMessage(
       mediaType: file.type || "application/octet-stream",
       url,
       ...(file.name ? { name: file.name } : {}),
+      // Carried through so the bubble is its final size on the first frame
+      // instead of resizing once the image decodes (SHO-407).
+      ...(file.width && file.height
+        ? { width: file.width, height: file.height }
+        : {}),
     })
   }
 
