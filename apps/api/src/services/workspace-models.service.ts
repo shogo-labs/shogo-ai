@@ -85,9 +85,10 @@ export async function setAllowedModelIds(
     prisma.workspaceModelVisibility.deleteMany({ where: { workspaceId } }),
     ...(unique.length > 0
       ? [
+          // No `skipDuplicates`: SQLite (desktop) rejects it, and the delete
+          // above already emptied the workspace's rows in this transaction.
           prisma.workspaceModelVisibility.createMany({
             data: unique.map((modelId) => ({ workspaceId, modelId, createdBy: userId })),
-            skipDuplicates: true,
           }),
         ]
       : []),

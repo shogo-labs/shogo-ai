@@ -529,19 +529,30 @@ function PoliciesCard({
   // there rather than a blank slate that would silently drop a grant.
   useEffect(() => {
     setDraft(
-      existing ?? {
-        subjectType,
-        subjectId,
-        abilities: null,
-        modelTiers: null,
-        modelIds: null,
-        defaultModelId: null,
-        spendCapUsd: null,
-        spendPeriod: null,
-        requestsPerHour: null,
-      },
+      existing
+        ? {
+            ...existing,
+            // `null`/`null` means "every model under the ceiling". Show that as
+            // every tier selected, so saving an untouched row cannot narrow it
+            // to "no models" — which is what an empty selection now means.
+            modelTiers:
+              existing.modelTiers == null && existing.modelIds == null
+                ? [...modelTiers]
+                : existing.modelTiers,
+          }
+        : {
+            subjectType,
+            subjectId,
+            abilities: null,
+            modelTiers: null,
+            modelIds: null,
+            defaultModelId: null,
+            spendCapUsd: null,
+            spendPeriod: null,
+            requestsPerHour: null,
+          },
     )
-  }, [existing, subjectType, subjectId])
+  }, [existing, subjectType, subjectId, modelTiers])
 
   const groups = useMemo(() => {
     const byGroup = new Map<string, AbilityOption[]>()

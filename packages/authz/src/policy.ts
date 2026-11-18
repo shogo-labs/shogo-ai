@@ -87,16 +87,35 @@ export interface EffectivePolicy {
 }
 
 const EVERYTHING: ModelGrant = { tiers: null, ids: null }
+const NOTHING: ModelGrant = { tiers: new Set(), ids: new Set() }
 
+/**
+ * A row's model grant.
+ *
+ * `null` in both columns means "everything under the ceiling" — the plan's
+ * meaning, and what a role with no policy row gets. An explicit empty array
+ * means "no models": that is how an ability-only grant is stored, so it can
+ * never widen a member to every model as a side effect of asking for one
+ * ability. The two are different values, not two spellings of the same one.
+ */
 function grantOf(row: AccessPolicyRow): ModelGrant {
   const tiers = (row.modelTiers ?? []).filter(isModelTier)
   const ids = (row.modelIds ?? []).filter((id): id is string => typeof id === 'string' && id.length > 0)
-  if (tiers.length === 0 && ids.length === 0) return EVERYTHING
+  if (tiers.length === 0 && ids.length === 0) {
+    return row.modelTiers == null && row.modelIds == null ? EVERYTHING : NOTHING
+  }
   return { tiers: new Set(tiers), ids: new Set(ids) }
 }
 
-/** A row that names no models at all — an ability-only grant. */
+/**
+ * A row that explicitly names no models — an ability-only grant.
+ *
+ * `null`/`null` is *not* this: it is "everything", and skipping it would make
+ * an approved model request a no-op for a member whose grant comes from their
+ * role rather than a row of their own.
+ */
 function namesNoModels(row: AccessPolicyRow): boolean {
+  if (row.modelTiers == null && row.modelIds == null) return false
   return (row.modelTiers ?? []).length === 0 && (row.modelIds ?? []).length === 0
 }
 

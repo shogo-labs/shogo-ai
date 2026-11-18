@@ -454,3 +454,64 @@ describe('an access request is a decision card (AC9)', () => {
     expect(own.body.abilities).toContain('boards:manage')
   })
 })
+
+/**
+ * A model request has to merge into the member's *effective* grant, not their
+ * own row. QA round 2 caught the old code reading only the member's row: with
+ * no row of their own it wrote `null`/`null`, which means "everything" and is
+ * skipped as an ability-only grant, so the approval was a no-op.
+ */
+describe('a model request grants the model (AC9)', () => {
+  test('approving a model request lets the member use it on the next request', async () => {
+    // The member's access comes from their role, and they have no row of their own.
+    const role = await call(app, as(w.users.owner), 'PUT', `/api/workspaces/${w.workspaceA}/access/policies`, {
+      subjectType: 'role',
+      subjectId: 'member',
+      modelIds: [economy.id],
+    })
+    expect(role.status).toBe(200)
+    expect(await isModelAllowedFor(w.workspaceA, w.users.member, premium.id)).toBe(false)
+
+    const asked = await call(app, as(w.users.member), 'POST', `/api/workspaces/${w.workspaceA}/access/requests`, {
+      modelId: premium.id,
+      reason: 'I need the premium model for this project',
+    })
+    expect(asked.status).toBe(200)
+
+    const decided = await call(
+      app,
+      as(w.users.owner),
+      'POST',
+      `/api/workspaces/${w.workspaceA}/access/requests/${asked.body.request.id}/decide`,
+      { approve: true },
+    )
+    expect(decided.status).toBe(200)
+
+    expect(await isModelAllowedFor(w.workspaceA, w.users.member, premium.id)).toBe(true)
+    // The role's own model is still there: the grant adds, it does not replace.
+    expect(await isModelAllowedFor(w.workspaceA, w.users.member, economy.id)).toBe(true)
+  })
+
+  test('an ability-only grant does not widen the member to every model', async () => {
+    const put = await call(app, as(w.users.owner), 'PUT', `/api/workspaces/${w.workspaceA}/access/policies`, {
+      subjectType: 'member',
+      subjectId: w.users.viewer,
+      abilities: ['boards:manage'],
+    })
+    expect(put.status).toBe(200)
+
+    const row = await db.accessPolicy.findUnique({
+      where: {
+        workspaceId_subjectType_subjectId: {
+          workspaceId: w.workspaceA,
+          subjectType: 'member',
+          subjectId: w.users.viewer,
+        },
+      },
+    })
+    // Stored as "no models", not as `null`/`null` ("everything").
+    expect(JSON.parse(row!.modelTiers as string)).toEqual([])
+    expect(JSON.parse(row!.modelIds as string)).toEqual([])
+    expect(await isModelAllowedFor(w.workspaceA, w.users.viewer, premium.id)).toBe(false)
+  })
+})

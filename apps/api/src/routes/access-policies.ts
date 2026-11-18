@@ -146,6 +146,7 @@ export function accessPolicyRoutes(config: AccessPolicyRoutesConfig) {
           abilities: body.abilities ?? null,
           modelTiers: body.modelTiers ?? null,
           modelIds: body.modelIds ?? null,
+          grantsAllModels: body.grantsAllModels === true,
           defaultModelId: body.defaultModelId ?? null,
           spendCapUsd: body.spendCapUsd ?? null,
           spendPeriod: body.spendPeriod ?? null,

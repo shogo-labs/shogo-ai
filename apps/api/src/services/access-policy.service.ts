@@ -474,6 +474,13 @@ export interface PolicyWrite {
   abilities?: string[] | null
   modelTiers?: string[] | null
   modelIds?: string[] | null
+  /**
+   * Grant every model under the ceiling. Only meaningful for a group or member
+   * row: a write that names no models is stored as "no models" (an ability-only
+   * grant), so "everything" has to be asked for rather than inferred from an
+   * empty field. A role row needs no flag — `null`/`null` is its default.
+   */
+  grantsAllModels?: boolean
   defaultModelId?: string | null
   spendCapUsd?: number | null
   spendPeriod?: string | null
@@ -582,6 +589,19 @@ export async function upsertPolicy(
     spendPeriod: write.spendPeriod ?? null,
     requestsPerHour: write.requestsPerHour ?? null,
     updatedBy: actorUserId,
+  }
+
+  // A group or member row that names no models is an ability-only grant, and it
+  // is stored as an explicit empty array. `null`/`null` keeps its one meaning —
+  // "everything under the ceiling" — so an ability grant can never widen a
+  // member to every model, and an approved model request is never a no-op.
+  if (write.subjectType !== 'role' && !write.grantsAllModels) {
+    const namesNoModels =
+      (write.modelTiers?.length ?? 0) === 0 && (write.modelIds?.length ?? 0) === 0
+    if (namesNoModels) {
+      data.modelTiers = [] as never
+      data.modelIds = [] as never
+    }
   }
 
   await prisma.accessPolicy.upsert({
@@ -990,10 +1010,16 @@ export async function decideAccessRequest(input: {
 /**
  * Merge one ability or model into a member's policy row, keeping the rest.
  *
- * A model grant is only narrowed when the row already named models. A row with
- * `modelIds: null` means "everything under the ceiling", so writing
- * `[thatModel]` there would cut the member from everything to one model as a
- * reward for asking — the opposite of what approving a request means.
+ * The model side merges into the member's **effective** grant — role ∪ groups ∪
+ * their own row — and writes the union explicitly. Reading only their own row
+ * made the approval a no-op for anyone whose access came from their role: with
+ * no row of their own the old code wrote `null`/`null`, which means "everything"
+ * and is skipped as an ability-only grant, so the member still could not use the
+ * model they had just been granted.
+ *
+ * A member who already has every model keeps their row untouched: the approval
+ * adds nothing, and rewriting it would either widen or narrow a grant the admin
+ * set deliberately.
  */
 async function grantRequestedItem(
   workspaceId: string,
@@ -1008,13 +1034,22 @@ async function grantRequestedItem(
   const abilities = parseJsonArray(existing?.abilities) ?? []
   if (request.permission && !abilities.includes(request.permission)) abilities.push(request.permission)
 
-  const existingModelIds = parseJsonArray(existing?.modelIds)
-  const existingTiers = parseJsonArray(existing?.modelTiers)
-  const grantsEverything = existingModelIds === null && existingTiers === null
-  let modelIds = existingModelIds
-  if (request.modelId && !grantsEverything) {
-    modelIds = existingModelIds ?? []
-    if (!modelIds.includes(request.modelId)) modelIds.push(request.modelId)
+  const effective = await getEffectiveAccess(workspaceId, userId)
+  const grant = effective?.models ?? { tiers: null, ids: null }
+  const grantsEverything = grant.tiers === null && grant.ids === null
+
+  let modelIds = parseJsonArray(existing?.modelIds)
+  let modelTiers = parseJsonArray(existing?.modelTiers)
+  // Only a row that already exists and already means "everything" is preserved
+  // as such. A member with no row of their own has no model grant to keep, so
+  // their new row must not invent one.
+  const rowGrantsEverything = existing !== null && modelIds === null && modelTiers === null
+
+  const writesExplicitModels = Boolean(request.modelId) && !grantsEverything
+  if (writesExplicitModels) {
+    modelIds = [...(grant.ids ?? [])]
+    modelTiers = [...(grant.tiers ?? [])]
+    if (!modelIds.includes(request.modelId!)) modelIds.push(request.modelId!)
   }
 
   await upsertPolicy(
@@ -1022,9 +1057,13 @@ async function grantRequestedItem(
     {
       subjectType: 'member',
       subjectId: userId,
-      abilities: abilities.length ? abilities : null,
-      modelIds: modelIds && modelIds.length ? modelIds : null,
-      modelTiers: existingTiers,
+      abilities: abilities.length ? abilities : [],
+      modelIds,
+      modelTiers,
+      // Preserve a row that already means "everything"; otherwise the write is
+      // an ability-only grant and is stored as "no models", so approving an
+      // ability can never hand out every model.
+      grantsAllModels: !writesExplicitModels && rowGrantsEverything,
       defaultModelId: (existing?.defaultModelId as string | null) ?? null,
       spendCapUsd: (existing?.spendCapUsd as number | null) ?? null,
       spendPeriod: (existing?.spendPeriod as string | null) ?? null,

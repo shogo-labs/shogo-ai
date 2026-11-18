@@ -386,12 +386,30 @@ describe('models: grants, ceiling and default', () => {
   })
 
   test('an ability-only group or member grant does not widen the models', () => {
+    // The write side stores an ability-only grant as explicit empty arrays, so
+    // that is what the resolver sees.
     const grant = resolveModelGrant('member', [
       policy({ subjectType: 'role', subjectId: 'member', modelTiers: ['economy'] }),
-      policy({ subjectType: 'group', subjectId: 'g-ml', abilities: ['agent.social:post'] }),
-      policy({ subjectType: 'member', subjectId: 'u1', abilities: ['project.secrets:read'] }),
+      policy({ subjectType: 'group', subjectId: 'g-ml', abilities: ['agent.social:post'], modelTiers: [], modelIds: [] }),
+      policy({ subjectType: 'member', subjectId: 'u1', abilities: ['project.secrets:read'], modelTiers: [], modelIds: [] }),
     ])
     expect(allowedModels(grant, ceiling, CATALOG).map((m) => m.id)).toEqual(['haiku'])
+  })
+
+  test('an explicit empty model list is "no models", not "everything"', () => {
+    const grant = resolveModelGrant('member', [
+      policy({ subjectType: 'role', subjectId: 'member', modelTiers: ['economy'] }),
+      policy({ subjectType: 'group', subjectId: 'g-ml', modelTiers: [], modelIds: [] }),
+    ])
+    expect(allowedModels(grant, ceiling, CATALOG).map((m) => m.id)).toEqual(['haiku'])
+  })
+
+  test('a null model list is "everything", even on a group row', () => {
+    const grant = resolveModelGrant('member', [
+      policy({ subjectType: 'role', subjectId: 'member', modelTiers: ['economy'] }),
+      policy({ subjectType: 'group', subjectId: 'g-all', modelTiers: null, modelIds: null }),
+    ])
+    expect(allowedModels(grant, ceiling, CATALOG).map((m) => m.id)).toEqual(['haiku', 'sonnet', 'opus'])
   })
 
   test('the ceiling always wins: a grant cannot widen it', () => {

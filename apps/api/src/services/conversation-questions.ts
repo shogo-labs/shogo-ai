@@ -788,7 +788,9 @@ export async function answerQuestion(input: AnswerInput): Promise<{ message: any
   }
 
   // An access request's card is the decision itself: Approve / Deny writes the
-  // grant (or the refusal) through the same service the admin queue uses.
+  // grant (or the refusal) through the same service the admin queue uses. A
+  // failure here is the admin's answer not landing, so it is raised rather than
+  // swallowed — a silent catch would leave them believing they had approved it.
   const accessRequest = (row.blocks as MessageBlocks | null)?.accessRequest
   if (accessRequest?.requestId) {
     const { applyAccessRequestAnswer } = await import('./access-policy.service')
@@ -797,7 +799,7 @@ export async function answerQuestion(input: AnswerInput): Promise<{ message: any
       workspaceId: accessRequest.workspaceId,
       answer: answerText,
       userId: input.userId,
-    }).catch((err: Error) => console.warn('[Questions] applying an access request answer failed:', err.message))
+    })
     return { message: closed.message, question: closed.question, relay: 'sent' }
   }
 
