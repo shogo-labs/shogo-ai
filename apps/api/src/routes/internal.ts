@@ -887,6 +887,22 @@ app.post('/huddles/livekit', async (c) => {
 })
 
 /**
+ * POST /api/internal/mail/apply
+ *
+ * A mail webhook's share for a workspace homed here, forwarded from the region
+ * that received it (see `handleMailWebhook`). The sender verified the
+ * provider's signature; this checks the region secret and applies it locally.
+ */
+app.post('/mail/apply', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const body = (await c.req.json().catch(() => null)) as Record<string, any> | null
+  if (!body || (body.kind !== 'received' && body.kind !== 'delivery')) return c.json({ error: 'Invalid mail event' }, 400)
+  const { applyMailForward } = await import('../services/mail/webhook')
+  await applyMailForward(body as any)
+  return c.json({ ok: true })
+})
+
+/**
  * POST /api/internal/chat-providers/:provider/resume
  *
  * Resume a message held for an unlinked person, in the workspace's home region

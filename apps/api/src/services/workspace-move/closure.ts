@@ -57,6 +57,9 @@ export const MOVE_CLOSURE: Record<string, ClosureRule> = {
   UserGroup: { mode: 'always' },
   UserIntegrationWorkspaceGrant: { mode: 'always' },
   MeetingTemplate: { mode: 'always' },
+  // A domain and its suppression list are the workspace's sending identity.
+  MailDomain: { mode: 'always' },
+  MailSuppression: { mode: 'always' },
 
   // ── the things the user picks ─────────────────────────────────────
   Conversation: { mode: 'root' },
@@ -65,6 +68,8 @@ export const MOVE_CLOSURE: Record<string, ClosureRule> = {
   // ── a channel's own content ───────────────────────────────────────
   Board: { mode: 'conversation', fields: ['conversationId'] },
   Meeting: { mode: 'conversation', fields: ['conversationId'] },
+  // A mailbox is its conversation; its threads and mail follow it as children.
+  Mailbox: { mode: 'conversation', fields: ['conversationId'] },
 
   // ── reachable through a foreign key ───────────────────────────────
   // A chat with an agent belongs to the project it is about; a schedule

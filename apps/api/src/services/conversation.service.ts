@@ -1312,6 +1312,12 @@ export interface PostMessageInput {
   agentChain?: AgentChain | null
   /** Record mentions (and notify) on a system message. Off by default so join/leave notices stay quiet. */
   systemMentions?: boolean
+  /**
+   * Store the text as written: no `@Name` resolution and no mention rows. For
+   * content written outside Shogo (an email), where an `@` must never page a
+   * person or wake an agent.
+   */
+  skipMentions?: boolean
   createdAt?: Date
 }
 
@@ -1337,7 +1343,7 @@ async function resolveForInsert(
   conversation: { workspaceId: string; provider?: string | null },
   text: string,
 ): Promise<{ text: string; warnings: string[] }> {
-  if (conversation.provider !== 'shogo' || input.authorType === 'system' || !text.includes('@')) {
+  if (conversation.provider !== 'shogo' || input.authorType === 'system' || input.skipMentions || !text.includes('@')) {
     return { text, warnings: [] }
   }
   try {
@@ -1428,7 +1434,7 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
   }
   const resolved = await resolveForInsert(input, conversation, text)
   const storedText = resolved.text
-  const mentions = input.authorType === 'system' && !input.systemMentions
+  const mentions = input.skipMentions || (input.authorType === 'system' && !input.systemMentions)
     ? []
     : await expandGroupMentions(conversation.workspaceId, parseMentions(storedText))
 

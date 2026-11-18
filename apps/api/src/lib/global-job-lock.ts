@@ -101,6 +101,8 @@ export const KNOWN_JOB_IDS: Record<string, bigint> = Object.freeze({
   'channels-email-digest': jobNameToLockId('channels-email-digest'),
   'channels-scheduler': jobNameToLockId('channels-scheduler'),
   'channels-indexer': jobNameToLockId('channels-indexer'),
+  'mail-sender': jobNameToLockId('mail-sender'),
+  'mail-sync': jobNameToLockId('mail-sync'),
   'chat-dead-reply-sweep': jobNameToLockId('chat-dead-reply-sweep'),
   'social-account-monthly': jobNameToLockId('social-account-monthly'),
   'published-usage-collect': jobNameToLockId('published-usage-collect'),

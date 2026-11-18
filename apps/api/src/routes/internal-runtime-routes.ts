@@ -58,6 +58,7 @@ import {
 import { workspaceMeetingRoutes } from './workspace-meetings'
 import { agentChannelRoutes, type AgentChannelAuthContext } from './conversations'
 import { agentBoardRoutes } from './work-boards'
+import { agentMailRoutes } from './mail'
 import { agentSocialRoutes } from './social'
 import {
   createInternalAuthorizers,
@@ -945,6 +946,21 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         // A cross-workspace call is made for a person; attribute the write to them.
         const userId = scopeRequesterUserId(c)
         return { workspaceId, projectId, ...(userId ? { userId } : {}) }
+      },
+    }),
+  )
+
+  app.route(
+    '/',
+    agentMailRoutes({
+      authorize: async (c) => {
+        const workspaceId = c.req.param('workspaceId')
+        if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+          return scopeDenied(c)
+        }
+        const identity = await authenticate(c)
+        const projectId = identity?.kind === 'project' ? identity.projectId : undefined
+        return { workspaceId, projectId }
       },
     }),
   )
