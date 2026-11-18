@@ -90,7 +90,18 @@ const subscriptionStore = {
     const subs = subsByWs.get(args.where.workspaceId) ?? []
     const statusIn: string[] | undefined = args.where.status?.in
     const filtered = statusIn ? subs.filter((s: any) => statusIn.includes(s.status)) : subs
-    return filtered[0] ?? null
+    const s = filtered[0] ?? null
+    if (!s) return null
+    // Mirror the migration's backfill: an active/past_due row that predates
+    // `firstPaidAt` has been charged, so it reads as paid. A trialing row stays
+    // null. Tests that need an untrusted active row set `firstPaidAt: null`.
+    const firstPaidAt =
+      s.firstPaidAt !== undefined
+        ? s.firstPaidAt
+        : s.status === 'active' || s.status === 'past_due'
+          ? (s.currentPeriodStart ?? s.createdAt ?? new Date())
+          : null
+    return { ...s, firstPaidAt }
   },
   findMany: async (args: any) => subsByWs.get(args.where.workspaceId) ?? [],
   update: async (args: any) => {

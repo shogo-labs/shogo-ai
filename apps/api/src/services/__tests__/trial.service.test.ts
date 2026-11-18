@@ -13,6 +13,7 @@ const assessments = new Map<string, Row>()
 const members: Row[] = []
 const cancelled: string[] = []
 let cardOf: Record<string, string | null> = {}
+let fundingOf: Record<string, string> = {}
 let failNextUpsertWithUniqueViolation = false
 
 function matches(row: Row, where: Row): boolean {
@@ -65,7 +66,7 @@ const stripe: any = {
     retrieve: async (id: string) => ({
       id,
       default_payment_method: cardOf[id]
-        ? { id: `pm_${id}`, type: 'card', card: { fingerprint: cardOf[id] } }
+        ? { id: `pm_${id}`, type: 'card', card: { fingerprint: cardOf[id], funding: fundingOf[id] ?? 'credit' } }
         : null,
     }),
     cancel: async (id: string) => {
@@ -84,6 +85,7 @@ beforeEach(() => {
   members.length = 0
   cancelled.length = 0
   cardOf = {}
+  fundingOf = {}
   failNextUpsertWithUniqueViolation = false
   members.push({ userId: 'u-1', workspaceId: 'ws-1', role: 'owner', projectId: null, createdAt: new Date(0) })
 })
@@ -103,6 +105,11 @@ describe('trialCheckoutParams', () => {
       trial_settings: { end_behavior: { missing_payment_method: 'cancel' } },
       metadata: { workspaceId: 'ws-1', planId: 'business', trial: 'true' },
     })
+  })
+
+  test('7 days requests 3D Secure on the card (SHO-409)', () => {
+    const p = trial.trialCheckoutParams(7, { workspaceId: 'ws-1' })
+    expect(p.payment_method_options).toEqual({ card: { request_three_d_secure: 'any' } })
   })
 })
 
@@ -201,6 +208,29 @@ describe('recordTrialStart (one trial per card)', () => {
     expect(outcome).toBe('recorded')
     expect(cancelled).toHaveLength(0)
     expect(redemptions[0]).toMatchObject({ workspaceId: 'ws-1', cardFingerprint: 'fp_A', status: 'trialing' })
+  })
+
+  test('a prepaid card cannot start a trial: cancelled and blocked (SHO-409)', async () => {
+    cardOf['sub_pre'] = 'fp_pre'
+    fundingOf['sub_pre'] = 'prepaid'
+    const outcome = await trial.recordTrialStart({
+      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'business',
+      subscriptionId: 'sub_pre', stripeCustomerId: 'cus_pre',
+    })
+    expect(outcome).toBe('blocked')
+    expect(cancelled).toEqual(['sub_pre'])
+    expect(redemptions.find((r) => r.workspaceId === 'ws-1')!.status).toBe('blocked_prepaid_card')
+  })
+
+  test('a debit card is recorded as today (only prepaid is refused)', async () => {
+    cardOf['sub_deb'] = 'fp_deb'
+    fundingOf['sub_deb'] = 'debit'
+    const outcome = await trial.recordTrialStart({
+      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'business',
+      subscriptionId: 'sub_deb', stripeCustomerId: 'cus_deb',
+    })
+    expect(outcome).toBe('recorded')
+    expect(cancelled).toHaveLength(0)
   })
 
   test('a card already used for a trial on another workspace is cancelled and blocked', async () => {

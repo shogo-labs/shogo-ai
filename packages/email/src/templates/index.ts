@@ -26,6 +26,7 @@ export { paymentFailedTemplate } from './billing/payment-failed.js'
 export { paymentActionRequiredTemplate } from './billing/payment-action-required.js'
 export { usageOverageChargedTemplate } from './billing/usage-overage-charged.js'
 export { usageApproachingLimitTemplate } from './billing/usage-approaching-limit.js'
+export { trialUnavailableTemplate } from './billing/trial-unavailable.js'
 
 // Workspace
 export { memberJoinedTemplate } from './workspace/member-joined.js'
@@ -73,6 +74,7 @@ import { paymentFailedTemplate } from './billing/payment-failed.js'
 import { paymentActionRequiredTemplate } from './billing/payment-action-required.js'
 import { usageOverageChargedTemplate } from './billing/usage-overage-charged.js'
 import { usageApproachingLimitTemplate } from './billing/usage-approaching-limit.js'
+import { trialUnavailableTemplate } from './billing/trial-unavailable.js'
 import { memberJoinedTemplate } from './workspace/member-joined.js'
 import { channelDigestTemplate } from './workspace/channel-digest.js'
 import { memberRemovedTemplate } from './workspace/member-removed.js'
@@ -108,6 +110,7 @@ export const allTemplates: EmailTemplate[] = [
   paymentActionRequiredTemplate,
   usageOverageChargedTemplate,
   usageApproachingLimitTemplate,
+  trialUnavailableTemplate,
   memberJoinedTemplate,
   memberRemovedTemplate,
   channelDigestTemplate,

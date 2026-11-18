@@ -132,6 +132,8 @@ mock.module('../lib/prisma', () => withPrismaExports({
               seats: 1,
               stripeSubscriptionId: 'sub_stripe_1',
               stripeCustomerId: 'cus_cloud',
+              // Active sub that has paid a real invoice → overage is trusted.
+              firstPaidAt: new Date('2026-01-01T00:00:00Z'),
             }
           : null,
     },
@@ -180,7 +182,7 @@ mock.module('../lib/prisma', () => withPrismaExports({
         subscription: {
           findFirst: async ({ where }: any) =>
             where.workspaceId === 'ws-cloud'
-              ? { planId: 'pro', seats: 1, stripeCustomerId: 'cus_cloud' }
+              ? { planId: 'pro', seats: 1, stripeCustomerId: 'cus_cloud', firstPaidAt: new Date('2026-01-01T00:00:00Z') }
               : null,
         },
       }),

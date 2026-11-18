@@ -48,6 +48,10 @@ export const ERROR_CODE_MESSAGES: Record<string, string> = {
   // An on-demand usage block is invoiced but unpaid (declined card, or the
   // bank requires the customer to confirm the charge).
   overage_payment_pending: "Your latest on-demand usage charge hasn't been paid yet. Pay or confirm the open invoice in Billing settings to continue.",
+  // Overage is on and the plan is paid, but the card has never been charged
+  // (a trialing subscription whose first invoice is $0). Overage starts after
+  // the first real payment.
+  overage_requires_payment: "On-demand usage starts after your first payment. Your trial includes your plan's usage limits and promo credit — add or verify a payment method to enable on-demand usage now.",
   session_expired: 'Your session has expired. Please refresh the page.',
   internal_error: 'Something went wrong on our end. Please try again.',
   shutting_down: 'A server update is in progress. Please retry in a few seconds.',
@@ -272,6 +276,7 @@ export type UsageLimitCode =
   | 'entitlement_expired'
   | 'overage_cap_reached'
   | 'overage_payment_pending'
+  | 'overage_requires_payment'
 
 const USAGE_LIMIT_CODES: Record<string, UsageLimitCode> = {
   usage_limit_reached: 'usage_limit_reached',
@@ -279,6 +284,7 @@ const USAGE_LIMIT_CODES: Record<string, UsageLimitCode> = {
   entitlement_expired: 'entitlement_expired',
   overage_cap_reached: 'overage_cap_reached',
   overage_payment_pending: 'overage_payment_pending',
+  overage_requires_payment: 'overage_requires_payment',
 }
 
 /**
