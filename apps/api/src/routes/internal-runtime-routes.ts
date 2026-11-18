@@ -45,6 +45,10 @@ import { projectPreviewUrl } from '../lib/project-preview-url'
 import { rememberPreviewRegion } from '../lib/cloudflare-preview-region-kv'
 import { REMOTE_IMPORT_MAX_BASE64_CHARS, remoteToolPermission } from '../lib/remote-tool-policy'
 import { TRANSFER_MAX_ARCHIVE_BYTES } from '@shogo/shared-runtime/project-transfer-limits'
+import {
+  WORKSPACE_ROOT_SECRETS_MAX_PAYLOAD_BYTES,
+  workspaceRuntimeKey,
+} from '@shogo/shared-runtime/workspace-root-secrets'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { getWorkspaceKind } from '../services/workspace.service'
 import { getRuntimeManager } from '../lib/runtime/manager'
@@ -3277,6 +3281,82 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         { error: { code: 'root_presign_failed', message: err?.message ?? 'Could not sign the request' } },
         502,
       )
+    }
+  })
+
+  /**
+   * Resolve which runtime a workspace-root secrets call is for (SHO-384).
+   *
+   * The runtime key is the one the metal home archive already uses as
+   * `HOME_STATE_ID`: `ws:<workspaceId>` for a merged workspace runtime, or
+   * `ws:proj:<anchor>` for a project-anchored one. `anchor` comes from the
+   * pod's own `WORKSPACE_ANCHOR_PROJECT_ID`, so it is checked against the
+   * workspace before it can name a store — a role, not a secret.
+   */
+  async function rootSecretsRuntimeKey(c: Context, workspaceId: string) {
+    const anchor = c.req.query('anchor')?.trim()
+    if (!anchor) return { runtimeKey: workspaceRuntimeKey({ workspaceId }) }
+    const project = await prisma.project.findFirst({
+      where: { id: anchor, workspaceId },
+      select: { id: true },
+    })
+    if (!project) return null
+    return { runtimeKey: workspaceRuntimeKey({ workspaceId, anchorProjectId: anchor }) }
+  }
+
+  /**
+   * GET /api/internal/workspaces/:workspaceId/root-secrets?anchor=<projectId>
+   *
+   * The workspace root's `.env*` files, for a cloud `ws:` runtime that has just
+   * cold-booted from its durable git repo (SHO-384). 204 means nothing has ever
+   * been stored — a brand-new runtime, not an error.
+   */
+  app.get('/workspaces/:workspaceId/root-secrets', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    if (!(await authorizeWorkspaceRuntimeRequest(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+    const resolved = await rootSecretsRuntimeKey(c, workspaceId)
+    if (!resolved) return c.json({ error: { code: 'forbidden', message: 'That project is not in this workspace' } }, 403)
+    try {
+      const { readRootSecrets } = await import('../lib/runtime/root-secrets')
+      const stored = await readRootSecrets(resolved.runtimeKey)
+      if (!stored) return new Response(null, { status: 204 })
+      return c.json({ tag: stored.tag, secrets: stored.secrets, updatedAt: stored.updatedAt.toISOString() })
+    } catch (err: any) {
+      console.error(`[Internal] root-secrets read failed for ${resolved.runtimeKey}:`, err?.message ?? err)
+      return c.json({ error: { code: 'root_secrets_read_failed', message: err?.message ?? 'Could not read' } }, 502)
+    }
+  })
+
+  /**
+   * PUT /api/internal/workspaces/:workspaceId/root-secrets?anchor=<projectId>
+   *   body: { version: 1, slots: [{ slot, files: [{ name, content, mode, mtimeMs }] }] }
+   *
+   * Store the runtime's current `.env*` set, sealed with a key derived from that
+   * runtime key. The response carries the stored tag; a payload that hashes to
+   * what is already stored comes back `{ ok: true, stored: false, tag }`, so a
+   * pod that only polls does not re-encrypt or rewrite the row.
+   */
+  app.put('/workspaces/:workspaceId/root-secrets', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    if (!(await authorizeWorkspaceRuntimeRequest(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+    const resolved = await rootSecretsRuntimeKey(c, workspaceId)
+    if (!resolved) return c.json({ error: { code: 'forbidden', message: 'That project is not in this workspace' } }, 403)
+    const declared = Number(c.req.header('content-length') ?? '0')
+    if (declared > WORKSPACE_ROOT_SECRETS_MAX_PAYLOAD_BYTES) {
+      return c.json({ error: { code: 'root_secrets_too_large', message: 'The payload is too large' } }, 413)
+    }
+    const body = await c.req.json().catch(() => null)
+    if (!body) return c.json({ error: { code: 'bad_request', message: 'A JSON payload is required' } }, 400)
+    const { writeRootSecrets, RootSecretsTooLargeError } = await import('../lib/runtime/root-secrets')
+    try {
+      const result = await writeRootSecrets(resolved.runtimeKey, body)
+      return c.json({ ok: true, ...result })
+    } catch (err: any) {
+      if (err instanceof RootSecretsTooLargeError) {
+        return c.json({ error: { code: 'root_secrets_too_large', message: err.message } }, 413)
+      }
+      console.error(`[Internal] root-secrets write failed for ${resolved.runtimeKey}:`, err?.message ?? err)
+      return c.json({ error: { code: 'root_secrets_write_failed', message: err?.message ?? 'Could not store' } }, 400)
     }
   })
 
