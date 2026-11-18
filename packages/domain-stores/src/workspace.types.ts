@@ -28,8 +28,11 @@ export interface WorkspaceType {
   agentReplyConcurrency?: number
   machineInstanceId?: string
   hostInstanceId?: string
+  personalOwnerId?: string
   movedToWorkspaceId?: string
   movedAt?: Date
+  runtimeDiskGiB?: number
+  diskAddonBilledThrough?: Date
   createdAt: Date
   updatedAt: Date
 }
@@ -51,8 +54,11 @@ export interface WorkspaceCreateInput {
   agentReplyConcurrency?: number
   machineInstanceId?: string
   hostInstanceId?: string
+  personalOwnerId?: string
   movedToWorkspaceId?: string
   movedAt?: Date
+  runtimeDiskGiB?: number
+  diskAddonBilledThrough?: Date
 }
 
 export interface WorkspaceUpdateInput {
@@ -72,6 +78,9 @@ export interface WorkspaceUpdateInput {
   agentReplyConcurrency?: number
   machineInstanceId?: string
   hostInstanceId?: string
+  personalOwnerId?: string
   movedToWorkspaceId?: string
   movedAt?: Date
+  runtimeDiskGiB?: number
+  diskAddonBilledThrough?: Date
 }

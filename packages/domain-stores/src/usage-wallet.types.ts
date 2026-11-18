@@ -21,6 +21,7 @@ export interface UsageWalletType {
   overageOutstandingInvoiceId?: string
   overageOutstandingUsd: number
   overageOutstandingInvoiceUrl?: string
+  capNotifyPendingAt?: Date
   alertsSentThisPeriod?: Record<string, unknown>
   stripeMeteredItemId?: string
   anniversaryDay: number
@@ -52,6 +53,7 @@ export interface UsageWalletCreateInput {
   overageOutstandingInvoiceId?: string
   overageOutstandingUsd?: number
   overageOutstandingInvoiceUrl?: string
+  capNotifyPendingAt?: Date
   alertsSentThisPeriod?: Record<string, unknown>
   stripeMeteredItemId?: string
   anniversaryDay: number
@@ -81,6 +83,7 @@ export interface UsageWalletUpdateInput {
   overageOutstandingInvoiceId?: string
   overageOutstandingUsd?: number
   overageOutstandingInvoiceUrl?: string
+  capNotifyPendingAt?: Date
   alertsSentThisPeriod?: Record<string, unknown>
   stripeMeteredItemId?: string
   anniversaryDay?: number
