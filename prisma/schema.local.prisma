@@ -4350,6 +4350,13 @@ model SocialProfile {
 model SocialAccount {
   id              String    @id @default(uuid())
   workspaceId     String
+  /// The project that owns this account. `null` = shared with the whole
+  /// workspace, so every project's agent may use it. Deliberately not a
+  /// relation: the cloud keeps mirror rows for accounts a desktop connected
+  /// through the relay, and those carry local project ids the cloud has no
+  /// `Project` row for. Project delete sets this to `null` (the account
+  /// becomes shared) rather than deleting the row or the Zernio account.
+  projectId       String?
   profileId       String
   zernioAccountId String    @unique
   platform        String
@@ -4376,6 +4383,7 @@ model SocialAccount {
 
   @@unique([workspaceId, platform, username])
   @@index([workspaceId, platform])
+  @@index([workspaceId, projectId])
   @@map("social_accounts")
 }
 
