@@ -56,6 +56,12 @@ export const ERROR_CODE_MESSAGES: Record<string, string> = {
   internal_error: 'Something went wrong on our end. Please try again.',
   shutting_down: 'A server update is in progress. Please retry in a few seconds.',
   offline: 'Your machine is offline. Reconnect it, or continue in the cloud.',
+  // Workspace RBAC (SHO-417). Every denial names the thing to ask an admin for,
+  // because the person cannot fix any of these themselves.
+  model_not_allowed: "Your role can't use that model. Ask a workspace admin for access.",
+  ability_not_allowed: 'Your role is not allowed to do that. Ask a workspace admin for access.',
+  spend_cap_reached: "You've reached the spending limit your workspace admin set for you. Ask them to raise it.",
+  rate_limited: "You're sending requests too quickly for your workspace's limit. Wait a moment and try again.",
 }
 
 /**

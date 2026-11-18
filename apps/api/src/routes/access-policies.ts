@@ -17,15 +17,21 @@ import { Hono } from 'hono'
 import { ABILITY_PERMISSIONS, MODEL_TIERS, type Permission } from '@shogo/authz'
 import { loadAccess } from '../lib/authz'
 import {
+  AccessRequestError,
   PolicyValidationError,
   accessModelCatalog,
   allowedModelIdsFor,
+  decideAccessRequest,
   deletePolicy,
   explainAccess,
   getEffectiveAccess,
+  listAccessAudit,
+  listAccessRequests,
   listPolicies,
+  requestAccess,
   upsertPolicy,
   validatePolicyWrite,
+  type AccessRequestStatus,
   type PolicyWrite,
 } from '../services/access-policy.service'
 import { getAllowedModelIds } from '../services/workspace-models.service'
@@ -178,6 +184,100 @@ export function accessPolicyRoutes(config: AccessPolicyRoutesConfig) {
     const explained = await explainAccess(workspaceId, c.req.param('userId'))
     if (!explained) return c.json({ error: { code: 'not_found', message: 'Not a workspace member' } }, 404)
     return c.json(explained)
+  })
+
+  /**
+   * Ask for one ability or one model. Any member, for themselves only — the
+   * requester is the session user, never a body field.
+   */
+  app.post('/workspaces/:workspaceId/access/requests', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const userId = await config.resolveUserId(c)
+    if (!userId) return c.json({ error: { code: 'unauthorized', message: 'Sign in required' } }, 401)
+    const access = await getEffectiveAccess(workspaceId, userId)
+    if (!access) return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
+
+    const body = (await c.req.json().catch(() => null)) as
+      | { permission?: string; modelId?: string; reason?: string }
+      | null
+    if (!body || typeof body !== 'object') {
+      return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+    }
+
+    try {
+      const request = await requestAccess({
+        workspaceId,
+        userId,
+        permission: body.permission ?? null,
+        modelId: body.modelId ?? null,
+        reason: body.reason ?? null,
+      })
+      return c.json({ request })
+    } catch (err) {
+      if (err instanceof AccessRequestError) {
+        return c.json({ error: { code: err.code, message: err.message } }, err.status)
+      }
+      throw err
+    }
+  })
+
+  /** The admin queue: open requests by default, or one status. Admin. */
+  app.get('/workspaces/:workspaceId/access/requests', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const denied = await requireAdmin(c, workspaceId)
+    if (denied) return denied
+
+    const status = c.req.query('status')
+    if (status && status !== 'open' && status !== 'granted' && status !== 'denied') {
+      return c.json({ error: { code: 'invalid_status', message: 'status must be open, granted or denied' } }, 400)
+    }
+    return c.json({
+      requests: await listAccessRequests(workspaceId, { status: status as AccessRequestStatus | undefined }),
+    })
+  })
+
+  /** Approve or deny one request. Admin. */
+  app.post('/workspaces/:workspaceId/access/requests/:requestId/decide', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const denied = await requireAdmin(c, workspaceId)
+    if (denied) return denied
+    const actorUserId = await config.resolveUserId(c)
+
+    const body = (await c.req.json().catch(() => null)) as { approve?: boolean } | null
+    if (!body || typeof body.approve !== 'boolean') {
+      return c.json({ error: { code: 'bad_request', message: 'approve must be true or false' } }, 400)
+    }
+
+    try {
+      const request = await decideAccessRequest({
+        workspaceId,
+        requestId: c.req.param('requestId'),
+        actorUserId,
+        approve: body.approve,
+      })
+      return c.json({ request })
+    } catch (err) {
+      if (err instanceof AccessRequestError) {
+        return c.json({ error: { code: err.code, message: err.message } }, err.status)
+      }
+      throw err
+    }
+  })
+
+  /** The audit trail, newest first. Admin. */
+  app.get('/workspaces/:workspaceId/access/audit', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const denied = await requireAdmin(c, workspaceId)
+    if (denied) return denied
+
+    const limitRaw = Number(c.req.query('limit') ?? 50)
+    return c.json({
+      events: await listAccessAudit(workspaceId, {
+        kind: c.req.query('kind') || undefined,
+        userId: c.req.query('userId') || undefined,
+        limit: Number.isFinite(limitRaw) ? limitRaw : 50,
+      }),
+    })
   })
 
   async function requireAdmin(c: any, workspaceId: string): Promise<Response | null> {

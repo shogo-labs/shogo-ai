@@ -1595,6 +1595,7 @@ async function invokeChat(args: InvokeArgs): Promise<Response> {
     userId: args.userId,
     agentMode: runModel.model,
     ...(runModel.downgrade ? { modelDowngrade: runModel.downgrade } : {}),
+    ...(runModel.autoTiers ? { autoTiers: runModel.autoTiers } : {}),
     clientTurnId: `channel-agent-${args.sessionId}-${crypto.randomUUID()}`,
   })
   const headers = {
@@ -2307,6 +2308,7 @@ async function runReservedReply(
         sessionId,
         chain,
         request,
+        requestedByUserId: args.userId,
       })
         .then((cardId) => { if (cardId) approvalCards.push(cardId) })
         .catch((err) => console.error('[ChannelAgent] approval card failed:', err))

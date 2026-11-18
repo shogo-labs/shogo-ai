@@ -30,6 +30,7 @@ import {
   Users as UsersIcon,
   Boxes as BoxesIcon,
   Shield as ShieldIcon,
+  ShieldCheck as ShieldCheckIcon,
   User as UserIcon,
   ExternalLink as ExternalLinkIcon,
   Trash2 as Trash2Icon,
@@ -118,6 +119,7 @@ import { IntegrationsTab } from "../../components/settings/IntegrationsTab";
 import { AutomationsTab } from "../../components/settings/AutomationsTab";
 import { WorkspaceExportView } from "../../components/settings/WorkspaceExportView";
 import { WorkspaceModelsTab } from "../../components/settings/WorkspaceModelsTab";
+import { WorkspaceAccessTab } from "../../components/settings/WorkspaceAccessTab";
 import { RemoteControlTab } from "../../components/settings/RemoteControlTab";
 import { SetSpendLimitDialog } from "../../components/billing/SetSpendLimitDialog";
 import { MemberUsageDetail } from "../../components/settings/MemberUsageDetail";
@@ -176,6 +178,7 @@ const SETTINGS_ICON_MAP = {
   Users: UsersIcon,
   Boxes: BoxesIcon,
   Shield: ShieldIcon,
+  ShieldCheck: ShieldCheckIcon,
   User: UserIcon,
   ExternalLink: ExternalLinkIcon,
   Trash2: Trash2Icon,
@@ -207,6 +210,7 @@ const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
   people: "Users",
   chat: "MessageSquare",
   models: "Boxes",
+  access: "ShieldCheck",
   integrations: "Plug",
   automations: "Zap",
   "remote-control": "Monitor",
@@ -248,6 +252,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
   "people",
   "chat",
   "models",
+  "access",
   "integrations",
   "automations",
   "remote-control",
@@ -262,6 +267,7 @@ const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
   "workspace",
   "chat",
   "models",
+  "access",
   "integrations",
   "automations",
   "remote-control",
@@ -4249,6 +4255,7 @@ export const SettingsContent = observer(function SettingsContent({
       {activeTab === "people" && !isLocal && <PeopleTab />}
       {activeTab === "chat" && <ChatPreferencesTab highlightSection={section} />}
       {activeTab === "models" && <WorkspaceModelsTab />}
+      {activeTab === "access" && <WorkspaceAccessTab />}
       {activeTab === "integrations" && <IntegrationsTab />}
       {activeTab === "automations" && (
         <AutomationsTab

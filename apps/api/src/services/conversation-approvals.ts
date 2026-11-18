@@ -45,6 +45,12 @@ export interface ApprovalBlock {
   reason?: string
   status: ApprovalStatus
   expiresAt?: string
+  /**
+   * The person the run that asked for this acts for (SHO-417). Deciding your
+   * own request needs no ability; deciding someone else's needs
+   * `agent.approvals:decide`.
+   */
+  requestedByUserId?: string | null
   decidedBy?: { userId: string | null; name: string }
   decidedAt?: string
 }
@@ -116,9 +122,12 @@ export async function postApprovalCard(input: {
   sessionId: string
   chain?: AgentChain | null
   request: ApprovalRequest
+  /** The person this run acts for; see `ApprovalBlock.requestedByUserId`. */
+  requestedByUserId?: string | null
 }): Promise<string | null> {
   const approval: ApprovalBlock = {
     requestId: input.request.id,
+    ...(input.requestedByUserId ? { requestedByUserId: input.requestedByUserId } : {}),
     ...(input.request.kind === 'credential' ? { kind: 'credential' as const } : {}),
     projectId: input.agent.projectId,
     toolName: input.request.toolName,
@@ -185,6 +194,21 @@ export async function decideApproval(input: {
   if (approval.expiresAt && Date.parse(approval.expiresAt) <= now.getTime()) {
     await settle(row, { status: 'expired' })
     throw new AgentMessageError(409, 'expired', 'This request timed out, so the action was not run')
+  }
+
+  // Deciding your own request needs no ability; deciding someone else's does
+  // (SHO-417). A card with no recorded requester predates this check, so it
+  // keeps the old behaviour rather than locking everyone out.
+  const requester = approval.requestedByUserId ?? null
+  if (requester && input.by.userId && requester !== input.by.userId) {
+    const { canUse } = await import('./access-policy.service')
+    if (!(await canUse(row.workspaceId, input.by.userId, 'agent.approvals:decide'))) {
+      throw new AgentMessageError(
+        403,
+        'ability_not_allowed',
+        'Ask a workspace admin for agent.approvals:decide to answer someone else\'s approval.',
+      )
+    }
   }
 
   deciding.add(row.id)

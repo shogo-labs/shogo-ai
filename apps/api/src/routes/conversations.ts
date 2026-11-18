@@ -11,7 +11,7 @@ import { Hono } from 'hono'
 import type { Permission } from '@shogo/authz'
 import { AudioTranscodeError, getTranscodedAudio } from '../lib/audio-transcode'
 import { prisma } from '../lib/prisma'
-import { loadAccess as loadAuthzAccess } from '../lib/authz'
+import { enforceAbility, loadAccess as loadAuthzAccess } from '../lib/authz'
 import { canReceive, subscribeWorkspaceEvents } from '../lib/conversation-bus'
 import {
   MAX_CONVERSATION_FILE_BYTES,
@@ -397,6 +397,11 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const auth = await requireWorkspace(c)
     if (auth instanceof Response) return auth
     const body = await readJson(c)
+    // A private channel is the ability; a public one is not (SHO-417).
+    if (body.kind === 'private') {
+      const denied = await enforceAbility(c, auth.workspaceId, auth.userId, 'channels.private:create')
+      if (denied) return denied
+    }
     try {
       const conversation = await createChannel({
         workspaceId: auth.workspaceId,
@@ -1671,6 +1676,10 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
   router.post(`${base}/:channel/messages`, async (c) => {
     const auth = await config.authorize(c)
     if (auth instanceof Response) return auth
+    // Posting as an agent needs the ability (SHO-417). A call with no person
+    // behind it (a service account) stays unscoped, like every other check.
+    const denied = await enforceAbility(c, auth.workspaceId, auth.userId, 'agent.channels:send')
+    if (denied) return denied
     const body = await readJson(c)
     const projectId = await agentIdentity(auth, body.projectId)
     const limited = await rateLimited(c, `agent:${auth.workspaceId}:${projectId ?? 'ws'}`, CHAT_RATE_LIMITS.agentPost)

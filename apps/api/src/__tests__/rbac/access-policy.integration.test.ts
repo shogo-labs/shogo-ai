@@ -190,6 +190,140 @@ describe('a policy narrows what a member may use', () => {
   })
 })
 
+describe('access requests', () => {
+  const wanted = 'project.secrets:read'
+  let requestId = ''
+
+  test('a member asks for an ability they do not have', async () => {
+    const before = await call(app, as(w.users.member), 'GET', `/api/workspaces/${w.workspaceA}/access/effective`)
+    expect(before.body.abilities).not.toContain(wanted)
+
+    const res = await call(app, as(w.users.member), 'POST', `/api/workspaces/${w.workspaceA}/access/requests`, {
+      permission: wanted,
+      reason: 'I need to rotate the deploy key',
+    })
+    expect(res.status).toBe(200)
+    expect(res.body.request.status).toBe('open')
+    expect(res.body.request.permission).toBe(wanted)
+    expect(res.body.request.userId).toBe(w.users.member)
+    requestId = res.body.request.id
+  })
+
+  test('asking twice returns the request they already have', async () => {
+    const res = await call(app, as(w.users.member), 'POST', `/api/workspaces/${w.workspaceA}/access/requests`, {
+      permission: wanted,
+    })
+    expect(res.status).toBe(200)
+    expect(res.body.request.id).toBe(requestId)
+  })
+
+  test('asking for both an ability and a model is refused', async () => {
+    const res = await call(app, as(w.users.member), 'POST', `/api/workspaces/${w.workspaceA}/access/requests`, {
+      permission: wanted,
+      modelId: premium.id,
+    })
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('invalid_request')
+  })
+
+  test('an unknown ability is refused', async () => {
+    const res = await call(app, as(w.users.member), 'POST', `/api/workspaces/${w.workspaceA}/access/requests`, {
+      permission: 'agent.teleport:use',
+    })
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('invalid_ability')
+  })
+
+  test('a member cannot read the admin queue', async () => {
+    const res = await call(app, as(w.users.member), 'GET', `/api/workspaces/${w.workspaceA}/access/requests`)
+    expect(res.status).toBe(403)
+  })
+
+  test('an owner sees the open request', async () => {
+    const res = await call(app, as(w.users.owner), 'GET', `/api/workspaces/${w.workspaceA}/access/requests`)
+    expect(res.status).toBe(200)
+    const mine = res.body.requests.find((r: any) => r.id === requestId)
+    expect(mine).toBeTruthy()
+    expect(mine.status).toBe('open')
+    expect(mine.reason).toBe('I need to rotate the deploy key')
+  })
+
+  test('a member cannot decide their own request', async () => {
+    const res = await call(
+      app,
+      as(w.users.member),
+      'POST',
+      `/api/workspaces/${w.workspaceA}/access/requests/${requestId}/decide`,
+      { approve: true },
+    )
+    expect(res.status).toBe(403)
+  })
+
+  test('approving grants the ability and closes the request', async () => {
+    const res = await call(
+      app,
+      as(w.users.owner),
+      'POST',
+      `/api/workspaces/${w.workspaceA}/access/requests/${requestId}/decide`,
+      { approve: true },
+    )
+    expect(res.status).toBe(200)
+    expect(res.body.request.status).toBe('granted')
+    expect(res.body.request.decidedByUserId).toBe(w.users.owner)
+
+    const own = await call(app, as(w.users.member), 'GET', `/api/workspaces/${w.workspaceA}/access/effective`)
+    expect(own.body.abilities).toContain(wanted)
+    // The grant is additive: the role's own abilities survive.
+    expect(own.body.abilities).toContain('agent.exec:use')
+  })
+
+  test('deciding the same request twice is a 409', async () => {
+    const res = await call(
+      app,
+      as(w.users.owner),
+      'POST',
+      `/api/workspaces/${w.workspaceA}/access/requests/${requestId}/decide`,
+      { approve: false },
+    )
+    expect(res.status).toBe(409)
+    expect(res.body.error.code).toBe('already_decided')
+  })
+
+  test('a denied request grants nothing', async () => {
+    const ask = await call(app, as(w.users.member), 'POST', `/api/workspaces/${w.workspaceA}/access/requests`, {
+      permission: 'models:use_all',
+    })
+    expect(ask.status).toBe(200)
+
+    const res = await call(
+      app,
+      as(w.users.owner),
+      'POST',
+      `/api/workspaces/${w.workspaceA}/access/requests/${ask.body.request.id}/decide`,
+      { approve: false },
+    )
+    expect(res.status).toBe(200)
+    expect(res.body.request.status).toBe('denied')
+
+    const own = await call(app, as(w.users.member), 'GET', `/api/workspaces/${w.workspaceA}/access/effective`)
+    expect(own.body.abilities).not.toContain('models:use_all')
+  })
+
+  test('the audit trail records the request and the grant', async () => {
+    const res = await call(app, as(w.users.owner), 'GET', `/api/workspaces/${w.workspaceA}/access/audit`)
+    expect(res.status).toBe(200)
+    const kinds = res.body.events.map((e: any) => e.kind)
+    expect(kinds).toContain('access.requested')
+    expect(kinds).toContain('access.granted')
+    expect(kinds).toContain('access.denied')
+  })
+
+  test('a member cannot read the audit trail', async () => {
+    const res = await call(app, as(w.users.member), 'GET', `/api/workspaces/${w.workspaceA}/access/audit`)
+    expect(res.status).toBe(403)
+  })
+})
+
 describe('explain', () => {
   test('an owner sees why a member has their access', async () => {
     const res = await call(

@@ -12,8 +12,9 @@ import { prisma } from '../lib/prisma'
 import { getAgentDefaultModel } from './workspace-agent.service'
 import { isModelVisibleForWorkspace } from './workspace-models.service'
 import { isModelAccessibleForWorkspace } from '../lib/model-access'
-import { getMergedModelEntrySync, resolveModelLabel } from './model-registry.service'
-import { recordAccessEvent, resolveRunModelFor } from './access-policy.service'
+import { getMergedModelEntrySync, resolveModelLabel, resolveModelLabelSync } from './model-registry.service'
+import { recordAccessEvent, allowedAutoTiers, resolveRunModelFor } from './access-policy.service'
+import { resolveEffectiveAgentModelDefaults } from '../lib/runtime/agent-model-defaults'
 import { getRbacMode } from '../lib/authz/mode'
 
 const db = prisma as any
@@ -66,7 +67,14 @@ export interface RunModelResolution {
    * effective set and the run was moved to their default model for this run
    * only (SHO-417, Russell 2026-11-18). The runtime states it in the reply.
    */
-  downgrade: { from: string; to: string } | null
+  downgrade: { from: string; to: string; fromLabel?: string; toLabel?: string } | null
+  /**
+   * The Auto tier map narrowed to this person, or `null` when the run is not on
+   * Auto. The runtime's process-wide `AGENT_AUTO_TIER_MAP` is one map for the
+   * whole workspace, so a per-person cap has to ride on the turn: with this
+   * map, `resolveAutoDowngrade` can only walk models the person may use.
+   */
+  autoTiers: Record<string, string> | null
 }
 
 /**
@@ -88,11 +96,12 @@ export async function resolveAgentRunModelFor(
   actingUserId: string | null | undefined,
 ): Promise<RunModelResolution | null> {
   const configured = await resolveAgentRunModel(projectId, workspaceId)
-  if (!workspaceId || !actingUserId) return { model: configured, downgrade: null }
+  if (!workspaceId || !actingUserId) return { model: configured, downgrade: null, autoTiers: null }
 
+  const autoTiers = await autoTiersFor(workspaceId, actingUserId, configured)
   const resolved = await resolveRunModelFor(workspaceId, actingUserId, configured)
   if (!resolved) return null
-  if (!resolved.downgrade) return { model: resolved.model, downgrade: null }
+  if (!resolved.downgrade) return { model: resolved.model, downgrade: null, autoTiers }
 
   const mode = await getRbacMode()
   await recordAccessEvent({
@@ -115,9 +124,49 @@ export async function resolveAgentRunModelFor(
       from: resolved.downgrade.from,
       to: resolved.downgrade.to,
     })
-    return { model: configured, downgrade: null }
+    return { model: configured, downgrade: null, autoTiers }
   }
-  return { model: resolved.model, downgrade: resolved.downgrade }
+  return { model: resolved.model, downgrade: withLabels(resolved.downgrade), autoTiers }
+}
+
+/**
+ * Name the models in the downgrade so the reply's first line reads
+ * "Ran on Claude Haiku 4.5 because your role can't use Claude Opus 4.5" rather
+ * than two raw ids. A model missing from the catalog keeps its id.
+ */
+function withLabels(downgrade: { from: string; to: string }): {
+  from: string
+  to: string
+  fromLabel?: string
+  toLabel?: string
+} {
+  const fromLabel = resolveModelLabelSync(downgrade.from)
+  const toLabel = resolveModelLabelSync(downgrade.to)
+  return {
+    ...downgrade,
+    ...(fromLabel && fromLabel !== downgrade.from ? { fromLabel } : {}),
+    ...(toLabel && toLabel !== downgrade.to ? { toLabel } : {}),
+  }
+}
+
+/**
+ * The Auto tier map for this person, or `null` when the run is not on Auto.
+ * Every tier maps to a model they may use, so an Auto fallback cannot land
+ * outside their set (AC3).
+ */
+async function autoTiersFor(
+  workspaceId: string,
+  actingUserId: string,
+  configured: string,
+): Promise<Record<string, string> | null> {
+  if (configured !== AUTO_MODEL_ID) return null
+  const defaults = await resolveEffectiveAgentModelDefaults(workspaceId).catch(() => null)
+  if (!defaults) return null
+  const configuredTiers: Record<string, string> = {}
+  for (const [tier, entry] of Object.entries(defaults.autoTiers)) {
+    if (entry?.id) configuredTiers[tier] = entry.id
+  }
+  return allowedAutoTiers(workspaceId, actingUserId, configuredTiers)
 }
 
 /**

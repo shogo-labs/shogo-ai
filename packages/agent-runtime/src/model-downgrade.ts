@@ -13,18 +13,35 @@
 export interface ModelDowngrade {
   from: string
   to: string
+  /** Display names, when the API could resolve them. The notice prefers these. */
+  fromLabel?: string
+  toLabel?: string
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value ? value : null
 }
 
 /** Read `modelDowngrade` off a chat body. Malformed input is ignored. */
 export function parseModelDowngrade(raw: unknown): ModelDowngrade | null {
   if (!raw || typeof raw !== 'object') return null
-  const value = raw as { from?: unknown; to?: unknown }
-  if (typeof value.from !== 'string' || !value.from) return null
-  if (typeof value.to !== 'string' || !value.to) return null
-  return { from: value.from, to: value.to }
+  const value = raw as { from?: unknown; to?: unknown; fromLabel?: unknown; toLabel?: unknown }
+  const from = nonEmptyString(value.from)
+  const to = nonEmptyString(value.to)
+  if (!from || !to) return null
+  const fromLabel = nonEmptyString(value.fromLabel)
+  const toLabel = nonEmptyString(value.toLabel)
+  return {
+    from,
+    to,
+    ...(fromLabel ? { fromLabel } : {}),
+    ...(toLabel ? { toLabel } : {}),
+  }
 }
 
 /** The first line of the reply when a run was moved off its configured model. */
 export function modelDowngradeNotice(downgrade: ModelDowngrade): string {
-  return `Ran on ${downgrade.to} because your role can't use ${downgrade.from}.\n\n`
+  const from = downgrade.fromLabel ?? downgrade.from
+  const to = downgrade.toLabel ?? downgrade.to
+  return `Ran on ${to} because your role can't use ${from}.\n\n`
 }

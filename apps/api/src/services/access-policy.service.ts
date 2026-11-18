@@ -356,6 +356,7 @@ export type AccessAuditKind =
   | 'model.downgraded'
   | 'access.requested'
   | 'access.granted'
+  | 'access.denied'
 
 export interface AccessAuditInput {
   workspaceId: string
@@ -400,8 +401,8 @@ export async function recordAccessEvent(input: AccessAuditInput): Promise<void> 
         onBehalfOfUserId: input.onBehalfOfUserId ?? null,
         permission: input.permission ?? null,
         modelId: input.modelId ?? null,
-        subject: input.subject == null ? null : JSON.stringify(input.subject),
-        detail: input.detail == null ? null : JSON.stringify(input.detail),
+        subject: input.subject == null ? undefined : JSON.stringify(input.subject),
+        detail: input.detail == null ? undefined : JSON.stringify(input.detail),
       },
     })
   } catch (err) {
@@ -626,4 +627,291 @@ export async function explainAccess(
     requestsPerHour: access.requestsPerHour,
     reasons: access.reasons,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Access requests — a member asks, an admin decides
+// ---------------------------------------------------------------------------
+
+/**
+ * A request is an audit row, not a table of its own: `access.requested` opens
+ * it, `access.granted` / `access.denied` closes it, and the decision row names
+ * the request in its `subject`. That keeps one append-only history for "who
+ * asked for what, who said yes" and means a request can never drift out of
+ * sync with the audit trail it belongs to.
+ */
+export type AccessRequestStatus = 'open' | 'granted' | 'denied'
+
+export interface AccessRequestRow {
+  id: string
+  userId: string
+  permission: string | null
+  modelId: string | null
+  reason: string | null
+  createdAt: string
+  status: AccessRequestStatus
+  decidedByUserId: string | null
+  decidedAt: string | null
+}
+
+export class AccessRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly status: 400 | 404 | 409 = 400,
+  ) {
+    super(message)
+  }
+}
+
+interface AuditRowLike {
+  id: string
+  kind: string
+  actorUserId: string | null
+  onBehalfOfUserId: string | null
+  permission: string | null
+  modelId: string | null
+  subject: unknown
+  createdAt: Date
+}
+
+function parseSubject(value: unknown): Record<string, unknown> {
+  if (value == null) return {}
+  if (typeof value === 'object') return value as Record<string, unknown>
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {}
+    } catch {
+      return {}
+    }
+  }
+  return {}
+}
+
+function toAccessRequestRow(
+  row: AuditRowLike,
+  decision?: { status: 'granted' | 'denied'; by: string | null; at: Date },
+): AccessRequestRow {
+  const subject = parseSubject(row.subject)
+  return {
+    id: row.id,
+    userId: row.onBehalfOfUserId ?? row.actorUserId ?? '',
+    permission: row.permission,
+    modelId: row.modelId,
+    reason: typeof subject.reason === 'string' ? subject.reason : null,
+    createdAt: row.createdAt.toISOString(),
+    status: decision?.status ?? 'open',
+    decidedByUserId: decision?.by ?? null,
+    decidedAt: decision?.at ? decision.at.toISOString() : null,
+  }
+}
+
+/**
+ * Requests plus their decisions, newest first. Decisions are always newer than
+ * the request they close, so one descending window holds both — a request whose
+ * decision fell outside the window is simply still open, which is the safe way
+ * to be wrong (an admin can decide it again).
+ */
+async function loadAccessRequests(workspaceId: string, limit = 200): Promise<AccessRequestRow[]> {
+  const rows = (await prisma.accessAuditEvent.findMany({
+    where: {
+      workspaceId,
+      kind: { in: ['access.requested', 'access.granted', 'access.denied'] },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+  })) as AuditRowLike[]
+
+  const decisions = new Map<string, { status: 'granted' | 'denied'; by: string | null; at: Date }>()
+  for (const row of rows) {
+    if (row.kind === 'access.requested') continue
+    const requestId = parseSubject(row.subject).requestId
+    if (typeof requestId !== 'string' || decisions.has(requestId)) continue
+    decisions.set(requestId, {
+      status: row.kind === 'access.granted' ? 'granted' : 'denied',
+      by: row.actorUserId,
+      at: row.createdAt,
+    })
+  }
+
+  return rows
+    .filter((row) => row.kind === 'access.requested')
+    .map((row) => toAccessRequestRow(row, decisions.get(row.id)))
+}
+
+/** Open requests in a workspace, for the admin queue. */
+export async function listAccessRequests(
+  workspaceId: string,
+  opts: { status?: AccessRequestStatus } = {},
+): Promise<AccessRequestRow[]> {
+  const rows = await loadAccessRequests(workspaceId)
+  return opts.status ? rows.filter((row) => row.status === opts.status) : rows
+}
+
+/**
+ * Ask for one ability or one model. At most one open request per person × item,
+ * so a member who asks twice gets the request they already have rather than a
+ * second card for an admin to answer.
+ */
+export async function requestAccess(input: {
+  workspaceId: string
+  userId: string
+  permission?: string | null
+  modelId?: string | null
+  reason?: string | null
+}): Promise<AccessRequestRow> {
+  const permission = input.permission?.trim() || null
+  const modelId = input.modelId?.trim() || null
+  if (!permission === !modelId) {
+    throw new AccessRequestError('Ask for exactly one ability or one model', 'invalid_request')
+  }
+  if (permission && !isAbilityPermissionName(permission)) {
+    throw new AccessRequestError(`Unknown ability: ${permission}`, 'invalid_ability')
+  }
+  if (modelId && !accessModelCatalog().some((m) => m.id === modelId)) {
+    throw new AccessRequestError(`Unknown model: ${modelId}`, 'invalid_model')
+  }
+
+  const open = (await loadAccessRequests(input.workspaceId)).find(
+    (row) =>
+      row.status === 'open' &&
+      row.userId === input.userId &&
+      row.permission === permission &&
+      row.modelId === modelId,
+  )
+  if (open) return open
+
+  const reason = input.reason?.trim().slice(0, 500) || null
+  const row = (await prisma.accessAuditEvent.create({
+    data: {
+      workspaceId: input.workspaceId,
+      kind: 'access.requested',
+      actorUserId: input.userId,
+      onBehalfOfUserId: input.userId,
+      permission,
+      modelId,
+      subject: JSON.stringify({ reason }),
+    },
+  })) as AuditRowLike
+  return toAccessRequestRow(row)
+}
+
+/**
+ * Approve or deny one request. Approving writes the item into the member's own
+ * policy row (merged with whatever they already have) and audits the grant;
+ * denying only audits. Both are idempotent-safe: a second decision on the same
+ * request is a 409 rather than a second grant.
+ */
+export async function decideAccessRequest(input: {
+  workspaceId: string
+  requestId: string
+  actorUserId: string | null
+  approve: boolean
+}): Promise<AccessRequestRow> {
+  const request = (await prisma.accessAuditEvent.findFirst({
+    where: { id: input.requestId, workspaceId: input.workspaceId, kind: 'access.requested' },
+  })) as AuditRowLike | null
+  if (!request) throw new AccessRequestError('No such access request', 'not_found', 404)
+
+  const current = (await loadAccessRequests(input.workspaceId, 500)).find((row) => row.id === request.id)
+  if (current && current.status !== 'open') {
+    throw new AccessRequestError('That request was already decided', 'already_decided', 409)
+  }
+
+  const subjectUserId = request.onBehalfOfUserId ?? request.actorUserId
+  if (input.approve && subjectUserId) {
+    await grantRequestedItem(input.workspaceId, subjectUserId, request, input.actorUserId)
+  }
+
+  await recordAccessEvent({
+    workspaceId: input.workspaceId,
+    kind: input.approve ? 'access.granted' : 'access.denied',
+    actorUserId: input.actorUserId,
+    onBehalfOfUserId: subjectUserId,
+    permission: request.permission,
+    modelId: request.modelId,
+    subject: { requestId: request.id },
+  })
+
+  return {
+    ...toAccessRequestRow(request),
+    status: input.approve ? 'granted' : 'denied',
+    decidedByUserId: input.actorUserId,
+    decidedAt: new Date().toISOString(),
+  }
+}
+
+/** Merge one ability or model into a member's policy row, keeping the rest. */
+async function grantRequestedItem(
+  workspaceId: string,
+  userId: string,
+  request: AuditRowLike,
+  actorUserId: string | null,
+): Promise<void> {
+  const existing = (await prisma.accessPolicy.findUnique({
+    where: { workspaceId_subjectType_subjectId: { workspaceId, subjectType: 'member', subjectId: userId } },
+  })) as Record<string, unknown> | null
+
+  const abilities = parseJsonArray(existing?.abilities) ?? []
+  const modelIds = parseJsonArray(existing?.modelIds) ?? []
+  if (request.permission && !abilities.includes(request.permission)) abilities.push(request.permission)
+  if (request.modelId && !modelIds.includes(request.modelId)) modelIds.push(request.modelId)
+
+  await upsertPolicy(
+    workspaceId,
+    {
+      subjectType: 'member',
+      subjectId: userId,
+      abilities: abilities.length ? abilities : null,
+      modelIds: modelIds.length ? modelIds : null,
+      modelTiers: parseJsonArray(existing?.modelTiers),
+      defaultModelId: (existing?.defaultModelId as string | null) ?? null,
+      spendCapUsd: (existing?.spendCapUsd as number | null) ?? null,
+      spendPeriod: (existing?.spendPeriod as string | null) ?? null,
+      requestsPerHour: (existing?.requestsPerHour as number | null) ?? null,
+    },
+    actorUserId,
+  )
+}
+
+/** The audit trail, newest first, for the settings screen. */
+export async function listAccessAudit(
+  workspaceId: string,
+  opts: { kind?: string; userId?: string; limit?: number } = {},
+): Promise<
+  Array<{
+    id: string
+    kind: string
+    actorUserId: string | null
+    onBehalfOfUserId: string | null
+    permission: string | null
+    modelId: string | null
+    subject: Record<string, unknown>
+    detail: Record<string, unknown>
+    createdAt: string
+  }>
+> {
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200)
+  const where: Record<string, unknown> = { workspaceId }
+  if (opts.kind) where.kind = opts.kind
+  if (opts.userId) where.OR = [{ actorUserId: opts.userId }, { onBehalfOfUserId: opts.userId }]
+
+  const rows = (await prisma.accessAuditEvent.findMany({
+    where,
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+  })) as Array<AuditRowLike & { detail: unknown }>
+
+  return rows.map((row) => ({
+    id: row.id,
+    kind: row.kind,
+    actorUserId: row.actorUserId,
+    onBehalfOfUserId: row.onBehalfOfUserId,
+    permission: row.permission,
+    modelId: row.modelId,
+    subject: parseSubject(row.subject),
+    detail: parseSubject(row.detail),
+    createdAt: row.createdAt.toISOString(),
+  }))
 }

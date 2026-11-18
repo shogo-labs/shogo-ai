@@ -2211,6 +2211,9 @@ app.post('/agent/chat', async (c) => {
   // Always replace: the gateway is a process singleton, so a missing
   // `viewer` must clear the previous request's phone/desktop hint.
   agentGateway!.setViewerContext(body.viewer)
+  // Same for the Auto tier map: the API narrows it to the person this run acts
+  // for, and a request without one must fall back to the process map (SHO-417).
+  agentGateway!.setTurnAutoTiers(body.autoTiers)
   agentGateway!.setAccountContext(parseAccountContext(body))
 
   const chatUserId = c.req.header('X-User-Id') || body.userId || undefined

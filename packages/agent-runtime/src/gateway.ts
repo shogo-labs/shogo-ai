@@ -316,8 +316,30 @@ function parseAutoTierOverride(raw: string | undefined): AutoTierOverride | unde
   return Object.keys(out).length > 0 ? out : undefined
 }
 
-const FALLBACK_SUMMARIZER_MODEL = { id: 'claude-haiku-4-5', provider: 'anthropic' }
+/**
+ * Parse the per-turn Auto tier map the API stamps on a chat body (SHO-417).
+ * Accepts either `{ economy: 'model-id' }` (what the API sends) or the
+ * `{ economy: { id } }` shape `AGENT_AUTO_TIER_MAP` uses, so one parser covers
+ * both. Malformed input is ignored: the process map then applies.
+ */
+function parseTurnAutoTiers(raw: unknown): AutoTierOverride | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const src = raw as Record<string, unknown>
+  const out: AutoTierOverride = {}
+  for (const tier of ['economy', 'standard', 'premium'] as const) {
+    const entry = src[tier]
+    const id =
+      typeof entry === 'string'
+        ? entry.trim()
+        : entry && typeof entry === 'object' && typeof (entry as { id?: unknown }).id === 'string'
+          ? ((entry as { id: string }).id).trim()
+          : ''
+    if (id) out[tier] = { id }
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
 
+const FALLBACK_SUMMARIZER_MODEL = { id: 'claude-haiku-4-5', provider: 'anthropic' }
 /**
  * True when the agent loop ended because the user pressed Stop. Such a turn
  * can legitimately have no text (e.g. stopped during a tool call) and must not
@@ -1153,6 +1175,13 @@ export class AgentGateway {
    * `AGENT_AUTO_TIER_MAP` env var. Undefined keeps the hardcoded defaults.
    */
   private autoTierOverride?: AutoTierOverride
+  /**
+   * The Auto tier map for the turn in flight, narrowed to the person it acts
+   * for (SHO-417). Set from the chat body on every request; when present it
+   * wins over `autoTierOverride`, so an Auto fallback cannot walk outside the
+   * person's effective set.
+   */
+  private turnAutoTiers?: AutoTierOverride
 
   // ── BETA: per-chat git worktrees ──────────────────────────────────────────
   /** Lazily-created worktree manager (null until first use when enabled). */
@@ -1328,6 +1357,17 @@ export class AgentGateway {
 
   setUserTimezone(tz: string): void {
     this.userTimezone = tz
+  }
+
+  /**
+   * The Auto tier map for the turn about to run, narrowed to the person it acts
+   * for (SHO-417). Replaced on every chat request, like `setViewerContext`: the
+   * process-wide `AGENT_AUTO_TIER_MAP` is one map for the whole workspace, so a
+   * per-person cap has to ride on the turn. `undefined` clears it and the
+   * process map applies again.
+   */
+  setTurnAutoTiers(raw: unknown): void {
+    this.turnAutoTiers = parseTurnAutoTiers(raw)
   }
 
   /** Live canvas preview size from the Studio client (iPhone vs desktop).
@@ -3589,8 +3629,11 @@ export class AgentGateway {
     let autoSelectedTier: AutoTierCeiling | undefined
 
     if (autoRouting) {
-      autoTiers = buildAutoTierMap(autoTierIds(this.autoTierOverride))
-      autoProviderHints = autoTierProviderHints(this.autoTierOverride)
+      // A per-turn map (narrowed to the person this run acts for) wins over the
+      // process-wide one, so an Auto fallback cannot leave their effective set.
+      const tierOverride = this.turnAutoTiers ?? this.autoTierOverride
+      autoTiers = buildAutoTierMap(autoTierIds(tierOverride))
+      autoProviderHints = autoTierProviderHints(tierOverride)
       const estimatedTokens = this.sessionManager.estimateTokens(session)
       const classInput: SpawnClassificationInput = {
         prompt,
@@ -3756,7 +3799,7 @@ export class AgentGateway {
       effectiveModel: modelId,
       effectiveProvider: provider,
       autoRouting,
-      autoTierOverride: this.autoTierOverride,
+      autoTierOverride: this.turnAutoTiers ?? this.autoTierOverride,
       dualPlan,
       shellState: sessionId ? {
         getCwd: () => this.shellCwd.get(sessionId!) || this.initialShellCwd(sessionWorkspaceDir),

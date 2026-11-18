@@ -26,7 +26,7 @@ import {
 } from '../services/checkpoint.service'
 import { prisma } from '../lib/prisma'
 import type { Permission } from '@shogo/authz'
-import { accessibleProjectsWhere, decide, getRbacMode, loadAccess, resolveAgentActor } from '../lib/authz'
+import { accessibleProjectsWhere, decide, enforceAbility, getRbacMode, loadAccess, resolveAgentActor } from '../lib/authz'
 import {
   authorizeAttachmentAction,
   filterReadableAttachments,
@@ -1524,17 +1524,18 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.post('/projects/:projectId/shared-files', async (c) => {
     const projectId = c.req.param('projectId')
     if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
-    if (!(await validateAuth(c, projectId))) {
+    const identity = await authenticate(c, projectId)
+    if (!identity) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
-    return mintSharedFileLink(c, projectId, async () => {
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { workspaceId: true },
-      })
-      if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
-      return { projectId, workspaceId: project.workspaceId }
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
     })
+    if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+    const denied = await enforceWorkspaceAbility(c, identity, project.workspaceId, 'project.files:share_public')
+    if (denied) return denied
+    return mintSharedFileLink(c, projectId, async () => ({ projectId, workspaceId: project.workspaceId }))
   })
 
   /**
@@ -1547,9 +1548,12 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.post('/workspaces/:workspaceId/shared-files', async (c) => {
     const workspaceId = c.req.param('workspaceId')
     if (!workspaceId) return c.json({ error: 'Missing workspaceId' }, 400)
-    if (!(await authorizeWorkspaceRuntimeRequest(c, workspaceId))) {
+    const identity = await authorizeWorkspaceRuntimeRequest(c, workspaceId)
+    if (!identity) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
+    const denied = await enforceWorkspaceAbility(c, identity, workspaceId, 'project.files:share_public')
+    if (denied) return denied
     return mintSharedFileLink(c, `workspace ${workspaceId}`, async () => ({ workspaceId }))
   })
 
@@ -1735,7 +1739,16 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.get('/projects/:projectId/github/cli-credentials', async (c) => {
     const projectId = c.req.param('projectId')
     if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
-    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const projectWorkspace = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
+    })
+    if (projectWorkspace) {
+      const denied = await enforceWorkspaceAbility(c, identity, projectWorkspace.workspaceId, 'project.secrets:read')
+      if (denied) return denied
+    }
 
     try {
       if (!loadGitHub) {
@@ -1856,7 +1869,16 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.post('/projects/:projectId/integrations/resolve', async (c) => {
     const projectId = c.req.param('projectId')
     if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
-    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const projectWorkspace = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
+    })
+    if (projectWorkspace) {
+      const denied = await enforceWorkspaceAbility(c, identity, projectWorkspace.workspaceId, 'integrations:connect')
+      if (denied) return denied
+    }
     const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
     const provider = typeof body?.provider === 'string' ? body.provider.trim() : ''
     const op = body?.op === 'read' ? 'read' : 'write'
@@ -2538,6 +2560,24 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const decision = await decide(access, permission, actor.principal, `${c.req.method} ${c.req.path}`)
     if (!decision.ok) return c.json({ error: { code: decision.code, message: decision.message } }, decision.status)
     return null
+  }
+
+  /**
+   * The ability gate for an internal route (SHO-417). Resolves the person the
+   * call acts for and refuses when they lack `permission` — the server half of
+   * the runtime's tool filter. A service account with no person stays unscoped,
+   * like every other internal check.
+   */
+  async function enforceWorkspaceAbility(
+    c: Context,
+    identity: InternalIdentity,
+    workspaceId: string,
+    permission: Permission,
+  ): Promise<Response | null> {
+    if (identity.kind === 'sa') return null
+    const actor = await resolveAgentActor(c, identity, { workspaceId })
+    if (!actor?.principal.userId || actor.unscoped) return null
+    return enforceAbility(c, workspaceId, actor.principal.userId, permission)
   }
 
   function lifecycleErrorResponse(c: Context, err: unknown): Response {
@@ -3428,6 +3468,8 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         403,
       )
     }
+    const abilityDenied = await enforceAbility(c, workspaceId, ticket.userId, 'instance.commands:run')
+    if (abilityDenied) return abilityDenied
     if ((await getWorkspaceKind(workspaceId)) !== 'personal') {
       return c.json(
         {
@@ -3591,6 +3633,8 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       c, authz.identity, authz.workspaceId, projectId, remoteToolPermission(tool),
     )
     if (denied) return denied
+    const abilityDenied = await enforceWorkspaceAbility(c, authz.identity, authz.workspaceId, 'instance.commands:run')
+    if (abilityDenied) return abilityDenied
 
     const callerProjectId =
       authz.identity.kind === 'project'
