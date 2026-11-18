@@ -124,7 +124,10 @@ export class FcApi {
    * around it. `path_on_host` must be the same file the drive was attached with.
    */
   patchDrive(driveId: string, pathOnHost: string) {
-    return this.patch(`/drives/${driveId}`, { path_on_host: pathOnHost })
+    // Firecracker requires `drive_id` in the PATCH body too (it 400s with
+    // "missing field drive_id" otherwise) — the path segment alone is not
+    // enough. SHO-401.
+    return this.patch(`/drives/${driveId}`, { drive_id: driveId, path_on_host: pathOnHost })
   }
 
   /**

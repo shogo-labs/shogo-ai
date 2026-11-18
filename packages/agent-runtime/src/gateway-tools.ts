@@ -2102,11 +2102,14 @@ async function withDiskFullHint(result: AgentToolResult<any>): Promise<AgentTool
   const usage = await readWorkspaceDriveUsage()
   if (!usage) return result
   const gib = (b: number) => Math.round((b / 1024 ** 3) * 10) / 10
+  // A workspace runtime's drive is the workspace's, not one project's, so the
+  // setting lives under Workspace → Disk (SHO-401).
+  const where = isWorkspaceRuntimeMode() ? 'Settings → Workspace → Disk' : 'Settings → Disk'
   return textResult({
     ...details,
     diskHint:
       `The project disk is full (${gib(usage.usedBytes)} of ${gib(usage.totalBytes)} GiB). ` +
-      'Free space, or raise it in Settings → Disk.',
+      `Free space, or raise it in ${where}.`,
   })
 }
 

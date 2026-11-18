@@ -29,11 +29,13 @@ export interface InstanceSizeSpec {
   storageGbLabel: string
   diskSizeLimit: string
   /**
-   * Ceiling (GiB) for a project's WORKSPACE drive on metal — the ext4 drive at
+   * GiB of workspace drive this tier INCLUDES on metal — the ext4 drive at
    * /data that holds the project itself. Distinct from `diskSizeLimit`, which
-   * is the Knative overlay. See `resolveWorkspaceDiskMiB`.
+   * is the Knative overlay. A workspace that may buy the disk add-on can grow
+   * past this up to `MAX_WORKSPACE_DISK_GIB`; one that may not is capped here.
+   * See `workspaceDiskCeilingGiB` / `resolveWorkspaceDiskMiB`.
    */
-  workspaceDiskMaxGiB: number
+  workspaceDiskIncludedGiB: number
   baseCostMonthly: number
   baseCostAnnual: number
   minScale: number
@@ -53,7 +55,7 @@ export const INSTANCE_SIZES: Record<InstanceSizeName, InstanceSizeSpec> = {
     storageLimitBytes: 1 * 1024 ** 3,
     storageGbLabel: '1 GB',
     diskSizeLimit: '2Gi',
-    workspaceDiskMaxGiB: 20,
+    workspaceDiskIncludedGiB: 20,
     baseCostMonthly: 0,
     baseCostAnnual: 0,
     minScale: 0,
@@ -69,7 +71,7 @@ export const INSTANCE_SIZES: Record<InstanceSizeName, InstanceSizeSpec> = {
     storageLimitBytes: 5 * 1024 ** 3,
     storageGbLabel: '5 GB',
     diskSizeLimit: '4Gi',
-    workspaceDiskMaxGiB: 20,
+    workspaceDiskIncludedGiB: 20,
     baseCostMonthly: 15,
     baseCostAnnual: 150,
     minScale: 1,
@@ -85,7 +87,7 @@ export const INSTANCE_SIZES: Record<InstanceSizeName, InstanceSizeSpec> = {
     storageLimitBytes: 20 * 1024 ** 3,
     storageGbLabel: '20 GB',
     diskSizeLimit: '8Gi',
-    workspaceDiskMaxGiB: 40,
+    workspaceDiskIncludedGiB: 40,
     baseCostMonthly: 40,
     baseCostAnnual: 400,
     minScale: 1,
@@ -101,7 +103,7 @@ export const INSTANCE_SIZES: Record<InstanceSizeName, InstanceSizeSpec> = {
     storageLimitBytes: 100 * 1024 ** 3,
     storageGbLabel: '100 GB',
     diskSizeLimit: '16Gi',
-    workspaceDiskMaxGiB: 80,
+    workspaceDiskIncludedGiB: 80,
     baseCostMonthly: 80,
     baseCostAnnual: 800,
     minScale: 1,
@@ -117,7 +119,7 @@ export const INSTANCE_SIZES: Record<InstanceSizeName, InstanceSizeSpec> = {
     storageLimitBytes: 200 * 1024 ** 3,
     storageGbLabel: '200 GB',
     diskSizeLimit: '32Gi',
-    workspaceDiskMaxGiB: 160,
+    workspaceDiskIncludedGiB: 160,
     baseCostMonthly: 150,
     baseCostAnnual: 1500,
     minScale: 1,
@@ -145,28 +147,50 @@ export const DEFAULT_WORKSPACE_DISK_GIB = 20
  */
 export const MAX_WORKSPACE_DISK_GIB = 200
 
-/** Largest workspace drive (GiB) a project on `instanceSize` may ask for. */
-export function workspaceDiskCeilingGiB(instanceSize: InstanceSizeName): number {
+/** GiB of workspace drive `instanceSize` includes before the paid add-on. */
+export function workspaceDiskIncludedGiB(instanceSize: InstanceSizeName): number {
   const spec = (INSTANCE_SIZES as Record<string, InstanceSizeSpec>)[instanceSize] ?? INSTANCE_SIZES.micro
-  return Math.max(DEFAULT_WORKSPACE_DISK_GIB, Math.min(spec.workspaceDiskMaxGiB, MAX_WORKSPACE_DISK_GIB))
+  return Math.max(DEFAULT_WORKSPACE_DISK_GIB, Math.min(spec.workspaceDiskIncludedGiB, MAX_WORKSPACE_DISK_GIB))
+}
+
+/**
+ * Largest workspace drive (GiB) a project on `instanceSize` may ask for.
+ *
+ * A workspace that may buy the disk add-on can go all the way to
+ * `MAX_WORKSPACE_DISK_GIB` (the host's `METAL_WORKSPACE_DRIVE_MAX_MIB`); one
+ * that may not is capped at what its tier includes.
+ */
+export function workspaceDiskCeilingGiB(
+  instanceSize: InstanceSizeName,
+  opts: { canBuyAddon?: boolean } = {},
+): number {
+  if (opts.canBuyAddon) return MAX_WORKSPACE_DISK_GIB
+  return workspaceDiskIncludedGiB(instanceSize)
 }
 
 /**
  * The workspace-drive size (MiB) to hand a metal host for one assignment.
  *
- * `requestedGiB` is `Project.workspaceDiskGiB` — null when the project never
- * asked. Drives never shrink (ext4 cannot shrink online, and the drive is
- * sparse so a bigger logical size costs nothing until written), so a request
- * below the default — or below the ceiling after a tier downgrade — clamps UP
- * to the default and only caps future growth.
+ * `requestedGiB` is `Project.workspaceDiskGiB` / `Workspace.runtimeDiskGiB` —
+ * null when nothing was ever asked. Drives never shrink (ext4 cannot shrink
+ * online, and the drive is sparse so a bigger logical size costs nothing until
+ * written), so a request below the default clamps UP to the default.
+ *
+ * It clamps only to the **host hard cap** (`MAX_WORKSPACE_DISK_GIB`), never to
+ * the tier ceiling. The tier ceiling is a *write-path* rule enforced by
+ * `planDiskChange`; clamping a stored size down here would shrink a drive that
+ * was legitimately bought on a paid plan and then downgraded — a cold boot
+ * would restore a 50 GiB drive into a 20 GiB file, which is the exact data-loss
+ * mode SHO-401 exists to prevent. A downgraded plan keeps its size (and keeps
+ * paying the add-on for it); it just can't grow.
  */
 export function resolveWorkspaceDiskMiB(
   requestedGiB: number | null | undefined,
   instanceSize: InstanceSizeName,
 ): number {
-  const ceiling = workspaceDiskCeilingGiB(instanceSize)
+  void instanceSize
   const wanted = typeof requestedGiB === 'number' && Number.isFinite(requestedGiB) ? Math.floor(requestedGiB) : 0
-  const gib = Math.min(Math.max(wanted, DEFAULT_WORKSPACE_DISK_GIB), ceiling)
+  const gib = Math.min(Math.max(wanted, DEFAULT_WORKSPACE_DISK_GIB), MAX_WORKSPACE_DISK_GIB)
   return gib * 1024
 }
 

@@ -29,6 +29,7 @@ export type UsageCategory =
   | 'hosting'
   | 'social'
   | 'native'
+  | 'storage'
 
 /** Billed action type → the dashboard category it rolls up into. */
 export const BILLED_USAGE_ACTION_TYPES = {
@@ -46,6 +47,8 @@ export const BILLED_USAGE_ACTION_TYPES = {
   ai_live_session_minutes: 'voice',
   voice_media_usage: 'voice',
   published_hosting: 'hosting',
+  // Workspace drive above the tier's included GiB (SHO-401).
+  disk_addon: 'storage',
   social_account_monthly: 'social',
   social_dm: 'social',
   social_x_api: 'social',
@@ -111,6 +114,7 @@ export const USAGE_CATEGORY_LABELS: Record<UsageCategory, string> = {
   // update MAU, so "Native build" would misname two of the three. The per-type
   // names below are what the rows show.
   native: 'Native',
+  storage: 'Storage',
 }
 
 /** Chart legend / dropdown order — chat first, then media, then the rest. */
@@ -125,6 +129,7 @@ export const USAGE_CATEGORY_ORDER: UsageCategory[] = [
   'hosting',
   'social',
   'native',
+  'storage',
 ]
 
 export function usageCategoryLabel(category: UsageCategory): string {
@@ -142,6 +147,7 @@ export function usageCategoryLabel(category: UsageCategory): string {
  */
 export const USAGE_ACTION_LABELS: Partial<Record<BilledUsageActionType, string>> = {
   published_hosting: 'Published hosting',
+  disk_addon: 'Disk add-on',
   social_account_monthly: 'Social: account',
   social_dm: 'Social: DM',
   social_x_api: 'Social: X API',
