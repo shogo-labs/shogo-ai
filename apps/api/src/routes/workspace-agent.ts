@@ -948,7 +948,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
   router.get('/workspaces/:workspaceId/active-chats', async (c) => {
     const auth = await authorize(c)
     if (auth instanceof Response) return auth
-    const chats = await listActiveChatTurns(auth.workspaceId)
+    const chats = await listActiveChatTurns(auth.workspaceId, { viewerUserId: auth.userId })
     return c.json({ chats })
   })
 

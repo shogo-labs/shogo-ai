@@ -4,7 +4,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { ActiveChatTurn, AgentTask } from '../api'
 import type { InboxItem, SentMessage } from '../team-chat-api'
-import { ACTIVITY_FILTERS, activityBadge, buildFeed, groupFeed, inboxEntry, matchesFilter, relativeTime, sectionFor, sentEntry, taskEntry, type ActivityEntry } from '../activity-feed'
+import { ACTIVITY_FILTERS, activityBadge, buildFeed, canStopRunningChat, chatEntry, groupFeed, inboxEntry, matchesFilter, relativeTime, sectionFor, sentEntry, taskEntry, type ActivityEntry } from '../activity-feed'
 
 const NOW = Date.parse('2026-10-01T12:00:00Z')
 const ago = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString()
@@ -123,6 +123,70 @@ describe('agent entries', () => {
 
   test('a running task previews its current step', () => {
     expect(taskEntry(task({ id: 'e', status: 'running', currentStep: 'Reading statements' }), NOW).preview).toBe('Reading statements')
+  })
+})
+
+describe('running chats', () => {
+  /** What the dispatcher stores today: the channel, then the message that woke the agent. */
+  const running = (over: Partial<ActiveChatTurn> = {}): ActiveChatTurn => ({
+    ...chat,
+    agentName: 'Shogo Dev 2',
+    conversationId: 'conv-1',
+    conversationName: 'shogo-dev',
+    conversationKind: 'public',
+    threadRootId: 'thread-1',
+    messageId: 'msg-1',
+    sessionName: '#shogo-dev: fix SHO-421 on your branch',
+    ...over,
+  })
+
+  test('a card thread is titled by its card, and nothing else', () => {
+    expect(chatEntry(running({ card: { key: 'SHO-421', title: 'A full PR from an empty channel' } }), NOW).title)
+      .toBe('SHO-421 · A full PR from an empty channel')
+  })
+
+  test('a stored channel label drops the channel and the tag that woke the agent', () => {
+    expect(chatEntry(running({ sessionName: '#shogo-dev: @Shogo Dev 2 fix SHO-421 on your branch' }), NOW).title)
+      .toBe('fix SHO-421 on your branch')
+  })
+
+  test('an old session that stored the unresolved `@agent` reads as the message', () => {
+    expect(chatEntry(running({ sessionName: '#shogo-dev: @agent plan a card for this and begin' }), NOW).title)
+      .toBe('plan a card for this and begin')
+  })
+
+  test('the second line says who, where and how long — never the old filler', () => {
+    const entry = chatEntry(running(), NOW)
+    expect(entry.context).toBe('Shogo Dev 2 · #shogo-dev · 2m')
+    expect(entry.preview).toBe('')
+    expect(`${entry.context} ${entry.preview}`).not.toContain('An agent is responding')
+  })
+
+  test('a project chat with no channel says where it is instead', () => {
+    const entry = chatEntry(running({ conversationName: null, conversationId: undefined, projectId: 'proj-1', projectName: 'Website' }), NOW)
+    expect(entry.context).toBe('Shogo Dev 2 · Website · 2m')
+  })
+
+  test('two runs of one agent sit together, each newest first, and stay two rows', () => {
+    const feed = buildFeed({
+      inbox: [],
+      tasks: [],
+      activeChats: [
+        running({ chatSessionId: 's-old', turnId: 't1', agentName: 'Shogo Dev 1', startedAt: ago(30), card: { key: 'SHO-1', title: 'one' } }),
+        running({ chatSessionId: 's-new', turnId: 't2', agentName: 'Shogo Dev 2', startedAt: ago(1), card: { key: 'SHO-2', title: 'two' } }),
+        running({ chatSessionId: 's-mid', turnId: 't3', agentName: 'Shogo Dev 2', startedAt: ago(10), card: { key: 'SHO-3', title: 'three' } }),
+      ],
+      now: NOW,
+    })
+    expect(feed.running.map((e) => e.agent?.chat?.card?.key)).toEqual(['SHO-1', 'SHO-2', 'SHO-3'])
+  })
+
+  test('a viewer is offered no stop; a member is, on any real run', () => {
+    expect(canStopRunningChat(running())).toBe(true)
+    expect(canStopRunningChat(running({ canStop: true }))).toBe(true)
+    expect(canStopRunningChat(running({ canStop: false }))).toBe(false)
+    expect(canStopRunningChat({ chatSessionId: 's1' })).toBe(true)
+    expect(canStopRunningChat({ chatSessionId: '' })).toBe(false)
   })
 })
 

@@ -160,6 +160,12 @@ export interface WorkspaceActiveChat {
   projectName: string | null
   projectHidden: boolean
   startedAt: string
+  /** The agent running this turn: the project agent, or the workspace agent. */
+  agentName?: string | null
+  /** The card whose thread the reply is posted in, when the thread is one. */
+  card?: { key: string; title: string } | null
+  /** False when the viewer may not stop this reply (a workspace viewer). */
+  canStop?: boolean
   /**
    * Set when this turn is an agent reply inside team chat. The client uses it
    * to open that channel or thread instead of a separate project session.
