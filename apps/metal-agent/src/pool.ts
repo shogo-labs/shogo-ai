@@ -514,6 +514,18 @@ export interface AssignedVm {
    * for `/api/*` (SHO-420 QA round 1).
    */
   needsUserActivityBaseline?: boolean
+  /**
+   * Wall-clock (ms) the current unbroken busy streak started: set by the first
+   * successful poll that reports busy, cleared by any successful poll that does
+   * not. A failed poll leaves it alone. The busy-idle ceiling requires this to
+   * be past the ceiling too, so a real turn driven by something other than an
+   * app request or `/agent/chat` (a project call, a trigger hook, a webchat or
+   * channel message) is not frozen mid-stream just because no person has used
+   * the VM for hours. A stuck guest never reports not-busy, so its streak only
+   * grows. On adopt it is seeded from the baselined `lastUserActivityAt`, so a
+   * deploy does not hand a stuck guest another full ceiling.
+   */
+  busySince?: number
   /** Wall-clock of the last periodic source backup (in memory only; see exportAllSource). */
   lastPeriodicSourceBackupAt?: number
   /**
@@ -5647,8 +5659,14 @@ export class MetalWarmPool {
             // Guest clock skew is seconds; the ceiling is hours.
             const reported = [appAt, agentAt].filter((t): t is number => typeof t === 'number')
             if (reported.length) a.lastUserActivityAt = Math.min(now, Math.max(...reported))
+            // The streak's start did not survive the restart either. A guest
+            // busy now with no user since the baseline is assumed busy since
+            // then; otherwise every deploy restarts a stuck guest's streak.
+            if (this.vmBusy(a) && a.busySince === undefined) a.busySince = a.lastUserActivityAt
           }
           if (reportsPerClass) a.needsUserActivityBaseline = false
+          if (this.vmBusy(a)) a.busySince ??= now
+          else a.busySince = undefined
 
           if (typeof appAt === 'number') {
             const advanced = appAt > (a.lastAppRequestAt ?? 0)
@@ -5785,7 +5803,12 @@ export class MetalWarmPool {
     const ceiling = this.cfg.busyIdleCeilingMs
     if (!(ceiling > 0)) return false
     if (a.alwaysOn || a.perClassActivity !== true) return false
-    return now - (a.lastUserActivityAt ?? a.assignedAt) >= ceiling
+    if (!this.vmBusy(a)) return false
+    const userIdleAt = a.lastUserActivityAt ?? a.assignedAt
+    // Both clocks: no person for the ceiling AND busy without a break for it.
+    // A turn that started recently (a project call, a hook, a webchat message)
+    // is real work even when no person has used the VM for hours.
+    return now - userIdleAt >= ceiling && now - (a.busySince ?? userIdleAt) >= ceiling
   }
 
   /**

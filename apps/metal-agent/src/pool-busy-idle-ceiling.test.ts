@@ -121,6 +121,7 @@ describe('busy-idle ceiling', () => {
       lastTouchedAt: old,
       lastRealActivityAt: old,
       lastUserActivityAt: old,
+      busySince: old,
       perClassActivity: true,
       lastAppRequestAt: old,
       lastAgentRequestAt: old,
@@ -148,6 +149,7 @@ describe('busy-idle ceiling', () => {
       lastTouchedAt: old,
       lastRealActivityAt: old,
       lastUserActivityAt: old,
+      busySince: old,
       perClassActivity: true,
       lastAppRequestAt: old,
       lastAgentRequestAt: old,
@@ -185,6 +187,7 @@ describe('busy-idle ceiling', () => {
       lastTouchedAt: old,
       lastRealActivityAt: old,
       lastUserActivityAt: old,
+      busySince: old,
       perClassActivity: true,
       lastAppRequestAt: old,
       lastAgentRequestAt: old,
@@ -205,6 +208,7 @@ describe('busy-idle ceiling', () => {
       lastTouchedAt: old,
       lastRealActivityAt: old,
       lastUserActivityAt: old,
+      busySince: old,
       perClassActivity: true,
       lastAppRequestAt: old,
       lastAgentRequestAt: old,
@@ -225,6 +229,7 @@ describe('busy-idle ceiling', () => {
       lastTouchedAt: old,
       lastRealActivityAt: old,
       lastUserActivityAt: old,
+      busySince: old,
     })
 
     // No lastAppRequestAt/lastAgentRequestAt keys at all: an older runtime that
@@ -385,6 +390,7 @@ describe('busy-idle ceiling', () => {
       lastTouchedAt: old,
       lastRealActivityAt: old,
       lastUserActivityAt: old,
+      busySince: old,
       perClassActivity: true,
       lastAppRequestAt: old,
       lastAgentRequestAt: old,
@@ -402,5 +408,102 @@ describe('busy-idle ceiling', () => {
     expect(listed.busy).toBe(true)
     expect(listed.busyIdle).toBe(true)
     expect(listed.userIdleMs).toBeGreaterThanOrEqual(2 * CEILING_MS)
+  })
+
+  test('does not freeze a turn that just started from a non-user path (project call, hook, webchat)', async () => {
+    const pool = makePool(dir)
+    const old = Date.now() - 2 * CEILING_MS
+    // No app request or /agent/chat for two ceilings, and idle at the last poll.
+    const a = pool.seed('hooked', {
+      assignedAt: old,
+      lastTouchedAt: old,
+      lastRealActivityAt: old,
+      lastUserActivityAt: old,
+      perClassActivity: true,
+      lastAppRequestAt: old,
+      lastAgentRequestAt: old,
+    })
+
+    // A trigger hook starts a turn: busy now, but neither per-class clock moves.
+    globalThis.fetch = stuckBusyGuest(old) as any
+    await pool.pollActivity()
+    expect(a.busy).toBe(true)
+    expect(a.busySince).toBeGreaterThan(old)
+    expect(pool.getProjectStatus('hooked').busyIdle).toBe(false)
+    expect(await pool.reapIdle(IDLE_MS)).toEqual([])
+    expect(pool.peek('hooked')).toBeDefined()
+  })
+
+  test('a poll that reports not-busy ends the streak, so the next busy turn starts a fresh one', async () => {
+    const pool = makePool(dir)
+    const old = Date.now() - 2 * CEILING_MS
+    const a = pool.seed('between-turns', {
+      assignedAt: old,
+      lastTouchedAt: old,
+      lastRealActivityAt: Date.now(),
+      lastUserActivityAt: old,
+      busySince: old,
+      perClassActivity: true,
+      lastAppRequestAt: old,
+      lastAgentRequestAt: old,
+    })
+
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ lastRequestAt: 1, activeStreams: 0, busy: false, activeTurns: 0, liveStreams: 0, lastAppRequestAt: old, lastAgentRequestAt: old }),
+          { status: 200 },
+        ),
+      )) as any
+    await pool.pollActivity()
+    expect(a.busySince).toBeUndefined()
+
+    globalThis.fetch = stuckBusyGuest(old) as any
+    await pool.pollActivity()
+    expect(a.busySince).toBeGreaterThan(old)
+    expect(await pool.reapIdle(IDLE_MS)).toEqual([])
+  })
+
+  test('an adopted busy guest inherits its streak from the baseline, not from the deploy', async () => {
+    const pool = makePool(dir)
+    const now = Date.now()
+    const a = pool.seed('adopted-busy', {
+      assignedAt: now,
+      lastTouchedAt: now,
+      lastRealActivityAt: now,
+      lastUserActivityAt: now,
+      needsUserActivityBaseline: true,
+    })
+    globalThis.fetch = stuckBusyGuest(now - 48 * HOUR) as any
+    await pool.pollActivity()
+    expect(a.busySince).toBe(now - 48 * HOUR)
+    expect(await pool.reapIdle(IDLE_MS)).toEqual(['adopted-busy'])
+  })
+
+  test('an idle, not-busy VM reaped late is not reported as a busy-idle ceiling suspend', async () => {
+    const pool = makePool(dir)
+    const old = Date.now() - 2 * CEILING_MS
+    pool.seed('plain-idle', {
+      assignedAt: old,
+      lastTouchedAt: old,
+      lastRealActivityAt: old,
+      lastUserActivityAt: old,
+      perClassActivity: true,
+      lastAppRequestAt: old,
+      lastAgentRequestAt: old,
+    })
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ lastRequestAt: 1, activeStreams: 0, busy: false, activeTurns: 0, liveStreams: 0, lastAppRequestAt: old, lastAgentRequestAt: old }),
+          { status: 200 },
+        ),
+      )) as any
+    await pool.pollActivity()
+    const before = metrics.getCounter(M.busyIdleCeilingSuspended)
+
+    expect(await pool.reapIdle(IDLE_MS)).toEqual(['plain-idle'])
+    expect(metrics.getCounter(M.busyIdleCeilingSuspended) - before).toBe(0)
+    expect(warnings.some((w) => w.includes('busy-idle ceiling'))).toBe(false)
   })
 })
