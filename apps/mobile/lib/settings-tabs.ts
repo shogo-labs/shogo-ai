@@ -72,7 +72,6 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
     label: "Access",
     Icon: ShieldCheck,
     group: "settings",
-    cloudOnly: true,
   },
   { id: "integrations", label: "Integrations", Icon: Plug, group: "settings" },
   { id: "automations", label: "Automations", Icon: Zap, group: "settings" },

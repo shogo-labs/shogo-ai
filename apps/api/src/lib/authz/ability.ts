@@ -11,6 +11,10 @@
  *
  * Everything goes through the RBAC mode, so it all runs in `shadow` first: a
  * shadow denial logs and writes an audit row, then lets the call through.
+ *
+ * `checkAbility` is the same decision without a Hono context, for services that
+ * throw their own error type instead of returning a Response. Both go through
+ * one implementation so a service can never accidentally bypass the mode.
  */
 
 import type { Context } from 'hono'
@@ -25,17 +29,17 @@ export interface AbilityDenial {
 }
 
 /**
- * Refuse the request when `userId` lacks `permission`. Returns `null` when the
- * call may proceed (including a shadow-mode denial, which is only recorded).
+ * The decision, without a Response: `null` when the call may proceed
+ * (including a shadow-mode denial, which is only recorded).
  *
  * `userId` is the person the call acts for — never the runtime's own identity.
  */
-export async function enforceAbility(
-  c: Context,
+export async function checkAbility(
   workspaceId: string,
   userId: string | null | undefined,
   permission: Permission,
-): Promise<Response | null> {
+  detail: Record<string, unknown> = {},
+): Promise<AbilityDenial | null> {
   if (!userId) return null
   if (await canUse(workspaceId, userId, permission)) return null
 
@@ -45,20 +49,32 @@ export async function enforceAbility(
     kind: mode === 'on' ? 'denied' : 'shadow_denied',
     onBehalfOfUserId: userId,
     permission,
-    detail: { route: `${c.req.method} ${c.req.path}`, mode },
+    detail: { ...detail, mode },
   })
   if (mode !== 'on') {
     console.warn('[rbac] shadow-deny ability', { workspaceId, userId, permission })
     return null
   }
-  return c.json(
-    {
-      error: {
-        code: 'ability_not_allowed',
-        permission,
-        message: `Ask a workspace admin for ${permission}.`,
-      },
-    },
-    403,
-  )
+  return {
+    code: 'ability_not_allowed',
+    permission,
+    message: `Ask a workspace admin for ${permission}.`,
+  }
+}
+
+/**
+ * Refuse the request when `userId` lacks `permission`. Returns `null` when the
+ * call may proceed (including a shadow-mode denial, which is only recorded).
+ */
+export async function enforceAbility(
+  c: Context,
+  workspaceId: string,
+  userId: string | null | undefined,
+  permission: Permission,
+): Promise<Response | null> {
+  const denial = await checkAbility(workspaceId, userId, permission, {
+    route: `${c.req.method} ${c.req.path}`,
+  })
+  if (!denial) return null
+  return c.json({ error: denial }, 403)
 }

@@ -37,9 +37,11 @@ import {
 import { prisma } from '../lib/prisma'
 import { getPodId, getSharedRedis } from '../lib/tunnel-redis'
 import { getRbacMode } from '../lib/authz/mode'
+import { AUTO_MODEL_ID } from '@shogo/model-catalog'
 import { getMergedCatalogSync } from './model-registry.service'
 import { getAllowedModelIds } from './workspace-models.service'
 import { getAgentDefaultModel } from './workspace-agent.service'
+import type { MessageBlocks, QuestionBlock } from './conversation-message-kind'
 
 const CACHE_TTL_MS = 30_000
 const INVALIDATE_CHANNEL = 'access:invalidate'
@@ -368,6 +370,11 @@ export async function allowedAutoTiers(
  * configured model is outside the acting person's set, the run uses their
  * default model for that run only (Russell, 2026-11-18) and the caller states
  * it in the reply. `null` when the person has no allowed model at all.
+ *
+ * `auto` is a routing sentinel, not a model: it is always allowed, and the
+ * capping happens in the narrowed `autoTiers` map the runtime receives. Treating
+ * it as a model would downgrade every Auto run and tell the person a false
+ * reason ("your role can't use auto").
  */
 export async function resolveRunModelFor(
   workspaceId: string,
@@ -376,6 +383,7 @@ export async function resolveRunModelFor(
 ): Promise<{ model: string; downgrade: { from: string; to: string } | null } | null> {
   const access = await getEffectiveAccess(workspaceId, userId)
   if (!access) return null
+  if (configuredModel === AUTO_MODEL_ID) return { model: AUTO_MODEL_ID, downgrade: null }
   const catalog = accessModelCatalog()
   const configured = catalog.find((m) => m.id === configuredModel)
   if (configured && isModelInGrant(access.models, configured, access.ceiling)) {
@@ -835,16 +843,17 @@ export async function requestAccess(input: {
       subject: JSON.stringify({ reason }),
     },
   })) as AuditRowLike
-  await announceAccessRequest(input.workspaceId, input.userId, permission, modelId, reason)
+  await announceAccessRequest(input.workspaceId, input.userId, permission, modelId, reason, row.id)
   return toAccessRequestRow(row)
 }
 
 /**
- * Tell the workspace where admins already look. The decision itself is the
- * admin queue (`GET /access/requests` + the Settings → Access screen), not a
- * button on this message: an access grant is a policy write, and it belongs
- * with the other policy writes. Best-effort — a missing activity channel or a
- * failed post must not lose the request.
+ * Ask the workspace admins, where they already look: a decision card in the
+ * workspace activity channel, with Approve / Deny on it. Answering the card is
+ * what decides the request (see `applyAccessRequestAnswer`), so the card and the
+ * admin queue in Settings → Access are two views of one decision, not two
+ * paths. Best-effort — a missing activity channel or a failed post must not
+ * lose the request, which is already an audit row.
  */
 async function announceAccessRequest(
   workspaceId: string,
@@ -852,13 +861,19 @@ async function announceAccessRequest(
   permission: string | null,
   modelId: string | null,
   reason: string | null,
+  requestId: string,
 ): Promise<void> {
   try {
     const channel = (await prisma.conversation.findFirst({
       where: { workspaceId, slug: 'activity' },
-      select: { id: true },
-    })) as { id: string } | null
+    })) as Record<string, any> | null
     if (!channel) return
+
+    const admins = (await prisma.member.findMany({
+      where: { workspaceId, projectId: null, role: { in: ['owner', 'admin'] } },
+      select: { userId: true },
+    })) as Array<{ userId: string }>
+    const adminIds = admins.map((m) => m.userId).filter((id) => id !== userId)
 
     const user = (await prisma.user.findUnique({
       where: { id: userId },
@@ -867,15 +882,64 @@ async function announceAccessRequest(
     const who = user?.name || user?.email || 'A member'
     const what = permission ? `the "${permission}" ability` : `the ${modelId} model`
 
+    const { newQuestionId, onQuestionAsked } = await import('./conversation-questions')
     const { postMessage } = await import('./conversation.service')
-    await postMessage({
+    const { afterMessagePosted } = await import('./conversation-pipeline')
+
+    const question: QuestionBlock = {
+      id: newQuestionId(),
+      to: { userIds: adminIds, anyone: adminIds.length === 0, via: 'channel' },
+      header: 'Access request',
+      prompt: `${who} asked for ${what}.${reason ? ` "${reason}"` : ''} Approve it?`,
+      interaction: 'choice',
+      options: [
+        { label: 'Approve', description: `Grant ${what} to ${who}.` },
+        { label: 'Deny', description: 'Leave their access as it is.' },
+      ],
+      status: 'open',
+      source: 'inferred',
+      askCount: 1,
+      lastAskedAt: new Date().toISOString(),
+    }
+    const blocks: MessageBlocks = {
+      questions: [question],
+      accessRequest: { requestId, workspaceId, permission, modelId },
+      messageKind: 'decision',
+    }
+    const posted = await postMessage({
       conversationId: channel.id,
-      text: `${who} asked for ${what}.${reason ? `\n\n"${reason}"` : ''}\n\nA workspace admin can approve or deny it in Settings → Access.`,
       authorType: 'system',
+      systemMentions: true,
+      text: `${adminIds.map((id) => `<@u:${id}> `).join('')}**Access request:** ${who} asked for ${what}.`,
+      blocks,
     })
+    await onQuestionAsked({ ...posted.row, blocks }, channel, question).catch((err: Error) =>
+      console.warn('[access] request card notify failed:', err.message),
+    )
+    void afterMessagePosted(posted, { actorUserId: null, origin: 'system' })
   } catch (err) {
     console.warn('[access] request announcement failed:', (err as Error).message)
   }
+}
+
+/**
+ * What an admin chose on an access request's card. Applied where every other
+ * answer lands (`answerQuestion`), so the card and the queue cannot disagree.
+ * A second answer is refused by `decideAccessRequest` itself (409).
+ */
+export async function applyAccessRequestAnswer(input: {
+  requestId: string
+  workspaceId: string
+  answer: string
+  userId: string
+}): Promise<void> {
+  const approve = /^approve/i.test(input.answer.trim())
+  await decideAccessRequest({
+    workspaceId: input.workspaceId,
+    requestId: input.requestId,
+    actorUserId: input.userId,
+    approve,
+  })
 }
 
 /**
@@ -923,7 +987,14 @@ export async function decideAccessRequest(input: {
   }
 }
 
-/** Merge one ability or model into a member's policy row, keeping the rest. */
+/**
+ * Merge one ability or model into a member's policy row, keeping the rest.
+ *
+ * A model grant is only narrowed when the row already named models. A row with
+ * `modelIds: null` means "everything under the ceiling", so writing
+ * `[thatModel]` there would cut the member from everything to one model as a
+ * reward for asking — the opposite of what approving a request means.
+ */
 async function grantRequestedItem(
   workspaceId: string,
   userId: string,
@@ -935,9 +1006,16 @@ async function grantRequestedItem(
   })) as Record<string, unknown> | null
 
   const abilities = parseJsonArray(existing?.abilities) ?? []
-  const modelIds = parseJsonArray(existing?.modelIds) ?? []
   if (request.permission && !abilities.includes(request.permission)) abilities.push(request.permission)
-  if (request.modelId && !modelIds.includes(request.modelId)) modelIds.push(request.modelId)
+
+  const existingModelIds = parseJsonArray(existing?.modelIds)
+  const existingTiers = parseJsonArray(existing?.modelTiers)
+  const grantsEverything = existingModelIds === null && existingTiers === null
+  let modelIds = existingModelIds
+  if (request.modelId && !grantsEverything) {
+    modelIds = existingModelIds ?? []
+    if (!modelIds.includes(request.modelId)) modelIds.push(request.modelId)
+  }
 
   await upsertPolicy(
     workspaceId,
@@ -945,8 +1023,8 @@ async function grantRequestedItem(
       subjectType: 'member',
       subjectId: userId,
       abilities: abilities.length ? abilities : null,
-      modelIds: modelIds.length ? modelIds : null,
-      modelTiers: parseJsonArray(existing?.modelTiers),
+      modelIds: modelIds && modelIds.length ? modelIds : null,
+      modelTiers: existingTiers,
       defaultModelId: (existing?.defaultModelId as string | null) ?? null,
       spendCapUsd: (existing?.spendCapUsd as number | null) ?? null,
       spendPeriod: (existing?.spendPeriod as string | null) ?? null,
@@ -995,4 +1073,65 @@ export async function listAccessAudit(
     detail: parseSubject(row.detail),
     createdAt: row.createdAt.toISOString(),
   }))
+}
+
+/**
+ * What `shadow` mode would have blocked, grouped per person and per item.
+ *
+ * This is the number an admin needs before flipping `rbac_enforce` to `on`: a
+ * role that would block a hundred calls a day is a policy to fix, not a switch
+ * to throw. Counted from the audit rows themselves, so it can never disagree
+ * with the trail below it.
+ */
+export async function summarizeShadowDenials(
+  workspaceId: string,
+  opts: { days?: number } = {},
+): Promise<
+  Array<{
+    userId: string | null
+    permission: string | null
+    modelId: string | null
+    count: number
+    lastAt: string
+  }>
+> {
+  const days = Math.min(Math.max(opts.days ?? 7, 1), 90)
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+  const rows = (await prisma.accessAuditEvent.findMany({
+    where: { workspaceId, kind: 'shadow_denied', createdAt: { gte: since } },
+    select: {
+      onBehalfOfUserId: true,
+      actorUserId: true,
+      permission: true,
+      modelId: true,
+      createdAt: true,
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 5_000,
+  })) as Array<{
+    onBehalfOfUserId: string | null
+    actorUserId: string | null
+    permission: string | null
+    modelId: string | null
+    createdAt: Date
+  }>
+
+  const grouped = new Map<string, { userId: string | null; permission: string | null; modelId: string | null; count: number; lastAt: string }>()
+  for (const row of rows) {
+    const userId = row.onBehalfOfUserId ?? row.actorUserId ?? null
+    const key = `${userId ?? ''}|${row.permission ?? ''}|${row.modelId ?? ''}`
+    const seen = grouped.get(key)
+    if (seen) {
+      seen.count += 1
+      continue
+    }
+    grouped.set(key, {
+      userId,
+      permission: row.permission,
+      modelId: row.modelId,
+      count: 1,
+      lastAt: row.createdAt.toISOString(),
+    })
+  }
+  return [...grouped.values()].sort((a, b) => b.count - a.count)
 }

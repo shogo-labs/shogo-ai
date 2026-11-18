@@ -20,9 +20,12 @@ import { setupChannelsTestDb } from '../helpers/channels-test-db'
 const { dir } = setupChannelsTestDb()
 const { buildRbacApp, call, seedRbacWorld, db } = await import('../helpers/rbac-world')
 const { accessPolicyRoutes } = await import('../../routes/access-policies')
-const { accessModelCatalog, __clearAccessCache, resolveRunModelFor, getEffectiveAccess } = await import(
+const { accessModelCatalog, __clearAccessCache, resolveRunModelFor, getEffectiveAccess, isModelAllowedFor } = await import(
   '../../services/access-policy.service'
 )
+const { createGroup, updateGroup } = await import('../../services/chat-customization')
+const { removeMembership } = await import('../../services/membership.service')
+const { answerQuestion } = await import('../../services/conversation-questions')
 type World = Awaited<ReturnType<typeof seedRbacWorld>>
 
 let w: World
@@ -345,5 +348,109 @@ describe('explain', () => {
       `/api/workspaces/${w.workspaceA}/access/explain/${w.users.outsider}`,
     )
     expect(res.status).toBe(404)
+  })
+})
+
+describe('auto is a routing sentinel, not a model', () => {
+  test('an Auto run is never downgraded and never audited as a denial', async () => {
+    const resolved = await resolveRunModelFor(w.workspaceA, w.users.member, 'auto')
+    expect(resolved).toEqual({ model: 'auto', downgrade: null })
+  })
+})
+
+describe('a revoke takes effect on the next request (AC2)', () => {
+  test('removing a member from a group drops the group grant immediately', async () => {
+    // Narrow the role first, so premium can only come from the group.
+    const role = await call(
+      app,
+      as(w.users.owner),
+      'PUT',
+      `/api/workspaces/${w.workspaceA}/access/policies`,
+      { subjectType: 'role', subjectId: 'member', modelTiers: ['economy'] },
+    )
+    expect(role.status).toBe(200)
+    expect(await isModelAllowedFor(w.workspaceA, w.users.member, premium.id)).toBe(false)
+
+    const group = await createGroup(w.workspaceA, w.users.owner, {
+      handle: 'ml',
+      name: 'ML',
+      memberIds: [w.users.member],
+    })
+    const put = await call(
+      app,
+      as(w.users.owner),
+      'PUT',
+      `/api/workspaces/${w.workspaceA}/access/policies`,
+      { subjectType: 'group', subjectId: group.id, modelTiers: ['premium'] },
+    )
+    expect(put.status).toBe(200)
+    expect(await isModelAllowedFor(w.workspaceA, w.users.member, premium.id)).toBe(true)
+
+    await updateGroup(group.id, w.users.owner, { memberIds: [] })
+
+    expect(await isModelAllowedFor(w.workspaceA, w.users.member, premium.id)).toBe(false)
+  })
+
+  test('removing a member drops their own grant immediately', async () => {
+    const put = await call(
+      app,
+      as(w.users.owner),
+      'PUT',
+      `/api/workspaces/${w.workspaceA}/access/policies`,
+      { subjectType: 'member', subjectId: w.users.viewer, modelTiers: ['premium'] },
+    )
+    expect(put.status).toBe(200)
+    expect(await isModelAllowedFor(w.workspaceA, w.users.viewer, premium.id)).toBe(true)
+
+    const row = await db.member.findFirst({
+      where: { workspaceId: w.workspaceA, userId: w.users.viewer, projectId: null },
+      select: { id: true },
+    })
+    await removeMembership(db, row!.id)
+
+    expect(await isModelAllowedFor(w.workspaceA, w.users.viewer, premium.id)).toBe(false)
+  })
+})
+
+/**
+ * AC9's decision surface: the request is a card in the workspace activity
+ * channel, and answering it is what grants. The card and the admin queue are
+ * two views of one decision, so this drives the card and then reads the queue.
+ */
+describe('an access request is a decision card (AC9)', () => {
+  test('answering the card grants the ability and closes the request', async () => {
+    const channel = await db.conversation.create({
+      data: { workspaceId: w.workspaceA, kind: 'public', name: 'Activity', slug: 'activity' } as any,
+    })
+
+    const asked = await call(app, as(w.users.member), 'POST', `/api/workspaces/${w.workspaceA}/access/requests`, {
+      permission: 'boards:manage',
+      reason: 'I run the support board',
+    })
+    expect(asked.status).toBe(200)
+
+    const messages = await db.conversationMessage.findMany({
+      where: { conversationId: channel.id },
+      orderBy: { createdAt: 'desc' },
+    })
+    const card = messages.find((m: any) => m.blocks?.accessRequest)
+    expect(card).toBeTruthy()
+    const blocks = card.blocks as any
+    expect(blocks?.accessRequest?.requestId).toBe(asked.body.request.id)
+    expect(blocks?.questions?.[0]?.options?.map((o: any) => o.label)).toEqual(['Approve', 'Deny'])
+
+    await answerQuestion({
+      messageId: card.id,
+      questionId: blocks.questions[0].id,
+      answer: 'Approve',
+      userId: w.users.owner,
+    })
+
+    const queue = await call(app, as(w.users.owner), 'GET', `/api/workspaces/${w.workspaceA}/access/requests`)
+    const decided = (queue.body.requests as any[]).find((r) => r.id === asked.body.request.id)
+    expect(decided.status).toBe('granted')
+
+    const own = await call(app, as(w.users.member), 'GET', `/api/workspaces/${w.workspaceA}/access/effective`)
+    expect(own.body.abilities).toContain('boards:manage')
   })
 })

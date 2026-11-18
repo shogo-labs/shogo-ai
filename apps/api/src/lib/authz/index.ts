@@ -22,7 +22,7 @@ import { prisma } from '../prisma'
 export { loadAccess, type AccessContext, type AccessScope, type Principal, type AccessCache } from './access'
 export { getRbacMode, invalidateRbacMode, _setRbacModeForTests, RBAC_MODE_SETTING_KEY, type RbacMode } from './mode'
 export { resolveAgentActor, type AgentActor, type AgentCaller } from './agent-actor'
-export { enforceAbility } from './ability'
+export { checkAbility, enforceAbility, type AbilityDenial } from './ability'
 
 declare module 'hono' {
   interface ContextVariableMap {

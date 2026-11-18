@@ -249,8 +249,11 @@ export async function assertUserCanWork(board: any, userId: string): Promise<voi
 export async function assertUserCanAdmin(board: any, userId: string): Promise<void> {
   await assertUserCanWork(board, userId)
   // Changing a board's structure is an ability, not just a role (SHO-417).
-  const { canUse } = await import('./access-policy.service')
-  if (!(await canUse(board.workspaceId, userId, 'boards:manage'))) {
+  // Through `checkAbility` so it runs in `shadow` first like every other
+  // ability, rather than blocking an Editor on rollout (AC10).
+  const { checkAbility } = await import('../lib/authz')
+  const denial = await checkAbility(board.workspaceId, userId, 'boards:manage', { boardId: board.id })
+  if (denial) {
     throw forbidden('Ask a workspace admin for boards:manage to change a board’s structure')
   }
   if (board.createdById === userId) return

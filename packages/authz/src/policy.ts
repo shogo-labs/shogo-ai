@@ -95,6 +95,11 @@ function grantOf(row: AccessPolicyRow): ModelGrant {
   return { tiers: new Set(tiers), ids: new Set(ids) }
 }
 
+/** A row that names no models at all — an ability-only grant. */
+function namesNoModels(row: AccessPolicyRow): boolean {
+  return (row.modelTiers ?? []).length === 0 && (row.modelIds ?? []).length === 0
+}
+
 function isEverything(grant: ModelGrant): boolean {
   return grant.tiers === null && grant.ids === null
 }
@@ -140,6 +145,10 @@ export function resolveModelGrant(
   const grants: ModelGrant[] = [rolePolicy ? grantOf(rolePolicy) : EVERYTHING]
   for (const p of policies) {
     if (p.subjectType === 'role') continue
+    // A group or member row that names no models grants abilities only. Reading
+    // its empty model columns as "everything" would let an ability request
+    // silently widen the member to every model in the workspace.
+    if (namesNoModels(p)) continue
     grants.push(grantOf(p))
   }
   return unionGrants(grants)
@@ -262,7 +271,16 @@ export function resolveLimits(policies: readonly AccessPolicyRow[]): {
   return { spendCapUsd, spendPeriod, requestsPerHour }
 }
 
-/** Everything the resolver decides, from the rows it was given. */
+/**
+ * Everything the resolver decides, from the rows it was given.
+ *
+ * `models:use_all` is honoured here rather than at each call site: it replaces
+ * the role/group/member grant with "everything", and the ceiling is still
+ * applied on top by `isModelAllowed`, so the ability can never widen what the
+ * workspace allows. That is the whole point of the switch — an owner or admin
+ * who is narrowed by a role policy can still reach every model the workspace
+ * has, and nothing beyond it.
+ */
 export function resolvePolicy(opts: {
   role: WorkspaceRole
   policies: readonly AccessPolicyRow[]
@@ -272,7 +290,9 @@ export function resolvePolicy(opts: {
   reasons?: readonly string[]
 }): EffectivePolicy {
   const abilities = resolveAbilities(opts.role, opts.policies)
-  const models = resolveModelGrant(opts.role, opts.policies)
+  const models = abilities.has('models:use_all')
+    ? EVERYTHING
+    : resolveModelGrant(opts.role, opts.policies)
   const limits = resolveLimits(opts.policies)
   return {
     abilities,

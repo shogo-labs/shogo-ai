@@ -385,6 +385,15 @@ describe('models: grants, ceiling and default', () => {
     expect(allowedModels(grant, ceiling, CATALOG).map((m) => m.id)).toEqual(['haiku', 'sonnet'])
   })
 
+  test('an ability-only group or member grant does not widen the models', () => {
+    const grant = resolveModelGrant('member', [
+      policy({ subjectType: 'role', subjectId: 'member', modelTiers: ['economy'] }),
+      policy({ subjectType: 'group', subjectId: 'g-ml', abilities: ['agent.social:post'] }),
+      policy({ subjectType: 'member', subjectId: 'u1', abilities: ['project.secrets:read'] }),
+    ])
+    expect(allowedModels(grant, ceiling, CATALOG).map((m) => m.id)).toEqual(['haiku'])
+  })
+
   test('the ceiling always wins: a grant cannot widen it', () => {
     const narrowCeiling = new Set(['haiku'])
     const grant = resolveModelGrant('owner', [])

@@ -50,6 +50,50 @@ describe('abilityForTool', () => {
       expect(ability).toMatch(/^[a-z][a-z.]*:[a-z_]+$/)
     }
   })
+
+  test('publish is gated on project:publish', () => {
+    expect(abilityForTool('publish')).toBe('project:publish')
+  })
+
+  test('every ability the plan names has at least one tool behind it', () => {
+    const mapped = new Set(Object.values(TOOL_ABILITIES))
+    for (const ability of [
+      'agent.exec:use',
+      'agent.browser:use',
+      'agent.media:generate',
+      'agent.channels:send',
+      'agent.social:post',
+      'agent:create',
+      'schedule:manage',
+      'trigger:manage',
+      'system:apply',
+      'project:publish',
+      'project.files:share_public',
+      'integrations:connect',
+      'members.activity:read',
+      'boards:manage',
+    ]) {
+      expect(mapped.has(ability)).toBe(true)
+    }
+  })
+})
+
+describe('AC7: one gate per ability', () => {
+  // Every mapped tool, checked against its own ability and against an empty
+  // set. A tool that is allowed with no abilities at all is a hole in the gate.
+  for (const [name, ability] of Object.entries(TOOL_ABILITIES)) {
+    test(`${name} needs ${ability}`, () => {
+      expect(isToolAllowed(name, new Set([ability]))).toBe(true)
+      expect(isToolAllowed(name, new Set())).toBe(false)
+      expect(isToolAllowed(name, new Set(['some.other:ability']))).toBe(false)
+    })
+  }
+
+  test('a turn with no abilities keeps only the ungated tools', () => {
+    const names = Object.keys(TOOL_ABILITIES)
+    const gated = applyAbilityGate(names.map(tool), new Set())
+    expect(gated.map((t) => t.name)).toEqual([])
+  })
 })
 
 describe('isToolAllowed', () => {

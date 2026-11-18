@@ -26,6 +26,7 @@ import {
   explainAccess,
   getEffectiveAccess,
   listAccessAudit,
+  summarizeShadowDenials,
   listAccessRequests,
   listPolicies,
   requestAccess,
@@ -264,18 +265,22 @@ export function accessPolicyRoutes(config: AccessPolicyRoutesConfig) {
     }
   })
 
-  /** The audit trail, newest first. Admin. */
+  /** The audit trail, newest first, plus what shadow mode would have blocked. Admin. */
   app.get('/workspaces/:workspaceId/access/audit', async (c) => {
     const workspaceId = c.req.param('workspaceId')
     const denied = await requireAdmin(c, workspaceId)
     if (denied) return denied
 
     const limitRaw = Number(c.req.query('limit') ?? 50)
+    const daysRaw = Number(c.req.query('days') ?? 7)
     return c.json({
       events: await listAccessAudit(workspaceId, {
         kind: c.req.query('kind') || undefined,
         userId: c.req.query('userId') || undefined,
         limit: Number.isFinite(limitRaw) ? limitRaw : 50,
+      }),
+      shadow: await summarizeShadowDenials(workspaceId, {
+        days: Number.isFinite(daysRaw) ? daysRaw : 7,
       }),
     })
   })

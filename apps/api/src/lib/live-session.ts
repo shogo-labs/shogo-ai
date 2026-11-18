@@ -7,7 +7,7 @@ import {
   isModelProviderConfigured,
   resolveVisibleModelsForWorkspace,
 } from '../services/visible-models.service'
-import { isModelVisibleForWorkspace } from '../services/workspace-models.service'
+import { checkModelAccess } from '../services/access-policy.service'
 import type { ModelEntry } from '@shogo/model-catalog'
 
 export interface LiveSessionStart {
@@ -63,6 +63,33 @@ function visibleEntry(
   })
 }
 
+/**
+ * The per-member model gate for a live session, or `null` when it may start.
+ *
+ * Live sessions used to check only the workspace ceiling, so a member narrowed
+ * to economy could start a premium live model (SHO-417, §3/§5). The acting
+ * person comes from the proxy token the same way the chat routes resolve it.
+ */
+async function liveModelAccess(
+  tokenPayload: ProxyTokenPayload,
+  modelId: string,
+  code: 'model_not_visible' | 'backend_model_not_visible' = 'model_not_visible',
+): Promise<LiveValidation | null> {
+  const userId = tokenPayload.actingUserId || tokenPayload.userId
+  if (!userId) return null
+  const decision = await checkModelAccess(tokenPayload.workspaceId, userId, modelId, {
+    projectId: tokenPayload.projectId,
+    actorUserId: tokenPayload.userId ?? null,
+  })
+  if (decision.allowed) return null
+  return {
+    ok: false,
+    status: 403,
+    code,
+    message: `Live model '${modelId}' is not available for this workspace.`,
+  }
+}
+
 /** Validate a Live session before any audio or provider request is started. */
 export async function validateLiveSessionStart(
   tokenPayload: ProxyTokenPayload,
@@ -101,14 +128,10 @@ export async function validateLiveSessionStart(
       message: `Live model '${modelId}' is not available for this workspace.`,
     }
   }
-  if (!await isModelVisibleForWorkspace(tokenPayload.workspaceId, modelId)) {
-    return {
-      ok: false,
-      status: 403,
-      code: 'model_not_visible',
-      message: `Live model '${modelId}' is not available for this workspace.`,
-    }
-  }
+  // The per-member gate, not just the workspace ceiling: a member whose role is
+  // narrowed to economy must not start a premium live session (SHO-417, §3/§5).
+  const liveAccess = await liveModelAccess(tokenPayload, modelId)
+  if (liveAccess) return liveAccess
 
   const delegation = session.delegation
   if (delegation?.type === 'responses') {
@@ -130,8 +153,7 @@ export async function validateLiveSessionStart(
         message: `Backend model '${backendModelId}' must be a visible OpenAI chat model.`,
       }
     }
-    if (!visibleEntry(visible.catalogModels, backend) ||
-        !await isModelVisibleForWorkspace(tokenPayload.workspaceId, backendModelId)) {
+    if (!visibleEntry(visible.catalogModels, backend)) {
       return {
         ok: false,
         status: 403,
@@ -139,6 +161,8 @@ export async function validateLiveSessionStart(
         message: `Backend model '${backendModelId}' is not available for this workspace.`,
       }
     }
+    const backendAccess = await liveModelAccess(tokenPayload, backendModelId, 'backend_model_not_visible')
+    if (backendAccess) return backendAccess
     return {
       ok: true,
       model,

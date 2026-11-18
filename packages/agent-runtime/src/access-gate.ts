@@ -37,6 +37,7 @@ export const TOOL_ABILITIES: Readonly<Record<string, string>> = {
   trigger_update: 'trigger:manage',
   trigger_delete: 'trigger:manage',
   system_apply: 'system:apply',
+  publish: 'project:publish',
   share_file: 'project.files:share_public',
   connect: 'integrations:connect',
   member_activity: 'members.activity:read',
@@ -52,6 +53,28 @@ export const TOOL_ABILITIES: Readonly<Record<string, string>> = {
 /** The ability a tool needs, or null when it needs none. */
 export function abilityForTool(name: string): string | null {
   return TOOL_ABILITIES[name] ?? null
+}
+
+/**
+ * The ability that gates a capability toggle, for `capabilities_configure`'s
+ * member read mode. A key absent here is not gated by an ability at all, so the
+ * agent can say "that is a workspace setting" rather than "ask an admin".
+ */
+export const CAPABILITY_ABILITIES: Readonly<Record<string, string>> = {
+  shellEnabled: 'agent.exec:use',
+  browserEnabled: 'agent.browser:use',
+  imageGenEnabled: 'agent.media:generate',
+  videoGenEnabled: 'agent.media:generate',
+  musicGenEnabled: 'agent.media:generate',
+  threeDGenEnabled: 'agent.media:generate',
+  channelsEnabled: 'agent.channels:send',
+  socialMediaEnabled: 'agent.social:post',
+  socialManagementEnabled: 'agent.social:post',
+  socialInstagramEnabled: 'agent.social:post',
+  socialTiktokEnabled: 'agent.social:post',
+  integrationsEnabled: 'integrations:connect',
+  boardAdminEnabled: 'boards:manage',
+  workTriggersEnabled: 'trigger:manage',
 }
 
 /**

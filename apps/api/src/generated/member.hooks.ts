@@ -66,6 +66,7 @@ import { hookAccess, hookRequire } from "../lib/authz/hooks"
 import { sendMemberRemovedEmail } from "../services/email.service"
 import { syncSeatsFromMembership } from "../services/billing.service"
 import { removeMembership } from "../services/membership.service"
+import { invalidateAccess } from "../services/access-policy.service"
 
 const userInclude = {
   user: {
@@ -120,6 +121,10 @@ export const memberHooks: MemberHooks = {
   afterCreate: async (record, ctx) => {
     if (!record.workspaceId || record.projectId) return
 
+    // A re-added member may still have a cached entry from before they left
+    // (SHO-417, AC2).
+    invalidateAccess(record.workspaceId)
+
     // Cursor-style active-seat billing: when an accepted member joins the
     // workspace, bump the Stripe seat quantity (and local Subscription /
     // UsageWallet allocation). Project-only memberships don't bill seats.
@@ -136,6 +141,15 @@ export const memberHooks: MemberHooks = {
         prisma: ctx.prisma,
       }))
       .catch(() => {})
+  },
+
+  /**
+   * A role change swaps which role policy applies, so the member's cached
+   * access must go (SHO-417, AC2). `beforeUpdate` has already validated it.
+   */
+  afterUpdate: async (record, ctx) => {
+    if (!record.workspaceId || record.projectId) return
+    invalidateAccess(record.workspaceId)
   },
 
   beforeGet: async (id, ctx) => {

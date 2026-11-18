@@ -160,7 +160,7 @@ import {
   resolvePlatformVisibleModels,
   resolvePlatformVisibleModelsForRequest,
 } from './services/visible-models.service'
-import { allowedModelIdsFor } from './services/access-policy.service'
+import { allowedModelIdsFor, invalidateAccess } from './services/access-policy.service'
 import { localAuthRoutes } from './routes/local-auth'
 import { loadPlatformModelSetting, platformModelSettingRoutes } from './routes/platform-model-setting'
 import { resetCloudKeyState } from './lib/cloud-key-state'
@@ -9950,6 +9950,12 @@ app.post('/api/workspaces/:id/leave', async (c) => {
   }
 
   await prisma.member.deleteMany({ where: { userId, workspaceId } })
+  // Leaving drops the member's own access policy and their cached access
+  // (SHO-417, plan §1 cascade + AC2).
+  await prisma.accessPolicy
+    .deleteMany({ where: { workspaceId, subjectType: 'member', subjectId: userId } })
+    .catch(() => {})
+  invalidateAccess(workspaceId)
 
   // Active-seat billing: leaving a workspace removes a paid seat.
   billingService.syncSeatsFromMembership(workspaceId).catch((err: any) =>

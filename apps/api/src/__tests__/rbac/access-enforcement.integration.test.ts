@@ -29,6 +29,8 @@ const { scheduleOwnerDenial } = await import('../../jobs/run-agent-schedule-disp
 const { accessModelCatalog, canUse, checkModelAccess, getEffectiveAccess, __clearAccessCache } = await import(
   '../../services/access-policy.service'
 )
+const { ABILITY_PERMISSIONS } = await import('@shogo/authz')
+const { checkAbility } = await import('../../lib/authz')
 type World = Awaited<ReturnType<typeof seedRbacWorld>>
 
 let w: World
@@ -320,5 +322,58 @@ describe('the ability gate on the routes (AC7)', () => {
     })
     expect(denied.status).toBe(403)
     expect(denied.body.error.code).toBe('ability_not_allowed')
+  })
+})
+
+/**
+ * AC7's "one test per ability": every ability in the catalog is refused for a
+ * person whose role policy omits it and allowed for one whose policy names it.
+ *
+ * The route tests above prove the routes call this gate; this proves the gate
+ * itself has no ability that silently passes. `models:use_all` is checked
+ * through the model grant instead, because it is not an ability a route asks
+ * for — it widens the grant (see the authz matrix).
+ */
+describe('every ability is enforced (AC7)', () => {
+  beforeEach(() => _setRbacModeForTests('on'))
+
+  afterEach(async () => {
+    await clearMemberRolePolicy()
+  })
+
+  for (const ability of ABILITY_PERMISSIONS) {
+    if (ability === 'models:use_all') continue
+    test(`${ability} is refused without it and allowed with it`, async () => {
+      await call(app, as(w.users.owner), 'PUT', `/api/workspaces/${w.workspaceA}/access/policies`, {
+        subjectType: 'role',
+        subjectId: 'member',
+        abilities: [],
+      })
+      const denied = await checkAbility(w.workspaceA, w.users.member, ability)
+      expect(denied).not.toBeNull()
+      expect(denied!.code).toBe('ability_not_allowed')
+      expect(denied!.permission).toBe(ability)
+
+      await call(app, as(w.users.owner), 'PUT', `/api/workspaces/${w.workspaceA}/access/policies`, {
+        subjectType: 'role',
+        subjectId: 'member',
+        abilities: [ability],
+      })
+      expect(await checkAbility(w.workspaceA, w.users.member, ability)).toBeNull()
+    })
+  }
+
+  test('a shadow denial is recorded and the call proceeds', async () => {
+    _setRbacModeForTests('shadow')
+    await call(app, as(w.users.owner), 'PUT', `/api/workspaces/${w.workspaceA}/access/policies`, {
+      subjectType: 'role',
+      subjectId: 'member',
+      abilities: ['agent.exec:use'],
+    })
+    expect(await checkAbility(w.workspaceA, w.users.member, 'boards:manage')).toBeNull()
+    const rows = await db.accessAuditEvent.findMany({
+      where: { workspaceId: w.workspaceA, kind: 'shadow_denied', permission: 'boards:manage' },
+    })
+    expect(rows.length).toBeGreaterThan(0)
   })
 })

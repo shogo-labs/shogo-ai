@@ -201,8 +201,13 @@ export async function decideApproval(input: {
   // keeps the old behaviour rather than locking everyone out.
   const requester = approval.requestedByUserId ?? null
   if (requester && input.by.userId && requester !== input.by.userId) {
-    const { canUse } = await import('./access-policy.service')
-    if (!(await canUse(row.workspaceId, input.by.userId, 'agent.approvals:decide'))) {
+    // Through `checkAbility`, not `canUse`: this must run in `shadow` first like
+    // every other ability, or an Editor is blocked on rollout (SHO-417, AC10).
+    const { checkAbility } = await import('../lib/authz')
+    const denial = await checkAbility(row.workspaceId, input.by.userId, 'agent.approvals:decide', {
+      approvalId: approval.requestId,
+    })
+    if (denial) {
       throw new AgentMessageError(
         403,
         'ability_not_allowed',

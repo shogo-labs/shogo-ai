@@ -787,6 +787,20 @@ export async function answerQuestion(input: AnswerInput): Promise<{ message: any
     return { message: closed.message, question: closed.question, relay: 'sent' }
   }
 
+  // An access request's card is the decision itself: Approve / Deny writes the
+  // grant (or the refusal) through the same service the admin queue uses.
+  const accessRequest = (row.blocks as MessageBlocks | null)?.accessRequest
+  if (accessRequest?.requestId) {
+    const { applyAccessRequestAnswer } = await import('./access-policy.service')
+    await applyAccessRequestAnswer({
+      requestId: accessRequest.requestId,
+      workspaceId: accessRequest.workspaceId,
+      answer: answerText,
+      userId: input.userId,
+    }).catch((err: Error) => console.warn('[Questions] applying an access request answer failed:', err.message))
+    return { message: closed.message, question: closed.question, relay: 'sent' }
+  }
+
   const relay = await settleRelays(row.id, { userId: input.userId, origin: input.origin })
   return { message: closed.message, question: closed.question, relay: relay.status, reply: relay.reply }
 }

@@ -92,7 +92,7 @@ import {
   type ModelTier,
 } from '@shogo/model-catalog'
 import { randomUUID } from 'node:crypto'
-import { resolveAutoTierModel } from '../lib/runtime/agent-model-defaults'
+import { resolveAutoTierModel, resolveEffectiveAgentModelDefaults } from '../lib/runtime/agent-model-defaults'
 import { putVideoJob, getVideoJob, claimVideoCharge, type VideoJobRecord } from '../lib/video-job-store'
 import { put3dJob, get3dJob, claim3dCharge } from '../lib/3d-job-store'
 import {
@@ -470,12 +470,24 @@ function resolveAgentModel(model: string): { resolvedModel: string; isLocal: boo
 export async function resolveRequestModel(
   model: string,
   workspaceId: string,
+  userId?: string | null,
 ): Promise<{ resolvedModel: string; isLocal: boolean }> {
   if (!isAutoModel(model)) return resolveAgentModel(model)
   // Local dev against an Ollama-style backend: same model `basic` maps to,
   // since the tier map's ids do not exist there.
   if (isLocalDev && process.env.LOCAL_LLM_BASE_URL) {
     return { resolvedModel: process.env.LOCAL_LLM_BASIC_MODEL || 'llama3', isLocal: true }
+  }
+  // `auto` must resolve inside the acting person's set, not the workspace's
+  // (SHO-417, AC3): resolving to the workspace standard-tier model and then
+  // 403ing would refuse a request the person could have served.
+  if (userId) {
+    const defaults = await resolveEffectiveAgentModelDefaults(workspaceId)
+    const configured = Object.fromEntries(
+      Object.entries(defaults.autoTiers).map(([tier, entry]) => [tier, entry.id]),
+    )
+    const narrowed = await allowedAutoTiers(workspaceId, userId, configured)
+    if (narrowed?.standard) return { resolvedModel: narrowed.standard, isLocal: false }
   }
   const entry = await resolveAutoTierModel(workspaceId, 'standard')
   return { resolvedModel: entry.id, isLocal: false }
@@ -4900,7 +4912,7 @@ export function aiProxyRoutes() {
     // below, which must send the cloud a concrete id rather than `auto`.
     const request: ChatCompletionRequest = await c.req.json()
     if (request?.model) {
-      request.model = (await resolveRequestModel(request.model, tokenPayload.workspaceId)).resolvedModel
+      request.model = (await resolveRequestModel(request.model, tokenPayload.workspaceId, resolveUsageMemberId(tokenPayload))).resolvedModel
     }
 
     // When Shogo Cloud key is configured, forward everything to the cloud
@@ -5236,7 +5248,7 @@ export function aiProxyRoutes() {
     // cloud-forwarding branch below (see chat/completions).
     const body = await c.req.json()
     if (body?.model) {
-      body.model = (await resolveRequestModel(body.model, tokenPayload.workspaceId)).resolvedModel
+      body.model = (await resolveRequestModel(body.model, tokenPayload.workspaceId, resolveUsageMemberId(tokenPayload))).resolvedModel
     }
 
     // When a Shogo Cloud key is configured, forward to the cloud — the local
@@ -5673,7 +5685,7 @@ export function aiProxyRoutes() {
         // resolution, before the request leaves this machine.
         let forwardedModel: string | undefined
         try { forwardedModel = JSON.parse(body)?.model } catch { /* cloud reports malformed bodies */ }
-        const { resolvedModel: forwardedResolved, isLocal: forwardedIsLocal } = await resolveRequestModel(forwardedModel || 'advanced', tokenPayload.workspaceId)
+        const { resolvedModel: forwardedResolved, isLocal: forwardedIsLocal } = await resolveRequestModel(forwardedModel || 'advanced', tokenPayload.workspaceId, resolveUsageMemberId(tokenPayload))
         if (!forwardedIsLocal) {
           const forwardedDenied = await enforceModelAccess(c, tokenPayload, forwardedResolved)
           if (forwardedDenied) return forwardedDenied
@@ -5729,7 +5741,7 @@ export function aiProxyRoutes() {
       const isStream = !!parsed.stream
       const chatSessionId = c.req.header('x-chat-session-id') || null
 
-      const { resolvedModel, isLocal } = await resolveRequestModel(requestModel, tokenPayload.workspaceId)
+      const { resolvedModel, isLocal } = await resolveRequestModel(requestModel, tokenPayload.workspaceId, resolveUsageMemberId(tokenPayload))
       console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
       const resolvedModelConfig = resolveModel(resolvedModel)
 

@@ -76,6 +76,24 @@ interface MemberOption {
   name: string
 }
 
+interface AuditEvent {
+  id: string
+  kind: string
+  actorUserId: string | null
+  onBehalfOfUserId: string | null
+  permission: string | null
+  modelId: string | null
+  createdAt: string
+}
+
+interface ShadowDenial {
+  userId: string | null
+  permission: string | null
+  modelId: string | null
+  count: number
+  lastAt: string
+}
+
 const ROLES = ['owner', 'admin', 'member', 'viewer'] as const
 const SPEND_PERIODS = ['day', 'week', 'month'] as const
 
@@ -103,6 +121,8 @@ export const WorkspaceAccessTab = observer(function WorkspaceAccessTab() {
   const [policies, setPolicies] = useState<PolicyRow[]>([])
   const [requests, setRequests] = useState<AccessRequest[]>([])
   const [members, setMembers] = useState<MemberOption[]>([])
+  const [audit, setAudit] = useState<AuditEvent[]>([])
+  const [shadow, setShadow] = useState<ShadowDenial[]>([])
 
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -123,7 +143,7 @@ export const WorkspaceAccessTab = observer(function WorkspaceAccessTab() {
       setEffective(own.data ?? null)
 
       if (canManage) {
-        const [catalog, queue, people] = await Promise.all([
+        const [catalog, queue, people, trail] = await Promise.all([
           http.get<{ policies: PolicyRow[]; abilities: AbilityOption[]; modelTiers: string[]; models: ModelOption[] }>(
             `/api/workspaces/${encodeURIComponent(workspaceId)}/access/policies`,
           ),
@@ -131,12 +151,19 @@ export const WorkspaceAccessTab = observer(function WorkspaceAccessTab() {
             `/api/workspaces/${encodeURIComponent(workspaceId)}/access/requests?status=open`,
           ),
           api.getWorkspaceMembers(http, workspaceId).catch(() => []),
+          http
+            .get<{ events: AuditEvent[]; shadow: ShadowDenial[] }>(
+              `/api/workspaces/${encodeURIComponent(workspaceId)}/access/audit?limit=50`,
+            )
+            .catch(() => ({ data: { events: [], shadow: [] } })),
         ])
         setPolicies(catalog.data?.policies ?? [])
         setAbilities(catalog.data?.abilities ?? [])
         setModelTiers(catalog.data?.modelTiers ?? [])
         setModels(catalog.data?.models ?? [])
         setRequests(queue.data?.requests ?? [])
+        setAudit(trail.data?.events ?? [])
+        setShadow(trail.data?.shadow ?? [])
         setMembers(
           (people as Array<{ user?: { id: string; name?: string; email?: string } }>)
             .map((m) => m.user)
@@ -245,6 +272,15 @@ export const WorkspaceAccessTab = observer(function WorkspaceAccessTab() {
           onNotice={setNotice}
           icon={<ShieldCheck size={16} className="text-foreground" />}
           checkIcon={<Check size={13} color="#fff" />}
+        />
+      )}
+
+      {canManage && (
+        <AuditCard
+          events={audit}
+          shadow={shadow}
+          members={members}
+          icon={<ShieldCheck size={16} className="text-foreground" />}
         />
       )}
 
@@ -775,6 +811,80 @@ function PoliciesCard({
           ))}
         </View>
       )}
+    </View>
+  )
+}
+
+/**
+ * What the policy rows actually did: the audit trail, and — while the workspace
+ * is still in `shadow` — the calls that would have been blocked. The counts are
+ * the number an admin needs before flipping `rbac_enforce` to `on`: a role that
+ * would block a hundred calls a day is a policy to fix, not a switch to throw.
+ */
+function AuditCard({
+  events,
+  shadow,
+  members,
+  icon,
+}: {
+  events: AuditEvent[]
+  shadow: ShadowDenial[]
+  members: MemberOption[]
+  icon: React.ReactNode
+}) {
+  const nameOf = useMemo(() => new Map(members.map((m) => [m.id, m.name])), [members])
+  const who = (id: string | null) => (id ? nameOf.get(id) ?? id : 'system')
+  const wouldBlock = shadow.reduce((sum, row) => sum + row.count, 0)
+
+  return (
+    <View className="bg-card border border-border rounded-xl">
+      <SectionHeader
+        icon={icon}
+        title="Audit"
+        description={
+          wouldBlock === 0
+            ? 'Nothing would have been blocked in the last 7 days.'
+            : `${wouldBlock} ${wouldBlock === 1 ? 'call' : 'calls'} would have been blocked in the last 7 days.`
+        }
+      />
+
+      {shadow.length > 0 && (
+        <View className="px-5 py-4 gap-2 border-b border-border">
+          <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Would have been blocked
+          </Text>
+          {shadow.slice(0, 10).map((row) => (
+            <View
+              key={`${row.userId ?? ''}-${row.permission ?? ''}-${row.modelId ?? ''}`}
+              className="flex-row items-center justify-between gap-3"
+            >
+              <Text className="text-xs text-foreground flex-1">
+                {who(row.userId)} · {row.permission ?? row.modelId}
+              </Text>
+              <Text className="text-xs text-muted-foreground">{row.count}×</Text>
+            </View>
+          ))}
+        </View>
+      )}
+
+      <View className="px-5 py-4 gap-2">
+        <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Recent events
+        </Text>
+        {events.length === 0 && <Text className="text-xs text-muted-foreground">No events yet.</Text>}
+        {events.slice(0, 25).map((event) => (
+          <View key={event.id} className="flex-row items-center justify-between gap-3">
+            <Text className="text-xs text-foreground flex-1">
+              {event.kind} · {who(event.onBehalfOfUserId ?? event.actorUserId)}
+              {event.permission ? ` · ${event.permission}` : ''}
+              {event.modelId ? ` · ${event.modelId}` : ''}
+            </Text>
+            <Text className="text-[11px] text-muted-foreground">
+              {new Date(event.createdAt).toLocaleDateString()}
+            </Text>
+          </View>
+        ))}
+      </View>
     </View>
   )
 }

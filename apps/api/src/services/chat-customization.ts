@@ -15,6 +15,7 @@ import {
   signConversationFileToken,
 } from '../lib/conversation-files'
 import { ConversationError, getWorkspaceRole } from './conversation.service'
+import { deletePoliciesForSubject, invalidateAccess } from './access-policy.service'
 
 const db = prisma as any
 
@@ -97,6 +98,9 @@ export async function createGroup(
     },
   })
   for (const id of memberIds) await db.userGroupMember.create({ data: { groupId: created.id, userId: id } })
+  // Group membership feeds the access resolver, so a new group's members may
+  // have just gained a grant (SHO-417, AC2).
+  invalidateAccess(workspaceId)
   publishGroups(workspaceId)
   const row = await db.userGroup.findUnique({ where: { id: created.id }, include: { members: { select: { userId: true } } } })
   return serializeGroup(row)
@@ -134,6 +138,9 @@ export async function updateGroup(
     await db.userGroupMember.deleteMany({ where: { groupId, userId: { notIn: next } } })
     const have = new Set((await db.userGroupMember.findMany({ where: { groupId }, select: { userId: true } })).map((m: any) => m.userId))
     for (const id of next) if (!have.has(id)) await db.userGroupMember.create({ data: { groupId, userId: id } })
+    // A removed member must lose the group's grant on their next request, not
+    // after the 30 s cache expires (SHO-417, AC2).
+    invalidateAccess(row.workspaceId)
   }
   publishGroups(row.workspaceId)
   const full = await db.userGroup.findUnique({ where: { id: groupId }, include: { members: { select: { userId: true } } } })
@@ -146,6 +153,10 @@ export async function deleteGroup(groupId: string, userId: string) {
     throw new ConversationError(403, 'forbidden', 'Only the creator or a workspace admin can delete this group')
   }
   await db.userGroup.delete({ where: { id: groupId } })
+  // The group's policy row would otherwise outlive it and silently re-apply to
+  // whoever joins a group with the same id later (SHO-417, plan §1 cascade).
+  await deletePoliciesForSubject(row.workspaceId, 'group', groupId)
+  invalidateAccess(row.workspaceId)
   publishGroups(row.workspaceId)
   return { deleted: true }
 }

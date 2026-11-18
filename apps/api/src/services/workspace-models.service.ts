@@ -95,9 +95,19 @@ export async function setAllowedModelIds(
   invalidateWorkspaceModels(workspaceId)
 }
 
-/** Drop the cached allowlist for a workspace. Call after a write. */
+/**
+ * Drop the cached allowlist for a workspace. Call after a write.
+ *
+ * The ceiling is an input to the access resolver, so a ceiling change must also
+ * drop the per-member access cache — otherwise a member keeps a model the
+ * workspace just removed for up to 30 s (SHO-417, AC2). Imported lazily because
+ * `access-policy.service` reads the ceiling from this module.
+ */
 export function invalidateWorkspaceModels(workspaceId: string): void {
   cache.delete(workspaceId)
+  void import('./access-policy.service')
+    .then((m) => m.invalidateAccess(workspaceId))
+    .catch(() => {})
 }
 
 interface PlatformModelSets<C extends { id: string }, O extends { id: string }> {
