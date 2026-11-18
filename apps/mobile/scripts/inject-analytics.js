@@ -17,6 +17,7 @@ const {
   LANDSCAPE_OVERLAY_ID,
   PHONE_GUARD_STYLE_ID,
   PHONE_VIEWPORT_GUARD_CSS,
+  VIEWPORT_META_CONTENT,
   ZOOM_GUARD_ATTRIBUTE,
   ZOOM_GUARD_SCRIPT,
 } = require('./web-shell-guards')
@@ -54,10 +55,8 @@ if (!html.includes('data-shogo-theme-bootstrap')) {
   snippets = THEME_BOOTSTRAP_SCRIPT + snippets
 }
 
-// Pinch-zoom / auto-zoom guard (SHO-405). `+html.tsx` carries the same script
-// (from scripts/web-shell-guards.js) for the dev server, but Expo's "single"
-// export strips <script> tags from that file, so the deployed shell needs it
-// re-injected here. First in <head> so it runs before the app boots.
+// Pinch-zoom / auto-zoom guard (SHO-405), from scripts/web-shell-guards.js.
+// First in <head> so it runs before the app boots.
 if (!html.includes(ZOOM_GUARD_ATTRIBUTE)) {
   snippets = `<script ${ZOOM_GUARD_ATTRIBUTE}>${ZOOM_GUARD_SCRIPT}</script>` + snippets
 }
@@ -85,10 +84,23 @@ if (!html.includes('name="google" content="notranslate"')) {
   html = html.replace('</head>', `${GOOGLE_NOTRANSLATE_META}</head>`)
 }
 
-// The rest of the phone shell guard (SHO-405): the CSS rules and the landscape
-// rotate prompt. `+html.tsx` renders both from scripts/web-shell-guards.js, and
-// the "single" export has been known to drop `+html.tsx` customizations, so
-// whatever did not survive the export is put back here.
+// --- Phone viewport guard (SHO-405) ---------------------------------------
+// `web.output: "single"` makes the web export ignore `app/+html.tsx` entirely:
+// the shipped shell is Expo's default template, with a permissive viewport, no
+// manifest link and none of the guard's markup or CSS (the branch's test runs
+// this step against a captured export). Put all of it back.
+if (!html.includes(VIEWPORT_META_CONTENT)) {
+  const viewportMeta = `<meta name="viewport" content="${VIEWPORT_META_CONTENT}" />`
+  html = html.replace(/<meta[^>]+name="viewport"[^>]*>/i, viewportMeta)
+  if (!html.includes(VIEWPORT_META_CONTENT)) {
+    html = html.replace('</head>', `${viewportMeta}</head>`)
+  }
+}
+
+if (!html.includes('rel="manifest"')) {
+  html = html.replace('</head>', '<link rel="manifest" href="/manifest.json" /></head>')
+}
+
 if (!html.includes(PHONE_GUARD_STYLE_ID)) {
   html = html.replace('</head>', `<style id="${PHONE_GUARD_STYLE_ID}">${PHONE_VIEWPORT_GUARD_CSS}</style></head>`)
 }

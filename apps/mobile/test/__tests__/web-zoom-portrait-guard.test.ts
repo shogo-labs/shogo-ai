@@ -3,16 +3,16 @@
 //
 // SHO-405 — phone web must not zoom and must not stay in landscape.
 //
-// The web shell is the only place these can be enforced: `user-scalable=no` /
-// `maximum-scale=1` cover input-focus auto-zoom, `touch-action` covers
-// double-tap, and the gesture/touchmove guard covers iOS pinch (which has
-// ignored the viewport meta since iOS 10). A browser tab can never be locked
-// to portrait, so landscape phones get the rotate prompt instead. Tablets and
-// desktop keep landscape and their own browser zoom.
+// The rules live in the web shell, and the shell has two builders: `app/+html.tsx`
+// (dev server) and `scripts/inject-analytics.js` (the deployed `dist/index.html`).
+// `app.json` sets `web.output: "single"`, which makes the export ignore
+// `+html.tsx` *entirely*, so the shipped shell is Expo's default template and the
+// post-export step is the one that actually ships. Its fixture below is a real
+// `expo export --platform web` index.html, so this file fails if the export
+// template ever changes shape or if a guard stops being re-added.
 //
-// `e2e/local/web-shell-zoom-portrait.test.ts` renders this same CSS and script
-// in a real phone-sized browser and asserts the behaviour; this file covers the
-// markup/config wiring and the post-export path that deploys it.
+// `e2e/local/web-shell-zoom-portrait.test.ts` renders the same CSS and script in a
+// real browser at phone, iPad and desktop viewports and asserts the behaviour.
 
 import { describe, expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
@@ -25,7 +25,9 @@ import {
   LANDSCAPE_OVERLAY_HTML,
   LANDSCAPE_OVERLAY_ID,
   PHONE_GUARD_STYLE_ID,
+  PHONE_MEDIA_QUERY,
   PHONE_VIEWPORT_GUARD_CSS,
+  VIEWPORT_META_CONTENT,
   ZOOM_GUARD_ATTRIBUTE,
   ZOOM_GUARD_SCRIPT,
 } from '../../scripts/web-shell-guards'
@@ -33,54 +35,126 @@ import {
 const mobileDir = fileURLToPath(new URL('../..', import.meta.url))
 
 const htmlShell = readFileSync(join(mobileDir, 'app', '+html.tsx'), 'utf8')
-const injectAnalytics = readFileSync(join(mobileDir, 'scripts', 'inject-analytics.js'), 'utf8')
 const appJson = JSON.parse(readFileSync(join(mobileDir, 'app.json'), 'utf8')).expo as Record<string, any>
 const manifest = JSON.parse(readFileSync(join(mobileDir, 'public', 'manifest.json'), 'utf8'))
+/** Captured from `expo export --platform web` on this branch — what actually ships before patching. */
+const exportedShell = readFileSync(join(mobileDir, 'test', 'fixtures', 'expo-single-export-index.html'), 'utf8')
 
-describe('SHO-405 phone web: no zoom', () => {
-  test('the viewport meta refuses pinch and input-focus zoom', () => {
-    expect(htmlShell).toContain('maximum-scale=1')
-    expect(htmlShell).toContain('user-scalable=no')
+const count = (haystack: string, needle: string) => haystack.split(needle).length - 1
+
+/** Run the real post-export step against `html`, in an isolated copy of the scripts directory. */
+function runInjector(html: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'shogo-web-shell-'))
+  try {
+    mkdirSync(join(dir, 'scripts'))
+    mkdirSync(join(dir, 'dist'))
+    for (const file of ['inject-analytics.js', 'web-shell-guards.js']) {
+      copyFileSync(join(mobileDir, 'scripts', file), join(dir, 'scripts', file))
+    }
+    writeFileSync(join(dir, 'dist', 'index.html'), html)
+    execFileSync('node', [join(dir, 'scripts', 'inject-analytics.js')], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: { ...process.env, EXPO_PUBLIC_GA4_ID: '', EXPO_PUBLIC_FB_PIXEL_ID: '' },
+    })
+    return readFileSync(join(dir, 'dist', 'index.html'), 'utf8')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+describe('SHO-405 the exported shell starts out unguarded', () => {
+  // Guards this test file itself: the fixture must be the real, permissive export.
+  test('the export template has no zoom limits, manifest link or guard markup', () => {
+    expect(exportedShell).toContain('<div id="root"></div>')
+    expect(exportedShell).not.toContain('maximum-scale')
+    expect(exportedShell).not.toContain('rel="manifest"')
+    expect(exportedShell).not.toContain(ZOOM_GUARD_ATTRIBUTE)
+    expect(exportedShell).not.toContain(PHONE_GUARD_STYLE_ID)
   })
 
-  test('the shell renders the shared CSS and guard script', () => {
-    expect(htmlShell).toContain('id={PHONE_GUARD_STYLE_ID}')
+  test('the dev shell renders the same strings from the shared module', () => {
+    expect(htmlShell).toContain('<meta name="viewport" content={VIEWPORT_META_CONTENT} />')
+    expect(htmlShell).toContain('<link rel="manifest" href="/manifest.json" />')
+    expect(htmlShell).toMatch(/id=\{PHONE_GUARD_STYLE_ID\}/)
     expect(htmlShell).toContain('__html: PHONE_VIEWPORT_GUARD_CSS')
     expect(htmlShell).toContain('__html: ZOOM_GUARD_SCRIPT')
-    expect(htmlShell).toContain('[ZOOM_GUARD_ATTRIBUTE]')
     expect(htmlShell).toContain('__html: LANDSCAPE_OVERLAY_HTML')
-  })
-
-  test('CSS kills pinch and double-tap zoom below the whole app', () => {
-    expect(PHONE_VIEWPORT_GUARD_CSS).toContain('html{touch-action:pan-x pan-y')
-    expect(PHONE_VIEWPORT_GUARD_CSS).toContain('-webkit-text-size-adjust:100%')
-  })
-
-  test('form controls are at least 16px on touch devices, so iOS never auto-zooms them', () => {
-    // One rule instead of a font-size edit at ~30 `TextInput` call sites.
-    const rule = PHONE_VIEWPORT_GUARD_CSS.match(/@media \(pointer:coarse\)\{([^@]*?)\}\}/)
-    expect(rule?.[1] ?? '').toContain('font-size:max(16px,1em)!important')
-    expect(rule?.[1] ?? '').toContain('textarea')
-  })
-
-  test('the guard script only engages on touch devices, so desktop keeps browser zoom', () => {
-    expect(ZOOM_GUARD_SCRIPT).toContain("matchMedia('(pointer: coarse)').matches")
-    expect(ZOOM_GUARD_SCRIPT).toContain('if (!window.matchMedia')
-    expect(ZOOM_GUARD_SCRIPT).toContain('gesturestart')
-    expect(ZOOM_GUARD_SCRIPT).toContain('touchmove')
-    expect(ZOOM_GUARD_SCRIPT).toContain('event.ctrlKey')
-    expect(ZOOM_GUARD_SCRIPT).toContain('preventDefault()')
   })
 })
 
-describe('SHO-405 phone web: no landscape', () => {
-  test('the rotate prompt is markup the CSS can reveal', () => {
-    expect(LANDSCAPE_OVERLAY_ID).toBe('shogo-lock-portrait')
-    expect(LANDSCAPE_OVERLAY_HTML).toContain(`id="${LANDSCAPE_OVERLAY_ID}"`)
-    expect(PHONE_VIEWPORT_GUARD_CSS).toContain(`#${LANDSCAPE_OVERLAY_ID}{display:none`)
+describe('SHO-405 the post-export step guards the shell that actually ships', () => {
+  const patched = runInjector(exportedShell)
+
+  test('the viewport meta is replaced with the strict one, in place', () => {
+    expect(count(patched, 'name="viewport"')).toBe(1)
+    expect(patched).toContain(`content="${VIEWPORT_META_CONTENT}"`)
+    expect(patched).not.toContain('content="width=device-width, initial-scale=1, shrink-to-fit=no"')
+    expect(patched.indexOf('maximum-scale=1')).toBeLessThan(patched.indexOf('</head>'))
   })
 
-  test('it only appears on coarse-pointer phones in landscape, never on desktop or tablets', () => {
+  test('the manifest link is added, so the portrait PWA lock is live', () => {
+    expect(count(patched, 'rel="manifest"')).toBe(1)
+    expect(patched.indexOf('rel="manifest"')).toBeLessThan(patched.indexOf('</head>'))
+    expect(existsSync(join(mobileDir, 'public', 'manifest.json'))).toBe(true)
+  })
+
+  test('the guard style, prompt and script are each added exactly once', () => {
+    expect(count(patched, `id="${PHONE_GUARD_STYLE_ID}"`)).toBe(1)
+    expect(count(patched, `id="${LANDSCAPE_OVERLAY_ID}"`)).toBe(1)
+    expect(count(patched, ZOOM_GUARD_ATTRIBUTE)).toBe(1)
+
+    expect(patched.indexOf(PHONE_GUARD_STYLE_ID)).toBeLessThan(patched.indexOf('</head>'))
+    expect(patched.indexOf(ZOOM_GUARD_ATTRIBUTE)).toBeLessThan(patched.indexOf('</head>'))
+    expect(patched.indexOf(`id="${LANDSCAPE_OVERLAY_ID}"`)).toBeGreaterThan(patched.indexOf('<body'))
+    expect(patched.indexOf(`id="${LANDSCAPE_OVERLAY_ID}"`)).toBeLessThan(patched.indexOf('<div id="root">'))
+    expect(patched).toContain(ZOOM_GUARD_SCRIPT)
+    expect(patched).toContain(PHONE_VIEWPORT_GUARD_CSS)
+    expect(patched).toContain(LANDSCAPE_OVERLAY_HTML)
+  })
+
+  test('running it twice does not duplicate anything', () => {
+    const twice = runInjector(patched)
+    expect(count(twice, 'name="viewport"')).toBe(1)
+    expect(count(twice, 'rel="manifest"')).toBe(1)
+    expect(count(twice, `id="${PHONE_GUARD_STYLE_ID}"`)).toBe(1)
+    expect(count(twice, `id="${LANDSCAPE_OVERLAY_ID}"`)).toBe(1)
+    expect(count(twice, ZOOM_GUARD_ATTRIBUTE)).toBe(1)
+  })
+})
+
+describe('SHO-405 phones only: iPads and desktops keep their zoom', () => {
+  test('the phone gate is bounded by viewport size, not just touch', () => {
+    expect(PHONE_MEDIA_QUERY).toContain('(pointer: coarse)')
+    expect(PHONE_MEDIA_QUERY).toContain('(max-width: 600px)')
+    expect(PHONE_MEDIA_QUERY).toContain('(max-height: 500px)')
+  })
+
+  test('the CSS rules are scoped to that gate, so an iPad neither loses pinch nor gets 16px inputs', () => {
+    // The whole guard block opens with the phone gate, and the zoom/type rules
+    // appear exactly once, inside it.
+    expect(PHONE_VIEWPORT_GUARD_CSS.startsWith(`@media ${PHONE_MEDIA_QUERY}{`)).toBe(true)
+    expect(count(PHONE_VIEWPORT_GUARD_CSS, 'touch-action:pan-x pan-y')).toBe(1)
+    expect(count(PHONE_VIEWPORT_GUARD_CSS, 'font-size:max(16px,1em)')).toBe(1)
+    const gateBody = PHONE_VIEWPORT_GUARD_CSS.slice(0, PHONE_VIEWPORT_GUARD_CSS.indexOf('\n'))
+    expect(gateBody).toContain('touch-action:pan-x pan-y')
+    expect(gateBody).toContain('font-size:max(16px,1em)!important')
+  })
+
+  test('the script re-reads the same gate on every event', () => {
+    expect(ZOOM_GUARD_SCRIPT).toContain(PHONE_MEDIA_QUERY)
+    expect(ZOOM_GUARD_SCRIPT).toContain('matchMedia(PHONE)')
+    expect(ZOOM_GUARD_SCRIPT).toContain('gesturestart')
+    expect(ZOOM_GUARD_SCRIPT).toContain('event.ctrlKey')
+    expect(ZOOM_GUARD_SCRIPT).toContain('preventDefault()')
+    // Best-effort PWA orientation lock must not run on a tablet either.
+    expect(ZOOM_GUARD_SCRIPT).toContain('standalone && isPhone()')
+  })
+})
+
+describe('SHO-405 portrait-only', () => {
+  test('the rotate prompt appears only for coarse-pointer phones in landscape', () => {
+    expect(LANDSCAPE_OVERLAY_HTML).toContain(`id="${LANDSCAPE_OVERLAY_ID}"`)
     const overlay = PHONE_VIEWPORT_GUARD_CSS.match(
       /@media \(orientation:landscape\)[^{]*\{#shogo-lock-portrait\{display:flex\}\}/,
     )
@@ -95,7 +169,6 @@ describe('SHO-405 phone web: no landscape', () => {
     for (const icon of manifest.icons as { src: string }[]) {
       expect(existsSync(join(mobileDir, 'public', icon.src.replace(/^\//, '')))).toBe(true)
     }
-    expect(htmlShell).toContain('<link rel="manifest" href="/manifest.json" />')
   })
 
   test('native phones ship portrait while iPads keep all four orientations', () => {
@@ -107,67 +180,5 @@ describe('SHO-405 phone web: no landscape', () => {
       'UIInterfaceOrientationLandscapeLeft',
       'UIInterfaceOrientationLandscapeRight',
     ])
-  })
-})
-
-describe('SHO-405 deployed shell', () => {
-  // Expo's "single" export strips <script> tags from +html.tsx and has dropped
-  // other customizations, so the deployed dist/index.html is patched post-export.
-  // Run that patch for real, in an isolated copy of the scripts directory.
-  function runInjector(html: string): string {
-    const dir = mkdtempSync(join(tmpdir(), 'shogo-web-shell-'))
-    try {
-      mkdirSync(join(dir, 'scripts'))
-      mkdirSync(join(dir, 'dist'))
-      for (const file of ['inject-analytics.js', 'web-shell-guards.js']) {
-        copyFileSync(join(mobileDir, 'scripts', file), join(dir, 'scripts', file))
-      }
-      writeFileSync(join(dir, 'dist', 'index.html'), html)
-      execFileSync('node', [join(dir, 'scripts', 'inject-analytics.js')], {
-        cwd: dir,
-        encoding: 'utf8',
-        env: { ...process.env, EXPO_PUBLIC_GA4_ID: '', EXPO_PUBLIC_FB_PIXEL_ID: '' },
-      })
-      return readFileSync(join(dir, 'dist', 'index.html'), 'utf8')
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  }
-
-  const count = (haystack: string, needle: string) => haystack.split(needle).length - 1
-
-  const BARE_EXPORT =
-    '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"></head><body><div id="root"></div></body></html>'
-
-  test('a stripped shell gets the guard style, prompt and script exactly once, in the right places', () => {
-    const injected = runInjector(BARE_EXPORT)
-
-    expect(count(injected, ZOOM_GUARD_ATTRIBUTE)).toBe(1)
-    expect(injected.indexOf(ZOOM_GUARD_ATTRIBUTE)).toBeLessThan(injected.indexOf('</head>'))
-
-    expect(count(injected, `id="${PHONE_GUARD_STYLE_ID}"`)).toBe(1)
-    expect(injected.indexOf(PHONE_GUARD_STYLE_ID)).toBeLessThan(injected.indexOf('</head>'))
-
-    expect(count(injected, `id="${LANDSCAPE_OVERLAY_ID}"`)).toBe(1)
-    expect(injected.indexOf(`id="${LANDSCAPE_OVERLAY_ID}"`)).toBeGreaterThan(injected.indexOf('<body'))
-  })
-
-  test('running the post-export step on an intact shell changes nothing', () => {
-    const intact = BARE_EXPORT.replace(
-      '</head>',
-      `<style id="${PHONE_GUARD_STYLE_ID}">${PHONE_VIEWPORT_GUARD_CSS}</style></head>`,
-    ).replace('<body>', `<body>${LANDSCAPE_OVERLAY_HTML}`)
-
-    const once = runInjector(intact)
-    const twice = runInjector(once)
-
-    for (const injected of [once, twice]) {
-      expect(count(injected, ZOOM_GUARD_ATTRIBUTE)).toBe(1)
-      expect(count(injected, `id="${PHONE_GUARD_STYLE_ID}"`)).toBe(1)
-      expect(count(injected, `id="${LANDSCAPE_OVERLAY_ID}"`)).toBe(1)
-    }
-    expect(twice).toContain(ZOOM_GUARD_SCRIPT)
-    expect(twice).toContain(PHONE_VIEWPORT_GUARD_CSS)
-    expect(injectAnalytics).toContain("require('./web-shell-guards')")
   })
 })

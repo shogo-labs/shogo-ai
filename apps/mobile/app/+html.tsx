@@ -7,9 +7,16 @@ import {
   LANDSCAPE_OVERLAY_HTML,
   PHONE_GUARD_STYLE_ID,
   PHONE_VIEWPORT_GUARD_CSS,
+  VIEWPORT_META_CONTENT,
   ZOOM_GUARD_ATTRIBUTE,
   ZOOM_GUARD_SCRIPT,
 } from '../scripts/web-shell-guards'
+
+// NOTE: `app.json` sets `web.output: "single"`, so the *exported* shell does not
+// come from this file — it is Expo's default template. Everything below is kept
+// for the dev server and for a future switch to `output: "static"`, and
+// `scripts/inject-analytics.js` builds the same head/body for `dist/index.html`
+// from these same strings. Change one and the other follows.
 
 export default function Root({ children }: PropsWithChildren) {
   const buildHash = process.env.EXPO_PUBLIC_BUILD_HASH || 'dev'
@@ -24,10 +31,7 @@ export default function Root({ children }: PropsWithChildren) {
             one is stopped by the guard script below — but it still honours
             maximum-scale=1 for input-focus auto-zoom, which the
             16px-minimum input rule further down also prevents. */}
-        <meta
-          name="viewport"
-          content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, shrink-to-fit=no, viewport-fit=cover"
-        />
+        <meta name="viewport" content={VIEWPORT_META_CONTENT} />
         <link rel="manifest" href="/manifest.json" />
         <link rel="icon" href={`/favicon.ico?v=${encodeURIComponent(buildHash)}`} />
         <script

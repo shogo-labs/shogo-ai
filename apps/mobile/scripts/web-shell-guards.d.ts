@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
+/** Media query that matches phones only (touch, phone-sized viewport, either orientation). */
+export declare const PHONE_MEDIA_QUERY: string
+
+/** `content` for the viewport meta: no pinch, no input-focus zoom. */
+export declare const VIEWPORT_META_CONTENT: string
+
 /** Attribute marking (and labelling) the injected pinch-zoom guard script. */
 export declare const ZOOM_GUARD_ATTRIBUTE: string
 
