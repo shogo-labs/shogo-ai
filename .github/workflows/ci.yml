@@ -424,9 +424,11 @@ jobs:
         # out, SHO-415). Nothing else reads these files against the schema, so
         # without this check the drift is silent and permanent.
         #
-        # The script regenerates the output in memory — it never writes — and
-        # diffs it against the committed files, so it cannot itself create the
-        # drift it is looking for.
+        # The check compares against HEAD, not the working tree: this job's own
+        # `bun install` already ran the generator over the checkout, so a
+        # working-tree comparison could only ever pass and a stale commit would
+        # sail through (QA, SHO-415 round 1). It regenerates in memory and never
+        # writes, so it cannot itself create the drift it is looking for.
         run: bun run check:domain-stores
 
       - name: Check multi-region cron locks + unique-key classification
