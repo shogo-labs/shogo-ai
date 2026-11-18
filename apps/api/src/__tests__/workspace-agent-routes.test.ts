@@ -32,6 +32,7 @@ let agentDefaultModel: string | null = null
 
 mock.module('../services/workspace-models.service', () => ({
   isModelVisibleForWorkspace: async (_workspaceId: string, modelId: string) => modelId !== 'hidden-model',
+  getAllowedModelIds: async () => null,
 }))
 
 const memberRoles: Record<string, string> = {

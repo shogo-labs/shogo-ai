@@ -39,7 +39,7 @@ import { getPodId, getSharedRedis } from '../lib/tunnel-redis'
 import { getRbacMode } from '../lib/authz/mode'
 import { AUTO_MODEL_ID } from '@shogo/model-catalog'
 import { getMergedCatalogSync } from './model-registry.service'
-import { getAllowedModelIds } from './workspace-models.service'
+import { getAllowedModelIds, isModelVisibleForWorkspace } from './workspace-models.service'
 import { getAgentDefaultModel } from './workspace-agent.service'
 import type { MessageBlocks, QuestionBlock } from './conversation-message-kind'
 
@@ -209,6 +209,12 @@ function reasonsFor(role: WorkspaceRole, policies: readonly AccessPolicyRow[]): 
 /**
  * The effective access of one member. `null` when they are not a workspace
  * member (a guest, or a stale id) — callers treat that as "no access".
+ *
+ * This sits on the hot path of every proxied request, so it never throws: a
+ * read that fails returns `null`, the caller falls back to the workspace
+ * ceiling (today's behaviour) and an ability check fails closed. A 500 here
+ * would take down every model call in the workspace because one row was
+ * unreadable.
  */
 export async function getEffectiveAccess(
   workspaceId: string,
@@ -218,33 +224,38 @@ export async function getEffectiveAccess(
   const cached = cache.get(key)
   if (cached && Date.now() - cached.loadedAt <= CACHE_TTL_MS) return cached.value
 
-  const role = await loadRole(workspaceId, userId)
-  if (!role) return null
+  try {
+    const role = await loadRole(workspaceId, userId)
+    if (!role) return null
 
-  const [policies, ceiling, workspaceDefaultModelId] = await Promise.all([
-    loadPolicies(workspaceId, userId, role),
-    getAllowedModelIds(workspaceId),
-    getAgentDefaultModel(workspaceId).catch(() => null),
-  ])
+    const [policies, ceiling, workspaceDefaultModelId] = await Promise.all([
+      loadPolicies(workspaceId, userId, role),
+      getAllowedModelIds(workspaceId),
+      getAgentDefaultModel(workspaceId).catch(() => null),
+    ])
 
-  const resolved = resolvePolicy({
-    role,
-    policies,
-    ceiling,
-    catalog: accessModelCatalog(),
-    workspaceDefaultModelId,
-    reasons: reasonsFor(role, policies),
-  })
+    const resolved = resolvePolicy({
+      role,
+      policies,
+      ceiling,
+      catalog: accessModelCatalog(),
+      workspaceDefaultModelId,
+      reasons: reasonsFor(role, policies),
+    })
 
-  const value: EffectiveAccess = {
-    ...resolved,
-    workspaceId,
-    userId,
-    role,
-    ceiling,
+    const value: EffectiveAccess = {
+      ...resolved,
+      workspaceId,
+      userId,
+      role,
+      ceiling,
+    }
+    cache.set(key, { value, loadedAt: Date.now() })
+    return value
+  } catch (err) {
+    console.warn('[access] effective access read failed:', (err as Error)?.message ?? err)
+    return null
   }
-  cache.set(key, { value, loadedAt: Date.now() })
-  return value
 }
 
 /** Whether the member may use `permission`. Unknown members get nothing. */
@@ -283,18 +294,39 @@ export async function isModelAllowedFor(
  * `allowed: false` means the acting person may not use `modelId` and the caller
  * should refuse with `code`. In `shadow` mode the decision is `allowed: true`
  * and a `shadow_denied` row is written, so an admin can tune policies before
- * enforcing. A caller with no effective access (a non-member, a stale id) is
- * not gated here — the membership check upstream already refused them.
+ * enforcing.
+ *
+ * The workspace ceiling never depends on a member row. When there is no
+ * effective access — a guest, a stale id, or a read that failed — the allowlist
+ * check that shipped before RBAC still runs, so a workspace that hid a model
+ * keeps hiding it. Only the per-person grant needs a member row.
  */
 export async function checkModelAccess(
   workspaceId: string,
-  userId: string,
+  userId: string | null | undefined,
   modelId: string,
   context: { projectId?: string | null; actorUserId?: string | null } = {},
-): Promise<{ allowed: true } | { allowed: false; code: 'model_not_allowed'; message: string }> {
-  const access = await getEffectiveAccess(workspaceId, userId)
-  if (!access) return { allowed: true }
-  if (await isModelAllowedFor(workspaceId, userId, modelId)) return { allowed: true }
+): Promise<
+  | { allowed: true }
+  | { allowed: false; code: 'model_not_allowed' | 'model_not_visible'; message: string }
+> {
+  const access = userId ? await getEffectiveAccess(workspaceId, userId) : null
+
+  if (!access) {
+    if (await isModelVisibleForWorkspace(workspaceId, modelId)) return { allowed: true }
+    return {
+      allowed: false,
+      code: 'model_not_visible',
+      message: `Model '${modelId}' is not available in this workspace.`,
+    }
+  }
+
+  if (await isModelAllowedFor(workspaceId, userId!, modelId)) return { allowed: true }
+
+  // A model outside the workspace allowlist is a ceiling denial, not a policy
+  // one: the person could not have it whatever their role granted.
+  const outsideCeiling = access.ceiling !== null && !access.ceiling.has(modelId)
+  const code = outsideCeiling ? 'model_not_visible' : 'model_not_allowed'
 
   const mode = await getRbacMode()
   await recordAccessEvent({
@@ -304,7 +336,7 @@ export async function checkModelAccess(
     onBehalfOfUserId: userId,
     modelId,
     permission: 'models:use_all',
-    detail: { projectId: context.projectId ?? null, mode, role: access.role },
+    detail: { projectId: context.projectId ?? null, mode, role: access.role, code },
   })
   if (mode !== 'on') {
     console.warn('[rbac] shadow-deny model', { workspaceId, userId, modelId, role: access.role })
@@ -312,8 +344,10 @@ export async function checkModelAccess(
   }
   return {
     allowed: false,
-    code: 'model_not_allowed',
-    message: `Your role can't use ${modelId}. Ask a workspace admin for access.`,
+    code,
+    message: outsideCeiling
+      ? `Model '${modelId}' is not available in this workspace.`
+      : `Your role can't use ${modelId}. Ask a workspace admin for access.`,
   }
 }
 

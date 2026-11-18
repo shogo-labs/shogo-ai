@@ -56,9 +56,8 @@ mock.module('../lib/proxy-billing-session', () => ({
   closeSession: async () => null,
 }))
 
-mock.module('../lib/project-user-context', () => ({
-  getProjectUser: () => 'real-user',
-}))
+// The metering seat is the person the request acts for (SHO-417), stamped on
+// the token payload — not an in-memory "last person who chatted here" guess.
 
 const { recordUsage } = await import('../routes/ai-proxy')
 
@@ -89,7 +88,7 @@ describe('recordUsage — internal (non-billable) title generation', () => {
     expect(ev.actionType).toBe('title_generation')
     expect(ev.billedUsd).toBe(0)
     expect(ev.workspaceId).toBe('ws-1')
-    expect(ev.memberId).toBe('real-user')
+    expect(ev.memberId).toBe('user-1')
     // Real cost is captured for admin tracking even though the user is billed $0.
     expect(typeof ev.rawUsd).toBe('number')
     expect((ev.actionMetadata as any).internal).toBe(true)

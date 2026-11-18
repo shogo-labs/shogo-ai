@@ -38,7 +38,13 @@ export async function resolveAgentRunModel(projectId: string | null, workspaceId
     if (!(await isModelVisibleForWorkspace(workspaceId, model))) return AUTO_MODEL_ID
     return (await isModelAccessibleForWorkspace(workspaceId, model)) ? model : AUTO_MODEL_ID
   }
-  const row = await db.agentConfig.findUnique({ where: { projectId }, select: { modelName: true } }).catch(() => null)
+  // `db` is the untyped prisma handle, so a missing delegate (a partial test
+  // mock, or a client generated before the model existed) throws on the
+  // property access rather than returning a rejected promise — `.catch()` on
+  // the call alone would not see it.
+  const row = await Promise.resolve()
+    .then(() => db.agentConfig.findUnique({ where: { projectId }, select: { modelName: true } }))
+    .catch(() => null)
   const name = row?.modelName?.trim()
   if (!name || name === DEFAULT_AGENT_MODEL || name === AUTO_MODEL_ID) return AUTO_MODEL_ID
   // A model id that is no longer in the registry (an admin deleted it, or the
@@ -91,6 +97,22 @@ export interface RunModelResolution {
  * with `model_not_allowed` and "ask an admin".
  */
 export async function resolveAgentRunModelFor(
+  projectId: string | null,
+  workspaceId: string | undefined,
+  actingUserId: string | null | undefined,
+): Promise<RunModelResolution | null> {
+  // This runs on the chat hot path, so a resolution failure must not 500 the
+  // turn: fall back to the configured model with no downgrade and let the proxy
+  // gate the request as it always did.
+  try {
+    return await resolveRunModelForActor(projectId, workspaceId, actingUserId)
+  } catch (err) {
+    console.warn('[rbac] run model resolution failed:', (err as Error)?.message ?? err)
+    return { model: AUTO_MODEL_ID, downgrade: null, autoTiers: null }
+  }
+}
+
+async function resolveRunModelForActor(
   projectId: string | null,
   workspaceId: string | undefined,
   actingUserId: string | null | undefined,

@@ -65,6 +65,8 @@ mock.module('../services/workspace-agent.service', () => ({
 
 mock.module('../services/workspace-models.service', () => ({
   isModelVisibleForWorkspace: async () => true,
+  // `null` = every platform-visible model, the same thing the visible check says.
+  getAllowedModelIds: async () => null,
 }))
 
 // `knownModels === null` means "the registry knows every id" (the pre-existing
@@ -75,6 +77,8 @@ mock.module('../services/model-registry.service', () => ({
   getMergedModelEntrySync: (id: string) =>
     id && (knownModels === null || knownModels.has(id)) ? { id, displayName: id } : undefined,
   resolveModelLabel: async (id: string) => id,
+  resolveModelLabelSync: (id: string) => id,
+  getMergedCatalogSync: () => [],
 }))
 
 // ─── readProjectConfig deps ──────────────────────────────────────────────────

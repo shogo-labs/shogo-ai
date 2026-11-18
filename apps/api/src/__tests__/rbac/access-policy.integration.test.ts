@@ -509,9 +509,11 @@ describe('a model request grants the model (AC9)', () => {
         },
       },
     })
-    // Stored as "no models", not as `null`/`null` ("everything").
-    expect(JSON.parse(row!.modelTiers as string)).toEqual([])
-    expect(JSON.parse(row!.modelIds as string)).toEqual([])
+    // Stored as "no models", not as `null`/`null` ("everything"). SQLite hands
+    // a Json column back as text, Postgres as the parsed value.
+    const json = (v: unknown) => (typeof v === 'string' ? JSON.parse(v) : v)
+    expect(json(row!.modelTiers)).toEqual([])
+    expect(json(row!.modelIds)).toEqual([])
     expect(await isModelAllowedFor(w.workspaceA, w.users.viewer, premium.id)).toBe(false)
   })
 })

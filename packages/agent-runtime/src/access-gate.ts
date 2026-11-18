@@ -8,7 +8,8 @@
  * denied tool is hidden from the model, and a direct call to it answers
  * `ability_not_allowed` with the permission to ask an admin for.
  *
- * The ability set comes from `GET /api/internal/access/effective`, fetched
+ * The ability set comes from the workspace access route
+ * (`GET /api/internal/workspaces/:workspaceId/access/effective`), fetched
  * once per turn with the requester ticket. When the call fails (no API, a
  * network blip, a runtime with no ticket) the gate fails **open**: the server
  * still refuses the call, and a runtime that cannot reach the API must not

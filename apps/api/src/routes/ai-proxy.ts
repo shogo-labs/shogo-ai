@@ -2979,8 +2979,10 @@ export async function enforceModelAccess(
   tokenPayload: ProxyTokenPayload,
   modelId: string,
 ): Promise<Response | null> {
+  // The workspace ceiling is checked even when no acting person can be
+  // resolved: it never depended on a member row, and a token without a user id
+  // must not be a way around the allowlist.
   const userId = resolveUsageMemberId(tokenPayload)
-  if (!userId) return null
   const decision = await checkModelAccess(tokenPayload.workspaceId, userId, modelId, {
     projectId: tokenPayload.projectId,
     actorUserId: tokenPayload.userId ?? null,

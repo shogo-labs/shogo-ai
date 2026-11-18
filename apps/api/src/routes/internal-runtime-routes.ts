@@ -1528,6 +1528,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (!identity) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
+    // Validate the path before the project lookup: a malformed request is a 400
+    // whatever the project turns out to be, and it must not depend on a row.
+    const request = await readSharedFileRequest(c)
+    if (request instanceof Response) return request
     const project = await prisma.project.findUnique({
       where: { id: projectId },
       select: { workspaceId: true },
@@ -1535,7 +1539,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
     const denied = await enforceWorkspaceAbility(c, identity, project.workspaceId, 'project.files:share_public')
     if (denied) return denied
-    return mintSharedFileLink(c, projectId, async () => ({ projectId, workspaceId: project.workspaceId }))
+    return mintSharedFileLink(c, projectId, request, async () => ({ projectId, workspaceId: project.workspaceId }))
   })
 
   /**
@@ -1552,16 +1556,17 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (!identity) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
+    const request = await readSharedFileRequest(c)
+    if (request instanceof Response) return request
     const denied = await enforceWorkspaceAbility(c, identity, workspaceId, 'project.files:share_public')
     if (denied) return denied
-    return mintSharedFileLink(c, `workspace ${workspaceId}`, async () => ({ workspaceId }))
+    return mintSharedFileLink(c, `workspace ${workspaceId}`, request, async () => ({ workspaceId }))
   })
 
-  async function mintSharedFileLink(
+  /** The path and lifetime a shared-file mint asks for, or a 400 response. */
+  async function readSharedFileRequest(
     c: Context,
-    label: string,
-    loadScope: () => Promise<{ projectId?: string; workspaceId: string } | Response>,
-  ): Promise<Response> {
+  ): Promise<{ path: string; expiresInDays: number } | Response> {
     const body = await c.req.json().catch(() => null) as {
       path?: unknown
       expiresInDays?: unknown
@@ -1582,7 +1587,16 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       typeof body?.expiresInDays === 'number' && Number.isFinite(body.expiresInDays)
         ? Math.floor(body.expiresInDays)
         : 7
-    const expiresInDays = Math.max(1, Math.min(7, requestedDays))
+    return { path, expiresInDays: Math.max(1, Math.min(7, requestedDays)) }
+  }
+
+  async function mintSharedFileLink(
+    c: Context,
+    label: string,
+    request: { path: string; expiresInDays: number },
+    loadScope: () => Promise<{ projectId?: string; workspaceId: string } | Response>,
+  ): Promise<Response> {
+    const { path, expiresInDays } = request
     const now = Math.floor(Date.now() / 1000)
 
     try {

@@ -75,8 +75,9 @@ async function liveModelAccess(
   modelId: string,
   code: 'model_not_visible' | 'backend_model_not_visible' = 'model_not_visible',
 ): Promise<LiveValidation | null> {
-  const userId = tokenPayload.actingUserId || tokenPayload.userId
-  if (!userId) return null
+  // No acting person still gets the workspace ceiling: it never depended on a
+  // member row, and a token without a user id must not skip the allowlist.
+  const userId = tokenPayload.actingUserId || tokenPayload.userId || null
   const decision = await checkModelAccess(tokenPayload.workspaceId, userId, modelId, {
     projectId: tokenPayload.projectId,
     actorUserId: tokenPayload.userId ?? null,
