@@ -1053,17 +1053,6 @@ export const api = {
     return res.data
   },
 
-  async createInstanceCheckout(http: HttpClient, params: {
-    workspaceId: string
-    instanceSize: string
-    billingInterval: string
-    successUrl?: string
-    cancelUrl?: string
-  }) {
-    const res = await http.post<{ url?: string }>('/api/billing/instance-checkout', params)
-    return res.data
-  },
-
   async createInstancePortal(http: HttpClient, workspaceId: string, returnUrl?: string) {
     const res = await http.post<{ url?: string }>(
       `/api/billing/instance-portal?workspaceId=${encodeURIComponent(workspaceId)}`,
@@ -1074,6 +1063,17 @@ export const api = {
 
   async getWorkspaceInstance(http: HttpClient, workspaceId: string) {
     const res = await http.get<any>(`/api/workspaces/${workspaceId}/instance`)
+    return res.data
+  },
+
+  /**
+   * This period's metered VM compute (SHO-424). The server decides how much to
+   * return: owners/admins get the per-project, per-size and per-state split, a
+   * member gets the period total only. Instance sizes are no longer sold, so
+   * this replaces the old size-purchase cards.
+   */
+  async getWorkspaceComputeUsage(http: HttpClient, workspaceId: string) {
+    const res = await http.get<any>(`/api/workspaces/${workspaceId}/compute-usage`)
     return res.data
   },
 

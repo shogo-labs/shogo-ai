@@ -81,7 +81,7 @@ describe('admin marketing analytics page', () => {
   test('loads each panel exactly once on mount', async () => {
     const { getByTestId } = render(<AdminMarketingAnalyticsPage />)
 
-    await waitFor(() => expect(fetchCalls).toHaveLength(9))
+    await waitFor(() => expect(fetchCalls).toHaveLength(10))
     expect(getByTestId('user-next')).toBeTruthy()
     for (const path of [
       '/analytics/overview',
@@ -93,6 +93,7 @@ describe('admin marketing analytics page', () => {
       '/analytics/source-breakdown',
       '/analytics/ai-digest',
       '/analytics/ai-digest/list',
+      '/compute',
     ]) {
       expect(callsFor(path)).toBe(1)
     }
@@ -100,16 +101,19 @@ describe('admin marketing analytics page', () => {
 
   test('paging the user table refetches only the user table', async () => {
     const { getByTestId } = render(<AdminMarketingAnalyticsPage />)
-    await waitFor(() => expect(fetchCalls).toHaveLength(9))
+    await waitFor(() => expect(fetchCalls).toHaveLength(10))
 
     fireEvent.click(getByTestId('user-next'))
     await waitFor(() => expect(callsFor('/analytics/user-activity')).toBe(2))
 
-    expect(fetchCalls).toHaveLength(10)
+    expect(fetchCalls).toHaveLength(11)
     expect(callsFor('/analytics/overview')).toBe(1)
     expect(callsFor('/analytics/funnel')).toBe(1)
     expect(callsFor('/analytics/ai-digest')).toBe(1)
     expect(callsFor('/analytics/active-users-timeseries')).toBe(1)
+    // The Compute panel is self-loading, so paging the user table must not
+    // re-trigger it — that is SHO-311's contract applied to the new panel.
+    expect(callsFor('/compute')).toBe(1)
     expect(fetchCalls.filter((c) => c.path === '/analytics/user-activity').at(-1)?.params).toMatchObject({
       page: '2',
       limit: '20',
