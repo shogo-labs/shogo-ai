@@ -177,6 +177,14 @@ describe('formatErrorMessage', () => {
   it('returns raw message when not JSON and no pattern match', () => {
     expect(formatErrorMessage('Some random error')).toBe('Some random error')
   })
+
+  // The AI SDK throws `new Error('')` when a failed chat request carried no
+  // body, so the banner rendered as nothing at all — Android users reported a
+  // send that failed "with no message" (SHOGO-ANDROID-5).
+  it('never renders an empty message as an empty banner', () => {
+    expect(formatErrorMessage('')).toBe('The request failed. Please tap Retry to try again.')
+    expect(formatErrorMessage('   ')).toBe('The request failed. Please tap Retry to try again.')
+  })
 })
 
 describe('formatToolName', () => {

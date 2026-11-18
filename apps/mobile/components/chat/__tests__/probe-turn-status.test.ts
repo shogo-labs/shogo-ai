@@ -156,22 +156,25 @@ describe("probeChatTurn", () => {
     expect(await probeChatTurn({ url: "http://x/turn", fetch })).toEqual({
       status: "active",
       turnId: "turn-7",
+      answered: true,
     })
   })
 
-  test("404 (no buffer for this session) → unknown with no turn id", async () => {
+  test("404 (no buffer for this session) → unknown with no turn id, answered", async () => {
     const fetch = makeFetch({ status: 404, body: { status: "unknown" } })
     expect(await probeChatTurn({ url: "http://x/turn", fetch })).toEqual({
       status: "unknown",
       turnId: null,
+      answered: true,
     })
   })
 
-  test("204 (no body) → unknown with no turn id", async () => {
+  test("204 (no body) → unknown with no turn id, answered", async () => {
     const fetch = makeFetch({ status: 204 })
     expect(await probeChatTurn({ url: "http://x/turn", fetch })).toEqual({
       status: "unknown",
       turnId: null,
+      answered: true,
     })
   })
 
@@ -180,6 +183,41 @@ describe("probeChatTurn", () => {
     expect(await probeChatTurn({ url: "http://x/turn", fetch })).toEqual({
       status: "completed",
       turnId: null,
+      answered: true,
+    })
+  })
+
+  // `answered` is the difference between "the runtime says it has no turn"
+  // and "I could not ask". Recovery gives up on the first and keeps trying on
+  // the second — 4 blind probes is how REACT-5Z declared live turns dead.
+  test("a 5xx is not an answer", async () => {
+    const fetch = makeFetch({ status: 503, body: {} })
+    expect(await probeChatTurn({ url: "http://x/turn", fetch })).toEqual({
+      status: "unknown",
+      turnId: null,
+      answered: false,
+    })
+  })
+
+  test("a thrown fetch is not an answer", async () => {
+    const fetch = (async () => {
+      throw new TypeError("network error")
+    }) as unknown as typeof globalThis.fetch
+    expect(await probeChatTurn({ url: "http://x/turn", fetch })).toEqual({
+      status: "unknown",
+      turnId: null,
+      answered: false,
+    })
+  })
+
+  test("a 200 with an unparseable body is not an answer", async () => {
+    const fetch = (async () =>
+      ({ ok: true, status: 200, async json() { throw new Error("bad json") } }) as any
+    ) as unknown as typeof globalThis.fetch
+    expect(await probeChatTurn({ url: "http://x/turn", fetch })).toEqual({
+      status: "unknown",
+      turnId: null,
+      answered: false,
     })
   })
 })
