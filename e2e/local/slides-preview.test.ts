@@ -25,14 +25,14 @@
  */
 import { expect, test, type Page, type Route } from "@playwright/test"
 import { readFileSync } from "node:fs"
-import { fileURLToPath } from "node:url"
+import { join } from "node:path"
 import { LOCAL_API_BASE } from "./helpers"
 import { activateTeamWorkspace, api, signIn, teamWorkspaceId } from "./team-nav-seed"
 
 const SUFFIX = Date.now().toString(36)
 
 /** The deck every "it renders" assertion below is about. */
-const DECK = readFileSync(fileURLToPath(new URL("./fixtures/qa-deck-3-slides.pptx", import.meta.url)))
+const DECK = readFileSync(join(__dirname, "fixtures/qa-deck-3-slides.pptx"))
 const DECK_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 /** Bytes that are not a zip at all: the renderer must fail, not spin. */
