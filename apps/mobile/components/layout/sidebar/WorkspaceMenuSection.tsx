@@ -175,11 +175,6 @@ function PendingInvitationsSection({
             <Text className={cn("mt-0.5 text-muted-foreground", density.text.caption)}>
               {expired ? "Expired invitation. Ask for a new invite to join." : "Invited to join this workspace"}
             </Text>
-            {acceptError ? (
-              <Text className={cn("mt-1 text-destructive", density.text.caption)}>
-                {acceptError}
-              </Text>
-            ) : null}
             <View className="mt-2 flex-row gap-2">
               <Pressable
                 disabled={expired || busy}
@@ -229,6 +224,14 @@ function PendingInvitationsSection({
           </View>
         );
       })}
+      {/* Hook-level, not per-invite: the refusal is about the workspace's seat
+          count, so it belongs once below the list rather than repeated under
+          every pending row. */}
+      {acceptError ? (
+        <Text className={cn("px-4 pb-1 text-destructive", density.text.caption)}>
+          {acceptError}
+        </Text>
+      ) : null}
     </View>
   );
 }

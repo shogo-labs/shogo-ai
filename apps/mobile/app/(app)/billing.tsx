@@ -431,16 +431,17 @@ export default observer(function BillingPage() {
   const businessPricing = PLAN_PRICING.business
   const basicPricing = PLAN_PRICING.basic
 
-  const fmtPrice = useCallback((usdAmount: number, planKey?: string) => {
+  const fmtPrice = useCallback((usdAmount: number, planKey?: string, intervalOverride?: 'monthly' | 'annual') => {
     if (!regionalPricing || !planKey) return `$${usdAmount}`
     const localPlan = regionalPricing.plans[planKey]
     if (!localPlan) return `$${usdAmount}`
+    const interval = intervalOverride ?? billingInterval
     const basePlan = PLAN_PRICING[planKey as keyof typeof PLAN_PRICING]
-    const baseAmount = billingInterval === 'monthly'
+    const baseAmount = interval === 'monthly'
       ? basePlan?.monthly
       : (basePlan?.annual ? Math.round(basePlan.annual / 12) : undefined)
     const quantity = baseAmount ? Math.max(1, Math.round(usdAmount / baseAmount)) : 1
-    const localAmount = billingInterval === 'monthly' ? localPlan.monthly : Math.round(localPlan.annual / 12)
+    const localAmount = interval === 'monthly' ? localPlan.monthly : Math.round(localPlan.annual / 12)
     return `~${formatCurrencyPrice(localAmount * quantity, regionalPricing.currency)}`
   }, [regionalPricing, billingInterval])
 
@@ -478,20 +479,51 @@ export default observer(function BillingPage() {
     : null
 
   // What the card is charged if the trial ends now: the plan's price for the
-  // seats already on the subscription, at the subscription's own interval.
-  const endTrialAmount = useMemo(() => {
-    const planKey: 'basic' | 'business' = (subscription?.planId ?? '').toLowerCase().startsWith('business')
+  // seats already on the subscription, at the subscription's OWN interval —
+  // not the page's monthly/annual toggle, which the user can flip without
+  // touching the subscription — less any spendable workspace credit.
+  const endTrialCharge = useMemo(() => {
+    if (!subscription) return null
+    const planKey: 'basic' | 'business' = (subscription.planId ?? '').toLowerCase().startsWith('business')
       ? 'business'
       : 'basic'
-    const seats = Math.max(1, subscription?.seats ?? 1)
+    const seats = Math.max(1, subscription.seats ?? 1)
+    const annual = subscription.billingInterval === 'annual'
+    const interval = annual ? 'annual' as const : 'monthly' as const
     const pricing = PLAN_PRICING[planKey]
-    return subscription?.billingInterval === 'annual'
-      ? fmtAnnualPrice(pricing.annual * seats, planKey)
-      : fmtPrice(pricing.monthly * seats, planKey)
-  }, [subscription?.planId, subscription?.seats, subscription?.billingInterval, fmtAnnualPrice, fmtPrice])
+    const listUsd = (annual ? pricing.annual : pricing.monthly) * seats
+    // Credit is denominated in USD and comes off the invoice, so it lowers the
+    // figure we quote rather than being folded into the per-seat price.
+    const creditUsd = Math.max(0, promoCredit?.availableUsd ?? 0)
+    const netUsd = Math.max(0, listUsd - creditUsd)
+    const fmt = (usd: number) =>
+      annual ? fmtAnnualPrice(usd, planKey) : fmtPrice(usd, planKey, interval)
+    return {
+      seats,
+      amount: fmt(netUsd),
+      listAmount: fmt(listUsd),
+      creditAppliedUsd: Math.max(0, listUsd - netUsd),
+    }
+  }, [subscription, promoCredit?.availableUsd, fmtAnnualPrice, fmtPrice])
+
+  // One string for both the native Alert and the web dialog, so the two cannot
+  // drift. Credit is called out separately rather than silently folded in:
+  // `endTrialCharge` quotes the net figure, and the owner should know why it is
+  // lower than the list price.
+  const endTrialConfirmBody = endTrialCharge
+    ? [
+        `You'll be charged ${endTrialCharge.amount} today for ${endTrialCharge.seats} × ${planName} and the trial ends immediately.`,
+        endTrialCharge.creditAppliedUsd > 0
+          ? `That is the ${endTrialCharge.listAmount} list price less your available workspace credit.`
+          : null,
+        'You can add more seats once the plan is paid.',
+      ]
+        .filter(Boolean)
+        .join(' ')
+    : `Your card will be charged for ${planName} and the trial ends immediately. You can add more seats once the plan is paid.`
 
   const requestEndTrialConfirm = useCallback((): Promise<boolean> => {
-    const body = `You'll be charged ${endTrialAmount} today for ${planName} and the trial ends immediately. You can add more seats once the plan is paid.`
+    const body = endTrialConfirmBody
     if (Platform.OS !== 'web') {
       return new Promise((resolve) => {
         Alert.alert(
@@ -509,7 +541,7 @@ export default observer(function BillingPage() {
       endTrialConfirmResolve.current = resolve
       setEndTrialConfirmOpen(true)
     })
-  }, [endTrialAmount, planName])
+  }, [endTrialConfirmBody])
 
   const handleEndTrial = useCallback(async () => {
     if (!currentWorkspace?.id) return
@@ -1312,7 +1344,7 @@ export default observer(function BillingPage() {
           </AlertDialogHeader>
           <AlertDialogBody className="mb-4 mt-3">
             <UIText size="sm" className="text-typography-700">
-              {`You'll be charged ${endTrialAmount} today for ${planName} and the trial ends immediately. You can add more seats once the plan is paid.`}
+              {endTrialConfirmBody}
             </UIText>
           </AlertDialogBody>
           <AlertDialogFooter>
