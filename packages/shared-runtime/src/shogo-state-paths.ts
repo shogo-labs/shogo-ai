@@ -23,6 +23,7 @@
  */
 
 import { spawn } from './child-process'
+import { WORKSPACE_SECRET_GITIGNORE_LINES } from './workspace-root-secrets'
 import {
   existsSync,
   mkdirSync,
@@ -61,6 +62,11 @@ export const SHOGO_EXCLUDE_LINES: readonly string[] = [
   '*.db-wal',
   '*.db-shm',
   '*.db-journal',
+  // `.env*` holds tokens. A repo whose own `.gitignore` was written before
+  // SHO-384 does not list them, and an ignore rule in the tree beats this one
+  // only if it re-includes the name — so a run's `git add -A` cannot commit a
+  // secret the secrets store would have carried (SHO-384 QA round 1).
+  ...WORKSPACE_SECRET_GITIGNORE_LINES,
 ]
 
 /**
