@@ -88,6 +88,9 @@ describe('admin Compute panel', () => {
     expect(screen.getByText('Odin AI')).toBeDefined()
     expect(screen.getByText(/Meter coverage/)).toBeDefined()
     expect(screen.getByText(/5 host\(s\) reported usage in the last 72h/)).toBeDefined()
+    // The rate card is stated in full so an operator can check the number. The
+    // 3-decimal memory rate is the one that would silently round wrong.
+    expect(document.body.textContent).toContain('$0.07/vCPU-h + $0.012/GiB-h')
     expect(lastPath).toBe('/compute')
   })
 
