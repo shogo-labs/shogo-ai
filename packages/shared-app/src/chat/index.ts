@@ -27,6 +27,7 @@ export {
   shouldReportChatError,
   chatErrorMessage,
   isReactUpdateDepthError,
+  shouldInterruptStuckToolsOnStreamError,
   SHOGO_TELEMETRY_TAG,
   type ChatErrorClass,
   type ChatErrorContext,

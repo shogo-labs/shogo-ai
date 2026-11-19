@@ -163,6 +163,21 @@ export function isReactUpdateDepthError(err: unknown): boolean {
   return REACT_UPDATE_DEPTH_PATTERNS.some((pattern) => pattern.test(message) || pattern.test(name))
 }
 
+/**
+ * Whether a stream error should close the UI-side tool spinners by writing to
+ * the message store.
+ *
+ * A render-depth error must not. `setMessages` notifies the AI SDK's store,
+ * which forces a synchronous re-render of the tree that just threw, which
+ * throws again and lands back in the same `onError` — one #185 became 450
+ * Sentry events from a single session (JAVASCRIPT-REACT-5S). The turn id is
+ * recorded separately and `shouldAutoRecoverStalledTurn` already skips
+ * recovery for it, so the store write is the only thing left to skip.
+ */
+export function shouldInterruptStuckToolsOnStreamError(err: unknown): boolean {
+  return !isReactUpdateDepthError(err)
+}
+
 function isParseError(name: string, message: string): boolean {
   if (PARSE_NAME_PATTERNS.some((p) => p.test(name))) return true
   // Only inspect the message PREFIX — an `AI_JSONParseError` appends the raw
