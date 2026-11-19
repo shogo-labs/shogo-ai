@@ -165,6 +165,22 @@ describe("BuddyEngine gradient radii", () => {
     }
   })
 
+  test("a positive runaway offset is the production shape and still draws", () => {
+    const engine = new BuddyEngine()
+    engine.showLogo(false)
+
+    // The direction the Sentry event actually took: a positive `oy` pushes
+    // `cy` below the canvas, so `H - cy` goes negative and `drawGlow` is
+    // handed a negative radius — the 8.7e6 in JAVASCRIPT-REACT-6E.
+    engine.oy = 1_000_000
+    const radii = drawFrame(engine)
+    expect(radii.length).toBeGreaterThan(0)
+    for (const r of radii) {
+      expect(Number.isFinite(r)).toBe(true)
+      expect(r).toBeGreaterThanOrEqual(0)
+    }
+  })
+
   test("a non-finite offset draws a centred frame instead of throwing", () => {
     const engine = new BuddyEngine()
     engine.showLogo(false)
