@@ -197,6 +197,24 @@ describe('custom_event_2', () => {
     expect(cometCalls).toEqual(['custom_event_2'])
   })
 
+  test('waits for a slow tag instead of dropping the event', async () => {
+    // Cold cache: the 225 KB tag has not executed when the 1 s delay is up.
+    delete window.comet
+    markNewSignup()
+    expect(consumeNewSignupEvent(Date.now(), 0, 5)).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 2))
+    expect(cometCalls).toEqual([])
+
+    window.comet = (name: string) => {
+      cometCalls.push(name)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25))
+
+    expect(cometCalls).toEqual(['custom_event_2'])
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    expect(cometCalls).toEqual(['custom_event_2'])
+  })
+
   test('a separate sign-up in the same browser later on still reports', async () => {
     const at = Date.now()
     markNewSignup(at)

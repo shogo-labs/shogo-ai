@@ -51,6 +51,13 @@ const NEW_SIGNUP_FLAG_MAX_AGE_MS = 24 * 60 * 60 * 1000
 export const NEW_SIGNUP_REPORTED_KEY = 'shogo_cometly_reported_new_signup'
 const SIGNUP_REPORT_DEDUPE_MS = 2 * 60 * 1000
 const CUSTOM_EVENT_DELAY_MS = 1_000
+/**
+ * The site tag is ~225 KB, so on a cold cache it can still be downloading when
+ * the 1 s delay is up and `window.comet` would not exist yet. Retry a bounded
+ * number of times instead of dropping the conversion on the floor.
+ */
+const CUSTOM_EVENT_RETRY_MS = 500
+const CUSTOM_EVENT_MAX_ATTEMPTS = 10
 
 function isWeb(): boolean {
   return Platform.OS === 'web' && typeof window !== 'undefined' && typeof document !== 'undefined'
@@ -139,6 +146,24 @@ export function hasRecentSignupReport(now: number = Date.now()): boolean {
 }
 
 /**
+ * Fire `custom_event_2` as soon as the tag is actually on the page. The first
+ * attempt is the 1 s delay; if `window.comet` is still missing (cold cache,
+ * blocked request) it retries every `retryMs` for a few seconds and then gives
+ * up silently rather than throwing into a React effect.
+ */
+function fireCustomEvent(attempt: number, retryMs: number): void {
+  if (!isWeb()) return
+  if (typeof window.comet === 'function') {
+    try {
+      window.comet('custom_event_2')
+    } catch {}
+    return
+  }
+  if (retryMs <= 0 || attempt + 1 >= CUSTOM_EVENT_MAX_ATTEMPTS) return
+  setTimeout(() => fireCustomEvent(attempt + 1, retryMs), retryMs)
+}
+
+/**
  * Report `custom_event_2` on the first authenticated page of a new sign-up,
  * then forget the flag. A flag older than a day is dropped silently, and a
  * normal login never sets one, so this cannot fire on a login or twice.
@@ -146,6 +171,7 @@ export function hasRecentSignupReport(now: number = Date.now()): boolean {
 export function consumeNewSignupEvent(
   now: number = Date.now(),
   delayMs: number = CUSTOM_EVENT_DELAY_MS,
+  retryMs: number = CUSTOM_EVENT_RETRY_MS,
 ): boolean {
   if (!isWeb()) return false
   let raw: string | null = null
@@ -171,10 +197,6 @@ export function consumeNewSignupEvent(
   // `window.comet` only exists once the tag has loaded, and the tag is not on
   // the app routes — so load it here, on the one post-signup page.
   loadCometlyPixel()
-  setTimeout(() => {
-    try {
-      window.comet?.('custom_event_2')
-    } catch {}
-  }, delayMs)
+  setTimeout(() => fireCustomEvent(0, retryMs), delayMs)
   return true
 }
