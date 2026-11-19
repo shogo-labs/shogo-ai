@@ -45,6 +45,20 @@ declare module '@shogo/agent-runtime/src/fs-tree-walker' {
      * directory's absolute path.
      */
     lazy?: boolean;
+    /** Matched by `.gitignore` / `.shogoignore`; still returned. */
+    ignored?: boolean;
+    /** A defensive cap tripped before this entry was `stat`ed. */
+    stub?: boolean;
+  }
+
+  export type WalkTruncatedReason = 'time' | 'entries' | 'aborted';
+
+  export interface WalkFilesTreeResult {
+    tree: WorkspaceTreeNode[];
+    truncated: boolean;
+    truncatedReason?: WalkTruncatedReason;
+    elapsedMs: number;
+    entriesScanned: number;
   }
 
   export interface WalkFilesTreeOptions {
@@ -84,4 +98,11 @@ declare module '@shogo/agent-runtime/src/fs-tree-walker' {
     rootDir: string,
     options?: WalkFilesTreeOptions,
   ): Promise<WorkspaceTreeNode[]>;
+
+  /** `walkFilesTree` plus whether (and why) a defensive cap cut the walk short. */
+  export function walkFilesTreeWithMeta(
+    dir: string,
+    rootDir: string,
+    options?: WalkFilesTreeOptions,
+  ): Promise<WalkFilesTreeResult>;
 }

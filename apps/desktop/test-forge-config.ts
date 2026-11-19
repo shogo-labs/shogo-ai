@@ -348,22 +348,19 @@ assertTrue(
 }
 
 {
-  const ideViewsPath = path.join(__dirname, 'src', 'ide-views.ts')
-  const ideViewsSrc = fs.readFileSync(ideViewsPath, 'utf8')
+  // The Shogo IDE server URL is built from the port and token we chose, never
+  // scraped from server output (#1989).
+  const launchSrc = fs.readFileSync(path.join(__dirname, 'src', 'code-oss-server', 'launch.ts'), 'utf8')
+  const ideViewsSrc = fs.readFileSync(path.join(__dirname, 'src', 'ide-views.ts'), 'utf8')
   assertTrue(
-    'ide-views.ts extracts Code OSS URLs through a dedicated filter',
-    /extractCodeOssServerUrl\s*\(/.test(ideViewsSrc),
-    'no extractCodeOssServerUrl helper found in ide-views.ts',
+    'the Shogo IDE server listens on loopback only',
+    launchSrc.includes("export const SERVER_HOST = '127.0.0.1'") && launchSrc.includes("'--host', SERVER_HOST"),
+    'launch.ts no longer pins the server to 127.0.0.1',
   )
   assertTrue(
-    'ide-views.ts only accepts local Code OSS server URLs',
-    ideViewsSrc.includes("url.hostname === '127.0.0.1'") && ideViewsSrc.includes("url.hostname === 'localhost'"),
-    'local server hostname allow-list is missing',
-  )
-  assertTrue(
-    'ide-views.ts no longer resolves the first arbitrary HTTPS URL from launch output',
-    !ideViewsSrc.includes('const match = text.match(/https?:\\/\\/[^\\s]+/)'),
-    'generic first-URL extraction would incorrectly accept https://nodejs.org inspector help output',
+    'the workbench URL is built locally from port + token',
+    /export function buildWorkbenchUrl\s*\(/.test(launchSrc) && !/extractCodeOssServerUrl/.test(ideViewsSrc + launchSrc),
+    'workbench URL is not built by buildWorkbenchUrl, or output scraping came back',
   )
 }
 

@@ -36,9 +36,10 @@ const securityPolicy = readJson('apps/shogo-ide/hardening/security-policy.json')
 const packagingChecklist = readJson('apps/shogo-ide/hardening/packaging-checklist.json')
 const readiness = readJson('apps/shogo-ide/hardening/generated/production-readiness.json')
 const desktopBridge = read('apps/desktop/src/shogo-ide.ts')
-const idePanel = read('apps/mobile/components/project/panels/IDEPanel.tsx')
-const statusBar = read('apps/mobile/components/project/panels/ide/StatusBar.tsx')
+const topBar = read('apps/mobile/components/project/ProjectTopBar.tsx')
 const main = read('apps/desktop/src/main.ts')
+const serverManifestCheck = read('scripts/check-shogo-ide-server-manifest.ts')
+const lock = readJson('apps/shogo-ide/code-oss.lock.json')
 const layout = read('apps/mobile/app/(app)/projects/[id]/_layout.tsx')
 const packageJson = readJson('apps/shogo-ide/package.json')
 const rootPackage = readJson('package.json')
@@ -74,15 +75,16 @@ if (readiness) {
   assert(readiness.nextManualGates?.includes('macOS signing and notarization'), 'readiness report must list manual signing gate')
 }
 
-assert(desktopBridge.includes('hardeningReportPath'), 'desktop bridge must include hardening report status')
-assert(desktopBridge.includes('generatedProductPath'), 'desktop bridge must include generated product status')
 assert(!desktopBridge.includes('writeLaunchDiagnostic'), 'desktop bridge must remove old standalone launch diagnostics')
 assert(!desktopBridge.includes('launchShogoIde'), 'desktop bridge must not keep the old standalone launch path')
-assert(desktopBridge.includes('phase: 6'), 'desktop bridge status must report Phase 6')
+assert(desktopBridge.includes('shogoIdeLogPath'), 'desktop bridge must keep a Shogo IDE log users can open')
 
-assert(statusBar.includes('Shogo IDE'), 'Status bar must expose the managed Shogo-IDE action')
+// Release gate: the prebuilt server is pinned and the shipped manifest must match it.
+assert(/^[0-9a-f]{40}$/.test(lock?.commit ?? ''), 'code-oss.lock.json must pin a full Code - OSS commit')
+assert(serverManifestCheck.includes('validateManifest'), 'releases must validate the Shogo IDE server manifest')
+
+assert(topBar.includes('OpenInShogoIdeButton'), 'Top bar must expose the managed Shogo-IDE action')
 assert(main.includes("label: 'Open Shogo IDE'"), 'File menu must expose Open Shogo IDE')
-assert(idePanel.includes('onOpenCodeWorkbench'), 'IDE panel must accept the managed workbench callback')
 assert(layout.includes('handleOpenCodeWorkbench'), 'project layout must wire the managed workbench opener')
 
 if (packageJson) {

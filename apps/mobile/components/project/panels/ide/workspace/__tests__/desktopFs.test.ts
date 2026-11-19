@@ -184,15 +184,42 @@ describe('DesktopFs.listTree', () => {
       listTree: mock(async () => ({ ok: false, error: 'boom' })),
     })
     const sdk = makeSdkFs()
-    const sdkListTree = mock(async () => [
-      { name: 'fallback.txt', path: 'fallback.txt', kind: 'file' as const, language: 'plaintext' },
-    ])
-    ;(sdk as any).listTree = sdkListTree
+    const sdkListTree = mock(async () => ({
+      nodes: [{ name: 'fallback.txt', path: 'fallback.txt', kind: 'file' as const, language: 'plaintext' }],
+      truncated: true,
+    }))
+    ;(sdk as any).listTreeWithMeta = sdkListTree
 
     const svc = new DesktopFs(bridge, ROOT, sdk, 'desktop-test')
     const nodes = await svc.listTree('foo')
     expect(sdkListTree).toHaveBeenCalledWith('foo')
     expect(nodes[0]?.name).toBe('fallback.txt')
+    expect((await svc.listTreeWithMeta('foo')).truncated).toBe(true)
+  })
+
+  test('reports the IPC truncation flag; stub folders stay lazy', async () => {
+    const bridge = makeBridge({
+      listTree: mock(async () => ({
+        ok: true,
+        truncated: true,
+        tree: [
+          { name: 'src', path: 'src', type: 'directory' as const, modified: 0, lazy: true, stub: true },
+          { name: 'app.py', path: 'app.py', type: 'file' as const, modified: 0, stub: true },
+        ],
+      })),
+    })
+    const svc = new DesktopFs(bridge, ROOT, makeSdkFs(), 'desktop-test')
+    const listing = await svc.listTreeWithMeta()
+    expect(listing.truncated).toBe(true)
+    expect(listing.nodes).toEqual([
+      { name: 'src', path: 'src', kind: 'dir', lazy: true },
+      { name: 'app.py', path: 'app.py', kind: 'file', language: 'python' },
+    ])
+  })
+
+  test('an IPC response without the flag is complete', async () => {
+    const svc = new DesktopFs(makeBridge(), ROOT, makeSdkFs(), 'desktop-test')
+    expect((await svc.listTreeWithMeta()).truncated).toBe(false)
   })
 })
 

@@ -14,6 +14,7 @@ import type {
   SearchResult,
   VisualMode,
   WorkspaceBundle,
+  WorkspaceTreeResult,
 } from './types.js'
 
 /** Per-request bodies set Content-Type; shared headers must not force a single type (e.g. multipart). */
@@ -223,9 +224,18 @@ export class AgentClient {
    * again with the entry's `path` to load that subtree on demand.
    */
   async getWorkspaceTree(path?: string): Promise<FileNode[]> {
+    return (await this.getWorkspaceTreeWithMeta(path)).tree
+  }
+
+  /** The tree plus whether the server's walk budget ran out (some entries are stubs). */
+  async getWorkspaceTreeWithMeta(path?: string): Promise<WorkspaceTreeResult> {
     const qs = path ? `?path=${encodeURIComponent(path)}` : ''
-    const data = await this.fetchJson<{ tree: FileNode[] }>(`/agent/workspace/tree${qs}`, undefined, { scoped: true })
-    return data.tree ?? []
+    const data = await this.fetchJson<Partial<WorkspaceTreeResult>>(`/agent/workspace/tree${qs}`, undefined, { scoped: true })
+    return {
+      tree: data.tree ?? [],
+      truncated: data.truncated === true,
+      ...(data.truncatedReason ? { truncatedReason: data.truncatedReason } : {}),
+    }
   }
 
   /**

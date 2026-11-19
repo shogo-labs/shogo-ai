@@ -51,6 +51,7 @@ import {
   WEB_WIDE_MIN_WIDTH,
 } from '../../lib/native-phone-layout'
 import { requestIdeActivity } from "../../lib/ide-activity-bus"
+import { OpenInShogoIdeButton } from "./topbar/OpenInShogoIdeButton"
 import { nextIdeAlignment } from '../../lib/project-topbar-layout'
 import { BarIconButton } from "./topbar/BarIconButton"
 import { IdeAlignmentToggle } from "./topbar/IdeAlignmentToggle"
@@ -146,6 +147,7 @@ export function ProjectTopBar({
   onCanvasOpenInNewTab,
   onCanvasPrewarm,
   onOpenCodeWorkbench,
+  codeWorkbenchStatus = null,
   onOpenSettingsItem,
   onBack,
   idePrimarySideBarPosition = 'left',
@@ -858,17 +860,7 @@ export function ProjectTopBar({
             />
           )}
           {isIdeActive && canOpenCodeWorkbench && (
-            <Pressable
-              onPress={onOpenCodeWorkbench}
-              className="h-8 flex-row items-center gap-1.5 rounded-lg border border-orange-500/40 bg-orange-500/10 px-3 active:bg-orange-500/15"
-              accessibilityRole="button"
-              accessibilityLabel="Open in Shogo IDE"
-            >
-              <ExternalLink size={14} className="text-orange-400" />
-              <Text className="text-xs font-semibold text-orange-400">
-                {isWide ? 'Open in Shogo IDE' : 'Open in IDE'}
-              </Text>
-            </Pressable>
+            <OpenInShogoIdeButton onPress={onOpenCodeWorkbench!} status={codeWorkbenchStatus} wide={isWide} />
           )}
           {isCanvasActive && canPublish && (
             <PublishDropdown

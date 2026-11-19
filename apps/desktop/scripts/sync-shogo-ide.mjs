@@ -14,6 +14,9 @@ const DEST = path.join(DESKTOP_DIR, 'resources', 'apps', 'shogo-ide')
 
 const REQUIRED_FILES = [
   { rel: 'package.json', minBytes: 100 },
+  // "Open in Shogo IDE" downloads the prebuilt server this names (#1989);
+  // written by .github/workflows/shogo-ide-server.yml.
+  { rel: 'code-oss-server.manifest.json', minBytes: 200 },
   { rel: 'product.shogo.template.json', minBytes: 100 },
   { rel: 'scripts/materialize-distribution.mjs', minBytes: 100 },
   { rel: 'scripts/generate-hardening-report.mjs', minBytes: 100 },
@@ -31,6 +34,7 @@ const REQUIRED_DIRS_NONEMPTY = [
 ]
 const COPY_ENTRIES = [
   'package.json',
+  'code-oss-server.manifest.json',
   'product.shogo.template.json',
   'scripts',
   'distribution',

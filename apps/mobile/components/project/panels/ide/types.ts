@@ -145,4 +145,6 @@ export interface Root {
   tree: TreeNode[];
   loading: boolean;
   error: string | null;
+  /** The root listing was still truncated after the automatic retries. */
+  incomplete?: boolean;
 }

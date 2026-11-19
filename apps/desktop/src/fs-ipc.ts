@@ -58,7 +58,7 @@ import { getWorkspacesDir } from './paths'
 // `bun build` can resolve this import. Module is purely node:fs +
 // node:path + plain constants, so nothing else from agent-runtime gets
 // pulled into the Electron main bundle.
-import { walkFilesTree } from '@shogo/agent-runtime/src/fs-tree-walker'
+import { walkFilesTreeWithMeta, type WalkFilesTreeResult } from '@shogo/agent-runtime/src/fs-tree-walker'
 import { resolveManagedWorkspaceRoot as resolveManagedRoot } from './workspace-root-containment'
 
 /**
@@ -104,12 +104,10 @@ export interface ResolveWorkspaceContext {
 
 export interface ListTreeResult {
   ok: boolean
-  /**
-   * The walked tree. `walkFilesTree` is async (post-2026-05-25), so we
-   * unwrap the Promise here — the IPC result carries the resolved value,
-   * not the promise itself.
-   */
-  tree?: Awaited<ReturnType<typeof walkFilesTree>>
+  tree?: WalkFilesTreeResult['tree']
+  /** Some entries are stubs because a walker cap tripped; re-fetch for full metadata. */
+  truncated?: boolean
+  truncatedReason?: WalkFilesTreeResult['truncatedReason']
   error?: string
 }
 
@@ -246,11 +244,11 @@ export function registerFsIpcHandlers(): void {
         // IPC with `subPath` set when the user clicks the chevron on a
         // lazy directory — `desktopFs.listTree(path)` → here, walked at
         // the same depth-1 limit, so drilling is uniformly fast.
-        const tree = await walkFilesTree(startDir, resolvedRoot, {
+        const { tree, truncated, truncatedReason } = await walkFilesTreeWithMeta(startDir, resolvedRoot, {
           eagerDepth: 1,
           signal: controller.signal,
         })
-        return { ok: true, tree }
+        return { ok: true, tree, truncated, ...(truncatedReason ? { truncatedReason } : {}) }
       } catch (err) {
         return { ok: false, error: (err as Error).message }
       } finally {

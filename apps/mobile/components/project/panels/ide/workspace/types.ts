@@ -76,10 +76,19 @@ export interface WorkspaceSubscribeOptions {
   onStatus?: (status: WorkspaceStreamStatus) => void;
 }
 
+/** A directory listing plus whether the backend cut its walk short. */
+export interface WsTreeListing {
+  nodes: WsNode[];
+  /** Some entries are unexpanded stubs; listing again fills them in. */
+  truncated: boolean;
+}
+
 export interface WorkspaceService {
   readonly id: string;
   readonly label: string;
   listTree(path?: string, depth?: number): Promise<WsNode[]>;
+  /** `listTree` plus the truncation flag. Backends that always walk fully omit it. */
+  listTreeWithMeta?(path?: string): Promise<WsTreeListing>;
   readFile(path: string): Promise<WsFile>;
   writeFile(path: string, content: string): Promise<{ mtime: number; size: number }>;
   mkdir(path: string): Promise<void>;

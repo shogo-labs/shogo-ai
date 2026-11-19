@@ -4,6 +4,7 @@
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import type { UsageWindows } from "@shogo/shared-app/hooks";
 import type { UsageOverageContext } from "../../../lib/billing-config";
+import type { CodeWorkbenchStatus } from "../../../lib/code-workbench-status";
 
 export type IdePrimarySideBarPosition = "left" | "right";
 
@@ -134,6 +135,8 @@ export interface ProjectTopBarProps {
    */
   onCanvasPrewarm?: () => void;
   onOpenCodeWorkbench?: () => void;
+  /** Progress of an in-flight "Open in Shogo IDE" (desktop only). */
+  codeWorkbenchStatus?: CodeWorkbenchStatus | null;
   /**
    * Open a section of the project's Settings pane (e.g. the Publish dropdown's
    * "Custom domain" row jumps to `custom-domains`). The layout owns the nonce.

@@ -19,6 +19,7 @@ import {
   WORKSPACE_TREE_HIDDEN_FILES,
   WORKSPACE_TREE_LAZY_DIRS,
   walkFilesTree,
+  walkFilesTreeWithMeta,
   compareWorkspaceTreeNodes,
 } from '../fs-tree-walker'
 import { SYMLINKS_SUPPORTED } from './helpers/symlink-support'
@@ -421,17 +422,25 @@ describe('walkFilesTree (eagerDepth — lazy-past-depth UX cap)', () => {
 
 describe('walkFilesTree (defensive caps)', () => {
   // The caps exist to keep a runaway tree (symlink cycle, mis-mounted
-  // FUSE, multi-million-file repo) from hanging the UI. They're
-  // intentionally silent — partial results come back with lazy stubs
-  // for the uncrossed parts so the user can still navigate.
-  test('maxEntries caps the total entries returned', async () => {
+  // FUSE, multi-million-file repo) from hanging the UI. Once one trips the
+  // walker stops `stat`ing and descending, but every name in the directory
+  // being read still comes back — as a `stub` (directories also `lazy`) —
+  // so the explorer never shows a partial listing (#1989).
+  test('maxEntries caps stat calls but still lists every name', async () => {
     const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-cap-'))
     try {
-      for (let i = 0; i < 50; i++) {
+      for (let i = 0; i < 200; i++) {
         writeFileSync(join(root, `file-${i}.txt`), 'x')
       }
-      const tree = await walkFilesTree(root, root, { maxEntries: 10 })
-      expect(tree.length).toBeLessThanOrEqual(10)
+      const result = await walkFilesTreeWithMeta(root, root, { maxEntries: 10 })
+      expect(result.tree).toHaveLength(200)
+      expect(result.tree.filter((n) => !n.stub)).toHaveLength(10)
+      expect(result.entriesScanned).toBe(10)
+      expect(result.truncated).toBe(true)
+      expect(result.truncatedReason).toBe('entries')
+      const stub = result.tree.find((n) => n.stub)!
+      expect(stub).toEqual(expect.objectContaining({ type: 'file', modified: 0 }))
+      expect(stub.size).toBeUndefined()
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -456,19 +465,120 @@ describe('walkFilesTree (defensive caps)', () => {
     }
   })
 
-  test('aborted AbortSignal stops the walk', async () => {
+  test('an aborted signal stops stat and descent but lists every top-level name', async () => {
     const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-abort-'))
     try {
       for (let i = 0; i < 200; i++) {
         writeFileSync(join(root, `file-${i}.txt`), 'x')
       }
+      mkdirSync(join(root, 'sub', 'deep'), { recursive: true })
       const controller = new AbortController()
       controller.abort()
-      const tree = await walkFilesTree(root, root, { signal: controller.signal })
-      // First entry might sneak through before the budget check (the check
-      // runs at top of each iteration) — what matters is that the walk
-      // didn't process all 200 entries.
-      expect(tree.length).toBeLessThan(200)
+      const result = await walkFilesTreeWithMeta(root, root, { signal: controller.signal })
+      expect(result.tree).toHaveLength(201)
+      expect(result.tree.every((n) => n.stub)).toBe(true)
+      expect(result.entriesScanned).toBe(0)
+      expect(result.truncatedReason).toBe('aborted')
+      const sub = result.tree.find((n) => n.name === 'sub')
+      expect(sub).toEqual(expect.objectContaining({ type: 'directory', lazy: true, stub: true }))
+      expect(sub?.children).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // The shape of the reported bug: a 200-entry folder whose walk ran out of
+  // wall-clock time came back as a dozen dot-entries.
+  test('a zero time budget still lists dot entries, files and folders', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-budget-'))
+    try {
+      for (let i = 0; i < 50; i++) writeFileSync(join(root, `.dot-${i}`), 'x')
+      for (let i = 0; i < 50; i++) writeFileSync(join(root, `file-${i}.py`), 'x')
+      for (let i = 0; i < 20; i++) mkdirSync(join(root, `dir-${i}`, 'inner'), { recursive: true })
+      const result = await walkFilesTreeWithMeta(root, root, { eagerDepth: 1, timeBudgetMs: 0 })
+      expect(result.tree).toHaveLength(120)
+      expect(result.truncated).toBe(true)
+      expect(result.truncatedReason).toBe('time')
+      const dirs = result.tree.filter((n) => n.type === 'directory')
+      expect(dirs).toHaveLength(20)
+      expect(dirs.every((n) => n.lazy && n.children === undefined)).toBe(true)
+      // Sorted like a full walk: folders first.
+      expect(result.tree[0].type).toBe('directory')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('a budget that trips mid-descent keeps every sibling as a lazy stub', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-mid-'))
+    try {
+      // readdir order is filesystem-dependent, so assert the invariant rather
+      // than which directory the budget ran out in: every directory is either
+      // walked with all its names or a lazy stub, and nothing is missing.
+      const expected: Record<string, string[]> = { a: [] }
+      mkdirSync(join(root, 'a'))
+      for (let i = 0; i < 30; i++) {
+        writeFileSync(join(root, 'a', `f-${i}.txt`), 'x')
+        expected.a.push(`f-${i}.txt`)
+      }
+      for (const name of ['b', 'c', 'd']) {
+        mkdirSync(join(root, name, 'inner'), { recursive: true })
+        expected[name] = ['inner']
+      }
+      writeFileSync(join(root, 'z.txt'), 'x')
+      const result = await walkFilesTreeWithMeta(root, root, { maxEntries: 5 })
+      expect(result.truncated).toBe(true)
+      expect(result.tree.map((n) => n.name)).toEqual(['a', 'b', 'c', 'd', 'z.txt'])
+      const dirs = result.tree.filter((n) => n.type === 'directory')
+      expect(dirs.some((n) => n.lazy && n.stub)).toBe(true)
+      for (const dir of dirs) {
+        if (dir.children) expect(dir.children.map((n) => n.name).sort()).toEqual([...expected[dir.name]].sort())
+        else expect(dir).toEqual(expect.objectContaining({ lazy: true, stub: true }))
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('stubs still honour hidden and ignore rules', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-stub-rules-'))
+    try {
+      writeFileSync(join(root, '.gitignore'), 'secret.env\nbuild-out/\n')
+      writeFileSync(join(root, 'secret.env'), 'x')
+      writeFileSync(join(root, 'Thumbs.db'), 'x')
+      writeFileSync(join(root, 'keep.ts'), 'x')
+      mkdirSync(join(root, '.git', 'objects'), { recursive: true })
+      mkdirSync(join(root, 'build-out'))
+      const result = await walkFilesTreeWithMeta(root, root, { timeBudgetMs: 0 })
+      const names = result.tree.map((n) => n.name)
+      expect(names).not.toContain('.git')
+      expect(names).not.toContain('Thumbs.db')
+      expect(names).toEqual(expect.arrayContaining(['.gitignore', 'secret.env', 'keep.ts', 'build-out']))
+      expect(ignoredOf(result.tree).sort()).toEqual(['build-out', 'secret.env'])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('a complete walk reports truncated: false', async () => {
+    const result = await walkFilesTreeWithMeta(ROOT, ROOT, { eagerDepth: 1 })
+    expect(result.truncated).toBe(false)
+    expect(result.truncatedReason).toBeUndefined()
+    expect(result.tree.some((n) => n.stub)).toBe(false)
+  })
+
+  // Worktrees and submodules have a `gitdir:` pointer FILE named `.git`.
+  // Only the VCS directory is hidden; the pointer is a real file.
+  test('a .git pointer file is listed; a .git directory is hidden', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-gitfile-'))
+    const nested = join(root, 'nested')
+    try {
+      writeFileSync(join(root, '.git'), 'gitdir: ../.git/modules/x\n')
+      mkdirSync(join(nested, '.git'), { recursive: true })
+      const tree = await walkFilesTree(root, root)
+      expect(tree.find((n) => n.name === '.git')).toEqual(expect.objectContaining({ type: 'file' }))
+      const nestedNode = tree.find((n) => n.name === 'nested')
+      expect(nestedNode?.children?.map((n) => n.name)).toEqual([])
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -642,6 +752,29 @@ describe('walkFilesTree (linked directories)', () => {
     const blocks = subtree.find((n) => n.name === 'BuildingBlocks')
     expect(blocks?.type).toBe('directory')
     expect(blocks?.path).toBe('project-1/agents/BuildingBlocks')
+  })
+
+  // A folder project is served through `<root>/<projectId>`, a link to the
+  // user's folder: the full listing must come back through it.
+  test('a 200-entry folder behind a directory link lists completely', async () => {
+    const big = join(merged, '..', 'big-folder')
+    const mount = join(merged, '..', 'big-mount')
+    mkdirSync(big, { recursive: true })
+    for (let i = 0; i < 30; i++) writeFileSync(join(big, `.dot-${i}`), 'x')
+    for (let i = 0; i < 160; i++) writeFileSync(join(big, `file-${i}.py`), 'x')
+    for (let i = 0; i < 10; i++) mkdirSync(join(big, `pkg-${i}`, 'sub'), { recursive: true })
+    symlinkSync(big, mount, DIR_LINK_TYPE)
+    const result = await walkFilesTreeWithMeta(mount, mount, { eagerDepth: 1 })
+    expect(result.truncated).toBe(false)
+    expect(result.tree).toHaveLength(200)
+    expect(result.tree.find((n) => n.name === 'pkg-3')?.children?.map((n) => n.name)).toEqual(['sub'])
+  })
+
+  test('stubs for directory links are classified as directories', async () => {
+    const result = await walkFilesTreeWithMeta(merged, merged, { timeBudgetMs: 0 })
+    expect(result.tree.find((n) => n.name === 'project-1')).toEqual(
+      expect.objectContaining({ type: 'directory', lazy: true, stub: true }),
+    )
   })
 
   test('a link back into its own ancestor chain is a lazy stub, not an infinite walk', async () => {

@@ -462,6 +462,27 @@ describe('AgentClient — workspace files', () => {
     expect(await c2.getWorkspaceTree()).toEqual([])
   })
 
+  test('getWorkspaceTreeWithMeta passes through truncation', async () => {
+    const calls: Call[] = []
+    const f = makeFetch(
+      () => jsonResponse({ tree: [{ name: 'src', path: 'src', type: 'directory', lazy: true, stub: true, modified: 0 }], truncated: true, truncatedReason: 'time' }),
+      calls,
+    )
+    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
+    const out = await c.getWorkspaceTreeWithMeta('a b')
+    expect(out.truncated).toBe(true)
+    expect(out.truncatedReason).toBe('time')
+    expect(out.tree[0].stub).toBe(true)
+    expect(calls[0].url).toContain('/agent/workspace/tree?path=a%20b')
+  })
+
+  test('getWorkspaceTreeWithMeta treats an older runtime without the flag as complete', async () => {
+    const f = makeFetch(() => jsonResponse({ tree: [{ name: 'a', path: 'a', type: 'file' }] }))
+    const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
+    const out = await c.getWorkspaceTreeWithMeta()
+    expect(out).toEqual({ tree: [{ name: 'a', path: 'a', type: 'file' }], truncated: false })
+  })
+
   test('getWorkspaceBundle returns the raw bundle', async () => {
     const f = makeFetch(() => jsonResponse({ files: { 'a.ts': 'aGk=' } }))
     const c = new AgentClient({ baseUrl: 'http://x.test', fetch: f })
