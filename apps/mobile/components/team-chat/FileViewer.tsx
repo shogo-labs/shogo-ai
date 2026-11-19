@@ -49,10 +49,14 @@ export function FileViewer({ attachmentId, fallbackName }: FileViewerProps) {
     | { status: 'ready'; file: ConversationFileMeta }
     | { status: 'error'; message: string }
   >({ status: 'loading' })
+  // A deck whose slides failed to render still has its extracted text, so the
+  // viewer shows that rather than an empty frame (SHO-426).
+  const [slidesFailed, setSlidesFailed] = useState(false)
 
   useEffect(() => {
     let live = true
     setState({ status: 'loading' })
+    setSlidesFailed(false)
     api
       .fileMeta(attachmentId)
       .then(({ file }) => {
@@ -103,7 +107,7 @@ export function FileViewer({ attachmentId, fallbackName }: FileViewerProps) {
   const kind = fileViewKind(file.name, file.mimeType)
   // An office document has no renderer, but the server already extracted its
   // text: show that rather than an opaque chip that only offers a download.
-  const shown = kind === 'binary' && file.hasText ? 'text' : kind
+  const shown = (kind === 'binary' || (kind === 'slides' && slidesFailed)) && file.hasText ? 'text' : kind
   const url = absoluteApiUrl(file.url)
 
   const nativeImage = (
@@ -136,7 +140,7 @@ export function FileViewer({ attachmentId, fallbackName }: FileViewerProps) {
             file={file}
             kind={shown}
             themeMode={isDark ? 'dark' : 'light'}
-            extracted={kind === 'binary'}
+            extracted={kind === 'binary' || kind === 'slides'}
           />
         ) : shown === 'binary' ? (
           <DownloadView file={file} label={meta.label} />
@@ -149,6 +153,7 @@ export function FileViewer({ attachmentId, fallbackName }: FileViewerProps) {
             readOnly
             themeMode={isDark ? 'dark' : 'light'}
             pathKey={viewerPathKey(`attachment:${file.id}`)}
+            onPreviewError={() => setSlidesFailed(true)}
             nativeImage={nativeImage}
             download={<DownloadButton url={url} name={file.name} />}
             testID="file-viewer-content"

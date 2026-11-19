@@ -223,6 +223,7 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   SocialProfile: { decision: 'exclude', reason: 'Provider mirror: the Zernio profile that owns the connected accounts. Unique on the provider id and recreated on connect, so it must not travel in an archive.' },
   SocialRelayedEvent: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },
   StorageUsage: { decision: 'exclude', reason: 'Money and metering, not content. Also carries payment-processor ids; StorageUsage is recomputable.' },
+  StorageUsageDaily: { decision: 'exclude', reason: 'Money and metering, not content: the per-day peak bytes a storage charge was computed from. Region-local and recomputed by the next 6h pass, so an archive must not carry it.' },
   Subscription: { decision: 'exclude', reason: 'Money and metering, not content. Also carries payment-processor ids; StorageUsage is recomputable.' },
   TaskDependency: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },
   TaskExecution: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },
@@ -246,6 +247,7 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   WorkspaceEvent: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },
   WorkspaceGrant: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },
   WorkspaceMove: { decision: 'exclude', reason: 'The log of how this copy got here (phase cursors, id map, handover). The target records its own; carrying it across would describe a move that never happened.' },
+  WorkspaceRootSecret: { decision: 'exclude', reason: 'The sealed copy of the workspace-root .env* files (SHO-384), encrypted with a key this instance holds and a runtime key naming one cloud pod. An archive could not decrypt or place it on another instance, and a downloaded file must never carry the plaintext it protects. The files themselves travel as files.' },
 }
 
 /**

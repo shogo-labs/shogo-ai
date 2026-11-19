@@ -207,6 +207,13 @@ const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
     partitionKeyColumn: 'Workspace.homeRegion',
   },
   {
+    fn: 'runStorageUsageBill',
+    file: 'apps/api/src/jobs/storage-usage-bill.ts',
+    reason:
+      'storage_usage_daily is region-local and each pass measures only the workspaces this region homes, so both the read set and the wallet debit are already home-partitioned via homeRegionWorkspaceWhere(). A global lock would let one region bill days it cannot see (SHO-345); claimRegionPeriod only de-dupes pods inside the region.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
     fn: 'runChatQueueDrain',
     file: 'apps/api/src/jobs/run-chat-queue-drain.ts',
     reason:
@@ -640,6 +647,13 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'cron_locked',
     reason:
       'Written by recalculateAllStorageUsage (boot + 6h cron) and only by that cron. Wrapped in withGlobalJobLock (de-dupes pods within a region) and filtered to homeRegionWorkspaceWhere() (PERF-8), so each region upserts only its own home workspaces and the workspaceId unique never collides across regions.',
+    writer: 'storage-recalculate-all',
+  },
+  {
+    key: 'StorageUsageDaily.(day,workspaceId)',
+    category: 'cron_locked',
+    reason:
+      'Inserted only by upsertDailyRow inside recalculateAllStorageUsage, the same withGlobalJobLock-ed, homeRegionWorkspaceWhere()-filtered pass as storage_usage; the table is region-local (excluded from shogo_all_pub), so two regions can never insert the same (workspace, day).',
     writer: 'storage-recalculate-all',
   },
   {
@@ -1100,6 +1114,13 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'Rows are written only by jobs/published-usage.ts, and runPublishedUsageCollect samples only environments whose workspace is homed in the writing region (homeRegionWorkspaceWhere), so the two regions write disjoint (environmentId, minute) sets — the peer never inserts a key the other one already has. Within a region the advisory lock plus the per-region PlatformSetting claim let exactly one pod write each minute. runPublishedUsageBill bills and stamps billedAt only on its own region\'s environments.',
     writer: 'runPublishedUsageCollect',
+  },
+  // --- workspace root secrets (SHO-384) ------------------------------------
+  {
+    key: 'WorkspaceRootSecret.runtimeKey',
+    category: 'single_tenant_upsert',
+    reason:
+      'One sealed blob per runtime (`ws:<workspaceId>` or `ws:proj:<anchorProjectId>`), upserted by that runtime\'s own internal PUT. A runtime is homed to one region with its workspace, so the writer for a given key is always the same region and a retry updates the same row instead of duplicating it.',
   },
   // --- workspace compute (SHO-424) ----------------------------------------
   {

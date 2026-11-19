@@ -115,6 +115,7 @@ const EXEMPT: Record<string, string> = {
   slackWorkspaceInstallation: 'Mutated via /api/integrations/slack/workspaces/:workspaceId routes (path workspaceId) and the OAuth callback (workspaceId from signed OAuth state).',
   scheduledMessage: 'Mutated via workspace-scoped scheduled-message routes — resolved by path workspaceId.',
   storageUsage: 'Counter table written via workspace-scoped usage routes — resolved by path workspaceId.',
+  storageUsageDaily: 'SHO-423: written only by the 6h measurement pass and the daily bill job (both home-region locked — see check-multiregion-cron-locks.ts) and read via /api/workspaces/:id/storage or the super-admin views; there is no standalone row mutation route.',
   subagentModelOverride: 'Mutated via workspace/project-scoped routes — resolved by path params.',
   trialRedemption: 'Written only by the signed Stripe webhook (/api/webhooks/stripe, skipped by the router) alongside the subscription and usage wallet rows the same event updates (services/trial.service.ts); never mutated via REST.',
   userGroup: 'Mutated via workspace-scoped user-group routes — resolved by path workspaceId.',
@@ -125,6 +126,7 @@ const EXEMPT: Record<string, string> = {
   voiceProjectConfig: 'Mutated via /api/projects/:projectId/voice — resolved by path projectId.',
   workspaceAgentProfile: 'Mutated via /api/workspaces/:workspaceId/agent-profile — resolved by path workspaceId (routes/workspace-agent.ts, mounted publicly and internally with the same handler); single-tenant upsert (see check-multiregion-cron-locks.ts).',
   workspaceModelVisibility: 'Mutated via /api/workspaces/:id/... — resolved by path workspaceId.',
+  workspaceRootSecret: 'SHO-384: written and read only via /api/internal/workspaces/:workspaceId/root-secrets (the pod↔API transport for a cloud runtime) — resolved by path workspaceId; there is no standalone /api/<resource>/:id row mutation.',
 }
 
 function parseModelsWithTenantKey(schema: string): string[] {

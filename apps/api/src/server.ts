@@ -25,6 +25,7 @@ import * as workspaceModelsService from './services/workspace-models.service'
 import { REGION_ID, REGION_LABEL, REGION_PEERS, getPeer } from './lib/region'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
+import { slidesViewerRoutes } from './routes/slides-viewer'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { pinChatToHomeRegion, pinProjectRoutesToHomeRegion } from './lib/chat-region-pin'
 import { RuntimeNotInHomeRegionError, runtimeNotInHomeRegionResponse } from './lib/runtime-home-region-guard'
@@ -675,6 +676,17 @@ app.use('/api/preview/:projectId/render/*', previewFrameStrip)
 app.use('/api/preview/:projectId/ports/:port/render', previewFrameStrip)
 app.use('/api/preview/:projectId/ports/:port/render/*', previewFrameStrip)
 
+// The slides viewer is framed by every file host, and on desktop the app and
+// the API are different origins (app :8081, API :8002), so SAMEORIGIN would
+// block it there while cloud (same origin) never noticed. Strip the framing
+// headers on the way out of secureHeaders, the same way the preview proxy
+// does (SHO-426).
+app.use('/api/viewers/slides', async (c, next) => {
+  await next()
+  c.res.headers.delete('X-Frame-Options')
+  c.res.headers.delete('Cross-Origin-Opener-Policy')
+})
+
 // Security headers — X-Content-Type-Options, X-Frame-Options, etc.
 app.use('*', secureHeaders({
   xFrameOptions: 'SAMEORIGIN',
@@ -1034,6 +1046,11 @@ app.get('/api/integrations/callback', (c) => {
 </body></html>`
   return c.html(html)
 })
+
+// The slides viewer page: a static, sandboxed document every file host frames
+// to render a PowerPoint deck (SHO-426). Same code for cloud and the desktop
+// local API, so the two can never drift.
+app.route('/api/viewers', slidesViewerRoutes())
 
 // Platform config (tells frontend about local mode, enabled features, etc.)
 app.get('/api/config', async (c) => {
@@ -9029,11 +9046,22 @@ app.get('/api/workspaces/:id/storage', async (c) => {
   try {
     const workspaceId = c.req.param('id')
 
-    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+    const userId = await verifyWorkspaceMembership(c, workspaceId)
+    if (!userId) {
       return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
     }
 
-    const storage = await storageService.getStorageUsage(workspaceId)
+    // Owner/admin (and a billing admin) get the full picture: category
+    // breakdown, real per-project bytes, history and the month-to-date
+    // estimate. A plain member keeps the total-only view — the breakdown names
+    // every project in the workspace, including ones they cannot open (SHO-423).
+    const access = await getAccess(c, { workspaceId })
+    const detail =
+      access.workspaceRole === 'owner' ||
+      access.workspaceRole === 'admin' ||
+      access.permissions.has('workspace.billing:manage')
+
+    const storage = await storageService.getStorageUsage(workspaceId, { detail })
     if (!storage) {
       return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
     }
@@ -11200,6 +11228,21 @@ setTimeout(async () => {
       startDiskAddonDailyCron()
     } catch (err: any) {
       console.error('[DiskAddon] failed to schedule the disk add-on meter (non-fatal):', err?.message ?? err)
+    }
+  })()
+}
+
+// Storage bill — `storage` (SHO-423). Turns each completed day of
+// `StorageUsageDaily` into a GB-month charge above the tier allowance, once per
+// UTC day, home-region partitioned, idempotent through `billedAt`. Shadow mode
+// (the default) records the charge without debiting. Local mode is a no-op.
+{
+  ;(async () => {
+    try {
+      const { startStorageUsageBillCron } = await import('./jobs/storage-usage-bill')
+      startStorageUsageBillCron()
+    } catch (err: any) {
+      console.error('[StorageBill] failed to schedule the storage meter (non-fatal):', err?.message ?? err)
     }
   })()
 }

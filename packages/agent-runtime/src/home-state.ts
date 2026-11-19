@@ -49,6 +49,7 @@ import {
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+import { isWorkspaceSecretFile, staleWorkspaceSecretNames } from '@shogo/shared-runtime/workspace-root-secrets'
 
 /** Paths under HOME that are persisted. Each must be a single path segment. */
 export const HOME_STATE_PATHS = [
@@ -102,15 +103,13 @@ export interface WorkspaceSecretRoot {
  * all, so a cold boot otherwise loses them. Committed templates
  * (`.env.example` and the like) are excluded — they never hold a secret and
  * replacing them would be pointless churn.
+ *
+ * The rule itself lives in `@shogo/shared-runtime/workspace-root-secrets`
+ * (SHO-384): the cloud store decides exactly which names travel, and two
+ * copies of the list would drift into one side archiving a file the other
+ * silently drops.
  */
-const WORKSPACE_SECRET_NAMES = new Set<string>(['.env', '.env.local'])
-const WORKSPACE_SECRET_TEMPLATE_SUFFIXES = ['.example', '.sample', '.template']
-
-export function isWorkspaceSecretFile(name: string): boolean {
-  if (WORKSPACE_SECRET_NAMES.has(name)) return true
-  if (!name.startsWith('.env.')) return false
-  return !WORKSPACE_SECRET_TEMPLATE_SUFFIXES.some((suffix) => name.endsWith(suffix))
-}
+export { isWorkspaceSecretFile }
 
 /** A slot that can name a project folder without escaping the workspace. */
 const SLOT_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
@@ -624,8 +623,7 @@ function restoreWorkspaceSecrets(
     // survive the restore. An archive written before this member existed has no
     // container at all and leaves every destination untouched.
     try {
-      for (const name of readdirSync(dest)) {
-        if (!isWorkspaceSecretFile(name) || names.has(name)) continue
+      for (const name of staleWorkspaceSecretNames(readdirSync(dest), names)) {
         const stale = join(dest, name)
         const st = lstatSync(stale)
         if (!st.isFile() && !st.isSymbolicLink()) continue
