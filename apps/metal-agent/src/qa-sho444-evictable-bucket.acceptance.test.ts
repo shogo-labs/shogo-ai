@@ -69,21 +69,27 @@ class TestPool extends MetalWarmPool {
 
 let dir: string
 const cleanups: Array<() => void> = []
-const savedControlPlane = config.controlPlaneUrl
-const savedIdleSuspendMs = config.idleSuspendMs
+/**
+ * `config` is `as const`, so its knobs are readonly. The test env has no
+ * METAL_IDLE_SUSPEND_MS and no control plane, so these two have to be set per
+ * test; a mutable view keeps that explicit instead of casting at each site.
+ */
+const cfg = config as { -readonly [K in keyof typeof config]: (typeof config)[K] }
+const savedControlPlane = cfg.controlPlaneUrl
+const savedIdleSuspendMs = cfg.idleSuspendMs
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'qa-sho444-'))
   // The heartbeat only reports an idle window when the reaper is on, and the
   // test env has no METAL_IDLE_SUSPEND_MS.
-  config.idleSuspendMs = IDLE_MS
+  cfg.idleSuspendMs = IDLE_MS
 })
 
 afterEach(() => {
   for (const c of cleanups.splice(0)) c()
   rmSync(dir, { recursive: true, force: true })
-  config.controlPlaneUrl = savedControlPlane
-  config.idleSuspendMs = savedIdleSuspendMs
+  cfg.controlPlaneUrl = savedControlPlane
+  cfg.idleSuspendMs = savedIdleSuspendMs
   _resetIdleDirective()
 })
 
@@ -186,7 +192,7 @@ describe('AC5 — the heartbeat reports active/evictable, and the idle window ke
     pool.seed('paid', { lastRealActivityAt: now - 100 * IDLE_MS, alwaysOn: true })
 
     const cp = fakeControlPlane()
-    config.controlPlaneUrl = cp.url
+    cfg.controlPlaneUrl = cp.url
     await announceRestarting(pool)
 
     expect(cp.bodies).toHaveLength(1)
@@ -207,7 +213,7 @@ describe('AC5 — the heartbeat reports active/evictable, and the idle window ke
     pool.seed('in-use', { lastRealActivityAt: now })
 
     const cp = fakeControlPlane()
-    config.controlPlaneUrl = cp.url
+    cfg.controlPlaneUrl = cp.url
     setIdleDirective({ idleMs: RELAXED_MS, tier: 'relaxed' })
     await announceRestarting(pool)
 
@@ -225,7 +231,7 @@ describe('AC5 — the heartbeat reports active/evictable, and the idle window ke
     for (let i = 0; i < 80; i++) pool.seed(`busy-${i}`, { lastRealActivityAt: now })
 
     const cp = fakeControlPlane()
-    config.controlPlaneUrl = cp.url
+    cfg.controlPlaneUrl = cp.url
     setIdleDirective({ idleMs: RELAXED_MS, tier: 'relaxed' })
     await announceRestarting(pool)
 
