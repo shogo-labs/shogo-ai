@@ -98,7 +98,7 @@ import { EnvironmentBadge } from "../components/layout/EnvironmentBadge";
 import { getActiveEnvKey, telemetryEnvFor } from "../lib/env-override";
 import { getRuntimeAppEnv } from "../lib/runtime-env";
 
-import { isNoiseEvent } from "../lib/sentry-noise-filter";
+import { isDeliberateTelemetry, isExpectedClientError, isNoiseEvent } from "../lib/sentry-noise-filter";
 
 Sentry.init({
   dsn: sentryDsn,
@@ -143,6 +143,24 @@ Sentry.init({
     if (isNoiseEvent(event)) return null;
 
     const reason = hint?.originalException as unknown;
+
+    // A 4xx ShogoError / AuthRequestError is the API refusing a request the
+    // person made — a wrong password, a duplicate star, a permission the
+    // account does not have, a project that was deleted. The screen already
+    // shows the message; as a Sentry error it buries real defects under
+    // expected outcomes (SHO-437). Keep a breadcrumb so a later failure still
+    // carries the trail. Deliberate telemetry captures are never dropped.
+    if (!isDeliberateTelemetry(event) && isExpectedClientError(reason)) {
+      const err = reason as { status?: number; code?: string; message?: string };
+      Sentry.addBreadcrumb({
+        category: "http",
+        level: "info",
+        message: `expected ${err.status} ${err.code ?? ""}`.trim(),
+        data: { status: err.status, code: err.code, message: err.message },
+      });
+      return null;
+    }
+
     const isPlainEventReason =
       typeof reason !== "undefined" &&
       reason !== null &&
