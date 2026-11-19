@@ -1,0 +1,182 @@
+name: Symbolicate a shipped Android release
+
+# Backfills sourcemaps for an Android build that already shipped without them.
+#
+# `android.yml` uploads the bundle + composed sourcemap for every *new* release,
+# so its events symbolicate from the moment they arrive. This workflow exists for
+# the releases that came before that: they were built while the upload step was
+# disabled by a no-op `sentry-cli` stub, so they have no artifacts in Sentry at
+# all (`GET /projects/shogo-ai/shogo-android/releases/<sha>/files/` → `[]`) and
+# every stack is stuck at `app:///index.android.bundle:1`.
+#
+# Uploading a release's artifacts retroactively resolves the events already
+# stored for it — Sentry symbolicates on read, not on ingest. So one dispatch of
+# this workflow (with `release` = the sha the events report) turns ANDROID-11 and
+# friends into `.tsx` frames without shipping a new build.
+#
+# It rebuilds from source rather than scavenging the AAB: the map is not in the
+# shipped artifact, and the bytecode columns only line up if the bundle comes
+# from the same toolchain and the same inlined `EXPO_PUBLIC_*` values as the
+# build it is being matched against. Hence `environment` and `ref` inputs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'The `release` the events report (a sha, e.g. a03fde077ff6d86a5df2822710068e945bde4c01)'
+        required: true
+        type: string
+      ref:
+        description: 'Git ref to build (defaults to `release`; use the tag if the sha is short)'
+        required: false
+        type: string
+      environment:
+        description: 'Build environment the release shipped with (decides the inlined API URL)'
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+          - staging
+      dist:
+        description: 'The `dist` the events report'
+        required: true
+        default: android
+        type: string
+
+permissions:
+  contents: read
+
+# One backfill at a time: two runs writing the same release's artifacts is a
+# good way to upload a map that matches neither.
+concurrency:
+  group: symbolicate-android-${{ inputs.release }}
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    name: Build and upload ${{ inputs.release }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # Job-level so every `bun install` in this file can run @vscode/ripgrep's
+      # postinstall (scripts/check-ci-bun-install-token.ts).
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_ORG: shogo-ai
+      SENTRY_PROJECT: shogo-android
+      SENTRY_LOG_LEVEL: info
+      RELEASE: ${{ inputs.release }}
+      SENTRY_DIST: ${{ inputs.dist }}
+      EXPO_PUBLIC_APP_ENV: ${{ inputs.environment }}_app
+      EXPO_PUBLIC_BUILD_HASH: ${{ inputs.release }}
+      EXPO_PUBLIC_SENTRY_DSN_ANDROID: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_ANDROID }}
+      # The build being matched inlined this value into the bundle; a different
+      # one shifts every byte after the first occurrence.
+      EXPO_PUBLIC_API_URL: ${{ inputs.environment == 'production' && 'https://studio.shogo.ai' || 'https://studio.staging.shogo.ai' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.ref || inputs.release }}
+          fetch-depth: 1
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: bun run build
+
+      - name: Expo prebuild (Android)
+        working-directory: apps/mobile
+        env:
+          EXPO_UPDATES_CHANNEL: ${{ inputs.environment }}
+          SENTRY_PROJECT: shogo-android
+        run: bunx expo prebuild --platform android --no-install
+
+      - name: Build the JS bundle and its maps
+        # Only the JS bundle task: no compile, no keystore. This is the same task
+        # `bundleRelease` runs, so the output is the shipped artifact — with
+        # Hermes on, `index.android.bundle` is the bytecode, and RN's task
+        # composes the bytecode->source map itself (`hermesFlags` keeps
+        # `-output-source-map` by default).
+        working-directory: apps/mobile/android
+        run: ./gradlew :app:createBundleReleaseJsAndAssets --no-daemon
+
+      - name: Upload sourcemaps for ${{ inputs.release }}
+        working-directory: apps/mobile
+        run: |
+          set -u
+          fail() {
+            echo "::error title=Sentry backfill ($RELEASE)::$1"
+            exit 1
+          }
+
+          [ -n "${SENTRY_AUTH_TOKEN:-}" ] || fail "SENTRY_AUTH_TOKEN is not configured"
+
+          # Same rule as android.yml: a real semver-printing CLI or nothing. A
+          # stub that exits 0 is how these releases lost their maps in the first
+          # place.
+          is_real_cli() { "$@" --version 2>/dev/null | grep -qE '^sentry-cli [0-9]+\.[0-9]+\.[0-9]+'; }
+          SENTRY_CLI=./node_modules/.bin/sentry-cli
+          if ! is_real_cli "$SENTRY_CLI"; then
+            bun install --no-save @sentry/cli@^3 >/dev/null 2>&1 || true
+          fi
+          if ! is_real_cli "$SENTRY_CLI"; then
+            SENTRY_CLI="bunx @sentry/cli"
+          fi
+          is_real_cli $SENTRY_CLI || fail "no working sentry-cli"
+
+          BUNDLE="android/app/build/generated/assets/react/release/index.android.bundle"
+          COMPOSED="android/app/build/generated/sourcemaps/react/release/index.android.bundle.map"
+          PACKAGER="android/app/build/intermediates/sourcemaps/react/release/index.android.bundle.packager.map"
+
+          [ -f "$BUNDLE" ] || fail "no shipped bundle at $BUNDLE — createBundleReleaseJsAndAssets produced nothing"
+          [ -f "$COMPOSED" ] || fail "no composed source map at $COMPOSED — the bundle task only writes it while hermesFlags keeps -output-source-map"
+          [ -f "$PACKAGER" ] || fail "no packager source map at $PACKAGER, so the composed map cannot carry the bundle's debug id"
+
+          SENTRY_RN_DIR=$(dirname "$(node -p "require.resolve('@sentry/react-native/package.json')")")
+          node "$SENTRY_RN_DIR/scripts/copy-debugid.js" "$PACKAGER" "$COMPOSED"
+          DEBUG_ID=$(node "$SENTRY_RN_DIR/scripts/has-sourcemap-debugid.js" "$COMPOSED" | tail -1)
+          echo "Sentry debug id: $DEBUG_ID"
+
+          OUT="$RUNNER_TEMP/backfill"
+          mkdir -p "$OUT"
+          cp "$BUNDLE" "$OUT/index.android.bundle"
+          cp "$COMPOSED" "$OUT/index.android.bundle.map"
+
+          # Same pairing as android.yml: `--debug-id-reference` is what makes a
+          # Hermes bytecode bundle resolve (the CLI cannot read the id from it).
+          # Exit status is the proof (`--strict` fails on an unuploadable map,
+          # `--wait-for` fails when the server cannot process the artifact
+          # bundle). `sentry-cli releases files` does not exist in CLI 3.x, and
+          # 3.x uploads through the artifact-bundle API, so it could never list
+          # these files either.
+          $SENTRY_CLI sourcemaps upload \
+            --bundle "$OUT/index.android.bundle" \
+            --bundle-sourcemap "$OUT/index.android.bundle.map" \
+            --debug-id-reference --strict \
+            --wait-for 300 \
+            --release "$RELEASE" \
+            --dist "$SENTRY_DIST" \
+            --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" \
+            --url-prefix "app:///" \
+            || fail "sourcemaps upload failed"
+
+          {
+            echo "### Symbolicated Android release \`$RELEASE\` (dist \`$SENTRY_DIST\`)"
+            echo ""
+            echo "- bundle: \`index.android.bundle\` (Hermes bytecode, as shipped)"
+            echo "- map: RN's composed \`index.android.bundle.map\`, debug id \`$DEBUG_ID\`"
+            echo "- upload: `--strict --wait-for 300`, accepted by the server"
+            echo ""
+            echo "Events already stored for this release symbolicate on read — reload the issue."
+          } >> "$GITHUB_STEP_SUMMARY"
