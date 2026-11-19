@@ -17,6 +17,7 @@
  */
 import { prisma } from './prisma'
 import { deriveSourceTag } from '../services/analytics.service'
+import { sendCometlyEvent, splitName, COMET_TOKEN_COOKIE } from './cometly'
 
 /** The UTM payload the marketing site (or the app) stores in `__shogo_utm`. */
 export interface UtmCookie {
@@ -106,6 +107,10 @@ export interface RecordSignupAttributionInput {
   cookieHeader?: string | null
   /** Auth provider: `google`, `credential`, `email`, … */
   method?: string | null
+  /** The new account's email — Cometly's primary identifier for the event. */
+  email?: string | null
+  /** The new account's display name, split into first/last for Cometly. */
+  name?: string | null
 }
 
 /**
@@ -145,6 +150,25 @@ export async function recordSignupAttribution(
       },
       update: {},
     })
+
+    // Cometly (SHO-441). One `sign_up` per new social account, identified by
+    // the token the pixel minted on the sign-in page and carried here on the
+    // OAuth callback's cookie header. Email sign-ups are read off the form by
+    // the pixel itself, and a native sign-in has no cookie, so both fall
+    // through. Fire-and-forget: Cometly must never slow down or fail a signup.
+    const cometToken = parseCookieHeader(input.cookieHeader ?? '', COMET_TOKEN_COOKIE)
+    if (input.method === 'social' && cometToken && input.email) {
+      const { firstName, lastName } = splitName(input.name)
+      void sendCometlyEvent({
+        eventName: 'sign_up',
+        email: input.email,
+        firstName,
+        lastName,
+        cometToken,
+        idempotencyKey: `signup_${input.userId}`,
+      }).catch(() => {})
+    }
+
     return sourceTag
   } catch (error: any) {
     console.warn('[Attribution] signup attribution write failed:', error?.message ?? error)

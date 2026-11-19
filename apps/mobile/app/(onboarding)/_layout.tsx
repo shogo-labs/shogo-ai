@@ -9,9 +9,10 @@ import { useAuth } from '../../contexts/auth'
 import { DomainProvider } from '../../contexts/domain'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { autoSignInLocally } from '../../lib/auth-client'
+import { consumeNewSignupEvent, markNewSignup } from '../../lib/cometly'
 
 export default function OnboardingLayout() {
-  const { isAuthenticated, isLoading, refreshSession } = useAuth()
+  const { isAuthenticated, isLoading, refreshSession, user } = useAuth()
   const { localMode, configLoaded } = usePlatformConfig()
   const autoSignInAttempted = useRef(false)
   const [autoSigningIn, setAutoSigningIn] = useState(false)
@@ -36,6 +37,22 @@ export default function OnboardingLayout() {
     }
     attemptAutoSignIn()
   }, [configLoaded, localMode, isAuthenticated, isLoading, attemptAutoSignIn])
+
+  // Cometly (SHO-441). The onboarding gate in `app/index.tsx` sends a brand-new
+  // account here before `(app)`, so this is its first authenticated page and
+  // the one that reports `custom_event_2`. A returning Google login is past the
+  // 60 s window and has no flag, so it reports nothing.
+  useEffect(() => {
+    if (!isAuthenticated || isLoading) return
+    try {
+      const pending = sessionStorage.getItem('oauth_pending')
+      const accountAge = user?.createdAt
+        ? Date.now() - new Date(user.createdAt).getTime()
+        : Infinity
+      if (pending && accountAge < 60_000) markNewSignup()
+    } catch {}
+    consumeNewSignupEvent()
+  }, [isAuthenticated, isLoading, user?.createdAt])
 
   // Cloud requires an existing account; local mode signs in the seeded user
   // here before mounting the shared onboarding flow.
