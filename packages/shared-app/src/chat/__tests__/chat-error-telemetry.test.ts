@@ -16,6 +16,7 @@ import {
   shouldReportChatError,
   buildChatStreamErrorReport,
   isReactUpdateDepthError,
+  chatErrorMessage,
   SHOGO_TELEMETRY_TAG,
 } from '../chat-error-telemetry'
 
@@ -152,5 +153,41 @@ describe('buildChatStreamErrorReport', () => {
     expect(report!.class).toBe('other')
     expect(report!.tags.projectId).toBe('(none)')
     expect(report!.tags.turnId).toBe('(none)')
+  })
+})
+
+describe('an error with no text is still identifiable', () => {
+  // The AI SDK does `new Error(await response.text())` for a failed chat
+  // request; an empty body makes that `new Error('')`. Sentry grouped those as
+  // "Error: No error message" with rawMessage "" (SHOGO-ANDROID-5: 447 events
+  // across 108 users) — nothing to debug from and nothing to show the person.
+  test('chatErrorMessage never returns an empty string', () => {
+    expect(chatErrorMessage(new Error(''))).toBe('unknown error (no message)')
+    expect(chatErrorMessage({ message: '' })).toBe('unknown error (no message)')
+    expect(chatErrorMessage(null)).toBe('unknown error (no message)')
+  })
+
+  test('falls back to the name, the cause, then the code', () => {
+    expect(chatErrorMessage(Object.assign(new Error(''), { name: 'TimeoutError' }))).toBe('TimeoutError')
+    expect(chatErrorMessage(new Error('', { cause: new Error('socket hang up') }))).toBe('socket hang up')
+    expect(chatErrorMessage({ message: '', code: 'ERR_NETWORK' })).toBe('chat error ERR_NETWORK')
+  })
+
+  test('a blank error still reports, flagged as having carried no text', () => {
+    const report = buildChatStreamErrorReport(new Error(''), { turnId: 'turn-9' })
+    expect(report).not.toBeNull()
+    expect(report!.extra.rawMessage).toBe('unknown error (no message)')
+    expect(report!.extra.emptyMessage).toBe(true)
+    expect(report!.tags.turnId).toBe('turn-9')
+  })
+
+  test('a real message is reported as-is and the cause is kept', () => {
+    const err = new Error('The chat request failed (HTTP 502).', {
+      cause: new Error('upstream reset'),
+    })
+    const report = buildChatStreamErrorReport(err)
+    expect(report!.extra.rawMessage).toBe('The chat request failed (HTTP 502).')
+    expect(report!.extra.emptyMessage).toBe(false)
+    expect(report!.extra.errorCause).toBe('upstream reset')
   })
 })

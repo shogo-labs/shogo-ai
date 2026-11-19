@@ -25,6 +25,8 @@
  * already represented in the history we just loaded — no need to replay.
  */
 
+import { STALL_PROBE_TIMEOUT_MS } from "../../lib/chat-stall-watchdog"
+
 /**
  * Snapshot status as exposed by the runtime's `/agent/chat/:id/turn` route
  * (forwarded by the API's `/projects/:projectId/chat/:chatSessionId/turn`).
@@ -46,6 +48,15 @@ export type ChatTurnStatus = "active" | "completed" | "failed" | "aborted" | "un
 export interface ChatTurnSnapshot {
   status: ChatTurnStatus
   turnId: string | null
+  /**
+   * Whether the runtime answered the probe at all. `false` means every attempt
+   * failed (network error, abort, 5xx) — the status is a placeholder, not an
+   * answer. Recovery has to tell the two apart: a runtime that says "I have no
+   * turn for this session" (answered, `unknown`) really has nothing to reattach
+   * to, while a probe that could not reach the pod says nothing about the turn
+   * and is worth retrying (Sentry REACT-5Z gave up on 4 blind probes).
+   */
+  answered: boolean
 }
 
 export interface ProbeTurnStatusOptions {
@@ -137,7 +148,38 @@ export async function probeChatTurnStatus(
   return (await probeChatTurn(opts)).status
 }
 
-const UNKNOWN_TURN: ChatTurnSnapshot = { status: "unknown", turnId: null }
+/**
+ * The probe every stall/recovery path must use: `probeChatTurn` with a hard
+ * upper bound on how long the caller can wait.
+ *
+ * Without a bound a half-open socket never settles the fetch, and the caller
+ * cannot distinguish "the runtime is slow" from "this request will never come
+ * back": the watchdog's in-flight latch stays taken (every 15 s tick returns
+ * early) and the recovery loop sits inside its "recovering" state forever —
+ * the exact "nothing comes back" the probe exists to prevent. An abort reads
+ * as `answered: false`, which every caller already handles as "the runtime
+ * said nothing".
+ *
+ * `opts.signal` wins when the caller passes one (it owns the lifetime), and
+ * the timer is always cleared so a fast probe leaves nothing behind.
+ */
+export async function probeChatTurnBounded(
+  opts: ProbeTurnStatusOptions,
+  timeoutMs: number = STALL_PROBE_TIMEOUT_MS,
+): Promise<ChatTurnSnapshot> {
+  if (opts.signal) return probeChatTurn(opts)
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await probeChatTurn({ ...opts, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+const UNKNOWN_TURN: ChatTurnSnapshot = { status: "unknown", turnId: null, answered: false }
+/** The runtime answered, and it has no turn for this session. */
+const NO_LIVE_TURN: ChatTurnSnapshot = { status: "unknown", turnId: null, answered: true }
 
 async function probeOnce(
   opts: ProbeTurnStatusOptions,
@@ -152,15 +194,18 @@ async function probeOnce(
     } as any)
 
     // 404 ⇒ runtime has no buffer for this session — treat as unknown.
-    if (res.status === 404 || res.status === 204) return UNKNOWN_TURN
+    if (res.status === 404 || res.status === 204) return NO_LIVE_TURN
     if (!res.ok) return "error"
 
     const body = (await res.json().catch(() => null)) as
       | { status?: unknown; turnId?: unknown }
       | null
+    // A 200 whose body we could not parse is not an answer either.
+    if (!body) return "error"
     return {
-      status: normalizeTurnStatus(body?.status),
-      turnId: typeof body?.turnId === "string" ? body.turnId : null,
+      status: normalizeTurnStatus(body.status),
+      turnId: typeof body.turnId === "string" ? body.turnId : null,
+      answered: true,
     }
   } catch {
     // Network error, abort, or otherwise — fall back to "no live turn".

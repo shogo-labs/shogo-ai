@@ -34,10 +34,25 @@ mock.module('react-native-safe-area-context', () => ({
 }))
 
 const fetchCalls: { path: string; params?: Record<string, string> }[] = []
+
+/** Shape `StorageSection` reads in full — a bare `{ ok: true }` is a rolling-deploy payload. */
+const STORAGE_SUMMARY = {
+  lastPassAt: '2026-11-18T12:00:00.000Z',
+  buckets: { measuredBytes: 4096, workspaces: 2 },
+  categories: { project_files: 1024, repo: 2048, assets: 0, backups: 0, quarantine: 1024 },
+  billableBytes: 3072,
+  overheadBytes: 1024,
+  unmeasured: [],
+  month: { gbMonths: 0.25, shadowUsd: 0.04, chargedUsd: 0, mode: 'shadow' },
+  topByBytes: [{ workspaceId: 'ws-1', name: 'Acme', totalBytes: 4096, allowanceBytes: 1024, overageBytes: 3072 }],
+  topByOverage: [{ workspaceId: 'ws-1', name: 'Acme', totalBytes: 4096, allowanceBytes: 1024, overageBytes: 3072 }],
+}
+
 const fetchAdminJson = mock(async (path: string, params?: Record<string, string>) => {
   fetchCalls.push({ path, params })
   if (path === '/analytics/activity-timeseries' || path === '/analytics/active-users-timeseries') return []
   if (path === '/analytics/ai-digest/list') return []
+  if (path === '/storage') return STORAGE_SUMMARY
   return { ok: true }
 })
 
@@ -81,7 +96,7 @@ describe('admin marketing analytics page', () => {
   test('loads each panel exactly once on mount', async () => {
     const { getByTestId } = render(<AdminMarketingAnalyticsPage />)
 
-    await waitFor(() => expect(fetchCalls).toHaveLength(10))
+    await waitFor(() => expect(fetchCalls).toHaveLength(11))
     expect(getByTestId('user-next')).toBeTruthy()
     for (const path of [
       '/analytics/overview',
@@ -93,6 +108,7 @@ describe('admin marketing analytics page', () => {
       '/analytics/source-breakdown',
       '/analytics/ai-digest',
       '/analytics/ai-digest/list',
+      '/storage',
       '/compute',
     ]) {
       expect(callsFor(path)).toBe(1)
@@ -101,16 +117,17 @@ describe('admin marketing analytics page', () => {
 
   test('paging the user table refetches only the user table', async () => {
     const { getByTestId } = render(<AdminMarketingAnalyticsPage />)
-    await waitFor(() => expect(fetchCalls).toHaveLength(10))
+    await waitFor(() => expect(fetchCalls).toHaveLength(11))
 
     fireEvent.click(getByTestId('user-next'))
     await waitFor(() => expect(callsFor('/analytics/user-activity')).toBe(2))
 
-    expect(fetchCalls).toHaveLength(11)
+    expect(fetchCalls).toHaveLength(12)
     expect(callsFor('/analytics/overview')).toBe(1)
     expect(callsFor('/analytics/funnel')).toBe(1)
     expect(callsFor('/analytics/ai-digest')).toBe(1)
     expect(callsFor('/analytics/active-users-timeseries')).toBe(1)
+    expect(callsFor('/storage')).toBe(1)
     // The Compute panel is self-loading, so paging the user table must not
     // re-trigger it — that is SHO-311's contract applied to the new panel.
     expect(callsFor('/compute')).toBe(1)

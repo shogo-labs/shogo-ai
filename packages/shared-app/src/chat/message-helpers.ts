@@ -379,6 +379,11 @@ const GENERIC_REQUEST_FAILED = 'The request failed. Please tap Retry to try agai
 
 export function formatErrorMessage(rawMessage: string): string {
   const cleaned = stripInternalErrorMarkers(rawMessage)
+  // An empty message (an error with no text at all — see
+  // `ensureReadableErrorBody` in auto-resuming-fetch) used to render as an
+  // empty banner: on Android a failed send showed no reason whatsoever
+  // (SHOGO-ANDROID-5). Say something the person can act on.
+  if (!cleaned.trim()) return GENERIC_REQUEST_FAILED
   try {
     const parsed = JSON.parse(cleaned)
     if (parsed?.error?.code && ERROR_CODE_MESSAGES[parsed.error.code]) {
