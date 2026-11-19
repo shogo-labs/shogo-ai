@@ -24,6 +24,8 @@ import { z } from 'zod'
 import { getAccess, principalOf } from '../lib/authz'
 import { parseBody } from '../lib/parse-body'
 import { prisma } from '../lib/prisma'
+import { assertTrialSeatRoom } from '../services/billing.service'
+import { trialSeatLimitMessage } from '../config/usage-plans'
 
 export interface InviteLinkCreated {
   link: { id: string; token: string; role: string; projectId: string | null; workspaceId: string | null }
@@ -105,6 +107,13 @@ export function inviteLinkRoutes(config: InviteLinkRoutesConfig = {}): Hono {
       const access = await getAccess(c, { workspaceId: scope.workspaceId })
       if (!canAssignWorkspaceRole(access, requested)) {
         return forbidden(c, 'Only admins and owners can create invite links')
+      }
+      // A trialing workspace never holds more than TRIAL_MAX_SEATS seats
+      // (SHO-422). Refuse the link here rather than at accept time; acceptance
+      // is re-checked too, for links created before the cap.
+      const room = await assertTrialSeatRoom(scope.workspaceId)
+      if (!room.ok) {
+        return c.json({ error: { code: room.code!, message: trialSeatLimitMessage(room.maxSeats) } }, 409)
       }
       role = requested
     }

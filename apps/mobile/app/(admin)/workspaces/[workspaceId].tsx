@@ -68,10 +68,35 @@ interface WorkspaceApiKey {
   lastUsedAt: string | null
 }
 
-interface WorkspaceStorageUsage {
-  id: string
-  bytesUsed: string | number
-  updatedAt: string
+/**
+ * `GET /api/admin/storage?workspaceId=<id>` — the same detail an owner sees,
+ * with the category breakdown, the rolling 30-day history and the
+ * month-to-date estimate. That endpoint orders and windows the daily rows;
+ * the generated workspace include does neither (`take: 50`, unordered), so the
+ * detail page reads storage from here instead.
+ */
+interface WorkspaceStorageDetail {
+  totalBytes: number
+  billableBytes: number
+  limitBytes: number
+  projectCount: number
+  percentUsed: number
+  isOverLimit: boolean
+  categories?: Record<string, number>
+  projects?: Array<{ projectId: string; projectName: string | null; hidden: boolean; bytes: number }>
+  unmeasured?: string[]
+  history?: WorkspaceStorageHistoryDay[]
+  month?: { billableGbMonths: number; estimatedUsd: number; mode: 'shadow' | 'enforce' }
+  lastCalculatedAt: string | null
+}
+
+interface WorkspaceStorageHistoryDay {
+  day: string
+  totalBytes: number
+  billableBytes: number
+  allowanceBytes: number
+  chargedUsd: number | null
+  billedAt: string | null
 }
 
 interface InstanceSubscription {
@@ -123,7 +148,6 @@ interface WorkspaceDetail {
   projects?: WorkspaceProject[]
   subscriptions?: WorkspaceSubscription[]
   apiKeys?: WorkspaceApiKey[]
-  storageUsage?: WorkspaceStorageUsage | null
   instanceSubscription?: InstanceSubscription | null
 }
 
@@ -170,6 +194,171 @@ function formatBytes(input: string | number | undefined | null): string {
   return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`
 }
 
+/** Storage categories, in the order `storage.service.ts` measures them. */
+const STORAGE_CATEGORY_LABELS: Array<{ key: string; label: string }> = [
+  { key: 'project_files', label: 'Project files' },
+  { key: 'repo', label: 'Repositories' },
+  { key: 'assets', label: 'Assets' },
+  { key: 'backups', label: 'Backups' },
+  { key: 'chat_files', label: 'Chat files' },
+  { key: 'workspace_root', label: 'Workspace drive' },
+  { key: 'published', label: 'Published sites' },
+  { key: 'quarantine', label: 'Quarantine (overhead)' },
+  { key: 'vm_snapshots', label: 'VM snapshots (overhead)' },
+]
+
+/**
+ * The workspace's storage footprint (SHO-423), from `/api/admin/storage`.
+ * `billableBytes` already excludes the platform-overhead categories, so "over
+ * allowance" is billable bytes minus the instance-size allowance.
+ */
+function WorkspaceStorageCard({ storage }: { storage: WorkspaceStorageDetail | null }) {
+  if (!storage) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-4 mb-4">
+        <View className="flex-row items-center gap-2">
+          <HardDrive size={14} className="text-muted-foreground" />
+          <Text className="text-xs font-semibold text-foreground">Storage</Text>
+        </View>
+        <Text className="text-xs text-muted-foreground mt-1">Storage data unavailable.</Text>
+      </View>
+    )
+  }
+
+  const { totalBytes, billableBytes, limitBytes } = storage
+  const overBytes = limitBytes > 0 ? Math.max(0, billableBytes - limitBytes) : 0
+  const percent = limitBytes > 0 ? Math.min((totalBytes / limitBytes) * 100, 100) : 0
+  const categories = storage.categories ?? {}
+  const measured = STORAGE_CATEGORY_LABELS.filter((row) => Number(categories[row.key] ?? 0) > 0)
+  const topProjects = (storage.projects ?? []).filter((project) => project.bytes > 0).slice(0, 5)
+  const unmeasured = storage.unmeasured ?? []
+  const days = [...(storage.history ?? [])].reverse().slice(0, 14)
+  const maxDayBytes = days.reduce((max, row) => Math.max(max, row.totalBytes), 0)
+
+  return (
+    <View className="rounded-xl border border-border bg-card p-4 mb-4">
+      <View className="flex-row items-center justify-between mb-3 gap-2">
+        <View className="flex-row items-center gap-2">
+          <HardDrive size={14} className="text-primary" />
+          <Text className="text-xs font-semibold text-foreground">Storage</Text>
+        </View>
+        <Text className="text-[11px] text-muted-foreground">
+          Last measured{' '}
+          {storage.lastCalculatedAt ? new Date(storage.lastCalculatedAt).toLocaleString() : 'never'}
+        </Text>
+      </View>
+
+      <View className="flex-row flex-wrap gap-2 mb-3">
+        <View className="flex-1 min-w-[120px] rounded-lg bg-muted/50 p-2.5">
+          <Text className="text-[11px] text-muted-foreground">Total</Text>
+          <Text className="text-sm font-semibold text-foreground">{formatBytes(totalBytes)}</Text>
+        </View>
+        <View className="flex-1 min-w-[120px] rounded-lg bg-muted/50 p-2.5">
+          <Text className="text-[11px] text-muted-foreground">Billable</Text>
+          <Text className="text-sm font-semibold text-foreground">{formatBytes(billableBytes)}</Text>
+        </View>
+        <View className="flex-1 min-w-[120px] rounded-lg bg-muted/50 p-2.5">
+          <Text className="text-[11px] text-muted-foreground">Allowance</Text>
+          <Text className="text-sm font-semibold text-foreground">
+            {limitBytes > 0 ? formatBytes(limitBytes) : '—'}
+          </Text>
+        </View>
+        <View className="flex-1 min-w-[120px] rounded-lg bg-muted/50 p-2.5">
+          <Text className="text-[11px] text-muted-foreground">Over allowance</Text>
+          <Text
+            className={cn(
+              'text-sm font-semibold',
+              overBytes > 0 ? 'text-orange-600 dark:text-orange-400' : 'text-foreground',
+            )}
+          >
+            {limitBytes > 0 ? formatBytes(overBytes) : '—'}
+          </Text>
+        </View>
+      </View>
+
+      {limitBytes > 0 && (
+        <View className="mb-1">
+          <View className="h-2 bg-muted rounded-full overflow-hidden">
+            <View
+              className={cn(
+                'h-full rounded-full',
+                percent > 90 ? 'bg-destructive' : percent > 70 ? 'bg-amber-500' : 'bg-primary',
+              )}
+              style={{ width: `${Math.max(percent, 1)}%` }}
+            />
+          </View>
+          <Text className="text-[11px] text-muted-foreground mt-1">
+            {percent.toFixed(percent >= 10 ? 0 : 1)}% of allowance
+            {storage.month
+              ? ` · ${storage.month.mode === 'shadow' ? 'shadow' : 'billed'} $${storage.month.estimatedUsd.toFixed(2)} MTD`
+              : ''}
+          </Text>
+        </View>
+      )}
+
+      <Text className="text-[11px] font-medium text-muted-foreground mt-3 mb-1">By category</Text>
+      {measured.length === 0 && (
+        <Text className="text-xs text-muted-foreground">
+          {storage.projectCount > 0 ? 'Nothing measured yet.' : 'No projects.'}
+        </Text>
+      )}
+      {measured.map((row) => (
+        <View key={row.key} className="flex-row items-center justify-between py-0.5">
+          <Text className="text-xs text-muted-foreground">{row.label}</Text>
+          <Text className="text-xs text-foreground">{formatBytes(Number(categories[row.key]))}</Text>
+        </View>
+      ))}
+      {unmeasured.length > 0 && (
+        <Text className="text-[11px] text-amber-600 dark:text-amber-400 mt-1">
+          Not measured: {unmeasured.join(', ')}
+        </Text>
+      )}
+
+      {topProjects.length > 0 && (
+        <>
+          <Text className="text-[11px] font-medium text-muted-foreground mt-3 mb-1">Top projects</Text>
+          {topProjects.map((project) => (
+            <View key={project.projectId} className="flex-row items-center justify-between py-0.5">
+              <Text className="text-xs text-muted-foreground flex-1 mr-2" numberOfLines={1}>
+                {project.projectName ?? 'Hidden project'}
+              </Text>
+              <Text className="text-xs text-foreground">{formatBytes(project.bytes)}</Text>
+            </View>
+          ))}
+        </>
+      )}
+
+      <Text className="text-[11px] font-medium text-muted-foreground mt-3 mb-1">
+        Last {days.length} day{days.length === 1 ? '' : 's'}
+      </Text>
+      {days.length === 0 && (
+        <Text className="text-xs text-muted-foreground">No daily history yet.</Text>
+      )}
+      {days.map((row) => (
+        <View key={row.day} className="flex-row items-center gap-2 py-0.5">
+          <Text className="text-[11px] text-muted-foreground w-[74px]">{row.day}</Text>
+          <View className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+            <View
+              className={cn(
+                'h-full rounded-full',
+                row.allowanceBytes > 0 && row.billableBytes > row.allowanceBytes
+                  ? 'bg-orange-500'
+                  : 'bg-primary',
+              )}
+              style={{
+                width: `${maxDayBytes > 0 ? Math.max((row.totalBytes / maxDayBytes) * 100, 2) : 2}%`,
+              }}
+            />
+          </View>
+          <Text className="text-[11px] text-foreground w-[64px] text-right">
+            {formatBytes(row.totalBytes)}
+          </Text>
+        </View>
+      ))}
+    </View>
+  )
+}
+
 export default function AdminWorkspaceDetailPage() {
   const { workspaceId } = useLocalSearchParams<{ workspaceId: string }>()
   const router = useRouter()
@@ -178,20 +367,25 @@ export default function AdminWorkspaceDetailPage() {
 
   const [workspace, setWorkspace] = useState<WorkspaceDetail | null>(null)
   const [grants, setGrants] = useState<WorkspaceGrant[]>([])
+  const [storage, setStorage] = useState<WorkspaceStorageDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [userNames, setUserNames] = useState<Record<string, { name: string | null; email: string }>>({})
 
   const loadWorkspace = useCallback(async () => {
     if (!workspaceId) return
-    const [data, grantsData] = await Promise.all([
+    const [data, grantsData, storageData] = await Promise.all([
       fetchAdminJson<WorkspaceDetail>(`/workspaces/${workspaceId}`),
       fetchAdminJson<GrantsListResponse>(
         `/workspace-grants?workspaceId=${encodeURIComponent(workspaceId)}&limit=50&orderBy=createdAt&order=desc`,
       ),
+      fetchAdminJson<WorkspaceStorageDetail>(
+        `/storage?workspaceId=${encodeURIComponent(workspaceId)}`,
+      ),
     ])
     setWorkspace(data)
     setGrants(grantsData?.workspaceGrants ?? [])
+    setStorage(storageData)
     setLoading(false)
     setRefreshing(false)
   }, [workspaceId])
@@ -331,14 +525,6 @@ export default function AdminWorkspaceDetailPage() {
                 Updated {new Date(workspace.updatedAt).toLocaleDateString()}
               </Text>
             </View>
-            {workspace.storageUsage && (
-              <View className="flex-row items-center gap-1.5">
-                <HardDrive size={12} className="text-muted-foreground" />
-                <Text className="text-xs text-muted-foreground">
-                  {formatBytes(workspace.storageUsage.bytesUsed)} storage
-                </Text>
-              </View>
-            )}
           </View>
 
           <View className="mt-3 pt-3 border-t border-border">
@@ -347,6 +533,8 @@ export default function AdminWorkspaceDetailPage() {
             </Text>
           </View>
         </View>
+
+        <WorkspaceStorageCard storage={storage} />
 
         {/* Stats row */}
         <View className={cn('mb-4', isWide ? 'flex-row gap-4' : 'gap-2')}>

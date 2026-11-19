@@ -61,12 +61,21 @@ const CODE_EXT = new Set([
 /** A bounded prefix of a delimited file is enough to show its shape. */
 const PREVIEW_SCAN_BYTES = 8 * 1024
 
-type OfficeKind = 'docx' | 'pptx' | 'xlsx'
+type OfficeKind = 'docx' | 'pptx' | 'xlsx' | 'odp'
 const OFFICE_MIME: Record<string, OfficeKind> = {
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation.macroenabled.12': 'pptx',
+  'application/vnd.openxmlformats-officedocument.presentationml.slideshow': 'pptx',
+  'application/vnd.openxmlformats-officedocument.presentationml.slideshow.macroenabled.12': 'pptx',
+  'application/vnd.openxmlformats-officedocument.presentationml.template': 'pptx',
+  'application/vnd.openxmlformats-officedocument.presentationml.template.macroenabled.12': 'pptx',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.oasis.opendocument.presentation': 'odp',
 }
+
+/** Every extension that holds a presentation we can read. */
+const PPTX_EXT = new Set(['pptx', 'pptm', 'ppsx', 'ppsm', 'potx', 'potm'])
 
 function extension(name: string): string {
   return name.includes('.') ? name.toLowerCase().split('.').pop() ?? '' : ''
@@ -85,7 +94,8 @@ function officeKind(mimeType: string, name: string): OfficeKind | null {
   const byMime = OFFICE_MIME[mimeType.toLowerCase()]
   if (byMime) return byMime
   const ext = extension(name)
-  return ext === 'docx' || ext === 'pptx' || ext === 'xlsx' ? ext : null
+  if (ext === 'docx' || ext === 'xlsx' || ext === 'odp') return ext
+  return PPTX_EXT.has(ext) ? 'pptx' : null
 }
 
 /** Whether `extractAttachmentText` could produce text for this file. */
@@ -143,7 +153,7 @@ const XLSX_TEXT_PART = /^xl\/sharedStrings\.xml$/
 /** Extra parts the spreadsheet preview needs; never joined into the search text. */
 const XLSX_GRID_PART = /^xl\/(worksheets\/sheet1\.xml|workbook\.xml)$/
 
-function officeTextPart(name: string, kind: OfficeKind): boolean {
+function officeTextPart(name: string, kind: Exclude<OfficeKind, 'odp'>): boolean {
   return kind === 'docx' ? DOCX_TEXT_PART.test(name)
     : kind === 'pptx' ? PPTX_TEXT_PART.test(name)
       : XLSX_TEXT_PART.test(name)
@@ -156,7 +166,7 @@ type OfficeZip = { parts: { name: string; text: string }[]; files: Record<string
  * text needs plus (for spreadsheets) the worksheet the table preview reads.
  * The text assembly is deliberately unchanged from before the preview existed.
  */
-function unzipOffice(bytes: Uint8Array, kind: OfficeKind): OfficeZip | null {
+function unzipOffice(bytes: Uint8Array, kind: Exclude<OfficeKind, 'odp'>): OfficeZip | null {
   let files: Record<string, Uint8Array>
   try {
     files = unzipSync(bytes, {
@@ -203,7 +213,7 @@ async function pdfContent(bytes: Uint8Array): Promise<ExtractedContent> {
   }
 }
 
-function officeContent(bytes: Uint8Array, kind: OfficeKind): ExtractedContent {
+function officeContent(bytes: Uint8Array, kind: Exclude<OfficeKind, 'odp'>): ExtractedContent {
   const zip = unzipOffice(bytes, kind)
   if (!zip) return EMPTY
   const joined = zip.parts.map((part) => part.text).join('\n')
@@ -211,8 +221,40 @@ function officeContent(bytes: Uint8Array, kind: OfficeKind): ExtractedContent {
   return { text, preview: officePreview(zip, kind, text ?? joined) }
 }
 
+/** An `.odp` holds every slide in one `content.xml`, one `<draw:page>` each. */
+const ODP_CONTENT_PART = /^content\.xml$/
+
+function odpPages(xml: string): string[] {
+  return xml
+    .split(/<draw:page\b[^>]*>/)
+    .slice(1)
+    .map((page) => xmlText(page.split('</draw:page>')[0] ?? page, 'text:p'))
+    .map((page) => page.trim())
+}
+
+/**
+ * An OpenDocument presentation has no browser renderer, so it opens as its
+ * extracted per-slide text — the same outline the attachment card draws
+ * (SHO-426). No page is invented: an empty deck stays null.
+ */
+function odpContent(bytes: Uint8Array): ExtractedContent {
+  let files: Record<string, Uint8Array>
+  try {
+    files = unzipSync(bytes, {
+      filter: (part) => ODP_CONTENT_PART.test(part.name) && part.originalSize <= MAX_OFFICE_PART_BYTES,
+    })
+  } catch {
+    return EMPTY
+  }
+  const content = files['content.xml']
+  if (!content) return EMPTY
+  const pages = odpPages(new TextDecoder().decode(content))
+  const text = tidy(pages.join('\n'))
+  return { text, preview: buildSlidesPreview(pages) }
+}
+
 /** Slide 1 of a deck, the opening prose of a document, or a sheet's first rows. */
-function officePreview(zip: OfficeZip, kind: OfficeKind, text: string): AttachmentPreview | null {
+function officePreview(zip: OfficeZip, kind: Exclude<OfficeKind, 'odp'>, text: string): AttachmentPreview | null {
   if (kind === 'pptx') return buildSlidesPreview(zip.parts.map((part) => part.text))
   if (kind === 'docx') return buildTextPreview(text)
   const worksheet = zip.files['xl/worksheets/sheet1.xml']
@@ -255,6 +297,7 @@ export async function extractAttachmentContent(bytes: Uint8Array, mimeType: stri
   try {
     if (isPdf(mimeType, name)) return await pdfContent(bytes)
     const office = officeKind(mimeType, name)
+    if (office === 'odp') return odpContent(bytes)
     if (office) return officeContent(bytes, office)
     if (isTextLike(mimeType, name)) return textContent(bytes, mimeType, name)
   } catch {

@@ -3,6 +3,8 @@
 export {
   extractTextContent,
   formatErrorMessage,
+  formatApiError,
+  fillErrorCodeMessage,
   isTunnelDisconnectError,
   isClientNetworkFailure,
   isChatUnauthorizedError,

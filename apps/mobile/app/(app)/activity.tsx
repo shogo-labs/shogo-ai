@@ -5,12 +5,15 @@ import { useCallback, useMemo, useState } from 'react'
 import { Platform, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
-import { ChevronRight, Clock3, Folder, ListTodo, MessageSquare, XCircle } from 'lucide-react-native'
+import { ChevronRight, Clock3, Folder, ListTodo, Square, XCircle } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useProjectCollection } from '../../contexts/domain'
 import { useWorkspaceDataScope, useWorkspaceInView } from '../../hooks/useWorkspaceInView'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
-import type { AgentTask } from '../../lib/api'
+import type { ActiveChatTurn, AgentTask } from '../../lib/api'
+import { canStopRunningChat, chatTitle, elapsedLabel, sortRunningChats } from '../../lib/activity-feed'
+import { stopRunningChat } from '../../lib/stop-running-chat'
+import { AgentAvatar } from '../../components/team-chat/AgentAvatar'
 import { useAgentActivity } from '../../hooks/useAgentActivity'
 import { openActiveChat } from '../../lib/open-active-chat'
 import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
@@ -51,13 +54,7 @@ function timestamp(value: unknown): number {
 }
 
 function elapsed(task: { startedAt?: string | null; queuedAt?: string | null; createdAt?: string }) {
-  const start = task.startedAt || task.queuedAt || task.createdAt || ''
-  const epoch = Date.parse(start)
-  if (!Number.isFinite(epoch)) return '—'
-  const minutes = Math.max(0, Math.floor((Date.now() - epoch) / 60_000))
-  if (minutes < 1) return '<1m'
-  if (minutes < 60) return `${minutes}m`
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+  return elapsedLabel(task.startedAt || task.queuedAt || task.createdAt)
 }
 
 function SectionHeader({ title, count, subtitle }: { title: string; count?: number; subtitle?: string }) {
@@ -181,6 +178,15 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
     refresh,
   } = useAgentActivity({ polling: focused })
   const runningCount = active.length + activeChats.length
+  // One agent's runs next to each other, newest first — the same order the
+  // Activity feed's strip uses.
+  const runningChats = useMemo(() => sortRunningChats(activeChats), [activeChats])
+  const [stopError, setStopError] = useState<string | null>(null)
+  const stopChat = (chat: ActiveChatTurn) => {
+    setStopError(null)
+    void stopRunningChat(chat, workspace?.id ?? null)
+      .catch((err: unknown) => setStopError(err instanceof Error ? err.message : 'That run could not be stopped.'))
+  }
   const projectList = projects.all
   const projectActivity = useMemo(() => {
     const groups = new Map<string, ProjectActivityGroup>()
@@ -267,6 +273,7 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
           />
         </View>
       ) : null}
+      {stopError ? <Text className="mx-4 mt-3 text-sm text-destructive">{stopError}</Text> : null}
       {loading ? <ActivityLoadingState /> : (
         <ScrollView
           className="flex-1"
@@ -307,19 +314,41 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
               />
             </View>
             ))}
-            {activeChats.map((chat) => (
-              <View key={`${chat.chatSessionId}:${chat.turnId}`} className="mx-4 mt-3">
-                <ActivityCard
-                  tone="primary"
-                  icon={<MessageSquare size={19} className="text-primary" />}
-                  title={chat.sessionName}
-                  subtitle={`${chat.projectHidden ? 'Companion' : chat.projectName || 'Workspace chat'} · Chatting · ${elapsed(chat)}`}
-                  message={<View className="rounded-xl bg-background/70 px-3 py-2.5"><Text className="text-sm leading-5 text-foreground">An agent is responding in this chat.</Text></View>}
-                  trailing={<ChevronRight size={17} className="mt-0.5 text-primary" />}
-                  onPress={() => openActiveChat(router, chat)}
-                />
-              </View>
-            ))}
+            {runningChats.map((chat) => {
+              const agent = chat.agentName?.trim() || chat.projectName || 'Agent'
+              const where = chat.conversationName
+                ? `#${chat.conversationName}`
+                : chat.projectHidden ? 'Companion' : chat.projectName || 'Workspace chat'
+              return (
+                <View key={`${chat.chatSessionId}:${chat.turnId}`} className="mx-4 mt-3">
+                  <ActivityCard
+                    tone="primary"
+                    icon={<AgentAvatar name={agent} projectId={chat.projectId} workspaceId={workspace?.id ?? null} size={30} />}
+                    title={chatTitle(chat)}
+                    subtitle={`${agent} · ${where} · ${elapsed(chat)}`}
+                    trailing={
+                      <View className="flex-row items-center gap-2">
+                        {canStopRunningChat(chat) ? (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`Stop ${chatTitle(chat)}`}
+                            testID={`stop-${chat.chatSessionId}`}
+                            hitSlop={8}
+                            // Stop ends the run; it never opens the chat behind it.
+                            onPress={(event) => { event?.stopPropagation?.(); void stopChat(chat) }}
+                            className="h-8 w-8 items-center justify-center rounded-full border border-border active:bg-accent"
+                          >
+                            <Square size={11} className="fill-primary text-primary" />
+                          </Pressable>
+                        ) : null}
+                        <ChevronRight size={17} className="mt-0.5 text-primary" />
+                      </View>
+                    }
+                    onPress={() => openActiveChat(router, chat)}
+                  />
+                </View>
+              )
+            })}
           </>}
 
           <SectionHeader title="Workspace projects" count={projectActivity.length} subtitle="Monitor every project in this workspace" />

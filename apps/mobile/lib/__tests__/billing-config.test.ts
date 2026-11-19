@@ -35,6 +35,7 @@ import {
   UPGRADE_PLAN_PRICE_LABEL,
   getWindowDisplays,
   usageFillPixelWidth,
+  trialSeatsExceedCap,
 } from '../billing-config'
 
 describe('getWindowLimitsForPlan', () => {
@@ -400,5 +401,34 @@ describe('the plan the upsells sell (SHO-398)', () => {
       `${formatUsd(PLAN_PRICING[UPGRADE_PLAN_ID].monthly)}/seat/mo`,
     )
     expect(UPGRADE_PLAN_PRICE_LABEL).toBe('$16/seat/mo')
+  })
+})
+
+/**
+ * The billing page disables "Start 7-day free trial" when the seats picked
+ * exceed the cap the server reported (SHO-422). The number is never hardcoded
+ * here — it arrives as `limits.trialMaxSeats` — so this pins only the rule.
+ */
+describe('trialSeatsExceedCap', () => {
+  test('a seat count at the cap is allowed', () => {
+    expect(trialSeatsExceedCap(5, 5)).toBe(false)
+  })
+
+  test('a seat count above the cap is refused', () => {
+    expect(trialSeatsExceedCap(6, 5)).toBe(true)
+    expect(trialSeatsExceedCap(123, 5)).toBe(true)
+  })
+
+  test('no reported cap means no client-side gate', () => {
+    // The API is still the gate; this only stops the button lying about a
+    // checkout the server would have accepted.
+    expect(trialSeatsExceedCap(50, undefined)).toBe(false)
+    expect(trialSeatsExceedCap(50, null)).toBe(false)
+  })
+
+  test('normalises the seat input the same way the checkout does', () => {
+    expect(trialSeatsExceedCap(0, 5)).toBe(false)
+    expect(trialSeatsExceedCap(5.9, 5)).toBe(false)
+    expect(trialSeatsExceedCap(6.1, 5)).toBe(true)
   })
 })

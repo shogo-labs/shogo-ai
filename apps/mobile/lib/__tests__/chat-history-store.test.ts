@@ -21,6 +21,7 @@ import {
   setChatHistoryBackend,
   writeChatHistory,
 } from '../chat-history-store'
+import { transcriptBytes } from '../message-bytes'
 
 let seq = 0
 const message = (text = 'hi') => ({ id: `m${++seq}`, text, createdAt: Date.now() })
@@ -80,6 +81,38 @@ describe('chat history store', () => {
     const key = chatHistoryKey('u1', 'origin', 's1')
     await writeChatHistory('project', key, entry([]))
     expect(await readChatHistory('project', key)).toBeNull()
+  })
+
+  test('a photo-heavy slice is trimmed by bytes, not just by message count', async () => {
+    // Ten messages, each carrying an inline image far larger than the whole
+    // slice is allowed to be (SHO-434). Counting messages would keep all ten.
+    const key = chatHistoryKey('u1', 'origin', 'photos')
+    const limits = chatHistoryLimits()
+    const photo = () => ({
+      ...message(),
+      parts: [
+        { type: 'text', text: 'look' },
+        { type: 'file', mediaType: 'image/jpeg', url: `data:image/jpeg;base64,${'A'.repeat(4 * 1024 * 1024)}` },
+      ],
+    })
+    const messages = Array.from({ length: 10 }, photo)
+    await writeChatHistory('project', key, entry(messages))
+
+    const read = await readChatHistory('project', key)
+    expect(read?.messages.length).toBeLessThan(messages.length)
+    // What is kept is the newest end, and a single message is always kept.
+    expect(read?.messages[read.messages.length - 1]).toEqual(messages[messages.length - 1])
+    expect(transcriptBytes(read!.messages)).toBeLessThanOrEqual(limits.bytes)
+    expect(read?.hasMoreOlder).toBe(true)
+  })
+
+  test('a slice that fits is stored untouched', async () => {
+    const key = chatHistoryKey('u1', 'origin', 'small')
+    const messages = [message('a'), message('b'), message('c')]
+    await writeChatHistory('project', key, entry(messages))
+    const read = await readChatHistory('project', key)
+    expect(read?.messages).toHaveLength(3)
+    expect(read?.hasMoreOlder).toBe(false)
   })
 
   test('the least recently saved chats are evicted once the cap is reached', async () => {

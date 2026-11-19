@@ -65,6 +65,15 @@ function makeCtx(userId = ADMIN_USER_ID) {
     project: {
       findUnique: async () => null,
     },
+    // `assertTrialSeatRoom` (SHO-422) resolves the billing workspace, then looks
+    // for a trialing subscription. No parent, no subscription → no seat cap, so
+    // these invitation tests keep exercising the duplicate-invite rules only.
+    workspace: {
+      findUnique: async () => ({ parentWorkspaceId: null }),
+    },
+    subscription: {
+      findFirst: async () => null,
+    },
     invitation: {
       findUnique: async ({ where }: { where: any }) => {
         const row = invitations.find((item) => matchesScope(item, where))

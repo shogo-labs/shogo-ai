@@ -1182,3 +1182,48 @@ model LocalConfig {
 
   @@map("local_config")
 }
+
+// =============================================================================
+// VM COMPUTE METERING (SHO-424) — mirrored from prisma/schema.local.prisma
+// =============================================================================
+// Empty in local mode: compute billing is a cloud concern and the hourly job
+// no-ops locally. Present so the desktop track carries the same shape.
+
+model VmUsageHour {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  projectId    String    @default("")
+  hour         DateTime
+  hostId       String
+  vcpus        Int
+  memMiB       Int
+  cause        String    @default("user_open")
+  agentSeconds Int       @default(0)
+  appSeconds   Int       @default(0)
+  idleSeconds  Int       @default(0)
+  chargedUsd   Float?
+  billedAt     DateTime?
+
+  @@unique([workspaceId, projectId, hour, hostId, vcpus, memMiB, cause])
+  @@index([workspaceId, hour])
+  @@index([billedAt])
+  @@index([hour])
+  @@map("vm_usage_hours")
+}
+
+model VmMeterCursor {
+  id         String   @id @default(cuid())
+  hostId     String
+  vmId       String
+  assignedAt BigInt
+  agentMs    Int      @default(0)
+  appMs      Int      @default(0)
+  idleMs     Int      @default(0)
+  lastSeenAt DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([hostId, vmId, assignedAt])
+  @@index([lastSeenAt])
+  @@map("vm_meter_cursors")
+}
+

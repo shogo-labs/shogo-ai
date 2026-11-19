@@ -187,6 +187,14 @@ describe('POST /workspaces/:id/dms { agent }', () => {
     expect(res.status).toBe(410)
     expect(res.json.error.code).toBe('moved_to_project_chat')
     expect(typeof res.json.chatSessionId).toBe('string')
+    // A shipped client cannot follow `chatSessionId` — the only thing it shows
+    // is this message, so it has to be an instruction the person can act on,
+    // and a client that can render a link gets the store one (SHO-433).
+    expect(res.json.error.message).toMatch(/update shogo/i)
+    expect(res.json.upgrade).toEqual({
+      required: true,
+      playStoreUrl: 'https://play.google.com/store/apps/details?id=ai.shogo.mobile',
+    })
 
     const session = await db.chatSession.findUnique({ where: { id: res.json.chatSessionId } })
     expect(session.directKey).toBe(`a:${seed.workspaceId}:${seed.member}:${seed.projectId}`)

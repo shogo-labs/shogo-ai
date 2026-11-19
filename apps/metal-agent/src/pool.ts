@@ -446,11 +446,71 @@ export class StagedRootfsUnavailableError extends Error {
   readonly code = 'no_staged_rootfs'
 }
 
+/**
+ * Why a VM was started, as told by the control plane on `/assign`. Billing
+ * reads this: most causes are billable running time, but `rewarm`/`prewarm`/
+ * `published` are platform overhead (see `config/vm-pricing.ts` in apps/api).
+ * `user_open` is the default so an older caller that sends nothing is still
+ * metered rather than lost.
+ */
+export type VmCause = 'user_open' | 'agent_wake' | 'schedule' | 'published' | 'rewarm' | 'prewarm'
+
+export const VM_CAUSES: readonly VmCause[] = [
+  'user_open',
+  'agent_wake',
+  'schedule',
+  'published',
+  'rewarm',
+  'prewarm',
+]
+
+export function isVmCause(v: unknown): v is VmCause {
+  return typeof v === 'string' && (VM_CAUSES as readonly string[]).includes(v)
+}
+
+/**
+ * Cumulative running time of ONE VM since it was assigned, in milliseconds, by
+ * why it was running. Advanced on each heartbeat/reaper tick from the same
+ * classification `classifyAssigned` buckets the fleet by, and never reset for
+ * the life of the VM — so a heartbeat the control plane never receives costs
+ * nothing, the next one carries the full total.
+ */
+export interface VmMeter {
+  agentMs: number
+  appMs: number
+  idleMs: number
+  /** Wall-clock of the last advance. Elapsed since here is what the next tick charges. */
+  advancedAt: number
+}
+
+/** One VM's meter as reported to the control plane (see `meterReport`). */
+export interface VmMeterReport {
+  runtimeKey: string
+  vmId: string
+  assignedAt: number
+  /** CPU count the host actually booted (the handler's), never the env accounting. */
+  vcpus: number
+  /** MiB the host actually booted. */
+  memMiB: number
+  vmClass: string
+  cause: VmCause
+  alwaysOn: boolean
+  agentMs: number
+  appMs: number
+  idleMs: number
+  /** Set once the VM stopped being assigned; the row is held until the control plane acks it. */
+  endedAt?: number
+}
+
 export interface AssignedVm {
   projectId: string
   handle: FcVmHandle
   assignedAt: number
   lastTouchedAt: number
+  /** Why this VM was started (billing). Undefined on an adopted VM = `user_open`. */
+  cause?: VmCause
+  /** Billing counters (see {@link VmMeter}); created on the first tick. */
+  meter?: VmMeter
   /** Snapshot files this VM was restored from; protected from orphan reclaim. */
   restoredFrom?: { vmstate: string; mem: string }
   /**
@@ -940,6 +1000,16 @@ function yieldToEventLoop(): Promise<void> {
 const APP_ACTIVE_WINDOW_MS = 120_000
 
 /**
+ * How long a stopped VM's final meter is retried before it is dropped, and how
+ * many of them are held at once. The counters are cumulative, so the control
+ * plane normally ingests a closed VM on the very first heartbeat that carries
+ * it; these bounds only matter for a control plane that is unreachable for an
+ * hour or a busy host that churns more than 2,000 VMs inside one.
+ */
+const CLOSED_METER_TTL_MS = 60 * 60_000
+const MAX_CLOSED_METERS = 2_000
+
+/**
  * Hard ceiling on a hydrate deadline, whatever the per-MiB budget works out to.
  *
  * The guest clamps its own pull at 30 minutes (PULL_MAX_SECONDS in
@@ -1195,6 +1265,13 @@ export class MetalWarmPool {
   /** Collapses concurrent suspend calls for the same project. */
   private suspendFlight = new Singleflight<SuspendedVm>()
   private recycleFlight = new Singleflight<RecycleReport>()
+  /**
+   * Billing meters: the seq of the newest report the control plane has seen, the
+   * VM rows that stopped being assigned but which no heartbeat has acked yet
+   * (their final counters live only here), and the seq each was last sent with.
+   */
+  private meterSeq = 0
+  private closedMeters: Array<VmMeterReport & { lastSentSeq?: number }> = []
   private autoRecycleHistory = new Map<string, number[]>()
   /**
    * Serializes writable-state exports per project. The periodic exporter and
@@ -1991,12 +2068,13 @@ export class MetalWarmPool {
     projectId: string,
     env: Record<string, string> = {},
     bind?: { workspaceId?: string; attachedProjectIds?: string[] },
+    opts: { cause?: VmCause } = {},
   ): Promise<OpenResult> {
     ;({ env, bind } = this.ownMembersOnly(projectId, env, bind))
-    const r = await this.openOnce(projectId, env, bind, null)
+    const r = await this.openOnce(projectId, env, bind, null, opts.cause)
     // Joined a concurrent staged open that had nothing to boot: this caller
     // needs a running VM, so open again (now as the flight's owner).
-    if (r.mode === 'prewarmed') return this.open(projectId, env, bind)
+    if (r.mode === 'prewarmed') return this.open(projectId, env, bind, opts)
     return r
   }
 
@@ -2014,7 +2092,9 @@ export class MetalWarmPool {
     ;({ env, bind } = this.ownMembersOnly(projectId, env, bind))
     const staged = this.stagedRootfs(this.resolveVmClass(projectId, env))
     if (!staged) throw new StagedRootfsUnavailableError(`no staged rootfs on this host for ${projectId}`)
-    return this.openOnce(projectId, env, bind, staged)
+    // A staged open is always the switch-over pre-warm, whatever the caller
+    // labelled it: it exists to fill the new image, not to serve a user.
+    return this.openOnce(projectId, env, bind, staged, 'prewarm')
   }
 
   private async openOnce(
@@ -2022,6 +2102,7 @@ export class MetalWarmPool {
     env: Record<string, string>,
     bind: { workspaceId?: string; attachedProjectIds?: string[] } | undefined,
     staged: { path: string; identity: string } | null,
+    cause: VmCause = 'user_open',
   ): Promise<OpenResult | PrewarmedResult> {
     const r = await this.openFlight.run(projectId, async (): Promise<OpenResult | PrewarmedResult> => {
       const timer = new PhaseTimer()
@@ -2120,13 +2201,13 @@ export class MetalWarmPool {
       if (staged) {
         // Never resume here: the current snapshot stays the project's serving
         // copy until activation, and this boot is on the new image.
-        const a = await this.assign(projectId, env, bind, timer, staged)
+        const a = await this.assign(projectId, env, bind, timer, staged, cause)
         return done({ handle: a.handle, mode: 'assigned', bootRootfsIdentity: staged.identity })
       }
       let staleReason: StaleReason | undefined
       if (await timer.time('can_resume', () => this.canResume(projectId))) {
         try {
-          const res = await this.resume(projectId, env, timer)
+          const res = await this.resume(projectId, env, timer, cause)
           if (res)
             return done({
               handle: res.assigned.handle,
@@ -2152,7 +2233,7 @@ export class MetalWarmPool {
         staleReason = 'no_snapshot'
       }
       this.lastStaleReason.delete(projectId)
-      const a = await this.assign(projectId, env, bind, timer)
+      const a = await this.assign(projectId, env, bind, timer, undefined, cause)
       return done({ handle: a.handle, mode: 'assigned', staleReason, bootRootfsIdentity: this.bootRootfsIdentity(a) })
     })
     if (r?.mode === 'prewarmed') return r
@@ -2224,6 +2305,7 @@ export class MetalWarmPool {
     bind?: { workspaceId?: string; attachedProjectIds?: string[] },
     timer = new PhaseTimer(),
     staged?: { path: string; identity: string },
+    cause: VmCause = 'user_open',
   ): Promise<AssignedVm> {
     ;({ env, bind } = this.ownMembersOnly(projectId, env, bind))
     const vmClass = this.resolveVmClass(projectId, env)
@@ -2246,7 +2328,7 @@ export class MetalWarmPool {
       )
       timer.add('boot', performance.now() - t0 - waited)
     }
-    return this.assignVm(projectId, env, bind, timer, vm, staged?.identity)
+    return this.assignVm(projectId, env, bind, timer, vm, staged?.identity, cause)
   }
 
   private resolveVmClass(projectId: string, env: Record<string, string>): VmClass {
@@ -2276,6 +2358,7 @@ export class MetalWarmPool {
     timer: PhaseTimer,
     vm: PooledVm,
     stagedIdentity: string | undefined,
+    cause: VmCause,
   ): Promise<AssignedVm> {
     // The claimed/booted VM is now off the pool and not yet in `assigned`. If
     // the guest /pool/assign call fails or times out we must stop it, or its FC
@@ -2309,6 +2392,8 @@ export class MetalWarmPool {
       handle: vm.handle,
       assignedAt: now,
       stateSince: now,
+      cause,
+      meter: { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: now },
       repoHydratePending: true,
       lastTouchedAt: now,
       lastRealActivityAt: now,
@@ -2368,6 +2453,7 @@ export class MetalWarmPool {
       }
     } catch (err: any) {
       console.error(`[pool] hydrate-from-backup failed for ${projectId} — failing open (NOT serving template):`, err?.message ?? err)
+      this.closeMeter(a)
       this.assigned.delete(projectId)
       this.live.remove(projectId)
       await this.mgr.stopVM(vm.handle).catch(() => {})
@@ -2386,6 +2472,7 @@ export class MetalWarmPool {
         }
       } catch (err: any) {
         console.error(`[pool] workspace member hydrate failed for ${projectId}:`, err?.message ?? err)
+        this.closeMeter(a)
         this.assigned.delete(projectId)
         this.live.remove(projectId)
         await this.mgr.stopVM(vm.handle).catch(() => {})
@@ -4849,6 +4936,7 @@ export class MetalWarmPool {
         await this.callGuestHook(a.handle.agentUrl, 'rehydrate', this.cfg.rehydrateTimeoutMs, a.runtimeToken)
         throw err
       }
+      this.closeMeter(a)
       this.assigned.delete(projectId)
       this.live.remove(projectId) // no longer a live process — snapshot is the source of truth
       const now = Date.now()
@@ -5190,6 +5278,7 @@ export class MetalWarmPool {
     projectId: string,
     env: Record<string, string> = {},
     timer = new PhaseTimer(),
+    cause: VmCause = 'user_open',
   ): Promise<{
     assigned: AssignedVm
     apiMs: number
@@ -5398,6 +5487,8 @@ export class MetalWarmPool {
       projectId,
       handle,
       assignedAt: now,
+      cause,
+      meter: { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: now },
       lastTouchedAt: now,
       lastRealActivityAt: now,
       lastUserActivityAt: now,
@@ -5824,6 +5915,10 @@ export class MetalWarmPool {
       return []
     }
     const now = Date.now()
+    // Final tick before anything is suspended: a VM's last running seconds are
+    // metered while it is still assigned, so suspending it never loses billable
+    // time (`closeMeter` is the belt to this braces).
+    this.advanceMeters(now)
     const idleFor = (a: AssignedVm) => now - (a.lastRealActivityAt ?? a.assignedAt)
     // Always-on projects (paid tiers) are never idle-suspended — the parity for
     // Knative's min-scale=1. They still resume fine if the agent restarts, but
@@ -5965,6 +6060,7 @@ export class MetalWarmPool {
    * which is the intended self-heal once durability has a current copy.
    */
   private async discardDeadVm(a: AssignedVm, why: string): Promise<void> {
+    this.closeMeter(a)
     this.assigned.delete(a.projectId)
     this.live.remove(a.projectId)
     await this.rescueWorkspace(a, why)
@@ -6835,11 +6931,123 @@ export class MetalWarmPool {
     let unhealthy = 0
     for (const a of this.assigned.values()) {
       if (a.lastHealthOk === false) unhealthy++
-      if ((a.activeStreams ?? 0) > 0) agentActive++
-      else if (a.lastAppRequestAt && now - a.lastAppRequestAt <= APP_ACTIVE_WINDOW_MS) appActive++
+      const cls = this.vmMeterClass(a, now)
+      if (cls === 'agent') agentActive++
+      else if (cls === 'app') appActive++
       else idleTail++
     }
     return { appActive, agentActive, idleTail, unhealthy }
+  }
+
+  /**
+   * Liveness class of ONE VM: an in-flight agent turn wins, then recent end-user
+   * app traffic, else the idle tail. `classifyAssigned` buckets the fleet with
+   * exactly this, and the billing meter charges time to exactly this — one
+   * classifier, so the fleet gauges and the bill can never disagree.
+   */
+  private vmMeterClass(a: AssignedVm, now: number): 'agent' | 'app' | 'idle' {
+    if ((a.activeStreams ?? 0) > 0) return 'agent'
+    if (a.lastAppRequestAt && now - a.lastAppRequestAt <= APP_ACTIVE_WINDOW_MS) return 'app'
+    return 'idle'
+  }
+
+  /**
+   * Advance every assigned VM's cumulative counters by the time since its last
+   * tick, in its current class. Called by `status()` (the heartbeat) and
+   * `reapIdle()` (before it suspends anything), so a VM's final tick is taken
+   * while it is still assigned and its full running time is reported.
+   *
+   * The counters are cumulative per VM, never reset: a heartbeat the control
+   * plane drops loses nothing, because the next one carries the total and the
+   * control plane diff's it against its own cursor.
+   */
+  advanceMeters(now = Date.now()): void {
+    for (const a of this.assigned.values()) this.advanceOneMeter(a, now)
+  }
+
+  private advanceOneMeter(a: AssignedVm, now: number): VmMeter {
+    const m = (a.meter ??= { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: a.assignedAt })
+    // Clamped: a clock step backwards must not subtract metered time.
+    const elapsed = Math.max(0, now - m.advancedAt)
+    m.advancedAt = now
+    if (elapsed > 0) {
+      const cls = this.vmMeterClass(a, now)
+      if (cls === 'agent') m.agentMs += elapsed
+      else if (cls === 'app') m.appMs += elapsed
+      else m.idleMs += elapsed
+    }
+    return m
+  }
+
+  /**
+   * Final tick + park a VM's counters in the closed list, so the heartbeat still
+   * reports its running time after it leaves `assigned` (suspend, retire,
+   * destroy, a dead-VM discard). The row is dropped once the control plane acks
+   * the seq that carried it — bounded by {@link MAX_CLOSED_METERS} rows and
+   * {@link CLOSED_METER_TTL_MS}, so a control plane that never acks cannot grow
+   * the agent's memory without limit.
+   */
+  private closeMeter(a: AssignedVm, now = Date.now()): void {
+    const m = this.advanceOneMeter(a, now)
+    const row: VmMeterReport & { lastSentSeq?: number } = {
+      ...this.meterRow(a, m),
+      endedAt: now,
+    }
+    this.closedMeters.push(row)
+    if (this.closedMeters.length > MAX_CLOSED_METERS) {
+      this.closedMeters.splice(0, this.closedMeters.length - MAX_CLOSED_METERS)
+    }
+  }
+
+  private meterRow(a: AssignedVm, m: VmMeter): VmMeterReport {
+    return {
+      runtimeKey: a.projectId,
+      vmId: a.handle.id,
+      assignedAt: a.assignedAt,
+      // The size the host ACTUALLY booted, not the API's env accounting: a host
+      // boots the class default (or the project's vmMemoryMiB override), which
+      // is what occupies the machine and so what the workspace pays for.
+      vcpus: a.handle.vcpus,
+      memMiB: a.handle.memoryMB,
+      vmClass: a.handle.vmClass,
+      cause: a.cause ?? 'user_open',
+      alwaysOn: !!a.alwaysOn,
+      agentMs: Math.round(m.agentMs),
+      appMs: Math.round(m.appMs),
+      idleMs: Math.round(m.idleMs),
+    }
+  }
+
+  /**
+   * The heartbeat's billing block: every assigned VM's cumulative counters plus
+   * the stored workspace key and machine size the control plane cannot know, and
+   * the closed rows it has not acked. `seq` is monotonic; the control plane
+   * replies with `meterAck: seq` on the NEXT register response.
+   */
+  meterReport(now = Date.now()): {
+    seq: number
+    vms: VmMeterReport[]
+    closed: VmMeterReport[]
+  } {
+    this.advanceMeters(now)
+    this.pruneClosedMeters(now)
+    const seq = ++this.meterSeq
+    const vms = [...this.assigned.values()].map((a) => this.meterRow(a, a.meter!))
+    for (const c of this.closedMeters) c.lastSentSeq = seq
+    return { seq, vms, closed: this.closedMeters.map(({ lastSentSeq, ...row }) => row) }
+  }
+
+  /**
+   * Drop closed rows the control plane has confirmed it ingested. Rows created
+   * after the report that carried `seq` keep their row (no `lastSentSeq`).
+   */
+  ackMeters(seq: number): void {
+    if (!Number.isFinite(seq) || seq <= 0) return
+    this.closedMeters = this.closedMeters.filter((c) => c.lastSentSeq == null || c.lastSentSeq > seq)
+  }
+
+  private pruneClosedMeters(now: number): void {
+    this.closedMeters = this.closedMeters.filter((c) => (c.endedAt ?? now) + CLOSED_METER_TTL_MS > now)
   }
 
   /**
@@ -6973,6 +7181,7 @@ export class MetalWarmPool {
           }
         }
       }
+      this.closeMeter(a)
       this.assigned.delete(projectId)
       this.live.remove(projectId)
       stoppedVm = true
@@ -7327,6 +7536,11 @@ export class MetalWarmPool {
       store: this.store.kind,
       idleSuspendMs: this.cfg.idleSuspendMs,
       busyIdleCeilingMs: this.cfg.busyIdleCeilingMs,
+      // Billing: every assigned VM's cumulative running time by class, plus the
+      // closed VMs the control plane has not acked. The control plane ingests it
+      // from the heartbeat; `meter` is here (not only in register.ts) so /vms
+      // shows exactly what the last heartbeat carried.
+      meter: this.meterReport(now),
       rootfsCow: this.cfg.rootfsCow,
       disk: this.disk(),
       cache: { localCount: this.suspended.size, stagedCount: this.stagedSuspended.size, localBytes: this.cacheBytes() },
