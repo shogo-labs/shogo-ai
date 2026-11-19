@@ -27,6 +27,7 @@ import {
   packRepoArchive,
   seedRepoIfAbsent,
 } from '../../../../packages/shared-runtime/src/repo-store'
+import { reconcileRepoHistory } from '../../../../packages/shared-runtime/src/repo-reconcile'
 import {
   buildRepoBundle,
   materializeRepoFromBundles,
@@ -190,6 +191,8 @@ export class FakeGuest {
   readonly adoptGate = new RepoAdoptGate()
   /** Every `/pool/repo-hydrated` adopt answer, in order: 200, 409 (busy), 504, 500. */
   readonly adoptStatuses: number[] = []
+  /** Every `/pool/repo-reconcile` result, in order (SHO-442 heal). */
+  readonly reconciles: Array<{ head: string; durableHead: string; localHead: string | null }> = []
   /** Every request path this guest served, in order (SHO-399 ordering assertions). */
   readonly calls: string[] = []
   /** Bodies of the `/pool/stop-background-tasks` calls this guest served. */
@@ -381,6 +384,20 @@ export class FakeGuest {
       }
       case '/pool/repo-hydrated':
         return this.repoHydrated(body)
+      case '/pool/repo-reconcile': {
+        if (this.kind !== 'deferring') return new Response('not found', { status: 404 })
+        const staging = this.resolve(body.stagingDir)
+        if (!existsSync(join(staging, '.git'))) return Response.json({ error: 'staging repo is missing' }, { status: 400 })
+        try {
+          const result = await reconcileRepoHistory(this.ws, staging)
+          this.reconciles.push({ head: result.head, durableHead: result.durableHead, localHead: result.localHead })
+          return Response.json({ ok: true, ...result })
+        } catch (err: any) {
+          return Response.json({ error: err?.message ?? 'repo reconcile failed' }, { status: 500 })
+        } finally {
+          rmSync(staging, { recursive: true, force: true })
+        }
+      }
       case '/pool/export': {
         const src = this.resolve(body.dir)
         const out = execFileSync('tar', ['-czf', '-', '--exclude=./.git', '--exclude=./.shogo', '-C', src, '.'])
@@ -422,7 +439,9 @@ export class FakeGuest {
 
   private async repoHydrated(body: any): Promise<Response> {
     if (body.probe === true) {
-      if (this.kind === 'deferring') return Response.json({ ok: true, supported: true, deadline: true, bundles: true, ifIdle: true })
+      if (this.kind === 'deferring') {
+        return Response.json({ ok: true, supported: true, deadline: true, bundles: true, ifIdle: true, reconcile: true })
+      }
       return Response.json(this.kind === 'current' ? { ok: true, supported: true, deadline: true } : { ok: true, supported: true })
     }
     const res = await this.repoAdopt(body)

@@ -85,6 +85,15 @@ they're managed separately as YAML/JSON files under this directory:
 - `alerts/metal-repo-hydrate-failing.yaml` — warns when 5+ opens on a host in
   30 minutes fail to restore git history (`metal.repo_hydrate{mode="failed"}`;
   they run on the source's `.git` with git writes blocked).
+- `alerts/metal-repo-untrusted.yaml` — pages when any assigned runtime on a
+  host is UNTRUSTED (`metal.host.gauge{counter="metal_repo_untrusted_vms"}`):
+  it cannot write the durable repo, so a cold boot restores the older copy.
+  Never force-recycle one of these — that is how the work is lost (SHO-442).
+- `alerts/metal-repo-unsaved.yaml` — pages when a runtime's HEAD has been
+  unsaved for over 30 minutes
+  (`metal.host.gauge{counter="metal_repo_unsaved_seconds"}`). The stop paths
+  refuse to drop such a VM, so it is pinned, not deleted — but the work exists
+  only inside the guest until the save lands (SHO-442).
 - `alerts/metal-cold-boot-ratio-high.yaml` — warns when cold boots exceed 40%
   of wakes that needed work for 30+ minutes (snapshots being discarded or
   never taken; the 2026-10 20s-wake regression).
