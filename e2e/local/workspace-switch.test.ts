@@ -172,7 +172,9 @@ async function switchWorkspaceWide(page: Page, toName: string) {
 /** Name of the workspace the client currently treats as active. */
 async function activeWorkspaceName(page: Page): Promise<string | undefined> {
   return page.evaluate(async (apiBase) => {
-    const id = localStorage.getItem("shogo:active-workspace-id")
+    // This tab's own selection first: `localStorage` is only the shared default
+    // a brand-new tab starts from (SHO-390).
+    const id = sessionStorage.getItem("shogo:active-workspace-id") ?? localStorage.getItem("shogo:active-workspace-id")
     const res = await fetch(`${apiBase}/api/workspaces`, { credentials: "include" }).catch(() => null)
     const body = res ? await res.json().catch(() => null) : null
     const items = (body?.items ?? body?.data?.items ?? []) as Array<{ id: string; name: string }>

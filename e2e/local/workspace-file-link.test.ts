@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { expect, test, type Page, type Route } from "@playwright/test"
-import { ignoreDevErrorToast } from "./helpers"
+import { ignoreDevErrorToast, seedActiveWorkspace } from "./helpers"
 
 /**
  * SHO-284: the workspace file viewer's header. Download is an icon button the
@@ -121,12 +121,10 @@ async function installFileMock(page: Page, expectedPath: string, content: string
 
 /**
  * Make `workspaceId` the workspace the app opens in, before the first paint —
- * the same key the workspace switcher writes.
+ * the same keys the workspace switcher writes, in both stores.
  */
 async function activateWorkspace(page: Page, workspaceId: string): Promise<void> {
-  await page.addInitScript((id) => {
-    localStorage.setItem("shogo:active-workspace-id", id)
-  }, workspaceId)
+  await seedActiveWorkspace(page, workspaceId, null)
 }
 
 test.describe("Workspace file viewer: icon Download and a shareable file link", () => {

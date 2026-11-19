@@ -21,7 +21,7 @@
  * browser page on the cloud origin with its own team chat socket.
  */
 import { expect, request, test, type APIRequestContext, type Browser, type Locator, type Page } from "@playwright/test"
-import { LOCAL_API_BASE, openTeamHome, writeActiveWorkspaceSelection } from "./helpers"
+import { LOCAL_API_BASE, openTeamHome, readActiveWorkspaceId, writeActiveWorkspaceSelection } from "./helpers"
 
 const CLOUD = process.env.E2E_CLOUD_URL
 const suffix = Date.now().toString(36)
@@ -157,7 +157,7 @@ test.describe("Desktop + Shogo Cloud workspaces", () => {
   test("signing in keeps the local Personal active; the cloud Personal is shared with the web and mobile apps", async () => {
     await page.goto("/")
     await expect.poll(() => page.evaluate(() => localStorage.getItem("shogo:cloud-workspaces")), { timeout: 20_000 }).toContain(personal.id)
-    expect(await page.evaluate(() => localStorage.getItem("shogo:active-workspace-id"))).not.toBe(personal.id)
+    expect(await page.evaluate(readActiveWorkspaceId)).not.toBe(personal.id)
 
     // Something made on the web/mobile side shows up on the desktop.
     const created = await json(
