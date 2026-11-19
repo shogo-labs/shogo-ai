@@ -60,6 +60,9 @@ export interface ProjectType {
   preferredInstanceId?: string
   preferredInstancePolicy: string
   cloudSyncMode: CloudSyncMode
+  workspaceDiskGiB?: number
+  vmMemoryMiB?: number
+  vmVcpus?: number
   myPermissions?: string[]
 }
 
@@ -100,6 +103,9 @@ export interface ProjectCreateInput {
   preferredInstanceId?: string
   preferredInstancePolicy?: string
   cloudSyncMode?: CloudSyncMode
+  workspaceDiskGiB?: number
+  vmMemoryMiB?: number
+  vmVcpus?: number
 }
 
 export interface ProjectUpdateInput {
@@ -139,4 +145,7 @@ export interface ProjectUpdateInput {
   preferredInstanceId?: string
   preferredInstancePolicy?: string
   cloudSyncMode?: CloudSyncMode
+  workspaceDiskGiB?: number
+  vmMemoryMiB?: number
+  vmVcpus?: number
 }

@@ -244,11 +244,17 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   UserIdentityLink: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },
   UserIntegrationConnection: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },
   Verification: { decision: 'exclude', reason: 'Instance catalog or global configuration, identical on every restore.' },
+  // SHO-424: compute metering. Both are the arithmetic behind a wallet charge,
+  // recomputable from the metal heartbeats that produced them; neither is
+  // content, and neither means anything on another instance.
+  VmMeterCursor: { decision: 'exclude', reason: 'SHO-424 compute metering: a read-modify-write guard holding the last-counted (agentMs, appMs, idleMs) triple for a VM on a specific metal host. Restoring it would carry counters for hosts that no longer exist, which can suppress or double-count future charges.' },
+  VmUsageHour: { decision: 'exclude', reason: 'Money and metering, not content — the counted seconds behind consumeUsage, recomputable from the heartbeats that reported them.' },
   VoiceCallMeter: { decision: 'exclude', reason: 'Money and metering, not content. Also carries payment-processor ids; StorageUsage is recomputable.' },
   WorkItemSubscription: { decision: 'exclude', reason: 'One device or one person\'s ephemeral state, meaningless on restore.' },
   WorkspaceEvent: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },
   WorkspaceGrant: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },
   WorkspaceMove: { decision: 'exclude', reason: 'The log of how this copy got here (phase cursors, id map, handover). The target records its own; carrying it across would describe a move that never happened.' },
+  WorkspaceRootSecret: { decision: 'exclude', reason: 'The sealed copy of the workspace-root .env* files (SHO-384), encrypted with a key this instance holds and a runtime key naming one cloud pod. An archive could not decrypt or place it on another instance, and a downloaded file must never carry the plaintext it protects. The files themselves travel as files.' },
 }
 
 /**

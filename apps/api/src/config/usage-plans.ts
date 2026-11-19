@@ -554,6 +554,34 @@ export const SIGNUP_CREDIT_TTL_DAYS = 30
  * it when the trial ends. Only one trial per user, workspace and card.
  */
 export const TRIAL_PERIOD_DAYS = 7
+
+/**
+ * Most seats a trialing subscription may hold (SHO-422).
+ *
+ * A trial's card is not charged until the trial ends, so a 123-seat trial is a
+ * ~$2k charge to a card we cannot collect on — the Nov 2026 fraud trials were
+ * exactly that (123 and 166 seats, Hong Kong cards, throwaway Gmail accounts,
+ * 1-2 real members each). Card checks cannot catch it: both passed CVC and 3D
+ * Secure. Seats alone buy no extra AI (the allowance is per member, SHO-312),
+ * so the only thing a big trial buys is a big chargeback.
+ *
+ * To get more seats the buyer ends the trial and pays first. One constant, one
+ * error code (`trial_seat_limit`), one message on web and native.
+ */
+export const TRIAL_MAX_SEATS = 5
+
+/** The one error code every seat-cap refusal carries (SHO-422). */
+export const TRIAL_SEAT_LIMIT_CODE = 'trial_seat_limit'
+
+/**
+ * The one message every seat-cap refusal shows. The client renders the same
+ * string from `ERROR_CODE_MESSAGES.trial_seat_limit` in `@shogo/shared-app`,
+ * with `{maxSeats}` filled from the error payload.
+ */
+export function trialSeatLimitMessage(maxSeats: number = TRIAL_MAX_SEATS): string {
+  return `Free trials include up to ${maxSeats} seats. To add more, end your trial and start your paid plan in Billing.`
+}
+
 // Pro is retired (SHO-339/SHO-397): no new Pro trial can start through any
 // path. Existing Pro subscriptions keep their plan until the migration moves
 // them to Business at renewal.

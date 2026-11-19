@@ -107,6 +107,11 @@ export const KNOWN_JOB_IDS: Record<string, bigint> = Object.freeze({
   'social-account-monthly': jobNameToLockId('social-account-monthly'),
   'published-usage-collect': jobNameToLockId('published-usage-collect'),
   'published-usage-bill': jobNameToLockId('published-usage-bill'),
+  // Workspace compute (SHO-424): prices every closed hour of metal VM time and
+  // calls `consumeUsage` once per workspace-hour. Two regions pricing the same
+  // hour would draw the plan's included USD twice, so it is globally locked on
+  // top of being home-region scoped.
+  'vm-usage-bill': jobNameToLockId('vm-usage-bill'),
   // Native release: the poller starts store builds (which cost money), and the
   // monthly sweep charges Updates MAU — two regions doing either would double
   // the work or double-charge.

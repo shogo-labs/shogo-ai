@@ -1603,6 +1603,36 @@ export async function deleteMessage(messageId: string, userId: string) {
   return updateMessageInternal(messageId, { text: '', blocks: null, deletedAt: new Date() })
 }
 
+/**
+ * Who a `from` filter selects: one person, or one agent. `projectId: null` is
+ * the workspace agent, which has no project of its own.
+ */
+export type MessageAuthorFilter =
+  | { type: 'user'; userId: string }
+  | { type: 'agent'; projectId: string | null }
+
+const INVALID_FROM = 'from must be user:<userId>, agent:<projectId> or agent:ws'
+
+/**
+ * Parse the `from` query param (SHO-419): `user:<userId>`, `agent:<projectId>`,
+ * or `agent:ws` for the workspace agent. Anything else is a 400 rather than a
+ * silently unfiltered page.
+ */
+export function parseFromParam(raw: string | null | undefined): MessageAuthorFilter | undefined {
+  const value = (raw ?? '').trim()
+  if (!value) return undefined
+  if (value === 'agent:ws') return { type: 'agent', projectId: null }
+  if (value.startsWith('user:')) {
+    const userId = value.slice('user:'.length)
+    if (userId) return { type: 'user', userId }
+  }
+  if (value.startsWith('agent:')) {
+    const projectId = value.slice('agent:'.length)
+    if (projectId) return { type: 'agent', projectId }
+  }
+  throw new ConversationError(400, 'invalid_from', INVALID_FROM)
+}
+
 export interface ListMessagesOptions {
   beforeSeq?: number
   afterSeq?: number
@@ -1615,6 +1645,12 @@ export interface ListMessagesOptions {
    * through as changed rows even though `seq` did not move.
    */
   changedSince?: Date
+  /**
+   * Only the messages this member sent — top-level posts and thread replies
+   * alike — newest first (SHO-419). Exclusive with the thread and delta reads:
+   * it is its own view of the conversation, not a narrowing of the timeline.
+   */
+  from?: MessageAuthorFilter
 }
 
 /**
@@ -1657,6 +1693,16 @@ export async function listMessages(conversationId: string, userId: string, opts:
 
 export async function listMessagesUnchecked(conversationId: string, opts: ListMessagesOptions = {}) {
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200)
+  if (opts.from) {
+    if (opts.threadRootId || opts.afterSeq !== undefined || opts.changedSince) {
+      throw new ConversationError(
+        400,
+        'invalid_filter',
+        'from cannot be combined with threadRootId, afterSeq or changedSince',
+      )
+    }
+    return listMessagesFrom(conversationId, opts.from, opts.beforeSeq, limit)
+  }
   if (opts.threadRootId) {
     const root = await db.conversationMessage.findUnique({ where: { id: opts.threadRootId }, include: MESSAGE_INCLUDE })
     if (!root || root.conversationId !== conversationId) throw new ConversationError(404, 'not_found', 'Thread not found')
@@ -1725,6 +1771,79 @@ export async function listMessagesUnchecked(conversationId: string, opts: ListMe
     hasMore: rows.length > limit,
     cursor: pageCursor(page),
   }
+}
+
+/**
+ * One member's messages in a conversation — top-level posts and thread replies
+ * alike — newest first, paged by `beforeSeq` (SHO-419).
+ *
+ * The author match runs in SQL rather than as a Prisma `where`: `authorAgentRef`
+ * is `Json` on Postgres and a JSON string on SQLite, and Prisma cannot express
+ * "this agent" on both. Matching after the page was taken would hand back short
+ * pages with a wrong `hasMore`, which is exactly the bug global search has.
+ */
+async function listMessagesFrom(
+  conversationId: string,
+  from: MessageAuthorFilter,
+  beforeSeq: number | undefined,
+  limit: number,
+) {
+  const ids = await authorMessageIds(conversationId, from, beforeSeq, limit + 1)
+  const page = ids.slice(0, limit)
+  const rows = page.length
+    ? await db.conversationMessage.findMany({ where: { id: { in: page } }, include: MESSAGE_INCLUDE })
+    : []
+  const byId = new Map<string, any>(rows.map((row: any) => [row.id, row] as [string, any]))
+  const ordered = page.map((id) => byId.get(id)).filter(Boolean)
+  return {
+    messages: ordered.map(serializeMessage),
+    hasMore: ids.length > limit,
+    cursor: pageCursor(ordered),
+  }
+}
+
+/**
+ * Ids of one member's messages in a conversation, newest first. Written once
+ * against a small dialect (placeholders, the enum cast, JSON access) so desktop
+ * and cloud run the same statement shape on the same columns.
+ */
+async function authorMessageIds(
+  conversationId: string,
+  from: MessageAuthorFilter,
+  beforeSeq: number | undefined,
+  take: number,
+): Promise<string[]> {
+  const sqlite = process.env.SHOGO_LOCAL_MODE === 'true'
+  const params: unknown[] = []
+  const bind = (value: unknown) => {
+    params.push(value)
+    return sqlite ? '?' : `$${params.length}`
+  }
+  const where = [
+    `m."conversationId" = ${bind(conversationId)}`,
+    `m."deletedAt" IS NULL`,
+    sqlite ? `m."authorType" <> 'system'` : `m."authorType"::text <> 'system'`,
+  ]
+  if (from.type === 'user') {
+    where.push(sqlite ? `m."authorType" = 'user'` : `m."authorType"::text = 'user'`)
+    where.push(`m."authorUserId" = ${bind(from.userId)}`)
+  } else {
+    where.push(sqlite ? `m."authorType" = 'agent'` : `m."authorType"::text = 'agent'`)
+    // The workspace agent's ref carries `projectId: null`; a ref that is not
+    // valid JSON (nothing writes one) is treated the same way rather than
+    // making `json_extract` raise and take the whole page down.
+    where.push(
+      sqlite
+        ? `(CASE WHEN json_valid(m."authorAgentRef") THEN json_extract(m."authorAgentRef", '$.projectId') END) IS ${bind(from.projectId)}`
+        : `m."authorAgentRef"->>'projectId' IS NOT DISTINCT FROM ${bind(from.projectId)}`,
+    )
+  }
+  if (beforeSeq !== undefined) where.push(`m."seq" < ${bind(beforeSeq)}`)
+  const rows = await db.$queryRawUnsafe(
+    `SELECT m."id" FROM conversation_messages m WHERE ${where.join(' AND ')} ORDER BY m."seq" DESC LIMIT ${bind(take)}`,
+    ...params,
+  )
+  return rows.map((row: any) => row.id)
 }
 
 export async function getMessage(messageId: string, userId: string) {

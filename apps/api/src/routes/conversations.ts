@@ -53,6 +53,7 @@ import {
   removeMember,
   requirePost,
   normalizeLinkPreviewOptOuts,
+  parseFromParam,
   serializeConversation,
   setAttachmentUrlBuilder,
   setReaction,
@@ -760,6 +761,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         limit: numberParam(c.req.query('limit')),
         threadRootId: c.req.query('threadRootId') || undefined,
         changedSince: isoDateParam(c.req.query('changedSince')),
+        from: parseFromParam(c.req.query('from')),
       }))
     } catch (err) {
       return errorResponse(c, err)

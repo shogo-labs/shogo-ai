@@ -39,6 +39,7 @@ import { publishConversationEvent } from '../lib/conversation-bus'
 import { recordChainPaused } from '../lib/agent-chain-metrics'
 import { enqueueAgentReplySlot, agentReplySlotState, type AgentReplySlot, type QueuedPosition } from './agent-reply-slots'
 import { resolveAgentReplyCapacity } from './agent-reply-capacity'
+import { chatSessionLabel } from './chat-session-label'
 import {
   agentTurnsSinceHuman,
   chainLimitHit,
@@ -2026,8 +2027,15 @@ async function runReservedReply(
     previousFailed: previous.failed,
   })
   const reused = fresh ? null : previous?.sessionId ?? null
-  const label = conversation.name ? `#${conversation.name}: ${trigger.text}` : `Chat: ${trigger.text}`
-  const sessionId = reused ?? await createSession(conversation, target, renderMentionsAsText(label))
+  // The label is only needed for a new session, and only there are the mention
+  // tokens still around to render (SHO-425): the stored name is plain text.
+  const sessionId = reused ?? await createSession(conversation, target, await chatSessionLabel({
+    workspaceId: conversation.workspaceId,
+    conversationName: conversation.name,
+    text: trigger.text,
+    target,
+    threadRootId,
+  }))
   if (fresh && previous) await noteFreshRetrySession({ threadRootId, target, previous, sessionId })
 
   // The run's liveness, written where another pod can see it: a reply whose

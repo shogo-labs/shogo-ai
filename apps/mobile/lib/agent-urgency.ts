@@ -5,6 +5,7 @@
  * then agents working, then queued, then ones that just finished. Pure, so the
  * Home list, the widgets and the Live Activity all agree on the order.
  */
+import { chatTitle } from './activity-feed'
 import type { ActiveChatTurn, AgentTask } from './api'
 import { readableAgentTaskError } from './agent-task-ui'
 import type { PendingApproval } from './team-chat-api'
@@ -38,7 +39,10 @@ type TaskLike = Pick<
   AgentTask,
   'id' | 'projectId' | 'status' | 'title' | 'currentStep' | 'resultSummary' | 'errorMessage' | 'chatSessionId' | 'startedAt' | 'completedAt' | 'updatedAt' | 'createdAt'
 >
-type ChatLike = Pick<ActiveChatTurn, 'projectId' | 'sessionName' | 'startedAt' | 'chatSessionId'>
+type ChatLike = Pick<
+  ActiveChatTurn,
+  'projectId' | 'sessionName' | 'agentName' | 'card' | 'startedAt' | 'chatSessionId'
+>
 
 export interface AgentRow {
   /** The agent's key: its project id, or `ws` for the workspace agent. */
@@ -127,7 +131,10 @@ export function buildAgentRows(input: {
         chatSessionId: running.chatSessionId,
       }
     } else if (chat) {
-      row = { ...base, state: 'running', detail: chat.sessionName, at: time(chat.startedAt), chatSessionId: chat.chatSessionId }
+      // The stored session name leads with `#channel: @agent`, which is the
+      // same on every run in that thread; the Activity rows already strip it
+      // (and name the card), so Home says the same thing they do.
+      row = { ...base, state: 'running', detail: chatTitle(chat), at: time(chat.startedAt), chatSessionId: chat.chatSessionId }
     } else if (failed) {
       row = {
         ...base,

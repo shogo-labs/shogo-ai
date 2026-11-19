@@ -2,15 +2,18 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useMemo, useState } from 'react'
-import { AppState, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { AppState, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
-import { CheckCircle2, CircleAlert, Clock3, MessageSquare, Sparkles } from 'lucide-react-native'
+import { CheckCircle2, CircleAlert, Clock3, Sparkles, Square } from 'lucide-react-native'
 import { isApprovalPending } from '@shogo/shared-app'
 import { useDomainHttp } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { api, type PersonalWorkspaceActivity } from '../../lib/api'
+import { api, type ActiveChatTurn, type PersonalWorkspaceActivity } from '../../lib/api'
+import { canStopRunningChat, chatFromActivityItem, chatTitle, elapsedLabel, sortRunningChats } from '../../lib/activity-feed'
 import { openActiveChat } from '../../lib/open-active-chat'
+import { stopRunningChat } from '../../lib/stop-running-chat'
+import { AgentAvatar } from '../team-chat/AgentAvatar'
 import {
   ActivityCard,
   ActivityEmptyCard,
@@ -86,7 +89,16 @@ export const PersonalActivityScreen = observer(function PersonalActivityScreen()
   }, [load]))
 
   const pendingApprovals = useMemo(() => items.filter(isApprovalPending), [items])
-  const activeChats = useMemo(() => items.filter((item) => item.type === 'chat_turn'), [items])
+  const activeChats = useMemo(() => items.filter((item) => item.type === 'chat_turn').map(chatFromActivityItem), [items])
+  // One agent's runs next to each other, newest first — the same order the
+  // Activity feed's strip and the team Activity screen use.
+  const runningChats = useMemo(() => sortRunningChats(activeChats), [activeChats])
+  const [stopError, setStopError] = useState<string | null>(null)
+  const stopChat = (chat: ActiveChatTurn) => {
+    setStopError(null)
+    void stopRunningChat(chat, workspace?.id ?? null)
+      .catch((err: unknown) => setStopError(err instanceof Error ? err.message : 'That run could not be stopped.'))
+  }
   const feedItems = useMemo(
     () => items.filter((item) => item.type !== 'chat_turn' && !isApprovalPending(item)),
     [items],
@@ -112,6 +124,11 @@ export const PersonalActivityScreen = observer(function PersonalActivityScreen()
           <ActivityErrorBanner message={error} onRetry={() => void load(true)} />
         </View>
       ) : null}
+      {stopError ? (
+        <View className="mt-6">
+          <ActivityErrorBanner message={stopError} onRetry={() => setStopError(null)} />
+        </View>
+      ) : null}
 
       {loading ? (
         <ActivityLoadingState />
@@ -126,20 +143,47 @@ export const PersonalActivityScreen = observer(function PersonalActivityScreen()
               />
             </View>
           ) : null}
-          {activeChats.length > 0 ? (
+          {runningChats.length > 0 ? (
             <View className="mt-6 gap-3">
               <Text className="text-lg font-semibold text-foreground">Happening now</Text>
-              {activeChats.map((item) => (
-                <ActivityCard
-                  key={item.id}
-                  tone="primary"
-                  icon={<MessageSquare size={17} className="text-primary" />}
-                  title={item.sessionName || 'Active chat'}
-                  message={`${item.projectHidden ? 'Companion' : item.projectName || 'Workspace chat'} · An agent is responding now.`}
-                  footer="Live"
-                  onPress={() => openActiveChat(router, item)}
-                />
-              ))}
+              {runningChats.map((chat) => {
+                const agent = chat.agentName?.trim() || chat.projectName || 'Agent'
+                const where = chat.conversationName
+                  ? `#${chat.conversationName}`
+                  : chat.projectHidden
+                    ? 'Companion'
+                    : chat.projectName || 'Workspace chat'
+                const title = chatTitle(chat)
+                return (
+                  <ActivityCard
+                    key={`${chat.chatSessionId}:${chat.turnId}`}
+                    tone="primary"
+                    icon={<AgentAvatar name={agent} projectId={chat.projectId} workspaceId={workspace?.id ?? null} size={30} />}
+                    title={title}
+                    subtitle={`${agent} · ${where} · ${elapsedLabel(chat.startedAt)}`}
+                    trailing={
+                      canStopRunningChat(chat) ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`Stop ${title}`}
+                          testID={`stop-${chat.chatSessionId}`}
+                          hitSlop={8}
+                          // Stop ends the run; it never opens the chat behind it.
+                          onPress={(event) => {
+                            event?.stopPropagation?.()
+                            void stopChat(chat)
+                          }}
+                          className="h-8 w-8 items-center justify-center rounded-full border border-border active:bg-accent"
+                        >
+                          <Square size={11} className="fill-primary text-primary" />
+                        </Pressable>
+                      ) : undefined
+                    }
+                    onPress={() => openActiveChat(router, chat)}
+                    accessibilityLabel={`${title}, running`}
+                  />
+                )
+              })}
             </View>
           ) : null}
           {!error && feedItems.length === 0 && pendingApprovals.length === 0 && activeChats.length === 0 ? (

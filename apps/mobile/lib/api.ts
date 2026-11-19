@@ -929,6 +929,20 @@ export const api = {
     return res.data
   },
 
+  /**
+   * POST /api/billing/end-trial — end a free trial and pay now (SHO-422).
+   * Owners and billing admins only. `status` is Stripe's subscription status
+   * after the change; `latestInvoiceStatus` says whether the charge went
+   * through (`paid`) or is still open (`open`/`draft`).
+   */
+  async endTrial(http: HttpClient, workspaceId: string) {
+    const res = await http.post<{ ok?: boolean; status?: string; latestInvoiceStatus?: string | null }>(
+      `/api/billing/end-trial?workspaceId=${encodeURIComponent(workspaceId)}`,
+      {},
+    )
+    return res.data
+  },
+
   /** GET /api/billing/invoices — recent Stripe invoices for the workspace. */
   async listInvoices(http: HttpClient, workspaceId: string, limit = 12) {
     const res = await http.get<{ ok?: boolean; invoices?: BillingInvoice[] }>(
@@ -1053,17 +1067,6 @@ export const api = {
     return res.data
   },
 
-  async createInstanceCheckout(http: HttpClient, params: {
-    workspaceId: string
-    instanceSize: string
-    billingInterval: string
-    successUrl?: string
-    cancelUrl?: string
-  }) {
-    const res = await http.post<{ url?: string }>('/api/billing/instance-checkout', params)
-    return res.data
-  },
-
   async createInstancePortal(http: HttpClient, workspaceId: string, returnUrl?: string) {
     const res = await http.post<{ url?: string }>(
       `/api/billing/instance-portal?workspaceId=${encodeURIComponent(workspaceId)}`,
@@ -1074,6 +1077,17 @@ export const api = {
 
   async getWorkspaceInstance(http: HttpClient, workspaceId: string) {
     const res = await http.get<any>(`/api/workspaces/${workspaceId}/instance`)
+    return res.data
+  },
+
+  /**
+   * This period's metered VM compute (SHO-424). The server decides how much to
+   * return: owners/admins get the per-project, per-size and per-state split, a
+   * member gets the period total only. Instance sizes are no longer sold, so
+   * this replaces the old size-purchase cards.
+   */
+  async getWorkspaceComputeUsage(http: HttpClient, workspaceId: string) {
+    const res = await http.get<any>(`/api/workspaces/${workspaceId}/compute-usage`)
     return res.data
   },
 

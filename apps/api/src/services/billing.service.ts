@@ -36,6 +36,7 @@ import {
   getWindowLimitsForPlan,
   normalizePlanId,
   promoCreditAvailableUsd,
+  TRIAL_MAX_SEATS,
   type WindowLimits,
 } from '../config/usage-plans';
 import { getOveragePriceConfig } from '../config/stripe-prices';
@@ -2668,6 +2669,51 @@ export async function countActiveWorkspaceMembers(workspaceId: string): Promise<
 }
 
 /**
+ * Whether `workspaceId` may add `adding` more seats right now (SHO-422).
+ *
+ * A trialing subscription never holds more than `TRIAL_MAX_SEATS` seats: the
+ * card is not charged until the trial ends, so a large trial is a large charge
+ * to a card we cannot collect on. Resolves the *billing* workspace, so a child
+ * workspace counts against its parent's pooled seats.
+ *
+ * Every seat-increasing path calls this one function — trial checkout, member
+ * joins, invitations, invite links — and none of them does its own check.
+ * Any status other than `trialing` is unaffected.
+ */
+export async function assertTrialSeatRoom(
+  workspaceId: string,
+  adding = 1,
+): Promise<{ ok: boolean; code?: 'trial_seat_limit'; maxSeats?: number }> {
+  if (isLocalMode) return { ok: true }
+  const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId)
+  const sub = await prisma.subscription.findFirst({
+    where: { workspaceId: billingWorkspaceId, status: { in: ['trialing'] } },
+    select: { id: true },
+  })
+  if (!sub) return { ok: true }
+  const [members, grant] = await Promise.all([
+    countActiveWorkspaceMembers(billingWorkspaceId),
+    getActiveGrantsForWorkspace(billingWorkspaceId),
+  ])
+  if (members + adding - grant.freeSeats > TRIAL_MAX_SEATS) {
+    return { ok: false, code: 'trial_seat_limit', maxSeats: TRIAL_MAX_SEATS }
+  }
+  return { ok: true }
+}
+
+/**
+ * Whether a workspace member may change billing for the workspace: the owner,
+ * an admin, or a member explicitly granted billing admin. Used by the routes
+ * that spend money on the workspace's card (checkout, portal, end-trial).
+ */
+export function canManageBilling(
+  member: { role?: string | null; isBillingAdmin?: boolean | null } | null | undefined,
+): boolean {
+  if (!member) return false
+  return member.role === 'owner' || member.role === 'admin' || member.isBillingAdmin === true
+}
+
+/**
  * Sync the Stripe seat quantity for a workspace's subscription so it matches
  * the count of distinct active workspace-level members.
  *
@@ -2707,7 +2753,20 @@ export async function syncSeatsFromMembership(
     // member count we still bill 1 seat so the Stripe subscription stays
     // active. Revisit later by pausing the seat item entirely when a
     // grant fully covers all members.
-    const desiredStripeSeats = Math.max(1, totalMembers - grant.freeSeats)
+    let desiredStripeSeats = Math.max(1, totalMembers - grant.freeSeats)
+    // Backstop for the trial seat cap (SHO-422): a trialing subscription never
+    // pushes a quantity above `TRIAL_MAX_SEATS`, whatever path added the
+    // members (import, move, machine-sync). The join paths refuse first; this
+    // catches the ones that do not go through them.
+    if (sub.status === 'trialing' && desiredStripeSeats > TRIAL_MAX_SEATS) {
+      console.warn('[billing] clamping trial seats to TRIAL_MAX_SEATS', {
+        workspaceId: billingWorkspaceId,
+        wanted: desiredStripeSeats,
+        maxSeats: TRIAL_MAX_SEATS,
+        totalMembers,
+      })
+      desiredStripeSeats = TRIAL_MAX_SEATS
+    }
     // The wallet's included USD reflects total *entitled* seats: the paid
     // Stripe seats plus the granted free seats. Using `totalMembers` here was
     // a bug — when a grant's free seats exceed the member count (e.g. a 5-seat

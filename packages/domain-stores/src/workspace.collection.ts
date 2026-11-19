@@ -479,7 +479,7 @@ export const WorkspaceCollection = types
 // ============================================================================
 
 // Relation fields that expect IDs (safeReference)
-const relationFields = ["parent","children","projects","members","billingAccounts","invitations","inviteLinks","folders","subscriptions","instanceSubscription","usageWallets","usageEvents","liveSessionMeters","storageUsage","starredProjects","integrationGrants","agentTasks","agentSchedules","workspaceEvents","eventSubscriptions","apiKeys","instances","meetings","meetingTemplates","voiceProjectConfigs","projectAgents","agentCostMetrics","budgetAlerts","modelExperiments","subagentModelOverrides","agentEvalResults","agentEvalSets","slackInstallation","grants","chatSessions","plans","modelVisibility","agentProfile","goals","proxyTurns","conversations","chatInstallations","boards","workItems","socialProfiles","socialAccounts","socialPosts","socialRelayedEvents","nativeApps","nativeAppCredentials","nativeReleases","socialConversations","socialMessages","socialComments","socialAutomations","socialAutomationRuns"]
+const relationFields = ["parent","children","projects","members","billingAccounts","invitations","inviteLinks","folders","subscriptions","instanceSubscription","usageWallets","usageEvents","liveSessionMeters","storageUsage","starredProjects","integrationGrants","agentTasks","agentSchedules","workspaceEvents","eventSubscriptions","apiKeys","instances","meetings","meetingTemplates","voiceProjectConfigs","projectAgents","agentCostMetrics","budgetAlerts","modelExperiments","subagentModelOverrides","agentEvalResults","agentEvalSets","slackInstallation","grants","chatSessions","plans","modelVisibility","agentProfile","goals","proxyTurns","conversations","chatInstallations","mailDomains","mailboxes","mailSuppressions","boards","workItems","socialProfiles","socialAccounts","socialPosts","socialRelayedEvents","nativeApps","nativeAppCredentials","nativeReleases","socialConversations","socialMessages","socialComments","socialAutomations","socialAutomationRuns","rootSecrets"]
 
 /**
  * Transform API response for MST compatibility:
@@ -490,7 +490,7 @@ const relationFields = ["parent","children","projects","members","billingAccount
 function transformForMST(obj: any): any {
   if (!obj || typeof obj !== "object") return obj
 
-  const dateFields = ["movedAt","createdAt","updatedAt"]
+  const dateFields = ["movedAt","diskAddonBilledThrough","createdAt","updatedAt"]
   const result: Record<string, any> = {}
 
   for (const [key, value] of Object.entries(obj)) {

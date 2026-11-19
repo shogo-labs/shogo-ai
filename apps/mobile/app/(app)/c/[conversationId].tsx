@@ -16,6 +16,8 @@
  * other panes) and in its place on narrow ones. `?profile=<userId>` shows a
  * person's profile in that same pane; narrow screens push `/(app)/people/[userId]`
  * instead, and closing it brings back a thread it was shown over.
+ * `?from=<user:id|agent:id|agent:ws>` lists every message one member sent in
+ * this conversation, thread replies included, in that same pane.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ActivityIndicator, AppState, KeyboardAvoidingView, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
@@ -42,6 +44,7 @@ import { HuddleBanner } from '../../../components/team-chat/Huddle'
 import { TimelinePane } from '../../../components/team-chat/TimelinePane'
 import { ProjectSidePane } from '../../../components/team-chat/ProjectSidePane'
 import { FilesPane } from '../../../components/team-chat/FilesPane'
+import { MemberMessagesPane } from '../../../components/team-chat/MemberMessagesPane'
 import { SidePaneResizeHandle, useSidePaneWidth } from '../../../components/team-chat/SidePaneResizer'
 import { DocPane } from '../../../components/team-chat/DocPane'
 import { UserProfilePane } from '../../../components/team-chat/UserProfilePane'
@@ -87,6 +90,7 @@ export default function ConversationScreen() {
     card?: string
     profile?: string
     file?: string
+    from?: string
   }>()
   const conversationId = first(params.conversationId) ?? null
   const threadRootId = first(params.thread) ?? null
@@ -97,6 +101,7 @@ export default function ConversationScreen() {
   const boardParam = first(params.board) ?? null
   const cardId = first(params.card) ?? null
   const profilePaneId = first(params.profile) ?? null
+  const memberFrom = first(params.from) ?? null
   const fileHref = first(params.file) ?? null
   const openFile = fileHref ? parseInAppFileHref(fileHref) : null
   const router = useRouter()
@@ -266,12 +271,12 @@ export default function ConversationScreen() {
     router.setParams({ thread: undefined, msg: undefined } as any)
   }, [navigation, router, conversationId])
   const openProjectPane = useCallback(
-    (projectId: string) => router.setParams({ project: projectId, thread: undefined, files: undefined, doc: undefined } as any),
+    (projectId: string) => router.setParams({ project: projectId, thread: undefined, files: undefined, doc: undefined, from: undefined } as any),
     [router],
   )
   const closeProjectPane = useCallback(() => router.setParams({ project: undefined } as any), [router])
   const openFiles = useCallback(
-    () => router.setParams({ files: '1', doc: undefined, thread: undefined, project: undefined } as any),
+    () => router.setParams({ files: '1', doc: undefined, thread: undefined, project: undefined, from: undefined } as any),
     [router],
   )
   const closeFiles = useCallback(() => router.setParams({ files: undefined } as any), [router])
@@ -280,17 +285,34 @@ export default function ConversationScreen() {
       router.setParams({ files: undefined, doc: undefined, project: undefined, thread: file.threadRootId ?? undefined, msg: file.messageId } as any),
     [router],
   )
+  /**
+   * One member's messages in the pane. Like the files list it steps aside for
+   * nothing: the other panes close, and the switcher inside it changes who you
+   * are looking at without leaving.
+   */
+  const openMemberMessages = useCallback(
+    (from: string) =>
+      router.setParams({ from, files: undefined, doc: undefined, thread: undefined, project: undefined, card: undefined, profile: undefined, file: undefined } as any),
+    [router],
+  )
+  const closeMemberMessages = useCallback(() => router.setParams({ from: undefined } as any), [router])
+  /** Jump the channel to one of those messages, in its thread when it has one. */
+  const showMemberMessageInChat = useCallback(
+    (message: ChatMessage) =>
+      router.setParams({ from: undefined, thread: message.threadRootId ?? undefined, msg: message.id } as any),
+    [router],
+  )
   const openDoc = useCallback(
-    () => router.setParams({ doc: '1', board: undefined, files: undefined, thread: undefined, project: undefined, card: undefined } as any),
+    () => router.setParams({ doc: '1', board: undefined, files: undefined, thread: undefined, project: undefined, card: undefined, from: undefined } as any),
     [router],
   )
   const closeDoc = useCallback(() => router.setParams({ doc: undefined, board: undefined } as any), [router])
   const openBoard = useCallback(
-    (boardId: string) => router.setParams({ board: boardId, doc: undefined, files: undefined } as any),
+    (boardId: string) => router.setParams({ board: boardId, doc: undefined, files: undefined, from: undefined } as any),
     [router],
   )
   const openCard = useCallback(
-    (item: Pick<WorkItem, 'id'>) => router.setParams({ card: item.id, thread: undefined, project: undefined, files: undefined, doc: undefined } as any),
+    (item: Pick<WorkItem, 'id'>) => router.setParams({ card: item.id, thread: undefined, project: undefined, files: undefined, doc: undefined, from: undefined } as any),
     [router],
   )
   const closeCard = useCallback(() => router.setParams({ card: undefined } as any), [router])
@@ -301,7 +323,7 @@ export default function ConversationScreen() {
    */
   const openShareFile = useCallback(
     (target: ShareFileTarget) =>
-      router.setParams({ file: target.href, project: undefined, files: undefined, doc: undefined, card: undefined } as any),
+      router.setParams({ file: target.href, project: undefined, files: undefined, doc: undefined, card: undefined, from: undefined } as any),
     [router],
   )
   const closeShareFile = useCallback(() => router.setParams({ file: undefined } as any), [router])
@@ -316,7 +338,7 @@ export default function ConversationScreen() {
   const openProfile = useCallback(
     (userId: string) => {
       if (width >= THREAD_SIDE_PANE_MIN_WIDTH) {
-        router.setParams({ profile: userId, project: undefined, files: undefined, doc: undefined, card: undefined } as any)
+        router.setParams({ profile: userId, project: undefined, files: undefined, doc: undefined, card: undefined, from: undefined } as any)
       } else {
         router.push({ pathname: '/(app)/people/[userId]', params: { userId } } as any)
       }
@@ -390,6 +412,8 @@ export default function ConversationScreen() {
     showThreadPane,
     showFilePane,
     showFileFull,
+    showMemberPane,
+    showMemberFull,
     showMain,
   } = resolvePanes({
     sidePane,
@@ -400,6 +424,7 @@ export default function ConversationScreen() {
     cardId,
     profilePaneId,
     fileOpen: !!openFile,
+    memberFrom,
   })
   const projectPaneName =
     (projectPaneId &&
@@ -438,6 +463,7 @@ export default function ConversationScreen() {
       onBack={goBack}
       onOpenFiles={openFiles}
       onOpenDoc={supportsDoc ? openDoc : undefined}
+      onOpenMemberMessages={openMemberMessages}
       onLayout={floating ? (e) => setHeaderHeight(Math.round(e.nativeEvent.layout.height)) : undefined}
       tabsMenu={tabsMenu}
     />
@@ -500,7 +526,7 @@ export default function ConversationScreen() {
                   conversation={conversation}
                   me={me}
                   mentionables={mentionables}
-                  visible={visible && !((threadRootId || cardId || filesOpen || docOpen || !!openFile) && !sidePane)}
+                  visible={visible && !((threadRootId || cardId || filesOpen || docOpen || !!openFile || !!memberFrom) && !sidePane)}
                   highlightMessageId={threadRootId ? null : linkedMessageId}
                   onOpenThread={openThread}
                   onOpenSession={openSession}
@@ -630,6 +656,32 @@ export default function ConversationScreen() {
               />
             </View>
           )}
+          {(showMemberPane || showMemberFull) && memberFrom && (
+            <View
+              className={showMemberPane ? 'relative shrink-0 border-l border-border bg-background' : 'flex-1 bg-background'}
+              style={showMemberPane ? { width: threadPane.width } : { paddingTop: floating ? insets.top : 0 }}
+            >
+              {showMemberPane && (
+                <SidePaneResizeHandle
+                  width={threadPane.width}
+                  minWidth={THREAD_PANE_MIN}
+                  maxWidth={maxPaneWidth}
+                  onResize={threadPane.setWidth}
+                  onResizeEnd={threadPane.commit}
+                  onReset={threadPane.reset}
+                />
+              )}
+              <MemberMessagesPane
+                key={`${conversation.id}:${memberFrom}`}
+                workspaceId={workspaceId}
+                conversation={conversation}
+                from={memberFrom}
+                onClose={closeMemberMessages}
+                onChangeMember={openMemberMessages}
+                onShowInChat={showMemberMessageInChat}
+              />
+            </View>
+          )}
           {showDocPane && (
             <View className="relative shrink-0 border-l border-border bg-background" style={{ width: docPane.width }}>
               <SidePaneResizeHandle
@@ -664,6 +716,8 @@ export default function ConversationScreen() {
                 key={profilePaneId}
                 workspaceId={workspaceId}
                 userId={profilePaneId}
+                conversation={conversation}
+                onOpenMemberMessages={openMemberMessages}
                 onClose={closeProfile}
               />
             </View>
