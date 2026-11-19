@@ -1,0 +1,93 @@
+# SigNoz alert: a metal runtime cannot save its git history
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts` (POST /api/v2/rules).
+#
+# Why: on 2026-11-15 a workspace on fra-2 was marked UNTRUSTED after a deferred
+# history download finished late. From that moment it saved nothing at all —
+# not the durable repo, not even a quarantine copy — and nobody was told. The
+# user kept working for a day and a half on a VM whose history could not be
+# written anywhere, and the next cold boot restored the Nov 15 save.
+#
+# `metal_repo_untrusted_vms` is the node-agent gauge of assigned VMs whose
+# `.git` is not trusted to write the durable repo. It is reported on the
+# heartbeat and surfaces as `metal.host.gauge{counter="metal_repo_untrusted_vms"}`.
+# Any non-zero value is a runtime that is one cold boot away from losing work,
+# so the threshold is 0 and there is no "acceptable" level.
+#
+# A healthy fleet has no series at all (old agents omit `gauges`). Do NOT set
+# alertOnAbsent: absent means "not reporting", not "nothing wrong".
+
+alert: MetalRepoUntrusted
+alertType: METRIC_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    unit: none
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          aggregations:
+            - metricName: metal.host.gauge
+              spaceAggregation: max
+              timeAggregation: max
+          filter:
+            expression: "counter = 'metal_repo_untrusted_vms'"
+          groupBy:
+            - name: host_id
+              fieldContext: attribute
+              fieldDataType: string
+          legend: "{{host_id}} untrusted runtimes"
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: above
+        matchType: on_average
+        target: 0
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 5m
+    frequency: 1m
+labels:
+  severity: critical
+  team: platform
+  incident_class: metal
+notificationSettings:
+  groupBy: [host_id]
+  renotify:
+    enabled: true
+    interval: 1h
+    alertStates: [firing]
+annotations:
+  summary: "Metal host has runtimes that cannot save git history ({{host_id}})"
+  description: |
+    One or more assigned microVMs on this host are UNTRUSTED: their `.git` is
+    not known to descend from the durable repo, so a normal save is refused.
+    They now write a quarantine copy to `conflict/<projectId>/` on every HEAD
+    change, and `healUntrustedRepo` retries re-attaching them — but until that
+    succeeds, a cold boot restores the durable copy and the work since is gone.
+
+    Do NOT force-recycle these runtimes: that is exactly how the work is lost.
+
+    Triage:
+    1. `curl -s localhost:${METAL_AGENT_PORT}/vms | jq '.assigned[] | select(.repoUntrustedReason)'`
+       — the reason says whether it was a hydrate failure, a busy-deferred
+       restore, or a lineage mismatch.
+    2. `metal_repo_healed_total` on the same host: is the reconcile running and
+       failing, or not running at all?
+    3. `metal_repo_quarantine_total`: is the floor being written? A VM with
+       quarantine copies is recoverable; one without is not.
+    4. Check object storage reachability from this host's region — a hydrate
+       that cannot download is what marks a VM untrusted in the first place.
+
+    Runbook: docs/runbooks/metal-fleet.md

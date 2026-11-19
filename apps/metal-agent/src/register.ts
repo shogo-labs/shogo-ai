@@ -148,6 +148,12 @@ function payload(pool: MetalWarmPool, opts: { restarting?: boolean } = {}) {
     // 2026-10-31). Old agents simply omit this.
     rootDisk: rootDisk,
     metrics: metrics.snapshot().counters,
+    // Gauges are STATE, not totals, and the control plane cannot derive them
+    // from anything else it receives. Without this the durability gauges
+    // (untrusted VMs, oldest untrusted age, worst unsaved age) never left the
+    // host, so the incident that lost a day and a half of work had no signal
+    // anywhere (SHO-442). Old agents simply omit this.
+    gauges: metrics.snapshot().gauges,
     // Only meaningful when the reaper runs; the control plane's hysteresis reads `directiveTier`.
     idle: config.idleSuspendMs > 0 ? currentIdleWindow(s.assigned.length) : undefined,
     ts: Date.now(),
