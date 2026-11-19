@@ -192,6 +192,7 @@ import {
   type GitHubWorkspaceOpInput,
 } from './github-workspace-git'
 import { isHostMediatedDurability } from './host-durability'
+import { noteRepoExportFailed, noteRepoExportSucceeded } from './repo-durability-prompt'
 import { executeRemoteTool } from './remote-tools'
 import { guardRemoteDeviceCall, remoteDeviceApprovalCategory } from './remote-device-guard'
 import {
@@ -3774,6 +3775,9 @@ app.post('/pool/export-repo-bundle', async (c) => {
         )
       }
       if (push?.state === 'failed') {
+        // The host's save just failed. The agent is the one still writing
+        // files, so it gets one line about it in its next turn (SHO-442).
+        noteRepoExportFailed(push.job.state.error!.reason, push.job.state.error!.message)
         return c.json(lfsPushFailureBody(push.job.state.error!), 503)
       }
       lfsMissing = push?.job.state.missing ?? []
@@ -3797,6 +3801,7 @@ app.post('/pool/export-repo-bundle', async (c) => {
       if (attempt >= 2) return c.json({ error: 'repo refs kept moving during export; retry' }, 409)
     }
 
+    noteRepoExportSucceeded()
     return c.json({
       bundle: built?.entry ?? null,
       head: snapshot.head,
@@ -3809,6 +3814,7 @@ app.post('/pool/export-repo-bundle', async (c) => {
     })
   } catch (err: any) {
     console.error('[pool/export-repo-bundle] failed:', err?.message ?? err)
+    noteRepoExportFailed('other', err?.message ?? 'export-repo-bundle failed')
     return c.json({ error: err?.message ?? 'export-repo-bundle failed' }, 500)
   }
 })

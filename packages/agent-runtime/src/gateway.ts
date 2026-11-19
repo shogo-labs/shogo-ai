@@ -81,6 +81,7 @@ import { BlockChunker } from './block-chunker'
 import { canvasModeStableGuides } from './canvas-v2-prompt'
 import { buildCapabilityStatusSection, resolveCapabilitiesForScope, resolveRuntimeCapabilities } from './capability-status-prompt'
 import { buildWakeStatusSection } from './wake-status-prompt'
+import { buildRepoDurabilitySection } from './repo-durability-prompt'
 import { BOARDS_GUIDE, COMPANY_OPS_GUIDE } from './board-tools'
 import { TASK_WAKE_RETRY_MS } from './remote-tasks'
 import { buildViewerContextPrompt, parseCanvasViewer } from './viewer-context'
@@ -6706,6 +6707,14 @@ export class AgentGateway {
     if (sessionId) {
       const wake = buildWakeStatusSection(this.wakeStates.get(sessionId))
       if (wake) pushDynamic('wake-status', wake)
+    }
+
+    // 12c. The workspace's git history is not reaching durable storage. Same
+    // reason as above for the cache boundary: it comes and goes per turn, and
+    // the agent is the one still writing files while it is failing (SHO-442).
+    {
+      const durability = buildRepoDurabilitySection()
+      if (durability) pushDynamic('repo-durability', durability)
     }
 
     this.lastPromptBreakdown = sections
