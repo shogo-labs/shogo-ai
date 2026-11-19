@@ -80,7 +80,7 @@ const base = {
   currency: 'USD',
   periodStart: '2026-11-01T00:00:00.000Z',
   periodEnd: '2026-11-18T10:00:00.000Z',
-  rates: { vcpuHour: 0.1, gibHour: 0.005, idleBilling: 'none' },
+  rates: { vcpuHour: 0.07, gibHour: 0.012, idleBilling: 'none' },
   totals: {
     activeVmHours: 3,
     totalVmHours: 12,
@@ -136,7 +136,7 @@ describe('Settings → Compute usage', () => {
     expect(screen.getByText('What started it')).toBeDefined()
     // Rates are stated in full, so the number is checkable. Interpolated text
     // splits across nodes, so read the rendered text rather than one node.
-    expect(document.body.textContent).toContain('$0.10/vCPU-hour + $0.005/GiB-hour')
+    expect(document.body.textContent).toContain('$0.07/vCPU-hour + $0.012/GiB-hour')
   })
 
   test('a member gets the total and none of the split', async () => {

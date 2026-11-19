@@ -52,7 +52,7 @@ function summary(overrides: Record<string, unknown> = {}) {
     mode: 'shadow',
     windowStart: '2026-11-01T00:00:00.000Z',
     generatedAt: '2026-11-18T10:00:00.000Z',
-    rates: { vcpuHour: 0.1, gibHour: 0.005, idleBilling: 'none' },
+    rates: { vcpuHour: 0.07, gibHour: 0.012, idleBilling: 'none' },
     fleet: {
       hosts: 5,
       hostMonthlyUsd: 500,
