@@ -20,7 +20,7 @@ import {
   type WorkspaceRole,
 } from '@shogo/authz'
 import type { HttpClient } from '@shogo-ai/sdk'
-import { useDomainHttp } from '../contexts/domain'
+import { getDomainHttpClient, useDomainHttpOptional } from '../contexts/domain'
 import { canInviteHere, useCloudWorkspaces } from '../lib/workspace-route'
 import {
   api,
@@ -205,7 +205,11 @@ export function invalidatePermissions(scope?: PermissionScope) {
 export { canInviteHere } from '../lib/workspace-route'
 
 export function usePermissions(scope: PermissionScope) {
-  const http = useDomainHttp()
+  // The workspace switcher renders in a portal that sits outside the domain
+  // provider, so the throwing `useDomainHttp` would take the whole menu down
+  // there. Fall back to the module-level client, which is the same one the
+  // provider hands out.
+  const http = useDomainHttpOptional() ?? getDomainHttpClient()
   const key = scopeKey(scope)
   const [, setVersion] = useState(0)
 

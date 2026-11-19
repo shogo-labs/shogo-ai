@@ -82,7 +82,11 @@ const store = { workspaceCollection: { all: [], loadAll: loadAllWorkspaces } }
 const actions = { acceptInvitation, declineInvitation }
 
 mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
-  useDomainHttp: () => null,
+  // The real hook throws without a provider; the switcher renders in a portal
+  // that has none, so anything on its render path must use the optional form.
+  useDomainHttp: () => {
+    throw new Error("useSDKHttp must be used within SDKDomainProvider")
+  },
   useDomainHttpOptional: () => null,
   getDomainHttpClient: () => http,
   useDomain: () => {
