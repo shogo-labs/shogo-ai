@@ -225,6 +225,7 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   SocialProfile: { decision: 'exclude', reason: 'Provider mirror: the Zernio profile that owns the connected accounts. Unique on the provider id and recreated on connect, so it must not travel in an archive.' },
   SocialRelayedEvent: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },
   StorageUsage: { decision: 'exclude', reason: 'Money and metering, not content. Also carries payment-processor ids; StorageUsage is recomputable.' },
+  StorageUsageDaily: { decision: 'exclude', reason: 'Money and metering, not content: the per-day peak bytes a storage charge was computed from. Region-local and recomputed by the next 6h pass, so an archive must not carry it.' },
   Subscription: { decision: 'exclude', reason: 'Money and metering, not content. Also carries payment-processor ids; StorageUsage is recomputable.' },
   TaskDependency: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },
   TaskExecution: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },

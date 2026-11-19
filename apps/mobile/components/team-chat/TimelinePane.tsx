@@ -127,6 +127,38 @@ function confirmDelete(): Promise<boolean> {
   )
 }
 
+/**
+ * The footer sits over the transcript rather than under it: the pane measures
+ * it on layout and pulls it back up by its own height, so the list keeps full
+ * height and messages scroll behind the composer instead of stopping above an
+ * opaque band. `box-none` lets the wheel and clicks through the empty space
+ * around the composer reach the list underneath (SHO-439).
+ */
+function OverlayFooter({
+  height,
+  onHeight,
+  style,
+  testID,
+  children,
+}: {
+  height: number
+  onHeight: (height: number) => void
+  style?: React.ComponentProps<typeof View>['style']
+  testID?: string
+  children: React.ReactNode
+}) {
+  return (
+    <View
+      pointerEvents="box-none"
+      onLayout={(e) => onHeight(Math.round(e.nativeEvent.layout.height))}
+      style={[{ marginTop: -height }, style]}
+      testID={testID}
+    >
+      {children}
+    </View>
+  )
+}
+
 export function TimelinePane(props: TimelinePaneProps) {
   const { workspaceId, conversation, threadRootId = null, me, mentionables, visible, floating = false, topInset = 0 } = props
   const router = useRouter()
@@ -155,6 +187,11 @@ export function TimelinePane(props: TimelinePaneProps) {
   }, [props.onOpenProfile, router])
   const [threadHeaderHeight, setThreadHeaderHeight] = useState(0)
   const [footerHeight, setFooterHeight] = useState(0)
+  // A layout pass reports the footer every time it moves; only a different
+  // height should re-inset the list.
+  const measureFooter = useCallback((height: number) => {
+    setFooterHeight((prev) => (prev === height ? prev : height))
+  }, [])
   const [cardFrom, setCardFrom] = useState<ChatMessage | null>(null)
   const [cardNotice, setCardNotice] = useState<string | null>(null)
   useEffect(() => {
@@ -401,9 +438,13 @@ export function TimelinePane(props: TimelinePaneProps) {
       floating={floating}
     />
   )
-  const listInsets = floating
-    ? { top: (showActivityFilters ? 0 : topInset) + threadHeaderHeight, bottom: footerHeight }
-    : undefined
+  // The list runs full height and is told how much of its bottom the footer
+  // covers, so the newest message clears the composer at rest while everything
+  // older scrolls behind the transparent band above it.
+  const listInsets = {
+    top: floating ? (showActivityFilters ? 0 : topInset) + threadHeaderHeight : 0,
+    bottom: footerHeight,
+  }
   const list = (
     <MessageList
       state={{ ...timeline.state, messages: visibleMessages }}
@@ -577,13 +618,10 @@ export function TimelinePane(props: TimelinePaneProps) {
             </GlassChip>
           </View>
         ) : null}
-        <View
-          pointerEvents="box-none"
-          onLayout={(e) => {
-            const next = Math.round(e.nativeEvent.layout.height)
-            setFooterHeight((prev) => (prev === next ? prev : next))
-          }}
-          style={{ marginTop: -footerHeight, paddingBottom: chrome.bottom }}
+        <OverlayFooter
+          height={footerHeight}
+          onHeight={measureFooter}
+          style={{ paddingBottom: chrome.bottom }}
           testID="floating-composer"
         >
           {runningReplies.length ? (
@@ -610,7 +648,7 @@ export function TimelinePane(props: TimelinePaneProps) {
           ) : (
             composer
           )}
-        </View>
+        </OverlayFooter>
       </View>
     )
   }
@@ -646,22 +684,32 @@ export function TimelinePane(props: TimelinePaneProps) {
       ) : (
         list
       )}
-      <View style={typingColumnStyle}>
-        {runningDock}
-      </View>
-      <View className="min-h-[30px] justify-end pb-2.5" style={typingColumnStyle}>
-        {typingRow}
-      </View>
-      {!showComposer ? (
-        <View className="items-center gap-2 border-t border-border px-4 py-3">
-          <Text className="text-sm text-muted-foreground">You are viewing #{conversation.name}.</Text>
-          <Pressable onPress={props.onJoin} className="rounded-md bg-primary px-4 py-1.5">
-            <Text className="text-sm font-medium text-primary-foreground">Join channel</Text>
-          </Pressable>
+      <OverlayFooter height={footerHeight} onHeight={measureFooter} testID="composer-footer">
+        <View pointerEvents="box-none" style={typingColumnStyle}>
+          {runningDock}
         </View>
-      ) : (
-        composer
-      )}
+        {/* The slot keeps its height so the composer never jumps, but it draws
+            nothing until someone types — and then only a pill behind the text.
+            The pill's own vertical padding is taken back out of the layout
+            (`-my-1`): the slot reserves 20px of content and a padded one-line
+            pill is 24px, which would grow the footer by 4px and move both the
+            composer and the transcript the moment someone starts typing. */}
+        <View pointerEvents="box-none" className="min-h-[30px] justify-end pb-2.5" style={typingColumnStyle} testID="typing-slot">
+          {typingRow ? (
+            <View className="-my-1 self-start rounded-full bg-background/90 px-2.5 py-1">{typingRow}</View>
+          ) : null}
+        </View>
+        {!showComposer ? (
+          <View className="items-center gap-2 border-t border-border bg-background px-4 py-3">
+            <Text className="text-sm text-muted-foreground">You are viewing #{conversation.name}.</Text>
+            <Pressable onPress={props.onJoin} className="rounded-md bg-primary px-4 py-1.5">
+              <Text className="text-sm font-medium text-primary-foreground">Join channel</Text>
+            </Pressable>
+          </View>
+        ) : (
+          composer
+        )}
+      </OverlayFooter>
       {dragging && (
         <View
           pointerEvents="none"

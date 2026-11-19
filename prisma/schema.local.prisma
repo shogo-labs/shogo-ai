@@ -217,6 +217,7 @@ model Workspace {
   usageEvents            UsageEvent[]
   liveSessionMeters      LiveSessionMeter[]
   storageUsage           StorageUsage?
+  storageUsageDaily      StorageUsageDaily[]
   starredProjects        StarredProject[]
   integrationGrants      UserIntegrationWorkspaceGrant[]
   agentTasks             AgentTask[]
@@ -1480,7 +1481,13 @@ model StorageUsage {
   id               String   @id @default(uuid())
   workspaceId      String   @unique
   totalBytes       BigInt   @default(0)
+  /// Total minus the platform-overhead categories (quarantine archives, metal
+  /// VM snapshots) — the bytes a customer is actually billed for (SHO-423).
+  billableBytes    BigInt   @default(0)
   projectCount     Int      @default(0)
+  /// Per-category and per-project byte breakdown from the last pass (SHO-423).
+  /// JSON-encoded in SQLite (`{ categories, projects, unmeasured }`).
+  breakdown        String?
   lastCalculatedAt DateTime
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -1488,6 +1495,37 @@ model StorageUsage {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@map("storage_usage")
+}
+
+/// One row per workspace per UTC day, written by the 6h storage pass with the
+/// MAXIMUM bytes seen that day (SHO-423). The daily storage bill job reads the
+/// completed days and charges the GB-months above the tier allowance, then
+/// stamps `billedAt` — so a rerun never double-charges. Region-local (excluded
+/// from logical replication, like `storage_usage`): each region only measures
+/// the workspaces it is home to.
+model StorageUsageDaily {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  /// UTC midnight of the day these numbers describe.
+  day            DateTime
+  totalBytes     BigInt    @default(0)
+  billableBytes  BigInt    @default(0)
+  /// The workspace instance tier's `storageLimitBytes` at measurement time.
+  allowanceBytes BigInt    @default(0)
+  breakdown      String?
+  /// USD this day accrued. Filled in `shadow` mode too, so the projected
+  /// revenue can be compared against Stripe before money moves.
+  chargedUsd     Float?
+  /// Set once the debit landed (enforce) or was recorded (shadow). Null = unbilled.
+  billedAt       DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, day])
+  @@index([day])
+  @@map("storage_usage_daily")
 }
 
 // =============================================================================

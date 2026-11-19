@@ -121,8 +121,10 @@ describe('getInstanceForWorkspace', () => {
       instanceSize: 'small',
       storageUsage: {
         totalBytes: BigInt(2 * 1024 * 1024 * 1024),
+        billableBytes: BigInt(2 * 1024 * 1024 * 1024),
         projectCount: 5,
         lastCalculatedAt: new Date('2026-02-01T00:00:00Z'),
+        breakdown: null,
       },
     }))
     const result = await getInstanceForWorkspace('ws_1')
@@ -131,10 +133,36 @@ describe('getInstanceForWorkspace', () => {
     expect(result!.spec).toBe(INSTANCE_SIZES.small)
     expect(result!.storage).toEqual({
       totalBytes: 2 * 1024 * 1024 * 1024,
+      billableBytes: 2 * 1024 * 1024 * 1024,
       projectCount: 5,
       limitBytes: INSTANCE_SIZES.small.storageLimitBytes,
       lastCalculatedAt: new Date('2026-02-01T00:00:00Z'),
+      categories: null,
+      unmeasured: [],
     })
+  })
+
+  test('carries the measured categories when a breakdown exists', async () => {
+    findUniqueWs.mockImplementation(async () => ({
+      instanceSize: 'small',
+      storageUsage: {
+        totalBytes: BigInt(1000),
+        billableBytes: BigInt(700),
+        projectCount: 1,
+        lastCalculatedAt: new Date('2026-02-01T00:00:00Z'),
+        breakdown: {
+          categories: { project_files: 700, quarantine: 300 },
+          projects: [],
+          unmeasured: ['artifacts'],
+        },
+      },
+    }))
+    const result = await getInstanceForWorkspace('ws_bd')
+    expect(result!.storage!.billableBytes).toBe(700)
+    expect(result!.storage!.categories).toEqual(
+      expect.objectContaining({ project_files: 700, quarantine: 300, assets: 0 }),
+    )
+    expect(result!.storage!.unmeasured).toEqual(['artifacts'])
   })
 
   test('returns storage:null when storageUsage row is missing', async () => {
@@ -169,8 +197,10 @@ describe('getInstanceForWorkspace', () => {
     expect(args.select.instanceSize).toBe(true)
     expect(args.select.storageUsage.select).toEqual({
       totalBytes: true,
+      billableBytes: true,
       projectCount: true,
       lastCalculatedAt: true,
+      breakdown: true,
     })
   })
 })

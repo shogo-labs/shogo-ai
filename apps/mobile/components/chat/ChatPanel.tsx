@@ -138,7 +138,7 @@ import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import {
   isLiveTurnOtherThan,
   probeChatTurn,
-  probeChatTurnStatus,
+  probeChatTurnBounded,
   type ChatTurnSnapshot,
   type ChatTurnStatus,
 } from "./probe-turn-status"
@@ -169,9 +169,11 @@ import {
 } from "./retry-triage"
 import {
   computeRecoveryBackoff,
+  decideStallTrip,
   getStallRecoveryEffects,
   markStuckToolsInterrupted,
   shouldAutoRecoverStalledTurn,
+  turnEndedOnServer,
 } from "./stall-recovery"
 import { recordAutoResumeAttempt } from "./auto-resume-circuit-breaker"
 import { followNextTurn } from "./next-turn-follow"
@@ -2473,6 +2475,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const recoveredTurnIdRef = useRef<string | null>(null)
   const renderDepthErrorTurnIdRef = useRef<string | null>(null)
   const stallRecoveryRef = useRef<(() => void) | null>(null)
+  // One `/turn` probe at a time from the stall watchdog: the 15 s tick would
+  // otherwise stack probes while a slow one is still in flight.
+  const stallTripProbeRef = useRef(false)
+  // How many trips this turn has already been kept alive for, so a body that
+  // is dead while the runtime still runs the turn is reattached instead of
+  // waited on forever (see `DEFAULT_STALL_KEEP_ALIVES`).
+  const stallKeepAliveRef = useRef<{ turnId: string | null; count: number }>({
+    turnId: null,
+    count: 0,
+  })
   const currentSessionIdRef = useRef<string | null>(null)
   currentSessionIdRef.current = currentSessionId
 
@@ -5205,7 +5217,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           .filter((p) => p.notify && !p.stale && !isFinishedProcess(p))
           .map((p) => p.id ?? p.runId)
       },
-      probeTurn: () => {
+      probeTurn: async () => {
         const turnUrl = buildChatTurnUrl(
           API_URL!,
           projectId,
@@ -5213,12 +5225,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
           currentSessionId,
           chatWorkspaceId,
         )
-        return probeChatTurnStatus({
-          url: turnUrl,
-          fetch: expoFetch,
-          headers: nativeHeaders ? nativeHeaders() : undefined,
-          credentials: Platform.OS === "web" ? "include" : undefined,
-        })
+        return (
+          await probeChatTurnBounded({
+            url: turnUrl,
+            fetch: expoFetch,
+            headers: nativeHeaders ? nativeHeaders() : undefined,
+            credentials: Platform.OS === "web" ? "include" : undefined,
+          })
+        ).status
       },
       // Reload first: the live stream carries only the reply, and the wake's
       // `[Task update]` row has to be in place for it to attach to.
@@ -5283,7 +5297,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }
 
     void pollForLateTurn({
-      probe: () => {
+      probe: async () => {
         const turnUrl = buildChatTurnUrl(
           API_URL!,
           projectId,
@@ -5291,12 +5305,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
           currentSessionId,
           chatWorkspaceId,
         )
-        return probeChatTurnStatus({
-          url: turnUrl,
-          fetch: expoFetch,
-          headers: nativeHeaders ? nativeHeaders() : undefined,
-          credentials: Platform.OS === "web" ? "include" : undefined,
-        })
+        return (
+          await probeChatTurnBounded({
+            url: turnUrl,
+            fetch: expoFetch,
+            headers: nativeHeaders ? nativeHeaders() : undefined,
+            credentials: Platform.OS === "web" ? "include" : undefined,
+          })
+        ).status
       },
       attach: () => guardedAutoResumeStream("live-turn-probe"),
       reload: refreshPersistedResponse,
@@ -7729,7 +7745,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       const now = Date.now()
       const lastProgressAt = lastChatProgressAtRef.current
       if (
-        isChatStalled({
+        !isChatStalled({
           status,
           lastProgressAt,
           now,
@@ -7738,9 +7754,159 @@ const ChatPanelContent = observer(function ChatPanelContent({
             document.visibilityState === "hidden",
         })
       ) {
-        const elapsedMs = now - lastProgressAt
+        return
+      }
+      const elapsedMs = now - lastProgressAt
+
+      // Client-side time alone does not say the turn is dead: a cold pod, a
+      // large prompt build or a provider TTFB leaves the stream legitimately
+      // silent past the threshold, and a half-open socket looks identical.
+      // Ask the runtime before aborting anything — every recorded trip sat at
+      // threshold + one 15 s tick (~133 s), and `stop()` on a live turn is what
+      // turned long replies into "Runtime unreachable — tap retry" on web, iOS
+      // and Android (Sentry REACT-38, SHOGO-ANDROID-16, SHOGO-IOS-Q).
+      if (stallTripProbeRef.current) return
+      stallTripProbeRef.current = true
+      const stalledSessionId = currentSessionId
+      const stalledTurnId = currentTurnIdRef.current
+      const probeUrl =
+        stalledSessionId && API_URL ? buildChatTurnUrl(
+          API_URL,
+          projectId,
+          localAgentUrl,
+          stalledSessionId,
+          chatWorkspaceId,
+        ) : null
+      void (async () => {
+        let snapshot: ChatTurnSnapshot | null = null
+        try {
+          if (probeUrl) {
+            snapshot = await probeChatTurnBounded({
+              url: probeUrl,
+              fetch: expoFetch,
+              headers: nativeHeaders ? nativeHeaders() : undefined,
+              credentials: Platform.OS === "web" ? "include" : undefined,
+            })
+          }
+        } catch {
+          snapshot = null
+        } finally {
+          stallTripProbeRef.current = false
+        }
+
+        // The world may have moved on while the probe was in flight. A probe
+        // answers about ONE turn: if turn A finished during the probe and a
+        // queued send already started turn B, A's terminal answer must not
+        // `stop()` B — the session check alone let that through.
+        if (
+          !isStreamingRef.current ||
+          currentSessionIdRef.current !== stalledSessionId ||
+          currentTurnIdRef.current !== stalledTurnId
+        ) {
+          return
+        }
+
+        const keptAliveSoFar =
+          stallKeepAliveRef.current.turnId === stalledTurnId
+            ? stallKeepAliveRef.current.count
+            : 0
+        const decision = decideStallTrip({
+          turnStatus: snapshot?.status ?? "unknown",
+          answered: Boolean(snapshot?.answered),
+          keptAlive: keptAliveSoFar,
+        })
+        stallKeepAliveRef.current =
+          decision === "stay-attached"
+            ? { turnId: stalledTurnId, count: keptAliveSoFar + 1 }
+            : { turnId: stalledTurnId, count: 0 }
+
+        if (decision === "stay-attached") {
+          // The runtime still owns this turn — give it a fresh window instead
+          // of aborting work the person is waiting for.
+          console.warn(
+            `[ChatPanel] stall watchdog: ${elapsedMs}ms without bytes, but turn ${stalledTurnId} is still active server-side — staying attached`,
+          )
+          lastChatProgressAtRef.current = Date.now()
+          try {
+            Sentry.captureMessage("chat_stall_probe_kept_alive", {
+              level: "warning",
+              tags: {
+                projectId: projectId ?? "(none)",
+                chatSessionId: stalledSessionId ?? "(none)",
+                chatStatus: status,
+              },
+              extra: {
+                elapsedMs,
+                turnId: stalledTurnId,
+                lastSeq: turnLastSeqRef.current,
+              },
+            })
+          } catch (err) {
+            console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+          }
+          return
+        }
+
+        if (decision === "stop-and-reattach") {
+          // The turn is running but this body has delivered nothing for two
+          // full windows: the socket is dead. Drop it (which does NOT stop the
+          // turn — the runtime buffers it and the API persists it) so the
+          // falling-edge recovery can reattach from the buffer. No banner: the
+          // reply is still coming.
+          console.warn(
+            `[ChatPanel] stall watchdog: turn ${stalledTurnId} is active but this stream delivered nothing for ${elapsedMs}ms — dropping the dead body to reattach`,
+          )
+          try {
+            Sentry.captureMessage("chat_stall_probe_reattached", {
+              level: "warning",
+              tags: {
+                projectId: projectId ?? "(none)",
+                chatSessionId: stalledSessionId ?? "(none)",
+                chatStatus: status,
+              },
+              extra: {
+                elapsedMs,
+                turnId: stalledTurnId,
+                lastSeq: turnLastSeqRef.current,
+                keptAlive: keptAliveSoFar,
+              },
+            })
+          } catch (err) {
+            console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+          }
+          stallWatchdogTrippedRef.current = false
+          try {
+            void stop()
+          } catch (err) {
+            console.warn("[ChatPanel] stall watchdog stop() threw:", err)
+          }
+          return
+        }
+
+        if (decision === "stop-and-reload") {
+          // The turn already finished server-side: the reply is saved and the
+          // body on this device is simply dead. Unwedge the composer and paint
+          // what the server has — "runtime unreachable" would be a lie, and a
+          // Retry would re-run work that already produced a reply.
+          console.warn(
+            `[ChatPanel] stall watchdog: turn ${stalledTurnId} ended server-side (${snapshot?.status}) — reloading saved history`,
+          )
+          try {
+            void stop()
+          } catch (err) {
+            console.warn("[ChatPanel] stall watchdog stop() threw:", err)
+          }
+          setTimeout(() => {
+            if (currentSessionIdRef.current !== stalledSessionId) return
+            // History-only reload: the turn is over, so there is no live turn
+            // to probe for (`refreshHistoryRef` skips that probe by design).
+            refreshHistoryRef.current()
+          }, 500)
+          return
+        }
+
         console.warn(
-          `[ChatPanel] stall watchdog tripped — status=${status} pinned for ${elapsedMs}ms with no progress; calling stop() to recover`,
+          `[ChatPanel] stall watchdog tripped — status=${status} pinned for ${elapsedMs}ms with no progress and the turn probe did not confirm a live turn; calling stop() to recover`,
         )
         // Surface in Sentry so this class of bug is visible in the
         // dashboard instead of having to be reconstructed from kube
@@ -7766,6 +7932,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
               streamingThresholdMs: DEFAULT_STREAMING_STALL_MS,
               lastProgressAt,
               now,
+              turnId: stalledTurnId,
+              lastSeq: turnLastSeqRef.current,
+              probeAnswered: Boolean(snapshot?.answered),
+              probeStatus: snapshot?.status ?? "unknown",
             },
           })
         } catch (err) {
@@ -7780,10 +7950,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
         } catch (err) {
           console.warn("[ChatPanel] stall watchdog stop() threw:", err)
         }
-      }
+      })()
     }, intervalMs)
     return () => clearInterval(timer)
-  }, [isStreaming, status, stop, projectId, currentSessionId, isActive])
+  }, [
+    isStreaming,
+    status,
+    stop,
+    projectId,
+    currentSessionId,
+    isActive,
+    localAgentUrl,
+    chatWorkspaceId,
+    expoFetch,
+    nativeHeaders,
+  ])
 
   // Hydrate the queue for the active session from the per-session cache when
   // the session changes. Previously this effect *cleared* the queue on every
@@ -8740,12 +8921,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
             currentSessionId,
             chatWorkspaceId,
           )
-          turnStatus = await probeChatTurnStatus({
-            url: turnUrl,
-            fetch: expoFetch,
-            headers: nativeHeaders ? nativeHeaders() : undefined,
-            credentials: Platform.OS === "web" ? "include" : undefined,
-          })
+          turnStatus = (
+            await probeChatTurnBounded({
+              url: turnUrl,
+              fetch: expoFetch,
+              headers: nativeHeaders ? nativeHeaders() : undefined,
+              credentials: Platform.OS === "web" ? "include" : undefined,
+            })
+          ).status
         } catch {
           turnStatus = "unknown"
         }
@@ -8811,7 +8994,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
     const recoverySessionId = currentSessionId
     const recoveryTurnId = currentTurnIdRef.current
     const fromSeqAtStall = turnLastSeqRef.current
-    const MAX_ATTEMPTS = 4
+    // A warm-pool/pod transition or a buffer that is republished a beat after
+    // the stream died both look like `unknown` for tens of seconds. Four quick
+    // probes covered ~9 s and then declared the turn dead (Sentry REACT-5Z /
+    // SHOGO-ANDROID-V: "gave up after 4 attempts", one at fromSeq 1802) while
+    // the runtime was still running it. Twelve probes with the existing capped
+    // backoff (0.6 + 1.2 + 2.4 + 5×9 s ≈ 50 s) covers those transitions.
+    const MAX_ATTEMPTS = 12
 
     setStreamAutoRecovering(true)
     void (async () => {
@@ -8827,7 +9016,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
             return
           }
 
-          let turnStatus: ChatTurnStatus = "unknown"
+          let snapshot: ChatTurnSnapshot = {
+            status: "unknown",
+            turnId: null,
+            answered: false,
+          }
           try {
             const turnUrl = buildChatTurnUrl(
               API_URL,
@@ -8836,15 +9029,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
               recoverySessionId,
               chatWorkspaceId,
             )
-            turnStatus = await probeChatTurnStatus({
+            snapshot = await probeChatTurnBounded({
               url: turnUrl,
               fetch: expoFetch,
               headers: nativeHeaders ? nativeHeaders() : undefined,
               credentials: Platform.OS === "web" ? "include" : undefined,
             })
           } catch {
-            turnStatus = "unknown"
+            snapshot = { status: "unknown", turnId: null, answered: false }
           }
+          const turnStatus = snapshot.status
 
           // Re-check liveness after the await — the world may have changed.
           if (
@@ -8874,29 +9068,42 @@ const ChatPanelContent = observer(function ChatPanelContent({
             setMessages((prev) =>
               markStuckToolsInterrupted(prev, "Connection interrupted"),
             )
-            // The stall watchdog reports its own trips; this give-up path
-            // (stream ended without turn-complete and could not be
-            // reattached) shows the same banner, so report it separately.
-            try {
-              Sentry.captureMessage("chat_stall_recovery_gave_up", {
-                level: "warning",
-                tags: {
-                  projectId: projectId ?? "(none)",
-                  chatSessionId: recoverySessionId,
-                  turnStatus,
-                },
-                extra: {
-                  attempt,
-                  maxAttempts: MAX_ATTEMPTS,
-                  turnId: recoveryTurnId,
-                  fromSeq: fromSeqAtStall,
-                  isLocalAgent: !!localAgentUrl,
-                },
-              })
-            } catch (err) {
-              console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+            // The runtime answered and says the turn is over: the reply (or
+            // the reason it failed) is saved, so paint it instead of claiming
+            // the runtime is unreachable and asking for a Retry that would
+            // start the work again.
+            const ended = snapshot.answered && turnEndedOnServer(turnStatus)
+            if (ended) {
+              console.log(
+                `[ChatPanel] auto-recovery: turn ${recoveryTurnId} ended server-side (${turnStatus}) — reloading saved history`,
+              )
+              void catchUpAfterTurnEndedRef.current?.()
+            } else {
+              // The stall watchdog reports its own trips; this give-up path
+              // (stream ended without turn-complete and could not be
+              // reattached) shows the same banner, so report it separately.
+              try {
+                Sentry.captureMessage("chat_stall_recovery_gave_up", {
+                  level: "warning",
+                  tags: {
+                    projectId: projectId ?? "(none)",
+                    chatSessionId: recoverySessionId,
+                    turnStatus,
+                  },
+                  extra: {
+                    attempt,
+                    maxAttempts: MAX_ATTEMPTS,
+                    turnId: recoveryTurnId,
+                    fromSeq: fromSeqAtStall,
+                    isLocalAgent: !!localAgentUrl,
+                    probeAnswered: snapshot.answered,
+                  },
+                })
+              } catch (err) {
+                console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+              }
             }
-            if (effects.showRetryBanner) {
+            if (effects.showRetryBanner && !ended) {
               setErrorDismissed(false)
               setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE)
             }

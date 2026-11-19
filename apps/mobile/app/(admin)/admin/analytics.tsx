@@ -26,6 +26,8 @@ import {
   CalendarDays,
   BarChart3,
   Sparkles,
+  HardDrive,
+  Server,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
@@ -66,6 +68,19 @@ interface ActiveUsersData {
   dau: number
   wau: number
   mau: number
+}
+
+/** GET /api/admin/storage — platform S3 metering (SHO-423). */
+interface StorageSummaryData {
+  lastPassAt: string | null
+  buckets: { measuredBytes: number; workspaces: number }
+  categories: Record<string, number>
+  billableBytes: number
+  overheadBytes: number
+  unmeasured: string[]
+  month: { gbMonths: number; shadowUsd: number; chargedUsd: number; mode: 'shadow' | 'enforce' }
+  topByBytes: Array<{ workspaceId: string; name: string; totalBytes: number; billableBytes: number; allowanceBytes: number }>
+  topByOverage: Array<{ workspaceId: string; name: string; totalBytes: number; overageBytes: number; allowanceBytes: number }>
 }
 
 // =============================================================================
@@ -147,6 +162,171 @@ function ActiveUsersSection({ data, loading }: { data: ActiveUsersData | null; l
 // Main Page
 // =============================================================================
 
+const STORAGE_CATEGORY_ROWS: Array<{ key: string; label: string }> = [
+  { key: 'project_files', label: 'Project files' },
+  { key: 'repo', label: 'Git & LFS' },
+  { key: 'assets', label: 'Assets' },
+  { key: 'backups', label: 'Backups' },
+  { key: 'chat_files', label: 'Chats' },
+  { key: 'workspace_root', label: 'Workspace drive' },
+  { key: 'published', label: 'Published' },
+  { key: 'quarantine', label: 'Quarantine (overhead)' },
+  { key: 'vm_snapshots', label: 'VM snapshots (overhead)' },
+]
+
+function formatStorageBytes(bytes: number | null | undefined): string {
+  const value = Number(bytes ?? 0)
+  if (!Number.isFinite(value) || value <= 0) return '0 B'
+  const gb = value / 1024 ** 3
+  if (gb >= 1) return `${gb.toFixed(gb >= 10 ? 0 : 1)} GB`
+  const mb = value / 1024 ** 2
+  if (mb >= 1) return `${mb.toFixed(0)} MB`
+  return `${(value / 1024).toFixed(0)} KB`
+}
+
+/**
+ * A rolling deploy can hand us an older pod's answer (or a mock's `{ ok: true }`),
+ * so never trust that a truthy payload is a summary: every field below is read
+ * unconditionally, and a missing `month` used to throw inside render.
+ */
+function isStorageSummary(
+  data: StorageSummaryData | null | undefined,
+): data is StorageSummaryData {
+  if (!data || typeof data !== 'object') return false
+  const { month, buckets, categories } = data
+  return (
+    !!month &&
+    typeof month.mode === 'string' &&
+    typeof month.gbMonths === 'number' &&
+    typeof month.shadowUsd === 'number' &&
+    typeof month.chargedUsd === 'number' &&
+    !!buckets &&
+    typeof buckets.measuredBytes === 'number' &&
+    typeof buckets.workspaces === 'number' &&
+    !!categories &&
+    typeof categories === 'object' &&
+    typeof data.billableBytes === 'number' &&
+    typeof data.overheadBytes === 'number' &&
+    Array.isArray(data.unmeasured) &&
+    Array.isArray(data.topByBytes) &&
+    Array.isArray(data.topByOverage)
+  )
+}
+
+/**
+ * Platform S3 footprint (SHO-423): what every workspace's bytes add up to by
+ * category, how much of it is billable vs our own overhead, and the month's
+ * shadow revenue. Read-only — it never triggers a measurement pass.
+ */
+function StorageSection({
+  data,
+  loading,
+}: {
+  data: StorageSummaryData | null
+  loading: boolean
+}) {
+  if (loading) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-4">
+        <View className="h-4 w-28 bg-muted rounded mb-3" />
+        <View className="flex-row flex-wrap gap-2">
+          {[1, 2, 3, 4].map((i) => (
+            <View key={i} className="flex-1 min-w-[120px] h-14 bg-muted/50 rounded-lg" />
+          ))}
+        </View>
+      </View>
+    )
+  }
+  if (!isStorageSummary(data)) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-4">
+        <Text className="text-sm text-muted-foreground">Storage data unavailable.</Text>
+      </View>
+    )
+  }
+
+  const modeLabel = data.month.mode === 'shadow' ? 'shadow (not charged)' : 'enforced'
+  return (
+    <View className="gap-4">
+      <View className="flex-row flex-wrap gap-2">
+        <StatCard label="Measured" value={formatStorageBytes(data.buckets.measuredBytes)} icon={HardDrive} />
+        <StatCard label="Billable" value={formatStorageBytes(data.billableBytes)} icon={BarChart3} />
+        <StatCard label="Overhead" value={formatStorageBytes(data.overheadBytes)} icon={Server} />
+        <StatCard
+          label={`Month ${data.month.mode === 'shadow' ? '(est.)' : ''}`}
+          value={`$${data.month.shadowUsd.toFixed(2)}`}
+          icon={Sparkles}
+        />
+      </View>
+
+      <View className="rounded-xl border border-border bg-card p-4">
+        <View className="flex-row items-center justify-between mb-3">
+          <Text className="text-sm font-semibold text-foreground">By category</Text>
+          <Text className="text-[11px] text-muted-foreground">
+            {data.buckets.workspaces} workspaces · {modeLabel}
+          </Text>
+        </View>
+        <View className="gap-1.5">
+          {STORAGE_CATEGORY_ROWS.map((row) => (
+            <View key={row.key} className="flex-row items-center justify-between">
+              <Text className="text-sm text-muted-foreground">{row.label}</Text>
+              <Text className="text-sm text-foreground">{formatStorageBytes(data.categories[row.key] ?? 0)}</Text>
+            </View>
+          ))}
+        </View>
+        <View className="mt-3 pt-2 border-t border-border gap-1">
+          <Text className="text-[11px] text-muted-foreground">
+            {data.month.gbMonths.toFixed(3)} billable GB-months this month
+            {data.month.mode === 'shadow'
+              ? ` · would charge $${data.month.shadowUsd.toFixed(2)}`
+              : ` · charged $${data.month.chargedUsd.toFixed(2)}`}
+          </Text>
+          <Text className="text-[11px] text-muted-foreground">
+            Last pass {data.lastPassAt ? new Date(data.lastPassAt).toLocaleString() : 'never'}
+          </Text>
+          {data.unmeasured.length > 0 && (
+            <Text className="text-[11px] text-amber-600 dark:text-amber-400">
+              Not measured: {data.unmeasured.join(', ')}
+            </Text>
+          )}
+        </View>
+      </View>
+
+      <View className="flex-row flex-wrap gap-4">
+        <View className="flex-1 min-w-[280px] rounded-xl border border-border bg-card p-4">
+          <Text className="text-sm font-semibold text-foreground mb-3">Biggest workspaces</Text>
+          {data.topByBytes.slice(0, 10).map((row) => (
+            <View key={row.workspaceId} className="flex-row items-center justify-between py-1">
+              <Text className="text-sm text-foreground flex-1 min-w-0 mr-2" numberOfLines={1}>
+                {row.name}
+              </Text>
+              <Text className="text-sm text-muted-foreground">{formatStorageBytes(row.totalBytes)}</Text>
+            </View>
+          ))}
+          {data.topByBytes.length === 0 && (
+            <Text className="text-sm text-muted-foreground">Nothing measured yet.</Text>
+          )}
+        </View>
+
+        <View className="flex-1 min-w-[280px] rounded-xl border border-border bg-card p-4">
+          <Text className="text-sm font-semibold text-foreground mb-3">Over allowance</Text>
+          {data.topByOverage.slice(0, 10).map((row) => (
+            <View key={row.workspaceId} className="flex-row items-center justify-between py-1">
+              <Text className="text-sm text-foreground flex-1 min-w-0 mr-2" numberOfLines={1}>
+                {row.name}
+              </Text>
+              <Text className="text-sm text-muted-foreground">{formatStorageBytes(row.overageBytes)}</Text>
+            </View>
+          ))}
+          {data.topByOverage.length === 0 && (
+            <Text className="text-sm text-muted-foreground">No workspace is over its allowance.</Text>
+          )}
+        </View>
+      </View>
+    </View>
+  )
+}
+
 export default function AdminMarketingAnalyticsPage() {
   const { width } = useWindowDimensions()
   const insets = useSafeAreaInsets()
@@ -168,6 +348,7 @@ export default function AdminMarketingAnalyticsPage() {
   const [sourceBreakdown, setSourceBreakdown] = useState<{ data: SourceBreakdownData | null; loading: boolean }>({ data: null, loading: true })
   const [aiDigest, setAiDigest] = useState<{ data: AIDigestData | null; loading: boolean }>({ data: null, loading: true })
   const [digestList, setDigestList] = useState<{ data: AIDigestListItem[] | null; loading: boolean }>({ data: null, loading: true })
+  const [storage, setStorage] = useState<{ data: StorageSummaryData | null; loading: boolean }>({ data: null, loading: true })
 
   const internalParam = excludeInternal ? 'true' : 'false'
 
@@ -269,6 +450,14 @@ export default function AdminMarketingAnalyticsPage() {
     setDigestList({ data, loading: false })
   }, [trackDigestList])
 
+  const trackStorage = usePanelSequence()
+  const loadStorage = useCallback(async () => {
+    setStorage((s) => ({ ...s, loading: true }))
+    const data = await trackStorage(() => fetchAdminJson<StorageSummaryData>('/storage'))
+    if (data === SUPERSEDED) return
+    setStorage({ data, loading: false })
+  }, [trackStorage])
+
   const loadAll = useCallback(async () => {
     await Promise.all([
       loadOverview(),
@@ -280,6 +469,7 @@ export default function AdminMarketingAnalyticsPage() {
       loadSourceBreakdown(),
       loadAiDigest(),
       loadDigestList(),
+      loadStorage(),
     ])
   }, [
     loadOverview,
@@ -291,6 +481,7 @@ export default function AdminMarketingAnalyticsPage() {
     loadSourceBreakdown,
     loadAiDigest,
     loadDigestList,
+    loadStorage,
   ])
 
   useEffect(() => {
@@ -328,6 +519,10 @@ export default function AdminMarketingAnalyticsPage() {
   useEffect(() => {
     void loadDigestList()
   }, [loadDigestList])
+
+  useEffect(() => {
+    void loadStorage()
+  }, [loadStorage])
 
   const handleGenerateDigest = useCallback(async () => {
     setGenerating(true)
@@ -443,6 +638,12 @@ export default function AdminMarketingAnalyticsPage() {
         <View className="mb-5">
           <SectionLabel title="Acquisition" detail="How people find Shogo" />
           <SourceBreakdownPanel data={sourceBreakdown.data} loading={sourceBreakdown.loading} />
+        </View>
+
+        {/* Storage footprint (SHO-423) */}
+        <View className="mb-5">
+          <SectionLabel title="Storage" detail="Platform S3 footprint and month-to-date billing" />
+          <StorageSection data={storage.data} loading={storage.loading} />
         </View>
 
         {/* Compute (SHO-424) */}
