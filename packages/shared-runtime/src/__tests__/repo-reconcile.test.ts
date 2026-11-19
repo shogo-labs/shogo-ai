@@ -21,6 +21,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 
 import { reconcileRepoHistory } from '../repo-reconcile'
+import { getShogoAgentEmail, getShogoAgentName } from '../agent-attribution'
 
 let dir: string
 beforeEach(() => {
@@ -44,6 +45,15 @@ function git(cwd: string, ...args: string[]): string {
       GIT_CONFIG_SYSTEM: '/dev/null',
     },
   }).trim()
+}
+
+/** `git config --get` exits 1 when the key is unset; that is an answer, not a failure. */
+function gitOptional(cwd: string, ...args: string[]): string {
+  try {
+    return git(cwd, ...args)
+  } catch {
+    return ''
+  }
 }
 
 /** A repo with the given files committed, returning its HEAD. */
@@ -171,5 +181,38 @@ describe('reconcileRepoHistory', () => {
     await expect(reconcileRepoHistory(workspace, join(dir, 'missing'))).rejects.toThrow()
     expect(git(workspace, 'rev-parse', 'HEAD')).toBe(before)
     expect(existsSync(join(workspace, 'a.txt'))).toBe(true)
+  })
+
+  test('the reconcile commit is authored as the Shogo agent, with no git identity configured', async () => {
+    // CI has no global git identity, and a checkout Shogo only has on loan must
+    // not have its `.git/config` rewritten. `commit-tree` therefore has to get
+    // the identity from the environment — without it the heal dies with
+    // "Author identity unknown" and an untrusted VM can never save again.
+    const saved = { global: process.env.GIT_CONFIG_GLOBAL, system: process.env.GIT_CONFIG_SYSTEM }
+    process.env.GIT_CONFIG_GLOBAL = '/dev/null'
+    process.env.GIT_CONFIG_SYSTEM = '/dev/null'
+    try {
+      repo('durable', { 'src/App.tsx': 'durable version\n' })
+      const workspace = join(dir, 'live')
+      mkdirSync(workspace, { recursive: true })
+      git(workspace, 'init', '-q', '-b', 'main')
+      write(workspace, { 'src/App.tsx': 'live version\n' })
+      git(workspace, 'add', '-A')
+      git(workspace, 'commit', '-q', '-m', 'live v1')
+
+      const { head } = await reconcileRepoHistory(workspace, join(dir, 'durable'))
+
+      const name = getShogoAgentName()
+      const email = getShogoAgentEmail()
+      expect(git(workspace, 'log', '-1', '--format=%an <%ae>|%cn <%ce>', head)).toBe(`${name} <${email}>|${name} <${email}>`)
+      expect(git(workspace, 'log', '-1', '--format=%B', head)).toContain(`Co-authored-by: ${name} <${email}>`)
+      // Nothing was written into the repo's own config to make that work.
+      expect(gitOptional(workspace, 'config', '--local', '--get', 'user.email')).toBe('')
+    } finally {
+      if (saved.global === undefined) delete process.env.GIT_CONFIG_GLOBAL
+      else process.env.GIT_CONFIG_GLOBAL = saved.global
+      if (saved.system === undefined) delete process.env.GIT_CONFIG_SYSTEM
+      else process.env.GIT_CONFIG_SYSTEM = saved.system
+    }
   })
 })

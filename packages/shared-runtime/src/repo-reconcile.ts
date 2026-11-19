@@ -25,6 +25,7 @@
 
 import { existsSync, rmSync } from 'fs'
 import { join } from 'path'
+import { getShogoAgentEmail, getShogoAgentName, shogoCoAuthorTrailer } from './agent-attribution'
 import { spawn } from './child-process'
 import { resolveGitDir } from './shogo-state-paths'
 
@@ -49,7 +50,19 @@ function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<GitR
   return new Promise((resolve, reject) => {
     const child = spawn('git', args, {
       cwd,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(env ?? {}) },
+      // The identity comes from the environment, not the repo config: CI has no
+      // global git identity, and a checkout Shogo only has on loan must not have
+      // its `.git/config` rewritten. `commit-tree` is the one call here that
+      // needs it — without it the reconcile dies with "Author identity unknown".
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_AUTHOR_NAME: getShogoAgentName(),
+        GIT_AUTHOR_EMAIL: getShogoAgentEmail(),
+        GIT_COMMITTER_NAME: getShogoAgentName(),
+        GIT_COMMITTER_EMAIL: getShogoAgentEmail(),
+        ...(env ?? {}),
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let stdout = ''
@@ -113,12 +126,13 @@ export async function reconcileRepoHistory(
 
     const parents = localHead ? ['-p', durableHead, '-p', localHead] : ['-p', durableHead]
     const message =
-      opts.message ??
-      `Reconcile with the durable history\n\n` +
-        `The workspace was running on a history that could not be proven to descend from the\n` +
-        `durable repo. This commit joins the two: its tree is the working tree as it stood,\n` +
-        `and its parents are the durable HEAD (${durableHead.slice(0, 12)}) and the live HEAD` +
-        `${localHead ? ` (${localHead.slice(0, 12)})` : ''}. No file was changed.`
+      (opts.message ??
+        `Reconcile with the durable history\n\n` +
+          `The workspace was running on a history that could not be proven to descend from the\n` +
+          `durable repo. This commit joins the two: its tree is the working tree as it stood,\n` +
+          `and its parents are the durable HEAD (${durableHead.slice(0, 12)}) and the live HEAD` +
+          `${localHead ? ` (${localHead.slice(0, 12)})` : ''}. No file was changed.`) +
+      `\n\n${shogoCoAuthorTrailer()}`
     const head = await must(workspaceDir, ['commit-tree', tree, ...parents, '-m', message])
 
     // Move the branch (or detached HEAD) forward, then make the index match the
