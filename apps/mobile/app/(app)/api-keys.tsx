@@ -98,6 +98,10 @@ export default observer(function ApiKeysPage() {
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyInfo | null>(null)
   const [isRevoking, setIsRevoking] = useState(false)
   const [showManualKeys, setShowManualKeys] = useState(false)
+  // A held signup (SHO-416) is refused with a code, not a generic failure. The
+  // message is the API's own, so the user is told to verify rather than left
+  // wondering why "Create Key" did nothing.
+  const [createError, setCreateError] = useState<{ message: string; verify: boolean } | null>(null)
 
   const deviceKeys = useMemo(() => keys.filter((k) => k.kind === 'device'), [keys])
   const userKeys = useMemo(() => keys.filter((k) => k.kind !== 'device'), [keys])
@@ -122,12 +126,21 @@ export default observer(function ApiKeysPage() {
   const handleCreate = async () => {
     if (!workspace?.id || !newKeyName.trim()) return
     setIsCreating(true)
+    setCreateError(null)
     try {
       const data = await platform.createApiKey(newKeyName.trim(), workspace.id)
       setCreatedKey(data.key)
       await loadKeys()
     } catch (err) {
       console.error('[ApiKeys] Failed to create:', err)
+      const code = (err as { details?: { error?: { code?: string } } })?.details?.error?.code
+      setCreateError({
+        message:
+          err instanceof Error && err.message
+            ? err.message
+            : 'We could not create the key. Please try again.',
+        verify: code === 'email_verification_required',
+      })
     } finally {
       setIsCreating(false)
     }
@@ -166,6 +179,7 @@ export default observer(function ApiKeysPage() {
     setCreatedKey(null)
     setNewKeyName('Shogo Local')
     setCopied(false)
+    setCreateError(null)
   }
 
   return (
@@ -608,6 +622,25 @@ export default observer(function ApiKeysPage() {
                       placeholder="e.g. My Laptop, Office Desktop"
                     />
                   </View>
+
+                  {createError ? (
+                    <View className="gap-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3">
+                      <Text className="text-sm text-destructive">{createError.message}</Text>
+                      {createError.verify ? (
+                        <Pressable
+                          onPress={() => {
+                            closeCreateModal()
+                            router.push('/(auth)/verify-email' as any)
+                          }}
+                          accessibilityRole="button"
+                          accessibilityLabel="Verify your email"
+                          className="self-start rounded-lg bg-destructive/10 px-3 py-1.5"
+                        >
+                          <Text className="text-sm font-medium text-destructive">Verify email</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  ) : null}
 
                   <View className="flex-row gap-3">
                     <Button variant="outline" onPress={closeCreateModal} className="min-h-11 flex-1 rounded-xl" disabled={isCreating}>

@@ -16,6 +16,7 @@ import { startChatSweepWorker, stopChatSweepWorker } from '../jobs/run-chat-swee
 import { startChannelWorkers, stopChannelWorkers } from '../jobs/run-channel-workers'
 import { getLocalHeartbeatScheduler, startLocalHeartbeatScheduler } from './local-heartbeat-scheduler'
 import { startSocialRelayConsumer, stopSocialRelayConsumer } from '../services/social/relay-consumer'
+import { startAgentDmMigration } from '../services/agent-chat.service'
 
 export interface LocalBackgroundWorkersOptions {
   /** Wakes a sleeping project when one of its heartbeats comes due. */
@@ -45,6 +46,8 @@ export async function startLocalBackgroundWorkers({
   // verified and stored them, this applies them locally and acks. A no-op
   // unless this process is a desktop in relay mode.
   startSocialRelayConsumer()
+  // Move every existing agent DM into a project chat, once (SHO-412).
+  startAgentDmMigration()
   try {
     await startLocalHeartbeatScheduler(runtimeManager)
   } catch (err: any) {

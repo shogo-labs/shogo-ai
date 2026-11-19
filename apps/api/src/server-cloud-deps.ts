@@ -20,6 +20,7 @@ import * as storageService from './services/storage.service'
 import * as nodeMetricsService from './services/node-metrics.service'
 import * as affiliateService from './services/affiliate.service'
 import * as trialService from './services/trial.service'
+import * as soloFounderService from './services/solo-founder.service'
 import * as signupCreditService from './services/signup-credit.service'
 import {
   sendPlanUpgradedEmail,
@@ -89,6 +90,7 @@ export {
   nodeMetricsService,
   affiliateService,
   trialService,
+  soloFounderService,
   signupCreditService,
   sendPlanUpgradedEmail,
   sendTrialEndingEmail,

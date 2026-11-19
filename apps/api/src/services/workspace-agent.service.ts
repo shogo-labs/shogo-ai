@@ -337,7 +337,11 @@ export function isApprovalPending(event: { kind: string; metadata?: unknown }): 
   return !metadata?.resolvedAt
 }
 
-export async function listWorkspaceActivity(workspaceId: string, limit = 100) {
+export async function listWorkspaceActivity(
+  workspaceId: string,
+  limit = 100,
+  opts: { viewerUserId?: string } = {},
+) {
   const [events, tasks, chats] = await Promise.all([
     prisma.goalEvent.findMany({
       where: { goal: { workspaceId } },
@@ -362,7 +366,7 @@ export async function listWorkspaceActivity(workspaceId: string, limit = 100) {
       orderBy: { updatedAt: 'desc' },
       take: limit,
     }),
-    listActiveChatTurns(workspaceId),
+    listActiveChatTurns(workspaceId, { viewerUserId: opts.viewerUserId }),
   ])
 
   return [
@@ -401,6 +405,16 @@ export async function listWorkspaceActivity(workspaceId: string, limit = 100) {
       projectHidden: chat.projectHidden,
       startedAt: chat.startedAt,
       createdAt: chat.startedAt,
+      // The same row metadata `/active-chats` returns, so this surface can
+      // name the run (card or cleaned command), show who and how long, and
+      // offer a stop under the same rules.
+      agentName: chat.agentName ?? null,
+      card: chat.card ?? null,
+      canStop: chat.canStop,
+      messageId: chat.messageId ?? null,
+      conversationId: chat.conversationId ?? null,
+      conversationName: chat.conversationName ?? null,
+      threadRootId: chat.threadRootId ?? null,
     })),
   ]
     .sort((a, b) => {

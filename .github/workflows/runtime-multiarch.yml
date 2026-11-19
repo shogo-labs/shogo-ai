@@ -44,6 +44,11 @@ on:
         type: boolean
   push:
     branches: [main]
+    # Release tags also build, so the `publish` job below can re-tag the same
+    # per-arch digests into the public GHCR image. No `paths:` filter on tags:
+    # a release tag always publishes, whatever it touched.
+    tags:
+      - 'v[0-9]*'
     paths:
       # Only the runtime chain drives this image.
       - 'packages/agent-runtime/**'
@@ -150,6 +155,16 @@ jobs:
             BASE_IMAGE=${{ steps.reg.outputs.registry }}/shogo/shogo-runtime-base:mx-${{ github.sha }}-${{ matrix.arch }}
             WORKSPACE_DEPS=${{ steps.reg.outputs.registry }}/shogo/shogo-workspace-deps:mx-${{ github.sha }}-${{ matrix.arch }}
             SHOGO_RUNTIME_REVISION=${{ github.sha }}
+          # OCI labels travel with the manifest into the public GHCR image, so a
+          # partner can read the version, revision and source straight off the
+          # image they pulled.
+          labels: |
+            org.opencontainers.image.title=Shogo agent runtime
+            org.opencontainers.image.description=Standalone Shogo agent runtime (AGPL-3.0-or-later)
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
           # Push by digest only; the merge job assembles the shared tag into a
           # manifest list from the two per-arch digests.
           outputs: type=image,name=${{ steps.reg.outputs.registry }}/shogo/shogo-runtime,push-by-digest=true,name-canonical=true,push=true
@@ -225,6 +240,148 @@ jobs:
           PREFIX: ${{ inputs.environment || 'staging' }}
         run: |
           docker buildx imagetools inspect "${REGISTRY}/shogo/shogo-runtime:${PREFIX}-multiarch-latest"
+
+  # ---------------------------------------------------------------------------
+  # Public image: re-tag the SAME per-arch digests into GHCR on a release tag.
+  #
+  # The runtime is AGPL-3.0-or-later and its binaries are already published on
+  # every `v[0-9]*` tag (publish-agent-runtime.yml), so a public image follows
+  # the same policy. Nothing is rebuilt here — `imagetools create` copies the
+  # two per-arch manifests from OCIR into one GHCR manifest list, so the public
+  # image is byte-identical to the one our own fleet runs.
+  #
+  # One-time setting this workflow cannot make: the GHCR package must be
+  # PUBLIC. After the first publish, set it in the package settings
+  # (Packages → shogo-runtime → Change visibility → Public). Until then
+  # `docker pull` needs credentials.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish public multi-arch image (GHCR)
+    needs: [build, merge]
+    if: startsWith(github.ref, 'refs/tags/v')
+    # Same environment as `merge`: the OCIR credentials it reads are
+    # environment-scoped secrets.
+    environment: ${{ (inputs.environment || 'staging') == 'production' && 'production-us' || 'staging' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # append the digests to the release notes
+      packages: write # push to ghcr.io
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: /tmp/digests
+          pattern: runtime-digest-*
+          merge-multiple: true
+
+      - name: Login to OCIR (source)
+        run: |
+          echo "${{ secrets.OCI_AUTH_TOKEN }}" | docker login \
+            ${{ vars.OCI_REGION }}.ocir.io \
+            -u "${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}" \
+            --password-stdin
+
+      - name: Login to GHCR (destination)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io \
+            -u "${{ github.actor }}" \
+            --password-stdin
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Create + push the public manifest
+        id: public
+        env:
+          SOURCE: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}/shogo/shogo-runtime
+          TARGET: ghcr.io/shogo-labs/shogo-runtime
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          AMD64="$(cat /tmp/digests/amd64)"
+          ARM64="$(cat /tmp/digests/arm64)"
+          echo "amd64=$AMD64"
+          echo "arm64=$ARM64"
+
+          docker buildx imagetools create \
+            -t "${TARGET}:${TAG}" \
+            -t "${TARGET}:sha-${SHA}" \
+            "${SOURCE}@${AMD64}" \
+            "${SOURCE}@${ARM64}"
+
+          echo "image=${TARGET}:${TAG}" >> "$GITHUB_OUTPUT"
+          echo "amd64=${AMD64}" >> "$GITHUB_OUTPUT"
+          echo "arm64=${ARM64}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the public manifest
+        env:
+          TARGET: ghcr.io/shogo-labs/shogo-runtime
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${TARGET}:${TAG}"
+          # Both platforms must be present, or `docker pull` on one arch fails.
+          docker buildx imagetools inspect "${TARGET}:${TAG}" | grep -q 'linux/amd64'
+          docker buildx imagetools inspect "${TARGET}:${TAG}" | grep -q 'linux/arm64'
+
+      - name: Append the image + digests to the release notes
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        with:
+          # No `name:` — whichever workflow creates the release first wins the
+          # title, everyone else appends. `append_body` keeps the desktop and
+          # binary notes intact.
+          append_body: true
+          body: |
+
+            ### Standalone agent runtime image
+
+            Public multi-arch image (linux/amd64 + linux/arm64), AGPL-3.0-or-later:
+
+            ```
+            docker pull ghcr.io/shogo-labs/shogo-runtime:${{ github.ref_name }}
+            ```
+
+            Pin by digest for a reproducible deploy:
+
+            | Platform | Digest |
+            | --- | --- |
+            | linux/amd64 | `${{ steps.public.outputs.amd64 }}` |
+            | linux/arm64 | `${{ steps.public.outputs.arm64 }}` |
+
+            Contract: [docs/STANDALONE_RUNTIME.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/STANDALONE_RUNTIME.md)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # Release gate: boot the image we just published the way a hardened
+  # deployment does — read-only root filesystem, every writable path mounted,
+  # SHOGO_STANDALONE=1, no Shogo API — and prove it is usable. A tag that fails
+  # here is a tag partners cannot run, so it must not go out.
+  # ---------------------------------------------------------------------------
+  smoke:
+    name: Smoke-test the published image (read-only root)
+    needs: [publish]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Free disk space (runtime image is ~14GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
+      - name: Login to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io \
+            -u "${{ github.actor }}" \
+            --password-stdin
+
+      - name: Run the standalone smoke test
+        run: scripts/standalone-runtime-smoke.sh "ghcr.io/shogo-labs/shogo-runtime:${{ github.ref_name }}"
 
   # ---------------------------------------------------------------------------
   # Docker-class image: the multi-arch runtime plus dockerd and the starter

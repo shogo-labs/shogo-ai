@@ -40,13 +40,39 @@ export interface NoiseFilterEvent {
  */
 const SHOGO_TELEMETRY_TAG = 'shogo_telemetry'
 
+/**
+ * True when the event is a deliberate Shogo capture (chat stream-error
+ * telemetry and friends). Those must never be dropped by any filter here.
+ */
+export function isDeliberateTelemetry(event: NoiseFilterEvent): boolean {
+  return !!(event.tags && event.tags[SHOGO_TELEMETRY_TAG] != null)
+}
+
+/**
+ * A 4xx is the API refusing a request the person made — a wrong password, a
+ * duplicate star, a permission the account does not have, a project that was
+ * deleted. The screen already shows the message, so reporting it as a Sentry
+ * error buries real defects under expected outcomes (SHO-437). 5xx and errors
+ * with no status stay reportable: those are the server failing, not the person.
+ *
+ * Structural on purpose — `ShogoError` (SDK) and `AuthRequestError`
+ * (shared-app auth) both carry `name` + `status`, and this module stays free of
+ * cross-package imports so it is trivially unit-testable.
+ */
+export function isExpectedClientError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const e = error as { name?: unknown; status?: unknown }
+  if (e.name !== 'ShogoError' && e.name !== 'AuthRequestError') return false
+  return typeof e.status === 'number' && e.status >= 400 && e.status < 500
+}
+
 export function isNoiseEvent(event: NoiseFilterEvent): boolean {
   // Never drop an intentional Shogo capture. These carry a marker tag and rich
   // context precisely BECAUSE the raw message (e.g. "Failed to fetch",
   // "TimeoutError") overlaps the generic transient-network noise below that we
   // filter for UNOWNED global rejections. Without this bypass we'd silence the
   // very chat transport-failure telemetry we added to stop silent failures.
-  if (event.tags && event.tags[SHOGO_TELEMETRY_TAG] != null) return false
+  if (isDeliberateTelemetry(event)) return false
 
   const values = event.exception?.values ?? []
   const messages = values

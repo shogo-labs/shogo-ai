@@ -34,6 +34,7 @@ import {
   statSync,
 } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
+import { isShogoRuntimeSubtree } from '@shogo/shared-runtime/shogo-state-paths'
 import { importCloudModule } from '../../lib/cloud-import'
 import { deriveProjectRuntimeToken } from '../../lib/project-runtime-token'
 
@@ -93,8 +94,16 @@ export const isExcludedFile = (name: string): boolean =>
 /**
  * Path-aware exclusion check: `.shogo/install-marker` is excluded by full
  * relative path, everything else by basename.
+ *
+ * Shogo's own runtime state (`.shogo/run`, `.shogo/logs`, `.tmp/`,
+ * `.shogo-cwd-*`) never travels in an archive — the rules come from the shared
+ * predicate in `@shogo/shared-runtime/shogo-state-paths` (SHO-371) so export,
+ * checkpoints and GitHub commits cannot drift apart. The project's SQLite
+ * database is deliberately *not* excluded: it is project data, and
+ * {@link checkpointSqliteWal} folds its WAL in before it is read.
  */
 export const isExcludedRelPath = (relPath: string): boolean => {
+  if (isShogoRuntimeSubtree(relPath)) return true
   if (EXCLUDED_RELATIVE_PATHS.has(relPath)) return true
   // The marker matters wherever it sits: a project's own marker has the same
   // effect (and the same skew risk) as the workspace root's.

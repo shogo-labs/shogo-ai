@@ -2,37 +2,22 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { existsSync, readFileSync } from 'fs'
 import { publishRequestTimeoutMs } from '@shogo/shared-runtime/publish-timeouts'
+import { resolveApiUrl } from '@shogo/shared-runtime/standalone'
 import { requesterTicketHeaders } from './credential-scope'
 import { crossWorkspaceHeaders } from './cross-workspace-scope'
 import type { TaskLink } from './task-registry'
 
 const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
 
+/**
+ * The Shogo API base URL, or `null` when there is none to talk to.
+ *
+ * Delegates to the one shared resolver (`@shogo/shared-runtime/standalone`) so
+ * this copy, `server-framework.ts` and `self-assign.ts` can never drift again.
+ * `null` in standalone mode is what turns every API-bound caller off.
+ */
 export function deriveApiUrl(): string | null {
-  if (process.env.SHOGO_API_URL) return process.env.SHOGO_API_URL
-  if (process.env.API_URL) return process.env.API_URL
-  const proxyUrl = process.env.AI_PROXY_URL
-  if (proxyUrl) {
-    try {
-      const url = new URL(proxyUrl)
-      return `${url.protocol}//${url.host}`
-    } catch { /* invalid URL */ }
-  }
-  // The cluster-DNS fallback only resolves inside Kubernetes. Elsewhere (a
-  // standalone/local runtime with no API configured) return null so callers
-  // fail fast with NO_API_URL_ERROR instead of an ENOTFOUND DNS lookup.
-  if (!isInKubernetes()) return null
-  const systemNs = process.env.SYSTEM_NAMESPACE || 'shogo-system'
-  return `http://api.${systemNs}.svc.cluster.local`
-}
-
-function isInKubernetes(): boolean {
-  if (process.env.KUBERNETES_SERVICE_HOST) return true
-  try {
-    return existsSync(SA_TOKEN_PATH)
-  } catch {
-    return false
-  }
+  return resolveApiUrl()
 }
 
 /** Error returned by internal-API calls when `deriveApiUrl()` is null. */

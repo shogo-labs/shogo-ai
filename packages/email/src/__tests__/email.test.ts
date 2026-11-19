@@ -287,5 +287,49 @@ describe('Template System', () => {
       // Server-generated URLs remain intact in the href
       expect(html).toContain('href="https://app.example.com/accept"')
     })
+
+    // SHO-409: the prepaid-card explanation only reaches the owner if the
+    // template actually declares `reason`/`reasonMessage`. A missing template
+    // throws templateNotFound and the email is silently dropped.
+    test('trial-unavailable template renders the prepaid reason', () => {
+      const { subject, html } = registry.render('trial-unavailable', {
+        workspaceName: 'Acme',
+        planName: 'Pro',
+        dashboardUrl: 'https://app.example.com/billing',
+        reason: 'blocked_prepaid_card',
+        reasonMessage: "Free trials need a debit or credit card — prepaid cards can't start a trial.",
+      })
+      expect(subject).toContain('Acme')
+      expect(html).toContain("prepaid cards can&#39;t start a trial")
+      expect(html).toContain('Nothing was charged')
+      expect(html).toContain('href="https://app.example.com/billing"')
+    })
+
+    test('trial-unavailable template renders the Solo Founder refund', () => {
+      const { subject, html } = registry.render('trial-unavailable', {
+        workspaceName: 'Acme',
+        planName: 'Business',
+        dashboardUrl: 'https://app.example.com/billing',
+        reason: 'solo_founder_prepaid',
+        subjectLine: 'Your Solo Founder purchase was refunded',
+        heading: 'We refunded your Solo Founder purchase',
+        chargeLine: 'We charged your card and refunded it in full.',
+      })
+      expect(subject).toBe('Your Solo Founder purchase was refunded')
+      expect(html).toContain('We refunded your Solo Founder purchase')
+      expect(html).toContain('Acme')
+      expect(html).toContain('refunded it in full')
+      // A refund was charged first: the trial reassurance must not appear.
+      expect(html).not.toContain('Nothing was charged')
+    })
+
+    test('trial-unavailable template falls back to the duplicate-trial reason', () => {
+      const { html } = registry.render('trial-unavailable', {
+        workspaceName: 'Acme',
+        planName: 'Pro',
+        dashboardUrl: 'https://app.example.com/billing',
+      })
+      expect(html).toContain('already used a free trial')
+    })
   })
 })

@@ -104,7 +104,11 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
         const streamsInPlace = namedKind === "video" || namedKind === "audio"
         const nativeDocument =
           Platform.OS !== "web" && (namedKind === "image" || namedKind === "pdf")
-        if (streamsInPlace || nativeDocument) {
+        // A deck is never buffered here: the slides viewer buffers it itself,
+        // under its own size cap, so a 300 MB deck is refused before it lands
+        // in memory (SHO-426).
+        const deck = namedKind === "slides"
+        if (streamsInPlace || nativeDocument || deck) {
           const probe = await fetch(source, {
             credentials: "include",
             headers: { Range: "bytes=0-0" },

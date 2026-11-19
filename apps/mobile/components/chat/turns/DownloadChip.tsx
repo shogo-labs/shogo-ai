@@ -21,12 +21,12 @@ import {
   Pressable,
   ActivityIndicator,
   Platform,
-  InteractionManager,
 } from "react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import { Download } from "lucide-react-native";
-import { agentFetch } from "../../../lib/agent-fetch";
+import { nativeAuthHeaders } from "../../../lib/agent-fetch";
 import { buildAgentWorkspaceUrl } from "../../../lib/agent-workspace-url";
+import { downloadFileToCache, shareCachedFile } from "../../../lib/download-to-file";
 
 export interface DownloadChipProps {
   /** Workspace-relative path of the deliverable file (e.g. `report.pptx`). */
@@ -44,17 +44,6 @@ export interface DownloadChipProps {
 
 function basename(path: string): string {
   return path.split(/[\\/]/).pop() || "download";
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  // Chunk to avoid `String.fromCharCode(...hugeArray)` stack overflows.
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(binary);
 }
 
 export function DownloadChip({ path, agentUrl, className, variant = "chip" }: DownloadChipProps) {
@@ -79,38 +68,15 @@ export function DownloadChip({ path, agentUrl, className, variant = "chip" }: Do
       return;
     }
 
-    // Native: fetch (with auth), write to app storage, present share sheet.
+    // Native: the URL streams straight to app storage (no whole-file buffer on
+    // the JS heap — SHO-434), then the OS share sheet takes it from disk.
     setBusy(true);
     try {
-      const res = await agentFetch(url);
-      if (!res.ok) throw new Error(`Download failed (${res.status})`);
-      const base64 = arrayBufferToBase64(await res.arrayBuffer());
-
-      const { cacheDirectory, writeAsStringAsync, EncodingType } =
-        await import("expo-file-system/legacy");
-      const Sharing = await import("expo-sharing");
-      const dir = cacheDirectory;
-      if (!dir) throw new Error("Could not access app storage");
-      const fileUri = `${dir}${Date.now()}-${name}`;
-      await writeAsStringAsync(fileUri, base64, {
-        encoding: EncodingType.Base64,
+      const fileUri = await downloadFileToCache(url, {
+        name,
+        headers: nativeAuthHeaders(),
       });
-
-      // Let the active screen settle so the OS can present the share sheet.
-      await new Promise<void>((resolve) => {
-        InteractionManager.runAfterInteractions(() => resolve());
-      });
-
-      try {
-        await Sharing.shareAsync(fileUri, { dialogTitle: `Download ${name}` });
-      } catch (shareErr: unknown) {
-        if (Platform.OS === "ios") {
-          const { Share } = await import("react-native");
-          await Share.share({ url: fileUri, title: name });
-        } else {
-          throw shareErr;
-        }
-      }
+      await shareCachedFile(fileUri, name);
     } catch (err: any) {
       setError(err?.message ?? "Download failed");
     } finally {

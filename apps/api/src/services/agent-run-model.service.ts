@@ -12,7 +12,10 @@ import { prisma } from '../lib/prisma'
 import { getAgentDefaultModel } from './workspace-agent.service'
 import { isModelVisibleForWorkspace } from './workspace-models.service'
 import { isModelAccessibleForWorkspace } from '../lib/model-access'
-import { getMergedModelEntrySync, resolveModelLabel } from './model-registry.service'
+import { getMergedModelEntrySync, resolveModelLabel, resolveModelLabelSync } from './model-registry.service'
+import { recordAccessEvent, allowedAutoTiers, resolveRunModelFor } from './access-policy.service'
+import { resolveEffectiveAgentModelDefaults } from '../lib/runtime/agent-model-defaults'
+import { getRbacMode } from '../lib/authz/mode'
 
 const db = prisma as any
 
@@ -35,7 +38,13 @@ export async function resolveAgentRunModel(projectId: string | null, workspaceId
     if (!(await isModelVisibleForWorkspace(workspaceId, model))) return AUTO_MODEL_ID
     return (await isModelAccessibleForWorkspace(workspaceId, model)) ? model : AUTO_MODEL_ID
   }
-  const row = await db.agentConfig.findUnique({ where: { projectId }, select: { modelName: true } }).catch(() => null)
+  // `db` is the untyped prisma handle, so a missing delegate (a partial test
+  // mock, or a client generated before the model existed) throws on the
+  // property access rather than returning a rejected promise — `.catch()` on
+  // the call alone would not see it.
+  const row = await Promise.resolve()
+    .then(() => db.agentConfig.findUnique({ where: { projectId }, select: { modelName: true } }))
+    .catch(() => null)
   const name = row?.modelName?.trim()
   if (!name || name === DEFAULT_AGENT_MODEL || name === AUTO_MODEL_ID) return AUTO_MODEL_ID
   // A model id that is no longer in the registry (an admin deleted it, or the
@@ -55,6 +64,131 @@ export async function resolveAgentRunModel(projectId: string | null, workspaceId
   // it must not name a model the run will never use (SHO-145, SHO-264).
   if (workspaceId && !(await isModelAccessibleForWorkspace(workspaceId, name))) return AUTO_MODEL_ID
   return name
+}
+
+export interface RunModelResolution {
+  model: string
+  /**
+   * Set when the agent's configured model is outside the acting person's
+   * effective set and the run was moved to their default model for this run
+   * only (SHO-417, Russell 2026-11-18). The runtime states it in the reply.
+   */
+  downgrade: { from: string; to: string; fromLabel?: string; toLabel?: string } | null
+  /**
+   * The Auto tier map narrowed to this person, or `null` when the run is not on
+   * Auto. The runtime's process-wide `AGENT_AUTO_TIER_MAP` is one map for the
+   * whole workspace, so a per-person cap has to ride on the turn: with this
+   * map, `resolveAutoDowngrade` can only walk models the person may use.
+   */
+  autoTiers: Record<string, string> | null
+}
+
+/**
+ * The model a run should use for one person, with the run-start downgrade
+ * applied.
+ *
+ * When the agent's configured model is outside the acting person's effective
+ * set, the run uses that person's default model **for this run only** — the
+ * agent's saved config is untouched. In `shadow` mode the run keeps the
+ * configured model and only an audit row is written, so an admin can see what
+ * would have happened before enforcing.
+ *
+ * `null` when the person has no allowed model at all: the caller fails the run
+ * with `model_not_allowed` and "ask an admin".
+ */
+export async function resolveAgentRunModelFor(
+  projectId: string | null,
+  workspaceId: string | undefined,
+  actingUserId: string | null | undefined,
+): Promise<RunModelResolution | null> {
+  // This runs on the chat hot path, so a resolution failure must not 500 the
+  // turn: fall back to the configured model with no downgrade and let the proxy
+  // gate the request as it always did.
+  try {
+    return await resolveRunModelForActor(projectId, workspaceId, actingUserId)
+  } catch (err) {
+    console.warn('[rbac] run model resolution failed:', (err as Error)?.message ?? err)
+    return { model: AUTO_MODEL_ID, downgrade: null, autoTiers: null }
+  }
+}
+
+async function resolveRunModelForActor(
+  projectId: string | null,
+  workspaceId: string | undefined,
+  actingUserId: string | null | undefined,
+): Promise<RunModelResolution | null> {
+  const configured = await resolveAgentRunModel(projectId, workspaceId)
+  if (!workspaceId || !actingUserId) return { model: configured, downgrade: null, autoTiers: null }
+
+  const autoTiers = await autoTiersFor(workspaceId, actingUserId, configured)
+  const resolved = await resolveRunModelFor(workspaceId, actingUserId, configured)
+  if (!resolved) return null
+  if (!resolved.downgrade) return { model: resolved.model, downgrade: null, autoTiers }
+
+  const mode = await getRbacMode()
+  await recordAccessEvent({
+    workspaceId,
+    kind: mode === 'on' ? 'model.downgraded' : 'shadow_denied',
+    onBehalfOfUserId: actingUserId,
+    modelId: resolved.downgrade.from,
+    detail: {
+      from: resolved.downgrade.from,
+      to: resolved.downgrade.to,
+      projectId,
+      mode,
+      reason: 'agent_model_above_actor',
+    },
+  })
+  if (mode !== 'on') {
+    console.warn('[rbac] shadow-deny run model', {
+      workspaceId,
+      userId: actingUserId,
+      from: resolved.downgrade.from,
+      to: resolved.downgrade.to,
+    })
+    return { model: configured, downgrade: null, autoTiers }
+  }
+  return { model: resolved.model, downgrade: withLabels(resolved.downgrade), autoTiers }
+}
+
+/**
+ * Name the models in the downgrade so the reply's first line reads
+ * "Ran on Claude Haiku 4.5 because your role can't use Claude Opus 4.5" rather
+ * than two raw ids. A model missing from the catalog keeps its id.
+ */
+function withLabels(downgrade: { from: string; to: string }): {
+  from: string
+  to: string
+  fromLabel?: string
+  toLabel?: string
+} {
+  const fromLabel = resolveModelLabelSync(downgrade.from)
+  const toLabel = resolveModelLabelSync(downgrade.to)
+  return {
+    ...downgrade,
+    ...(fromLabel && fromLabel !== downgrade.from ? { fromLabel } : {}),
+    ...(toLabel && toLabel !== downgrade.to ? { toLabel } : {}),
+  }
+}
+
+/**
+ * The Auto tier map for this person, or `null` when the run is not on Auto.
+ * Every tier maps to a model they may use, so an Auto fallback cannot land
+ * outside their set (AC3).
+ */
+async function autoTiersFor(
+  workspaceId: string,
+  actingUserId: string,
+  configured: string,
+): Promise<Record<string, string> | null> {
+  if (configured !== AUTO_MODEL_ID) return null
+  const defaults = await resolveEffectiveAgentModelDefaults(workspaceId).catch(() => null)
+  if (!defaults) return null
+  const configuredTiers: Record<string, string> = {}
+  for (const [tier, entry] of Object.entries(defaults.autoTiers)) {
+    if (entry?.id) configuredTiers[tier] = entry.id
+  }
+  return allowedAutoTiers(workspaceId, actingUserId, configuredTiers)
 }
 
 /**

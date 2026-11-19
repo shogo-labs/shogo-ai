@@ -53,6 +53,7 @@ let WORKSPACE_ALLOWED_IDS: Set<string> | null = null
 
 mock.module('../../services/model-registry.service', () => ({
   getMergedModelEntrySync: (id: string) => MERGED_ENTRIES[id],
+  getMergedCatalogSync: () => Object.values(MERGED_ENTRIES),
 }))
 
 mock.module('../../services/visible-models.service', () => ({
@@ -66,6 +67,7 @@ mock.module('../../services/visible-models.service', () => ({
 mock.module('../../services/workspace-models.service', () => ({
   isModelVisibleForWorkspace: async (_workspaceId: string, modelId: string) =>
     WORKSPACE_ALLOWED_IDS === null || WORKSPACE_ALLOWED_IDS.has(modelId),
+  getAllowedModelIds: async () => WORKSPACE_ALLOWED_IDS,
 }))
 
 const { validateLiveSessionStart } = await import('../live-session')

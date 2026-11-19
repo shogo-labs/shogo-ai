@@ -123,7 +123,7 @@ beforeEach(() => {
   }
 })
 
-function seedMember(role: 'owner' | 'admin' | 'member' | 'viewer' = 'member') {
+function seedMember(role: 'owner' | 'admin' | 'member' | 'viewer' = 'admin') {
   members.push({ userId: 'user_1', workspaceId: WS, role })
 }
 
@@ -132,11 +132,25 @@ function seedMember(role: 'owner' | 'admin' | 'member' | 'viewer' = 'member') {
 // ──────────────────────────────────────────────────────────────────────
 
 describe('access guards', () => {
-  test('non-member → 403 forbidden on member-only endpoint', async () => {
+  test('non-member → 403 analytics_admin_only on a read endpoint', async () => {
     const res = await call('GET', PATH('agent-breakdown'))
     expect(res.status).toBe(403)
-    expect(res.body.error.code).toBe('forbidden')
-    expect(res.body.error.message).toContain('Not a member')
+    expect(res.body.error.code).toBe('analytics_admin_only')
+  })
+
+  test('a workspace member → 403 analytics_admin_only on a read endpoint', async () => {
+    seedMember('member')
+    const res = await call('GET', PATH('agent-breakdown'))
+    expect(res.status).toBe(403)
+    expect(res.body.error.code).toBe('analytics_admin_only')
+    expect(svcSpies.getAgentCostBreakdown).not.toHaveBeenCalled()
+  })
+
+  test('a viewer → 403 analytics_admin_only on a read endpoint', async () => {
+    seedMember('viewer')
+    const res = await call('GET', PATH('agent-breakdown'))
+    expect(res.status).toBe(403)
+    expect(res.body.error.code).toBe('analytics_admin_only')
   })
 
   test('member but not admin → 403 forbidden on admin-only endpoint', async () => {
@@ -241,12 +255,19 @@ describe('agent-breakdown / recommendations / trends', () => {
 // ──────────────────────────────────────────────────────────────────────
 
 describe('budget-alerts', () => {
-  test('GET requires only member access', async () => {
-    seedMember('viewer')
+  test('GET requires admin access', async () => {
+    seedMember('admin')
     svcSpies.getBudgetAlerts.mockImplementationOnce(async () => [{ id: 'ba_1' }])
     const res = await call('GET', PATH('budget-alerts'))
     expect(res.status).toBe(200)
     expect(res.body.data).toEqual([{ id: 'ba_1' }])
+  })
+
+  test('GET refuses a viewer', async () => {
+    seedMember('viewer')
+    const res = await call('GET', PATH('budget-alerts'))
+    expect(res.status).toBe(403)
+    expect(res.body.error.code).toBe('analytics_admin_only')
   })
 
   test('POST 400 when body is missing name', async () => {
@@ -603,12 +624,18 @@ const ADMIN_CATCH_ENDPOINTS: Array<{
   { label: 'experiment stop',      method: 'POST',   suffix: 'experiments/exp_1/stop',      svcKey: 'stopExperiment' },
 ]
 
-describe('forbidden 403 on member-guarded endpoints', () => {
-  test.each(MEMBER_ENDPOINTS)('$label → 403 when caller is not a member', async ({ method, suffix }) => {
+describe('forbidden 403 on analytics-read endpoints', () => {
+  test.each(MEMBER_ENDPOINTS)('$label → 403 analytics_admin_only when caller is not a member', async ({ method, suffix }) => {
     const res = await call(method, PATH(suffix))
     expect(res.status).toBe(403)
-    expect(res.body.error.code).toBe('forbidden')
-    expect(res.body.error.message).toContain('Not a member')
+    expect(res.body.error.code).toBe('analytics_admin_only')
+  })
+
+  test.each(MEMBER_ENDPOINTS)('$label → 403 analytics_admin_only for a workspace member', async ({ method, suffix }) => {
+    seedMember('member')
+    const res = await call(method, PATH(suffix))
+    expect(res.status).toBe(403)
+    expect(res.body.error.code).toBe('analytics_admin_only')
   })
 })
 

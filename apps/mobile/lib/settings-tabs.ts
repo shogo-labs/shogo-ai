@@ -5,6 +5,7 @@ import {
   Boxes,
   Building2,
   CreditCard,
+  HardDrive,
   Laptop,
   MessageSquare,
   Monitor,
@@ -13,6 +14,7 @@ import {
   RefreshCw,
   Server,
   Shield,
+  ShieldCheck,
   User,
   Users,
   Zap,
@@ -24,9 +26,11 @@ export type SettingsTabId =
   | "people"
   | "chat"
   | "models"
+  | "access"
   | "integrations"
   | "automations"
   | "data"
+  | "disk"
   | "remote-control"
   | "account"
   | "security"
@@ -63,9 +67,16 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
   },
   { id: "chat", label: "Chat", Icon: MessageSquare, group: "settings" },
   { id: "models", label: "Models", Icon: Boxes, group: "settings" },
+  {
+    id: "access",
+    label: "Access",
+    Icon: ShieldCheck,
+    group: "settings",
+  },
   { id: "integrations", label: "Integrations", Icon: Plug, group: "settings" },
   { id: "automations", label: "Automations", Icon: Zap, group: "settings" },
   { id: "data", label: "Backup & export", Icon: Server, group: "settings" },
+  { id: "disk", label: "Disk", Icon: HardDrive, group: "settings" },
   {
     id: "remote-control",
     label: "Remote Control",

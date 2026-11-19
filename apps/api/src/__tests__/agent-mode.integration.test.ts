@@ -26,39 +26,52 @@ beforeAll(async () => {
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
+/**
+ * `agentModeFor` returns the whole run resolution (the model plus the
+ * run-start downgrade and the per-person Auto tiers). These tests are about
+ * which model it picks, so they read `.model`.
+ */
+async function modeOf(
+  projectId: string | null,
+  workspaceId?: string,
+  actingUserId?: string | null,
+): Promise<string | undefined> {
+  return (await agentModeFor(projectId, workspaceId, actingUserId))?.model
+}
+
 describe('agentModeFor', () => {
   test('workspace-level runs and projects without a config use auto routing', async () => {
-    expect(await agentModeFor(null)).toBe('auto')
-    expect(await agentModeFor(seed.projectId)).toBe('auto')
+    expect(await modeOf(null)).toBe('auto')
+    expect(await modeOf(seed.projectId)).toBe('auto')
   })
 
   test('the default model is not a choice, so it stays on auto', async () => {
     await db.agentConfig.create({ data: { projectId: seed.projectId, modelName: 'claude-haiku-4-5' } })
-    expect(await agentModeFor(seed.projectId)).toBe('auto')
+    expect(await modeOf(seed.projectId)).toBe('auto')
   })
 
   test('a model someone picked is used', async () => {
     await db.agentConfig.update({ where: { projectId: seed.projectId }, data: { modelName: 'claude-sonnet-4-6' } })
-    expect(await agentModeFor(seed.projectId)).toBe('claude-sonnet-4-6')
+    expect(await modeOf(seed.projectId)).toBe('claude-sonnet-4-6')
   })
 
   test('the workspace agent uses the admin-set workspace default', async () => {
-    expect(await agentModeFor(null, seed.workspaceId)).toBe('auto')
+    expect(await modeOf(null, seed.workspaceId)).toBe('auto')
     await setAgentDefaultModel(seed.workspaceId, 'claude-sonnet-4-6')
-    expect(await agentModeFor(null, seed.workspaceId)).toBe('claude-sonnet-4-6')
+    expect(await modeOf(null, seed.workspaceId)).toBe('claude-sonnet-4-6')
     // A project agent keeps its own model, not the workspace agent's default.
     await db.agentConfig.update({ where: { projectId: seed.projectId }, data: { modelName: 'claude-haiku-4-5' } })
-    expect(await agentModeFor(seed.projectId, seed.workspaceId)).toBe('auto')
+    expect(await modeOf(seed.projectId, seed.workspaceId)).toBe('auto')
   })
 
   test('a default the workspace no longer allows falls back to auto', async () => {
     await db.workspaceModelVisibility.create({ data: { workspaceId: seed.workspaceId, modelId: 'gpt-5.4-nano' } })
     invalidateWorkspaceModels(seed.workspaceId)
-    expect(await agentModeFor(null, seed.workspaceId)).toBe('auto')
+    expect(await modeOf(null, seed.workspaceId)).toBe('auto')
     await db.workspaceModelVisibility.deleteMany({ where: { workspaceId: seed.workspaceId } })
     invalidateWorkspaceModels(seed.workspaceId)
     await setAgentDefaultModel(seed.workspaceId, null)
-    expect(await agentModeFor(null, seed.workspaceId)).toBe('auto')
+    expect(await modeOf(null, seed.workspaceId)).toBe('auto')
   })
 })
 

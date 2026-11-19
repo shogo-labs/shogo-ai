@@ -23,6 +23,8 @@ import type { Context } from 'hono'
 import { prisma } from '../lib/prisma'
 import { decryptSecret } from '../lib/secret-crypto'
 import { assertWebhookUrlAllowed, WebhookUrlError } from '../lib/webhook-url-guard'
+import { canUse, recordAccessEvent } from './access-policy.service'
+import { getRbacMode } from '../lib/authz/mode'
 import {
   AgentTurnError,
   ensureWorkspaceChatSession,
@@ -140,10 +142,41 @@ function backgroundContext(signal: AbortSignal): Context {
   return { req: { raw, header: () => undefined } } as unknown as Context
 }
 
+/**
+ * The person a subscription runs as, or a refusal.
+ *
+ * A trigger runs as its owner, so it may only do what that owner may still do
+ * (SHO-417, AC6): leaving the workspace and losing `trigger:manage` are both
+ * refusals, and neither reassigns the run to someone else. In `shadow` mode the
+ * run proceeds and only an audit row is written.
+ */
 async function requireOwner(sub: DeliverySubscription): Promise<string> {
   if (!sub.ownerUserId) throw new DeliveryError('This subscription has no owner to run as', 'forbidden')
   if (!(await hasWorkspaceAccess(sub.workspaceId, sub.ownerUserId))) {
     throw new DeliveryError("The subscription's owner is no longer a member of this workspace", 'forbidden', 403)
+  }
+  if (!(await canUse(sub.workspaceId, sub.ownerUserId, 'trigger:manage'))) {
+    const mode = await getRbacMode()
+    await recordAccessEvent({
+      workspaceId: sub.workspaceId,
+      kind: mode === 'on' ? 'denied' : 'shadow_denied',
+      onBehalfOfUserId: sub.ownerUserId,
+      permission: 'trigger:manage',
+      subject: { subscriptionId: sub.id },
+      detail: { mode, reason: 'trigger_owner_lost_ability' },
+    })
+    if (mode === 'on') {
+      throw new DeliveryError(
+        'The person this trigger runs as can no longer manage triggers. Ask a workspace admin to restore their access, or recreate the trigger as someone who can.',
+        'forbidden',
+        403,
+      )
+    }
+    console.warn('[rbac] shadow-deny trigger run', {
+      workspaceId: sub.workspaceId,
+      userId: sub.ownerUserId,
+      subscriptionId: sub.id,
+    })
   }
   return sub.ownerUserId
 }

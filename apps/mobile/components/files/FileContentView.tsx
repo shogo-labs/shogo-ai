@@ -13,7 +13,7 @@
  * `--ide-*` variables from, so hosts stop wrapping by hand.
  */
 
-import { Suspense, lazy, useState, type ReactNode } from "react"
+import { Suspense, lazy, useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   ActivityIndicator,
   Platform,
@@ -32,6 +32,17 @@ import { FilePreview } from "../project/panels/ide/FilePreview"
 import { DEFAULT_SETTINGS, type EditorSettings } from "../project/panels/ide/types"
 import { languageFor } from "../project/panels/ide/workspace/language"
 import type { FileViewKind } from "./file-view-kind"
+import { API_URL } from "../../lib/api-url"
+import {
+  MAX_SLIDES_BYTES_NATIVE,
+  SLIDES_RENDER_TIMEOUT_MS,
+  fetchSlidesBytes,
+  parseSlidesViewerMessage,
+  slidesChunkMessages,
+  slidesPreviewErrorText,
+  slidesViewerUrl,
+  unsupportedPresentationMessage,
+} from "../project/panels/ide/slides-viewer-protocol"
 
 type MonacoNs = typeof import("monaco-editor")
 
@@ -73,6 +84,10 @@ export interface FileContentViewProps {
   download?: ReactNode
   /** Copy for the binary fallback, when the host says it differently. */
   binaryMessage?: string
+  /** A renderer failed; the host may show extracted text instead. */
+  onPreviewError?: (message: string) => void
+  /** A deck's bytes the host already read (native: a workspace file). */
+  slidesBytes?: ArrayBuffer
   testID?: string
 }
 
@@ -101,11 +116,21 @@ export function FileContentView({
   nativeImage,
   download,
   binaryMessage = "No preview for this file type.",
+  onPreviewError,
+  slidesBytes,
   testID,
 }: FileContentViewProps) {
   if (kind === "binary") {
+    // A `.key` / `.ppt` / `.odp` holds slides we cannot render: say what it is
+    // and what to do, rather than "no preview for this file type" (SHO-426).
     return (
-      <BinaryFallback message={binaryMessage} download={download} url={url} name={name} testID={testID} />
+      <BinaryFallback
+        message={unsupportedPresentationMessage(name) ?? binaryMessage}
+        download={download}
+        url={url}
+        name={name}
+        testID={testID}
+      />
     )
   }
 
@@ -162,6 +187,18 @@ export function FileContentView({
     if (kind === "image" && nativeImage) return <>{nativeImage}</>
     if (kind === "pdf" && url) return <NativePdf url={url} name={name} testID={testID} />
     if (kind === "video" && url) return <NativeVideo url={url} download={download} testID={testID} />
+    if (kind === "slides" && (url || slidesBytes)) {
+      return (
+        <NativeSlides
+          url={url}
+          bytes={slidesBytes}
+          name={name}
+          themeMode={themeMode}
+          download={download}
+          testID={testID}
+        />
+      )
+    }
     return (
       <BinaryFallback message={binaryMessage} download={download} url={url} name={name} testID={testID} />
     )
@@ -179,7 +216,7 @@ export function FileContentView({
       data-theme={themeMode}
       data-testid={testID}
     >
-      <FilePreview kind={kind} url={url} name={name} path={path ?? name} />
+      <FilePreview kind={kind} url={url} name={name} path={path ?? name} onError={onPreviewError} />
     </div>
   )
 }
@@ -489,5 +526,138 @@ function NativePdf({ url, name, testID }: { url: string; name: string; testID?: 
       testID={testID ?? "file-view-pdf"}
       accessibilityLabel={name}
     />
+  )
+}
+
+/**
+ * A deck on a phone: the same `/api/viewers/slides` page the web app frames,
+ * in a WebView (SHO-426). iOS's QuickLook is deliberately not used — one
+ * renderer keeps iOS and Android identical, and the page keeps its opaque
+ * origin from the CSP header.
+ *
+ * The WebView cannot be handed an ArrayBuffer, so the deck goes over the bridge
+ * as base64 chunks once the page says it is listening.
+ */
+function NativeSlides({
+  url,
+  bytes: given,
+  name,
+  themeMode,
+  download,
+  testID,
+}: {
+  url?: string | null
+  bytes?: ArrayBuffer
+  name: string
+  themeMode: "dark" | "light"
+  download?: ReactNode
+  testID?: string
+}) {
+  const WebView = require("react-native-webview").default
+  const frameRef = useRef<{ injectJavaScript: (script: string) => void } | null>(null)
+  const bytesRef = useRef<ArrayBuffer | null>(null)
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading")
+  const [message, setMessage] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setState("loading")
+    setMessage(null)
+    if (given) {
+      bytesRef.current = given
+      return () => {
+        cancelled = true
+      }
+    }
+    bytesRef.current = null
+    if (!url) {
+      setState("error")
+      setMessage(`Could not open ${name}`)
+      return () => {
+        cancelled = true
+      }
+    }
+    fetchSlidesBytes(url, { maxBytes: MAX_SLIDES_BYTES_NATIVE })
+      .then((bytes) => {
+        if (!cancelled) bytesRef.current = bytes
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setState("error")
+        setMessage(slidesPreviewErrorText(error, name))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [url, given, name])
+
+  // A deck that never reports back must not leave a dead frame.
+  useEffect(() => {
+    if (state !== "loading") return
+    const timer = setTimeout(() => {
+      setState((current) => (current === "loading" ? "error" : current))
+      setMessage((current) => current ?? `Could not render ${name}.`)
+    }, SLIDES_RENDER_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  }, [state, name])
+
+  const sendDeck = useCallback(() => {
+    const bytes = bytesRef.current
+    const frame = frameRef.current
+    if (!bytes || !frame) return
+    for (const chunk of slidesChunkMessages(name, themeMode, new Uint8Array(bytes))) {
+      frame.injectJavaScript(`window.__shogoSlidesReceive(${JSON.stringify(JSON.stringify(chunk))});true;`)
+    }
+  }, [name, themeMode])
+
+  if (state === "error") {
+    return (
+      <View
+        className="flex-1 items-center justify-center gap-2 px-6 py-8"
+        testID={testID ?? "file-view-slides"}
+      >
+        <Text className="text-center text-sm text-foreground">{message ?? `Could not render ${name}.`}</Text>
+        {download ? (
+          <Text className="text-center text-[11px] text-muted-foreground">
+            Use Download to save it and open it in its own app.
+          </Text>
+        ) : null}
+        {download}
+      </View>
+    )
+  }
+
+  return (
+    <View className="flex-1 bg-background" testID={testID ?? "file-view-slides"}>
+      <WebView
+        ref={(instance: unknown) => {
+          frameRef.current = (instance as { injectJavaScript: (script: string) => void } | null) ?? null
+        }}
+        source={{ uri: slidesViewerUrl(API_URL) }}
+        style={{ flex: 1 }}
+        javaScriptEnabled
+        accessibilityLabel={name}
+        testID="file-view-slides-webview"
+        onMessage={(event: { nativeEvent?: { data?: unknown } }) => {
+          const parsed = parseSlidesViewerMessage(event?.nativeEvent?.data)
+          if (!parsed) return
+          if (parsed.type === "ready") {
+            sendDeck()
+            return
+          }
+          if (parsed.type === "rendered") {
+            setState("ready")
+            return
+          }
+          setState("error")
+          setMessage(parsed.message)
+        }}
+      />
+      {state === "loading" ? (
+        <View className="absolute inset-0 items-center justify-center" pointerEvents="none">
+          <ActivityIndicator />
+        </View>
+      ) : null}
+    </View>
   )
 }

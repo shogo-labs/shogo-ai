@@ -787,6 +787,22 @@ export async function answerQuestion(input: AnswerInput): Promise<{ message: any
     return { message: closed.message, question: closed.question, relay: 'sent' }
   }
 
+  // An access request's card is the decision itself: Approve / Deny writes the
+  // grant (or the refusal) through the same service the admin queue uses. A
+  // failure here is the admin's answer not landing, so it is raised rather than
+  // swallowed — a silent catch would leave them believing they had approved it.
+  const accessRequest = (row.blocks as MessageBlocks | null)?.accessRequest
+  if (accessRequest?.requestId) {
+    const { applyAccessRequestAnswer } = await import('./access-policy.service')
+    await applyAccessRequestAnswer({
+      requestId: accessRequest.requestId,
+      workspaceId: accessRequest.workspaceId,
+      answer: answerText,
+      userId: input.userId,
+    })
+    return { message: closed.message, question: closed.question, relay: 'sent' }
+  }
+
   const relay = await settleRelays(row.id, { userId: input.userId, origin: input.origin })
   return { message: closed.message, question: closed.question, relay: relay.status, reply: relay.reply }
 }

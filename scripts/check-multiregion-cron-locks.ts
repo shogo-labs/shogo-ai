@@ -207,6 +207,13 @@ const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
     partitionKeyColumn: 'Workspace.homeRegion',
   },
   {
+    fn: 'runStorageUsageBill',
+    file: 'apps/api/src/jobs/storage-usage-bill.ts',
+    reason:
+      'storage_usage_daily is region-local and each pass measures only the workspaces this region homes, so both the read set and the wallet debit are already home-partitioned via homeRegionWorkspaceWhere(). A global lock would let one region bill days it cannot see (SHO-345); claimRegionPeriod only de-dupes pods inside the region.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
     fn: 'runChatQueueDrain',
     file: 'apps/api/src/jobs/run-chat-queue-drain.ts',
     reason:
@@ -260,6 +267,13 @@ const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
     file: 'apps/api/src/jobs/grant-monthly-refill.ts',
     reason:
       'Each region refills only the workspaces it is the home-writer for (homeRegionWorkspaceWhere(): workspace.homeRegion === REGION_ID, plus null-homeRegion rows on the primary — the same ownership rule the home-region write router uses). usage_wallets is deliberately excluded from shogo_all_pub (see k8s/cnpg/logical-replication/exclude-region-local-tables.sql), so a wallet exists only in its home region; partitioning keeps every region\'s write set disjoint, which is exactly the guarantee the removed global lock used to provide. All request/webhook wallet writes are home-routed by the billing service (routeWalletProvision / consumeUsage), and the lazy first-call refill inside consumeUsage is home-routed too, so workspace.homeRegion is the sole writer-identity for usage_wallets.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
+    fn: 'runDiskAddonDaily',
+    file: 'apps/api/src/jobs/disk-addon-daily.ts',
+    reason:
+      'Each region meters only the workspaces it is the home-writer for (homeRegionWorkspaceWhere()). Both rows it writes — the usage_wallets debit and the Workspace.diskAddonBilledThrough watermark — are home-region rows (usage_wallets is excluded from shogo_all_pub), so the per-region write sets are disjoint and a global lock would only serialize peers over rows they cannot see. claimRegionPeriod de-duplicates the pods inside one region.',
     partitionKeyColumn: 'Workspace.homeRegion',
   },
 ]
@@ -505,6 +519,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'workspace-models.service.ts setAllowedModelIds deletes+recreates a workspace\'s allowlist in one transaction from an owner/admin PUT request; per-workspace, not a global/cron writer.',
   },
   {
+    key: 'AccessPolicy.(subjectId,subjectType,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'One policy per subject per workspace, upserted by access-policy.service.ts from an owner/admin PUT in the workspace home region; a cross-region duplicate needs a failover mid-write and the upsert is idempotent.',
+  },
+  {
     key: 'GitHubConnection.projectId',
     category: 'single_tenant_upsert',
     reason: 'github.service.ts:309 upserts on projectId from a user request.',
@@ -598,6 +618,19 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'Stripe webhook is single-source per Stripe account; collision needs cross-region webhook redelivery.',
   },
+  // --- Solo Founder course (SHO-428) ---------------------------------------
+  {
+    key: 'CourseEnrollment.stripeCheckoutSessionId',
+    category: 'external_global_id',
+    reason:
+      'Stripe-assigned checkout session id; the fulfillment write happens only in `checkout.session.completed`, whose one ingest path is the same as `Subscription.stripeSubscriptionId`. The unique is what makes a redelivered event land on the existing enrollment instead of installing the course twice.',
+  },
+  {
+    key: 'CourseEnrollment.(courseId,userId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'One enrollment per user per course, upserted by `soloFounderService.enroll()`; a user is homed to one region and both writers (`checkout.session.completed` and `customer.subscription.created`) resolve to that same home.',
+  },
   {
     key: 'LiveSessionMeter.sessionId',
     category: 'external_global_id',
@@ -633,6 +666,13 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'cron_locked',
     reason:
       'Written by recalculateAllStorageUsage (boot + 6h cron) and only by that cron. Wrapped in withGlobalJobLock (de-dupes pods within a region) and filtered to homeRegionWorkspaceWhere() (PERF-8), so each region upserts only its own home workspaces and the workspaceId unique never collides across regions.',
+    writer: 'storage-recalculate-all',
+  },
+  {
+    key: 'StorageUsageDaily.(day,workspaceId)',
+    category: 'cron_locked',
+    reason:
+      'Inserted only by upsertDailyRow inside recalculateAllStorageUsage, the same withGlobalJobLock-ed, homeRegionWorkspaceWhere()-filtered pass as storage_usage; the table is region-local (excluded from shogo_all_pub), so two regions can never insert the same (workspace, day).',
     writer: 'storage-recalculate-all',
   },
   {
@@ -797,6 +837,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'request_scoped',
     reason:
       'Written when a user attaches a project to a workspace-scoped chat session (generated chat-session-project route). One user request per attach; the unique pair just dedupes a double-attach of the same project to the same session.',
+  },
+  {
+    key: 'ChatSession.directKey',
+    category: 'request_scoped',
+    reason:
+      'agent-chat.service.ts:openAgentChatSession find-or-creates the one chat a person has with an agent, keyed `a:<workspaceId>:<userId>:<projectId|ws>`, from a user-pinned request; a cross-region duplicate insert is caught and resolved to the row that won the index. The boot-time agent-DM migration writes the same key for the same person and agent.',
   },
   {
     key: 'Plan.(filename,projectId)',
@@ -1087,6 +1133,28 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'Rows are written only by jobs/published-usage.ts, and runPublishedUsageCollect samples only environments whose workspace is homed in the writing region (homeRegionWorkspaceWhere), so the two regions write disjoint (environmentId, minute) sets — the peer never inserts a key the other one already has. Within a region the advisory lock plus the per-region PlatformSetting claim let exactly one pod write each minute. runPublishedUsageBill bills and stamps billedAt only on its own region\'s environments.',
     writer: 'runPublishedUsageCollect',
+  },
+  // --- workspace root secrets (SHO-384) ------------------------------------
+  {
+    key: 'WorkspaceRootSecret.runtimeKey',
+    category: 'single_tenant_upsert',
+    reason:
+      'One sealed blob per runtime (`ws:<workspaceId>` or `ws:proj:<anchorProjectId>`), upserted by that runtime\'s own internal PUT. A runtime is homed to one region with its workspace, so the writer for a given key is always the same region and a retry updates the same row instead of duplicating it.',
+  },
+  // --- workspace compute (SHO-424) ----------------------------------------
+  {
+    key: 'VmUsageHour.(cause,hostId,hour,memMiB,projectId,vcpus,workspaceId)',
+    category: 'request_scoped',
+    reason:
+      'Inserted only by the metal register heartbeat (/api/internal/metal -> lib/vm-metering/ingest.ts), and `hostId` is in the key: a metal host heartbeats to exactly one region, so in steady state only that region writes a given key and the peer never has one to collide with. The hourly biller only UPDATEs rows it already read (stamping billedAt/chargedUsd by id) and is globally locked, so it cannot insert a duplicate. Residual risk, acknowledged rather than solved: a heartbeat RETRIED into the peer region inside the replication window would insert the same tuple under a different id and halt the apply worker on this unique. The fix is to pin host->region at ingest (reject a heartbeat for a host homed elsewhere) rather than to exclude the table — these rows have to stay fleet-visible, because the biller and the admin panel read the hours of a workspace regardless of which region produced them.',
+    writer: 'ingestMetalMeters',
+  },
+  {
+    key: 'VmMeterCursor.(assignedAt,hostId,vmId)',
+    category: 'request_scoped',
+    reason:
+      'Per-VM ingest cursor, written only by the metal register heartbeat, keyed by the same hostId that makes VmUsageHour region-disjoint. Within a region the delta is applied with a compare-and-swap on the (agentMs, appMs, idleMs) triple in the same transaction as the usage row, so two pods ingesting one host cannot both charge the same seconds; a losing insert is caught as P2002 and treated as the peer having got there first. Same residual as VmUsageHour: a heartbeat retried across regions inside the replication window could collide. Excluding this table (the proxy_turns precedent for host-local state) is the escape hatch if that ever bites, but exclusion would re-bill a whole VM lifetime if a host were rehomed, so it stays published.',
+    writer: 'ingestMetalMeters',
   },
 ]
 

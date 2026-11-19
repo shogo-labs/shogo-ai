@@ -111,7 +111,7 @@ mock.module('react-native', () =>
         onKeyDown: (e: any) => onKeyPress?.({ nativeEvent: { key: e.key, shiftKey: e.shiftKey }, preventDefault: () => e.preventDefault() }),
       })
     }),
-    FlatList: forwardRef(function List({ data, renderItem, keyExtractor, ListEmptyComponent, ListFooterComponent, ListHeaderComponent, onViewableItemsChanged }: any, ref: any) {
+    FlatList: forwardRef(function List({ data, renderItem, keyExtractor, ListEmptyComponent, ListFooterComponent, ListHeaderComponent, contentContainerStyle, onViewableItemsChanged }: any, ref: any) {
       // The list's own scroll node, as react-native-web reports it — where its
       // native `wheel` listener lives.
       const scroller = useRef<HTMLDivElement | null>(null)
@@ -127,7 +127,7 @@ mock.module('react-native', () =>
       }))
       return createElement(
         'div',
-        { ref: scroller, 'data-scroll-node': 'true' },
+        { ref: scroller, 'data-scroll-node': 'true', 'data-content-padding-top': contentContainerStyle?.paddingTop },
         ListHeaderComponent,
         data.length
           ? data.map((item: any, index: number) => createElement(Fragment, { key: keyExtractor ? keyExtractor(item, index) : index }, renderItem({ item, index })))
@@ -2258,61 +2258,6 @@ describe('agent profile links', () => {
   })
 })
 
-describe('ConversationHeader agent DMs', () => {
-  const dm = (projectId: string | null, overrides: Record<string, unknown> = {}): any => ({
-    id: 'dm1', workspaceId: 'ws', kind: 'dm', name: null, slug: null, topic: null, lastSeq: 0, lastMessageAt: null,
-    archivedAt: null, createdAt: '2026-09-29T10:00:00.000Z', joined: true, starred: false, muted: false, notifyLevel: 'default',
-    lastReadSeq: 0, canPost: true, canReply: true, canManage: false,
-    members: [
-      { id: 'm1', type: 'user', userId: 'u-me', name: 'Me' },
-      { id: 'm2', type: 'agent', projectId, name: 'Billing Bot', agentTrigger: 'mention' },
-    ],
-    ...overrides,
-  })
-  const header = (conversation: any, extra: Record<string, unknown> = {}) =>
-    render(<ConversationHeader conversation={conversation} mentionables={null} me="u-me" onChanged={() => {}} onLeft={() => {}} {...extra} />)
-
-  test('a project agent DM links to the profile and project, and the side panel when there is room', () => {
-    routed.length = 0
-    const pane = mock(() => {})
-    header(dm('proj-1'), { onOpenProjectPane: pane })
-    expect(shims('buddy').length).toBeGreaterThan(0)
-    fireEvent.click(screen.getByLabelText('Open project'))
-    fireEvent.click(screen.getByLabelText('View profile'))
-    fireEvent.click(screen.getByLabelText('Show in side panel'))
-    expect(routed).toEqual([
-      { pathname: '/(app)/projects/[id]', params: { id: 'proj-1' } },
-      { pathname: '/(app)/agents/[key]', params: { key: 'proj-1' } },
-    ])
-    expect(pane).toHaveBeenCalledWith('proj-1', 'Billing Bot')
-  })
-
-  test('no side panel action without a handler', () => {
-    header(dm('proj-1'))
-    expect(screen.getByLabelText('Open project')).toBeTruthy()
-    expect(screen.queryByLabelText('Show in side panel')).toBeNull()
-  })
-
-  test('the workspace agent has a profile but no project; people DMs have neither', () => {
-    header(dm(null), { onOpenProjectPane: mock(() => {}) })
-    expect(screen.getByLabelText('View profile')).toBeTruthy()
-    expect(screen.queryByLabelText('Open project')).toBeNull()
-    expect(screen.queryByLabelText('Show in side panel')).toBeNull()
-    cleanup()
-
-    header(dm('proj-1', { members: [{ id: 'm1', type: 'user', userId: 'u-me', name: 'Me' }, { id: 'm3', type: 'user', userId: 'u-ana', name: 'Ana' }] }), { onOpenProjectPane: mock(() => {}) })
-    expect(screen.queryByLabelText('View profile')).toBeNull()
-    expect(screen.queryByLabelText('Open project')).toBeNull()
-  })
-
-  test('the phone header puts Open project beside Catch me up', () => {
-    routed.length = 0
-    header(dm('proj-1'), { floating: true, onBack: () => {} })
-    fireEvent.click(screen.getAllByLabelText('Open project')[0])
-    expect(routed).toEqual([{ pathname: '/(app)/projects/[id]', params: { id: 'proj-1' } }])
-  })
-})
-
 describe('#activity filters', () => {
   test('picking agents hides every other agent\'s lines', () => {
     activityTimeline.messages = [
@@ -2483,6 +2428,88 @@ describe('running agents in a channel', () => {
     const footer = shim('floating-composer')
     expect(footer).toBeTruthy()
     expect(footer!.querySelector('[data-rn-shim="running-agents-dock"]')).not.toBeNull()
+    // The wide overlay is the other branch's; a phone must not get both.
+    expect(shim('composer-footer')).toBeNull()
+  })
+
+  /** What a layout pass on the footer reports, once it has been measured. */
+  const reportFooterHeight = (height: number) => {
+    const footer = shim('composer-footer') as Element
+    const handler = layoutHandlers.get(footer)
+    if (!handler) throw new Error('the composer footer registered no onLayout')
+    act(() => handler({ nativeEvent: { layout: { width: 900, height } } }))
+  }
+
+  /** The list's visual bottom padding — `paddingTop`, because the list is inverted. */
+  const listBottomInset = () => {
+    const scroller = document.querySelector('[data-scroll-node="true"]') as HTMLElement
+    return Number(scroller.dataset.contentPaddingTop) - 8
+  }
+
+  test('the wide pane lays the composer over the transcript instead of under it', () => {
+    renderChannel()
+    const footer = shim('composer-footer')
+    expect(footer).toBeTruthy()
+    // The composer lives inside the overlay, so it is what the list scrolls behind.
+    expect(footer!.contains(document.querySelector('textarea[aria-label="Message"]'))).toBe(true)
+    // Nothing is pulled up until the pane has measured the footer.
+    expect(parseFloat(footer!.style.marginTop)).toBe(0)
+    expect(listBottomInset()).toBe(0)
+
+    reportFooterHeight(120)
+
+    expect(parseFloat(shim('composer-footer')!.style.marginTop)).toBe(-120)
+    // The list keeps its newest message clear of the footer, as it did before.
+    expect(listBottomInset()).toBe(120)
+  })
+
+  test('a taller footer — a running agent docked — re-insets the list', () => {
+    activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
+    renderChannel()
+    reportFooterHeight(96)
+    expect(listBottomInset()).toBe(96)
+    reportFooterHeight(140)
+    expect(listBottomInset()).toBe(140)
+    expect(shim('composer-footer')!.querySelector('[data-rn-shim="running-agents-dock"]')).not.toBeNull()
+  })
+
+  test('the wide footer reserves the typing slot but draws nothing in it', () => {
+    renderChannel()
+    const slot = shim('typing-slot')
+    expect(slot).toBeTruthy()
+    // The height that keeps the composer from jumping, and no backing of its own.
+    expect(slot!.className).toContain('min-h-[30px]')
+    expect(slot!.className).not.toContain('bg-')
+    expect(slot!.textContent).toBe('')
+  })
+
+  test('a typing line over a scrolled message gets a backing of its own', () => {
+    typingUsers.push({ id: 'pat', name: 'Pat' })
+    renderChannel()
+    const slot = shim('typing-slot')!
+    expect(slot.textContent).toContain('Pat is typing')
+    expect(slot.querySelector('[class*="bg-background/90"]')).not.toBeNull()
+  })
+
+  test('the typing pill cannot grow the slot it sits in', () => {
+    renderChannel()
+    const empty = shim('typing-slot')!
+    expect(empty.textContent).toBe('')
+
+    cleanup()
+    typingUsers.push({ id: 'pat', name: 'Pat' })
+    renderChannel()
+    const filled = shim('typing-slot')!
+    expect(filled.textContent).toContain('Pat is typing')
+
+    // Same box either way — the footer, and the composer under it, measure the
+    // same height, so #1776's "the composer never jumps" still holds.
+    expect(filled.className).toBe(empty.className)
+    // The pill's 1-unit vertical padding is cancelled in layout, so its 24px
+    // stays inside the 20px the 30px slot reserves below its 10px gap.
+    const pill = filled.querySelector('[class*="bg-background/90"]') as HTMLElement
+    expect(pill.className.split(' ')).toContain('-my-1')
+    expect(pill.className.split(' ')).toContain('py-1')
   })
 })
 

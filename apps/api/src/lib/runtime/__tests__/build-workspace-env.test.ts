@@ -188,6 +188,40 @@ describe('buildWorkspaceEnv', () => {
     }
   })
 
+  it('sizes a bare ws:<id> runtime from Workspace.runtimeDiskGiB, beating the members (SHO-401)', async () => {
+    const env = await buildWorkspaceEnv('ws-1', ['p1'], {
+      ...seams,
+      forMetal: true,
+      _loadWorkspace: async () => ({
+        name: 'My WS',
+        composioScope: 'workspace',
+        instanceSize: 'micro',
+        runtimeDiskGiB: 100,
+      }),
+      _loadProjects: async (ids: string[]) =>
+        ids.map((id) => ({ id, name: id, settings: { techStackId: 'react-app' }, workspaceDiskGiB: 30 })),
+    } as any)
+    // 100 GiB beats the member's 30 GiB.
+    expect(env.SHOGO_VM_DISK_MIB).toBe(String(100 * 1024))
+  })
+
+  it('keeps a stored size above the tier even when the workspace can no longer buy (SHO-401)', async () => {
+    // A downgraded plan keeps its size: clamping to the tier here would restore
+    // a 100 GiB drive into a 20 GiB file on the next cold boot.
+    const env = await buildWorkspaceEnv('ws-1', ['p1'], {
+      ...seams,
+      forMetal: true,
+      _loadWorkspace: async () => ({
+        name: 'My WS',
+        composioScope: 'workspace',
+        instanceSize: 'micro',
+        runtimeDiskGiB: 100,
+      }),
+      _loadProjects: async (ids: string[]) => ids.map((id) => ({ id, name: id, settings: { techStackId: 'react-app' } })),
+    } as any)
+    expect(env.SHOGO_VM_DISK_MIB).toBe(String(100 * 1024))
+  })
+
   it('omits SHOGO_EXPOSED_PORTS when no member declares ports', async () => {
     const env = await buildWorkspaceEnv('ws-1', ['p1'], {
       ...seams,
@@ -243,6 +277,44 @@ describe('buildWorkspaceEnv', () => {
       expect(metal.HOME_STATE_ID).toBeUndefined()
       process.env.SECRETS_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64')
       expect((await buildWorkspaceEnv('ws-1', [], seams as any)).HOME_STATE_KEY).toBeUndefined()
+    })
+
+    describe('cloud workspace-root secret store (SHO-384)', () => {
+      const savedNs = process.env.SYSTEM_NAMESPACE
+      const savedLocalMode = process.env.SHOGO_LOCAL_MODE
+      beforeEach(() => {
+        // The desktop/local flag and the cluster namespace are mutually
+        // exclusive in production; a dev shell can have both exported.
+        delete process.env.SHOGO_LOCAL_MODE
+      })
+      afterEach(() => {
+        if (savedNs === undefined) delete process.env.SYSTEM_NAMESPACE
+        else process.env.SYSTEM_NAMESPACE = savedNs
+        if (savedLocalMode === undefined) delete process.env.SHOGO_LOCAL_MODE
+        else process.env.SHOGO_LOCAL_MODE = savedLocalMode
+      })
+
+      it('an in-cluster workspace runtime gets the API-side store', async () => {
+        process.env.SECRETS_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64')
+        process.env.SYSTEM_NAMESPACE = 'shogo-system'
+        const env = await buildWorkspaceEnv('ws-1', ['p1'], seams as any)
+        expect(env.SHOGO_WORKSPACE_SECRET_STORE).toBe('rest')
+        // The metal path is unchanged: the home archive carries them there.
+        const metal = await buildWorkspaceEnv('ws-1', ['p1'], { ...seams, forMetal: true } as any)
+        expect(metal.SHOGO_WORKSPACE_SECRET_STORE).toBeUndefined()
+      })
+
+      it('no store outside the cluster, so a desktop root stays its own files', async () => {
+        process.env.SECRETS_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64')
+        delete process.env.SYSTEM_NAMESPACE
+        expect((await buildWorkspaceEnv('ws-1', [], seams as any)).SHOGO_WORKSPACE_SECRET_STORE).toBeUndefined()
+      })
+
+      it('no store without a master key to seal it with', async () => {
+        delete process.env.SECRETS_ENCRYPTION_KEY
+        process.env.SYSTEM_NAMESPACE = 'shogo-system'
+        expect((await buildWorkspaceEnv('ws-1', [], seams as any)).SHOGO_WORKSPACE_SECRET_STORE).toBeUndefined()
+      })
     })
   })
 
@@ -593,10 +665,13 @@ describe('buildWorkspaceEnv — workspace drive (SHO-349)', () => {
     expect(env.SHOGO_VM_DISK_MIB).toBe(String(40 * 1024))
   })
 
-  it('never exceeds the tier ceiling for the workspace', async () => {
-    // `medium` allows 40 GiB: a member asking for 80 resolves to the ceiling.
+  it('honours a stored size above the tier — the ceiling is a write-path rule', async () => {
+    // `medium` includes 40 GiB, but a stored 80 GiB (bought on a paid plan, or
+    // set before a downgrade) must be provisioned as 80. Clamping here would
+    // restore an 80 GiB drive into a 40 GiB file. `planDiskChange` is what
+    // refuses a *new* request above the ceiling.
     const env = await buildWorkspaceEnv('ws-1', ['p1'], metalSeams({ p1: 80 }))
-    expect(env.SHOGO_VM_DISK_MIB).toBe(String(40 * 1024))
+    expect(env.SHOGO_VM_DISK_MIB).toBe(String(80 * 1024))
   })
 
   it('is not emitted off metal', async () => {

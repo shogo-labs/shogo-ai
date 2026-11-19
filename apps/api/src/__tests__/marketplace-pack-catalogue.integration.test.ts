@@ -48,8 +48,9 @@ afterAll(async () => {
 })
 
 describe('the catalogue', () => {
-  test('lists 13 packs, each with questions', () => {
-    expect(packs.length).toBe(13)
+  test('lists 14 packs, each with questions', () => {
+    expect(packs.length).toBe(14)
+    expect(packs.map((p) => p.id)).not.toContain('department-course')
     for (const pack of packs) {
       const manifest = manifestOf(pack.id)
       expect({ pack: pack.id, questions: (manifest.setup?.questions.length ?? 0) > 0 }).toEqual({ pack: pack.id, questions: true })

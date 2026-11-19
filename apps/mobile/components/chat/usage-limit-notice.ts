@@ -8,8 +8,12 @@ export interface UsageLimitNotice {
   variant: "blocked" | "stopped"
   title: string
   body: string
-  /** Opens billing. `Start free trial` opens Billing with the Business trial selected. */
-  primaryLabel: "Upgrade" | "Open billing" | "Start free trial"
+  /**
+   * Opens billing. `Start free trial` opens Billing with the Business trial
+   * selected. `Verify email` opens the verification screen; `Contact support`
+   * opens the support mail link.
+   */
+  primaryLabel: "Upgrade" | "Open billing" | "Start free trial" | "Verify email" | "Contact support"
   /** `Retry` re-sends the refused message; `Continue` resumes the stopped turn. */
   secondaryLabel: "Retry" | "Continue"
 }
@@ -70,6 +74,27 @@ export function usageLimitNoticeFor(input: {
           "Your message wasn't sent; tap Retry after it resets.",
         ),
         primaryLabel,
+        secondaryLabel: "Retry",
+      }
+    }
+    // A held account (SHO-416): the way out is verifying the email, not paying.
+    // Leading with billing here would send a real person to a checkout page
+    // that cannot help them.
+    if (blocked.code === "email_verification_required") {
+      return {
+        variant: "blocked",
+        title: "Verify your email",
+        body: `${ERROR_CODE_MESSAGES[blocked.code]} Your message wasn't sent; tap Retry once you've verified.`,
+        primaryLabel: "Verify email",
+        secondaryLabel: "Retry",
+      }
+    }
+    if (blocked.code === "account_review_required") {
+      return {
+        variant: "blocked",
+        title: "Account under review",
+        body: `${ERROR_CODE_MESSAGES[blocked.code]} Your message wasn't sent; tap Retry once that's sorted.`,
+        primaryLabel: "Contact support",
         secondaryLabel: "Retry",
       }
     }

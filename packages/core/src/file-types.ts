@@ -53,6 +53,7 @@ export const BINARY_FILE_EXTENSIONS: ReadonlySet<string> = new Set([
   'ogg', 'oga', 'ogv', 'aac', 'opus', 'pdf',
   // Office / document containers
   'xls', 'xlsx', 'xlsm', 'xlsb', 'doc', 'docx', 'docm', 'ppt', 'pptx', 'pptm',
+  'ppsx', 'ppsm', 'potx', 'potm',
   'odt', 'ods', 'odp', 'pages', 'numbers', 'key', 'epub',
   // Fonts
   'woff', 'woff2', 'ttf', 'otf', 'eot',

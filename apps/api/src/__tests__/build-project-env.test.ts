@@ -897,16 +897,18 @@ describe('buildProjectEnv — workspace drive (SHO-349)', () => {
     expect(env.SHOGO_VM_DISK_MIB).toBe(String(20 * 1024))
   })
 
-  test('clamps a stale request down to the current tier ceiling', async () => {
-    // Lowered from `large` to `medium`: 80 GiB is above the 40 GiB ceiling, so
-    // the host is never told to grow past what this plan allows today.
+  test('never shrinks a stored size after a downgrade', async () => {
+    // Lowered from `large` to `medium`: the drive already holds 80 GiB, so the
+    // host must be told 80 GiB. The tier ceiling is a write-path gate in
+    // `planDiskChange`, never a read-path clamp — clamping here would restore
+    // 80 GiB of files into a 40 GiB file.
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-1',
       workspaceDiskGiB: 80,
       workspace: { instanceSize: 'medium' },
     }))
     const env = await buildProjectEnv('proj-disk-downgraded', { forMetal: true })
-    expect(env.SHOGO_VM_DISK_MIB).toBe(String(40 * 1024))
+    expect(env.SHOGO_VM_DISK_MIB).toBe(String(80 * 1024))
   })
 
   test('leaves the drive size off non-metal envs', async () => {

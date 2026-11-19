@@ -41,6 +41,7 @@ import { stampModelProvider } from '../lib/stamp-model-provider'
 import { stampWorkspacePlan } from '../lib/stamp-workspace-plan'
 import { stampTeamWorkspaceNames } from '../lib/stamp-team-workspace-names'
 import { getPersonalCompanionModelId } from '../lib/personal-companion-model'
+import { resolveAgentRunModelFor } from '../services/agent-run-model.service'
 import { getWorkspaceKind, loadWorkspaceContext, type WorkspaceKind } from '../services/workspace.service'
 import { autoCheckpointWorkspaceProjects } from '../services/workspace-checkpoint.service'
 import { persistUserMessageForTurn } from '../services/chat-user-message'
@@ -845,6 +846,21 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       // the forwarded body (after any tier-downgrade) so a UUID-addressed DB
       // model routes natively instead of being inferred as `custom`.
       stampModelProvider(parsedBody)
+    }
+
+    // AC5 (SHO-417): the workspace agent's configured model may be above the
+    // person chatting with it. This run then uses their default model and the
+    // runtime states it in the reply's first line; the agent's saved config is
+    // untouched. A personal companion is exempt — its model is a platform-wide
+    // super-admin choice, not a per-person pick.
+    if (auth.kind !== 'personal' && auth.userId) {
+      const runModel = await resolveAgentRunModelFor(null, workspaceId, auth.userId)
+      if (runModel) {
+        parsedBody.agentMode = runModel.model
+        if (runModel.downgrade) parsedBody.modelDowngrade = runModel.downgrade
+        if (runModel.autoTiers) parsedBody.autoTiers = runModel.autoTiers
+        stampModelProvider(parsedBody)
+      }
     }
     await stampWorkspacePlan(parsedBody, workspaceId)
     // Tell the runtime which surface this chat is, so capability toggles and

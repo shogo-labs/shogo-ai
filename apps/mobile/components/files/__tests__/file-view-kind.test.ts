@@ -29,7 +29,17 @@ describe("fileViewKind: the extension decides", () => {
     ["package.json", "text"],
     ["script.sh", "text"],
     ["bundle.zip", "binary"],
-    ["deck.pptx", "binary"],
+    // A deck is renderable now; the formats with no renderer stay honest
+    // binaries that the viewer explains (SHO-426).
+    ["deck.pptx", "slides"],
+    ["deck.PPTM", "slides"],
+    ["show.ppsx", "slides"],
+    ["show.ppsm", "slides"],
+    ["theme.potx", "slides"],
+    ["theme.potm", "slides"],
+    ["old.ppt", "binary"],
+    ["talk.key", "binary"],
+    ["open.odp", "binary"],
     ["Makefile", "text"],
   ])("%s is %s", (name, expected) => {
     expect(fileViewKind(name)).toBe(expected as never)
@@ -54,6 +64,11 @@ describe("fileViewKind: the MIME type fills the gaps", () => {
     ["untitled", "application/vnd.sqlite3", "sqlite"],
     ["mystery.xyz", "video/webm", "video"],
     ["mystery.xyz", "text/plain", "text"],
+    // A presentation type with no extension still opens as slides; the legacy
+    // PowerPoint type does not, because nothing can render it (SHO-426).
+    ["untitled", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "slides"],
+    ["untitled", "application/vnd.openxmlformats-officedocument.presentationml.slideshow", "slides"],
+    ["untitled", "application/vnd.ms-powerpoint", "text"],
   ])("%s served as %s is %s", (name, mime, expected) => {
     expect(fileViewKind(name, mime)).toBe(expected as never)
   })

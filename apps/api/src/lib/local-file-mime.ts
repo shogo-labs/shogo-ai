@@ -19,6 +19,18 @@ export const MIME_TYPES: Record<string, string> = {
   '.json': 'application/json',
   '.md': 'text/markdown',
   '.pdf': 'application/pdf',
+  // Presentations: the browser-based slides viewer decides from the
+  // extension, but a labelled response keeps every other consumer honest
+  // (SHO-426). Macros never run — the renderer only reads the XML.
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.pptm': 'application/vnd.openxmlformats-officedocument.presentationml.presentation.macroEnabled.12',
+  '.ppsx': 'application/vnd.openxmlformats-officedocument.presentationml.slideshow',
+  '.ppsm': 'application/vnd.openxmlformats-officedocument.presentationml.slideshow.macroEnabled.12',
+  '.potx': 'application/vnd.openxmlformats-officedocument.presentationml.template',
+  '.potm': 'application/vnd.openxmlformats-officedocument.presentationml.template.macroEnabled.12',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.odp': 'application/vnd.oasis.opendocument.presentation',
+  '.key': 'application/vnd.apple.keynote',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.txt': 'text/plain',

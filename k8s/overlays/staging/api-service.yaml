@@ -380,6 +380,15 @@ spec:
                   optional: true
             - name: BETTER_AUTH_URL
               value: "https://studio.staging.shogo.ai"
+            # Cometly conversion tracking (SHO-441): the server-side Create Event
+            # for a new Google sign-up. Optional — with no `cometly-config`
+            # secret the event is skipped, so this is inert until the key exists.
+            - name: COMETLY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cometly-config
+                  key: COMETLY_API_KEY
+                  optional: true
             - name: SHOGO_PUBLIC_API_URL
               value: "https://studio.staging.shogo.ai"
             - name: ALLOWED_ORIGINS

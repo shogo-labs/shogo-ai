@@ -81,6 +81,12 @@ describe('disposable and blocked domains', () => {
     }
   })
 
+  test('the 2026-11-18 API-key farm domains are rejected', () => {
+    for (const d of ['euploading.com', 'arizarouter.dev', 'kalcer.dev', 'jublin.dev', 'gyukopo.dev', 'zekon.dev', 'dombasu.dev', 'rexhot.com', 'kasturi.cloud', 'satukataku.com']) {
+      expect(isBlockedEmailDomain(`s0736omldaaaa@${d}`)).toBe(true)
+    }
+  })
+
   test('a subdomain of a blocked provider is blocked too', () => {
     // Parent-walk matching: no entry exists for mail.mailinator.com.
     expect(isBlockedEmailDomain('ops@mail.mailinator.com')).toBe(true)

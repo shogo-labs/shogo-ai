@@ -7,11 +7,11 @@
  * recent personal chat, creating one when they have none.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
-import { ActivityIndicator, AppState, Platform, Pressable, Text, View, useWindowDimensions } from "react-native"
+import { ActivityIndicator, AppState, Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useRouter } from "expo-router"
 import { observer } from "mobx-react-lite"
-import { Sparkles, X } from "lucide-react-native"
+import { SlidersHorizontal, Sparkles, X } from "lucide-react-native"
 import { useAuth } from "../../contexts/auth"
 import { useActiveInstance } from "../../contexts/active-instance"
 import {
@@ -91,6 +91,14 @@ import {
 
 /** Wide enough to show a project beside the chat (same as team chat's side pane). */
 const PROJECT_SIDE_PANE_MIN_WIDTH = 1024
+
+/**
+ * How far below the top inset `MobileWorkspaceShell`'s floating chrome reaches:
+ * it places its menu (left) and notification bell (right) buttons — `h-11`, so
+ * 44 pt tall — at `insets.top + 10`, which puts their bottom edge at 54 pt.
+ * Phone content that has to stay clear of them adds this to `insets.top`.
+ */
+const SHELL_CHROME_ROW_BOTTOM = 10 + 44
 
 interface ProjectPaneState extends OpenProjectPaneRequest {
   /** Changes on every open so a new request re-targets the pane. */
@@ -821,6 +829,43 @@ export const WorkspaceAgentChatScreen = observer(
     const projectName = (projectId: string) =>
       projects.all.find((project: any) => project.id === projectId)?.name ??
       `Project ${projectId.slice(0, 8)}`
+    /**
+     * A working-set project opens beside this chat on a wide screen, in the same
+     * slot a thread's agent uses (SHO-427) — the chat stays mounted and the URL
+     * does not change. Phones have no side slot, so their chip keeps opening the
+     * scope sheet and "Open" still goes to the project page.
+     */
+    const openWorkingSetProject = (projectId: string) => {
+      if (!hasSidePane) return false
+      openProjectPane({
+        projectId,
+        name: projectName(projectId),
+        tab: "canvas",
+      })
+      return true
+    }
+    const pressWorkingSetChip = (projectId: string) => {
+      // The project already in the pane: a second press puts it away.
+      if (projectPane?.projectId === projectId) {
+        closeProjectPane()
+        return
+      }
+      openWorkingSetProject(projectId)
+    }
+    const openProjectFromSheet = (projectId: string) => {
+      if (!openWorkingSetProject(projectId)) {
+        router.push({
+          pathname: "/(app)/projects/[id]",
+          params: {
+            id: projectId,
+            chatSessionId: sessionId,
+            chatScope: "workspace",
+          },
+        } as any)
+        return
+      }
+      setScopeSheetOpen(false)
+    }
     const attachableProjects = projects.all.filter(
       (project: any) =>
         project.workspaceId === workspace.id &&
@@ -882,6 +927,9 @@ export const WorkspaceAgentChatScreen = observer(
           sessionId,
           attachment.projectId,
         )
+        // The project left the working set, so the pane showing it has nothing
+        // left to describe (SHO-427).
+        if (projectPane?.projectId === attachment.projectId) closeProjectPane()
         publishWorkspaceSessionScopeChanged(workspace.id, sessionId)
       } catch {
         setAttachments((current) =>
@@ -987,7 +1035,23 @@ export const WorkspaceAgentChatScreen = observer(
       <ShareFileProvider open={openShareFile}>
       <View className="flex-1 flex-row bg-background">
       <View className="min-w-0 flex-1 bg-background">
-        {usesMobileWorkspaceChrome ? (
+        {header ? (
+          // Opened from a team chat message: the way back up (`#shogo-dev ›
+          // Thread › Shogo · session`) is this screen's header — the companion
+          // identity block below sits it out, the way a project agent's session
+          // shows nothing above its trail (SHO-438). On a phone the trail is
+          // the first thing in normal flow, so it only clears the shell's
+          // floating menu (left) and bell (right) row.
+          <View
+            style={
+              usesMobileWorkspaceChrome
+                ? { paddingTop: insets.top + SHELL_CHROME_ROW_BOTTOM }
+                : undefined
+            }
+          >
+            {header}
+          </View>
+        ) : usesMobileWorkspaceChrome ? (
           <PersonalAgentMobileHeader
             profile={profile}
             actions={profileActions}
@@ -1001,13 +1065,6 @@ export const WorkspaceAgentChatScreen = observer(
             compact
           />
         )}
-        {header ? (
-          // Opened from a team chat message: the trail back. On phones the
-          // floating header needs the same clearance the content below gets.
-          <View style={usesMobileWorkspaceChrome ? { paddingTop: insets.top + 112 } : undefined}>
-            {header}
-          </View>
-        ) : null}
         {usesMobileWorkspaceChrome &&
         !header &&
         ((isPersonalWorkspace && showWelcome) || attachments.length > 0) ? (
@@ -1080,27 +1137,88 @@ export const WorkspaceAgentChatScreen = observer(
           </View>
         ) : null}
         {attachments.length > 0 ? (
-          <View className="mx-auto w-full max-w-[760px] flex-row items-center gap-2 px-4 pb-2 pt-3">
-            <Text className="text-xs font-medium text-muted-foreground">
-              Working set
-            </Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Manage project scope"
-              onPress={() => setScopeSheetOpen(true)}
-              className="max-w-[190px] rounded-full border border-border bg-card px-2.5 py-1 active:bg-muted"
-            >
-              <Text
-                className="text-xs font-medium text-foreground"
-                numberOfLines={1}
+          <View className="mx-auto w-full max-w-[760px] px-4 pb-2 pt-3">
+            <View className="flex-row items-center gap-2">
+              <Text className="text-xs font-medium text-muted-foreground">
+                Working set
+              </Text>
+              {hasSidePane ? null : (
+                <>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Manage project scope"
+                    onPress={() => setScopeSheetOpen(true)}
+                    className="max-w-[190px] rounded-full border border-border bg-card px-2.5 py-1 active:bg-muted"
+                  >
+                    <Text
+                      className="text-xs font-medium text-foreground"
+                      numberOfLines={1}
+                    >
+                      {projectName(focusedProjectId ?? attachments[0].projectId)}
+                    </Text>
+                  </Pressable>
+                  {attachments.length > 1 ? (
+                    <Text className="text-xs text-muted-foreground">
+                      +{attachments.length - 1}
+                    </Text>
+                  ) : null}
+                </>
+              )}
+            </View>
+            {hasSidePane ? (
+              // Every attached project gets its own chip and opens beside the
+              // chat like a thread's agent (SHO-427); a long working set scrolls
+              // sideways rather than pushing the Manage button off the row.
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ alignItems: "center", gap: 8 }}
+                className="mt-1.5 flex-row"
+                testID="working-set-projects"
               >
-                {projectName(focusedProjectId ?? attachments[0].projectId)}
-              </Text>
-            </Pressable>
-            {attachments.length > 1 ? (
-              <Text className="text-xs text-muted-foreground">
-                +{attachments.length - 1}
-              </Text>
+                {attachments.map((attachment) => {
+                  const name = projectName(attachment.projectId)
+                  const shown = activePane?.projectId === attachment.projectId
+                  return (
+                    <Pressable
+                      key={attachment.id}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${name} project`}
+                      accessibilityHint={
+                        shown
+                          ? "Closes the project beside this chat"
+                          : "Shows the project beside this chat"
+                      }
+                      aria-selected={shown}
+                      testID={`working-set-project-${attachment.projectId}`}
+                      onPress={() => pressWorkingSetChip(attachment.projectId)}
+                      className={`max-w-[190px] rounded-full border px-2.5 py-1 active:bg-muted ${
+                        shown
+                          ? "border-primary bg-primary/10"
+                          : "border-border bg-card"
+                      }`}
+                    >
+                      <Text
+                        className={`text-xs font-medium ${
+                          shown ? "text-primary" : "text-foreground"
+                        }`}
+                        numberOfLines={1}
+                      >
+                        {name}
+                      </Text>
+                    </Pressable>
+                  )
+                })}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Manage project scope"
+                  testID="working-set-manage"
+                  onPress={() => setScopeSheetOpen(true)}
+                  className="h-7 w-7 items-center justify-center rounded-full active:bg-muted"
+                >
+                  <SlidersHorizontal size={14} className="text-muted-foreground" />
+                </Pressable>
+              </ScrollView>
             ) : null}
           </View>
         ) : null}
@@ -1194,16 +1312,12 @@ export const WorkspaceAgentChatScreen = observer(
                       <Text className="text-xs text-destructive">Detach</Text>
                     </Pressable>
                     <Pressable
-                      onPress={() =>
-                        router.push({
-                          pathname: "/(app)/projects/[id]",
-                          params: {
-                            id: attachment.projectId,
-                            chatSessionId: sessionId,
-                            chatScope: "workspace",
-                          },
-                        } as any)
-                      }
+                      onPress={() => openProjectFromSheet(attachment.projectId)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Open ${projectName(
+                        attachment.projectId,
+                      )}`}
+                      testID={`scope-open-${attachment.projectId}`}
                       className="rounded-lg px-2.5 py-1.5 active:bg-muted"
                     >
                       <Text className="text-xs text-primary">Open</Text>

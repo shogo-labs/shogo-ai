@@ -6,7 +6,6 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { createElement } from 'react'
 import { createReactNativeMock } from '../../../test/react-native-mock'
 
-const agentDms: Array<{ workspaceId: string; projectId: string | null }> = []
 const dms: Array<{ workspaceId: string; userIds: string[] }> = []
 const selfDms: Array<{ workspaceId: string; userId: string }> = []
 const huddles: Array<{ conversationId: string; workspaceId: string; label: string; kind?: string | null }> = []
@@ -37,10 +36,6 @@ mock.module('@shogo/shared-ui/primitives', () => ({ cn: (...a: unknown[]) => a.f
 mock.module('../../../lib/team-chat-api', () => ({
   absoluteApiUrl: (url: string) => url,
   teamChatApi: () => ({
-    openAgentDm: async (workspaceId: string, projectId: string | null) => {
-      agentDms.push({ workspaceId, projectId })
-      return { id: `agent-dm-${projectId}` }
-    },
     openDm: async (workspaceId: string, userIds: string[]) => {
       dms.push({ workspaceId, userIds })
       return { id: 'people-dm' }
@@ -78,18 +73,16 @@ function renderPicker(props: Partial<React.ComponentProps<typeof NewMessagePicke
 
 afterEach(() => {
   cleanup()
-  agentDms.length = 0
   dms.length = 0
   selfDms.length = 0
   huddles.length = 0
 })
 
 describe('filterRecipients', () => {
-  test('leaves out the current user and matches names, emails and agent descriptions', () => {
+  test('leaves out the current user and matches names and emails', () => {
     expect(filterRecipients(mentionables, 'me', '').people.map((p) => p.id)).toEqual(['u-ana', 'u-ben'])
     expect(filterRecipients(mentionables, 'me', 'ben@').people.map((p) => p.id)).toEqual(['u-ben'])
-    expect(filterRecipients(mentionables, 'me', 'invoices').agents.map((a) => a.key)).toEqual(['p:proj-1'])
-    expect(filterRecipients(null, 'me', '')).toEqual({ people: [], agents: [], selfRecipient: null })
+    expect(filterRecipients(null, 'me', '')).toEqual({ people: [], selfRecipient: null })
   })
 
   test('returns yourself apart from the people list, so you can message your own notes', () => {
@@ -106,54 +99,26 @@ describe('filterRecipients', () => {
 })
 
 describe('NewMessagePicker', () => {
-  test('lists teammates and agents together', () => {
+  test('lists teammates, and no agents: a chat with an agent is a project chat (SHO-412)', () => {
     renderPicker()
     // Each name is both a filter chip and a section heading.
     expect(screen.getAllByText('People')).toHaveLength(2)
-    expect(screen.getAllByText('Agents')).toHaveLength(2)
+    expect(screen.queryByText('Agents')).toBeNull()
     expect(screen.getByLabelText('Ana Lopez, ana@example.com')).toBeTruthy()
-    expect(screen.getByLabelText('Billing Bot, agent')).toBeTruthy()
-    expect(screen.getByLabelText('Workspace agent, agent')).toBeTruthy()
+    expect(screen.queryByLabelText('Billing Bot, agent')).toBeNull()
+    expect(screen.queryByLabelText('Workspace agent, agent')).toBeNull()
     // You do not message yourself.
     expect(screen.queryByLabelText('Me Myself, me@example.com')).toBeNull()
   })
 
-  test('search filters people and agents at once', () => {
+  test('search filters the people list', () => {
     renderPicker()
-    fireEvent.change(screen.getByLabelText('Search people and agents'), { target: { value: 'bil' } })
-    expect(screen.getByLabelText('Billing Bot, agent')).toBeTruthy()
-    expect(screen.queryByLabelText('Workspace agent, agent')).toBeNull()
-    expect(screen.queryByLabelText('Ana Lopez, ana@example.com')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Search people'), { target: { value: 'ana' } })
+    expect(screen.getByLabelText('Ana Lopez, ana@example.com')).toBeTruthy()
+    expect(screen.queryByLabelText('Ben Okafor, ben@example.com')).toBeNull()
 
-    fireEvent.change(screen.getByLabelText('Search people and agents'), { target: { value: 'zzz' } })
-    expect(screen.getByText('No people or agents match.')).toBeTruthy()
-  })
-
-  test('the filter chips narrow the list to people or agents', () => {
-    renderPicker()
-    fireEvent.click(screen.getByRole('tab', { name: 'Agents' }))
-    expect(screen.queryByLabelText('Ana Lopez, ana@example.com')).toBeNull()
-    expect(screen.getByLabelText('Billing Bot, agent')).toBeTruthy()
-  })
-
-  test('starts on the agents list when asked to', () => {
-    renderPicker({ initialFilter: 'agents' })
-    expect(screen.queryByLabelText('Ana Lopez, ana@example.com')).toBeNull()
-    expect(screen.getByLabelText('Billing Bot, agent')).toBeTruthy()
-  })
-
-  test('tapping an agent opens its DM right away', async () => {
-    const created = renderPicker()
-    fireEvent.click(screen.getByLabelText('Billing Bot, agent'))
-    await waitFor(() => expect(created).toEqual([{ id: 'agent-dm-proj-1' }]))
-    expect(agentDms).toEqual([{ workspaceId: 'ws-1', projectId: 'proj-1' }])
-    expect(dms).toEqual([])
-  })
-
-  test('the workspace agent is messaged with a null project', async () => {
-    renderPicker()
-    fireEvent.click(screen.getByLabelText('Workspace agent, agent'))
-    await waitFor(() => expect(agentDms).toEqual([{ workspaceId: 'ws-1', projectId: null }]))
+    fireEvent.change(screen.getByLabelText('Search people'), { target: { value: 'zzz' } })
+    expect(screen.getByText('No teammates match.')).toBeTruthy()
   })
 
   test('your own row sits above People and opens your notes', async () => {
@@ -166,11 +131,6 @@ describe('NewMessagePicker', () => {
     expect(selfDms).toEqual([{ workspaceId: 'ws-1', userId: 'me' }])
     // Your own note is a one-to-one conversation, not a pick from the people list.
     expect(dms).toEqual([])
-  })
-
-  test('the Agents chip leaves your own row out, since it is not an agent', () => {
-    renderPicker({ initialFilter: 'agents' })
-    expect(screen.queryByLabelText('Me Myself (you), message yourself')).toBeNull()
   })
 
   test('teammates are multi-selected and started together', async () => {

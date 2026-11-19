@@ -5,6 +5,7 @@
  * Prisma and Stripe are in-memory doubles.
  */
 import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { TRIAL_MAX_SEATS } from '../../config/usage-plans'
 
 type Row = Record<string, any>
 const redemptions: Row[] = []
@@ -13,6 +14,7 @@ const assessments = new Map<string, Row>()
 const members: Row[] = []
 const cancelled: string[] = []
 let cardOf: Record<string, string | null> = {}
+let fundingOf: Record<string, string> = {}
 let failNextUpsertWithUniqueViolation = false
 
 function matches(row: Row, where: Row): boolean {
@@ -65,7 +67,7 @@ const stripe: any = {
     retrieve: async (id: string) => ({
       id,
       default_payment_method: cardOf[id]
-        ? { id: `pm_${id}`, type: 'card', card: { fingerprint: cardOf[id] } }
+        ? { id: `pm_${id}`, type: 'card', card: { fingerprint: cardOf[id], funding: fundingOf[id] ?? 'credit' } }
         : null,
     }),
     cancel: async (id: string) => {
@@ -84,6 +86,7 @@ beforeEach(() => {
   members.length = 0
   cancelled.length = 0
   cardOf = {}
+  fundingOf = {}
   failNextUpsertWithUniqueViolation = false
   members.push({ userId: 'u-1', workspaceId: 'ws-1', role: 'owner', projectId: null, createdAt: new Date(0) })
 })
@@ -103,6 +106,11 @@ describe('trialCheckoutParams', () => {
       trial_settings: { end_behavior: { missing_payment_method: 'cancel' } },
       metadata: { workspaceId: 'ws-1', planId: 'business', trial: 'true' },
     })
+  })
+
+  test('7 days requests 3D Secure on the card (SHO-409)', () => {
+    const p = trial.trialCheckoutParams(7, { workspaceId: 'ws-1' })
+    expect(p.payment_method_options).toEqual({ card: { request_three_d_secure: 'any' } })
   })
 })
 
@@ -136,6 +144,35 @@ describe('buildCheckoutTrialFields', () => {
       expect(f.payment_method_collection).toBeUndefined()
       expect(f.payment_method_types).toBeUndefined()
     }
+  })
+
+  // The second check behind the routes' own gate (SHO-422 AC1): a caller that
+  // forgets to gate still cannot open an over-cap trial.
+  test('an eligible trial over the seat cap throws instead of opening the session', async () => {
+    const err = await trial.buildCheckoutTrialFields({
+      wantsTrial: true, userId: 'u-1', workspaceId: 'ws-1', planId: 'business',
+      metadata: { ...metadata, seats: String(TRIAL_MAX_SEATS + 1) }, affiliate,
+    }).then(() => null, (e: any) => e)
+    expect(err).toBeInstanceOf(trial.TrialSeatLimitError)
+    expect(err.code).toBe('trial_seat_limit')
+    expect(err.seats).toBe(TRIAL_MAX_SEATS + 1)
+    expect(err.message).toContain(`up to ${TRIAL_MAX_SEATS} seats`)
+  })
+
+  test('an eligible trial exactly at the seat cap is allowed', async () => {
+    const f = await trial.buildCheckoutTrialFields({
+      wantsTrial: true, userId: 'u-1', workspaceId: 'ws-1', planId: 'business',
+      metadata: { ...metadata, seats: String(TRIAL_MAX_SEATS) }, affiliate,
+    })
+    expect(f.subscription_data).toMatchObject({ trial_period_days: 7 })
+  })
+
+  test('a paid checkout keeps any seat count', async () => {
+    const f = await trial.buildCheckoutTrialFields({
+      wantsTrial: false, userId: 'u-1', workspaceId: 'ws-1', planId: 'business',
+      metadata: { ...metadata, seats: '50' }, affiliate,
+    })
+    expect(f.subscription_data).toEqual({ metadata: { affiliateId: 'aff-1' } })
   })
 })
 
@@ -178,6 +215,27 @@ describe('trialEligibility', () => {
     })
   })
 
+  // A seat-limit block is not a trial that was used. The owner is told to
+  // "start the trial again with 5 seats or fewer", so the row must not lock
+  // them out of the retry it asks for (SHO-422, QA round 1).
+  test('a blocked_seat_limit row does not burn the trial', async () => {
+    redemptions.push({ userId: 'u-1', workspaceId: 'ws-1', status: 'blocked_seat_limit' })
+    expect(await trial.trialEligibility({ userId: 'u-1', workspaceId: 'ws-1', planId: 'business' })).toEqual({
+      eligible: true,
+    })
+  })
+
+  test('the other block reasons still burn the trial', async () => {
+    for (const status of ['blocked_duplicate_card', 'blocked_duplicate_user', 'blocked_prepaid_card']) {
+      redemptions.length = 0
+      redemptions.push({ userId: 'u-1', workspaceId: 'ws-1', status })
+      expect(await trial.trialEligibility({ userId: 'u-1', workspaceId: 'ws-1', planId: 'business' })).toEqual({
+        eligible: false,
+        reason: 'already_used',
+      })
+    }
+  })
+
   test('a high-risk signup goes to review and gets no trial', async () => {
     assessments.set('u-1', { band: 'high' })
     expect(await trial.trialEligibility({ userId: 'u-1', workspaceId: 'ws-1', planId: 'business' })).toEqual({
@@ -201,6 +259,29 @@ describe('recordTrialStart (one trial per card)', () => {
     expect(outcome).toBe('recorded')
     expect(cancelled).toHaveLength(0)
     expect(redemptions[0]).toMatchObject({ workspaceId: 'ws-1', cardFingerprint: 'fp_A', status: 'trialing' })
+  })
+
+  test('a prepaid card cannot start a trial: cancelled and blocked (SHO-409)', async () => {
+    cardOf['sub_pre'] = 'fp_pre'
+    fundingOf['sub_pre'] = 'prepaid'
+    const outcome = await trial.recordTrialStart({
+      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'business',
+      subscriptionId: 'sub_pre', stripeCustomerId: 'cus_pre',
+    })
+    expect(outcome).toBe('blocked')
+    expect(cancelled).toEqual(['sub_pre'])
+    expect(redemptions.find((r) => r.workspaceId === 'ws-1')!.status).toBe('blocked_prepaid_card')
+  })
+
+  test('a debit card is recorded as today (only prepaid is refused)', async () => {
+    cardOf['sub_deb'] = 'fp_deb'
+    fundingOf['sub_deb'] = 'debit'
+    const outcome = await trial.recordTrialStart({
+      stripe, workspaceId: 'ws-1', userId: 'u-1', planId: 'business',
+      subscriptionId: 'sub_deb', stripeCustomerId: 'cus_deb',
+    })
+    expect(outcome).toBe('recorded')
+    expect(cancelled).toHaveLength(0)
   })
 
   test('a card already used for a trial on another workspace is cancelled and blocked', async () => {
@@ -296,5 +377,157 @@ describe('trial status transitions', () => {
     await trial.markTrialEndedForSubscription('sub_2')
     expect(redemptions[0].status).toBe('ended')
     expect(redemptions[1].status).toBe('converted')
+  })
+})
+
+describe('endTrialNow', () => {
+  function stripeDouble(update: (id: string, params: any) => any) {
+    const calls: Array<{ id: string; params: any }> = []
+    return {
+      calls,
+      stripe: {
+        subscriptions: {
+          update: async (id: string, params: any) => {
+            calls.push({ id, params })
+            return update(id, params)
+          },
+        },
+      } as any,
+    }
+  }
+
+  test('ends the trial now and reports the invoice status', async () => {
+    const { calls, stripe: s } = stripeDouble(() => ({
+      id: 'sub_1',
+      status: 'active',
+      latest_invoice: { id: 'in_1', status: 'paid' },
+    }))
+    const result = await trial.endTrialNow({ stripe: s, stripeSubscriptionId: 'sub_1' })
+    expect(result).toEqual({ status: 'active', latestInvoiceStatus: 'paid' })
+    expect(calls).toHaveLength(1)
+    expect(calls[0].id).toBe('sub_1')
+    expect(calls[0].params.trial_end).toBe('now')
+    expect(calls[0].params.proration_behavior).toBe('none')
+    expect(calls[0].params.expand).toEqual(['latest_invoice'])
+  })
+
+  test('reports an open invoice instead of claiming the charge went through', async () => {
+    const { stripe: s } = stripeDouble(() => ({
+      id: 'sub_1',
+      status: 'past_due',
+      latest_invoice: { id: 'in_1', status: 'open' },
+    }))
+    const result = await trial.endTrialNow({ stripe: s, stripeSubscriptionId: 'sub_1' })
+    expect(result).toEqual({ status: 'past_due', latestInvoiceStatus: 'open' })
+  })
+
+  test('reports a null invoice status when Stripe returns an unexpanded id', async () => {
+    const { stripe: s } = stripeDouble(() => ({
+      id: 'sub_1',
+      status: 'active',
+      latest_invoice: 'in_1',
+    }))
+    const result = await trial.endTrialNow({ stripe: s, stripeSubscriptionId: 'sub_1' })
+    expect(result.latestInvoiceStatus).toBeNull()
+  })
+})
+
+/**
+ * The two webhook shapes the seat cap has to survive (SHO-422 AC4). Both go
+ * through `enforceTrialSeatCap`, so these are the tests for the webhook branches
+ * without standing up the webhook itself.
+ */
+describe('enforceTrialSeatCap', () => {
+  const seatItemUpdates: Array<{ id: string; params: any }> = []
+
+  beforeEach(() => {
+    seatItemUpdates.length = 0
+  })
+
+  function webhookStripe(opts: { cancelThrows?: boolean } = {}) {
+    return {
+      subscriptions: {
+        cancel: async (id: string) => {
+          if (opts.cancelThrows) throw new Error('No such subscription')
+          cancelled.push(id)
+          return { id, status: 'canceled' }
+        },
+      },
+      subscriptionItems: {
+        update: async (id: string, params: any) => {
+          seatItemUpdates.push({ id, params })
+          return { id, quantity: params.quantity }
+        },
+      },
+    } as any
+  }
+
+  const created = {
+    event: 'created' as const,
+    workspaceId: 'ws-1',
+    planId: 'business',
+    subscriptionId: 'sub_big',
+    stripeCustomerId: 'cus_big',
+    seats: 123,
+    seatItemId: null,
+  }
+
+  test('a subscription created over the cap is blocked, not clamped', async () => {
+    const outcome = await trial.enforceTrialSeatCap({ ...created, stripe: webhookStripe() })
+    expect(outcome).toEqual({ action: 'blocked' })
+    // Cancelled with no invoice and no proration — `cancel`, never an update.
+    expect(cancelled).toEqual(['sub_big'])
+    expect(seatItemUpdates).toHaveLength(0)
+    expect(redemptions[0].status).toBe('blocked_seat_limit')
+    expect(redemptions[0].stripeSubscriptionId).toBe('sub_big')
+    expect(redemptions[0].userId).toBe('u-1')
+    expect(await trial.getTrialBlockStatus('ws-1')).toBe('blocked_seat_limit')
+  })
+
+  test('a re-delivered created event does not block or cancel twice', async () => {
+    redemptions.push({ workspaceId: 'ws-1', stripeSubscriptionId: 'sub_big', status: 'blocked_seat_limit' })
+    const outcome = await trial.enforceTrialSeatCap({ ...created, stripe: webhookStripe() })
+    expect(outcome).toEqual({ action: 'already_blocked' })
+    expect(cancelled).toHaveLength(0)
+  })
+
+  test('an already-cancelled subscription still records the block', async () => {
+    const outcome = await trial.enforceTrialSeatCap({
+      ...created,
+      stripe: webhookStripe({ cancelThrows: true }),
+    })
+    expect(outcome).toEqual({ action: 'blocked' })
+    expect(redemptions[0].status).toBe('blocked_seat_limit')
+  })
+
+  test('a subscription updated over the cap has its seat item reset to the cap', async () => {
+    const outcome = await trial.enforceTrialSeatCap({
+      ...created,
+      event: 'updated',
+      seats: 40,
+      seatItemId: 'si_seat',
+      stripe: webhookStripe(),
+    })
+    expect(outcome).toEqual({ action: 'clamped', seats: TRIAL_MAX_SEATS })
+    expect(seatItemUpdates).toHaveLength(1)
+    expect(seatItemUpdates[0].id).toBe('si_seat')
+    expect(seatItemUpdates[0].params).toEqual({
+      quantity: TRIAL_MAX_SEATS,
+      proration_behavior: 'none',
+    })
+    // An update is not a block: the trial keeps running at the cap.
+    expect(cancelled).toHaveLength(0)
+    expect(redemptions).toHaveLength(0)
+  })
+
+  test('a subscription at the cap is left alone', async () => {
+    const outcome = await trial.enforceTrialSeatCap({
+      ...created,
+      seats: TRIAL_MAX_SEATS,
+      stripe: webhookStripe(),
+    })
+    expect(outcome).toEqual({ action: 'none' })
+    expect(cancelled).toHaveLength(0)
+    expect(seatItemUpdates).toHaveLength(0)
   })
 })

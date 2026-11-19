@@ -51,3 +51,36 @@ test("a plain arrival passes no file link", () => {
   expect(rendered.at(-1)?.linkWorkspaceId).toBeNull()
   expect(rendered.at(-1)?.initialFilePath).toBeNull()
 })
+
+test("opened from a thread the trail heads the screen — channel and DM alike", () => {
+  params = {
+    chatSessionId: "chat-7",
+    fromConversation: "conv-1",
+    fromKind: "public",
+    fromLabel: "shogo-dev",
+    fromThread: "root-1",
+    fromAgent: "Shogo",
+  }
+  render(<AgentChatRoute />)
+  expect(rendered.at(-1)?.header).not.toBeNull()
+
+  cleanup()
+  rendered.length = 0
+
+  params = {
+    chatSessionId: "chat-8",
+    fromConversation: "dm-1",
+    fromKind: "dm",
+    fromLabel: "Russell",
+    fromAgent: "Shogo",
+  }
+  render(<AgentChatRoute />)
+  expect(rendered.at(-1)?.header).not.toBeNull()
+})
+
+test("a plain arrival has no trail to show", () => {
+  params = { chatSessionId: "chat-9" }
+  render(<AgentChatRoute />)
+
+  expect(rendered.at(-1)?.header).toBeUndefined()
+})

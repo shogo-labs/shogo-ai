@@ -104,6 +104,12 @@ function payload(pool: MetalWarmPool, opts: { restarting?: boolean } = {}) {
     // exactly as before for any consumer that hasn't been updated to read
     // per-class data yet — it always mirrors the 'standard' entry.
     classes: s.classes,
+    // Billing: every assigned VM's cumulative running time by liveness class,
+    // the workspace key + machine size it actually booted, and why it was
+    // started, plus the closed VMs whose final counters the control plane has
+    // not acked yet. Cumulative per VM, so a heartbeat lost in transit costs
+    // nothing — the next one carries the total.
+    meter: s.meter,
     load: {
       available: s.available,
       assigned: s.assigned.length,
@@ -142,6 +148,12 @@ function payload(pool: MetalWarmPool, opts: { restarting?: boolean } = {}) {
     // 2026-10-31). Old agents simply omit this.
     rootDisk: rootDisk,
     metrics: metrics.snapshot().counters,
+    // Gauges are STATE, not totals, and the control plane cannot derive them
+    // from anything else it receives. Without this the durability gauges
+    // (untrusted VMs, oldest untrusted age, worst unsaved age) never left the
+    // host, so the incident that lost a day and a half of work had no signal
+    // anywhere (SHO-442). Old agents simply omit this.
+    gauges: metrics.snapshot().gauges,
     // Only meaningful when the reaper runs; the control plane's hysteresis reads `directiveTier`.
     idle: config.idleSuspendMs > 0 ? currentIdleWindow(s.assigned.length) : undefined,
     ts: Date.now(),
@@ -150,6 +162,11 @@ function payload(pool: MetalWarmPool, opts: { restarting?: boolean } = {}) {
 
 interface RegisterResponse {
   ok?: boolean
+  /**
+   * Highest `meter.seq` the control plane ingested. Closed-VM rows older than
+   * this are dropped; anything newer is re-sent on the next heartbeat.
+   */
+  meterAck?: number
   /** Version this host should be running (pull-based deploy). */
   desired?: DesiredAgent | null
   /** Idle-suspend window for this host (see idle-policy.ts). */
@@ -247,6 +264,10 @@ export function startRegistration(pool: MetalWarmPool): () => void {
     if (stopped) return
     const res = await announce(pool)
     if (res) console.log(`[metal-agent] registered (heartbeat every ${config.registerIntervalMs}ms)`)
+    // Stop re-sending the final counters of VMs the control plane has already
+    // ingested. Checked before the rootfs/self-update work below, which can
+    // restart the process and lose whatever is still unacked.
+    if (res?.meterAck) pool.ackMeters(res.meterAck)
     if (res?.idleSuspend) setIdleDirective(res.idleSuspend)
     // A staged rootfs switches on the control plane's word, or on our own once
     // it has waited too long. Checked even when the heartbeat failed, so a host

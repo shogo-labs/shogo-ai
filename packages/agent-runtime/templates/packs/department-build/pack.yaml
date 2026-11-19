@@ -1,0 +1,119 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/pack-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/pack-templates-gen.ts
+version: 1
+name: Build department
+description: "A #build channel with a Backlog board and a builder agent that takes an idea to shipped."
+projects:
+  - key: build-agent
+    name: Builder
+    description: Turns an idea on the Backlog into something shipped, and keeps the card honest about it.
+    agent:
+      model: auto
+      heartbeat:
+        enabled: true
+        interval: 14400
+      capabilities:
+        boardsEnabled: true
+        boardAdminEnabled: false
+        teamChatEnabled: true
+        companyOpsEnabled: false
+    files:
+      AGENTS.md: |
+        # Builder
+
+        You work in #build. Turns an idea on the Backlog into something shipped, and keeps the card honest about it.
+
+        ## Boards
+        - **Backlog** (BLD-): Everything we intend to build. A card leaves Review only when the change is actually live.
+
+        ## What you do
+        - For a card in Ideas, write the smallest version that is worth shipping and its acceptance criteria in the thread.
+        - When a card moves to Building, implement it, test it, and post what changed and where it runs.
+        - Move a card to Review only when it is live and you have said how to see it; never mark it Shipped yourself.
+        - When Review sends a card back, fix what was raised and say what you changed.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Do not move a card to Shipped; a person decides that.
+        - Do not change the acceptance criteria after a card leaves Ideas without saying so in the thread.
+
+        ## Workspace profile
+
+        - **What this team builds**: {{answers.profile.product}}
+        - **Who signs off**: {{answers.profile.sign-off}}
+        - **Response target**: {{answers.profile.sla}}
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. board_health for #build. Move any card in Ideas past 3 days to a blocker or ask the owner in the thread.
+        2. For cards in Review over 2 days, post one nudge with what a reviewer needs to check.
+teamChannels:
+  - name: build
+    topic: What we are building. Every idea is a card on Backlog.
+    members:
+      - project: build-agent
+        agentTrigger: mention
+    boards:
+      - name: Backlog
+        itemType: task
+        keyPrefix: BLD
+        description: Everything we intend to build. A card leaves Review only when the change is actually live.
+        columns:
+          - name: Ideas
+            category: backlog
+          - name: Building
+            category: active
+            wipLimit: 2
+          - name: Review
+            category: review
+            slaHours: 48
+          - name: Shipped
+            category: done
+          - name: Dropped
+            category: dismissed
+        fields:
+          - key: area
+            label: Area
+            type: text
+          - key: size
+            label: Size
+            type: select
+            options:
+              - S
+              - M
+              - L
+          - key: link
+            label: Link
+            type: url
+        requiresHumanReview: true
+        defaultAgent: build-agent
+setup:
+  questions:
+    - id: product
+      header: What this team builds
+      question: What does this team build or sell, in one sentence?
+      type: text
+      applies: profile.product
+    - id: sign-off
+      header: Who signs off
+      question: Who approves build work?
+      type: text
+      applies: profile.sign-off
+      default: the workspace owner
+    - id: sla
+      header: Response target
+      question: How fast should this team respond to a new request?
+      type: choice
+      options:
+        - Same day
+        - Within 2 business days
+        - Within a week
+      default: Within 2 business days
+      applies: profile.sla
+  profile:
+    file: AGENTS.md
+    section: "## Workspace profile"

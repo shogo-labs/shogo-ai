@@ -89,7 +89,7 @@ const UPSTREAM_BILLING_FAILURE =
 export function isUsageLimitFailure(raw?: string | null): boolean {
   if (!raw) return false
   if (UPSTREAM_BILLING_FAILURE.test(raw)) return false
-  return /usage_limit_reached|usage limit reached|reached your usage limit|spending cap|overage_cap_reached|overage_payment_pending/i.test(
+  return /usage_limit_reached|usage limit reached|reached your usage limit|spending cap|overage_cap_reached|overage_payment_pending|overage_requires_payment|on-demand usage starts after your first payment/i.test(
     raw,
   )
 }

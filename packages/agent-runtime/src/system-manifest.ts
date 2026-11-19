@@ -154,6 +154,12 @@ export const BoardSpecSchema = z.object({
   requiresHumanReview: z.boolean().optional(),
   /** New cards go to this agent unless assigned. */
   defaultAgent: AgentRefSchema.optional(),
+  /**
+   * Template the board was created from, recorded on the board row. Server
+   * behaviour keys off it where a board is more than a board (the Solo
+   * Founder course board refuses to close a lesson until its check passes).
+   */
+  templateId: z.string().min(1).max(100).optional(),
 }).strict()
 
 export const TeamChannelSpecSchema = z.object({

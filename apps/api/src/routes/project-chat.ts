@@ -63,6 +63,7 @@ import { deleteTurnFrames, TurnJournalWriter } from "../services/chat-turn-journ
 import { persistUserMessageForTurn } from "../services/chat-user-message"
 import { createJournalledForwarder } from "../lib/journalled-forwarder"
 import { compactChatSession } from "../services/chat-compact.service"
+import { resolveAgentRunModelFor } from "../services/agent-run-model.service"
 import { countLineChanges } from "../lib/tool-line-stats"
 import { fetchFromProjectRuntime } from "../lib/chat-runtime-fetch"
 import { importCloudModule } from "../lib/cloud-import"
@@ -1733,6 +1734,21 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           }
         } catch (err: any) {
           console.error(`[ProjectChat] Failed to verify user membership:`, err.message)
+        }
+      }
+
+      // AC5 (SHO-417): a run may not use a model the acting person cannot use.
+      // When the agent's configured model is above them, this run uses their
+      // default model and the runtime states it in the reply's first line. The
+      // agent's saved config is untouched. `auto` is a sentinel, not a model, so
+      // it is never downgraded — the narrowed tier map caps it instead.
+      if (verifiedUserId) {
+        const runModel = await resolveAgentRunModelFor(projectId, project.workspaceId, verifiedUserId)
+        if (runModel) {
+          parsedBody.agentMode = runModel.model
+          if (runModel.downgrade) parsedBody.modelDowngrade = runModel.downgrade
+          if (runModel.autoTiers) parsedBody.autoTiers = runModel.autoTiers
+          stampModelProvider(parsedBody)
         }
       }
 

@@ -448,6 +448,23 @@ export function getPlanDisplayName(planId: string | undefined): string {
   return base.charAt(0).toUpperCase() + base.slice(1)
 }
 
+/**
+ * Whether the seats picked for a Business trial exceed the trial seat cap
+ * (SHO-422).
+ *
+ * `maxSeats` is `limits.trialMaxSeats` from `GET /api/billing/workspace-plan`,
+ * so no client hardcodes the number. `null`/`undefined` means the server did
+ * not report a cap — treat that as "no cap" and let the API be the gate rather
+ * than blocking a checkout the server would allow.
+ */
+export function trialSeatsExceedCap(
+  seats: number,
+  maxSeats: number | null | undefined,
+): boolean {
+  if (maxSeats == null) return false
+  return Math.max(1, Math.floor(seats || 1)) > maxSeats
+}
+
 export interface CurrencyDisplay {
   code: string
   symbol: string

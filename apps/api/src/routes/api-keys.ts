@@ -40,6 +40,7 @@ import {
 } from '../lib/api-keys-mint'
 import { normalizeDeviceVersion, recordDeviceVersionEvent } from '../lib/device-version-events'
 import { getAccess } from '../lib/authz'
+import { getSignupTrustHold, signupTrustHoldPayload } from '../lib/signup-trust'
 
 export function apiKeyRoutes() {
   const router = new Hono()
@@ -60,6 +61,11 @@ export function apiKeyRoutes() {
     if (!access.permissions.has('workspace:read')) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
+
+    // A held signup gets no credential until it verifies (SHO-416). Before the
+    // mint, so no `api_keys` row is created.
+    const hold = await getSignupTrustHold(auth.userId)
+    if (hold) return c.json(signupTrustHoldPayload(hold), 403)
 
     const { fullKey, keyHash, keyPrefix } = await generateApiKey()
 

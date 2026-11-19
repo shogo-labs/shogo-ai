@@ -42,18 +42,17 @@ const list = [
 const ids = (l: ConversationSummary[]) => l.map((c) => c.id)
 
 describe('directConversations', () => {
-  test('people and agents together, newest first, without channels or archived', () => {
+  test('direct conversations, newest first, without channels or archived', () => {
     expect(ids(directConversations(list))).toEqual(['reviewer', 'eby', 'group', 'muted'])
   })
 })
 
 describe('filterDms', () => {
-  test('People leaves out agents; Agents keeps only them', () => {
-    expect(ids(filterDms(list, 'people'))).toEqual(['eby', 'group', 'muted'])
-    expect(ids(filterDms(list, 'agents'))).toEqual(['reviewer'])
+  test('People is every direct conversation (there is no Agents chip any more, SHO-412)', () => {
+    expect(ids(filterDms(list, 'people'))).toEqual(['reviewer', 'eby', 'group', 'muted'])
   })
 
-  test('Unreads counts people and agents, but not muted conversations', () => {
+  test('Unreads leaves out muted conversations', () => {
     expect(ids(filterDms(list, 'unreads'))).toEqual(['reviewer', 'eby'])
   })
 
@@ -78,9 +77,7 @@ describe('splitStarredDms', () => {
 
   test('the active chip narrows both groups', () => {
     expect(ids(splitStarredDms(withStar, 'people').starred)).toEqual(['ana', 'eby'])
-    expect(ids(splitStarredDms(withStar, 'people').others)).toEqual([])
-    expect(ids(splitStarredDms(withStar, 'agents').starred)).toEqual([])
-    expect(ids(splitStarredDms(withStar, 'agents').others)).toEqual(['reviewer'])
+    expect(ids(splitStarredDms(withStar, 'people').others)).toEqual(['reviewer'])
   })
 
   test('channels and archived conversations stay out of both groups', () => {

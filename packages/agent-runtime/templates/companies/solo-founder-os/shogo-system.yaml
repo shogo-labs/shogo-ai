@@ -1,0 +1,459 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+version: 1
+name: Solo Founder OS
+description: Build, Marketing, Sales, Support and Ops for one person running a company, with every agent on the economy model.
+projects:
+  - key: builder
+    name: Builder
+    description: Plans, builds and tests product changes, then hands them to the founder for review.
+    agent:
+      model: hoshi-2-0
+      heartbeat:
+        enabled: true
+        interval: 86400
+      capabilities: &a1
+        boardsEnabled: true
+        boardAdminEnabled: false
+        teamChatEnabled: true
+        companyOpsEnabled: false
+    files:
+      AGENTS.md: |
+        # Builder
+
+        You work in #build. Plans, builds and tests product changes, then hands them to the founder for review.
+
+        ## Boards
+        - **Backlog** (BLD-): Everything we intend to build. A card leaves Review only when the change is actually live.
+
+        ## What you do
+        - Before starting new work, read the company brief in the #ops channel doc (`team_chat_doc_read`). If it is missing, ask the founder to do Lesson 0 first.
+        - Write for a busy founder: short, plain, the decision you need first.
+        - End every task with a checklist of what you were asked to do, each marked done / not done / couldn't check, with one line of evidence. Never mark something done you didn't verify.
+        - When a card lands in Ideas, write a short plan in its thread: what changes, and a checklist of how we'll know it works. Ask at most 3 questions if something important is unclear.
+        - Build it, then test every checklist item yourself the way a customer would, and post what passed and what didn't.
+        - Move the card to Review and tag the founder with the preview link. If the founder sends it back, fix exactly what they said and say what changed.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Never publish, send, post, spend or delete anything outside Shogo without the founder's approval in the thread.
+        - Never invent facts, numbers, testimonials or customer names. If it isn't in the brief or a source, mark it [GUESS].
+        - Never move a card to Shipped; that is the founder's call.
+        - Never publish, change payments to live mode or delete data without the founder's approval in the thread.
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. Cards in Building with no update for 2 days: post where it stands or what you need.
+        2. Post nothing if nothing needs attention.
+  - key: marketer
+    name: Marketer
+    description: Turns the brief into posts, guides and ad ideas, and keeps the calendar moving.
+    agent:
+      model: hoshi-2-0
+      heartbeat:
+        enabled: true
+        interval: 86400
+      capabilities: *a1
+    files:
+      AGENTS.md: |
+        # Marketer
+
+        You work in #marketing. Turns the brief into posts, guides and ad ideas, and keeps the calendar moving.
+
+        ## Boards
+        - **Content** (CNT-): Everything we publish. A card needs a publish date before it leaves Drafting.
+        - **Campaigns** (CMP-): Launches, promotions and events. Close a card only after its results are posted.
+
+        ## What you do
+        - Before starting new work, read the company brief in the #ops channel doc (`team_chat_doc_read`). If it is missing, ask the founder to do Lesson 0 first.
+        - Write for a busy founder: short, plain, the decision you need first.
+        - End every task with a checklist of what you were asked to do, each marked done / not done / couldn't check, with one line of evidence. Never mark something done you didn't verify.
+        - Propose post ideas as cards in Ideas, each one a customer problem in their words.
+        - Draft posts when a card moves to Drafting (hook under 10 words, the post, the channel) and move them to Review.
+        - For ads: write hooks as Campaigns cards in Brief; follow the ad rules in this channel's doc. When a campaign moves to Measuring, report spend, sign-ups and cost per sign-up.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Never publish, send, post, spend or delete anything outside Shogo without the founder's approval in the thread.
+        - Never invent facts, numbers, testimonials or customer names. If it isn't in the brief or a source, mark it [GUESS].
+        - Never publish or schedule a post, and never start, change or raise ad spend; propose and wait for approval.
+        - No fake urgency, no claims we can't prove.
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. Cards in Review over 2 days: one-line reminder to the founder.
+        2. Scheduled cards whose date has passed: flag them.
+  - key: seller
+    name: Seller
+    description: Finds and researches leads, keeps every deal's next step current, and drafts follow-ups.
+    agent:
+      model: hoshi-2-0
+      heartbeat:
+        enabled: true
+        interval: 86400
+      capabilities: *a1
+    files:
+      AGENTS.md: |
+        # Seller
+
+        You work in #sales. Finds and researches leads, keeps every deal's next step current, and drafts follow-ups.
+
+        ## Boards
+        - **Pipeline** (DEAL-): Every open deal. A deal without a next step and a date is stale.
+
+        ## What you do
+        - Before starting new work, read the company brief in the #ops channel doc (`team_chat_doc_read`). If it is missing, ask the founder to do Lesson 0 first.
+        - Write for a busy founder: short, plain, the decision you need first.
+        - End every task with a checklist of what you were asked to do, each marked done / not done / couldn't check, with one line of evidence. Never mark something done you didn't verify.
+        - Research leads from public sources only; add each to Lead with why it fits and the evidence.
+        - Every open deal has a next step and a date. Each morning list the overdue ones and draft the follow-up in each thread.
+        - When asked, build a demo for a lead using only their public details, and send the preview (don't publish it).
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Never publish, send, post, spend or delete anything outside Shogo without the founder's approval in the thread.
+        - Never invent facts, numbers, testimonials or customer names. If it isn't in the brief or a source, mark it [GUESS].
+        - Never contact a lead or send an email yourself.
+        - Never scrape private data or guess personal contact details.
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. Deals past their next-step date: draft the follow-up and tag the founder once.
+    integrations:
+      - hubspot
+      - salesforce
+      - gmail
+  - key: support
+    name: Support
+    description: Turns customer emails into tickets and drafts every reply for the founder's approval.
+    agent:
+      model: hoshi-2-0
+      heartbeat:
+        enabled: true
+        interval: 86400
+      capabilities: *a1
+    files:
+      AGENTS.md: |
+        # Support
+
+        You work in #support. Turns customer emails into tickets and drafts every reply for the founder's approval.
+
+        ## Boards
+        - **Tickets** (SUP-): Every customer request. Reply in the card thread; move to Waiting on customer when the ball is in their court.
+
+        ## What you do
+        - Before starting new work, read the company brief in the #ops channel doc (`team_chat_doc_read`). If it is missing, ask the founder to do Lesson 0 first.
+        - Write for a busy founder: short, plain, the decision you need first.
+        - End every task with a checklist of what you were asked to do, each marked done / not done / couldn't check, with one line of evidence. Never mark something done you didn't verify.
+        - Triage each ticket in New: the customer, their question in one line, and a drafted reply in the thread using the brief and docs.
+        - When the founder approves a draft, send it (once email is connected) and move the ticket to Waiting on customer or Solved.
+        - When a ticket is a product bug, add a card to Ideas on the Build board and link it in the thread.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Never publish, send, post, spend or delete anything outside Shogo without the founder's approval in the thread.
+        - Never invent facts, numbers, testimonials or customer names. If it isn't in the brief or a source, mark it [GUESS].
+        - Never send a reply the founder hasn't approved.
+        - Never promise refunds, credits or dates.
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. Tickets in New for more than 1 day: remind the founder.
+        2. Waiting on customer for over 3 days: draft a friendly follow-up.
+    integrations:
+      - zendesk
+      - intercom
+      - gmail
+  - key: ops
+    name: Chief of Staff
+    description: Keeps the company brief current, tracks the 30-day goal, and writes the digests the founder asks for.
+    agent:
+      model: hoshi-2-0
+      heartbeat:
+        enabled: true
+        interval: 86400
+      capabilities: *a1
+    files:
+      AGENTS.md: |
+        # Chief of Staff
+
+        You work in #ops. Keeps the company brief current, tracks the 30-day goal, and writes the digests the founder asks for.
+
+        ## Boards
+        - **OKRs** (OKR-): One card per key result. Update the confidence field every week.
+
+        ## What you do
+        - Before starting new work, read the company brief in the #ops channel doc (`team_chat_doc_read`). If it is missing, ask the founder to do Lesson 0 first.
+        - Write for a busy founder: short, plain, the decision you need first.
+        - End every task with a checklist of what you were asked to do, each marked done / not done / couldn't check, with one line of evidence. Never mark something done you didn't verify.
+        - Keep the company brief in this channel's doc up to date when the founder asks; never change it on your own.
+        - Turn the brief's 30-day goal into the first OKR card, and check its confidence with the founder each Monday.
+        - Run the routines the founder sets up (morning digest, weekly numbers, weekly review) and keep each one short.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Never publish, send, post, spend or delete anything outside Shogo without the founder's approval in the thread.
+        - Never invent facts, numbers, testimonials or customer names. If it isn't in the brief or a source, mark it [GUESS].
+        - Never sign up for or pay for tools.
+        - Never change a goal's target.
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. On Mondays, start the goal check-in if it hasn't run this week.
+teamChannels:
+  - name: build
+    topic: "Product: ideas, builds and what shipped."
+    members:
+      - project: builder
+        agentTrigger: mention
+    boards:
+      - name: Backlog
+        itemType: task
+        keyPrefix: BLD
+        description: Everything we intend to build. A card leaves Review only when the change is actually live.
+        columns:
+          - name: Ideas
+            category: backlog
+          - name: Building
+            category: active
+            wipLimit: 2
+          - name: Review
+            category: review
+            slaHours: 48
+          - name: Shipped
+            category: done
+          - name: Dropped
+            category: dismissed
+        fields:
+          - key: area
+            label: Area
+            type: text
+          - key: size
+            label: Size
+            type: select
+            options:
+              - S
+              - M
+              - L
+          - key: link
+            label: Link
+            type: url
+        requiresHumanReview: true
+        defaultAgent: builder
+  - name: marketing
+    topic: Content, guides and ads.
+    members:
+      - project: marketer
+        agentTrigger: mention
+    boards:
+      - name: Content
+        itemType: content
+        keyPrefix: CNT
+        description: Everything we publish. A card needs a publish date before it leaves Drafting.
+        columns:
+          - name: Ideas
+            category: backlog
+          - name: Drafting
+            category: active
+            wipLimit: 5
+          - name: Review
+            category: review
+            slaHours: 48
+          - name: Scheduled
+            category: waiting
+          - name: Published
+            category: done
+        fields:
+          - key: format
+            label: Format
+            type: select
+            options:
+              - blog
+              - newsletter
+              - social
+              - video
+              - case study
+          - key: publishDate
+            label: Publish date
+            type: date
+          - key: link
+            label: Link
+            type: url
+        requiresHumanReview: true
+        defaultAgent: marketer
+      - name: Campaigns
+        itemType: task
+        keyPrefix: CMP
+        description: Launches, promotions and events. Close a card only after its results are posted.
+        columns:
+          - name: Brief
+            category: backlog
+          - name: Building
+            category: active
+          - name: Live
+            category: active
+          - name: Measuring
+            category: review
+          - name: Done
+            category: done
+        fields:
+          - key: goal
+            label: Goal
+            type: text
+          - key: budget
+            label: Budget
+            type: money
+          - key: launchDate
+            label: Launch date
+            type: date
+        defaultAgent: marketer
+  - name: sales
+    topic: Leads, follow-ups and demos.
+    members:
+      - project: seller
+        agentTrigger: mention
+    boards:
+      - name: Pipeline
+        itemType: deal
+        keyPrefix: DEAL
+        description: Every open deal. A deal without a next step and a date is stale.
+        columns:
+          - name: Lead
+            category: backlog
+            slaHours: 48
+          - name: Qualified
+            category: active
+          - name: Proposal
+            category: active
+          - name: Negotiation
+            category: review
+          - name: Won
+            category: done
+          - name: Lost
+            category: dismissed
+        fields:
+          - key: company
+            label: Company
+            type: text
+            required: true
+          - key: amount
+            label: Amount
+            type: money
+          - key: closeDate
+            label: Expected close
+            type: date
+          - key: nextStep
+            label: Next step
+            type: text
+          - key: lostReason
+            label: Lost reason
+            type: select
+            options:
+              - price
+              - timing
+              - competitor
+              - no decision
+              - fit
+        postToChannel: done_only
+        defaultAgent: seller
+  - name: support
+    topic: Customer questions. Every email is a ticket.
+    members:
+      - project: support
+        agentTrigger: mention
+    boards:
+      - name: Tickets
+        itemType: ticket
+        keyPrefix: SUP
+        description: Every customer request. Reply in the card thread; move to Waiting on customer when the ball is in their court.
+        columns:
+          - name: New
+            category: backlog
+            slaHours: 4
+          - name: Open
+            category: active
+            wipLimit: 15
+            slaHours: 24
+          - name: Waiting on customer
+            category: waiting
+          - name: Solved
+            category: done
+        fields:
+          - key: customer
+            label: Customer
+            type: text
+            required: true
+          - key: plan
+            label: Plan
+            type: select
+            options:
+              - free
+              - pro
+              - enterprise
+          - key: channel
+            label: Came in via
+            type: select
+            options:
+              - email
+              - chat
+              - phone
+              - social
+        postToChannel: done_only
+        defaultAgent: support
+  - name: ops
+    topic: The company brief, goals and the morning digest.
+    members:
+      - project: ops
+        agentTrigger: mention
+    boards:
+      - name: OKRs
+        itemType: custom
+        keyPrefix: OKR
+        description: One card per key result. Update the confidence field every week.
+        columns:
+          - name: Not started
+            category: backlog
+          - name: On track
+            category: active
+          - name: At risk
+            category: waiting
+          - name: Achieved
+            category: done
+          - name: Missed
+            category: dismissed
+        fields:
+          - key: objective
+            label: Objective
+            type: text
+            required: true
+          - key: target
+            label: Target
+            type: text
+          - key: confidence
+            label: Confidence
+            type: select
+            options:
+              - high
+              - medium
+              - low
+        defaultAgent: ops

@@ -11,6 +11,7 @@ exports[`generated route output model routes 1`] = `
 
 import { Hono } from "hono"
 import { PrismaClient } from "./prisma/client"
+import type { Prisma } from "./prisma/client"
 import type { ProjectHooks } from "./project.hooks"
 
 // JSON replacer that coerces native BigInt values to strings so they can
@@ -92,7 +93,7 @@ function buildContext(c: any, body?: any) {
 /**
  * HTTP status for a hook rejection. Hooks signal authorization failures
  * with \`unauthorized\` / \`forbidden\` / \`not_found\` codes, and state
- * conflicts with \`already_member\` / \`last_owner\`.
+ * conflicts with \`already_member\` / \`last_owner\` / \`trial_seat_limit\`.
  */
 function hookErrorStatus(error: { code?: string } | undefined): number {
   switch (error?.code) {
@@ -100,7 +101,8 @@ function hookErrorStatus(error: { code?: string } | undefined): number {
     case "forbidden": return 403
     case "not_found": return 404
     case "already_member":
-    case "last_owner": return 409
+    case "last_owner":
+    case "trial_seat_limit": return 409
     default: return 400
   }
 }
@@ -110,8 +112,8 @@ function hookErrorStatus(error: { code?: string } | undefined): number {
 const WRITABLE_SCALAR_FIELDS = ["name", "completed", "priority", "createdAt", "workspaceId"] as const
 const RELATION_FIELDS = ["workspace"] as const
 
-type WriteBodyResult =
-  | { ok: true; data: Record<string, unknown> }
+type WriteBodyResult<T> =
+  | { ok: true; data: T }
   | { ok: false; error: { code: string; message: string } }
 
 /**
@@ -125,7 +127,7 @@ type WriteBodyResult =
  * - Unknown keys are silently dropped to prevent injection of fields the
  *   schema does not expose.
  */
-function pickWritableFields(body: any): WriteBodyResult {
+function pickWritableFields<T>(body: any): WriteBodyResult<T> {
   if (body == null || typeof body !== "object" || Array.isArray(body)) {
     return { ok: false, error: { code: "invalid_body", message: "Request body must be a JSON object." } }
   }
@@ -147,7 +149,7 @@ function pickWritableFields(body: any): WriteBodyResult {
     }
     data[key] = value
   }
-  return { ok: true, data }
+  return { ok: true, data: data as T }
 }
 
 /**
@@ -273,7 +275,7 @@ export function createProjectRoutes(): Hono {
 
       // Filter the body to schema-known scalars + relation-shaped relations.
       // Prevents accidental relation-as-scalar errors and unknown-key Prisma crashes.
-      const picked = pickWritableFields(body)
+      const picked = pickWritableFields<Prisma.ProjectUncheckedCreateInput>(body)
       if (!picked.ok) {
         return sendJson(c, { error: picked.error }, 400)
       }
@@ -314,7 +316,7 @@ export function createProjectRoutes(): Hono {
       }
 
       // Same allowlist filter as on create — see pickWritableFields above.
-      const picked = pickWritableFields(body)
+      const picked = pickWritableFields<Prisma.ProjectUncheckedUpdateInput>(body)
       if (!picked.ok) {
         return sendJson(c, { error: picked.error }, 400)
       }

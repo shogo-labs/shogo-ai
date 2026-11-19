@@ -21,6 +21,7 @@ import {
 } from '../config/usage-plans'
 import { allocateFreeWallet } from './billing.service'
 import { homeWorkspaceIds } from '../lib/region'
+import { invalidateSignupTrustHold } from '../lib/signup-trust'
 import {
   collectSignupRiskFeatures,
   recordSignupRiskAssessment,
@@ -130,6 +131,7 @@ export interface VerificationReleaseOutcome {
     | 'no_assessment'
     | 'not_eligible'
     | 'rescored_high_risk'
+    | 'rescored_below_high'
     | 'no_workspace'
     | 'released'
   band?: string
@@ -141,6 +143,11 @@ export interface VerificationReleaseOutcome {
  * credit if it still qualifies. The re-score uses the stored features (IP, device,
  * canonical email) and counts accounts created since signup, so a burst that
  * arrives after the first signup is caught here.
+ *
+ * A high-band account is re-scored even though it was never eligible for credit
+ * (`no_credit`): the re-score is what lifts — or confirms — the trust hold in
+ * `lib/signup-trust.ts` (SHO-416). Its credit decision stays `no_credit` either
+ * way, because verification does not change the credit rules.
  */
 export async function releaseSignupCreditOnVerification(params: {
   userId: string
@@ -151,7 +158,9 @@ export async function releaseSignupCreditOnVerification(params: {
     where: { userId: params.userId },
   })
   if (!assessment) return { released: false, reason: 'no_assessment' }
-  if (assessment.decision !== CREDIT_DECISIONS.initial && assessment.decision !== CREDIT_DECISIONS.held) {
+  const creditEligible =
+    assessment.decision === CREDIT_DECISIONS.initial || assessment.decision === CREDIT_DECISIONS.held
+  if (!creditEligible && assessment.band !== 'high') {
     return { released: false, reason: 'not_eligible' }
   }
 
@@ -193,6 +202,20 @@ export async function releaseSignupCreditOnVerification(params: {
       decision: CREDIT_DECISIONS.none,
     })
     return { released: false, reason: 'rescored_high_risk', band: result.band }
+  }
+
+  // Verified and no longer clustered. A high-band account was never eligible
+  // for credit, so only the hold lifts — record the new band and stop.
+  if (!creditEligible) {
+    await recordSignupRiskAssessment({
+      userId: params.userId,
+      email: user.email,
+      provider: signals.provider ?? 'credential',
+      request,
+      result,
+      decision: CREDIT_DECISIONS.none,
+    })
+    return { released: false, reason: 'rescored_below_high', band: result.band }
   }
 
   const workspaceId = await findSignupCreditWorkspaceId(params.userId)
@@ -262,6 +285,8 @@ export async function approveSignupCredit(params: {
       reviewedAt: now,
     },
   })
+  // An approval releases the trust hold too (SHO-416).
+  invalidateSignupTrustHold(params.userId)
   return { granted: grantedUsd > 0, grantedUsd }
 }
 
@@ -305,6 +330,8 @@ export async function revokeSignupCredit(params: {
       reviewedAt: new Date(),
     },
   })
+  // A revoke can change the hold (a revoked account is no longer approved).
+  invalidateSignupTrustHold(params.userId)
   return { revokedUsd }
 }
 

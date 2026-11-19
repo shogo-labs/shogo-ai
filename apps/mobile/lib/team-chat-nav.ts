@@ -44,6 +44,19 @@ export function sessionRoute(input: { projectId: string | null; sessionId: strin
   }
 }
 
+/**
+ * The route for a person's chat with an agent: a project chat for a project
+ * agent, the workspace agent chat for the workspace agent (SHO-412).
+ */
+export function agentChatRoute(input: { projectId: string | null; sessionId: string; wide: boolean }): SessionRoute {
+  const { projectId, sessionId, wide } = input
+  if (!projectId) return { pathname: '/(app)/agent', params: { chatSessionId: sessionId } }
+  return {
+    pathname: wide ? '/(app)/projects/[id]' : '/(app)/project-chat/[id]',
+    params: { id: projectId, chatSessionId: sessionId },
+  }
+}
+
 /** The conversation, and the thread when the run happened in one. Same shape as the session breadcrumb. */
 export function conversationThreadRoute(conversationId: string, threadRootId?: string | null): {
   pathname: '/(app)/c/[conversationId]'

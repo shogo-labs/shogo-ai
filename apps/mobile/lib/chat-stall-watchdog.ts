@@ -144,6 +144,17 @@ export function resolveProgressAfterVisibilityChange(opts: {
   return opts.isVisibleNow ? opts.now : opts.lastProgressAt
 }
 
+/**
+ * Upper bound on a `/turn` probe the stall paths issue before they touch a
+ * stream. The probe is ~50 bytes of JSON, but without a bound a half-open
+ * socket never settles the fetch: the watchdog's in-flight latch stays taken
+ * (every 15 s tick returns early) and the recovery loop never advances — the
+ * exact "nothing comes back" the probe exists to prevent. An abort reads as
+ * `answered: false`, which both callers already handle as "the runtime said
+ * nothing".
+ */
+export const STALL_PROBE_TIMEOUT_MS = 5_000
+
 /** Shown when the stall watchdog aborts a turn that never produced a byte. */
 export const STALL_TIMEOUT_USER_MESSAGE = 'Runtime unreachable — tap retry'
 

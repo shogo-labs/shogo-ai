@@ -30,6 +30,19 @@ describe('ShogoError.fromStatus', () => {
     expect(e.message).toBe('Bad payload')
     expect(e.details).toEqual({ field: 'email' })
   })
+
+  test('keeps a server error code the SDK knows instead of the status code', () => {
+    const e = ShogoError.fromStatus(400, 'Trial is limited to 5 seats', {
+      error: { code: 'trial_seat_limit', message: 'Trial is limited to 5 seats' },
+    })
+    expect(e.code).toBe('TRIAL_SEAT_LIMIT')
+    expect(e.status).toBe(400)
+  })
+
+  test('ignores a server error code the SDK does not know', () => {
+    const e = ShogoError.fromStatus(400, 'nope', { error: { code: 'some_new_code' } })
+    expect(e.code).toBe('VALIDATION_ERROR')
+  })
 })
 
 describe('ShogoError factory helpers', () => {

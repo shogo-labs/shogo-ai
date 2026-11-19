@@ -11,7 +11,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
-import { AlarmClock, AtSign, Bot, ChevronRight, Heart, Lock, Megaphone, MessageCircleQuestion, MessageSquare, MessagesSquare, Tag } from 'lucide-react-native'
+import { AlarmClock, AtSign, Bot, ChevronRight, Heart, Lock, Megaphone, MessageCircleQuestion, MessageSquare, MessagesSquare, Square, Tag } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useWorkspaceInView } from '../../hooks/useWorkspaceInView'
 import { useAgentActivity } from '../../hooks/useAgentActivity'
@@ -22,7 +22,9 @@ import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { openActiveChat } from '../../lib/open-active-chat'
 import { openConversationMessage } from '../../lib/team-chat-nav'
 import { readableAgentTaskError } from '../../lib/agent-task-ui'
-import { ACTIVITY_FILTERS, buildFeed, groupFeed, relativeTime, type ActivityEntry, type ActivityFilter, type FeedHeaderRow } from '../../lib/activity-feed'
+import { ACTIVITY_FILTERS, buildFeed, canStopRunningChat, groupFeed, relativeTime, type ActivityEntry, type ActivityFilter, type FeedHeaderRow } from '../../lib/activity-feed'
+import { stopRunningChat } from '../../lib/stop-running-chat'
+import { AgentAvatar } from '../team-chat/AgentAvatar'
 import type { AgentTask } from '../../lib/api'
 import type { InboxKind } from '../../lib/team-chat-api'
 
@@ -66,6 +68,7 @@ export function ActivityFeed({ compact = false, withFloatingCreate = false }: Ac
   const focused = useFocused()
   const [filter, setFilter] = useState<ActivityFilter>('all')
   const [unreadOnly, setUnreadOnly] = useState(false)
+  const [stopError, setStopError] = useState<string | null>(null)
   /**
    * The server filters, not `buildFeed`. Filtering unread on the client means
    * every page arrives mostly-read, the filtered list never fills the viewport,
@@ -130,6 +133,18 @@ export function ActivityFeed({ compact = false, withFloatingCreate = false }: Ac
     if (id === 'sent') setUnreadOnly(false)
   }
 
+  /**
+   * Stop the run behind a row. The strip is a poll behind the server, so the
+   * row leaves on its own; a refused stop says why instead of disappearing.
+   */
+  const stop = (entry: ActivityEntry) => {
+    const chat = entry.agent?.chat
+    if (!chat) return
+    setStopError(null)
+    void stopRunningChat(chat, workspaceId)
+      .catch((err: unknown) => setStopError(err instanceof Error ? err.message : 'That run could not be stopped.'))
+  }
+
   return (
     <View className="flex-1 bg-background">
       <ScrollView
@@ -183,8 +198,9 @@ export function ActivityFeed({ compact = false, withFloatingCreate = false }: Ac
                 <ChevronRight size={14} className="text-amber-700 dark:text-amber-400" />
               </Pressable>
             ) : null}
-            {feed.running.length > 0 && <RunningNow entries={feed.running} compact={compact} onOpen={open} />}
+            {feed.running.length > 0 && <RunningNow entries={feed.running} compact={compact} onOpen={open} onStop={stop} workspaceId={workspaceId} />}
             {loading ? <ActivityIndicator className="mt-8" /> : null}
+            {stopError && filter !== 'sent' ? <Text className="px-4 pt-2 text-sm text-destructive">{stopError}</Text> : null}
             {filter !== 'sent' && inbox.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{inbox.error}</Text> : null}
             {filter !== 'sent' && agents.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{readableAgentTaskError(agents.error, 'We could not refresh agent activity.')}</Text> : null}
             {filter === 'sent' && sent.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{sent.error}</Text> : null}
@@ -277,28 +293,78 @@ function openTask(router: ReturnType<typeof useRouter>, task: AgentTask) {
 }
 
 /** The agents working right now, kept above the history. */
-export function RunningNow({ entries, compact, onOpen }: { entries: ActivityEntry[]; compact?: boolean; onOpen: (e: ActivityEntry) => void }) {
+export function RunningNow({
+  entries,
+  compact,
+  onOpen,
+  onStop,
+  workspaceId,
+}: {
+  entries: ActivityEntry[]
+  compact?: boolean
+  onOpen: (e: ActivityEntry) => void
+  /** Stops the run behind a row; the row leaves the strip on the next poll. */
+  onStop?: (e: ActivityEntry) => void
+  workspaceId?: string | null
+}) {
   return (
     <View className={cn('border-b border-border/60', compact ? 'px-3 pb-2' : 'px-4 pb-3')} testID="running-now">
       <View className="flex-row items-center gap-2 pb-1 pt-2">
         <View className="h-2 w-2 rounded-full bg-primary" />
         <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{`Running now · ${entries.length}`}</Text>
       </View>
-      {entries.map((entry) => (
-        <Pressable
-          key={entry.id}
-          accessibilityRole="button"
-          accessibilityLabel={`${entry.title}, ${entry.agent?.state === 'queued' ? 'queued' : 'running'}`}
-          onPress={() => onOpen(entry)}
-          className="flex-row items-center gap-2.5 rounded-md px-1 py-1.5 active:bg-accent/50"
-        >
-          <AgentMark running />
-          <View className="min-w-0 flex-1">
-            <Text className="text-sm font-medium text-foreground" numberOfLines={1}>{entry.title}</Text>
-            <Text className="text-xs text-muted-foreground" numberOfLines={1}>{`${entry.context} · ${entry.preview}`}</Text>
-          </View>
-        </Pressable>
-      ))}
+      {entries.map((entry) => {
+        const chat = entry.agent?.chat
+        const second = [entry.context, entry.preview].filter((part) => !!part).join(' · ')
+        return (
+          <Pressable
+            key={entry.id}
+            accessibilityRole="button"
+            accessibilityLabel={`${entry.title}, ${entry.agent?.state === 'queued' ? 'queued' : 'running'}`}
+            onPress={() => onOpen(entry)}
+            className="flex-row items-center gap-2.5 rounded-md px-1 py-1.5 active:bg-accent/50"
+          >
+            {chat ? (
+              // The agent's own avatar, so six runs are six agents at a glance.
+              <View
+                className={cn('rounded-lg', entry.agent?.state === 'running' && 'border border-primary/60')}
+                testID={`running-avatar-${entry.id}`}
+              >
+                <AgentAvatar
+                  name={chat.agentName || chat.projectName || 'Agent'}
+                  projectId={chat.projectId}
+                  workspaceId={workspaceId ?? null}
+                  size={30}
+                />
+              </View>
+            ) : (
+              <AgentMark running />
+            )}
+            <View className="min-w-0 flex-1">
+              <Text className="text-sm font-medium text-foreground" numberOfLines={1}>{entry.title}</Text>
+              {second ? <Text className="text-xs text-muted-foreground" numberOfLines={1}>{second}</Text> : null}
+            </View>
+            {chat && onStop && canStopRunningChat(chat) ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Stop ${entry.title}`}
+                testID={`stop-${entry.id}`}
+                hitSlop={8}
+                // Stops the reply it belongs to, and never opens the row: the
+                // inner pressable owns the touch (and on web, where a press is
+                // a click, it stops that click from reaching the row).
+                onPress={(event) => {
+                  event?.stopPropagation?.()
+                  onStop(entry)
+                }}
+                className="h-8 w-8 items-center justify-center rounded-full border border-border active:bg-accent"
+              >
+                <Square size={11} className="fill-foreground text-foreground" />
+              </Pressable>
+            ) : null}
+          </Pressable>
+        )
+      })}
     </View>
   )
 }

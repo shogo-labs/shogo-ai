@@ -26,7 +26,7 @@ import {
 } from '../services/checkpoint.service'
 import { prisma } from '../lib/prisma'
 import type { Permission } from '@shogo/authz'
-import { accessibleProjectsWhere, decide, getRbacMode, loadAccess, resolveAgentActor } from '../lib/authz'
+import { accessibleProjectsWhere, decide, enforceAbility, getRbacMode, loadAccess, resolveAgentActor } from '../lib/authz'
 import {
   authorizeAttachmentAction,
   filterReadableAttachments,
@@ -44,6 +44,11 @@ import { isMetalEnabled } from '../lib/metal-eligibility'
 import { projectPreviewUrl } from '../lib/project-preview-url'
 import { rememberPreviewRegion } from '../lib/cloudflare-preview-region-kv'
 import { REMOTE_IMPORT_MAX_BASE64_CHARS, remoteToolPermission } from '../lib/remote-tool-policy'
+import { TRANSFER_MAX_ARCHIVE_BYTES } from '@shogo/shared-runtime/project-transfer-limits'
+import {
+  WORKSPACE_ROOT_SECRETS_MAX_PAYLOAD_BYTES,
+  workspaceRuntimeKey,
+} from '@shogo/shared-runtime/workspace-root-secrets'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { getWorkspaceKind } from '../services/workspace.service'
 import { getRuntimeManager } from '../lib/runtime/manager'
@@ -1523,17 +1528,22 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.post('/projects/:projectId/shared-files', async (c) => {
     const projectId = c.req.param('projectId')
     if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
-    if (!(await validateAuth(c, projectId))) {
+    const identity = await authenticate(c, projectId)
+    if (!identity) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
-    return mintSharedFileLink(c, projectId, async () => {
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { workspaceId: true },
-      })
-      if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
-      return { projectId, workspaceId: project.workspaceId }
+    // Validate the path before the project lookup: a malformed request is a 400
+    // whatever the project turns out to be, and it must not depend on a row.
+    const request = await readSharedFileRequest(c)
+    if (request instanceof Response) return request
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
     })
+    if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+    const denied = await enforceWorkspaceAbility(c, identity, project.workspaceId, 'project.files:share_public')
+    if (denied) return denied
+    return mintSharedFileLink(c, projectId, request, async () => ({ projectId, workspaceId: project.workspaceId }))
   })
 
   /**
@@ -1546,17 +1556,21 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.post('/workspaces/:workspaceId/shared-files', async (c) => {
     const workspaceId = c.req.param('workspaceId')
     if (!workspaceId) return c.json({ error: 'Missing workspaceId' }, 400)
-    if (!(await authorizeWorkspaceRuntimeRequest(c, workspaceId))) {
+    const identity = await authorizeWorkspaceRuntimeRequest(c, workspaceId)
+    if (!identity) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
-    return mintSharedFileLink(c, `workspace ${workspaceId}`, async () => ({ workspaceId }))
+    const request = await readSharedFileRequest(c)
+    if (request instanceof Response) return request
+    const denied = await enforceWorkspaceAbility(c, identity, workspaceId, 'project.files:share_public')
+    if (denied) return denied
+    return mintSharedFileLink(c, `workspace ${workspaceId}`, request, async () => ({ workspaceId }))
   })
 
-  async function mintSharedFileLink(
+  /** The path and lifetime a shared-file mint asks for, or a 400 response. */
+  async function readSharedFileRequest(
     c: Context,
-    label: string,
-    loadScope: () => Promise<{ projectId?: string; workspaceId: string } | Response>,
-  ): Promise<Response> {
+  ): Promise<{ path: string; expiresInDays: number } | Response> {
     const body = await c.req.json().catch(() => null) as {
       path?: unknown
       expiresInDays?: unknown
@@ -1577,7 +1591,16 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       typeof body?.expiresInDays === 'number' && Number.isFinite(body.expiresInDays)
         ? Math.floor(body.expiresInDays)
         : 7
-    const expiresInDays = Math.max(1, Math.min(7, requestedDays))
+    return { path, expiresInDays: Math.max(1, Math.min(7, requestedDays)) }
+  }
+
+  async function mintSharedFileLink(
+    c: Context,
+    label: string,
+    request: { path: string; expiresInDays: number },
+    loadScope: () => Promise<{ projectId?: string; workspaceId: string } | Response>,
+  ): Promise<Response> {
+    const { path, expiresInDays } = request
     const now = Math.floor(Date.now() / 1000)
 
     try {
@@ -1734,7 +1757,16 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.get('/projects/:projectId/github/cli-credentials', async (c) => {
     const projectId = c.req.param('projectId')
     if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
-    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const projectWorkspace = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
+    })
+    if (projectWorkspace) {
+      const denied = await enforceWorkspaceAbility(c, identity, projectWorkspace.workspaceId, 'project.secrets:read')
+      if (denied) return denied
+    }
 
     try {
       if (!loadGitHub) {
@@ -1855,7 +1887,16 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.post('/projects/:projectId/integrations/resolve', async (c) => {
     const projectId = c.req.param('projectId')
     if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
-    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const projectWorkspace = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
+    })
+    if (projectWorkspace) {
+      const denied = await enforceWorkspaceAbility(c, identity, projectWorkspace.workspaceId, 'integrations:connect')
+      if (denied) return denied
+    }
     const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
     const provider = typeof body?.provider === 'string' ? body.provider.trim() : ''
     const op = body?.op === 'read' ? 'read' : 'write'
@@ -2539,6 +2580,24 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     return null
   }
 
+  /**
+   * The ability gate for an internal route (SHO-417). Resolves the person the
+   * call acts for and refuses when they lack `permission` — the server half of
+   * the runtime's tool filter. A service account with no person stays unscoped,
+   * like every other internal check.
+   */
+  async function enforceWorkspaceAbility(
+    c: Context,
+    identity: InternalIdentity,
+    workspaceId: string,
+    permission: Permission,
+  ): Promise<Response | null> {
+    if (identity.kind === 'sa') return null
+    const actor = await resolveAgentActor(c, identity, { workspaceId })
+    if (!actor?.principal.userId || actor.unscoped) return null
+    return enforceAbility(c, workspaceId, actor.principal.userId, permission)
+  }
+
   function lifecycleErrorResponse(c: Context, err: unknown): Response {
     const anyErr = err as { name?: string; code?: string; message?: string }
     if (anyErr?.name === 'WorkspaceConfigError') {
@@ -2897,6 +2956,43 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     } catch (err) {
       return lifecycleErrorResponse(c, err)
     }
+  })
+
+  /**
+   * GET /api/internal/workspaces/:workspaceId/access/effective
+   *
+   * The acting person's effective access in this workspace: the ability set the
+   * runtime's tool gate filters on, plus the model grant and limits the settings
+   * UI explains. `abilities: null` means "unknown" — no person behind the turn,
+   * or a caller that is not a member — and the runtime treats that as "allow
+   * everything", because the server still refuses each call on its own.
+   */
+  app.get('/workspaces/:workspaceId/access/effective', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const authz = await authorizeLifecycleWorkspace(c, workspaceId)
+    if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+    const actor = await resolveAgentActor(c, authz.identity, { workspaceId })
+    if (!actor?.principal.userId || actor.unscoped) {
+      return c.json({ workspaceId, abilities: null, reason: 'no_actor' })
+    }
+    const { getEffectiveAccess } = await import('../services/access-policy.service')
+    const access = await getEffectiveAccess(workspaceId, actor.principal.userId)
+    if (!access) return c.json({ workspaceId, abilities: null, reason: 'not_a_member' })
+    return c.json({
+      workspaceId,
+      userId: access.userId,
+      role: access.role,
+      abilities: [...access.abilities],
+      models: {
+        tiers: access.models.tiers ? [...access.models.tiers] : null,
+        ids: access.models.ids ? [...access.models.ids] : null,
+      },
+      defaultModelId: access.defaultModelId,
+      spendCapUsd: access.spendCapUsd,
+      spendPeriod: access.spendPeriod,
+      requestsPerHour: access.requestsPerHour,
+      reasons: access.reasons,
+    })
   })
 
   /**
@@ -3280,6 +3376,82 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   })
 
   /**
+   * Resolve which runtime a workspace-root secrets call is for (SHO-384).
+   *
+   * The runtime key is the one the metal home archive already uses as
+   * `HOME_STATE_ID`: `ws:<workspaceId>` for a merged workspace runtime, or
+   * `ws:proj:<anchor>` for a project-anchored one. `anchor` comes from the
+   * pod's own `WORKSPACE_ANCHOR_PROJECT_ID`, so it is checked against the
+   * workspace before it can name a store — a role, not a secret.
+   */
+  async function rootSecretsRuntimeKey(c: Context, workspaceId: string) {
+    const anchor = c.req.query('anchor')?.trim()
+    if (!anchor) return { runtimeKey: workspaceRuntimeKey({ workspaceId }) }
+    const project = await prisma.project.findFirst({
+      where: { id: anchor, workspaceId },
+      select: { id: true },
+    })
+    if (!project) return null
+    return { runtimeKey: workspaceRuntimeKey({ workspaceId, anchorProjectId: anchor }) }
+  }
+
+  /**
+   * GET /api/internal/workspaces/:workspaceId/root-secrets?anchor=<projectId>
+   *
+   * The workspace root's `.env*` files, for a cloud `ws:` runtime that has just
+   * cold-booted from its durable git repo (SHO-384). 204 means nothing has ever
+   * been stored — a brand-new runtime, not an error.
+   */
+  app.get('/workspaces/:workspaceId/root-secrets', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    if (!(await authorizeWorkspaceRuntimeRequest(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+    const resolved = await rootSecretsRuntimeKey(c, workspaceId)
+    if (!resolved) return c.json({ error: { code: 'forbidden', message: 'That project is not in this workspace' } }, 403)
+    try {
+      const { readRootSecrets } = await import('../lib/runtime/root-secrets')
+      const stored = await readRootSecrets(resolved.runtimeKey)
+      if (!stored) return new Response(null, { status: 204 })
+      return c.json({ tag: stored.tag, secrets: stored.secrets, updatedAt: stored.updatedAt.toISOString() })
+    } catch (err: any) {
+      console.error(`[Internal] root-secrets read failed for ${resolved.runtimeKey}:`, err?.message ?? err)
+      return c.json({ error: { code: 'root_secrets_read_failed', message: err?.message ?? 'Could not read' } }, 502)
+    }
+  })
+
+  /**
+   * PUT /api/internal/workspaces/:workspaceId/root-secrets?anchor=<projectId>
+   *   body: { version: 1, slots: [{ slot, files: [{ name, content, mode, mtimeMs }] }] }
+   *
+   * Store the runtime's current `.env*` set, sealed with a key derived from that
+   * runtime key. The response carries the stored tag; a payload that hashes to
+   * what is already stored comes back `{ ok: true, stored: false, tag }`, so a
+   * pod that only polls does not re-encrypt or rewrite the row.
+   */
+  app.put('/workspaces/:workspaceId/root-secrets', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    if (!(await authorizeWorkspaceRuntimeRequest(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+    const resolved = await rootSecretsRuntimeKey(c, workspaceId)
+    if (!resolved) return c.json({ error: { code: 'forbidden', message: 'That project is not in this workspace' } }, 403)
+    const declared = Number(c.req.header('content-length') ?? '0')
+    if (declared > WORKSPACE_ROOT_SECRETS_MAX_PAYLOAD_BYTES) {
+      return c.json({ error: { code: 'root_secrets_too_large', message: 'The payload is too large' } }, 413)
+    }
+    const body = await c.req.json().catch(() => null)
+    if (!body) return c.json({ error: { code: 'bad_request', message: 'A JSON payload is required' } }, 400)
+    const { writeRootSecrets, RootSecretsTooLargeError } = await import('../lib/runtime/root-secrets')
+    try {
+      const result = await writeRootSecrets({ runtimeKey: resolved.runtimeKey, workspaceId }, body)
+      return c.json({ ok: true, ...result })
+    } catch (err: any) {
+      if (err instanceof RootSecretsTooLargeError) {
+        return c.json({ error: { code: 'root_secrets_too_large', message: err.message } }, 413)
+      }
+      console.error(`[Internal] root-secrets write failed for ${resolved.runtimeKey}:`, err?.message ?? err)
+      return c.json({ error: { code: 'root_secrets_write_failed', message: err?.message ?? 'Could not store' } }, 400)
+    }
+  })
+
+  /**
    * GET /api/internal/devices
    *
    * The paired desktops of the **requester** (SHO-285 Update 2, SHO-329).
@@ -3390,6 +3562,8 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         403,
       )
     }
+    const abilityDenied = await enforceAbility(c, workspaceId, ticket.userId, 'instance.commands:run')
+    if (abilityDenied) return abilityDenied
     if ((await getWorkspaceKind(workspaceId)) !== 'personal') {
       return c.json(
         {
@@ -3549,6 +3723,12 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ error: { code: 'bad_request', message: 'args must be an object' } }, 400)
     }
     const tool = body.tool.trim()
+    // The target project's own permission is the gate: `project:read` for a
+    // read-only tool, `project:update` for a mutating one. This is not a
+    // paired-desktop command, so it must not also require
+    // `instance.commands:run` — that ability is for running commands on the
+    // caller's own machine, and requiring it here locked read-only viewers out
+    // of reading files in projects they can see (SHO-353).
     const denied = await enforceProjectPermission(
       c, authz.identity, authz.workspaceId, projectId, remoteToolPermission(tool),
     )
@@ -3616,7 +3796,8 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ error: { code: 'bad_request', message: 'archive (base64 tar.gz) is required' } }, 400)
     }
     if (body.archive.length > REMOTE_IMPORT_MAX_BASE64_CHARS) {
-      return c.json({ error: { code: 'too_large', message: 'The archive exceeds the 25 MB transfer limit.' } }, 413)
+      const limitMb = Math.round(TRANSFER_MAX_ARCHIVE_BYTES / 1024 / 1024)
+      return c.json({ error: { code: 'too_large', message: `The archive exceeds the ${limitMb} MB transfer limit.` } }, 413)
     }
     if (body.dest !== undefined && typeof body.dest !== 'string') {
       return c.json({ error: { code: 'bad_request', message: 'dest must be a string' } }, 400)

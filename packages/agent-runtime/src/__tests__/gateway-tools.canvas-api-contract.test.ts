@@ -39,7 +39,7 @@ function makeCtx(overrides?: Partial<ToolContext>): ToolContext {
   }
 }
 
-function fakeSkillServerManager(activeRoutes: string[]) {
+function fakeApiServer(activeRoutes: string[]) {
   return {
     phase: 'ready',
     url: 'http://localhost:0',
@@ -72,8 +72,8 @@ describe('canvas-API contract — write_file', () => {
   afterAll(() => clearTrustForTests())
 
   test('flags fetch to non-existent route on src/*.tsx write', async () => {
-    const ssm = fakeSkillServerManager(['users', 'posts'])
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer(['users', 'posts'])
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(
       ctx,
       'src/App.tsx',
@@ -105,8 +105,8 @@ describe('canvas-API contract — write_file', () => {
        app.post("/webhooks/stripe", (c) => c.json({}))
        export default app`,
     )
-    const ssm = fakeSkillServerManager(['users'])
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer(['users'])
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(
       ctx,
       'src/App.tsx',
@@ -120,15 +120,15 @@ describe('canvas-API contract — write_file', () => {
       join(TEST_DIR, 'custom-routes.ts'),
       `/**\n * Example: app.get('/dashboard', ...)\n */\n// app.get('/leads', h)\nconst app = new Hono()\nexport default app`,
     )
-    const ssm = fakeSkillServerManager(['users'])
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer(['users'])
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(ctx, 'src/App.tsx', `fetch('/api/dashboard'); fetch('/api/leads')`)
     expect(r.canvasApiContract.orphanedFetches.sort()).toEqual(['/api/dashboard', '/api/leads'])
   })
 
   test('does NOT flag fetches that match an active route', async () => {
-    const ssm = fakeSkillServerManager(['users', 'leads'])
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer(['users', 'leads'])
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(
       ctx,
       'src/App.tsx',
@@ -138,15 +138,15 @@ describe('canvas-API contract — write_file', () => {
   })
 
   test('case-insensitive route matching (LEADS vs leads)', async () => {
-    const ssm = fakeSkillServerManager(['Leads'])
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer(['Leads'])
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(ctx, 'src/x.tsx', `fetch('/api/leads')`)
     expect(r.canvasApiContract).toBeUndefined()
   })
 
   test('skips files outside src/ and canvas/', async () => {
-    const ssm = fakeSkillServerManager(['users'])
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer(['users'])
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     // server.tsx contains the *handler* for /api/leads — flagging it
     // would be a false positive, since registering the route here is
     // exactly what makes the contract valid.
@@ -159,8 +159,8 @@ describe('canvas-API contract — write_file', () => {
   })
 
   test('skips generated CRUD output (src/generated/...)', async () => {
-    const ssm = fakeSkillServerManager(['users'])
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer(['users'])
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(
       ctx,
       'src/generated/api-client.tsx',
@@ -170,8 +170,8 @@ describe('canvas-API contract — write_file', () => {
   })
 
   test('flags multiple distinct orphaned routes (deduped)', async () => {
-    const ssm = fakeSkillServerManager(['users'])
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer(['users'])
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(
       ctx,
       'src/App.tsx',
@@ -183,16 +183,16 @@ describe('canvas-API contract — write_file', () => {
     expect(r.canvasApiContract.orphanedFetches.sort()).toEqual(['/api/deals', '/api/leads'])
   })
 
-  test('does nothing when there is no skillServerManager', async () => {
-    const ctx = makeCtx() // no skillServerManager
+  test('does nothing when no API server is attached', async () => {
+    const ctx = makeCtx() // no resolveApiServer
     const r = await runWrite(ctx, 'src/App.tsx', `fetch('/api/anything')`)
     expect(r.canvasApiContract).toBeUndefined()
     expect(r.ok).toBe(true)
   })
 
   test('does nothing when the file has no static fetches', async () => {
-    const ssm = fakeSkillServerManager(['users'])
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer(['users'])
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(
       ctx,
       'src/utils.ts',
@@ -205,8 +205,8 @@ describe('canvas-API contract — write_file', () => {
     // Dynamic paths are intentionally not flagged — the regex only matches
     // static segments. Dropping a 404-prone `/api/${id}` is also a real
     // bug, but it's harder to catch reliably from static analysis.
-    const ssm = fakeSkillServerManager(['users'])
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer(['users'])
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(
       ctx,
       'src/App.tsx',
@@ -216,8 +216,8 @@ describe('canvas-API contract — write_file', () => {
   })
 
   test('matches absolute http://localhost:<port>/api/<seg>', async () => {
-    const ssm = fakeSkillServerManager(['users'])
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer(['users'])
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(
       ctx,
       'src/App.tsx',
@@ -227,8 +227,8 @@ describe('canvas-API contract — write_file', () => {
   })
 
   test('flags fetches inside canvas/ files too', async () => {
-    const ssm = fakeSkillServerManager(['users'])
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer(['users'])
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(
       ctx,
       'canvas/widget.tsx',
@@ -252,8 +252,8 @@ describe('canvas-API contract — edit_file', () => {
   afterEach(() => rmSync(TEST_DIR, { recursive: true, force: true }))
 
   test('edit that introduces an orphaned fetch is flagged', async () => {
-    const ssm = fakeSkillServerManager(['users'])
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer(['users'])
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runEdit(
       ctx,
       'src/App.tsx',
