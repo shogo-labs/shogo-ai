@@ -30,6 +30,9 @@ mock.module('@shogo/model-catalog', () => ({
   AUTO_MODEL_ID: 'auto',
   isAutoModel: (id: string) => id === 'auto',
   inferProviderFromModel: (_id: string, fallback: string) => fallback,
+  // The RBAC run-model path reads these; a partial mock must still answer them.
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
 }))
 
 mock.module('../services/cost-analytics.service', () => ({

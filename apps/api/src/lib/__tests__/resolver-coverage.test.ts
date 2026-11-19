@@ -118,6 +118,8 @@ const EXEMPT: Record<string, string> = {
   storageUsageDaily: 'SHO-423: written only by the 6h measurement pass and the daily bill job (both home-region locked — see check-multiregion-cron-locks.ts) and read via /api/workspaces/:id/storage or the super-admin views; there is no standalone row mutation route.',
   subagentModelOverride: 'Mutated via workspace/project-scoped routes — resolved by path params.',
   trialRedemption: 'Written only by the signed Stripe webhook (/api/webhooks/stripe, skipped by the router) alongside the subscription and usage wallet rows the same event updates (services/trial.service.ts); never mutated via REST.',
+  courseEnrollment:
+    'SHO-428: written by the signed Stripe webhook (/api/webhooks/stripe, skipped by the router) and by the buyer\'s return trip /api/billing/verify-checkout (path workspaceId), read by /api/billing/solo-founder (workspaceId in the query), and its `progress` is a side effect of the work-item move that already resolved its board\'s workspace. Never mutated via a standalone /api/<resource>/:id route.',
   userGroup: 'Mutated via workspace-scoped user-group routes — resolved by path workspaceId.',
   userIntegrationGrant: 'Mutated via /api/projects/:projectId/integrations/:provider/connect (path projectId), /api/me/integrations (the user\'s own rows), /api/workspaces/:workspaceId/integrations/:provider/my-access/agents/:projectId (path workspaceId), and the GitHub OAuth callback (projectId from signed state).',
   userIntegrationWorkspaceGrant: 'Mutated via /api/workspaces/:workspaceId/integrations/:provider/my-access (path workspaceId), /api/projects/:projectId/integrations/:provider/connect (path projectId; the grant is for that project\'s workspace), and DELETE /api/me/integrations/:provider (revokes the user\'s own rows).',
@@ -126,6 +128,8 @@ const EXEMPT: Record<string, string> = {
   voiceProjectConfig: 'Mutated via /api/projects/:projectId/voice — resolved by path projectId.',
   workspaceAgentProfile: 'Mutated via /api/workspaces/:workspaceId/agent-profile — resolved by path workspaceId (routes/workspace-agent.ts, mounted publicly and internally with the same handler); single-tenant upsert (see check-multiregion-cron-locks.ts).',
   workspaceModelVisibility: 'Mutated via /api/workspaces/:id/... — resolved by path workspaceId.',
+  accessPolicy: 'Mutated only via /api/workspaces/:workspaceId/access/policies (routes/access-policies.ts) and the access-request decision — resolved by path workspaceId; single-tenant upsert (see check-multiregion-cron-locks.ts).',
+  accessAuditEvent: 'Append-only audit trail written as a side effect of the access write or denial it records (same request, same region) and read via /api/workspaces/:workspaceId/access/audit — never mutated via REST.',
   workspaceRootSecret: 'SHO-384: written and read only via /api/internal/workspaces/:workspaceId/root-secrets (the pod↔API transport for a cloud runtime) — resolved by path workspaceId; there is no standalone /api/<resource>/:id row mutation.',
 }
 

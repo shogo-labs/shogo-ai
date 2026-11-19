@@ -80,6 +80,13 @@ export interface ProxyTokenPayload {
    * `'session'` (a browser session) are not.
    */
   authKind?: 'api-key' | 'runtime' | 'proxy-jwt' | 'session'
+  /**
+   * The person this request acts for (SHO-417), resolved once by the proxy
+   * auth wrapper: a valid `X-Requester-Ticket` wins, else `userId`. Not part
+   * of the signed token — it is stamped per request. Policy checks and
+   * per-seat billing both read this, so they can never disagree.
+   */
+  actingUserId?: string
 }
 
 // =============================================================================

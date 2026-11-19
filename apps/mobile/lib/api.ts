@@ -337,6 +337,50 @@ export interface CheckoutParams {
   trial?: boolean
 }
 
+/**
+ * `POST /api/billing/checkout` body for the $99 Solo Founder offer (SHO-428).
+ * Same route as a plan checkout, but the server owns plan, seats, interval,
+ * the course line and the first-year discount, so none of them are sent.
+ */
+export interface SoloFounderCheckoutParams {
+  workspaceId: string
+  offer: 'solo_founder'
+  /** Buyer's own Stripe promotion code, instead of the default $78 coupon. */
+  promoCode?: string
+  userEmail?: string
+  referralId?: string
+  successUrl?: string
+  cancelUrl?: string
+}
+
+/** `GET /api/billing/solo-founder` — what the Billing panel shows for the offer. */
+export interface SoloFounderState {
+  ok: boolean
+  offer: 'solo_founder'
+  pricing: {
+    businessAnnualUsd: number
+    courseUsd: number
+    firstYearDiscountUsd: number
+    firstYearUsd: number
+    renewalUsd: number
+    overageCapUsd: number
+  }
+  enrolled: boolean
+  /** Enrollment status: 'active' once paid, 'rejected_prepaid' when refused. */
+  status: string | null
+  /** Pack install: 'pending' | 'installing' | 'installed' | 'failed'. */
+  installStatus: string | null
+  installError: string | null
+  courseBoardId: string | null
+  courseChannelId: string | null
+  totalLessons: number
+  completedLessons: string[]
+  completedAt: string | null
+  eligibility:
+    | { eligible: true }
+    | { eligible: false; code: 'offer_not_eligible' | 'already_enrolled' | 'risk_review'; reason: string }
+}
+
 export interface WorkspaceCheckoutParams {
   workspaceName: string
   planId: string
@@ -844,6 +888,20 @@ export const api = {
 
   async createCheckoutSession(http: HttpClient, params: CheckoutParams) {
     const res = await http.post<{ url?: string }>('/api/billing/checkout', params)
+    return res.data
+  },
+
+  /** Start the $99 Solo Founder checkout. Server answers with a Checkout URL. */
+  async createSoloFounderCheckout(http: HttpClient, params: SoloFounderCheckoutParams) {
+    const res = await http.post<{ url?: string; sessionId?: string }>('/api/billing/checkout', params)
+    return res.data
+  },
+
+  /** The Solo Founder offer's state for this workspace (also retries a lost install). */
+  async getSoloFounderState(http: HttpClient, workspaceId: string) {
+    const res = await http.get<SoloFounderState>(
+      `/api/billing/solo-founder?workspaceId=${encodeURIComponent(workspaceId)}`
+    )
     return res.data
   },
 

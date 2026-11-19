@@ -212,6 +212,7 @@ model Workspace {
   inviteLinks            InviteLink[]
   folders                Folder[]
   subscriptions          Subscription[]
+  courseEnrollments      CourseEnrollment[]
   instanceSubscription   InstanceSubscription?
   usageWallets           UsageWallet[]
   usageEvents            UsageEvent[]
@@ -245,6 +246,8 @@ model Workspace {
   workItems              WorkItem[]
   plans                  Plan[]
   modelVisibility        WorkspaceModelVisibility[]
+  accessPolicies         AccessPolicy[]
+  accessAuditEvents      AccessAuditEvent[]
   slackInstallation      SlackWorkspaceInstallation?
   agentProfile           WorkspaceAgentProfile?
   goals                  Goal[]
@@ -2261,6 +2264,59 @@ model WorkspaceModelVisibility {
   @@unique([workspaceId, modelId])
   @@index([workspaceId])
   @@map("workspace_model_visibility")
+}
+
+// ============================================================================
+// Workspace RBAC (SHO-417) — SQLite mirror of prisma/schema.prisma.
+// Json? → String? (JSON-encoded), enums → String.
+// ============================================================================
+
+model AccessPolicy {
+  id          String @id @default(uuid())
+  workspaceId String
+  /// `role` | `group` | `member`
+  subjectType String
+  /// Role name, `UserGroup.id`, or `User.id` — polymorphic, so no FK.
+  subjectId   String
+  /// JSON array of ability names. Null on a role row = the built-in default.
+  abilities   String?
+  /// JSON array of model tiers. Null with `modelIds` null = everything.
+  modelTiers  String?
+  /// JSON array of explicit model ids.
+  modelIds    String?
+  defaultModelId  String?
+  spendCapUsd     Float?
+  /// `day` | `week` | `month`
+  spendPeriod     String?
+  requestsPerHour Int?
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, subjectType, subjectId])
+  @@index([workspaceId])
+  @@map("access_policies")
+}
+
+model AccessAuditEvent {
+  id               String   @id @default(uuid())
+  workspaceId      String
+  actorUserId      String?
+  onBehalfOfUserId String?
+  kind             String
+  permission       String?
+  modelId          String?
+  subject          String?
+  detail           String?
+  createdAt        DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, kind, createdAt])
+  @@map("access_audit_events")
 }
 
 // ============================================================================
@@ -5160,6 +5216,39 @@ model CrossWorkspaceAudit {
 
   @@index([targetWorkspaceId, createdAt])
   @@map("cross_workspace_audit")
+}
+
+/// One purchase of a paid course (SHO-428). See prisma/schema.prisma for full
+/// semantics; local mode has no Stripe, so rows come from the license-key and
+/// admin paths (and a cloud-synced workspace's own row).
+model CourseEnrollment {
+  id                      String    @id @default(uuid())
+  /// Stable course key, e.g. `solo-founder-v1`.
+  courseId                String
+  userId                  String
+  workspaceId             String
+  /// stripe | license_key | admin
+  source                  String
+  stripeCheckoutSessionId String?   @unique
+  stripeSubscriptionId    String?
+  /// active | rejected_prepaid | refunded
+  status                  String
+  purchasedAt             DateTime
+  /// pending | installed | failed
+  installStatus           String    @default("pending")
+  installError            String?
+  packBindings            Json?
+  courseBoardId           String?
+  progress                Json?
+  completedAt             DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, courseId])
+  @@index([workspaceId])
+  @@map("course_enrollments")
 }
 
 /// The workspace root's `.env*` files, sealed at rest (SHO-384).

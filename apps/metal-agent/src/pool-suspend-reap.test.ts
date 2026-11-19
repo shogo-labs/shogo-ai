@@ -19,7 +19,7 @@ import { mkdtempSync, mkdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
-import { MetalWarmPool, type AssignedVm } from './pool'
+import { MetalWarmPool, REPO_DEFERRED_REASON, type AssignedVm } from './pool'
 import type { FcSnapshot, FcVmHandle, FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
 
@@ -127,13 +127,14 @@ function makePool() {
   for (const m of [
     'saveBackupToStore',
     'drainForeignMembersOf',
-    'saveWorkspaceMembersToStore',
     'saveProjectDataToStore',
     'saveRepoToStore',
     'saveHomeStateToStore',
   ]) {
     ;(pool as any)[m] = async () => undefined
   }
+  // Returns the members whose backup failed; `suspend()` reads its length.
+  ;(pool as any).saveWorkspaceMembersToStore = async () => []
   return { pool, alive, pushed, snapshotted, release: () => release() }
 }
 
@@ -169,5 +170,116 @@ describe('reapDeadAssigned() during a suspend', () => {
     expect(pool.rescued).toEqual(['crashed:reaper: fc process gone'])
     expect(pool.isAssigned('alive')).toBe(true)
     expect(pool.isAssigned('crashed')).toBe(false)
+  })
+})
+
+/**
+ * A cold boot restores the DURABLE repo, so stopping a VM whose current HEAD
+ * never reached it is how a day and a half of work disappeared (SHO-442). The
+ * stop is refused as data — the VM keeps running and the next sweep retries.
+ */
+describe('a stop that would cold-start over unsaved work is refused', () => {
+  function seedWith(extra: Partial<AssignedVm>) {
+    const { pool, alive, release } = makePool()
+    const handle = handleFor('fcvm-1')
+    alive.add(handle.id)
+    pool.seed('p1', handle)
+    Object.assign((pool as any).assigned.get('p1'), extra)
+    return { pool, alive, handle, release }
+  }
+
+  test('an untrusted VM is not suspended and stays assigned', async () => {
+    const { pool, alive } = seedWith({ repoUntrustedReason: 'hydrate failed', repoHeadSha: 'abc123' })
+
+    const out = await pool.suspendOrRetire('p1')
+
+    expect(out.kind).toBe('refused')
+    expect(pool.isAssigned('p1')).toBe(true)
+    expect(alive.has('fcvm-1')).toBe(true)
+  })
+
+  test('a VM whose HEAD never reached the durable repo is not suspended', async () => {
+    const { pool, alive } = seedWith({ repoHeadSha: 'abc123', repoExportedHeadSha: 'def456' })
+
+    const out = await pool.suspendOrRetire('p1')
+
+    expect(out.kind).toBe('refused')
+    expect(pool.isAssigned('p1')).toBe(true)
+    expect(alive.has('fcvm-1')).toBe(true)
+  })
+
+  test('a VM whose HEAD is durable suspends normally', async () => {
+    const { pool, alive, release } = seedWith({ repoHeadSha: 'abc123', repoExportedHeadSha: 'abc123' })
+
+    const stopping = pool.suspendOrRetire('p1')
+    release()
+    const out = await stopping
+
+    expect(out.kind).toBe('suspended')
+    expect(pool.isAssigned('p1')).toBe(false)
+    expect(alive.has('fcvm-1')).toBe(false)
+  })
+
+  test('a VM that reports no HEAD has nothing to lose and suspends', async () => {
+    const { pool, release } = seedWith({})
+
+    const stopping = pool.suspendOrRetire('p1')
+    release()
+
+    expect((await stopping).kind).toBe('suspended')
+  })
+
+  test('an untrusted VM that never made a commit still suspends', async () => {
+    // Its files are the source backup's already; refusing here would pin every
+    // guest whose git layer never came up (SHO-442).
+    const { pool, release } = seedWith({ repoUntrustedReason: 'hydrate failed' })
+
+    const stopping = pool.suspendOrRetire('p1')
+    release()
+
+    expect((await stopping).kind).toBe('suspended')
+  })
+
+  test('the idle reaper leaves a VM whose HEAD is not durable running', async () => {
+    // The second production instance (Samsara App, ws:proj:6692ddbf) went
+    // through idle-suspend, not rollout: the repo backup timed out at 22:02:48
+    // and the VM was idle-suspended at 22:03:20 anyway (SHO-442).
+    const { pool, alive } = seedWith({
+      repoHeadSha: 'abc123',
+      repoExportedHeadSha: 'def456',
+      lastRealActivityAt: Date.now() - 60_000,
+    })
+
+    expect(await pool.reapIdle(1)).toEqual([])
+    expect(pool.isAssigned('p1')).toBe(true)
+    expect(alive.has('fcvm-1')).toBe(true)
+  })
+
+  test('the idle reaper still suspends a VM whose HEAD is durable', async () => {
+    const { pool, alive, release } = seedWith({
+      repoHeadSha: 'abc123',
+      repoExportedHeadSha: 'abc123',
+      lastRealActivityAt: Date.now() - 60_000,
+    })
+
+    const reaping = pool.reapIdle(1)
+    release()
+
+    expect(await reaping).toEqual(['p1'])
+    expect(pool.isAssigned('p1')).toBe(false)
+    expect(alive.has('fcvm-1')).toBe(false)
+  })
+
+  test('a VM whose history is still downloading suspends instead of being pinned', async () => {
+    const { pool, release } = seedWith({
+      repoUntrustedReason: REPO_DEFERRED_REASON,
+      repoHydratePending: true,
+      repoHeadSha: 'source-head',
+    })
+
+    const stopping = pool.suspendOrRetire('p1')
+    release()
+
+    expect((await stopping).kind).toBe('suspended')
   })
 })

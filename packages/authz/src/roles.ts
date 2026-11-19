@@ -11,6 +11,8 @@
 import {
   PROJECT_PERMISSIONS,
   WORKSPACE_PERMISSIONS,
+  isAbilityPermission,
+  type AbilityPermission,
   type ProjectPermission,
   type WorkspacePermission,
 } from './permissions'
@@ -72,14 +74,63 @@ export function toProjectRole(value: unknown): ProjectRole | null {
 const ALL_WORKSPACE = [...WORKSPACE_PERMISSIONS]
 const ALL_PROJECT = [...PROJECT_PERMISSIONS]
 
+/**
+ * Abilities an Editor (workspace `member`) has today. A **new** ability added
+ * later starts denied for Editor and Viewer unless its card says otherwise —
+ * add it here only when the card grants it.
+ *
+ * `boards:manage` and `instance.commands:run` are here because board admin and
+ * paired-desktop commands are open to every member today; the rest is the
+ * card's list (agent abilities, unattended work, integrations, public links,
+ * private channels).
+ */
+const EDITOR_ABILITIES: readonly WorkspacePermission[] = [
+  'agent.exec:use',
+  'agent.browser:use',
+  'agent.media:generate',
+  'agent.channels:send',
+  'agent.social:post',
+  'agent:create',
+  'schedule:manage',
+  'trigger:manage',
+  'integrations:connect',
+  'project.files:share_public',
+  'channels.private:create',
+  'boards:manage',
+  'instance.commands:run',
+]
+
 /** Workspace-scoped permissions granted by a workspace role. */
 export const WORKSPACE_ROLE_PERMISSIONS: Record<WorkspaceRole, readonly WorkspacePermission[]> = {
   owner: ALL_WORKSPACE,
   admin: ALL_WORKSPACE.filter(
     (p) => p !== 'workspace:delete' && p !== 'workspace.owners:manage' && p !== 'workspace.billing:manage',
   ),
-  member: ['workspace:read', 'workspace.members:read', 'project:create'],
+  member: ['workspace:read', 'workspace.members:read', 'project:create', ...EDITOR_ABILITIES],
   viewer: ['workspace:read', 'workspace.members:read'],
+}
+
+/**
+ * The part of a role's bundle an admin cannot edit: the pre-RBAC permissions
+ * that keep the app usable. A role policy row narrows only the abilities
+ * (`ABILITY_PERMISSIONS`), never these.
+ */
+export const WORKSPACE_ROLE_BASE_PERMISSIONS: Record<WorkspaceRole, readonly WorkspacePermission[]> = {
+  owner: WORKSPACE_ROLE_PERMISSIONS.owner.filter((p) => !isAbilityPermission(p)),
+  admin: WORKSPACE_ROLE_PERMISSIONS.admin.filter((p) => !isAbilityPermission(p)),
+  member: WORKSPACE_ROLE_PERMISSIONS.member.filter((p) => !isAbilityPermission(p)),
+  viewer: WORKSPACE_ROLE_PERMISSIONS.viewer.filter((p) => !isAbilityPermission(p)),
+}
+
+/**
+ * The abilities a role has when it has no policy row — today's behaviour, so
+ * an existing workspace sees no change on rollout.
+ */
+export const WORKSPACE_ROLE_DEFAULT_ABILITIES: Record<WorkspaceRole, readonly AbilityPermission[]> = {
+  owner: WORKSPACE_ROLE_PERMISSIONS.owner.filter(isAbilityPermission),
+  admin: WORKSPACE_ROLE_PERMISSIONS.admin.filter(isAbilityPermission),
+  member: WORKSPACE_ROLE_PERMISSIONS.member.filter(isAbilityPermission),
+  viewer: WORKSPACE_ROLE_PERMISSIONS.viewer.filter(isAbilityPermission),
 }
 
 /** Extra workspace permissions for `Member.isBillingAdmin`. */

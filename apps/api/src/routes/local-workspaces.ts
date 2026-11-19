@@ -12,6 +12,7 @@ import {
   workspaceFileInventory,
 } from '../services/workspace-files.service'
 import { deleteConversationFile } from '../lib/conversation-files'
+import { invalidateAccess } from '../services/access-policy.service'
 
 function authUserId(c: any): string | null {
   const auth = c.get('auth') as { userId?: string; isAuthenticated?: boolean } | undefined
@@ -454,6 +455,10 @@ export function localWorkspaceRoutes(options: LocalWorkspaceRouteOptions = {}): 
       }
     }
     await prisma.member.deleteMany({ where: { userId, workspaceId } })
+    await prisma.accessPolicy
+      .deleteMany({ where: { workspaceId, subjectType: 'member', subjectId: userId } })
+      .catch(() => {})
+    invalidateAccess(workspaceId)
     return c.json({ ok: true })
   })
 

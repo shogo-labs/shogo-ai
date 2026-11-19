@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock, setSystemTime } from 'bun:test'
 import * as realStripePrices from '../../config/stripe-prices'
-import { TRIAL_MAX_SEATS } from '../../config/usage-plans'
+import { SOLO_FOUNDER_OVERAGE_CAP_USD, TRIAL_MAX_SEATS } from '../../config/usage-plans'
 
 // ============================================================================
 // In-memory prisma mock
@@ -630,6 +630,16 @@ describe('allocateMonthlyIncluded', () => {
     wallets.set('w1', freshWallet({ overageHardLimitUsd: 250 }))
     const w = await billing.allocateMonthlyIncluded('w1', 'pro', 1)
     expect(w.overageHardLimitUsd).toBe(250)
+  })
+  // SHO-428 AC6: the $50 cap the Solo Founder offer applies is not the
+  // grant-only default ($5), so the monthly reset must leave it alone — the
+  // promise in the checkout disclosure is "$50/mo", not "until the first
+  // reset". Annual subscriptions refill monthly, and every refill lands here.
+  it('keeps the Solo Founder $50 cap through the monthly reset', async () => {
+    wallets.set('w1', freshWallet({ overageHardLimitUsd: SOLO_FOUNDER_OVERAGE_CAP_USD }))
+    const w = await billing.allocateMonthlyIncluded('w1', 'business', 1)
+    expect(w.overageHardLimitUsd).toBe(SOLO_FOUNDER_OVERAGE_CAP_USD)
+    expect(w.alertsSentThisPeriod).toEqual({})
   })
   it('basic single user ignores seats > 1', async () => {
     const w = await billing.allocateMonthlyIncluded('w1', 'basic', 5)

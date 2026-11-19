@@ -66,7 +66,7 @@ import { AGENT_REPLY_TIMEOUT_MS, emitTaskEvent, replyEvent, replyTargetRef, sile
 import { docContextFor } from './conversation-doc.service'
 import { parseMuteCommand, pickResponder, type RelevanceCandidate } from './conversation-agent-relevance'
 import { publishReplyMedia } from './agent-reply-media'
-import { resolveAgentRunModel } from './agent-run-model.service'
+import { resolveAgentRunModelFor, type RunModelResolution } from './agent-run-model.service'
 import {
   fitThreadBudget,
   historySeedFor,
@@ -1553,8 +1553,12 @@ function chainContext(conversation: any, trigger: any, threadRootId: string | nu
  *
  * Delegates to `agent-run-model.service` so the profile card reports the same model this run uses.
  */
-export async function agentModeFor(projectId: string | null, workspaceId?: string): Promise<string> {
-  return resolveAgentRunModel(projectId, workspaceId)
+export async function agentModeFor(
+  projectId: string | null,
+  workspaceId?: string,
+  actingUserId?: string | null,
+): Promise<RunModelResolution | null> {
+  return resolveAgentRunModelFor(projectId, workspaceId, actingUserId)
 }
 
 async function invokeChat(args: InvokeArgs): Promise<Response> {
@@ -1570,12 +1574,29 @@ async function invokeChat(args: InvokeArgs): Promise<Response> {
       })
   const call = { ...args, historySeed }
   if (config.invoke) return config.invoke(call)
+  // SHO-417: the run's model is the agent's configured one, unless it is above
+  // the person this run acts for — then it is their default model for this run
+  // only, and the runtime states it in the reply.
+  const runModel = await agentModeFor(args.projectId, args.workspaceId, args.userId)
+  if (!runModel) {
+    return new Response(
+      JSON.stringify({
+        error: {
+          code: 'model_not_allowed',
+          message: 'You have no model available. Ask a workspace admin for access.',
+        },
+      }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    )
+  }
   const body = JSON.stringify({
     messages: [{ role: 'user', parts: [{ type: 'text', text: args.prompt }] }],
     ...(historySeed ? { historySeed } : {}),
     chatSessionId: args.sessionId,
     userId: args.userId,
-    agentMode: await agentModeFor(args.projectId, args.workspaceId),
+    agentMode: runModel.model,
+    ...(runModel.downgrade ? { modelDowngrade: runModel.downgrade } : {}),
+    ...(runModel.autoTiers ? { autoTiers: runModel.autoTiers } : {}),
     clientTurnId: `channel-agent-${args.sessionId}-${crypto.randomUUID()}`,
   })
   const headers = {
@@ -2295,6 +2316,7 @@ async function runReservedReply(
         sessionId,
         chain,
         request,
+        requestedByUserId: args.userId,
       })
         .then((cardId) => { if (cardId) approvalCards.push(cardId) })
         .catch((err) => console.error('[ChannelAgent] approval card failed:', err))

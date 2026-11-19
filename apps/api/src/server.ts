@@ -38,6 +38,7 @@ import { computeUsageRoutes } from './routes/compute-usage'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
 import { conversationRoutes } from './routes/conversations'
 import { workBoardRoutes } from './routes/work-boards'
+import { accessPolicyRoutes } from './routes/access-policies'
 // Analytics routes are plain in-repo modules (Prisma only), so they mount in
 // local mode too. Loading them via server-cloud-deps left local 404ing.
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
@@ -160,6 +161,7 @@ import {
   resolvePlatformVisibleModels,
   resolvePlatformVisibleModelsForRequest,
 } from './services/visible-models.service'
+import { allowedModelIdsFor, invalidateAccess } from './services/access-policy.service'
 import { localAuthRoutes } from './routes/local-auth'
 import { loadPlatformModelSetting, platformModelSettingRoutes } from './routes/platform-model-setting'
 import { resetCloudKeyState } from './lib/cloud-key-state'
@@ -266,6 +268,7 @@ const sendTrialEndingEmail: any = cloud.sendTrialEndingEmail ?? (async () => {})
 const sendTrialUnavailableEmail: any = cloud.sendTrialUnavailableEmail ?? (async () => {})
 const trialService: any = cloud.trialService ?? {}
 const signupCreditService: any = cloud.signupCreditService ?? {}
+const soloFounderService: any = cloud.soloFounderService ?? {}
 const sendInvitationEmail: any = cloud.sendInvitationEmail ?? (async () => {})
 const sendProjectInviteEmail: any = cloud.sendProjectInviteEmail ?? (async () => {})
 const sendMemberRemovedEmail: any = cloud.sendMemberRemovedEmail ?? (async () => {})
@@ -1749,6 +1752,7 @@ void settleOrphanedAgentReplies(0).catch((err) => console.warn('[Channels] could
 registerBuiltInChatProviders()
 app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', workBoardRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', accessPolicyRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', chatProviderRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))
 // Resume queued agent tasks after API restarts and keep dueAt-backed work
@@ -3115,13 +3119,18 @@ app.get('/api/projects/:projectId/runtime/status', async (c) => {
       if (isMetalEnabled() && isMetalEligibleProject(projectId)) {
         const { MetalSubstrate } = await import('./lib/substrate/metal-substrate')
         const s = await new MetalSubstrate().getStatus(projectId)
+        // Durability says whether this VM's work has reached the durable repo.
+        // A cold boot restores the durable copy, so a runtime that is not
+        // durable is one stop away from losing the user's changes — the UI
+        // needs to say so (SHO-442). Absent when the project has no assigned VM.
+        const durability = s.durability
         if (!s.exists) {
           return c.json({ projectId, status: 'not_found', message: 'Project runtime not created yet', ready: false })
         }
         if (!s.ready) {
-          return c.json({ projectId, status: 'starting', message: 'Project runtime is starting...', ready: false, replicas: s.replicas })
+          return c.json({ projectId, status: 'starting', message: 'Project runtime is starting...', ready: false, replicas: s.replicas, ...(durability ? { durability } : {}) })
         }
-        return c.json({ projectId, status: 'running', message: 'Project runtime is ready', ready: true, replicas: s.replicas, url: s.url })
+        return c.json({ projectId, status: 'running', message: 'Project runtime is ready', ready: true, replicas: s.replicas, url: s.url, ...(durability ? { durability } : {}) })
       }
     } catch (error: any) {
       console.error('[Runtime] Metal status failed, falling back:', error?.message ?? error)
@@ -8013,9 +8022,25 @@ app.post('/api/billing/checkout', async (c) => {
     const userId = authCtx?.userId as string | undefined
 
     const body = await c.req.json()
-    const { workspaceId, planId, seats: rawSeats, billingInterval, userEmail, referralId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl, trial: wantsTrial } = body
+    const {
+      workspaceId,
+      planId,
+      seats: rawSeats,
+      billingInterval: requestedInterval,
+      userEmail,
+      referralId,
+      successUrl: clientSuccessUrl,
+      cancelUrl: clientCancelUrl,
+      trial: wantsTrial,
+      // `offer: 'solo_founder'` is the $99 Solo Founder checkout (SHO-428). It is
+      // the same route, not a second one: membership, affiliate attribution and
+      // the success/cancel URLs are the same, and the server decides every
+      // value the client would otherwise send.
+      offer: requestedOffer,
+      promoCode,
+    } = body
 
-    if (!workspaceId || !planId || !billingInterval) {
+    if (!workspaceId || (!requestedOffer && (!planId || !requestedInterval))) {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
     }
 
@@ -8023,18 +8048,39 @@ app.post('/api/billing/checkout', async (c) => {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
 
-    if (planId !== 'basic' && planId !== 'pro' && planId !== 'business') {
+    const isSoloFounder = requestedOffer === soloFounderService.SOLO_FOUNDER_OFFER
+
+    if (!isSoloFounder && planId !== 'basic' && planId !== 'pro' && planId !== 'business') {
       return c.json({ error: { code: 'invalid_plan', message: `Unknown plan: ${planId}` } }, 400)
     }
     // Pro is retired (SHO-339/SHO-397). Older web, desktop and Android builds
     // still post `pro`; remap it to Business so they land on the price we
     // actually sell instead of a 400 or the retired $20 price.
-    const checkoutPlanId = normalizeCheckoutPlanId(planId)
-    if (checkoutPlanId !== planId) {
+    const checkoutPlanId = isSoloFounder ? 'business' : normalizeCheckoutPlanId(planId)
+    if (!isSoloFounder && checkoutPlanId !== planId) {
       console.log(`[Billing] ${planId} checkout remapped to ${checkoutPlanId}`)
     }
+    const billingInterval: 'monthly' | 'annual' = isSoloFounder ? 'annual' : requestedInterval
     // Basic is single-user, always 1 seat. Business defaults to 1, can be more.
-    const seats = checkoutPlanId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
+    // The Solo Founder offer is one person, one seat, no exceptions.
+    const seats = checkoutPlanId === 'basic' || isSoloFounder ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
+
+    if (isSoloFounder) {
+      const eligibility = await soloFounderService.checkEligibility({ userId, workspaceId })
+      if (!eligibility.eligible) {
+        const status = soloFounderService.SOLO_FOUNDER_ERROR_STATUS[eligibility.reason]
+        return c.json(
+          {
+            error: {
+              code: eligibility.code,
+              message: soloFounderService.eligibilityMessage(eligibility.reason),
+              reason: eligibility.reason,
+            },
+          },
+          status as any,
+        )
+      }
+    }
 
     // A trial never holds more than TRIAL_MAX_SEATS seats (SHO-422). Refuse
     // rather than quietly charging them: they asked for a trial, and a paid
@@ -8056,16 +8102,81 @@ app.post('/api/billing/checkout', async (c) => {
       planId: checkoutPlanId,
       billingInterval,
       seats: String(seats),
+      ...(isSoloFounder ? { offer: soloFounderService.SOLO_FOUNDER_OFFER } : {}),
     }
 
     // Use client-provided URLs (native apps pass deep link URLs), fall back to web URLs
     const frontendUrl = getFrontendUrl()
     const successUrl = clientSuccessUrl
-      || `${frontendUrl}/?workspace=${workspaceId}&checkout=success&session_id={CHECKOUT_SESSION_ID}`
+      || (isSoloFounder
+        // Land the buyer in #course, not on a generic billing page.
+        ? `${frontendUrl}/?workspace=${workspaceId}&checkout=success&offer=solo_founder&session_id={CHECKOUT_SESSION_ID}`
+        : `${frontendUrl}/?workspace=${workspaceId}&checkout=success&session_id={CHECKOUT_SESSION_ID}`)
     const cancelUrl = clientCancelUrl
       || `${frontendUrl}/?workspace=${workspaceId}&checkout=canceled`
 
     const affiliateOverrides = await affiliateCheckoutOverrides(userId)
+
+    if (isSoloFounder) {
+      // The course line and the first-year discount are provisioned objects,
+      // resolved by lookup on every attempt. A missing one is a 503 — the offer
+      // never quietly falls back to "just a year of Business for $156".
+      const coursePriceId = await soloFounderService.resolveCoursePriceId(stripe)
+      if (!coursePriceId) {
+        return c.json({ error: { code: 'price_not_provisioned', message: 'The Solo Founder course price has not been created in Stripe yet' } }, 503)
+      }
+      let discount: StripeTypes.Checkout.SessionCreateParams.Discount
+      if (promoCode) {
+        try {
+          const promotion = await soloFounderService.resolveOfferPromotionCode(stripe, String(promoCode))
+          discount = { promotion_code: promotion.promotionCodeId }
+        } catch (err: any) {
+          if (err instanceof soloFounderService.InvalidPromoCodeError) {
+            return c.json({ error: { code: 'invalid_promo_code', message: err.message } }, 400)
+          }
+          throw err
+        }
+      } else {
+        const couponId = await soloFounderService.resolveFirstYearCouponId(stripe)
+        if (!couponId) {
+          return c.json({ error: { code: 'price_not_provisioned', message: 'The Solo Founder first-year coupon has not been created in Stripe yet' } }, 503)
+        }
+        discount = { coupon: couponId }
+      }
+
+      const subscriptionMetadata = { ...metadata, ...(affiliateOverrides.metadata ?? {}) }
+      const session = await stripe.checkout.sessions.create({
+        mode: 'subscription',
+        line_items: [
+          // Business annual, one seat, plus the one-time course. In a
+          // subscription-mode session a one-time price is invoiced once, on
+          // the first invoice, with no adjustable quantity on either line.
+          { price: priceId, quantity: 1 },
+          { price: coursePriceId, quantity: 1 },
+        ],
+        discounts: [discount],
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        ...(userEmail && { customer_email: userEmail }),
+        ...(referralId && { client_reference_id: referralId }),
+        ...(affiliateOverrides.customer_creation && { customer_creation: affiliateOverrides.customer_creation }),
+        // Fraud rules (SHO-409): a cheap year of Business attracts stolen and
+        // prepaid cards. Cards only, and ask the issuer for 3DS on every
+        // payment. Checkout cannot filter by funding type — prepaid is refused
+        // in the webhook, before anything is provisioned.
+        payment_method_types: ['card'],
+        payment_method_options: { card: { request_three_d_secure: 'any' } },
+        metadata: subscriptionMetadata,
+        subscription_data: { metadata: subscriptionMetadata },
+        custom_text: {
+          submit: {
+            message: soloFounderService.renewalDisclosure(new Date()),
+          },
+        },
+      })
+      return c.json({ sessionId: session.id, url: session.url, offer: soloFounderService.SOLO_FOUNDER_OFFER }, 200)
+    }
+
     const trialFields = await trialService.buildCheckoutTrialFields({
       wantsTrial: Boolean(wantsTrial),
       userId,
@@ -8539,6 +8650,31 @@ app.post('/api/billing/verify-checkout', async (c) => {
       ? stripeSubscription.current_period_end * 1000
       : now + (30 * 24 * 60 * 60 * 1000)
 
+    // The buyer's return trip provisions the same subscription the webhooks do,
+    // so the prepaid refusal has to hold here too (SHO-428) — otherwise landing
+    // back in the app would buy the year the webhook just refunded.
+    if (session.metadata?.offer === soloFounderService.SOLO_FOUNDER_OFFER) {
+      const refusal = await soloFounderService.refuseIfPrepaidOffer({
+        stripe,
+        workspaceId,
+        userId: (c.get('auth') as any)?.userId ?? session.metadata?.userId ?? null,
+        subscriptionId: stripeSubscription.id,
+        purchasedAt: new Date((session.created || Math.floor(Date.now() / 1000)) * 1000),
+      })
+      if (refusal.refused) {
+        return c.json({
+          error: {
+            code: 'prepaid_refused',
+            // Only claim the money is back when it actually is. A refund that
+            // did not go through is recorded and retried by the next delivery.
+            message: refusal.refundId
+              ? 'That card cannot be used for this offer. The payment was refunded in full and your plan is still Free.'
+              : 'That card cannot be used for this offer, so your plan is still Free. The refund has not completed yet — it is retried automatically, and it will appear on your statement once it does.',
+          },
+        }, 402)
+      }
+    }
+
     await billingService.syncFromStripe({
       stripeSubscriptionId: stripeSubscription.id,
       stripeCustomerId: session.customer as string,
@@ -8555,10 +8691,55 @@ app.post('/api/billing/verify-checkout', async (c) => {
     await billingService.allocateMonthlyIncluded(workspaceId, planId, seats)
     console.log('[Billing] Verify-checkout: subscription provisioned for workspace:', workspaceId, 'plan:', planId, 'seats:', seats)
 
+    // The Solo Founder purchase also owns a course, and its install runs after
+    // the webhook returns 200. If that install was lost, the buyer's return trip
+    // is where it recovers (SHO-428).
+    if (session.metadata?.offer === soloFounderService.SOLO_FOUNDER_OFFER) {
+      const uid = (c.get('auth') as any)?.userId as string | undefined
+      if (uid) {
+        soloFounderService.retryInstallIfNeeded({ userId: uid, workspaceId }).catch((err: any) =>
+          console.error('[Billing] Solo Founder install retry failed:', err?.message ?? err),
+        )
+      }
+    }
+
     return c.json({ ok: true, workspaceId, planId, seats, billingInterval, amountPaid, currency }, 200)
   } catch (error: any) {
     console.error('[Billing] Verify-checkout error:', error)
     return c.json({ error: { code: 'verify_error', message: error.message } }, 500)
+  }
+})
+
+/**
+ * The $99 Solo Founder offer's state for the billing panel (SHO-428): whether
+ * the caller is enrolled, how the install went, where the Course board is, and
+ * which lessons are done. Also retries a pending/failed install, so opening
+ * Billing recovers a lost background install.
+ */
+app.get('/api/billing/solo-founder', async (c) => {
+  try {
+    const userId = (c.get('auth') as any)?.userId as string | undefined
+    const workspaceId = new URL(c.req.url).searchParams.get('workspaceId')
+    if (!workspaceId) return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+    const [state, eligibility] = await Promise.all([
+      userId
+        ? soloFounderService.retryInstallIfNeeded({ userId, workspaceId })
+        : soloFounderService.getOfferState({ workspaceId }),
+      soloFounderService.checkEligibility({ userId, workspaceId }),
+    ])
+    return c.json({
+      ok: true,
+      offer: soloFounderService.SOLO_FOUNDER_OFFER,
+      pricing: soloFounderService.SOLO_FOUNDER_PRICING,
+      ...state,
+      eligibility,
+    })
+  } catch (error: any) {
+    console.error('[Billing] solo-founder state error:', error)
+    return c.json({ error: { code: 'offer_state_failed', message: error.message } }, 500)
   }
 })
 
@@ -8908,29 +9089,32 @@ app.post('/api/billing/instance-portal', async (c) => {
 // write). Hard enforcement of "can't use a hidden model" lives in the AI proxy.
 
 // GET /api/workspaces/:id/visible-models — resolved set for this workspace
-// (platform-visible ∩ workspace allowlist). Any member may read it (drives the
-// chat picker). `allowedModelIds` is the raw allowlist: `null` = inherit all.
+// (platform-visible ∩ workspace allowlist ∩ the member's own grant). Any member
+// may read it (drives the chat picker). `allowedModelIds` is the raw workspace
+// allowlist: `null` = inherit all.
 app.get('/api/workspaces/:id/visible-models', async (c) => {
   try {
     const workspaceId = c.req.param('id')
-    if (!(await verifyWorkspaceMembership(c, workspaceId))) {
+    const userId = await verifyWorkspaceMembership(c, workspaceId)
+    if (!userId) {
       return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
     }
 
     const platform = await resolvePlatformVisibleModelsForRequest()
     const allowed = await workspaceModelsService.getAllowedModelIds(workspaceId)
+    const ceiling = workspaceModelsService.filterToAllowlist(platform, allowed)
 
-    if (allowed === null) {
-      // Inherit: the workspace sees everything the platform exposes.
-      return c.json({ ...platform, allowedModelIds: null })
-    }
+    // The picker must not offer a model the person cannot use (SHO-417). A
+    // member with no policy row resolves to their role default, which is the
+    // whole ceiling, so this is a no-op for them.
+    const personal = await allowedModelIdsFor(workspaceId, userId)
+    const narrowed = workspaceModelsService.filterToAllowlist(ceiling, new Set(personal))
 
-    const narrowed = workspaceModelsService.filterToAllowlist(platform, allowed)
     return c.json({
       catalogIds: platform.catalogIds,
       catalogModels: narrowed.catalogModels,
       openrouterModels: narrowed.openrouterModels,
-      allowedModelIds: Array.from(allowed),
+      allowedModelIds: allowed === null ? null : Array.from(allowed),
     })
   } catch (error: any) {
     console.error('[WorkspaceModels] Get visible-models error:', error)
@@ -9166,6 +9350,24 @@ app.post('/api/webhooks/stripe', async (c) => {
         })
         const wsId = resolved?.workspaceId
         const metaPlanId = resolved?.planId
+        // Solo Founder (SHO-428): a prepaid card is refused here as well as in
+        // `checkout.session.completed`, because Stripe may deliver this event
+        // first. Without this the plan and its allowance would be provisioned
+        // before the refusal that follows. The call is idempotent, so whichever
+        // event comes second finds the refusal already recorded and provisions
+        // nothing.
+        if (wsId && subscription.metadata?.offer === soloFounderService.SOLO_FOUNDER_OFFER) {
+          const refusal = await soloFounderService.refuseIfPrepaidOffer({
+            stripe,
+            workspaceId: wsId,
+            userId: subscription.metadata?.userId ?? null,
+            subscriptionId: subscription.id,
+          })
+          if (refusal.refused) {
+            console.log('[Webhook] Solo Founder prepaid subscription left unprovisioned:', subscription.id)
+            break
+          }
+        }
         if (wsId && metaPlanId) {
           try {
             let quantity = resolved.seats
@@ -9471,6 +9673,29 @@ app.post('/api/webhooks/stripe', async (c) => {
               ? stripeSubscription.current_period_end * 1000
               : now + (30 * 24 * 60 * 60 * 1000)
 
+            // Solo Founder (SHO-428): the cheap year of Business must not be a
+            // prepaid card. Checkout cannot filter by funding type, so the card
+            // is read here, before anything is provisioned: cancel, refund the
+            // first invoice in full, write a rejected enrollment, tell the
+            // owner, and leave the workspace exactly as it was.
+            if (session.metadata?.offer === soloFounderService.SOLO_FOUNDER_OFFER) {
+              const refusal = await soloFounderService.refuseIfPrepaidOffer({
+                stripe,
+                workspaceId,
+                userId: session.metadata?.userId ?? null,
+                subscriptionId: stripeSubscription.id,
+                purchasedAt: new Date((session.created || Math.floor(Date.now() / 1000)) * 1000),
+              })
+              if (refusal.refused) {
+                console.log('[Webhook] Solo Founder prepaid purchase refused:', {
+                  workspaceId,
+                  refunded: !!refusal.refundId,
+                  refundId: refusal.refundId,
+                })
+                break
+              }
+            }
+
             // Free trial: record it first (one trial per user/workspace/card). A
             // card already used for a trial elsewhere gets cancelled inside
             // recordTrialStart, so skip provisioning entirely in that case.
@@ -9536,6 +9761,33 @@ app.post('/api/webhooks/stripe', async (c) => {
             } else {
               await billingService.allocateMonthlyIncluded(workspaceId, planId, checkoutSeats, checkoutPriceId)
               console.log('[Webhook] Subscription created + monthly included USD allocated for workspace:', workspaceId, 'plan:', planId, 'seats:', checkoutSeats)
+            }
+
+            // Solo Founder fulfilment (SHO-428): the plan is provisioned above,
+            // so now the course. The enrollment row is written synchronously and
+            // the install (which creates projects) runs after this webhook has
+            // returned — a lost install is retried by `verify-checkout` and the
+            // offer panel. `enroll()` is idempotent, so a redelivery or the
+            // sibling subscription event cannot duplicate it.
+            if (session.metadata?.offer === soloFounderService.SOLO_FOUNDER_OFFER) {
+              const offerUserId = session.metadata?.userId
+                || (await prisma.member.findFirst({
+                  where: { workspaceId, projectId: null, role: 'owner' },
+                  select: { userId: true },
+                }))?.userId
+              if (offerUserId) {
+                await soloFounderService.enroll({
+                  workspaceId,
+                  userId: offerUserId,
+                  source: 'stripe',
+                  stripeCheckoutSessionId: session.id,
+                  stripeSubscriptionId: stripeSubscription.id,
+                  purchasedAt: new Date((session.created || Math.floor(Date.now() / 1000)) * 1000),
+                })
+                console.log('[Webhook] Solo Founder enrollment written for workspace:', workspaceId)
+              } else {
+                console.error('[Webhook] Solo Founder purchase with no owner to enroll:', { workspaceId, sessionId: session.id })
+              }
             }
 
             // Send plan-upgraded email to workspace owner
@@ -10074,6 +10326,12 @@ app.post('/api/workspaces/:id/leave', async (c) => {
   }
 
   await prisma.member.deleteMany({ where: { userId, workspaceId } })
+  // Leaving drops the member's own access policy and their cached access
+  // (SHO-417, plan §1 cascade + AC2).
+  await prisma.accessPolicy
+    .deleteMany({ where: { workspaceId, subjectType: 'member', subjectId: userId } })
+    .catch(() => {})
+  invalidateAccess(workspaceId)
 
   // Active-seat billing: leaving a workspace removes a paid seat.
   billingService.syncSeatsFromMembership(workspaceId).catch((err: any) =>

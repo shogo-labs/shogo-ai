@@ -58,9 +58,38 @@ export const ERROR_CODE_MESSAGES: Record<string, string> = {
   // the first real payment.
   overage_requires_payment: "On-demand usage starts after your first payment. Your trial includes your plan's usage limits and promo credit — add or verify a payment method to enable on-demand usage now.",
   session_expired: 'Your session has expired. Please refresh the page.',
+  // The $99 Solo Founder offer (SHO-428) refuses a purchase for a reason the
+  // buyer can act on. These codes come from /api/billing/checkout and are shown
+  // on the Billing panel by code, never as a generic failure.
+  offer_not_eligible: 'This workspace already has a paid subscription. The Solo Founder offer is for a Free workspace — cancel first, or use another workspace.',
+  already_enrolled: 'You already own the Solo Founder course. Open #course to keep going.',
+  invalid_promo_code: "That promo code is not valid for this offer. Check the code, or leave it empty to get the standard first-year price.",
+  risk_review: 'This purchase needs a review before it can go through. Contact support and we will sort it out.',
+  price_not_provisioned: 'The offer is not available for purchase yet. We have been alerted — please try again shortly.',
+  // The purchase went through, then the card turned out to be prepaid: the
+  // subscription is cancelled and the charge refunded in full.
+  prepaid_refused: 'That card cannot be used for this offer. Nothing was charged — the payment was refunded in full and your plan is still Free.',
+  // Same refusal as `session_expired`, but raised by the API's auth gate with
+  // the code it actually sends. Native has no page to refresh, so the copy
+  // asks for a sign-in, and it is the exact string `ChatPanel` renders for a
+  // send refused mid-conversation (SHO-431). It promises the message is kept
+  // because the panel puts it back in the composer — say so only if that
+  // restore actually ran.
+  unauthorized:
+    'Your session has expired. Sign in again to continue — we kept your message.',
   internal_error: 'Something went wrong on our end. Please try again.',
   shutting_down: 'A server update is in progress. Please retry in a few seconds.',
   offline: 'Your machine is offline. Reconnect it, or continue in the cloud.',
+  // Workspace RBAC (SHO-417). Every denial names the thing to ask an admin for,
+  // because the person cannot fix any of these themselves.
+  model_not_allowed: "Your role can't use that model. Ask a workspace admin for access.",
+  ability_not_allowed: 'Your role is not allowed to do that. Ask a workspace admin for access.',
+  spend_cap_reached: "You've reached the spending limit your workspace admin set for you. Ask them to raise it.",
+  // The hourly request cap is set per role/group/member, so the number is part
+  // of the message: `{requestsPerHour}` is filled from the error payload. When
+  // a rate limit that is NOT the workspace policy's (a per-route throttle)
+  // sends no number, the fill fails and the server's own message is shown.
+  rate_limited: "You've hit your workspace's limit of {requestsPerHour} requests per hour. Wait a moment and try again, or ask a workspace admin to raise it.",
   // A trialing subscription never holds more than `maxSeats` seats (SHO-422):
   // the card is not charged until the trial ends, so a large trial is a large
   // charge to a card we cannot collect on. `{maxSeats}` is filled from the
@@ -178,6 +207,85 @@ export function isClientNetworkFailure(err: unknown): boolean {
     return true
   }
   return false
+}
+
+/** The API's code for "no valid session on this request". */
+export const UNAUTHORIZED_ERROR_CODE = 'unauthorized'
+
+/**
+ * What a person sees when their session was refused mid-conversation, on every
+ * platform. Native has no page to refresh, so the copy asks for a sign-in.
+ * Reused from `ERROR_CODE_MESSAGES` so the panel's own banner and the fallback
+ * that goes through `formatErrorMessage` can never drift apart.
+ */
+export const CHAT_SESSION_EXPIRED_MESSAGE = ERROR_CODE_MESSAGES.unauthorized
+
+/**
+ * Longest text still treated as a bare refusal. The API's own message is 24
+ * characters; a longer blob is a stream/tool payload that merely mentions
+ * authentication, not a refused session.
+ */
+const MAX_BARE_REFUSAL_LENGTH = 200
+
+/** HTTP status a thrown error still carries, when the SDK kept one. */
+function thrownStatus(err: unknown): number | undefined {
+  if (!err || typeof err !== 'object') return undefined
+  const e = err as { status?: unknown; statusCode?: unknown; response?: { status?: unknown } }
+  for (const value of [e.status, e.statusCode, e.response?.status]) {
+    if (typeof value === 'number') return value
+  }
+  return undefined
+}
+
+function thrownText(err: unknown): string {
+  if (typeof err === 'string') return err
+  if (err && typeof err === 'object') {
+    const message = (err as { message?: unknown }).message
+    if (typeof message === 'string') return message
+  }
+  return ''
+}
+
+/** The API's error envelope, when `text` is one. */
+function errorEnvelope(text: string): { code?: string; message?: string } | null {
+  try {
+    const parsed = JSON.parse(text)
+    const error = (parsed as { error?: unknown })?.error
+    if (!error || typeof error !== 'object') return null
+    const { code, message } = error as { code?: unknown; message?: unknown }
+    return {
+      code: typeof code === 'string' ? code : undefined,
+      message: typeof message === 'string' ? message : undefined,
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * True when a chat request was refused because the caller has no valid
+ * session — the API's `401 {"error":{"code":"unauthorized",…}}`.
+ *
+ * The AI SDK's `makeRequest` throws `new Error(await response.text())`, so the
+ * status code is gone by the time the panel sees the failure: the envelope has
+ * to be parsed back out of the message text (SHO-431). A session refusal is
+ * the one chat failure a retry can repair on its own once a fresh session is
+ * established, so it must be distinguishable from a network drop
+ * (`isClientNetworkFailure`) and from a real server error.
+ */
+export function isChatUnauthorizedError(err: unknown): boolean {
+  if (!err) return false
+  if (thrownStatus(err) === 401) return true
+  const code = (err as { code?: unknown })?.code
+  if (code === UNAUTHORIZED_ERROR_CODE) return true
+  const text = thrownText(err).trim()
+  if (!text) return false
+  const envelope = errorEnvelope(text)
+  if (envelope?.code === UNAUTHORIZED_ERROR_CODE) return true
+  // No envelope: the API's own refusal reaches the client bare in a few
+  // paths, and the SDK's client wraps it as `ShogoError: Authentication
+  // required`. Only a short message counts — see MAX_BARE_REFUSAL_LENGTH.
+  return text.length <= MAX_BARE_REFUSAL_LENGTH && /authentication required/i.test(text)
 }
 
 /**

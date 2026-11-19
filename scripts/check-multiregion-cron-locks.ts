@@ -519,6 +519,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'workspace-models.service.ts setAllowedModelIds deletes+recreates a workspace\'s allowlist in one transaction from an owner/admin PUT request; per-workspace, not a global/cron writer.',
   },
   {
+    key: 'AccessPolicy.(subjectId,subjectType,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'One policy per subject per workspace, upserted by access-policy.service.ts from an owner/admin PUT in the workspace home region; a cross-region duplicate needs a failover mid-write and the upsert is idempotent.',
+  },
+  {
     key: 'GitHubConnection.projectId',
     category: 'single_tenant_upsert',
     reason: 'github.service.ts:309 upserts on projectId from a user request.',
@@ -611,6 +617,19 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'external_global_id',
     reason:
       'Stripe webhook is single-source per Stripe account; collision needs cross-region webhook redelivery.',
+  },
+  // --- Solo Founder course (SHO-428) ---------------------------------------
+  {
+    key: 'CourseEnrollment.stripeCheckoutSessionId',
+    category: 'external_global_id',
+    reason:
+      'Stripe-assigned checkout session id; the fulfillment write happens only in `checkout.session.completed`, whose one ingest path is the same as `Subscription.stripeSubscriptionId`. The unique is what makes a redelivered event land on the existing enrollment instead of installing the course twice.',
+  },
+  {
+    key: 'CourseEnrollment.(courseId,userId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'One enrollment per user per course, upserted by `soloFounderService.enroll()`; a user is homed to one region and both writers (`checkout.session.completed` and `customer.subscription.created`) resolve to that same home.',
   },
   {
     key: 'LiveSessionMeter.sessionId',

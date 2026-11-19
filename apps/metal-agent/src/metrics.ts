@@ -251,7 +251,29 @@ export const M = {
   repoBundlesGced: 'metal_repo_bundle_gc_deleted_total',
   // Unmigrated projects kept on the tarball because the guest's LFS push failed.
   repoBundleLfsFallback: 'metal_repo_bundle_lfs_fallback_total',
+  // The guest's LFS push is still running (202). The export retries and joins
+  // the same job; a slow push must never look like a failed save (SHO-442).
+  repoBundleLfsPending: 'metal_repo_bundle_lfs_pending_total',
+  // An UNTRUSTED VM's `.git` was copied to `conflict/` — the floor that keeps
+  // its work durable while it cannot write the real repo (SHO-442).
+  repoQuarantine: 'metal_repo_quarantine_total',
+  // An UNTRUSTED VM was re-attached to the durable history and can save again.
+  repoHealed: 'metal_repo_healed_total',
+  // A suspend/retire/recycle was refused because the current HEAD is not in the
+  // durable repo. The VM keeps running and the next sweep retries.
+  repoDurabilityRefused: 'metal_repo_durability_refused_total',
+  // Pointers whose bytes are on neither side, reported by the guest's export.
+  repoLfsMissing: 'metal_repo_lfs_missing_total',
   repoExportUnchanged: 'metal_repo_export_unchanged_total',
+  // Durability gauges (SHO-442). The incident ran a day and a half with no
+  // signal at all: VMs that could not save, and work that had never been
+  // written anywhere. `repoUntrustedVms` counts assigned VMs whose `.git` is
+  // not trusted to write the durable repo, `repoUntrustedOldestSec` is how long
+  // the oldest has been in that state, and `repoUnsavedSeconds` is the worst
+  // age of a HEAD that exists only inside a guest.
+  repoUntrustedVms: 'metal_repo_untrusted_vms',
+  repoUntrustedOldestSec: 'metal_repo_untrusted_oldest_seconds',
+  repoUnsavedSeconds: 'metal_repo_unsaved_seconds',
   // Assign-time git history restore, `{outcome=}`: `foreground` (done before
   // the open returned), `deferred` (open returned on the source's .git, the
   // download finishing behind it), `none` (no durable repo), `failed`.

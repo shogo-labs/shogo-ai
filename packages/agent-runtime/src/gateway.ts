@@ -81,6 +81,7 @@ import { BlockChunker } from './block-chunker'
 import { canvasModeStableGuides } from './canvas-v2-prompt'
 import { buildCapabilityStatusSection, resolveCapabilitiesForScope, resolveRuntimeCapabilities } from './capability-status-prompt'
 import { buildWakeStatusSection } from './wake-status-prompt'
+import { buildRepoDurabilitySection } from './repo-durability-prompt'
 import { BOARDS_GUIDE, COMPANY_OPS_GUIDE } from './board-tools'
 import { TASK_WAKE_RETRY_MS } from './remote-tasks'
 import { buildViewerContextPrompt, parseCanvasViewer } from './viewer-context'
@@ -135,6 +136,7 @@ import {
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
 import { deriveApiUrl, fetchReachableChats, fetchWorkspacePause, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, postInterruptedResume, projectScopedId, runtimeServesProjectId, type SessionWakeState, type WorkspaceAgentsPause } from './internal-api'
+import { fetchEffectiveAbilities } from './access-gate'
 import { buildWorkspaceRootConflictContext, currentWorkspaceRootSync } from './workspace-root-sync'
 import {
   createToolProfile,
@@ -316,8 +318,30 @@ function parseAutoTierOverride(raw: string | undefined): AutoTierOverride | unde
   return Object.keys(out).length > 0 ? out : undefined
 }
 
-const FALLBACK_SUMMARIZER_MODEL = { id: 'claude-haiku-4-5', provider: 'anthropic' }
+/**
+ * Parse the per-turn Auto tier map the API stamps on a chat body (SHO-417).
+ * Accepts either `{ economy: 'model-id' }` (what the API sends) or the
+ * `{ economy: { id } }` shape `AGENT_AUTO_TIER_MAP` uses, so one parser covers
+ * both. Malformed input is ignored: the process map then applies.
+ */
+function parseTurnAutoTiers(raw: unknown): AutoTierOverride | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const src = raw as Record<string, unknown>
+  const out: AutoTierOverride = {}
+  for (const tier of ['economy', 'standard', 'premium'] as const) {
+    const entry = src[tier]
+    const id =
+      typeof entry === 'string'
+        ? entry.trim()
+        : entry && typeof entry === 'object' && typeof (entry as { id?: unknown }).id === 'string'
+          ? ((entry as { id: string }).id).trim()
+          : ''
+    if (id) out[tier] = { id }
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
 
+const FALLBACK_SUMMARIZER_MODEL = { id: 'claude-haiku-4-5', provider: 'anthropic' }
 /**
  * True when the agent loop ended because the user pressed Stop. Such a turn
  * can legitimately have no text (e.g. stopped during a tool call) and must not
@@ -1172,6 +1196,13 @@ export class AgentGateway {
    * `AGENT_AUTO_TIER_MAP` env var. Undefined keeps the hardcoded defaults.
    */
   private autoTierOverride?: AutoTierOverride
+  /**
+   * The Auto tier map for the turn in flight, narrowed to the person it acts
+   * for (SHO-417). Set from the chat body on every request; when present it
+   * wins over `autoTierOverride`, so an Auto fallback cannot walk outside the
+   * person's effective set.
+   */
+  private turnAutoTiers?: AutoTierOverride
 
   // ── BETA: per-chat git worktrees ──────────────────────────────────────────
   /** Lazily-created worktree manager (null until first use when enabled). */
@@ -1347,6 +1378,17 @@ export class AgentGateway {
 
   setUserTimezone(tz: string): void {
     this.userTimezone = tz
+  }
+
+  /**
+   * The Auto tier map for the turn about to run, narrowed to the person it acts
+   * for (SHO-417). Replaced on every chat request, like `setViewerContext`: the
+   * process-wide `AGENT_AUTO_TIER_MAP` is one map for the whole workspace, so a
+   * per-person cap has to ride on the turn. `undefined` clears it and the
+   * process map applies again.
+   */
+  setTurnAutoTiers(raw: unknown): void {
+    this.turnAutoTiers = parseTurnAutoTiers(raw)
   }
 
   /** Live canvas preview size from the Studio client (iPhone vs desktop).
@@ -3609,8 +3651,11 @@ export class AgentGateway {
     let autoSelectedTier: AutoTierCeiling | undefined
 
     if (autoRouting) {
-      autoTiers = buildAutoTierMap(autoTierIds(this.autoTierOverride))
-      autoProviderHints = autoTierProviderHints(this.autoTierOverride)
+      // A per-turn map (narrowed to the person this run acts for) wins over the
+      // process-wide one, so an Auto fallback cannot leave their effective set.
+      const tierOverride = this.turnAutoTiers ?? this.autoTierOverride
+      autoTiers = buildAutoTierMap(autoTierIds(tierOverride))
+      autoProviderHints = autoTierProviderHints(tierOverride)
       const estimatedTokens = this.sessionManager.estimateTokens(session)
       const classInput: SpawnClassificationInput = {
         prompt,
@@ -3725,6 +3770,9 @@ export class AgentGateway {
 
     const commandRegistry = sessionId ? this.getOrCreateCommandRegistry(sessionId) : undefined
     const persistedProgressMessages = new Set<Message>()
+    // SHO-417: the acting person's abilities for this turn, fetched once. A
+    // denied tool is hidden from the model; the server refuses it anyway.
+    const abilities = await fetchEffectiveAbilities(requesterTicket)
     const toolContext: ToolContext = {
       workspaceDir: sessionWorkspaceDir,
       channels: this.channels,
@@ -3748,6 +3796,7 @@ export class AgentGateway {
       permissionEngine: this.permissionEngine ?? undefined,
       userId: this.currentUserId,
       requesterTicket,
+      abilities,
       aiProxyUrl: process.env.AI_PROXY_URL,
       aiProxyToken: process.env.AI_PROXY_TOKEN,
       uiWriter,
@@ -3775,7 +3824,7 @@ export class AgentGateway {
       effectiveModel: modelId,
       effectiveProvider: provider,
       autoRouting,
-      autoTierOverride: this.autoTierOverride,
+      autoTierOverride: this.turnAutoTiers ?? this.autoTierOverride,
       dualPlan,
       shellState: sessionId ? {
         getCwd: () => this.shellCwd.get(sessionId!) || this.initialShellCwd(sessionWorkspaceDir),
@@ -4875,9 +4924,14 @@ export class AgentGateway {
         sessionId !== 'chat' &&
         sessionId !== 'default' &&
         sessionId !== 'webhook'
-      const extraHeaders: Record<string, string> | undefined = isRealChatSession
-        ? { 'x-chat-session-id': sessionId }
-        : undefined
+      const extraHeaders: Record<string, string> | undefined = {
+        ...(isRealChatSession ? { 'x-chat-session-id': sessionId } : {}),
+        // SHO-417: the person this turn acts for, on the LLM call itself. The
+        // proxy resolves the acting user from this ticket, so a turn started by
+        // person A in a project whose token belongs to person B is still A's
+        // turn — for the model gate and for per-seat billing alike.
+        ...(requesterTicket ? { 'X-Requester-Ticket': requesterTicket } : {}),
+      }
 
       // Mid-turn summarization (SHO-96). pi-agent-core drives the tool loop, so
       // `transformContext` is the only point we control between tool calls —
@@ -6706,6 +6760,14 @@ export class AgentGateway {
     if (sessionId) {
       const wake = buildWakeStatusSection(this.wakeStates.get(sessionId))
       if (wake) pushDynamic('wake-status', wake)
+    }
+
+    // 12c. The workspace's git history is not reaching durable storage. Same
+    // reason as above for the cache boundary: it comes and goes per turn, and
+    // the agent is the one still writing files while it is failing (SHO-442).
+    {
+      const durability = buildRepoDurabilitySection()
+      if (durability) pushDynamic('repo-durability', durability)
     }
 
     this.lastPromptBreakdown = sections

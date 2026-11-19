@@ -15,6 +15,7 @@
  */
 
 import { prisma } from '../lib/prisma'
+import { checkCourseLessonMove, lessonIdFromFields, recordLessonDone } from './lesson-checks.service'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { getFrontendUrl } from '../lib/cloud-urls'
 import {
@@ -248,6 +249,14 @@ export async function assertUserCanWork(board: any, userId: string): Promise<voi
 /** Board structure: channel managers, workspace admins, or the person who made the board. */
 export async function assertUserCanAdmin(board: any, userId: string): Promise<void> {
   await assertUserCanWork(board, userId)
+  // Changing a board's structure is an ability, not just a role (SHO-417).
+  // Through `checkAbility` so it runs in `shadow` first like every other
+  // ability, rather than blocking an Editor on rollout (AC10).
+  const { checkAbility } = await import('../lib/authz')
+  const denial = await checkAbility(board.workspaceId, userId, 'boards:manage', { boardId: board.id })
+  if (denial) {
+    throw forbidden('Ask a workspace admin for boards:manage to change a board’s structure')
+  }
   if (board.createdById === userId) return
   const role = await getWorkspaceRole(board.workspaceId, userId)
   if (role === 'owner' || role === 'admin') return
@@ -1297,6 +1306,23 @@ export async function moveWorkItem(item: any, input: MoveInput, actor: BoardActo
   if (toBoard.requiresHumanReview && actor.agentRef && toColumn.category === 'done' && fromColumn.category !== 'review') {
     throw new ConversationError(403, 'review_required', `${toBoard.name} needs a person to review cards before they are done. Move it to a review column instead.`)
   }
+  // A course lesson is done when the workspace shows its output, not when
+  // someone says so (SHO-428). The Coach's prompt says "try the move"; this is
+  // where the move refuses. It applies to agents and people alike, and
+  // *Skipped* (dismissed) stays open so a lesson the person does not need can
+  // be put down without pretending it was done.
+  if (toColumn.id !== fromColumn.id && toColumn.category === 'done') {
+    const gate = await checkCourseLessonMove({
+      workspaceId: item.workspaceId,
+      board: toBoard,
+      columnCategory: toColumn.category,
+      itemFields: item.fields,
+      itemKey: item.key,
+    })
+    if (gate && !gate.ok) {
+      throw new ConversationError(409, 'lesson_check_failed', gate.message)
+    }
+  }
   const sameColumn = toColumn.id === fromColumn.id
   const now = new Date()
   const position = await positionFor(toColumn.id, input, item.id)
@@ -1333,6 +1359,15 @@ export async function moveWorkItem(item: any, input: MoveInput, actor: BoardActo
     await workActivity('work.regressed', updated, toBoard, actor, `regressed:${now.getTime()}`)
   } else if (toColumn.category === 'done') {
     await workActivity('work.done', updated, toBoard, actor, `done:${now.getTime()}`)
+    // The gate above proved the lesson's output exists; record it so the
+    // Coach knows which lesson is current and the Capstone can complete the
+    // enrollment. `recordLessonDone` is a no-op for any other board.
+    const lessonId = lessonIdFromFields(updated.fields)
+    if (lessonId) {
+      await recordLessonDone({ workspaceId: item.workspaceId, lessonId, at: now }).catch((err: any) =>
+        console.error('[boards] failed to record lesson completion:', err?.message ?? err),
+      )
+    }
   }
   await linkActorSession(item, actor)
 
