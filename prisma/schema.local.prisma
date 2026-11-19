@@ -44,6 +44,12 @@ model User {
   // null for users who never got that far.
   firstCapHitAt               DateTime?
   firstPreviewSeenAt          DateTime?
+  // Paid-acquisition activation (Meta funnel plan, 2026-11-18): set once, the
+  // first time a user either opens a preview of something they built or sends
+  // their 3rd chat message. `activationMessages` counts sends until then and
+  // stops moving after. Reported to Meta as the `Activated` event.
+  activatedAt                 DateTime?
+  activationMessages          Int      @default(0)
   createdAt                   DateTime @default(now())
   updatedAt                   DateTime @updatedAt
 
@@ -1276,6 +1282,14 @@ model SignupAttribution {
   landingPage  String?
   signupMethod String?
   sourceTag    String?
+  // Funnel the signup came through (`f1`…`f6`, from `__shogo_utm`), and the
+  // Meta browser ids + client hints the Conversions API needs to match events
+  // that happen later with no browser attached (activation, first payment).
+  funnel       String?
+  fbp          String?
+  fbc          String?
+  clientIp     String?
+  userAgent    String?
   createdAt    DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1283,6 +1297,29 @@ model SignupAttribution {
   @@index([sourceTag])
   @@index([createdAt])
   @@map("signup_attributions")
+}
+
+// Anonymous, pre-signup funnel steps from shogo.ai (page view of a funnel,
+// started, got the free result). Insert-only with client-minted ids, so the
+// same row can never be written twice in two regions. `eventId` is the id the
+// browser Pixel used, shared with the Conversions API call so Meta dedupes.
+model FunnelEvent {
+  id          String   @id @default(uuid())
+  eventId     String   @unique
+  funnel      String
+  step        String
+  visitorId   String?
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+  utmContent  String?
+  landingPage String?
+  metadata    String?
+  createdAt   DateTime @default(now())
+
+  @@index([funnel, step, createdAt])
+  @@index([utmContent])
+  @@map("funnel_events")
 }
 
 // =============================================================================

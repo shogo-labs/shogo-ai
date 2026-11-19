@@ -332,6 +332,13 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'One Updates-MAU row per app per month, written only by the `native-update-monthly` sweep, which runs under `withGlobalJobLock` so exactly one region bills a given month.',
     writer: 'native-update-monthly',
   },
+  // --- Meta funnel tracking (2026-11-18) ----------------------------------
+  {
+    key: 'FunnelEvent.eventId',
+    category: 'random_secret',
+    reason:
+      'Insert-only; the id is a browser-minted UUID (`<funnel>_<step>_<uuid>`) sent once per funnel step by the shogo.ai Pages Function. A retried beacon hits P2002 and is treated as a duplicate; no two regions mint the same id.',
+  },
   // --- signup risk / free trial (added with the signup credit rollout) ----
   {
     key: 'SignupRiskAssessment.userId',

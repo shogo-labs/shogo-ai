@@ -74,6 +74,7 @@ import { filePaneTarget } from "../chat/remote-project-paths"
 import { projectAgentProxyBase } from "../../lib/agent-proxy-base"
 import { ProjectSidePane } from "../team-chat/ProjectSidePane"
 import { TaskThreadPaneHost } from "../chat/task/TaskThreadPaneHost"
+import { takePendingPrompt } from "../../lib/attribution"
 import type { RestoreDraftRequest } from "../chat/ChatInput"
 import { NativePhoneSheet } from "../phone/NativePhoneSheet"
 import { PersonalAgentHeader } from "../personal/PersonalAgentHeader"
@@ -679,6 +680,15 @@ export const WorkspaceAgentChatScreen = observer(
       setPrefillRequest(crossTabPrefill)
       clearChatPrefill(crossTabPrefill.nonce)
     }, [crossTabPrefill])
+
+    // A shogo.ai funnel handed this visitor over with a ready prompt (e.g. the
+    // try-it's six hooks). Prefilled on the landing's new chat, never sent:
+    // the text came from a URL, so the person reads it and presses Send.
+    useEffect(() => {
+      if (!startNewSession || initialSessionId) return
+      const handedOver = takePendingPrompt()
+      if (handedOver) setPrefillRequest({ nonce: Date.now(), content: handedOver })
+    }, [startNewSession, initialSessionId])
 
     const prefill = useCallback((content: string) => {
       setPrefillRequest({ nonce: Date.now(), content })

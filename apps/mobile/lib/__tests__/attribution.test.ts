@@ -45,6 +45,9 @@ const {
   discardPendingSignupAttribution,
   shouldRecordSignupAttribution,
   flushSignupAttribution,
+  capturePendingPrompt,
+  takePendingPrompt,
+  writeUtmCookie,
 } = await import('../attribution')
 
 beforeEach(() => {
@@ -198,5 +201,34 @@ describe('queueSignupAttribution', () => {
     await Promise.all([first, second])
     expect(posts).toBe(1)
     expect(getPendingSignupAttribution()).toBeNull()
+  })
+})
+
+describe('funnel hand-over prompt', () => {
+  test('captured from ?prompt= and taken exactly once', () => {
+    capturePendingPrompt('?prompt=' + encodeURIComponent('Put these 6 hooks on an Ads board'))
+    expect(takePendingPrompt()).toBe('Put these 6 hooks on an Ads board')
+    expect(takePendingPrompt()).toBeNull()
+  })
+
+  test('captureAttribution keeps the prompt even on a return visit', () => {
+    setLocation('?utm_source=meta')
+    captureAttribution()
+    setLocation('?prompt=hello')
+    captureAttribution()
+    expect(takePendingPrompt()).toBe('hello')
+  })
+
+  test('a prompt older than a day is dropped', () => {
+    capturePendingPrompt('?prompt=stale')
+    expect(takePendingPrompt(Date.now() + 25 * 60 * 60 * 1000)).toBeNull()
+  })
+})
+
+describe('writeUtmCookie', () => {
+  test('only on shogo.ai hosts, and only with something to attribute', () => {
+    expect(writeUtmCookie({ utmSource: 'meta' }, 'localhost')).toBe(false)
+    expect(writeUtmCookie({}, 'studio.shogo.ai')).toBe(false)
+    expect(writeUtmCookie({ utmSource: 'meta' }, 'evilshogo.ai')).toBe(false)
   })
 })

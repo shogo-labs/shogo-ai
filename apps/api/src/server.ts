@@ -290,6 +290,7 @@ const adminMarketplaceRoutes: any = cloud.adminMarketplaceRoutes ?? emptyRouter
 const licenseKeyAdminRoutes: any = cloud.licenseKeyAdminRoutes ?? emptyRouter
 const licenseKeyRoutes: any = cloud.licenseKeyRoutes ?? emptyRouter
 const affiliateRoutes: any = cloud.affiliateRoutes ?? emptyRouter
+const funnelRoutes: any = cloud.funnelRoutes ?? emptyRouter
 const marketplaceRoutes: any = cloud.marketplaceRoutes ?? emptyRouter
 const integrationRoutes: any = cloud.integrationRoutes ?? emptyRouter
 const evalOutputRoutes: any = cloud.evalOutputRoutes ?? emptyRouter
@@ -9578,6 +9579,18 @@ app.post('/api/webhooks/stripe', async (c) => {
             const count = await billingService.markSubscriptionFirstPaid(customerId, invoice.amount_paid ?? 0)
             if (count > 0) {
               console.log('[Webhook] Marked subscription firstPaidAt:', { customerId, count })
+              // First real charge on this card: the conversion Meta optimizes
+              // toward last. Fire-and-forget.
+              if (invoice.id) {
+                void import('./lib/activation')
+                  .then(({ reportFirstPayment }) => reportFirstPayment({
+                    stripeCustomerId: customerId,
+                    invoiceId: invoice.id!,
+                    amountPaidCents: invoice.amount_paid ?? 0,
+                    currency: invoice.currency,
+                  }))
+                  .catch(() => {})
+              }
             }
           } catch (err: any) {
             console.error('[Webhook] Failed to set firstPaidAt:', err?.message ?? err)
@@ -9962,6 +9975,7 @@ app.route('/api', userAttributionRoute())
 // commissions/payouts, downline, internal click tracking, public lookup).
 // Each handler short-circuits on the SHOGO_AFFILIATES_NATIVE flag.
 app.route('/api', affiliateRoutes())
+app.route('/api', funnelRoutes())
 
 // Scoped analytics routes handle their own auth (workspace/project membership checks)
 app.route('/api', scopedAnalyticsRoutes())

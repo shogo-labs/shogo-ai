@@ -14,6 +14,7 @@
  */
 import { prisma } from './prisma'
 import { trackEvent } from '../services/loops.service'
+import { markActivated } from './activation'
 
 export interface UsageLimitHit {
   workspaceId: string
@@ -80,4 +81,7 @@ export async function recordFirstPreviewSeen(userId: string | null | undefined):
   } catch (error: any) {
     console.warn('[usage-cap] firstPreviewSeenAt write failed:', error?.message ?? error)
   }
+  // Seeing what they built is one of the two ways a signup activates. No-op
+  // for anyone already activated.
+  await markActivated(userId, 'preview')
 }

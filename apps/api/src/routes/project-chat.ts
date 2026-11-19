@@ -2011,6 +2011,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // usage-limit and attachment gates (a rejected send writes nothing) and
       // before the first proxy attempt.
       const persistedUserMessage = await persistUserMessageForTurn(incomingChatSessionId, parsedBody as Record<string, unknown>)
+      // Counts toward activation (the Meta `Activated` event). Fire-and-forget.
+      const activationUserId = verifiedUserId
+      if (persistedUserMessage.created && activationUserId) {
+        void import('../lib/activation')
+          .then(({ recordActivationMessage }) => recordActivationMessage(activationUserId))
+          .catch(() => {})
+      }
 
       // A hosted workspace whose desktop is offline queues the turn instead of
       // failing it; the desktop runs it when it is back (SHO-285).

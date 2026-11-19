@@ -4611,6 +4611,113 @@ export interface FunnelResult {
   avgMinToFirstMessage: number | null
 }
 
+export interface AcquisitionRow {
+  funnel: string | null
+  utmSource: string | null
+  utmCampaign: string | null
+  utmContent: string | null
+  views: number
+  starts: number
+  leads: number
+  signups: number
+  activated: number
+  paid: number
+}
+
+export interface AcquisitionFunnelResult {
+  since: string
+  rows: AcquisitionRow[]
+  totals: Omit<AcquisitionRow, 'funnel' | 'utmSource' | 'utmCampaign' | 'utmContent'>
+}
+
+/**
+ * Paid-acquisition funnel by ad (`utm_content`): pre-signup steps from
+ * `funnel_events`, then signups, activations and first payments of the users
+ * whose `signup_attributions` row carries the same tags. This is the table the
+ * Meta budget decisions are made from (cost per activated user per ad).
+ */
+export async function getAcquisitionFunnel(
+  period: AnalyticsPeriod = '30d',
+  excludeInternal = true,
+): Promise<AcquisitionFunnelResult> {
+  const since = periodStartAsOf(period)
+  const keyOf = (r: { funnel?: string | null; utmSource?: string | null; utmCampaign?: string | null; utmContent?: string | null }) =>
+    JSON.stringify([r.funnel ?? null, r.utmSource ?? null, r.utmCampaign ?? null, r.utmContent ?? null])
+  const rows = new Map<string, AcquisitionRow>()
+  const rowFor = (r: Parameters<typeof keyOf>[0]): AcquisitionRow => {
+    const key = keyOf(r)
+    let row = rows.get(key)
+    if (!row) {
+      row = {
+        funnel: r.funnel ?? null,
+        utmSource: r.utmSource ?? null,
+        utmCampaign: r.utmCampaign ?? null,
+        utmContent: r.utmContent ?? null,
+        views: 0, starts: 0, leads: 0, signups: 0, activated: 0, paid: 0,
+      }
+      rows.set(key, row)
+    }
+    return row
+  }
+
+  const events = await prisma.funnelEvent.groupBy({
+    by: ['funnel', 'step', 'utmSource', 'utmCampaign', 'utmContent'],
+    where: { createdAt: { gte: since } },
+    _count: { _all: true },
+  })
+  for (const e of events) {
+    const row = rowFor(e)
+    const n = e._count._all
+    if (e.step === 'view') row.views += n
+    else if (e.step === 'start') row.starts += n
+    else if (e.step === 'result') row.leads += n
+  }
+
+  const signups = await prisma.signupAttribution.findMany({
+    where: { createdAt: { gte: since }, ...(excludeInternal ? { user: realUserWhere() } : {}) },
+    select: {
+      userId: true, funnel: true, utmSource: true, utmCampaign: true, utmContent: true,
+      user: { select: { activatedAt: true } },
+    },
+  })
+
+  const userIds = signups.map((s) => s.userId)
+  const payers = new Set<string>()
+  if (userIds.length > 0) {
+    const memberships = await prisma.member.findMany({
+      where: { userId: { in: userIds }, workspaceId: { not: null }, OR: [{ role: 'owner' }, { isBillingAdmin: true }] },
+      select: { userId: true, workspaceId: true },
+    })
+    const workspaceIds = [...new Set(memberships.map((m) => m.workspaceId!))]
+    const paidWorkspaces = new Set(
+      workspaceIds.length === 0
+        ? []
+        : (await prisma.subscription.findMany({
+            where: { workspaceId: { in: workspaceIds }, firstPaidAt: { not: null } },
+            select: { workspaceId: true },
+          })).map((s) => s.workspaceId),
+    )
+    for (const m of memberships) if (paidWorkspaces.has(m.workspaceId!)) payers.add(m.userId)
+  }
+
+  for (const s of signups) {
+    const row = rowFor(s)
+    row.signups += 1
+    if (s.user?.activatedAt) row.activated += 1
+    if (payers.has(s.userId)) row.paid += 1
+  }
+
+  const list = [...rows.values()].sort((a, b) => b.signups - a.signups || b.leads - a.leads || b.views - a.views)
+  const totals = list.reduce(
+    (t, r) => ({
+      views: t.views + r.views, starts: t.starts + r.starts, leads: t.leads + r.leads,
+      signups: t.signups + r.signups, activated: t.activated + r.activated, paid: t.paid + r.paid,
+    }),
+    { views: 0, starts: 0, leads: 0, signups: 0, activated: 0, paid: 0 },
+  )
+  return { since: since.toISOString(), rows: list, totals }
+}
+
 export async function getUserFunnel(
   period: AnalyticsPeriod = '30d',
   excludeInternal = true,

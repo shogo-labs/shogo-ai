@@ -111,7 +111,7 @@ export default function SignInScreen() {
           ? `${window.location.origin}/sign-in?next=${encodeURIComponent(nextPath)}`
           : undefined
       const result = await signUp(name, email, password, verifyCallback ? { callbackURL: verifyCallback } : undefined)
-      trackSignUp('email')
+      trackSignUp('email', result.userId)
       sendEmailAttribution()
       if (result.requiresVerification) {
         router.replace({ pathname: '/(auth)/verify-email', params: { email, next: nextPath !== '/' ? nextPath : undefined } as any })

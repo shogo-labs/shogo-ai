@@ -426,6 +426,9 @@ export const PUBLIC_PREFIXES = [
   '/api/ai/',
   // Public OpenAI-compatible API — self-authenticates with a `shogo_sk_*` key.
   '/api/v1/',
+  // shogo.ai funnel pages (via its Pages Functions) — self-authenticates with
+  // the `x-shogo-funnel-key` shared secret in `./routes/funnel.ts`.
+  '/api/funnel/',
   '/api/tools/',
   '/api/api-keys/validate',
   // Device-key heartbeat — the key in the body is the credential (verified in

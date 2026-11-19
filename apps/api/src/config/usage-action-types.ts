@@ -71,12 +71,14 @@ export type BilledUsageActionType = keyof typeof BILLED_USAGE_ACTION_TYPES
  *  - `ai_proxy_internal` — legacy internal completion tag.
  *  - `title_generation` / `analytics_digest` — server-side internal completions
  *    (`INTERNAL_USAGE_TAGS` in `routes/ai-proxy.ts`).
+ *  - `funnel_try` — the anonymous shogo.ai try-it run (`routes/funnel.ts`).
  *  - `signup_credit_expired` / `signup_credit_revoked` — wallet adjustments.
  */
 export const NON_BILLED_USAGE_ACTION_TYPES = [
   'ai_proxy_internal',
   'title_generation',
   'analytics_digest',
+  'funnel_try',
   'signup_credit_expired',
   'signup_credit_revoked',
 ] as const

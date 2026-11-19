@@ -47,6 +47,7 @@ import { adminRoutes, userAttributionRoute } from './routes/admin'
 import { adminMarketplaceRoutes } from './routes/admin-marketplace'
 import { licenseKeyAdminRoutes, licenseKeyRoutes } from './routes/license-keys'
 import { affiliateRoutes } from './routes/affiliates'
+import { funnelRoutes } from './routes/funnel'
 import { marketplaceRoutes } from './routes/marketplace'
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
 import { costAnalyticsRoutes } from './routes/cost-analytics'
@@ -120,6 +121,7 @@ export {
   licenseKeyAdminRoutes,
   licenseKeyRoutes,
   affiliateRoutes,
+  funnelRoutes,
   marketplaceRoutes,
   scopedAnalyticsRoutes,
   costAnalyticsRoutes,

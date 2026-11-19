@@ -25,6 +25,8 @@ export interface AuthUser {
 
 export interface SignUpResult {
   requiresVerification: boolean
+  /** The new account's id, when the server returned it (for analytics event ids). */
+  userId?: string
 }
 
 export interface AuthContextValue {
@@ -194,7 +196,8 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError }: A
       if (hasSession && data?.user) {
         setUser(data.user as AuthUser)
       }
-      return { requiresVerification: !hasSession }
+      const userId = (data as any)?.user?.id as string | undefined
+      return { requiresVerification: !hasSession, ...(userId ? { userId } : {}) }
     } catch (e: any) {
       const msg = e.message || 'Sign up failed'
       setError(msg)

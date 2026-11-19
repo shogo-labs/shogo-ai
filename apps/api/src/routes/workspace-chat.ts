@@ -930,6 +930,12 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // the same contract as project-chat: awaited after every gate (a rejected
     // send writes nothing) and before the first proxy attempt.
     const persistedUserMessage = await persistUserMessageForTurn(sessionId, parsedBody as Record<string, unknown>)
+    // Counts toward activation (the Meta `Activated` event). Fire-and-forget.
+    if (persistedUserMessage.created && auth.userId) {
+      void import('../lib/activation')
+        .then(({ recordActivationMessage }) => recordActivationMessage(auth.userId))
+        .catch(() => {})
+    }
 
     // A hosted workspace whose desktop is offline queues the turn instead of
     // failing it; the desktop runs it when it is back (SHO-285).

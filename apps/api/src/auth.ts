@@ -804,11 +804,20 @@ export const auth = betterAuth({
           // which is a number we were missing entirely.
           try {
             const { recordSignupAttribution } = await import('./lib/signup-attribution')
+            const { clientIpFromHeaders } = await import('./lib/meta-capi')
             await recordSignupAttribution({
               userId: user.id,
               cookieHeader:
                 ctx?.request?.headers?.get?.('cookie') ?? ctx?.headers?.get?.('cookie') ?? '',
               method: signupProviderFromPath(ctx?.path),
+              email: user.email,
+              clientIp: (() => {
+                const h = ctx?.request?.headers ?? ctx?.headers
+                if (!h?.get) return null
+                return clientIpFromHeaders((name) => h.get(name))
+              })(),
+              userAgent:
+                ctx?.request?.headers?.get?.('user-agent') ?? ctx?.headers?.get?.('user-agent') ?? null,
             })
           } catch (err) {
             console.warn('[Attribution] signup attribution on signup failed', err)
