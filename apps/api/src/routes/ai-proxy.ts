@@ -6969,13 +6969,6 @@ export function aiProxyRoutes() {
       // upscale (a re-render at a higher resolution, the only upscaling Google
       // offers), with a prompt an edit, or an extend when `options.task` asks.
       if (entry.provider === 'google') {
-        const apiKey = getImageProviderApiKey('google')
-        if (!apiKey) {
-          return c.json(
-            { error: { message: `Video provider 'google' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } },
-            503
-          )
-        }
         if (!entry.apiModel) {
           return c.json(
             { error: { message: `${entry.displayName} has no upstream model id.`, type: 'server_error', code: 'provider_not_configured' } },
@@ -7078,6 +7071,18 @@ export function aiProxyRoutes() {
           return invalid(
             `A first-and-last-frame clip (start_image + end_image) is limited to 10 s; got ${duration}.`,
             'invalid_duration',
+          )
+        }
+
+        // Only now, with the request itself known to be well formed: a bad
+        // request is a 400 on every stack, key or no key (SHO-383). Refusing it
+        // as `provider_not_configured` teaches an agent to go configure a key
+        // for a body that would be rejected anyway.
+        const apiKey = getImageProviderApiKey('google')
+        if (!apiKey) {
+          return c.json(
+            { error: { message: `Video provider 'google' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } },
+            503
           )
         }
 
