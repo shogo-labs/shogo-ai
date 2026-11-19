@@ -40,7 +40,12 @@ export interface IdleWindowInput {
   staleAfterMs: number
   /** `METAL_IDLE_SUSPEND_MS`; also the aggressive fallback. */
   aggressiveMs: number
-  assigned: number
+  /**
+   * ACTIVE assigned VMs on this host — not the resident total. An idle-resident
+   * VM is evictable (see `vmResidency`), so it is free capacity and must not
+   * push the host into the aggressive window; only VMs someone is using do.
+   */
+  active: number
   maxVms: number
   hostGuardPct: number
   /** No control plane configured: the static window is all there is. */
@@ -54,7 +59,7 @@ export function resolveIdleWindow(i: IdleWindowInput): IdleWindow {
   if (!d || !(d.idleMs > 0) || i.now - d.receivedAt > i.staleAfterMs) {
     return { idleMs: i.aggressiveMs, tier: 'aggressive', reason: 'stale', directiveTier }
   }
-  if (i.maxVms > 0 && (i.assigned / i.maxVms) * 100 >= i.hostGuardPct) {
+  if (i.maxVms > 0 && (i.active / i.maxVms) * 100 >= i.hostGuardPct) {
     return { idleMs: Math.min(d.idleMs, i.aggressiveMs), tier: 'aggressive', reason: 'host_guard', directiveTier }
   }
   return { idleMs: d.idleMs, tier: d.tier, reason: 'directive', directiveTier }
@@ -82,13 +87,13 @@ export function _resetIdleDirective(): void {
   last = undefined
 }
 
-export function currentIdleWindow(assigned: number, now = Date.now()): IdleWindow {
+export function currentIdleWindow(active: number, now = Date.now()): IdleWindow {
   return resolveIdleWindow({
     directive: last,
     now,
     staleAfterMs: 3 * config.registerIntervalMs + 15_000,
     aggressiveMs: config.idleSuspendMs,
-    assigned,
+    active,
     maxVms: config.maxVmsPerHost,
     hostGuardPct: config.idleHostGuardPct,
     standalone: !config.controlPlaneUrl,

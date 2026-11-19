@@ -28,6 +28,10 @@ interface ComputeSummary {
     hostCostUsd: number
     marginUsd: number
     assignedNow: number
+    /** Assigned VMs holding a slot someone needs (SHO-444). Absent on an older API. */
+    activeNow?: number
+    /** Assigned VMs that are warm but evictable — free capacity. Absent on an older API. */
+    evictableNow?: number
     livenessNow: { appActive: number; agentActive: number; idleTail: number } | null
   }
   totals: {
@@ -138,7 +142,16 @@ export function ComputePanel() {
           sub={data.fleet.marginUsd >= 0 ? 'billable covers hosts' : 'hosts cost more'}
           tone={data.fleet.marginUsd >= 0 ? 'good' : 'bad'}
         />
-        <Tile label="Running now" value={String(data.fleet.assignedNow)} sub={`${data.fleet.livenessNow?.agentActive ?? 0} agent · ${data.fleet.livenessNow?.appActive ?? 0} app · ${data.fleet.livenessNow?.idleTail ?? 0} idle`} />
+        <Tile
+          label="Running now"
+          value={String(data.fleet.assignedNow)}
+          sub={`${data.fleet.activeNow ?? data.fleet.assignedNow} active · ${data.fleet.evictableNow ?? 0} evictable`}
+        />
+        <Tile
+          label="Liveness"
+          value={`${data.fleet.livenessNow?.agentActive ?? 0} agent`}
+          sub={`${data.fleet.livenessNow?.appActive ?? 0} app · ${data.fleet.livenessNow?.idleTail ?? 0} idle`}
+        />
       </View>
 
       {byCause.length > 0 && (

@@ -50,6 +50,13 @@ const pool = new MetalWarmPool()
 // back http://{publicHost}:{port}. No-op (returns the private guest URL) unless
 // METAL_PUBLIC_HOST is set.
 const fwd = new PortForward()
+// An on-demand eviction (SHO-444) suspends a warm VM to make room for another
+// project's assign. The project is no longer resident here, so drop its DNAT
+// forward and tell the control plane now rather than at the next heartbeat.
+pool.onEvicted = (projectId) => {
+  fwd.remove(projectId)
+  reportPlacement('suspended', projectId)
+}
 if (fwd.enabled) console.log(`[metal-agent] public port-forward on: ${config.publicHost}:${config.fwdPortBase}-${config.fwdPortBase + config.fwdPortSpan - 1} allow=${config.fwdAllowCidr || 'any'}`)
 
 // Packet filter on our own control port, under the METAL_AUTH_MODE bearer.
@@ -236,7 +243,7 @@ async function handle(req: Request, srv: PeerLookup): Promise<Response> {
         const r = await pool.resume(projectId, env ?? {})
         if (!r) return Response.json({ error: 'no restorable snapshot (cold miss)' }, { status: 409 })
         const url = await fwd.ensure(projectId, r.assigned.handle.guestIp)
-        return Response.json({ url, source: r.source, readyMs: r.readyMs })
+        return Response.json({ url, source: r.source, readyMs: r.readyMs, suspendReason: r.suspendReason })
       }
 
       if (path === '/touch' && req.method === 'POST') {
@@ -484,7 +491,7 @@ if (config.idleSuspendMs > 0) {
       })
       .catch((err) => console.error('[metal-agent] api watchdog error:', err?.message ?? err))
       .then(() => {
-        const w = currentIdleWindow(pool.status().assigned.length)
+        const w = currentIdleWindow(pool.status().liveness.active)
         if (w.tier !== lastIdleTier || w.reason !== lastIdleReason) {
           console.log(`[metal-agent] idle window: ${w.tier} ${w.idleMs}ms (${w.reason})`)
           lastIdleTier = w.tier
@@ -507,6 +514,14 @@ if (config.idleSuspendMs > 0) {
         if (retired.length) console.log(`[metal-agent] idle-retired (stale rootfs): ${retired.join(', ')}`)
       })
       .catch((err) => console.error('[metal-agent] idle reap error:', err?.message ?? err))
+      // Keep a couple of slots free so most assigns never pay for an on-demand
+      // eviction (SHO-444). Runs after the idle pass, so a VM the window already
+      // suspended is not evicted twice; `onEvicted` handles the forward/placement.
+      .then(() => pool.evictForHeadroom())
+      .then((ids) => {
+        if (ids.length) console.log(`[metal-agent] evicted for headroom: ${ids.join(', ')}`)
+      })
+      .catch((err) => console.error('[metal-agent] headroom eviction error:', err?.message ?? err))
       .then(() => pool.rotateStale())
       .then(({ retired, alwaysOn }) => {
         for (const id of retired) {

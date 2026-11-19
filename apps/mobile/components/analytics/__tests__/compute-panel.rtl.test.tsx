@@ -59,6 +59,8 @@ function summary(overrides: Record<string, unknown> = {}) {
       hostCostUsd: 2500,
       marginUsd: 1000,
       assignedNow: 22,
+      activeNow: 7,
+      evictableNow: 15,
       livenessNow: { appActive: 1, agentActive: 6, idleTail: 15 },
     },
     totals: {
@@ -99,6 +101,27 @@ describe('admin Compute panel', () => {
     render(createElement(ComputePanel))
 
     expect(await screen.findByText(/metal-us-9/)).toBeDefined()
+  })
+
+  test('shows the residency split: active holds a slot, evictable is free capacity (SHO-444)', async () => {
+    nextPayload = summary()
+    render(createElement(ComputePanel))
+
+    // 22 resident, of which 7 are in use and 15 are warm-but-free. The gap is
+    // what the burst scaler no longer pays for, so it has to be visible here.
+    expect(await screen.findByText('7 active · 15 evictable')).toBeDefined()
+  })
+
+  test('an older API without the residency fields falls back to assigned, not a blank', async () => {
+    const old = summary()
+    delete (old.fleet as any).activeNow
+    delete (old.fleet as any).evictableNow
+    nextPayload = old
+    render(createElement(ComputePanel))
+
+    // Never "undefined active": an agent that predates the bucket reports only
+    // assigned, and every resident VM counts as load.
+    expect(await screen.findByText('22 active · 0 evictable')).toBeDefined()
   })
 
   // Kept last: the crash below leaves React poisoned for later renders in the

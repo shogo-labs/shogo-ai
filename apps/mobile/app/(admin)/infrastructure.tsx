@@ -244,12 +244,21 @@ interface MetalHostLive {
   meshIp: string
   agentPort: number
   capacity: { poolSize: number; memMiB: number; vcpus: number }
-  load: { available: number; assigned: number; suspended: number }
+  load: {
+    available: number
+    assigned: number
+    suspended: number
+    /** Residency split (SHO-444): active holds a slot, evictable is warm but free. */
+    active?: number
+    evictable?: number
+  }
   disk?: { totalBytes: number; freeBytes: number; usedPct: number; cacheBytes: number; localCount: number }
   live: boolean
   overWatermark: boolean
   cordoned: boolean
   utilPct: number
+  /** Same as utilPct, over ACTIVE VMs only (SHO-444). */
+  activeUtilPct?: number
 }
 
 interface MetalFleetHostRow {
@@ -276,7 +285,21 @@ interface MetalFleetData {
   defaults: { plan: string; os: string; billing: string; swapGiB: number }
   burst: { enabled: boolean; plan: string; maxPerRegion: number; scaleUpUtilPct: number; scaleDownUtilPct: number; cooldownSec: number }
   hosts: MetalFleetHostRow[]
-  regions: Record<string, { hosts: number; live: number; assigned: number; poolSize: number; utilPct: number }>
+  regions: Record<
+    string,
+    {
+      hosts: number
+      live: number
+      assigned: number
+      /** Residency split (SHO-444). Absent on an older API. */
+      active?: number
+      evictable?: number
+      poolSize: number
+      utilPct: number
+      /** Same as utilPct, over ACTIVE VMs only. Absent on an older API. */
+      assignedUtilPct?: number
+    }
+  >
   stats: { assigned: number; resumed: number; coldMiss: number; hostErrors: number; noHost: number; snapshotHitRate: number | null }
   config: { hostTtlMs: number; assignTimeoutMs: number; diskHighPct: number }
   drift: { missing: string[]; unmanaged: string[] }
@@ -684,6 +707,7 @@ function MetalFleetPanel({
             <Globe size={11} className="text-blue-400" />
             <Text className="text-[11px] text-muted-foreground">
               {region.toUpperCase()}: {r.live} hosts · {r.utilPct}% util
+              {typeof r.active === 'number' ? ` (${r.active} active · ${r.evictable ?? 0} evictable)` : ''}
             </Text>
           </View>
         ))}
@@ -821,6 +845,14 @@ function MetalFleetPanel({
                       {live.load.assigned}/{live.capacity.poolSize} assigned ({live.utilPct}%)
                     </Text>
                   </View>
+                  {typeof live.load.active === 'number' && (
+                    <View className="flex-row items-center gap-1">
+                      <Box size={10} className="text-amber-400" />
+                      <Text className="text-[10px] text-muted-foreground">
+                        {live.load.active} active · {live.load.evictable ?? 0} evictable
+                      </Text>
+                    </View>
+                  )}
                   <View className="flex-row items-center gap-1">
                     <Activity size={10} className="text-green-400" />
                     <Text className="text-[10px] text-muted-foreground">{live.load.available} warm · {live.load.suspended} susp</Text>
