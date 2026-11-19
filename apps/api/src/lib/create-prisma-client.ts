@@ -94,6 +94,9 @@ const JSON_OBJECT_FIELDS = new Set([
   'chain',
   // Social posts / targets keep their media URL list as JSON on both sides.
   'mediaJson',
+  // Storage metering breakdown (Json? on PG, JSON String on SQLite): categories,
+  // per-project bytes and the buckets a pass could not measure (SHO-423).
+  'breakdown',
 ])
 
 // In SQLite mode, String[] fields are stored as JSON strings, and

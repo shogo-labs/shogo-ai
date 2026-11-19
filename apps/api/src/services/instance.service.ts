@@ -13,6 +13,7 @@ import {
   INSTANCE_SIZES,
   getKubernetesResourceOverrides,
 } from '../config/instance-sizes'
+import { parseBreakdown } from './storage.service'
 
 export async function getInstanceForWorkspace(workspaceId: string) {
   const workspace = await prisma.workspace.findUnique({
@@ -22,8 +23,10 @@ export async function getInstanceForWorkspace(workspaceId: string) {
       storageUsage: {
         select: {
           totalBytes: true,
+          billableBytes: true,
           projectCount: true,
           lastCalculatedAt: true,
+          breakdown: true,
         },
       },
     },
@@ -34,15 +37,25 @@ export async function getInstanceForWorkspace(workspaceId: string) {
   const size = workspace.instanceSize as InstanceSizeName
   const spec = INSTANCE_SIZES[size]
 
+  const usage = workspace.storageUsage
+  const breakdown = usage ? parseBreakdown(usage.breakdown) : null
+
   return {
     size,
     spec,
-    storage: workspace.storageUsage
+    storage: usage
       ? {
-          totalBytes: Number(workspace.storageUsage.totalBytes),
-          projectCount: workspace.storageUsage.projectCount,
+          totalBytes: Number(usage.totalBytes),
+          // Overhead categories (quarantine, VM snapshots) are measured but
+          // never billed, so the instance payload distinguishes the two the
+          // same way `/api/workspaces/:id/storage` does (SHO-423).
+          billableBytes:
+            usage.billableBytes == null ? Number(usage.totalBytes) : Number(usage.billableBytes),
+          projectCount: usage.projectCount,
           limitBytes: spec.storageLimitBytes,
-          lastCalculatedAt: workspace.storageUsage.lastCalculatedAt,
+          lastCalculatedAt: usage.lastCalculatedAt,
+          categories: breakdown?.categories ?? null,
+          unmeasured: breakdown?.unmeasured ?? [],
         }
       : null,
   }

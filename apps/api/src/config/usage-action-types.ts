@@ -53,6 +53,8 @@ export const BILLED_USAGE_ACTION_TYPES = {
   vm_compute: 'hosting',
   // Workspace drive above the tier's included GiB (SHO-401).
   disk_addon: 'storage',
+  // S3 bytes above the tier's storage allowance, billed as GB-months (SHO-423).
+  storage: 'storage',
   social_account_monthly: 'social',
   social_dm: 'social',
   social_x_api: 'social',
@@ -152,6 +154,7 @@ export function usageCategoryLabel(category: UsageCategory): string {
 export const USAGE_ACTION_LABELS: Partial<Record<BilledUsageActionType, string>> = {
   published_hosting: 'Published hosting',
   disk_addon: 'Disk add-on',
+  storage: 'Storage',
   social_account_monthly: 'Social: account',
   social_dm: 'Social: DM',
   social_x_api: 'Social: X API',

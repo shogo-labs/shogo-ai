@@ -31,6 +31,7 @@ export function ComputeTab() {
   const workspaceId = workspace?.id
   const [instance, setInstance] = useState<any>(null)
   const [metrics, setMetrics] = useState<any>(null)
+  const [storage, setStorage] = useState<any>(null)
   const [metricsPeriod, setMetricsPeriod] = useState<MetricsPeriod>('24h')
   const [isLoading, setIsLoading] = useState(true)
 
@@ -41,10 +42,12 @@ export function ComputeTab() {
     Promise.all([
       api.getWorkspaceInstance(http, workspaceId).catch(() => null),
       api.getWorkspaceMetrics(http, workspaceId, metricsPeriod).catch(() => null),
-    ]).then(([inst, met]) => {
+      api.getWorkspaceStorage(http, workspaceId).catch(() => null),
+    ]).then(([inst, met, store]) => {
       if (!cancelled) {
         setInstance(inst)
         setMetrics(met)
+        setStorage(store)
         setIsLoading(false)
       }
     })
@@ -71,8 +74,11 @@ export function ComputeTab() {
 
   const currentSize = (instance?.size ?? 'micro') as InstanceSizeName
   const currentSpec = getInstanceSize(currentSize)
-  const storageTotalBytes = instance?.storage?.totalBytes ?? 0
-  const storageLimitBytes = instance?.storage?.limitBytes ?? currentSpec.storageLimitGb * 1024 ** 3
+  // The storage endpoint is the authority (it carries the breakdown); the
+  // instance payload stays the fallback for a member whose call failed.
+  const storageTotalBytes = storage?.totalBytes ?? instance?.storage?.totalBytes ?? 0
+  const storageLimitBytes =
+    storage?.limitBytes ?? instance?.storage?.limitBytes ?? currentSpec.storageLimitGb * 1024 ** 3
   const storagePercent = storageLimitBytes > 0 ? Math.min((storageTotalBytes / storageLimitBytes) * 100, 100) : 0
 
   const cpuPercent = metrics?.current?.cpuPercent ?? 0
@@ -130,7 +136,7 @@ export function ComputeTab() {
                 <Text className="text-sm text-muted-foreground">Storage</Text>
               </View>
               <Text className="text-sm text-muted-foreground">
-                {formatStorageBytes(storageTotalBytes)} / {currentSpec.storageLabel}
+                {formatStorageBytes(storageTotalBytes)} / {formatStorageBytes(storageLimitBytes)}
               </Text>
             </View>
             <View className="h-2 bg-muted rounded-full overflow-hidden">
@@ -145,6 +151,9 @@ export function ComputeTab() {
           </View>
         </CardContent>
       </Card>
+
+      {/* Storage breakdown + history (owners/admins only) */}
+      <StorageDetailCard storage={storage} />
 
       {/* Resource Usage Metrics */}
       {currentSpec.dedicated && metrics?.history?.timestamps?.length > 0 ? (
@@ -280,6 +289,189 @@ function ResourceUsageSection({
             })}
           </View>
         </View>
+      </CardContent>
+    </Card>
+  )
+}
+
+// ─── Storage detail (SHO-423) ───────────────────────────────────────────────
+
+/**
+ * Category labels in display order. `quarantine` and `vm_snapshots` are
+ * platform overhead: measured and shown, never billed, and they are excluded
+ * from the billable total the server sends.
+ */
+const STORAGE_CATEGORY_LABELS: Array<{ key: string; label: string; overhead?: boolean }> = [
+  { key: 'project_files', label: 'Project files' },
+  { key: 'repo', label: 'Git repos & LFS' },
+  { key: 'assets', label: 'Assets' },
+  { key: 'backups', label: 'Backups' },
+  { key: 'chat_files', label: 'Chats & attachments' },
+  { key: 'workspace_root', label: 'Workspace drive' },
+  { key: 'published', label: 'Published sites' },
+  { key: 'quarantine', label: 'Sync quarantine (not billed)', overhead: true },
+  { key: 'vm_snapshots', label: 'VM snapshots (not billed)', overhead: true },
+]
+
+/** How many projects to list before collapsing into "and N more". */
+const STORAGE_PROJECT_ROWS = 8
+
+function formatGbMonths(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0 GB-mo'
+  return `${value < 0.01 ? value.toFixed(4) : value.toFixed(2)} GB-mo`
+}
+
+function formatUsd(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '$0.00'
+  if (value < 0.01) return '<$0.01'
+  return `$${value.toFixed(2)}`
+}
+
+function formatDayLabel(day: string): string {
+  const parsed = new Date(`${day}T00:00:00Z`)
+  if (Number.isNaN(parsed.getTime())) return day
+  return parsed.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+function StorageDetailCard({ storage }: { storage: any }) {
+  // Absent for a plain member (the server strips the breakdown) or before the
+  // first measurement lands.
+  if (!storage?.categories || !storage?.projects) return null
+
+  const categories: Record<string, number> = storage.categories ?? {}
+  const projects: Array<{ projectId: string; projectName: string | null; hidden: boolean; bytes: number }> =
+    storage.projects ?? []
+  const history: Array<{ day: string; totalBytes: number; billableBytes: number }> = storage.history ?? []
+  const month = storage.month
+  const unmeasured: string[] = storage.unmeasured ?? []
+
+  const visibleProjects = projects.filter((project) => project.bytes > 0)
+  const namedProjects = visibleProjects.filter((project) => !project.hidden && project.projectName)
+  const systemBytes = visibleProjects
+    .filter((project) => project.hidden || !project.projectName)
+    .reduce((sum, project) => sum + project.bytes, 0)
+  const listedProjects = namedProjects.slice(0, STORAGE_PROJECT_ROWS)
+  const hiddenProjectCount = Math.max(0, namedProjects.length - listedProjects.length)
+
+  const categoryRows = STORAGE_CATEGORY_LABELS.filter((row) => (categories[row.key] ?? 0) > 0)
+  const maxHistoryBytes = history.reduce((max, row) => Math.max(max, row.totalBytes), 0)
+  const measuredAt = storage.lastCalculatedAt ? new Date(storage.lastCalculatedAt) : null
+
+  return (
+    <Card>
+      <CardContent className="p-4 gap-3">
+        <View className="flex-row items-center gap-2">
+          <HardDrive size={18} className="text-primary" />
+          <Text className="text-base font-semibold text-foreground">Storage breakdown</Text>
+        </View>
+
+        {month && (
+          <View className="rounded-lg bg-muted/50 p-3 gap-1">
+            <View className="flex-row items-center justify-between">
+              <Text className="text-sm text-muted-foreground">This month so far</Text>
+              <Text className="text-sm font-semibold text-foreground">
+                {formatUsd(month.estimatedUsd)}
+              </Text>
+            </View>
+            <Text className="text-xs text-muted-foreground">
+              {formatGbMonths(month.billableGbMonths)} above your allowance
+              {month.mode === 'shadow' ? ' — estimate, not yet charged' : ' — charged daily'}
+            </Text>
+          </View>
+        )}
+
+        {categoryRows.length > 0 && (
+          <View className="gap-1.5">
+            {categoryRows.map((row) => (
+              <View key={row.key} className="flex-row items-center justify-between">
+                <Text
+                  className={cn(
+                    'text-sm',
+                    row.overhead ? 'text-muted-foreground' : 'text-foreground',
+                  )}
+                >
+                  {row.label}
+                </Text>
+                <Text className="text-sm text-muted-foreground">
+                  {formatStorageBytes(categories[row.key] ?? 0)}
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {(listedProjects.length > 0 || systemBytes > 0) && (
+          <View className="gap-1.5 pt-2 border-t border-border">
+            <Text className="text-xs font-medium text-muted-foreground">By project</Text>
+            {listedProjects.map((project) => (
+              <View key={project.projectId} className="flex-row items-center justify-between">
+                <Text className="text-sm text-foreground flex-1 min-w-0 mr-2" numberOfLines={1}>
+                  {project.projectName}
+                </Text>
+                <Text className="text-sm text-muted-foreground">
+                  {formatStorageBytes(project.bytes)}
+                </Text>
+              </View>
+            ))}
+            {hiddenProjectCount > 0 && (
+              <Text className="text-xs text-muted-foreground">
+                and {hiddenProjectCount} more project{hiddenProjectCount === 1 ? '' : 's'}
+              </Text>
+            )}
+            {systemBytes > 0 && (
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm text-foreground">System</Text>
+                <Text className="text-sm text-muted-foreground">{formatStorageBytes(systemBytes)}</Text>
+              </View>
+            )}
+          </View>
+        )}
+
+        {history.length > 1 && (
+          <View className="gap-2 pt-2 border-t border-border">
+            <View className="flex-row items-center justify-between">
+              <Text className="text-xs font-medium text-muted-foreground">Last 30 days</Text>
+              <Text className="text-xs text-muted-foreground">
+                peak {formatStorageBytes(maxHistoryBytes)}
+              </Text>
+            </View>
+            <View className="flex-row items-end h-12 gap-px">
+              {history.map((row) => {
+                const pct = maxHistoryBytes > 0 ? (row.totalBytes / maxHistoryBytes) * 100 : 0
+                return (
+                  <View
+                    key={row.day}
+                    className="flex-1 rounded-t-sm bg-primary"
+                    style={{ height: `${Math.max(pct, 2)}%`, opacity: 0.7 }}
+                  />
+                )
+              })}
+            </View>
+            <View className="flex-row items-center justify-between">
+              <Text className="text-[10px] text-muted-foreground">{formatDayLabel(history[0].day)}</Text>
+              <Text className="text-[10px] text-muted-foreground">
+                {formatDayLabel(history[history.length - 1].day)}
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {measuredAt && (
+          <Text className="text-xs text-muted-foreground">
+            Last measured {measuredAt.toLocaleString(undefined, {
+              month: 'short',
+              day: 'numeric',
+              hour: 'numeric',
+              minute: '2-digit',
+            })}
+          </Text>
+        )}
+
+        {unmeasured.length > 0 && (
+          <Text className="text-xs text-amber-600 dark:text-amber-400">
+            Not measured: {unmeasured.join(', ')}
+          </Text>
+        )}
       </CardContent>
     </Card>
   )
