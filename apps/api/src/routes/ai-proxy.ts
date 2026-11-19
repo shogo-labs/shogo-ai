@@ -3035,6 +3035,7 @@ async function enforceSpendAndRate(
             message: `Rate limit reached (${access.requestsPerHour}/hour). Try again later or ask a workspace admin.`,
             type: 'permission_error',
             code: 'rate_limited',
+            requestsPerHour: access.requestsPerHour,
             retryAfterSeconds: 60,
           },
         },

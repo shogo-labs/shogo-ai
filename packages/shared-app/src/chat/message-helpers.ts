@@ -66,7 +66,11 @@ export const ERROR_CODE_MESSAGES: Record<string, string> = {
   model_not_allowed: "Your role can't use that model. Ask a workspace admin for access.",
   ability_not_allowed: 'Your role is not allowed to do that. Ask a workspace admin for access.',
   spend_cap_reached: "You've reached the spending limit your workspace admin set for you. Ask them to raise it.",
-  rate_limited: "You're sending requests too quickly for your workspace's limit. Wait a moment and try again.",
+  // The hourly request cap is set per role/group/member, so the number is part
+  // of the message: `{requestsPerHour}` is filled from the error payload. When
+  // a rate limit that is NOT the workspace policy's (a per-route throttle)
+  // sends no number, the fill fails and the server's own message is shown.
+  rate_limited: "You've hit your workspace's limit of {requestsPerHour} requests per hour. Wait a moment and try again, or ask a workspace admin to raise it.",
   // A trialing subscription never holds more than `maxSeats` seats (SHO-422):
   // the card is not charged until the trial ends, so a large trial is a large
   // charge to a card we cannot collect on. `{maxSeats}` is filled from the
