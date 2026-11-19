@@ -36,8 +36,8 @@ export function parseInviteChips(input: string): InviteChip[] {
 /** The addresses a send should actually attempt: valid, not already a member, not already invited. */
 export function sendableEmails(
   chips: InviteChip[],
-  memberEmails: ReadonlySet<string>,
-  pendingEmails: ReadonlySet<string>,
+  memberEmails: { has(value: string): boolean },
+  pendingEmails: { has(value: string): boolean },
 ): string[] {
   return chips
     .filter((c) => c.valid && !memberEmails.has(c.value) && !pendingEmails.has(c.value))

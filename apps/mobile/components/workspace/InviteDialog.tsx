@@ -56,7 +56,10 @@ import {
   type InviteOutcome,
   type InviteResultLine,
 } from './invite-dialog-logic'
-import { InviteDialogContext, type OpenInviteDialogOptions } from './invite-dialog-context'
+import {
+  closeInviteDialog,
+  useInviteDialogRequest,
+} from './invite-dialog-context'
 
 // ─── Email parsing ────────────────────────────────────────
 
@@ -67,7 +70,7 @@ const ROLE_HINTS: Record<string, string> = {
   viewer: 'Read-only access',
 }
 
-// ─── Context ──────────────────────────────────────────────
+// ─── Provider ─────────────────────────────────────────────
 
 export {
   useInviteDialog,
@@ -77,17 +80,10 @@ export {
 } from './invite-dialog-context'
 
 export function InviteDialogProvider({ children }: { children: ReactNode }) {
-  const [request, setRequest] = useState<{ workspaceId: string | null; emails: string[] } | null>(null)
-
-  const openInviteDialog = useCallback((workspaceId?: string | null, opts?: OpenInviteDialogOptions) => {
-    setRequest({ workspaceId: workspaceId ?? null, emails: opts?.emails ?? [] })
-  }, [])
-  const closeInviteDialog = useCallback(() => setRequest(null), [])
-
-  const value = useMemo(() => ({ openInviteDialog, closeInviteDialog }), [openInviteDialog, closeInviteDialog])
+  const request = useInviteDialogRequest()
 
   return (
-    <InviteDialogContext.Provider value={value}>
+    <>
       {children}
       <InviteDialog
         visible={!!request}
@@ -95,7 +91,7 @@ export function InviteDialogProvider({ children }: { children: ReactNode }) {
         initialEmails={request?.emails ?? []}
         onClose={closeInviteDialog}
       />
-    </InviteDialogContext.Provider>
+    </>
   )
 }
 

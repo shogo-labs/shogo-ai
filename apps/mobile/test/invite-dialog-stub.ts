@@ -25,6 +25,8 @@ export function inviteDialogContextStub() {
       closeInviteDialog: () => {},
     }),
     useInviteDialogOptional: () => null,
+    useInviteDialogRequest: () => null,
+    closeInviteDialog: () => {},
   }
 }
 
