@@ -8,6 +8,7 @@ import { authClient } from './auth-client'
 import { defaultLocalAccess, type LocalAccessPrefs } from './local-access'
 import { routeUrl } from './workspace-route'
 import { usageLogCsvUrl } from './usage-log-csv'
+import { billingApiBase, billingSummaryPath, type BillingSummary } from '@shogo/shared-app/hooks'
 
 export { API_URL } from './api-url'
 
@@ -473,7 +474,43 @@ export interface BillingInvoice {
   hostedInvoiceUrl: string | null
   invoicePdf: string | null
   description: string | null
+  /** Tax included in `total`, when Stripe reports it. */
+  tax?: number | null
+  /** `total` before tax, when Stripe reports it. */
+  totalExcludingTax?: number | null
   lines: { description: string | null; amount: number }[]
+}
+
+/**
+ * `POST /api/billing/change-plan/preview` — what a plan change costs before the
+ * customer confirms it (SHO-451).
+ */
+export interface PlanChangePreview {
+  planId: string
+  billingInterval: 'monthly' | 'annual'
+  seats: number
+  /** Recurring amount the workspace pays today. */
+  currentPriceUsd: number
+  /** Recurring amount after the change. */
+  newPriceUsd: number
+  /** Charged today for the proration. */
+  prorationUsd: number
+  /** ISO timestamp the change takes effect. */
+  effectiveAt: string
+  /** What the next renewal will be. */
+  nextInvoiceUsd: number
+  /** Unix seconds the preview was computed at; sent back on apply. */
+  prorationDate: number
+}
+
+/** `POST /api/billing/change-plan` result. */
+export interface PlanChangeResult {
+  ok: true
+  planId: string
+  billingInterval: 'monthly' | 'annual'
+  seats: number
+  status: string
+  currentPeriodEnd: string | null
 }
 
 /** One DNS record a user must add to point a custom domain at their app. */
@@ -1007,6 +1044,83 @@ export const api = {
       `/api/billing/invoices?workspaceId=${encodeURIComponent(workspaceId)}&limit=${limit}`,
     )
     return res.data?.invoices ?? []
+  },
+
+  /**
+   * GET /api/billing/summary — plan, seats, period, next invoice, card on file
+   * and any payment problem (SHO-451). `localMode` reads the linked cloud
+   * workspace through the local bridge.
+   */
+  async getBillingSummary(http: HttpClient, workspaceId: string, localMode = false) {
+    const path = localMode
+      ? billingSummaryPath(true)
+      : `${billingSummaryPath(false)}?workspaceId=${encodeURIComponent(workspaceId)}`
+    const res = await http.get<BillingSummary & { ok?: boolean }>(path)
+    return res.data
+  },
+
+  /**
+   * POST /api/billing/change-plan/preview — what a plan change costs before the
+   * customer confirms it. Never opens a second Checkout.
+   */
+  async previewPlanChange(
+    http: HttpClient,
+    params: {
+      workspaceId: string
+      planId: string
+      billingInterval: 'monthly' | 'annual'
+      seats?: number
+      localMode?: boolean
+    },
+  ) {
+    const { localMode, ...body } = params
+    const res = await http.post<PlanChangePreview & { ok?: boolean }>(
+      `${billingApiBase(Boolean(localMode))}/change-plan/preview`,
+      body,
+    )
+    return res.data
+  },
+
+  /**
+   * POST /api/billing/change-plan — apply the change to the existing Stripe
+   * subscription. `prorationDate` comes from the preview so the charge matches
+   * what the customer was shown.
+   */
+  async changePlan(
+    http: HttpClient,
+    params: {
+      workspaceId: string
+      planId: string
+      billingInterval: 'monthly' | 'annual'
+      seats?: number
+      prorationDate?: number
+      localMode?: boolean
+    },
+  ) {
+    const { localMode, ...body } = params
+    const res = await http.post<PlanChangeResult>(
+      `${billingApiBase(Boolean(localMode))}/change-plan`,
+      body,
+    )
+    return res.data
+  },
+
+  /** POST /api/billing/cancel — cancel at period end; access runs to the end. */
+  async cancelSubscription(http: HttpClient, workspaceId: string, localMode = false) {
+    const res = await http.post<{ ok?: boolean; cancelAtPeriodEnd?: boolean; accessEndsAt?: string | null }>(
+      `${billingApiBase(localMode)}/cancel`,
+      { workspaceId },
+    )
+    return res.data
+  },
+
+  /** POST /api/billing/resume — undo a scheduled cancellation. */
+  async resumeSubscription(http: HttpClient, workspaceId: string, localMode = false) {
+    const res = await http.post<{ ok?: boolean; cancelAtPeriodEnd?: boolean; accessEndsAt?: string | null }>(
+      `${billingApiBase(localMode)}/resume`,
+      { workspaceId },
+    )
+    return res.data
   },
 
   /** GET /api/notifications/unread-count — unread inbox count for the bell badge. */

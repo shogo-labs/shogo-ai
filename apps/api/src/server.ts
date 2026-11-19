@@ -251,6 +251,7 @@ const Stripe: any = cloud.Stripe ?? class LocalStripeUnavailable {
   }
 }
 const billingService: any = cloud.billingService ?? {}
+const billingSummaryService: any = cloud.billingSummaryService ?? {}
 const appleIap: any = cloud.appleIap ?? {}
 const instanceService: any = cloud.instanceService ?? {}
 const storageService: any = cloud.storageService ?? {}
@@ -8074,6 +8075,29 @@ app.post('/api/billing/checkout', async (c) => {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
 
+    // A workspace that already has a live Stripe subscription must change that
+    // subscription, not start a second Checkout (SHO-451). A second Checkout
+    // created a second subscription; `syncFromStripe` upserts by workspaceId,
+    // so the new row overwrote the old one and the original kept billing.
+    // Grant-only workspaces have no Stripe subscription and keep Checkout.
+    const billingWorkspaceId = await billingService.resolveBillingWorkspaceId(workspaceId)
+    const existingSubscription = await prisma.subscription.findFirst({
+      where: {
+        workspaceId: billingWorkspaceId,
+        status: { in: ['active', 'trialing', 'past_due'] },
+      },
+      select: { planId: true },
+    })
+    if (existingSubscription) {
+      return c.json({
+        error: {
+          code: 'already_subscribed',
+          message: 'This workspace already has a subscription. Use Change plan to switch plans.',
+          planId: existingSubscription.planId,
+        },
+      }, 409)
+    }
+
     const isSoloFounder = requestedOffer === soloFounderService.SOLO_FOUNDER_OFFER
 
     if (!isSoloFounder && planId !== 'basic' && planId !== 'pro' && planId !== 'business') {
@@ -8961,6 +8985,11 @@ app.get('/api/billing/invoices', async (c) => {
       hostedInvoiceUrl: inv.hosted_invoice_url ?? null,
       invoicePdf: inv.invoice_pdf ?? null,
       description: inv.description ?? null,
+      // Tax is reported per invoice; a VAT-registered customer needs to see it
+      // on the row, not only on the PDF (SHO-451).
+      tax: typeof inv.tax === 'number' ? inv.tax / 100 : null,
+      totalExcludingTax:
+        typeof inv.total_excluding_tax === 'number' ? inv.total_excluding_tax / 100 : null,
       lines: (inv.lines?.data ?? []).map((line: any) => ({
         description: line.description ?? null,
         amount: (line.amount ?? 0) / 100,
@@ -8971,6 +9000,184 @@ app.get('/api/billing/invoices', async (c) => {
   } catch (error: any) {
     console.error('[Billing] invoices error:', error)
     return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+// ============================================================
+// Billing summary + in-app plan change (SHO-451)
+// ============================================================
+
+/**
+ * Turn a `BillingError` from `billing-summary.service` into its HTTP shape.
+ * Anything else is a 500 with the real message — never a 200 with `{}`.
+ */
+function billingServiceError(c: any, error: any, fallbackCode: string) {
+  const BillingError = billingSummaryService.BillingError
+  if (BillingError && error instanceof BillingError) {
+    return c.json({ error: { code: error.code, message: error.message } }, error.status)
+  }
+  console.error(`[Billing] ${fallbackCode}:`, error)
+  return c.json(
+    { error: { code: fallbackCode, message: error?.message ?? 'Billing request failed' } },
+    500,
+  )
+}
+
+/**
+ * Owner / admin / billing-admin gate for the routes that spend money on the
+ * workspace's card. Mirrors `/api/billing/end-trial`.
+ */
+async function requireBillingManager(c: any, workspaceId: string) {
+  const userId = (c.get('auth') as any)?.userId as string | undefined
+  if (!userId) {
+    return {
+      response: c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401),
+    }
+  }
+  const member = await prisma.member.findFirst({
+    where: { workspaceId, userId, projectId: null },
+    select: { role: true, isBillingAdmin: true },
+  })
+  if (!billingService.canManageBilling(member)) {
+    return {
+      response: c.json(
+        { error: { code: 'forbidden', message: 'Only owners and billing admins can change billing' } },
+        403,
+      ),
+    }
+  }
+  return { userId }
+}
+
+/**
+ * What the billing page's summary card and payment banner need: plan, seats,
+ * period, next invoice, card on file, and any payment problem. Grant-only and
+ * free workspaces get nulls rather than a 404.
+ */
+app.get('/api/billing/summary', async (c) => {
+  try {
+    const workspaceId = new URL(c.req.url).searchParams.get('workspaceId')
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+    const summary = await billingSummaryService.getBillingSummary({ workspaceId, stripe })
+    return c.json({ ok: true, ...summary })
+  } catch (error: any) {
+    return billingServiceError(c, error, 'summary_failed')
+  }
+})
+
+/**
+ * Price a plan change before the customer confirms it: old price, new price,
+ * what is charged today, and when it takes effect.
+ */
+app.post('/api/billing/change-plan/preview', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+    const body = await c.req.json().catch(() => ({} as any))
+    const workspaceId = body?.workspaceId
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    const gate = await requireBillingManager(c, workspaceId)
+    if (gate.response) return gate.response
+
+    const preview = await billingSummaryService.previewPlanChange({
+      workspaceId,
+      stripe,
+      planId: body.planId,
+      billingInterval: body.billingInterval,
+      seats: body.seats,
+    })
+    return c.json({ ok: true, ...preview })
+  } catch (error: any) {
+    return billingServiceError(c, error, 'change_plan_preview_failed')
+  }
+})
+
+/**
+ * Apply a plan change to the existing Stripe subscription. Never creates a
+ * second subscription — that was the bug this route exists to remove.
+ */
+app.post('/api/billing/change-plan', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+    const body = await c.req.json().catch(() => ({} as any))
+    const workspaceId = body?.workspaceId
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    const gate = await requireBillingManager(c, workspaceId)
+    if (gate.response) return gate.response
+
+    const result = await billingSummaryService.applyPlanChange({
+      workspaceId,
+      stripe,
+      planId: body.planId,
+      billingInterval: body.billingInterval,
+      seats: body.seats,
+      prorationDate: body.prorationDate,
+    })
+    return c.json(result)
+  } catch (error: any) {
+    return billingServiceError(c, error, 'change_plan_failed')
+  }
+})
+
+/** Self-serve cancel: access runs to the end of the paid period. */
+app.post('/api/billing/cancel', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+    const body = await c.req.json().catch(() => ({} as any))
+    const workspaceId = body?.workspaceId
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    const gate = await requireBillingManager(c, workspaceId)
+    if (gate.response) return gate.response
+
+    const result = await billingSummaryService.setCancelAtPeriodEnd({
+      workspaceId,
+      stripe,
+      cancel: true,
+    })
+    return c.json(result)
+  } catch (error: any) {
+    return billingServiceError(c, error, 'cancel_failed')
+  }
+})
+
+/** Undo a scheduled cancellation. */
+app.post('/api/billing/resume', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+    const body = await c.req.json().catch(() => ({} as any))
+    const workspaceId = body?.workspaceId
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    const gate = await requireBillingManager(c, workspaceId)
+    if (gate.response) return gate.response
+
+    const result = await billingSummaryService.setCancelAtPeriodEnd({
+      workspaceId,
+      stripe,
+      cancel: false,
+    })
+    return c.json(result)
+  } catch (error: any) {
+    return billingServiceError(c, error, 'resume_failed')
   }
 })
 
