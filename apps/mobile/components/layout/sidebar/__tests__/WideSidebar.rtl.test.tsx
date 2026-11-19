@@ -26,7 +26,7 @@ mock.module("expo-router", () => ({ usePathname: () => pathname, useRouter: () =
 mock.module("@shogo/shared-ui/primitives", () => ({ cn: (...args: unknown[]) => args.filter(Boolean).join(" ") }))
 mock.module("lucide-react-native", () => {
   const Icon = () => createElement("span")
-  return { Bell: Icon, Bot: Icon, Folder: Icon, Hash: Icon, Home: Icon, Mail: Icon, MessagesSquare: Icon, Mic: Icon, MoreHorizontal: Icon, Plus: Icon, Search: Icon, Shield: Icon, Target: Icon }
+  return { Bell: Icon, Bot: Icon, Folder: Icon, Hash: Icon, Home: Icon, Mail: Icon, MessagesSquare: Icon, Mic: Icon, MoreHorizontal: Icon, Plus: Icon, Search: Icon, Shield: Icon, Target: Icon, UserPlus: Icon }
 })
 mock.module(resolve(import.meta.dir, "../../../branding/ShogoLogoMark"), () => ({ ShogoLogoMark: () => createElement("span") }))
 mock.module(resolve(import.meta.dir, "../../CreateMenu"), () => ({ CreateMenu: () => createElement("span") }))

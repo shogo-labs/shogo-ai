@@ -83,6 +83,7 @@ mock.module("lucide-react-native", () => {
     PinOff: Icon,
     Plus: Icon,
     Trash2: Icon,
+    UserPlus: Icon,
     X: Icon,
   };
 });

@@ -13,7 +13,7 @@
  */
 import { useSyncExternalStore } from 'react'
 import { clearActiveWorkspaceId, getActiveWorkspaceId } from './workspace-store'
-import { isLocalMode } from './platform-config'
+import { isLocalMode } from './local-mode'
 import { safeGetItem, safeSetItem, safeRemoveItem } from './safe-storage'
 
 export interface CloudWorkspaceInfo {
