@@ -5,7 +5,7 @@
  * no rough notes: just what the owner chose to share.
  */
 import { useEffect, useState } from 'react'
-import { View, Text, ScrollView, ActivityIndicator, Pressable, Linking } from 'react-native'
+import { View, Text, ScrollView, ActivityIndicator, Pressable } from 'react-native'
 import { useLocalSearchParams } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { CheckSquare, Square } from 'lucide-react-native'
@@ -14,6 +14,7 @@ import { formatDuration } from '../../lib/format-duration'
 import { stripActionItemsSection } from '../../lib/meeting-notes'
 import type { MeetingActionItem } from '../../lib/meetings-api'
 import { MarkdownText } from '../../components/chat/MarkdownText'
+import { openExternalLink } from '../../lib/open-external-link';
 
 interface SharedMeeting {
   title: string | null
@@ -98,7 +99,7 @@ export default function SharedMeetingScreen() {
           </View>
         )}
 
-        <Pressable onPress={() => Linking.openURL('https://shogo.ai')} className="mt-10 self-center">
+        <Pressable onPress={() => openExternalLink('https://shogo.ai')} className="mt-10 self-center">
           <Text className="text-xs text-muted-foreground">Notes by Shogo</Text>
         </Pressable>
       </ScrollView>

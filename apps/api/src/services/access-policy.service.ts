@@ -595,6 +595,15 @@ export function validatePolicyWrite(
     throw new PolicyValidationError('requestsPerHour must be a non-negative integer', 'invalid_rate_limit')
   }
 
+  // "Everything under the ceiling" has exactly one stored form — `null`/`null` —
+  // and on a group or member row the flag is the only way to ask for it. A write
+  // that asks for it and also names models is contradictory, so the flag wins:
+  // the row can never read as "all models" in the editor and hold an explicit
+  // list in the database. A role row needs no flag; `null`/`null` is its default.
+  if (write.subjectType !== 'role' && write.grantsAllModels) {
+    return { ...write, modelTiers: null, modelIds: null }
+  }
+
   return write
 }
 

@@ -41,7 +41,6 @@ import {
   Alert,
   AppState,
   Dimensions,
-  Linking,
   View,
   Text,
   Pressable,
@@ -91,6 +90,7 @@ import {
   SHOGO_TELEMETRY_TAG,
   buildChatStreamErrorReport,
   isReactUpdateDepthError,
+  shouldInterruptStuckToolsOnStreamError,
 } from "@shogo/shared-app/chat"
 import {
   useChatTransportConfig,
@@ -420,6 +420,7 @@ import {
   workspaceExperience,
   type WorkspaceExperienceComposer,
 } from "@shogo/shared-app"
+import { openExternalLink } from "../../lib/open-external-link";
 
 /** Full composer (model picker + interaction modes, no forced mode) — the default for team workspaces and any caller that doesn't pass `composer`. */
 const DEFAULT_CHAT_COMPOSER: WorkspaceExperienceComposer =
@@ -1368,7 +1369,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   }, [router])
 
   const handleContactSupportClick = useCallback(() => {
-    void Linking.openURL("mailto:support@shogo.ai?subject=Account%20under%20review").catch(() => {})
+    void openExternalLink("mailto:support@shogo.ai?subject=Account%20under%20review")
   }, [])
 
   // Panel state
@@ -2786,7 +2787,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
         )
       }
 
-      setMessages((prev) => markStuckToolsInterrupted(prev))
+      // A render-depth error is React refusing to keep re-rendering, not a
+      // stream defect, and writing to the message store here is what re-enters
+      // the render that just blew up: `setMessages` notifies the AI SDK's
+      // store, which forces a synchronous re-render of the same tree, which
+      // throws again and lands back in this callback. That is how one #185
+      // became 450 Sentry events from a single session (JAVASCRIPT-REACT-5S).
+      // The turn id is already recorded above and `shouldAutoRecoverStalledTurn`
+      // reads it to skip auto-recovery, so there is nothing left to do here.
+      if (shouldInterruptStuckToolsOnStreamError(err)) {
+        setMessages((prev) => markStuckToolsInterrupted(prev))
+      }
     },
     onData: async (dataPart) => {
       const activePlanStream = isActivePanelRef.current ? planStream : null

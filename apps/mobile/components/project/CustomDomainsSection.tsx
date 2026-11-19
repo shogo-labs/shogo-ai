@@ -22,7 +22,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { View, Text, TextInput, Pressable, ActivityIndicator, ScrollView, Linking } from 'react-native'
+import { View, Text, TextInput, Pressable, ActivityIndicator, ScrollView } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { CheckCircle, Copy, Trash2, RefreshCw, RotateCw, AlertTriangle, Globe, ExternalLink, Star, Circle, XCircle } from 'lucide-react-native'
 import type { HttpClient } from '@shogo-ai/sdk'
@@ -33,6 +33,7 @@ import {
   type CustomDomainInstruction,
   type CustomDomainStage,
 } from '../../lib/api'
+import { openExternalLink } from '../../lib/open-external-link';
 
 /** Customer-facing setup guide (Docusaurus, docs.shogo.ai). */
 const SETUP_GUIDE_URL = 'https://docs.shogo.ai/features/custom-domains'
@@ -462,7 +463,7 @@ export function CustomDomainsSection({ projectId, http, embedded = true }: Custo
         set up <Text className="font-mono">www</Text> and a redirect for you automatically.
       </Text>
       <Pressable
-        onPress={() => Linking.openURL(SETUP_GUIDE_URL)}
+        onPress={() => openExternalLink(SETUP_GUIDE_URL)}
         hitSlop={6}
         className="flex-row items-center gap-1 mb-2 self-start"
       >

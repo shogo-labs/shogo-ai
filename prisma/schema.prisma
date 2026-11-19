@@ -1817,6 +1817,7 @@ model TrialRedemption {
   cardFingerprint      String?  @unique
   planId               String
   /// trialing | converted | ended | blocked_duplicate_card | blocked_duplicate_user
+  /// | blocked_duplicate_network | blocked_prepaid_card | blocked_seat_limit
   /// (see `TRIAL_STATUS` in services/trial.service.ts)
   status               String
   createdAt            DateTime @default(now())

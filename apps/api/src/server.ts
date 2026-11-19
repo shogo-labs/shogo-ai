@@ -196,6 +196,7 @@ import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
 import { isMidCutoverStatus } from './services/published-cutover.service'
+import { readSignupRequestInfo } from './services/signup-risk.service'
 import { deployedAppVersionOrUnknown } from './lib/app-version'
 import { toNativeAuthHandback } from './lib/auth-handback'
 // Auth middleware for generated routes
@@ -8170,35 +8171,19 @@ app.post('/api/billing/checkout', async (c) => {
       }
 
       const subscriptionMetadata = { ...metadata, ...(affiliateOverrides.metadata ?? {}) }
-      const session = await stripe.checkout.sessions.create({
-        mode: 'subscription',
-        line_items: [
-          // Business annual, one seat, plus the one-time course. In a
-          // subscription-mode session a one-time price is invoiced once, on
-          // the first invoice, with no adjustable quantity on either line.
-          { price: priceId, quantity: 1 },
-          { price: coursePriceId, quantity: 1 },
-        ],
-        discounts: [discount],
-        success_url: successUrl,
-        cancel_url: cancelUrl,
-        ...(userEmail && { customer_email: userEmail }),
-        ...(referralId && { client_reference_id: referralId }),
-        ...(affiliateOverrides.customer_creation && { customer_creation: affiliateOverrides.customer_creation }),
-        // Fraud rules (SHO-409): a cheap year of Business attracts stolen and
-        // prepaid cards. Cards only, and ask the issuer for 3DS on every
-        // payment. Checkout cannot filter by funding type — prepaid is refused
-        // in the webhook, before anything is provisioned.
-        payment_method_types: ['card'],
-        payment_method_options: { card: { request_three_d_secure: 'any' } },
-        metadata: subscriptionMetadata,
-        subscription_data: { metadata: subscriptionMetadata },
-        custom_text: {
-          submit: {
-            message: soloFounderService.renewalDisclosure(new Date()),
-          },
-        },
-      })
+      const session = await stripe.checkout.sessions.create(
+        soloFounderService.buildSoloFounderCheckoutParams({
+          priceId,
+          coursePriceId,
+          discount,
+          successUrl,
+          cancelUrl,
+          metadata: subscriptionMetadata,
+          userEmail,
+          referralId,
+          customerCreation: affiliateOverrides.customer_creation ?? null,
+        }),
+      )
       return c.json({ sessionId: session.id, url: session.url, offer: soloFounderService.SOLO_FOUNDER_OFFER }, 200)
     }
 
@@ -8208,6 +8193,7 @@ app.post('/api/billing/checkout', async (c) => {
       workspaceId,
       planId: checkoutPlanId,
       metadata,
+      request: readSignupRequestInfo(c.req.raw.headers),
       affiliate: affiliateOverrides,
     })
 
@@ -8308,7 +8294,11 @@ app.get('/api/billing/workspace-plan', async (c) => {
         ? prisma.signupRiskAssessment.findUnique({ where: { userId: cloudUserId }, select: { decision: true } })
         : null,
       !sub && cloudUserId
-        ? trialService.trialEligibility({ userId: cloudUserId, workspaceId })
+        ? trialService.trialEligibility({
+            userId: cloudUserId,
+            workspaceId,
+            request: readSignupRequestInfo(c.req.raw.headers),
+          })
         : { eligible: false },
     ])
     const promoEmailVerified = Boolean(promoUser?.emailVerified)
@@ -8490,6 +8480,7 @@ app.post('/api/billing/workspace-checkout', async (c) => {
       workspaceId: newWorkspaceId,
       planId: checkoutPlanId,
       metadata,
+      request: readSignupRequestInfo(c.req.raw.headers),
       affiliate: affiliateOverrides,
     })
 
@@ -9976,6 +9967,22 @@ app.post('/api/webhooks/stripe', async (c) => {
             )
           } catch (err: any) {
             console.error('[Webhook] affiliate clawback failed:', err?.message ?? err)
+          }
+        }
+        // The 30-day guarantee: a full refund of the offer's first invoice
+        // closes the course. Partial refunds, renewals and other charges are
+        // left alone, and a redelivery is a no-op (SHO-446).
+        if (event.type === 'charge.refunded') {
+          try {
+            const refund = await soloFounderService.handleOfferChargeRefunded({ stripe, charge: obj })
+            if (refund.refunded) {
+              console.log('[Webhook] Solo Founder enrollment refunded:', {
+                subscriptionId: refund.subscriptionId,
+                chargeId,
+              })
+            }
+          } catch (err: any) {
+            console.error('[Webhook] Solo Founder refund handling failed:', err?.message ?? err)
           }
         }
         break

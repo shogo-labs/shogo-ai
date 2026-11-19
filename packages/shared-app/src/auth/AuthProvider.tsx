@@ -296,7 +296,7 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError, soc
       const result = await (authClient as any).signIn.social({
         provider: 'google',
         callbackURL,
-      })
+      }, signupFetchOptions())
       if (result?.error) {
         console.error('[Auth] Google sign-in error:', result.error)
         setError(result.error.message || 'Google sign-in failed')
@@ -380,7 +380,7 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError, soc
       const result = await (authClient as any).signIn.social({
         provider: 'apple',
         idToken: { token: idToken, ...(nonce ? { nonce } : {}) },
-      })
+      }, signupFetchOptions())
       if (result?.error) {
         // Thrown so it lands in the one catch below, which is what reports it —
         // reporting here too sent an Apple failure to Sentry twice.

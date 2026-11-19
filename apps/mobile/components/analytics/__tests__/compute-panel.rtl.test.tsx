@@ -52,7 +52,7 @@ function summary(overrides: Record<string, unknown> = {}) {
     mode: 'shadow',
     windowStart: '2026-11-01T00:00:00.000Z',
     generatedAt: '2026-11-18T10:00:00.000Z',
-    rates: { vcpuHour: 0.1, gibHour: 0.005, idleBilling: 'none' },
+    rates: { vcpuHour: 0.07, gibHour: 0.012, idleBilling: 'none' },
     fleet: {
       hosts: 5,
       hostMonthlyUsd: 500,
@@ -90,6 +90,9 @@ describe('admin Compute panel', () => {
     expect(screen.getByText('Odin AI')).toBeDefined()
     expect(screen.getByText(/Meter coverage/)).toBeDefined()
     expect(screen.getByText(/5 host\(s\) reported usage in the last 72h/)).toBeDefined()
+    // The rate card is stated in full so an operator can check the number. The
+    // 3-decimal memory rate is the one that would silently round wrong.
+    expect(document.body.textContent).toContain('$0.07/vCPU-h + $0.012/GiB-h')
     expect(lastPath).toBe('/compute')
   })
 
