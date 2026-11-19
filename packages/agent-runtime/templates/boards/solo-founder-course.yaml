@@ -1,0 +1,43 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+#
+# A board template: add `board` to a team channel in shogo-system.yaml
+# (or call work_template_add), then run system_apply.
+id: solo-founder-course
+name: Course
+summary: One card per lesson, closed only when the workspace shows the lesson produced something.
+channel: course
+board:
+  name: Course
+  itemType: custom
+  keyPrefix: SF
+  description: "Your 30 days. Move a lesson to Checking when you think it is done: the server checks the card against your workspace before it can reach Done."
+  columns:
+    - name: Up next
+      category: backlog
+    - name: This week
+      category: active
+    - name: Checking
+      category: waiting
+      agent: coach
+    - name: Done
+      category: done
+    - name: Skipped
+      category: dismissed
+  fields:
+    - key: lessonId
+      label: Lesson
+      type: text
+    - key: module
+      label: Module
+      type: number
+    - key: videoUrl
+      label: Video
+      type: url
+    - key: output
+      label: Output
+      type: text
+    - key: check
+      label: Check
+      type: text
+  templateId: solo-founder-course

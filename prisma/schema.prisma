@@ -267,6 +267,7 @@ model Workspace {
   inviteLinks            InviteLink[]
   folders                Folder[]
   subscriptions          Subscription[]
+  courseEnrollments      CourseEnrollment[]
   instanceSubscription   InstanceSubscription?
   usageWallets           UsageWallet[]
   usageEvents            UsageEvent[]
@@ -6426,6 +6427,51 @@ model CrossWorkspaceAudit {
 
   @@index([targetWorkspaceId, createdAt])
   @@map("cross_workspace_audit")
+}
+
+/// One purchase of a paid course (SHO-428). Today only the $99 Solo Founder
+/// offer writes these: the Stripe webhook creates it after the card clears the
+/// prepaid check, `solo-founder.service.enroll()` sets the overage cap and
+/// installs the course pack (channels, boards, agents, lesson cards), and the
+/// Course board's Coach reads `progress` to know which lesson is done.
+///
+/// `packBindings` is the install's receipt: the project/channel/board ids the
+/// pack created, kept so a retried or replayed install updates through them
+/// instead of creating a second #course. `userId` is a plain string (no FK) so
+/// the row can travel in a workspace export and a move without dragging the
+/// global User row along.
+model CourseEnrollment {
+  id                      String    @id @default(uuid())
+  /// Stable course key, e.g. `solo-founder-v1`.
+  courseId                String
+  userId                  String
+  workspaceId             String
+  /// stripe | license_key | admin
+  source                  String
+  /// Idempotency key for the Stripe path: one session, one enrollment.
+  stripeCheckoutSessionId String?   @unique
+  stripeSubscriptionId    String?
+  /// active | rejected_prepaid | refunded
+  status                  String
+  purchasedAt             DateTime
+  /// pending | installed | failed — the pack created from `packBindings`.
+  installStatus           String    @default("pending")
+  installError            String?
+  /// PackBindings JSON from the install (projects/channels/boards/schedules/triggers).
+  packBindings            Json?
+  /// The Course board this enrollment reads its progress from.
+  courseBoardId           String?
+  /// { completedLessons: string[], lastLessonAt: string | null }
+  progress                Json?
+  completedAt             DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, courseId])
+  @@index([workspaceId])
+  @@map("course_enrollments")
 }
 
 /// The workspace root's `.env*` files, sealed at rest (SHO-384).
