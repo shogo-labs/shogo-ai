@@ -426,6 +426,16 @@ describe('models: grants, ceiling and default', () => {
     expect(isModelAllowed(grant, { id: 'opus-5', tier: 'premium' }, null)).toBe(true)
   })
 
+  test('a model added later is included for "everything" and excluded for an explicit tier list (SHO-448)', () => {
+    const everything = resolveModelGrant('member', [])
+    const narrowed = resolveModelGrant('member', [
+      policy({ subjectType: 'role', subjectId: 'member', modelTiers: ['economy'] }),
+    ])
+    const added = { id: 'opus-6', tier: 'premium' }
+    expect(isModelAllowed(everything, added, null)).toBe(true)
+    expect(isModelAllowed(narrowed, added, null)).toBe(false)
+  })
+
   test('default model: member policy, then group, then role, then workspace, then highest tier', () => {
     const base = { role: 'member' as const, ceiling, catalog: CATALOG }
     const grant = resolveModelGrant('member', [])

@@ -517,3 +517,142 @@ describe('a model request grants the model (AC9)', () => {
     expect(await isModelAllowedFor(w.workspaceA, w.users.viewer, premium.id)).toBe(false)
   })
 })
+
+/**
+ * SHO-448: "every model under the ceiling" is a state the settings screen has
+ * to be able to write, and an untouched row has to round-trip unchanged. The
+ * screen sends `grantsAllModels`; the API stores `null`/`null` for it, which is
+ * the one value that keeps covering models added to the catalog later.
+ */
+describe('grantsAllModels round-trips (SHO-448)', () => {
+  const storedRow = (subjectType: string, subjectId: string) =>
+    db.accessPolicy.findUnique({
+      where: {
+        workspaceId_subjectType_subjectId: { workspaceId: w.workspaceA, subjectType, subjectId },
+      },
+    })
+  // SQLite hands a Json column back as text, Postgres as the parsed value.
+  const json = (v: unknown) => (typeof v === 'string' ? JSON.parse(v) : v)
+  const put = (body: Record<string, unknown>) =>
+    call(app, as(w.users.owner), 'PUT', `/api/workspaces/${w.workspaceA}/access/policies`, body)
+
+  let groupId = ''
+
+  afterAll(async () => {
+    for (const [subjectType, subjectId] of [
+      ['role', 'viewer'],
+      ['role', 'member'],
+      ['member', w.users.billingAdmin],
+      ...(groupId ? [['group', groupId]] : []),
+    ] as Array<[string, string]>) {
+      await call(
+        app,
+        as(w.users.owner),
+        'DELETE',
+        `/api/workspaces/${w.workspaceA}/access/policies/${subjectType}/${subjectId}`,
+      )
+    }
+  })
+
+  test('a role row saved as "all models" stores null/null', async () => {
+    const res = await put({
+      subjectType: 'role',
+      subjectId: 'viewer',
+      abilities: ['agent.exec:use'],
+      grantsAllModels: true,
+    })
+    expect(res.status).toBe(200)
+
+    const row = await storedRow('role', 'viewer')
+    expect(json(row!.modelTiers)).toBeNull()
+    expect(json(row!.modelIds)).toBeNull()
+  })
+
+  test('a group row saved as "all models" stores null/null', async () => {
+    // No members: the row is what this test is about, and a member here would
+    // widen that person for the member-row tests below.
+    const group = await createGroup(w.workspaceA, w.users.owner, {
+      handle: 'all-models',
+      name: 'All models',
+      memberIds: [],
+    })
+    groupId = group.id
+
+    const res = await put({ subjectType: 'group', subjectId: group.id, grantsAllModels: true })
+    expect(res.status).toBe(200)
+
+    const row = await storedRow('group', group.id)
+    expect(json(row!.modelTiers)).toBeNull()
+    expect(json(row!.modelIds)).toBeNull()
+  })
+
+  test('a member row saved as "all models" stores null/null and covers every model under the ceiling', async () => {
+    // Narrow the role first, so "everything" can only come from the member row.
+    // (An admin or owner is a bad subject here: `models:use_all` is one of their
+    // base abilities, so the resolver hands them everything regardless.)
+    expect((await put({ subjectType: 'role', subjectId: 'member', modelTiers: ['economy'] })).status).toBe(200)
+    expect(await isModelAllowedFor(w.workspaceA, w.users.billingAdmin, premium.id)).toBe(false)
+
+    const res = await put({ subjectType: 'member', subjectId: w.users.billingAdmin, grantsAllModels: true })
+    expect(res.status).toBe(200)
+
+    const row = await storedRow('member', w.users.billingAdmin)
+    expect(json(row!.modelTiers)).toBeNull()
+    expect(json(row!.modelIds)).toBeNull()
+    expect(await isModelAllowedFor(w.workspaceA, w.users.billingAdmin, premium.id)).toBe(true)
+  })
+
+  test('saving an untouched null/null row writes the same row back', async () => {
+    const before = (await storedRow('member', w.users.billingAdmin)) as Record<string, unknown>
+
+    // Exactly what the screen sends for a row it opened and did not change.
+    const res = await put({
+      subjectType: 'member',
+      subjectId: w.users.billingAdmin,
+      abilities: json(before.abilities),
+      grantsAllModels: true,
+      modelTiers: null,
+      modelIds: null,
+      defaultModelId: null,
+      spendCapUsd: null,
+      spendPeriod: null,
+      requestsPerHour: null,
+    })
+    expect(res.status).toBe(200)
+
+    const after = (await storedRow('member', w.users.billingAdmin)) as Record<string, unknown>
+    const { updatedAt: _beforeAt, ...beforeRow } = before
+    const { updatedAt: _afterAt, ...afterRow } = after
+    expect(afterRow).toEqual(beforeRow)
+  })
+
+  test('"these tiers" stores the tier list and excludes a model outside it', async () => {
+    const res = await put({
+      subjectType: 'member',
+      subjectId: w.users.billingAdmin,
+      modelTiers: ['economy'],
+      grantsAllModels: false,
+    })
+    expect(res.status).toBe(200)
+
+    const row = await storedRow('member', w.users.billingAdmin)
+    expect(json(row!.modelTiers)).toEqual(['economy'])
+    expect(json(row!.modelIds)).toBeNull()
+    expect(await isModelAllowedFor(w.workspaceA, w.users.billingAdmin, premium.id)).toBe(false)
+  })
+
+  test('grantsAllModels wins over a contradictory explicit list', async () => {
+    const res = await put({
+      subjectType: 'member',
+      subjectId: w.users.billingAdmin,
+      grantsAllModels: true,
+      modelTiers: ['economy'],
+      modelIds: [economy.id],
+    })
+    expect(res.status).toBe(200)
+
+    const row = await storedRow('member', w.users.billingAdmin)
+    expect(json(row!.modelTiers)).toBeNull()
+    expect(json(row!.modelIds)).toBeNull()
+  })
+})
