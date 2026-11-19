@@ -105,7 +105,7 @@ behaviour, never emptier than reality.
   moves on to the next candidate. Cap: `METAL_EVICT_MAX_PER_ASSIGN` (default 3).
 - If nothing is evictable the assign proceeds exactly as before — an assign is
   never failed because eviction could not free room. It logs and increments
-  `metal.host.evict_none_available_total`.
+  `metal_evict_none_available_total`.
 - The reaper also runs a **headroom pass** after `reapIdle`: it keeps
   `METAL_EVICT_HEADROOM_SLOTS` (default 2) VMs' worth of room free, so most
   assigns never pay for an on-demand eviction (which is a backup + snapshot on
