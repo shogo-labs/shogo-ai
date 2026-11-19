@@ -202,6 +202,8 @@ mock.module('@ai-sdk/openai-compatible', () => ({
 // to the Anthropic branch via the helper's prefix heuristic.
 mock.module('../services/model-registry.service', () => ({
   getMergedModelEntrySync: () => undefined,
+  // The RBAC model catalog reads the merged list; a partial mock must answer it.
+  getMergedCatalogSync: () => [],
 }))
 mock.module('../services/public-models.service', () => ({
   resolvePublicModelSync: () => null,

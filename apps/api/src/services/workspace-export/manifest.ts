@@ -59,6 +59,8 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   WorkspaceAgentProfile: { decision: 'include', reason: 'The workspace agent identity shown in team chat.', scope: { kind: 'workspace' } },
   SubagentModelOverride: { decision: 'include', reason: 'Per-workspace/per-project subagent model overrides.', scope: { kind: 'workspace' } },
   WorkspaceModelVisibility: { decision: 'include', reason: 'Which models this workspace allows.', scope: { kind: 'workspace' } },
+  AccessPolicy: { decision: 'include', reason: 'Who may use which models and agent abilities (SHO-417).', scope: { kind: 'workspace' } },
+  AccessAuditEvent: { decision: 'exclude', reason: 'A per-machine record of denials and policy changes; it describes what happened here, not what the workspace is.' },
   StarredProject: { decision: 'include', reason: 'A member starred project.', scope: { kind: 'workspace' } },
   CustomEmoji: { decision: 'include', reason: 'Custom emoji a member uploaded.', scope: { kind: 'workspace' } },
   ChatSession: { decision: 'include', reason: 'Every agent chat session in the workspace (project- and workspace-scoped).', scope: { kind: 'workspace' } },

@@ -38,6 +38,7 @@ import { computeUsageRoutes } from './routes/compute-usage'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
 import { conversationRoutes } from './routes/conversations'
 import { workBoardRoutes } from './routes/work-boards'
+import { accessPolicyRoutes } from './routes/access-policies'
 // Analytics routes are plain in-repo modules (Prisma only), so they mount in
 // local mode too. Loading them via server-cloud-deps left local 404ing.
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
@@ -160,6 +161,7 @@ import {
   resolvePlatformVisibleModels,
   resolvePlatformVisibleModelsForRequest,
 } from './services/visible-models.service'
+import { allowedModelIdsFor, invalidateAccess } from './services/access-policy.service'
 import { localAuthRoutes } from './routes/local-auth'
 import { loadPlatformModelSetting, platformModelSettingRoutes } from './routes/platform-model-setting'
 import { resetCloudKeyState } from './lib/cloud-key-state'
@@ -1750,6 +1752,7 @@ void settleOrphanedAgentReplies(0).catch((err) => console.warn('[Channels] could
 registerBuiltInChatProviders()
 app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', workBoardRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', accessPolicyRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', chatProviderRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))
 // Resume queued agent tasks after API restarts and keep dueAt-backed work
@@ -9081,29 +9084,32 @@ app.post('/api/billing/instance-portal', async (c) => {
 // write). Hard enforcement of "can't use a hidden model" lives in the AI proxy.
 
 // GET /api/workspaces/:id/visible-models — resolved set for this workspace
-// (platform-visible ∩ workspace allowlist). Any member may read it (drives the
-// chat picker). `allowedModelIds` is the raw allowlist: `null` = inherit all.
+// (platform-visible ∩ workspace allowlist ∩ the member's own grant). Any member
+// may read it (drives the chat picker). `allowedModelIds` is the raw workspace
+// allowlist: `null` = inherit all.
 app.get('/api/workspaces/:id/visible-models', async (c) => {
   try {
     const workspaceId = c.req.param('id')
-    if (!(await verifyWorkspaceMembership(c, workspaceId))) {
+    const userId = await verifyWorkspaceMembership(c, workspaceId)
+    if (!userId) {
       return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
     }
 
     const platform = await resolvePlatformVisibleModelsForRequest()
     const allowed = await workspaceModelsService.getAllowedModelIds(workspaceId)
+    const ceiling = workspaceModelsService.filterToAllowlist(platform, allowed)
 
-    if (allowed === null) {
-      // Inherit: the workspace sees everything the platform exposes.
-      return c.json({ ...platform, allowedModelIds: null })
-    }
+    // The picker must not offer a model the person cannot use (SHO-417). A
+    // member with no policy row resolves to their role default, which is the
+    // whole ceiling, so this is a no-op for them.
+    const personal = await allowedModelIdsFor(workspaceId, userId)
+    const narrowed = workspaceModelsService.filterToAllowlist(ceiling, new Set(personal))
 
-    const narrowed = workspaceModelsService.filterToAllowlist(platform, allowed)
     return c.json({
       catalogIds: platform.catalogIds,
       catalogModels: narrowed.catalogModels,
       openrouterModels: narrowed.openrouterModels,
-      allowedModelIds: Array.from(allowed),
+      allowedModelIds: allowed === null ? null : Array.from(allowed),
     })
   } catch (error: any) {
     console.error('[WorkspaceModels] Get visible-models error:', error)
@@ -10315,6 +10321,12 @@ app.post('/api/workspaces/:id/leave', async (c) => {
   }
 
   await prisma.member.deleteMany({ where: { userId, workspaceId } })
+  // Leaving drops the member's own access policy and their cached access
+  // (SHO-417, plan §1 cascade + AC2).
+  await prisma.accessPolicy
+    .deleteMany({ where: { workspaceId, subjectType: 'member', subjectId: userId } })
+    .catch(() => {})
+  invalidateAccess(workspaceId)
 
   // Active-seat billing: leaving a workspace removes a paid seat.
   billingService.syncSeatsFromMembership(workspaceId).catch((err: any) =>

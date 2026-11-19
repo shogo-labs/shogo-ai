@@ -77,6 +77,19 @@ export interface CardEscalation {
 
 export type CardEscalationReason = 'run_died_twice' | 'no_holder' | 'rate_limited'
 
+/**
+ * A member's access request, asked as a decision card in the workspace activity
+ * channel. Answering its question is what approves or denies it — see
+ * `applyAccessRequestAnswer`.
+ */
+export interface AccessRequestBlock {
+  requestId: string
+  workspaceId: string
+  /** The ability or model asked for, for the card's own label. */
+  permission?: string | null
+  modelId?: string | null
+}
+
 /** A board card's channel post: enough for a client to draw a tappable card without a fetch. */
 export interface WorkItemBlock {
   id: string
@@ -112,6 +125,8 @@ export interface MessageBlocks {
   cardRetry?: CardRetry
   /** A card's run died twice: this question asks a person who takes it. */
   cardEscalation?: CardEscalation
+  /** A member's access request: this question asks an admin to approve or deny it. */
+  accessRequest?: AccessRequestBlock
   /** `explicit`: the agent passed questions; `done`: the designer has looked at it. */
   questionScan?: 'explicit' | 'done'
   [key: string]: unknown

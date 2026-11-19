@@ -45,6 +45,10 @@ export const MIRROR_MODELS: readonly string[] = [
   'AgentConfig',
   'ProjectAgent',
   'WorkspaceAgentProfile',
+  // Workspace RBAC (SHO-417): who may use which models and abilities. The
+  // desktop enforces the same policy, so the rows travel both ways. The audit
+  // trail does not — it is a per-machine record of what happened here.
+  'AccessPolicy',
 
   // ── Chat ──
   'ChatSession',
@@ -238,6 +242,10 @@ const NEVER_CLOUD_PLATFORM = [
   'NativeAppCredential',
   'NativeSigningCredential',
   'ProjectAuthConfig', // published-site auth, cloud-served
+  // SHO-417: the RBAC audit trail is a per-machine record of denials and
+  // policy changes. Syncing it would merge two machines' histories into one
+  // and make "who was denied here" unanswerable.
+  'AccessAuditEvent',
   'ProjectAuthSignIn',
   'PlatformSetting',
   'ModelProvider',

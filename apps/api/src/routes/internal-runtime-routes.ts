@@ -26,7 +26,7 @@ import {
 } from '../services/checkpoint.service'
 import { prisma } from '../lib/prisma'
 import type { Permission } from '@shogo/authz'
-import { accessibleProjectsWhere, decide, getRbacMode, loadAccess, resolveAgentActor } from '../lib/authz'
+import { accessibleProjectsWhere, decide, enforceAbility, getRbacMode, loadAccess, resolveAgentActor } from '../lib/authz'
 import {
   authorizeAttachmentAction,
   filterReadableAttachments,
@@ -1528,17 +1528,22 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.post('/projects/:projectId/shared-files', async (c) => {
     const projectId = c.req.param('projectId')
     if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
-    if (!(await validateAuth(c, projectId))) {
+    const identity = await authenticate(c, projectId)
+    if (!identity) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
-    return mintSharedFileLink(c, projectId, async () => {
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { workspaceId: true },
-      })
-      if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
-      return { projectId, workspaceId: project.workspaceId }
+    // Validate the path before the project lookup: a malformed request is a 400
+    // whatever the project turns out to be, and it must not depend on a row.
+    const request = await readSharedFileRequest(c)
+    if (request instanceof Response) return request
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
     })
+    if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+    const denied = await enforceWorkspaceAbility(c, identity, project.workspaceId, 'project.files:share_public')
+    if (denied) return denied
+    return mintSharedFileLink(c, projectId, request, async () => ({ projectId, workspaceId: project.workspaceId }))
   })
 
   /**
@@ -1551,17 +1556,21 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.post('/workspaces/:workspaceId/shared-files', async (c) => {
     const workspaceId = c.req.param('workspaceId')
     if (!workspaceId) return c.json({ error: 'Missing workspaceId' }, 400)
-    if (!(await authorizeWorkspaceRuntimeRequest(c, workspaceId))) {
+    const identity = await authorizeWorkspaceRuntimeRequest(c, workspaceId)
+    if (!identity) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
-    return mintSharedFileLink(c, `workspace ${workspaceId}`, async () => ({ workspaceId }))
+    const request = await readSharedFileRequest(c)
+    if (request instanceof Response) return request
+    const denied = await enforceWorkspaceAbility(c, identity, workspaceId, 'project.files:share_public')
+    if (denied) return denied
+    return mintSharedFileLink(c, `workspace ${workspaceId}`, request, async () => ({ workspaceId }))
   })
 
-  async function mintSharedFileLink(
+  /** The path and lifetime a shared-file mint asks for, or a 400 response. */
+  async function readSharedFileRequest(
     c: Context,
-    label: string,
-    loadScope: () => Promise<{ projectId?: string; workspaceId: string } | Response>,
-  ): Promise<Response> {
+  ): Promise<{ path: string; expiresInDays: number } | Response> {
     const body = await c.req.json().catch(() => null) as {
       path?: unknown
       expiresInDays?: unknown
@@ -1582,7 +1591,16 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       typeof body?.expiresInDays === 'number' && Number.isFinite(body.expiresInDays)
         ? Math.floor(body.expiresInDays)
         : 7
-    const expiresInDays = Math.max(1, Math.min(7, requestedDays))
+    return { path, expiresInDays: Math.max(1, Math.min(7, requestedDays)) }
+  }
+
+  async function mintSharedFileLink(
+    c: Context,
+    label: string,
+    request: { path: string; expiresInDays: number },
+    loadScope: () => Promise<{ projectId?: string; workspaceId: string } | Response>,
+  ): Promise<Response> {
+    const { path, expiresInDays } = request
     const now = Math.floor(Date.now() / 1000)
 
     try {
@@ -1739,7 +1757,16 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.get('/projects/:projectId/github/cli-credentials', async (c) => {
     const projectId = c.req.param('projectId')
     if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
-    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const projectWorkspace = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
+    })
+    if (projectWorkspace) {
+      const denied = await enforceWorkspaceAbility(c, identity, projectWorkspace.workspaceId, 'project.secrets:read')
+      if (denied) return denied
+    }
 
     try {
       if (!loadGitHub) {
@@ -1860,7 +1887,16 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.post('/projects/:projectId/integrations/resolve', async (c) => {
     const projectId = c.req.param('projectId')
     if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
-    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const projectWorkspace = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
+    })
+    if (projectWorkspace) {
+      const denied = await enforceWorkspaceAbility(c, identity, projectWorkspace.workspaceId, 'integrations:connect')
+      if (denied) return denied
+    }
     const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
     const provider = typeof body?.provider === 'string' ? body.provider.trim() : ''
     const op = body?.op === 'read' ? 'read' : 'write'
@@ -2544,6 +2580,24 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     return null
   }
 
+  /**
+   * The ability gate for an internal route (SHO-417). Resolves the person the
+   * call acts for and refuses when they lack `permission` — the server half of
+   * the runtime's tool filter. A service account with no person stays unscoped,
+   * like every other internal check.
+   */
+  async function enforceWorkspaceAbility(
+    c: Context,
+    identity: InternalIdentity,
+    workspaceId: string,
+    permission: Permission,
+  ): Promise<Response | null> {
+    if (identity.kind === 'sa') return null
+    const actor = await resolveAgentActor(c, identity, { workspaceId })
+    if (!actor?.principal.userId || actor.unscoped) return null
+    return enforceAbility(c, workspaceId, actor.principal.userId, permission)
+  }
+
   function lifecycleErrorResponse(c: Context, err: unknown): Response {
     const anyErr = err as { name?: string; code?: string; message?: string }
     if (anyErr?.name === 'WorkspaceConfigError') {
@@ -2902,6 +2956,43 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     } catch (err) {
       return lifecycleErrorResponse(c, err)
     }
+  })
+
+  /**
+   * GET /api/internal/workspaces/:workspaceId/access/effective
+   *
+   * The acting person's effective access in this workspace: the ability set the
+   * runtime's tool gate filters on, plus the model grant and limits the settings
+   * UI explains. `abilities: null` means "unknown" — no person behind the turn,
+   * or a caller that is not a member — and the runtime treats that as "allow
+   * everything", because the server still refuses each call on its own.
+   */
+  app.get('/workspaces/:workspaceId/access/effective', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const authz = await authorizeLifecycleWorkspace(c, workspaceId)
+    if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+    const actor = await resolveAgentActor(c, authz.identity, { workspaceId })
+    if (!actor?.principal.userId || actor.unscoped) {
+      return c.json({ workspaceId, abilities: null, reason: 'no_actor' })
+    }
+    const { getEffectiveAccess } = await import('../services/access-policy.service')
+    const access = await getEffectiveAccess(workspaceId, actor.principal.userId)
+    if (!access) return c.json({ workspaceId, abilities: null, reason: 'not_a_member' })
+    return c.json({
+      workspaceId,
+      userId: access.userId,
+      role: access.role,
+      abilities: [...access.abilities],
+      models: {
+        tiers: access.models.tiers ? [...access.models.tiers] : null,
+        ids: access.models.ids ? [...access.models.ids] : null,
+      },
+      defaultModelId: access.defaultModelId,
+      spendCapUsd: access.spendCapUsd,
+      spendPeriod: access.spendPeriod,
+      requestsPerHour: access.requestsPerHour,
+      reasons: access.reasons,
+    })
   })
 
   /**
@@ -3471,6 +3562,8 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         403,
       )
     }
+    const abilityDenied = await enforceAbility(c, workspaceId, ticket.userId, 'instance.commands:run')
+    if (abilityDenied) return abilityDenied
     if ((await getWorkspaceKind(workspaceId)) !== 'personal') {
       return c.json(
         {
@@ -3630,6 +3723,12 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ error: { code: 'bad_request', message: 'args must be an object' } }, 400)
     }
     const tool = body.tool.trim()
+    // The target project's own permission is the gate: `project:read` for a
+    // read-only tool, `project:update` for a mutating one. This is not a
+    // paired-desktop command, so it must not also require
+    // `instance.commands:run` — that ability is for running commands on the
+    // caller's own machine, and requiring it here locked read-only viewers out
+    // of reading files in projects they can see (SHO-353).
     const denied = await enforceProjectPermission(
       c, authz.identity, authz.workspaceId, projectId, remoteToolPermission(tool),
     )

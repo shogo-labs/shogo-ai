@@ -36,6 +36,9 @@ mock.module('@shogo/model-catalog', () => ({
   AUTO_MODEL_ID: 'auto',
   isAutoModel: (id: string) => id === 'auto',
   inferProviderFromModel: (_id: string, fallback: string) => fallback,
+  // The RBAC run-model path reads these; a partial mock must still answer them.
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
 }))
 
 process.env.AI_PROXY_SECRET = process.env.AI_PROXY_SECRET ?? 'test-secret'
@@ -143,6 +146,9 @@ mock.module('../services/model-registry.service', () => ({
       : id === HOSHI_UUID
         ? { provider: 'custom', tier: 'economy' }
         : undefined,
+  getMergedCatalogSync: () => [],
+  resolveModelLabel: async (id: string) => id,
+  resolveModelLabelSync: (id: string) => id,
 }))
 mock.module('../services/public-models.service', () => ({
   resolvePublicModelSync: (id: string) =>
