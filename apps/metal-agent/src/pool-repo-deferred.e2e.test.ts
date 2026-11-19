@@ -357,6 +357,10 @@ describe('an UNTRUSTED VM heals back to a normal writer', () => {
     const a = pool.getAssigned('p1')!
     expect(a.repoUntrustedReason).toBeDefined()
     expect(a.repoUntrustedReason).not.toBe(REPO_DEFERRED_REASON)
+    // Work the user has not committed yet, and an export that does not flush it
+    // (a mid-turn export): the heal must carry it in the tree, not drop it.
+    guest.flushBeforeExport = false
+    guest.writeWorkspace('notes.md', 'written but not committed\n')
     // What the guest's heartbeat would report; the harness has no heartbeat.
     a.repoHeadSha = guest.head()
     const liveHead = a.repoHeadSha
@@ -381,6 +385,9 @@ describe('an UNTRUSTED VM heals back to a normal writer', () => {
     // next commit is a no-op.
     expect(guest.read('src/App.tsx')).toBe('the user’s first edit\n')
     expect(git(guest.ws, 'show', `${healed.head}:src/App.tsx`)).toBe('the user’s first edit')
+    // The uncommitted file is in the healed tree AND still on disk.
+    expect(git(guest.ws, 'show', `${healed.head}:notes.md`)).toBe('written but not committed')
+    expect(guest.read('notes.md')).toBe('written but not committed\n')
     expect(git(guest.ws, 'status', '--porcelain')).toBe('')
     // Healed is not saved: the durable repo still holds the pre-heal HEAD, so
     // nothing may stop this VM until the next export lands.
