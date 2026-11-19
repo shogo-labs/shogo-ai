@@ -39,6 +39,9 @@ interface ScopeAccess {
   visibility: ProjectVisibility | null
   isGuest: boolean
   isSuperAdmin: boolean
+  /** Workspace scope only (SHO-454): who may invite, and whether this caller may. */
+  invitePolicy: 'members' | 'admins' | null
+  canInvite: boolean
 }
 
 interface CacheEntry {
@@ -59,6 +62,8 @@ const NO_ACCESS: ScopeAccess = {
   visibility: null,
   isGuest: false,
   isSuperAdmin: false,
+  invitePolicy: null,
+  canInvite: false,
 }
 
 const cache = new Map<string, CacheEntry>()
@@ -78,6 +83,8 @@ function fromWorkspace(data: WorkspacePermissionsData | null): ScopeAccess {
     visibility: null,
     isGuest: false,
     isSuperAdmin: !!data.isSuperAdmin,
+    invitePolicy: data.invitePolicy ?? null,
+    canInvite: !!data.canInvite,
   }
 }
 
@@ -90,6 +97,8 @@ function fromProject(data: ProjectPermissionsData | null): ScopeAccess {
     visibility: data.visibility ?? null,
     isGuest: !!data.isGuest,
     isSuperAdmin: !!data.isSuperAdmin,
+    invitePolicy: null,
+    canInvite: false,
   }
 }
 
@@ -235,6 +244,9 @@ export function usePermissions(scope: PermissionScope) {
     visibility: data?.visibility ?? null,
     isGuest: data?.isGuest ?? false,
     isSuperAdmin: data?.isSuperAdmin ?? false,
+    /** Workspace scope only: who may invite, and whether this caller may (SHO-454). */
+    invitePolicy: data?.invitePolicy ?? null,
+    canInvite: data?.canInvite ?? false,
     loading,
     refetch,
   }

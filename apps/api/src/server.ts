@@ -54,6 +54,7 @@ import { startEventDeliveryWorker, stopEventDeliveryWorker } from './jobs/run-ev
 import { inviteLinkAcceptRoutes } from './routes/invite-link-accept'
 import { createInviteLinkAfterAccept } from './routes/invite-link-after-accept'
 import { inviteLinkRoutes } from './routes/invite-links'
+import { invitationResendRoutes } from './routes/invitation-resend'
 import { invitationInfoRoutes } from './routes/invitation-info'
 import { rbacRoutes } from './routes/rbac'
 import { appActionsRoutes } from './routes/app-actions'
@@ -10740,6 +10741,9 @@ app.route('/api', inviteLinkRoutes({
     }
   },
 }))
+
+// Resend a pending invitation's email and extend its expiry (SHO-454).
+app.route('/api', invitationResendRoutes())
 
 // Accept invite link (public-ish - requires auth but not membership)
 app.route('/api', inviteLinkAcceptRoutes({

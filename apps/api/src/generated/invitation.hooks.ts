@@ -15,6 +15,7 @@ import { getFrontendUrl } from "../lib/cloud-urls"
 import { canAssignProjectRole, canAssignWorkspaceRole, isWorkspaceRole, toProjectRole } from "@shogo/authz"
 import type { Principal } from "../lib/authz"
 import { hookAccess, hookCan, hookRequire } from "../lib/authz/hooks"
+import { canInviteToWorkspace } from "../lib/workspace-invite-policy"
 import { assertTrialSeatRoom } from "../services/billing.service"
 import { trialSeatLimitMessage } from "../config/usage-plans"
 
@@ -73,6 +74,10 @@ async function getUserEmail(prisma: any, userId: string): Promise<string | null>
 /**
  * Whether the caller may invite (or manage invitations) at this scope, and,
  * when `role` is given, grant that role without escalating past their own.
+ *
+ * This is the *manager* rule: changing roles, removing members and revoking
+ * other people's invitations. Inviting itself is looser for a workspace — see
+ * `canInviteHere`, which also lets an Editor invite under the default policy.
  */
 async function canManageInvite(
   ctx: HookContext,
@@ -91,6 +96,28 @@ async function canManageInvite(
     return isWorkspaceRole(role) && canAssignWorkspaceRole(access, role)
   }
   return false
+}
+
+/**
+ * Whether the caller may create an invitation at this scope (SHO-454).
+ *
+ * A project invitation keeps the manager rule. A workspace invitation goes
+ * through `canInviteToWorkspace`, so an Editor can invite as Editor or Viewer
+ * while the workspace's `invitePolicy` allows it, and a Viewer never can.
+ */
+async function canInviteHere(
+  ctx: HookContext,
+  opts: { workspaceId?: string | null; projectId?: string | null },
+  role?: string,
+): Promise<boolean> {
+  if (opts.projectId) return canManageInvite(ctx, opts, role)
+  if (!opts.workspaceId) return false
+  const access = await hookAccess(ctx, { workspaceId: opts.workspaceId })
+  const workspace = await ctx.prisma.workspace.findUnique({
+    where: { id: opts.workspaceId },
+    select: { invitePolicy: true },
+  })
+  return canInviteToWorkspace(access, workspace, role)
 }
 
 /**
@@ -266,7 +293,7 @@ export const invitationHooks: InvitationHooks = {
     }
     if (!input.role) input.role = 'member'
 
-    if (!(await canManageInvite(ctx, { workspaceId: input.workspaceId, projectId }, input.role))) {
+    if (!(await canInviteHere(ctx, { workspaceId: input.workspaceId, projectId }, input.role))) {
       return { ok: false, error: { code: "forbidden", message: "You cannot invite with this role" } }
     }
 
@@ -477,7 +504,13 @@ export const invitationHooks: InvitationHooks = {
     }
 
     if (!(await canManageInvite(ctx, { workspaceId: invitation.workspaceId, projectId: invitation.projectId }))) {
-      return { ok: false, error: { code: "forbidden", message: "Only admins and owners can delete invitations" } }
+      // An Editor may revoke an invitation they created themselves, while the
+      // workspace's policy still lets them invite (SHO-454). Revoking anyone
+      // else's stays a manager action.
+      const ownInvite = !!invitation.invitedBy && invitation.invitedBy === userId
+      if (!ownInvite || !(await canInviteHere(ctx, { workspaceId: invitation.workspaceId, projectId: invitation.projectId }))) {
+        return { ok: false, error: { code: "forbidden", message: "Only admins and owners can delete invitations" } }
+      }
     }
 
     return { ok: true }

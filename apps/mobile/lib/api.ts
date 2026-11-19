@@ -76,6 +76,24 @@ export interface WorkspacePermissionsData {
   role: WorkspaceRole | null
   isSuperAdmin: boolean
   permissions: Permission[]
+  /** Who may invite (SHO-454): `members` (any Editor) or `admins`. */
+  invitePolicy?: 'members' | 'admins'
+  /** The one boolean every invite entry point gates on. */
+  canInvite?: boolean
+}
+
+/** A workspace join link (`/api/invite-links`), as the invite dialog reads it. */
+export interface WorkspaceInviteLink {
+  id: string
+  token: string
+  role: 'owner' | 'admin' | 'member' | 'viewer'
+  workspaceId: string | null
+  projectId: string | null
+  enabled: boolean
+  expiresAt: string | null
+  useCount: number
+  createdBy: string
+  createdAt: string
 }
 
 /** `GET /api/projects/:id/permissions` payload. */
@@ -3645,6 +3663,73 @@ export const api = {
   async getWorkspacePermissions(http: HttpClient, workspaceId: string) {
     const res = await http.get<{ ok?: boolean; data?: WorkspacePermissionsData }>(
       `/api/workspaces/${encodeURIComponent(workspaceId)}/permissions`,
+    )
+    return res.data?.data ?? null
+  },
+
+  /**
+   * GET /api/invite-links?workspaceId= — the workspace's shareable join links.
+   * The workspaceId rides in the query so a desktop cloud workspace routes the
+   * call through `/api/cloud/<id>` (SHO-454).
+   */
+  async getWorkspaceInviteLinks(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ ok?: boolean; items?: WorkspaceInviteLink[] }>(
+      `/api/invite-links?workspaceId=${encodeURIComponent(workspaceId)}`,
+    )
+    return res.data?.items ?? []
+  },
+
+  /** POST /api/invite-links — create a workspace join link with a role and expiry. */
+  async createWorkspaceInviteLink(
+    http: HttpClient,
+    params: { workspaceId: string; role: 'admin' | 'member' | 'viewer'; expiresInDays?: 7 | 30 | null },
+  ) {
+    const res = await http.post<{ ok?: boolean; data?: WorkspaceInviteLink }>(
+      `/api/invite-links?workspaceId=${encodeURIComponent(params.workspaceId)}`,
+      {
+        workspaceId: params.workspaceId,
+        role: params.role,
+        expiresInDays: params.expiresInDays === undefined ? 7 : params.expiresInDays,
+      },
+    )
+    return res.data?.data ?? null
+  },
+
+  /** PATCH /api/invite-links/:id — enable or disable a link (managers only). */
+  async setWorkspaceInviteLinkEnabled(http: HttpClient, workspaceId: string, linkId: string, enabled: boolean) {
+    await http.patch(
+      `/api/invite-links/${encodeURIComponent(linkId)}?workspaceId=${encodeURIComponent(workspaceId)}`,
+      { enabled },
+    )
+  },
+
+  /** DELETE /api/invite-links/:id — revoke a link (managers only). */
+  async deleteWorkspaceInviteLink(http: HttpClient, workspaceId: string, linkId: string) {
+    await http.delete(
+      `/api/invite-links/${encodeURIComponent(linkId)}?workspaceId=${encodeURIComponent(workspaceId)}`,
+    )
+  },
+
+  /**
+   * PATCH /api/workspaces/:id/invite-policy — who may invite (SHO-454).
+   * Owners and admins only (`workspace.settings:manage`).
+   */
+  async setWorkspaceInvitePolicy(
+    http: HttpClient,
+    workspaceId: string,
+    invitePolicy: 'members' | 'admins',
+  ) {
+    await http.patch(`/api/workspaces/${encodeURIComponent(workspaceId)}/invite-policy`, { invitePolicy })
+  },
+
+  /**
+   * POST /api/invitations/:id/resend — send a pending invitation's email again
+   * and push its expiry out another 7 days (SHO-454).
+   */
+  async resendInvitation(http: HttpClient, workspaceId: string, invitationId: string) {
+    const res = await http.post<{ ok?: boolean; data?: unknown }>(
+      `/api/invitations/${encodeURIComponent(invitationId)}/resend?workspaceId=${encodeURIComponent(workspaceId)}`,
+      {},
     )
     return res.data?.data ?? null
   },
