@@ -100,10 +100,46 @@ export function readClientIp(headers: HeaderSource): string | null {
 const DEVICE_ID_HEADER = 'x-shogo-device-id'
 const DEVICE_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/
 
+/**
+ * First-party cookie carrying the same device id as `DEVICE_ID_HEADER`.
+ *
+ * Google and Apple sign-ups are created on `/callback/:provider`, a top-level
+ * redirect the client cannot attach headers to, so the header alone left every
+ * OAuth signup with `deviceId: null` (SHO-440). `auth.ts` sets this cookie on
+ * `/sign-in/social` and `/sign-up/email` when the request carries a valid
+ * header; the browser then sends it back on the callback and on checkout.
+ */
+export const DEVICE_ID_COOKIE = 'shogo.device_id'
+
+/** One cookie value from a raw `Cookie:` header, URL-decoded. */
+export function readCookie(headers: HeaderSource, name: string): string | null {
+  const raw = readHeader(headers, 'cookie')
+  if (!raw) return null
+  for (const part of raw.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq < 0) continue
+    if (part.slice(0, eq).trim() !== name) continue
+    const value = part.slice(eq + 1).trim()
+    try {
+      return decodeURIComponent(value)
+    } catch {
+      return value
+    }
+  }
+  return null
+}
+
+/** The first valid device id: the header wins, then the cookie. */
+export function readDeviceId(headers: HeaderSource): string | null {
+  for (const candidate of [readHeader(headers, DEVICE_ID_HEADER), readCookie(headers, DEVICE_ID_COOKIE)]) {
+    if (candidate && DEVICE_ID_PATTERN.test(candidate)) return candidate
+  }
+  return null
+}
+
 export function readSignupRequestInfo(headers: HeaderSource): SignupRequestInfo {
   const ip = readClientIp(headers)
-  const rawDevice = readHeader(headers, DEVICE_ID_HEADER)
-  const deviceId = rawDevice && DEVICE_ID_PATTERN.test(rawDevice) ? rawDevice : null
+  const deviceId = readDeviceId(headers)
   return {
     ip,
     ipPrefix: ip ? ipPrefixFor(ip) : null,

@@ -25,6 +25,7 @@ import { getFrontendUrl } from "./lib/cloud-urls"
 import { homeRegionForNewUser } from "./lib/region"
 import { E2E_BOOTSTRAP_HEADER, isE2eBootstrapRequest } from "./lib/e2e-bootstrap-secret"
 import { isBlockedEmailDomain } from "./services/signup-risk-scoring"
+import { DEVICE_ID_COOKIE, readDeviceId } from "./services/signup-risk.service"
 import { checkSignupRateLimit, checkVerificationEmailRateLimit } from "./lib/signup-rate-limit"
 import { invalidateSignupTrustHold, getSignupTrustHold } from "./lib/signup-trust"
 import { getSharedRedis } from "./lib/tunnel-redis"
@@ -296,6 +297,45 @@ const signupRateLimitPlugin: BetterAuthPlugin = {
             },
             { "Retry-After": String(verdict.retryAfterSeconds) },
           )
+        }),
+      },
+    ],
+  },
+}
+
+/**
+ * Persist the client's device id in a first-party cookie (SHO-440).
+ *
+ * Google and Apple sign-ups are created on `/callback/:provider`, a top-level
+ * redirect that cannot carry the `x-shogo-device-id` header, so those accounts
+ * were scored with no device signal at all. The header *is* present on the
+ * request that starts the flow, so the cookie is set there and the browser
+ * sends it back on the callback and on every later checkout.
+ */
+const DEVICE_ID_COOKIE_MAX_AGE_SECONDS = 365 * 24 * 60 * 60
+
+const deviceIdCookiePlugin: BetterAuthPlugin = {
+  id: "shogo-device-id-cookie",
+  hooks: {
+    after: [
+      {
+        matcher(ctx) {
+          return ctx.path === "/sign-in/social" || ctx.path === "/sign-up/email"
+        },
+        handler: createAuthMiddleware(async (ctx) => {
+          const request = ctx.request as Request | undefined
+          const deviceId = readDeviceId(ctx.headers ?? request?.headers ?? null)
+          if (!deviceId) return
+          // Same domain/secure attributes as the session cookie, so the cookie
+          // is sent to the API host on the OAuth callback and on checkout.
+          const sessionAttributes = (ctx.context as any)?.authCookies?.sessionToken?.attributes ?? {}
+          ctx.setCookie(DEVICE_ID_COOKIE, deviceId, {
+            ...sessionAttributes,
+            httpOnly: true,
+            sameSite: "lax",
+            path: "/",
+            maxAge: DEVICE_ID_COOKIE_MAX_AGE_SECONDS,
+          })
         }),
       },
     ],
@@ -624,7 +664,7 @@ export const auth = betterAuth({
     return origins
   },
 
-  plugins: [expo(), projectAuthPlugin, signupRateLimitPlugin],
+  plugins: [expo(), projectAuthPlugin, signupRateLimitPlugin, deviceIdCookiePlugin],
 
   rateLimit: {
     window: 60,

@@ -145,12 +145,30 @@ mock.module('../services/project-auth-config.service', () => ({
   },
 }))
 
+const riskState: { upserts: any[] } = { upserts: [] }
+
+// The credit grant pulls the whole billing graph in; the hook test only cares
+// that the assessment ran, so it is stubbed (SHO-440).
+mock.module('../services/signup-credit.service', () => ({
+  applyInitialSignupCredit: async () => {},
+}))
+
 mock.module('../lib/prisma', () => ({
   prisma: {
     user: {
       count: async () => 0, // never local-mode-blocked in this file
       update: async (_args: unknown) => ({ id: 'u', role: 'super_admin' }),
     },
+    // Enough of the signup-risk tables for `assessNewSignup` to run, so the
+    // device-id path can be asserted end to end (SHO-440).
+    signupRiskAssessment: {
+      count: async () => 0,
+      upsert: async (args: any) => {
+        riskState.upserts.push(args)
+        return args.create
+      },
+    },
+    $transaction: async (ops: any[]) => Promise.all(ops),
   },
 }))
 
@@ -184,6 +202,7 @@ beforeEach(() => {
   allowState.verdict = { allowed: true }
   allowState.recordCalls.length = 0
   allowState.recordShouldThrow = false
+  riskState.upserts.length = 0
   delete process.env.SHOGO_AFFILIATES_NATIVE
   delete process.env.NODE_ENV
   delete process.env.SHOGO_LOG_PASSWORD_RESET_URL
@@ -666,5 +685,82 @@ describe('project-auth-allowlist plugin', () => {
       headers: { get: (k: string) => k === 'x-shogo-project-id' ? 'proj-1' : null },
     })
     expect(errLog).toContain('recordSignIn failed')
+  })
+})
+
+// ===========================================================================
+// shogo-device-id-cookie plugin (SHO-440)
+// ===========================================================================
+
+const DEVICE_ID = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'
+
+function devicePlugin(): any {
+  const p = (capturedConfig.plugins as any[]).find((x) => x?.id === 'shogo-device-id-cookie')
+  if (!p) throw new Error('device-id cookie plugin not registered')
+  return p
+}
+
+function cookieCtx(path: string, headers: Record<string, string>) {
+  const cookies: Array<{ name: string; value: string; options: any }> = []
+  return {
+    cookies,
+    ctx: {
+      path,
+      headers: { get: (k: string) => headers[k.toLowerCase()] ?? null },
+      context: {
+        authCookies: {
+          sessionToken: { attributes: { secure: true, sameSite: 'lax', path: '/', domain: '.shogo.ai' } },
+        },
+      },
+      setCookie: (name: string, value: string, options: any) => cookies.push({ name, value, options }),
+    },
+  }
+}
+
+describe('shogo-device-id-cookie plugin', () => {
+  test('matches the two requests that start a signup, not the OAuth callback', () => {
+    const hook = devicePlugin().hooks.after[0]
+    expect(hook.matcher({ path: '/sign-in/social' })).toBe(true)
+    expect(hook.matcher({ path: '/sign-up/email' })).toBe(true)
+    expect(hook.matcher({ path: '/callback/google' })).toBe(false)
+    expect(hook.matcher({ path: '/sign-in/email' })).toBe(false)
+  })
+
+  test('/sign-in/social carrying the header sets the device cookie', async () => {
+    const { cookies, ctx } = cookieCtx('/sign-in/social', { 'x-shogo-device-id': DEVICE_ID })
+    await devicePlugin().hooks.after[0].handler(ctx)
+    expect(cookies).toHaveLength(1)
+    expect(cookies[0].name).toBe('shogo.device_id')
+    expect(cookies[0].value).toBe(DEVICE_ID)
+    expect(cookies[0].options).toMatchObject({
+      httpOnly: true,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 365 * 24 * 60 * 60,
+      // Same domain/secure attributes as the session cookie.
+      secure: true,
+      domain: '.shogo.ai',
+    })
+  })
+
+  test('no header and no cookie sets nothing', async () => {
+    const { cookies, ctx } = cookieCtx('/sign-in/social', {})
+    await devicePlugin().hooks.after[0].handler(ctx)
+    expect(cookies).toHaveLength(0)
+  })
+
+  test('an invalid header is ignored', async () => {
+    const { cookies, ctx } = cookieCtx('/sign-up/email', { 'x-shogo-device-id': 'bad value!' })
+    await devicePlugin().hooks.after[0].handler(ctx)
+    expect(cookies).toHaveLength(0)
+  })
+
+  test('a user created on /callback/google with the cookie records deviceId', async () => {
+    await capturedConfig.databaseHooks.user.create.after(
+      { id: 'u-oauth', email: 'oauth@gmail.com', name: 'OAuth', emailVerified: true },
+      { path: '/callback/google', headers: { get: (k: string) => k === 'cookie' ? `shogo.device_id=${DEVICE_ID}` : null } },
+    )
+    expect(riskState.upserts).toHaveLength(1)
+    expect(riskState.upserts[0].create.deviceId).toBe(DEVICE_ID)
   })
 })
