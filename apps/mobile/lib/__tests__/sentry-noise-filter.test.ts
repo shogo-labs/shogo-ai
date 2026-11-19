@@ -12,7 +12,12 @@
  * genuine app errors are NOT dropped.
  */
 import { describe, test, expect } from 'bun:test'
-import { isNoiseEvent, type NoiseFilterEvent } from '../sentry-noise-filter'
+import {
+  isDeliberateTelemetry,
+  isExpectedClientError,
+  isNoiseEvent,
+  type NoiseFilterEvent,
+} from '../sentry-noise-filter'
 
 const exc = (type: string, value: string, frames: { filename?: string }[] = []): NoiseFilterEvent => ({
   exception: { values: [{ type, value, stacktrace: { frames } }] },
@@ -121,5 +126,45 @@ describe('isNoiseEvent — genuine app errors are NOT dropped', () => {
 
   test('MST "Update already in progress" is a real bug, not noise', () => {
     expect(isNoiseEvent(exc('Error', 'Update already in progress'))).toBe(false)
+  })
+})
+
+/**
+ * SHO-437: expected 4xx outcomes were reported as Sentry errors — "Project is
+ * already starred", "Invalid email or password", "User already exists",
+ * "Super admin access required", "Team chat is turned off for this workspace",
+ * "Project not found". They are the API working as designed.
+ */
+describe('isExpectedClientError — 4xx outcomes are not errors (SHO-437)', () => {
+  const shogoError = (status: number, message = 'nope') =>
+    Object.assign(new Error(message), { name: 'ShogoError', status })
+
+  test('drops the 4xx ShogoErrors from the card', () => {
+    expect(isExpectedClientError(shogoError(400, 'Project is already starred'))).toBe(true)
+    expect(isExpectedClientError(shogoError(403, 'Super admin access required'))).toBe(true)
+    expect(isExpectedClientError(shogoError(404, 'Project not found'))).toBe(true)
+    expect(isExpectedClientError(shogoError(409, 'Team chat is turned off for this workspace'))).toBe(true)
+  })
+
+  test('covers AuthRequestError (sign-in / sign-up outcomes)', () => {
+    const err = Object.assign(new Error('Invalid email or password'), {
+      name: 'AuthRequestError',
+      status: 401,
+    })
+    expect(isExpectedClientError(err)).toBe(true)
+  })
+
+  test('keeps 5xx, status-less errors and non-Shogo errors reportable', () => {
+    expect(isExpectedClientError(shogoError(500))).toBe(false)
+    expect(isExpectedClientError(shogoError(503))).toBe(false)
+    expect(isExpectedClientError(new Error('boom'))).toBe(false)
+    expect(isExpectedClientError(undefined)).toBe(false)
+    expect(isExpectedClientError('Project is already starred')).toBe(false)
+  })
+
+  test('a deliberate telemetry capture is never treated as expected noise', () => {
+    expect(isDeliberateTelemetry({ tags: { shogo_telemetry: 'chat_stream_error' } })).toBe(true)
+    expect(isDeliberateTelemetry({ tags: {} })).toBe(false)
+    expect(isDeliberateTelemetry({})).toBe(false)
   })
 })
