@@ -15,7 +15,7 @@
  * person typing still shows: `desktop-cloud-workspaces.test.ts` covers that
  * with a real second user.
  */
-import { expect, test, type Browser, type Page } from "@playwright/test"
+import { expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test"
 import { LOCAL_API_BASE, openTeamHome } from "./helpers"
 
 const suffix = Date.now().toString(36)
@@ -31,9 +31,8 @@ async function apiJson(page: Page, method: string, path: string, body?: unknown)
 }
 
 /** A second team-chat socket for the signed-in user, in its own browser context. */
-async function probeSocket(page: Page, workspaceId: string) {
-  const browser = page.context().browser()!
-  const context = await browser.newContext({ storageState: await page.context().storageState() })
+async function probeSocket(browser: Browser, baseURL: string, page: Page, workspaceId: string) {
+  const context = await browser.newContext({ baseURL, storageState: await page.context().storageState() })
   const probe = await context.newPage()
   await probe.goto("/")
   await probe.evaluate((url) => {
@@ -60,18 +59,25 @@ test.describe("Team chat: you never see your own typing", () => {
   test.describe.configure({ mode: "serial" })
   test.setTimeout(180_000)
 
+  let browser: Browser
+  let baseURL: string
+  let context: BrowserContext
   let windowA: Page
   let windowB: Page
   let workspaceId: string
   let channelId: string
   let threadRootId: string
 
-  test.beforeAll(async ({ browser }: { browser: Browser }) => {
-    windowA = await browser.newPage()
+  test.beforeAll(async ({ browser: b }, info) => {
+    browser = b
+    baseURL = String(info.project.use.baseURL)
+    // One context, two windows: the same signed-in user, each window with its
+    // own socket. (`browser.newPage()` cannot hand out a second page.)
+    context = await browser.newContext({ baseURL })
+    windowA = await context.newPage()
     await windowA.setViewportSize({ width: 1440, height: 900 })
     await openTeamHome(windowA)
-    // A second window of the same signed-in user: same storage, its own socket.
-    windowB = await windowA.context().newPage()
+    windowB = await context.newPage()
     await windowB.setViewportSize({ width: 1440, height: 900 })
 
     const workspaces = await apiJson(windowA, "GET", "/api/workspaces")
@@ -95,12 +101,11 @@ test.describe("Team chat: you never see your own typing", () => {
   })
 
   test.afterAll(async () => {
-    await windowB?.close()
-    await windowA?.close()
+    await context?.close()
   })
 
   test("typing in a channel shows in no window of the typist, though the server does deliver it", async () => {
-    const probe = await probeSocket(windowA, workspaceId)
+    const probe = await probeSocket(browser, baseURL, windowA, workspaceId)
     try {
       const composerA = await openComposer(windowA, channelId)
       await openComposer(windowB, channelId)
@@ -127,7 +132,7 @@ test.describe("Team chat: you never see your own typing", () => {
   })
 
   test("typing in a thread shows in no window of the typist, though the server does deliver it", async () => {
-    const probe = await probeSocket(windowA, workspaceId)
+    const probe = await probeSocket(browser, baseURL, windowA, workspaceId)
     try {
       const composerA = await openComposer(windowA, channelId, threadRootId)
       await openComposer(windowB, channelId, threadRootId)
