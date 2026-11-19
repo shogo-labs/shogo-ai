@@ -42,6 +42,7 @@ import {
   shouldRecordSignupAttribution,
 } from "../../lib/attribution";
 import { trackSignUp, trackLogin } from "../../lib/tracking";
+import { clearCometTokenCookie, consumeNewSignupEvent, markNewSignup } from "../../lib/cometly";
 import { usePostHogIdentify, usePostHogSafe } from "../../contexts/posthog";
 import { DomainProvider, useWorkspaceCollection } from "../../contexts/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
@@ -465,11 +466,20 @@ function AppLayoutInner() {
           : Infinity;
         if (accountAge < 60_000) {
           trackSignUp(pending as "google");
+          // A brand-new Google account: the Cometly `custom_event_2` below is
+          // this page's.
+          markNewSignup();
         } else {
           trackLogin(pending as "google");
         }
+        // The round trip is over, so the token has served its purpose.
+        clearCometTokenCookie();
       }
     } catch {}
+
+    // Cometly (SHO-441): report `custom_event_2` once, on the first
+    // authenticated page of a new sign-up. A normal login has no flag.
+    consumeNewSignupEvent();
 
     const queued = getPendingSignupAttribution();
     if (!queued) return;

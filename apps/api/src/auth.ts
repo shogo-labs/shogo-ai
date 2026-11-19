@@ -809,6 +809,8 @@ export const auth = betterAuth({
               cookieHeader:
                 ctx?.request?.headers?.get?.('cookie') ?? ctx?.headers?.get?.('cookie') ?? '',
               method: signupProviderFromPath(ctx?.path),
+              email: user.email,
+              name: user.name,
             })
           } catch (err) {
             console.warn('[Attribution] signup attribution on signup failed', err)
