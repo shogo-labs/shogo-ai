@@ -195,6 +195,14 @@ const NEVER_BILLING = [
   'MarketplaceReview',
   'MarketplaceTransaction',
   'TrialRedemption', // card-backed trial, keyed by Stripe ids
+  // SHO-428: the $99 Solo Founder purchase — the checkout session, the
+  // subscription it became, `status` (active / rejected_prepaid / refunded)
+  // and the refund. Same shape as TrialRedemption: created by the Stripe
+  // webhook on the cloud and never something a desktop may claim. The pack it
+  // installs (channels, boards, agents) syncs as ordinary content; `progress`
+  // is written where the row lives, so the Course board and its gate work on a
+  // desktop but lesson progress is read from the cloud panel.
+  'CourseEnrollment',
   // SHO-308: the metered minutes behind `published_hosting` — the input to
   // consumeUsage, so the cloud's own accounting, never a synced row.
   'PublishedUsageMinute',

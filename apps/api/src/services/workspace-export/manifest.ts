@@ -117,6 +117,7 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   CustomDomain: { decision: 'include', reason: 'Custom publish domains and their verification state.', scope: { kind: 'project' } },
   ProjectAuthConfig: { decision: 'include', reason: 'Published-site auth mode and allowlists.', scope: { kind: 'project' } },
   VoiceProjectConfig: { decision: 'include', reason: 'Voice config (agent/phone ids; provider keys are not stored here).', scope: { kind: 'workspace' } },
+  CourseEnrollment: { decision: 'include', reason: 'A purchased course and the lesson progress that drives the Course board: the licence, the install bindings and `progress`. Stripe session ids travel with it (they are ids, not credentials) so a restore does not re-offer the purchase.', scope: { kind: 'workspace' } },
   Account: { decision: 'exclude', reason: 'Global rows (auth, marketplace catalog, affiliate programme) that belong to the instance or the person, not this workspace. Member carries the names and emails the export needs.' },
   Affiliate: { decision: 'exclude', reason: 'Global rows (auth, marketplace catalog, affiliate programme) that belong to the instance or the person, not this workspace. Member carries the names and emails the export needs.' },
   AffiliateAttribution: { decision: 'exclude', reason: 'Global rows (auth, marketplace catalog, affiliate programme) that belong to the instance or the person, not this workspace. Member carries the names and emails the export needs.' },

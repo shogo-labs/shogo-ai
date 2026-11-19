@@ -62,6 +62,10 @@ export const MOVE_CLOSURE: Record<string, ClosureRule> = {
   UserGroup: { mode: 'always' },
   UserIntegrationWorkspaceGrant: { mode: 'always' },
   MeetingTemplate: { mode: 'always' },
+  // SHO-428: a course purchase belongs to the workspace as a whole, never to
+  // one channel or project — the same as WorkspaceAgentProfile. A partial move
+  // carries it, so the buyer keeps the course they paid for.
+  CourseEnrollment: { mode: 'always' },
 
   // ── the things the user picks ─────────────────────────────────────
   Conversation: { mode: 'root' },

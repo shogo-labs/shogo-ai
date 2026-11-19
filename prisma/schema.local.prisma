@@ -212,6 +212,7 @@ model Workspace {
   inviteLinks            InviteLink[]
   folders                Folder[]
   subscriptions          Subscription[]
+  courseEnrollments      CourseEnrollment[]
   instanceSubscription   InstanceSubscription?
   usageWallets           UsageWallet[]
   usageEvents            UsageEvent[]
@@ -5215,6 +5216,39 @@ model CrossWorkspaceAudit {
 
   @@index([targetWorkspaceId, createdAt])
   @@map("cross_workspace_audit")
+}
+
+/// One purchase of a paid course (SHO-428). See prisma/schema.prisma for full
+/// semantics; local mode has no Stripe, so rows come from the license-key and
+/// admin paths (and a cloud-synced workspace's own row).
+model CourseEnrollment {
+  id                      String    @id @default(uuid())
+  /// Stable course key, e.g. `solo-founder-v1`.
+  courseId                String
+  userId                  String
+  workspaceId             String
+  /// stripe | license_key | admin
+  source                  String
+  stripeCheckoutSessionId String?   @unique
+  stripeSubscriptionId    String?
+  /// active | rejected_prepaid | refunded
+  status                  String
+  purchasedAt             DateTime
+  /// pending | installed | failed
+  installStatus           String    @default("pending")
+  installError            String?
+  packBindings            Json?
+  courseBoardId           String?
+  progress                Json?
+  completedAt             DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, courseId])
+  @@index([workspaceId])
+  @@map("course_enrollments")
 }
 
 /// The workspace root's `.env*` files, sealed at rest (SHO-384).

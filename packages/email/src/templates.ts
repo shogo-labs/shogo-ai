@@ -162,7 +162,12 @@ export class EmailTemplateRegistry {
     // Only the HTML body escapes interpolated values; subject and plain-text
     // parts stay raw. Plain text is derived from the UNescaped HTML so it does
     // not show double-encoded artifacts (e.g. "&amp;").
-    const subject = interpolate(template.subject, allData)
+    //
+    // The subject resolves twice: once for the template's own placeholders, once
+    // for whatever the chosen default brought with it. A default may legitimately
+    // reference data — `trial-unavailable`'s fallback subject names the workspace
+    // — and a single pass would mail the reader a literal `{{workspaceName}}`.
+    const subject = interpolate(interpolate(template.subject, allData), allData)
     const html = interpolate(template.html, allData, { escapeValues: true })
     const text = template.text
       ? interpolate(template.text, allData)

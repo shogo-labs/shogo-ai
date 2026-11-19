@@ -1,0 +1,89 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+version: 1
+name: Course department
+description: "A #course channel with the Course board and a Coach that runs one lesson at a time and checks the output."
+projects:
+  - key: coach
+    name: Coach
+    description: "Runs the Solo Founder course: posts each lesson, checks the learner's work, and helps when they're stuck."
+    agent:
+      model: auto
+      heartbeat:
+        enabled: true
+        interval: 86400
+      capabilities:
+        boardsEnabled: true
+        boardAdminEnabled: false
+        teamChatEnabled: true
+        companyOpsEnabled: false
+    files:
+      AGENTS.md: |
+        # Coach
+
+        You work in #course. Runs the Solo Founder course: posts each lesson, checks the learner's work, and helps when they're stuck.
+
+        ## Boards
+        - **Course** (SF-): Your 30 days. Move a lesson to Checking when you think it is done: the server checks the card against your workspace before it can reach Done.
+
+        ## What you do
+        - Post each lesson when it moves to This week: what to watch, the exact prompt to paste and where, and what "done" looks like.
+        - When the learner says they are done or moves a lesson to Checking, look at their setup with your tools (`project_list`, `schedule_list`, `work_item_list`, `team_chat_doc_read`) and then try to move it to Done. The server runs the check. If it refuses, explain what is missing in plain words, give the next step, and move it back to This week.
+        - For lessons the server does not check (M2, M3, M5, M10), ask for the evidence listed on the card (a link, a screenshot, a pasted reply) and judge honestly.
+        - When a lesson is Done, celebrate in one line, pull the next lesson into This week, and post it.
+        - In Lesson 0, explain models: cheap models for routine work, stronger ones for hard builds, and where the usage cap is set.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Never mark a lesson Done any other way than by the server check (or, for unchecked lessons, real evidence).
+        - Never do the lesson for the learner. Help them do it.
+        - After 3 nudges with no reply, stop nudging until the learner writes.
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. Nothing on a timer: the daily 09:00 nudge is its own schedule, not this sweep. If the learner has not written and no lesson sits in Checking, say nothing.
+teamChannels:
+  - name: course
+    topic: Your Solo Founder course. One lesson at a time.
+    members:
+      - project: coach
+        agentTrigger: mention
+    boards:
+      - name: Course
+        itemType: custom
+        keyPrefix: SF
+        description: "Your 30 days. Move a lesson to Checking when you think it is done: the server checks the card against your workspace before it can reach Done."
+        columns:
+          - name: Up next
+            category: backlog
+          - name: This week
+            category: active
+          - name: Checking
+            category: waiting
+            agent: coach
+          - name: Done
+            category: done
+          - name: Skipped
+            category: dismissed
+        fields:
+          - key: lessonId
+            label: Lesson
+            type: text
+          - key: module
+            label: Module
+            type: number
+          - key: videoUrl
+            label: Video
+            type: url
+          - key: output
+            label: Output
+            type: text
+          - key: check
+            label: Check
+            type: text
+        templateId: solo-founder-course
+        defaultAgent: coach

@@ -682,3 +682,14 @@ export function getChatAttachmentCap(planId: string | null | undefined): number 
 export function getChatAttachmentCapForPaid(paid: boolean): number {
   return paid ? PAID_CHAT_ATTACHMENT_BYTES : FREE_CHAT_ATTACHMENT_BYTES
 }
+
+/**
+ * Default monthly overage cap for a Solo Founder course workspace (SHO-428).
+ *
+ * The offer's deal is "the full Business allowance, and overage at cost +20%,
+ * capped at $50/mo by default — change it in Billing". `soloFounderService.enroll()`
+ * applies it only when the wallet has no cap of its own, and the monthly
+ * overage reset clears only the grant-only $5 cap, so $50 survives every
+ * period until the person changes it.
+ */
+export const SOLO_FOUNDER_OVERAGE_CAP_USD = 50

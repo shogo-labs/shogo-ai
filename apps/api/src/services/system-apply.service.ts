@@ -175,6 +175,12 @@ export async function previewSystemPack(params: {
   manifest: SystemManifest
   answers?: Record<string, unknown>
   anchorProjectId?: string
+  /**
+   * Channels this pack already owns (the ids in a previous apply's bindings).
+   * Their names are never a conflict: a re-apply must land on the same channel
+   * instead of installing a second `#build-2`, `#build-3` beside it.
+   */
+  boundChannelIds?: string[]
 }): Promise<PackPreview> {
   const { workspaceId } = params
   // One canonical answer set: keyed by `applies` path and by question id, with
@@ -186,7 +192,8 @@ export async function previewSystemPack(params: {
   const plan: string[] = []
 
   const liveChannels = await listTeamChannels(workspaceId)
-  const takenChannels = new Set(liveChannels.channels.map((c) => c.name))
+  const owned = new Set(params.boundChannelIds ?? [])
+  const takenChannels = new Set(liveChannels.channels.filter((c) => !owned.has(c.id)).map((c) => c.name))
   const channelNames: Record<string, string> = {}
   for (const ch of manifest.teamChannels) {
     const name = freeChannelName(slugify(ch.name), takenChannels)
@@ -308,6 +315,7 @@ export async function applySystemPack(args: ApplyPackArgs): Promise<ApplyPackRes
     manifest,
     answers,
     anchorProjectId: args.anchorProjectId,
+    boundChannelIds: Object.values(args.bindings?.channels ?? {}),
   })
   const channelNames = { ...preview.channelNames, ...(args.channelNames ?? {}) }
   const result: ApplyPackResult = {
@@ -480,6 +488,7 @@ export async function applySystemPack(args: ApplyPackArgs): Promise<ApplyPackRes
             fieldsSchema: board.fields,
             postToChannel: board.postToChannel,
             requiresHumanReview: board.requiresHumanReview,
+            templateId: board.templateId,
             defaultAssigneeAgentRef: board.defaultAgent === 'workspace' ? 'workspace' : board.defaultAgent ? `project:${bindings.projects[board.defaultAgent] ?? ''}` : null,
             systemManagedBy: systemProjectId,
             managedBy: 'manifest',
