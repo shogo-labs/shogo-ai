@@ -17,9 +17,7 @@
  *   - a footer that says how many invitations are pending and links to them.
  */
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -49,9 +47,6 @@ import { getCloudWorkspacesState, isCloudWorkspace } from '../../lib/workspace-r
 import { useDomainActions, useDomainHttp, useWorkspaceCollection } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { usePermissions } from '../../hooks/usePermissions'
-
-// ─── Email parsing ────────────────────────────────────────
-
 import {
   parseInviteChips,
   sendableEmails,
@@ -61,6 +56,9 @@ import {
   type InviteOutcome,
   type InviteResultLine,
 } from './invite-dialog-logic'
+import { InviteDialogContext, type OpenInviteDialogOptions } from './invite-dialog-context'
+
+// ─── Email parsing ────────────────────────────────────────
 
 /** The public URL a copied invite link points at. */
 export function inviteLinkUrl(token: string, workspaceId: string): string {
@@ -81,8 +79,6 @@ const ROLE_HINTS: Record<string, string> = {
 }
 
 // ─── Context ──────────────────────────────────────────────
-
-import { InviteDialogContext, type OpenInviteDialogOptions } from './invite-dialog-context'
 
 export {
   useInviteDialog,
