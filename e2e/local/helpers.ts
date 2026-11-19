@@ -5,6 +5,75 @@ import type { Locator, Page } from "@playwright/test"
 export const LOCAL_API_BASE = process.env.E2E_API_URL || process.env.STAGING_API_URL || "http://localhost:8002"
 
 /**
+ * Write a workspace selection into a document's two stores.
+ *
+ * `localStorage` is only the default a brand-new tab starts from; a tab keeps
+ * its own selection in `sessionStorage` and that wins over the shared value
+ * (SHO-390). A seed that writes the shared key alone therefore moves nothing in
+ * a tab that has already picked a workspace — which is why the apps' own
+ * switcher writes both. The kind is the `{ id, kind }` JSON that
+ * `readCachedWorkspaceKind` parses back.
+ *
+ * Page-function: called through `page.evaluate(...)`, or serialised into an
+ * `addInitScript`, so it must stay self-contained.
+ */
+export function writeActiveWorkspaceSelection([id, kind]: readonly [string, "team" | "personal"]): void {
+  const cached = JSON.stringify({ id, kind })
+  for (const store of [window.sessionStorage, window.localStorage]) {
+    store.setItem("shogo:active-workspace-id", id)
+    store.setItem("shogo:active-workspace-kind", cached)
+  }
+}
+
+/** Put the loaded page's tab on `id`, in both stores. Reload to apply it. */
+export async function setActiveWorkspace(
+  page: Page,
+  id: string,
+  kind: "team" | "personal" = "team",
+): Promise<void> {
+  await page.evaluate(writeActiveWorkspaceSelection, [id, kind] as const)
+}
+
+/**
+ * Put the page on `id` before every load, in both stores.
+ *
+ * `addInitScript` alone is not enough with a single store: it runs again on
+ * each navigation, but a tab that has already booted keeps its own
+ * `sessionStorage` selection, so a script that writes only the shared
+ * `localStorage` default changes nothing on the second load (SHO-390). `kind:
+ * null` writes the id and clears the cached kind from both stores, for the
+ * "nothing cached yet" chrome cases.
+ */
+export async function seedActiveWorkspace(
+  page: Page,
+  id: string,
+  kind: "team" | "personal" | null = "team",
+): Promise<void> {
+  await page.addInitScript(
+    ([id, kind]: readonly [string, "team" | "personal" | null]) => {
+      for (const store of [window.sessionStorage, window.localStorage]) {
+        store.setItem("shogo:active-workspace-id", id)
+        if (kind === null) store.removeItem("shogo:active-workspace-kind")
+        else store.setItem("shogo:active-workspace-kind", JSON.stringify({ id, kind }))
+      }
+    },
+    [id, kind] as const,
+  )
+}
+
+/**
+ * The workspace this tab is on, read the way the app reads it: the tab's own
+ * selection first, the shared default only when the tab has nothing of its own.
+ * Page-function: call it through `page.evaluate(readActiveWorkspaceId)`.
+ */
+export function readActiveWorkspaceId(): string | null {
+  return (
+    window.sessionStorage.getItem("shogo:active-workspace-id") ??
+    window.localStorage.getItem("shogo:active-workspace-id")
+  )
+}
+
+/**
  * What is painted on top of an element's own centre, or `null` when nothing is.
  * Occlusion is invisible to `toBeVisible()` — a covered element still has a box —
  * so this asks the browser for the paint stack instead.
@@ -70,12 +139,10 @@ export async function openTeamHome(page: Page, timeout = 30_000): Promise<void> 
   }, LOCAL_API_BASE)
   if (!teamId) throw new Error("local stack has no team workspace")
 
-  await page.evaluate((id) => {
-    localStorage.setItem("shogo:active-workspace-id", id)
-    sessionStorage.setItem("shogo:active-workspace-id", id)
-    localStorage.setItem("shogo:active-workspace-kind", "team")
-    sessionStorage.setItem("shogo:active-workspace-kind", "team")
-  }, teamId)
+  // This tab's own selection is what the app reads (SHO-390): `sessionStorage`
+  // wins over the shared `localStorage` default, so writing only the latter
+  // leaves a tab that already has a workspace on it exactly where it was.
+  await page.evaluate(writeActiveWorkspaceSelection, [teamId, "team"] as const)
   await page.goto("/home")
   await page.getByText("What are we building", { exact: false }).first().waitFor({ state: "visible", timeout })
 }

@@ -23,6 +23,7 @@
  */
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { api, signIn, teamWorkspaceId } from "./team-nav-seed"
+import { writeActiveWorkspaceSelection } from "./helpers"
 
 let seeder: Page
 let workspaceId: string
@@ -194,12 +195,9 @@ test.describe("markdown tables in team chat scroll on both axes", () => {
 
   test.beforeEach(async ({ page }) => {
     await signIn(page)
-    await page.addInitScript((id) => {
-      localStorage.setItem("shogo:active-workspace-id", id)
-      sessionStorage.setItem("shogo:active-workspace-id", id)
-      localStorage.setItem("shogo:active-workspace-kind", JSON.stringify({ id, kind: "team" }))
-      sessionStorage.setItem("shogo:active-workspace-kind", JSON.stringify({ id, kind: "team" }))
-    }, workspaceId)
+    // Both stores: `signIn` has already booted this tab, so its own
+    // `sessionStorage` selection beats the shared default seeded here.
+    await page.addInitScript(writeActiveWorkspaceSelection, [workspaceId, "team"] as const)
     // The wide desktop layout puts the thread in a resizable side pane.
     await page.setViewportSize({ width: 1280, height: 720 })
   })

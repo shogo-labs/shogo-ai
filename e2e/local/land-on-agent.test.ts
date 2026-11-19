@@ -13,7 +13,7 @@
  *   npx playwright test --config e2e/local/playwright.config.ts land-on-agent
  */
 import { expect, test, type Page } from "@playwright/test"
-import { LOCAL_API_BASE } from "./helpers"
+import { LOCAL_API_BASE, seedActiveWorkspace } from "./helpers"
 import { activateTeamWorkspace, signIn, teamWorkspaceId } from "./team-nav-seed"
 
 /** The workspace agent's composer (ChatInput's default accessibility label). */
@@ -252,12 +252,7 @@ test.describe("Landing on the workspace agent (local)", () => {
     test.setTimeout(180_000)
     await signIn(page)
     const workspaceId = await personalWorkspaceId(page)
-    await page.addInitScript((id) => {
-      localStorage.setItem("shogo:active-workspace-id", id)
-      sessionStorage.setItem("shogo:active-workspace-id", id)
-      localStorage.setItem("shogo:active-workspace-kind", JSON.stringify({ id, kind: "personal" }))
-      sessionStorage.setItem("shogo:active-workspace-kind", JSON.stringify({ id, kind: "personal" }))
-    }, workspaceId)
+    await seedActiveWorkspace(page, workspaceId, "personal")
 
     // The first load may create the workspace's primary session; after that the
     // count must not grow — personal never mints a landing chat.

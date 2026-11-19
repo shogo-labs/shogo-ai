@@ -16,6 +16,7 @@
  *   E2E_LOCAL_START_STACK=1 npx playwright test --config e2e/local/playwright.config.ts project-chat-url
  */
 import { expect, test, type Page } from "@playwright/test"
+import { writeActiveWorkspaceSelection } from "./helpers"
 
 const API = process.env.E2E_API_URL || "http://localhost:8002"
 
@@ -77,12 +78,9 @@ async function stubProjectRuntime(page: Page) {
 }
 
 async function useTeamWorkspace(page: Page) {
-  await page.evaluate((id) => {
-    localStorage.setItem("shogo:active-workspace-id", id)
-    sessionStorage.setItem("shogo:active-workspace-id", id)
-    localStorage.setItem("shogo:active-workspace-kind", "team")
-    sessionStorage.setItem("shogo:active-workspace-kind", "team")
-  }, workspaceId)
+  // Both stores: this tab has already booted, so its own `sessionStorage`
+  // selection is what the app reads and the shared default alone moves nothing.
+  await page.evaluate(writeActiveWorkspaceSelection, [workspaceId, "team"] as const)
 }
 
 /** Stub the runtime, land on the app (localStorage needs a document) and pick the team workspace. */

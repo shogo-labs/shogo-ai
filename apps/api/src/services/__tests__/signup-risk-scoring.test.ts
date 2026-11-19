@@ -182,4 +182,36 @@ describe('trusted OAuth provider', () => {
     expect(r.signals.map((s) => s.name)).toContain('trusted_oauth_provider')
     expect(r.score).toBe(0)
   })
+
+  // SHO-440: the Nov 18 farm signed up through Google on one IP. The −15 used
+  // to cancel the IP match, so three accounts on one address scored 0–5.
+  test('a social sign-up with an IP cluster keeps the cluster weight and gets no discount', () => {
+    const r = scoreSignupRisk(features({ provider: 'social', ipLinkedAccounts: 1 }))
+    expect(r.signals.map((s) => s.name)).toContain('ip_cluster_2plus')
+    expect(r.signals.map((s) => s.name)).not.toContain('trusted_oauth_provider')
+    expect(r.score).toBe(20)
+    expect(r.band).toBe('low')
+  })
+
+  test('a social sign-up on a 4+ account IP scores 40 (medium), not 25', () => {
+    const r = scoreSignupRisk(features({ provider: 'social', ipLinkedAccounts: 3 }))
+    expect(r.signals.map((s) => s.name)).toContain('ip_cluster_4plus')
+    expect(r.score).toBe(40)
+    expect(r.band).toBe('medium')
+  })
+
+  test('a device match also withholds the discount', () => {
+    const r = scoreSignupRisk(features({ provider: 'social', deviceLinkedAccounts: 1 }))
+    expect(r.signals.map((s) => s.name)).not.toContain('trusted_oauth_provider')
+    expect(r.score).toBe(60)
+    expect(r.band).toBe('high')
+  })
+
+  test('a clean social sign-up keeps the discount and the full credit', () => {
+    const r = scoreSignupRisk(features({ provider: 'social', emailVerified: true }))
+    expect(r.signals.map((s) => s.name)).toContain('trusted_oauth_provider')
+    expect(r.score).toBe(0)
+    expect(r.band).toBe('low')
+    expect(r.decision).toBe('credit_full')
+  })
 })

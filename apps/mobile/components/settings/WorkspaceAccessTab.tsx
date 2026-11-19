@@ -25,6 +25,13 @@ import { api, createHttpClient } from '../../lib/api'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { usePermissions } from '../../hooks/usePermissions'
 import { Text, useAccountSheetIcons } from './account-sheet-chrome'
+import {
+  describeModelGrant,
+  emptySelectionHint,
+  modelGrantMode,
+  modelGrantWrite,
+  type ModelGrantMode,
+} from './access-policy-draft'
 
 interface AbilityOption {
   id: string
@@ -48,6 +55,11 @@ interface PolicyRow {
   spendCapUsd: number | null
   spendPeriod: string | null
   requestsPerHour: number | null
+}
+
+/** A stored row plus the model state the editor is showing for it. */
+interface PolicyDraft extends PolicyRow {
+  modelMode: ModelGrantMode
 }
 
 interface EffectiveAccess {
@@ -96,6 +108,21 @@ interface ShadowDenial {
 
 const ROLES = ['owner', 'admin', 'member', 'viewer'] as const
 const SPEND_PERIODS = ['day', 'week', 'month'] as const
+
+/**
+ * The three model states a policy row can be in. "All models" is a real choice,
+ * not the absence of one: it is stored as `null`/`null` and keeps covering
+ * models that are added to the catalog later.
+ */
+const MODEL_MODES: ReadonlyArray<{ mode: ModelGrantMode; label: string; description: string }> = [
+  {
+    mode: 'all',
+    label: 'All models under the ceiling',
+    description: 'Every model the workspace allows, including ones added later.',
+  },
+  { mode: 'tiers', label: 'These tiers', description: 'Only the tiers you pick.' },
+  { mode: 'models', label: 'These models', description: 'Only the models you pick.' },
+]
 
 function errorMessage(err: unknown, fallback: string): string {
   const message = (err as { message?: unknown })?.message
@@ -517,7 +544,7 @@ function PoliciesCard({
 }) {
   const [subjectType, setSubjectType] = useState<'role' | 'member'>('role')
   const [subjectId, setSubjectId] = useState<string>('member')
-  const [draft, setDraft] = useState<PolicyRow | null>(null)
+  const [draft, setDraft] = useState<PolicyDraft | null>(null)
   const [saving, setSaving] = useState(false)
 
   const existing = useMemo(
@@ -526,33 +553,29 @@ function PoliciesCard({
   )
 
   // The editor always starts from the stored row, so an admin edits what is
-  // there rather than a blank slate that would silently drop a grant.
+  // there rather than a blank slate that would silently drop a grant. The model
+  // mode is read straight off the row: `null`/`null` stays "all models", so
+  // saving an untouched row writes back exactly what it read.
   useEffect(() => {
     setDraft(
       existing
-        ? {
-            ...existing,
-            // `null`/`null` means "every model under the ceiling". Show that as
-            // every tier selected, so saving an untouched row cannot narrow it
-            // to "no models" — which is what an empty selection now means.
-            modelTiers:
-              existing.modelTiers == null && existing.modelIds == null
-                ? [...modelTiers]
-                : existing.modelTiers,
-          }
+        ? { ...existing, modelMode: modelGrantMode(existing) }
         : {
             subjectType,
             subjectId,
             abilities: null,
             modelTiers: null,
             modelIds: null,
+            // A new row grants no models of its own until the admin says
+            // otherwise — "all models" is a widening and must be chosen.
+            modelMode: 'tiers',
             defaultModelId: null,
             spendCapUsd: null,
             spendPeriod: null,
             requestsPerHour: null,
           },
     )
-  }, [existing, subjectType, subjectId, modelTiers])
+  }, [existing, subjectType, subjectId])
 
   const groups = useMemo(() => {
     const byGroup = new Map<string, AbilityOption[]>()
@@ -584,18 +607,28 @@ function PoliciesCard({
     })
   }
 
+  const toggleModel = (id: string) => {
+    setDraft((prev) => {
+      if (!prev) return prev
+      const current = new Set(prev.modelIds ?? [])
+      if (current.has(id)) current.delete(id)
+      else current.add(id)
+      return { ...prev, modelIds: [...current] }
+    })
+  }
+
   const save = async () => {
     if (!draft) return
     setSaving(true)
     onError(null)
     onNotice(null)
     try {
+      const models = modelGrantWrite(draft.modelMode, draft.modelTiers ?? [], draft.modelIds ?? [])
       await http.put(`/api/workspaces/${encodeURIComponent(workspaceId)}/access/policies`, {
         subjectType: draft.subjectType,
         subjectId: draft.subjectId,
         abilities: draft.abilities,
-        modelTiers: draft.modelTiers,
-        modelIds: draft.modelIds,
+        ...models,
         defaultModelId: draft.defaultModelId,
         spendCapUsd: draft.spendCapUsd,
         spendPeriod: draft.spendPeriod,
@@ -640,6 +673,7 @@ function PoliciesCard({
           {(['role', 'member'] as const).map((type) => (
             <Pressable
               key={type}
+              accessibilityLabel={type === 'role' ? 'Role' : 'Member'}
               onPress={() => {
                 setSubjectType(type)
                 setSubjectId(type === 'role' ? 'member' : members[0]?.id ?? '')
@@ -658,6 +692,7 @@ function PoliciesCard({
           {(subjectType === 'role' ? ROLES.map((r) => ({ id: r, name: r })) : members).map((option) => (
             <Pressable
               key={option.id}
+              accessibilityLabel={option.name}
               onPress={() => setSubjectId(option.id)}
               className={cn(
                 'px-3 py-2 rounded-lg border',
@@ -704,25 +739,88 @@ function PoliciesCard({
             ))}
 
             <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mt-2">
-              Model tiers
+              Models
             </Text>
-            <View className="flex-row flex-wrap gap-2">
-              {modelTiers.map((tier) => {
-                const checked = (draft.modelTiers ?? []).includes(tier)
+            <View className="gap-2">
+              {MODEL_MODES.map((option) => {
+                const selected = draft.modelMode === option.mode
                 return (
                   <Pressable
-                    key={tier}
-                    onPress={() => toggleTier(tier)}
+                    key={option.mode}
+                    accessibilityLabel={option.label}
+                    onPress={() =>
+                      setDraft((prev) => (prev ? { ...prev, modelMode: option.mode } : prev))
+                    }
                     className={cn(
-                      'px-3 py-2 rounded-lg border',
-                      checked ? 'border-primary bg-primary/5' : 'border-border bg-background',
+                      'px-3 py-2.5 rounded-lg border flex-row items-center gap-3',
+                      selected ? 'border-primary/50 bg-primary/5' : 'border-border bg-background',
                     )}
                   >
-                    <Text className="text-xs text-foreground">{tier}</Text>
+                    <View
+                      className={cn(
+                        'w-5 h-5 rounded-full border items-center justify-center',
+                        selected ? 'border-primary bg-primary' : 'border-border bg-background',
+                      )}
+                    >
+                      {selected && checkIcon}
+                    </View>
+                    <View className="flex-1">
+                      <Text className="text-sm text-foreground">{option.label}</Text>
+                      <Text className="text-[11px] text-muted-foreground mt-0.5">{option.description}</Text>
+                    </View>
                   </Pressable>
                 )
               })}
             </View>
+
+            {draft.modelMode === 'tiers' && (
+              <View className="flex-row flex-wrap gap-2">
+                {modelTiers.map((tier) => {
+                  const checked = (draft.modelTiers ?? []).includes(tier)
+                  return (
+                    <Pressable
+                      key={tier}
+                      accessibilityLabel={`Tier ${tier}`}
+                      onPress={() => toggleTier(tier)}
+                      className={cn(
+                        'px-3 py-2 rounded-lg border',
+                        checked ? 'border-primary bg-primary/5' : 'border-border bg-background',
+                      )}
+                    >
+                      <Text className="text-xs text-foreground">{tier}</Text>
+                    </Pressable>
+                  )
+                })}
+              </View>
+            )}
+
+            {draft.modelMode === 'models' && (
+              <View className="flex-row flex-wrap gap-2">
+                {models.map((model) => {
+                  const checked = (draft.modelIds ?? []).includes(model.id)
+                  return (
+                    <Pressable
+                      key={model.id}
+                      accessibilityLabel={`Model ${model.displayName}`}
+                      onPress={() => toggleModel(model.id)}
+                      className={cn(
+                        'px-3 py-2 rounded-lg border',
+                        checked ? 'border-primary bg-primary/5' : 'border-border bg-background',
+                      )}
+                    >
+                      <Text className="text-xs text-foreground">
+                        {model.displayName} · {model.tier}
+                      </Text>
+                    </Pressable>
+                  )
+                })}
+              </View>
+            )}
+
+            {draft.modelMode !== 'all' &&
+              ((draft.modelMode === 'tiers' ? draft.modelTiers : draft.modelIds) ?? []).length === 0 && (
+                <Text className="text-[11px] text-amber-600">{emptySelectionHint(draft.subjectType)}</Text>
+              )}
 
             <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mt-2">
               Limits
@@ -772,6 +870,7 @@ function PoliciesCard({
               <Pressable
                 onPress={save}
                 disabled={saving}
+                accessibilityLabel="Save policy"
                 className={cn('px-4 py-2.5 rounded-md', saving ? 'bg-muted' : 'bg-primary')}
               >
                 {saving ? (
@@ -809,9 +908,7 @@ function PoliciesCard({
                   {p.subjectType} · {p.subjectId}
                 </Text>
                 <Text className="text-[11px] text-muted-foreground mt-0.5">
-                  {p.abilities?.length ?? 0} abilities
-                  {p.modelTiers?.length ? ` · tiers ${p.modelTiers.join(', ')}` : ''}
-                  {p.modelIds?.length ? ` · ${p.modelIds.length} models` : ''}
+                  {p.abilities?.length ?? 0} abilities · {describeModelGrant(p)}
                   {p.spendCapUsd != null ? ` · $${p.spendCapUsd}/${p.spendPeriod ?? 'month'}` : ''}
                 </Text>
               </View>

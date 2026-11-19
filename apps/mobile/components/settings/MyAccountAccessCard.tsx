@@ -2,9 +2,10 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useEffect, useState } from "react";
-import { Linking, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
 import { API_URL } from "../../lib/api";
 import { Text } from "./account-sheet-chrome";
+import { openExternalLink } from "../../lib/open-external-link";
 
 export type AccessScope = "own" | "all" | "selected";
 
@@ -105,7 +106,7 @@ export function MyAccountAccessCard({ workspaceId, provider = "github" }: { work
   const label = access.label || provider;
   const via = access.agents.find((a) => a.createdByMe) ?? access.agents[0];
   const connect = via
-    ? () => void Linking.openURL(`${API_URL}/api/projects/${encodeURIComponent(via.projectId)}/integrations/${encodeURIComponent(provider)}/connect`)
+    ? () => void openExternalLink(`${API_URL}/api/projects/${encodeURIComponent(via.projectId)}/integrations/${encodeURIComponent(provider)}/connect`)
     : null;
   const allowedCount = access.agents.filter((a) => a.allowed).length;
 

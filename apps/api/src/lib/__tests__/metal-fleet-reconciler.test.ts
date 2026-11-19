@@ -40,6 +40,14 @@ function host(hostId: string, region: string, poolSize: number, assigned: number
   return { hostId, region, capacity: { poolSize }, load: { assigned } }
 }
 
+/**
+ * A host that reports the residency split (SHO-444): `assigned` resident VMs of
+ * which `active` are holding a slot. The rest are evictable — warm but free.
+ */
+function hostSplit(hostId: string, region: string, poolSize: number, assigned: number, active: number): any {
+  return { hostId, region, capacity: { poolSize }, load: { assigned, active, evictable: assigned - active } }
+}
+
 function snap(over: Partial<ReconcileSnapshot>): ReconcileSnapshot {
   return {
     now: 1_000_000_000,
@@ -100,6 +108,31 @@ describe('planReconcile — scale up', () => {
     const desired = { ...DESIRED, burst: { ...DESIRED.burst, enabled: false } }
     const plan = planReconcile(snap({ desired, live: [host('latitude-dal-1', 'us', 24, HOT)] }))
     expect(plan.actions.some((a) => a.kind === 'scale_up')).toBe(false)
+  })
+})
+
+describe('planReconcile — scale up counts ACTIVE VMs only (SHO-444)', () => {
+  it('does NOT scale up for a region full of evictable VMs', () => {
+    // The whole point of the "ready to suspend" bucket: 75% of capacity is
+    // resident, but every one of those VMs is idle and evictable, so the region
+    // has room. Before this, this exact shape bought a host to hold VMs nobody
+    // was using.
+    const plan = planReconcile(snap({ live: [hostSplit('latitude-dal-1', 'us', 24, HOT, 0)] }))
+    expect(plan.actions.find((a) => a.kind === 'scale_up')).toBeUndefined()
+    expect(plan.regions.find((r) => r.region === 'us')!.utilPct).toBe(0)
+  })
+
+  it('still scales up when the ACTIVE VMs are hot, however many are evictable', () => {
+    const plan = planReconcile(snap({ live: [hostSplit('latitude-dal-1', 'us', 24, HOT, HOT)] }))
+    expect(plan.actions.find((a) => a.kind === 'scale_up')).toBeTruthy()
+  })
+
+  it('an old agent with no residency split behaves exactly as today', () => {
+    // No `active` field: every resident VM counts as load, which is the safe
+    // direction — busier than it may be, never emptier.
+    const plan = planReconcile(snap({ live: [host('latitude-dal-1', 'us', 24, HOT)] }))
+    expect(plan.regions.find((r) => r.region === 'us')!.utilPct).toBe(Math.round((HOT / MAX_VMS_PER_HOST) * 100))
+    expect(plan.actions.find((a) => a.kind === 'scale_up')).toBeTruthy()
   })
 })
 

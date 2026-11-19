@@ -402,14 +402,20 @@ export async function adminComputeSummary(params: { now?: Date; hostMonthlyUsd?:
 
   let hosts = 0
   let assignedNow = 0
+  let activeNow = 0
+  let evictableNow = 0
   let liveness: { appActive: number; agentActive: number; idleTail: number } | null = null
   try {
-    const { getMetalWarmPoolController } = await import('../lib/metal-warm-pool-controller')
+    const { getMetalWarmPoolController, activeLoad } = await import('../lib/metal-warm-pool-controller')
     const fleet = await getMetalWarmPoolController().getFleetStatus()
     hosts = fleet.hosts.length
     const acc = { appActive: 0, agentActive: 0, idleTail: 0 }
     for (const h of fleet.hosts) {
       assignedNow += h.load?.assigned ?? 0
+      // The residency split (SHO-444): `active` is what the fleet is really
+      // doing, `evictable` is warm capacity that costs nothing to give up.
+      activeNow += activeLoad(h)
+      evictableNow += h.load?.evictable ?? 0
       acc.appActive += h.load?.liveness?.appActive ?? 0
       acc.agentActive += h.load?.liveness?.agentActive ?? 0
       acc.idleTail += h.load?.liveness?.idleTail ?? 0
@@ -444,6 +450,10 @@ export async function adminComputeSummary(params: { now?: Date; hostMonthlyUsd?:
       // Cost the platform pays this month vs what the meter says it could bill.
       marginUsd: roundUsd(billableUsd - hostCostUsd),
       assignedNow,
+      // Residency split (SHO-444): `active` is what the fleet is really doing,
+      // `evictable` is warm capacity that costs nothing to give up.
+      activeNow,
+      evictableNow,
       livenessNow: liveness,
     },
     totals: {

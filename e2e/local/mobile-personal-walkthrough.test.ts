@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { expect, test, type Page } from "@playwright/test";
 
+import { seedActiveWorkspace } from "./helpers";
+
 const API_BASE =
   process.env.E2E_API_URL ||
   process.env.STAGING_API_URL ||
@@ -73,14 +75,7 @@ function homeComposer(page: Page) {
 }
 
 async function openPersonalHome(page: Page, workspace: WorkspaceRow) {
-  await page.addInitScript((activeWorkspace) => {
-    localStorage.setItem("shogo:active-workspace-id", activeWorkspace.id);
-    sessionStorage.setItem("shogo:active-workspace-id", activeWorkspace.id);
-    localStorage.setItem(
-      "shogo:active-workspace-kind",
-      JSON.stringify({ id: activeWorkspace.id, kind: "personal" }),
-    );
-  }, workspace);
+  await seedActiveWorkspace(page, workspace.id, "personal");
   await page.goto("/(app)");
   await expect(
     page.getByRole("button", { name: "Open chat sessions" }),

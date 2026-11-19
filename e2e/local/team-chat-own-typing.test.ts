@@ -60,16 +60,17 @@ test.describe("Team chat: you never see your own typing", () => {
   test.describe.configure({ mode: "serial" })
   test.setTimeout(180_000)
 
+  let context: BrowserContext
   let windowA: Page
   let windowB: Page
-  let context: BrowserContext
   let workspaceId: string
   let channelId: string
   let threadRootId: string
 
   test.beforeAll(async ({ browser }: { browser: Browser }) => {
-    // Both pages must share one explicit context so they model two tabs.
-    // browser.newPage() owns a one-page context and rejects another page.
+    // Both windows must share one session, so one explicit context: the
+    // implicit context behind `browser.newPage()` refuses a second page
+    // ("Please use browser.newContext()").
     context = await browser.newContext()
     windowA = await context.newPage()
     await windowA.setViewportSize({ width: 1440, height: 900 })

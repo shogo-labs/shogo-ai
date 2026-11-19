@@ -17,7 +17,7 @@ import { execFileSync } from "child_process"
 import { mkdirSync, writeFileSync } from "fs"
 import { dirname, resolve } from "path"
 import { expect, type Page } from "@playwright/test"
-import { LOCAL_API_BASE } from "./helpers"
+import { LOCAL_API_BASE, writeActiveWorkspaceSelection } from "./helpers"
 
 const REPO = resolve(__dirname, "../..")
 // Same resolution as `playwright.config.ts`'s `localDbPath`: the seed has to
@@ -179,12 +179,10 @@ export async function cleanupTeamNav(page: Page, seed: TeamNavSeed): Promise<voi
 
 /** Make the team workspace the active one (Local mode opens Personal). */
 export async function activateTeamWorkspace(page: Page, workspaceId: string): Promise<void> {
-  await page.addInitScript((id) => {
-    localStorage.setItem("shogo:active-workspace-id", id)
-    sessionStorage.setItem("shogo:active-workspace-id", id)
-    localStorage.setItem("shogo:active-workspace-kind", JSON.stringify({ id, kind: "team" }))
-    sessionStorage.setItem("shogo:active-workspace-kind", JSON.stringify({ id, kind: "team" }))
-  }, workspaceId)
+  // Both stores: a tab that has already booted keeps its own `sessionStorage`
+  // selection and ignores the shared default, so seeding `localStorage` alone
+  // leaves it on Personal (SHO-390).
+  await page.addInitScript(writeActiveWorkspaceSelection, [workspaceId, "team"] as const)
 }
 
 /**

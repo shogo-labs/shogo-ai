@@ -42,6 +42,12 @@ export interface OverlayVideoModel {
   bestFor: string
   textToVideoApiModel?: string
   imageToVideoApiModel?: string
+  /**
+   * Endpoint that takes reference images and audio together, so a clip can
+   * lip-sync to a recorded voice. Its `image_urls` / `audio_urls` caps become
+   * the model's `maxReferenceImages` / `maxReferenceAudio`.
+   */
+  referenceToVideoApiModel?: string
   /** Genjutsu-style edit workflow: submits a source clip instead of generating. */
   editApiModel?: string
   genjutsu?: 'motion_transfer' | 'object_swap' | 'restyle'
@@ -191,36 +197,42 @@ export const HIGGSFIELD_VIDEO_OVERLAY: readonly OverlayVideoModel[] = [
     id: 'hf-wan-3.0', displayName: 'Wan 3.0',
     textToVideoApiModel: 'alibaba/wan-3.0/text-to-video',
     imageToVideoApiModel: 'alibaba/wan-3.0/image-to-video',
+    referenceToVideoApiModel: 'alibaba/wan-3.0/reference-to-video',
     bestFor: 'Wan 3.0 with native audio and up to 30 s',
   },
   {
     id: 'hf-wan-3.0-prime', displayName: 'Wan 3.0 Prime',
     textToVideoApiModel: 'alibaba/wan-3.0-prime/text-to-video',
     imageToVideoApiModel: 'alibaba/wan-3.0-prime/image-to-video',
+    referenceToVideoApiModel: 'alibaba/wan-3.0-prime/reference-to-video',
     bestFor: "Wan's best motion and prompt following, with native audio",
   },
   {
     id: 'hf-happy-horse', displayName: 'Happy Horse 1.0',
     textToVideoApiModel: 'alibaba/happy-horse/text-to-video',
     imageToVideoApiModel: 'alibaba/happy-horse/image-to-video',
+    referenceToVideoApiModel: 'alibaba/happy-horse/reference-to-video',
     bestFor: 'Cheap Alibaba text/image-to-video at 720p or 1080p',
   },
   {
     id: 'hf-happy-horse-1.1', displayName: 'HappyHorse 1.1',
     textToVideoApiModel: 'alibaba/happy-horse/v1.1/text-to-video',
     imageToVideoApiModel: 'alibaba/happy-horse/v1.1/image-to-video',
+    referenceToVideoApiModel: 'alibaba/happy-horse/v1.1/reference-to-video',
     bestFor: 'HappyHorse 1.1, 1080p by default',
   },
   {
     id: 'hf-seedance-2.0', displayName: 'Seedance 2.0',
     textToVideoApiModel: 'bytedance/seedance-2.0/text-to-video',
     imageToVideoApiModel: 'bytedance/seedance-2.0/image-to-video',
+    referenceToVideoApiModel: 'bytedance/seedance-2.0/reference-to-video',
     bestFor: 'ByteDance shots with native audio, 480p to 4K',
   },
   {
     id: 'hf-seedance-2.5', displayName: 'Seedance 2.5',
     textToVideoApiModel: 'bytedance/seedance-2.5/text-to-video',
     imageToVideoApiModel: 'bytedance/seedance-2.5/image-to-video',
+    referenceToVideoApiModel: 'bytedance/seedance-2.5/reference-to-video',
     bestFor: 'Seedance 2.5: up to 30 s, first/last frames, native audio',
   },
   {
@@ -270,6 +282,7 @@ export const HIGGSFIELD_VIDEO_OVERLAY: readonly OverlayVideoModel[] = [
     id: 'hf-minimax-h3', displayName: 'MiniMax H3',
     textToVideoApiModel: 'minimax/h3/text-to-video',
     imageToVideoApiModel: 'minimax/h3/image-to-video',
+    referenceToVideoApiModel: 'minimax/h3/reference-to-video',
     bestFor: 'MiniMax H3 at 2K, 5–15 s',
   },
   {

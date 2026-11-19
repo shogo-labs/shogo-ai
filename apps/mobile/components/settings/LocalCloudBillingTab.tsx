@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useState } from 'react'
-import { ActivityIndicator, Linking, Platform, Pressable, View } from 'react-native'
+import { ActivityIndicator, Platform, Pressable, View } from 'react-native'
 import { AlertCircle, CreditCard, ExternalLink, RefreshCw } from 'lucide-react-native'
 import {
   Badge,
@@ -26,6 +26,7 @@ import {
   getWindowDisplays,
 } from '../../lib/billing-config'
 import { SetSpendLimitDialog } from '../billing/SetSpendLimitDialog'
+import { openExternalLink } from '../../lib/open-external-link';
 
 const Alert = accountSheetIcon(AlertCircle)
 const CardIcon = accountSheetIcon(CreditCard)
@@ -34,9 +35,7 @@ const Refresh = accountSheetIcon(RefreshCw)
 
 function openUrl(url: string | undefined) {
   if (!url) return
-  Linking.openURL(url).catch((error) => {
-    console.warn('[LocalCloudBilling] failed to open cloud billing URL:', error)
-  })
+  void openExternalLink(url)
 }
 
 export function LocalCloudBillingTab() {

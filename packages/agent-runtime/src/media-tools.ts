@@ -22,6 +22,9 @@ export { IMAGE_TOOL_NAMES, VIDEO_TOOL_NAMES, THREE_D_TOOL_NAMES, MEDIA_TOOL_NAME
 /** Upper bound on reference images a tool call may attach; models may allow fewer (see list_media_models). */
 export const MAX_REFERENCE_IMAGES = 4
 
+/** Upper bound on reference audio clips a tool call may attach; models allow fewer (see list_media_models). */
+export const MAX_REFERENCE_AUDIO = 10
+
 const IMAGE_MIME_BY_EXT: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -94,6 +97,9 @@ function toDataUri(image: LoadedImage): string {
 /** Higgsfield's input limit for a Genjutsu source clip. */
 export const MAX_SOURCE_VIDEO_BYTES = 200 * 1024 * 1024
 
+/** Per-file cap on a reference voice track (a 30 s WAV is ~3 MB). */
+export const MAX_REFERENCE_AUDIO_BYTES = 25 * 1024 * 1024
+
 /**
  * Duration of an MP4, read from its `mvhd` box — the only reliable way to know
  * how many source seconds a Genjutsu edit will be billed for without shelling
@@ -163,26 +169,58 @@ function loadWorkspaceVideo(
 }
 
 /**
- * Put a workspace clip on the provider's storage and return its public URL.
+ * Read a workspace voice track for a reference-to-video call. The provider's
+ * upload endpoint accepts WAV only (`audio/wav`, `audio/x-wav`), so anything
+ * else is refused here with the conversion to run rather than uploaded and
+ * rejected upstream.
+ */
+function loadWorkspaceAudio(
+  ctx: ToolContext,
+  workspacePath: string,
+  maxBytes = MAX_REFERENCE_AUDIO_BYTES,
+): { buffer: Buffer; workspacePath: string; contentType: string } | { error: string } {
+  const resolved = assertWithinWorkspace(ctx.workspaceDir, workspacePath)
+  if (!existsSync(resolved)) return { error: `Reference audio not found: ${workspacePath}` }
+  const ext = extname(resolved).toLowerCase()
+  if (ext !== '.wav') {
+    return {
+      error:
+        `Reference audio must be a .wav (got ${ext || 'no extension'}): ${workspacePath}. ` +
+        'The provider accepts WAV only — convert it first, e.g. ffmpeg -i in.mp3 -ar 48000 -ac 1 out.wav.',
+    }
+  }
+  const buffer = readFileSync(resolved)
+  if (buffer.byteLength > maxBytes) {
+    const limitMb = Math.round(maxBytes / (1024 * 1024))
+    const sizeMb = (buffer.byteLength / (1024 * 1024)).toFixed(1)
+    return { error: `Reference audio is ${sizeMb} MB; the limit is ${limitMb} MB. Trim it first.` }
+  }
+  return { buffer, workspacePath, contentType: 'audio/wav' }
+}
+
+/**
+ * Put a workspace file on the provider's storage and return its public URL.
  * The proxy owns the provider key, so the bytes go through it rather than to
  * the storage host directly.
  */
-async function uploadSourceVideo(
+async function uploadMedia(
   proxy: ProxyConfig,
   buffer: Buffer,
+  contentType: string,
+  label: string,
   signal?: AbortSignal,
 ): Promise<{ url: string } | { error: string }> {
   const response = await fetch(`${proxy.base}/v1/media/uploads`, {
     method: 'POST',
-    headers: { 'Content-Type': 'video/mp4', Authorization: `Bearer ${proxy.token}` },
+    headers: { 'Content-Type': contentType, Authorization: `Bearer ${proxy.token}` },
     body: buffer as unknown as BodyInit,
     signal,
   })
   if (!response.ok) {
-    return { error: friendlyMediaError('Uploading the source video', response.status, await response.text()) }
+    return { error: friendlyMediaError(`Uploading the ${label}`, response.status, await response.text()) }
   }
   const body = (await response.json()) as { url?: string }
-  if (!body.url) return { error: 'Uploading the source video failed: the proxy returned no URL.' }
+  if (!body.url) return { error: `Uploading the ${label} failed: the proxy returned no URL.` }
   return { url: body.url }
 }
 
@@ -774,6 +812,7 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
     description:
       'Generate a video clip from a text prompt, or animate a still image by passing start_image (recommended: make the still with generate_image first). ' +
       'Pass start_image + end_image to animate between two stills: the clip interpolates from the first frame to the last (Gemini Omni and the Higgsfield models whose list_media_models entry says last_frame: true). ' +
+      'Pass reference_images with reference_audio (recorded .wav voice tracks) to lip-sync a character to your own voice: the call goes to the model\'s reference-to-video endpoint, which drives the subject from the images and the speech from the audio. ' +
       'Also edits an existing clip: pass source_video with genjutsu "motion_transfer" | "object_swap" | "restyle" (restyle needs a preset_id from the presets list). ' +
       'Gemini Omni (model "google-omni-1.2-flash") drafts cheaply at 360p and continues the same clip later — pass previous_job_id with a higher resolution and no prompt to upscale it, or with a prompt to edit or extend it. ' +
       'Saves an MP4 to videos/ by default; pass path to save anywhere in the workspace. Billed per clip (Higgsfield) or per output second and by usage tokens (Gemini Omni) — call list_media_models for prices. ' +
@@ -802,7 +841,15 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
       reference_images: Type.Optional(
         Type.Array(Type.String(), {
           maxItems: MAX_REFERENCE_IMAGES,
-          description: 'Character/object reference images. Genjutsu motion_transfer and object_swap need at least one (the subject to drive or swap in).',
+          description:
+            'Character/object reference images (workspace paths). With reference_audio this lip-syncs the subject to a recorded voice; Genjutsu motion_transfer and object_swap need at least one (the subject to drive or swap in). list_media_models shows max_reference_images per model.',
+        }),
+      ),
+      reference_audio: Type.Optional(
+        Type.Array(Type.String(), {
+          maxItems: MAX_REFERENCE_AUDIO,
+          description:
+            'Workspace .wav voice tracks the clip lip-syncs to (uploaded automatically; WAV only — convert an .mp3 first). Sends the call to the model\'s reference-to-video endpoint. list_media_models shows max_reference_audio per model; 0 means that model cannot lip-sync.',
         }),
       ),
       source_video: Type.Optional(
@@ -848,6 +895,7 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
         start_image?: string
         end_image?: string
         reference_images?: string[]
+        reference_audio?: string[]
         source_video?: string
         genjutsu?: 'motion_transfer' | 'object_swap' | 'restyle'
         preset_id?: string
@@ -875,9 +923,18 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
       let sourceVideoUrl: string | undefined
       let sourceDurationSeconds: number | undefined
       const references: string[] = []
+      const referenceAudioUrls: string[] = []
       try {
         if ((p.reference_images?.length ?? 0) > MAX_REFERENCE_IMAGES) {
           return textResult({ error: `At most ${MAX_REFERENCE_IMAGES} reference images are supported per call.` })
+        }
+        if ((p.reference_audio?.length ?? 0) > MAX_REFERENCE_AUDIO) {
+          return textResult({ error: `At most ${MAX_REFERENCE_AUDIO} reference audio clips are supported per call.` })
+        }
+        if (p.source_video && (p.reference_audio?.length ?? 0) > 0) {
+          return textResult({
+            error: 'A Genjutsu edit takes no reference_audio: it keeps the source clip\'s own audio. Drop reference_audio, or generate a new clip with reference_images instead.',
+          })
         }
         if (p.end_image && !p.start_image) {
           return textResult({
@@ -899,10 +956,17 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
           if ('error' in image) return textResult({ error: image.error })
           references.push(toDataUri(image))
         }
+        for (const audioPath of p.reference_audio ?? []) {
+          const audio = loadWorkspaceAudio(ctx, audioPath)
+          if ('error' in audio) return textResult({ error: audio.error })
+          const uploaded = await uploadMedia(proxy, audio.buffer, audio.contentType, 'reference audio', signal)
+          if ('error' in uploaded) return textResult({ error: uploaded.error })
+          referenceAudioUrls.push(uploaded.url)
+        }
         if (p.source_video) {
           const video = loadWorkspaceVideo(ctx, p.source_video)
           if ('error' in video) return textResult({ error: video.error })
-          const uploaded = await uploadSourceVideo(proxy, video.buffer, signal)
+          const uploaded = await uploadMedia(proxy, video.buffer, 'video/mp4', 'source video', signal)
           if ('error' in uploaded) return textResult({ error: uploaded.error })
           sourceVideoUrl = uploaded.url
           // The edit is billed per source second; the proxy refuses the job if
@@ -937,6 +1001,7 @@ function createGenerateVideoTool(ctx: ToolContext): AgentTool {
             start_image: startImage,
             end_image: endImage,
             reference_images: references.length > 0 ? references : undefined,
+            reference_audio_urls: referenceAudioUrls.length > 0 ? referenceAudioUrls : undefined,
             source_video_url: sourceVideoUrl,
             source_duration_seconds: sourceDurationSeconds,
             preset_id: p.preset_id,

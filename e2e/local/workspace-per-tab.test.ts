@@ -161,12 +161,9 @@ test.describe("SHO-390 — one workspace per browser tab", () => {
     tabA.setDefaultTimeout(30_000)
     await tabA.setViewportSize({ width: 1280, height: 800 })
 
-    // This spec owns a BrowserContext, so establish the local-mode session in it.
-    const signIn = await context.request.post(LOCAL_API_BASE + "/api/local/auto-sign-in")
-    if (!signIn.ok()) {
-      throw new Error("local auto-sign-in failed (" + signIn.status() + "): " + await signIn.text())
-    }
-
+    // `page.request` shares this context's cookie jar, and a fresh context has
+    // no local session yet: without a page load the first call is a 401.
+    await goHome(tabA)
     const body = await apiJson<any>(tabA, "GET", "/api/workspaces")
     const items = (body?.items ?? body?.data?.items ?? body) as Array<{ id?: string; name?: string }>
     const workspaces = items.filter((w): w is Workspace => !!w?.id && !!w?.name)
@@ -180,10 +177,7 @@ test.describe("SHO-390 — one workspace per browser tab", () => {
     // Both tabs start in X, and X is the shared default a new tab would seed.
     await switchWorkspaceWide(tabA, X.name)
     await tabA.evaluate(
-      ([id]) => {
-        localStorage.setItem("shogo:active-workspace-id", id)
-        sessionStorage.setItem("shogo:active-workspace-id", id)
-      },
+      ([id]) => localStorage.setItem("shogo:active-workspace-id", id),
       [X.id],
     )
 
@@ -292,8 +286,12 @@ test.describe("SHO-390 — one workspace per browser tab", () => {
     if (!workspace?.id) throw new Error(`workspace create returned no id: ${JSON.stringify(created)}`)
     Z = { id: workspace.id as string, name: String(workspace.name) }
 
-    // Tab B is on X; the link names Z and must carry only tab B.
-    await tabB.goto(`/projects?workspace=${Z.id}`)
+    // Tab B is on X; the link names Z and must carry only tab B. SHO-284's link
+    // is always a *file* link (`/agent?workspace=<id>&file=<path>`, what the
+    // viewer's "Copy link to file" writes): `useFileLinkArrival` adopts the
+    // workspace on the way to opening the file, and returns early without a
+    // path, so a bare `?workspace=` is not a surface at all.
+    await tabB.goto(`/agent?workspace=${Z.id}&file=README.md`)
     await expect.poll(() => tabWorkspaceId(tabB), { timeout: 30_000 }).toBe(Z.id)
 
     // Tab A was on Y and stays there: the link changed nothing in it.

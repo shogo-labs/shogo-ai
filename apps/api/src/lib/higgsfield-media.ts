@@ -69,6 +69,10 @@ export type HiggsfieldErrorCode =
   | 'invalid_end_image'
   | 'text_to_video_unsupported'
   | 'reference_images_unsupported'
+  /** `reference_audio` on a model whose reference endpoint has no audio field. */
+  | 'reference_audio_unsupported'
+  /** More reference audio clips than the model's reference endpoint accepts. */
+  | 'too_many_reference_audio'
   | 'blocked'
   | 'unavailable'
   | 'server'
@@ -820,13 +824,6 @@ function applyOptions(
   }
 }
 
-/** The declared field that carries an input array of reference images. */
-function referenceArrayField(entry: MediaEntry, endpoint: string): ModelOptionField | undefined {
-  return optionsForEndpoint(entry, endpoint).find(
-    (field) => field.type === 'array' && /image/i.test(field.name),
-  )
-}
-
 export interface HiggsfieldImageParams {
   prompt: string
   size?: string
@@ -941,6 +938,8 @@ export interface HiggsfieldVideoParams {
   endImageUrl?: string
   /** Public URLs of character/object references. */
   referenceUrls?: string[]
+  /** Public URLs of recorded voice tracks the clip lip-syncs to (reference-to-video). */
+  referenceAudioUrls?: string[]
   /** Public URL of the clip a Genjutsu workflow edits. */
   sourceVideoUrl?: string
   /** Restyle style UUID. */
@@ -977,8 +976,49 @@ export function buildHiggsfieldVideoRequest(
     return { endpoint, input }
   }
 
+  const references = params.referenceUrls ?? []
+  const referenceAudio = params.referenceAudioUrls ?? []
+  const wantsReference = references.length > 0 || referenceAudio.length > 0
+  const referenceEndpoint = entry.referenceToVideoApiModel
+
+  if (wantsReference) {
+    if (!referenceEndpoint) {
+      fail(
+        referenceAudio.length > 0
+          ? `${entry.displayName} takes no reference audio — pick a model whose list_media_models entry has max_reference_audio above 0.`
+          : `${entry.displayName} does not accept reference images.`,
+        referenceAudio.length > 0 ? 'reference_audio_unsupported' : 'reference_images_unsupported',
+      )
+    }
+    if (referenceAudio.length > 0 && entry.maxReferenceAudio === 0) {
+      fail(
+        `${entry.displayName} takes no reference audio — its reference endpoint has no audio field. Pick a model with max_reference_audio above 0.`,
+        'reference_audio_unsupported',
+      )
+    }
+    if (referenceAudio.length > entry.maxReferenceAudio) {
+      fail(
+        `${entry.displayName} accepts at most ${entry.maxReferenceAudio} reference audio clip(s); got ${referenceAudio.length}.`,
+        'too_many_reference_audio',
+      )
+    }
+    // A start frame and references are two different modes: the reference
+    // endpoint drives the subject from the images, so a first frame would be a
+    // second, conflicting instruction — unless the vendor documents one there.
+    if (params.startImageUrl && !firstDeclared(entry, referenceEndpoint, ['image_url', 'start_image', 'image'])) {
+      fail(
+        `${entry.displayName} takes either start_image (image-to-video) or reference images/audio (reference-to-video), not both — pick one.`,
+        'validation',
+      )
+    }
+  }
+
   const wantsImage = !!params.startImageUrl
-  const endpoint = wantsImage ? entry.imageToVideoApiModel : entry.textToVideoApiModel
+  const endpoint = wantsReference
+    ? referenceEndpoint!
+    : wantsImage
+      ? entry.imageToVideoApiModel
+      : entry.textToVideoApiModel
   if (!endpoint) {
     fail(
       wantsImage
@@ -1046,13 +1086,9 @@ export function buildHiggsfieldVideoRequest(
     setField(entry, endpoint, input, lastField, params.endImageUrl)
   }
 
-  const references = params.referenceUrls ?? []
-  if (references.length > 0) {
-    const field = entry.maxReferenceImages > 0 ? referenceArrayField(entry, endpoint) : undefined
-    if (!field) {
-      fail(`${entry.displayName} does not accept reference images.`, 'reference_images_unsupported')
-    }
-    setField(entry, endpoint, input, field.name, references)
+  if (wantsReference) {
+    if (references.length > 0) setField(entry, endpoint, input, 'image_urls', references)
+    if (referenceAudio.length > 0) setField(entry, endpoint, input, 'audio_urls', referenceAudio)
   }
 
   applyOptions(entry, endpoint, input, params.options)

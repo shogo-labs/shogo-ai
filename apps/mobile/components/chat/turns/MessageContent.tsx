@@ -14,7 +14,6 @@ import {
   Text,
   Image,
   Pressable,
-  Linking,
   Platform,
   useWindowDimensions,
 } from "react-native"
@@ -31,6 +30,8 @@ import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
 import { VideoPreviewModal } from "../VideoPreviewModal"
 import { useShareFileOpener } from "../share-file-context"
 import { parseInAppFileHref } from "../../../lib/share-file-links"
+import { decodeDataUrlText } from "../../../lib/data-url"
+import { openExternalLink } from "../../../lib/open-external-link"
 import { downloadImage, isShogoDesktop } from "../chatImageActions"
 import { usePhoneLayout, usePhoneLayoutOverride } from "../../../lib/native-phone-layout"
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
@@ -328,12 +329,21 @@ function DocumentThumbnail({
   const servedFile = useMemo(() => parseInAppFileHref(url), [url])
   const openFile = useCallback(() => {
     if (servedFile && openShareFile) openShareFile(servedFile)
-    else Linking.openURL(url)
+    else void openExternalLink(url)
   }, [openShareFile, servedFile, url])
 
   const handlePress = useCallback(async () => {
     if (isVideo) {
       setShowVideoModal(true)
+      return
+    }
+    // A `data:` URL is the file itself, not an address: Android throws on it
+    // (`Could not open URL 'data:…'`, SHOGO-ANDROID-1D), so the bytes are
+    // decoded here and shown in the app's own viewer (SHO-436).
+    const inline = decodeDataUrlText(url)
+    if (inline) {
+      setFileContent(inline.text)
+      setShowModal(true)
       return
     }
     if (!isTextLike) {

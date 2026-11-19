@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useEffect, useRef, useState } from "react"
-import { Linking, Pressable, Text, View } from "react-native"
+import { Pressable, Text, View } from "react-native"
 import { API_URL, createHttpClient } from "../../lib/api"
+import { openExternalLink } from "../../lib/open-external-link";
 
 export interface IntegrationAuthRequest {
   provider: string
@@ -121,7 +122,7 @@ export function IntegrationConnectCard({
           accessibilityLabel={`Connect ${label}`}
           onPress={() => {
             setOpened(true)
-            void Linking.openURL(request.connectUrl)
+            void openExternalLink(request.connectUrl)
           }}
           className="rounded-lg bg-primary px-3 py-1.5"
         >

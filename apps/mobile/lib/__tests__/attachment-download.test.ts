@@ -10,8 +10,14 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
 mock.module('react-native', () => ({
   Platform: { OS: 'web' },
+  Alert: { alert: () => {} },
   Linking: { openURL: async () => undefined },
   InteractionManager: { runAfterInteractions: (task: () => void) => task() },
+}))
+// The download falls back to the shared opener, which presents its in-app
+// browser first (SHO-436).
+mock.module('expo-web-browser', () => ({
+  openBrowserAsync: async () => ({ type: 'opened' }),
 }))
 
 const { attachmentDownloadUrl, downloadAttachment } = await import('../attachment-download')

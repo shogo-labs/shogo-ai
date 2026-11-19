@@ -52,13 +52,15 @@ function summary(overrides: Record<string, unknown> = {}) {
     mode: 'shadow',
     windowStart: '2026-11-01T00:00:00.000Z',
     generatedAt: '2026-11-18T10:00:00.000Z',
-    rates: { vcpuHour: 0.1, gibHour: 0.005, idleBilling: 'none' },
+    rates: { vcpuHour: 0.07, gibHour: 0.012, idleBilling: 'none' },
     fleet: {
       hosts: 5,
       hostMonthlyUsd: 500,
       hostCostUsd: 2500,
       marginUsd: 1000,
       assignedNow: 22,
+      activeNow: 7,
+      evictableNow: 15,
       livenessNow: { appActive: 1, agentActive: 6, idleTail: 15 },
     },
     totals: {
@@ -88,6 +90,9 @@ describe('admin Compute panel', () => {
     expect(screen.getByText('Odin AI')).toBeDefined()
     expect(screen.getByText(/Meter coverage/)).toBeDefined()
     expect(screen.getByText(/5 host\(s\) reported usage in the last 72h/)).toBeDefined()
+    // The rate card is stated in full so an operator can check the number. The
+    // 3-decimal memory rate is the one that would silently round wrong.
+    expect(document.body.textContent).toContain('$0.07/vCPU-h + $0.012/GiB-h')
     expect(lastPath).toBe('/compute')
   })
 
@@ -96,6 +101,27 @@ describe('admin Compute panel', () => {
     render(createElement(ComputePanel))
 
     expect(await screen.findByText(/metal-us-9/)).toBeDefined()
+  })
+
+  test('shows the residency split: active holds a slot, evictable is free capacity (SHO-444)', async () => {
+    nextPayload = summary()
+    render(createElement(ComputePanel))
+
+    // 22 resident, of which 7 are in use and 15 are warm-but-free. The gap is
+    // what the burst scaler no longer pays for, so it has to be visible here.
+    expect(await screen.findByText('7 active · 15 evictable')).toBeDefined()
+  })
+
+  test('an older API without the residency fields falls back to assigned, not a blank', async () => {
+    const old = summary()
+    delete (old.fleet as any).activeNow
+    delete (old.fleet as any).evictableNow
+    nextPayload = old
+    render(createElement(ComputePanel))
+
+    // Never "undefined active": an agent that predates the bucket reports only
+    // assigned, and every resident VM counts as load.
+    expect(await screen.findByText('22 active · 0 evictable')).toBeDefined()
   })
 
   // Kept last: the crash below leaves React poisoned for later renders in the

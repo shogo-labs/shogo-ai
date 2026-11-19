@@ -26,6 +26,7 @@
  *   npx playwright test --config e2e/local/playwright.config.ts chat-composer-memory
  */
 import { expect, test, type Locator, type Page, type Route } from "@playwright/test"
+import { writeActiveWorkspaceSelection } from "./helpers"
 
 const API = process.env.E2E_API_URL || "http://localhost:8002"
 
@@ -128,12 +129,9 @@ async function mockChatTurns(page: Page): Promise<SentTurn[]> {
 }
 
 async function useTeamWorkspace(page: Page) {
-  await page.evaluate((id) => {
-    localStorage.setItem("shogo:active-workspace-id", id)
-    sessionStorage.setItem("shogo:active-workspace-id", id)
-    localStorage.setItem("shogo:active-workspace-kind", "team")
-    sessionStorage.setItem("shogo:active-workspace-kind", "team")
-  }, workspaceId)
+  // Both stores: this tab has already booted, so its own `sessionStorage`
+  // selection is what the app reads and the shared default alone moves nothing.
+  await page.evaluate(writeActiveWorkspaceSelection, [workspaceId, "team"] as const)
 }
 
 /** Stub the runtime, land on the app (localStorage needs a document), pick the team workspace. */

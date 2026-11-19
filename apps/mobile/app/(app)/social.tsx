@@ -19,7 +19,6 @@ import { useCallback, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
-  Linking,
   Platform,
   Pressable,
   RefreshControl,
@@ -48,6 +47,7 @@ import {
 } from 'lucide-react-native'
 import { useDomainHttp } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { openExternalLink } from '../../lib/open-external-link';
 
 type Tab = 'accounts' | 'compose' | 'calendar' | 'inbox' | 'comments' | 'automations'
 
@@ -827,7 +827,7 @@ function CalendarTab({
           </Text>
           <Text className="text-xs text-muted-foreground">{entry.reason}</Text>
           {entry.url ? (
-            <Pressable onPress={() => void Linking.openURL(entry.url)} className="mt-1">
+            <Pressable onPress={() => void openExternalLink(entry.url)} className="mt-1">
               <Text className="text-xs text-primary" numberOfLines={1}>
                 {entry.url}
               </Text>

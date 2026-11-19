@@ -245,6 +245,38 @@ export const config = {
   maxVmsPerHost: parseInt(env('METAL_MAX_VMS_PER_HOST', '80'), 10),
   /** Above this % of `maxVmsPerHost` assigned, use the aggressive idle window regardless of region. */
   idleHostGuardPct: parseInt(env('METAL_IDLE_HOST_GUARD_PCT', '80'), 10),
+
+  // --- "ready to suspend" bucket (SHO-444) ----------------------------------
+  //
+  // An idle VM stays resident (instant resume) but counts as free capacity, and
+  // is suspended early only when an assign/resume on this host needs the room.
+  // These knobs define "needs the room". Defaults are deliberately inert: prod
+  // behaviour changes only through the active-load accounting until someone
+  // tunes them.
+
+  /**
+   * Resident-VM count cap for the eviction trigger. 0 = no count cap, which is
+   * the default on purpose: production hosts already hold ~200 resident VMs
+   * each, so a cap anywhere near `METAL_MAX_VMS_PER_HOST` (80) would mass-evict
+   * on the first assign. Set it on a host whose real limit is a slot count.
+   */
+  maxResidentVmsPerHost: parseInt(env('METAL_MAX_RESIDENT_VMS_PER_HOST', '0'), 10),
+  /**
+   * Host RAM kept free when deciding a host is full: an assign that would leave
+   * less than this available evicts first. Defaults to 10% of MemTotal, because
+   * the kernel, the page cache and the next VM's own boot all need headroom —
+   * filling MemAvailable to zero is how a host starts OOM-killing firecracker
+   * processes. 0 disables the memory trigger (the count cap still applies).
+   */
+  evictMemReserveMiB: parseInt(env('METAL_EVICT_MEM_RESERVE_MIB', '0'), 10),
+  /** Most VMs one assign/resume may evict to make room. */
+  evictMaxPerAssign: parseInt(env('METAL_EVICT_MAX_PER_ASSIGN', '3'), 10),
+  /**
+   * The reaper keeps this many VMs' worth of room free, so most assigns never
+   * pay for an on-demand eviction (a backup + snapshot on the incoming open's
+   * path). 0 disables the proactive pass.
+   */
+  evictHeadroomSlots: parseInt(env('METAL_EVICT_HEADROOM_SLOTS', '2'), 10),
   /**
    * Back up source of a VM resident this long with user activity since its last
    * backup (pool.exportAllSource). Matters once the relaxed idle window keeps

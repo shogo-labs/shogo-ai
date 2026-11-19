@@ -10,7 +10,6 @@ import {
   ActivityIndicator,
   Image,
   FlatList,
-  Linking,
   Platform,
   useWindowDimensions,
 } from 'react-native'
@@ -30,6 +29,7 @@ import {
   type CreatorTier,
 } from '../../../../components/marketplace'
 import { useMarketplaceGridLayout, MARKETPLACE_GRID_PAD_X, marketplaceGridCellClass } from '../../../../hooks/useGridColumns'
+import { openExternalLink } from '../../../../lib/open-external-link';
 
 interface CreatorPublicProfile {
   id: string
@@ -332,7 +332,7 @@ export default observer(function CreatorProfileScreen() {
                     <Pressable
                       className="flex-row items-center gap-1.5 rounded-xl border border-border px-4 py-2 active:opacity-80"
                       onPress={() => {
-                        Linking.openURL(profile.websiteUrl!).catch(() => undefined)
+                        void openExternalLink(profile.websiteUrl!)
                       }}
                     >
                       <ExternalLink size={14} color="#71717a" />

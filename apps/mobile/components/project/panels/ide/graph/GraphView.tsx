@@ -18,7 +18,7 @@ import {
   Search,
   UploadCloud,
 } from "lucide-react-native";
-import { Linking, Platform } from "react-native";
+import { Platform } from "react-native";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
@@ -37,6 +37,7 @@ import { CommitGraphCanvas } from "./CommitGraphCanvas";
 import { CommitDetailPanel } from "./CommitDetailPanel";
 import { relativeTime } from "./gitAvatar";
 import { ROW_HEIGHT, type DisplayRow } from "./types";
+import { openExternalLink } from "../../../../../lib/open-external-link";
 
 type Selection = { kind: "wip" } | { kind: "commit"; sha: string } | null;
 
@@ -164,7 +165,7 @@ export function GraphView({
   const liveUrl = publish.subdomain ? `https://${publish.subdomain}.${publish.publishDomain}` : null;
 
   const handleViewLive = useCallback(() => {
-    if (liveUrl) Linking.openURL(liveUrl);
+    if (liveUrl) openExternalLink(liveUrl);
   }, [liveUrl]);
 
   // Re-deploy the current HEAD to the same subdomain (rebuild + re-tag), then

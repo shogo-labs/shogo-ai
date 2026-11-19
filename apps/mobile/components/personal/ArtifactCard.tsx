@@ -6,10 +6,11 @@
  * you. Rendered in chat (as a tool-result card), Goal Detail, and Activity,
  * so this is the one definition of what a "deliverable" looks like.
  */
-import { Linking, Pressable, Text, View } from 'react-native'
+import { Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { ExternalLink, File as FileIcon, FolderKanban } from 'lucide-react-native'
 import type { PersonalGoalDeliverable as GoalDeliverable } from '../../lib/api'
+import { openExternalLink } from '../../lib/open-external-link';
 
 const ICONS = {
   url: ExternalLink,
@@ -34,7 +35,7 @@ export function ArtifactCard({ deliverable }: { deliverable: GoalDeliverable }) 
       return
     }
     if (deliverable.url) {
-      void Linking.openURL(deliverable.url).catch(() => undefined)
+      void openExternalLink(deliverable.url)
     }
   }
 

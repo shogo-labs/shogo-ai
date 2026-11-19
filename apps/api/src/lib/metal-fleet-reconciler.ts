@@ -118,7 +118,7 @@ export interface LiveHost {
   hostId: string
   region: string
   capacity?: { poolSize: number }
-  load?: { assigned: number }
+  load?: { assigned: number; active?: number }
   cordoned?: boolean
 }
 
@@ -151,17 +151,23 @@ export interface ReconcilePlan {
 }
 
 /**
- * Region utilization as a whole-number percent: total LIVE assigned microVMs
+ * Region utilization as a whole-number percent: total LIVE ACTIVE microVMs
  * divided by real capacity (liveHosts × MAX_VMS_PER_HOST). Deliberately NOT
  * divided by the warm-pool `capacity.poolSize` — that made a lightly-loaded
  * region report >100% and falsely trip burst scale-up.
+ *
+ * ACTIVE, not resident (SHO-444): an idle-resident VM is evictable, so it is
+ * free capacity. Counting it is what made the burst scaler buy hosts to hold
+ * VMs nobody was using. A host that predates the residency split reports only
+ * `assigned`, so it falls back to today's behaviour — busier than it may be,
+ * never emptier.
  */
 function regionUtilPct(live: LiveHost[]): number {
   if (live.length === 0) return 0
-  let assigned = 0
-  for (const h of live) assigned += h.load?.assigned ?? 0
+  let active = 0
+  for (const h of live) active += h.load?.active ?? h.load?.assigned ?? 0
   const cap = live.length * MAX_VMS_PER_HOST
-  return Math.round((assigned / cap) * 100)
+  return Math.round((active / cap) * 100)
 }
 
 /** Map a region to its provider site from the desired baseline (first match). */

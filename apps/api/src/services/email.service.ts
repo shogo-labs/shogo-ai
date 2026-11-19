@@ -263,9 +263,9 @@ export async function sendTrialUnavailableEmail(params: {
   planName: string
   dashboardUrl: string
   /**
-   * `blocked_duplicate_card` | `blocked_duplicate_user` | `blocked_prepaid_card`
-   * | `blocked_seat_limit` for a trial, `solo_founder_prepaid` for a refunded
-   * Solo Founder purchase.
+   * `blocked_duplicate_card` | `blocked_duplicate_user` |
+   * `blocked_duplicate_network` | `blocked_prepaid_card` | `blocked_seat_limit`
+   * for a trial, `solo_founder_prepaid` for a refunded Solo Founder purchase.
    */
   reason?: string | null
   /** Override the subject/heading (the Solo Founder refund reuses this template). */
@@ -284,7 +284,9 @@ export async function sendTrialUnavailableEmail(params: {
         ? "Free trials need a debit or credit card — prepaid cards can't start a trial. You can still upgrade with this card, or start the trial with a different card."
         : params.reason === 'blocked_seat_limit'
           ? `Free trials include up to ${TRIAL_MAX_SEATS} seats. Start a paid plan to add more, or start the trial again with ${TRIAL_MAX_SEATS} seats or fewer.`
-          : 'This card or account has already used a free trial. You can still subscribe without a trial.')
+          : params.reason === 'blocked_duplicate_network'
+            ? "A free trial has already been started from this network. You can still subscribe without a trial."
+            : 'This card or account has already used a free trial. You can still subscribe without a trial.')
   return sendTemplateEmail('trial-unavailable', params.to, {
     workspaceName: params.workspaceName,
     planName: params.planName,

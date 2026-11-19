@@ -6,7 +6,7 @@
  * replies (streaming text, the tool in use, Stop).
  */
 import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Image, Linking, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
+import { Image, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
 import { createPortal } from 'react-dom'
 import { useRouter } from 'expo-router'
 import * as Clipboard from 'expo-clipboard'
@@ -76,6 +76,7 @@ import { customEmojiFor, jumboEmojiCodes, useCustomEmoji } from '../../hooks/use
 import { useEditRequest } from '../../hooks/useChatShortcuts'
 import { useMobileWorkspaceChrome } from '../layout/MobileWorkspaceChromeContext'
 import { HuddleWakeNote, huddleWakeBlockOf } from './HuddleWakeNote'
+import { openExternalLink } from '../../lib/open-external-link';
 
 export const QUICK_REACTIONS = ['👍', '✅', '👀', '🎉', '❤️', '😂']
 
@@ -263,7 +264,7 @@ function UnfurlCards({ message }: { message: ChatMessage }) {
       {live.map((u) => (
         <Pressable
           key={u.url}
-          onPress={() => Linking.openURL(u.url)}
+          onPress={() => openExternalLink(u.url)}
           accessibilityRole="link"
           accessibilityLabel={`Link preview: ${u.title}`}
           className="max-w-[520px] flex-row gap-3 rounded-md border-l-4 border-border bg-muted/30 py-2 pl-3 pr-2 active:bg-muted"
@@ -1104,7 +1105,7 @@ function MessageRowImpl(props: MessageRowProps) {
     const open = () => {
       if (!target) return
       if (target.type === 'url') {
-        void Linking.openURL(target.url)
+        void openExternalLink(target.url)
         return
       }
       // An activity line about a channel message opens it the way any other

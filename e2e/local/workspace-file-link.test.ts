@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { expect, test, type Page, type Route } from "@playwright/test"
-import { ignoreDevErrorToast } from "./helpers"
+import { ignoreDevErrorToast, seedActiveWorkspace } from "./helpers"
 
 /**
  * SHO-284: the workspace file viewer's header. Download is an icon button the
@@ -121,13 +121,10 @@ async function installFileMock(page: Page, expectedPath: string, content: string
 
 /**
  * Make `workspaceId` the workspace the app opens in, before the first paint —
- * the same key the workspace switcher writes.
+ * the same keys the workspace switcher writes, in both stores.
  */
 async function activateWorkspace(page: Page, workspaceId: string): Promise<void> {
-  await page.addInitScript((id) => {
-    localStorage.setItem("shogo:active-workspace-id", id)
-    sessionStorage.setItem("shogo:active-workspace-id", id)
-  }, workspaceId)
+  await seedActiveWorkspace(page, workspaceId, null)
 }
 
 test.describe("Workspace file viewer: icon Download and a shareable file link", () => {
@@ -159,8 +156,12 @@ test.describe("Workspace file viewer: icon Download and a shareable file link", 
     const rows = (Array.isArray(list) ? list : []) as Array<{ id: string; kind?: string }>
     // The file has to live in the workspace the chat on screen is in, or the
     // mention chip opens it in a different workspace than the one the link
-    // names. The app's own active workspace is the truth here.
-    const active = await page.evaluate(() => localStorage.getItem("shogo:active-workspace-id"))
+    // names. The app's own active workspace is the truth here, and that is this
+    // tab's `sessionStorage` selection — `localStorage` is only the default a
+    // new tab starts from (SHO-390).
+    const active = await page.evaluate(
+      () => sessionStorage.getItem("shogo:active-workspace-id") ?? localStorage.getItem("shogo:active-workspace-id"),
+    )
     const workspace = rows.find((row) => row.id === active) ?? rows.find((row) => row.kind === "personal") ?? rows[0]
     expect(workspace?.id, `workspace list ${workspaces.status}`).toBeTruthy()
     workspaceId = workspace.id
@@ -278,8 +279,11 @@ test.describe("Workspace file viewer: icon Download and a shareable file link", 
     await expect(opened.getByTestId("workspace-file-markdown")).toContainText("E2E Report Heading", {
       timeout: 30_000,
     })
+    // The link moves *this tab*: adoption is an automatic write, which the
+    // store keeps tab-local on purpose so a link can never move the shared
+    // default out from under another window (SHO-390).
     await expect
-      .poll(() => opened.evaluate(() => localStorage.getItem("shogo:active-workspace-id")), { timeout: 20_000 })
+      .poll(() => opened.evaluate(() => sessionStorage.getItem("shogo:active-workspace-id")), { timeout: 20_000 })
       .toBe(workspaceId)
     await opened.close()
   })
@@ -301,7 +305,9 @@ test.describe("Workspace file viewer: icon Download and a shareable file link", 
     // settle, then hold the arrival to its own rule: the stranger must not
     // change what is on screen.
     const settled = () =>
-      opened.evaluate(() => localStorage.getItem("shogo:active-workspace-id"))
+      opened.evaluate(
+        () => sessionStorage.getItem("shogo:active-workspace-id") ?? localStorage.getItem("shogo:active-workspace-id"),
+      )
     await expect
       .poll(
         async () => {
