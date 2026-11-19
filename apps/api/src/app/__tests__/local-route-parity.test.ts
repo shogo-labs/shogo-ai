@@ -130,6 +130,17 @@ const REQUIRED_LOCAL_ROUTES = [
   // viewer is a blank screen on exactly the surface that has no browser tab.
   'GET /api/conversation-files/:attachmentId/meta',
   'GET /api/conversation-files/:attachmentId/text',
+  // Inviting people (SHO-454): the invite dialog's link section, its Resend,
+  // and the `/invite/<token>` accept page. `server.ts` mounted all four and
+  // `createLocalApp()` did not, so every one of them 404'd in a local team
+  // workspace — the desktop/cloud divergence the channel rule forbids.
+  'POST /api/invite-links',
+  'GET /api/invite-links',
+  'PATCH /api/invite-links/:id',
+  'DELETE /api/invite-links/:id',
+  'POST /api/invite-links/:token/accept',
+  'GET /api/invite-links/:token/info',
+  'POST /api/invitations/:id/resend',
 ] as const
 
 /** Runtime → API paths that intentionally only exist in the cloud API. */

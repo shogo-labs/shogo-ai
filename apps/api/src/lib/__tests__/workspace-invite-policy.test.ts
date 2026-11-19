@@ -9,8 +9,8 @@
  * invites. Unknown stored values fall back to the permissive default.
  */
 import { describe, expect, test } from 'bun:test'
-import { resolveAccess, type WorkspaceRole } from '@shogo/authz'
-import { canInviteToWorkspace, normalizeInvitePolicy } from '../workspace-invite-policy'
+import { ALL_PERMISSIONS, resolveAccess, type WorkspaceRole } from '@shogo/authz'
+import { canGrantWorkspaceRole, canInviteToWorkspace, normalizeInvitePolicy } from '../workspace-invite-policy'
 import type { AccessContext } from '../authz/access'
 
 function accessFor(workspaceRole: WorkspaceRole): AccessContext {
@@ -107,5 +107,45 @@ describe('canInviteToWorkspace — bad input', () => {
   test('a missing workspace row falls back to the permissive default', () => {
     expect(canInviteToWorkspace(editor, null)).toBe(true)
     expect(canInviteToWorkspace(editor, undefined, 'member')).toBe(true)
+  })
+})
+
+describe('canGrantWorkspaceRole — a manager with no workspace role', () => {
+  // A tunnel request from the desktop: the cloud proxy already authorized the
+  // caller, so `computeAccess` hands it every permission but leaves
+  // `workspaceRole` null. Comparing against a null role refused every role,
+  // which is why creating a link or an invitation 403'd on desktop.
+  const tunnel: AccessContext = {
+    ...resolveAccess({}),
+    permissions: new Set(ALL_PERMISSIONS),
+    workspaceRole: null,
+    workspaceId: 'ws_1',
+    projectId: null,
+    exists: true,
+    visibility: null,
+    legacyAllowed: true,
+  }
+
+  test('may grant Editor, Viewer and Admin', () => {
+    for (const role of ['admin', 'member', 'viewer']) {
+      expect(canGrantWorkspaceRole(tunnel, role)).toBe(true)
+      expect(canInviteToWorkspace(tunnel, membersPolicy, role)).toBe(true)
+    }
+  })
+
+  test('may not mint an owner — that rule is unchanged', () => {
+    expect(canGrantWorkspaceRole(tunnel, 'owner')).toBe(false)
+    expect(canInviteToWorkspace(tunnel, membersPolicy, 'owner')).toBe(false)
+  })
+
+  test('an unknown role is still refused', () => {
+    expect(canGrantWorkspaceRole(tunnel, 'superuser')).toBe(false)
+  })
+
+  test('a caller with a real role still hits the no-escalation ceiling', () => {
+    expect(canGrantWorkspaceRole(admin, 'admin')).toBe(true)
+    expect(canGrantWorkspaceRole(admin, 'owner')).toBe(false)
+    expect(canGrantWorkspaceRole(editor, 'admin')).toBe(false)
+    expect(canGrantWorkspaceRole(viewer, 'viewer')).toBe(false)
   })
 })

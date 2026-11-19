@@ -41,6 +41,9 @@ import { aiLiveRoutes } from '../routes/ai-live'
 import { voiceRoutes } from '../routes/voice'
 import { voiceMediaRoutes } from '../routes/voice-media'
 import { rbacRoutes } from '../routes/rbac'
+import { inviteLinkRoutes } from '../routes/invite-links'
+import { inviteLinkAcceptRoutes } from '../routes/invite-link-accept'
+import { invitationResendRoutes } from '../routes/invitation-resend'
 import { chatRoutes } from '../routes/chat'
 import { createChatMessageEditRoutes } from '../routes/chat-message-edits'
 import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from '../routes/chat-message-feedback'
@@ -234,6 +237,40 @@ export function createLocalApp(): LocalAppBundle {
   // none of them, so mounting both here does not duplicate a route (SHO-73).
   app.route('/api', voiceMediaRoutes())
   app.route('/api', rbacRoutes())
+  // Inviting people (SHO-454). `server.ts` (cloud) mounts these next to
+  // `rbacRoutes()`, but this composer is the one desktop boots, so without them
+  // the invite dialog's Create / Reset / Turn off, its Resend, and the
+  // `/invite/<token>` accept page all 404 in a local team workspace.
+  //
+  // The cloud-only side effects are deliberately omitted, as elsewhere in this
+  // file: `afterCreate` sends the invitation email and `afterAccept` syncs
+  // billing seats, and neither exists locally (no SMTP, no plan).
+  app.route('/api', inviteLinkRoutes())
+  app.route('/api', invitationResendRoutes())
+  app.route('/api', inviteLinkAcceptRoutes({ resolveUserId: getAuthUserId }))
+  // The accept page renders before the invitee signs in, so this one is
+  // unauthenticated and carries no email address — same contract as cloud.
+  app.get('/api/invite-links/:token/info', async (c) => {
+    const link = await prisma.inviteLink.findUnique({
+      where: { token: c.req.param('token') },
+      include: {
+        project: { select: { id: true, name: true } },
+        workspace: { select: { id: true, name: true } },
+      },
+    })
+    if (!link || !link.enabled) {
+      return c.json({ error: 'Invite link not found or disabled' }, 404)
+    }
+    return c.json({
+      ok: true,
+      data: {
+        role: link.role,
+        projectName: link.project?.name,
+        workspaceName: link.workspace?.name,
+        expired: link.expiresAt ? new Date(link.expiresAt) < new Date() : false,
+      },
+    })
+  })
   app.route('/api', chatRoutes())
   app.route('/api', toolsProxyRoutes())
   // Social management: the desktop owns its own account/post rows and forwards

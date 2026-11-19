@@ -33,6 +33,27 @@ export interface InvitePolicyWorkspace {
 }
 
 /**
+ * Whether `access` may grant `role` in a workspace.
+ *
+ * A principal that holds `workspace.members:manage` but has no workspace role
+ * has no ceiling to escalate past: that is a tunnel request from the desktop
+ * (the cloud proxy already authorized the caller, so `computeAccess` hands it
+ * every permission) or a super admin with no membership row. Without this,
+ * `canAssignWorkspaceRole` compares against a null role and refuses every
+ * role, which is why creating a link or an invitation 403'd on desktop.
+ *
+ * `owner` stays on the unchanged rule — this card does not widen who may mint
+ * an owner.
+ */
+export function canGrantWorkspaceRole(access: AccessContext, role: string): boolean {
+  if (!isWorkspaceRole(role)) return false
+  if (role !== 'owner' && access.workspaceRole === null && access.permissions.has('workspace.members:manage')) {
+    return true
+  }
+  return canAssignWorkspaceRole(access, role)
+}
+
+/**
  * Whether `access` may invite to `workspace`, and — when `role` is given —
  * grant that role.
  *
@@ -49,7 +70,7 @@ export function canInviteToWorkspace(
 
   // Owners and admins: unchanged from before this card.
   if (access.permissions.has('workspace.members:manage')) {
-    return requested === null ? true : canAssignWorkspaceRole(access, requested)
+    return requested === null ? true : canGrantWorkspaceRole(access, requested)
   }
 
   // Editors only, and only while the workspace allows it.

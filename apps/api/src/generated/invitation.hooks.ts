@@ -15,7 +15,7 @@ import { getFrontendUrl } from "../lib/cloud-urls"
 import { canAssignProjectRole, canAssignWorkspaceRole, isWorkspaceRole, toProjectRole } from "@shogo/authz"
 import type { Principal } from "../lib/authz"
 import { hookAccess, hookCan, hookRequire } from "../lib/authz/hooks"
-import { canInviteToWorkspace } from "../lib/workspace-invite-policy"
+import { canGrantWorkspaceRole, canInviteToWorkspace } from "../lib/workspace-invite-policy"
 import { assertTrialSeatRoom } from "../services/billing.service"
 import { trialSeatLimitMessage } from "../config/usage-plans"
 
@@ -93,7 +93,7 @@ async function canManageInvite(
   if (opts.workspaceId) {
     const access = await hookAccess(ctx, { workspaceId: opts.workspaceId })
     if (role === undefined) return access.permissions.has('workspace.members:manage')
-    return isWorkspaceRole(role) && canAssignWorkspaceRole(access, role)
+    return canGrantWorkspaceRole(access, role)
   }
   return false
 }
