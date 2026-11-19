@@ -12,6 +12,7 @@ import { discardPendingSignupAttribution, flushSignupAttribution, queueSignupAtt
 import { api, createHttpClient, API_URL } from '../../lib/api'
 import { getPasswordResetRedirectUrl } from '../../lib/password-reset-redirect'
 import { resolveAuthCallbackUrl } from '../../lib/auth-callback-url'
+import { openExternalLink } from '../../lib/open-external-link'
 import { LoginScreen } from '@shogo/shared-ui/screens'
 import { LoginShowcase } from '../../components/auth/LoginShowcase'
 import { EnvironmentVersionTrigger } from '../../components/settings/EnvironmentPicker'
@@ -218,6 +219,7 @@ export default function SignInScreen() {
         isLoading={isLoading}
         error={error}
         onClearError={clearError}
+        onOpenExternalLink={openExternalLink}
         colorScheme={resolvedColorScheme}
         desktopShowcase={
           Platform.OS === 'web' ? <LoginShowcase colorScheme={resolvedColorScheme} /> : undefined
