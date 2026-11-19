@@ -18,14 +18,20 @@ import { PhoneLayoutOverrideProvider } from "../lib/native-phone-layout"
 import { IslandApp } from "../components/island/IslandApp"
 import { useIslandBridge } from "../components/island/useIslandBridge"
 import { useIslandPointer } from "../components/island/useIslandPointer"
-import { ISLAND_SURFACE_PROPS, ISLAND_TRIGGER_PROPS, getIslandBridge } from "../components/island/types"
+import { ISLAND_SURFACE_PROPS, ISLAND_TRIGGER_PROPS, getIslandBridge, isIslandWindow } from "../components/island/types"
 
 const SIGNED_OUT_RETRY_MS = 15_000
 
 // This window is not a tab: it mirrors the workspace the person picked in the
-// main window, including switches made after it loaded (SHO-390). Set at module
-// load so every read below goes to the shared default.
-setActiveWorkspaceFollowsShared(true)
+// main window, including switches made after it loaded (SHO-390).
+//
+// Only the island window may do this. Expo Router evaluates every route module
+// it may navigate to, so this module also runs in an ordinary browser tab,
+// where making the window a follower silently disables SHO-390: writes stop
+// going to `sessionStorage`, so a switch in one tab lands in the shared default
+// and every other tab follows it — and the switch intent itself is written
+// shared, so a stale screen can put the old workspace back.
+if (isIslandWindow()) setActiveWorkspaceFollowsShared(true)
 
 /** The overlay window is transparent, but the page and every navigator
  * container above this route paint an opaque background (react-navigation's

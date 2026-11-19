@@ -31,10 +31,12 @@ const PROBE_DELAY_MS = 1_500
 /**
  * How long the bubble may take to paint, measured from the Enter keypress.
  * ~15–40 ms on an idle local machine, 106–126 ms on a loaded PR runner (3 shards
- * in parallel, measured on #1525), so 250 ms is the default. The property under
- * test is only "well under `PROBE_DELAY_MS`" — 250 ms is 6× under it.
+ * in parallel, measured on #1525), and 255 ms on the 2026-11-18 shard 2 run that
+ * sat at 31.5 of its 35 min cap — so 600 ms. The property under test is only
+ * "well under `PROBE_DELAY_MS`"; 600 ms is still 2.5× under it, and the echo
+ * being gated on the probe would take the full 1500 ms.
  */
-const ECHO_BUDGET_MS = Number(process.env.E2E_ECHO_BUDGET_MS || 250)
+const ECHO_BUDGET_MS = Number(process.env.E2E_ECHO_BUDGET_MS || 600)
 const REPLY_TEXT = "Echo timing reply."
 
 // ─── SSE frames (AI SDK `UIMessageChunk`s, one JSON object per `data:` line) ─
@@ -114,27 +116,28 @@ async function createProject(page: Page, prompt: string) {
 }
 
 /**
- * Watches the DOM from inside the page for the first paint of `marker` outside
- * the composer, so the measurement uses the browser's own clock instead of a
- * round trip from the test runner. The composer draws a transparent mirror of
- * its text, so a bare body-text match is not proof of a bubble: a user bubble
- * (`role=button`, "Edit this message …") or text with the composer emptied is.
+ * Watches the DOM from inside the page for the first paint of `marker` in the
+ * TRANSCRIPT, so the measurement uses the browser's own clock instead of a
+ * round trip from the test runner.
+ *
+ * Scoped to `[data-testid="turn-list"]` on purpose. The composer draws a
+ * transparent mirror of its text, and it clears its `value` a frame before the
+ * mirror's text leaves the DOM — so a bare `document.body.innerText` match can
+ * fire on the mirror, before the echo bubble exists, and the bubble is then
+ * gone by the time the order is read (`echoAt === -1`, the 2026-11-19 shard 2
+ * failure). The echo is an optimistic message, so `canEditMessage` gives it no
+ * `role=button` / "Edit this message" label to match on; the transcript
+ * container is the marker that actually distinguishes a bubble from the
+ * composer.
  */
 async function armEchoWatch(page: Page, marker: string) {
   await page.evaluate((m) => {
     const w = window as any
-    const composerText = () => {
-      const el = document.querySelector('[data-testid="project-composer-input"]') as HTMLTextAreaElement | null
-      if (!el) return ""
-      return typeof el.value === "string" ? el.value : (el.innerText ?? "")
+    const transcriptText = () => {
+      const list = document.querySelector('[data-testid="turn-list"]')
+      return list ? (list.textContent || "") : ""
     }
-    const bubbleTexts = () =>
-      Array.from(document.querySelectorAll('[role="button"]')).filter((el) =>
-        (el.getAttribute("aria-label") || "").includes("Edit this message"),
-      )
-    const painted = () =>
-      bubbleTexts().some((el) => (el.textContent || "").includes(m)) ||
-      (document.body.innerText.includes(m) && !composerText().includes(m))
+    const painted = () => transcriptText().includes(m)
     w.__echoTiming = { sentAt: null, appearedAt: null }
     const observer = new MutationObserver(() => {
       // Only mutations caused by the send count — the composer mirror holds the
@@ -171,7 +174,10 @@ async function sendAndTimeEcho(page: Page, text: string): Promise<number> {
 async function transcriptOrder(page: Page, text: string, reply: string) {
   return page.evaluate(
     ({ t, r }) => {
-      const body = document.body.innerText
+      // The transcript, not `document.body`: the composer mirror holds the same
+      // text and would otherwise be counted as a bubble (see `armEchoWatch`).
+      const list = document.querySelector('[data-testid="turn-list"]')
+      const body = list ? (list.textContent || "") : ""
       return {
         echoAt: body.lastIndexOf(t),
         replyAt: body.lastIndexOf(r),

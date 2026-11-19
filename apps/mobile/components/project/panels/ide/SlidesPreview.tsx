@@ -105,26 +105,38 @@ export function SlidesPreview({
     if (!bytes) return
     const frame = frameRef.current
     if (!frame) return
-    let sent = false
     // The IDE and the viewers paint their own chrome, so the frame follows the
     // theme the host already decided instead of a prop threaded through them.
     const theme: SlidesTheme =
       rootRef.current?.closest('[data-theme]')?.getAttribute('data-theme') === 'light' ? 'light' : 'dark'
-    const send = () => {
+    // A transferred buffer is detached in the sender, so the deck can only be
+    // posted once that way. The blind post below may be dropped — the page is
+    // 2.4 MB of inlined renderer and can still be parsing at 250 ms — and the
+    // page's own `ready` is then the only chance left. So only that last post
+    // transfers; the blind one copies (SHO-383).
+    const post = (transfer: boolean) => {
       const target = frame.contentWindow
-      if (sent || !target) return
-      sent = true
-      const { message, transfer } = slidesLoadMessage(name, theme, bytes)
-      target.postMessage(message, '*', transfer)
+      if (!target) return
+      const { message, transfer: list } = slidesLoadMessage(name, theme, bytes)
+      target.postMessage(message, '*', transfer ? list : [])
     }
+    // Only a post made in answer to the page's own `ready` latches. The blind
+    // post must not: latching there left the `ready` that followed with
+    // nothing to do, and the deck never rendered (SHO-383).
+    let answered = false
     const onReady = (event: MessageEvent) => {
       if (event.source !== frame.contentWindow) return
-      if (parseSlidesViewerMessage(event.data)?.type === 'ready') send()
+      if (parseSlidesViewerMessage(event.data)?.type !== 'ready') return
+      if (answered) return
+      answered = true
+      post(true)
     }
     window.addEventListener('message', onReady)
     // A page that was already ready before the bytes arrived (an iframe that
     // loaded from cache) never repeats `ready`, so post once on the next tick.
-    const retry = setTimeout(send, 250)
+    const retry = setTimeout(() => {
+      if (!answered) post(false)
+    }, 250)
     return () => {
       window.removeEventListener('message', onReady)
       clearTimeout(retry)

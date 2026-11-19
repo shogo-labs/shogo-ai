@@ -21,6 +21,7 @@
  */
 import { expect, test, type Page } from "@playwright/test"
 import { teamWorkspaceId } from "./team-nav-seed"
+import { readActiveWorkspaceId } from "./helpers"
 
 const PHONE = { width: 390, height: 844 }
 const WIDE = { width: 1440, height: 900 }
@@ -91,7 +92,7 @@ test.describe("Phone Settings is the Account sheet", () => {
     await expectAccountSheet(page, "Automations")
     await expect
       .poll(
-        () => page.evaluate(() => localStorage.getItem("shogo:active-workspace-id")),
+        () => page.evaluate(readActiveWorkspaceId),
         { timeout: 30_000 },
       )
       .toBe(teamId)

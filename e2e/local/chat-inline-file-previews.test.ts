@@ -22,9 +22,13 @@ import { test, expect, type Page, type Route } from "@playwright/test"
 
 const API = process.env.E2E_API_URL || "http://localhost:8002"
 
-/** A real 1x1 PNG: a `<img>` only proves it drew when the bytes decode. */
+/**
+ * A real 240×160 PNG: a `<img>` only proves it drew when the bytes decode, and
+ * a card draws at the picture's own size — a 1×1 fixture would make the
+ * "fits the thread at 390px" measurement meaningless (it came out 3px wide).
+ */
 const PNG_BYTES = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "iVBORw0KGgoAAAANSUhEUgAAAPAAAACgCAIAAAC9uXYyAAABRElEQVR42u3SQQ0AAAjEsFOETDQiBxV8SJMqWJbqgTciAYYGQ4OhwdAYGgwNhgZDg6ExNBgaDA2GBkNjaDA0GBoMDYbG0GBoMDQYGgyNocHQYGgwNBgaQ4OhwdBgaDA0hgZDg6HB0BgaDA2GBkODoTE0GBoMDYYGQ2NoMDQYGgwNhsbQYGgwNBgaDI2hwdBgaDA0GBpDg6HB0GBoMDSGBkODocHQYGgMDYYGQ4OhMTQYGgwNhgZDY2gwNBgaDA2GxtBgaDA0GBoMjaHB0GBoMDQYGkODocHQYGgwNIYGQ4OhwdBgaAwNhgZDg6ExtAoYGgwNhgZDY2gwNBgaDA2GxtBgaDA0GBoMjaHB0GBoMDQYGkODocHQYGgwNIYGQ4OhwdBgaAwNhgZDg6HB0BgaDA2GBkNjaDA0GBoMDYbG0GBoMDTcWJWAFZnlgHM7AAAAAElFTkSuQmCC",
   "base64",
 )
 
