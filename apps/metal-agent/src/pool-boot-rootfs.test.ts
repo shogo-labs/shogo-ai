@@ -15,6 +15,7 @@ import { join } from 'path'
 import { config, type MetalConfig } from './config'
 import type { FcVmConfig, FcVmHandle } from './firecracker-vm-manager'
 import { LiveRegistry, type LiveVmEntry } from './live-registry'
+import { CacheIndex } from './cache-index'
 import { MetalWarmPool } from './pool'
 import type { SnapshotStore } from './snapshot-store'
 
@@ -140,6 +141,27 @@ describe('boot rootfs identity', () => {
     const suspended = pool.getProjectStatus('ws:proj:p1')
     expect(suspended.state).toBe('suspended')
     expect(suspended.rootfsFresh).toBe(false)
+  })
+
+  test('a snapshot whose final member backup failed is flagged, in memory and in the index', async () => {
+    // Its snapshot is then the only copy of the latest work; evictLocal reads
+    // the flag and quarantines the disks rather than deleting them.
+    const guest = makeGuest()
+    const cfg = makeCfg()
+    const { store } = recordingStore()
+    const pool = new MetalWarmPool(fakeMgr(guest.port) as any, cfg, store)
+    await pool.start()
+
+    const a = await pool.assign('ws:proj:p1', {})
+    a.bootRootfsIdentity = 'OLD-IMAGE'
+    ;(pool as any).saveWorkspaceMembersToStore = async () => [{ projectId: 'p1', reason: 'export timed out after 60000ms' }]
+    const s = await pool.suspend('ws:proj:p1')
+    expect(s.finalBackupFailed).toBe(true)
+    expect(new CacheIndex(cfg.snapDir).get('ws:proj:p1')?.finalBackupFailed).toBe(true)
+
+    await pool.assign('ws:proj:p2', {})
+    ;(pool as any).saveWorkspaceMembersToStore = async () => []
+    expect((await pool.suspend('ws:proj:p2')).finalBackupFailed).toBeUndefined()
   })
 
   test('a fresh VM suspends with the current identity and pushes it durably', async () => {

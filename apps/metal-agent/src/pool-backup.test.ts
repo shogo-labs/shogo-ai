@@ -234,3 +234,56 @@ describe('pool write-side backup (save on stop)', () => {
     expect(a.backupParentEtag).toBeUndefined()
   })
 })
+
+describe('source export deadline', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'metal-export-budget-'))
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  class BudgetPool extends TestPool {
+    budgets: number[] = []
+    next: Array<Uint8Array | Error> = []
+    protected override async fetchExport(
+      _h: unknown,
+      _t?: string,
+      _d?: string,
+      budgetMs?: number,
+    ): Promise<Uint8Array | null> {
+      this.budgets.push(budgetMs!)
+      const r = this.next.shift()!
+      if (r instanceof Error) throw r
+      return r
+    }
+  }
+
+  test('a timed-out export gets the full hydrate ceiling next time, and a success sizes the deadline', async () => {
+    // A 2 GB workspace (rendered video) timed out at a flat 60 s on every
+    // export for two days, so its durable backup silently stopped moving.
+    const cfg = {
+      ...config,
+      work: dir,
+      snapDir: join(dir, 'snap'),
+      runDir: join(dir, 'run'),
+      hydrateTimeoutMs: 5000,
+      hydrateTimeoutPerMiBMs: 400,
+    } as typeof config
+    mkdirSync(cfg.snapDir, { recursive: true })
+    mkdirSync(cfg.runDir, { recursive: true })
+    const pool = new BudgetPool({ procCount: () => 0 } as unknown as FirecrackerVMManager, cfg, {
+      kind: 'none',
+    } as unknown as SnapshotStore)
+
+    pool.next.push(new Error('export timed out after 5000ms'))
+    await expect(pool.save('p1')).rejects.toThrow('export timed out')
+    pool.next.push(new Uint8Array(10 * 1024 * 1024))
+    await pool.save('p1')
+    pool.next.push(new Uint8Array(1))
+    await pool.save('p1')
+
+    expect(pool.budgets).toEqual([5000, 30 * 60_000, 5000 + 10 * 400])
+  })
+})

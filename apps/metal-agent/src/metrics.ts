@@ -215,6 +215,9 @@ export const M = {
   rescueGuest: 'metal_rescue_guest_export_total',
   rescueDisk: 'metal_rescue_disk_extract_total',
   rescueFailed: 'metal_rescue_failed_quarantined_total',
+  // A snapshot whose final source backup failed was dropped from the cache, so
+  // its disks were quarantined instead of deleted. Page on it, like rescueFailed.
+  unbackedSnapshotQuarantined: 'metal_unbacked_snapshot_quarantined_total',
   staleSnapshotSkipped: 'metal_stale_snapshot_skipped_total',
   // Same events labelled `{reason="repo"|"member_data"|...}` (see StaleReason).
   staleSnapshotSkippedByReason: 'metal_stale_snapshot_skipped_by_reason_total',
