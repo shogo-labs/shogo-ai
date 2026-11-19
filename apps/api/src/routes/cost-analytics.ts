@@ -60,8 +60,11 @@ function isExperimentInputError(error: unknown): boolean {
 export function costAnalyticsRoutes(): Hono {
   const router = new Hono()
 
-  router.use('*', authMiddleware)
-  router.use('*', requireAuth)
+  // Scoped to this router's own path, not '*': mounted at /api in server.ts, a
+  // '*' middleware becomes part of the parent's chain for every /api/* route
+  // registered after it (SHO-452).
+  router.use('/workspaces/:workspaceId/cost-analytics/*', authMiddleware)
+  router.use('/workspaces/:workspaceId/cost-analytics/*', requireAuth)
 
   // --------------------------------------------------------------------------
   // Agent Cost Breakdown
