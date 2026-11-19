@@ -42,6 +42,14 @@ const COMET_TOKEN_MAX_AGE_SECONDS = 30 * 60
 /** "a new sign-up happened here, report it on the next authenticated page". */
 export const NEW_SIGNUP_FLAG_KEY = 'shogo_cometly_new_signup'
 const NEW_SIGNUP_FLAG_MAX_AGE_MS = 24 * 60 * 60 * 1000
+/**
+ * When `custom_event_2` was last reported for this browser. Only has to outlive
+ * the 60 s window in which two authenticated layouts can both see the same new
+ * account, so it stays short enough that a genuinely separate sign-up in the
+ * same browser still reports.
+ */
+export const NEW_SIGNUP_REPORTED_KEY = 'shogo_cometly_reported_new_signup'
+const SIGNUP_REPORT_DEDUPE_MS = 2 * 60 * 1000
 const CUSTOM_EVENT_DELAY_MS = 1_000
 
 function isWeb(): boolean {
@@ -101,12 +109,33 @@ export function clearCometTokenCookie(): void {
 /**
  * Remember that this browser just created an account. localStorage, not
  * sessionStorage, because verifying the email can land in another tab.
+ *
+ * No-ops while a report is still fresh (see `consumeNewSignupEvent`): a Google
+ * sign-up can mount two authenticated layouts in a row — the onboarding gate,
+ * then `(app)` once it finishes — and `oauth_pending` is still in sessionStorage
+ * for the second one, so without this guard a sign-up completed inside the
+ * 60 s new-account window would report `custom_event_2` twice.
  */
-export function markNewSignup(now: number = Date.now()): void {
-  if (!isWeb()) return
+export function markNewSignup(now: number = Date.now()): boolean {
+  if (!isWeb()) return false
   try {
+    if (hasRecentSignupReport(now)) return false
     window.localStorage.setItem(NEW_SIGNUP_FLAG_KEY, String(now))
-  } catch {}
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Whether `custom_event_2` was reported for this browser moments ago. */
+export function hasRecentSignupReport(now: number = Date.now()): boolean {
+  if (!isWeb()) return false
+  try {
+    const reportedAt = Number(window.localStorage.getItem(NEW_SIGNUP_REPORTED_KEY))
+    return Number.isFinite(reportedAt) && reportedAt > 0 && now - reportedAt < SIGNUP_REPORT_DEDUPE_MS
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -132,6 +161,12 @@ export function consumeNewSignupEvent(
 
   const markedAt = Number(raw)
   if (!Number.isFinite(markedAt) || now - markedAt > NEW_SIGNUP_FLAG_MAX_AGE_MS) return false
+
+  // Stamp the report before firing so the next authenticated layout (or a
+  // remount of this one) cannot mark and report the same sign-up again.
+  try {
+    window.localStorage.setItem(NEW_SIGNUP_REPORTED_KEY, String(now))
+  } catch {}
 
   // `window.comet` only exists once the tag has loaded, and the tag is not on
   // the app routes — so load it here, on the one post-signup page.

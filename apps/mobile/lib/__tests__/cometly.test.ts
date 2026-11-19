@@ -182,6 +182,35 @@ describe('custom_event_2', () => {
     expect(cometCalls).toEqual(['custom_event_2'])
   })
 
+  test('a second authenticated layout in the same sign-up flow does not fire again', async () => {
+    // A Google sign-up that finishes onboarding inside 60 s mounts (onboarding)
+    // and then (app), and `oauth_pending` is still set for the second one.
+    const at = Date.now()
+    expect(markNewSignup(at)).toBe(true)
+    expect(consumeNewSignupEvent(at, 0)).toBe(true)
+    await flush()
+
+    expect(markNewSignup(at + 20_000)).toBe(false)
+    expect(consumeNewSignupEvent(at + 20_000, 0)).toBe(false)
+    await flush()
+
+    expect(cometCalls).toEqual(['custom_event_2'])
+  })
+
+  test('a separate sign-up in the same browser later on still reports', async () => {
+    const at = Date.now()
+    markNewSignup(at)
+    consumeNewSignupEvent(at, 0)
+    await flush()
+
+    const later = at + 3 * 60 * 1000
+    expect(markNewSignup(later)).toBe(true)
+    expect(consumeNewSignupEvent(later, 0)).toBe(true)
+    await flush()
+
+    expect(cometCalls).toEqual(['custom_event_2', 'custom_event_2'])
+  })
+
   test('a normal login has no flag and never fires', async () => {
     expect(consumeNewSignupEvent(Date.now(), 0)).toBe(false)
     await flush()
