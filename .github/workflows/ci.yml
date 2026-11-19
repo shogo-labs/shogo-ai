@@ -806,7 +806,8 @@ jobs:
           E2E_LOCAL_START_STACK: '1'
           # Specs that have their own entry in this matrix skip themselves when
           # this is set, so they are not also run (and not also red) inside a
-          # shard. `slides-preview` is the first: it is its own job below.
+          # shard. `slides-preview` and `chat-send-body-size` are the two today;
+          # a new own-entry spec goes on that list in its own file.
           E2E_SHARD: ${{ matrix.shard }}
         run: npx playwright test --config e2e/local/playwright.config.ts --project=chromium --shard=${{ matrix.shard }}
 

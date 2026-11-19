@@ -25,6 +25,16 @@
 import { expect, test, type Page } from "@playwright/test"
 import { openTeamHome } from "./helpers"
 
+// This spec has its own CI job (`E2E (chat send body size)` in ci.yml) because
+// the shards never reached it inside their cap. Running it inside a shard as
+// well only doubles the cost — and, when it flakes, doubles the red on a job
+// that already reports it (SHO-447). The shard step sets `E2E_SHARD`; the
+// dedicated entry does not.
+test.skip(
+  Boolean(process.env.E2E_SHARD),
+  "has its own CI job (E2E (chat send body size)); it does not also run inside a shard",
+)
+
 test.use({ video: "off", trace: "off" })
 
 /** Turns in the fixture: well past a page, with tool output on every one. */
