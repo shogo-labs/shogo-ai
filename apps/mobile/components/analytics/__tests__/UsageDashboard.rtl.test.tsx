@@ -143,8 +143,11 @@ describe('UsageDashboard', () => {
     // Work activity.
     expect(screen.getByText('5 approved · 1 denied')).toBeTruthy()
     expect(screen.getByText('9 started')).toBeTruthy()
-    expect(screen.getByText('Write launch docs')).toBeTruthy()
-    expect(screen.getByText('Merge pull request #12')).toBeTruthy()
+    // The Recent list is intentionally gone: no message or task previews are
+    // rendered, even though the API still returns a `recent` array.
+    expect(screen.queryByText('Recent')).toBeNull()
+    expect(screen.queryByText('Write launch docs')).toBeNull()
+    expect(screen.queryByText('Merge pull request #12')).toBeNull()
 
     // Charts and panels.
     expect(screen.getByTestId('daily-chart').getAttribute('data-series')).toBe('Claude Sonnet,GPT')

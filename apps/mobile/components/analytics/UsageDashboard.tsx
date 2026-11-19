@@ -44,7 +44,6 @@ import {
   seriesColor,
   type EngagementPeriod,
   type EngagementStats,
-  type RecentWorkItem,
 } from '../../lib/engagement-utils'
 import { Text } from '../settings/account-sheet-chrome'
 import { StatCard, CostSplitLines, formatDollarCost } from './SharedAnalytics'
@@ -175,41 +174,6 @@ function WorkTile({
       </View>
       <Text className="text-lg font-bold text-foreground">{value}</Text>
       {sub ? <Text className="text-[11px] text-muted-foreground mt-0.5">{sub}</Text> : null}
-    </View>
-  )
-}
-
-function RecentList({ items }: { items: RecentWorkItem[] }) {
-  if (items.length === 0) return null
-  return (
-    <View className="gap-1.5 pt-1">
-      <Text className="text-xs font-medium text-muted-foreground">Recent</Text>
-      {items.map((item, i) => {
-        const Icon = item.kind === 'approval' ? ShieldCheck : CheckCircle2
-        return (
-          <View key={`${item.at}-${i}`} className="flex-row items-start gap-2">
-            <Icon size={14} className="text-muted-foreground mt-0.5" />
-            <View className="flex-1">
-              <Text className="text-xs text-foreground" numberOfLines={2}>
-                {item.label}
-              </Text>
-              {item.detail ? (
-                <Text className="text-[11px] text-muted-foreground" numberOfLines={2}>
-                  {item.detail}
-                </Text>
-              ) : null}
-            </View>
-            <Text className="text-[11px] text-muted-foreground">
-              {new Date(item.at).toLocaleString(undefined, {
-                month: 'short',
-                day: 'numeric',
-                hour: 'numeric',
-                minute: '2-digit',
-              })}
-            </Text>
-          </View>
-        )
-      })}
     </View>
   )
 }
@@ -355,7 +319,6 @@ export function UsageDashboard({
           <WorkTile icon={Wrench} label="Tool calls" value={compactNumber(t.toolCalls)} />
           <WorkTile icon={Video} label="Meetings" value={String(t.meetings)} />
         </View>
-        <RecentList items={data.recent} />
       </Panel>
 
       <Panel title="Daily token usage" subtitle="Tokens per day, stacked by model. Hover a day for its model breakdown.">

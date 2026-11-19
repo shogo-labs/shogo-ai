@@ -7,9 +7,10 @@
  * messages themselves, full text and ids, so an admin can dig further. Two
  * sources, both authored by the person and never a reply:
  *
- *   team_chat   `ConversationMessage.authorType = 'user'` in any conversation
- *               of the workspace, private channels and DMs included (that is
- *               what an admin export means) — deleted messages excluded.
+ *   team_chat   `ConversationMessage.authorType = 'user'` in any channel of
+ *               the workspace — private channels included, DMs and group DMs
+ *               excluded (their bodies are never exportable) — deleted
+ *               messages excluded.
  *   agent_chat  `ChatMessage.role = 'user'` in a chat belonging to the
  *               workspace. `project_call` relays and wake notes are left out:
  *               they are not something the person typed.
@@ -234,6 +235,9 @@ export async function getMemberMessages(
     authorType: 'user',
     authorUserId: userId,
     deletedAt: null,
+    // DMs and group DMs are private. They are counted in the summary's totals
+    // but their bodies are never part of an admin export or an agent lookup.
+    conversation: { kind: { notIn: ['dm', 'group_dm'] } },
     ...(Object.keys(window).length ? { createdAt: window } : {}),
     ...belowCursor(cursor),
   }

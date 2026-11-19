@@ -46,12 +46,20 @@ mock.module('../../lib/prisma', () => ({
     usageEvent: { findMany: async (a: any) => (record('usage', a), fx.usage) },
     toolCallLog: { findMany: async (a: any) => (record('tools', a), fx.tools) },
     conversationMessage: {
-      // The service issues two queries: user-authored messages, then agent-authored approval cards.
+      // The service issues three queries: channel messages, private (DM) messages,
+      // then agent-authored approval cards. A fourth shape is the thread-root lookup.
       findMany: async (a: any) => {
         record('message', a)
-        // Third shape: the thread-root lookup that decides a reply's audience.
         if (a.where?.id?.in) return fx.threadRoots
-        return a.where.authorType === 'agent' ? fx.approvalMessages : fx.messages
+        if (a.where.authorType === 'agent') return fx.approvalMessages
+        const kind = a.where.conversation?.kind
+        const kindOf = (m: any) => m.conversation?.kind ?? 'public'
+        let rows = fx.messages
+        if (kind?.in) rows = rows.filter((m: any) => kind.in.includes(kindOf(m)))
+        if (kind?.notIn) rows = rows.filter((m: any) => !kind.notIn.includes(kindOf(m)))
+        // Prisma returns only selected columns. Mirror that so a query that
+        // does not select `text` cannot leak a body through the mock.
+        return a.select?.text ? rows : rows.map(({ text, ...rest }: any) => rest)
       },
     },
     goalEvent: { findMany: async (a: any) => (record('goalEvent', a), fx.goalEvents) },
@@ -149,12 +157,37 @@ describe('collection scoping', () => {
   })
 
   test('postgres filters approval cards by JSON path; sqlite by substring', async () => {
+    const approvalCall = () => calls.message.filter((c) => c.where.blocks).at(-1)
     await svc.getEngagementStats({ workspaceId: WS }, '30d', 'UTC', range)
-    expect(calls.message[1].where.blocks).toEqual({ path: ['type'], equals: 'approval_request' })
+    expect(approvalCall().where.blocks).toEqual({ path: ['type'], equals: 'approval_request' })
 
     process.env.SHOGO_LOCAL_MODE = 'true'
     await svc.getEngagementStats({ workspaceId: WS }, '30d', 'UTC', range)
-    expect(calls.message[3].where.blocks).toEqual({ contains: 'approval_request' })
+    expect(approvalCall().where.blocks).toEqual({ contains: 'approval_request' })
+  })
+
+  test('DM bodies are never selected or surfaced — not even for the author', async () => {
+    fx.messages = [
+      { authorUserId: 'alice', id: 'dm1', conversationId: 'c-dm', conversation: { kind: 'dm' }, text: 'my private plan', createdAt: new Date('2026-07-07T10:00:00Z') },
+      { authorUserId: 'alice', id: 'ch1', conversationId: 'c-ch', conversation: { kind: 'public' }, text: 'shipped it', createdAt: new Date('2026-07-07T09:00:00Z') },
+    ]
+
+    // Workspace-wide (admin, no userId): the private query must not select text.
+    const team = await svc.getEngagementStats({ workspaceId: WS }, '30d', 'UTC', range)
+    const privateQuery = calls.message.find((c) => c.where.conversation?.kind?.in)
+    expect(privateQuery.select.text).toBeUndefined()
+    expect(team.recent.map((r) => r.id)).toEqual(['ch1'])
+    expect(team.totals.messagesSent).toBe(2)
+
+    // Admin drilling into another member: same rule.
+    const drill = await svc.getEngagementStats({ workspaceId: WS, userId: 'alice' }, '30d', 'UTC', range)
+    expect(drill.recent.map((r) => r.id)).toEqual(['ch1'])
+
+    // The author's own view: the body is still not selected and not shown.
+    const self = await svc.getEngagementStats({ workspaceId: WS, userId: 'alice' }, '30d', 'UTC', range)
+    const selfPrivateQuery = calls.message.filter((c) => c.where.conversation?.kind?.in).at(-1)
+    expect(selfPrivateQuery.select.text).toBeUndefined()
+    expect(self.recent.map((r) => r.id)).toEqual(['ch1'])
   })
 })
 
@@ -345,6 +378,21 @@ describe('getMemberWorkActivity', () => {
     // Queries are narrowed to exactly that person in that workspace.
     expect(calls.usage.at(-1).where.memberId).toBe('alice')
     expect(calls.usage.at(-1).where.workspaceId).toEqual({ in: [WS] })
+  })
+
+  test('a member’s DM bodies are never shown in their activity, to anyone', async () => {
+    const at = (h: number) => new Date(`2026-07-07T${String(h).padStart(2, '0')}:00:00Z`)
+    fx.messages = [
+      { authorUserId: 'alice', id: 'dm1', conversationId: 'c-dm', conversation: { kind: 'dm' }, text: 'my private plan', createdAt: at(10) },
+      { authorUserId: 'alice', id: 'ch1', conversationId: 'c-ch', conversation: { kind: 'public' }, text: 'shipped it', createdAt: at(9) },
+    ]
+
+    const out = await svc.getMemberWorkActivity(WS, alice, { range: 'today', tz: 'UTC' }, now)
+
+    // The DM is counted, but its body is neither selected nor surfaced.
+    expect(out.totals.messagesSent).toBe(2)
+    expect(out.recent.map((r) => r.id)).toEqual(['ch1'])
+    expect(out.recent.some((r) => r.label.includes('private'))).toBe(false)
   })
 
   test('a quiet day is reported as zeros, not an error', async () => {

@@ -147,7 +147,8 @@ export async function collectActivity(
   const [
     usageEvents,
     toolCalls,
-    messages,
+    channelMessages,
+    privateMessages,
     approvalMessages,
     goalEvents,
     tasks,
@@ -193,6 +194,7 @@ export async function collectActivity(
         createdAt: true,
       },
     }),
+    // Channel messages: always content-bearing, because a channel is shared.
     prisma.conversationMessage.findMany({
       where: {
         workspaceId: { in: workspaceIds },
@@ -200,6 +202,7 @@ export async function collectActivity(
         authorUserId: user ?? { not: null },
         deletedAt: null,
         createdAt,
+        conversation: { kind: { notIn: ['dm', 'group_dm'] } },
       },
       select: {
         id: true,
@@ -208,6 +211,28 @@ export async function collectActivity(
         conversationId: true,
         threadRootId: true,
         text: true,
+        conversation: { select: { kind: true } },
+        mentions: { select: { targetType: true, targetUserId: true, projectId: true } },
+      },
+    }),
+    // DMs and group DMs: counted for totals and the audience split, but their
+    // body is never selected. Nobody — not the author, not an admin — sees a
+    // private message's text in analytics.
+    prisma.conversationMessage.findMany({
+      where: {
+        workspaceId: { in: workspaceIds },
+        authorType: 'user',
+        authorUserId: user ?? { not: null },
+        deletedAt: null,
+        createdAt,
+        conversation: { kind: { in: ['dm', 'group_dm'] } },
+      },
+      select: {
+        id: true,
+        authorUserId: true,
+        createdAt: true,
+        conversationId: true,
+        threadRootId: true,
         conversation: { select: { kind: true } },
         mentions: { select: { targetType: true, targetUserId: true, projectId: true } },
       },
@@ -397,7 +422,7 @@ export async function collectActivity(
       chatSessionId: t.chatSessionId,
       createdAt: t.createdAt,
     })),
-    messages: await classifyMessages(messages, workspaceIds),
+    messages: await classifyMessages([...channelMessages, ...privateMessages], workspaceIds),
     approvals,
     tasks: tasks.map((t) => ({
       userId: t.userId,
@@ -499,6 +524,8 @@ async function classifyMessages(
       id: m.id,
       conversationId: m.conversationId,
       threadRootId,
+      conversationKind: kind,
+      isPrivate: kind === 'dm' || kind === 'group_dm',
       text: m.text,
       workItemKey: cardKeyByThread.get(threadRootId ?? m.id) ?? null,
       audience: classifyAudience({

@@ -428,8 +428,9 @@ describe('the export of what one person sent', () => {
     const page = await getMemberMessages(seeded.workspaceId, alice, { since: new Date(FROM), until: new Date(UNTIL), limit: 200 })
     const texts = page.items.map((i) => i.text)
 
-    expect(texts).toContain('dm to a person')
-    expect(texts).toContain('dm to an agent')
+    // DMs are private: counted in the summary, never exported.
+    expect(texts).not.toContain('dm to a person')
+    expect(texts).not.toContain('dm to an agent')
     expect(texts).toContain('tagged the agent')
     expect(texts).toContain('tagged both')
     expect(texts).toContain('plain channel post')
@@ -449,8 +450,6 @@ describe('the export of what one person sent', () => {
     }
 
     const byText = new Map(page.items.map((i) => [i.text, i]))
-    expect(byText.get('dm to a person')!.audience).toBe('person')
-    expect(byText.get('dm to an agent')!.audience).toBe('agent')
     expect(byText.get('tagged the agent')!.audience).toBe('agent')
     expect(byText.get('tagged both')!.audience).toBe('mixed')
     expect(byText.get('plain channel post')!.audience).toBe('channel')
@@ -492,7 +491,8 @@ describe('the export of what one person sent', () => {
       audience: 'person',
       limit: 200,
     })
-    expect(people.items.map((i) => i.text)).toEqual(['dm to a person'])
+    // The only person-audience message in the fixture was a DM, which is private.
+    expect(people.items).toEqual([])
 
     const agents = await getMemberMessages(seeded.workspaceId, alice, {
       since: new Date(FROM),
@@ -501,7 +501,7 @@ describe('the export of what one person sent', () => {
       limit: 200,
     })
     expect(new Set(agents.items.map((i) => i.text))).toEqual(
-      new Set(['dm to an agent', 'tagged the agent', 'replying in the agent thread', 'prompt one', 'prompt two', 'prompt in the shared project chat']),
+      new Set(['tagged the agent', 'replying in the agent thread', 'prompt one', 'prompt two', 'prompt in the shared project chat']),
     )
 
     const channelOnly = await getMemberMessages(seeded.workspaceId, alice, {
@@ -510,7 +510,8 @@ describe('the export of what one person sent', () => {
       source: 'team_chat',
       limit: 200,
     })
-    expect(channelOnly.items).toHaveLength(EXPECTED.messagesSent)
+    // Seven messages were sent, but two were DMs and are never exported.
+    expect(channelOnly.items).toHaveLength(EXPECTED.messagesSent - 2)
     expect(channelOnly.items.every((i) => i.source === 'team_chat')).toBe(true)
   })
 
@@ -539,7 +540,8 @@ describe('the export of what one person sent', () => {
       until: new Date('2026-10-24T11:05:00.000Z'),
       limit: 200,
     })
-    expect(inside.items.map((i) => i.text)).toEqual(['dm to a person'])
+    // The only message in this window was a DM, which is private.
+    expect(inside.items).toEqual([])
   })
 
   test('the CSV is every page of the same rows', async () => {
@@ -571,8 +573,10 @@ describe('the routes and the gate', () => {
     const text = await res.text()
     const lines = text.trim().split('\n')
     expect(lines[0]).toBe('created_at,source,audience,conversation,thread_root_id,card,chat_session_id,message_id,text')
-    expect(lines.length).toBe(1 + EXPECTED.messagesSent + 3)
-    expect(text).toContain('dm to a person')
+    // Two of the seven sent messages were DMs and are excluded from the export.
+    expect(lines.length).toBe(1 + (EXPECTED.messagesSent - 2) + 3)
+    expect(text).not.toContain('dm to a person')
+    expect(text).not.toContain('dm to an agent')
     expect(text).not.toContain('the answer')
   })
 

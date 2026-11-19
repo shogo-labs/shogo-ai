@@ -230,8 +230,10 @@ describe('getMemberMessages on a real database', () => {
       return acc
     }, {})
 
-    expect(byAudience).toEqual({ channel: 1, agent: 4, mixed: 1, person: 1 })
+    // The owner's DM is counted in the summary but never exported.
+    expect(byAudience).toEqual({ channel: 1, agent: 4, mixed: 1 })
     expect(page.items.every((i) => i.text.length > 0)).toBe(true)
+    expect(page.items.some((i) => i.text.includes('thanks for the review'))).toBe(false)
     expect(page.items.every((i) => !!i.id)).toBe(true)
     // Nobody else's message, and not the deleted one.
     expect(page.items.some((i) => i.text.includes('not the owners'))).toBe(false)
@@ -241,15 +243,16 @@ describe('getMemberMessages on a real database', () => {
   })
 
   test('filters by audience and by source, on real queries', async () => {
+    // The only person-audience message was a DM, which is private.
     const people = await messages.getMemberMessages(seed.workspaceId, seed.owner, { audience: 'person' })
-    expect(people.items.map((i) => i.audience)).toEqual(['person'])
+    expect(people.items).toEqual([])
 
     const agents = await messages.getMemberMessages(seed.workspaceId, seed.owner, { audience: 'agent' })
     expect(agents.items).toHaveLength(4)
     expect(agents.items.every((i) => i.audience === 'agent')).toBe(true)
 
     const teamOnly = await messages.getMemberMessages(seed.workspaceId, seed.owner, { source: 'team_chat' })
-    expect(teamOnly.items).toHaveLength(5)
+    expect(teamOnly.items).toHaveLength(4)
     expect(teamOnly.items.every((i) => i.source === 'team_chat')).toBe(true)
 
     const chatOnly = await messages.getMemberMessages(seed.workspaceId, seed.owner, { source: 'agent_chat' })
@@ -271,7 +274,8 @@ describe('getMemberMessages on a real database', () => {
     const all = await messages.getMemberMessages(seed.workspaceId, seed.owner, { limit: 200 })
     expect(seen).toEqual(all.items.map((i) => i.id))
     expect(new Set(seen).size).toBe(seen.length)
-    expect(seen).toHaveLength(7)
+    // Five team-chat messages minus the private DM, plus two agent-chat prompts.
+    expect(seen).toHaveLength(6)
   })
 
   test('the CSV reads the same rows in one pass', async () => {
