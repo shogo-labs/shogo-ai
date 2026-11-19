@@ -27,7 +27,7 @@ import { buildStopRequest } from "../../lib/chat-stop"
 import { resolveChatScope } from "../../lib/chat-scope"
 import type { IslandPermissionDecision, IslandPlanSummary } from "../../lib/desktop-island"
 import type { PlanData } from "../chat/PlanCard"
-import { probeChatTurnStatus, shouldAttachLiveStream } from "../chat/probe-turn-status"
+import { probeChatTurnBounded, shouldAttachLiveStream } from "../chat/probe-turn-status"
 import {
   applyMessageSnapshot,
   dropUnfinishedAssistantTail,
@@ -347,10 +347,12 @@ export function useOwnedIslandSession(
       .then(async (history) => {
         if (cancelled) return
         setMessages(history)
-        const turnStatus = await probeChatTurnStatus({
-          url: buildChatTurnUrl(API_URL!, chatProjectId, null, sessionId, chatWorkspaceId),
-          credentials: "include",
-        })
+        const turnStatus = (
+          await probeChatTurnBounded({
+            url: buildChatTurnUrl(API_URL!, chatProjectId, null, sessionId, chatWorkspaceId),
+            credentials: "include",
+          })
+        ).status
         if (!cancelled && shouldAttachLiveStream(turnStatus)) resume()
       })
       .catch((err) => !cancelled && setError(errorMessage(err)))

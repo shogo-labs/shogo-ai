@@ -47,6 +47,69 @@ export interface StallRecoveryGateInput {
   userInitiatedStop: boolean
 }
 
+/** A status the runtime reported for a turn that is no longer running. */
+export function turnEndedOnServer(turnStatus: ChatTurnStatus): boolean {
+  return turnStatus === "completed" || turnStatus === "failed" || turnStatus === "aborted"
+}
+
+export type StallTripDecision =
+  /** The runtime is still running this turn — give it a fresh window. */
+  | "stay-attached"
+  /** The runtime is running it but this body is dead — reattach, no banner. */
+  | "stop-and-reattach"
+  /** The turn already ended server-side — drop the dead body and paint history. */
+  | "stop-and-reload"
+  /** Nothing confirmed the turn is alive — break the wedge and offer Retry. */
+  | "stop"
+
+/**
+ * How many consecutive trips a single turn may be kept alive for. One full
+ * fresh window absorbs a slow first byte; a second window of complete silence
+ * while the runtime still reports the turn running means the body this device
+ * is reading is dead, so the panel drops it and reattaches from the buffer
+ * instead of waiting on a socket that will never deliver.
+ */
+export const DEFAULT_STALL_KEEP_ALIVES = 1
+
+export interface StallTripInput {
+  turnStatus: ChatTurnStatus
+  /** Whether the `/turn` probe was answered at all (see `ChatTurnSnapshot`). */
+  answered: boolean
+  /** Trips already kept alive for this same turn. */
+  keptAlive?: number
+  /** Budget before the body is declared dead. Defaults to {@link DEFAULT_STALL_KEEP_ALIVES}. */
+  maxKeptAlive?: number
+}
+
+/**
+ * What the stall watchdog should do once its threshold has passed and the
+ * `/turn` probe has answered.
+ *
+ * The watchdog used to call `stop()` the moment client-side time crossed the
+ * threshold, without asking the server anything. Every trip it recorded sat at
+ * roughly threshold + one 15 s tick (~133 s against the 120 s `submitted`
+ * threshold), which is exactly what a healthy turn looks like when the runtime
+ * has not written a byte yet (cold pod, large prompt build, provider TTFB) or
+ * when the socket died without an error. Aborting those turns is how a live
+ * reply turned into "Runtime unreachable — tap retry" on web, iOS and Android.
+ *
+ * So: `active` keeps the turn (and only resets the window), a terminal status
+ * reloads what the server already saved, and only an unanswered probe — where
+ * nothing says the turn is alive — falls back to the old hard stop.
+ */
+export function decideStallTrip({
+  turnStatus,
+  answered,
+  keptAlive = 0,
+  maxKeptAlive = DEFAULT_STALL_KEEP_ALIVES,
+}: StallTripInput): StallTripDecision {
+  if (turnStatus === "active") {
+    return keptAlive >= maxKeptAlive ? "stop-and-reattach" : "stay-attached"
+  }
+  if (answered && turnEndedOnServer(turnStatus)) return "stop-and-reload"
+  return "stop"
+}
+
 /**
  * Decide whether a stream ending without `data-turn-complete` should launch
  * automatic recovery. A React update-depth error is not a transport stall:
