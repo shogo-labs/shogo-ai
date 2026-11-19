@@ -78,9 +78,10 @@ test.describe("Admin quality chart cache-hit units", () => {
     const chart = qualityChart()
     await expect(chart).toBeVisible({ timeout: 30_000 })
 
-    // The tick labels are the chart's own `formatY` output. A 0–1 series would
-    // print "0.9%" here; a 0–100 series prints "90%".
-    await expect(chart).toContainText(`${CACHE_HIT}%`)
+    // The tick labels are the chart's own `formatY` output over a "nice" axis
+    // (`[0, ¼, ½, ¾, 1] × niceMax`), so a 90 % series tops out at 100 %. A 0–1
+    // series would top out at "1.0%" — and print the day as "0.9%".
+    await expect(chart).toContainText("100%")
     await expect(chart).not.toContainText(`${CACHE_HIT / 100}%`)
   })
 
@@ -94,8 +95,19 @@ test.describe("Admin quality chart cache-hit units", () => {
   })
 
   test("the live endpoint returns cacheHitRatio on the 0–100 scale", async () => {
-    const res = await api(page, "GET", "/api/admin/analytics/quality-timeseries?period=30d")
-    expect(res.status).toBe(200)
+    // The desktop composer mounts only the workspace-scoped analytics routes
+    // (`/api/admin/*` is the cloud composer's), and this one runs the same
+    // `getQualityTimeseries` — so it is the live contract a local stack has.
+    const workspaces = await api(page, "GET", "/api/workspaces")
+    const rows = (workspaces.json?.items ?? workspaces.json?.data?.items ?? []) as Array<{
+      id: string
+      kind?: string
+    }>
+    const workspaceId = (rows.find((w) => w.kind !== "personal") ?? rows[0])?.id
+    expect(workspaceId, JSON.stringify(workspaces.json)).toBeTruthy()
+
+    const res = await api(page, "GET", `/api/workspaces/${workspaceId}/analytics/quality-timeseries?period=30d`)
+    expect(res.status, JSON.stringify(res.json)).toBe(200)
 
     const points = (res.json?.data ?? []) as Array<{ cacheHitRatio: number }>
     expect(Array.isArray(points)).toBe(true)

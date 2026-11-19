@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { deflateSync } from "zlib"
+import { writeFileSync } from "fs"
 import { expect, test, type Page } from "@playwright/test"
 import { openTeamHome } from "./helpers"
 
@@ -241,6 +242,12 @@ interface PhotoChatState {
   sessionId: string | null
   /** Every workspace download the page asked for, in order. */
   downloads: string[]
+  /** The resource type of each download, same order: `fetch` vs `image`. */
+  types: string[]
+  /** Downloads an earlier document asked for before it was replaced. */
+  earlier: string[]
+  /** How many times this page loaded a whole new document. */
+  reloads: number
 }
 
 /**
@@ -252,13 +259,47 @@ async function installPhotoChat(page: Page): Promise<PhotoChatState> {
     rows: chatRows(`data:image/png;base64,${png(PHOTO_WIDTH, PHOTO_HEIGHT).toString("base64")}`),
     sessionId: null,
     downloads: [],
+    types: [],
+    earlier: [],
+    reloads: 0,
   }
+  // A workspace switch navigates the whole document (`reloadAfterWorkspaceSwitch`),
+  // which drops whatever image loads were in flight: the new document asks for
+  // those again because the module cache died with the old one. That second ask
+  // is the app's, not the thumbnail's, so each document is counted on its own —
+  // and everything the earlier one fetched is kept for the run's artifacts.
+  // Counting starts at the first download: the spec's own `page.goto`s happen
+  // before any thumbnail is mounted and are not reloads of a loading chat.
+  let loading = false
+  page.on("framenavigated", (frame) => {
+    if (frame !== page.mainFrame() || !loading) return
+    state.reloads += 1
+    state.earlier.push(...state.downloads)
+    state.downloads.length = 0
+    state.types.length = 0
+  })
   await page.addInitScript(`window.__e2eFindScroller = ${FIND_SCROLLER}`)
   await page.addInitScript(`window.__e2eSampleTranscript = ${SAMPLE_TRANSCRIPT}`)
+  await page.addInitScript(`
+    window.__e2ePreviewStacks = []
+    var origFetch = window.fetch
+    window.fetch = function (input, init) {
+      var url = typeof input === "string" ? input : (input && input.url) || ""
+      if (String(url).indexOf("/.previews/") !== -1) {
+        window.__e2ePreviewStacks.push(String(url).replace(/^.*?(\\/\\.previews\\/)/, "$1") + "\\n" + new Error().stack)
+      }
+      return origFetch.apply(this, arguments)
+    }
+  `)
 
   await page.route(DOWNLOAD_GLOB, async (route) => {
     const url = new URL(route.request().url())
-    state.downloads.push(url.pathname)
+    loading = true
+    // Keep the query: two requests for one photo that differ only by a signed
+    // parameter are not a duplicate download, and the failure message below has
+    // to show which kind happened.
+    state.downloads.push(url.pathname + url.search)
+    state.types.push(route.request().resourceType())
     // A preview is a small JPEG; the original is the full photo. Serving them
     // differently is what makes "the thumbnail never asked for the original"
     // an assertion rather than a hope.
@@ -361,13 +402,32 @@ async function samples(page: Page): Promise<Sample[]> {
 
 /** Wait until every preview has been requested and the transcript has settled. */
 async function waitForPreviews(page: Page, state: PhotoChatState): Promise<void> {
-  await expect
-    .poll(() => state.downloads.filter((path) => path.includes("/.previews/")).length, {
-      timeout: 30_000,
-    })
-    .toBe(PHOTO_COUNT)
+  const reached = () =>
+    expect
+      .poll(() => state.downloads.filter((path) => path.includes("/.previews/")).length, {
+        timeout: 30_000,
+      })
+      .toBe(PHOTO_COUNT)
+  await reached()
   // Let the last preview paint and any follow-up layout happen.
+  const reloads = state.reloads
   await page.waitForTimeout(1_200)
+  // A reload in the settle window starts the count again in the new document.
+  // Wait for that one instead of asserting on a torn-down page.
+  if (state.reloads !== reloads) await reached()
+  // Every download the page asked for, in order, into the run's artifacts: a
+  // red here has to name the photo it asked for twice (and whether the two
+  // requests differed only by a query string), not just count them.
+  writeFileSync(
+    test.info().outputPath("downloads.txt"),
+    [
+      `reloads: ${state.reloads}`,
+      `--- document ${state.reloads + 1} (${state.downloads.length}) ---`,
+      ...state.downloads,
+      ...(state.earlier.length ? ["--- earlier documents ---", ...state.earlier] : []),
+      "",
+    ].join("\n"),
+  )
 }
 
 /** The rendered box of the nth thumbnail, in transcript order. */
@@ -441,8 +501,19 @@ test.describe("a photo-heavy agent chat resumes at the bottom and stays there", 
     ).toEqual([])
 
     const previews = state.downloads.filter((path) => path.includes("/.previews/"))
-    expect(previews.length, "a preview was fetched more than once").toBe(PHOTO_COUNT)
-    expect(new Set(previews).size, "a preview was fetched more than once").toBe(PHOTO_COUNT)
+    const stacks = (await page.evaluate(() => (window as any).__e2ePreviewStacks as string[])) ?? []
+    const doc = await page.evaluate(() => {
+      const nav = performance.getEntriesByType("navigation")[0] as any
+      return { type: nav?.type, sinceStart: Math.round(performance.now()) }
+    })
+    const previewList = previews.map((path) => path.split("/").pop()).join(", ")
+    expect(
+      previews.length,
+      `previews were fetched ${previews.length} times after ${state.reloads} document reload(s) (${state.types.join(", ")}): ${previewList}\n\nearlier documents: ${state.earlier.join(", ") || "none"}\n\n${stacks.join("\n---\n")}`,
+    ).toBe(PHOTO_COUNT)
+    expect(new Set(previews).size, `a preview was fetched more than once: ${previewList}`).toBe(
+      PHOTO_COUNT,
+    )
   })
 
   test("a stored size makes the box final, and a legacy part keeps a fixed box", async ({

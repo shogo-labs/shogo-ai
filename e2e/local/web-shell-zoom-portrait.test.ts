@@ -62,16 +62,32 @@ const PAGE = `<!doctype html>
   </body>
 </html>`
 
+/** Nothing from the app's shell: no viewport meta, no guard CSS, no script. */
+const BARE_PAGE = `<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>control</title></head>
+  <body style="margin:0"><p id="app-text">a page with no guards</p></body>
+</html>`
+
 let server: Server
 let pageUrl: string
+/**
+ * Whether this Chromium can synthesize a pinch at all. On the CI runner
+ * `Input.synthesizePinchGesture` leaves `visualViewport.scale` at 1 even on a
+ * page with no viewport meta and no guards, so every reading is 1 and proves
+ * nothing — the control below asks the question directly instead of assuming.
+ */
+let pinchMeasurable = true
 
-test.beforeAll(async () => {
-  server = createServer((_request, response) => {
+test.beforeAll(async ({ browser }) => {
+  server = createServer((request, response) => {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" })
-    response.end(PAGE)
+    // `/bare` is the control: no viewport meta, no guard CSS, no script.
+    response.end(request.url === "/bare" ? BARE_PAGE : PAGE)
   })
   await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen))
   pageUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`
+  pinchMeasurable = await measuresPinch(browser, `${pageUrl}bare`)
 })
 
 test.afterAll(async () => {
@@ -145,6 +161,27 @@ async function pinchScale(page: Page, viewport: { width: number; height: number 
   })
   await page.waitForTimeout(400)
   return page.evaluate(() => window.visualViewport?.scale ?? 1)
+}
+
+/**
+ * Measures a pinch on the bare control page. `true` when this browser really
+ * zooms, so the tablet assertions below have something to compare against.
+ */
+async function measuresPinch(browser: Browser, url: string): Promise<boolean> {
+  const context = await browser.newContext({
+    viewport: { width: 768, height: 1024 },
+    screen: { width: 768, height: 1024 },
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+  })
+  try {
+    const page = await context.newPage()
+    await page.goto(url)
+    return (await pinchScale(page, { width: 768, height: 1024 }, true)) > 1.9
+  } finally {
+    await context.close()
+  }
 }
 
 function computedStyles(page: Page) {
@@ -233,7 +270,11 @@ test.describe("everything that is not a phone keeps its zoom", () => {
         const styles = await computedStyles(page)
         expect(styles.input).toBe("12px")
         expect(styles.touchAction).toBe("auto")
-        // The real pinch the global viewport meta used to eat.
+        // The real pinch the global viewport meta used to eat. Only measurable
+        // where the harness can synthesize one at all (the bare control page
+        // has to zoom first); on a runner where it cannot, every reading is 1
+        // and the guard assertions above are the whole proof.
+        test.skip(!pinchMeasurable, "this Chromium cannot synthesize a pinch (a guard-free control page did not zoom either)")
         expect(await pinchScale(page, viewport, true)).toBeGreaterThan(1.9)
       })
     })

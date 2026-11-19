@@ -28,6 +28,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { existsSync } from "fs";
 import { resolve } from "path";
 import { DatabaseSync } from "node:sqlite";
+import { seedActiveWorkspace } from "./helpers";
 
 type WorkspaceRow = { id: string; kind?: string; name?: string };
 
@@ -170,13 +171,7 @@ test("the drawer lists workspace chats newest activity first", async ({ page }) 
     ).run(prismaDate(activeAt), prismaDate(new Date(now)), row.id);
   });
 
-  await page.addInitScript((activeWorkspace: WorkspaceRow) => {
-    localStorage.setItem("shogo:active-workspace-id", activeWorkspace.id);
-    localStorage.setItem(
-      "shogo:active-workspace-kind",
-      JSON.stringify({ id: activeWorkspace.id, kind: "personal" }),
-    );
-  }, workspace);
+  await seedActiveWorkspace(page, workspace.id, "personal");
   await page.goto("/(app)");
 
   await page.getByRole("button", { name: "Open chat sessions" }).click();
@@ -207,7 +202,9 @@ test("the drawer lists workspace chats newest activity first", async ({ page }) 
   if (createdHere) cleanupSessions.push(createdHere);
   const createdLabel = await page.evaluate(async ({ apiBase, id }) => {
     const response = await fetch(
-      `${apiBase}/api/workspaces/${localStorage.getItem("shogo:active-workspace-id")}/sessions`,
+      `${apiBase}/api/workspaces/${
+        sessionStorage.getItem("shogo:active-workspace-id") ?? localStorage.getItem("shogo:active-workspace-id")
+      }/sessions`,
       { credentials: "include" },
     );
     const body = await response.json();
@@ -296,13 +293,7 @@ test("pinned chats lead and the archived group is activity-ordered too", async (
     );
   }
 
-  await page.addInitScript((activeWorkspace: WorkspaceRow) => {
-    localStorage.setItem("shogo:active-workspace-id", activeWorkspace.id);
-    localStorage.setItem(
-      "shogo:active-workspace-kind",
-      JSON.stringify({ id: activeWorkspace.id, kind: "personal" }),
-    );
-  }, workspace);
+  await seedActiveWorkspace(page, workspace.id, "personal");
   await page.goto("/(app)");
 
   await page.getByRole("button", { name: "Open chat sessions" }).click();

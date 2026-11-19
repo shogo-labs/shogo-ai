@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page, type Route } from "@playwright/test"
+import { writeActiveWorkspaceSelection } from "./helpers"
 
 /**
  * Russell's bug, end to end: a file the workspace agent wrote in ANOTHER
@@ -237,10 +238,9 @@ test.describe("A file the workspace agent wrote in another project", () => {
     const rows = Array.isArray(list) ? list : []
     const workspace = rows.find((row: { kind?: string }) => row.kind !== "personal") ?? rows[0]
     expect(workspace?.id, `workspace list ${workspaces.status}`).toBeTruthy()
-    await page.evaluate((id) => {
-      localStorage.setItem("shogo:active-workspace-id", id)
-      localStorage.setItem("shogo:active-workspace-kind", "team")
-    }, workspace.id)
+    // Both stores: the tab has already booted, so its own `sessionStorage`
+    // selection wins over the shared default.
+    await page.evaluate(writeActiveWorkspaceSelection, [workspace.id as string, "team"] as const)
     await page.goto("/")
     await composer(page).waitFor({ state: "visible", timeout: 60_000 })
 

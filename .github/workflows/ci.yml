@@ -604,9 +604,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: 'E2E (local mode) (1/3)', shard: '1/3' }
-          - { name: 'E2E (local mode) (2/3)', shard: '2/3' }
-          - { name: 'E2E (local mode) (3/3)', shard: '3/3' }
+          - { name: 'E2E (local mode) (1/5)', shard: '1/5' }
+          - { name: 'E2E (local mode) (2/5)', shard: '2/5' }
+          - { name: 'E2E (local mode) (3/5)', shard: '3/5' }
+          - { name: 'E2E (local mode) (4/5)', shard: '4/5' }
+          - { name: 'E2E (local mode) (5/5)', shard: '5/5' }
           # These specs all need the API pointed at the fake model, which
           # would change every other spec, so they get stacks of their own.
           # They are FOUR jobs, not one (SHO-251): on one worker, all 27 tests
@@ -711,6 +713,17 @@ jobs:
     # well under 60% of it, and a per-entry cap via `${{ matrix.timeout }}`
     # turned out to mean NO cap at all for entries without the key — a job ran
     # 39 min until its run was superseded. Keep this a literal.
+    #
+    # The shards are FIVE, not three, since 2026-11-19 (SHO-383): the local
+    # suite grew to ~378 tests and every one of the three shards was at this cap
+    # in the same run — 1/3 passed at 33m49s, 2/3 at 30m05s, and 3/3 was
+    # cancelled at 35m18s with 23 of its 126 tests never reached. That is not a
+    # hang: a local test measures ~17–20 s plus ~5 min of stack boot, so the
+    # third of the suite that each job got simply cost more than 35 min. At five
+    # shards the biggest one lands near 25–30 min and the retries a red spec
+    # costs (~2–3 min for three attempts) fit inside the cap again. Same cap,
+    # more jobs: raising the number would put the merge queue back in the hole
+    # this comment opens with.
     timeout-minutes: 35
 
     steps:
