@@ -196,6 +196,7 @@ import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
 import { isMidCutoverStatus } from './services/published-cutover.service'
+import { readSignupRequestInfo } from './services/signup-risk.service'
 import { deployedAppVersionOrUnknown } from './lib/app-version'
 import { toNativeAuthHandback } from './lib/auth-handback'
 // Auth middleware for generated routes
@@ -8183,6 +8184,7 @@ app.post('/api/billing/checkout', async (c) => {
       workspaceId,
       planId: checkoutPlanId,
       metadata,
+      request: readSignupRequestInfo(c.req.raw.headers),
       affiliate: affiliateOverrides,
     })
 
@@ -8283,7 +8285,11 @@ app.get('/api/billing/workspace-plan', async (c) => {
         ? prisma.signupRiskAssessment.findUnique({ where: { userId: cloudUserId }, select: { decision: true } })
         : null,
       !sub && cloudUserId
-        ? trialService.trialEligibility({ userId: cloudUserId, workspaceId })
+        ? trialService.trialEligibility({
+            userId: cloudUserId,
+            workspaceId,
+            request: readSignupRequestInfo(c.req.raw.headers),
+          })
         : { eligible: false },
     ])
     const promoEmailVerified = Boolean(promoUser?.emailVerified)
@@ -8465,6 +8471,7 @@ app.post('/api/billing/workspace-checkout', async (c) => {
       workspaceId: newWorkspaceId,
       planId: checkoutPlanId,
       metadata,
+      request: readSignupRequestInfo(c.req.raw.headers),
       affiliate: affiliateOverrides,
     })
 

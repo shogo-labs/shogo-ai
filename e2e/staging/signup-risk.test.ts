@@ -63,6 +63,37 @@ test.describe("Signup risk", () => {
     }
   })
 
+  // SHO-440: Google and Apple sign-ups are created on `/callback/:provider`,
+  // which cannot carry the device header, so the header's value is persisted in
+  // a first-party cookie on the request that starts the flow.
+  test("a sign-up carrying the device header sets the first-party cookie", async () => {
+    const deviceId = `e2e-device-${ts}`
+    const ctx = await playwrightRequest.newContext({
+      baseURL: BASE,
+      extraHTTPHeaders: { Origin: BASE, "x-shogo-device-id": deviceId },
+    })
+    try {
+      const res = await ctx.post("/api/auth/sign-up/email", {
+        data: {
+          name: `E2E Device ${ts}`,
+          email: `e2e-device-${ts}@example.com`,
+          password: `E2EDevice${ts}Test2026!`,
+        },
+      })
+      expect(res.status()).toBe(200)
+      const setCookies = res
+        .headersArray()
+        .filter((h) => h.name.toLowerCase() === "set-cookie")
+        .map((h) => h.value)
+      const deviceCookie = setCookies.find((v) => v.startsWith("shogo.device_id="))
+      expect(deviceCookie).toBeDefined()
+      expect(deviceCookie).toContain(`shogo.device_id=${deviceId}`)
+      expect(deviceCookie!.toLowerCase()).toContain("httponly")
+    } finally {
+      await ctx.dispose()
+    }
+  })
+
   test.describe("disposable domain without the e2e header", () => {
     test.skip(!BACKDOOR, "needs SHOGO_E2E_BOOTSTRAP_SECRET to read the assessment")
 

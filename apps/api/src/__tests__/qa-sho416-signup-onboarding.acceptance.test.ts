@@ -105,6 +105,8 @@ mock.module('../lib/prisma', () => ({
 }))
 
 mock.module('../services/signup-risk.service', () => ({
+  DEVICE_ID_COOKIE: 'shogo.device_id',
+  readDeviceId: () => null,
   assessNewSignup: async () => {
     if (state.assessmentThrows) throw new Error('scoring down')
     return { band: state.band, decision: state.band === 'high' ? 'no_credit' : 'initial', score: 10 }
