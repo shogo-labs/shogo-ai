@@ -1,0 +1,817 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+
+/**
+ * Metal density soak — how many VMs one host carries before agent turns degrade.
+ *
+ * Runs ON the bare-metal host as root (see scripts/metal-agent/run-density-soak.sh)
+ * and drives the node-agent's own HTTP API on loopback, the same contract the
+ * control plane uses. It answers one question with data instead of a guess:
+ * `METAL_MAX_VMS_PER_HOST` defaults to 80 on the belief that "an s3-large-x86
+ * comfortably runs ~80 ~1 GB microVMs", while prod VMs are 2 vCPU / 2–4 GiB and
+ * prod hosts were raised to 120. Nothing had measured it.
+ *
+ * What it does:
+ *   1. Preflight: refuse unless the host is staging-registered, cordon it,
+ *      record `/etc/metal-agent.env`, raise the VM cap and disable idle-suspend
+ *      for the run, restart the agent so the env takes effect.
+ *   2. Baseline: one VM runs the agent-turn workload 5× alone.
+ *   3. Steps: grow to each N (VMs are kept between steps), assign roles by the
+ *      prod mix, hold, and sample the host every 5 s while agent-role VMs loop
+ *      turns and app-role VMs serve HTTP.
+ *   4. Burst: at the highest passing N and at N=80, start a fraction of N turns
+ *      inside a short window on top of the steady mix.
+ *   5. Report: per-step table, both knees, and a recommendation.
+ *   6. Teardown (trap/finally, including SIGINT): destroy every `soak-` VM,
+ *      restore the env, restart the agent, uncordon.
+ *
+ * Safety: staging only, cordoned, abort guard on MemAvailable < 5% or any OOM
+ * kill, and it never touches a project id that is not `soak-<runId>-*`.
+ */
+
+import { execFileSync } from 'child_process'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { HostSampler, oomKillsSince, percentile, type HostSample } from './density/host-sampler'
+import { DEFAULT_MIX, allocateRoles, parseMix, roleCounts, type Mix, type Role } from './density/mix'
+import { DEFAULT_BOUNDS, TURN_STEPS, computeKnees, ramCeilingsBySize, type Bounds, type StepMetrics, type TurnStep } from './density/knee'
+import { primeWarmCache, runAgentTurn, startAppLoad, type AppLoadHandle, type TurnTimings } from './density/guest-workload'
+import { assertStagingHost, DEFAULT_STAGING_CONTROL_PLANES, DEFAULT_STAGING_HOSTS } from './density/staging-guard'
+import { writeReport, type BurstRow, type ReportInput, type RunEnv, type StepRow } from './density/report'
+
+// ---------------------------------------------------------------------------
+// Flags
+// ---------------------------------------------------------------------------
+
+export interface SoakOptions {
+  host: string
+  base: string
+  envFile: string
+  steps: number[]
+  holdMs: number
+  rampConcurrency: number
+  mix: Mix
+  burst: boolean
+  burstWindowMs: number
+  burstFraction: number
+  memMiB?: number
+  vcpus?: number
+  outDir: string
+  adminToken?: string
+  assumeCordoned: boolean
+  restartAgent: boolean
+  probeResume: boolean
+  sampleMs: number
+  abortMemPct: number
+  allowHosts: string[]
+  allowControlPlanes: string[]
+  bounds: Bounds
+  dryRun: boolean
+}
+
+const num = (v: string | undefined, d: number) => {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : d
+}
+
+/** `10m`, `90s`, `2h`, `500ms` → ms. A bare number is ms. */
+export function parseDuration(v: string | undefined, fallbackMs: number): number {
+  if (!v) return fallbackMs
+  const m = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h)?$/i.exec(v.trim())
+  if (!m) return fallbackMs
+  const unit = (m[2] ?? 'ms').toLowerCase()
+  const mult = unit === 'h' ? 3_600_000 : unit === 'm' ? 60_000 : unit === 's' ? 1_000 : 1
+  return Math.round(Number(m[1]) * mult)
+}
+
+export function parseArgs(argv: string[], env: NodeJS.ProcessEnv = process.env): SoakOptions {
+  const get = (name: string): string | undefined => {
+    const i = argv.indexOf(`--${name}`)
+    if (i >= 0 && i + 1 < argv.length && !argv[i + 1].startsWith('--')) return argv[i + 1]
+    const eq = argv.find((a) => a.startsWith(`--${name}=`))
+    return eq ? eq.slice(name.length + 3) : undefined
+  }
+  const has = (name: string) => argv.includes(`--${name}`) || argv.some((a) => a.startsWith(`--${name}=`))
+
+  const steps = (get('steps') ?? '40,60,80,100,120,160')
+    .split(',')
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => Number.isInteger(n) && n > 0)
+    .sort((a, b) => a - b)
+
+  return {
+    host: get('host') ?? env.METAL_HOST_ID ?? '',
+    base: get('base') ?? env.DENSITY_SOAK_BASE ?? 'http://127.0.0.1:9900',
+    envFile: get('env-file') ?? env.DENSITY_SOAK_ENV_FILE ?? '/etc/metal-agent.env',
+    steps,
+    holdMs: get('hold-ms') ? num(get('hold-ms'), 10 * 60_000) : parseDuration(get('hold'), 10 * 60_000),
+    rampConcurrency: num(get('ramp-concurrency'), 8),
+    mix: get('mix') ? parseMix(get('mix')!) : DEFAULT_MIX,
+    burst: has('burst'),
+    burstWindowMs: get('burst-window-ms') ? num(get('burst-window-ms'), 60_000) : parseDuration(get('burst-window'), 60_000),
+    burstFraction: num(get('burst-fraction'), 0.25),
+    memMiB: get('mem-mib') ? num(get('mem-mib'), 0) : undefined,
+    vcpus: get('vcpus') ? num(get('vcpus'), 0) : undefined,
+    outDir: get('out') ?? join(import.meta.dir, 'results', `density-${new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)}`),
+    adminToken: get('admin-token') ?? env.DENSITY_SOAK_ADMIN_TOKEN,
+    assumeCordoned: has('assume-cordoned'),
+    restartAgent: !has('no-restart-agent'),
+    probeResume: !has('no-probe-resume'),
+    sampleMs: num(get('sample-ms'), 5000),
+    abortMemPct: num(get('abort-mem-pct'), 5),
+    allowHosts: (get('allow-hosts') ?? env.DENSITY_SOAK_STAGING_HOSTS ?? DEFAULT_STAGING_HOSTS.join(',')).split(',').map((s) => s.trim()).filter(Boolean),
+    allowControlPlanes: (get('allow-control-planes') ?? env.DENSITY_SOAK_STAGING_CONTROL_PLANES ?? DEFAULT_STAGING_CONTROL_PLANES.join(','))
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    bounds: DEFAULT_BOUNDS,
+    dryRun: has('dry-run'),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Host env file
+// ---------------------------------------------------------------------------
+
+/** Parse a systemd EnvironmentFile (`KEY=value`, `#` comments, optional quotes). */
+export function parseEnvFile(text: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const raw of text.split('\n')) {
+    const line = raw.trim()
+    if (!line || line.startsWith('#')) continue
+    const eq = line.indexOf('=')
+    if (eq <= 0) continue
+    const k = line.slice(0, eq).trim()
+    let v = line.slice(eq + 1).trim()
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1)
+    out[k] = v
+  }
+  return out
+}
+
+/** Render back to an EnvironmentFile, preserving key order. */
+export function renderEnvFile(env: Record<string, string>): string {
+  return Object.entries(env)
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n') + '\n'
+}
+
+// ---------------------------------------------------------------------------
+// Node-agent client
+// ---------------------------------------------------------------------------
+
+interface AgentResponse {
+  ok: boolean
+  status: number
+  ms: number
+  json: any
+}
+
+class AgentClient {
+  constructor(
+    private readonly base: string,
+    private readonly token: string,
+  ) {}
+
+  async req(method: string, path: string, body?: unknown, timeoutMs = 240_000): Promise<AgentResponse> {
+    const t0 = performance.now()
+    try {
+      const res = await fetch(`${this.base}${path}`, {
+        method,
+        headers: {
+          ...(body ? { 'content-type': 'application/json' } : {}),
+          ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      const json = await res.json().catch(() => null)
+      return { ok: res.ok, status: res.status, ms: +(performance.now() - t0).toFixed(1), json }
+    } catch (err: any) {
+      return { ok: false, status: 0, ms: +(performance.now() - t0).toFixed(1), json: { error: err?.message ?? String(err) } }
+    }
+  }
+
+  assign(projectId: string, env: Record<string, string>) {
+    return this.req('POST', '/assign', { projectId, env })
+  }
+  suspend(projectId: string) {
+    return this.req('POST', '/suspend', { projectId })
+  }
+  destroy(projectId: string) {
+    return this.req('POST', '/destroy', { projectId })
+  }
+  touch(projectId: string) {
+    return this.req('POST', '/touch', { projectId }, 10_000)
+  }
+  vms() {
+    return this.req('GET', '/vms', undefined, 30_000)
+  }
+  healthz() {
+    return this.req('GET', '/healthz', undefined, 5_000)
+  }
+}
+
+const ASSIGN_ENV = { RUNTIME_AUTH_SECRET: 'e2e', PROJECT_TIER: 'starter' }
+
+// ---------------------------------------------------------------------------
+// Runner
+// ---------------------------------------------------------------------------
+
+const log = (step: string, msg: string) => console.log(`[density] ${step.padEnd(10)} ${msg}`)
+
+interface SoakVm {
+  projectId: string
+  role: Role
+  url?: string
+  assigned: boolean
+}
+
+export class DensitySoak {
+  private readonly agent: AgentClient
+  private readonly sampler = new HostSampler()
+  private readonly samples: HostSample[] = []
+  private readonly turns: { n: number; role: string; projectId: string; t: Record<string, any> }[] = []
+  private readonly vms: SoakVm[] = []
+  private readonly probeIds: string[] = []
+  private readonly runId = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)
+  private readonly startedAt = new Date().toISOString()
+  private readonly startedMs = Date.now()
+  private originalEnv: Record<string, string> | null = null
+  /** The env file exactly as it was, so teardown restores it byte-for-byte. */
+  private originalEnvText: string | null = null
+  private cordoned = false
+  private agentRestarted = false
+  private keepAliveTimer: ReturnType<typeof setInterval> | null = null
+  private sampleTimer: ReturnType<typeof setInterval> | null = null
+  private appLoads: AppLoadHandle[] = []
+  private abortReason: string | undefined
+  private residentBefore: string[] = []
+  private hostInfo: { model: string; kernel: string; fcVersion: string; threads: number; memMiB: number; gitSha: string } = {
+    model: 'unknown',
+    kernel: 'unknown',
+    fcVersion: 'unknown',
+    threads: 0,
+    memMiB: 0,
+    gitSha: 'unknown',
+  }
+
+  constructor(private readonly opts: SoakOptions) {
+    const token = this.readToken()
+    this.agent = new AgentClient(opts.base, token)
+  }
+
+  private readToken(): string {
+    try {
+      const env = parseEnvFile(readFileSync(this.opts.envFile, 'utf8'))
+      return env.METAL_REGISTER_TOKEN ?? env.SHOGO_INTERNAL_SECRET ?? ''
+    } catch {
+      return process.env.METAL_REGISTER_TOKEN ?? ''
+    }
+  }
+
+  private readHostEnv(): Record<string, string> {
+    return parseEnvFile(readFileSync(this.opts.envFile, 'utf8'))
+  }
+
+  private sh(cmd: string, args: string[]): string {
+    try {
+      return execFileSync(cmd, args, { encoding: 'utf8', timeout: 60_000 }).trim()
+    } catch {
+      return ''
+    }
+  }
+
+  private collectHostInfo(): void {
+    const cpuinfo = (() => {
+      try {
+        return readFileSync('/proc/cpuinfo', 'utf8')
+      } catch {
+        return ''
+      }
+    })()
+    const model = /model name\s*:\s*(.+)/.exec(cpuinfo)?.[1]?.trim() ?? 'unknown'
+    const threads = (cpuinfo.match(/^processor\s*:/gm) ?? []).length
+    const mem = this.sampler.sample()
+    this.hostInfo = {
+      model,
+      kernel: this.sh('uname', ['-r']) || 'unknown',
+      fcVersion: this.sh('/opt/fc-spike/bin/firecracker', ['--version']).split('\n')[0] || 'unknown',
+      threads,
+      memMiB: mem.mem?.totalMiB ?? 0,
+      gitSha: this.sh('git', ['-C', join(import.meta.dir, '..', '..', '..'), 'rev-parse', '--short', 'HEAD']) || process.env.DENSITY_SOAK_GIT_SHA || 'unknown',
+    }
+  }
+
+  // -- preflight ------------------------------------------------------------
+
+  async preflight(): Promise<void> {
+    log('preflight', `host=${this.opts.host || '(unset)'} base=${this.opts.base} env=${this.opts.envFile}`)
+
+    if (!existsSync(this.opts.envFile)) {
+      throw new Error(`env file ${this.opts.envFile} not found — run this on the host as root`)
+    }
+    this.originalEnvText = readFileSync(this.opts.envFile, 'utf8')
+    this.originalEnv = parseEnvFile(this.originalEnvText)
+    const controlPlaneUrl = this.originalEnv.METAL_CONTROL_PLANE_URL ?? ''
+    const region = this.originalEnv.METAL_REGION ?? ''
+
+    const guard = await assertStagingHost({
+      hostId: this.opts.host,
+      controlPlaneUrl,
+      region,
+      allowHosts: this.opts.allowHosts,
+      allowControlPlaneHosts: this.opts.allowControlPlanes,
+      token: this.originalEnv.METAL_REGISTER_TOKEN ?? '',
+    })
+    if (!guard.ok) {
+      throw new Error(`refusing to soak: ${guard.reasons.join('; ')}`)
+    }
+    log('preflight', `staging confirmed: ${this.opts.host} → ${controlPlaneUrl}`)
+
+    const health = await this.agent.healthz()
+    if (!health.ok) throw new Error(`node-agent not reachable at ${this.opts.base}: ${JSON.stringify(health.json)}`)
+
+    this.collectHostInfo()
+    log('preflight', `host: ${this.hostInfo.model}, ${this.hostInfo.threads} threads, ${this.hostInfo.memMiB} MiB, kernel ${this.hostInfo.kernel}`)
+
+    // Record what is already resident. These are real staging projects: never
+    // suspend, touch or destroy them.
+    const vms = await this.agent.vms()
+    const assigned: any[] = vms.json?.assigned ?? []
+    const suspended: any[] = vms.json?.suspended ?? []
+    this.residentBefore = [...assigned, ...suspended].map((v) => v.projectId).filter((p) => typeof p === 'string' && !p.startsWith('soak-'))
+    log('preflight', `${this.residentBefore.length} real project(s) resident — will not be touched`)
+
+    if (this.opts.dryRun) {
+      log('preflight', 'dry run: stopping before cordon/env swap')
+      return
+    }
+
+    await this.cordon(true)
+    await this.swapEnv()
+  }
+
+  private async cordon(on: boolean): Promise<void> {
+    if (this.opts.assumeCordoned) {
+      log('cordon', on ? 'assuming the operator cordoned the host (--assume-cordoned)' : 'leaving cordon state alone (--assume-cordoned)')
+      return
+    }
+    if (!this.opts.adminToken) {
+      throw new Error('no admin token: set DENSITY_SOAK_ADMIN_TOKEN (a super-admin session) or pass --assume-cordoned after cordoning by hand')
+    }
+    const cp = (this.originalEnv?.METAL_CONTROL_PLANE_URL ?? '').replace(/\/+$/, '')
+    const action = on ? 'cordon' : 'uncordon'
+    const res = await fetch(`${cp}/api/admin/metal/hosts/${encodeURIComponent(this.opts.host)}/${action}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${this.opts.adminToken}` },
+      signal: AbortSignal.timeout(20_000),
+    })
+    const body = await res.json().catch(() => null)
+    if (!res.ok || !(body as any)?.ok) throw new Error(`${action} failed (${res.status}): ${JSON.stringify(body)}`)
+    this.cordoned = on
+    log('cordon', `${action}ed ${this.opts.host}`)
+  }
+
+  private async swapEnv(): Promise<void> {
+    const env = { ...this.originalEnv! }
+    const top = Math.max(...this.opts.steps, 0)
+    env.METAL_MAX_VMS_PER_HOST = String(Math.max(top + 20, 200))
+    env.METAL_IDLE_SUSPEND_MS = '0'
+    writeFileSync(this.opts.envFile, renderEnvFile(env))
+    log('env', `raised METAL_MAX_VMS_PER_HOST to ${env.METAL_MAX_VMS_PER_HOST}, METAL_IDLE_SUSPEND_MS=0`)
+    if (this.opts.restartAgent) await this.restartAgent()
+  }
+
+  private async restartAgent(): Promise<void> {
+    log('agent', 'restarting metal-agent to pick up the env')
+    this.sh('systemctl', ['restart', 'metal-agent'])
+    const deadline = Date.now() + 120_000
+    while (Date.now() < deadline) {
+      const h = await this.agent.healthz()
+      if (h.ok) {
+        this.agentRestarted = true
+        log('agent', 'metal-agent healthy again')
+        return
+      }
+      await Bun.sleep(1000)
+    }
+    throw new Error('metal-agent did not come back healthy within 120s')
+  }
+
+  // -- sampling -------------------------------------------------------------
+
+  private startSampling(): void {
+    this.sampleTimer = setInterval(() => {
+      const s = this.sampler.sample()
+      this.samples.push(s)
+      if (s.memAvailablePct !== null && s.memAvailablePct < this.opts.abortMemPct && !this.abortReason) {
+        this.abortReason = `MemAvailable fell to ${s.memAvailablePct}% (abort floor ${this.opts.abortMemPct}%)`
+        log('abort', this.abortReason)
+      }
+    }, this.opts.sampleMs)
+  }
+
+  private stopSampling(): void {
+    if (this.sampleTimer) clearInterval(this.sampleTimer)
+    this.sampleTimer = null
+  }
+
+  /** Touch every soak VM so the reaper cannot suspend an idle one mid-hold. */
+  private startKeepAlive(): void {
+    this.keepAliveTimer = setInterval(() => {
+      for (const vm of this.vms) if (vm.assigned) void this.agent.touch(vm.projectId)
+    }, 10_000)
+  }
+
+  private stopKeepAlive(): void {
+    if (this.keepAliveTimer) clearInterval(this.keepAliveTimer)
+    this.keepAliveTimer = null
+  }
+
+  private checkAbort(): void {
+    if (this.abortReason) throw new Error(`aborted: ${this.abortReason}`)
+    const oom = oomKillsSince(this.startedMs)
+    if (oom > 0) {
+      this.abortReason = `${oom} OOM kill(s) since the run started`
+      throw new Error(`aborted: ${this.abortReason}`)
+    }
+  }
+
+  // -- workload -------------------------------------------------------------
+
+  private projectId(role: Role, index: number): string {
+    return `soak-${this.runId}-${role}-${String(index).padStart(4, '0')}`
+  }
+
+  async growTo(n: number): Promise<void> {
+    const roles = allocateRoles(n, this.opts.mix)
+    const toAdd: { projectId: string; role: Role }[] = []
+    for (let i = this.vms.length; i < n; i++) toAdd.push({ projectId: this.projectId(roles[i], i), role: roles[i] })
+
+    let next = 0
+    const worker = async () => {
+      while (next < toAdd.length) {
+        const item = toAdd[next++]
+        const a = await this.agent.assign(item.projectId, ASSIGN_ENV)
+        const vm: SoakVm = { projectId: item.projectId, role: item.role, url: a.json?.url, assigned: a.ok }
+        this.vms.push(vm)
+        if (!a.ok) log('ramp', `assign ${item.projectId} failed (${a.status}): ${JSON.stringify(a.json).slice(0, 160)}`)
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(this.opts.rampConcurrency, toAdd.length) }, worker))
+    log('ramp', `at N=${this.vms.length} (${JSON.stringify(roleCounts(this.vms.length, this.opts.mix))})`)
+  }
+
+  private async runTurnsFor(role: Role, n: number, deadline: number, skipLlmWait = false): Promise<void> {
+    const targets = this.vms.filter((v) => v.role === role && v.assigned && v.url)
+    let next = 0
+    const worker = async () => {
+      while (next < targets.length && Date.now() < deadline && !this.abortReason) {
+        const vm = targets[next++]
+        try {
+          const t = await runAgentTurn(vm.url!, { skipLlmWait })
+          this.turns.push({ n, role, projectId: vm.projectId, t: { ...t } })
+        } catch (err: any) {
+          this.turns.push({ n, role, projectId: vm.projectId, t: { ok: false, error: err?.message ?? String(err) } })
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(targets.length, 64) }, worker))
+  }
+
+  private async startAppRoles(): Promise<void> {
+    for (const vm of this.vms) {
+      if (vm.role !== 'app' || !vm.assigned || !vm.url) continue
+      try {
+        this.appLoads.push(await startAppLoad(vm.url, 2))
+      } catch (err: any) {
+        log('app', `${vm.projectId}: ${err?.message ?? err}`)
+      }
+    }
+  }
+
+  private stopAppRoles(): void {
+    for (const a of this.appLoads) a.stop()
+    this.appLoads = []
+  }
+
+  /** Resume latency for the dedicated probe projects, under the current load. */
+  private async probeResume(): Promise<number[]> {
+    if (!this.opts.probeResume) return []
+    const out: number[] = []
+    for (const pid of this.probeIds) {
+      await this.agent.suspend(pid)
+      const a = await this.agent.assign(pid, ASSIGN_ENV)
+      if (a.ok) out.push(a.json?.readyMs ?? a.ms)
+    }
+    return out
+  }
+
+  private async apiLatency(): Promise<number[]> {
+    const out: number[] = []
+    for (let i = 0; i < 5; i++) {
+      out.push((await this.agent.healthz()).ms)
+      out.push((await this.agent.vms()).ms)
+    }
+    return out
+  }
+
+  private turnP95(n: number, role: string = 'agent'): Record<TurnStep, number> {
+    const rows = this.turns.filter((t) => t.n === n && t.role === role && t.t.ok)
+    const out = {} as Record<TurnStep, number>
+    for (const s of TURN_STEPS) out[s] = +percentile(rows.map((r) => Number(r.t[`${s}Ms`]) || 0), 95).toFixed(1)
+    return out
+  }
+
+  private turnP50(n: number, role: string = 'agent'): Record<TurnStep, number> {
+    const rows = this.turns.filter((t) => t.n === n && t.role === role && t.t.ok)
+    const out = {} as Record<TurnStep, number>
+    for (const s of TURN_STEPS) out[s] = +percentile(rows.map((r) => Number(r.t[`${s}Ms`]) || 0), 50).toFixed(1)
+    return out
+  }
+
+  private windowSamples(fromMs: number, toMs: number): HostSample[] {
+    return this.samples.filter((s) => s.ts >= fromMs && s.ts <= toMs)
+  }
+
+  private avg(xs: number[]): number {
+    return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0
+  }
+
+  private stepMetrics(n: number, fromMs: number, toMs: number, resume: number[], api: number[]): StepMetrics {
+    const win = this.windowSamples(fromMs, toMs)
+    const last = win[win.length - 1]
+    return {
+      n,
+      turnP95: this.turnP95(n),
+      cpuPsiSomeAvg60: last?.cpuPressure?.some60 ?? 0,
+      resumeP95Ms: +percentile(resume, 95).toFixed(1),
+      oomKills: oomKillsSince(this.startedMs),
+      swapInPagesPerSec: +this.avg(win.map((s) => s.swapInPagesPerSec ?? 0)).toFixed(1),
+      memPsiFullAvg60: last?.memPressure?.full60 ?? 0,
+      memAvailablePct: last?.memAvailablePct ?? 0,
+    }
+  }
+
+  // -- main -----------------------------------------------------------------
+
+  async run(): Promise<ReportInput> {
+    await this.preflight()
+    if (this.opts.dryRun) {
+      return this.buildReport([], [], { cpuKnee: 0, ramKnee: 0, recommended: 0, verdicts: [] })
+    }
+
+    this.startSampling()
+    this.startKeepAlive()
+
+    // Probe projects: 3 dedicated ids, suspended between steps, used only to
+    // measure resume latency under load.
+    for (let i = 0; i < 3; i++) this.probeIds.push(`soak-${this.runId}-probe-${i}`)
+    for (const pid of this.probeIds) await this.agent.assign(pid, ASSIGN_ENV)
+
+    // Baseline: one VM, alone, 5 turns with no llm wait.
+    log('baseline', 'N=1, 5 turns')
+    await this.growTo(1)
+    const baseVm = this.vms[0]
+    if (!baseVm?.url) throw new Error('baseline VM did not come up')
+    await primeWarmCache(baseVm.url)
+    const baselineTurns: TurnTimings[] = []
+    for (let i = 0; i < 5; i++) baselineTurns.push(await runAgentTurn(baseVm.url, { skipLlmWait: true }))
+    const baseline = {} as Record<TurnStep, number>
+    for (const s of TURN_STEPS) baseline[s] = +percentile(baselineTurns.map((t) => Number((t as any)[`${s}Ms`]) || 0), 50).toFixed(1)
+    log('baseline', TURN_STEPS.map((s) => `${s} ${baseline[s]}ms`).join(' '))
+
+    const rows: StepRow[] = []
+    const burstRows: BurstRow[] = []
+    const vcpus = this.opts.vcpus ?? Number(this.originalEnv?.METAL_VCPUS ?? 2)
+    const memMiB = this.opts.memMiB ?? Number(this.originalEnv?.METAL_MEM_MIB ?? 1024)
+
+    for (const n of this.opts.steps) {
+      this.checkAbort()
+      log('step', `growing to N=${n}`)
+      await this.growTo(n)
+      // Prime the cache on every new agent VM before the hold, so `install`
+      // measures CPU and disk rather than the registry.
+      for (const vm of this.vms) {
+        if (vm.role === 'agent' && vm.assigned && vm.url && !(vm as any).primed) {
+          try {
+            await primeWarmCache(vm.url)
+            ;(vm as any).primed = true
+          } catch (err: any) {
+            log('prime', `${vm.projectId}: ${err?.message ?? err}`)
+          }
+        }
+      }
+      await this.startAppRoles()
+
+      const from = Date.now()
+      const deadline = from + this.opts.holdMs
+      log('hold', `N=${n} for ${Math.round(this.opts.holdMs / 1000)}s`)
+      const turnLoop = this.runTurnsFor('agent', n, deadline)
+      const resume: number[] = []
+      const api: number[] = []
+      while (Date.now() < deadline) {
+        this.checkAbort()
+        resume.push(...(await this.probeResume()))
+        api.push(...(await this.apiLatency()))
+        await Bun.sleep(Math.min(30_000, Math.max(1000, deadline - Date.now())))
+      }
+      await turnLoop
+      this.stopAppRoles()
+      const to = Date.now()
+
+      const metrics = this.stepMetrics(n, from, to, resume, api)
+      const verdict = computeKnees([metrics], baseline, this.opts.bounds).verdicts[0]
+      const win = this.windowSamples(from, to)
+      const last = win[win.length - 1]
+      rows.push({
+        ...metrics,
+        cpuOversubRatio: this.hostInfo.threads > 0 ? +((n * vcpus) / this.hostInfo.threads).toFixed(2) : 0,
+        ramCommittedMiB: n * memMiB,
+        ramPhysicalMiB: last?.fcRssMiB ?? 0,
+        turnP50: this.turnP50(n),
+        runDelayP95MsPerSec: last?.runDelayMsPerSec?.p95 ?? 0,
+        apiP95Ms: +percentile(api, 95).toFixed(1),
+        verdict,
+      })
+      log('step', `N=${n} cpu=${verdict.cpuPass ? 'pass' : 'FAIL'} ram=${verdict.ramPass ? 'pass' : 'FAIL'} memAvail=${metrics.memAvailablePct}%`)
+    }
+
+    // Burst: at the highest passing N and at N=80 for comparison.
+    if (this.opts.burst) {
+      const knees = computeKnees(rows, baseline, this.opts.bounds)
+      const targets = [...new Set([knees.recommended, 80].filter((n) => n > 0 && n <= Math.max(...this.opts.steps)))]
+      for (const n of targets) {
+        this.checkAbort()
+        if (this.vms.length < n) await this.growTo(n)
+        const from = Date.now()
+        const deadline = from + this.opts.burstWindowMs
+        const started = Math.max(1, Math.round(n * this.opts.burstFraction))
+        log('burst', `N=${n}: ${started} turns in ${Math.round(this.opts.burstWindowMs / 1000)}s`)
+        const targets2 = this.vms.filter((v) => v.assigned && v.url).slice(0, started)
+        await Promise.all(
+          targets2.map(async (vm) => {
+            try {
+              const t = await runAgentTurn(vm.url!, { skipLlmWait: true })
+              this.turns.push({ n, role: 'burst', projectId: vm.projectId, t: { ...t } })
+            } catch (err: any) {
+              this.turns.push({ n, role: 'burst', projectId: vm.projectId, t: { ok: false, error: err?.message ?? String(err) } })
+            }
+          }),
+        )
+        const to = Date.now()
+        const metrics = this.stepMetrics(n, from, to, [], [])
+        const verdict = computeKnees([metrics], baseline, this.opts.bounds).verdicts[0]
+        burstRows.push({
+          n,
+          fraction: this.opts.burstFraction,
+          windowMs: this.opts.burstWindowMs,
+          turnsStarted: targets2.length,
+          turnP95: this.turnP95(n, 'burst'),
+          cpuPsiSomeAvg60: metrics.cpuPsiSomeAvg60,
+          memAvailablePct: metrics.memAvailablePct,
+          oomKills: metrics.oomKills,
+          resumeP95Ms: metrics.resumeP95Ms,
+          pass: verdict.cpuPass && verdict.ramPass,
+        })
+      }
+    }
+
+    return this.buildReport(rows, burstRows, computeKnees(rows, baseline, this.opts.bounds))
+  }
+
+  private buildReport(rows: StepRow[], burst: BurstRow[], knees: ReturnType<typeof computeKnees>): ReportInput {
+    const vcpus = this.opts.vcpus ?? Number(this.originalEnv?.METAL_VCPUS ?? 2)
+    const memMiB = this.opts.memMiB ?? Number(this.originalEnv?.METAL_MEM_MIB ?? 1024)
+    const last = this.samples[this.samples.length - 1]
+    const perVmRssMiB = rows.length > 0 && rows[rows.length - 1].n > 0 ? Math.round(rows[rows.length - 1].ramPhysicalMiB / rows[rows.length - 1].n) : 0
+    const env: RunEnv = {
+      hostId: this.opts.host,
+      hostModel: this.hostInfo.model,
+      kernel: this.hostInfo.kernel,
+      firecrackerVersion: this.hostInfo.fcVersion,
+      gitSha: this.hostInfo.gitSha,
+      region: this.originalEnv?.METAL_REGION ?? '',
+      controlPlaneUrl: this.originalEnv?.METAL_CONTROL_PLANE_URL ?? '',
+      vcpus,
+      memMiB,
+      hostMemMiB: this.hostInfo.memMiB,
+      hostThreads: this.hostInfo.threads,
+      maxVmsPerHost: Number(this.originalEnv?.METAL_MAX_VMS_PER_HOST ?? 80),
+      idleSuspendMs: Number(this.originalEnv?.METAL_IDLE_SUSPEND_MS ?? 0),
+      startedAt: this.startedAt,
+      finishedAt: new Date().toISOString(),
+      abortReason: this.abortReason,
+    }
+    const baseline = {} as Record<TurnStep, number>
+    for (const s of TURN_STEPS) baseline[s] = rows.length > 0 ? rows[0].turnP50[s] : 0
+    return {
+      env,
+      baseline,
+      steps: rows,
+      burst,
+      knees,
+      recommendation: {
+        maxVmsPerHost: knees.recommended,
+        cpuKnee: knees.cpuKnee,
+        ramKnee: knees.ramKnee,
+        bySize: ramCeilingsBySize({ hostMemMiB: this.hostInfo.memMiB, perVmRssMiB, reservePct: this.opts.bounds.memAvailablePct }),
+        perVmRssMiB,
+      },
+      mix: this.opts.mix,
+      notes: [
+        `Resident before the run: ${this.residentBefore.length} real project(s), never touched.`,
+        `Samples: ${this.samples.length} at ${this.opts.sampleMs}ms.`,
+        last?.mem ? `Final MemAvailable ${last.mem.availableMiB} MiB of ${last.mem.totalMiB} MiB.` : '',
+      ].filter(Boolean),
+    }
+  }
+
+  // -- teardown -------------------------------------------------------------
+
+  /** Destroy every soak VM, restore the env, restart the agent, uncordon. */
+  async teardown(): Promise<void> {
+    this.stopSampling()
+    this.stopKeepAlive()
+    this.stopAppRoles()
+
+    const ids = [...this.vms.map((v) => v.projectId), ...this.probeIds]
+    log('teardown', `destroying ${ids.length} soak VM(s)`)
+    for (const pid of ids) {
+      await this.agent.suspend(pid).catch(() => {})
+      await this.agent.destroy(pid).catch(() => {})
+    }
+
+    // Verify nothing of ours is left.
+    const vms = await this.agent.vms()
+    const left = [...(vms.json?.assigned ?? []), ...(vms.json?.suspended ?? [])]
+      .map((v: any) => v.projectId)
+      .filter((p: string) => typeof p === 'string' && p.startsWith(`soak-${this.runId}-`))
+    if (left.length > 0) log('teardown', `WARNING: ${left.length} soak VM(s) still present: ${left.slice(0, 5).join(', ')}`)
+    else log('teardown', '0 soak VMs left')
+
+    if (this.originalEnvText !== null) {
+      writeFileSync(this.opts.envFile, this.originalEnvText)
+      log('teardown', 'env restored')
+      if (this.opts.restartAgent && this.agentRestarted) await this.restartAgent().catch((err) => log('teardown', `agent restart failed: ${err?.message ?? err}`))
+    }
+    if (this.cordoned) await this.cordon(false).catch((err) => log('teardown', `uncordon failed: ${err?.message ?? err}`))
+  }
+
+  writeOutput(input: ReportInput): string {
+    const { dir } = writeReport(this.opts.outDir, input, this.samples, this.turns)
+    log('report', `wrote ${dir}`)
+    return dir
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+async function main() {
+  const opts = parseArgs(process.argv.slice(2))
+  const soak = new DensitySoak(opts)
+  let report: ReportInput | null = null
+  let failed: unknown = null
+
+  const onSignal = async (sig: string) => {
+    log('signal', `${sig} — tearing down`)
+    try {
+      await soak.teardown()
+    } finally {
+      process.exit(130)
+    }
+  }
+  process.on('SIGINT', () => void onSignal('SIGINT'))
+  process.on('SIGTERM', () => void onSignal('SIGTERM'))
+
+  try {
+    report = await soak.run()
+  } catch (err) {
+    failed = err
+    log('error', String((err as any)?.message ?? err))
+  } finally {
+    try {
+      await soak.teardown()
+    } catch (err) {
+      log('teardown', `failed: ${String((err as any)?.message ?? err)}`)
+    }
+  }
+
+  if (report) {
+    const dir = soak.writeOutput(report)
+    console.log(`\n===== DENSITY SOAK =====`)
+    console.log(`CPU knee ${report.knees.cpuKnee} · RAM knee ${report.knees.ramKnee} · recommend METAL_MAX_VMS_PER_HOST=${report.recommendation.maxVmsPerHost}`)
+    console.log(`report: ${join(dir, 'report.md')}`)
+  }
+  if (failed) process.exit(1)
+}
+
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error('[density] fatal:', err)
+    process.exit(1)
+  })
+}
