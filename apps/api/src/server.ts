@@ -6840,7 +6840,7 @@ app.all('/api/admin/regions/:regionId/*', async (c) => {
 // GET /api/admin/metal/fleet — desired baseline vs live registry + drift.
 app.get('/api/admin/metal/fleet', async (c) => {
   try {
-    const { getMetalFleetStatus, MAX_VMS_PER_HOST } = await import('./lib/metal-warm-pool-controller')
+    const { getMetalFleetStatus, MAX_VMS_PER_HOST, activeLoad } = await import('./lib/metal-warm-pool-controller')
     const { getHomeFleetEnv, fleetEnvKey, METAL_FLEET } = await import('./config/metal-fleet')
     const { getMetalHostRecordMap } = await import('./lib/metal-fleet-hosts')
 
@@ -6884,24 +6884,49 @@ app.get('/api/admin/metal/fleet', async (c) => {
       .filter((h) => !desiredIds.has(h.hostId))
       .map((h) => ({ hostId: h.hostId, region: h.region, kind: 'burst' as const, present: true, provisioned: true, live: h }))
 
-    // Region rollups (utilization for burst decisions). utilPct is assigned live
+    // Region rollups (utilization for burst decisions). utilPct is ACTIVE live
     // microVMs over REAL capacity (live hosts × MAX_VMS_PER_HOST), NOT the
     // warm-pool poolSize (which is just the idle pre-boot target and made util
     // read >100% on lightly-loaded regions). poolSize is still surfaced for ops.
+    // `assigned` is the resident total and `evictable` the warm-but-free part of
+    // it (SHO-444), so the gap between utilPct and assignedUtilPct IS the bucket.
     const byRegion: Record<
       string,
-      { hosts: number; live: number; assigned: number; poolSize: number; capacity: number; utilPct: number }
+      {
+        hosts: number
+        live: number
+        assigned: number
+        active: number
+        evictable: number
+        poolSize: number
+        capacity: number
+        utilPct: number
+        assignedUtilPct: number
+      }
     > = {}
     for (const h of status.hosts) {
-      const r = (byRegion[h.region] ||= { hosts: 0, live: 0, assigned: 0, poolSize: 0, capacity: 0, utilPct: 0 })
+      const r = (byRegion[h.region] ||= {
+        hosts: 0,
+        live: 0,
+        assigned: 0,
+        active: 0,
+        evictable: 0,
+        poolSize: 0,
+        capacity: 0,
+        utilPct: 0,
+        assignedUtilPct: 0,
+      })
       r.hosts++
       r.live++
       r.assigned += h.load?.assigned ?? 0
+      r.active += activeLoad(h)
+      r.evictable += h.load?.evictable ?? 0
       r.poolSize += h.capacity?.poolSize ?? 0
     }
     for (const r of Object.values(byRegion)) {
       r.capacity = r.live * MAX_VMS_PER_HOST
-      r.utilPct = r.capacity > 0 ? Math.round((r.assigned / r.capacity) * 100) : 0
+      r.utilPct = r.capacity > 0 ? Math.round((r.active / r.capacity) * 100) : 0
+      r.assignedUtilPct = r.capacity > 0 ? Math.round((r.assigned / r.capacity) * 100) : 0
     }
 
     return c.json({

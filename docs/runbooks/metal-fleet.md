@@ -53,8 +53,8 @@ Copyright (C) 2026 Shogo Technologies, Inc.
 
 ## Auto-scaling (burst) — how it works
 
-Each tick the reconciler computes per-region utilization (`assigned/poolSize`)
-and:
+Each tick the reconciler computes per-region utilization — **active** microVMs ÷
+(live hosts × `METAL_MAX_VMS_PER_HOST`), see "VM residency" below — and:
 
 - **scale up** when util ≥ `scaleUpUtilPct` and active burst < `maxPerRegion`
   and the region cooldown has elapsed → creates an hourly Latitude host with
@@ -65,6 +65,71 @@ and:
 
 Only reconciler-created burst hosts (tracked in the registry) are ever
 destroyed — baseline hosts are untouchable by the actuator.
+
+## VM residency: active, evictable, suspended
+
+An assigned VM is in one of two resident states, and a third state once it is
+suspended. The distinction is what keeps the fleet from buying hosts to hold
+VMs nobody is using.
+
+| State | What it means | Counts as capacity? |
+|---|---|---|
+| **active** | Someone is using it: `alwaysOn`, a busy guest (agent turn, live stream, background task), or real user activity inside `METAL_IDLE_SUSPEND_MS` (15m). | **Yes** — this is the only thing that does. |
+| **evictable** | Idle ≥ 15m, not busy, not always-on. Still resident, so a resume is instant — but it is free capacity. | No. |
+| **suspended** | Snapshot on local NVMe (+ durable store). A resume restores it. | No. |
+
+`active + evictable = assigned` (the resident total). The classifier is
+`MetalWarmPool.vmResidency()`; `status()` reports the split as
+`liveness.active` / `liveness.evictable`, and the heartbeat carries both.
+
+**What uses active only:** the idle directive's region utilization
+(`idleDirectiveFor`), the host guard in `resolveIdleWindow`, placement order
+(`loadRatio`), the burst scaler (`regionUtilPct`), and the
+`metal.region.active_util_pct` gauge. An agent that predates this reports no
+`active` field, and every one of those falls back to `assigned` — i.e. today's
+behaviour, never emptier than reality.
+
+**Eviction.** An evictable VM is suspended early only when an `assign()` or
+`resume()` on that host actually needs the slot or the RAM:
+
+- The host is **full** when resident count `assigned.size + 1 >
+  METAL_MAX_RESIDENT_VMS_PER_HOST` (0 = no count cap, the default — prod hosts
+  already hold ~200 resident VMs, so a cap near 80 would mass-evict), or when
+  `MemAvailable − vmMemMiB < METAL_EVICT_MEM_RESERVE_MIB` (default 10% of
+  MemTotal; 0 disables the memory trigger; off Linux there is no meminfo, so the
+  memory check is off).
+- While full, the **longest-idle evictable** VM is suspended, never the project
+  being assigned, never one already being evicted (an `evicting` set keeps two
+  concurrent assigns from picking the same victim), and it is re-checked for
+  evictability immediately before the suspend. A suspend that refuses or throws
+  moves on to the next candidate. Cap: `METAL_EVICT_MAX_PER_ASSIGN` (default 3).
+- If nothing is evictable the assign proceeds exactly as before — an assign is
+  never failed because eviction could not free room. It logs and increments
+  `metal.host.evict_none_available_total`.
+- The reaper also runs a **headroom pass** after `reapIdle`: it keeps
+  `METAL_EVICT_HEADROOM_SLOTS` (default 2) VMs' worth of room free, so most
+  assigns never pay for an on-demand eviction (which is a backup + snapshot on
+  the incoming open's path). Counted against `METAL_REAP_MAX_PER_PASS`.
+
+**Why it matters for latency.** An evicted VM's next open is a resume, not an
+instant hit. The snapshot records why it was taken (`suspendReason: 'idle' |
+'evicted'`), the resume result carries it back, and the control plane labels
+`metal.wake_total_ms` / `metal.wake_latency_ms` with `suspend_reason`. Compare
+p95 for `evicted` against `idle` before lowering any host count.
+
+**Env vars (all on the metal-agent):**
+
+| Var | Default | Meaning |
+|---|---|---|
+| `METAL_MAX_RESIDENT_VMS_PER_HOST` | `0` | Resident-VM count cap for the eviction trigger. 0 = no count cap. |
+| `METAL_EVICT_MEM_RESERVE_MIB` | `0` → 10% of MemTotal | Host RAM kept free; an assign that would leave less evicts first. 0 disables the memory trigger. |
+| `METAL_EVICT_MAX_PER_ASSIGN` | `3` | Most VMs one assign/resume may evict. |
+| `METAL_EVICT_HEADROOM_SLOTS` | `2` | Slots the reaper keeps free proactively. 0 disables the pass. |
+| `METAL_IDLE_SUSPEND_MS` | `900000` (15m) | Also the evictable threshold. `0` disables idle-suspend **and** eviction. |
+
+Billing is unchanged: an evictable VM is still metered as the `idle` class and
+charged nothing (`idleBilling: 'none'`), and eviction goes through
+`suspendOrRetire()` so `closeMeter` runs.
 
 ## Safety gates (why nothing spends money by accident)
 

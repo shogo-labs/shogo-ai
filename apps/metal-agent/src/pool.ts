@@ -31,9 +31,11 @@ import { HydrateProxy } from './hydrate-proxy'
 import { classConfig, config, isVmClassSupported, VM_CLASSES, type VmClass } from './config'
 import { allocatedBytes, diskUsage, type DiskUsage } from './disk'
 import { DataDriveProvisioner, WORKSPACE_DRIVE_SUFFIX } from './data-drive'
+import { hostFullness, resolveMemReserveMiB, selectEvictionVictim } from './evict'
 import { FcApi } from './fc-api'
 import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
 import { planEvictions, type EvictionCandidate } from './gc-policy'
+import { hostMemory } from './host-memory'
 import { LiveRegistry, pidAlive, type MemberDataState } from './live-registry'
 import { M, metrics } from './metrics'
 import { tapIndex, existingTapIndices, TAP_NET_CAPACITY, type VmNet } from './net'
@@ -489,6 +491,20 @@ export type SuspendOutcome =
    * would cold-start over unsaved work (SHO-442). It keeps running.
    */
   | { kind: 'refused'; reason: string }
+
+/**
+ * Whether an assigned VM is holding a slot someone needs (`active`) or is only
+ * warm (`evictable`). See `MetalWarmPool.vmResidency`.
+ */
+export type VmResidency = 'active' | 'evictable'
+
+/**
+ * Why a VM was suspended. `idle` is the reaper's window; `evicted` is an
+ * on-demand suspend to make room for an assign/resume on the same host (see
+ * `makeRoom`). Carried on the snapshot so a resume can label its wake latency
+ * with what it is paying for.
+ */
+export type SuspendReason = 'idle' | 'evicted'
 
 /** `open({ rootfs: 'staged' })` on a host that holds no staged rootfs for the class. */
 export class StagedRootfsUnavailableError extends Error {
@@ -1005,6 +1021,14 @@ export interface SuspendedVm {
   workspaceOrigin?: 'template' | 'backup' | 'snapshot'
   /** See CacheEntry.durablePending. */
   durablePending?: boolean
+  /**
+   * Why this VM was suspended: the reaper's idle window (`idle`) or an
+   * on-demand eviction to make room for another assign on this host
+   * (`evicted`). A resume reports it back so wake latency can be split by what
+   * the user is paying for — an evicted VM's resume is the cost of the bucket.
+   * Absent on snapshots taken before this shipped.
+   */
+  suspendReason?: SuspendReason
 }
 
 export interface GcReport {
@@ -1295,6 +1319,12 @@ export class MetalWarmPool {
   private available: PooledVm[] = []
   private assigned = new Map<string, AssignedVm>()
   private suspended = new Map<string, SuspendedVm>()
+  /**
+   * Projects a concurrent assign/resume has already picked to evict (SHO-444).
+   * Two opens on a full host must evict two DIFFERENT VMs, not race for the
+   * same longest-idle one and leave the host still full.
+   */
+  private evicting = new Set<string>()
   /**
    * Snapshots taken on the STAGED rootfs (pre-warm before a switch), kept apart
    * from `suspended` so the project's current snapshot keeps serving opens
@@ -2272,6 +2302,7 @@ export class MetalWarmPool {
               mode: 'resumed',
               source: res.source,
               readyMs: res.readyMs,
+              suspendReason: res.suspendReason,
               bootRootfsIdentity: this.bootRootfsIdentity(res.assigned),
             })
           staleReason = this.lastStaleReason.get(projectId) ?? 'no_snapshot'
@@ -2338,6 +2369,7 @@ export class MetalWarmPool {
       mode: r.mode,
       ...(r.source ? { source: r.source } : {}),
       ...(r.staleReason ? { staleReason: r.staleReason } : {}),
+      ...(r.suspendReason ? { suspendReason: r.suspendReason } : {}),
       phases: r.phases ?? {},
       totalMs: r.totalMs ?? 0,
       ...(repo ? { repo } : {}),
@@ -2373,6 +2405,16 @@ export class MetalWarmPool {
     // Pool VMs boot from the current image at the class's size, so a staged
     // boot or a project that needs a bigger VM always starts fresh.
     const bigger = vmBootSize(env, classConfig(this.cfg, vmClass))
+    // Make room BEFORE claiming/booting: a host full of warm VMs serves this
+    // project by suspending the longest-idle one, instead of the control plane
+    // buying another host to hold VMs nobody is using (SHO-444). Never fails the
+    // assign — see `makeRoom`.
+    await timer.time('evict_wait', () =>
+      this.makeRoom({
+        exclude: projectId,
+        vmMemMiB: bigger?.memoryMB ?? classConfig(this.cfg, vmClass).memMiB,
+      }),
+    )
     let vm = staged || bigger ? null : this.claim(vmClass)
     if (!vm) {
       const t0 = performance.now()
@@ -5184,7 +5226,7 @@ export class MetalWarmPool {
    * intact so a same-host resume still works. Heavy steps run under the
    * host-wide semaphore; concurrent suspends for one project collapse.
    */
-  async suspend(projectId: string): Promise<SuspendedVm> {
+  async suspend(projectId: string, opts: { reason?: SuspendReason } = {}): Promise<SuspendedVm> {
     if (this.recycleFlight.has(projectId)) throw new Error(`project ${projectId} is being recycled`)
     return this.suspendFlight.run(projectId, async () => {
       const a = this.assigned.get(projectId)
@@ -5302,6 +5344,7 @@ export class MetalWarmPool {
         memberSourceEtags: this.trustedMemberSourceEtags(a),
         repoEtag: this.trustedRepoEtag(a),
         workspaceOrigin: a.workspaceOrigin,
+        suspendReason: opts.reason,
       }
       const untrustedSource = this.sourceUntrustedReason(a)
 
@@ -5443,7 +5486,7 @@ export class MetalWarmPool {
    * A recycle that refuses (busy, a backup failed) falls back to a plain
    * suspend, which keeps today's behavior: the work is safe either way.
    */
-  async suspendOrRetire(projectId: string): Promise<SuspendOutcome> {
+  async suspendOrRetire(projectId: string, opts: { reason?: SuspendReason } = {}): Promise<SuspendOutcome> {
     const a = this.assigned.get(projectId)
     if (a && this.rootfsGeneration(this.bootRootfsIdentity(a), a.handle.vmClass) === 'stale') {
       const r = await this.recycle(projectId, { reason: 'stale-rootfs' })
@@ -5455,7 +5498,7 @@ export class MetalWarmPool {
       console.warn(`[pool] retiring ${projectId} aborted (${JSON.stringify(r.steps.at(-1))}) — suspending instead`)
     }
     try {
-      const s = await this.suspend(projectId)
+      const s = await this.suspend(projectId, opts)
       return { kind: 'suspended', s, staged: this.stagedSuspended.get(projectId) === s }
     } catch (err) {
       // A refused stop is an answer, not an error: the VM keeps running and the
@@ -5495,6 +5538,7 @@ export class MetalWarmPool {
       repoEtag: s.repoEtag,
       workspaceOrigin: s.workspaceOrigin,
       durablePending: s.durablePending,
+      suspendReason: s.suspendReason,
       v: 1,
     }
     index.put(e)
@@ -5641,10 +5685,22 @@ export class MetalWarmPool {
     apiMs: number
     readyMs: number
     source: 'local' | 'store'
+    /** Why the snapshot was taken: the idle window, or an on-demand eviction. */
+    suspendReason?: SuspendReason
     /** Workspace-drive size (MiB) re-asserted after the restore, when requested. */
     drive?: number | null
   } | null> {
     ;({ env } = this.ownMembersOnly(projectId, env))
+    // Make room before restoring: a resume is a VM coming back onto this host,
+    // so it needs the same slot/RAM an assign does (SHO-444). The snapshot's own
+    // size is not known until it is pulled, so the class default is the estimate
+    // — close enough for a reserve, and the memory trigger is off by default.
+    await timer.time('evict_wait', () =>
+      this.makeRoom({
+        exclude: projectId,
+        vmMemMiB: classConfig(this.cfg, vmClassFromEnv(env)).memMiB,
+      }),
+    )
     let s = this.suspended.get(projectId)
     let source: 'local' | 'store' = 'local'
     let repair: SnapshotDrift[] = []
@@ -5910,7 +5966,7 @@ export class MetalWarmPool {
         )
     }
     metrics.inc(source === 'local' ? M.resumeLocalHits : M.resumeStoreHits)
-    return { assigned: a, apiMs, readyMs: apiMs + readyMs, source, drive: wantDriveMiB ?? null }
+    return { assigned: a, apiMs, readyMs: apiMs + readyMs, source, suspendReason: s.suspendReason, drive: wantDriveMiB ?? null }
   }
 
   /**
@@ -6325,7 +6381,7 @@ export class MetalWarmPool {
         )
       }
       try {
-        const outcome = await this.suspendOrRetire(a.projectId)
+        const outcome = await this.suspendOrRetire(a.projectId, { reason: 'idle' })
         if (outcome.kind === 'retired') opts.retired?.push(a.projectId)
         else if (outcome.kind === 'refused') {
           // Not stopped: its HEAD is not durable yet. Leave it running and let
@@ -6339,6 +6395,148 @@ export class MetalWarmPool {
       }
     }
     return done
+  }
+
+  /**
+   * Make room for one more VM on this host by suspending the longest-idle
+   * evictable ones (SHO-444).
+   *
+   * Called at the top of `assign()` and `resume()`, before the VM is claimed or
+   * restored, so a full host serves the incoming project instead of the control
+   * plane buying another host to hold VMs nobody is using. Also called by the
+   * reaper's headroom pass, which keeps most assigns from ever paying for this.
+   *
+   * Never fails an assign: if nothing is evictable the caller proceeds exactly
+   * as before (the host has always accepted an assign it has no room for) and
+   * `evict_none_available` increments, which is the signal that the host is
+   * genuinely full of work rather than of warm VMs.
+   *
+   * Returns the projectIds actually suspended.
+   */
+  async makeRoom(opts: {
+    /** The project being assigned/resumed — never evict it. */
+    exclude: string
+    /** RAM the incoming VM will occupy, for the memory trigger. */
+    vmMemMiB: number
+    /**
+     * Metric label for the eviction. Defaults to the fullness trigger
+     * (`mem` | `slots`); the headroom pass passes `headroom` so its evictions
+     * are distinguishable from ones an assign had to pay for.
+     */
+    label?: 'mem' | 'slots' | 'headroom'
+    /** Cap on evictions for this call; defaults to METAL_EVICT_MAX_PER_ASSIGN. */
+    max?: number
+    /**
+     * Keep this many VMs' worth of room free rather than just one VM's (the
+     * reaper's headroom pass). 0 = make room for exactly the incoming VM.
+     */
+    headroomSlots?: number
+  }): Promise<string[]> {
+    const cap = opts.max ?? this.cfg.evictMaxPerAssign
+    if (!(cap > 0)) return []
+    const headroom = Math.max(0, opts.headroomSlots ?? 0)
+    const mem = this.hostMemoryNow()
+    const reserve = resolveMemReserveMiB(this.cfg.evictMemReserveMiB, mem?.totalMiB)
+    const evicted: string[] = []
+    for (let i = 0; i < cap; i++) {
+      const full = hostFullness({
+        resident: this.assigned.size + headroom,
+        residentCap: this.cfg.maxResidentVmsPerHost,
+        memAvailableMiB: mem?.availableMiB,
+        vmMemMiB: opts.vmMemMiB * (1 + headroom),
+        memReserveMiB: reserve,
+      })
+      if (!full.full) break
+      const now = Date.now()
+      const candidates = [...this.assigned.values()]
+        .filter((a) => this.vmResidency(a, now) === 'evictable')
+        .map((a) => ({ projectId: a.projectId, idleMs: now - (a.lastRealActivityAt ?? a.assignedAt) }))
+      const victim = selectEvictionVictim({
+        candidates,
+        exclude: new Set([opts.exclude]),
+        evicting: this.evicting,
+      })
+      if (!victim) {
+        metrics.inc(M.evictNoneAvailable)
+        console.warn(
+          `[pool] host full (${full.reason}) for ${opts.exclude} but nothing is evictable — ` +
+            `${this.assigned.size} resident, all active`,
+        )
+        break
+      }
+      this.evicting.add(victim.projectId)
+      try {
+        // Re-check immediately before suspending: the VM may have become active
+        // between selection and here (a user clicked, a turn started). Skipping
+        // it costs one loop iteration; suspending it would drop live work.
+        const a = this.assigned.get(victim.projectId)
+        if (!a || this.vmResidency(a, Date.now()) !== 'evictable') continue
+        const outcome = await this.suspendOrRetire(victim.projectId, { reason: 'evicted' })
+        if (outcome.kind === 'retired') {
+          // Retired off a superseded rootfs: the control plane re-warms it, so
+          // it is not a suspend and must not be counted as one.
+          metrics.inc(`${M.evictions}{reason="retired"}`)
+        } else if (outcome.kind === 'refused') {
+          // SHO-442: the VM's git history is not durable yet, so the stop was
+          // refused and it is still running. Not an eviction — try the next
+          // candidate rather than counting a VM that never left.
+          console.warn(`[pool] eviction of ${victim.projectId} refused (${outcome.reason}) — trying the next`)
+          continue
+        } else {
+          evicted.push(victim.projectId)
+          metrics.inc(`${M.evictions}{reason="${opts.label ?? full.reason}"}`)
+          console.log(
+            `[pool] evicted ${victim.projectId} (idle ${Math.round(victim.idleMs / 1000)}s) ` +
+              `to make room for ${opts.exclude} — host full on ${full.reason}`,
+          )
+        }
+        this.onEvicted?.(victim.projectId)
+      } catch (err: any) {
+        // A suspend that refuses (e.g. SHO-442's "HEAD not durable") must not
+        // fail the incoming assign: try the next candidate.
+        console.warn(`[pool] eviction of ${victim.projectId} failed, trying the next:`, err?.message ?? err)
+      } finally {
+        this.evicting.delete(victim.projectId)
+      }
+    }
+    return evicted
+  }
+
+  /**
+   * Called after an on-demand eviction suspends a VM, so the host can drop its
+   * DNAT forward and tell the control plane the project is no longer resident
+   * here. A callback because pool.ts must not import register.ts (which imports
+   * pool.ts); server.ts wires it to `fwd.remove` + `reportPlacement`.
+   */
+  onEvicted?: (projectId: string) => void
+
+  /**
+   * The host's memory as the eviction policy sees it. A seam so a test can
+   * inject a meminfo instead of needing a Linux host.
+   */
+  protected hostMemoryNow(): { totalMiB: number; availableMiB: number } | undefined {
+    return hostMemory()
+  }
+
+  /**
+   * The reaper's proactive headroom pass: keep `METAL_EVICT_HEADROOM_SLOTS`
+   * VMs' worth of room free so most assigns never pay for an on-demand
+   * eviction (a backup + snapshot on the incoming open's path).
+   *
+   * Counted against the same per-pass cap as `reapIdle`, so a host that is
+   * suddenly over-full cannot spend one pass evicting everything.
+   */
+  async evictForHeadroom(): Promise<string[]> {
+    const slots = this.cfg.evictHeadroomSlots
+    if (!(slots > 0)) return []
+    const cap = this.cfg.reapMaxPerPass > 0 ? Math.min(this.cfg.reapMaxPerPass, slots) : slots
+    return this.makeRoom({
+      exclude: '',
+      vmMemMiB: this.cfg.memMiB,
+      label: 'headroom',
+      max: cap,
+      headroomSlots: slots,
+    })
   }
 
   /**
@@ -7255,6 +7453,8 @@ export class MetalWarmPool {
     metrics.gauge(M.assignedAgentActive, cls.agentActive)
     metrics.gauge(M.assignedIdleTail, cls.idleTail)
     metrics.gauge(M.assignedUnhealthy, cls.unhealthy)
+    metrics.gauge(M.assignedActive, cls.active)
+    metrics.gauge(M.assignedEvictable, cls.evictable)
 
     // Git durability (SHO-442): how many VMs cannot save, how long the oldest
     // has been that way, and the worst unsaved age. These are the numbers the
@@ -7300,22 +7500,67 @@ export class MetalWarmPool {
    * {@link APP_ACTIVE_WINDOW_MS}, and `idleTail` otherwise (running but neither
    * being used nor edited — the 30-min idle-suspend tail). agent-active wins
    * when a VM is both, so the buckets are disjoint and sum to `assigned.size`.
+   *
+   * `active` / `evictable` are the OTHER decomposition of the same set (see
+   * {@link vmResidency}): whether the VM is holding a slot someone needs, or is
+   * only warm. They are disjoint and also sum to `assigned.size`, and they are
+   * what the control plane counts as capacity — an idle-resident VM is free
+   * room, not demand.
    */
   private classifyAssigned(
     now = Date.now(),
-  ): { appActive: number; agentActive: number; idleTail: number; unhealthy: number } {
+  ): {
+    appActive: number
+    agentActive: number
+    idleTail: number
+    unhealthy: number
+    active: number
+    evictable: number
+  } {
     let appActive = 0
     let agentActive = 0
     let idleTail = 0
     let unhealthy = 0
+    let active = 0
+    let evictable = 0
     for (const a of this.assigned.values()) {
       if (a.lastHealthOk === false) unhealthy++
       const cls = this.vmMeterClass(a, now)
       if (cls === 'agent') agentActive++
       else if (cls === 'app') appActive++
       else idleTail++
+      if (this.vmResidency(a, now) === 'evictable') evictable++
+      else active++
     }
-    return { appActive, agentActive, idleTail, unhealthy }
+    return { appActive, agentActive, idleTail, unhealthy, active, evictable }
+  }
+
+  /**
+   * Whether this assigned VM is holding a slot someone needs (`active`) or is
+   * only warm (`evictable`).
+   *
+   * The third state Russell asked for: an idle VM stays resident — instant
+   * resume, no snapshot restore — but counts as FREE capacity, and is suspended
+   * early only when an assign/resume on this host actually needs the room (see
+   * `makeRoom`). Before this, an idle VM was either resident (counted as used,
+   * which is what made the burst scaler buy hosts to hold VMs nobody was using)
+   * or suspended (a resume on the user's next click).
+   *
+   * `evictable` is deliberately the same threshold as the aggressive idle
+   * window (`METAL_IDLE_SUSPEND_MS`, 15m): a VM the reaper would already have
+   * suspended in a busy region is exactly the one that may be evicted early in
+   * a quiet one. No new knob, and the two can never disagree about "idle".
+   *
+   * Never evictable: `alwaysOn` (paid, never idle-suspended), a busy guest
+   * (`vmBusy` — an agent turn, a live stream, a background task), and anything
+   * inside the window. With idle-suspend disabled (`METAL_IDLE_SUSPEND_MS=0`)
+   * nothing is evictable either: an operator who turned the reaper off did not
+   * ask for VMs to be suspended on someone else's assign.
+   */
+  protected vmResidency(a: AssignedVm, now = Date.now()): VmResidency {
+    if (!(this.cfg.idleSuspendMs > 0)) return 'active'
+    if (a.alwaysOn || this.vmBusy(a)) return 'active'
+    return now - (a.lastRealActivityAt ?? a.assignedAt) >= this.cfg.idleSuspendMs ? 'evictable' : 'active'
   }
 
   /**
@@ -7965,6 +8210,9 @@ export class MetalWarmPool {
         // guest) = an agent turn in flight.
         activeStreams: a.activeStreams ?? 0,
         busy: this.vmBusy(a),
+        // `active` = holding a slot someone needs; `evictable` = warm but free
+        // capacity, suspended early only when an assign here needs the room.
+        residency: this.vmResidency(a, now),
         // Reports busy, but no user activity past the ceiling: the reaper will
         // suspend it on its next pass.
         busyIdle: this.vmBusy(a) && this.pastBusyIdleCeiling(a, now),
@@ -8033,6 +8281,13 @@ export interface OpenResult {
   totalMs?: number
   /** Cold boot only: why no snapshot was resumed. */
   staleReason?: StaleReason
+  /**
+   * Resume only: why the snapshot being restored was taken — the idle window
+   * (`idle`) or an on-demand eviction (`evicted`). The control plane labels its
+   * wake-latency metric with it, so the cost of the "ready to suspend" bucket is
+   * measurable instead of assumed.
+   */
+  suspendReason?: SuspendReason
   /** Fresh assign only: how the git history restore went. */
   repo?: RepoRestoreInfo
   /** `reused` only: the open this VM came from, if nobody received it (see reportOpen). */
@@ -8045,6 +8300,7 @@ export interface LateWake {
   mode: 'assigned' | 'resumed'
   source?: 'local' | 'store'
   staleReason?: StaleReason
+  suspendReason?: SuspendReason
   phases: Record<string, number>
   totalMs: number
   repo?: RepoRestoreInfo
