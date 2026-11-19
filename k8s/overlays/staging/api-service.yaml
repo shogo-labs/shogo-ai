@@ -694,6 +694,44 @@ spec:
                   name: api-secrets
                   key: SHOGO_EDGE_PROXY_SECRET
                   optional: true
+            # Slack OAuth (install, callback, events/interactions). Values come
+            # from the Slack app built from docs/slack/manifest.yml. Optional so
+            # the pod boots before the secrets exist; until then
+            # /api/integrations/slack/install answers 503.
+            - name: SLACK_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: SLACK_CLIENT_ID
+                  optional: true
+            - name: SLACK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: SLACK_CLIENT_SECRET
+                  optional: true
+            - name: SLACK_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: SLACK_SIGNING_SECRET
+                  optional: true
+            # Not read by the API today; plumbed for the future api_app_id check.
+            - name: SLACK_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: SLACK_APP_ID
+                  optional: true
+            # OpenRouter key for the model-provider fallback. Every deploy job
+            # writes it into api-secrets; without this reader the cloud never
+            # saw it (SHO-453).
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: OPENROUTER_API_KEY
+                  optional: true
             # --- Affiliate content-CPM (Instagram / TikTok view tracking) ---
             # Optional, DB-controlled feature. The master toggle, provider,
             # CPM rate, hold days, and caps are all super-admin PlatformSetting
