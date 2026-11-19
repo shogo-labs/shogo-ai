@@ -43,14 +43,25 @@ on:
   # build that motivated it. Manual dispatch gives a fresh run against the
   # current file without pushing a no-op commit to main.
   workflow_dispatch:
+  # The local-mode E2E matrix used to be PR-only (see the `e2e-local` job), so a
+  # regression in it could only be seen on someone's PR — and when it went red
+  # on every PR nobody could tell which PR caused it, so it sat red for weeks
+  # (SHO-447). A nightly run on main gives the same suite a home where a red is
+  # attributable to a commit on main, and where it is caught before it reaches a
+  # PR. One run of the matrix is ~250 runner-minutes (~$1.50), not the ~7,950
+  # min/day the PR runs cost, so this is cheap.
+  schedule:
+    - cron: '17 3 * * *'
 
 permissions: {}
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
-  # Preserve cache-populating main runs; superseded PR and merge-group runs
-  # are safe to cancel.
-  cancel-in-progress: ${{ github.event_name != 'push' }}
+  # The nightly gets its own group so it never cancels, or queues behind, a
+  # push/PR run on main.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || (github.head_ref || github.ref_name) }}
+  # Preserve cache-populating main runs and the nightly local-mode run;
+  # superseded PR and merge-group runs are safe to cancel.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 jobs:
   # One prelude instead of two. Both answers below are needed before anything
@@ -592,12 +603,19 @@ jobs:
     # DB. These specs previously only ran on developer machines.
     name: ${{ matrix.name }}
     needs: prelude
-    # PR-only, and app-code PRs only. This matrix is not in the required `ci`
-    # aggregator's `needs`, so on `merge_group` and `push` it gates nothing —
-    # it only burns runner slots (15,905 min ≈ $95 gross over two days). A
-    # docs-only PR cannot change local-mode behaviour either. Do not add it to
-    # the aggregator.
-    if: github.event_name == 'pull_request' && needs.prelude.outputs.app == 'true'
+    # PRs, plus the nightly run on main (SHO-447). This matrix is not in the
+    # required `ci` aggregator's `needs`, so on `merge_group` and `push` it
+    # gates nothing — it only burns runner slots (15,905 min ≈ $95 gross over
+    # two days). A docs-only PR cannot change local-mode behaviour either. Do
+    # not add it to the aggregator.
+    #
+    # It used to be PR-only, which meant a regression here could only be seen
+    # on someone's PR: when it went red on every PR nobody could tell which PR
+    # caused it, so it sat red for weeks (SHO-447). The nightly `schedule` run
+    # on main is where a red is attributable to a commit, and where it is
+    # caught before it reaches a PR. `prelude` reports `app=true` for any
+    # non-PR event, so the nightly runs the whole matrix.
+    if: (github.event_name == 'pull_request' || github.event_name == 'schedule') && needs.prelude.outputs.app == 'true'
     # Playwright 1.58 has no ubuntu26.04 deps; unpin when @playwright/test supports it
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     strategy:
@@ -786,6 +804,10 @@ jobs:
         if: ${{ !matrix.spec }}
         env:
           E2E_LOCAL_START_STACK: '1'
+          # Specs that have their own entry in this matrix skip themselves when
+          # this is set, so they are not also run (and not also red) inside a
+          # shard. `slides-preview` is the first: it is its own job below.
+          E2E_SHARD: ${{ matrix.shard }}
         run: npx playwright test --config e2e/local/playwright.config.ts --project=chromium --shard=${{ matrix.shard }}
 
       - name: Run e2e/local (${{ matrix.spec }})

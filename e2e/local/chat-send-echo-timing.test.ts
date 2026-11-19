@@ -116,27 +116,28 @@ async function createProject(page: Page, prompt: string) {
 }
 
 /**
- * Watches the DOM from inside the page for the first paint of `marker` outside
- * the composer, so the measurement uses the browser's own clock instead of a
- * round trip from the test runner. The composer draws a transparent mirror of
- * its text, so a bare body-text match is not proof of a bubble: a user bubble
- * (`role=button`, "Edit this message …") or text with the composer emptied is.
+ * Watches the DOM from inside the page for the first paint of `marker` in the
+ * TRANSCRIPT, so the measurement uses the browser's own clock instead of a
+ * round trip from the test runner.
+ *
+ * Scoped to `[data-testid="turn-list"]` on purpose. The composer draws a
+ * transparent mirror of its text, and it clears its `value` a frame before the
+ * mirror's text leaves the DOM — so a bare `document.body.innerText` match can
+ * fire on the mirror, before the echo bubble exists, and the bubble is then
+ * gone by the time the order is read (`echoAt === -1`, the 2026-11-19 shard 2
+ * failure). The echo is an optimistic message, so `canEditMessage` gives it no
+ * `role=button` / "Edit this message" label to match on; the transcript
+ * container is the marker that actually distinguishes a bubble from the
+ * composer.
  */
 async function armEchoWatch(page: Page, marker: string) {
   await page.evaluate((m) => {
     const w = window as any
-    const composerText = () => {
-      const el = document.querySelector('[data-testid="project-composer-input"]') as HTMLTextAreaElement | null
-      if (!el) return ""
-      return typeof el.value === "string" ? el.value : (el.innerText ?? "")
+    const transcriptText = () => {
+      const list = document.querySelector('[data-testid="turn-list"]')
+      return list ? (list.textContent || "") : ""
     }
-    const bubbleTexts = () =>
-      Array.from(document.querySelectorAll('[role="button"]')).filter((el) =>
-        (el.getAttribute("aria-label") || "").includes("Edit this message"),
-      )
-    const painted = () =>
-      bubbleTexts().some((el) => (el.textContent || "").includes(m)) ||
-      (document.body.innerText.includes(m) && !composerText().includes(m))
+    const painted = () => transcriptText().includes(m)
     w.__echoTiming = { sentAt: null, appearedAt: null }
     const observer = new MutationObserver(() => {
       // Only mutations caused by the send count — the composer mirror holds the
@@ -173,7 +174,10 @@ async function sendAndTimeEcho(page: Page, text: string): Promise<number> {
 async function transcriptOrder(page: Page, text: string, reply: string) {
   return page.evaluate(
     ({ t, r }) => {
-      const body = document.body.innerText
+      // The transcript, not `document.body`: the composer mirror holds the same
+      // text and would otherwise be counted as a bubble (see `armEchoWatch`).
+      const list = document.querySelector('[data-testid="turn-list"]')
+      const body = list ? (list.textContent || "") : ""
       return {
         echoAt: body.lastIndexOf(t),
         replyAt: body.lastIndexOf(r),
