@@ -30,6 +30,7 @@
  */
 
 import { spawn } from './child-process'
+import { createHash } from 'crypto'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
@@ -171,11 +172,47 @@ interface GitResult {
   stderr: string
 }
 
+interface GitBufferResult {
+  exitCode: number
+  stdout: Buffer
+  stderr: string
+}
+
+function runGitBuffer(
+  args: string[],
+  cwd: string,
+  opts: { input?: Buffer; timeoutMs?: number } = {},
+): Promise<GitBufferResult> {
+  const timeoutMs = opts.timeoutMs ?? GIT_TIMEOUT_MS
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', args, {
+      cwd,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      stdio: [opts.input ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+    })
+    const out: Buffer[] = []
+    const err: string[] = []
+    child.stdout?.on('data', (c: Buffer) => out.push(c))
+    child.stderr?.setEncoding('utf-8')
+    child.stderr?.on('data', (c: string) => err.push(c))
+    const timer = setTimeout(() => {
+      try { child.kill('SIGKILL') } catch { /* ignore */ }
+      reject(new Error(`git ${args.join(' ')} timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
+    child.on('error', (e) => { clearTimeout(timer); reject(e) })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      resolve({ exitCode: code ?? -1, stdout: Buffer.concat(out), stderr: err.join('') })
+    })
+    if (opts.input && child.stdin) child.stdin.end(opts.input)
+  })
+}
+
 function runGit(args: string[], cwd: string, env?: NodeJS.ProcessEnv): Promise<GitResult> {
   return new Promise((resolve, reject) => {
     const child = spawn('git', args, {
       cwd,
-      env: { ...process.env, ...(env ?? {}) },
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(env ?? {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     const out: string[] = []
@@ -416,28 +453,438 @@ export function lfsConfigArgs(cfg: LfsRemoteConfig): string[] {
  * dedups (objects it already has return no upload action), so re-running is
  * cheap. Returns true on success; never throws (durability falls back to the
  * `.git` tarball when this fails — see {@link persistRepoToStore}).
+ *
+ * Prefer {@link lfsPushIncremental} for a save: this walks every ref's whole
+ * history, which is what made a media-heavy workspace time out on every save
+ * (SHO-442).
  */
 export async function lfsPushAll(cfg: LfsRemoteConfig): Promise<boolean> {
   const logger = cfg.logger ?? console
-  if (!existsSync(join(cfg.workspaceDir, '.git'))) return false
   try {
-    // Never upload a runaway local store: if the repo is over budget, free the
-    // unreferenced objects first and let the budget gate in
-    // `autoTrackLargeFiles` keep it there.
-    if (lfsOverBudget(cfg.workspaceDir, { logger })) await pruneLfsBudget(cfg.workspaceDir, logger)
-    const remote = await ensureCloudRemote(cfg)
-    const res = await runGit(
-      [...lfsConfigArgs(cfg), 'lfs', 'push', '--all', remote],
-      cfg.workspaceDir,
-    )
-    if (res.exitCode !== 0) {
-      logger.warn(`[lfs] push failed (${res.exitCode}): ${(res.stderr || '').slice(0, 400)}`)
-      return false
-    }
+    await lfsPushIncremental(cfg, { tips: null, logger })
     return true
   } catch (err: any) {
-    logger.warn(`[lfs] push threw: ${err?.message ?? err}`)
+    logger.warn(`[lfs] push failed (${err?.reason ?? 'other'}): ${String(err?.message ?? err).slice(0, 400)}`)
     return false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Incremental, resumable push (SHO-442)
+// ---------------------------------------------------------------------------
+//
+// `git lfs push --all` re-walks every ref's whole history and batch-checks
+// every object on every save. A media-heavy workspace takes minutes, the host
+// gave up at 60 s, and the next save started again from zero — every save
+// failed, forever. What we do instead:
+//
+//   1. find the LFS oids reachable from commits the durable repo does not
+//      already have (`git rev-list --objects --all --not <tips>`),
+//   2. push exactly those, in chunks, with `git lfs push --object-id`,
+//   3. treat an object whose file is gone locally but that the server already
+//      has as done (a cold boot only pulls HEAD's objects),
+//   4. and never fail the export because an object is missing on both sides:
+//      name its paths, record them, and export the history anyway. History
+//      must never be held back for a lost blob.
+
+/** Why an LFS push failed. Carried in the export's 503 body and in the logs. */
+export type LfsFailureReason = 'auth' | 'timeout' | 'missing-objects' | 'network' | 'presign' | 'other'
+
+/** A pointer the repo references whose bytes are on neither side. */
+export interface LfsMissingObject {
+  oid: string
+  paths: string[]
+}
+
+/** A push that could not complete. `stderr` is the untruncated git-lfs output. */
+export class LfsPushError extends Error {
+  constructor(
+    message: string,
+    readonly reason: LfsFailureReason,
+    readonly stderr: string = '',
+    readonly missing: LfsMissingObject[] = [],
+  ) {
+    super(message)
+  }
+}
+
+/**
+ * Classify a `git lfs` / batch-API failure from its own output. The incident's
+ * `lfs-push-failed` was opaque because only the code reached the host.
+ */
+export function classifyLfsFailure(stderr: string, status?: number): LfsFailureReason {
+  const s = stderr || ''
+  if (/Unable to (find source for object|stat local media path)|missing object|object does not exist|No such file or directory/i.test(s)) {
+    return 'missing-objects'
+  }
+  if (/timed out|timeout|deadline exceeded|operation was canceled|i\/o timeout/i.test(s)) return 'timeout'
+  if (/SignatureDoesNotMatch|Request has expired|ExpiredToken|presign|X-Amz-Signature/i.test(s)) return 'presign'
+  if (status === 401 || status === 403 || /401|403|Unauthorized|Forbidden|Authentication|Bad credentials|Permission denied|access denied/i.test(s)) {
+    return 'auth'
+  }
+  if (/Could not resolve|Connection refused|connection reset|ECONNRESET|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|socket hang up|TLS|network|502|503|504/i.test(s)) {
+    return 'network'
+  }
+  return 'other'
+}
+
+const LFS_POINTER_HEADER = 'version https://git-lfs.github.com/spec/v1'
+/** Pointer blobs are tiny; anything bigger is a pre-LFS file that git will not filter. */
+const LFS_POINTER_MAX_BYTES = 1024
+/** Objects per `git lfs push --object-id` / batch request. */
+export const LFS_PUSH_CHUNK = 100
+
+export interface LfsObjectRef {
+  oid: string
+  size: number
+  paths: string[]
+}
+
+/** Parse a git-lfs pointer blob. Null for anything else, so a pre-LFS binary file is never mistaken for one. */
+export function parseLfsPointer(content: string): { oid: string; size: number } | null {
+  if (!content.startsWith(LFS_POINTER_HEADER)) return null
+  const oid = /^oid sha256:([0-9a-f]{64})$/m.exec(content)
+  const size = /^size (\d+)$/m.exec(content)
+  if (!oid || !size) return null
+  return { oid: oid[1], size: Number(size[1]) }
+}
+
+/** On-disk path of an LFS object inside the repo's local store. */
+export function localLfsObjectPath(workspaceDir: string, oid: string): string | null {
+  const gitDir = resolveGitDir(workspaceDir)
+  if (!gitDir) return null
+  return join(gitDir, 'lfs', 'objects', oid.slice(0, 2), oid.slice(2, 4), oid)
+}
+
+/** Whether the object's bytes are in this repo's local LFS store. */
+export function hasLocalLfsObject(workspaceDir: string, oid: string): boolean {
+  const p = localLfsObjectPath(workspaceDir, oid)
+  return !!p && existsSync(p)
+}
+
+/** Keep only the paths `.gitattributes` marks `filter=lfs`. */
+async function lfsTrackedPaths(workspaceDir: string, paths: string[]): Promise<Set<string>> {
+  const tracked = new Set<string>()
+  if (!paths.length) return tracked
+  const input = Buffer.from(paths.join('\0') + '\0')
+  const res = await runGitBuffer(['check-attr', '--stdin', '-z', 'filter'], workspaceDir, { input })
+  if (res.exitCode !== 0) return tracked
+  const parts = res.stdout.toString('utf-8').split('\0')
+  for (let i = 0; i + 2 < parts.length; i += 3) {
+    if (parts[i + 1] === 'filter' && parts[i + 2] === 'lfs') tracked.add(parts[i])
+  }
+  return tracked
+}
+
+/** Read every blob of `shas` in one `git cat-file --batch`. */
+async function readBlobs(workspaceDir: string, shas: string[]): Promise<Map<string, Buffer>> {
+  const out = new Map<string, Buffer>()
+  if (!shas.length) return out
+  const res = await runGitBuffer(['cat-file', '--batch'], workspaceDir, {
+    input: Buffer.from(shas.join('\n') + '\n'),
+  })
+  if (res.exitCode !== 0) throw new Error(`git cat-file --batch failed: ${res.stderr.slice(0, 200)}`)
+  let buf = res.stdout
+  let at = 0
+  while (at < buf.length) {
+    const nl = buf.indexOf(0x0a, at)
+    if (nl === -1) break
+    const header = buf.toString('utf-8', at, nl).split(' ')
+    at = nl + 1
+    if (header.length < 3) continue // `<sha> missing`
+    const size = Number(header[2])
+    if (!Number.isFinite(size)) continue
+    if (header[1] === 'blob') out.set(header[0], buf.subarray(at, at + size))
+    at += size + 1
+  }
+  return out
+}
+
+/**
+ * LFS objects referenced by the commits in `tips..HEAD`-equivalent: every
+ * object reachable from a ref but not from the durable tips. `tips: null`
+ * scans everything (base exports, compaction, {@link lfsPushAll}).
+ *
+ * One `rev-list`, one `check-attr`, one `cat-file`: no `git lfs` walk over
+ * history, and we get the paths for free — which is what lets a missing object
+ * be reported as files rather than a hash.
+ */
+export async function lfsObjectsInRange(
+  workspaceDir: string,
+  tips: string[] | null,
+): Promise<LfsObjectRef[]> {
+  if (!existsSync(join(workspaceDir, '.git'))) return []
+  const args = ['rev-list', '--objects', '--all']
+  if (tips?.length) args.push('--not', ...tips)
+  const listed = await runGit(args, workspaceDir)
+  if (listed.exitCode !== 0) {
+    throw new LfsPushError(
+      `git rev-list failed (${listed.exitCode})`,
+      classifyLfsFailure(listed.stderr),
+      listed.stderr,
+    )
+  }
+  const blobPaths = new Map<string, Set<string>>()
+  for (const line of listed.stdout.split('\n')) {
+    if (!line) continue
+    const sp = line.indexOf(' ')
+    if (sp === -1) continue // a commit or tree without a path
+    const sha = line.slice(0, sp)
+    blobPaths.set(sha, (blobPaths.get(sha) ?? new Set()).add(line.slice(sp + 1)))
+  }
+  if (blobPaths.size === 0) return []
+
+  const candidates = [...blobPaths.keys()]
+  const tracked = await lfsTrackedPaths(workspaceDir, candidates.flatMap((sha) => [...(blobPaths.get(sha) ?? [])]))
+  const wanted = candidates.filter((sha) => [...(blobPaths.get(sha) ?? [])].some((p) => tracked.has(p)))
+  if (wanted.length === 0) return []
+
+  const blobs = await readBlobs(workspaceDir, wanted)
+  const byOid = new Map<string, LfsObjectRef>()
+  for (const [sha, body] of blobs) {
+    if (body.length > LFS_POINTER_MAX_BYTES) continue
+    const pointer = parseLfsPointer(body.toString('utf-8'))
+    if (!pointer) continue
+    const paths = byOid.get(pointer.oid)?.paths ?? []
+    for (const p of blobPaths.get(sha) ?? []) if (!paths.includes(p)) paths.push(p)
+    byOid.set(pointer.oid, { oid: pointer.oid, size: pointer.size, paths })
+  }
+  return [...byOid.values()]
+}
+
+/**
+ * Which of `objects` the server already holds. The batch API answers an upload
+ * request for an object it has with no `actions`, which is exactly the question
+ * "do you already have these bytes?" — one request for the chunk.
+ */
+export async function lfsRemoteHasObjects(
+  cfg: LfsRemoteConfig,
+  objects: Array<{ oid: string; size: number }>,
+): Promise<Set<string>> {
+  const present = new Set<string>()
+  for (let i = 0; i < objects.length; i += LFS_PUSH_CHUNK) {
+    const chunk = objects.slice(i, i + LFS_PUSH_CHUNK)
+    const url = `${buildLfsEndpointUrl(cfg.cloudApiUrl, cfg.projectId)}/objects/batch`
+    let res: Response
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${cfg.runtimeAuthSecret}`,
+          Accept: 'application/vnd.git-lfs+json',
+          'Content-Type': 'application/vnd.git-lfs+json',
+        },
+        body: JSON.stringify({
+          operation: 'upload',
+          transfers: ['basic'],
+          objects: chunk.map((o) => ({ oid: o.oid, size: o.size })),
+        }),
+        signal: AbortSignal.timeout(GIT_TIMEOUT_MS),
+      })
+    } catch (err: any) {
+      throw new LfsPushError(
+        `lfs batch request failed: ${err?.message ?? err}`,
+        /timeout|abort/i.test(String(err?.name ?? err?.message)) ? 'timeout' : 'network',
+        String(err?.message ?? err),
+      )
+    }
+    if (!res.ok) {
+      const text = (await res.text().catch(() => '')).slice(0, 400)
+      throw new LfsPushError(`lfs batch check failed (${res.status})`, classifyLfsFailure(text, res.status), text)
+    }
+    const body = (await res.json().catch(() => null)) as { objects?: Array<{ oid?: unknown; actions?: unknown }> } | null
+    for (const o of body?.objects ?? []) {
+      if (typeof o?.oid !== 'string') continue
+      if (!o.actions || typeof o.actions !== 'object') present.add(o.oid)
+    }
+  }
+  return present
+}
+
+/** Upload exactly `oids` with `git lfs push --object-id`, in chunks. */
+export async function pushLfsObjectIds(cfg: LfsRemoteConfig, oids: string[]): Promise<void> {
+  if (!oids.length) return
+  const remote = await ensureCloudRemote(cfg)
+  for (let i = 0; i < oids.length; i += LFS_PUSH_CHUNK) {
+    const chunk = oids.slice(i, i + LFS_PUSH_CHUNK)
+    const res = await runGit([...lfsConfigArgs(cfg), 'lfs', 'push', '--object-id', remote, ...chunk], cfg.workspaceDir)
+    if (res.exitCode !== 0) {
+      const stderr = res.stderr || res.stdout || ''
+      throw new LfsPushError(
+        `git lfs push failed (${res.exitCode})`,
+        classifyLfsFailure(stderr),
+        stderr.slice(0, 16_000),
+      )
+    }
+  }
+}
+
+export interface LfsPushProgress {
+  total: number
+  pushed: number
+  skipped: number
+  missing: LfsMissingObject[]
+}
+
+/** Same shape as the progress the job reports; a completed push is its own result. */
+export type LfsPushResult = LfsPushProgress
+
+/**
+ * Push the LFS objects a repo needs for the commits since `tips`. Idempotent
+ * and resumable: everything it does is keyed by content, so an interrupted run
+ * picks up where it stopped instead of starting over.
+ *
+ * Never throws for a missing object — it records the paths instead, so the
+ * history still exports.
+ */
+export async function lfsPushIncremental(
+  cfg: LfsRemoteConfig,
+  opts: { tips?: string[] | null; logger?: Logger; onProgress?: (p: LfsPushProgress) => void } = {},
+): Promise<LfsPushResult> {
+  const logger = opts.logger ?? cfg.logger ?? console
+  if (!existsSync(join(cfg.workspaceDir, '.git'))) {
+    return { total: 0, pushed: 0, skipped: 0, missing: [] }
+  }
+  // Never upload a runaway local store: if the repo is over budget, free the
+  // unreferenced objects first and let the budget gate in
+  // `autoTrackLargeFiles` keep it there.
+  if (lfsOverBudget(cfg.workspaceDir, { logger })) await pruneLfsBudget(cfg.workspaceDir, logger)
+
+  const objects = await lfsObjectsInRange(cfg.workspaceDir, opts.tips ?? null)
+  const progress: LfsPushProgress = { total: objects.length, pushed: 0, skipped: 0, missing: [] }
+  if (objects.length === 0) {
+    opts.onProgress?.(progress)
+    return progress
+  }
+
+  const local: LfsObjectRef[] = []
+  const absentLocal: LfsObjectRef[] = []
+  for (const o of objects) (hasLocalLfsObject(cfg.workspaceDir, o.oid) ? local : absentLocal).push(o)
+
+  // A cold boot pulls only HEAD's objects, so history can reference oids this
+  // VM never had. If the server has them, nothing is missing and nothing is
+  // uploaded.
+  const remoteHas = absentLocal.length ? await lfsRemoteHasObjects(cfg, absentLocal) : new Set<string>()
+  for (const o of absentLocal) {
+    if (remoteHas.has(o.oid)) progress.skipped++
+    else progress.missing.push({ oid: o.oid, paths: o.paths })
+  }
+  if (progress.missing.length) {
+    logger.error(
+      `[lfs] ${progress.missing.length} object(s) referenced by history are missing on both sides ` +
+        `(${progress.missing.flatMap((m) => m.paths).slice(0, 10).join(', ')}) — exporting the history anyway`,
+    )
+  }
+
+  const pending = local.map((o) => o.oid)
+  for (let i = 0; i < pending.length; i += LFS_PUSH_CHUNK) {
+    const chunk = pending.slice(i, i + LFS_PUSH_CHUNK)
+    await pushLfsObjectIds(cfg, chunk)
+    progress.pushed += chunk.length
+    opts.onProgress?.({ ...progress, missing: [...progress.missing] })
+  }
+  opts.onProgress?.({ ...progress, missing: [...progress.missing] })
+  return progress
+}
+
+export interface LfsPushJob {
+  /** `<tip-hash>@<HEAD>`: two saves with the same durable tips and HEAD share one push. */
+  key: string
+  startedAt: number
+  state: LfsPushProgress & { done: boolean; error?: LfsPushError }
+  settled: Promise<void>
+}
+
+/**
+ * Runs the incremental push as a background job keyed by the export's target
+ * tips and HEAD, so a slow push is joined by the next export request instead of
+ * started again, and a host that stops waiting cannot make it restart.
+ */
+export class LfsPushRunner {
+  private jobs = new Map<string, LfsPushJob>()
+  private completed = new Map<string, string>()
+  constructor(private readonly opts: { logger?: Logger; maxAgeMs?: number } = {}) {}
+
+  private tipsKey(cfg: LfsRemoteConfig, tips: string[] | null): string {
+    const tipHash = tips?.length ? createHash('sha1').update([...tips].sort().join(',')).digest('hex') : 'full'
+    return `${cfg.workspaceDir}:${tipHash}`
+  }
+
+  /** Join the running job for these tips, or start one. Already-completed keys settle at once. */
+  async run(cfg: LfsRemoteConfig, tips: string[] | null): Promise<LfsPushJob> {
+    const logger = this.opts.logger ?? cfg.logger ?? console
+    const head = (await runGit(['rev-parse', 'HEAD'], cfg.workspaceDir)).stdout.trim()
+    const tipsKey = this.tipsKey(cfg, tips)
+    const key = `${tipsKey}@${head}`
+    this.prune()
+
+    const running = this.jobs.get(key)
+    if (running) return running
+    if (this.completed.get(tipsKey) === key) {
+      const done: LfsPushJob = {
+        key,
+        startedAt: Date.now(),
+        state: { total: 0, pushed: 0, skipped: 0, missing: [], done: true },
+        settled: Promise.resolve(),
+      }
+      return done
+    }
+
+    const state: LfsPushJob['state'] = { total: 0, pushed: 0, skipped: 0, missing: [], done: false }
+    const job: LfsPushJob = { key, startedAt: Date.now(), state, settled: Promise.resolve() }
+    job.settled = lfsPushIncremental(cfg, {
+      tips,
+      logger,
+      onProgress: (p) => {
+        state.total = p.total
+        state.pushed = p.pushed
+        state.skipped = p.skipped
+        state.missing = p.missing
+      },
+    })
+      .then(() => {
+        state.done = true
+        this.completed.set(tipsKey, key)
+        logger.log(`[lfs] pushed ${state.pushed}/${state.total} object(s)${state.skipped ? `, ${state.skipped} already remote` : ''}${state.missing.length ? `, ${state.missing.length} missing` : ''}`)
+      })
+      .catch((err: unknown) => {
+        const error = err instanceof LfsPushError ? err : new LfsPushError(String((err as any)?.message ?? err), 'other', String((err as any)?.stack ?? ''))
+        state.error = error
+        state.done = true
+        logger.warn(`[lfs] push job failed (${error.reason}): ${error.message}`)
+      })
+    this.jobs.set(key, job)
+    job.settled.finally(() => {
+      if (this.jobs.get(key) === job) this.jobs.delete(key)
+    })
+    return job
+  }
+
+  /** 'pending' when the job is still running after `waitMs`. */
+  async settle(job: LfsPushJob, waitMs: number): Promise<'done' | 'failed' | 'pending'> {
+    if (!job.state.done && waitMs > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([
+        job.settled,
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, waitMs) }),
+      ])
+      if (timer) clearTimeout(timer)
+    }
+    if (!job.state.done) return 'pending'
+    return job.state.error ? 'failed' : 'done'
+  }
+
+  private prune(): void {
+    const maxAge = this.opts.maxAgeMs ?? 30 * 60_000
+    const now = Date.now()
+    for (const [key, job] of this.jobs) if (job.state.done && now - job.startedAt > maxAge) this.jobs.delete(key)
+    if (this.completed.size > 64) {
+      // Only the newest key per tips key matters; the map itself is pruned by
+      // replacement, so cap it rather than track timestamps per entry.
+      const keep = [...this.completed.entries()].slice(-32)
+      this.completed.clear()
+      for (const [k, v] of keep) this.completed.set(k, v)
+    }
   }
 }
 

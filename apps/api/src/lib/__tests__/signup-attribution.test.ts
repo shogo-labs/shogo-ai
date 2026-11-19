@@ -8,7 +8,7 @@
  * from the cookies on the signup POST — including when there are none, because
  * a `direct` row is itself the number we were missing.
  */
-import { describe, test, expect, mock, beforeEach } from 'bun:test'
+import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test'
 
 const upsert = mock(() => Promise.resolve({ id: 'attr-1' }))
 
@@ -103,5 +103,103 @@ describe('recordSignupAttribution', () => {
     await expect(
       recordSignupAttribution({ userId: 'user-3', cookieHeader: '', method: 'credential' }),
     ).resolves.toBeNull()
+  })
+})
+
+/**
+ * Cometly (SHO-441): the same hook reports the sign-up, gated on the token
+ * cookie the web sign-in page writes before the Google round trip. `fetch` is
+ * stubbed, so no event ever leaves the test.
+ */
+describe('recordSignupAttribution → Cometly', () => {
+  const realFetch = globalThis.fetch
+  let cometCalls: Array<{ url: string; body: any }> = []
+
+  beforeEach(() => {
+    cometCalls = []
+    process.env.COMETLY_API_KEY = 'test-key'
+    globalThis.fetch = mock(async (url: string, init: RequestInit) => {
+      cometCalls.push({ url, body: JSON.parse(String(init.body)) })
+      return new Response('{}', { status: 202 })
+    }) as unknown as typeof fetch
+  })
+
+  afterEach(() => {
+    globalThis.fetch = realFetch
+    delete process.env.COMETLY_API_KEY
+  })
+
+  const cometCookie = `theme=dark; __shogo_comet_token=${encodeURIComponent('tok_abc')}`
+
+  test('a new Google account sends exactly one sign_up, keyed by the user id', async () => {
+    await recordSignupAttribution({
+      userId: 'user-9',
+      cookieHeader: cometCookie,
+      method: 'social',
+      email: 'ada@example.com',
+      name: 'Ada Lovelace',
+    })
+
+    expect(cometCalls).toHaveLength(1)
+    expect(cometCalls[0]!.url).toBe('https://app.cometly.com/public-api/v1/events/track')
+    expect(cometCalls[0]!.body).toEqual({
+      event_name: 'sign_up',
+      email: 'ada@example.com',
+      first_name: 'Ada',
+      last_name: 'Lovelace',
+      comet_token: 'tok_abc',
+      idempotency_key: 'signup_user-9',
+    })
+  })
+
+  test('no token cookie (pixel blocked, or a native sign-in) sends nothing', async () => {
+    await recordSignupAttribution({
+      userId: 'user-10',
+      cookieHeader: 'theme=dark',
+      method: 'social',
+      email: 'ada@example.com',
+      name: 'Ada Lovelace',
+    })
+
+    expect(cometCalls).toHaveLength(0)
+  })
+
+  test('an email/password sign-up sends nothing — the pixel reads that form', async () => {
+    await recordSignupAttribution({
+      userId: 'user-11',
+      cookieHeader: cometCookie,
+      method: 'credential',
+      email: 'ada@example.com',
+      name: 'Ada Lovelace',
+    })
+
+    expect(cometCalls).toHaveLength(0)
+  })
+
+  test('an account with no email sends nothing', async () => {
+    await recordSignupAttribution({
+      userId: 'user-12',
+      cookieHeader: cometCookie,
+      method: 'social',
+      name: 'Ada Lovelace',
+    })
+
+    expect(cometCalls).toHaveLength(0)
+  })
+
+  test('with COMETLY_API_KEY unset a social sign-up still writes its row and sends nothing', async () => {
+    delete process.env.COMETLY_API_KEY
+
+    const tag = await recordSignupAttribution({
+      userId: 'user-13',
+      cookieHeader: cometCookie,
+      method: 'social',
+      email: 'ada@example.com',
+      name: 'Ada Lovelace',
+    })
+
+    expect(tag).toBe('direct')
+    expect(upsert).toHaveBeenCalledTimes(1)
+    expect(cometCalls).toHaveLength(0)
   })
 })

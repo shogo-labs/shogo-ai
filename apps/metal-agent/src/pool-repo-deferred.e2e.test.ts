@@ -219,7 +219,10 @@ describe.each(['tarball', 'bundles'] as const)('git history download hangs (%s r
     const a = pool.getAssigned('p1')!
     expect(a.repoUntrustedReason).toBeDefined()
     expect(a.repoUntrustedReason).not.toBe(REPO_DEFERRED_REASON)
-    expect(await pool.saveRepoToStore(a)).toBe(false)
+    // Their work still gets somewhere durable: the copy lands in `conflict/`,
+    // and the real repo is untouched (SHO-442).
+    expect(await pool.saveRepoToStore(a)).toBe(true)
+    expect(a.repoQuarantineKey).toContain('conflict/')
     expect(s3.body(repoKey)).toEqual(repoBytes!)
     // Their work still reaches the source backup.
     expect(a.sourceUntrustedReason).toBeUndefined()
@@ -246,7 +249,9 @@ describe.each(['tarball', 'bundles'] as const)('git history download hangs (%s r
     expect(guest.read('src/App.tsx')).toBe('v2: the user’s app\n')
     const a = pool.getAssigned('p1')!
     expect(a.repoUntrustedReason).toContain('failed in the background')
-    expect(await pool.saveRepoToStore(a)).toBe(false)
+    // It saves to `conflict/`; the durable repo it never adopted is untouched.
+    expect(await pool.saveRepoToStore(a)).toBe(true)
+    expect(a.repoQuarantineKey).toContain('conflict/')
     expect(s3.body(repoKey)).toEqual(repoBytes!)
     // A failed download proves nothing about the tree: source stays trusted.
     expect(a.sourceUntrustedReason).toBeUndefined()
@@ -312,10 +317,143 @@ describe('the VM goes away while the history is still downloading', () => {
     expect(guest.hasCommit(repoSha)).toBe(false)
 
     guest.edit('src/App.tsx', 'work after the resume\n')
+    // Create-only: it may start a repo, never replace one. The copy lands in
+    // `conflict/` and the durable history is untouched (SHO-442).
     expect(await pool.saveRepoToStore(a)).toBe(false)
     expect(s3.body(repoKey)).toEqual(repoBytes!)
     expect(s3.body('p1/repo/manifest.json')).toBeUndefined()
     // The work itself is safe in the source backup.
     expect(await pool.backup('p1')).toBe('written')
+  }, 30_000)
+})
+
+/**
+ * AC3: an UNTRUSTED VM heals back to a normal writer.
+ *
+ * Before SHO-442 nothing ever cleared `repoUntrustedReason`, so a VM that lost
+ * trust once saved nothing for the rest of its life — that is how ws 2e47feea
+ * lost a day and a half. The heal downloads the durable history into a side
+ * staging dir and asks the guest to write a commit whose tree is its CURRENT
+ * working tree and whose parents are `[durable HEAD, live HEAD]`. No file is
+ * rewritten, so a workspace the user is already working in is fine.
+ */
+describe('an UNTRUSTED VM heals back to a normal writer', () => {
+  test('the busy-deferred case: the user worked first, and the heal keeps every file', async () => {
+    const { s3, host, pool, stall } = rig()
+    const { repoSha, repoKey, lineageEtag } = await seedProject(s3, 'p1', 'bundles')
+    const release = stall((k) => k === repoKey)
+    const before = deferredCount()
+
+    expect((await timedOpen(pool, 'p1')).r.repo?.mode).toBe('deferred')
+    const guest = guestOf(host, pool, 'p1')
+    await guest.use('src/App.tsx', 'the user’s first edit\n')
+
+    // The late swap is refused because the workspace is in use, and the VM is
+    // distrusted for the rest of its life — until the heal.
+    release()
+    await settleDeferred(before)
+    expect(guest.adoptStatuses).toEqual([409])
+
+    const a = pool.getAssigned('p1')!
+    expect(a.repoUntrustedReason).toBeDefined()
+    expect(a.repoUntrustedReason).not.toBe(REPO_DEFERRED_REASON)
+    // Work the user has not committed yet, and an export that does not flush it
+    // (a mid-turn export): the heal must carry it in the tree, not drop it.
+    guest.flushBeforeExport = false
+    guest.writeWorkspace('notes.md', 'written but not committed\n')
+    // What the guest's heartbeat would report; the harness has no heartbeat.
+    a.repoHeadSha = guest.head()
+    const liveHead = a.repoHeadSha
+    expect(pool.repoDurable(a)).toBe(false)
+
+    // One sweep: the copy goes to `conflict/` AND the lineage is re-attached.
+    expect(await pool.exportAllRepos()).toBe(1)
+    expect(a.repoQuarantineKey).toContain('conflict/')
+
+    expect(a.repoUntrustedReason).toBeUndefined()
+    expect(a.repoLinked).toBe(true)
+    expect(a.repoParentEtag).toBe(lineageEtag)
+    expect(guest.reconciles).toHaveLength(1)
+    const healed = guest.reconciles[0]!
+    expect(healed.durableHead).toBe(repoSha)
+    expect(healed.localHead).toBe(liveHead)
+    expect(guest.head()).toBe(healed.head)
+    // Both parents: the durable history and the live one.
+    expect(git(guest.ws, 'rev-list', '--parents', '-n', '1', 'HEAD')).toBe(`${healed.head} ${repoSha} ${liveHead}`)
+
+    // No file was rewritten, the user's work is in the healed tree, and the
+    // next commit is a no-op.
+    expect(guest.read('src/App.tsx')).toBe('the user’s first edit\n')
+    expect(git(guest.ws, 'show', `${healed.head}:src/App.tsx`)).toBe('the user’s first edit')
+    // The uncommitted file is in the healed tree AND still on disk.
+    expect(git(guest.ws, 'show', `${healed.head}:notes.md`)).toBe('written but not committed')
+    expect(guest.read('notes.md')).toBe('written but not committed\n')
+    expect(git(guest.ws, 'status', '--porcelain')).toBe('')
+    // Healed is not saved: the durable repo still holds the pre-heal HEAD, so
+    // nothing may stop this VM until the next export lands.
+    expect(pool.repoDurable(a)).toBe(false)
+
+    // Normal saves resume, and the next one extends the durable repo.
+    guest.edit('src/App.tsx', 'v3 after the heal\n')
+    a.repoHeadSha = guest.head()
+    expect(await pool.saveRepoToStore(a)).toBe(true)
+    const manifest = JSON.parse(new TextDecoder().decode(s3.body('p1/repo/manifest.json')!))
+    expect(manifest.refs['refs/heads/main']).toBe(guest.head())
+    expect(git(guest.ws, 'rev-parse', 'HEAD~1')).toBe(healed.head)
+    expect(pool.repoDurable(a)).toBe(true)
+  }, 30_000)
+
+  test('a download that failed outright heals too, and the durable history is never replaced', async () => {
+    const { s3, host, pool, stall } = rig()
+    const { repoSha, repoKey } = await seedProject(s3, 'p1', 'bundles')
+    const repoBytes = s3.body(repoKey)
+    const release = stall((k) => k === repoKey, { kind: 'fail', afterMs: FOREGROUND_MS * 2 })
+    const before = deferredCount()
+
+    expect((await timedOpen(pool, 'p1')).r.repo?.mode).toBe('deferred')
+    await settleDeferred(before)
+    // Storage recovers; the heal's own download must not hit the same fault.
+    release()
+
+    const guest = guestOf(host, pool, 'p1')
+    const a = pool.getAssigned('p1')!
+    expect(a.repoUntrustedReason).toContain('failed in the background')
+    guest.edit('src/App.tsx', 'work made while untrusted\n')
+    a.repoHeadSha = guest.head()
+    const liveHead = a.repoHeadSha
+
+    expect(await pool.exportAllRepos()).toBe(1)
+    expect(a.repoUntrustedReason).toBeUndefined()
+    expect(guest.reconciles).toHaveLength(1)
+    expect(guest.reconciles[0]!.durableHead).toBe(repoSha)
+    expect(guest.reconciles[0]!.localHead).toBe(liveHead)
+    expect(guest.read('src/App.tsx')).toBe('work made while untrusted\n')
+    expect(git(guest.ws, 'status', '--porcelain')).toBe('')
+    // The durable bundle the VM never adopted is untouched by the heal.
+    expect(s3.body(repoKey)).toEqual(repoBytes!)
+  }, 30_000)
+
+  test('a heal that cannot reach the durable repo leaves the VM untrusted and backs off', async () => {
+    const { s3, host, pool } = rig()
+    await seedProject(s3, 'p1', 'bundles')
+    expect((await timedOpen(pool, 'p1')).r.mode).toBe('assigned')
+
+    const guest = guestOf(host, pool, 'p1')
+    const a = pool.getAssigned('p1')!
+    // Distrusted with no durable repo to reconcile against: the heal must not
+    // pretend it worked, and must not retry on every sweep.
+    a.repoUntrustedReason = 'hydrate failed'
+    a.repoHeadSha = guest.head()
+    s3.objects.delete('p1/repo/manifest.json')
+
+    expect(await pool.exportAllRepos()).toBe(1)
+    expect(a.repoUntrustedReason).toBe('hydrate failed')
+    expect(guest.reconciles).toHaveLength(0)
+    expect(a.repoHealFailures).toBe(1)
+    expect(a.repoHealRetryAt).toBeGreaterThan(Date.now())
+
+    // The next sweep inside the backoff window does not try again.
+    expect(await pool.exportAllRepos()).toBe(0)
+    expect(a.repoHealFailures).toBe(1)
   }, 30_000)
 })

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
+import { useEffect } from 'react'
 import { Stack, Redirect, useSegments } from 'expo-router'
 import { useAuth } from '../../contexts/auth'
 import { usePlatformConfig } from '../../lib/platform-config'
+import { loadCometlyPixel } from '../../lib/cometly'
 
 export default function AuthLayout() {
   const { isAuthenticated, isLoading } = useAuth()
@@ -10,6 +12,13 @@ export default function AuthLayout() {
   const segments = useSegments()
   const isResetPassword = segments.includes('reset-password')
   const isVerifyEmail = segments.includes('verify-email')
+
+  // Cometly (SHO-441): the auth pages are the only place the app loads the
+  // pixel — it reads the email/password form itself, and its token is what a
+  // Google sign-up hands to the server. Web only; the loader is idempotent.
+  useEffect(() => {
+    loadCometlyPixel()
+  }, [])
 
   if (configLoaded && localMode) {
     return <Redirect href="/" />

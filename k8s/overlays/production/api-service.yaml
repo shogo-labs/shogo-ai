@@ -188,6 +188,15 @@ spec:
               value: "shogo.one"
             - name: BETTER_AUTH_URL
               value: "https://studio.shogo.ai"
+            # Cometly conversion tracking (SHO-441): the server-side Create Event
+            # for a new Google sign-up. Optional — with no `cometly-config`
+            # secret the event is skipped, so this is inert until the key exists.
+            - name: COMETLY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cometly-config
+                  key: COMETLY_API_KEY
+                  optional: true
             # User-browser-reachable frontend URL used to build links in
             # transactional emails (welcome, invites, billing, member-joined).
             # Resolved by getFrontendUrl() in apps/api/src/lib/cloud-urls.ts;

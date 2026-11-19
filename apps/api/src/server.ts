@@ -3119,13 +3119,18 @@ app.get('/api/projects/:projectId/runtime/status', async (c) => {
       if (isMetalEnabled() && isMetalEligibleProject(projectId)) {
         const { MetalSubstrate } = await import('./lib/substrate/metal-substrate')
         const s = await new MetalSubstrate().getStatus(projectId)
+        // Durability says whether this VM's work has reached the durable repo.
+        // A cold boot restores the durable copy, so a runtime that is not
+        // durable is one stop away from losing the user's changes — the UI
+        // needs to say so (SHO-442). Absent when the project has no assigned VM.
+        const durability = s.durability
         if (!s.exists) {
           return c.json({ projectId, status: 'not_found', message: 'Project runtime not created yet', ready: false })
         }
         if (!s.ready) {
-          return c.json({ projectId, status: 'starting', message: 'Project runtime is starting...', ready: false, replicas: s.replicas })
+          return c.json({ projectId, status: 'starting', message: 'Project runtime is starting...', ready: false, replicas: s.replicas, ...(durability ? { durability } : {}) })
         }
-        return c.json({ projectId, status: 'running', message: 'Project runtime is ready', ready: true, replicas: s.replicas, url: s.url })
+        return c.json({ projectId, status: 'running', message: 'Project runtime is ready', ready: true, replicas: s.replicas, url: s.url, ...(durability ? { durability } : {}) })
       }
     } catch (error: any) {
       console.error('[Runtime] Metal status failed, falling back:', error?.message ?? error)
