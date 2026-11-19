@@ -46,10 +46,20 @@ describe("SlidesPreview ready handshake", () => {
     const iframe = container.querySelector("iframe") as HTMLIFrameElement
     expect(iframe).toBeTruthy()
 
-    // Stand in for the frame's window: it records what the host posts in.
+    // Stand in for the frame's window: it records what the host posts in, and
+    // it detaches a transferred buffer the way a real `postMessage` does. A
+    // stub that ignores the transfer list hides the bug this test is for: the
+    // blind post spends the deck's only buffer, so the `ready` that follows has
+    // nothing left to send.
     const posted: unknown[] = []
     const frameWindow = {
-      postMessage: (message: unknown) => {
+      postMessage: (message: unknown, _target?: string, transfer?: Transferable[]) => {
+        for (const item of transfer ?? []) {
+          if (item instanceof ArrayBuffer) {
+            if (item.byteLength === 0) throw new DOMException("detached", "DataCloneError")
+            structuredClone(item, { transfer: [item] })
+          }
+        }
         posted.push(message)
       },
     }
