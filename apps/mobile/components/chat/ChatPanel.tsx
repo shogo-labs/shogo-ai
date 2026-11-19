@@ -41,7 +41,6 @@ import {
   Alert,
   AppState,
   Dimensions,
-  Linking,
   View,
   Text,
   Pressable,
@@ -421,6 +420,7 @@ import {
   workspaceExperience,
   type WorkspaceExperienceComposer,
 } from "@shogo/shared-app"
+import { openExternalLink } from "../../lib/open-external-link";
 
 /** Full composer (model picker + interaction modes, no forced mode) — the default for team workspaces and any caller that doesn't pass `composer`. */
 const DEFAULT_CHAT_COMPOSER: WorkspaceExperienceComposer =
@@ -1369,7 +1369,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   }, [router])
 
   const handleContactSupportClick = useCallback(() => {
-    void Linking.openURL("mailto:support@shogo.ai?subject=Account%20under%20review").catch(() => {})
+    void openExternalLink("mailto:support@shogo.ai?subject=Account%20under%20review")
   }, [])
 
   // Panel state

@@ -15,7 +15,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { View, Text, Pressable, ActivityIndicator, Linking } from 'react-native'
+import { View, Text, Pressable, ActivityIndicator } from 'react-native'
 import Svg, { Path, Defs, LinearGradient, Stop, Line, Text as SvgText, Circle, G } from 'react-native-svg'
 import {
   Eye,
@@ -27,6 +27,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import type { ContentAnalytics } from '../../lib/affiliate-api'
+import { openExternalLink } from '../../lib/open-external-link';
 
 type SeriesId = 'views' | 'engagement' | 'likes' | 'comments' | 'shares'
 
@@ -299,7 +300,7 @@ function StatCard({
 function VideoRow({ video }: { video: ContentAnalytics['videos'][number] }) {
   const title = video.caption?.trim() || video.url || video.id
   const open = useCallback(() => {
-    if (video.url) Linking.openURL(video.url).catch(() => {})
+    if (video.url) void openExternalLink(video.url)
   }, [video.url])
   return (
     <Pressable

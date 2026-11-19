@@ -6,7 +6,7 @@
  */
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { ActivityIndicator, Linking, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { Cloud, CloudOff, ExternalLink, LogIn, LogOut, Plus, Settings, Sparkles, Users, Zap } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import { usePostHogSafe } from "../../../contexts/posthog";
@@ -27,6 +27,7 @@ import { getDomainHttpClient, useDomainHttpOptional } from "../../../contexts/do
 import { isPhoneLayout } from "../../../lib/native-phone-layout";
 import { isInvitationExpired } from "../../../lib/api";
 import { usePendingInvitations } from "../../../lib/use-pending-invitations";
+import { openExternalLink } from "../../../lib/open-external-link";
 
 type PendingInvitations = ReturnType<typeof usePendingInvitations>;
 
@@ -328,7 +329,7 @@ export function WorkspaceMenuSection({
     // in the Shogo Cloud web app.
     if (currentIsCloud && cloud.cloudUrl) {
       const id = encodeURIComponent(currentWorkspace.id);
-      void Linking.openURL(`${cloud.cloudUrl.replace(/\/+$/, "")}/settings?tab=people&workspace=${id}`);
+      void openExternalLink(`${cloud.cloudUrl.replace(/\/+$/, "")}/settings?tab=people&workspace=${id}`);
       return;
     }
     onNavigate("/(app)/settings?tab=people");

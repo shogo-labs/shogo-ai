@@ -10,7 +10,6 @@ import {
   Image,
   ActivityIndicator,
   Alert,
-  Linking,
   TextInput,
   Modal,
   Platform,
@@ -64,6 +63,7 @@ import {
   resolvePermissionCopy,
   categoryLabel,
 } from '@shogo/shared-app'
+import { openExternalLink } from '../../../lib/open-external-link';
 
 interface CreatorFromAPI {
   id: string
@@ -385,7 +385,7 @@ export default observer(function MarketplaceDetailScreen() {
       const data = res.data
       setConsentOpen(false)
       if (data.checkoutUrl) {
-        await Linking.openURL(data.checkoutUrl)
+        await openExternalLink(data.checkoutUrl)
       } else if (data.projectId) {
         setPackOpen(false)
         router.push(`/(app)/projects/${data.projectId}` as any)

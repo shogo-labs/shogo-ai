@@ -14,7 +14,6 @@ import {
   TextInput,
   useWindowDimensions,
 } from 'react-native'
-import { Linking } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   Cloud,
@@ -47,6 +46,7 @@ import { useAccentTheme } from '../../contexts/accent-theme'
 import { ACCENT_PRESETS, ACCENT_NAMES } from '../../lib/accent-themes'
 import { usePlatformConfig, invalidatePlatformConfigCache } from '../../lib/platform-config'
 import { refreshCloudWorkspaces } from '../../lib/workspace-route'
+import { openExternalLink } from '../../lib/open-external-link';
 
 /** True when this window is the Electron desktop shell — only then can we
  * use the native system-browser handshake. Metro dev or a plain browser
@@ -591,7 +591,7 @@ export default function AdminGeneralPage() {
                       </Text>
                     </Pressable>
                     <Pressable
-                      onPress={() => Linking.openURL(`${cloudUrl}/api-keys`)}
+                      onPress={() => openExternalLink(`${cloudUrl}/api-keys`)}
                       className="flex-row items-center gap-1.5 px-3 py-2.5 rounded-lg border border-border"
                     >
                       <ExternalLink size={14} className="text-foreground" />

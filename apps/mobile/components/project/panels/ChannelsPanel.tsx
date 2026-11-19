@@ -9,7 +9,6 @@ import {
   ActivityIndicator,
   TextInput,
   Switch,
-  Linking,
 } from 'react-native'
 import {
   MessageSquare,
@@ -32,6 +31,7 @@ import { usePlatformConfig } from '../../../lib/platform-config'
 import { API_URL } from '../../../lib/api'
 import { PhonePanel } from './PhonePanel'
 import { useIsNativePhoneLayout } from '../../../lib/native-phone-layout'
+import { openExternalLink } from '../../../lib/open-external-link';
 
 interface ChannelInfo {
   type: string
@@ -689,7 +689,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                     onPress={() => {
                       if (isSlackAgent && !isConnected) {
                         if (API_URL && workspaceId) {
-                          Linking.openURL(
+                          openExternalLink(
                             `${API_URL}/api/integrations/slack/install?workspaceId=${encodeURIComponent(workspaceId)}`,
                           )
                         }
@@ -776,7 +776,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                       )
                     ) : def.setupUrl ? (
                       <Pressable
-                        onPress={() => Linking.openURL(def.setupUrl)}
+                        onPress={() => openExternalLink(def.setupUrl)}
                         className="p-1 rounded-md active:bg-muted"
                       >
                         <ExternalLink size={14} className="text-muted-foreground" />
@@ -794,7 +794,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                         </Text>
                         {!slackAgentConfig?.installed ? (
                           <Pressable
-                            onPress={() => API_URL && Linking.openURL(
+                            onPress={() => API_URL && openExternalLink(
                               `${API_URL}/api/integrations/slack/install?workspaceId=${encodeURIComponent(workspaceId)}`,
                             )}
                             className="self-start px-3 py-1.5 bg-primary rounded-md active:bg-primary/80"
@@ -867,7 +867,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                             )}
                           </Pressable>
                           <Pressable
-                            onPress={() => Linking.openURL('https://docs.shogo.ai/docs/features/external-triggers/quickstart')}
+                            onPress={() => openExternalLink('https://docs.shogo.ai/docs/features/external-triggers/quickstart')}
                             className="flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
                           >
                             <ExternalLink size={12} className="text-muted-foreground" />
@@ -1104,7 +1104,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                           </Pressable>
                           {def.setupUrl ? (
                             <Pressable
-                              onPress={() => Linking.openURL(def.setupUrl)}
+                              onPress={() => openExternalLink(def.setupUrl)}
                               className="ml-auto flex-row items-center gap-1 active:opacity-70"
                             >
                               <ExternalLink size={12} className="text-muted-foreground" />

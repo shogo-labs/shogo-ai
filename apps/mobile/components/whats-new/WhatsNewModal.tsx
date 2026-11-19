@@ -3,7 +3,6 @@
 
 import { useEffect } from "react";
 import {
-  Linking,
   Modal,
   Platform,
   Pressable,
@@ -28,6 +27,7 @@ import {
   X,
 } from "lucide-react-native";
 import type { WhatsNewRelease } from "../../lib/whats-new/use-whats-new";
+import { openExternalLink } from "../../lib/open-external-link";
 
 const ICONS = {
   activity: Activity,
@@ -190,7 +190,7 @@ export function WhatsNewModal({
             <Pressable
               accessibilityRole="link"
               onPress={() => {
-                void Linking.openURL(release.url);
+                void openExternalLink(release.url);
                 onDismiss();
               }}
               className="flex-row items-center justify-center gap-1 py-1"
