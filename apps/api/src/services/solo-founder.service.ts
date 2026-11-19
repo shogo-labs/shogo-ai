@@ -31,6 +31,7 @@ import {
   encodeLessonCheck,
 } from '../config/solo-founder-course'
 import { lookupPriceIdByLookupKey } from './stripe-price-lookup.service'
+import { resolveInvoiceSubscriptionId } from '../lib/stripe-helpers'
 import { applySystemPack, type PackBindings } from './system-apply.service'
 import { createWorkItem, resolveBoard } from './work-boards.service'
 import * as billingService from './billing.service'
@@ -171,6 +172,72 @@ export async function resolveFirstYearCouponId(
     return coupon?.valid === false ? null : (coupon?.id ?? null)
   } catch {
     return null
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Checkout session params
+// ---------------------------------------------------------------------------
+
+export interface SoloFounderCheckoutInput {
+  /** Business annual price id, resolved by the route. */
+  priceId: string
+  /** The one-time course price id (`solo_founder_course_v1`). */
+  coursePriceId: string
+  /** The first-year coupon, or the resolved promotion code. */
+  discount: Stripe.Checkout.SessionCreateParams.Discount
+  successUrl: string
+  cancelUrl: string
+  /** `workspaceId`, `planId`, `billingInterval`, `seats`, `offer`. */
+  metadata: Record<string, string>
+  userEmail?: string | null
+  referralId?: string | null
+  customerCreation?: Stripe.Checkout.SessionCreateParams.CustomerCreation | null
+  /** The day the renewal disclosure counts a year from. */
+  now?: Date
+}
+
+/**
+ * The offer's Checkout session, as a pure function of what the route resolved.
+ *
+ * It is a builder rather than an inline object so the shape AC1 promises can be
+ * tested without Stripe: Business annual (qty 1) plus the one-time course, one
+ * discount and never `allow_promotion_codes`, cards only with 3DS on every
+ * payment, the offer metadata on both the session and the subscription, the
+ * renewal disclosure, and no trial — the offer has no trial, whatever the
+ * client sends.
+ */
+export function buildSoloFounderCheckoutParams(
+  input: SoloFounderCheckoutInput,
+): Stripe.Checkout.SessionCreateParams {
+  const metadata = { ...input.metadata }
+  return {
+    mode: 'subscription',
+    line_items: [
+      // In a subscription-mode session a one-time price is invoiced once, on
+      // the first invoice, with no adjustable quantity on either line.
+      { price: input.priceId, quantity: 1 },
+      { price: input.coursePriceId, quantity: 1 },
+    ],
+    discounts: [input.discount],
+    success_url: input.successUrl,
+    cancel_url: input.cancelUrl,
+    ...(input.userEmail ? { customer_email: input.userEmail } : {}),
+    ...(input.referralId ? { client_reference_id: input.referralId } : {}),
+    ...(input.customerCreation ? { customer_creation: input.customerCreation } : {}),
+    // Fraud rules (SHO-409): a cheap year of Business attracts stolen and
+    // prepaid cards. Cards only, and ask the issuer for 3DS on every payment.
+    // Checkout cannot filter by funding type — prepaid is refused in the
+    // webhook, before anything is provisioned.
+    payment_method_types: ['card'],
+    payment_method_options: { card: { request_three_d_secure: 'any' } },
+    metadata,
+    subscription_data: { metadata: { ...metadata } },
+    custom_text: {
+      submit: {
+        message: renewalDisclosure(input.now ?? new Date()),
+      },
+    },
   }
 }
 
@@ -837,4 +904,107 @@ export async function markEnrollmentRefunded(params: { stripeSubscriptionId: str
     data: { status: 'refunded' },
   })
   return result.count
+}
+
+// ---------------------------------------------------------------------------
+// Refunds (the 30-day guarantee)
+// ---------------------------------------------------------------------------
+
+export type OfferRefundSkipReason =
+  | 'not_full'
+  | 'no_payment_intent'
+  | 'no_invoice'
+  | 'not_first_invoice'
+  | 'not_offer'
+  | 'already_refunded'
+
+export interface OfferRefundResult {
+  /** This delivery flipped an `active` enrollment to `refunded`. */
+  refunded: boolean
+  /** Why nothing changed; `null` when it did. */
+  reason: OfferRefundSkipReason | null
+  subscriptionId: string | null
+}
+
+/**
+ * A refund made in the Stripe dashboard (the 30-day guarantee) has to reach the
+ * enrollment, or the course stays open after the money went back.
+ *
+ * Only a **full** refund of the **first** invoice of a Solo Founder
+ * subscription counts: a partial refund leaves the purchase standing, and a
+ * renewal refund is a later year, not the offer. `markEnrollmentRefunded` only
+ * touches `active` rows, so a redelivery is a no-op and the automatic prepaid
+ * refusal's `rejected_prepaid` row is never overwritten.
+ *
+ * The charge → invoice hop follows Stripe's own recipe for API 2025-03-31+:
+ * `Charge.invoice` is gone, so the PaymentIntent is listed against invoice
+ * payments and each paid invoice is checked for a subscription parent.
+ */
+export async function handleOfferChargeRefunded(params: {
+  stripe: Pick<Stripe, 'invoicePayments' | 'invoices' | 'subscriptions'>
+  charge: Stripe.Charge
+}): Promise<OfferRefundResult> {
+  const { charge } = params
+  const amount = charge.amount ?? 0
+  const refundedAmount = charge.amount_refunded ?? 0
+  const full = charge.refunded === true || (amount > 0 && refundedAmount >= amount)
+  if (!full) return { refunded: false, reason: 'not_full', subscriptionId: null }
+
+  const paymentIntent = typeof charge.payment_intent === 'string'
+    ? charge.payment_intent
+    : charge.payment_intent?.id ?? null
+  if (!paymentIntent) return { refunded: false, reason: 'no_payment_intent', subscriptionId: null }
+
+  const invoices = await paidInvoicesForPaymentIntent(params.stripe, paymentIntent)
+  let sawFirstInvoice = false
+  for (const invoice of invoices) {
+    if (invoice.billing_reason !== 'subscription_create') continue
+    sawFirstInvoice = true
+    const subscriptionId = resolveInvoiceSubscriptionId(invoice)
+    if (!subscriptionId) continue
+    const subscription = await params.stripe.subscriptions.retrieve(subscriptionId)
+    if (subscription.metadata?.offer !== SOLO_FOUNDER_OFFER) continue
+    const count = await markEnrollmentRefunded({ stripeSubscriptionId: subscriptionId })
+    return { refunded: count > 0, reason: count > 0 ? null : 'already_refunded', subscriptionId }
+  }
+  return {
+    refunded: false,
+    reason: sawFirstInvoice ? 'not_offer' : invoices.length ? 'not_first_invoice' : 'no_invoice',
+    subscriptionId: null,
+  }
+}
+
+/**
+ * The paid invoices a PaymentIntent settled. A PaymentIntent can pay more than
+ * one invoice, so the list is paged; the SDK's `invoicePayments` endpoint is the
+ * only charge → invoice link left in the current API version.
+ */
+async function paidInvoicesForPaymentIntent(
+  stripe: Pick<Stripe, 'invoicePayments' | 'invoices'>,
+  paymentIntentId: string,
+): Promise<Stripe.Invoice[]> {
+  const invoices: Stripe.Invoice[] = []
+  let startingAfter: string | undefined
+  for (let page = 0; page < 5; page++) {
+    const list = await stripe.invoicePayments.list({
+      payment: { type: 'payment_intent', payment_intent: paymentIntentId },
+      status: 'paid',
+      limit: 10,
+      ...(startingAfter ? { starting_after: startingAfter } : {}),
+    })
+    for (const payment of list.data ?? []) {
+      const ref = payment.invoice
+      if (!ref) continue
+      if (typeof ref === 'string') {
+        invoices.push(await stripe.invoices.retrieve(ref))
+      } else if (!('deleted' in ref)) {
+        invoices.push(ref as Stripe.Invoice)
+      }
+    }
+    const data = list.data ?? []
+    const last = data[data.length - 1]
+    if (!list.has_more || !last) break
+    startingAfter = last.id
+  }
+  return invoices
 }

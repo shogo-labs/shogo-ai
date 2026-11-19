@@ -29,8 +29,8 @@ mock.module('../services/email.service', () => ({
 }))
 
 const { prisma } = await import('../lib/prisma')
-const { enroll, getOfferState, refuseIfPrepaidOffer, PREPAID_REFUSAL_ERRORS } = await import('../services/solo-founder.service')
-const { COURSE_LESSONS, SOLO_FOUNDER_OS_CHANNELS } = await import('../config/solo-founder-course')
+const { enroll, getOfferState, refuseIfPrepaidOffer, handleOfferChargeRefunded, PREPAID_REFUSAL_ERRORS } = await import('../services/solo-founder.service')
+const { COURSE_LESSONS, SOLO_FOUNDER_OS_CHANNELS, SOLO_FOUNDER_COURSE_ID } = await import('../config/solo-founder-course')
 
 const db = prisma as any
 let seed: SeededWorkspace
@@ -258,6 +258,129 @@ describe('enroll() on SQLite (desktop parity)', () => {
     expect(b.refused).toBe(true)
     expect(stripe.calls).toEqual({ retrieve: 1, cancel: 1, refund: 1 })
     expect(sentEmails).toHaveLength(1)
+  })
+})
+
+// ────────────────────────────────────────────────────────────────────
+// SHO-446 — a refund in the Stripe dashboard closes the course
+// ────────────────────────────────────────────────────────────────────
+
+/** An enrollment on its own workspace, so each refund case starts clean. */
+async function enrollmentFor(subscriptionId: string, status = 'active') {
+  const ws = await seedWorkspace(db)
+  const row = await db.courseEnrollment.create({
+    data: {
+      courseId: SOLO_FOUNDER_COURSE_ID,
+      userId: ws.owner,
+      workspaceId: ws.workspaceId,
+      source: 'stripe',
+      stripeSubscriptionId: subscriptionId,
+      status,
+      purchasedAt: new Date(),
+      installStatus: status === 'active' ? 'installed' : 'failed',
+    },
+  })
+  return { ws, row }
+}
+
+/** A charge that was refunded in full, unless a test says otherwise. */
+function refundedCharge(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'ch_test',
+    amount: 9900,
+    amount_refunded: 9900,
+    refunded: true,
+    payment_intent: 'pi_test',
+    ...overrides,
+  } as any
+}
+
+/**
+ * Just enough Stripe for the refund handler: one paid invoice payment, one
+ * invoice, one subscription. `Charge.invoice` is gone in the current API
+ * version, so the handler goes charge → PaymentIntent → invoice payments.
+ */
+function fakeRefundStripe(opts: {
+  offer?: boolean
+  billingReason?: string
+  subscriptionId?: string
+} = {}) {
+  const subscriptionId = opts.subscriptionId ?? 'sub_refund_offer'
+  const invoice = {
+    id: 'in_first',
+    billing_reason: opts.billingReason ?? 'subscription_create',
+    parent: { type: 'subscription_details', subscription_details: { subscription: subscriptionId } },
+  }
+  return {
+    invoicePayments: {
+      list: async () => ({ data: [{ id: 'inpay_1', invoice: invoice.id }], has_more: false }),
+    },
+    invoices: { retrieve: async () => invoice },
+    subscriptions: {
+      retrieve: async (id: string) => ({
+        id,
+        metadata: opts.offer === false ? {} : { offer: 'solo_founder' },
+      }),
+    },
+  }
+}
+
+describe('SHO-446 a refund closes the course', () => {
+  test('a full refund of the first invoice marks the enrollment refunded, once', async () => {
+    const { row } = await enrollmentFor('sub_refund_offer')
+    const stripe = fakeRefundStripe()
+
+    const first = await handleOfferChargeRefunded({ stripe: stripe as any, charge: refundedCharge() })
+    expect(first).toEqual({ refunded: true, reason: null, subscriptionId: 'sub_refund_offer' })
+    expect((await db.courseEnrollment.findUnique({ where: { id: row.id } })).status).toBe('refunded')
+
+    // Stripe redelivers the same event: nothing changes a second time.
+    const again = await handleOfferChargeRefunded({ stripe: stripe as any, charge: refundedCharge() })
+    expect(again.refunded).toBe(false)
+    expect(again.reason).toBe('already_refunded')
+    expect((await db.courseEnrollment.findUnique({ where: { id: row.id } })).status).toBe('refunded')
+  })
+
+  test('a partial refund changes nothing', async () => {
+    const { row } = await enrollmentFor('sub_refund_partial')
+    const out = await handleOfferChargeRefunded({
+      stripe: fakeRefundStripe({ subscriptionId: 'sub_refund_partial' }) as any,
+      charge: refundedCharge({ amount: 9900, amount_refunded: 2000, refunded: false }),
+    })
+    expect(out).toEqual({ refunded: false, reason: 'not_full', subscriptionId: null })
+    expect((await db.courseEnrollment.findUnique({ where: { id: row.id } })).status).toBe('active')
+  })
+
+  test('a charge on a subscription that is not the offer changes nothing', async () => {
+    const { row } = await enrollmentFor('sub_other')
+    const out = await handleOfferChargeRefunded({
+      stripe: fakeRefundStripe({ offer: false, subscriptionId: 'sub_other' }) as any,
+      charge: refundedCharge(),
+    })
+    expect(out.refunded).toBe(false)
+    expect(out.reason).toBe('not_offer')
+    expect((await db.courseEnrollment.findUnique({ where: { id: row.id } })).status).toBe('active')
+  })
+
+  test('a refund of a renewal invoice changes nothing', async () => {
+    const { row } = await enrollmentFor('sub_renewal')
+    const out = await handleOfferChargeRefunded({
+      stripe: fakeRefundStripe({ billingReason: 'subscription_cycle', subscriptionId: 'sub_renewal' }) as any,
+      charge: refundedCharge(),
+    })
+    expect(out.reason).toBe('not_first_invoice')
+    expect((await db.courseEnrollment.findUnique({ where: { id: row.id } })).status).toBe('active')
+  })
+
+  test('a rejected_prepaid row is never overwritten with refunded', async () => {
+    const { row } = await enrollmentFor('sub_prepaid', 'rejected_prepaid')
+    const out = await handleOfferChargeRefunded({
+      stripe: fakeRefundStripe({ subscriptionId: 'sub_prepaid' }) as any,
+      charge: refundedCharge(),
+    })
+    expect(out.refunded).toBe(false)
+    expect(out.reason).toBe('already_refunded')
+    expect((await db.courseEnrollment.findUnique({ where: { id: row.id } })).status).toBe('rejected_prepaid')
   })
 })
 
