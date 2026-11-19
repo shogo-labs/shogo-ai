@@ -519,6 +519,102 @@ describe('generate_video', () => {
       expect(calls.length).toBe(0)
     })
   })
+
+  // Reference-to-video: a recorded voice track is uploaded first, then the
+  // proxy submits to the model's reference endpoint.
+  describe('reference_audio (lip-sync)', () => {
+    function mockUploads() {
+      let n = 0
+      on(`${PROXY}/media/uploads`, () => {
+        n += 1
+        return json({ url: `https://cdn.hf/up-${n}.wav` })
+      })
+    }
+
+    test('uploads each voice track as audio/wav and sends the URLs', async () => {
+      writeFileSync(join(TEST_DIR, 'refs/line1.wav'), 'RIFF-one')
+      writeFileSync(join(TEST_DIR, 'refs/line2.wav'), 'RIFF-two')
+      mockUploads()
+      const flow = mockVideoFlow(['completed'])
+
+      const r = await run('generate_video', {
+        prompt: 'maya says her line',
+        model: 'hf-seedance-2.5',
+        reference_images: ['refs/a.png'],
+        reference_audio: ['refs/line1.wav', 'refs/line2.wav'],
+        path: 'videos/maya.mp4',
+      })
+      expect(r.error).toBeUndefined()
+
+      const uploads = calls.filter((c) => c.url === `${PROXY}/media/uploads`)
+      expect(uploads).toHaveLength(2)
+      for (const upload of uploads) {
+        expect((upload.init?.headers as any)['Content-Type']).toBe('audio/wav')
+      }
+      expect(flow.submitBody()).toMatchObject({
+        model: 'hf-seedance-2.5',
+        reference_audio_urls: ['https://cdn.hf/up-1.wav', 'https://cdn.hf/up-2.wav'],
+      })
+      expect(flow.submitBody().reference_images).toHaveLength(1)
+    })
+
+    test('refuses more than ten voice tracks before uploading anything', async () => {
+      const r = await run('generate_video', {
+        prompt: 'x',
+        model: 'hf-seedance-2.5',
+        reference_audio: Array.from({ length: 11 }, (_, i) => `refs/line${i}.wav`),
+      })
+      expect(r.error).toContain('At most 10 reference audio clips')
+      expect(calls.some((c) => c.url.includes('/media/uploads'))).toBe(false)
+      expect(calls.some((c) => c.url.includes('/videos/generations'))).toBe(false)
+    })
+
+    test('a non-WAV voice track is refused with the conversion to run', async () => {
+      writeFileSync(join(TEST_DIR, 'refs/line.mp3'), 'ID3')
+      const r = await run('generate_video', {
+        prompt: 'x',
+        model: 'hf-seedance-2.5',
+        reference_audio: ['refs/line.mp3'],
+      })
+      expect(r.error).toContain('must be a .wav')
+      expect(r.error).toContain('ffmpeg')
+      expect(calls.some((c) => c.url.includes('/media/uploads'))).toBe(false)
+    })
+
+    test('a missing voice track is named, not uploaded', async () => {
+      const r = await run('generate_video', {
+        prompt: 'x',
+        model: 'hf-seedance-2.5',
+        reference_audio: ['refs/nope.wav'],
+      })
+      expect(r.error).toContain('Reference audio not found: refs/nope.wav')
+      expect(calls.some((c) => c.url.includes('/media/uploads'))).toBe(false)
+    })
+
+    test('a Genjutsu edit refuses reference_audio instead of dropping it', async () => {
+      writeFileSync(join(TEST_DIR, 'refs/clip.mp4'), mp4Fixture(8))
+      writeFileSync(join(TEST_DIR, 'refs/line1.wav'), 'RIFF-one')
+      const r = await run('generate_video', {
+        source_video: 'refs/clip.mp4',
+        genjutsu: 'restyle',
+        preset_id: 'preset-1',
+        prompt: 'make it anime',
+        reference_audio: ['refs/line1.wav'],
+      })
+      expect(r.error).toContain('takes no reference_audio')
+      expect(calls.some((c) => c.url.includes('/media/uploads'))).toBe(false)
+    })
+
+    test('the tool advertises lip-sync and the reference limits', () => {
+      const t = tool('generate_video')
+      expect(t.description).toContain('lip-sync')
+      const audio = (t.parameters as any).properties.reference_audio
+      expect(audio.maxItems).toBe(10)
+      expect(audio.description).toContain('max_reference_audio')
+      const images = (t.parameters as any).properties.reference_images
+      expect(images.description).toContain('lip-sync')
+    })
+  })
 })
 
 // =========================================================================

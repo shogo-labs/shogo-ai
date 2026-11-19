@@ -246,6 +246,13 @@ export interface VideoModelEntry {
   usdPerSecondByResolution?: Record<string, number>
   /** Most reference images (character/object elements) one request accepts. */
   maxReferenceImages: number
+  /** Most reference audio clips (recorded voice tracks) one request accepts. 0 when the model takes none. */
+  maxReferenceAudio: number
+  /**
+   * Endpoint that takes reference images and audio together, so a clip can
+   * lip-sync to a recorded voice. Absent when the model has no such endpoint.
+   */
+  referenceToVideoApiModel?: string
   bestFor?: string
   /** Still routable but superseded — see `ImageModelEntry.deprecated`. */
   deprecated?: boolean
@@ -928,6 +935,7 @@ export const GOOGLE_VIDEO_MODELS = {
     defaultResolution: '720p',
     usdPerSecondByResolution: { '360p': 0.023, '720p': 0.07, '1080p': 0.104, '4k': 0.209 },
     maxReferenceImages: 6,
+    maxReferenceAudio: 0,
     audio: true,
     lastFrame: true,
     endpoints: ['gemini-omni-1.2-flash'],

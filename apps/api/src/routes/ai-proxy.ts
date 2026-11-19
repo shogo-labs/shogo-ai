@@ -4021,6 +4021,7 @@ export async function listMediaModels(
         source_video: !!entry.sourceVideo,
         ...(entry.modes ? { modes: entry.modes } : {}),
         max_reference_images: entry.maxReferenceImages,
+        max_reference_audio: entry.maxReferenceAudio,
         last_frame: supportsLastFrame(entry),
         audio: !!entry.audio,
         endpoints: endpointsOf(entry),
@@ -4108,12 +4109,44 @@ export async function listMediaModels(
           ? await cachedHiggsfieldEstimate(higgsfieldKey, entry, request, signal)
           : null
         const rawUsd = estimate?.rawUsd ?? entry.usdPerRequest
+        // A reference-to-video call is priced on its own endpoint, so quote that
+        // one too. An endpoint that requires a reference image answers a
+        // media-less estimate with a validation error, which reads as `null`
+        // rather than a guessed figure.
+        let referenceUsd: number | null = null
+        if (entry.referenceToVideoApiModel) {
+          const referenceEstimate = await cachedHiggsfieldEstimate(
+            higgsfieldKey,
+            entry,
+            {
+              endpoint: entry.referenceToVideoApiModel,
+              input: {
+                prompt: 'a person talking to camera',
+                duration: entry.defaultDuration,
+                ...(entry.defaultResolution ? { resolution: entry.defaultResolution } : {}),
+              },
+            },
+            signal,
+          )
+          referenceUsd = referenceEstimate?.rawUsd !== undefined
+            ? roundUsd(calculateHiggsfieldUsageCost({ rawUsd: referenceEstimate.rawUsd }).billedUsd)
+            : null
+        }
         return {
           ...base,
           price: {
             unit: 'clip',
             usd: rawUsd !== undefined ? roundUsd(calculateHiggsfieldUsageCost({ rawUsd }).billedUsd) : null,
             ...(estimate?.rawUsd !== undefined ? { default_clip_usd: roundUsd(calculateHiggsfieldUsageCost({ rawUsd: estimate.rawUsd }).billedUsd), default_duration: entry.defaultDuration } : {}),
+            ...(entry.referenceToVideoApiModel
+              ? {
+                  reference_clip_usd: referenceUsd,
+                  reference_note:
+                    referenceUsd === null
+                      ? 'the vendor quotes no price for a reference-to-video call without media — ask /ai/v1/media/estimate with your reference_images / reference_audio_urls'
+                      : 'quoted with the default prompt and no reference media',
+                }
+              : {}),
             source: estimate ? estimate.source ?? 'estimate' : rawUsd !== undefined ? 'catalog' : 'unknown',
           },
         }
@@ -6647,6 +6680,9 @@ export function aiProxyRoutes() {
         quality?: string
         prompt?: string
         audio?: boolean
+        /** Reference media, so a reference-to-video call is quoted on its own endpoint. */
+        reference_images?: string[]
+        reference_audio_urls?: string[]
         source_video_url?: string
         source_duration_seconds?: number
         preset_id?: string
@@ -6704,6 +6740,8 @@ export function aiProxyRoutes() {
           resolution: body.resolution,
           aspectRatio: body.aspect_ratio,
           audio: body.audio,
+          referenceUrls: body.reference_images,
+          referenceAudioUrls: body.reference_audio_urls,
           options: body.options,
         })
         const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, c.req.raw.signal, { entry: videoEntry })
@@ -6813,8 +6851,9 @@ export function aiProxyRoutes() {
    * POST /ai/v1/videos/generations - Submit a video job.
    *
    * Body: `{ prompt, model, duration?, aspect_ratio?, resolution?, audio?,
-   * start_image?, end_image?, reference_images?, source_video_url?, preset_id?,
-   * options? }` with images as data URIs (or public URLs). `options` carries
+   * start_image?, end_image?, reference_images?, reference_audio_urls?,
+   * source_video_url?, preset_id?, options? }` with images as data URIs (or
+   * public URLs) and reference audio as public https URLs. `options` carries
    * model-specific fields (`cfg_scale`, `multi_shots`, `multi_prompt`, `seed`, …)
    * — the proxy validates each against the endpoint's documented schema. Returns
    * `{ id }` right away; poll `GET /ai/v1/videos/:id`. Nothing is charged until
@@ -6854,6 +6893,8 @@ export function aiProxyRoutes() {
         start_image?: string
         end_image?: string
         reference_images?: string[]
+        /** Public https URLs of recorded voice tracks (reference-to-video lip-sync). */
+        reference_audio_urls?: string[]
         source_video_url?: string
         source_duration_seconds?: number
         preset_id?: string
@@ -6955,11 +6996,29 @@ export function aiProxyRoutes() {
           entry.maxReferenceImages === 0
             ? `${entry.displayName} does not accept reference images.`
             : `${entry.displayName} accepts at most ${entry.maxReferenceImages} reference image(s); got ${refs.length}.`,
-          'too_many_reference_images',
+          entry.maxReferenceImages === 0 ? 'reference_images_unsupported' : 'too_many_reference_images',
         )
       }
       if (entry.sourceVideo && entry.genjutsu !== 'restyle' && refs.length === 0) {
         return invalid(`${entry.displayName} needs at least 1 reference image (the subject to drive or swap in).`, 'missing_reference_images')
+      }
+      // Reference audio is uploaded by the caller (the tool), so it arrives as
+      // public URLs — never a data URI, which would be a 10 MB JSON body.
+      const referenceAudio = body.reference_audio_urls ?? []
+      if (!Array.isArray(referenceAudio) || referenceAudio.some((url) => typeof url !== 'string' || !/^https:\/\//i.test(url))) {
+        return invalid('reference_audio_urls must be public https URLs (upload the files first)', 'invalid_reference_audio')
+      }
+      if (referenceAudio.length > 0 && entry.maxReferenceAudio === 0) {
+        return invalid(
+          `${entry.displayName} takes no reference audio — pick a model whose list_media_models entry has max_reference_audio above 0.`,
+          'reference_audio_unsupported',
+        )
+      }
+      if (referenceAudio.length > entry.maxReferenceAudio) {
+        return invalid(
+          `${entry.displayName} accepts at most ${entry.maxReferenceAudio} reference audio clip(s); got ${referenceAudio.length}.`,
+          'too_many_reference_audio',
+        )
       }
 
       // ---- Google Gemini Omni ------------------------------------------------
@@ -7193,6 +7252,7 @@ export function aiProxyRoutes() {
         startImageUrl,
         endImageUrl,
         referenceUrls,
+        referenceAudioUrls: referenceAudio,
         sourceVideoUrl: body.source_video_url,
         presetId: body.preset_id,
         options: body.options,

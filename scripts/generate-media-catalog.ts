@@ -215,11 +215,17 @@ function buildVideoEntry(catalog: Catalog, model: OverlayVideoModel, used: Used)
     requireEndpoint(catalog, model.editApiModel, model.id, ['edit'])
     claim(used, model.editApiModel, model.id)
   }
+  if (model.referenceToVideoApiModel) {
+    // The vendor classes these `other` (they are neither plain text- nor
+    // image-to-video), so accept either class rather than pinning one.
+    requireEndpoint(catalog, model.referenceToVideoApiModel, model.id, ['other', 'video'])
+    claim(used, model.referenceToVideoApiModel, model.id)
+  }
   if (generationEndpoints.length === 0 && !model.editApiModel) {
     throw new GenerationError(`${model.id}: no endpoint.`)
   }
 
-  const endpoints = uniqueInOrder([...generationEndpoints, model.editApiModel])
+  const endpoints = uniqueInOrder([...generationEndpoints, model.referenceToVideoApiModel, model.editApiModel])
   const optionsByEndpoint: Record<string, ModelOptionField[]> = {}
   for (const endpoint of endpoints) optionsByEndpoint[endpoint] = optionsOf(catalog.endpoints[endpoint])
 
@@ -228,8 +234,9 @@ function buildVideoEntry(catalog: Catalog, model: OverlayVideoModel, used: Used)
   const sourceVideo = !!model.editApiModel
   // One menu for the model, not one per endpoint: keep only the values every
   // endpoint accepts, so a duration an agent reads here works whether or not it
-  // also passes a start image.
-  const perEndpointDurations = generationEndpoints.map((endpoint) =>
+  // also passes a start image or reference audio.
+  const durationEndpoints = uniqueInOrder([...generationEndpoints, model.referenceToVideoApiModel])
+  const perEndpointDurations = durationEndpoints.map((endpoint) =>
     durationsOf(fieldNamed(catalog.endpoints[endpoint], 'duration')),
   )
   const durations = sourceVideo
@@ -245,6 +252,23 @@ function buildVideoEntry(catalog: Catalog, model: OverlayVideoModel, used: Used)
     const spec = catalog.endpoints[endpoint].fields
     return !!spec.sound || !!spec.generate_audio
   })
+
+  // Reference images and audio are capped by the reference endpoint's own
+  // schema: a model that takes 30 images there must not advertise the 4 the
+  // image path defaults to, and one with no `audio_urls` takes no audio at all.
+  const referenceEndpoint = model.referenceToVideoApiModel
+    ? catalog.endpoints[model.referenceToVideoApiModel]
+    : undefined
+  const referenceImages = fieldNamed(referenceEndpoint, 'image_urls')
+  if (model.referenceToVideoApiModel && !referenceImages) {
+    throw new GenerationError(
+      `${model.id}: '${model.referenceToVideoApiModel}' documents no 'image_urls', so it cannot take references.`,
+    )
+  }
+  const capOf = (field: CatalogField | undefined): number =>
+    field ? field.maxItems ?? (field.type === 'array' ? 4 : 1) : 0
+  const maxReferenceImages = model.maxReferenceImages ?? capOf(referenceImages)
+  const maxReferenceAudio = capOf(fieldNamed(referenceEndpoint, 'audio_urls'))
 
   const entry: VideoModelEntry = {
     id: model.id,
@@ -265,7 +289,9 @@ function buildVideoEntry(catalog: Catalog, model: OverlayVideoModel, used: Used)
       return durations[0] ?? 4
     })(),
     aspectRatios: fieldNamed(primary, 'aspect_ratio')?.enum ?? [],
-    maxReferenceImages: model.maxReferenceImages ?? 0,
+    maxReferenceImages,
+    maxReferenceAudio,
+    ...(model.referenceToVideoApiModel ? { referenceToVideoApiModel: model.referenceToVideoApiModel } : {}),
     bestFor: model.bestFor,
     endpoints,
     optionsByEndpoint,
@@ -444,6 +470,8 @@ function renderVideoEntry(entry: VideoModelEntry): string {
   if (entry.resolutions) scalars.push(`resolutions: ${ts(entry.resolutions)}`)
   if (entry.defaultResolution) scalars.push(`defaultResolution: ${ts(entry.defaultResolution)}`)
   scalars.push(`maxReferenceImages: ${entry.maxReferenceImages}`)
+  scalars.push(`maxReferenceAudio: ${entry.maxReferenceAudio}`)
+  if (entry.referenceToVideoApiModel) scalars.push(`referenceToVideoApiModel: ${ts(entry.referenceToVideoApiModel)}`)
   scalars.push(`audio: ${!!entry.audio}`)
   if (entry.bestFor) scalars.push(`bestFor: ${ts(entry.bestFor)}`)
   if (entry.usdPerRequest !== undefined) scalars.push(`usdPerRequest: ${entry.usdPerRequest}`)
