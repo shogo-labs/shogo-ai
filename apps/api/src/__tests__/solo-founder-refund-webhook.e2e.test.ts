@@ -22,7 +22,7 @@
  *
  * Run: bun test apps/api/src/__tests__/solo-founder-refund-webhook.e2e.test.ts
  */
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, mock, test } from 'bun:test'
 import { createHmac } from 'node:crypto'
 import { setupChannelsTestDb } from './helpers/channels-test-db'
 
@@ -88,9 +88,7 @@ class StripeStub {
   }
 }
 
-const { mock } = await import('bun:test')
 mock.module('stripe', () => ({ default: StripeStub }))
-
 const server = (await import('../server')).default as any
 const { SOLO_FOUNDER_COURSE_ID } = await import('../config/solo-founder-course')
 
