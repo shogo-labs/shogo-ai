@@ -92,6 +92,14 @@ import {
 /** Wide enough to show a project beside the chat (same as team chat's side pane). */
 const PROJECT_SIDE_PANE_MIN_WIDTH = 1024
 
+/**
+ * How far below the top inset `MobileWorkspaceShell`'s floating chrome reaches:
+ * it places its menu (left) and notification bell (right) buttons — `h-11`, so
+ * 44 pt tall — at `insets.top + 10`, which puts their bottom edge at 54 pt.
+ * Phone content that has to stay clear of them adds this to `insets.top`.
+ */
+const SHELL_CHROME_ROW_BOTTOM = 10 + 44
+
 interface ProjectPaneState extends OpenProjectPaneRequest {
   /** Changes on every open so a new request re-targets the pane. */
   nonce: number
@@ -1027,7 +1035,23 @@ export const WorkspaceAgentChatScreen = observer(
       <ShareFileProvider open={openShareFile}>
       <View className="flex-1 flex-row bg-background">
       <View className="min-w-0 flex-1 bg-background">
-        {usesMobileWorkspaceChrome ? (
+        {header ? (
+          // Opened from a team chat message: the way back up (`#shogo-dev ›
+          // Thread › Shogo · session`) is this screen's header — the companion
+          // identity block below sits it out, the way a project agent's session
+          // shows nothing above its trail (SHO-438). On a phone the trail is
+          // the first thing in normal flow, so it only clears the shell's
+          // floating menu (left) and bell (right) row.
+          <View
+            style={
+              usesMobileWorkspaceChrome
+                ? { paddingTop: insets.top + SHELL_CHROME_ROW_BOTTOM }
+                : undefined
+            }
+          >
+            {header}
+          </View>
+        ) : usesMobileWorkspaceChrome ? (
           <PersonalAgentMobileHeader
             profile={profile}
             actions={profileActions}
@@ -1041,13 +1065,6 @@ export const WorkspaceAgentChatScreen = observer(
             compact
           />
         )}
-        {header ? (
-          // Opened from a team chat message: the trail back. On phones the
-          // floating header needs the same clearance the content below gets.
-          <View style={usesMobileWorkspaceChrome ? { paddingTop: insets.top + 112 } : undefined}>
-            {header}
-          </View>
-        ) : null}
         {usesMobileWorkspaceChrome &&
         !header &&
         ((isPersonalWorkspace && showWelcome) || attachments.length > 0) ? (

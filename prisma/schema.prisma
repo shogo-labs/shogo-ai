@@ -316,6 +316,7 @@ model Workspace {
   socialComments         SocialComment[]
   socialAutomations      SocialAutomation[]
   socialAutomationRuns   SocialAutomationRun[]
+  rootSecrets            WorkspaceRootSecret[]
 
   @@index([createdAt])
   @@index([homeRegion])
@@ -6453,4 +6454,36 @@ model CrossWorkspaceAudit {
 
   @@index([targetWorkspaceId, createdAt])
   @@map("cross_workspace_audit")
+}
+
+/// The workspace root's `.env*` files, sealed at rest (SHO-384).
+///
+/// A cloud `ws:` runtime rebuilds its root from `git archive HEAD`, which never
+/// carries `.env*`, and it has no host in front of it to keep the metal
+/// encrypted home archive. The API holds them here instead: one blob per
+/// runtime key (`ws:<workspaceId>` or `ws:proj:<anchor>`), AES-256-GCM with a
+/// key derived per runtime and the runtime key bound in as associated data, so
+/// a blob cannot be replayed onto another runtime. Nothing about the content is
+/// queryable — the row exists so the pod can fetch its secrets after a cold
+/// boot.
+model WorkspaceRootSecret {
+  id         String   @id @default(uuid())
+  /// `ws:<workspaceId>` for a merged workspace runtime, `ws:proj:<anchor>` for a project-anchored one.
+  runtimeKey String   @unique
+  /// The owning workspace, so deleting it drops the blob. The key can be a
+  /// project-anchored one, so it cannot be read back out of `runtimeKey`.
+  workspaceId String
+  /// Content fingerprint of the payload, so an unchanged runtime skips the upload.
+  tag        String
+  /// `v1:<iv>:<authTag>:<ciphertext>`, base64. AAD is the runtime key.
+  ciphertext String
+  /// Plaintext byte count, for the ceiling and for observability.
+  size       Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("workspace_root_secrets")
 }

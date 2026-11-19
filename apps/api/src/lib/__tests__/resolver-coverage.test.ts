@@ -127,6 +127,7 @@ const EXEMPT: Record<string, string> = {
   workspaceModelVisibility: 'Mutated via /api/workspaces/:id/... — resolved by path workspaceId.',
   accessPolicy: 'Mutated only via /api/workspaces/:workspaceId/access/policies (routes/access-policies.ts) and the access-request decision — resolved by path workspaceId; single-tenant upsert (see check-multiregion-cron-locks.ts).',
   accessAuditEvent: 'Append-only audit trail written as a side effect of the access write or denial it records (same request, same region) and read via /api/workspaces/:workspaceId/access/audit — never mutated via REST.',
+  workspaceRootSecret: 'SHO-384: written and read only via /api/internal/workspaces/:workspaceId/root-secrets (the pod↔API transport for a cloud runtime) — resolved by path workspaceId; there is no standalone /api/<resource>/:id row mutation.',
 }
 
 function parseModelsWithTenantKey(schema: string): string[] {

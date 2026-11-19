@@ -90,6 +90,25 @@ describe('isShogoRuntimeState', () => {
 })
 
 describe('ensureShogoExcludes', () => {
+  test('never stages a .env* secret, and still commits the templates (SHO-384)', () => {
+    const dir = tmpRepo()
+    ensureShogoExcludes(dir, quiet)
+    for (const name of ['.env', '.env.local', '.env.production', '.env.development', '.env.staging', '.env.test']) {
+      writeFileSync(join(dir, name), 'TOKEN=secret\n')
+    }
+    for (const name of ['.env.example', '.env.sample', '.env.template', '.env.production.example']) {
+      writeFileSync(join(dir, name), 'TOKEN=replace-me\n')
+    }
+
+    git(dir, 'add', '-A')
+    const staged = git(dir, 'diff', '--cached', '--name-only').split('\n').filter(Boolean).sort()
+
+    // The secrets rule and the ignore list are one list now: a name the store
+    // would carry must not be stageable, or `git add -A` puts the tokens in the
+    // durable repo the next cold boot rebuilds from.
+    expect(staged).toEqual(['.env.example', '.env.production.example', '.env.sample', '.env.template'])
+  })
+
   test('writes the managed block into .git/info/exclude and is idempotent', () => {
     const dir = tmpRepo()
     try {

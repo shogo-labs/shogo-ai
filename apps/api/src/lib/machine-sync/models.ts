@@ -134,6 +134,10 @@ const NEVER_CREDENTIALS = [
   'Account', // OAuth provider link
   'Verification', // one-time codes
   'ApiKey', // could sign in as the workspace
+  // SHO-384: the sealed workspace-root .env* blob. Decrypted only by the cloud
+  // API's key, for one cloud pod's runtime key — a desktop's own disk is its
+  // source of truth, so copying the row would hand it ciphertext it cannot read.
+  'WorkspaceRootSecret',
   'UserIdentityLink', // maps a cloud identity to a local one
   'UserIntegrationConnection', // OAuth tokens
   'UserIntegrationGrant',
