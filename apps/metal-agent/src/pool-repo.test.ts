@@ -32,7 +32,7 @@ import type { SnapshotStore } from './snapshot-store'
 const HANDLE = { id: 'vm-1', agentUrl: 'http://10.0.0.9:8080', guestIp: '10.0.0.9' } as any
 
 class TestPool extends MetalWarmPool {
-  uploads: Array<{ projectId: string; bytes: Uint8Array; opts: { lineage: RepoLineage } }> = []
+  uploads: Array<{ projectId: string; bytes: Uint8Array; opts: { lineage: RepoLineage; preserveOnRefusal?: boolean } }> = []
   outcome: RepoWriteOutcome = { status: 'written', etag: '"new-repo"' }
   /** Per-call outcomes, consumed before falling back to `outcome`. */
   outcomes: RepoWriteOutcome[] = []
@@ -135,7 +135,7 @@ describe('pool host-mediated repo persist', () => {
     // The store refuses an untrusted lineage and diverts the bytes to a
     // quarantine key. Before SHO-442 this VM saved NOTHING for the rest of its
     // life, which is how a day and a half of work was lost.
-    pool.outcome = { status: 'refused', quarantineKey: 'conflict/p1/untrusted-repo.tar.gz' }
+    pool.outcome = { status: 'refused', reason: 'untrusted', quarantineKey: 'conflict/p1/untrusted-repo.tar.gz' }
     const a = pool.add('p1', { repoUntrustedReason: 'hydrate failed', repoHeadSha: 'abc123' })
 
     // `true` = the bytes reached somewhere durable (here, `conflict/`). It is
@@ -155,7 +155,7 @@ describe('pool host-mediated repo persist', () => {
 
   test('an untrusted VM whose quarantine copy reaches nowhere is reported, not silently dropped', async () => {
     const pool = makePool(dir)
-    pool.outcome = { status: 'refused' }
+    pool.outcome = { status: 'refused', reason: 'untrusted', quarantineKey: null }
     const a = pool.add('p1', { repoUntrustedReason: 'hydrate failed', repoHeadSha: 'abc123' })
 
     expect(await pool.saveRepoToStore(a)).toBe(false)
@@ -182,7 +182,7 @@ describe('pool host-mediated repo persist', () => {
 
     test('quarantines on a HEAD change and does not repeat it for the same HEAD', async () => {
       const pool = sweepPool()
-      pool.outcome = { status: 'refused', quarantineKey: 'conflict/p1/x.tar.gz' }
+      pool.outcome = { status: 'refused', reason: 'untrusted', quarantineKey: 'conflict/p1/x.tar.gz' }
       const a = pool.add('p1', { repoUntrustedReason: 'hydrate failed', repoHeadSha: 'aaa' })
 
       expect(await pool.exportAllRepos()).toBe(1)

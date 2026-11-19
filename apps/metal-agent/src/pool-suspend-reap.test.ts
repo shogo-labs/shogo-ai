@@ -240,6 +240,36 @@ describe('a stop that would cold-start over unsaved work is refused', () => {
     expect((await stopping).kind).toBe('suspended')
   })
 
+  test('the idle reaper leaves a VM whose HEAD is not durable running', async () => {
+    // The second production instance (Samsara App, ws:proj:6692ddbf) went
+    // through idle-suspend, not rollout: the repo backup timed out at 22:02:48
+    // and the VM was idle-suspended at 22:03:20 anyway (SHO-442).
+    const { pool, alive } = seedWith({
+      repoHeadSha: 'abc123',
+      repoExportedHeadSha: 'def456',
+      lastRealActivityAt: Date.now() - 60_000,
+    })
+
+    expect(await pool.reapIdle(1)).toEqual([])
+    expect(pool.isAssigned('p1')).toBe(true)
+    expect(alive.has('fcvm-1')).toBe(true)
+  })
+
+  test('the idle reaper still suspends a VM whose HEAD is durable', async () => {
+    const { pool, alive, release } = seedWith({
+      repoHeadSha: 'abc123',
+      repoExportedHeadSha: 'abc123',
+      lastRealActivityAt: Date.now() - 60_000,
+    })
+
+    const reaping = pool.reapIdle(1)
+    release()
+
+    expect(await reaping).toEqual(['p1'])
+    expect(pool.isAssigned('p1')).toBe(false)
+    expect(alive.has('fcvm-1')).toBe(false)
+  })
+
   test('a VM whose history is still downloading suspends instead of being pinned', async () => {
     const { pool, release } = seedWith({
       repoUntrustedReason: REPO_DEFERRED_REASON,
