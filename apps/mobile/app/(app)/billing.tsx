@@ -44,11 +44,11 @@ import type { IapPurchaseResult } from '../../lib/iap'
 import type { RegionalPricingResponse } from '../../lib/api'
 import { getRewardfulReferral } from '../../lib/rewardful'
 import { nativeActivePill } from '../../lib/native-active-shadow'
-import { trackInitiateCheckout, trackPurchase } from '../../lib/tracking'
+import { trackInitiateCheckout, trackPurchase, trackBillingView, trackPlanClick, trackPlanChange, trackCancel } from '../../lib/tracking'
 import { resolveActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { useDomainActions } from '@shogo/shared-app/domain'
-import { useBillingData } from '@shogo/shared-app/hooks'
+import { usePlatformConfig } from '../../lib/platform-config'
+import { useBillingData, useBillingSummary } from '@shogo/shared-app/hooks'
 import {
   PLAN_PRICING,
   BASIC_FEATURES,
@@ -65,6 +65,12 @@ import {
 import { SeatCounter } from '../../components/billing/SeatCounter'
 import { SoloFounderCard } from '../../components/billing/SoloFounderCard'
 import { BillingHistory } from '../../components/billing/BillingHistory'
+import { BillingSummaryCard } from '../../components/billing/BillingSummaryCard'
+import { PaymentIssueBanner } from '../../components/billing/PaymentIssueBanner'
+import { PlanChangeDialog, type PlanChangeTarget } from '../../components/billing/PlanChangeDialog'
+import { CancelSubscriptionDialog } from '../../components/billing/CancelSubscriptionDialog'
+import { PlanComparison } from '../../components/billing/PlanComparison'
+import { SetSpendLimitDialog } from '../../components/billing/SetSpendLimitDialog'
 import { useToast, Toast, ToastTitle, ToastDescription } from '../../components/ui/toast'
 import { FeatureList } from '../../components/billing/FeatureList'
 import { UsageWindowBar } from '../../components/billing/UsageWindows'
@@ -153,7 +159,6 @@ export default observer(function BillingPage() {
   }>()
   const { user, isLoading: isAuthLoading } = useAuth()
   const workspaces = useWorkspaceCollection()
-  const actions = useDomainActions()
 
   useEffect(() => {
     const ownWorkspaceIds = workspaces?.all?.map((workspace: any) => workspace.id) ?? []
@@ -175,7 +180,6 @@ export default observer(function BillingPage() {
     refetchUsageWallet,
     planSource,
     usageWindows,
-    overagePayment,
     promoCredit,
     trialEligible,
     trialEndsAt,
@@ -186,6 +190,36 @@ export default observer(function BillingPage() {
   // adapt by checking `planSource === 'subscription'` instead of just
   // `subscription` truthiness.
   const hasStripeSubscription = planSource === 'subscription'
+
+  // Desktop reaches the linked cloud workspace through the local bridge, so the
+  // summary/plan-change/cancel calls take the same shape on both surfaces.
+  const { localMode } = usePlatformConfig()
+  const {
+    summary: billingSummary,
+    error: billingSummaryError,
+    refetch: refetchBillingSummary,
+  } = useBillingSummary(currentWorkspace?.id, { localMode })
+  // A paid workspace changes its existing subscription; it never starts a
+  // second Checkout (SHO-451).
+  const isPaidWorkspace = hasStripeSubscription || planSource === 'grant'
+  const [planChangeTarget, setPlanChangeTarget] = useState<PlanChangeTarget | null>(null)
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false)
+  const [spendLimitOpen, setSpendLimitOpen] = useState(false)
+  const [licenseBoxOpen, setLicenseBoxOpen] = useState(false)
+
+  // One view event per mount, so we can see how often billing is opened and on
+  // what plan.
+  const billingViewTrackedRef = useRef(false)
+  useEffect(() => {
+    if (billingViewTrackedRef.current) return
+    if (isBillingLoading || !currentWorkspace?.id) return
+    billingViewTrackedRef.current = true
+    trackBillingView({
+      workspaceId: currentWorkspace.id,
+      planId: billingSummary?.planId ?? subscription?.planId,
+      hasSubscription: hasStripeSubscription,
+    })
+  }, [isBillingLoading, currentWorkspace?.id, billingSummary?.planId, subscription?.planId, hasStripeSubscription])
 
   // Coupled window display: when the weekly window is exhausted the user is
   // maxed out regardless of 5-hour headroom, so the 5-hour bar is forced to
@@ -209,6 +243,17 @@ export default observer(function BillingPage() {
 
   const [billingInterval, setBillingInterval] = useState<'monthly' | 'annual'>('monthly')
   const [businessSeats, setBusinessSeats] = useState(1)
+
+  // The interval and seat controls start from the subscription's own values, so
+  // a plan change previews the change the customer actually has.
+  const summarySyncedRef = useRef(false)
+  useEffect(() => {
+    if (summarySyncedRef.current || !billingSummary) return
+    summarySyncedRef.current = true
+    if (billingSummary.billingInterval) setBillingInterval(billingSummary.billingInterval)
+    if (billingSummary.seats > 1) setBusinessSeats(billingSummary.seats)
+  }, [billingSummary])
+
   const [isCheckoutLoading, setIsCheckoutLoading] = useState(false)
   const [isPortalLoading, setIsPortalLoading] = useState(false)
   const [isEndTrialLoading, setIsEndTrialLoading] = useState(false)
@@ -250,6 +295,9 @@ export default observer(function BillingPage() {
     const code = Array.isArray(redeemParam) ? redeemParam[0] : redeemParam
     if (!code) return
     setLicenseCode(code.trim().toUpperCase())
+    // The box is collapsed by default; a deep link opens it so the recipient
+    // does not have to find it.
+    setLicenseBoxOpen(true)
     // Consumed — drop any stashed copy so it can't re-trigger a later
     // navigation back to billing.
     clearPendingLicenseCode()
@@ -574,6 +622,31 @@ export default observer(function BillingPage() {
 
   const handleCheckout = useCallback(async (planType: 'business' | 'basic', seats: number, opts?: { trial?: boolean }) => {
     if (!currentWorkspace?.id) return
+    // A workspace that already pays changes its existing subscription in place.
+    // Opening a second Checkout would create a second Stripe subscription and
+    // leave the first one billing (SHO-451).
+    if (hasStripeSubscription && !opts?.trial) {
+      trackPlanClick({
+        planId: planType,
+        action: 'change',
+        billingInterval,
+        seats,
+        workspaceId: currentWorkspace.id,
+      })
+      setPlanChangeTarget({
+        planId: planType,
+        billingInterval,
+        seats: planType === 'basic' ? 1 : Math.max(1, Math.floor(seats || 1)),
+      })
+      return
+    }
+    trackPlanClick({
+      planId: planType,
+      action: opts?.trial ? 'trial' : 'checkout',
+      billingInterval,
+      seats,
+      workspaceId: currentWorkspace.id,
+    })
     setIsCheckoutLoading(true)
     try {
       const planId = planType
@@ -669,7 +742,7 @@ export default observer(function BillingPage() {
     } finally {
       setIsCheckoutLoading(false)
     }
-  }, [http, currentWorkspace?.id, billingInterval, user?.email, router, refetchSubscription, refetchUsageWallet, showIapToast])
+  }, [http, currentWorkspace?.id, billingInterval, user?.email, router, refetchSubscription, refetchUsageWallet, showIapToast, hasStripeSubscription])
 
   // The usage notice's "Start free trial" CTA lands here with `?trial=business`:
   // take them straight to Stripe's trial checkout for the Business plan rather
@@ -818,15 +891,56 @@ export default observer(function BillingPage() {
         </View>
       </View>
 
-      {/* The $99 Solo Founder offer: only for a Free workspace. iOS never shows
-          the buy panel, and the card says so itself on any native build. */}
-      {!subscription && (
-        <SoloFounderCard
-          workspaceId={currentWorkspace.id}
-          onPurchased={() => {
-            refetchSubscription()
-            refetchUsageWallet()
+      {/* A payment problem outranks everything else on the page (SHO-451). */}
+      <PaymentIssueBanner
+        pastDue={billingSummary?.pastDue ?? null}
+        isIos={Platform.OS === 'ios'}
+        isBusy={isPortalLoading}
+        onUpdateCard={handleManageSubscription}
+        onPayInvoice={(url) => WebBrowser.openBrowserAsync(url)}
+      />
+
+      {/* The summary could not be read — say why instead of rendering a blank
+          "Free Plan" card. A desktop install with no cloud link answers
+          `cloud_not_connected`; a Stripe outage answers `stripe_error`. */}
+      {billingSummaryError ? (
+        <View
+          className="mb-4 flex-row items-start gap-3 rounded-2xl border border-border bg-muted/60 p-4"
+          testID="billing-summary-error"
+        >
+          <Info size={18} className="mt-0.5 text-muted-foreground" />
+          <View className="flex-1 gap-2">
+            <Text className="text-sm font-medium text-foreground">
+              We couldn't load your plan details.
+            </Text>
+            <Text className="text-xs text-muted-foreground">{billingSummaryError}</Text>
+            <Button variant="outline" size="sm" onPress={refetchBillingSummary} testID="billing-summary-retry">
+              Try again
+            </Button>
+          </View>
+        </View>
+      ) : null}
+
+      {/* What plan am I on, what will I pay next, which card pays it. Suppressed
+          when the summary failed: the card would otherwise claim "Free Plan"
+          for a workspace we simply could not read. */}
+      {billingSummaryError ? null : (
+        <BillingSummaryCard
+          summary={billingSummary}
+          workspaceName={currentWorkspace.name}
+          isIos={Platform.OS === 'ios'}
+          isPortalLoading={isPortalLoading}
+          isRestoreLoading={isRestoreLoading}
+          onManage={handleManageSubscription}
+          onChangePlan={() => {
+            const planId = (billingSummary?.planId ?? subscription?.planId ?? 'business').toLowerCase()
+            setPlanChangeTarget({
+              planId: planId.startsWith('basic') ? 'basic' : 'business',
+              billingInterval: (billingSummary?.billingInterval ?? billingInterval) as 'monthly' | 'annual',
+              seats: Math.max(1, billingSummary?.seats ?? subscription?.seats ?? 1),
+            })
           }}
+          onRestore={handleRestorePurchases}
         />
       )}
 
@@ -871,93 +985,6 @@ export default observer(function BillingPage() {
         </Card>
       ) : null}
 
-      {/* Current Plan Card */}
-      <Card className="mb-4 rounded-2xl border-border shadow-none">
-        <CardContent className="p-4">
-          <View className="flex-row items-center justify-between">
-            <View className="flex-row items-center gap-3 flex-1">
-              <View className="h-10 w-10 rounded-full bg-primary/10 items-center justify-center">
-                <Text className="text-lg font-semibold text-primary">
-                  {currentWorkspace.name?.[0]?.toUpperCase() || 'W'}
-                </Text>
-              </View>
-              <View className="flex-1">
-                <Text className="text-sm font-medium text-foreground">
-                  You're on {planName}
-                </Text>
-                <Text className="text-xs text-muted-foreground">
-                  {subscription?.planId?.startsWith('pro')
-                    ? 'Pro is no longer sold. You move to Business at your next renewal.'
-                    : 'Upgrade anytime'}
-                </Text>
-              </View>
-            </View>
-            <View className="flex-row items-center gap-2">
-              {hasStripeSubscription && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onPress={handleManageSubscription}
-                  disabled={isPortalLoading}
-                >
-                  {isPortalLoading ? 'Loading...' : 'Manage'}
-                </Button>
-              )}
-              {Platform.OS === 'ios' && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onPress={handleRestorePurchases}
-                  disabled={isRestoreLoading}
-                >
-                  {isRestoreLoading ? 'Restoring...' : 'Restore Purchases'}
-                </Button>
-              )}
-            </View>
-          </View>
-        </CardContent>
-      </Card>
-
-      {/* Billing history (recent Stripe invoices) */}
-      {Platform.OS !== 'ios' && <BillingHistory workspaceId={currentWorkspace.id} />}
-
-      {/* Redeem a license key */}
-      {Platform.OS !== 'ios' && (
-      <Card className="mb-4 rounded-2xl border-border shadow-none">
-        <CardContent className="p-4 gap-3">
-          <View className="flex-row items-center gap-2">
-            <KeyRound size={16} className="text-primary" />
-            <Text className="text-sm font-medium text-foreground">Redeem a license key</Text>
-          </View>
-          <Text className="text-xs text-muted-foreground">
-            Have a license key? Redeem it to upgrade this workspace.
-          </Text>
-          <View className="flex-row items-center gap-2">
-            <TextInput
-              ref={licenseInputRef}
-              value={licenseCode}
-              onChangeText={setLicenseCode}
-              placeholder="SHGO-PRO-XXXX-XXXX-XXXX"
-              placeholderTextColor="#9ca3af"
-              autoCapitalize="characters"
-              autoCorrect={false}
-              editable={!isRedeeming}
-              onSubmitEditing={handleRedeemLicense}
-              returnKeyType="done"
-              className="flex-1 border border-border rounded-lg px-3 py-2 text-sm font-mono text-foreground bg-background"
-            />
-            <Button
-              size="sm"
-              onPress={handleRedeemLicense}
-              disabled={isRedeeming || !licenseCode.trim()}
-            >
-              {isRedeeming ? 'Redeeming...' : 'Redeem'}
-            </Button>
-          </View>
-        </CardContent>
-      </Card>
-      )}
-
       {/* Usage Display — time-gated rolling windows */}
       <Card className="mb-6 rounded-2xl border-border shadow-none">
         <CardContent className="p-4 gap-4">
@@ -982,21 +1009,26 @@ export default observer(function BillingPage() {
             />
           </View>
 
-          {overagePayment ? (
-            <View className="gap-2 rounded-md p-3 bg-destructive/10">
-              <View className="flex-row items-center gap-2">
-                <Info size={16} className="text-destructive" />
-                <Text className="flex-1 text-sm text-foreground font-medium">
-                  {`On-demand usage is paused: your ${formatUsd(overagePayment.amountUsd)} usage charge hasn't been paid. If your bank asked you to confirm the payment, approve it on the invoice page.`}
+          {/* Spend limit sits with the bars it caps, not buried in settings. */}
+          {Platform.OS !== 'ios' && (
+            <View className="flex-row items-center justify-between gap-3" testID="billing-spend-limit">
+              <Text className="text-sm text-muted-foreground">
+                Spending limit:{' '}
+                <Text className="text-sm font-medium text-foreground">
+                  {effectiveBalance?.overageHardLimitUsd != null
+                    ? `${formatUsd(effectiveBalance.overageHardLimitUsd)} / mo`
+                    : 'None'}
                 </Text>
-              </View>
-              {Platform.OS !== 'ios' && overagePayment.invoiceUrl ? (
-                <Button size="sm" onPress={() => WebBrowser.openBrowserAsync(overagePayment.invoiceUrl!)}>
-                  Pay or confirm invoice
-                </Button>
-              ) : null}
+              </Text>
+              <Pressable
+                onPress={() => setSpendLimitOpen(true)}
+                className="rounded-md border border-border bg-background px-3 py-1.5 active:bg-muted"
+                accessibilityRole="button"
+              >
+                <Text className="text-xs font-medium text-foreground">Edit</Text>
+              </Pressable>
             </View>
-          ) : null}
+          )}
 
           {usageLimitNotice ? (
             <View
@@ -1053,55 +1085,111 @@ export default observer(function BillingPage() {
         </CardContent>
       </Card>
 
-      {/* Regional Currency Indicator */}
-      {regionalPricing && (
-        <View className="items-center mb-4">
-          <View className="rounded-full border border-border bg-muted/60 px-3 py-1">
-            <Text className="text-xs font-medium text-muted-foreground">
-              Prices shown in {regionalPricing.currency.name} ({regionalPricing.currency.code})
-            </Text>
-          </View>
-        </View>
-      )}
+      {/* Plans. A Free workspace gets the sales layout (Solo Founder + the three
+          cards); a paid one gets a comparison with its current plan marked. */}
+      {isPaidWorkspace ? (
+        <>
+          {Platform.OS !== 'ios' && (billingSummary?.planId ?? subscription?.planId ?? '')
+            .toLowerCase()
+            .startsWith('business') ? (
+            <View className="mb-4">
+              <SeatCounter
+                value={businessSeats}
+                onChange={setBusinessSeats}
+                min={1}
+                max={500}
+                label="Seats"
+              />
+            </View>
+          ) : null}
+          <PlanComparison
+            currentPlanId={billingSummary?.planId ?? subscription?.planId ?? 'free'}
+            billingInterval={billingInterval}
+            seats={businessSeats}
+            isIos={Platform.OS === 'ios'}
+            isBusy={isCheckoutLoading}
+            onSelect={(planId) => {
+              trackPlanClick({
+                planId,
+                action: 'change',
+                billingInterval,
+                seats: planId === 'basic' ? 1 : businessSeats,
+                workspaceId: currentWorkspace.id,
+              })
+              setPlanChangeTarget({
+                planId,
+                billingInterval,
+                seats: planId === 'basic' ? 1 : Math.max(1, businessSeats),
+              })
+            }}
+            onContactSales={() => {
+              trackPlanClick({ planId: 'enterprise', action: 'contact', workspaceId: currentWorkspace.id })
+              openExternalLink('mailto:sales@shogo.ai')
+            }}
+          />
+        </>
+      ) : (
+        <>
+          {/* The $99 Solo Founder offer: only for a Free workspace. iOS never
+              shows the buy panel, and the card says so itself on any native build. */}
+          <SoloFounderCard
+            workspaceId={currentWorkspace.id}
+            onPurchased={() => {
+              refetchSubscription()
+              refetchUsageWallet()
+              refetchBillingSummary()
+            }}
+          />
 
-      {/* Billing Interval Toggle */}
-      <View className="items-center mb-6">
-        <View className="flex-row rounded-full border border-border bg-muted/60 p-1">
-          <Pressable
-            onPress={() => setBillingInterval('monthly')}
-            className={cn(
-              'px-5 py-2 rounded-full',
-              monthlyPill.className,
-            )}
-            style={monthlyPill.style}
-          >
-            <Text className={cn(
-              'text-sm font-medium',
-              billingInterval === 'monthly' ? 'text-primary-foreground' : 'text-muted-foreground'
-            )}>
-              Monthly
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setBillingInterval('annual')}
-            className={cn(
-              'flex-row items-center gap-1.5 px-5 py-2 rounded-full',
-              annualPill.className,
-            )}
-            style={annualPill.style}
-          >
-            <Text className={cn(
-              'text-sm font-medium',
-              billingInterval === 'annual' ? 'text-primary-foreground' : 'text-muted-foreground'
-            )}>
-              Annual
-            </Text>
-            <Badge variant="secondary" className="ml-1">
-              <Text className="text-[10px]">Save ~17%</Text>
-            </Badge>
-          </Pressable>
-        </View>
-      </View>
+          {/* Regional Currency Indicator */}
+          {regionalPricing && (
+            <View className="items-center mb-4">
+              <View className="rounded-full border border-border bg-muted/60 px-3 py-1">
+                <Text className="text-xs font-medium text-muted-foreground">
+                  Prices shown in {regionalPricing.currency.name} ({regionalPricing.currency.code})
+                </Text>
+              </View>
+            </View>
+          )}
+
+          {/* Billing Interval Toggle */}
+          <View className="items-center mb-6">
+            <View className="flex-row rounded-full border border-border bg-muted/60 p-1">
+              <Pressable
+                onPress={() => setBillingInterval('monthly')}
+                className={cn(
+                  'px-5 py-2 rounded-full',
+                  monthlyPill.className,
+                )}
+                style={monthlyPill.style}
+              >
+                <Text className={cn(
+                  'text-sm font-medium',
+                  billingInterval === 'monthly' ? 'text-primary-foreground' : 'text-muted-foreground'
+                )}>
+                  Monthly
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setBillingInterval('annual')}
+                className={cn(
+                  'flex-row items-center gap-1.5 px-5 py-2 rounded-full',
+                  annualPill.className,
+                )}
+                style={annualPill.style}
+              >
+                <Text className={cn(
+                  'text-sm font-medium',
+                  billingInterval === 'annual' ? 'text-primary-foreground' : 'text-muted-foreground'
+                )}>
+                  Annual
+                </Text>
+                <Badge variant="secondary" className="ml-1">
+                  <Text className="text-[10px]">Save ~17%</Text>
+                </Badge>
+              </Pressable>
+            </View>
+          </View>
 
       {/* Plan Cards — keep iPad portrait single-column; use columns only on wider layouts. */}
       <View className="gap-4 lg:flex-row lg:flex-wrap lg:items-stretch xl:flex-nowrap" testID="plan-cards-row">
@@ -1271,6 +1359,92 @@ export default observer(function BillingPage() {
         </View>
         )}
       </View>
+        </>
+      )}
+
+      {/* Invoices, pricing note, license key, cancel — the reference material. */}
+      {Platform.OS !== 'ios' && (
+        <BillingHistory workspaceId={currentWorkspace.id} limit={3} showViewAll />
+      )}
+
+      <View className="mb-4 gap-1 px-1">
+        <Text className="text-xs text-muted-foreground">
+          Usage beyond your plan is billed at model cost + 20%, capped by your spending limit.
+        </Text>
+        <Pressable
+          onPress={() => WebBrowser.openBrowserAsync('https://docs.shogo.ai/billing')}
+          accessibilityRole="link"
+        >
+          <Text className="text-xs text-primary underline">How usage billing works</Text>
+        </Pressable>
+      </View>
+
+      {/* Redeem a license key — collapsed until asked for, and auto-opened by a
+          `?redeem=` deep link (the recipient should not have to find it). */}
+      {Platform.OS !== 'ios' && (
+        <Card className="mb-4 rounded-2xl border-border shadow-none">
+          <CardContent className="p-4 gap-3">
+            <Pressable
+              onPress={() => setLicenseBoxOpen((open) => !open)}
+              className="flex-row items-center gap-2"
+              accessibilityRole="button"
+              testID="license-box-toggle"
+            >
+              <KeyRound size={16} className="text-primary" />
+              <Text className="flex-1 text-sm font-medium text-foreground">
+                Have a license key?
+              </Text>
+              <Text className="text-xs text-muted-foreground">
+                {licenseBoxOpen || licenseCode ? 'Hide' : 'Redeem'}
+              </Text>
+            </Pressable>
+            {licenseBoxOpen || licenseCode ? (
+              <>
+                <Text className="text-xs text-muted-foreground">
+                  Redeem it to upgrade this workspace.
+                </Text>
+                <View className="flex-row items-center gap-2">
+                  <TextInput
+                    ref={licenseInputRef}
+                    value={licenseCode}
+                    onChangeText={setLicenseCode}
+                    placeholder="SHGO-PRO-XXXX-XXXX-XXXX"
+                    placeholderTextColor="#9ca3af"
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                    editable={!isRedeeming}
+                    onSubmitEditing={handleRedeemLicense}
+                    returnKeyType="done"
+                    className="flex-1 border border-border rounded-lg px-3 py-2 text-sm font-mono text-foreground bg-background"
+                  />
+                  <Button
+                    size="sm"
+                    onPress={handleRedeemLicense}
+                    disabled={isRedeeming || !licenseCode.trim()}
+                  >
+                    {isRedeeming ? 'Redeeming...' : 'Redeem'}
+                  </Button>
+                </View>
+              </>
+            ) : null}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Self-serve cancel / resume. iOS points at App Store subscriptions
+          instead, which the legal block below already does. */}
+      {Platform.OS !== 'ios' && hasStripeSubscription ? (
+        <Pressable
+          onPress={() => setCancelDialogOpen(true)}
+          className="mb-6 self-center py-2"
+          accessibilityRole="button"
+          testID="billing-cancel-link"
+        >
+          <Text className="text-sm text-muted-foreground underline">
+            {billingSummary?.cancelAtPeriodEnd ? 'Resume subscription' : 'Cancel subscription'}
+          </Text>
+        </Pressable>
+      ) : null}
 
 
       {/*
@@ -1316,6 +1490,77 @@ export default observer(function BillingPage() {
 
       </View>
     </ScrollView>
+
+    {/* Plan change: price first, then confirm (SHO-451). */}
+    <PlanChangeDialog
+      visible={planChangeTarget != null}
+      onClose={() => setPlanChangeTarget(null)}
+      workspaceId={currentWorkspace.id}
+      currentPlanId={billingSummary?.planId ?? subscription?.planId}
+      target={planChangeTarget}
+      localMode={localMode}
+      onApplied={(result) => {
+        trackPlanChange({
+          fromPlanId: billingSummary?.planId ?? subscription?.planId,
+          planId: result.planId,
+          billingInterval: result.billingInterval,
+          seats: result.seats,
+          workspaceId: currentWorkspace.id,
+        })
+        refetchSubscription()
+        refetchUsageWallet()
+        refetchBillingSummary()
+        showIapToast(
+          'success',
+          'Plan changed',
+          `You're now on ${getPlanDisplayName(result.planId)} with ${result.seats} seat${result.seats === 1 ? '' : 's'}.`,
+        )
+      }}
+    />
+
+    {/* Self-serve cancel / resume. */}
+    <CancelSubscriptionDialog
+      visible={cancelDialogOpen}
+      onClose={() => setCancelDialogOpen(false)}
+      workspaceId={currentWorkspace.id}
+      planId={billingSummary?.planId ?? subscription?.planId}
+      currentPeriodEnd={billingSummary?.currentPeriodEnd ?? subscription?.currentPeriodEnd}
+      cancelAtPeriodEnd={Boolean(billingSummary?.cancelAtPeriodEnd ?? subscription?.cancelAtPeriodEnd)}
+      localMode={localMode}
+      onSwitchToBasic={() =>
+        setPlanChangeTarget({ planId: 'basic', billingInterval, seats: 1 })
+      }
+      onChanged={(action) => {
+        trackCancel({
+          planId: billingSummary?.planId ?? subscription?.planId,
+          action,
+          workspaceId: currentWorkspace.id,
+        })
+        refetchSubscription()
+        refetchUsageWallet()
+        refetchBillingSummary()
+        showIapToast(
+          'success',
+          action === 'cancel' ? 'Subscription cancelled' : 'Subscription resumed',
+          action === 'cancel'
+            ? 'You keep access until the end of the period you paid for.'
+            : 'Your plan will keep renewing.',
+        )
+      }}
+    />
+
+    {/* Spending limit, editable from the usage card. */}
+    <SetSpendLimitDialog
+      visible={spendLimitOpen}
+      onClose={() => setSpendLimitOpen(false)}
+      workspaceId={currentWorkspace.id}
+      currentLimitUsd={effectiveBalance?.overageHardLimitUsd ?? null}
+      accumulatedUsageUsd={effectiveBalance?.overageAccumulatedUsd}
+      onSaved={() => {
+        refetchUsageWallet()
+        refetchBillingSummary()
+      }}
+    />
 
     {/* Web confirm for "End trial and pay now" (SHO-422). Native uses
         `Alert.alert` with the same copy, so the action always has friction. */}

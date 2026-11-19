@@ -14,6 +14,7 @@ import { getCurrencyForCountry, formatPrice, SUPPORTED_CURRENCIES } from './conf
 import { getExchangeRates, convertPrice } from './services/exchange-rate.service'
 import { buildRegionalPlans } from './config/regional-plan-pricing'
 import * as billingService from './services/billing.service'
+import * as billingSummaryService from './services/billing-summary.service'
 import * as appleIap from './services/apple-iap.service'
 import * as instanceService from './services/instance.service'
 import * as storageService from './services/storage.service'
@@ -84,6 +85,7 @@ export {
   convertPrice,
   buildRegionalPlans,
   billingService,
+  billingSummaryService,
   appleIap,
   instanceService,
   storageService,

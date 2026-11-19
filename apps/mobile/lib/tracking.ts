@@ -148,3 +148,109 @@ export function trackPurchase(params: {
     }],
   })
 }
+
+/**
+ * The billing page was opened (SHO-451). Fires once per mount so we can see
+ * how often people land on billing and what plan they land on.
+ */
+export function trackBillingView(params: {
+  workspaceId?: string
+  planId?: string
+  hasSubscription: boolean
+}) {
+  fbq('trackCustom', 'BillingView', {
+    content_name: params.planId,
+    content_category: 'billing',
+    has_subscription: params.hasSubscription,
+  })
+
+  gtag('event', 'view_billing', {
+    plan_id: params.planId,
+    has_subscription: params.hasSubscription,
+    workspace_id: params.workspaceId,
+  })
+}
+
+/**
+ * A plan button was pressed. `action` says which path it took, so a click that
+ * opens Checkout is never confused with one that changes the existing
+ * subscription in place.
+ */
+export function trackPlanClick(params: {
+  planId: string
+  action: 'checkout' | 'trial' | 'change' | 'contact'
+  billingInterval?: string
+  seats?: number
+  workspaceId?: string
+}) {
+  const value = params.billingInterval
+    ? lookupPlanValue(params.planId, params.billingInterval, params.seats)
+    : undefined
+
+  fbq('trackCustom', 'PlanClick', {
+    content_ids: [params.planId],
+    content_name: params.planId,
+    content_category: 'subscription',
+    action: params.action,
+    currency: 'USD',
+    value,
+  })
+
+  gtag('event', 'select_plan', {
+    plan_id: params.planId,
+    action: params.action,
+    billing_interval: params.billingInterval,
+    seats: params.seats,
+    currency: 'USD',
+    value,
+    workspace_id: params.workspaceId,
+  })
+}
+
+/** A plan change was applied to the existing subscription. */
+export function trackPlanChange(params: {
+  fromPlanId?: string
+  planId: string
+  billingInterval?: string
+  seats?: number
+  workspaceId?: string
+}) {
+  const value = params.billingInterval
+    ? lookupPlanValue(params.planId, params.billingInterval, params.seats)
+    : undefined
+
+  fbq('trackCustom', 'PlanChange', {
+    content_name: params.planId,
+    content_category: 'subscription',
+    previous_plan: params.fromPlanId,
+    currency: 'USD',
+    value,
+  })
+
+  gtag('event', 'change_plan', {
+    plan_id: params.planId,
+    previous_plan_id: params.fromPlanId,
+    billing_interval: params.billingInterval,
+    seats: params.seats,
+    currency: 'USD',
+    value,
+    workspace_id: params.workspaceId,
+  })
+}
+
+/** A subscription was cancelled at period end, or a cancellation was undone. */
+export function trackCancel(params: {
+  planId?: string
+  action: 'cancel' | 'resume'
+  workspaceId?: string
+}) {
+  fbq('trackCustom', params.action === 'cancel' ? 'CancelSubscription' : 'ResumeSubscription', {
+    content_name: params.planId,
+    content_category: 'subscription',
+  })
+
+  gtag('event', params.action === 'cancel' ? 'cancel_subscription' : 'resume_subscription', {
+    plan_id: params.planId,
+    workspace_id: params.workspaceId,
+  })
+}

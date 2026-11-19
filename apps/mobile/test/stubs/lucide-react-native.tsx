@@ -87,6 +87,7 @@ export {
   Icon as Building,
   Icon as Building2,
   Icon as Calendar,
+  Icon as CalendarClock,
   Icon as CalendarDays,
   Icon as Camera,
   Icon as Car,
