@@ -83,7 +83,7 @@ function generateApiModelStore(model: PrismaModel): string[] {
     `  private pendingUpdates = new Set<string>()`,
     ``,
     `  constructor() {`,
-    `    makeAutoObservable(this, {`,
+    `    makeAutoObservable<this, 'pendingDeletes' | 'pendingUpdates'>(this, {`,
     `      pendingDeletes: false,`,
     `      pendingUpdates: false,`,
     `    })`,

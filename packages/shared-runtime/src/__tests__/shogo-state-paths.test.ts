@@ -9,13 +9,16 @@
  * "git does something surprising", so a mock would prove nothing.
  */
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 
 import {
   buildShogoExcludeBlock,
+  buildShogoGitHubExcludeBlock,
+  ensureShogoGitHubExcludes,
+  isShogoRuntimeSubtree,
   stripShogoLfsRules,
   directorySizeBytes,
   ensureShogoExcludes,
@@ -87,6 +90,25 @@ describe('isShogoRuntimeState', () => {
 })
 
 describe('ensureShogoExcludes', () => {
+  test('never stages a .env* secret, and still commits the templates (SHO-384)', () => {
+    const dir = tmpRepo()
+    ensureShogoExcludes(dir, quiet)
+    for (const name of ['.env', '.env.local', '.env.production', '.env.development', '.env.staging', '.env.test']) {
+      writeFileSync(join(dir, name), 'TOKEN=secret\n')
+    }
+    for (const name of ['.env.example', '.env.sample', '.env.template', '.env.production.example']) {
+      writeFileSync(join(dir, name), 'TOKEN=replace-me\n')
+    }
+
+    git(dir, 'add', '-A')
+    const staged = git(dir, 'diff', '--cached', '--name-only').split('\n').filter(Boolean).sort()
+
+    // The secrets rule and the ignore list are one list now: a name the store
+    // would carry must not be stageable, or `git add -A` puts the tokens in the
+    // durable repo the next cold boot rebuilds from.
+    expect(staged).toEqual(['.env.example', '.env.production.example', '.env.sample', '.env.template'])
+  })
+
   test('writes the managed block into .git/info/exclude and is idempotent', () => {
     const dir = tmpRepo()
     try {
@@ -246,5 +268,104 @@ describe('git dir resolution', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('one exclude list for every git path (SHO-371)', () => {
+  test('the GitHub block excludes all of .shogo, including memory history and the child ledger', () => {
+    const block = buildShogoGitHubExcludeBlock()
+    expect(block).toContain('.shogo/*')
+    expect(block).not.toContain('!.shogo/memory-history/')
+    expect(block).toContain('.tech-stack')
+    expect(block).toContain('prisma/dev.db')
+    // `.shogo/run/children.json` is covered by `.shogo/*` — the old hand-kept
+    // list had no `.shogo/run/` and pushed it into users' repositories.
+    expect(isShogoRuntimeState('.shogo/run/children.json')).toBe(true)
+  })
+
+  test('both managed blocks coexist in .git/info/exclude without clobbering each other', () => {
+    const dir = tmpRepo()
+    try {
+      writeFileSync(join(dir, '.git', 'info', 'exclude'), '# mine\n*.log\n')
+      expect(ensureShogoExcludes(dir, quiet)).toBe(true)
+      expect(ensureShogoGitHubExcludes(dir, quiet)).toBe(true)
+      // Idempotent: a second pass changes nothing.
+      expect(ensureShogoExcludes(dir, quiet)).toBe(false)
+      expect(ensureShogoGitHubExcludes(dir, quiet)).toBe(false)
+
+      const exclude = readFileSync(join(dir, '.git', 'info', 'exclude'), 'utf8')
+      expect(exclude).toContain('*.log')
+      expect(exclude).toContain('shogo checkpoint excludes')
+      expect(exclude).toContain('shogo github excludes')
+      expect(exclude.match(/shogo checkpoint excludes \(managed\) >>>/g)).toHaveLength(1)
+      expect(exclude.match(/shogo github excludes \(managed\) >>>/g)).toHaveLength(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('a GitHub-connected repo never stages .shogo/memory-history, even after a checkpoint turn', async () => {
+    const dir = tmpRepo()
+    try {
+      // GitHub connect writes its block first; a checkpoint turn then writes the
+      // checkpoint block into the same exclude file.
+      ensureShogoGitHubExcludes(dir, quiet)
+      ensureShogoExcludes(dir, quiet)
+
+      const exclude = readFileSync(join(dir, '.git', 'info', 'exclude'), 'utf8')
+      expect(exclude).toContain('shogo github excludes')
+      expect(exclude).not.toContain('!.shogo/memory-history/')
+
+      mkdirSync(join(dir, '.shogo', 'memory-history'), { recursive: true })
+      mkdirSync(join(dir, '.shogo', 'run'), { recursive: true })
+      writeFileSync(join(dir, '.shogo', 'memory-history', '2026-11-17.md'), 'memory\n')
+      writeFileSync(join(dir, '.shogo', 'run', 'children.json'), '{}\n')
+      writeFileSync(join(dir, 'AGENTS.md'), 'user source\n')
+
+      await untrackShogoStatePaths(dir, { logger: quiet })
+      execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'pipe' })
+
+      const staged = execFileSync('git', ['diff', '--cached', '--name-only'], {
+        cwd: dir,
+        encoding: 'utf8',
+      })
+        .split('\n')
+        .filter(Boolean)
+      expect(staged.filter((p) => p.startsWith('.shogo/'))).toEqual([])
+      expect(staged).toContain('AGENTS.md')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('a checkpoint repo still tracks .shogo/memory-history', async () => {
+    const dir = tmpRepo()
+    try {
+      ensureShogoExcludes(dir, quiet)
+      mkdirSync(join(dir, '.shogo', 'memory-history'), { recursive: true })
+      writeFileSync(join(dir, '.shogo', 'memory-history', 'x.md'), 'memory\n')
+
+      await untrackShogoStatePaths(dir, { logger: quiet })
+      execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'pipe' })
+
+      const staged = execFileSync('git', ['diff', '--cached', '--name-only'], {
+        cwd: dir,
+        encoding: 'utf8',
+      })
+      expect(staged).toContain('.shogo/memory-history/x.md')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('isShogoRuntimeSubtree keeps the user\'s own .shogo content', () => {
+    expect(isShogoRuntimeSubtree('.shogo/run/children.json')).toBe(true)
+    expect(isShogoRuntimeSubtree('.shogo/logs/build.log')).toBe(true)
+    expect(isShogoRuntimeSubtree('.shogo/sessions.db')).toBe(true)
+    expect(isShogoRuntimeSubtree('.tmp/x')).toBe(true)
+    expect(isShogoRuntimeSubtree('.shogo/skills/review/SKILL.md')).toBe(false)
+    expect(isShogoRuntimeSubtree('.shogo/agents/dev.md')).toBe(false)
+    expect(isShogoRuntimeSubtree('.shogo/memory-history/x.md')).toBe(false)
+    expect(isShogoRuntimeSubtree('prisma/dev.db')).toBe(false)
   })
 })

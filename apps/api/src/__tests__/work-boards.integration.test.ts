@@ -728,3 +728,93 @@ describe('waking the agent that owns a card', () => {
     expect(await db.workItemEvent.count({ where: { workItemId: card.id, type: 'agent_woken' } })).toBe(before + 1)
   }, 30_000)
 })
+
+/**
+ * SHO-428 — the Solo Founder course board refuses to close a lesson until the
+ * workspace shows the lesson's output, for people and agents, single and bulk.
+ */
+describe('the course lesson gate', () => {
+  let board: any
+  let lesson: any
+
+  async function courseBoard() {
+    const created = await createBoard({
+      conversationId: otherChannelId,
+      name: 'Course',
+      itemType: 'custom',
+      columns: [
+        { name: 'This week', category: 'active' },
+        { name: 'Checking', category: 'waiting' },
+        { name: 'Done', category: 'done' },
+        { name: 'Skipped', category: 'dismissed' },
+      ],
+    })
+    // The route does not take a template id; the install writes it directly and
+    // the gate keys off it, so the test does the same.
+    return db.board.update({ where: { id: created.id }, data: { templateId: 'solo-founder-course' } })
+  }
+
+  beforeAll(async () => {
+    board = await courseBoard()
+    const res = await call(seed.member, 'POST', `/boards/${board.id}/items`, {
+      title: 'Ship your landing page',
+      column: 'This week',
+      fields: { lessonId: 'm1', module: 1, check: 'project_published' },
+    })
+    expect(res.status).toBe(201)
+    lesson = res.json.item
+  })
+
+  test('a person cannot move Lesson 1 to Done before anything is published', async () => {
+    const res = await call(seed.member, 'POST', `/work-items/${lesson.id}/move`, { column: 'Done' })
+    expect(res.status).toBe(409)
+    expect(res.json.error.code).toBe('lesson_check_failed')
+    expect(res.json.error.message).toContain('Publish your site')
+  })
+
+  test('an agent is refused by the same check', async () => {
+    const res = await agent('POST', `/agent-work-items/${lesson.id}/move`, { column: 'Done' }, seed.projectId)
+    expect(res.status).toBe(409)
+    expect(res.json.error.code).toBe('lesson_check_failed')
+  })
+
+  test('a bulk move records the refusal per card instead of closing it', async () => {
+    const res = await call(seed.member, 'POST', `/workspaces/${seed.workspaceId}/work-items/bulk`, {
+      ids: [lesson.id],
+      patch: { column: 'Done' },
+    })
+    expect(res.status).toBe(200)
+    expect(res.json.updated).toBe(0)
+    expect(res.json.results[0].ok).toBe(false)
+    expect(res.json.results[0].error).toContain('Publish your site')
+  })
+
+  test('Skipped is always allowed', async () => {
+    const skipped = await call(seed.member, 'POST', `/work-items/${lesson.id}/move`, { column: 'Skipped' })
+    expect(skipped.status).toBe(200)
+    expect((await call(seed.member, 'POST', `/work-items/${lesson.id}/move`, { column: 'This week' })).status).toBe(200)
+  })
+
+  test('once a project is published the move succeeds and progress records it', async () => {
+    await db.courseEnrollment.create({
+      data: {
+        courseId: 'solo-founder-v1',
+        userId: seed.member,
+        workspaceId: seed.workspaceId,
+        source: 'admin',
+        status: 'active',
+        purchasedAt: new Date(),
+        installStatus: 'installed',
+        courseBoardId: board.id,
+      },
+    })
+    await db.project.create({
+      data: { name: 'Landing', workspaceId: seed.workspaceId, publishedAt: new Date() },
+    })
+
+    const res = await call(seed.member, 'POST', `/work-items/${lesson.id}/move`, { column: 'Done' })
+    expect(res.status).toBe(200)
+    const enrollment = await db.courseEnrollment.findFirst({ where: { workspaceId: seed.workspaceId } })
+    expect((enrollment.progress as any).completedLessons).toEqual(['m1'])
+  })
+})

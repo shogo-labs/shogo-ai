@@ -17,13 +17,22 @@ describe("previewLanguageFor", () => {
     ["song.mp3", "audio"],
     ["clip.mp4", "video"],
     ["Inter.woff2", "font"],
+    // A deck renders as real slides; the formats without a renderer do not
+    // claim one (SHO-426).
+    ["deck.pptx", "slides"],
+    ["deck.PPTM", "slides"],
+    ["show.ppsx", "slides"],
+    ["theme.potx", "slides"],
   ])("%s is previewed as %s", (path, kind) => {
     expect(previewLanguageFor(path)).toBe(kind as "image")
   })
 
-  test.each(["index.ts", "README.md", "config.json", "archive.zip"])("%s has no preview", (path) => {
-    expect(previewLanguageFor(path)).toBeNull()
-  })
+  test.each(["index.ts", "README.md", "config.json", "archive.zip", "talk.key", "old.ppt", "open.odp"])(
+    "%s has no preview",
+    (path) => {
+      expect(previewLanguageFor(path)).toBeNull()
+    },
+  )
 })
 
 describe("isPreviewLanguage", () => {

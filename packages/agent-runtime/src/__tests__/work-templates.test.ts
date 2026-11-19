@@ -110,11 +110,13 @@ describe('generated template files', () => {
     }
   })
 
-  test('the catalog lists 14 boards, 8 departments and 6 companies', () => {
-    expect(BOARD_TEMPLATES).toHaveLength(14)
-    expect(DEPARTMENTS).toHaveLength(8)
-    expect(COMPANIES).toHaveLength(6)
-    expect(listWorkTemplates()).toHaveLength(28)
+  test('the catalog lists 16 boards, 10 departments and 7 companies', () => {
+    expect(BOARD_TEMPLATES).toHaveLength(16)
+    expect(DEPARTMENTS).toHaveLength(10)
+    expect(COMPANIES).toHaveLength(7)
+    // 7 companies + 9 departments (the course pack is hidden) + 15 boards (the
+    // Course board belongs to that hidden department).
+    expect(listWorkTemplates()).toHaveLength(31)
   })
 })
 

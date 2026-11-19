@@ -35,6 +35,8 @@ export const RETRY_BACKOFF_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 60 * 60_00
 export const MAX_DELIVERY_ATTEMPTS = RETRY_BACKOFF_MS.length + 1
 export const MAX_CONSECUTIVE_SUBSCRIPTION_FAILURES = 5
 const EVENT_RETENTION_MS = 30 * 24 * 60 * 60_000
+/** Access audit rows are kept for 90 days (SHO-417, plan §1). */
+const ACCESS_AUDIT_RETENTION_MS = 90 * 24 * 60 * 60_000
 const PRUNE_INTERVAL_MS = 6 * 60 * 60_000
 
 const inFlight = new Set<Promise<void>>()
@@ -247,6 +249,12 @@ async function pruneOldEvents(now: number): Promise<void> {
   if (now - lastPruneAt < PRUNE_INTERVAL_MS) return
   lastPruneAt = now
   await db.workspaceEvent.deleteMany({ where: { occurredAt: { lt: new Date(now - EVENT_RETENTION_MS) } } }).catch(() => {})
+  // The access audit trail is a rolling 90-day record (SHO-417, plan §1). It is
+  // the only place denials and downgrades are kept, so it is pruned on the same
+  // tick rather than growing without bound.
+  await db.accessAuditEvent
+    .deleteMany({ where: { createdAt: { lt: new Date(now - ACCESS_AUDIT_RETENTION_MS) } } })
+    .catch(() => {})
 }
 
 /** Claims and starts due deliveries; returns how many were started. */

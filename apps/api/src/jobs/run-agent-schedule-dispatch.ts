@@ -14,6 +14,8 @@ import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
 import { schedulePlacementWhere } from '../lib/job-placement'
 import { nextAgentScheduleRun } from '../services/agent-schedule.service'
+import { canUse, recordAccessEvent } from '../services/access-policy.service'
+import { getRbacMode } from '../lib/authz/mode'
 import {
   AgentTurnError,
   ensureWorkspaceChatSession,
@@ -103,6 +105,42 @@ function failureUpdate(
   return { ...base, lastError: runError.message.slice(0, 2_000) }
 }
 
+/**
+ * Why this schedule must not run, or `null` when its owner may still run it.
+ *
+ * `canUse` returns false both for a member who lost the ability and for someone
+ * who is no longer a member at all, which is exactly the pair AC6 names. In
+ * `shadow` mode the run proceeds and only an audit row is written, so an admin
+ * can see what would have been skipped before enforcing.
+ */
+export async function scheduleOwnerDenial(schedule: {
+  id: string
+  workspaceId: string
+  userId: string
+}): Promise<string | null> {
+  const allowed = await canUse(schedule.workspaceId, schedule.userId, 'schedule:manage')
+  if (allowed) return null
+
+  const mode = await getRbacMode()
+  await recordAccessEvent({
+    workspaceId: schedule.workspaceId,
+    kind: mode === 'on' ? 'denied' : 'shadow_denied',
+    onBehalfOfUserId: schedule.userId,
+    permission: 'schedule:manage',
+    subject: { scheduleId: schedule.id },
+    detail: { mode, reason: 'schedule_owner_lost_ability' },
+  })
+  if (mode !== 'on') {
+    console.warn('[rbac] shadow-deny schedule run', {
+      workspaceId: schedule.workspaceId,
+      userId: schedule.userId,
+      scheduleId: schedule.id,
+    })
+    return null
+  }
+  return 'Skipped because the person this schedule runs as can no longer manage schedules. Ask a workspace admin to restore their access, or recreate the schedule as someone who can.'
+}
+
 async function runAgentSchedule(scheduleId: string, runtimeManager?: RuntimeManager): Promise<void> {
   const schedule = await prisma.agentSchedule.findUnique({
     where: { id: scheduleId },
@@ -116,6 +154,25 @@ async function runAgentSchedule(scheduleId: string, runtimeManager?: RuntimeMana
       data: {
         lastRunStatus: 'skipped',
         lastRunSummary: `Skipped because goal "${schedule.goal.title}" is ${schedule.goal.status}.`,
+        lastError: null,
+        runningAt: null,
+      },
+    })
+    return
+  }
+
+  // A schedule runs as the person who created it, so it may only do what that
+  // person may still do (SHO-417, AC6). When they lost `schedule:manage` or
+  // left the workspace the run is skipped with a reason they can read — never
+  // reassigned to someone else, which would be running unattended work as a
+  // person who never asked for it.
+  const ownerDenial = await scheduleOwnerDenial(schedule)
+  if (ownerDenial) {
+    await prisma.agentSchedule.updateMany({
+      where: { id: schedule.id, runningAt: schedule.runningAt },
+      data: {
+        lastRunStatus: 'skipped',
+        lastRunSummary: ownerDenial,
         lastError: null,
         runningAt: null,
       },

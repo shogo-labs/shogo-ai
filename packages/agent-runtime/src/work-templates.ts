@@ -42,6 +42,13 @@ export interface BoardSpecInput {
   postToChannel?: 'all' | 'done_only' | 'none'
   requiresHumanReview?: boolean
   defaultAgent?: string
+  /**
+   * Template the board came from, recorded on the board row. Server behaviour
+   * keys off it where a board is more than a board — the Solo Founder course
+   * board (`solo-founder-course`) refuses to close a lesson until its check
+   * passes.
+   */
+  templateId?: string
 }
 
 export interface BoardTemplate {
@@ -84,6 +91,38 @@ export interface DepartmentBundle {
   triggers?: TriggerSpecInput[]
   /** Advisory: integrations that feed this department; connected by hand. */
   integrations?: string[]
+  /**
+   * Not in the public catalogue: `work_template_list` and `work_template_add`
+   * never offer it. Installed by code that knows what it is for — today the
+   * Solo Founder course's #course department.
+   */
+  hidden?: boolean
+}
+
+/**
+ * Per-company tweaks to a department it borrows, so a company can reuse a
+ * department without a near-copy of it (the Solo Founder OS wants the
+ * `operations` department in #ops, and every agent on one model).
+ */
+export interface DepartmentOverride {
+  /** Channel name instead of the department's own. */
+  channel?: string
+  /** Channel topic, when a company's channel means something else. */
+  channelTopic?: string
+  /** Agent model id instead of `auto`. */
+  model?: string
+  /** Project key, display name and description instead of the department's agent. */
+  agentKey?: string
+  agentName?: string
+  description?: string
+  /** Replaces the agent's own copy: a company writes its duties in its own words. */
+  duties?: string[]
+  limits?: string[]
+  heartbeat?: string[]
+  /** Board template ids this company's channel installs, instead of all of them. */
+  boards?: string[]
+  /** Seconds between heartbeat sweeps instead of the department's default. */
+  heartbeatInterval?: number
 }
 
 export interface CompanyBundle {
@@ -91,6 +130,10 @@ export interface CompanyBundle {
   name: string
   summary: string
   departments: string[]
+  /** Keyed by department id. */
+  overrides?: Record<string, DepartmentOverride>
+  /** Not in the public catalogue. See `DepartmentBundle.hidden`. */
+  hidden?: boolean
 }
 
 export type WorkTemplateKind = 'board' | 'department' | 'company'
@@ -376,6 +419,59 @@ export const BOARD_TEMPLATES: BoardTemplate[] = [
         { key: 'budget', label: 'Budget', type: 'money' },
         { key: 'launchDate', label: 'Launch date', type: 'date' },
       ],
+    },
+  },
+  {
+    id: 'build-backlog',
+    name: 'Build Backlog',
+    summary: 'What to build next, from idea to shipped, one person or a small team.',
+    channel: 'build',
+    board: {
+      name: 'Backlog',
+      itemType: 'task',
+      keyPrefix: 'BLD',
+      description: 'Everything we intend to build. A card leaves Review only when the change is actually live.',
+      columns: [
+        col('Ideas', 'backlog'),
+        col('Building', 'active', { wipLimit: 2 }),
+        col('Review', 'review', { slaHours: 48 }),
+        col('Shipped', 'done'),
+        col('Dropped', 'dismissed'),
+      ],
+      fields: [
+        { key: 'area', label: 'Area', type: 'text' },
+        { key: 'size', label: 'Size', type: 'select', options: ['S', 'M', 'L'] },
+        { key: 'link', label: 'Link', type: 'url' },
+      ],
+      requiresHumanReview: true,
+    },
+  },
+  {
+    id: 'solo-founder-course',
+    name: 'Course',
+    summary: 'One card per lesson, closed only when the workspace shows the lesson produced something.',
+    channel: 'course',
+    board: {
+      name: 'Course',
+      itemType: 'custom',
+      keyPrefix: 'SF',
+      description:
+        'Your 30 days. Move a lesson to Checking when you think it is done: the server checks the card against your workspace before it can reach Done.',
+      columns: [
+        col('Up next', 'backlog'),
+        col('This week', 'active'),
+        col('Checking', 'waiting', { agent: 'coach' }),
+        col('Done', 'done'),
+        col('Skipped', 'dismissed'),
+      ],
+      fields: [
+        { key: 'lessonId', label: 'Lesson', type: 'text' },
+        { key: 'module', label: 'Module', type: 'number' },
+        { key: 'videoUrl', label: 'Video', type: 'url' },
+        { key: 'output', label: 'Output', type: 'text' },
+        { key: 'check', label: 'Check', type: 'text' },
+      ],
+      templateId: 'solo-founder-course',
     },
   },
   {
@@ -667,6 +763,64 @@ export const DEPARTMENTS: DepartmentBundle[] = [
     },
   },
   {
+    id: 'build',
+    name: 'Build',
+    summary: 'A #build channel with a Backlog board and a builder agent that takes an idea to shipped.',
+    channel: { name: 'build', topic: 'What we are building. Every idea is a card on Backlog.' },
+    boards: ['build-backlog'],
+    agent: {
+      key: 'build-agent',
+      name: 'Builder',
+      description: 'Turns an idea on the Backlog into something shipped, and keeps the card honest about it.',
+      duties: [
+        'For a card in Ideas, write the smallest version that is worth shipping and its acceptance criteria in the thread.',
+        'When a card moves to Building, implement it, test it, and post what changed and where it runs.',
+        'Move a card to Review only when it is live and you have said how to see it; never mark it Shipped yourself.',
+        'When Review sends a card back, fix what was raised and say what you changed.',
+      ],
+      limits: [
+        'Do not move a card to Shipped; a person decides that.',
+        'Do not change the acceptance criteria after a card leaves Ideas without saying so in the thread.',
+      ],
+      heartbeat: [
+        'board_health for #build. Move any card in Ideas past 3 days to a blocker or ask the owner in the thread.',
+        'For cards in Review over 2 days, post one nudge with what a reviewer needs to check.',
+      ],
+      capabilities: WORKER,
+      heartbeatInterval: SWEEP_INTERVAL,
+    },
+  },
+  {
+    id: 'course',
+    name: 'Course',
+    summary: 'A #course channel with the Course board and a Coach that runs one lesson at a time and checks the output.',
+    channel: { name: 'course', topic: 'Your Solo Founder course. One lesson at a time.' },
+    boards: ['solo-founder-course'],
+    hidden: true,
+    agent: {
+      key: 'coach',
+      name: 'Coach',
+      description: 'Runs the Solo Founder course: posts each lesson, checks the learner\'s work, and helps when they\'re stuck.',
+      duties: [
+        'Post each lesson when it moves to This week: what to watch, the exact prompt to paste and where, and what "done" looks like.',
+        'When the learner says they are done or moves a lesson to Checking, look at their setup with your tools (`project_list`, `schedule_list`, `work_item_list`, `team_chat_doc_read`) and then try to move it to Done. The server runs the check. If it refuses, explain what is missing in plain words, give the next step, and move it back to This week.',
+        "For lessons the server does not check (M2, M3, M5, M10), ask for the evidence listed on the card (a link, a screenshot, a pasted reply) and judge honestly.",
+        'When a lesson is Done, celebrate in one line, pull the next lesson into This week, and post it.',
+        'In Lesson 0, explain models: cheap models for routine work, stronger ones for hard builds, and where the usage cap is set.',
+      ],
+      limits: [
+        'Never mark a lesson Done any other way than by the server check (or, for unchecked lessons, real evidence).',
+        'Never do the lesson for the learner. Help them do it.',
+        'After 3 nudges with no reply, stop nudging until the learner writes.',
+      ],
+      heartbeat: [
+        'Nothing on a timer: the daily 09:00 nudge is its own schedule, not this sweep. If the learner has not written and no lesson sits in Checking, say nothing.',
+      ],
+      capabilities: WORKER,
+      heartbeatInterval: 24 * 3600,
+    },
+  },
+  {
     id: 'legal',
     name: 'Legal',
     summary: 'A #legal channel with a Contracts board and an agent that summarises contracts and flags risky terms.',
@@ -693,6 +847,32 @@ export const DEPARTMENTS: DepartmentBundle[] = [
 // ---------------------------------------------------------------------------
 // Company bundles
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Solo Founder OS
+//
+// The company that ships with the $99 course (SHO-428). Content comes from
+// Russell's course work (2026-11-18): five agents, each with its own duties,
+// every one on the economy model and a once-a-day heartbeat — six agents
+// sweeping every four hours would spend a beginner's AI allowance on empty
+// boards. The shared duties and limits are written into all five.
+// ---------------------------------------------------------------------------
+
+/** Prepended to every Solo Founder OS agent's duties. */
+const SOLO_FOUNDER_SHARED_DUTIES = [
+  'Before starting new work, read the company brief in the #ops channel doc (`team_chat_doc_read`). If it is missing, ask the founder to do Lesson 0 first.',
+  'Write for a busy founder: short, plain, the decision you need first.',
+  "End every task with a checklist of what you were asked to do, each marked done / not done / couldn't check, with one line of evidence. Never mark something done you didn't verify.",
+]
+
+/** Prepended to every Solo Founder OS agent's limits. */
+const SOLO_FOUNDER_SHARED_LIMITS = [
+  "Never publish, send, post, spend or delete anything outside Shogo without the founder's approval in the thread.",
+  "Never invent facts, numbers, testimonials or customer names. If it isn't in the brief or a source, mark it [GUESS].",
+]
+
+/** One day: the Solo Founder OS sweep interval for every agent. */
+const SOLO_FOUNDER_HEARTBEAT_SECONDS = 86_400
 
 export const COMPANIES: CompanyBundle[] = [
   {
@@ -731,6 +911,132 @@ export const COMPANIES: CompanyBundle[] = [
     summary: 'Support, Sales, Operations and Finance for a local service business.',
     departments: ['support', 'sales', 'operations', 'finance'],
   },
+  {
+    id: 'solo-founder-os',
+    name: 'Solo Founder OS',
+    summary: 'Build, Marketing, Sales, Support and Ops for one person running a company, with every agent on the economy model.',
+    departments: ['build', 'marketing', 'sales', 'support', 'operations'],
+    overrides: {
+      build: {
+        model: 'hoshi-2-0',
+        channelTopic: 'Product: ideas, builds and what shipped.',
+        agentKey: 'builder',
+        agentName: 'Builder',
+        description: 'Plans, builds and tests product changes, then hands them to the founder for review.',
+        duties: [
+          ...SOLO_FOUNDER_SHARED_DUTIES,
+          "When a card lands in Ideas, write a short plan in its thread: what changes, and a checklist of how we'll know it works. Ask at most 3 questions if something important is unclear.",
+          "Build it, then test every checklist item yourself the way a customer would, and post what passed and what didn't.",
+          'Move the card to Review and tag the founder with the preview link. If the founder sends it back, fix exactly what they said and say what changed.',
+        ],
+        limits: [
+          ...SOLO_FOUNDER_SHARED_LIMITS,
+          'Never move a card to Shipped; that is the founder\'s call.',
+          "Never publish, change payments to live mode or delete data without the founder's approval in the thread.",
+        ],
+        heartbeat: [
+          'Cards in Building with no update for 2 days: post where it stands or what you need.',
+          'Post nothing if nothing needs attention.',
+        ],
+        heartbeatInterval: SOLO_FOUNDER_HEARTBEAT_SECONDS,
+      },
+      marketing: {
+        model: 'hoshi-2-0',
+        channelTopic: 'Content, guides and ads.',
+        agentKey: 'marketer',
+        agentName: 'Marketer',
+        description: 'Turns the brief into posts, guides and ad ideas, and keeps the calendar moving.',
+        duties: [
+          ...SOLO_FOUNDER_SHARED_DUTIES,
+          'Propose post ideas as cards in Ideas, each one a customer problem in their words.',
+          'Draft posts when a card moves to Drafting (hook under 10 words, the post, the channel) and move them to Review.',
+          "For ads: write hooks as Campaigns cards in Brief; follow the ad rules in this channel's doc. When a campaign moves to Measuring, report spend, sign-ups and cost per sign-up.",
+        ],
+        limits: [
+          ...SOLO_FOUNDER_SHARED_LIMITS,
+          'Never publish or schedule a post, and never start, change or raise ad spend; propose and wait for approval.',
+          "No fake urgency, no claims we can't prove.",
+        ],
+        heartbeat: [
+          'Cards in Review over 2 days: one-line reminder to the founder.',
+          'Scheduled cards whose date has passed: flag them.',
+        ],
+        heartbeatInterval: SOLO_FOUNDER_HEARTBEAT_SECONDS,
+      },
+      sales: {
+        model: 'hoshi-2-0',
+        // A brand-new one-person company has no renewals, so no Renewals board.
+        boards: ['sales-pipeline'],
+        channelTopic: 'Leads, follow-ups and demos.',
+        agentKey: 'seller',
+        agentName: 'Seller',
+        description: "Finds and researches leads, keeps every deal's next step current, and drafts follow-ups.",
+        duties: [
+          ...SOLO_FOUNDER_SHARED_DUTIES,
+          'Research leads from public sources only; add each to Lead with why it fits and the evidence.',
+          'Every open deal has a next step and a date. Each morning list the overdue ones and draft the follow-up in each thread.',
+          "When asked, build a demo for a lead using only their public details, and send the preview (don't publish it).",
+        ],
+        limits: [
+          ...SOLO_FOUNDER_SHARED_LIMITS,
+          'Never contact a lead or send an email yourself.',
+          'Never scrape private data or guess personal contact details.',
+        ],
+        heartbeat: [
+          'Deals past their next-step date: draft the follow-up and tag the founder once.',
+        ],
+        heartbeatInterval: SOLO_FOUNDER_HEARTBEAT_SECONDS,
+      },
+      support: {
+        model: 'hoshi-2-0',
+        channelTopic: 'Customer questions. Every email is a ticket.',
+        agentKey: 'support',
+        agentName: 'Support',
+        description: "Turns customer emails into tickets and drafts every reply for the founder's approval.",
+        duties: [
+          ...SOLO_FOUNDER_SHARED_DUTIES,
+          'Triage each ticket in New: the customer, their question in one line, and a drafted reply in the thread using the brief and docs.',
+          'When the founder approves a draft, send it (once email is connected) and move the ticket to Waiting on customer or Solved.',
+          'When a ticket is a product bug, add a card to Ideas on the Build board and link it in the thread.',
+        ],
+        limits: [
+          ...SOLO_FOUNDER_SHARED_LIMITS,
+          "Never send a reply the founder hasn't approved.",
+          'Never promise refunds, credits or dates.',
+        ],
+        heartbeat: [
+          'Tickets in New for more than 1 day: remind the founder.',
+          'Waiting on customer for over 3 days: draft a friendly follow-up.',
+        ],
+        heartbeatInterval: SOLO_FOUNDER_HEARTBEAT_SECONDS,
+      },
+      // The Solo Founder reads #ops, not #operations, and has no vendors yet.
+      operations: {
+        model: 'hoshi-2-0',
+        channel: 'ops',
+        channelTopic: 'The company brief, goals and the morning digest.',
+        boards: ['okrs'],
+        agentKey: 'ops',
+        agentName: 'Chief of Staff',
+        description: 'Keeps the company brief current, tracks the 30-day goal, and writes the digests the founder asks for.',
+        duties: [
+          ...SOLO_FOUNDER_SHARED_DUTIES,
+          "Keep the company brief in this channel's doc up to date when the founder asks; never change it on your own.",
+          "Turn the brief's 30-day goal into the first OKR card, and check its confidence with the founder each Monday.",
+          'Run the routines the founder sets up (morning digest, weekly numbers, weekly review) and keep each one short.',
+        ],
+        limits: [
+          ...SOLO_FOUNDER_SHARED_LIMITS,
+          'Never sign up for or pay for tools.',
+          "Never change a goal's target.",
+        ],
+        heartbeat: [
+          "On Mondays, start the goal check-in if it hasn't run this week.",
+        ],
+        heartbeatInterval: SOLO_FOUNDER_HEARTBEAT_SECONDS,
+      },
+    },
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -749,21 +1055,30 @@ function department(id: string): DepartmentBundle {
   return d
 }
 
-function agentsMd(d: DepartmentBundle): string {
-  const boards = d.boards.map((id) => {
-    const t = boardTemplate(id)
-    return `- **${t.board.name}** (${t.board.keyPrefix}-): ${t.board.description ?? t.summary}`
-  })
+/** The agent as it will be written, after any company override. */
+interface ResolvedAgent {
+  key: string
+  name: string
+  description: string
+  duties: string[]
+  limits: string[]
+  heartbeat: string[]
+  heartbeatInterval: number
+  capabilities: Record<string, boolean>
+}
+
+function agentsMd(a: ResolvedAgent, channelName: string, boards: BoardTemplate[]): string {
+  const boardLines = boards.map((t) => `- **${t.board.name}** (${t.board.keyPrefix}-): ${t.board.description ?? t.summary}`)
   return [
-    `# ${d.agent.name}`,
+    `# ${a.name}`,
     '',
-    `You work in #${d.channel.name}. ${d.agent.description}`,
+    `You work in #${channelName}. ${a.description}`,
     '',
     '## Boards',
-    ...boards,
+    ...boardLines,
     '',
     '## What you do',
-    ...d.agent.duties.map((x) => `- ${x}`),
+    ...a.duties.map((x) => `- ${x}`),
     '',
     '## How you work a card',
     '- Start with `work_item_get` and read the thread before acting.',
@@ -771,43 +1086,59 @@ function agentsMd(d: DepartmentBundle): string {
     '- Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.',
     '',
     '## Never',
-    ...d.agent.limits.map((x) => `- ${x}`),
+    ...a.limits.map((x) => `- ${x}`),
     '',
   ].join('\n')
 }
 
-function heartbeatMd(d: DepartmentBundle): string {
-  return ['# Heartbeat', '', ...d.agent.heartbeat.map((x, i) => `${i + 1}. ${x}`), ''].join('\n')
+function heartbeatMd(a: ResolvedAgent): string {
+  return ['# Heartbeat', '', ...a.heartbeat.map((x, i) => `${i + 1}. ${x}`), ''].join('\n')
 }
 
-function departmentParts(d: DepartmentBundle) {
+function departmentParts(d: DepartmentBundle, override: DepartmentOverride = {}) {
+  const boards = (override.boards ?? d.boards).map(boardTemplate)
+  const agent: ResolvedAgent = {
+    key: override.agentKey ?? d.agent.key,
+    name: override.agentName ?? d.agent.name,
+    description: override.description ?? d.agent.description,
+    duties: override.duties ?? d.agent.duties,
+    limits: override.limits ?? d.agent.limits,
+    heartbeat: override.heartbeat ?? d.agent.heartbeat,
+    heartbeatInterval: override.heartbeatInterval ?? d.agent.heartbeatInterval,
+    capabilities: d.agent.capabilities,
+  }
+  const channelName = override.channel ?? d.channel.name
   const project = {
-    key: d.agent.key,
-    name: d.agent.name,
-    description: d.agent.description,
+    key: agent.key,
+    name: agent.name,
+    description: agent.description,
     agent: {
-      model: 'auto',
-      heartbeat: { enabled: true, interval: d.agent.heartbeatInterval },
-      capabilities: d.agent.capabilities,
+      model: override.model ?? 'auto',
+      heartbeat: { enabled: true, interval: agent.heartbeatInterval },
+      capabilities: agent.capabilities,
     },
-    files: { 'AGENTS.md': agentsMd(d), 'HEARTBEAT.md': heartbeatMd(d) },
+    files: { 'AGENTS.md': agentsMd(agent, channelName, boards), 'HEARTBEAT.md': heartbeatMd(agent) },
     ...(d.integrations?.length ? { integrations: d.integrations } : {}),
   }
   const channel = {
-    name: d.channel.name,
-    topic: d.channel.topic,
+    name: channelName,
+    topic: override.channelTopic ?? d.channel.topic,
     ...(d.channel.private ? { private: true } : {}),
-    members: [{ project: d.agent.key, agentTrigger: 'mention' }],
-    boards: d.boards.map((id) => ({ ...boardTemplate(id).board, defaultAgent: d.agent.key })),
+    members: [{ project: agent.key, agentTrigger: 'mention' }],
+    boards: boards.map((t) => ({ ...t.board, defaultAgent: agent.key })),
   }
   return { project, channel, triggers: d.triggers ?? [] }
 }
 
 /** The manifest for one department or company bundle, as a plain object. */
-export function bundleManifest(kind: 'department' | 'company', id: string): Record<string, unknown> {
+export function bundleManifest(
+  kind: 'department' | 'company',
+  id: string,
+  overrides?: Record<string, DepartmentOverride>,
+): Record<string, unknown> {
   if (kind === 'department') {
     const d = department(id)
-    const parts = departmentParts(d)
+    const parts = departmentParts(d, overrides?.[id])
     return {
       version: 1,
       name: `${d.name} department`,
@@ -819,7 +1150,7 @@ export function bundleManifest(kind: 'department' | 'company', id: string): Reco
   }
   const c = COMPANIES.find((x) => x.id === id)
   if (!c) throw new Error(`Unknown company "${id}"`)
-  const parts = c.departments.map((d) => departmentParts(department(d)))
+  const parts = c.departments.map((d) => departmentParts(department(d), c.overrides?.[d]))
   const triggers = parts.flatMap((p) => p.triggers)
   return {
     version: 1,
@@ -828,6 +1159,43 @@ export function bundleManifest(kind: 'department' | 'company', id: string): Reco
     projects: parts.map((p) => p.project),
     teamChannels: parts.map((p) => p.channel),
     ...(triggers.length ? { triggers } : {}),
+  }
+}
+
+/**
+ * The install for a paid Solo Founder course (SHO-428): the Solo Founder OS
+ * company plus the hidden #course department and the Coach's one daily nudge.
+ *
+ * Not a catalogue template: only `soloFounderService.enroll()` applies it. The
+ * Coach schedule is declared here so the M9 schedule check can exclude the
+ * schedules the pack created (they are in `bindings.schedules`).
+ */
+export function soloFounderCourseManifest(): Record<string, unknown> {
+  const company = bundleManifest('company', 'solo-founder-os') as any
+  // The Coach runs on the economy model too: a beginner should not spend the
+  // week's window on a course nudge.
+  const course = bundleManifest('department', 'course', { course: { model: 'hoshi-2-0' } }) as any
+  return {
+    version: 1,
+    name: 'Solo Founder OS + course',
+    description: 'The Solo Founder OS company and the Course board its Coach runs.',
+    projects: [...company.projects, ...course.projects],
+    teamChannels: [...company.teamChannels, ...course.teamChannels],
+    ...(company.triggers?.length || course.triggers?.length
+      ? { triggers: [...(company.triggers ?? []), ...(course.triggers ?? [])] }
+      : {}),
+    schedules: [
+      {
+        key: 'coach-lesson-nudge',
+        name: 'Coach: current lesson nudge',
+        project: 'coach',
+        channel: 'course',
+        hour: '09:00',
+        prompt:
+          'Post one short nudge on the current Solo Founder lesson in #course: what is left, and the prompt to do it. Check the workspace first (project_list, work_item_list, schedule_list); never claim a lesson is done unless its check passes and the card moved.',
+        enabled: true,
+      },
+    ],
   }
 }
 
@@ -872,19 +1240,25 @@ export function listWorkTemplates(kind?: WorkTemplateKind): WorkTemplateSummary[
   const out: WorkTemplateSummary[] = []
   if (!kind || kind === 'company') {
     for (const c of COMPANIES) {
+      if (c.hidden) continue
       out.push({
         id: c.id, kind: 'company', name: c.name, summary: c.summary,
-        adds: c.departments.flatMap((d) => department(d).boards.map((b) => `#${department(d).channel.name} ${boardTemplate(b).board.name}`)),
+        adds: c.departments.flatMap((d) => {
+          const channel = c.overrides?.[d]?.channel ?? department(d).channel.name
+          return department(d).boards.map((b) => `#${channel} ${boardTemplate(b).board.name}`)
+        }),
       })
     }
   }
   if (!kind || kind === 'department') {
     for (const d of DEPARTMENTS) {
+      if (d.hidden) continue
       out.push({ id: d.id, kind: 'department', name: d.name, summary: d.summary, adds: d.boards.map((b) => `#${d.channel.name} ${boardTemplate(b).board.name}`) })
     }
   }
   if (!kind || kind === 'board') {
     for (const b of BOARD_TEMPLATES) {
+      if (DEPARTMENTS.some((d) => d.hidden && d.boards.includes(b.id))) continue
       out.push({ id: b.id, kind: 'board', name: b.name, summary: b.summary, adds: [`#${b.channel} ${b.board.name}`] })
     }
   }
@@ -908,10 +1282,16 @@ export function boardTemplateArgs(id: string): Record<string, unknown> & { chann
   }
 }
 
-export function findWorkTemplate(id: string): { kind: WorkTemplateKind; id: string } | null {
-  if (COMPANIES.some((c) => c.id === id)) return { kind: 'company', id }
-  if (DEPARTMENTS.some((d) => d.id === id)) return { kind: 'department', id }
-  if (BOARD_TEMPLATES.some((b) => b.id === id)) return { kind: 'board', id }
+export function findWorkTemplate(
+  id: string,
+  opts: { includeHidden?: boolean } = {},
+): { kind: WorkTemplateKind; id: string } | null {
+  if (COMPANIES.some((c) => c.id === id && (opts.includeHidden || !c.hidden))) return { kind: 'company', id }
+  if (DEPARTMENTS.some((d) => d.id === id && (opts.includeHidden || !d.hidden))) return { kind: 'department', id }
+  if (BOARD_TEMPLATES.some((b) => b.id === id)) {
+    const hidden = DEPARTMENTS.some((d) => d.hidden && d.boards.includes(id))
+    if (opts.includeHidden || !hidden) return { kind: 'board', id }
+  }
   return null
 }
 

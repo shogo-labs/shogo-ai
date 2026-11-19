@@ -54,6 +54,8 @@ interface StoredRow {
   id: string
   role: string
   content: string
+  /** JSON parts, where a file attachment is recorded. */
+  parts?: string | null
   createdAt: Date
 }
 
@@ -65,10 +67,55 @@ type Summarizer = (input: {
   previous?: string | null
 }) => Promise<string | null>
 
-function messageText(row: StoredRow): string {
+/**
+ * A one-line record of the files a stored message carried.
+ *
+ * The seed is text, so an image the user sent earlier cannot come back as an
+ * image block the way it did when the client replayed its own transcript
+ * (SHO-402). Without a mention the model also cannot tell that a file was ever
+ * there — and a message that was *only* a screenshot has empty `content`, so it
+ * would vanish from the tail entirely. Names and media types are all a rebuilt
+ * transcript needs, so nothing here reads the file's data.
+ */
+const FILE_PART_TYPES = new Set(['file', 'image', 'file-upload', 'attachment'])
+
+export function attachmentNote(row: { parts?: string | null }): string {
+  if (!row.parts) return ''
+  // A legacy inline attachment can put megabytes in `parts` (SHO-213 moved them
+  // out, but rows written before it still hold data URLs). Nothing in a note
+  // that big is worth parsing, and the names sit at the head of the array.
+  const raw = row.parts
+  if (raw.length > 512_000) return '[attached: file]'
+
+  let parts: unknown
+  try {
+    parts = JSON.parse(raw)
+  } catch {
+    return ''
+  }
+  if (!Array.isArray(parts)) return ''
+
+  const files: string[] = []
+  for (const part of parts) {
+    if (!part || typeof part !== 'object') continue
+    const entry = part as Record<string, unknown>
+    if (!FILE_PART_TYPES.has(String(entry.type ?? ''))) continue
+    const name = typeof entry.name === 'string' && entry.name.trim() ? entry.name.trim() : 'file'
+    const mediaType = typeof entry.mediaType === 'string' ? entry.mediaType.trim() : ''
+    files.push(mediaType ? `${name} (${mediaType})` : name)
+    if (files.length >= 5) break
+  }
+  if (files.length === 0) return ''
+  return `[attached: ${files.join(', ')}]`
+}
+
+function messageText(row: { content: string; parts?: string | null }): string {
   // A row's `content` is the display text; `parts` can carry tool envelopes
-  // that mean nothing to a rebuilt transcript.
-  return (row.content ?? '').trim()
+  // that mean nothing to a rebuilt transcript — only its attachments matter.
+  const text = (row.content ?? '').trim()
+  const note = attachmentNote(row)
+  if (!note) return text
+  return text ? `${text}\n${note}` : note
 }
 
 /**
@@ -443,7 +490,7 @@ export async function buildChatHistorySeed(
       where: { sessionId: chatSessionId },
       orderBy: { createdAt: 'desc' },
       take: HISTORY_SCAN_LIMIT,
-      select: { id: true, role: true, content: true, createdAt: true },
+      select: { id: true, role: true, content: true, parts: true, createdAt: true },
     })
     .catch(() => [])) as StoredRow[]
 
@@ -523,12 +570,12 @@ function normalizeText(text: string): string {
 }
 
 /**
- * The seed for a *typed* turn (SHO-137 round 3, R4).
+ * The seed for a *typed* turn.
  *
- * A turn typed into the app sends the messages the client happens to have
- * loaded — pages of 50 — so anything older than that window was invisible to a
- * runtime whose session had been evicted. The durable seed fills that gap, and
- * the runtime only uses it when its own session is empty.
+ * A typed turn now posts only the message being sent, so this seed is how a
+ * cold or evicted runtime gets the conversation at all — not just a fallback
+ * for the part older than the page the client had loaded (SHO-402). The
+ * runtime still only uses it when its own session is empty.
  *
  * The request body already carries the message being sent, so a trailing user
  * row that duplicates it is dropped rather than replayed twice.
@@ -715,13 +762,14 @@ export async function summarizeSessionFromDb(
       where: { sessionId: chatSessionId },
       orderBy: { createdAt: 'asc' },
       take: SUMMARY_INPUT_LIMIT * 8,
-      select: { role: true, content: true },
+      select: { role: true, content: true, parts: true },
     })
-    .catch(() => [])) as Array<{ role: string; content: string }>
+    .catch(() => [])) as Array<{ role: string; content: string; parts?: string | null }>
   const messages: SeedMessage[] = rows
     .map((row) => ({
       role: row.role === 'assistant' ? ('assistant' as const) : ('user' as const),
-      text: normalizeText(row.content ?? ''),
+      // Same rule as the seed: a file-only message must still be summarized.
+      text: normalizeText(messageText(row)),
     }))
     .filter((m) => m.text.length > 0)
   if (messages.length === 0) return null

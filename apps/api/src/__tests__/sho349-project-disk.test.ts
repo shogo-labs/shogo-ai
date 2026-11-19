@@ -43,11 +43,12 @@ describe('resolveWorkspaceDiskMiB', () => {
     expect(resolveWorkspaceDiskMiB(-10, 'medium')).toBe(DEFAULT_WORKSPACE_DISK_GIB * 1024)
   })
 
-  it('clamps to the tier after a downgrade', () => {
-    // A project that asked for 80 GiB while on `large` keeps 80 GiB of drive;
-    // the micro ceiling only caps what it may ask for NEXT.
-    expect(resolveWorkspaceDiskMiB(80, 'micro')).toBe(workspaceDiskCeilingGiB('micro') * 1024)
-    expect(resolveWorkspaceDiskMiB(80, 'micro')).toBe(20 * 1024)
+  it('keeps a stored size after a downgrade — the tier only caps what it may ask for next', () => {
+    // A project that asked for 80 GiB while on `large` keeps 80 GiB of drive.
+    // Clamping to the micro ceiling here would restore an 80 GiB drive into a
+    // 20 GiB file on the next cold boot (the data-loss mode SHO-401 fixes).
+    expect(resolveWorkspaceDiskMiB(80, 'micro')).toBe(80 * 1024)
+    expect(workspaceDiskCeilingGiB('micro')).toBe(20)
   })
 
   it('never exceeds the fleet hard cap', () => {
@@ -66,12 +67,30 @@ describe('planDiskChange', () => {
   })
 
   it('rejects anything above the tier ceiling with a readable message', () => {
-    const plan = planDiskChange(120, 'medium')
+    // A workspace that may not buy the add-on is capped at what its tier
+    // includes (402 plan_required); one that may is capped at the hard 200 GiB
+    // (422 plan_ceiling).
+    const blocked = planDiskChange(120, 'medium')
+    expect(blocked.ok).toBe(false)
+    if (!blocked.ok) {
+      expect(blocked.status).toBe(402)
+      expect(blocked.code).toBe('plan_required')
+      expect(blocked.message).toContain('40 GiB')
+    }
+    const overCap = planDiskChange(250, 'medium', { canBuyAddon: true })
+    expect(overCap.ok).toBe(false)
+    if (!overCap.ok) {
+      expect(overCap.status).toBe(422)
+      expect(overCap.code).toBe('plan_ceiling')
+    }
+  })
+
+  it('refuses a size below the current effective size (cannot_shrink)', () => {
+    const plan = planDiskChange(20, 'medium', { canBuyAddon: true, currentEffectiveGiB: 30 })
     expect(plan.ok).toBe(false)
     if (!plan.ok) {
       expect(plan.status).toBe(422)
-      expect(plan.code).toBe('plan_ceiling')
-      expect(plan.message).toContain('40 GiB')
+      expect(plan.code).toBe('cannot_shrink')
     }
   })
 
@@ -95,9 +114,45 @@ describe('describeProjectDisk', () => {
   })
 
   it('pins canIncrease=false with a reason at the ceiling', () => {
+    // Without the add-on, the ceiling is what the tier includes.
     const body = describeProjectDisk({ requestedGiB: 40, instanceSize: 'medium', substrate: 'metal' })
     expect(body.canIncrease).toBe(false)
-    expect(body.reason).toBe('plan_ceiling')
+    expect(body.reason).toBe('plan_required')
+    // With the add-on, the ceiling is the hard 200 GiB.
+    const withAddon = describeProjectDisk({
+      requestedGiB: 40,
+      instanceSize: 'medium',
+      substrate: 'metal',
+      canBuyAddon: true,
+    })
+    expect(withAddon.maxGiB).toBe(MAX_WORKSPACE_DISK_GIB)
+    expect(withAddon.canIncrease).toBe(true)
+  })
+
+  it('reports included vs add-on GiB and the monthly price', () => {
+    const body = describeProjectDisk({
+      requestedGiB: 50,
+      instanceSize: 'micro',
+      substrate: 'metal',
+      canBuyAddon: true,
+    })
+    expect(body.includedGiB).toBe(20)
+    expect(body.effectiveGiB).toBe(50)
+    expect(body.addonGiB).toBe(30)
+    expect(body.pricePerGiBMonthUsd).toBe(0.15)
+    expect(body.addonMonthlyUsd).toBe(4.5)
+  })
+
+  it('keeps a bought size after a downgrade and still bills the add-on (SHO-401)', () => {
+    // 50 GiB bought on a paid plan, then the workspace dropped to free/micro.
+    // The size is kept (never clamped down) and still billed; growth is blocked.
+    const body = describeProjectDisk({ requestedGiB: 50, instanceSize: 'micro', substrate: 'metal' })
+    expect(body.effectiveGiB).toBe(50)
+    expect(body.includedGiB).toBe(20)
+    expect(body.addonGiB).toBe(30)
+    expect(body.addonMonthlyUsd).toBe(4.5)
+    expect(body.canIncrease).toBe(false)
+    expect(body.reason).toBe('plan_required')
   })
 
   it('passes measured usage through with a timestamp', () => {

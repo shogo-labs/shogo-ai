@@ -45,6 +45,10 @@ export const MIRROR_MODELS: readonly string[] = [
   'AgentConfig',
   'ProjectAgent',
   'WorkspaceAgentProfile',
+  // Workspace RBAC (SHO-417): who may use which models and abilities. The
+  // desktop enforces the same policy, so the rows travel both ways. The audit
+  // trail does not — it is a per-machine record of what happened here.
+  'AccessPolicy',
 
   // ── Chat ──
   'ChatSession',
@@ -130,6 +134,10 @@ const NEVER_CREDENTIALS = [
   'Account', // OAuth provider link
   'Verification', // one-time codes
   'ApiKey', // could sign in as the workspace
+  // SHO-384: the sealed workspace-root .env* blob. Decrypted only by the cloud
+  // API's key, for one cloud pod's runtime key — a desktop's own disk is its
+  // source of truth, so copying the row would hand it ciphertext it cannot read.
+  'WorkspaceRootSecret',
   'UserIdentityLink', // maps a cloud identity to a local one
   'UserIntegrationConnection', // OAuth tokens
   'UserIntegrationGrant',
@@ -164,6 +172,9 @@ const NEVER_BILLING = [
   'UsageEvent',
   'InstanceSubscription',
   'StorageUsage',
+  // Money/metering, never synced: each region measures and bills only the
+  // workspaces it homes, so a peer's copy would just overwrite the day's peak.
+  'StorageUsageDaily',
   'VoiceCallMeter',
   'LiveSessionMeter',
   'AgentCostMetric',
@@ -184,12 +195,30 @@ const NEVER_BILLING = [
   'MarketplaceReview',
   'MarketplaceTransaction',
   'TrialRedemption', // card-backed trial, keyed by Stripe ids
+  // SHO-428: the $99 Solo Founder purchase — the checkout session, the
+  // subscription it became, `status` (active / rejected_prepaid / refunded)
+  // and the refund. Same shape as TrialRedemption: created by the Stripe
+  // webhook on the cloud and never something a desktop may claim. The pack it
+  // installs (channels, boards, agents) syncs as ordinary content; `progress`
+  // is written where the row lives, so the Course board and its gate work on a
+  // desktop but lesson progress is read from the cloud panel.
+  'CourseEnrollment',
   // SHO-308: the metered minutes behind `published_hosting` — the input to
   // consumeUsage, so the cloud's own accounting, never a synced row.
   'PublishedUsageMinute',
   // SHO-323: the monthly Updates charge, same shape (consumeUsage's input).
   'NativeUsageMonth',
   'NativeBuild', // per-build EAS state and the charge attached to it
+  // SHO-424: compute metering. `VmUsageHour` counts a metal VM's seconds per
+  // workspace/project/cause and is the input to consumeUsage, so like the two
+  // groups above it is the cloud's own accounting. `VmMeterCursor` is the
+  // read-modify-write guard in front of it — the (agentMs, appMs, idleMs) triple
+  // is compared and swapped so two pods of the ingesting region cannot charge
+  // the same seconds twice; a synced copy would hand that guard to a second
+  // writer. Both are produced by metal heartbeats against a host a desktop does
+  // not run, so its copies of these tables correctly stay empty.
+  'VmUsageHour',
+  'VmMeterCursor',
 ] as const
 
 const NEVER_CLOUD_PLATFORM = [
@@ -213,6 +242,10 @@ const NEVER_CLOUD_PLATFORM = [
   'NativeAppCredential',
   'NativeSigningCredential',
   'ProjectAuthConfig', // published-site auth, cloud-served
+  // SHO-417: the RBAC audit trail is a per-machine record of denials and
+  // policy changes. Syncing it would merge two machines' histories into one
+  // and make "who was denied here" unanswerable.
+  'AccessAuditEvent',
   'ProjectAuthSignIn',
   'PlatformSetting',
   'ModelProvider',

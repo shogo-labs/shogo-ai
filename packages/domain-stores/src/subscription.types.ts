@@ -16,11 +16,13 @@ export interface SubscriptionType {
   stripeSubscriptionId: string
   stripeCustomerId: string
   planId: string
+  stripePriceId?: string
   seats: number
   status: SubscriptionStatus
   billingInterval: BillingInterval
   currentPeriodStart: Date
   currentPeriodEnd: Date
+  firstPaidAt?: Date
   cancelAtPeriodEnd: boolean
   createdAt: Date
   updatedAt: Date
@@ -31,11 +33,13 @@ export interface SubscriptionCreateInput {
   stripeSubscriptionId: string
   stripeCustomerId: string
   planId: string
+  stripePriceId?: string
   seats?: number
   status: SubscriptionStatus
   billingInterval: BillingInterval
   currentPeriodStart: Date
   currentPeriodEnd: Date
+  firstPaidAt?: Date
   cancelAtPeriodEnd?: boolean
 }
 
@@ -44,10 +48,12 @@ export interface SubscriptionUpdateInput {
   stripeSubscriptionId?: string
   stripeCustomerId?: string
   planId?: string
+  stripePriceId?: string
   seats?: number
   status?: SubscriptionStatus
   billingInterval?: BillingInterval
   currentPeriodStart?: Date
   currentPeriodEnd?: Date
+  firstPaidAt?: Date
   cancelAtPeriodEnd?: boolean
 }

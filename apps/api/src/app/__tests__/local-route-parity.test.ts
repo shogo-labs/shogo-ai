@@ -47,6 +47,9 @@ const REQUIRED_LOCAL_ROUTES = [
   'PATCH /api/workspaces/:workspaceId/schedules/:scheduleId',
   'DELETE /api/workspaces/:workspaceId/schedules/:scheduleId',
   'GET /api/types-proxy',
+  // The slides viewer (SHO-426): every file host frames it to render a deck, so
+  // desktop must mount the same page cloud does.
+  'GET /api/viewers/slides',
   // Settings-era Usage and the Analytics screen (Usage | Cost Optimizer) read
   // these on desktop; they 404'd when only server.ts (cloud) mounted them.
   'GET /api/workspaces/:workspaceId/analytics/usage-summary',
@@ -73,6 +76,7 @@ const REQUIRED_LOCAL_ROUTES = [
   'POST /api/workspaces/:workspaceId/social/accounts/sync',
   'POST /api/workspaces/:workspaceId/social/connect',
   'POST /api/workspaces/:workspaceId/social/connect/complete',
+  'PATCH /api/workspaces/:workspaceId/social/accounts/:accountId',
   'DELETE /api/workspaces/:workspaceId/social/accounts/:accountId',
   'GET /api/workspaces/:workspaceId/social/posts',
   'POST /api/workspaces/:workspaceId/social/posts',

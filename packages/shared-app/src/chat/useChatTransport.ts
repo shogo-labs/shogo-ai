@@ -9,7 +9,7 @@
 
 import { useMemo } from 'react'
 import { createAutoResumingFetch } from './auto-resuming-fetch'
-import { trimLegacyInlineAttachments } from './trim-history-attachments'
+import { trimLegacyInlineAttachments, type ChatHistoryMessage } from './trim-history-attachments'
 
 export interface ChatTransportOptions {
   /** API base URL (e.g., "http://localhost:8002" or "" for same-origin) */
@@ -171,6 +171,68 @@ export function buildChatTasksUrl(
 }
 
 /**
+ * The `messages` array a chat turn POSTs.
+ *
+ * The runtime reads only the newest user message out of the body and treats its
+ * own session as the source of truth, so a normal send posts just the turn
+ * being sent instead of the whole loaded transcript — which used to be ~800 KB
+ * at the median and 26 MB at the top end, and made a send on mobile data look
+ * like it never went out (SHO-402).
+ *
+ * A cold or evicted runtime gets its context from `historySeed`, which every
+ * typed-turn API route attaches (`historySeedForTurn`) and the runtime applies
+ * only when its session is empty. `directToRuntime` is the exception: a
+ * `localAgentUrl` request (and the remote-instance proxy, which has no
+ * `prepareSendMessagesRequest` at all) goes straight to `/agent/chat` with no
+ * API hop to attach the seed, so that path keeps the full transcript.
+ */
+export function outgoingChatMessages<M extends ChatHistoryMessage>(
+  messages: M[],
+  options: { directToRuntime?: boolean } = {},
+): M[] {
+  if (options.directToRuntime) return trimLegacyInlineAttachments(messages)
+  if (messages.length <= 1) return messages
+  // Everything from the newest user message on is the turn being sent (a
+  // regenerate re-sends that same message, so its attachments stay).
+  let start = messages.length - 1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') {
+      start = i
+      break
+    }
+  }
+  return trimLegacyInlineAttachments(messages.slice(start))
+}
+
+/**
+ * The body a chat turn POSTs: the caller's own fields plus the small set this
+ * transport owns, with `messages` reduced by `outgoingChatMessages`.
+ */
+export function prepareChatSendBody({
+  id,
+  messages,
+  body,
+  trigger,
+  messageId,
+  directToRuntime,
+}: {
+  id: string
+  messages: any[]
+  body: Record<string, any> | undefined
+  trigger: 'submit-message' | 'regenerate-message'
+  messageId: string | undefined
+  directToRuntime: boolean
+}): Record<string, unknown> {
+  return {
+    ...body,
+    id,
+    messages: outgoingChatMessages(messages, { directToRuntime }),
+    trigger,
+    messageId,
+  }
+}
+
+/**
  * Hook that returns a memoized chat transport config for DefaultChatTransport.
  */
 export function useChatTransportConfig({
@@ -218,16 +280,18 @@ export function useChatTransportConfig({
       credentials,
       fetch,
       headers: composedHeaders,
-      // The whole transcript is POSTed on every send, so without this a file
-      // attached earlier is re-uploaded with every later turn (SHO-213).
+      // Only the turn being sent rides in the body; the API attaches the
+      // durable history seed for a cold runtime (SHO-402). A `localAgentUrl`
+      // request bypasses that API hop, so it keeps the whole transcript.
       prepareSendMessagesRequest: ({ id, messages, body, headers: requestHeaders, credentials: requestCredentials, api, trigger, messageId }) => ({
-        body: {
-          ...body,
+        body: prepareChatSendBody({
           id,
-          messages: trimLegacyInlineAttachments(messages),
+          messages,
+          body,
           trigger,
           messageId,
-        },
+          directToRuntime: Boolean(localAgentUrl),
+        }),
         headers: requestHeaders,
         credentials: requestCredentials,
         api,

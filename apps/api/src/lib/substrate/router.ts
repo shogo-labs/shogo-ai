@@ -14,7 +14,7 @@
  * substrate instances (same convention as ResolvePodUrlOpts).
  */
 
-import type { ProjectSubstrate, Resources } from './types'
+import type { ProjectSubstrate, ResizeOutcome, Resources } from './types'
 import { SubstrateUnsupportedError } from './types'
 import {
   isMetalEnabled as metalEnabled,
@@ -126,10 +126,31 @@ export async function destroyProjectRuntime(projectId: string, opts: SubstrateRo
  * when the substrate can't do per-project sizing (metal today), so callers can
  * return a clean 501/409 instead of silently no-op'ing.
  */
-export async function resizeProjectRuntime(projectId: string, resources: Resources, opts: SubstrateRouterOpts = {}): Promise<void> {
+export async function resizeProjectRuntime(
+  projectId: string,
+  resources: Resources,
+  opts: SubstrateRouterOpts = {},
+): Promise<ResizeOutcome[] | void> {
   const substrate = await getProjectSubstrate(projectId, opts)
   if (!substrate.resize) throw new SubstrateUnsupportedError('resize', substrate.kind)
-  await substrate.resize(projectId, resources)
+  return substrate.resize(projectId, resources)
+}
+
+/**
+ * Grow a bare `ws:<workspaceId>` workspace runtime's drive live (SHO-401).
+ * Only metal has a per-workspace runtime with its own drive; off metal this is
+ * a no-op. Returns the host's grow result so the route can report `growError`.
+ */
+export async function resizeWorkspaceRuntime(
+  workspaceId: string,
+  resources: { disk?: string },
+  opts: SubstrateRouterOpts = {},
+): Promise<ResizeOutcome[]> {
+  const isMetalEnabled = opts._isMetalEnabled ?? (() => metalEnabled())
+  if (!opts._metalSubstrate && !isMetalEnabled()) return []
+  const metal = opts._metalSubstrate ?? (await makeMetalSubstrate())
+  if (!metal.resizeWorkspaceRuntime) return []
+  return metal.resizeWorkspaceRuntime(workspaceId, resources)
 }
 
 /**

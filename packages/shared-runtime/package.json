@@ -11,6 +11,7 @@
     "./capability-settings": "./src/capability-settings.ts",
     "./project-call-chat": "./src/project-call-chat.ts",
     "./publish-timeouts": "./src/publish-timeouts.ts",
+    "./project-transfer-limits": "./src/project-transfer-limits.ts",
     "./repo-bundles": "./src/repo-bundles.ts",
     "./shogo-state-paths": "./src/shogo-state-paths.ts",
     "./checkpoint-repo-repair": "./src/checkpoint-repo-repair.ts",
@@ -20,11 +21,13 @@
     "./interrupted-turn": "./src/interrupted-turn.ts",
     "./child-process": "./src/child-process.ts",
     "./workspace-root-sync": "./src/workspace-root-sync.ts",
+    "./workspace-root-secrets": "./src/workspace-root-secrets.ts",
     "./remote-device-call": "./src/remote-device-call.ts",
     "./published-database": "./src/published-database.ts",
     "./published-schema": "./src/published-schema.ts",
     "./byte-range": "./src/byte-range.ts",
-    "./published-image-ref": "./src/published-image-ref.ts"
+    "./published-image-ref": "./src/published-image-ref.ts",
+    "./standalone": "./src/standalone.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

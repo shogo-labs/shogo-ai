@@ -29,6 +29,7 @@
 import crypto from 'crypto'
 import type { PrismaClient } from '@prisma/client'
 import { recordDeviceVersionEvent, type DeviceVersionEventClient } from './device-version-events'
+import { getSignupTrustHold, SignupTrustHoldError } from './signup-trust'
 
 /** Public prefix on every minted key. Matched against incoming Bearer
  * tokens to short-circuit obvious non-API-key inputs. */
@@ -135,6 +136,12 @@ export interface MintedDeviceKey {
 export async function mintDeviceApiKey(
   args: MintDeviceKeyArgs,
 ): Promise<MintedDeviceKey> {
+  // A held signup gets no credential at all (SHO-416). Checked here rather than
+  // in each caller so the desktop bridge, the CLI device-code flow and the
+  // multi-workspace sync all inherit it.
+  const hold = await getSignupTrustHold(args.userId, args.prisma as any)
+  if (hold) throw new SignupTrustHoldError(hold)
+
   const { fullKey, keyHash, keyPrefix } = await generateApiKey()
 
   const deviceName =

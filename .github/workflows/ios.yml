@@ -531,6 +531,11 @@ jobs:
       - name: Expo prebuild iOS
         working-directory: apps/mobile
         env:
+          # `EXPO_UPDATES_CHANNEL` pins the binary to its own EAS Update branch
+          # and `SENTRY_PROJECT` names the Sentry project this platform's
+          # native uploads belong to; `app.config.js` bakes both into the
+          # generated native project (see apps/mobile/config/expo-env-config.js).
+          SENTRY_PROJECT: shogo-ios
           EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
           EXPO_PUBLIC_APP_VERSION: ${{ needs.check-fingerprint.outputs.app_version }}

@@ -337,6 +337,50 @@ export interface CheckoutParams {
   trial?: boolean
 }
 
+/**
+ * `POST /api/billing/checkout` body for the $99 Solo Founder offer (SHO-428).
+ * Same route as a plan checkout, but the server owns plan, seats, interval,
+ * the course line and the first-year discount, so none of them are sent.
+ */
+export interface SoloFounderCheckoutParams {
+  workspaceId: string
+  offer: 'solo_founder'
+  /** Buyer's own Stripe promotion code, instead of the default $78 coupon. */
+  promoCode?: string
+  userEmail?: string
+  referralId?: string
+  successUrl?: string
+  cancelUrl?: string
+}
+
+/** `GET /api/billing/solo-founder` — what the Billing panel shows for the offer. */
+export interface SoloFounderState {
+  ok: boolean
+  offer: 'solo_founder'
+  pricing: {
+    businessAnnualUsd: number
+    courseUsd: number
+    firstYearDiscountUsd: number
+    firstYearUsd: number
+    renewalUsd: number
+    overageCapUsd: number
+  }
+  enrolled: boolean
+  /** Enrollment status: 'active' once paid, 'rejected_prepaid' when refused. */
+  status: string | null
+  /** Pack install: 'pending' | 'installing' | 'installed' | 'failed'. */
+  installStatus: string | null
+  installError: string | null
+  courseBoardId: string | null
+  courseChannelId: string | null
+  totalLessons: number
+  completedLessons: string[]
+  completedAt: string | null
+  eligibility:
+    | { eligible: true }
+    | { eligible: false; code: 'offer_not_eligible' | 'already_enrolled' | 'risk_review'; reason: string }
+}
+
 export interface WorkspaceCheckoutParams {
   workspaceName: string
   planId: string
@@ -770,17 +814,29 @@ export interface PublishedEnvironmentMetrics {
   projectionUsd: number
 }
 
-/** `GET/PUT /api/projects/:id/disk` (SHO-349). */
+/** `GET/PUT /api/projects/:id/disk` and `/api/workspaces/:id/disk` (SHO-349, SHO-401). */
 export interface ProjectDiskState {
   /** What the project asked for; null = never set (fleet default). */
   requestedGiB: number | null
-  /** The size in force, clamped to the tier ceiling. */
+  /** The size in force, clamped to the ceiling. */
   effectiveGiB: number
   defaultGiB: number
-  /** Largest size this workspace's tier may ask for. */
+  /** GiB this tier includes before the paid add-on. */
+  includedGiB: number
+  /** Largest size this workspace may ask for (200 when it can buy the add-on). */
   maxGiB: number
+  /** GiB above the tier's included amount — the part that is billed. */
+  addonGiB: number
+  /** USD per GiB-month for the add-on. */
+  pricePerGiBMonthUsd: number
+  /** Monthly price of the current add-on GiB. */
+  addonMonthlyUsd: number
   canIncrease: boolean
-  reason?: string
+  reason?: 'plan_ceiling' | 'plan_required'
+  /** True when this workspace may buy disk above what its tier includes. */
+  canBuyAddon: boolean
+  /** Why not, when `canBuyAddon` is false. */
+  buyBlockedReason?: 'plan_required' | 'usage_limit_reached'
   /** Live usage from the guest; null while the project isn't running. */
   usage: { usedBytes: number; totalBytes: number; measuredAt: string } | null
   substrate: 'metal' | 'knative' | 'local'
@@ -832,6 +888,20 @@ export const api = {
 
   async createCheckoutSession(http: HttpClient, params: CheckoutParams) {
     const res = await http.post<{ url?: string }>('/api/billing/checkout', params)
+    return res.data
+  },
+
+  /** Start the $99 Solo Founder checkout. Server answers with a Checkout URL. */
+  async createSoloFounderCheckout(http: HttpClient, params: SoloFounderCheckoutParams) {
+    const res = await http.post<{ url?: string; sessionId?: string }>('/api/billing/checkout', params)
+    return res.data
+  },
+
+  /** The Solo Founder offer's state for this workspace (also retries a lost install). */
+  async getSoloFounderState(http: HttpClient, workspaceId: string) {
+    const res = await http.get<SoloFounderState>(
+      `/api/billing/solo-founder?workspaceId=${encodeURIComponent(workspaceId)}`
+    )
     return res.data
   },
 
@@ -913,6 +983,20 @@ export const api = {
     const res = await http.post<{ url?: string }>(
       `/api/billing/portal?workspaceId=${encodeURIComponent(workspaceId)}`,
       returnUrl ? { returnUrl } : {},
+    )
+    return res.data
+  },
+
+  /**
+   * POST /api/billing/end-trial — end a free trial and pay now (SHO-422).
+   * Owners and billing admins only. `status` is Stripe's subscription status
+   * after the change; `latestInvoiceStatus` says whether the charge went
+   * through (`paid`) or is still open (`open`/`draft`).
+   */
+  async endTrial(http: HttpClient, workspaceId: string) {
+    const res = await http.post<{ ok?: boolean; status?: string; latestInvoiceStatus?: string | null }>(
+      `/api/billing/end-trial?workspaceId=${encodeURIComponent(workspaceId)}`,
+      {},
     )
     return res.data
   },
@@ -1041,17 +1125,6 @@ export const api = {
     return res.data
   },
 
-  async createInstanceCheckout(http: HttpClient, params: {
-    workspaceId: string
-    instanceSize: string
-    billingInterval: string
-    successUrl?: string
-    cancelUrl?: string
-  }) {
-    const res = await http.post<{ url?: string }>('/api/billing/instance-checkout', params)
-    return res.data
-  },
-
   async createInstancePortal(http: HttpClient, workspaceId: string, returnUrl?: string) {
     const res = await http.post<{ url?: string }>(
       `/api/billing/instance-portal?workspaceId=${encodeURIComponent(workspaceId)}`,
@@ -1062,6 +1135,17 @@ export const api = {
 
   async getWorkspaceInstance(http: HttpClient, workspaceId: string) {
     const res = await http.get<any>(`/api/workspaces/${workspaceId}/instance`)
+    return res.data
+  },
+
+  /**
+   * This period's metered VM compute (SHO-424). The server decides how much to
+   * return: owners/admins get the per-project, per-size and per-state split, a
+   * member gets the period total only. Instance sizes are no longer sold, so
+   * this replaces the old size-purchase cards.
+   */
+  async getWorkspaceComputeUsage(http: HttpClient, workspaceId: string) {
+    const res = await http.get<any>(`/api/workspaces/${workspaceId}/compute-usage`)
     return res.data
   },
 
@@ -1470,6 +1554,21 @@ export const api = {
   async updateProjectDisk(http: HttpClient, projectId: string, sizeGiB: number) {
     const res = await http.put<ProjectDiskState & { growError?: string }>(
       `/api/projects/${projectId}/disk`,
+      { sizeGiB },
+    )
+    return res.data
+  },
+
+  /** Workspace-runtime drive size + live usage (SHO-401, Settings → Workspace → Disk). */
+  async getWorkspaceDisk(http: HttpClient, workspaceId: string) {
+    const res = await http.get<ProjectDiskState>(`/api/workspaces/${workspaceId}/disk`)
+    return res.data
+  },
+
+  /** Ask for a bigger workspace-runtime drive. Errors carry the server's message. */
+  async updateWorkspaceDisk(http: HttpClient, workspaceId: string, sizeGiB: number) {
+    const res = await http.put<ProjectDiskState & { growError?: string }>(
+      `/api/workspaces/${workspaceId}/disk`,
       { sizeGiB },
     )
     return res.data

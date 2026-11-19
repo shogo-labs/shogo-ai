@@ -421,9 +421,14 @@ export interface ProjectStatus {
   assignedAt?: number
   lastRealActivityAt?: number
   realIdleMs?: number
+  /** Wall-clock of the last real user request, and how long ago that was. */
+  lastUserActivityAt?: number
+  userIdleMs?: number
   activeStreams?: number
   /** The guest's own verdict on whether real agent work is running. */
   busy?: boolean
+  /** Reports busy, but no user activity for longer than the busy-idle ceiling. */
+  busyIdle?: boolean
   /** Rootfs the running guest booted from (assigned) or the local snapshot was taken on (suspended). */
   snapshotRootfsIdentity?: string
   /** A pre-warmed snapshot on the staged rootfs is held for this key (see `stagedSuspended`). */
@@ -441,11 +446,71 @@ export class StagedRootfsUnavailableError extends Error {
   readonly code = 'no_staged_rootfs'
 }
 
+/**
+ * Why a VM was started, as told by the control plane on `/assign`. Billing
+ * reads this: most causes are billable running time, but `rewarm`/`prewarm`/
+ * `published` are platform overhead (see `config/vm-pricing.ts` in apps/api).
+ * `user_open` is the default so an older caller that sends nothing is still
+ * metered rather than lost.
+ */
+export type VmCause = 'user_open' | 'agent_wake' | 'schedule' | 'published' | 'rewarm' | 'prewarm'
+
+export const VM_CAUSES: readonly VmCause[] = [
+  'user_open',
+  'agent_wake',
+  'schedule',
+  'published',
+  'rewarm',
+  'prewarm',
+]
+
+export function isVmCause(v: unknown): v is VmCause {
+  return typeof v === 'string' && (VM_CAUSES as readonly string[]).includes(v)
+}
+
+/**
+ * Cumulative running time of ONE VM since it was assigned, in milliseconds, by
+ * why it was running. Advanced on each heartbeat/reaper tick from the same
+ * classification `classifyAssigned` buckets the fleet by, and never reset for
+ * the life of the VM — so a heartbeat the control plane never receives costs
+ * nothing, the next one carries the full total.
+ */
+export interface VmMeter {
+  agentMs: number
+  appMs: number
+  idleMs: number
+  /** Wall-clock of the last advance. Elapsed since here is what the next tick charges. */
+  advancedAt: number
+}
+
+/** One VM's meter as reported to the control plane (see `meterReport`). */
+export interface VmMeterReport {
+  runtimeKey: string
+  vmId: string
+  assignedAt: number
+  /** CPU count the host actually booted (the handler's), never the env accounting. */
+  vcpus: number
+  /** MiB the host actually booted. */
+  memMiB: number
+  vmClass: string
+  cause: VmCause
+  alwaysOn: boolean
+  agentMs: number
+  appMs: number
+  idleMs: number
+  /** Set once the VM stopped being assigned; the row is held until the control plane acks it. */
+  endedAt?: number
+}
+
 export interface AssignedVm {
   projectId: string
   handle: FcVmHandle
   assignedAt: number
   lastTouchedAt: number
+  /** Why this VM was started (billing). Undefined on an adopted VM = `user_open`. */
+  cause?: VmCause
+  /** Billing counters (see {@link VmMeter}); created on the first tick. */
+  meter?: VmMeter
   /** Snapshot files this VM was restored from; protected from orphan reclaim. */
   restoredFrom?: { vmstate: string; mem: string }
   /**
@@ -481,6 +546,46 @@ export interface AssignedVm {
    * first request.
    */
   lastRealActivityAt?: number
+  /**
+   * Wall-clock (ms) of the last time a PERSON used this VM, on a clock that only
+   * real user requests move. `lastRealActivityAt` cannot serve this purpose: it
+   * is stamped on every poll where the guest reports busy, so a guest stuck
+   * reporting `busy: true` always looks freshly active and a ceiling on it would
+   * never fire.
+   *
+   * Advances only where the guest's per-class signals advance — an app request,
+   * an agent turn, or (for a legacy guest) the catch-all. It does NOT move on
+   * `vmBusy`, `lastTouchedAt`, `touch()`, or a failed poll. Seeded to `now` at
+   * assign/resume, and corrected from the guest's own report on the first
+   * baselining poll so a host restart does not hand a 47h-idle VM another
+   * ceiling (see `reapIdle`).
+   */
+  lastUserActivityAt?: number
+  /**
+   * Set only by `adopt()`: this VM's real-activity history did not survive the
+   * host restart, so `lastUserActivityAt` was seeded to `now` and the first
+   * per-class report must correct it from the guest's own clock.
+   *
+   * Deliberately NOT set by assign or resume. Both are a user action happening
+   * right now, so `now` is the truth; correcting a resume from the snapshot's
+   * frozen `lastAppRequestAt`/`lastAgentRequestAt` would suspend a VM the
+   * moment it came back, because the reaper polls and reaps in the same tick
+   * and the page load that triggered the resume only bumps `lastAppRequestAt`
+   * for `/api/*` (SHO-420 QA round 1).
+   */
+  needsUserActivityBaseline?: boolean
+  /**
+   * Wall-clock (ms) the current unbroken busy streak started: set by the first
+   * successful poll that reports busy, cleared by any successful poll that does
+   * not. A failed poll leaves it alone. The busy-idle ceiling requires this to
+   * be past the ceiling too, so a real turn driven by something other than an
+   * app request or `/agent/chat` (a project call, a trigger hook, a webchat or
+   * channel message) is not frozen mid-stream just because no person has used
+   * the VM for hours. A stuck guest never reports not-busy, so its streak only
+   * grows. On adopt it is seeded from the baselined `lastUserActivityAt`, so a
+   * deploy does not hand a stuck guest another full ceiling.
+   */
+  busySince?: number
   /** Wall-clock of the last periodic source backup (in memory only; see exportAllSource). */
   lastPeriodicSourceBackupAt?: number
   /**
@@ -895,6 +1000,16 @@ function yieldToEventLoop(): Promise<void> {
 const APP_ACTIVE_WINDOW_MS = 120_000
 
 /**
+ * How long a stopped VM's final meter is retried before it is dropped, and how
+ * many of them are held at once. The counters are cumulative, so the control
+ * plane normally ingests a closed VM on the very first heartbeat that carries
+ * it; these bounds only matter for a control plane that is unreachable for an
+ * hour or a busy host that churns more than 2,000 VMs inside one.
+ */
+const CLOSED_METER_TTL_MS = 60 * 60_000
+const MAX_CLOSED_METERS = 2_000
+
+/**
  * Hard ceiling on a hydrate deadline, whatever the per-MiB budget works out to.
  *
  * The guest clamps its own pull at 30 minutes (PULL_MAX_SECONDS in
@@ -1150,6 +1265,13 @@ export class MetalWarmPool {
   /** Collapses concurrent suspend calls for the same project. */
   private suspendFlight = new Singleflight<SuspendedVm>()
   private recycleFlight = new Singleflight<RecycleReport>()
+  /**
+   * Billing meters: the seq of the newest report the control plane has seen, the
+   * VM rows that stopped being assigned but which no heartbeat has acked yet
+   * (their final counters live only here), and the seq each was last sent with.
+   */
+  private meterSeq = 0
+  private closedMeters: Array<VmMeterReport & { lastSentSeq?: number }> = []
   private autoRecycleHistory = new Map<string, number[]>()
   /**
    * Serializes writable-state exports per project. The periodic exporter and
@@ -1562,6 +1684,13 @@ export class MetalWarmPool {
         // adopted VM on its original assignedAt would suspend the live set on
         // every rolling deploy.
         lastRealActivityAt: Date.now(),
+        // Same fresh seed, but the first baselining poll corrects it from the
+        // guest's own report — otherwise every metal-agent deploy would hand a
+        // VM that has been idle for days another full busy-idle ceiling. Only
+        // adopt needs that correction: assign and resume are a user action
+        // happening now, so their `now` seed is already the truth.
+        lastUserActivityAt: Date.now(),
+        needsUserActivityBaseline: true,
         restoredFrom: e.restoredFrom,
         bootRootfsIdentity: e.bootRootfsIdentity,
         workspaceOrigin: e.workspaceOrigin,
@@ -1939,12 +2068,13 @@ export class MetalWarmPool {
     projectId: string,
     env: Record<string, string> = {},
     bind?: { workspaceId?: string; attachedProjectIds?: string[] },
+    opts: { cause?: VmCause } = {},
   ): Promise<OpenResult> {
     ;({ env, bind } = this.ownMembersOnly(projectId, env, bind))
-    const r = await this.openOnce(projectId, env, bind, null)
+    const r = await this.openOnce(projectId, env, bind, null, opts.cause)
     // Joined a concurrent staged open that had nothing to boot: this caller
     // needs a running VM, so open again (now as the flight's owner).
-    if (r.mode === 'prewarmed') return this.open(projectId, env, bind)
+    if (r.mode === 'prewarmed') return this.open(projectId, env, bind, opts)
     return r
   }
 
@@ -1962,7 +2092,9 @@ export class MetalWarmPool {
     ;({ env, bind } = this.ownMembersOnly(projectId, env, bind))
     const staged = this.stagedRootfs(this.resolveVmClass(projectId, env))
     if (!staged) throw new StagedRootfsUnavailableError(`no staged rootfs on this host for ${projectId}`)
-    return this.openOnce(projectId, env, bind, staged)
+    // A staged open is always the switch-over pre-warm, whatever the caller
+    // labelled it: it exists to fill the new image, not to serve a user.
+    return this.openOnce(projectId, env, bind, staged, 'prewarm')
   }
 
   private async openOnce(
@@ -1970,6 +2102,7 @@ export class MetalWarmPool {
     env: Record<string, string>,
     bind: { workspaceId?: string; attachedProjectIds?: string[] } | undefined,
     staged: { path: string; identity: string } | null,
+    cause: VmCause = 'user_open',
   ): Promise<OpenResult | PrewarmedResult> {
     const r = await this.openFlight.run(projectId, async (): Promise<OpenResult | PrewarmedResult> => {
       const timer = new PhaseTimer()
@@ -2068,13 +2201,13 @@ export class MetalWarmPool {
       if (staged) {
         // Never resume here: the current snapshot stays the project's serving
         // copy until activation, and this boot is on the new image.
-        const a = await this.assign(projectId, env, bind, timer, staged)
+        const a = await this.assign(projectId, env, bind, timer, staged, cause)
         return done({ handle: a.handle, mode: 'assigned', bootRootfsIdentity: staged.identity })
       }
       let staleReason: StaleReason | undefined
       if (await timer.time('can_resume', () => this.canResume(projectId))) {
         try {
-          const res = await this.resume(projectId, env, timer)
+          const res = await this.resume(projectId, env, timer, cause)
           if (res)
             return done({
               handle: res.assigned.handle,
@@ -2100,7 +2233,7 @@ export class MetalWarmPool {
         staleReason = 'no_snapshot'
       }
       this.lastStaleReason.delete(projectId)
-      const a = await this.assign(projectId, env, bind, timer)
+      const a = await this.assign(projectId, env, bind, timer, undefined, cause)
       return done({ handle: a.handle, mode: 'assigned', staleReason, bootRootfsIdentity: this.bootRootfsIdentity(a) })
     })
     if (r?.mode === 'prewarmed') return r
@@ -2172,6 +2305,7 @@ export class MetalWarmPool {
     bind?: { workspaceId?: string; attachedProjectIds?: string[] },
     timer = new PhaseTimer(),
     staged?: { path: string; identity: string },
+    cause: VmCause = 'user_open',
   ): Promise<AssignedVm> {
     ;({ env, bind } = this.ownMembersOnly(projectId, env, bind))
     const vmClass = this.resolveVmClass(projectId, env)
@@ -2194,7 +2328,7 @@ export class MetalWarmPool {
       )
       timer.add('boot', performance.now() - t0 - waited)
     }
-    return this.assignVm(projectId, env, bind, timer, vm, staged?.identity)
+    return this.assignVm(projectId, env, bind, timer, vm, staged?.identity, cause)
   }
 
   private resolveVmClass(projectId: string, env: Record<string, string>): VmClass {
@@ -2224,6 +2358,7 @@ export class MetalWarmPool {
     timer: PhaseTimer,
     vm: PooledVm,
     stagedIdentity: string | undefined,
+    cause: VmCause,
   ): Promise<AssignedVm> {
     // The claimed/booted VM is now off the pool and not yet in `assigned`. If
     // the guest /pool/assign call fails or times out we must stop it, or its FC
@@ -2257,9 +2392,12 @@ export class MetalWarmPool {
       handle: vm.handle,
       assignedAt: now,
       stateSince: now,
+      cause,
+      meter: { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: now },
       repoHydratePending: true,
       lastTouchedAt: now,
       lastRealActivityAt: now,
+      lastUserActivityAt: now,
       // Warm VMs never outlive the agent process (prepareForRestart kills
       // them), so this one booted from the image this process was started on.
       bootRootfsIdentity: stagedIdentity ?? this.classRootfsIdentity(vm.handle.vmClass),
@@ -2315,6 +2453,7 @@ export class MetalWarmPool {
       }
     } catch (err: any) {
       console.error(`[pool] hydrate-from-backup failed for ${projectId} — failing open (NOT serving template):`, err?.message ?? err)
+      this.closeMeter(a)
       this.assigned.delete(projectId)
       this.live.remove(projectId)
       await this.mgr.stopVM(vm.handle).catch(() => {})
@@ -2333,6 +2472,7 @@ export class MetalWarmPool {
         }
       } catch (err: any) {
         console.error(`[pool] workspace member hydrate failed for ${projectId}:`, err?.message ?? err)
+        this.closeMeter(a)
         this.assigned.delete(projectId)
         this.live.remove(projectId)
         await this.mgr.stopVM(vm.handle).catch(() => {})
@@ -4796,6 +4936,7 @@ export class MetalWarmPool {
         await this.callGuestHook(a.handle.agentUrl, 'rehydrate', this.cfg.rehydrateTimeoutMs, a.runtimeToken)
         throw err
       }
+      this.closeMeter(a)
       this.assigned.delete(projectId)
       this.live.remove(projectId) // no longer a live process — snapshot is the source of truth
       const now = Date.now()
@@ -5137,6 +5278,7 @@ export class MetalWarmPool {
     projectId: string,
     env: Record<string, string> = {},
     timer = new PhaseTimer(),
+    cause: VmCause = 'user_open',
   ): Promise<{
     assigned: AssignedVm
     apiMs: number
@@ -5345,8 +5487,11 @@ export class MetalWarmPool {
       projectId,
       handle,
       assignedAt: now,
+      cause,
+      meter: { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: now },
       lastTouchedAt: now,
       lastRealActivityAt: now,
+      lastUserActivityAt: now,
       restoredFrom: { vmstate: s.snapshot.snapshotPath, mem: s.snapshot.memFilePath },
       // The restored guest runs the image its snapshot was taken on (already
       // gated fresh above); unstamped legacy snapshots count as current.
@@ -5562,6 +5707,9 @@ export class MetalWarmPool {
           if (this.vmBusy(a)) {
             a.lastTouchedAt = now // an active turn is activity
             a.lastRealActivityAt = now
+            // Deliberately NOT lastUserActivityAt: a guest that wrongly reports
+            // busy would then look freshly used forever, and the busy-idle
+            // ceiling could never fire (SHO-420).
           }
           // Did the catch-all counter move since the previous poll? Captured
           // before we overwrite it, because the legacy fallback below needs it.
@@ -5590,6 +5738,26 @@ export class MetalWarmPool {
           // VM a fresh window on every agent restart.
           const baselining = reportsPerClass && a.perClassActivity !== true
           if (reportsPerClass) a.perClassActivity = true
+          if (baselining && a.needsUserActivityBaseline) {
+            // Only an ADOPTED VM needs this. The registry does not carry the
+            // guest's real-activity history across a restart, so adopt seeded
+            // lastUserActivityAt to `now`; without this correction every deploy
+            // would hand a VM that has been idle for days another full ceiling.
+            // A fresh assign or a resume is a user action happening now, so its
+            // `now` seed is already the truth — correcting it from the
+            // snapshot's frozen timestamps would suspend the VM on the very
+            // first reaper pass after it came back (SHO-420 QA round 1).
+            // Guest clock skew is seconds; the ceiling is hours.
+            const reported = [appAt, agentAt].filter((t): t is number => typeof t === 'number')
+            if (reported.length) a.lastUserActivityAt = Math.min(now, Math.max(...reported))
+            // The streak's start did not survive the restart either. A guest
+            // busy now with no user since the baseline is assumed busy since
+            // then; otherwise every deploy restarts a stuck guest's streak.
+            if (this.vmBusy(a) && a.busySince === undefined) a.busySince = a.lastUserActivityAt
+          }
+          if (reportsPerClass) a.needsUserActivityBaseline = false
+          if (this.vmBusy(a)) a.busySince ??= now
+          else a.busySince = undefined
 
           if (typeof appAt === 'number') {
             const advanced = appAt > (a.lastAppRequestAt ?? 0)
@@ -5597,6 +5765,7 @@ export class MetalWarmPool {
             if (advanced && !baselining) {
               a.lastTouchedAt = now
               a.lastRealActivityAt = now // an end user hit the app
+              a.lastUserActivityAt = now
             }
           }
           if (typeof agentAt === 'number') {
@@ -5605,6 +5774,7 @@ export class MetalWarmPool {
             if (advanced && !baselining) {
               a.lastTouchedAt = now
               a.lastRealActivityAt = now // someone talked to the agent
+              a.lastUserActivityAt = now
             }
           }
           if (typeof body.appRequestCount === 'number') a.appRequestCount = body.appRequestCount
@@ -5623,6 +5793,7 @@ export class MetalWarmPool {
           // best available proxy for a user and must keep the VM alive.
           if (!a.perClassActivity && catchAllAdvanced) {
             a.lastRealActivityAt = now
+            a.lastUserActivityAt = now
           }
         } catch {
           a.lastTouchedAt = now // fail open: never evict on missing data
@@ -5707,6 +5878,31 @@ export class MetalWarmPool {
   }
 
   /**
+   * Whether this VM is past the busy-idle ceiling: it reports busy, but no
+   * person has used it for `busyIdleCeilingMs`. This is the escape hatch for a
+   * guest that wrongly reports `busy: true` (or leaks `activeStreams`) — it
+   * would otherwise never be idle-suspended, never rotate onto a fixed image,
+   * and hold host RAM forever (SHO-420).
+   *
+   * Deliberately excluded:
+   *   - `alwaysOn` VMs (paid, never idle-suspended).
+   *   - guests without per-class activity: their only signal is the catch-all,
+   *     which our own export sweeps move, so idle cannot be told from used.
+   *   - `busyIdleCeilingMs <= 0` (operator disabled it).
+   */
+  private pastBusyIdleCeiling(a: AssignedVm, now = Date.now()): boolean {
+    const ceiling = this.cfg.busyIdleCeilingMs
+    if (!(ceiling > 0)) return false
+    if (a.alwaysOn || a.perClassActivity !== true) return false
+    if (!this.vmBusy(a)) return false
+    const userIdleAt = a.lastUserActivityAt ?? a.assignedAt
+    // Both clocks: no person for the ceiling AND busy without a break for it.
+    // A turn that started recently (a project call, a hook, a webchat message)
+    // is real work even when no person has used the VM for hours.
+    return now - userIdleAt >= ceiling && now - (a.busySince ?? userIdleAt) >= ceiling
+  }
+
+  /**
    * Suspend assigned VMs that have been idle past the threshold. Driven by the
    * reaper timer in server.ts. Returns the projectIds that were suspended.
    */
@@ -5714,8 +5910,15 @@ export class MetalWarmPool {
     idleMs = this.cfg.idleSuspendMs,
     opts: { maxPerPass?: number; tier?: string; retired?: string[] } = {},
   ): Promise<string[]> {
-    if (idleMs <= 0) return []
+    if (idleMs <= 0) {
+      metrics.gauge(M.busyIdleVms, 0)
+      return []
+    }
     const now = Date.now()
+    // Final tick before anything is suspended: a VM's last running seconds are
+    // metered while it is still assigned, so suspending it never loses billable
+    // time (`closeMeter` is the belt to this braces).
+    this.advanceMeters(now)
     const idleFor = (a: AssignedVm) => now - (a.lastRealActivityAt ?? a.assignedAt)
     // Always-on projects (paid tiers) are never idle-suspended — the parity for
     // Knative's min-scale=1. They still resume fine if the agent restarts, but
@@ -5727,9 +5930,25 @@ export class MetalWarmPool {
     // external request bumping lastTouchedAt, so also skip any VM the last
     // activity poll saw mid-stream — never snapshot away an active agent
     // message. (The reaper timer polls activity immediately before this.)
+    //
+    // The second clause is the busy-idle ceiling: a VM whose guest keeps
+    // reporting busy but which no person has used for hours is suspended
+    // anyway, overriding `busy`, `activeStreams`, `activeTurns` and tasks.
     const stale = [...this.assigned.values()]
-      .filter((a) => !a.alwaysOn && idleFor(a) >= idleMs && !this.vmBusy(a))
+      .filter(
+        (a) =>
+          !a.alwaysOn &&
+          ((idleFor(a) >= idleMs && !this.vmBusy(a)) || this.pastBusyIdleCeiling(a, now)),
+      )
       .sort((x, y) => idleFor(y) - idleFor(x))
+    // VMs the reaper would have suspended if their guest did not report busy.
+    metrics.gauge(
+      M.busyIdleVms,
+      [...this.assigned.values()].filter(
+        (a) => !a.alwaysOn && this.vmBusy(a) && now - (a.lastUserActivityAt ?? a.assignedAt) >= idleMs,
+      ).length,
+    )
+    for (const id of this.busyIdleCeilingLogged) if (!this.assigned.has(id)) this.busyIdleCeilingLogged.delete(id)
     const cap = opts.maxPerPass ?? this.cfg.reapMaxPerPass ?? 0
     if (cap > 0 && stale.length > cap) {
       metrics.inc(M.idleReapDeferred, stale.length - cap)
@@ -5737,11 +5956,23 @@ export class MetalWarmPool {
     }
     const done: string[] = []
     for (const a of stale) {
+      const byCeiling = this.pastBusyIdleCeiling(a, now)
+      if (byCeiling && !this.busyIdleCeilingLogged.has(a.projectId)) {
+        this.busyIdleCeilingLogged.add(a.projectId)
+        const hours = (ms: number) => (ms / 3_600_000).toFixed(1)
+        console.warn(
+          `[pool] busy-idle ceiling: suspending ${a.projectId} — reports busy ` +
+            `(busy=${a.busy}, activeStreams=${a.activeStreams ?? 0}, activeTurns=${a.activeTurns}) ` +
+            `but no user activity for ${hours(now - (a.lastUserActivityAt ?? a.assignedAt))}h ` +
+            `(ceiling ${hours(this.cfg.busyIdleCeilingMs)}h)`,
+        )
+      }
       try {
         const outcome = await this.suspendOrRetire(a.projectId)
         if (outcome.kind === 'retired') opts.retired?.push(a.projectId)
         else done.push(a.projectId)
         metrics.inc(`${M.idleSuspendedByTier}{tier="${opts.tier ?? 'static'}"}`)
+        if (byCeiling) metrics.inc(M.busyIdleCeilingSuspended)
       } catch (err: any) {
         console.error(`[pool] idle-suspend failed for ${a.projectId}:`, err?.message ?? err)
       }
@@ -5818,6 +6049,8 @@ export class MetalWarmPool {
   private staleSince = new Map<string, number>()
   /** A rotation that aborted (a backup failed) waits until then: each attempt re-runs every backup. */
   private rotateRetryAt = new Map<string, number>()
+  /** VMs already reported by the busy-idle ceiling, so a failed suspend logs once, not every pass. */
+  private busyIdleCeilingLogged = new Set<string>()
 
   /**
    * Tear down a tracked VM: drop it from the assigned map + adopt-on-restart
@@ -5827,6 +6060,7 @@ export class MetalWarmPool {
    * which is the intended self-heal once durability has a current copy.
    */
   private async discardDeadVm(a: AssignedVm, why: string): Promise<void> {
+    this.closeMeter(a)
     this.assigned.delete(a.projectId)
     this.live.remove(a.projectId)
     await this.rescueWorkspace(a, why)
@@ -6009,7 +6243,59 @@ export class MetalWarmPool {
     const target = Math.min(Math.floor(targetMiB), cap)
     if (!(target > 0)) return 'unchanged'
     const fromMiB = this.driveProvisioner.sizeMiB(path)
-    if (fromMiB >= target) return 'unchanged'
+    if (fromMiB >= target) {
+      // The file is already big enough — but the guest may never have seen it.
+      // A grow whose PATCH /drives failed (SHO-401) leaves the file grown and
+      // the guest at the old size, and every later open would otherwise answer
+      // 'unchanged' forever. Compare against what the guest actually mounts and
+      // converge when it is clearly behind.
+      const guest = await this.guestDriveUsage(a)
+      if (!guest) return 'unchanged'
+      const guestMiB = Math.floor(guest.totalBytes / (1024 * 1024))
+      if (!this.guestIsBehind(fromMiB, guestMiB)) return 'unchanged'
+      return this.driveLock.run(a.handle.id, async () => {
+        const currentFile = this.driveProvisioner.sizeMiB(path)
+        const nowGuest = await this.guestDriveUsage(a)
+        if (!nowGuest) return 'unchanged'
+        const nowGuestMiB = Math.floor(nowGuest.totalBytes / (1024 * 1024))
+        if (!this.guestIsBehind(currentFile, nowGuestMiB)) return 'unchanged'
+
+        const t0 = Date.now()
+        let frozen = false
+        try {
+          const freeze = await this.guestDriveOp(a, 'freeze')
+          if (freeze === 'unsupported') {
+            console.warn(`[pool] guest for ${a.projectId} has no /pool/workspace-drive — not converging the drive`)
+            return 'unsupported'
+          }
+          frozen = true
+          // No ftruncate: the file is already the right size. Just tell the VM
+          // its backing file changed, then let it resize the filesystem.
+          await new FcApi(a.handle.socketPath).patchDrive('workspace', path)
+          await this.guestDriveOp(a, 'thaw')
+          frozen = false
+          await this.guestDriveOp(a, 'resize')
+          metrics.inc(`${M.workspaceDriveGrow}{result="converged"}`)
+          metrics.gauge(M.workspaceDriveGrowMs, Date.now() - t0)
+          console.log(
+            `[pool] converged workspace drive for ${a.projectId} ${nowGuestMiB}MiB → ${currentFile}MiB ` +
+              `(guest was behind the file, ${Date.now() - t0}ms)`,
+          )
+          return { fromMiB: nowGuestMiB, toMiB: currentFile }
+        } catch (err: any) {
+          metrics.inc(`${M.workspaceDriveGrow}{result="error"}`)
+          console.error(
+            `[pool] workspace-drive converge for ${a.projectId} to ${currentFile}MiB failed:`,
+            err?.message ?? err,
+          )
+          throw err
+        } finally {
+          if (frozen) {
+            await this.guestDriveOp(a, 'thaw').catch(() => {})
+          }
+        }
+      })
+    }
 
     return this.driveLock.run(a.handle.id, async () => {
       // Re-read inside the lock: a queued grow may have already done the work.
@@ -6056,6 +6342,35 @@ export class MetalWarmPool {
         }
       }
     })
+  }
+
+  /**
+   * True when the guest's mounted filesystem is clearly smaller than the
+   * backing file — i.e. a grow the VM never saw. ext4 metadata makes the guest
+   * total a little under the file size, so only a shortfall of more than 5% or
+   * 1 GiB counts (SHO-401).
+   */
+  private guestIsBehind(fileMiB: number, guestMiB: number): boolean {
+    const shortMiB = fileMiB - guestMiB
+    return shortMiB > Math.max(0.05 * fileMiB, 1024)
+  }
+
+  /** GET /pool/workspace-drive on the guest — the size the VM actually mounts. */
+  private async guestDriveUsage(
+    a: AssignedVm,
+  ): Promise<{ usedBytes: number; totalBytes: number } | null> {
+    try {
+      const res = await fetch(`${a.handle.agentUrl}/pool/workspace-drive`, {
+        headers: { ...(a.runtimeToken ? { Authorization: `Bearer ${a.runtimeToken}` } : {}) },
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!res.ok) return null
+      const body = (await res.json().catch(() => ({}))) as { usedBytes?: number; totalBytes?: number }
+      if (typeof body.usedBytes !== 'number' || typeof body.totalBytes !== 'number') return null
+      return { usedBytes: body.usedBytes, totalBytes: body.totalBytes }
+    } catch {
+      return null
+    }
   }
 
   /** POST /pool/workspace-drive on the guest. `'unsupported'` on 404/409. */
@@ -6616,11 +6931,123 @@ export class MetalWarmPool {
     let unhealthy = 0
     for (const a of this.assigned.values()) {
       if (a.lastHealthOk === false) unhealthy++
-      if ((a.activeStreams ?? 0) > 0) agentActive++
-      else if (a.lastAppRequestAt && now - a.lastAppRequestAt <= APP_ACTIVE_WINDOW_MS) appActive++
+      const cls = this.vmMeterClass(a, now)
+      if (cls === 'agent') agentActive++
+      else if (cls === 'app') appActive++
       else idleTail++
     }
     return { appActive, agentActive, idleTail, unhealthy }
+  }
+
+  /**
+   * Liveness class of ONE VM: an in-flight agent turn wins, then recent end-user
+   * app traffic, else the idle tail. `classifyAssigned` buckets the fleet with
+   * exactly this, and the billing meter charges time to exactly this — one
+   * classifier, so the fleet gauges and the bill can never disagree.
+   */
+  private vmMeterClass(a: AssignedVm, now: number): 'agent' | 'app' | 'idle' {
+    if ((a.activeStreams ?? 0) > 0) return 'agent'
+    if (a.lastAppRequestAt && now - a.lastAppRequestAt <= APP_ACTIVE_WINDOW_MS) return 'app'
+    return 'idle'
+  }
+
+  /**
+   * Advance every assigned VM's cumulative counters by the time since its last
+   * tick, in its current class. Called by `status()` (the heartbeat) and
+   * `reapIdle()` (before it suspends anything), so a VM's final tick is taken
+   * while it is still assigned and its full running time is reported.
+   *
+   * The counters are cumulative per VM, never reset: a heartbeat the control
+   * plane drops loses nothing, because the next one carries the total and the
+   * control plane diff's it against its own cursor.
+   */
+  advanceMeters(now = Date.now()): void {
+    for (const a of this.assigned.values()) this.advanceOneMeter(a, now)
+  }
+
+  private advanceOneMeter(a: AssignedVm, now: number): VmMeter {
+    const m = (a.meter ??= { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: a.assignedAt })
+    // Clamped: a clock step backwards must not subtract metered time.
+    const elapsed = Math.max(0, now - m.advancedAt)
+    m.advancedAt = now
+    if (elapsed > 0) {
+      const cls = this.vmMeterClass(a, now)
+      if (cls === 'agent') m.agentMs += elapsed
+      else if (cls === 'app') m.appMs += elapsed
+      else m.idleMs += elapsed
+    }
+    return m
+  }
+
+  /**
+   * Final tick + park a VM's counters in the closed list, so the heartbeat still
+   * reports its running time after it leaves `assigned` (suspend, retire,
+   * destroy, a dead-VM discard). The row is dropped once the control plane acks
+   * the seq that carried it — bounded by {@link MAX_CLOSED_METERS} rows and
+   * {@link CLOSED_METER_TTL_MS}, so a control plane that never acks cannot grow
+   * the agent's memory without limit.
+   */
+  private closeMeter(a: AssignedVm, now = Date.now()): void {
+    const m = this.advanceOneMeter(a, now)
+    const row: VmMeterReport & { lastSentSeq?: number } = {
+      ...this.meterRow(a, m),
+      endedAt: now,
+    }
+    this.closedMeters.push(row)
+    if (this.closedMeters.length > MAX_CLOSED_METERS) {
+      this.closedMeters.splice(0, this.closedMeters.length - MAX_CLOSED_METERS)
+    }
+  }
+
+  private meterRow(a: AssignedVm, m: VmMeter): VmMeterReport {
+    return {
+      runtimeKey: a.projectId,
+      vmId: a.handle.id,
+      assignedAt: a.assignedAt,
+      // The size the host ACTUALLY booted, not the API's env accounting: a host
+      // boots the class default (or the project's vmMemoryMiB override), which
+      // is what occupies the machine and so what the workspace pays for.
+      vcpus: a.handle.vcpus,
+      memMiB: a.handle.memoryMB,
+      vmClass: a.handle.vmClass,
+      cause: a.cause ?? 'user_open',
+      alwaysOn: !!a.alwaysOn,
+      agentMs: Math.round(m.agentMs),
+      appMs: Math.round(m.appMs),
+      idleMs: Math.round(m.idleMs),
+    }
+  }
+
+  /**
+   * The heartbeat's billing block: every assigned VM's cumulative counters plus
+   * the stored workspace key and machine size the control plane cannot know, and
+   * the closed rows it has not acked. `seq` is monotonic; the control plane
+   * replies with `meterAck: seq` on the NEXT register response.
+   */
+  meterReport(now = Date.now()): {
+    seq: number
+    vms: VmMeterReport[]
+    closed: VmMeterReport[]
+  } {
+    this.advanceMeters(now)
+    this.pruneClosedMeters(now)
+    const seq = ++this.meterSeq
+    const vms = [...this.assigned.values()].map((a) => this.meterRow(a, a.meter!))
+    for (const c of this.closedMeters) c.lastSentSeq = seq
+    return { seq, vms, closed: this.closedMeters.map(({ lastSentSeq, ...row }) => row) }
+  }
+
+  /**
+   * Drop closed rows the control plane has confirmed it ingested. Rows created
+   * after the report that carried `seq` keep their row (no `lastSentSeq`).
+   */
+  ackMeters(seq: number): void {
+    if (!Number.isFinite(seq) || seq <= 0) return
+    this.closedMeters = this.closedMeters.filter((c) => c.lastSentSeq == null || c.lastSentSeq > seq)
+  }
+
+  private pruneClosedMeters(now: number): void {
+    this.closedMeters = this.closedMeters.filter((c) => (c.endedAt ?? now) + CLOSED_METER_TTL_MS > now)
   }
 
   /**
@@ -6754,6 +7181,7 @@ export class MetalWarmPool {
           }
         }
       }
+      this.closeMeter(a)
       this.assigned.delete(projectId)
       this.live.remove(projectId)
       stoppedVm = true
@@ -7055,8 +7483,11 @@ export class MetalWarmPool {
         assignedAt: a.assignedAt,
         lastRealActivityAt: a.lastRealActivityAt ?? a.assignedAt,
         realIdleMs: now - (a.lastRealActivityAt ?? a.assignedAt),
+        lastUserActivityAt: a.lastUserActivityAt ?? a.assignedAt,
+        userIdleMs: now - (a.lastUserActivityAt ?? a.assignedAt),
         activeStreams: a.activeStreams ?? 0,
         busy: this.vmBusy(a),
+        busyIdle: this.vmBusy(a) && this.pastBusyIdleCeiling(a, now),
         snapshotRootfsIdentity: this.bootRootfsIdentity(a),
         ...(staged ? { stagedSnapshotIdentity: staged.rootfsIdentity } : {}),
       }
@@ -7104,6 +7535,12 @@ export class MetalWarmPool {
     return {
       store: this.store.kind,
       idleSuspendMs: this.cfg.idleSuspendMs,
+      busyIdleCeilingMs: this.cfg.busyIdleCeilingMs,
+      // Billing: every assigned VM's cumulative running time by class, plus the
+      // closed VMs the control plane has not acked. The control plane ingests it
+      // from the heartbeat; `meter` is here (not only in register.ts) so /vms
+      // shows exactly what the last heartbeat carried.
+      meter: this.meterReport(now),
       rootfsCow: this.cfg.rootfsCow,
       disk: this.disk(),
       cache: { localCount: this.suspended.size, stagedCount: this.stagedSuspended.size, localBytes: this.cacheBytes() },
@@ -7132,11 +7569,17 @@ export class MetalWarmPool {
         // What reapIdle actually compares against idleSuspendMs. Diverges from
         // idleMs by however much routing polls / fail-open have touched the VM.
         realIdleMs: now - (a.lastRealActivityAt ?? a.assignedAt),
+        // The clock the busy-idle ceiling reads: only real user requests move it,
+        // so a guest stuck reporting busy cannot keep it fresh.
+        userIdleMs: now - (a.lastUserActivityAt ?? a.assignedAt),
         // Per-class liveness (see AssignedVm). `*IdleMs: null` = no request of
         // that class observed yet; `busy` (or `activeStreams>0` for an older
         // guest) = an agent turn in flight.
         activeStreams: a.activeStreams ?? 0,
         busy: this.vmBusy(a),
+        // Reports busy, but no user activity past the ceiling: the reaper will
+        // suspend it on its next pass.
+        busyIdle: this.vmBusy(a) && this.pastBusyIdleCeiling(a, now),
         appIdleMs: a.lastAppRequestAt ? now - a.lastAppRequestAt : null,
         appRequestCount: a.appRequestCount ?? 0,
         agentIdleMs: a.lastAgentRequestAt ? now - a.lastAgentRequestAt : null,

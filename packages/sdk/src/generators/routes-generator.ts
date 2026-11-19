@@ -121,6 +121,7 @@ export function generateModelRoutes(
   //      message is hard to debug. We just drop unknown keys.
   const writableScalarFieldNames = getWritableScalarFields(model).map(f => f.name)
   const relationFieldNames = getRelationFields(model).map(f => f.name)
+  const hasRelations = relationFieldNames.length > 0
 
   const lines: string[] = [
     GENERATED_FILE_LICENSE_HEADER,
@@ -132,6 +133,7 @@ export function generateModelRoutes(
     '',
     'import { Hono } from "hono"',
     'import { PrismaClient } from "./prisma/client"',
+    'import type { Prisma } from "./prisma/client"',
     `import type { ${modelName}Hooks } from "./${toFileName(modelName)}.hooks"`,
     '',
     '// JSON replacer that coerces native BigInt values to strings so they can',
@@ -213,7 +215,7 @@ export function generateModelRoutes(
     '/**',
     ' * HTTP status for a hook rejection. Hooks signal authorization failures',
     ' * with `unauthorized` / `forbidden` / `not_found` codes, and state',
-    ' * conflicts with `already_member` / `last_owner`.',
+    ' * conflicts with `already_member` / `last_owner` / `trial_seat_limit`.',
     ' */',
     'function hookErrorStatus(error: { code?: string } | undefined): number {',
     '  switch (error?.code) {',
@@ -221,7 +223,8 @@ export function generateModelRoutes(
     '    case "forbidden": return 403',
     '    case "not_found": return 404',
     '    case "already_member":',
-    '    case "last_owner": return 409',
+    '    case "last_owner":',
+    '    case "trial_seat_limit": return 409',
     '    default: return 400',
     '  }',
     '}',
@@ -231,8 +234,8 @@ export function generateModelRoutes(
     `const WRITABLE_SCALAR_FIELDS = ${tsStringArrayLiteral(writableScalarFieldNames)}`,
     `const RELATION_FIELDS = ${tsStringArrayLiteral(relationFieldNames)}`,
     '',
-    'type WriteBodyResult =',
-    '  | { ok: true; data: Record<string, unknown> }',
+    'type WriteBodyResult<T> =',
+    '  | { ok: true; data: T }',
     '  | { ok: false; error: { code: string; message: string } }',
     '',
     '/**',
@@ -246,7 +249,7 @@ export function generateModelRoutes(
     " * - Unknown keys are silently dropped to prevent injection of fields the",
     ' *   schema does not expose.',
     ' */',
-    'function pickWritableFields(body: any): WriteBodyResult {',
+    'function pickWritableFields<T>(body: any): WriteBodyResult<T> {',
     '  if (body == null || typeof body !== "object" || Array.isArray(body)) {',
     '    return { ok: false, error: { code: "invalid_body", message: "Request body must be a JSON object." } }',
     '  }',
@@ -268,7 +271,7 @@ export function generateModelRoutes(
     '    }',
     '    data[key] = value',
     '  }',
-    '  return { ok: true, data }',
+    '  return { ok: true, data: data as T }',
     '}',
     '',
     '/**',
@@ -303,7 +306,12 @@ export function generateModelRoutes(
   lines.push('        }')
   lines.push('      }')
   lines.push('      ')
-      lines.push('      let include: any = undefined')
+      // A model with no relations has `include?: never` in its Prisma args, so
+      // emitting `include` at all fails typecheck. Only models that can
+      // actually include something get the variable and the argument.
+      if (hasRelations) {
+        lines.push('      let include: any = undefined')
+      }
       lines.push('      let orderBy: any = undefined')
       lines.push('')
       lines.push('      // Honor an `orderBy` query param of the form "field:direction"')
@@ -322,7 +330,9 @@ export function generateModelRoutes(
       lines.push('        }')
       lines.push('        if (result?.data) {')
       lines.push('          where = result.data.where || where')
-      lines.push('          include = result.data.include || include')
+      if (hasRelations) {
+        lines.push('          include = result.data.include || include')
+      }
       lines.push('          orderBy = result.data.orderBy || orderBy')
       lines.push('        }')
       lines.push('      }')
@@ -330,7 +340,9 @@ export function generateModelRoutes(
       lines.push(`      const [items, total] = await Promise.all([`)
       lines.push(`        prisma.${modelLower}.findMany({`)
       lines.push('          where,')
-      lines.push('          include,')
+      if (hasRelations) {
+        lines.push('          include,')
+      }
       lines.push('          orderBy,')
       lines.push('          take: query.limit ? parseInt(query.limit) : undefined,')
   lines.push('          skip: query.offset ? parseInt(query.offset) : undefined,')
@@ -401,7 +413,7 @@ export function generateModelRoutes(
   lines.push('')
   lines.push('      // Filter the body to schema-known scalars + relation-shaped relations.')
   lines.push('      // Prevents accidental relation-as-scalar errors and unknown-key Prisma crashes.')
-  lines.push('      const picked = pickWritableFields(body)')
+  lines.push(`      const picked = pickWritableFields<Prisma.${modelName}UncheckedCreateInput>(body)`)
   lines.push('      if (!picked.ok) {')
   lines.push('        return sendJson(c, { error: picked.error }, 400)')
   lines.push('      }')
@@ -444,7 +456,7 @@ export function generateModelRoutes(
   lines.push('      }')
   lines.push('')
   lines.push('      // Same allowlist filter as on create — see pickWritableFields above.')
-  lines.push('      const picked = pickWritableFields(body)')
+  lines.push(`      const picked = pickWritableFields<Prisma.${modelName}UncheckedUpdateInput>(body)`)
   lines.push('      if (!picked.ok) {')
   lines.push('        return sendJson(c, { error: picked.error }, 400)')
   lines.push('      }')

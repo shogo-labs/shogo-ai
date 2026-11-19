@@ -63,3 +63,47 @@ export function parseHistorySeed(raw: unknown): HistorySeed | null {
   if (kept.length === 0 && !summary) return null
   return { summary, messages: kept.reverse() }
 }
+
+/** The slice of a session store this module writes to. */
+export interface HistorySeedSession {
+  /** How many messages the session already holds (0 when it is empty). */
+  messageCount(): number
+  /** Write the seeded messages; returns how many were actually added. */
+  appendSeed(messages: HistorySeedMessage[]): number
+  /** The session's own compaction summary, if it has one. */
+  currentSummary(): string | null
+  setSummary(summary: string): void
+}
+
+/**
+ * Give a session that holds nothing its conversation back.
+ *
+ * A one-message turn is the *normal* shape for an app send now: the client
+ * posts only the message being sent and every typed-turn API route attaches the
+ * durable seed (SHO-402). So this is how a cold, evicted or restarted runtime
+ * gets its context.
+ *
+ * A session that already holds messages is never re-seeded. The runtime's own
+ * copy is the truth — seeding over it would replay every turn a second time —
+ * which is also why the client can stop sending the transcript at all.
+ */
+export function seedEmptySessionFromHistory(
+  seed: HistorySeed | null,
+  session: HistorySeedSession,
+): { restored: number; summary: boolean } {
+  if (!seed || session.messageCount() > 0) return { restored: 0, summary: false }
+  const restored = session.appendSeed(seed.messages)
+  if (seed.summary) {
+    // The durable summary must win over a runtime copy that covers less. The
+    // runtime has no watermark of its own (its counts are not the API's
+    // `ChatMessage` counts), so the comparable signal is coverage: a longer
+    // durable block folds more of the conversation. Every runtime compaction is
+    // also written back to the API, so it is never the older copy for long
+    // (SHO-137 round 3, R4).
+    const runtimeSummary = session.currentSummary()
+    if (!runtimeSummary || seed.summary.trim().length > runtimeSummary.trim().length) {
+      session.setSummary(seed.summary)
+    }
+  }
+  return { restored, summary: Boolean(seed.summary) }
+}

@@ -35,6 +35,7 @@ import {
 } from '../contexts/domain'
 import { api } from './api'
 import { invitationEvents } from './invitation-events'
+import { formatApiError } from '@shogo/shared-app/chat'
 
 export type InviteProcessingState = {
   id: string
@@ -65,6 +66,9 @@ export function usePendingInvitations({ enabled = true }: { enabled?: boolean } 
   const [pendingInvites, setPendingInvites] = useState<any[]>([])
   const [processingInvite, setProcessingInvite] = useState<InviteProcessingState>(null)
   const [isLoading, setIsLoading] = useState(true)
+  // Why the last accept failed, in the API's own words (e.g. a trialing
+  // workspace at its seat cap, SHO-422). Cleared on the next attempt.
+  const [acceptError, setAcceptError] = useState<string | null>(null)
 
   const reload = useCallback(async () => {
     if (!enabled || !http || !user?.email) {
@@ -89,6 +93,7 @@ export function usePendingInvitations({ enabled = true }: { enabled?: boolean } 
       // the caller should not offer Accept on such a surface at all.
       if (!actions || !workspaces) return false
       setProcessingInvite({ id: invite.id, action: 'accept' })
+      setAcceptError(null)
       let accepted = false
       try {
         await actions.acceptInvitation(invite.id, user?.id || '', {
@@ -100,6 +105,7 @@ export function usePendingInvitations({ enabled = true }: { enabled?: boolean } 
         setPendingInvites((prev) => prev.filter((item: any) => item.id !== invite.id))
       } catch (e) {
         console.error('[usePendingInvitations] Failed to accept invitation:', e)
+        setAcceptError(formatApiError(e))
       }
       if (accepted) {
         // The joined workspace has to be in the list before the caller can
@@ -161,6 +167,7 @@ export function usePendingInvitations({ enabled = true }: { enabled?: boolean } 
     reload,
     acceptInvite,
     declineInvite,
+    acceptError,
     /** Accept/decline need the domain store; read-only surfaces render no actions. */
     canRespond: !!actions && !!workspaces,
   }

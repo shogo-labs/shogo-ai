@@ -26,6 +26,31 @@ export {
 } from './workspace-root-sync'
 
 export {
+  WORKSPACE_ROOT_SECRETS_VERSION,
+  WORKSPACE_ROOT_SECRETS_MAX_BYTES,
+  WORKSPACE_ROOT_SECRETS_MAX_PAYLOAD_BYTES,
+  WORKSPACE_ROOT_SECRETS_MAX_FILES,
+  WORKSPACE_ROOT_SECRETS_MAX_SLOTS,
+  WORKSPACE_ROOT_SECRET_MAX_FILE_BYTES,
+  WORKSPACE_SECRET_SLOT_ROOT,
+  applyWorkspaceSecretSlot,
+  collectWorkspaceSecretSlot,
+  emptyWorkspaceRootSecrets,
+  flushWorkspaceRootSecrets,
+  isWorkspaceSecretFile,
+  isWorkspaceSecretSlot,
+  restoreWorkspaceRootSecrets,
+  staleWorkspaceSecretNames,
+  validateWorkspaceRootSecrets,
+  workspaceRuntimeKey,
+  workspaceSecretsTag,
+  type WorkspaceRootSecrets,
+  type WorkspaceRootSecretsTransport,
+  type WorkspaceSecretFile,
+  type WorkspaceSecretSlot,
+} from './workspace-root-secrets'
+
+export {
   ZERNIO_SOCIAL_TOOLKITS,
   isZernioSocialToolkit,
   normalizeToolkitName,
@@ -171,6 +196,9 @@ export {
 
 export {
   isShogoRuntimeState,
+  isShogoStatePath,
+  isShogoRuntimeSubtree,
+  SHOGO_RUNTIME_SUBTREES,
   toPosixPath,
   directorySizeBytes,
   resolveGitDir,
@@ -179,7 +207,9 @@ export {
   isRepairInProgress,
   acquireRepairLock,
   buildShogoExcludeBlock,
+  buildShogoGitHubExcludeBlock,
   ensureShogoExcludes,
+  ensureShogoGitHubExcludes,
   untrackShogoStatePaths,
   prepareCheckpointRepo,
   stripShogoLfsRules,
@@ -187,6 +217,9 @@ export {
   SHOGO_EXCLUDE_HEADER,
   SHOGO_EXCLUDE_FOOTER,
   SHOGO_EXCLUDE_LINES,
+  SHOGO_GITHUB_EXCLUDE_HEADER,
+  SHOGO_GITHUB_EXCLUDE_FOOTER,
+  SHOGO_GITHUB_EXCLUDE_LINES,
   type UntrackResult,
 } from './shogo-state-paths'
 
@@ -251,6 +284,20 @@ export {
   checkSelfAssign,
   type SelfAssignConfig,
 } from './self-assign'
+
+export {
+  assertStandaloneEnv,
+  isInKubernetes,
+  isStandalone,
+  isTruthyEnv,
+  logNoApiUrlOnce,
+  logStandaloneOnce,
+  parseAgentModelPin,
+  pinnedAgentModel,
+  resolveApiUrl,
+  StandaloneConfigError,
+  type AgentModelPin,
+} from './standalone'
 
 export {
   createRuntimeApp,

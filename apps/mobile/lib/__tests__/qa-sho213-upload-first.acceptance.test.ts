@@ -166,7 +166,8 @@ describe('AC1/AC2 — a large archive never rides in the chat body', () => {
 
     expect(parts[0].url).toBe(dataUrl)
     expect(parts[0].savedPath).toBeUndefined()
-    expect(received.length).toBe(before)
+    // The original is never uploaded — only its small preview is (SHO-407).
+    expect(received.slice(before).map((entry) => entry.name)).not.toContain('pixel.png')
   })
 })
 

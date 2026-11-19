@@ -17,6 +17,7 @@
 
 import { Hono } from 'hono'
 import { resolveDesiredForHost, setFleetChannelRelease, type AgentRelease } from '../lib/metal-agent-release'
+import { ingestMetalMeters } from '../lib/vm-metering/ingest'
 import { getMetalPlacementRegistry, type StagedRootfsReport } from '../lib/metal-placement-registry'
 import { activateRootfsFor, enqueueRefresh } from '../lib/metal-rewarm'
 import {
@@ -77,7 +78,7 @@ export function metalRoutes(): Hono {
     if (!authOk(c.req.header('authorization'))) {
       return c.json({ ok: false, error: 'unauthorized' }, 401)
     }
-    let body: Partial<MetalHostRegistration> & { load?: any; capacity?: any }
+    let body: Partial<MetalHostRegistration> & { load?: any; capacity?: any; meter?: unknown }
     try {
       body = await c.req.json()
     } catch {
@@ -158,6 +159,24 @@ export function metalRoutes(): Hono {
       restarting: body.restarting === true ? true : undefined,
     })
 
+    // VM compute metering (SHO-424): the host's cumulative per-VM counters become
+    // `VmUsageHour` rows. Deliberately NOT awaited before the register bookkeeping
+    // above and never allowed to fail the heartbeat — liveness is what keeps this
+    // host's projects routable, and a metering bug must not take a fleet down.
+    // `meterAck` tells the host it may forget the closed VMs it re-sends.
+    let meterAck: number | undefined
+    if (body.meter) {
+      try {
+        const ingested = await ingestMetalMeters({ hostId: String(body.hostId), payload: body.meter })
+        meterAck = ingested.ack
+        if (ingested.invalid > 0) {
+          console.warn(`[metal/meter] ${body.hostId}: ${ingested.invalid} unusable meter row(s) ignored`)
+        }
+      } catch (err: any) {
+        console.warn(`[metal/meter] ingest failed for ${body.hostId}:`, err?.message ?? err)
+      }
+    }
+
     // Idle-suspend window for this host, from its region's utilization. Absent on
     // a registry/compute failure, which the host treats like a stale directive.
     let idleSuspend = null
@@ -188,7 +207,13 @@ export function metalRoutes(): Hono {
       console.warn(`[metal] activateRootfsFor failed for ${body.hostId}:`, (err as any)?.message ?? err)
     }
 
-    return c.json({ ok: true, desired, idleSuspend, ...(activateRootfs ? { activateRootfs } : {}) })
+    return c.json({
+      ok: true,
+      desired,
+      idleSuspend,
+      ...(activateRootfs ? { activateRootfs } : {}),
+      ...(meterAck !== undefined ? { meterAck } : {}),
+    })
   })
 
   // POST /api/internal/metal/release — publish a node-agent release to a

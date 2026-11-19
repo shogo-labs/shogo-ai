@@ -24,6 +24,7 @@
 
 import { spawn } from './child-process'
 import { excludePathspecs } from './git-pathspec'
+import { WORKSPACE_SECRET_GITIGNORE_LINES } from './workspace-root-secrets'
 import {
   ensureShogoExcludes,
   evictStaleGitLock,
@@ -135,6 +136,10 @@ function run(cmd: string, args: string[], opts: { cwd?: string; env?: NodeJS.Pro
  * first `git add -A` committed `node_modules` (36k+ files) and every later
  * commit / restore / LFS pass walked that tree. Keep this list to the
  * directories that are never source: dependency installs and build output.
+ *
+ * The `.env*` rules come from {@link WORKSPACE_SECRET_GITIGNORE_LINES}, the same
+ * list the secrets store uses to decide what travels — a name the archive
+ * treats as a token must not be stageable here (SHO-384 QA round 1).
  */
 export const DEFAULT_WORKSPACE_GITIGNORE = [
   '# dependencies and build output are never source',
@@ -151,9 +156,7 @@ export const DEFAULT_WORKSPACE_GITIGNORE = [
   '.shogo-cwd-*',
   '.tmp/',
   '*.log',
-  '.env',
-  '.env.local',
-  '.env.*.local',
+  ...WORKSPACE_SECRET_GITIGNORE_LINES,
   '.DS_Store',
   '',
 ].join('\n')

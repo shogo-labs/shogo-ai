@@ -214,6 +214,16 @@ export const config = {
    * auto-suspend (VMs stay resident until explicitly /suspend'd).
    */
   idleSuspendMs: parseInt(env('METAL_IDLE_SUSPEND_MS', '0'), 10),
+  /**
+   * Busy-idle ceiling. A guest that keeps reporting `busy` (or a leaked
+   * `activeStreams`) is never idle-suspended, so it never rotates onto a fixed
+   * image and holds host RAM forever. Past this long with no *user* activity —
+   * no app request, no agent turn — the reaper suspends it anyway. 0 disables
+   * the ceiling. Only guests that report per-class activity are eligible: for an
+   * older guest the only signal is the catch-all, which our own export sweeps
+   * move, so idle cannot be told from used.
+   */
+  busyIdleCeilingMs: parseInt(env('METAL_BUSY_IDLE_CEILING_MS', String(6 * 60 * 60_000)), 10),
   /** How often the reaper scans assigned VMs for idleness. */
   reapIntervalMs: parseInt(env('METAL_REAP_INTERVAL_MS', '15000'), 10),
   /**

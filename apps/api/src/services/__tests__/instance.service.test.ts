@@ -132,8 +132,14 @@ describe('getInstanceForWorkspace', () => {
       instanceSize: 'small',
       storageUsage: {
         totalBytes: BigInt(1_000_000),
+        billableBytes: BigInt(900_000),
         projectCount: 3,
         lastCalculatedAt: new Date('2026-01-01'),
+        breakdown: {
+          categories: { project_files: 900_000, quarantine: 100_000 },
+          projects: [],
+          unmeasured: [],
+        },
       },
     }
     const out = await getInstanceForWorkspace('ws-1')
@@ -141,9 +147,12 @@ describe('getInstanceForWorkspace', () => {
     expect(out!.spec.cpuCores).toBeGreaterThan(0)
     expect(out!.storage).toEqual({
       totalBytes: 1_000_000,
+      billableBytes: 900_000,
       projectCount: 3,
       limitBytes: out!.spec.storageLimitBytes,
       lastCalculatedAt: new Date('2026-01-01'),
+      categories: expect.objectContaining({ project_files: 900_000, quarantine: 100_000 }),
+      unmeasured: [],
     })
   })
 

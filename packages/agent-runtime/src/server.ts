@@ -13,7 +13,7 @@
  * with an Agent Gateway that makes the configured agent "alive."
  */
 
-import { resolve, dirname, join, extname, basename } from 'path'
+import { resolve, dirname, join, extname, basename, isAbsolute, relative, sep } from 'path'
 import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
@@ -40,6 +40,10 @@ import {
   appendFileSync,
 } from 'fs'
 import { hydrateWorkspaceMembers, type MemberSync } from './workspace-hydration'
+import {
+  getWorkspaceRootSecretsSync,
+  type WorkspaceRootSecretSync,
+} from './workspace-secrets-sync'
 import {
   resolveMemberTechStackId,
   applyMemberTechStackMarker,
@@ -105,6 +109,9 @@ import {
   checkGitUsable,
   type CloudSyncMode,
   wrapSseStreamWithKeepalive,
+  assertStandaloneEnv,
+  isStandalone,
+  pinnedAgentModel,
 } from '@shogo/shared-runtime'
 import { traceStream } from '@shogo/shared-runtime/stream-trace'
 import {
@@ -155,7 +162,6 @@ import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
 import { ensureDurableTaskLogs } from './task-log-durability'
 import { resolveDistFile, staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
-import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, handlePtyUpgrade } from './pty-ws-handler'
 import {
@@ -228,7 +234,8 @@ import {
 } from './workspace-members'
 import { startWorkspaceRootSync } from './workspace-root-sync'
 import { seedEmptyChatSession } from './file-attachment-utils'
-import { parseHistorySeed } from './history-seed'
+import { parseHistorySeed, seedEmptySessionFromHistory } from './history-seed'
+import { modelDowngradeNotice, parseModelDowngrade } from './model-downgrade'
 import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
 import { WebhookAdapter } from './channels/webhook'
@@ -271,6 +278,20 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 // =============================================================================
 // Configuration
 // =============================================================================
+
+// Standalone mode (`SHOGO_STANDALONE=1`): a partner runs this runtime on its own
+// cluster with no Shogo API behind it. Validate the contract before anything
+// else reads the env, so a misconfigured pod fails once with one message naming
+// every missing variable instead of booting into a half-working state.
+if (isStandalone()) {
+  assertStandaloneEnv()
+  if (!process.env.PROJECT_ID) process.env.PROJECT_ID = 'standalone'
+  const pin = pinnedAgentModel()
+  console.log(
+    `[agent-runtime] standalone mode: no Shogo API, model pinned to ${pin?.provider}:${pin?.id}, ` +
+      `project=${process.env.PROJECT_ID}`,
+  )
+}
 
 let WORKSPACE_DIR = process.env.WORKSPACE_DIR || process.env.AGENT_DIR || process.env.PROJECT_DIR || '/app/workspace'
 if (applyGitSafeDirectoryEnv()) {
@@ -499,6 +520,13 @@ let publishedDataSyncInstance: PublishedDataSync | null = null
  * member and flush them all on shutdown. Empty for single-project runtimes.
  */
 let workspaceMemberSyncs: Map<string, import('@shogo/shared-runtime').S3Sync> = new Map()
+
+/**
+ * Keeps the workspace root's `.env*` in the API's encrypted store (SHO-384).
+ * Null unless the API attached one — desktop and metal runtimes keep their root
+ * on disk (desktop) or in the home archive (metal).
+ */
+let workspaceRootSecretSync: WorkspaceRootSecretSync | null = null
 
 /**
  * Whether real Git LFS is active for this pod. Scoped to `git_only` (the
@@ -2149,39 +2177,31 @@ app.post('/agent/chat', async (c) => {
       console.log(`[AgentRuntime][chat] seeded ${seeded} history message(s) for session ${chatSessionKey}`)
     }
   }
-  // A server-initiated turn (background-task wake, queued message, scheduled
-  // run, team-chat dispatch) carries exactly one message, so the block above
-  // never runs and a session with no local copy starts from the wake note
-  // alone. The API sends the conversation it already stores as `historySeed`
-  // for exactly that case (SHO-137).
+  // A one-message turn is the normal shape of an app send now: the client posts
+  // only the message being sent, and the API attaches the conversation it
+  // already stores as `historySeed` (SHO-402). The seed is applied only to a
+  // session that holds nothing — a warm session is never re-seeded (SHO-137).
   if (allMessages.length <= 1) {
     const seed = parseHistorySeed(body.historySeed)
-    const restored = seed && (sessionManager.get(chatSessionKey)?.messages.length ?? 0) === 0
-    if (seed && restored) {
-      const seeded = seedEmptyChatSession(
-        sessionManager,
-        chatSessionKey,
-        seed.messages.map((m) => ({ role: m.role, parts: [{ type: 'text', text: m.text }] })),
-        { label: 'chat_history' },
+    const { restored, summary } = seedEmptySessionFromHistory(seed, {
+      messageCount: () => sessionManager.get(chatSessionKey)?.messages.length ?? 0,
+      appendSeed: (messages) =>
+        seedEmptyChatSession(
+          sessionManager,
+          chatSessionKey,
+          messages.map((m) => ({ role: m.role, parts: [{ type: 'text', text: m.text }] })),
+          { label: 'chat_history' },
+        ),
+      currentSummary: () => sessionManager.get(chatSessionKey)?.compactedSummary ?? null,
+      setSummary: (value) => {
+        sessionManager.setCompactedSummary(chatSessionKey, value, { replace: true })
+      },
+    })
+    if (restored > 0 || summary) {
+      console.log(
+        `[AgentRuntime][chat] restored ${restored} message(s) and ${summary ? 'a summary' : 'no summary'} ` +
+          `from historySeed for session ${chatSessionKey}`,
       )
-      if (seed.summary) {
-        // The durable summary must win over a runtime copy that covers less.
-        // The runtime has no watermark of its own (its counts are not the
-        // API's `ChatMessage` counts), so the comparable signal is coverage:
-        // a longer durable block folds more of the conversation. Every runtime
-        // compaction is also written back to the API, so it is never the older
-        // copy for long (SHO-137 round 3, R4).
-        const runtimeSummary = sessionManager.get(chatSessionKey)?.compactedSummary ?? null
-        sessionManager.setCompactedSummary(chatSessionKey, seed.summary, {
-          replace: !runtimeSummary || seed.summary.trim().length > runtimeSummary.trim().length,
-        })
-      }
-      if (seeded > 0 || seed.summary) {
-        console.log(
-          `[AgentRuntime][chat] restored ${seeded} message(s) and ${seed.summary ? 'a summary' : 'no summary'} ` +
-            `from historySeed for session ${chatSessionKey}`,
-        )
-      }
     }
   }
 
@@ -2196,6 +2216,10 @@ app.post('/agent/chat', async (c) => {
   // session override so the Account prompt line names the model this turn
   // actually sends (SHO-145).
   const modelDisplayName = (body.modelDisplayName as string | undefined) || undefined
+  // SHO-417: the API moved this run off the agent's configured model because it
+  // is above the person the run acts for. The reply says so in code, before the
+  // model writes anything — never by asking the model to mention it.
+  const modelDowngrade = parseModelDowngrade(body.modelDowngrade)
   const confirmedPlan = body.confirmedPlan || undefined
   const dualPlan = body.dualPlan === true
   // Which surface this chat belongs to. The API proxy stamps it (workspace
@@ -2215,6 +2239,9 @@ app.post('/agent/chat', async (c) => {
   // Always replace: the gateway is a process singleton, so a missing
   // `viewer` must clear the previous request's phone/desktop hint.
   agentGateway!.setViewerContext(body.viewer)
+  // Same for the Auto tier map: the API narrows it to the person this run acts
+  // for, and a request without one must fall back to the process map (SHO-417).
+  agentGateway!.setTurnAutoTiers(body.autoTiers)
   agentGateway!.setAccountContext(parseAccountContext(body))
 
   const chatUserId = c.req.header('X-User-Id') || body.userId || undefined
@@ -2231,6 +2258,16 @@ app.post('/agent/chat', async (c) => {
     console.log(`[AgentChat] Session ${chatSessionKey} free after ${waitedMs}ms`)
   }
   const turn = bufferedTurns.start(chatSessionKey, async (writer) => {
+    if (modelDowngrade) {
+      const noticeId = `text-${Date.now()}-downgrade`
+      writer.write({ type: 'text-start', id: noticeId } as any)
+      writer.write({
+        type: 'text-delta',
+        id: noticeId,
+        delta: modelDowngradeNotice(modelDowngrade),
+      } as any)
+      writer.write({ type: 'text-end', id: noticeId } as any)
+    }
     await agentGateway!.processChatMessageStream(userText || '', writer, {
       modelOverride,
       modelProvider,
@@ -2941,6 +2978,17 @@ function getPreviewManager(): PreviewManager {
 const workspacePreviewManagers = new Map<string, PreviewManager>()
 
 /**
+ * Projects a person stopped on purpose (`POST /p/:id/preview/stop`).
+ *
+ * `/p/:id/preview/stop` deliberately drops the cached manager so a later
+ * start rebuilds from a clean instance — which would otherwise erase the
+ * "stopped on purpose" flag and let the next `/api/*` request or agent turn
+ * start a project the user had just stopped. Cleared by that project's
+ * `/preview/start` and `/preview/restart`.
+ */
+const stoppedByUserProjects = new Set<string>()
+
+/**
  * The full set of project ids this runtime will serve a preview for: the
  * boot-time attached list (`WORKSPACE_RUNTIME_PROJECT_IDS`, from
  * `WORKSPACE_PROJECT_IDS` env) PLUS anything the meta-agent has mounted live
@@ -3010,6 +3058,7 @@ function getWorkspacePreviewManager(projectId: string): PreviewManager | null {
       onLogLine: recordConsoleLogLine,
     })
     workspacePreviewManagers.set(projectId, pm)
+    if (stoppedByUserProjects.has(projectId)) pm.markStoppedByUser()
   }
   return pm
 }
@@ -3053,6 +3102,59 @@ function getRootPreviewManager(): PreviewManager {
     if (wpm) return wpm
   }
   return getPreviewManager()
+}
+
+/**
+ * The project whose API server a tool or API call means.
+ *
+ * `ref` may be a project id, a mount folder name, or a path inside a project
+ * (absolute, or relative to `WORKSPACE_DIR`) — that last form is what makes
+ * an edit to `<mountedProject>/custom-routes.ts` or
+ * `<mountedProject>/prisma/schema.prisma` sync and restart THAT project
+ * instead of the anchor. Anything unrecognised (or absent) resolves to the
+ * anchor, matching every pre-existing caller.
+ */
+function resolveApiServerTarget(ref?: string): PreviewManager | null {
+  if (!ref) return getRootPreviewManager()
+  if (!IS_WORKSPACE_RUNTIME) return getPreviewManager()
+
+  const mounts = parseWorkspaceMounts()
+  const anchorId = getAnchorProjectId()
+  const forProject = (projectId: string): PreviewManager | null =>
+    projectId === anchorId ? getRootPreviewManager() : getWorkspacePreviewManager(projectId)
+
+  // A project id or a mount's folder name.
+  if (mounts.some((m) => m.projectId === ref) || ref === anchorId) return forProject(ref)
+  const byMount = mounts.find((m) => m.mount === ref)
+  if (byMount) return byMount.kind === 'folder' ? getRootPreviewManager() : forProject(byMount.projectId)
+
+  // A path inside a project: match against each mount's host path first (a
+  // folder-linked project's real folder is outside WORKSPACE_DIR), then
+  // against the merged-root layout.
+  const abs = isAbsolute(ref) ? ref : join(WORKSPACE_DIR, ref)
+  for (const mount of mounts) {
+    if (mount.kind === 'folder') continue
+    if (abs === mount.path || abs.startsWith(mount.path + sep)) return forProject(mount.projectId)
+  }
+  const rel = relative(WORKSPACE_DIR, abs)
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return getRootPreviewManager()
+  const first = rel.split(sep)[0]
+  const owner = mounts.find((m) => m.mount === first)
+  if (owner) return owner.kind === 'folder' ? getRootPreviewManager() : forProject(owner.projectId)
+  return getRootPreviewManager()
+}
+
+/** The `ApiServerHost` the gateway resolves projects through (see `attachApiServer`). */
+function buildApiServerHost(): import('./preview-manager').ApiServerHost {
+  return {
+    resolve: (ref?: string) => resolveApiServerTarget(ref),
+    all: () => {
+      if (!IS_WORKSPACE_RUNTIME) return [getPreviewManager()]
+      return effectiveWorkspaceProjectIds()
+        .map((projectId) => getWorkspacePreviewManager(projectId))
+        .filter((pm): pm is PreviewManager => pm != null)
+    },
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3117,6 +3219,8 @@ app.post('/preview/start', async (c) => {
 
 app.post('/preview/stop', (c) => {
   const pm = getRootPreviewManager()
+  // Deliberate stop: on-demand starts (`/api/*`, agent turns) must not undo it.
+  pm.markStoppedByUser()
   pm.stop()
   return c.json({ ok: true })
 })
@@ -5702,19 +5806,20 @@ app.route('/', runtimeLogsRoutes())
 // the rollout.
 // =============================================================================
 
-app.get('/agent/api-server/status', (c) => {
-  if (!agentGateway) return c.json({ phase: 'unknown' })
-  return c.json({ phase: agentGateway.getSkillServerPhase() })
+// About the status: it is read-only (never starts anything) and reports the
+// same shape `server_sync({ mode: 'status' })` and `/preview/status` do.
+app.get('/agent/api-server/status', async (c) => {
+  return c.json(await getRootPreviewManager().apiServerStatus())
 })
-app.get('/agent/skill-server/status', (c) => {
-  if (!agentGateway) return c.json({ phase: 'unknown' })
-  return c.json({ phase: agentGateway.getSkillServerPhase() })
+app.get('/agent/skill-server/status', async (c) => {
+  return c.json(await getRootPreviewManager().apiServerStatus())
 })
 
 app.post('/agent/api-server/sync', async (c) => {
   if (!agentGateway) return c.json({ ok: false, error: 'gateway not running' }, 503)
   try {
-    const result = await agentGateway.syncSkillServer()
+    const project = new URL(c.req.url).searchParams.get('project') ?? undefined
+    const result = await agentGateway.syncApiServer(project)
     return c.json(result)
   } catch (err: any) {
     return c.json({ ok: false, phase: 'crashed', error: err.message || String(err) }, 500)
@@ -5723,7 +5828,8 @@ app.post('/agent/api-server/sync', async (c) => {
 app.post('/agent/skill-server/sync', async (c) => {
   if (!agentGateway) return c.json({ ok: false, error: 'gateway not running' }, 503)
   try {
-    const result = await agentGateway.syncSkillServer()
+    const project = new URL(c.req.url).searchParams.get('project') ?? undefined
+    const result = await agentGateway.syncApiServer(project)
     return c.json(result)
   } catch (err: any) {
     return c.json({ ok: false, phase: 'crashed', error: err.message || String(err) }, 500)
@@ -5740,12 +5846,10 @@ app.post('/agent/skill-server/sync', async (c) => {
 app.post('/agent/runtime-checks', async (c) => {
   const { runRuntimeChecks } = await import('./evals/runtime-checks')
   const body = await c.req.json<{ canvasExpectedPort?: number; evalId: string; verbose?: boolean; tenantProbe?: { route: string } }>()
-  // Use the PreviewManager's configured port directly; `getSkillServerPort()`
-  // also falls through to the same value via the shim, but reading it from
-  // the manager keeps the source-of-truth obvious. Never falls back to the
-  // retired skill server's 4100 — that port is unallocated post-merge.
+  // Use the PreviewManager's configured port directly. Never falls back to
+  // the retired skill server's 4100 — that port is unallocated post-merge.
   const skillServerPort = getPreviewManager().apiServerPort
-    ?? agentGateway?.getSkillServerPort()
+    ?? agentGateway?.getApiServerPort()
     ?? 3001
   try {
     const results = await runRuntimeChecks({
@@ -5775,75 +5879,52 @@ app.post('/agent/runtime-checks', async (c) => {
 // existing workspaces.
 // =============================================================================
 
-// Total time the proxy will wait for the project API server to come up
-// before returning 503 to the SPA. Sized for "cold-start without a hot
-// API server": the in-process health-check loop runs for up to
-// HEALTH_CHECK_RETRIES * HEALTH_CHECK_INTERVAL_MS (~5s) on a fresh
-// spawn, but most workspaces bind in well under 1s. 3s gives a healthy
-// 2× margin for the common case without holding the browser hostage
-// when `server.tsx` is genuinely broken — the SPA can render its
-// "starting up" state from the 503 + phase payload instead.
-const API_PROXY_STARTUP_WAIT_MS = 3000
-const API_PROXY_POLL_INTERVAL_MS = 100
+// Budget for the on-demand start of a project's API server from `/api/*`.
+// Sized for "cold-start without a hot API server": a first request on a fresh
+// runtime has to run `shogo generate` + `prisma db push` and spawn the
+// sidecar. The old 3s grace window was shorter than that, so the SPA's first
+// fetch got a hard 503 and agents learned to touch files and poll build.log.
+const API_PROXY_ENSURE_TIMEOUT_MS = 45_000
 
-// Phases in which the proxy waits briefly for `apiServerPort` to
-// transition from null → bound. Outside this set (`idle`, `healthy`,
-// `crashed`, `stopped`) waiting wouldn't change the answer.
-const API_PROXY_STARTUP_PHASES: ReadonlySet<string> = new Set([
-  'starting', 'restarting', 'generating',
-])
+type ApiProxyTarget =
+  | { ok: true; port: number }
+  | { ok: false; status: 400 | 404 | 503; body: Record<string, unknown> }
+
+/**
+ * Bring `pm`'s API sidecar up (idle/stopped/crashed all self-heal — see
+ * `PreviewManager.ensureApiServer`) and return the port to proxy to.
+ *
+ * One helper for both the root `/api/*` and the workspace `/p/:id/api/*`
+ * proxies: they previously carried copies of the same crashed-only recovery
+ * block and drifted from each other.
+ */
+async function resolveApiProxyTarget(pm: PreviewManager): Promise<ApiProxyTarget> {
+  const result = await pm.ensureApiServer({ timeoutMs: API_PROXY_ENSURE_TIMEOUT_MS })
+  const port = result.port ?? pm.apiServerPort
+  if (port != null) return { ok: true, port }
+  const noServer = result.phase === 'none'
+  const body: Record<string, unknown> = {
+    error: noServer ? 'No API server for this project' : 'API server not ready',
+    phase: result.phase,
+  }
+  if (result.buildError) body.buildError = result.buildError
+  return { ok: false, status: noServer ? 404 : 503, body }
+}
 
 app.all('/api/*', async (c) => {
   // Must match `/preview/status` and the root static serve: in workspace mode
   // the anchor's manager owns the sidecar; the root-rooted one never starts.
   const pm = getRootPreviewManager()
 
-  // Short grace window for the spawn → bind gap. Without it, the SPA's
-  // first `/api/*` fetch on a fresh project lands during cold-start (or
-  // a custom-routes hot restart) and immediately gets a hard 5xx,
-  // leaving the user staring at a blank preview until they manually
-  // refresh. `apiServerPort` returning null + phase ∈ {starting,
-  // restarting, generating} is exactly the "API is coming, just not
-  // here yet" signal we need to soak briefly. Polling is cheap (every
-  // 100 ms, total budget 3 s) and short-circuits the moment the port
-  // becomes available.
-  let port = pm.apiServerPort
-  // Self-heal: if the sidecar crashed beyond its restart cap, an incoming API
-  // request is the trigger to revive it — reset the crash budget and re-attempt
-  // a single start — instead of returning 503 forever until a manual
-  // /preview/restart. This flips the phase to `restarting`, so the grace-window
-  // poll below can pick up the freshly bound port within this same request.
-  if (port == null && pm.apiServerPhase === 'crashed') {
-    pm.maybeRecoverApiServer()
-  }
-  if (port == null && API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) {
-    const deadline = Date.now() + API_PROXY_STARTUP_WAIT_MS
-    while (port == null && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, API_PROXY_POLL_INTERVAL_MS))
-      if (!API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) break
-      port = pm.apiServerPort
-    }
-  }
-
-  if (port == null) {
-    // Surface the phase to the SPA so it can distinguish "API is still
-    // booting, retry in a moment" (starting/restarting/generating) from
-    // "API has crashed beyond recovery" (crashed) from "no API server
-    // configured for this project" (idle/stopped). 503 is correct in
-    // every non-bound case — the previous `c.notFound()` falsely
-    // implied the route didn't exist when in fact we just couldn't
-    // proxy yet.
-    return c.json(
-      { error: 'API server not ready', phase: pm.apiServerPhase },
-      503,
-    )
-  }
+  const target = await resolveApiProxyTarget(pm)
+  if (!target.ok) return c.json(target.body, target.status)
 
   const url = new URL(c.req.url)
-  const target = `http://127.0.0.1:${port}${url.pathname}${url.search}`
+  const { port } = target
+  const upstream = `http://127.0.0.1:${port}${url.pathname}${url.search}`
 
   try {
-    const res = await fetch(target, {
+    const res = await fetch(upstream, {
       method: c.req.method,
       headers: c.req.raw.headers,
       body: c.req.method !== 'GET' && c.req.method !== 'HEAD' ? c.req.raw.body : undefined,
@@ -5935,6 +6016,7 @@ app.get('/agent/ports/listening', async (c) => {
 
   app.post('/p/:projectId/preview/start', async (c) => {
     const projectId = c.req.param('projectId')
+    stoppedByUserProjects.delete(projectId)
     const pm = getWorkspacePreviewManager(projectId)
     if (!pm) return projectNotAttached(c, projectId)
     return c.json(await pm.start())
@@ -5942,6 +6024,7 @@ app.get('/agent/ports/listening', async (c) => {
 
   app.post('/p/:projectId/preview/restart', async (c) => {
     const projectId = c.req.param('projectId')
+    stoppedByUserProjects.delete(projectId)
     const pm = getWorkspacePreviewManager(projectId)
     if (!pm) return projectNotAttached(c, projectId)
     return c.json(await pm.restart())
@@ -5951,6 +6034,9 @@ app.get('/agent/ports/listening', async (c) => {
     const projectId = c.req.param('projectId')
     const pm = getWorkspacePreviewManager(projectId)
     if (!pm) return projectNotAttached(c, projectId)
+    // Deliberate stop: on-demand starts (`/api/*`, agent turns) must not undo it.
+    pm.markStoppedByUser()
+    stoppedByUserProjects.add(projectId)
     pm.stop()
     // Drop the cached instance so a subsequent start() rebuilds from a clean
     // PreviewManager (no leftover timers/child-slot state from this run).
@@ -5959,36 +6045,23 @@ app.get('/agent/ports/listening', async (c) => {
   })
 
   // Proxy `/p/<id>/api/*` to that project's server.tsx sidecar. Mirrors the
-  // root `/api/*` proxy (startup grace window, 503/502 semantics) but strips
+  // root `/api/*` proxy (on-demand start, 503/404 semantics) but strips
   // the `/p/<id>` prefix so the sidecar sees its own `/api/*` path.
   app.all('/p/:projectId/api/*', async (c) => {
     const projectId = c.req.param('projectId')
     const pm = getWorkspacePreviewManager(projectId)
     if (!pm) return projectNotAttached(c, projectId)
 
-    let port = pm.apiServerPort
-    // Self-heal a crashed-beyond-recovery sidecar on demand (see root `/api/*`).
-    if (port == null && pm.apiServerPhase === 'crashed') {
-      pm.maybeRecoverApiServer()
-    }
-    if (port == null && API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) {
-      const deadline = Date.now() + API_PROXY_STARTUP_WAIT_MS
-      while (port == null && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, API_PROXY_POLL_INTERVAL_MS))
-        if (!API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) break
-        port = pm.apiServerPort
-      }
-    }
-    if (port == null) {
-      return c.json({ error: 'API server not ready', phase: pm.apiServerPhase }, 503)
-    }
+    const target = await resolveApiProxyTarget(pm)
+    if (!target.ok) return c.json(target.body, target.status)
 
     const url = new URL(c.req.url)
+    const { port } = target
     const parsed = parseWorkspacePreviewPath(url.pathname)
     const sidecarPath = parsed ? parsed.rest : '/'
-    const target = `http://127.0.0.1:${port}${sidecarPath}${url.search}`
+    const upstream = `http://127.0.0.1:${port}${sidecarPath}${url.search}`
     try {
-      const res = await fetch(target, {
+      const res = await fetch(upstream, {
         method: c.req.method,
         headers: c.req.raw.headers,
         body: c.req.method !== 'GET' && c.req.method !== 'HEAD' ? c.req.raw.body : undefined,
@@ -6195,6 +6268,7 @@ import {
   CANVAS_BRIDGE_URL,
   loadCanvasBridgeSource,
 } from './canvas-bridge'
+import { injectPreviewBasePath, previewBasePath, stripPreviewBasePath } from './preview-base-path'
 
 const CANVAS_BRIDGE_SOURCE = loadCanvasBridgeSource()
 
@@ -6230,6 +6304,15 @@ function injectCanvasBridge(html: string): string {
     return html.slice(0, htmlClose) + CANVAS_BRIDGE_SCRIPT_TAG + html.slice(htmlClose)
   }
   return html + CANVAS_BRIDGE_SCRIPT_TAG
+}
+
+/**
+ * Every HTML document the runtime serves goes through here: the canvas bridge
+ * (appended before `</body>`) and, when `PREVIEW_BASE_PATH` is set, the
+ * base-path shim (injected into `<head>` so it runs before any app script).
+ */
+function injectRuntimeHtml(html: string): string {
+  return injectPreviewBasePath(injectCanvasBridge(html), previewBasePath())
 }
 
 // =============================================================================
@@ -6841,7 +6924,7 @@ function serveDistResponse(
     const ext = extname(resolvedFile).toLowerCase()
     const mime = STATIC_MIME[ext] || 'application/octet-stream'
     if (ext === '.html') {
-      const html = injectCanvasBridge(readFileSync(resolvedFile, 'utf-8'))
+      const html = injectRuntimeHtml(readFileSync(resolvedFile, 'utf-8'))
       return new Response(html, {
         headers: {
           'Content-Type': mime,
@@ -6879,7 +6962,7 @@ function serveDistResponse(
   // SPA fallback
   const indexPath = join(distDir, 'index.html')
   if (existsSync(indexPath)) {
-    const html = injectCanvasBridge(readFileSync(indexPath, 'utf-8'))
+    const html = injectRuntimeHtml(readFileSync(indexPath, 'utf-8'))
     return new Response(html, {
       headers: {
         'Content-Type': 'text/html',
@@ -7446,6 +7529,19 @@ async function initializeEssentials(): Promise<void> {
     }
   }
 
+  // The workspace root's `.env*` (SHO-384). Restored HERE, after the member
+  // hydrate and the git bootstrap above — both replace whole directory trees,
+  // so a `.env` restored earlier would be gone before the agent ever ran. The
+  // edit path then keeps the stored copy current: an interval, plus a flush on
+  // shutdown. Null on desktop (no store configured — the root is real files
+  // there) and on metal (the host-mediated home archive already carries them).
+  workspaceRootSecretSync = getWorkspaceRootSecretsSync()
+  if (workspaceRootSecretSync) {
+    await workspaceRootSecretSync.restore()
+    workspaceRootSecretSync.start()
+    logTiming('Workspace root secrets: API store attached')
+  }
+
   // Ensure workspace has node_modules. This no longer blocks boot: the install
   // runs in the background (`startWorkspaceDepsInstall`) so the gateway can
   // start and accept the first chat message while deps install. Deps-dependent
@@ -7680,7 +7776,7 @@ async function startGateway(expectedProjectId?: string): Promise<void> {
   // Wire the runtime's root-serving PreviewManager into the gateway so prompt
   // builders/tools query the active backend, and vite-watch build completion
   // emits canvas reload events for the preview the user is actually viewing.
-  agentGateway.attachApiServer(getRootPreviewManager())
+  agentGateway.attachApiServer(getRootPreviewManager(), buildApiServerHost())
   agentGateway.setLogCallback((line: string) => {
     appendRuntimeConsoleLogLine(line)
     for (const listener of logStreamListeners) {
@@ -7956,6 +8052,22 @@ async function gracefulShutdown(signal: string): Promise<void> {
     console.error(`[agent-runtime] Cloud sync flush error during shutdown:`, err.message)
   }
 
+  // The root's `.env*` first: it lives in the API's encrypted store, not in any
+  // member's archive, and it is the smallest write of the shutdown. Ordered
+  // ahead of the member flushes so a slow archive cannot eat its budget.
+  if (workspaceRootSecretSync) {
+    try {
+      const flushed = await workspaceRootSecretSync.flush()
+      if (flushed?.stored) {
+        console.log(`[agent-runtime] Workspace root secrets saved (${flushed.files} .env file(s))`)
+      }
+    } catch (err: any) {
+      console.error('[agent-runtime] Workspace root secrets flush failed:', err?.message ?? err)
+    } finally {
+      workspaceRootSecretSync.stop()
+    }
+  }
+
   // Flush every workspace member's S3 sync (cloud workspace runtime). Each
   // member owns its own prefix/subfolder, so the single-instance flush above
   // (which is null in workspace mode) doesn't cover them.
@@ -8084,22 +8196,6 @@ if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESE
       console.error('[agent-runtime] Pool pre-seed manifest failed:', err?.message ?? err)
     }
   })
-
-  // Pre-warm the skill-server's node_modules in parallel with the workspace
-  // deps copy. This moves the ~270 MB / ~9 s sync cpSync that the gateway
-  // would otherwise do on first /pool/assign into the warm-pod boot phase,
-  // shaving it off the user-perceived assignment latency. Runs in a
-  // microtask so it doesn't block the bind on :8080 any longer than it
-  // already takes — the cpSync is still synchronous, but it's now executed
-  // while the pod is unclaimed, not while a user is waiting.
-  queueMicrotask(() => {
-    try {
-      const copied = SkillServerManager.prewarmDeps(WORKSPACE_DIR)
-      if (copied) logTiming('Pool mode: skill-server deps pre-warmed')
-    } catch (err: any) {
-      console.error('[agent-runtime] Pool skill-server pre-warm failed:', err?.message ?? err)
-    }
-  })
 } else if (IS_PUBLISHED_MODE) {
   // Server-backed published app: run the project's server.tsx in production
   // without the agent gateway. No pool, no editing — serve-only.
@@ -8157,6 +8253,18 @@ export default {
   port: PORT,
   hostname: HOST,
   fetch: async (req: Request, server: any) => {
+    // `PREVIEW_BASE_PATH`: accept requests that still carry the prefix, so the
+    // runtime works whether or not the ingress strips it. Rewriting here (the
+    // one entry point) covers `/api/*`, assets and SPA routes at once.
+    const base = previewBasePath()
+    if (base) {
+      const incoming = new URL(req.url)
+      const stripped = stripPreviewBasePath(incoming.pathname, base)
+      if (stripped !== null) {
+        incoming.pathname = stripped
+        req = new Request(incoming.toString(), req)
+      }
+    }
     const url = new URL(req.url)
     // Hot-path bypass for /health: respond directly without going through
     // Hono's router. On Windows we observed a ~7s freeze during Bun's

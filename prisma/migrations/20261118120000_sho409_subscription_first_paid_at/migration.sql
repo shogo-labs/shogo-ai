@@ -1,0 +1,26 @@
+-- Migration: Subscription.firstPaidAt (SHO-409).
+--
+-- Overage must never be the first real charge on a card. A trialing
+-- subscription counts as a paid tier, so once its windows and promo credit are
+-- spent it fell through to overage — and the first invoice the card ever saw
+-- was our $25 overage block. For the fraud trials of Nov 2026 that charge
+-- failed every time (~$370 unrecoverable). `resolveEffectivePlan` now gates
+-- overage on `firstPaidAt`, which `invoice.payment_succeeded` sets the first
+-- time a real (amount_paid > 0) invoice clears.
+--
+-- DDL only. `subscriptions` is a published table, so a backfill UPDATE here
+-- would write the same logical rows in every region — the SHO-344 outage shape
+-- (RUNBOOK §3, `bun run check:migration-ids`). The backfill is an idempotent,
+-- primary-region-only post-deploy step instead:
+--
+--   bun scripts/backfill-subscription-first-paid.ts            # dry run
+--   bun scripts/backfill-subscription-first-paid.ts --apply    # US primary only
+--
+-- It sets `firstPaidAt = currentPeriodStart` for active / past_due
+-- subscriptions and for workspaces whose wallet has paid overage blocks.
+-- Trialing and cancelled-trial rows stay NULL: their card has never been
+-- charged, which is exactly the state the gate is meant to catch. Until it
+-- runs, existing payers are refused overage — so run it as part of the deploy.
+
+-- AlterTable
+ALTER TABLE "subscriptions" ADD COLUMN "firstPaidAt" TIMESTAMP(3);

@@ -38,6 +38,7 @@ import type { ToolContext } from './gateway-tools'
 import { BACKGROUND_TASK_HINT, textResult } from './gateway-tools'
 import { trackRemoteTask } from './remote-tasks'
 import { capabilityState, effectiveCapabilityValue, lockedCapabilityKeys, resolveCapabilitiesForScope, resolveRuntimeCapabilities } from './capability-status-prompt'
+import { CAPABILITY_ABILITIES } from './access-gate'
 import { isMetalRuntime } from './remote-tools'
 import {
   AUTO_MODEL_ID,
@@ -843,20 +844,54 @@ function writeLocalCapabilityCache(
   writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
 }
 
+/**
+ * What the acting person may use, for `scope: "member"`. `null` per key means
+ * the toggle is not gated by an ability (a workspace setting), and `null` for
+ * the whole map means the runtime could not ask, so nothing is claimed.
+ */
+function memberCapabilityStatus(ctx: ToolContext) {
+  const abilities = ctx.abilities ?? null
+  const capabilities: Record<string, boolean | null> = {}
+  for (const key of CAPABILITY_KEYS) {
+    const ability = CAPABILITY_ABILITIES[key]
+    capabilities[key] = !ability || !abilities ? null : abilities.has(ability)
+  }
+  return {
+    ok: true,
+    scope: 'member' as const,
+    known: abilities !== null,
+    abilities: abilities ? [...abilities].sort() : null,
+    capabilities,
+  }
+}
+
 export function createCapabilitiesConfigureTool(ctx: ToolContext): AgentTool {
   return {
     name: 'capabilities_configure',
     label: 'Configure Capabilities',
     description:
-      'Read or change capability toggles (web search, shell, browser, channels, and the rest). In a workspace chat these are the workspace agent\'s own toggles (stored on the workspace); in a project chat they are that project\'s. Call with no changes to read what is enabled, disabled, or locked. Defaults to the surface this turn runs in; pass `scope: "project"` from a workspace chat to change a project\'s toggles. Changes apply from your next turn. Locked capabilities cannot be changed.',
+      'Read or change capability toggles (web search, shell, browser, channels, and the rest). In a workspace chat these are the workspace agent\'s own toggles (stored on the workspace); in a project chat they are that project\'s. Call with no changes to read what is enabled, disabled, or locked. Defaults to the surface this turn runs in; pass `scope: "project"` from a workspace chat to change a project\'s toggles. Pass `scope: "member"` to read which capabilities the person you are acting for may use — that is how you explain a denial. Changes apply from your next turn. Locked capabilities cannot be changed.',
     parameters: Type.Object({
       changes: capabilityChangesSchema(),
-      scope: Type.Optional(Type.Union([Type.Literal('workspace'), Type.Literal('project')], {
+      scope: Type.Optional(Type.Union([
+        Type.Literal('workspace'),
+        Type.Literal('project'),
+        Type.Literal('member'),
+      ], {
         description: 'Which toggles to read or change. Defaults to this turn\'s surface.',
       })),
     }),
     execute: async (_id, params) => {
       const { changes: raw, scope: requestedScope } = params as { changes?: unknown; scope?: unknown }
+      if (requestedScope === 'member') {
+        if (raw !== undefined) {
+          return textResult({
+            error: 'scope "member" is read-only: a person\'s abilities are set by a workspace admin',
+            code: 'read_only',
+          })
+        }
+        return textResult(memberCapabilityStatus(ctx))
+      }
       const scope = capabilityScopeFor(ctx, requestedScope)
       const scopedConfig = capabilityConfigFor(ctx, scope)
 

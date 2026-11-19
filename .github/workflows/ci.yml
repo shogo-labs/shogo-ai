@@ -414,6 +414,23 @@ jobs:
         if: needs.prelude.outputs.verified != 'true'
         run: bun run check:whats-new
 
+      - name: Check generated domain-stores match the Prisma schema
+        if: needs.prelude.outputs.verified != 'true'
+        # `packages/domain-stores/src/{*.model,*.types,*.collection}.ts` are
+        # generated from prisma/schema.prisma, tracked in git, and written by
+        # `bun install`'s postinstall. Adding a schema field without committing
+        # the regenerated output leaves the next person's `bun install` with a
+        # dirty tree they did not cause (SHO-412 left `ChatSession.directKey`
+        # out, SHO-415). Nothing else reads these files against the schema, so
+        # without this check the drift is silent and permanent.
+        #
+        # The check compares against HEAD, not the working tree: this job's own
+        # `bun install` already ran the generator over the checkout, so a
+        # working-tree comparison could only ever pass and a stale commit would
+        # sail through (QA, SHO-415 round 1). It regenerates in memory and never
+        # writes, so it cannot itself create the drift it is looking for.
+        run: bun run check:domain-stores
+
       - name: Check multi-region cron locks + unique-key classification
         if: needs.prelude.outputs.verified != 'true'
         # Guards against the 2026-05-21 analytics_digests poison-pill class
@@ -673,6 +690,18 @@ jobs:
           # again through the refocus catch-up. Left in the shards it would
           # `test.skip` itself and run nowhere (SHO-122).
           - { name: 'E2E (chat two windows)', spec: 'chat-two-window-sync' }
+          # chat-send-body-size (SHO-402) asserts on the request the composer
+          # puts on the wire, so it needs no model — but it does need to run.
+          # Left in the shards it was never reached: shard 3 hit its 40m cap
+          # before the file started, so AC1's e2e proof ran nowhere (SHO-122).
+          - { name: 'E2E (chat send body size)', spec: 'chat-send-body-size' }
+          # slides-preview (SHO-426) shares the chat mock and needs no model: it
+          # renders a real 3-slide deck in a sandboxed frame from the team-chat
+          # viewer and from a `share_file` chip. Own entry, not a place in the
+          # shards — shard 3 has hit its 35 min cap in both runs since the spec
+          # landed, so the file was never reached and proved nothing (SHO-122);
+          # alone it measures ~3 min on a booted stack.
+          - { name: 'E2E (slides preview)', spec: 'slides-preview' }
     permissions:
       contents: read
     # 35, not 60: a wedged E2E job holds the whole merge queue for the length
@@ -1176,6 +1205,15 @@ jobs:
       - name: Analytics rollups (Postgres)
         working-directory: apps/api
         run: bun --no-env-file test src/__tests__/analytics-rollups.golden.test.ts
+
+      # SHO-419: the "messages from <member>" filter is raw SQL in two dialects
+      # too — `json_extract` with `?` placeholders on SQLite, `->>` with `$n` on
+      # Postgres — and the agent half only exists in that statement. `test` runs
+      # this file on SQLite; here it runs on Postgres, which is the half the
+      # cloud reads.
+      - name: Member message filter (Postgres)
+        working-directory: apps/api
+        run: bun --no-env-file test src/__tests__/conversation-member-messages.integration.test.ts
 
       # SHO-39: the tracked-call store has to behave identically on both
       # tracks. The `test` job runs this same file on SQLite; here it runs on

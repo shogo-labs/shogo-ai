@@ -13,11 +13,12 @@
  * `download` name as well — the header is what does the work when the file is
  * served from another origin, where the attribute is ignored.
  *
- * Native follows the same shape as the deliverable download chip: fetch the
- * bytes, write them into app storage, then present the share sheet.
+ * Native streams the file straight to app storage (`download-to-file`, SHO-434)
+ * and then presents the share sheet.
  */
 
-import { InteractionManager, Linking, Platform } from 'react-native'
+import { Linking, Platform } from 'react-native'
+import { downloadFileToCache, shareCachedFile } from './download-to-file'
 
 /** `?dl=1` on a capability URL, keeping the token it already carries. */
 export function attachmentDownloadUrl(url: string): string {
@@ -33,17 +34,6 @@ function fileNameFrom(name: string): string {
   return base || 'download'
 }
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer)
-  let binary = ''
-  // Chunked, so a large file cannot blow the argument stack.
-  const CHUNK = 0x8000
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
-  }
-  return btoa(binary)
-}
-
 function clickDownloadLink(href: string, filename: string): void {
   const anchor = document.createElement('a')
   anchor.href = href
@@ -55,28 +45,11 @@ function clickDownloadLink(href: string, filename: string): void {
 }
 
 async function saveToDevice(url: string, name: string): Promise<void> {
-  const response = await fetch(url)
-  if (!response.ok) throw new Error(`Download failed (${response.status})`)
-  const base64 = arrayBufferToBase64(await response.arrayBuffer())
-
-  const { cacheDirectory, writeAsStringAsync, EncodingType } = await import('expo-file-system/legacy')
-  if (!cacheDirectory) throw new Error('Could not reach app storage')
-  const fileUri = `${cacheDirectory}${Date.now()}-${name}`
-  await writeAsStringAsync(fileUri, base64, { encoding: EncodingType.Base64 })
-
-  // Let the screen settle before the OS presents its sheet.
-  await new Promise<void>((resolve) => {
-    InteractionManager.runAfterInteractions(() => resolve())
-  })
-
-  const Sharing = await import('expo-sharing')
-  try {
-    await Sharing.shareAsync(fileUri, { dialogTitle: `Download ${name}` })
-  } catch (shareError: unknown) {
-    if (Platform.OS !== 'ios') throw shareError
-    const { Share } = await import('react-native')
-    await Share.share({ url: fileUri, title: name })
-  }
+  // The URL carries its own signed token, so no session header is needed — and
+  // the bytes go to disk on the native side, never through the JS heap
+  // (SHO-434: a large attachment asked Android for a 54 MB allocation).
+  const fileUri = await downloadFileToCache(url, { name })
+  await shareCachedFile(fileUri, name)
 }
 
 export async function downloadAttachment(url: string, name: string): Promise<void> {

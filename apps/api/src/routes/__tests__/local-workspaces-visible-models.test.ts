@@ -34,6 +34,8 @@ mock.module('../../services/workspace.service', () => ({}))
 
 mock.module('../../services/workspace-models.service', () => ({
   getAllowedModelIds: async () => new Set([cloudModel.id]),
+  // The visible-models route asks the same question the allowlist answers.
+  isModelVisibleForWorkspace: async (_workspaceId: string, modelId: string) => modelId === cloudModel.id,
   filterToAllowlist: (platform: any, allowed: Set<string>) => ({
     catalogModels: platform.catalogModels.filter((model: any) => allowed.has(model.id)),
     openrouterModels: platform.openrouterModels.filter((model: any) => allowed.has(model.id)),

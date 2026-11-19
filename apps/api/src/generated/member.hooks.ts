@@ -64,8 +64,10 @@ import {
 import type { Principal } from "../lib/authz"
 import { hookAccess, hookRequire } from "../lib/authz/hooks"
 import { sendMemberRemovedEmail } from "../services/email.service"
-import { syncSeatsFromMembership } from "../services/billing.service"
+import { assertTrialSeatRoom, syncSeatsFromMembership } from "../services/billing.service"
+import { trialSeatLimitMessage } from "../config/usage-plans"
 import { removeMembership } from "../services/membership.service"
+import { invalidateAccess } from "../services/access-policy.service"
 
 const userInclude = {
   user: {
@@ -120,6 +122,10 @@ export const memberHooks: MemberHooks = {
   afterCreate: async (record, ctx) => {
     if (!record.workspaceId || record.projectId) return
 
+    // A re-added member may still have a cached entry from before they left
+    // (SHO-417, AC2).
+    invalidateAccess(record.workspaceId)
+
     // Cursor-style active-seat billing: when an accepted member joins the
     // workspace, bump the Stripe seat quantity (and local Subscription /
     // UsageWallet allocation). Project-only memberships don't bill seats.
@@ -136,6 +142,15 @@ export const memberHooks: MemberHooks = {
         prisma: ctx.prisma,
       }))
       .catch(() => {})
+  },
+
+  /**
+   * A role change swaps which role policy applies, so the member's cached
+   * access must go (SHO-417, AC2). `beforeUpdate` has already validated it.
+   */
+  afterUpdate: async (record, ctx) => {
+    if (!record.workspaceId || record.projectId) return
+    invalidateAccess(record.workspaceId)
   },
 
   beforeGet: async (id, ctx) => {
@@ -194,6 +209,17 @@ export const memberHooks: MemberHooks = {
     })
     if (existing) {
       return { ok: false, error: { code: "already_member", message: "User is already a member" } }
+    }
+
+    // A trialing workspace never holds more than TRIAL_MAX_SEATS seats
+    // (SHO-422). Seat count is active workspace members, so this is the gate
+    // for both an accepted emailed invitation and an admin adding someone.
+    // Project guests do not use a seat.
+    if (!projectId) {
+      const room = await assertTrialSeatRoom(workspaceId!)
+      if (!room.ok) {
+        return { ok: false, error: { code: room.code!, message: trialSeatLimitMessage(room.maxSeats) } }
+      }
     }
 
     const data = {

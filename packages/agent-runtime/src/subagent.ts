@@ -20,6 +20,7 @@ import { isSearchEnabled } from './search-flag'
 import { MEDIA_TOOL_NAMES } from './media-tool-names'
 import type { ToolContext } from './gateway-tools'
 import { createBrowserTool, createReadGuideTool, disposeBrowserTool, textResult } from './gateway-tools'
+import { pinnedAgentModel } from '@shogo/shared-runtime/standalone'
 
 // ---------------------------------------------------------------------------
 // Core gateway tool names — anything NOT in this set is a dynamic/installed
@@ -332,6 +333,9 @@ Update \`QaRun.data.json\` one last time:
    d. **\`screenshot\` after every navigate and every meaningful state change** so the canvas Latest Screenshot stays fresh.
    e. Call \`browser({ action: "console", level: "error" })\` after each step and record what it returns in \`errors\`.
 4. **Mobile pass:** unless the directive is desktop-only, rerun the main flow after \`browser({ action: "viewport", device: "mobile" })\` (390x844). Look for horizontal overflow, clipped or overlapping content, and controls that are hidden or too small to tap. Use the viewport the directive asks for when it names one. Switch back with \`device: "desktop"\` when you're done.
+   - **Layout is the app's, not Shogo's.** Shogo no longer injects responsive CSS into the preview, so what you see at 390px is exactly what the code says. Report a layout problem as a \`[major]\` UX issue against the component that owns it — never as "the preview overrides my styles".
+   - Check the three cases that used to be silently rewritten: \`grid grid-cols-2\` must render **2** columns, \`grid-cols-1 sm:grid-cols-2\` must render **1**, and \`.truncate\` must stay truncated (one line, ellipsis). A 2-up stat row collapsing to 1 column, or a truncated label wrapping, is a bug in the app's classes.
+   - A bare \`grid-cols-3+\` or a fixed-width sidebar (\`w-48\`…\`w-80\`) in a \`flex h-screen\` shell with no \`flex-col md:flex-row\` is the usual cause; \`read_lints\` warns on both.
 5. After each step, write the updated \`QaRun.data.json\` (when canvas exists). When flows are complete (or blocked), finalize the canvas and save the markdown artifact.
 
 ## What to Record Per Step
@@ -623,6 +627,9 @@ export function resolveModelTier(
   parentModel: string,
   autoTierOverride?: AutoTierOverride,
 ): string {
+  // `AGENT_MODEL` pins every model pick, so a tier request cannot escape it.
+  const pin = pinnedAgentModel()
+  if (pin) return pin.id
   if (!tier || tier === 'default') return parentModel
   const autoTier = tier === 'fast' ? 'economy' : tier === 'capable' ? 'premium' : undefined
   if (!autoTier) return parentModel
@@ -760,10 +767,16 @@ export async function resolveSubagentModel(
 ): Promise<{
   model: string
   provider: string | undefined
-  source: 'explicit' | 'project' | 'workspace' | 'experiment' | 'builtin'
+  source: 'pinned' | 'explicit' | 'project' | 'workspace' | 'experiment' | 'builtin'
   experimentId?: string
   experimentVariant?: 'A' | 'B'
 }> {
+  // `AGENT_MODEL` outranks every rung of the ladder below — including a
+  // caller's explicit `--model` and a built-in subagent's own default — so a
+  // standalone runtime can never reach a model its one endpoint does not serve.
+  const pin = pinnedAgentModel()
+  if (pin) return { model: pin.id, provider: pin.provider, source: 'pinned' }
+
   if (configModel) {
     return {
       model: configModel,
@@ -1030,7 +1043,7 @@ export async function runSubagent(
   let resolvedOverride: {
     model: string
     provider: string | undefined
-    source: 'explicit' | 'project' | 'workspace' | 'experiment' | 'builtin'
+    source: 'pinned' | 'explicit' | 'project' | 'workspace' | 'experiment' | 'builtin'
     experimentId?: string
     experimentVariant?: 'A' | 'B'
   } | null = null

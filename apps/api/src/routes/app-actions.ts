@@ -189,10 +189,15 @@ export function appActionsRoutes(): Hono {
     if (!body) return fail(c, 400, 'invalid_arguments', 'text is required')
     const member = await memberFor(auth.workspaceId, params.user)
     if (!member) return fail(c, 404, 'user_not_found', 'No workspace member matches that user id or email')
-    const { openAgentConversation } = await import('../services/conversation.service')
-    const conversation = await openAgentConversation(auth.workspaceId, member.userId, { projectId: auth.app?.projectId ?? null })
-    const result = await postAs(auth, conversation.id, body)
-    return c.json({ ok: true, channel: conversation.id, message: { id: result.message.id } })
+    // A message to a person lands in their chat with this agent (SHO-412).
+    const { deliverAgentDirectMessage } = await import('../services/agent-chat.service')
+    const delivered = await deliverAgentDirectMessage({
+      workspaceId: auth.workspaceId,
+      userId: member.userId,
+      projectId: auth.app?.projectId ?? null,
+      text: body,
+    })
+    return c.json({ ok: true, channel: delivered.chatSessionId, message: { id: delivered.messageId } })
   }))
 
   router.post('/channels.addMember', method('channels:manage', async (c, auth, params) => {

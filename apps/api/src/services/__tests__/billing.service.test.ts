@@ -3,6 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock, setSystemTime } from 'bun:test'
 import * as realStripePrices from '../../config/stripe-prices'
+import { SOLO_FOUNDER_OVERAGE_CAP_USD, TRIAL_MAX_SEATS } from '../../config/usage-plans'
 
 // ============================================================================
 // In-memory prisma mock
@@ -21,6 +22,8 @@ type Sub = {
   currentPeriodEnd: Date
   cancelAtPeriodEnd: boolean
   createdAt: Date
+  /** Set once the card has paid a real invoice; null while trialing. */
+  firstPaidAt?: Date | null
 }
 type Wallet = {
   workspaceId: string
@@ -112,9 +115,22 @@ const prismaApi = {
       if (orderBy?.createdAt === 'desc') candidates = [...candidates].sort((a, b) => +b.createdAt - +a.createdAt)
       const s = candidates[0]
       if (!s) return null
-      if (!select) return s
+      // Mirror the migration's backfill: an active/past_due row that predates
+      // `firstPaidAt` has been charged, so it reads as paid. A trialing row
+      // stays null (its first invoice is $0). Tests that need an untrusted
+      // active row set `firstPaidAt: null` explicitly.
+      const firstPaidAt =
+        s.firstPaidAt !== undefined
+          ? s.firstPaidAt
+          : s.status === 'active' || s.status === 'past_due'
+            ? (s.currentPeriodStart ?? s.createdAt ?? new Date())
+            : null
+      if (!select) return { ...s, firstPaidAt }
       const out: any = {}
-      for (const k of Object.keys(select)) if (select[k]) out[k] = (s as any)[k]
+      for (const k of Object.keys(select)) {
+        if (!select[k]) continue
+        out[k] = k === 'firstPaidAt' ? firstPaidAt : (s as any)[k]
+      }
       return out
     },
     findMany: async ({ where, orderBy }: any) => {
@@ -139,6 +155,18 @@ const prismaApi = {
         if (s) { Object.assign(s, data); return s }
       }
       throw new Error('sub not found')
+    },
+    updateMany: async ({ where, data }: any) => {
+      let count = 0
+      for (const arr of subs.values()) {
+        for (const s of arr) {
+          if (where.stripeCustomerId !== undefined && s.stripeCustomerId !== where.stripeCustomerId) continue
+          if (where.firstPaidAt === null && s.firstPaidAt != null) continue
+          Object.assign(s, data)
+          count++
+        }
+      }
+      return { count }
     },
   },
   usageWallet: {
@@ -603,6 +631,16 @@ describe('allocateMonthlyIncluded', () => {
     const w = await billing.allocateMonthlyIncluded('w1', 'pro', 1)
     expect(w.overageHardLimitUsd).toBe(250)
   })
+  // SHO-428 AC6: the $50 cap the Solo Founder offer applies is not the
+  // grant-only default ($5), so the monthly reset must leave it alone — the
+  // promise in the checkout disclosure is "$50/mo", not "until the first
+  // reset". Annual subscriptions refill monthly, and every refill lands here.
+  it('keeps the Solo Founder $50 cap through the monthly reset', async () => {
+    wallets.set('w1', freshWallet({ overageHardLimitUsd: SOLO_FOUNDER_OVERAGE_CAP_USD }))
+    const w = await billing.allocateMonthlyIncluded('w1', 'business', 1)
+    expect(w.overageHardLimitUsd).toBe(SOLO_FOUNDER_OVERAGE_CAP_USD)
+    expect(w.alertsSentThisPeriod).toEqual({})
+  })
   it('basic single user ignores seats > 1', async () => {
     const w = await billing.allocateMonthlyIncluded('w1', 'basic', 5)
     expect(w.monthlyIncludedUsd).toBe(10)
@@ -728,6 +766,18 @@ function setPlan(planId: string, seats = 1, workspaceId = 'w1') {
     stripeCustomerId: 'cus_x', planId, seats, status: 'active',
     billingInterval: 'monthly', currentPeriodStart: today, currentPeriodEnd: today,
     cancelAtPeriodEnd: false, createdAt: today,
+  }
+  subs.set(workspaceId, [s])
+}
+
+// A trialing subscription: a paid tier whose card has never been charged
+// (`firstPaidAt` null). Overage must not apply to it (SHO-409).
+function setTrialPlan(planId: string, seats = 1, workspaceId = 'w1') {
+  const s: Sub = {
+    id: `sub_trial_${planId}`, workspaceId, stripeSubscriptionId: `stripe_trial_${planId}`,
+    stripeCustomerId: 'cus_trial', planId, seats, status: 'trialing',
+    billingInterval: 'monthly', currentPeriodStart: today, currentPeriodEnd: today,
+    cancelAtPeriodEnd: false, createdAt: today, firstPaidAt: null,
   }
   subs.set(workspaceId, [s])
 }
@@ -868,6 +918,28 @@ describe('checkUsageBalance', () => {
     expect(await billing.checkUsageBalance('w1', 5)).toEqual({ ok: false, reason: 'overage_cap_reached' })
   })
 
+  // SHO-408: a cap at or below the block size used to carry the remainder
+  // forward forever. The refusal now kicks a partial invoice for it.
+  it('kicks a cap invoice for the unbilled remainder when the spend cap is reached', async () => {
+    process.env.STRIPE_SECRET_KEY = 'sk_test'
+    setPlan('pro')
+    wallets.set('w1', freshWallet({
+      overageEnabled: true, overageHardLimitUsd: 10, overageAccumulatedUsd: 9.98,
+      fiveHourWindowStart: now0(), fiveHourUsedUsd: 50,
+      weeklyWindowStart: now0(), weeklyUsedUsd: 50,
+    }))
+    expect(await billing.checkUsageBalance('w1', 5)).toEqual({ ok: false, reason: 'overage_cap_reached' })
+
+    // The kick is fire-and-forget; give its chain of awaits a few ticks.
+    for (let i = 0; i < 20 && !stripeCalls.some((c) => c.method === 'invoiceItems.create'); i++) {
+      await new Promise((r) => setTimeout(r, 0))
+    }
+    const item = stripeCalls.find((c) => c.method === 'invoiceItems.create')
+    expect(item?.args[0].amount).toBe(998)
+    expect(item?.args[0].metadata).toMatchObject({ reason: 'cap', partial: 'true' })
+    expect(wallets.get('w1')!.overageBilledUsd).toBe(9.98)
+  })
+
   // The core regression: `overageEnabled: true` (the user's on-demand toggle
   // reads as "on") but the grant backing it expired, so `paidTier` is false.
   it('reason "entitlement_expired" when overageEnabled is true but the paid grant has expired, and self-heals the flag', async () => {
@@ -920,7 +992,7 @@ describe('getOverageStatus', () => {
   it('overageActive is true only when both overageEnabled and paidTier are true', async () => {
     setPlan('pro')
     wallets.set('w1', freshWallet({ overageEnabled: true }))
-    expect(await billing.getOverageStatus('w1')).toEqual({ overageEnabled: true, paidTier: true, overageActive: true })
+    expect(await billing.getOverageStatus('w1')).toEqual({ overageEnabled: true, paidTier: true, overageTrusted: true, overageActive: true })
   })
 
   // This is exactly the client-visible symptom of the bug: the raw wallet
@@ -929,13 +1001,95 @@ describe('getOverageStatus', () => {
   // would show on-demand usage as enabled while every request is blocked.
   it('overageActive is false when overageEnabled is true but there is no live paid entitlement', async () => {
     wallets.set('w1', freshWallet({ overageEnabled: true }))
-    expect(await billing.getOverageStatus('w1')).toEqual({ overageEnabled: true, paidTier: false, overageActive: false })
+    expect(await billing.getOverageStatus('w1')).toEqual({ overageEnabled: true, paidTier: false, overageTrusted: true, overageActive: false })
   })
 
   it('overageActive is false when overageEnabled is false, regardless of paidTier', async () => {
     setPlan('pro')
     wallets.set('w1', freshWallet({ overageEnabled: false }))
-    expect(await billing.getOverageStatus('w1')).toEqual({ overageEnabled: false, paidTier: true, overageActive: false })
+    expect(await billing.getOverageStatus('w1')).toEqual({ overageEnabled: false, paidTier: true, overageTrusted: true, overageActive: false })
+  })
+})
+
+describe('overage requires a paid invoice (SHO-409)', () => {
+  const exhausted = {
+    overageEnabled: true, overageHardLimitUsd: null,
+    fiveHourWindowStart: now0(), fiveHourUsedUsd: 50,
+    weeklyWindowStart: now0(), weeklyUsedUsd: 50,
+  }
+
+  it('checkUsageBalance refuses a trialing workspace with overage_requires_payment', async () => {
+    setTrialPlan('pro')
+    wallets.set('w1', freshWallet(exhausted))
+    expect(await billing.checkUsageBalance('w1', 1)).toEqual({ ok: false, reason: 'overage_requires_payment' })
+  })
+
+  it('consumeUsage refuses a trialing workspace, records no overage, and keeps the toggle on', async () => {
+    setTrialPlan('pro')
+    wallets.set('w1', freshWallet(exhausted))
+    const r = await billing.consumeUsage({
+      workspaceId: 'w1', projectId: null, memberId: 'u1',
+      actionType: 'chat_message', billedUsd: 5,
+    })
+    expect(r.success).toBe(false)
+    expect(r.reason).toBe('overage_requires_payment')
+    const w = wallets.get('w1')!
+    expect(w.overageAccumulatedUsd).toBe(0)
+    // The user's setting is not healed away — it switches on after payment.
+    expect(w.overageEnabled).toBe(true)
+  })
+
+  it('chargeOverageBlocks returns 0 and creates no invoice for a trialing workspace', async () => {
+    setTrialPlan('pro')
+    wallets.set('w1', freshWallet({
+      overageEnabled: true, overageHardLimitUsd: null,
+      overageAccumulatedUsd: 30, overageBilledUsd: 0,
+    }))
+    const before = stripeCalls.length
+    expect(await billing.chargeOverageBlocks('w1')).toBe(0)
+    expect(stripeCalls.length).toBe(before)
+  })
+
+  it('overage applies once firstPaidAt is set (the card has paid)', async () => {
+    setPlan('pro') // active sub, backfilled firstPaidAt
+    wallets.set('w1', freshWallet(exhausted))
+    const r = await billing.consumeUsage({
+      workspaceId: 'w1', projectId: null, memberId: 'u1',
+      actionType: 'chat_message', billedUsd: 5,
+    })
+    expect(r.success).toBe(true)
+    expect(r.source).toBe('overage')
+    expect(wallets.get('w1')!.overageAccumulatedUsd).toBe(5)
+  })
+
+  it('getOverageStatus reports overageActive false for a trialing workspace', async () => {
+    setTrialPlan('pro')
+    wallets.set('w1', freshWallet({ overageEnabled: true }))
+    expect(await billing.getOverageStatus('w1')).toEqual({
+      overageEnabled: true, paidTier: true, overageTrusted: false, overageActive: false,
+    })
+  })
+})
+
+describe('markSubscriptionFirstPaid (SHO-409)', () => {
+  it('sets firstPaidAt on a null row for a real payment', async () => {
+    setTrialPlan('pro')
+    expect(await billing.markSubscriptionFirstPaid('cus_trial', 2500)).toBe(1)
+    expect(subs.get('w1')![0].firstPaidAt).toBeInstanceOf(Date)
+  })
+
+  it('does nothing for a $0 invoice (a trial invoice)', async () => {
+    setTrialPlan('pro')
+    expect(await billing.markSubscriptionFirstPaid('cus_trial', 0)).toBe(0)
+    expect(subs.get('w1')![0].firstPaidAt).toBeNull()
+  })
+
+  it('is idempotent: a second payment does not move an already-set firstPaidAt', async () => {
+    setTrialPlan('pro')
+    await billing.markSubscriptionFirstPaid('cus_trial', 2500)
+    const first = subs.get('w1')![0].firstPaidAt
+    expect(await billing.markSubscriptionFirstPaid('cus_trial', 2500)).toBe(0)
+    expect(subs.get('w1')![0].firstPaidAt).toBe(first)
   })
 })
 
@@ -1454,6 +1608,121 @@ describe('syncSeatsFromMembership', () => {
     } finally {
       stripeSubscriptionsRetrieve = orig
     }
+  })
+  it('clamps a trialing subscription to TRIAL_MAX_SEATS', async () => {
+    subs.set('w1', [{
+      id: 's1', workspaceId: 'w1', stripeSubscriptionId: 's', stripeCustomerId: 'c',
+      planId: 'pro', seats: 1, status: 'trialing', billingInterval: 'monthly',
+      currentPeriodStart: today, currentPeriodEnd: today, cancelAtPeriodEnd: false, createdAt: today,
+    }])
+    for (let i = 1; i <= TRIAL_MAX_SEATS + 3; i++) {
+      members.push({ workspaceId: 'w1', userId: `u${i}`, projectId: null })
+    }
+    const r = await billing.syncSeatsFromMembership('w1')
+    expect(r.ok).toBe(true)
+    expect(r.seats).toBe(TRIAL_MAX_SEATS)
+    expect(subs.get('w1')?.[0].seats).toBe(TRIAL_MAX_SEATS)
+  })
+  it('does not clamp an active subscription', async () => {
+    subs.set('w1', [{
+      id: 's1', workspaceId: 'w1', stripeSubscriptionId: 's', stripeCustomerId: 'c',
+      planId: 'pro', seats: 1, status: 'active', billingInterval: 'monthly',
+      currentPeriodStart: today, currentPeriodEnd: today, cancelAtPeriodEnd: false, createdAt: today,
+    }])
+    for (let i = 1; i <= TRIAL_MAX_SEATS + 3; i++) {
+      members.push({ workspaceId: 'w1', userId: `u${i}`, projectId: null })
+    }
+    const r = await billing.syncSeatsFromMembership('w1')
+    expect(r.seats).toBe(TRIAL_MAX_SEATS + 3)
+  })
+})
+
+// ============================================================================
+// assertTrialSeatRoom — the trial seat cap (SHO-422)
+// ============================================================================
+
+function seedTrial(workspaceId: string, status = 'trialing') {
+  subs.set(workspaceId, [{
+    id: `s_${workspaceId}`, workspaceId, stripeSubscriptionId: 's', stripeCustomerId: 'c',
+    planId: 'pro', seats: 1, status, billingInterval: 'monthly',
+    currentPeriodStart: today, currentPeriodEnd: today, cancelAtPeriodEnd: false, createdAt: today,
+  }])
+}
+
+function seedMembers(workspaceId: string, count: number) {
+  for (let i = 1; i <= count; i++) {
+    members.push({ workspaceId, userId: `${workspaceId}_u${i}`, projectId: null })
+  }
+}
+
+describe('assertTrialSeatRoom', () => {
+  it('allows any seat count when the workspace is not trialing', async () => {
+    seedTrial('w1', 'active')
+    seedMembers('w1', TRIAL_MAX_SEATS + 5)
+    expect(await billing.assertTrialSeatRoom('w1')).toEqual({ ok: true })
+  })
+
+  it('allows any seat count with no subscription at all', async () => {
+    seedMembers('w1', TRIAL_MAX_SEATS + 5)
+    expect(await billing.assertTrialSeatRoom('w1')).toEqual({ ok: true })
+  })
+
+  it('allows the join that lands exactly on the cap', async () => {
+    seedTrial('w1')
+    seedMembers('w1', TRIAL_MAX_SEATS - 1)
+    expect(await billing.assertTrialSeatRoom('w1')).toEqual({ ok: true })
+  })
+
+  it('refuses the join that would exceed the cap', async () => {
+    seedTrial('w1')
+    seedMembers('w1', TRIAL_MAX_SEATS)
+    expect(await billing.assertTrialSeatRoom('w1')).toEqual({
+      ok: false,
+      code: 'trial_seat_limit',
+      maxSeats: TRIAL_MAX_SEATS,
+    })
+  })
+
+  it('refuses a multi-seat add that would exceed the cap', async () => {
+    seedTrial('w1')
+    seedMembers('w1', TRIAL_MAX_SEATS - 1)
+    expect((await billing.assertTrialSeatRoom('w1', 2)).ok).toBe(false)
+  })
+
+  it('counts granted free seats against the cap', async () => {
+    seedTrial('w1')
+    seedMembers('w1', TRIAL_MAX_SEATS + 1)
+    grants.set('w1', [{
+      id: 'g1', workspaceId: 'w1', freeSeats: 2, monthlyIncludedUsd: 0, planId: null,
+      startsAt: new Date(today.getTime() - 86_400_000), expiresAt: null,
+    }])
+    expect(await billing.assertTrialSeatRoom('w1')).toEqual({ ok: true })
+  })
+
+  it('counts a child workspace against the parent trial', async () => {
+    workspaces.set('parent', { id: 'parent', name: 'Parent', slug: 'parent', parentWorkspaceId: null })
+    workspaces.set('child', { id: 'child', name: 'Child', slug: 'child', parentWorkspaceId: 'parent' })
+    seedTrial('parent')
+    seedMembers('parent', TRIAL_MAX_SEATS)
+    expect((await billing.assertTrialSeatRoom('child')).ok).toBe(false)
+  })
+})
+
+describe('canManageBilling', () => {
+  it('allows the owner', () => {
+    expect(billing.canManageBilling({ role: 'owner', isBillingAdmin: false })).toBe(true)
+  })
+  it('allows an admin', () => {
+    expect(billing.canManageBilling({ role: 'admin', isBillingAdmin: false })).toBe(true)
+  })
+  it('allows a member granted billing admin', () => {
+    expect(billing.canManageBilling({ role: 'member', isBillingAdmin: true })).toBe(true)
+  })
+  it('refuses a plain member', () => {
+    expect(billing.canManageBilling({ role: 'member', isBillingAdmin: false })).toBe(false)
+  })
+  it('refuses a non-member', () => {
+    expect(billing.canManageBilling(null)).toBe(false)
   })
 })
 

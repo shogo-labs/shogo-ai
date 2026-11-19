@@ -27,7 +27,6 @@ import { Type } from '@sinclair/typebox'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, StreamChunkConfig, SandboxConfig } from './types'
 import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSection, buildSkillMatchPrompt, type Skill } from './skills'
 import { loadQuickActions, buildQuickActionsPromptSection, type QuickAction } from './quick-actions'
-import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
 import {
   buildPlanContinuationPrompt,
@@ -123,6 +122,7 @@ import { mergeAgentModelIntoConfig, type AgentModelSnapshot } from './agent-mode
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { WorkspaceLSPManager, resolveBin, WorktreeManager, notifyProxyAuthFailure } from '@shogo/shared-runtime'
+import { pinnedAgentModel } from '@shogo/shared-runtime/standalone'
 import type { MergeResult as WorktreeMergeResult, WorktreeStatus } from '@shogo/shared-runtime'
 import {
   isForeignWorkspaceDir,
@@ -135,6 +135,7 @@ import {
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
 import { deriveApiUrl, fetchReachableChats, fetchWorkspacePause, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, postInterruptedResume, projectScopedId, runtimeServesProjectId, type SessionWakeState, type WorkspaceAgentsPause } from './internal-api'
+import { fetchEffectiveAbilities } from './access-gate'
 import { buildWorkspaceRootConflictContext, currentWorkspaceRootSync } from './workspace-root-sync'
 import {
   createToolProfile,
@@ -176,7 +177,7 @@ import {
   previewConsoleLogPath,
 } from './runtime-log-paths'
 import { shouldInjectPreviewUrl, buildPreviewUrlBlock } from './preview-url-context'
-import { detectLocalMode } from './preview-manager'
+import { detectLocalMode, type EnsureApiServerResult } from './preview-manager'
 import { LocalhostLinkRewriter, rewriteLocalhostLinks } from './preview-link-rewrite'
 import { extractShareLinkTokens, repairShareLinks } from './share-link-repair'
 
@@ -316,8 +317,30 @@ function parseAutoTierOverride(raw: string | undefined): AutoTierOverride | unde
   return Object.keys(out).length > 0 ? out : undefined
 }
 
-const FALLBACK_SUMMARIZER_MODEL = { id: 'claude-haiku-4-5', provider: 'anthropic' }
+/**
+ * Parse the per-turn Auto tier map the API stamps on a chat body (SHO-417).
+ * Accepts either `{ economy: 'model-id' }` (what the API sends) or the
+ * `{ economy: { id } }` shape `AGENT_AUTO_TIER_MAP` uses, so one parser covers
+ * both. Malformed input is ignored: the process map then applies.
+ */
+function parseTurnAutoTiers(raw: unknown): AutoTierOverride | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const src = raw as Record<string, unknown>
+  const out: AutoTierOverride = {}
+  for (const tier of ['economy', 'standard', 'premium'] as const) {
+    const entry = src[tier]
+    const id =
+      typeof entry === 'string'
+        ? entry.trim()
+        : entry && typeof entry === 'object' && typeof (entry as { id?: unknown }).id === 'string'
+          ? ((entry as { id: string }).id).trim()
+          : ''
+    if (id) out[tier] = { id }
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
 
+const FALLBACK_SUMMARIZER_MODEL = { id: 'claude-haiku-4-5', provider: 'anthropic' }
 /**
  * True when the agent loop ended because the user pressed Stop. Such a turn
  * can legitimately have no text (e.g. stopped during a tool call) and must not
@@ -352,6 +375,8 @@ export function isEmptyTurnResult(result: {
  * connected to a cloud that predates the setting.
  */
 export function resolveSummarizerModel(raw: string | undefined): { id: string; provider: string } {
+  const pin = pinnedAgentModel()
+  if (pin) return { id: pin.id, provider: pin.provider }
   if (!raw) return FALLBACK_SUMMARIZER_MODEL
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>
@@ -485,6 +510,23 @@ export function selectCrossFamilyFallback(opts: {
  */
 function resolveModelAlias(modelId: string): string {
   return resolveModelId(modelId)
+}
+
+/**
+ * The model alias a turn sends: the session override, else `config.json`'s
+ * model — unless `AGENT_MODEL` pins the process.
+ *
+ * A pin wins over both, and because a pinned id is never `auto` it also skips
+ * the Auto router, so a standalone runtime with one endpoint can never route
+ * itself onto a model that endpoint does not serve (SHO-418).
+ */
+export function resolveTurnModelAliasFor(
+  modelOverride: string | undefined,
+  configModelName: string,
+): string {
+  const pin = pinnedAgentModel()
+  if (pin) return pin.id
+  return modelOverride || configModelName
 }
 
 /**
@@ -1014,8 +1056,14 @@ export class AgentGateway {
   } | null = null
   /** Optional label for eval tracing — included in log prefix when set */
   private evalLabel: string | null = null
-  /** Manages the per-workspace skill server process (.shogo/server/) */
-  private skillServerManager: SkillServerManager
+  /**
+   * Resolves which projects' API servers this runtime owns: `resolve` maps a
+   * project id, folder name or file path to that project's `PreviewManager`
+   * (anchor when called with nothing), `all` lists every attached project
+   * that could have one. Injected by `server.ts`; without it every call
+   * resolves to the anchor.
+   */
+  private apiServerHost: import('./preview-manager').ApiServerHost | null = null
   /** Multi-language LSP manager for read_lints diagnostics */
   private lspManager: WorkspaceLSPManager | null = null
   /**
@@ -1113,12 +1161,10 @@ export class AgentGateway {
    */
   private canvasTypecheckGate: CanvasTypecheckGate | null = null
   /**
-   * Direct handle on the runtime's PreviewManager (set by
-   * `attachApiServer`). Held in addition to the `skillServerManager`
-   * shim because we need to surface its `depsReady` deferred to the
-   * canvas build manager — going through the shim would require
-   * forwarding the promise through a layer whose contract is
-   * "skill-server-like API server", not "preview lifecycle".
+   * Direct handle on the runtime's anchor PreviewManager (set by
+   * `attachApiServer`). We need it for its `depsReady` deferred (fed to the
+   * canvas build manager) and for the anchor's API-server state; per-project
+   * work goes through {@link apiServerHost}.
    *
    * `null` is tolerated by `CanvasBuildManager`: missing waitForDeps
    * just means the build proceeds without the gate (e.g. tests, or
@@ -1149,6 +1195,13 @@ export class AgentGateway {
    * `AGENT_AUTO_TIER_MAP` env var. Undefined keeps the hardcoded defaults.
    */
   private autoTierOverride?: AutoTierOverride
+  /**
+   * The Auto tier map for the turn in flight, narrowed to the person it acts
+   * for (SHO-417). Set from the chat body on every request; when present it
+   * wins over `autoTierOverride`, so an Auto fallback cannot walk outside the
+   * person's effective set.
+   */
+  private turnAutoTiers?: AutoTierOverride
 
   // ── BETA: per-chat git worktrees ──────────────────────────────────────────
   /** Lazily-created worktree manager (null until first use when enabled). */
@@ -1196,7 +1249,6 @@ export class AgentGateway {
     this.sessionManager = new SessionManager(this.config.session)
     this.fileStateCache.setWorkspaceDir(workspaceDir)
     this.mcpClientManager.setWorkspaceDir(workspaceDir)
-    this.skillServerManager = new SkillServerManager({ workspaceDir })
 
     // Apply admin-configured agent model overrides from injected env vars
     const envOverrides: Record<string, string> = {}
@@ -1327,6 +1379,17 @@ export class AgentGateway {
     this.userTimezone = tz
   }
 
+  /**
+   * The Auto tier map for the turn about to run, narrowed to the person it acts
+   * for (SHO-417). Replaced on every chat request, like `setViewerContext`: the
+   * process-wide `AGENT_AUTO_TIER_MAP` is one map for the whole workspace, so a
+   * per-person cap has to ride on the turn. `undefined` clears it and the
+   * process map applies again.
+   */
+  setTurnAutoTiers(raw: unknown): void {
+    this.turnAutoTiers = parseTurnAutoTiers(raw)
+  }
+
   /** Live canvas preview size from the Studio client (iPhone vs desktop).
    *  The gateway is a process singleton — call this on every chat request,
    *  including with `undefined`, so a missing payload clears the last hint. */
@@ -1347,6 +1410,7 @@ export class AgentGateway {
       ...(typeof ctx.canPublishSubdomain === 'boolean'
         ? { canPublishSubdomain: ctx.canPublishSubdomain }
         : {}),
+      ...(ctx.publishHosting ? { publishHosting: ctx.publishHosting } : {}),
       ...(ctx.teamWorkspaceNames ? { teamWorkspaceNames: ctx.teamWorkspaceNames } : {}),
     }
   }
@@ -1658,7 +1722,7 @@ export class AgentGateway {
    * survives) cannot disagree with the turn itself.
    */
   private resolveTurnModelAlias(modelOverride: string | undefined): string {
-    return modelOverride || this.config.model.name
+    return resolveTurnModelAliasFor(modelOverride, this.config.model.name)
   }
 
   /**
@@ -1810,16 +1874,14 @@ export class AgentGateway {
       }
     }
 
-    // The API server (root server.tsx) is owned by PreviewManager — see
-    // server.ts. The shim below just exposes its status to tools/prompts.
-    try {
-      const { started, port } = await this.skillServerManager.start()
-      if (started) {
-        console.log(`[AgentGateway] API server already running on port ${port}`)
-      }
-    } catch (error: any) {
-      console.error('[AgentGateway] API server status check error:', error.message)
-    }
+    // Make sure the project's API server (`server.tsx`) is up. It is owned by
+    // PreviewManager, which starts it as part of the preview lifecycle when
+    // that runs; on a cold runtime (a schedule, trigger or chat turn before
+    // any preview start) nothing has, so start it here. Non-blocking: the
+    // turn's `/api/*` calls go through the proxy, which ensures it for real.
+    void this.previewManager?.ensureApiServer().catch((error: any) => {
+      console.error('[AgentGateway] API server ensure failed:', error?.message ?? error)
+    })
 
     // Composio session init is deferred to per-request (processChatMessageStream)
     // so it uses the real authenticated user ID, not a static default.
@@ -2195,7 +2257,6 @@ export class AgentGateway {
 
     this.sessionManager.destroy()
     this.sessionPersistence?.close()
-    await this.skillServerManager.stop()
     this.canvasBuildManager?.stop()
     this.canvasTypecheckGate?.stop()
     // Without this, the `vite build --watch` child PreviewManager
@@ -3528,10 +3589,13 @@ export class AgentGateway {
     this.quickActions = loadQuickActions(this.workspaceDir)
     setLoadedSkills(this.skills)
 
-    // Start the skill server if it was just created (no-op if already running)
-    if (!this.skillServerManager.isRunning) {
-      this.skillServerManager.start().catch(() => {})
-    }
+    // Every turn (chat, schedule, trigger, heartbeat) goes through here. A
+    // cold runtime has never started the project's API server, so start it
+    // now rather than waiting for the model to notice a 503 and work around
+    // it. Non-blocking: the turn's `/api/*` requests go through the runtime
+    // proxy, which ensures the sidecar for real and answers 503 only on a
+    // genuine failure.
+    void this.ensureApiServerForTurn(sessionId).catch(() => {})
 
     // Per-turn trust refresh. Reconciles the runtime's view of
     // `trustLevel` with the DB at the boundary of every chat turn so
@@ -3586,8 +3650,11 @@ export class AgentGateway {
     let autoSelectedTier: AutoTierCeiling | undefined
 
     if (autoRouting) {
-      autoTiers = buildAutoTierMap(autoTierIds(this.autoTierOverride))
-      autoProviderHints = autoTierProviderHints(this.autoTierOverride)
+      // A per-turn map (narrowed to the person this run acts for) wins over the
+      // process-wide one, so an Auto fallback cannot leave their effective set.
+      const tierOverride = this.turnAutoTiers ?? this.autoTierOverride
+      autoTiers = buildAutoTierMap(autoTierIds(tierOverride))
+      autoProviderHints = autoTierProviderHints(tierOverride)
       const estimatedTokens = this.sessionManager.estimateTokens(session)
       const classInput: SpawnClassificationInput = {
         prompt,
@@ -3637,7 +3704,10 @@ export class AgentGateway {
       // whole pipeline to Hoshi 2.0. Honor the API server's native provider
       // hint when present; otherwise infer from the RESOLVED id.
       modelId = resolveModelAlias(effectiveAlias)
-      provider = session.modelProvider ?? inferProviderFromModel(modelId, this.config.model.provider)
+      const pin = pinnedAgentModel()
+      provider = pin
+        ? pin.provider
+        : (session.modelProvider ?? inferProviderFromModel(modelId, this.config.model.provider))
       console.log(`${this.logPrefix} LLM turn: model=${modelId} (alias=${modelAlias}) provider=${provider}${session.modelProvider ? ' (hint)' : ''} baseUrl=${process.env[provider === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL'] || '(not set)'}`)
     }
 
@@ -3699,6 +3769,9 @@ export class AgentGateway {
 
     const commandRegistry = sessionId ? this.getOrCreateCommandRegistry(sessionId) : undefined
     const persistedProgressMessages = new Set<Message>()
+    // SHO-417: the acting person's abilities for this turn, fetched once. A
+    // denied tool is hidden from the model; the server refuses it anyway.
+    const abilities = await fetchEffectiveAbilities(requesterTicket)
     const toolContext: ToolContext = {
       workspaceDir: sessionWorkspaceDir,
       channels: this.channels,
@@ -3722,6 +3795,7 @@ export class AgentGateway {
       permissionEngine: this.permissionEngine ?? undefined,
       userId: this.currentUserId,
       requesterTicket,
+      abilities,
       aiProxyUrl: process.env.AI_PROXY_URL,
       aiProxyToken: process.env.AI_PROXY_TOKEN,
       uiWriter,
@@ -3739,7 +3813,9 @@ export class AgentGateway {
       depsReady: this.previewManager?.depsSettled,
       fileStateCache: this.fileStateCache,
       agentManager: this.agentManager,
-      skillServerManager: this.skillServerManager,
+      // Tools that touch `prisma/schema.prisma` or `custom-routes.ts` act on
+      // the project that owns the edited file, not this runtime's anchor.
+      resolveApiServer: (ref?: string) => this.resolveApiServerTarget(ref),
       sessionPersistence: this.sessionPersistence ?? undefined,
       teamManager: this.teamManager,
       indexEngine: this.indexEngine ?? undefined,
@@ -3747,7 +3823,7 @@ export class AgentGateway {
       effectiveModel: modelId,
       effectiveProvider: provider,
       autoRouting,
-      autoTierOverride: this.autoTierOverride,
+      autoTierOverride: this.turnAutoTiers ?? this.autoTierOverride,
       dualPlan,
       shellState: sessionId ? {
         getCwd: () => this.shellCwd.get(sessionId!) || this.initialShellCwd(sessionWorkspaceDir),
@@ -4847,9 +4923,14 @@ export class AgentGateway {
         sessionId !== 'chat' &&
         sessionId !== 'default' &&
         sessionId !== 'webhook'
-      const extraHeaders: Record<string, string> | undefined = isRealChatSession
-        ? { 'x-chat-session-id': sessionId }
-        : undefined
+      const extraHeaders: Record<string, string> | undefined = {
+        ...(isRealChatSession ? { 'x-chat-session-id': sessionId } : {}),
+        // SHO-417: the person this turn acts for, on the LLM call itself. The
+        // proxy resolves the acting user from this ticket, so a turn started by
+        // person A in a project whose token belongs to person B is still A's
+        // turn — for the model gate and for per-seat billing alike.
+        ...(requesterTicket ? { 'X-Requester-Ticket': requesterTicket } : {}),
+      }
 
       // Mid-turn summarization (SHO-96). pi-agent-core drives the tool loop, so
       // `transformContext` is the only point we control between tool calls —
@@ -7036,11 +7117,17 @@ export class AgentGateway {
   private buildSkillServerPromptSection(): string | null {
     if (this.config.shellEnabled === false) return null
 
-    const phase = this.skillServerManager.phase
-    const genError = this.skillServerManager.lastGenerateError
-    const activeRoutes = this.skillServerManager.getActiveRoutes()
-    const schemaModels = this.skillServerManager.getSchemaModels()
-    const url = this.skillServerManager.url
+    let pm: import('./preview-manager').PreviewManager
+    try {
+      pm = this.resolveApiServerTarget()
+    } catch {
+      return null
+    }
+    const phase = pm.apiServerPhase
+    const genError = pm.apiLastGenerateError
+    const activeRoutes = pm.getActiveRoutes()
+    const schemaModels = pm.getSchemaModels()
+    const url = pm.apiServerUrl
 
     const regenGuide = [
       '### How schema regeneration works',
@@ -7067,7 +7154,7 @@ export class AgentGateway {
       '**Do NOT** manually run `prisma generate`, `shogo generate`, or `npm run db:generate` — it is all automatic.',
     ].join('\n')
 
-    if (this.skillServerManager.isRunning) {
+    if (phase === 'healthy') {
       const lines = [
         '## Project Server',
         '',
@@ -7446,49 +7533,86 @@ export class AgentGateway {
   }
 
   /**
-   * Wire the runtime's `PreviewManager` (owner of the API server) into
-   * the gateway's prompt builder + tools. Called from server.ts after
-   * both have been constructed.
+   * Wire the runtime's API-server owner (`PreviewManager`) into the gateway's
+   * prompt builder + tools. Called from server.ts after both have been
+   * constructed.
    *
-   * Once we finish the refactor, the gateway should hold a
-   * `PreviewManager` reference directly and the `SkillServerManager`
-   * shim can be deleted entirely.
+   * `host` maps a project id, folder name or file path to the
+   * `PreviewManager` for THAT project, so a tool acting on
+   * `<otherProject>/custom-routes.ts` syncs the other project rather than the
+   * anchor. Omitted (tests, single-project runtimes) → always the anchor.
    */
-  attachApiServer(pm: import('./preview-manager').PreviewManager): void {
-    this.skillServerManager.attach(pm)
+  attachApiServer(
+    pm: import('./preview-manager').PreviewManager,
+    host?: import('./preview-manager').ApiServerHost,
+  ): void {
     // Keep a direct handle so `start()` can pass `pm.depsReady` into
     // CanvasBuildManager. The order matters: `server.ts` calls
     // `attachApiServer()` BEFORE `start()`, so the handle is always
     // populated by the time we wire it.
     this.previewManager = pm
+    this.apiServerHost = host ?? null
   }
 
-  getSkillServerPort(): number | null {
-    // Return the configured port regardless of running state. The shim's
-    // `.port` already falls back to the resolved `API_SERVER_PORT` /
-    // `SKILL_SERVER_PORT` / 3001 chain when the manager hasn't attached
-    // yet, so callers (eg. the runtime-checks endpoint) probe the right
-    // port even while the API server is still booting. Returning `null`
-    // here used to short-circuit a stale `?? 4100` fallback that targeted
-    // the retired skill server's port — no longer correct now that the
-    // port is dynamic per-project.
-    return this.skillServerManager.port
+  /**
+   * The API server a tool or API call means: the project that owns `ref` (a
+   * project id, folder name, or a file inside it), falling back to this
+   * runtime's own (anchor) project when `ref` is absent or unknown.
+   */
+  resolveApiServerTarget(ref?: string): import('./preview-manager').PreviewManager {
+    const resolved = (ref ? this.apiServerHost?.resolve(ref) : null) ?? this.apiServerHost?.resolve() ?? this.previewManager
+    if (!resolved) {
+      throw new Error('API server provider not attached')
+    }
+    return resolved
   }
 
-  getSkillServerPhase(): string {
-    return this.skillServerManager.phase
+  /**
+   * Start the API server(s) a turn may need, without blocking the turn.
+   *
+   * In a workspace runtime every attached project with a `server.tsx` gets
+   * its own sidecar and the agent may work in any of them, so all of them are
+   * ensured; a single-project runtime only has the anchor. Schedules,
+   * triggers and heartbeats reach the same call as chat — they all go through
+   * `processChatMessageStream`.
+   */
+  private async ensureApiServerForTurn(_sessionId: string): Promise<void> {
+    const targets = this.apiServerHost?.all() ?? (this.previewManager ? [this.previewManager] : [])
+    await Promise.all(
+      targets.map((pm) =>
+        pm.ensureApiServer().catch((err: any) => {
+          console.error(`[AgentGateway] API server ensure failed for ${pm.projectId ?? 'project'}:`, err?.message ?? err)
+        }),
+      ),
+    )
   }
 
-  getSkillServerActiveRoutes(): string[] {
-    return this.skillServerManager.getActiveRoutes()
+  getApiServerPort(): number | null {
+    return this.previewManager?.apiServerPort ?? null
   }
 
-  getSkillServerSchemaModels(): string[] {
-    return this.skillServerManager.getSchemaModels()
+  getApiServerPhase(): string {
+    return this.previewManager?.apiServerPhase ?? 'idle'
   }
 
-  async syncSkillServer(): Promise<{ ok: boolean; phase: string }> {
-    return this.skillServerManager.sync()
+  async getApiServerActiveRoutes(): Promise<string[]> {
+    if (!this.previewManager) return []
+    return (await this.previewManager.fetchActiveRoutes()).routes
+  }
+
+  getApiServerSchemaModels(): string[] {
+    return this.previewManager?.getSchemaModels() ?? []
+  }
+
+  /**
+   * Force a regenerate + restart of a project's API server (`sync`), then
+   * report where it stands. Backs `POST /agent/api-server/sync` and the
+   * `server_sync` tool's `sync` mode.
+   */
+  async syncApiServer(project?: string): Promise<EnsureApiServerResult> {
+    const pm = this.resolveApiServerTarget(project)
+    await pm.sync()
+    return pm.ensureApiServer()
   }
 
   getMcpClientManager(): MCPClientManager {

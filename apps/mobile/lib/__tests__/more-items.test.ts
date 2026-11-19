@@ -14,6 +14,13 @@ describe('moreItems', () => {
     expect(ids(moreItems({ kind: 'team', marketplace: true, canvasesHidden: false }))[0]).toBe('analytics')
   })
 
+  test('Analytics is hidden from members: workspace analytics are admin-only', () => {
+    expect(ids(moreItems({ kind: 'team', marketplace: false, canvasesHidden: true, analytics: false }))).toEqual(['settings'])
+    expect(ids(moreItems({ kind: 'personal', marketplace: false, canvasesHidden: true, analytics: false }))).toEqual(['settings'])
+    // An admin (the default) still gets it.
+    expect(ids(moreItems({ kind: 'team', marketplace: false, canvasesHidden: true, analytics: true }))).toEqual(['analytics', 'settings'])
+  })
+
   test('a team workspace lists Marketplace, and Tasks only when its navigation is switched on', () => {
     expect(ids(moreItems({ kind: 'team', marketplace: true, canvasesHidden: true }))).toEqual(['analytics', 'marketplace', 'settings'])
     expect(ids(moreItems({ kind: 'team', marketplace: true, canvasesHidden: true, tasksHidden: false }))).toEqual(['analytics', 'tasks', 'marketplace', 'settings'])

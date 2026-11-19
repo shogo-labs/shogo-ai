@@ -743,7 +743,11 @@ function dedupeQuestions(questions: SetupQuestion[]): SetupQuestion[] {
 
 export const SPECIALIST_PACKS: PackTemplate[] = [OPS_TRIAGE, DAILY_STANDUP, MEETING_TO_CARDS, CHIEF_OF_STAFF, SELF_EVOLVING]
 
-export const DEPARTMENT_PACK_IDS = DEPARTMENTS.map((d) => d.id)
+/**
+ * Departments that are marketplace packs. A hidden department (the `course`
+ * that `enroll()` installs) is not one: nobody buys the pack by installing it.
+ */
+export const DEPARTMENT_PACK_IDS = DEPARTMENTS.filter((d) => !d.hidden).map((d) => d.id)
 
 /** Every installable pack, departments first, in catalogue order. */
 export function listPackTemplates(): PackTemplate[] {

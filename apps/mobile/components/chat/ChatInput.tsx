@@ -205,6 +205,9 @@ export interface FileAttachment {
    * instead of uploading it again.
    */
   savedPath?: string;
+  /** Pixel size of the original image, when it is known before the send. */
+  width?: number;
+  height?: number;
   /** Voice notes: clip length in ms. */
   durationMs?: number;
   /** Voice notes: waveform levels 0-100, space separated. */

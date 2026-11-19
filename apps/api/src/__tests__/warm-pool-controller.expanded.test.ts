@@ -197,6 +197,8 @@ mock.module('../lib/runtime/build-project-env', () => ({
 }))
 
 mock.module('@shogo/model-catalog', () => ({
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
   getModelTier: (_modelId: string) => 'standard',
   resolveModelId: (mode: string) => mode || 'claude-haiku-4-5',
   MODEL_CATALOG: {},

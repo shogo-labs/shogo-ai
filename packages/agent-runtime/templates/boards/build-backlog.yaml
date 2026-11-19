@@ -1,0 +1,42 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+#
+# A board template: add `board` to a team channel in shogo-system.yaml
+# (or call work_template_add), then run system_apply.
+id: build-backlog
+name: Build Backlog
+summary: What to build next, from idea to shipped, one person or a small team.
+channel: build
+board:
+  name: Backlog
+  itemType: task
+  keyPrefix: BLD
+  description: Everything we intend to build. A card leaves Review only when the change is actually live.
+  columns:
+    - name: Ideas
+      category: backlog
+    - name: Building
+      category: active
+      wipLimit: 2
+    - name: Review
+      category: review
+      slaHours: 48
+    - name: Shipped
+      category: done
+    - name: Dropped
+      category: dismissed
+  fields:
+    - key: area
+      label: Area
+      type: text
+    - key: size
+      label: Size
+      type: select
+      options:
+        - S
+        - M
+        - L
+    - key: link
+      label: Link
+      type: url
+  requiresHumanReview: true

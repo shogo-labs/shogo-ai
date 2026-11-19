@@ -344,6 +344,6 @@ describe('templates', () => {
 
   test('work_template_list filters by kind', async () => {
     const out = await run('work_template_list', { kind: 'company' })
-    expect(out.templates.map((t: any) => t.id)).toEqual(['saas-startup', 'agency', 'ecommerce', 'nonprofit', 'freelancer', 'local-services'])
+    expect(out.templates.map((t: any) => t.id)).toEqual(['saas-startup', 'agency', 'ecommerce', 'nonprofit', 'freelancer', 'local-services', 'solo-founder-os'])
   })
 })

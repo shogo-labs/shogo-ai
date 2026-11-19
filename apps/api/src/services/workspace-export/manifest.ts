@@ -59,6 +59,8 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   WorkspaceAgentProfile: { decision: 'include', reason: 'The workspace agent identity shown in team chat.', scope: { kind: 'workspace' } },
   SubagentModelOverride: { decision: 'include', reason: 'Per-workspace/per-project subagent model overrides.', scope: { kind: 'workspace' } },
   WorkspaceModelVisibility: { decision: 'include', reason: 'Which models this workspace allows.', scope: { kind: 'workspace' } },
+  AccessPolicy: { decision: 'include', reason: 'Who may use which models and agent abilities (SHO-417).', scope: { kind: 'workspace' } },
+  AccessAuditEvent: { decision: 'exclude', reason: 'A per-machine record of denials and policy changes; it describes what happened here, not what the workspace is.' },
   StarredProject: { decision: 'include', reason: 'A member starred project.', scope: { kind: 'workspace' } },
   CustomEmoji: { decision: 'include', reason: 'Custom emoji a member uploaded.', scope: { kind: 'workspace' } },
   ChatSession: { decision: 'include', reason: 'Every agent chat session in the workspace (project- and workspace-scoped).', scope: { kind: 'workspace' } },
@@ -115,6 +117,7 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   CustomDomain: { decision: 'include', reason: 'Custom publish domains and their verification state.', scope: { kind: 'project' } },
   ProjectAuthConfig: { decision: 'include', reason: 'Published-site auth mode and allowlists.', scope: { kind: 'project' } },
   VoiceProjectConfig: { decision: 'include', reason: 'Voice config (agent/phone ids; provider keys are not stored here).', scope: { kind: 'workspace' } },
+  CourseEnrollment: { decision: 'include', reason: 'A purchased course and the lesson progress that drives the Course board: the licence, the install bindings and `progress`. Stripe session ids travel with it (they are ids, not credentials) so a restore does not re-offer the purchase.', scope: { kind: 'workspace' } },
   Account: { decision: 'exclude', reason: 'Global rows (auth, marketplace catalog, affiliate programme) that belong to the instance or the person, not this workspace. Member carries the names and emails the export needs.' },
   Affiliate: { decision: 'exclude', reason: 'Global rows (auth, marketplace catalog, affiliate programme) that belong to the instance or the person, not this workspace. Member carries the names and emails the export needs.' },
   AffiliateAttribution: { decision: 'exclude', reason: 'Global rows (auth, marketplace catalog, affiliate programme) that belong to the instance or the person, not this workspace. Member carries the names and emails the export needs.' },
@@ -223,6 +226,7 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   SocialProfile: { decision: 'exclude', reason: 'Provider mirror: the Zernio profile that owns the connected accounts. Unique on the provider id and recreated on connect, so it must not travel in an archive.' },
   SocialRelayedEvent: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },
   StorageUsage: { decision: 'exclude', reason: 'Money and metering, not content. Also carries payment-processor ids; StorageUsage is recomputable.' },
+  StorageUsageDaily: { decision: 'exclude', reason: 'Money and metering, not content: the per-day peak bytes a storage charge was computed from. Region-local and recomputed by the next 6h pass, so an archive must not carry it.' },
   Subscription: { decision: 'exclude', reason: 'Money and metering, not content. Also carries payment-processor ids; StorageUsage is recomputable.' },
   TaskDependency: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },
   TaskExecution: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },
@@ -236,11 +240,17 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   UserIdentityLink: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },
   UserIntegrationConnection: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },
   Verification: { decision: 'exclude', reason: 'Instance catalog or global configuration, identical on every restore.' },
+  // SHO-424: compute metering. Both are the arithmetic behind a wallet charge,
+  // recomputable from the metal heartbeats that produced them; neither is
+  // content, and neither means anything on another instance.
+  VmMeterCursor: { decision: 'exclude', reason: 'SHO-424 compute metering: a read-modify-write guard holding the last-counted (agentMs, appMs, idleMs) triple for a VM on a specific metal host. Restoring it would carry counters for hosts that no longer exist, which can suppress or double-count future charges.' },
+  VmUsageHour: { decision: 'exclude', reason: 'Money and metering, not content — the counted seconds behind consumeUsage, recomputable from the heartbeats that reported them.' },
   VoiceCallMeter: { decision: 'exclude', reason: 'Money and metering, not content. Also carries payment-processor ids; StorageUsage is recomputable.' },
   WorkItemSubscription: { decision: 'exclude', reason: 'One device or one person\'s ephemeral state, meaningless on restore.' },
   WorkspaceEvent: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },
   WorkspaceGrant: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },
   WorkspaceMove: { decision: 'exclude', reason: 'The log of how this copy got here (phase cursors, id map, handover). The target records its own; carrying it across would describe a move that never happened.' },
+  WorkspaceRootSecret: { decision: 'exclude', reason: 'The sealed copy of the workspace-root .env* files (SHO-384), encrypted with a key this instance holds and a runtime key naming one cloud pod. An archive could not decrypt or place it on another instance, and a downloaded file must never carry the plaintext it protects. The files themselves travel as files.' },
 }
 
 /**

@@ -14,7 +14,7 @@
  *   - `formatToolInstallMessage` (gateway-tools.ts:3265) — three auth
  *     branches (active / authUrl present / needs_auth fallback).
  *
- * No real Prisma, no real Hono — `skillServerManager` is a fake whose
+ * No real Prisma, no real Hono — `resolveApiServer` returns a fake whose
  * methods we instrument. `server-tsx-drift` runs against real on-disk
  * fixtures so the drift detection logic itself is also exercised.
  */
@@ -48,16 +48,38 @@ function makeCtx(overrides?: Partial<ToolContext>): ToolContext {
   }
 }
 
-function fakeSkillServerManager(overrides: Record<string, any> = {}) {
-  return {
-    phase: 'ready',
-    url: 'http://localhost:0',
-    sync: async () => ({ ok: true, phase: 'ready' }),
-    getActiveRoutes: () => ['users', 'posts'],
+function fakeApiServer(overrides: Record<string, any> = {}) {
+  const phase = overrides.phase ?? 'healthy'
+  const routes = overrides.routes ?? ['users', 'posts']
+  const pm: any = {
+    apiServerPhase: phase,
+    apiServerUrl: 'http://localhost:0',
+    projectId: 'test',
+    projectDir: TEST_DIR,
+    sync: async () => ({ ok: true, phase: 'healthy' }),
+    getActiveRoutes: () => routes,
+    fetchActiveRoutes: async () => ({ routes, routesSource: 'server' }),
     getSchemaModels: () => ['User', 'Post'],
+    apiServerStatus: async () => ({
+      phase: pm.apiServerPhase,
+      port: 1,
+      reloadedAt: 1,
+      routes,
+      routesSource: 'server',
+      buildError: null,
+    }),
+    ensureApiServer: async () => ({
+      phase: pm.apiServerPhase,
+      port: 1,
+      reloadedAt: 1,
+      routes,
+      routesSource: 'server',
+      buildError: null,
+    }),
     restartApiServerOnly: async () => {},
     ...overrides,
   }
+  return pm
 }
 
 async function runWrite(ctx: ToolContext, path: string, content: string) {
@@ -91,7 +113,7 @@ describe('maybeSchemaSync — branches via write_file(prisma/schema.prisma)', ()
   afterEach(() => rmSync(TEST_DIR, { recursive: true, force: true }))
   afterAll(() => clearTrustForTests())
 
-  test('no skillServerManager → returns base result (no apiServer block)', async () => {
+  test('no API server provider → returns base result (no apiServer block)', async () => {
     const ctx = makeCtx()
     const r = await runWrite(ctx, 'prisma/schema.prisma', 'model User { id Int @id }\n')
     expect(r.ok).toBe(true)
@@ -101,8 +123,8 @@ describe('maybeSchemaSync — branches via write_file(prisma/schema.prisma)', ()
 
   test('schema with no model { ... } blocks → skipped (no sync triggered)', async () => {
     let syncCalls = 0
-    const ssm = fakeSkillServerManager({ sync: async () => { syncCalls++; return { ok: true, phase: 'ready' } } })
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer({ sync: async () => { syncCalls++; return { ok: true, phase: 'healthy' } } })
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(ctx, 'prisma/schema.prisma', '// just comments, no models\n')
     expect(r.ok).toBe(true)
     expect((r as any).apiServer).toBeUndefined()
@@ -110,25 +132,25 @@ describe('maybeSchemaSync — branches via write_file(prisma/schema.prisma)', ()
   })
 
   test('happy path → activeRoutes prefixed with /api/, no warning when no orphaned fetches', async () => {
-    const ssm = fakeSkillServerManager()
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer()
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(
       ctx,
       'prisma/schema.prisma',
       'generator client { provider = "prisma-client-js" }\nmodel User { id Int @id }\n',
     )
     expect((r as any).apiServer.synced).toBe(true)
-    expect((r as any).apiServer.phase).toBe('ready')
+    expect((r as any).apiServer.phase).toBe('healthy')
     expect((r as any).apiServer.activeRoutes).toEqual(['/api/users', '/api/posts'])
     expect((r as any).apiServer.orphanedFetches).toBeUndefined()
     expect((r as any).apiServer.warning).toBeUndefined()
   })
 
   test('sync() throws → synced:false with error + hint, schema content not deleted', async () => {
-    const ssm = fakeSkillServerManager({
+    const ssm = fakeApiServer({
       sync: async () => { throw new Error('prisma db push failed: SQLITE_BUSY') },
     })
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(ctx, 'prisma/schema.prisma', 'model User { id Int @id }\n')
     expect((r as any).apiServer.synced).toBe(false)
     expect((r as any).apiServer.error).toContain('SQLITE_BUSY')
@@ -148,8 +170,8 @@ describe('maybeSchemaSync — branches via write_file(prisma/schema.prisma)', ()
       }
       `,
     )
-    const ssm = fakeSkillServerManager({ getActiveRoutes: () => ['users', 'posts'] })
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer({ getActiveRoutes: () => ['users', 'posts'] })
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(ctx, 'prisma/schema.prisma', 'model User { id Int @id }\n')
     const apiServer = (r as any).apiServer
     expect(apiServer.synced).toBe(true)
@@ -170,7 +192,7 @@ describe('maybeCustomRoutesSync — drift heal branches via write_file(custom-ro
   afterEach(() => rmSync(TEST_DIR, { recursive: true, force: true }))
   afterAll(() => clearTrustForTests())
 
-  test('no skillServerManager → returns base result, no apiServer block', async () => {
+  test('no API server provider → returns base result, no apiServer block', async () => {
     const ctx = makeCtx()
     const r = await runWrite(ctx, 'custom-routes.ts', 'export default {} as any\n')
     expect(r.ok).toBe(true)
@@ -179,22 +201,22 @@ describe('maybeCustomRoutesSync — drift heal branches via write_file(custom-ro
 
   test('no shogo.config.json → drift check returns drifted:false, fast restart path runs', async () => {
     let restartCalls = 0
-    const ssm = fakeSkillServerManager({
+    const ssm = fakeApiServer({
       restartApiServerOnly: async () => { restartCalls++ },
     })
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(ctx, 'custom-routes.ts', 'export default {} as any\n')
     expect((r as any).apiServer.serverRestarted).toBe(true)
-    expect((r as any).apiServer.phase).toBe('ready')
+    expect((r as any).apiServer.phase).toBe('healthy')
     expect(restartCalls).toBe(1)
     expect((r as any).apiServer.hint).toContain('custom-routes.ts changes are live')
   })
 
   test('restartApiServerOnly throws on fast path → serverRestarted:false with error + hint', async () => {
-    const ssm = fakeSkillServerManager({
+    const ssm = fakeApiServer({
       restartApiServerOnly: async () => { throw new Error('port 38554 in use') },
     })
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(ctx, 'custom-routes.ts', 'export default {} as any\n')
     expect((r as any).apiServer.serverRestarted).toBe(false)
     expect((r as any).apiServer.error).toContain('port 38554 in use')
@@ -211,11 +233,11 @@ describe('maybeCustomRoutesSync — drift heal branches via write_file(custom-ro
       `export default app\n`,
     )
     let syncCalls = 0
-    const ssm = fakeSkillServerManager({
-      sync: async () => { syncCalls++; return { ok: true, phase: 'ready' } },
+    const ssm = fakeApiServer({
+      sync: async () => { syncCalls++; return { ok: true, phase: 'healthy' } },
       restartApiServerOnly: async () => { throw new Error('should not be called') },
     })
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(ctx, 'custom-routes.ts', 'export default {} as any\n')
     expect(syncCalls).toBe(1)
     expect((r as any).apiServer.regenerated).toBe(true)
@@ -229,13 +251,14 @@ describe('maybeCustomRoutesSync — drift heal branches via write_file(custom-ro
       join(TEST_DIR, 'server.tsx'),
       `// Auto-generated by @shogo-ai/sdk\nimport { Hono } from 'hono'\nexport default new Hono()\n`,
     )
-    const ssm = fakeSkillServerManager({
-      sync: async () => ({ ok: false, phase: 'failed', error: 'codegen failed' }),
+    const ssm = fakeApiServer({
+      phase: 'crashed',
+      sync: async () => ({ ok: false, phase: 'crashed', error: 'codegen failed' }),
     })
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(ctx, 'custom-routes.ts', 'export default {} as any\n')
     expect((r as any).apiServer.regenerated).toBe(true)
-    expect((r as any).apiServer.phase).toBe('failed')
+    expect((r as any).apiServer.phase).toBe('crashed')
     expect((r as any).apiServer.error).toBe('codegen failed')
   })
 
@@ -252,11 +275,11 @@ describe('maybeCustomRoutesSync — drift heal branches via write_file(custom-ro
     )
     let restartCalls = 0
     let syncCalls = 0
-    const ssm = fakeSkillServerManager({
-      sync: async () => { syncCalls++; return { ok: true, phase: 'ready' } },
+    const ssm = fakeApiServer({
+      sync: async () => { syncCalls++; return { ok: true, phase: 'healthy' } },
       restartApiServerOnly: async () => { restartCalls++ },
     })
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(ctx, 'custom-routes.ts', 'export default {} as any\n')
     expect(restartCalls).toBe(1)
     expect(syncCalls).toBe(0)
@@ -273,10 +296,10 @@ describe('maybeCustomRoutesSync — drift heal branches via write_file(custom-ro
     writeFileSync(join(TEST_DIR, 'shogo.config.json'), '{ this is not valid json ::')
     writeFileSync(join(TEST_DIR, 'server.tsx'), 'export default {}\n')
     let restartCalls = 0
-    const ssm = fakeSkillServerManager({
+    const ssm = fakeApiServer({
       restartApiServerOnly: async () => { restartCalls++ },
     })
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(ctx, 'custom-routes.ts', 'export default {} as any\n')
     expect(restartCalls).toBe(1)
     expect((r as any).apiServer.serverRestarted).toBe(true)
@@ -293,10 +316,10 @@ describe('maybeCustomRoutesSync — drift heal branches via write_file(custom-ro
       `export default app\n`,
     )
     let restartCalls = 0
-    const ssm = fakeSkillServerManager({
+    const ssm = fakeApiServer({
       restartApiServerOnly: async () => { restartCalls++ },
     })
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(ctx, 'custom-routes.ts', 'export default {} as any\n')
     expect(restartCalls).toBe(1)
     expect((r as any).apiServer.serverRestarted).toBe(true)
@@ -313,10 +336,10 @@ describe('maybeCustomRoutesSync — drift heal branches via write_file(custom-ro
       `// I wrote this myself\nconst app = { route: () => {} }\nexport default app\n`,
     )
     let restartCalls = 0
-    const ssm = fakeSkillServerManager({
+    const ssm = fakeApiServer({
       restartApiServerOnly: async () => { restartCalls++ },
     })
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(ctx, 'custom-routes.ts', 'export default {} as any\n')
     const api = (r as any).apiServer
     expect(api.serverRestarted).toBe(false)
@@ -328,8 +351,8 @@ describe('maybeCustomRoutesSync — drift heal branches via write_file(custom-ro
   })
 
   test('custom-routes.tsx (with x) extension also triggers the sync path', async () => {
-    const ssm = fakeSkillServerManager()
-    const ctx = makeCtx({ skillServerManager: ssm as any })
+    const ssm = fakeApiServer()
+    const ctx = makeCtx({ resolveApiServer: () => ssm as any })
     const r = await runWrite(ctx, 'custom-routes.tsx', 'export default {} as any\n')
     expect((r as any).apiServer.serverRestarted).toBe(true)
   })

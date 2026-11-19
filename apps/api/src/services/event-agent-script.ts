@@ -112,14 +112,20 @@ async function resolveChannel(workspaceId: string, channel: string, projectId: s
 
 async function runAction(action: ScriptAction, input: EventAgentTurnInput): Promise<void> {
   const args = render(action.args, input)
-  const { agentDisplayName, openAgentConversation, addUserMembersAsAgent } = await import('./conversation.service')
+  const { agentDisplayName, addUserMembersAsAgent } = await import('./conversation.service')
   const { postAgentMessage } = await import('./chat-providers/outbound')
   const agent = { projectId: input.projectId, name: await agentDisplayName(input.workspaceId, input.projectId) }
   switch (action.tool) {
     case 'team_chat_dm': {
       const userId = await resolveUserId(input.workspaceId, String(args.user))
-      const conv = await openAgentConversation(input.workspaceId, userId, { projectId: input.projectId })
-      await postAgentMessage({ conversationId: conv.id, workspaceId: input.workspaceId, text: String(args.text), agent })
+      // A message to a person lands in their chat with this agent (SHO-412).
+      const { deliverAgentDirectMessage } = await import('./agent-chat.service')
+      await deliverAgentDirectMessage({
+        workspaceId: input.workspaceId,
+        userId,
+        projectId: input.projectId,
+        text: String(args.text),
+      })
       return
     }
     case 'team_chat_post': {

@@ -30,6 +30,7 @@ import {
   Users as UsersIcon,
   Boxes as BoxesIcon,
   Shield as ShieldIcon,
+  ShieldCheck as ShieldCheckIcon,
   User as UserIcon,
   ExternalLink as ExternalLinkIcon,
   Trash2 as Trash2Icon,
@@ -47,6 +48,7 @@ import {
   Download as DownloadIcon,
   Monitor as MonitorIcon,
   Laptop as LaptopIcon,
+  HardDrive as HardDriveIcon,
   Paintbrush as PaintbrushIcon,
   RefreshCw as RefreshCwIcon,
   KeyRound as KeyRoundIcon,
@@ -73,6 +75,7 @@ import {
   type IDomainStore,
 } from "../../contexts/domain";
 import { useDomainActions } from "@shogo/shared-app/domain";
+import { formatApiError } from "@shogo/shared-app/chat";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { usePooledWorkspaceCreation } from "../../hooks/usePooledWorkspaceCreation";
@@ -109,6 +112,7 @@ import { EVENTS, trackEvent } from "../../lib/analytics";
 import { SecuritySettingsPanel } from "../../components/security/SecuritySettingsPanel";
 import { ComputerAndFilesPanel } from "../../components/settings/ComputerAndFilesPanel";
 import { ComputeTab } from "../../components/settings/ComputeTab";
+import { DiskSettings } from "../../components/settings/DiskSettings";
 import { LocalCloudBillingTab } from "../../components/settings/LocalCloudBillingTab";
 import { UpdatesTab } from "../../components/settings/UpdatesTab";
 import { EnvironmentVersionTrigger } from "../../components/settings/EnvironmentPicker";
@@ -116,6 +120,7 @@ import { IntegrationsTab } from "../../components/settings/IntegrationsTab";
 import { AutomationsTab } from "../../components/settings/AutomationsTab";
 import { WorkspaceExportView } from "../../components/settings/WorkspaceExportView";
 import { WorkspaceModelsTab } from "../../components/settings/WorkspaceModelsTab";
+import { WorkspaceAccessTab } from "../../components/settings/WorkspaceAccessTab";
 import { RemoteControlTab } from "../../components/settings/RemoteControlTab";
 import { SetSpendLimitDialog } from "../../components/billing/SetSpendLimitDialog";
 import { MemberUsageDetail } from "../../components/settings/MemberUsageDetail";
@@ -174,6 +179,7 @@ const SETTINGS_ICON_MAP = {
   Users: UsersIcon,
   Boxes: BoxesIcon,
   Shield: ShieldIcon,
+  ShieldCheck: ShieldCheckIcon,
   User: UserIcon,
   ExternalLink: ExternalLinkIcon,
   Trash2: Trash2Icon,
@@ -191,6 +197,7 @@ const SETTINGS_ICON_MAP = {
   Download: DownloadIcon,
   Monitor: MonitorIcon,
   Laptop: LaptopIcon,
+  HardDrive: HardDriveIcon,
   Paintbrush: PaintbrushIcon,
   RefreshCw: RefreshCwIcon,
 } as const;
@@ -204,9 +211,12 @@ const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
   people: "Users",
   chat: "MessageSquare",
   models: "Boxes",
+  access: "ShieldCheck",
   integrations: "Plug",
   automations: "Zap",
   "remote-control": "Monitor",
+  data: "Server",
+  disk: "HardDrive",
   account: "User",
   security: "Shield",
   "computer-files": "Laptop",
@@ -243,6 +253,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
   "people",
   "chat",
   "models",
+  "access",
   "integrations",
   "automations",
   "remote-control",
@@ -257,6 +268,7 @@ const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
   "workspace",
   "chat",
   "models",
+  "access",
   "integrations",
   "automations",
   "remote-control",
@@ -369,6 +381,7 @@ function SettingsSidebar({
     tabItem("models"),
     tabItem("integrations"),
     tabItem("automations"),
+    tabItem("disk"),
     tabItem("remote-control"),
     ...(showBilling
       ? [
@@ -1576,6 +1589,12 @@ const PeopleTab = observer(function PeopleTab() {
   const http = useDomainHttp();
   const currentWorkspace = useActiveWorkspace();
   const toast = useToast();
+  const { can, workspaceRole } = usePermissions({
+    workspaceId: currentWorkspace?.id,
+  });
+  // Workspace analytics are owner/admin only; a member's People tab must not
+  // fire the two workspace-wide usage reads (they would only 403).
+  const canViewMemberAnalytics = can("workspace.analytics:read");
 
   const [subTab, setSubTab] = useState<PeopleSubTab>("all");
   const [search, setSearch] = useState("");
@@ -1649,20 +1668,22 @@ const PeopleTab = observer(function PeopleTab() {
           setUserMap(map);
         } catch {}
 
-        try {
-          const usage = await api.getMemberUsageStats(http, ws.id, {
-            period: memberUsagePeriod,
-          });
-          setMemberUsage(usage);
-        } catch {}
+        if (canViewMemberAnalytics) {
+          try {
+            const usage = await api.getMemberUsageStats(http, ws.id, {
+              period: memberUsagePeriod,
+            });
+            setMemberUsage(usage);
+          } catch {}
 
-        try {
-          const insights = await api.getMemberInsights(http, ws.id, {
-            period: memberUsagePeriod,
-          });
-          setMemberInsights(insights);
-        } catch {
-          setMemberInsights({ rows: [], total: 0 });
+          try {
+            const insights = await api.getMemberInsights(http, ws.id, {
+              period: memberUsagePeriod,
+            });
+            setMemberInsights(insights);
+          } catch {
+            setMemberInsights({ rows: [], total: 0 });
+          }
         }
       }
     } catch {}
@@ -1674,6 +1695,7 @@ const PeopleTab = observer(function PeopleTab() {
     http,
     currentWorkspace?.id,
     memberUsagePeriod,
+    canViewMemberAnalytics,
   ]);
 
   useEffect(() => {
@@ -1797,12 +1819,8 @@ const PeopleTab = observer(function PeopleTab() {
     }
   };
 
-  const { can, workspaceRole } = usePermissions({
-    workspaceId: currentWorkspace?.id,
-  });
   const canManageMembers = can("workspace.members:manage");
   const isOwner = workspaceRole === "owner";
-  const canViewMemberAnalytics = can("workspace.analytics:read");
   const canManageMember = (member: { role?: string; userId?: string }) =>
     canManageMemberRow(
       { canManageMembers, isOwner, isSelf: member.userId === user?.id },
@@ -2094,7 +2112,11 @@ const PeopleTab = observer(function PeopleTab() {
 
       {filteredMembers.map((member: any) => {
         const isCurrentUser = member.userId === user?.id;
-        const canSeeInsight = canViewMemberAnalytics || isCurrentUser;
+        // The workspace usage columns come from the admin-only endpoints, so a
+        // member sees a dash for every row — including their own, whose real
+        // numbers live in Profile → Usage (`/me/analytics/*`). Rendering "0%"
+        // from an unfetched table would be a wrong number, not a hidden one.
+        const canSeeInsight = canViewMemberAnalytics;
         const canEditMember = canManageMember(member);
         const insight = memberInsightMap.get(member.userId);
         const avatarColor = ROLE_COLORS[member.role] || "bg-primary";
@@ -3098,9 +3120,9 @@ function InviteMembersModal({
       setRole("member");
       onClose();
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to send invitation"
-      );
+      // The API's refusal (e.g. `trial_seat_limit`) is the only thing that
+      // explains why the invite did not go out.
+      setError(formatApiError(err));
     } finally {
       setIsSubmitting(false);
     }
@@ -3559,6 +3581,9 @@ function BillingTab() {
   const router = useRouter();
   const http = useDomainHttp();
   const workspace = useActiveWorkspace();
+  const { can } = usePermissions({ workspaceId: workspace?.id });
+  // Workspace analytics are owner/admin only; a member has no page to open.
+  const canViewAnalytics = can("workspace.analytics:read");
   const { subscription, effectiveBalance, usageWindows, refetchUsageWallet } =
     useBillingData(workspace?.id);
   const [instanceLabel, setInstanceLabel] = useState<string | null>(null);
@@ -3769,17 +3794,19 @@ function BillingTab() {
                 Manage Plan
               </Text>
             </Button>
-            <Button
-              variant="outline"
-              onPress={() =>
-                router.push("/(app)/analytics" as any)
-              }
-              className="flex-1"
-            >
-              <Text className="text-foreground font-medium">
-                View detailed usage
-              </Text>
-            </Button>
+            {canViewAnalytics ? (
+              <Button
+                variant="outline"
+                onPress={() =>
+                  router.push("/(app)/analytics" as any)
+                }
+                className="flex-1"
+              >
+                <Text className="text-foreground font-medium">
+                  View detailed usage
+                </Text>
+              </Button>
+            ) : null}
           </View>
         </CardContent>
       </Card>
@@ -4179,6 +4206,33 @@ export function WorkspaceAccountActions({
   );
 }
 
+/**
+ * Settings → Workspace → Disk (SHO-401). The workspace runtime's own drive,
+ * editable by owners/admins. Read-only for everyone else.
+ */
+const WorkspaceDiskTab = observer(function WorkspaceDiskTab() {
+  const http = useDomainHttp();
+  const currentWorkspace = useActiveWorkspace();
+  const { can } = usePermissions({ workspaceId: currentWorkspace?.id });
+  if (!currentWorkspace?.id || !http) {
+    return (
+      <View className="flex-1 items-center justify-center p-6">
+        <Text className="text-sm text-muted-foreground">No workspace selected.</Text>
+      </View>
+    );
+  }
+  if (!can("workspace:update")) {
+    return (
+      <View className="flex-1 items-center justify-center p-6">
+        <Text className="text-sm text-muted-foreground">
+          Only workspace owners and admins can change the workspace disk.
+        </Text>
+      </View>
+    );
+  }
+  return <DiskSettings scope="workspace" workspaceId={currentWorkspace.id} http={http} />;
+});
+
 export const SettingsContent = observer(function SettingsContent({
   activeTab,
   localMode = false,
@@ -4198,9 +4252,11 @@ export const SettingsContent = observer(function SettingsContent({
   return (
     <>
       {activeTab === "workspace" && <WorkspaceSettingsTab />}
+      {activeTab === "disk" && <WorkspaceDiskTab />}
       {activeTab === "people" && !isLocal && <PeopleTab />}
       {activeTab === "chat" && <ChatPreferencesTab highlightSection={section} />}
       {activeTab === "models" && <WorkspaceModelsTab />}
+      {activeTab === "access" && <WorkspaceAccessTab />}
       {activeTab === "integrations" && <IntegrationsTab />}
       {activeTab === "automations" && (
         <AutomationsTab
@@ -4250,6 +4306,9 @@ export default observer(function SettingsPage({
   const workspaces = useWorkspaceCollection();
   const { features, localMode } = usePlatformConfig();
   const teamChat = useWorkspaceExperience().kind === "team";
+  const activeWorkspace = useActiveWorkspace();
+  const { can } = usePermissions({ workspaceId: activeWorkspace?.id });
+  const canViewAnalytics = can("workspace.analytics:read");
   const phoneTarget = phoneSettingsTarget(
     params as Record<string, string | string[] | undefined>,
     {
@@ -4258,6 +4317,7 @@ export default observer(function SettingsPage({
       platform: Platform.OS,
       isDesktop: IS_DESKTOP_CLIENT,
       teamChat,
+      canViewAnalytics,
     },
   );
 
@@ -4270,13 +4330,15 @@ export default observer(function SettingsPage({
   useEffect(() => {
     // The phone redirect already targets Analytics — never navigate twice.
     if (isPhoneSurface) return;
+    // Members have no analytics surface: leave them on Settings.
+    if (!canViewAnalytics) return;
     if (params.tab === "analytics" || params.tab === "costs") {
       router.replace({
         pathname: "/(app)/analytics",
         params: { view: params.tab === "costs" ? "costs" : "usage" },
       } as any);
     }
-  }, [isPhoneSurface, params.tab, router]);
+  }, [isPhoneSurface, params.tab, router, canViewAnalytics]);
 
   useEffect(() => {
     if (isPhoneSurface) return;
