@@ -430,6 +430,12 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       if (agent) {
         // An agent DM is a project chat with that agent now (SHO-412). Older
         // clients get the chat to open instead of a DM.
+        //
+        // A shipped client cannot be taught to follow `chatSessionId`, so the
+        // only thing it will show is `error.message` — make it an instruction
+        // the person can act on rather than a description of our data model,
+        // and carry the store links for a client that can render them
+        // (SHO-433: v2.5.x clients hit this on every message to an agent).
         await assertAgentInWorkspace(auth.workspaceId, agent, auth.userId)
         const { openAgentChatSession } = await import('../services/agent-chat.service')
         const chat = await openAgentChatSession(auth.workspaceId, auth.userId, agent.projectId)
@@ -437,10 +443,14 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
           {
             error: {
               code: 'moved_to_project_chat',
-              message: 'A message to an agent is a project chat with that agent now.',
+              message: 'Update Shogo to keep messaging your agents — this version can no longer start an agent chat.',
             },
             chatSessionId: chat.id,
             projectId: agent.projectId,
+            upgrade: {
+              required: true,
+              playStoreUrl: 'https://play.google.com/store/apps/details?id=ai.shogo.mobile',
+            },
           },
           410,
         )

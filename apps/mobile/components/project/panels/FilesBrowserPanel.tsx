@@ -15,6 +15,7 @@ import {
 } from 'react-native'
 import { AgentClient, type FileNode, type SearchResult } from '@shogo-ai/sdk/agent'
 import { agentFetch } from '../../../lib/agent-fetch'
+import { shareCachedFile, writeBlobToFile } from '../../../lib/download-to-file'
 import { filterForFilesBrowser } from './files-browser-filter'
 import {
   FileText,
@@ -663,35 +664,19 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
         document.body.removeChild(a)
         URL.revokeObjectURL(url)
       } else if (Platform.OS !== 'web') {
-        const { documentDirectory, writeAsStringAsync, EncodingType } = await import('expo-file-system/legacy')
-        const Sharing = await import('expo-sharing')
-        const dir = documentDirectory
-        if (!dir) throw new Error('Could not access app storage to save ZIP')
-        const fileUri = `${dir}${filename}`
-        const arrayBuf = await blob.arrayBuffer()
-        const bytes = new Uint8Array(arrayBuf)
-        let binary = ''
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-        const base64 = btoa(binary)
-        await writeAsStringAsync(fileUri, base64, { encoding: EncodingType.Base64 })
-
-        await new Promise<void>((resolve) => {
-          InteractionManager.runAfterInteractions(() => resolve())
+        // Write the ZIP's bytes straight to app storage (SHO-434): the old path
+        // read the whole blob again, built a binary string one byte at a time
+        // and base64d it — three more copies of the biggest file the app writes.
+        const fileUri = await writeBlobToFile(blob, {
+          name: filename,
+          directory: 'document',
+          overwrite: true,
         })
-
-        try {
-          await Sharing.shareAsync(fileUri, {
-            mimeType: 'application/zip',
-            UTI: 'public.zip-archive' as any,
-            dialogTitle: 'Download Project',
-          })
-        } catch (shareErr: unknown) {
-          if (Platform.OS === 'ios') {
-            await Share.share({ url: fileUri, title: 'Download Project' })
-          } else {
-            throw shareErr
-          }
-        }
+        await shareCachedFile(fileUri, filename, {
+          mimeType: 'application/zip',
+          UTI: 'public.zip-archive',
+          dialogTitle: 'Download Project',
+        })
       }
       setError(null)
     } catch (err: any) {
