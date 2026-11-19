@@ -101,6 +101,9 @@ import {
   ensureLfsRepoSetup,
   autoTrackLargeFiles,
   lfsPushAll,
+  lfsPushIncremental,
+  LfsPushError,
+  LfsPushRunner,
   lfsPull,
   lfsRemoteConfigFromEnv,
   migrateOffloadedAssetsToLfs,
@@ -114,6 +117,7 @@ import {
   pinnedAgentModel,
 } from '@shogo/shared-runtime'
 import { traceStream } from '@shogo/shared-runtime/stream-trace'
+import { reconcileRepoHistory } from '@shogo/shared-runtime/repo-reconcile'
 import {
   buildRepoBundle,
   materializeRepoFromBundles,
@@ -188,6 +192,7 @@ import {
   type GitHubWorkspaceOpInput,
 } from './github-workspace-git'
 import { isHostMediatedDurability } from './host-durability'
+import { noteRepoExportFailed, noteRepoExportSucceeded } from './repo-durability-prompt'
 import { executeRemoteTool } from './remote-tools'
 import { guardRemoteDeviceCall, remoteDeviceApprovalCategory } from './remote-device-guard'
 import {
@@ -538,6 +543,46 @@ let workspaceRootSecretSync: WorkspaceRootSecretSync | null = null
  */
 function isLfsActive(): boolean {
   return resolveCloudSyncMode() === 'git_only'
+}
+
+/**
+ * The LFS push runs as a background job keyed by the export's target tips and
+ * HEAD (SHO-442). A media-heavy push takes minutes; the host's export request
+ * is bounded at 60 s. Joining the same job on the next request means a slow
+ * push finishes once instead of restarting from zero on every save.
+ */
+const lfsPushRunner = new LfsPushRunner({ logger: console })
+
+/** How long an export request waits for the push before answering 202. */
+const LFS_PUSH_WAIT_MS = 20_000
+
+/**
+ * Start (or join) the push for this export and wait up to `waitMs`.
+ * `'pending'` means the job is still running: the caller answers 202 and the
+ * host retries, joining the same job.
+ */
+async function awaitLfsPush(
+  dir: string,
+  tips: string[] | null,
+  waitMs: number,
+): Promise<{ state: 'done' | 'failed' | 'pending'; job: import('@shogo/shared-runtime').LfsPushJob } | null> {
+  if (!isLfsActive() || !existsSync(join(dir, '.git'))) return null
+  const cfg = lfsRemoteConfigFromEnv(dir)
+  if (!cfg) return null
+  const job = await lfsPushRunner.run(cfg, tips)
+  const state = await lfsPushRunner.settle(job, waitMs)
+  return { state, job }
+}
+
+/** The 503 body for a failed push: the reason, the real stderr, and what is missing. */
+function lfsPushFailureBody(err: LfsPushError) {
+  return {
+    error: `lfs push failed (${err.reason}): ${err.message}`,
+    code: 'lfs-push-failed',
+    reason: err.reason,
+    stderr: err.stderr.slice(0, 16_000),
+    missing: err.missing,
+  }
 }
 
 /**
@@ -3569,9 +3614,15 @@ app.post('/pool/export-repo', async (c) => {
     const destinationDir = resolvePoolWorkspaceDir(body?.dir)
     await flushGitBeforeExport(destinationDir)
     let excludeLfsObjects = false
-    if (isLfsActive()) {
-      const lfsCfg = lfsRemoteConfigFromEnv(destinationDir)
-      if (lfsCfg) excludeLfsObjects = await lfsPushAll(lfsCfg)
+    // `skipLfsPush` is the quarantine export (SHO-442): an untrusted VM's
+    // `.git` must be copied somewhere durable NOW, and the tarball carries
+    // `.git/lfs/objects` itself, so waiting on a push would only delay it.
+    if (body?.skipLfsPush !== true) {
+      const waitMs = Math.min(Math.max(Number(body?.waitMs) || LFS_PUSH_WAIT_MS, 0), 120_000)
+      const push = await awaitLfsPush(destinationDir, null, waitMs)
+      // Only a finished push lets the tarball drop the local object store;
+      // otherwise the bytes would be durable nowhere.
+      excludeLfsObjects = push?.state === 'done'
     }
     const packed = await packRepoArchive(destinationDir, tmp, { excludeLfsObjects })
     if (!packed) return c.body(null, 204)
@@ -3619,7 +3670,10 @@ app.post('/pool/repo-hydrated', async (c) => {
   // tarball when a manifest exists, so it refuses instead of guessing.
   // `ifIdle` means this guest honours `ifIdle` below, so the host may hand the
   // project out before its history arrives and swap it in afterwards.
-  if (body?.probe === true) return c.json({ ok: true, supported: true, deadline: true, bundles: true, ifIdle: true })
+  // `reconcile` means this guest can re-attach a live history to the durable
+  // one (`/pool/repo-reconcile`), which is how an UNTRUSTED VM heals instead of
+  // never saving again (SHO-442).
+  if (body?.probe === true) return c.json({ ok: true, supported: true, deadline: true, bundles: true, ifIdle: true, reconcile: true })
   let stagingDir: string
   try {
     stagingDir = resolvePoolWorkspaceDir(body?.stagingDir)
@@ -3706,7 +3760,7 @@ function sameRepoSnapshot(a: RepoSnapshotFields, b: RepoSnapshotFields): boolean
 
 app.post('/pool/export-repo-bundle', async (c) => {
   sweepSpool()
-  let body: { dir?: unknown; since?: unknown; full?: unknown }
+  let body: { dir?: unknown; since?: unknown; full?: unknown; waitMs?: unknown }
   try {
     body = (await c.req.json().catch(() => ({}))) as typeof body
     const destinationDir = resolvePoolWorkspaceDir(body?.dir)
@@ -3718,13 +3772,33 @@ app.post('/pool/export-repo-bundle', async (c) => {
     await flushGitBeforeExport(destinationDir)
     // A workspace runtime keeps its members' repos in subfolders and drops
     // the root `.git`, so the root can have no repo and nothing to push.
+    //
+    // The push is a background job (SHO-442): a media-heavy history takes
+    // minutes, so the request waits only `waitMs` and then answers 202 with
+    // progress. The next call joins the same job instead of starting over, and
+    // a host that stopped waiting cannot make it restart.
+    let lfsMissing: import('@shogo/shared-runtime').LfsMissingObject[] = []
     if (isLfsActive() && existsSync(join(destinationDir, '.git'))) {
-      const lfsCfg = lfsRemoteConfigFromEnv(destinationDir)
-      // Bundles never carry LFS objects, so a failed push fails the export.
-      // The host keeps an unmigrated project on the tarball, which does.
-      if (lfsCfg && !(await lfsPushAll(lfsCfg))) {
-        return c.json({ error: 'lfs push failed; repo bundle not exported', code: 'lfs-push-failed' }, 503)
+      const waitMs = Math.min(Math.max(Number(body?.waitMs) || LFS_PUSH_WAIT_MS, 0), 120_000)
+      const push = await awaitLfsPush(destinationDir, since, waitMs)
+      if (push?.state === 'pending') {
+        return c.json(
+          {
+            pending: true,
+            pushedOids: push.job.state.pushed,
+            totalOids: push.job.state.total,
+            missing: push.job.state.missing,
+          },
+          202,
+        )
       }
+      if (push?.state === 'failed') {
+        // The host's save just failed. The agent is the one still writing
+        // files, so it gets one line about it in its next turn (SHO-442).
+        noteRepoExportFailed(push.job.state.error!.reason, push.job.state.error!.message)
+        return c.json(lfsPushFailureBody(push.job.state.error!), 503)
+      }
+      lfsMissing = push?.job.state.missing ?? []
     }
 
     // Snapshot refs before and after building. Refs that moved in between
@@ -3745,15 +3819,20 @@ app.post('/pool/export-repo-bundle', async (c) => {
       if (attempt >= 2) return c.json({ error: 'repo refs kept moving during export; retry' }, 409)
     }
 
+    noteRepoExportSucceeded()
     return c.json({
       bundle: built?.entry ?? null,
       head: snapshot.head,
       refs: snapshot.refs,
       config: snapshot.config,
       rootCommitAt: repoRootCommitAt(destinationDir),
+      // Pointers whose bytes are on neither side. The history still exports;
+      // the host records these so the loss is visible instead of silent.
+      ...(lfsMissing.length ? { lfsMissing } : {}),
     })
   } catch (err: any) {
     console.error('[pool/export-repo-bundle] failed:', err?.message ?? err)
+    noteRepoExportFailed('other', err?.message ?? 'export-repo-bundle failed')
     return c.json({ error: err?.message ?? 'export-repo-bundle failed' }, 500)
   }
 })
@@ -3817,6 +3896,45 @@ app.post('/pool/repo-bundles-hydrate', async (c) => {
     return c.json({ error: redactUrls(String(err?.message ?? 'repo bundle restore failed')) }, 500)
   } finally {
     for (const path of downloaded) rmSync(path, { force: true })
+  }
+})
+
+// Heal an UNTRUSTED repo (SHO-442). The host has already materialized the
+// durable history into `stagingDir` (bundles or tarball); this joins it to the
+// live history with a commit whose tree is the CURRENT working tree, so no file
+// is rewritten and a busy workspace is fine. After it answers, the host can
+// re-trust the VM and normal saves resume.
+//
+// A guest that predates this route answers 404 and the host keeps the VM
+// untrusted (today's behaviour) — it never guesses.
+app.post('/pool/repo-reconcile', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  let stagingDir: string
+  try {
+    stagingDir = resolvePoolWorkspaceDir(body?.stagingDir)
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'invalid staging dir' }, 400)
+  }
+  if (stagingDir === WORKSPACE_DIR) return c.json({ error: 'stagingDir is required' }, 400)
+  if (!existsSync(join(stagingDir, '.git'))) return c.json({ error: 'staging repo is missing' }, 400)
+
+  // The committer must not create a commit while we move the branch.
+  const sync = gitSyncInstance
+  await sync?.pause()
+  try {
+    const result = await reconcileRepoHistory(WORKSPACE_DIR, stagingDir)
+    cachedRepoHeadSha = result.head
+    console.log(
+      `[pool/repo-reconcile] joined durable ${result.durableHead.slice(0, 12)} with live ` +
+        `${result.localHead?.slice(0, 12) ?? '(unborn)'} -> ${result.head.slice(0, 12)}`,
+    )
+    return c.json({ ok: true, ...result })
+  } catch (err: any) {
+    console.error('[pool/repo-reconcile] failed:', err?.message ?? err)
+    return c.json({ error: err?.message ?? 'repo reconcile failed' }, 500)
+  } finally {
+    sync?.resume()
+    rmSync(stagingDir, { recursive: true, force: true })
   }
 })
 

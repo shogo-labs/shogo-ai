@@ -236,6 +236,13 @@ const hostIdleWindowGauge = meter.createObservableGauge('metal.host.idle_window_
 const hostCounter = meter.createObservableCounter('metal.host.counter', {
   description: 'Cumulative node-agent counter reported on the metal host heartbeat; `counter` is the agent metric name',
 })
+// Node-agent GAUGES (live state). Separate from `metal.host.counter` because a
+// gauge is not a total: summing or rate-ing it is meaningless, and the
+// durability gauges are the only signal that a VM cannot save its work
+// (SHO-442). `counter` is the agent metric name, same convention as above.
+const hostGauge = meter.createObservableGauge('metal.host.gauge', {
+  description: 'Node-agent gauge reported on the metal host heartbeat (live state, not a total); `counter` is the agent metric name',
+})
 
 /** `metal_x_total{reason="repo"}` → `{ counter: 'metal_x_total', reason: 'repo' }`. */
 export function parseHostCounterName(key: string): Record<string, string> {
@@ -324,6 +331,11 @@ function ensureFleetGauges(): void {
             obs.observe(hostCounter, value, { ...parseHostCounterName(key), ...attrs })
           }
         }
+        for (const [key, value] of Object.entries(h.gauges ?? {})) {
+          if (typeof value === 'number' && Number.isFinite(value)) {
+            obs.observe(hostGauge, value, { ...parseHostCounterName(key), ...attrs })
+          }
+        }
       }
     },
     [
@@ -347,6 +359,7 @@ function ensureFleetGauges(): void {
       hostUnhealthyGauge,
       hostHealthGateDiscardGauge,
       hostCounter,
+      hostGauge,
       fleetUtilGauge,
       hostIdleTierGauge,
       hostIdleWindowGauge,
@@ -420,6 +433,14 @@ export interface MetalHostRegistration {
   rootDisk?: RootDiskScalars
   /** Compact node-agent counters (gc/resume) for fleet observability. */
   metrics?: Record<string, number>
+  /**
+   * Compact node-agent GAUGES — live state, not totals. The durability gauges
+   * (`metal_repo_untrusted_vms`, `metal_repo_untrusted_oldest_seconds`,
+   * `metal_repo_unsaved_seconds`) only exist here: nothing else the control
+   * plane receives can tell it that a VM cannot save, or how long its work has
+   * been unsaved (SHO-442). Absent on agents predating the field.
+   */
+  gauges?: Record<string, number>
   /**
    * Idle-suspend window the host is applying right now and why: `directive`
    * (the tier from the last /register response), `stale` (no fresh directive,
@@ -663,6 +684,14 @@ export interface StopResult {
   staged?: boolean
   /** Rootfs identity the snapshot was taken on. */
   snapshotRootfsIdentity?: string
+  /**
+   * The node-agent refused to stop: the VM's current HEAD is not in the durable
+   * repo, so a cold boot would discard it. The VM is still running; retry later
+   * (SHO-442).
+   */
+  refused?: boolean
+  /** Why the stop was refused, when `refused`. */
+  reason?: string
 }
 
 /** A runtime's state on the host that holds it (the node-agent `/status` body). */
@@ -1619,9 +1648,17 @@ export class MetalWarmPoolController {
       // already-stopped). A busy/ambiguous reply → not suspended.
       // A retire (stale rootfs) stopped the VM too, just without a snapshot.
       const retired = body?.retired === true
+      // The VM kept running because its HEAD is not in the durable repo yet.
+      // Stopping it anyway is how unsaved work disappears (SHO-442).
+      const refused = body?.refused === true
       const suspended = body?.suspended === true || body?.alreadyStopped === true || retired
       if (busy) {
         console.log(`[MetalPool] stop ${projectId} on ${host.hostId} skipped: busy (active message)`)
+      }
+      if (refused) {
+        console.warn(
+          `[MetalPool] stop ${projectId} on ${host.hostId} refused: ${body?.reason ?? 'unsaved repo work'} — still running`,
+        )
       }
       const memBytes = typeof body?.memBytes === 'number' ? body.memBytes : undefined
       return {
@@ -1629,6 +1666,7 @@ export class MetalWarmPoolController {
         busy,
         ...(memBytes !== undefined ? { memBytes } : {}),
         ...(retired ? { retired } : {}),
+        ...(refused ? { refused, ...(typeof body?.reason === 'string' ? { reason: body.reason } : {}) } : {}),
         ...(body?.staged === true ? { staged: true } : {}),
         ...(typeof body?.snapshotRootfsIdentity === 'string' ? { snapshotRootfsIdentity: body.snapshotRootfsIdentity } : {}),
       }

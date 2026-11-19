@@ -55,6 +55,7 @@ import { AppSidebar } from "../../components/layout/AppSidebar";
 import { TeamChatNotifier } from "../../components/team-chat/TeamChatNotifier";
 import { NotificationPermissionBanner } from "../../components/notifications/NotificationPermissionBanner";
 import { AgentLimitBanner } from "../../components/AgentLimitBanner";
+import { DurabilityBanner } from "../../components/DurabilityBanner";
 import { AgentGlancePublisher } from "../../components/layout/AgentGlancePublisher";
 import { HuddleWindow } from "../../components/team-chat/HuddleWindow";
 import { HuddleRinger } from "../../components/team-chat/HuddleRinger";
@@ -685,6 +686,7 @@ function AppLayoutInner() {
       {!isIdeEmbed ? <TeamChatNotifier /> : null}
       {!isIdeEmbed ? <NotificationPermissionBanner /> : null}
       {!isIdeEmbed ? <AgentLimitBanner /> : null}
+      {!isIdeEmbed ? <DurabilityBanner /> : null}
       {!isIdeEmbed ? <AgentGlancePublisher /> : null}
       {!isIdeEmbed ? <HuddleWindow /> : null}
       {!isIdeEmbed ? <HuddleRinger /> : null}
