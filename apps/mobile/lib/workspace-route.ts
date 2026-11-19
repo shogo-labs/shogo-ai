@@ -13,6 +13,7 @@
  */
 import { useSyncExternalStore } from 'react'
 import { clearActiveWorkspaceId, getActiveWorkspaceId } from './workspace-store'
+import { isLocalMode } from './platform-config'
 import { safeGetItem, safeSetItem, safeRemoveItem } from './safe-storage'
 
 export interface CloudWorkspaceInfo {
@@ -146,6 +147,37 @@ export function routeUrl(url: string, apiBase: string): string {
   const base = apiBase.replace(/\/+$/, '')
   if (!url.startsWith(`${base}/api/`)) return url
   return `${base}${routePath(url.slice(base.length))}`
+}
+
+/**
+ * The public URL a copied invite link points at (SHO-454).
+ *
+ * A cloud workspace's link must be the cloud's own URL — a link minted on the
+ * desktop's local server is a `localhost` address nobody else can open.
+ */
+export function inviteLinkUrl(token: string, workspaceId: string): string {
+  const cloudBase = state.cloudUrl?.replace(/\/+$/, '')
+  if (isCloudWorkspace(workspaceId) && cloudBase) return `${cloudBase}/invite/${token}`
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return `${window.location.origin}/invite/${token}`
+  }
+  return `${cloudBase ?? ''}/invite/${token}`
+}
+
+/**
+ * Whether to offer the invite UI (SHO-454).
+ *
+ * Inviting needs a server that can actually deliver it. On the desktop, a
+ * local-only workspace has one person in it: a link minted by the local server
+ * is a `localhost` URL nobody else can open, and the local app sends no invite
+ * emails. So the UI is offered only for a cloud workspace, which routes through
+ * `/api/cloud/<id>` and behaves exactly as it does on the web. On the web
+ * `isLocalMode()` is false, so nothing changes there.
+ */
+export function canInviteHere(serverCanInvite: boolean, workspaceId: string | null | undefined): boolean {
+  if (!serverCanInvite) return false
+  if (!isLocalMode()) return true
+  return isCloudWorkspace(workspaceId)
 }
 
 let installed = false

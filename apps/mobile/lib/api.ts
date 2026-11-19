@@ -3723,6 +3723,25 @@ export const api = {
   },
 
   /**
+   * POST /api/invitations — invite one address to a workspace by email.
+   *
+   * The `workspaceId` goes in the query as well as the body on purpose: on the
+   * desktop, `routePath` only rewrites a call to `/api/cloud/<id>/…` when the
+   * path or the query names the workspace, so a body-only workspaceId would
+   * send a cloud workspace's invitation to the local server (SHO-454).
+   */
+  async sendInvitation(
+    http: HttpClient,
+    params: { workspaceId: string; email: string; role: 'admin' | 'member' | 'viewer' },
+  ) {
+    const res = await http.post<{ ok?: boolean; data?: unknown }>(
+      `/api/invitations?workspaceId=${encodeURIComponent(params.workspaceId)}`,
+      { email: params.email, role: params.role, workspaceId: params.workspaceId, status: 'pending' },
+    )
+    return res.data?.data ?? null
+  },
+
+  /**
    * POST /api/invitations/:id/resend — send a pending invitation's email again
    * and push its expiry out another 7 days (SHO-454).
    */

@@ -43,8 +43,8 @@ import { formatApiError } from '@shogo/shared-app/chat'
 import { useBillingData } from '@shogo/shared-app/hooks'
 import { api, type WorkspaceInviteLink } from '../../lib/api'
 import { formatUsd, PLAN_PRICING } from '../../lib/billing-config'
-import { getCloudWorkspacesState, isCloudWorkspace } from '../../lib/workspace-route'
-import { useDomainActions, useDomainHttp, useWorkspaceCollection } from '../../contexts/domain'
+import { inviteLinkUrl } from '../../lib/workspace-route'
+import { useDomainHttp, useWorkspaceCollection } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { usePermissions } from '../../hooks/usePermissions'
 import {
@@ -59,17 +59,6 @@ import {
 import { InviteDialogContext, type OpenInviteDialogOptions } from './invite-dialog-context'
 
 // ─── Email parsing ────────────────────────────────────────
-
-/** The public URL a copied invite link points at. */
-export function inviteLinkUrl(token: string, workspaceId: string): string {
-  const cloud = getCloudWorkspacesState()
-  const cloudBase = cloud.cloudUrl?.replace(/\/+$/, '')
-  if (isCloudWorkspace(workspaceId) && cloudBase) return `${cloudBase}/invite/${token}`
-  if (Platform.OS === 'web' && typeof window !== 'undefined' && window.location?.origin) {
-    return `${window.location.origin}/invite/${token}`
-  }
-  return `${cloudBase ?? ''}/invite/${token}`
-}
 
 const ROLE_LABELS: Record<string, string> = { admin: 'Admin', member: 'Editor', viewer: 'Viewer' }
 const ROLE_HINTS: Record<string, string> = {
@@ -122,7 +111,6 @@ export interface InviteDialogProps {
 export function InviteDialog({ visible, workspaceId, initialEmails = [], onClose }: InviteDialogProps) {
   const router = useRouter()
   const http = useDomainHttp()
-  const actions = useDomainActions()
   const workspaces = useWorkspaceCollection()
   const activeWorkspace = useActiveWorkspace()
   const { width } = useWindowDimensions()
@@ -320,7 +308,7 @@ export function InviteDialog({ visible, workspaceId, initialEmails = [], onClose
       const settled = await Promise.allSettled(
         targets.map(async (email): Promise<InviteResultLine> => {
           try {
-            await actions.sendInvitation({ email, role, workspaceId: resolvedId })
+            await api.sendInvitation(http, { workspaceId: resolvedId, email, role })
             return { email, outcome: 'sent' }
           } catch (err) {
             return { email, outcome: 'failed', message: formatApiError(err) }
@@ -348,7 +336,7 @@ export function InviteDialog({ visible, workspaceId, initialEmails = [], onClose
     } finally {
       setSending(false)
     }
-  }, [resolvedId, draft, chips, memberEmails, pendingByEmail, actions, role])
+  }, [resolvedId, draft, chips, memberEmails, pendingByEmail, http, role])
 
   const copyLink = useCallback(async () => {
     if (!activeLink || !resolvedId) return
