@@ -6438,6 +6438,10 @@ export class MetalWarmPool {
     const mem = this.hostMemoryNow()
     const reserve = resolveMemReserveMiB(this.cfg.evictMemReserveMiB, mem?.totalMiB)
     const evicted: string[] = []
+    // VMs this call must not pick again. `evicting` only covers the duration of
+    // one attempt, so a refused or failed stop would otherwise be re-selected
+    // on the next iteration and burn the whole cap on one VM (SHO-444).
+    const skip = new Set([opts.exclude])
     for (let i = 0; i < cap; i++) {
       const full = hostFullness({
         resident: this.assigned.size + headroom,
@@ -6453,7 +6457,7 @@ export class MetalWarmPool {
         .map((a) => ({ projectId: a.projectId, idleMs: now - (a.lastRealActivityAt ?? a.assignedAt) }))
       const victim = selectEvictionVictim({
         candidates,
-        exclude: new Set([opts.exclude]),
+        exclude: skip,
         evicting: this.evicting,
       })
       if (!victim) {
@@ -6480,6 +6484,7 @@ export class MetalWarmPool {
           // SHO-442: the VM's git history is not durable yet, so the stop was
           // refused and it is still running. Not an eviction — try the next
           // candidate rather than counting a VM that never left.
+          skip.add(victim.projectId)
           console.warn(`[pool] eviction of ${victim.projectId} refused (${outcome.reason}) — trying the next`)
           continue
         } else {
@@ -6494,6 +6499,7 @@ export class MetalWarmPool {
       } catch (err: any) {
         // A suspend that refuses (e.g. SHO-442's "HEAD not durable") must not
         // fail the incoming assign: try the next candidate.
+        skip.add(victim.projectId)
         console.warn(`[pool] eviction of ${victim.projectId} failed, trying the next:`, err?.message ?? err)
       } finally {
         this.evicting.delete(victim.projectId)
