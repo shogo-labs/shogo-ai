@@ -25,7 +25,7 @@ import { config, type MetalConfig } from './config'
 import type { FcVmConfig, FcVmHandle, FirecrackerVMManager } from './firecracker-vm-manager'
 import { _resetIdleDirective, setIdleDirective } from './idle-policy'
 import { M, metrics } from './metrics'
-import { MetalWarmPool, type AssignedVm } from './pool'
+import { MetalWarmPool, RepoNotDurableError, type AssignedVm } from './pool'
 import { announceRestarting } from './register'
 import type { SnapshotStore } from './snapshot-store'
 
@@ -36,12 +36,17 @@ class TestPool extends MetalWarmPool {
   /** ProjectIds this pool suspended, in order, with the reason it was given. */
   suspends: Array<{ projectId: string; reason?: string }> = []
   mem: { totalMiB: number; availableMiB: number } | undefined
+  /** Projects whose stop SHO-442 refuses (HEAD not in the durable repo). */
+  refuse = new Set<string>()
 
   protected override hostMemoryNow() {
     return this.mem
   }
 
   override async suspend(projectId: string, opts: { reason?: any } = {}): Promise<any> {
+    if (this.refuse.has(projectId)) {
+      throw new RepoNotDurableError(`HEAD of ${projectId} is not in the durable repo`)
+    }
     this.suspends.push({ projectId, reason: opts.reason })
     ;(this as any).assigned.delete(projectId)
     return { projectId, suspendReason: opts.reason }
@@ -309,5 +314,76 @@ describe('AC2 — active, busy and always-on VMs are never evicted', () => {
     expect(a.projectId).toBe('incoming')
     expect(pool.suspends).toEqual([])
     expect(pool.resident().sort()).toEqual(['incoming', 'just-used', 'mid-turn', 'paid'])
+  })
+})
+
+// --- Risks: a refused stop (SHO-442) is not an eviction ---------------------
+
+describe('a stop SHO-442 refuses is skipped, not counted as an eviction', () => {
+  test('the next-longest-idle VM is evicted, the refused one keeps running, and the assign still succeeds', async () => {
+    const guest = makeGuest()
+    const pool = makePool(guest.port, { maxResidentVmsPerHost: 2 })
+    const now = Date.now()
+    // The longest-idle VM is the one whose HEAD is not durable yet: SHO-442
+    // refuses to stop it, so it must keep running and the next candidate goes.
+    pool.seed('idle-30s', { lastRealActivityAt: now - 30 * IDLE_MS })
+    pool.seed('idle-5s', { lastRealActivityAt: now - 5 * IDLE_MS })
+    pool.refuse.add('idle-30s')
+    const evicted: string[] = []
+    pool.onEvicted = (id) => evicted.push(id)
+    const before = metrics.getCounter(`${M.evictions}{reason="slots"}`)
+
+    const a = await pool.assign('incoming')
+
+    expect(a.projectId).toBe('incoming')
+    expect(pool.suspends).toEqual([{ projectId: 'idle-5s', reason: 'evicted' }])
+    // The refused VM never left, so it is neither counted nor reported gone.
+    expect(pool.resident().sort()).toEqual(['idle-30s', 'incoming'])
+    expect(evicted).toEqual(['idle-5s'])
+    expect(metrics.getCounter(`${M.evictions}{reason="slots"}`)).toBe(before + 1)
+  })
+
+  test('when every candidate refuses, the assign still succeeds and nothing is counted', async () => {
+    const guest = makeGuest()
+    const pool = makePool(guest.port, { maxResidentVmsPerHost: 1 })
+    pool.seed('idle-30s', { lastRealActivityAt: Date.now() - 30 * IDLE_MS })
+    pool.refuse.add('idle-30s')
+    const evicted: string[] = []
+    pool.onEvicted = (id) => evicted.push(id)
+    const before = metrics.getCounter(`${M.evictions}{reason="slots"}`)
+
+    const a = await pool.assign('incoming')
+
+    expect(a.projectId).toBe('incoming')
+    expect(pool.suspends).toEqual([])
+    expect(pool.resident().sort()).toEqual(['idle-30s', 'incoming'])
+    expect(evicted).toEqual([])
+    expect(metrics.getCounter(`${M.evictions}{reason="slots"}`)).toBe(before)
+  })
+
+  test('a suspend that throws is skipped the same way, not retried on the same VM', async () => {
+    const guest = makeGuest()
+    const pool = makePool(guest.port, { maxResidentVmsPerHost: 2 })
+    const now = Date.now()
+    pool.seed('idle-30s', { lastRealActivityAt: now - 30 * IDLE_MS })
+    pool.seed('idle-5s', { lastRealActivityAt: now - 5 * IDLE_MS })
+    const realSuspend = pool.suspend.bind(pool)
+    let attempts = 0
+    pool.suspend = async (projectId: string, opts: any = {}) => {
+      if (projectId === 'idle-30s') {
+        attempts++
+        throw new Error('snapshot failed')
+      }
+      return realSuspend(projectId, opts)
+    }
+
+    const a = await pool.assign('incoming')
+
+    expect(a.projectId).toBe('incoming')
+    // One attempt on the failing VM, then the next candidate — not the same VM
+    // three times while the cap burns.
+    expect(attempts).toBe(1)
+    expect(pool.suspends).toEqual([{ projectId: 'idle-5s', reason: 'evicted' }])
+    expect(pool.resident().sort()).toEqual(['idle-30s', 'incoming'])
   })
 })
