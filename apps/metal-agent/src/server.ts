@@ -105,6 +105,12 @@ function stoppedResponse(projectId: string, outcome: SuspendOutcome) {
     reportPlacement('cold', projectId, { refresh: 'stale-rootfs' })
     return { ok: true, suspended: false, retired: true }
   }
+  // Refused: the VM's current HEAD is not in the durable repo, so stopping it
+  // would cold-start over unsaved work. It is still running — say so, so the
+  // control plane retries instead of believing it is stopped (SHO-442).
+  if (outcome.kind === 'refused') {
+    return { ok: true, suspended: false, refused: true, reason: outcome.reason }
+  }
   // A pre-warmed snapshot doesn't change what serves the project's next open.
   if (!outcome.staged) reportPlacement('suspended', projectId)
   return {

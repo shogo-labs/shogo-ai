@@ -219,7 +219,10 @@ describe.each(['tarball', 'bundles'] as const)('git history download hangs (%s r
     const a = pool.getAssigned('p1')!
     expect(a.repoUntrustedReason).toBeDefined()
     expect(a.repoUntrustedReason).not.toBe(REPO_DEFERRED_REASON)
-    expect(await pool.saveRepoToStore(a)).toBe(false)
+    // Their work still gets somewhere durable: the copy lands in `conflict/`,
+    // and the real repo is untouched (SHO-442).
+    expect(await pool.saveRepoToStore(a)).toBe(true)
+    expect(a.repoQuarantineKey).toContain('conflict/')
     expect(s3.body(repoKey)).toEqual(repoBytes!)
     // Their work still reaches the source backup.
     expect(a.sourceUntrustedReason).toBeUndefined()
@@ -246,7 +249,9 @@ describe.each(['tarball', 'bundles'] as const)('git history download hangs (%s r
     expect(guest.read('src/App.tsx')).toBe('v2: the user’s app\n')
     const a = pool.getAssigned('p1')!
     expect(a.repoUntrustedReason).toContain('failed in the background')
-    expect(await pool.saveRepoToStore(a)).toBe(false)
+    // It saves to `conflict/`; the durable repo it never adopted is untouched.
+    expect(await pool.saveRepoToStore(a)).toBe(true)
+    expect(a.repoQuarantineKey).toContain('conflict/')
     expect(s3.body(repoKey)).toEqual(repoBytes!)
     // A failed download proves nothing about the tree: source stays trusted.
     expect(a.sourceUntrustedReason).toBeUndefined()
@@ -312,6 +317,8 @@ describe('the VM goes away while the history is still downloading', () => {
     expect(guest.hasCommit(repoSha)).toBe(false)
 
     guest.edit('src/App.tsx', 'work after the resume\n')
+    // Create-only: it may start a repo, never replace one. The copy lands in
+    // `conflict/` and the durable history is untouched (SHO-442).
     expect(await pool.saveRepoToStore(a)).toBe(false)
     expect(s3.body(repoKey)).toEqual(repoBytes!)
     expect(s3.body('p1/repo/manifest.json')).toBeUndefined()

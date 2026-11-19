@@ -130,11 +130,38 @@ describe('pool host-mediated repo persist', () => {
     expect(a.repoParentEtag).toBe('"new-repo"')
   })
 
-  test('an untrusted VM never uploads', async () => {
+  test('an untrusted VM saves to conflict/, never the durable repo', async () => {
     const pool = makePool(dir)
-    const a = pool.add('p1', { repoUntrustedReason: 'hydrate failed' })
+    // The store refuses an untrusted lineage and diverts the bytes to a
+    // quarantine key. Before SHO-442 this VM saved NOTHING for the rest of its
+    // life, which is how a day and a half of work was lost.
+    pool.outcome = { status: 'refused', quarantineKey: 'conflict/p1/untrusted-repo.tar.gz' }
+    const a = pool.add('p1', { repoUntrustedReason: 'hydrate failed', repoHeadSha: 'abc123' })
+
+    // `true` = the bytes reached somewhere durable (here, `conflict/`). It is
+    // NOT a durable repo save: `repoDurable` stays false, so nothing may stop
+    // this VM on the strength of it.
+    expect(await pool.saveRepoToStore(a)).toBe(true)
+    expect(pool.uploads).toHaveLength(1)
+    expect(pool.uploads[0].opts.lineage).toEqual({ kind: 'untrusted', reason: 'hydrate failed' })
+    expect(pool.uploads[0].opts.preserveOnRefusal).toBe(true)
+    expect(a.repoQuarantineKey).toBe('conflict/p1/untrusted-repo.tar.gz')
+    expect(a.repoQuarantinedHeadSha).toBe('abc123')
+    // A quarantine copy is not a durable save: a cold boot still restores the
+    // durable repo, so the VM must not be treated as safe to stop.
+    expect(a.repoExportedHeadSha).toBeUndefined()
+    expect(pool.repoDurable(a)).toBe(false)
+  })
+
+  test('an untrusted VM whose quarantine copy reaches nowhere is reported, not silently dropped', async () => {
+    const pool = makePool(dir)
+    pool.outcome = { status: 'refused' }
+    const a = pool.add('p1', { repoUntrustedReason: 'hydrate failed', repoHeadSha: 'abc123' })
+
     expect(await pool.saveRepoToStore(a)).toBe(false)
-    expect(pool.uploads).toHaveLength(0)
+    expect(a.repoQuarantineKey).toBeUndefined()
+    expect(a.repoQuarantinedHeadSha).toBeUndefined()
+    expect(pool.repoDurable(a)).toBe(false)
   })
 
   test('a brand-new VM is create-only', async () => {
@@ -143,6 +170,86 @@ describe('pool host-mediated repo persist', () => {
     const a = pool.add('p1')
     expect(await pool.saveRepoToStore(a)).toBe(true)
     expect(pool.uploads[0].opts.lineage).toEqual({ kind: 'create-only' })
+  })
+
+  describe('the periodic sweep keeps an untrusted VM saving', () => {
+    /** The heal probe is a separate concern; these tests are about the copy. */
+    function sweepPool() {
+      const pool = makePool(dir)
+      ;(pool as any).healUntrustedRepo = async () => false
+      return pool
+    }
+
+    test('quarantines on a HEAD change and does not repeat it for the same HEAD', async () => {
+      const pool = sweepPool()
+      pool.outcome = { status: 'refused', quarantineKey: 'conflict/p1/x.tar.gz' }
+      const a = pool.add('p1', { repoUntrustedReason: 'hydrate failed', repoHeadSha: 'aaa' })
+
+      expect(await pool.exportAllRepos()).toBe(1)
+      expect(pool.uploads).toHaveLength(1)
+      expect(a.repoQuarantinedHeadSha).toBe('aaa')
+
+      // Same HEAD: the copy already tracks it, so nothing is re-uploaded.
+      expect(await pool.exportAllRepos()).toBe(0)
+      expect(pool.uploads).toHaveLength(1)
+
+      // New work: the copy follows the HEAD instead of freezing at the moment
+      // trust was lost.
+      a.repoHeadSha = 'bbb'
+      expect(await pool.exportAllRepos()).toBe(1)
+      expect(pool.uploads).toHaveLength(2)
+      expect(a.repoQuarantinedHeadSha).toBe('bbb')
+    })
+
+    test('a VM with no HEAD yet is not quarantined', async () => {
+      const pool = sweepPool()
+      const a = pool.add('p1', { repoUntrustedReason: 'hydrate failed' })
+
+      expect(await pool.exportAllRepos()).toBe(0)
+      expect(pool.uploads).toHaveLength(0)
+      expect(a.repoQuarantinedHeadSha).toBeUndefined()
+    })
+  })
+
+  describe('durability as the UI and the alert see it', () => {
+    test('a HEAD that never reached the durable repo reads as saving-failing', () => {
+      const pool = makePool(dir)
+      const a = pool.add('p1', { repoHeadSha: 'abc', repoExportedHeadSha: 'def' })
+
+      expect(pool.getProjectStatus('p1').durability).toMatchObject({
+        state: 'saving-failing',
+        reason: 'latest changes not saved yet',
+      })
+    })
+
+    test('an untrusted VM reads as untrusted, with its reason', () => {
+      const pool = makePool(dir)
+      pool.add('p1', { repoUntrustedReason: 'hydrate failed', repoHeadSha: 'abc' })
+
+      expect(pool.getProjectStatus('p1').durability).toMatchObject({
+        state: 'untrusted',
+        reason: 'hydrate failed',
+      })
+    })
+
+    test('a durable HEAD reads as ok', () => {
+      const pool = makePool(dir)
+      pool.add('p1', { repoHeadSha: 'abc', repoExportedHeadSha: 'abc' })
+
+      expect(pool.getProjectStatus('p1').durability).toMatchObject({ state: 'ok' })
+    })
+
+    test('a save that lands clears the unsaved age', async () => {
+      const pool = makePool(dir)
+      const a = pool.add('p1', { repoHeadSha: 'abc', repoExportedHeadSha: 'def' })
+      expect(pool.getProjectStatus('p1').durability?.state).toBe('saving-failing')
+
+      await pool.saveRepoToStore(a)
+
+      expect(a.repoExportedHeadSha).toBe('abc')
+      expect(a.repoLastSavedAt).toBeGreaterThan(0)
+      expect(pool.getProjectStatus('p1').durability?.state).toBe('ok')
+    })
   })
 
   describe('an unlinked VM whose export hits an existing durable repo', () => {
@@ -909,7 +1016,10 @@ describe('pool host-mediated repo persist', () => {
         expect(a.sourceUntrustedReason).toBeUndefined()
         expect(a.repoParentEtag).toBeUndefined()
         expect(await pool.saveRepoToStore(a)).toBe(false)
-        expect(pool.uploads).toHaveLength(0)
+        // It still saves — to `conflict/`, under the untrusted lineage. The
+        // durable repo is never written (SHO-442).
+        expect(pool.uploads).toHaveLength(1)
+        expect(pool.uploads[0].opts.lineage).toEqual({ kind: 'untrusted', reason: a.repoUntrustedReason! })
       } finally {
         guest.stop(true)
       }

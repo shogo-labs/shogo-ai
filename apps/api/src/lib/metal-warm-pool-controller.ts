@@ -663,6 +663,14 @@ export interface StopResult {
   staged?: boolean
   /** Rootfs identity the snapshot was taken on. */
   snapshotRootfsIdentity?: string
+  /**
+   * The node-agent refused to stop: the VM's current HEAD is not in the durable
+   * repo, so a cold boot would discard it. The VM is still running; retry later
+   * (SHO-442).
+   */
+  refused?: boolean
+  /** Why the stop was refused, when `refused`. */
+  reason?: string
 }
 
 /** A runtime's state on the host that holds it (the node-agent `/status` body). */
@@ -1619,9 +1627,17 @@ export class MetalWarmPoolController {
       // already-stopped). A busy/ambiguous reply → not suspended.
       // A retire (stale rootfs) stopped the VM too, just without a snapshot.
       const retired = body?.retired === true
+      // The VM kept running because its HEAD is not in the durable repo yet.
+      // Stopping it anyway is how unsaved work disappears (SHO-442).
+      const refused = body?.refused === true
       const suspended = body?.suspended === true || body?.alreadyStopped === true || retired
       if (busy) {
         console.log(`[MetalPool] stop ${projectId} on ${host.hostId} skipped: busy (active message)`)
+      }
+      if (refused) {
+        console.warn(
+          `[MetalPool] stop ${projectId} on ${host.hostId} refused: ${body?.reason ?? 'unsaved repo work'} — still running`,
+        )
       }
       const memBytes = typeof body?.memBytes === 'number' ? body.memBytes : undefined
       return {
@@ -1629,6 +1645,7 @@ export class MetalWarmPoolController {
         busy,
         ...(memBytes !== undefined ? { memBytes } : {}),
         ...(retired ? { retired } : {}),
+        ...(refused ? { refused, ...(typeof body?.reason === 'string' ? { reason: body.reason } : {}) } : {}),
         ...(body?.staged === true ? { staged: true } : {}),
         ...(typeof body?.snapshotRootfsIdentity === 'string' ? { snapshotRootfsIdentity: body.snapshotRootfsIdentity } : {}),
       }

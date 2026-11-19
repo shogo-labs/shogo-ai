@@ -57,6 +57,19 @@ export interface RepoManifest {
   bundles: RepoManifestBundle[]
   /** Bundles no longer referenced by this manifest, awaiting delayed deletion. */
   retired?: RepoManifestRetired[]
+  /**
+   * LFS pointers this history references whose bytes are on neither the guest
+   * nor the object store (SHO-442). The history is still complete and restores
+   * fine; these are the files whose content is gone, recorded so the loss is
+   * visible instead of silent.
+   */
+  lfsMissing?: RepoManifestLfsMissing[]
+}
+
+/** One lost LFS object, with the paths that point at it. */
+export interface RepoManifestLfsMissing {
+  oid: string
+  paths: string[]
 }
 
 /** Thrown when a manifest or bundle is malformed, mismatched or unreadable. */
@@ -133,6 +146,21 @@ export function parseRepoManifest(raw: unknown): RepoManifest {
     })
   }
 
+  let lfsMissing: RepoManifestLfsMissing[] | undefined
+  if (m.lfsMissing !== undefined) {
+    if (!Array.isArray(m.lfsMissing)) throw new RepoBundleError('manifest.lfsMissing must be an array')
+    lfsMissing = m.lfsMissing.map((entry) => {
+      const e = entry as Record<string, unknown>
+      if (typeof e?.oid !== 'string' || !HEX_SHA256.test(e.oid)) {
+        throw new RepoBundleError('manifest.lfsMissing entry has no oid')
+      }
+      if (!Array.isArray(e.paths) || e.paths.some((p) => typeof p !== 'string')) {
+        throw new RepoBundleError('manifest.lfsMissing entry has no paths')
+      }
+      return { oid: e.oid, paths: e.paths as string[] }
+    })
+  }
+
   return {
     v: REPO_MANIFEST_VERSION,
     head: 'ref' in head ? { ref: head.ref as string } : { sha: head.sha as string },
@@ -141,6 +169,7 @@ export function parseRepoManifest(raw: unknown): RepoManifest {
     rootCommitAt: (m.rootCommitAt as number | null) ?? null,
     bundles,
     ...(retired ? { retired } : {}),
+    ...(lfsMissing?.length ? { lfsMissing } : {}),
   }
 }
 
