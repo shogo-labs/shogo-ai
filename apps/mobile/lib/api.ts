@@ -8,7 +8,7 @@ import { authClient } from './auth-client'
 import { defaultLocalAccess, type LocalAccessPrefs } from './local-access'
 import { routeUrl } from './workspace-route'
 import { usageLogCsvUrl } from './usage-log-csv'
-import { billingApiBase, billingSummaryPath, type BillingSummary } from '@shogo/shared-app/hooks'
+import { billingApiBase } from '@shogo/shared-app/hooks'
 
 export { API_URL } from './api-url'
 
@@ -1044,19 +1044,6 @@ export const api = {
       `/api/billing/invoices?workspaceId=${encodeURIComponent(workspaceId)}&limit=${limit}`,
     )
     return res.data?.invoices ?? []
-  },
-
-  /**
-   * GET /api/billing/summary — plan, seats, period, next invoice, card on file
-   * and any payment problem (SHO-451). `localMode` reads the linked cloud
-   * workspace through the local bridge.
-   */
-  async getBillingSummary(http: HttpClient, workspaceId: string, localMode = false) {
-    const path = localMode
-      ? billingSummaryPath(true)
-      : `${billingSummaryPath(false)}?workspaceId=${encodeURIComponent(workspaceId)}`
-    const res = await http.get<BillingSummary & { ok?: boolean }>(path)
-    return res.data
   },
 
   /**

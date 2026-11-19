@@ -48,7 +48,6 @@ import { trackInitiateCheckout, trackPurchase, trackBillingView, trackPlanClick,
 import { resolveActiveWorkspaceId, setActiveWorkspaceId } from '../../lib/workspace-store'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { usePlatformConfig } from '../../lib/platform-config'
-import { useDomainActions } from '@shogo/shared-app/domain'
 import { useBillingData, useBillingSummary } from '@shogo/shared-app/hooks'
 import {
   PLAN_PRICING,
@@ -61,7 +60,6 @@ import {
   getPlanDisplayName,
   getWindowDisplays,
   getUsageLimitNotice,
-  formatResetCountdown,
   trialSeatsExceedCap,
 } from '../../lib/billing-config'
 import { SeatCounter } from '../../components/billing/SeatCounter'
@@ -161,7 +159,6 @@ export default observer(function BillingPage() {
   }>()
   const { user, isLoading: isAuthLoading } = useAuth()
   const workspaces = useWorkspaceCollection()
-  const actions = useDomainActions()
 
   useEffect(() => {
     const ownWorkspaceIds = workspaces?.all?.map((workspace: any) => workspace.id) ?? []
@@ -183,7 +180,6 @@ export default observer(function BillingPage() {
     refetchUsageWallet,
     planSource,
     usageWindows,
-    overagePayment,
     promoCredit,
     trialEligible,
     trialEndsAt,
@@ -200,6 +196,7 @@ export default observer(function BillingPage() {
   const { localMode } = usePlatformConfig()
   const {
     summary: billingSummary,
+    error: billingSummaryError,
     refetch: refetchBillingSummary,
   } = useBillingSummary(currentWorkspace?.id, { localMode })
   // A paid workspace changes its existing subscription; it never starts a
@@ -903,24 +900,49 @@ export default observer(function BillingPage() {
         onPayInvoice={(url) => WebBrowser.openBrowserAsync(url)}
       />
 
-      {/* What plan am I on, what will I pay next, which card pays it. */}
-      <BillingSummaryCard
-        summary={billingSummary}
-        workspaceName={currentWorkspace.name}
-        isIos={Platform.OS === 'ios'}
-        isPortalLoading={isPortalLoading}
-        isRestoreLoading={isRestoreLoading}
-        onManage={handleManageSubscription}
-        onChangePlan={() => {
-          const planId = (billingSummary?.planId ?? subscription?.planId ?? 'business').toLowerCase()
-          setPlanChangeTarget({
-            planId: planId.startsWith('basic') ? 'basic' : 'business',
-            billingInterval: (billingSummary?.billingInterval ?? billingInterval) as 'monthly' | 'annual',
-            seats: Math.max(1, billingSummary?.seats ?? subscription?.seats ?? 1),
-          })
-        }}
-        onRestore={handleRestorePurchases}
-      />
+      {/* The summary could not be read — say why instead of rendering a blank
+          "Free Plan" card. A desktop install with no cloud link answers
+          `cloud_not_connected`; a Stripe outage answers `stripe_error`. */}
+      {billingSummaryError ? (
+        <View
+          className="mb-4 flex-row items-start gap-3 rounded-2xl border border-border bg-muted/60 p-4"
+          testID="billing-summary-error"
+        >
+          <Info size={18} className="mt-0.5 text-muted-foreground" />
+          <View className="flex-1 gap-2">
+            <Text className="text-sm font-medium text-foreground">
+              We couldn't load your plan details.
+            </Text>
+            <Text className="text-xs text-muted-foreground">{billingSummaryError}</Text>
+            <Button variant="outline" size="sm" onPress={refetchBillingSummary} testID="billing-summary-retry">
+              Try again
+            </Button>
+          </View>
+        </View>
+      ) : null}
+
+      {/* What plan am I on, what will I pay next, which card pays it. Suppressed
+          when the summary failed: the card would otherwise claim "Free Plan"
+          for a workspace we simply could not read. */}
+      {billingSummaryError ? null : (
+        <BillingSummaryCard
+          summary={billingSummary}
+          workspaceName={currentWorkspace.name}
+          isIos={Platform.OS === 'ios'}
+          isPortalLoading={isPortalLoading}
+          isRestoreLoading={isRestoreLoading}
+          onManage={handleManageSubscription}
+          onChangePlan={() => {
+            const planId = (billingSummary?.planId ?? subscription?.planId ?? 'business').toLowerCase()
+            setPlanChangeTarget({
+              planId: planId.startsWith('basic') ? 'basic' : 'business',
+              billingInterval: (billingSummary?.billingInterval ?? billingInterval) as 'monthly' | 'annual',
+              seats: Math.max(1, billingSummary?.seats ?? subscription?.seats ?? 1),
+            })
+          }}
+          onRestore={handleRestorePurchases}
+        />
+      )}
 
       {/* Signup credit + free trial status */}
       {(promoCredit && (promoCredit.availableUsd > 0 || promoCredit.pendingVerificationUsd > 0)) || trialEndsAt ? (
