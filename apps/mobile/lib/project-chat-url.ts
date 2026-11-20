@@ -265,8 +265,8 @@ export function useProjectChatUrlMirror(
   const attemptedRef = useRef('')
   // Repairs run on a timer, after the render that scheduled them: read the chat
   // the screen is on *now* from this ref, never the one that render captured.
-  const liveChatRef = useRef(chatSessionId)
-  liveChatRef.current = chatSessionId
+  const liveChatRef = useRef(options.chatSessionId)
+  liveChatRef.current = options.chatSessionId
   const repairUrl = () => {
     if (!options.enabled || typeof window === 'undefined') return
     const preserved = { ...queryRef.current }
