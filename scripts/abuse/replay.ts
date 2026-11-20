@@ -12,7 +12,7 @@
  *   DATABASE_URL="postgresql://..." bun scripts/abuse/replay.ts ...
  */
 
-import { PrismaClient } from '../../apps/api/src/generated/prisma-pg'
+import { createPrismaClient } from '../../apps/api/src/lib/create-prisma-client'
 import { runAbuseCheckCore } from '../../apps/api/src/lib/abuse-check-job'
 
 const args = process.argv.slice(2)
@@ -36,7 +36,7 @@ function daysInRange(since: string, until: string): string[] {
   return dates
 }
 
-const prisma = new PrismaClient({ datasourceUrl: process.env.DATABASE_URL })
+const prisma = await createPrismaClient()
 
 async function main() {
   const dates = daysInRange(sinceArg, untilArg)
