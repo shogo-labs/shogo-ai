@@ -97,10 +97,10 @@ describe('listRecentAgentChats — real DB (AC §1)', () => {
 
   test('AC§1 exclusion: project chat in a project the caller cannot see is not returned', async () => {
     // foreignProjectId belongs to another workspace entirely — caller can't see it.
+    // Project sessions have createdByUserId null; authorship is tracked via ChatMessage.authorUserId.
     const sess = await mkSession(prisma, {
       contextType: 'project',
       contextId: seed.foreignProjectId,
-      createdByUserId: seed.owner,
     })
     await addUserMsg(prisma, sess.id, seed.owner)
 
@@ -184,10 +184,10 @@ describe('listRecentAgentChats — real DB (AC §1)', () => {
   })
 
   test('project chat has agentKey = projectId and correct projectId', async () => {
+    // createdByUserId is null for project sessions; authorship via ChatMessage.
     const sess = await mkSession(prisma, {
       contextType: 'project',
       contextId: seed.projectId,
-      createdByUserId: seed.owner,
     })
     await addUserMsg(prisma, sess.id, seed.owner)
 
@@ -198,7 +198,19 @@ describe('listRecentAgentChats — real DB (AC §1)', () => {
     expect(item!.agentKey).toBe(seed.projectId)
   })
 
-  test('preview is trimmed to 120 chars', async () => {
+  test('AC§1 exclusion: project chat where only another member wrote is excluded', async () => {
+    // The session is in a visible project but seed.owner never sent a message in it.
+    const sess = await mkSession(prisma, {
+      contextType: 'project',
+      contextId: seed.projectId,
+    })
+    await addUserMsg(prisma, sess.id, seed.member) // member wrote, not owner
+
+    const result = await listRecentAgentChats(seed.workspaceId, seed.owner, { limit: 100 })
+    expect(result.map((r) => r.chatSessionId)).not.toContain(sess.id)
+  })
+
+    test('preview is trimmed to 120 chars', async () => {
     const longText = 'a'.repeat(200)
     const sess = await mkSession(prisma, {
       contextType: 'workspace',

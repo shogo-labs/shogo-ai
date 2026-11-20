@@ -391,7 +391,9 @@ export async function listRecentAgentChats(
         // Workspace-agent chats owned by this user in this workspace.
         { contextType: 'workspace', workspaceId, createdByUserId: userId },
         // Project-agent chats in projects the user can see.
-        { contextType: 'project', project: { workspaceId, AND: readable }, createdByUserId: userId },
+        // No createdByUserId filter here — project sessions leave it null; authorship is
+        // established by messages.some(agentChatMessageWhere(...)) instead.
+        { contextType: 'project', project: { workspaceId, AND: readable } },
       ],
     },
     orderBy: { lastActiveAt: 'desc' },
