@@ -216,7 +216,6 @@ import {
   type OutgoingFilePart,
 } from "../../lib/chat-attachment-upload"
 import { decideContentSizeChange } from "../../lib/chat-scroll-follow"
-import { attachNestedWheelPassthrough } from "../../lib/nested-wheel-passthrough"
 import { releasePreviewUrl } from "../../lib/composer-attachments"
 import { transcriptKeyboardDismissMode } from "../../lib/composer-keyboard-dismiss"
 import { usePlatformConfig } from "../../lib/platform-config"
@@ -1862,23 +1861,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
     node.addEventListener("wheel", onWheel, { passive: true })
     node.addEventListener("touchstart", onTouchStart, { passive: true })
     node.addEventListener("keydown", onKeyDown)
-    // SHO-476: hand wheel events over a nested vertical scroller (e.g. a tall
-    // fenced code block with max-height: 400px) back to that element, the
-    // same way MessageList.tsx does for the inverted team-chat FlatList.
-    // `node` is the ScrollView's own scroll container, so it is both the root
-    // (where we attach the capture-phase listener) and the boundary (the walk
-    // stops before it, so we only intercept children, never the transcript
-    // itself). When no nested scroller can move in the wheel's direction the
-    // event falls through untouched and the browser scrolls the transcript.
-    const detachNestedWheel = attachNestedWheelPassthrough(
-      node as Element,
-      () => node as Element,
-    )
     return () => {
       node.removeEventListener("wheel", onWheel)
       node.removeEventListener("touchstart", onTouchStart)
       node.removeEventListener("keydown", onKeyDown)
-      detachNestedWheel()
     }
   }, [])
 
