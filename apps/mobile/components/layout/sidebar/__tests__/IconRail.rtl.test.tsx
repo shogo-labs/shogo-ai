@@ -25,6 +25,7 @@ mock.module("lucide-react-native", () => {
   return {
     Bell: Icon, Bot: Icon, Folder: Icon, Hash: Icon, Home: Icon, Mail: Icon, MessagesSquare: Icon,
     Mic: Icon, MoreHorizontal: Icon, Plus: Icon, Search: Icon, Shield: Icon, Target: Icon,
+    UserPlus: Icon,
   }
 })
 mock.module(resolve(import.meta.dir, "../../../branding/ShogoLogoMark"), () => ({ ShogoLogoMark: () => null }))

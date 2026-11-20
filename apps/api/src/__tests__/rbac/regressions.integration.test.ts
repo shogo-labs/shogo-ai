@@ -31,13 +31,19 @@ afterAll(async () => {
 })
 
 describe('invite links listing', () => {
-  test('non-members and plain members cannot list a workspace or project link set', async () => {
+  test('non-members and Viewers cannot list a link set; an Editor may read the workspace one', async () => {
     await call(app, as(w.users.owner), 'POST', '/api/invite-links', { workspaceId: w.workspaceA, role: 'member' })
     await call(app, as(w.users.owner), 'POST', '/api/invite-links', { projectId: w.projects.open, role: 'viewer' })
-    for (const who of [w.users.outsider, w.users.ownerB, w.users.viewer, w.users.member]) {
+    // Outsiders and Viewers never invite, so they never read a link set.
+    for (const who of [w.users.outsider, w.users.ownerB, w.users.viewer]) {
       expect((await call(app, as(who), 'GET', `/api/invite-links?workspaceId=${w.workspaceA}`)).status).toBe(403)
       expect((await call(app, as(who), 'GET', `/api/invite-links?projectId=${w.projects.open}`)).status).toBe(403)
     }
+    // An Editor may invite under the default policy, so "Copy link" needs the
+    // workspace set — but a project set still needs project.members:manage.
+    expect((await call(app, as(w.users.member), 'GET', `/api/invite-links?workspaceId=${w.workspaceA}`)).status).toBe(200)
+    expect((await call(app, as(w.users.member), 'GET', `/api/invite-links?projectId=${w.projects.open}`)).status).toBe(403)
+
     const owner = await call(app, as(w.users.owner), 'GET', `/api/invite-links?workspaceId=${w.workspaceA}`)
     expect(owner.body.items.every((l: any) => l.projectId === null)).toBe(true)
   })
@@ -60,7 +66,7 @@ describe('invite links listing', () => {
     expect(badRole.status).toBe(400)
     expect(badRole.body.error.code).toBe('bad_request')
 
-    const denied = await call(app, as(w.users.member), 'GET', `/api/invite-links?workspaceId=${w.workspaceA}`)
+    const denied = await call(app, as(w.users.viewer), 'GET', `/api/invite-links?workspaceId=${w.workspaceA}`)
     expect(denied.body.error.code).toBe('forbidden')
 
     const notFound = await call(app, as(w.users.owner), 'PATCH', '/api/invite-links/nope', { enabled: false })

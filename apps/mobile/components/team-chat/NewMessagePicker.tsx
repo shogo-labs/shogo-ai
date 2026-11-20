@@ -12,12 +12,14 @@
  */
 import { useState } from 'react'
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { Check, Headphones } from 'lucide-react-native'
+import { Check, Headphones, UserPlus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { huddleMediaSupported, joinHuddleCall } from '../../lib/huddle-call'
 import { teamChatApi, type ConversationSummary, type Mentionables } from '../../lib/team-chat-api'
 import { PresenceDot } from './PresenceDot'
 import { UserAvatar } from './UserAvatar'
+import { useInviteDialog } from '../workspace/invite-dialog-context'
+import { usePermissions } from '../../hooks/usePermissions'
 
 export type NewMessageFilter = 'all' | 'people'
 
@@ -66,9 +68,15 @@ export function NewMessagePicker({
   const [selected, setSelected] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const inviteDialog = useInviteDialog()
+  const { canInvite } = usePermissions({ workspaceId })
 
   const { people, selfRecipient } = filterRecipients(mentionables, me, query)
   const showSelf = !!selfRecipient
+  // Someone who is not in the workspace yet: offer to invite them (SHO-454).
+  const q = query.trim().toLowerCase()
+  const looksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(q)
+  const offerInvite = canInvite && !!q && (looksLikeEmail || (!people.length && !showSelf))
 
   const submit = async (fn: () => Promise<ConversationSummary>) => {
     if (busy) return
@@ -180,7 +188,29 @@ export function NewMessagePicker({
           </>
         )}
 
-        {empty && (
+        {offerInvite && (
+          <Pressable
+            testID="new-message-invite"
+            accessibilityRole="button"
+            accessibilityLabel={looksLikeEmail ? `Invite ${q}` : 'Invite someone new'}
+            onPress={() =>
+              inviteDialog.openInviteDialog(workspaceId, { emails: looksLikeEmail ? [q] : undefined })
+            }
+            className="min-h-12 flex-row items-center gap-3 rounded-md px-2 py-2 active:bg-muted hover:bg-muted"
+          >
+            <UserPlus size={15} className="text-primary" />
+            <View className="min-w-0 flex-1">
+              <Text className="text-sm text-foreground" numberOfLines={1}>
+                {looksLikeEmail ? `Invite ${q}` : 'Invite someone new'}
+              </Text>
+              <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+                They are not in this workspace yet
+              </Text>
+            </View>
+          </Pressable>
+        )}
+
+        {empty && !offerInvite && (
           <Text className="px-2 py-4 text-sm text-muted-foreground">
             No teammates match.
           </Text>

@@ -20,7 +20,8 @@ import {
   type WorkspaceRole,
 } from '@shogo/authz'
 import type { HttpClient } from '@shogo-ai/sdk'
-import { useDomainHttp } from '../contexts/domain'
+import { getDomainHttpClient, useDomainHttpOptional } from '../contexts/domain'
+import { canInviteHere, useCloudWorkspaces } from '../lib/workspace-route'
 import {
   api,
   type ProjectPermissionsData,
@@ -39,6 +40,9 @@ interface ScopeAccess {
   visibility: ProjectVisibility | null
   isGuest: boolean
   isSuperAdmin: boolean
+  /** Workspace scope only (SHO-454): who may invite, and whether this caller may. */
+  invitePolicy: 'members' | 'admins' | null
+  canInvite: boolean
 }
 
 interface CacheEntry {
@@ -59,6 +63,8 @@ const NO_ACCESS: ScopeAccess = {
   visibility: null,
   isGuest: false,
   isSuperAdmin: false,
+  invitePolicy: null,
+  canInvite: false,
 }
 
 const cache = new Map<string, CacheEntry>()
@@ -78,6 +84,8 @@ function fromWorkspace(data: WorkspacePermissionsData | null): ScopeAccess {
     visibility: null,
     isGuest: false,
     isSuperAdmin: !!data.isSuperAdmin,
+    invitePolicy: data.invitePolicy ?? null,
+    canInvite: !!data.canInvite,
   }
 }
 
@@ -90,6 +98,8 @@ function fromProject(data: ProjectPermissionsData | null): ScopeAccess {
     visibility: data.visibility ?? null,
     isGuest: !!data.isGuest,
     isSuperAdmin: !!data.isSuperAdmin,
+    invitePolicy: null,
+    canInvite: false,
   }
 }
 
@@ -188,8 +198,18 @@ export function invalidatePermissions(scope?: PermissionScope) {
   }
 }
 
+/**
+ * Whether to offer the invite UI (SHO-454). Re-exported from
+ * `lib/workspace-route` so the rule lives next to the routing it depends on.
+ */
+export { canInviteHere } from '../lib/workspace-route'
+
 export function usePermissions(scope: PermissionScope) {
-  const http = useDomainHttp()
+  // The workspace switcher renders in a portal that sits outside the domain
+  // provider, so the throwing `useDomainHttp` would take the whole menu down
+  // there. Fall back to the module-level client, which is the same one the
+  // provider hands out.
+  const http = useDomainHttpOptional() ?? getDomainHttpClient()
   const key = scopeKey(scope)
   const [, setVersion] = useState(0)
 
@@ -221,6 +241,13 @@ export function usePermissions(scope: PermissionScope) {
   const permissions = useMemo(() => new Set<Permission>(data?.permissions ?? []), [data])
   const can = useCallback((p: Permission) => permissions.has(p), [permissions])
 
+  // `canInviteHere` reads the cloud workspace list, which on the desktop
+  // arrives after the first permissions fetch. Subscribing here re-renders
+  // when it lands, so the invite UI appears without a manual refresh.
+  useCloudWorkspaces()
+  const workspaceId = 'workspaceId' in scope ? scope.workspaceId : null
+  const canInvite = canInviteHere(!!data?.canInvite, workspaceId)
+
   const refetch = useCallback(async () => {
     if (!key || !http) return
     await load(http, key, true)
@@ -235,6 +262,9 @@ export function usePermissions(scope: PermissionScope) {
     visibility: data?.visibility ?? null,
     isGuest: data?.isGuest ?? false,
     isSuperAdmin: data?.isSuperAdmin ?? false,
+    /** Workspace scope only: who may invite, and whether this caller may (SHO-454). */
+    invitePolicy: data?.invitePolicy ?? null,
+    canInvite,
     loading,
     refetch,
   }
