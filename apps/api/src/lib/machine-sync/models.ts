@@ -162,6 +162,7 @@ const NEVER_CREDENTIALS = [
   'PushSubscription',
   'MobilePushSubscription',
   'Notification', // the desktop's own inbox
+  'DeviceActiveDay',
   'DeviceVersionEvent',
   'SignupAttribution',
 ] as const
