@@ -314,12 +314,27 @@ const NEVER_LIVE_CALL = [
   'HuddleWake', // which transcript line already woke the agent, for the call in progress
 ] as const
 
+// Shogo Mail: mail is received (provider webhook / IMAP poll) and sent by the
+// instance that holds the domain at its provider, and an IMAP account's password
+// must never travel. The mailbox's conversation and its messages still mirror.
+const NEVER_MAIL = [
+  'MailDomain',
+  'Mailbox',
+  'MailThread',
+  'MailMessage',
+  'MailSender',
+  'MailRule',
+  'MailSuppression',
+  'MailAccount',
+] as const
+
 const NEVER_REASONS: Array<[readonly string[], string]> = [
   [NEVER_CREDENTIALS, 'credentials, sign-in or identity linkage'],
   [NEVER_BILLING, 'billing, metering or marketplace money'],
   [NEVER_CLOUD_PLATFORM, 'cloud platform data (registry, events, social, evals)'],
   [NEVER_MACHINE_LOCAL, 'machine-local run state or derived index'],
   [NEVER_LIVE_CALL, 'live call signalling state'],
+  [NEVER_MAIL, 'mail is served by the instance that holds the domain at its provider'],
 ]
 
 /** `Model → why it never leaves the machine`. */

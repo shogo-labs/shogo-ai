@@ -17,7 +17,7 @@ mock.module("react-native", () => createReactNativeMock())
 mock.module("@shogo/shared-ui/primitives", () => ({ cn: (...args: unknown[]) => args.filter(Boolean).join(" ") }))
 mock.module("lucide-react-native", () => {
   const Icon = () => createElement("span")
-  return { Bot: Icon, ChevronDown: Icon, ChevronRight: Icon, Hash: Icon, Lock: Icon, Pencil: Icon, Plus: Icon, Radio: Icon, Users: Icon }
+  return { Bot: Icon, ChevronDown: Icon, ChevronRight: Icon, Hash: Icon, Lock: Icon, Mail: Icon, Pencil: Icon, Plus: Icon, Radio: Icon, Users: Icon }
 })
 mock.module(resolve(import.meta.dir, "../PresenceDot"), () => ({
   PresenceDot: ({ userId }: { userId: string }) => createElement("span", { "data-presence": userId }),
