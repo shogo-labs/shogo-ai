@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { Hono } from 'hono'
-import { decideLearnAccess, gradeLearnCheck, LEARN_CERTIFICATES, LEARN_COACH_DAILY_LIMIT } from '../../config/learn-catalog'
+import { decideLearnAccess, gradeLearnCheck, learnPurchaseCourseId, LEARN_CERTIFICATES, LEARN_COACH_DAILY_LIMIT } from '../../config/learn-catalog'
+import { LEARN_COURSE_OFFER, buildLearnCheckoutParams, handleLearnRefund, learnStandaloneOffer, recordLearnPurchase } from '../../lib/learn-purchase'
 import { SOLO_FOUNDER_COURSE_ID } from '../../config/solo-founder-course'
 import {
   LEARN_COOKIE_NAME,
@@ -47,6 +48,8 @@ interface FakeState {
   enrollments: Array<{ userId: string; workspaceId: string; courseId: string; progress: unknown; completedAt: Date | null }>
   rateAllowed: boolean
   coachCalls: Array<{ system: string; messages: unknown[] }>
+  checkoutCalls?: any[]
+  checkoutResult?: { url: string } | { error: 'price_not_provisioned' }
 }
 
 function makeApp(state: FakeState) {
@@ -64,6 +67,10 @@ function makeApp(state: FakeState) {
       return 'What do you see on the Publish dialog right now?'
     },
     frontendUrl: () => 'https://studio.shogo.ai',
+    createCourseCheckout: async (input) => {
+      ;(state.checkoutCalls ??= []).push(input)
+      return state.checkoutResult ?? { url: 'https://checkout.stripe.com/c/pay/cs_test_1' }
+    },
     now: () => NOW,
   }
   const app = new Hono()
@@ -436,5 +443,158 @@ describe('certificates', () => {
   test('the new courses are on the catalog with the right access', () => {
     expect(decideLearnAccess({ kind: 'public' }, { signedIn: false, planId: 'free', enrolledCourseIds: new Set() }).hasAccess).toBe(true)
     expect(gradeLearnCheck(LEARN_CERTIFICATES['agents-for-everyone'], PASS)).toEqual({ score: 6, total: 6, wrong: [], passed: true })
+  })
+})
+
+
+describe('standalone course purchases', () => {
+  const RETURN = 'https://learn.shogo.ai/courses/first-client/the-offer/'
+
+  function freeState(): FakeState {
+    const st = baseState()
+    st.workspaces = { u1: ['ws-free'] }
+    return st
+  }
+
+  async function checkout(app: Hono, body: unknown, token: string | null = tokenFor()) {
+    return app.request('/api/learn/checkout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(token ? { [LEARN_TOKEN_HEADER]: token } : {}) },
+      body: JSON.stringify(body),
+    })
+  }
+
+  test('a plan course with a standalone offer: plan or purchase opens it, and the price is shown otherwise', () => {
+    const rule = { kind: 'plan', minPlan: 'basic', standalone: { courseId: 'first-client', title: 'x', priceUsd: 49, lookupKey: 'k' } } as const
+    expect(decideLearnAccess(rule, { signedIn: false, planId: 'free', enrolledCourseIds: new Set() })).toEqual({
+      hasAccess: false, reason: 'signed_out', requiredPlan: 'basic', standalone: { priceUsd: 49 },
+    })
+    expect(decideLearnAccess(rule, { signedIn: true, planId: 'free', enrolledCourseIds: new Set() })).toEqual({
+      hasAccess: false, reason: 'plan_required', requiredPlan: 'basic', standalone: { priceUsd: 49 },
+    })
+    expect(decideLearnAccess(rule, { signedIn: true, planId: 'free', enrolledCourseIds: new Set([learnPurchaseCourseId('first-client')]) }))
+      .toEqual({ hasAccess: true, reason: 'purchased' })
+    expect(decideLearnAccess(rule, { signedIn: true, planId: 'basic', enrolledCourseIds: new Set() }))
+      .toEqual({ hasAccess: true, reason: 'plan' })
+  })
+
+  test('/me: a purchase unlocks the course for the buyer only, never their teammates', async () => {
+    const st = freeState()
+    st.workspaces.u2 = ['ws-free']
+    st.sessions.s2 = { userId: 'u2', live: true }
+    st.enrollments = [{ userId: 'u2', workspaceId: 'ws-free', courseId: 'learn:first-client', progress: null, completedAt: null }]
+    const { app } = makeApp(st)
+    const me = async (token: string) =>
+      (await (await app.request('/api/learn/me', { headers: { [LEARN_TOKEN_HEADER]: token } })).json()) as any
+    expect((await me(tokenFor('u2', 's2'))).courses['first-client']).toEqual({ hasAccess: true, reason: 'purchased' })
+    expect((await me(tokenFor('u1', 's1'))).courses['first-client']).toMatchObject({ hasAccess: false, standalone: { priceUsd: 49 } })
+    expect((await me(tokenFor('u1', 's1'))).courses['paid-app']).toMatchObject({ hasAccess: false, standalone: { priceUsd: 49 } })
+  })
+
+  test('POST /checkout creates a Stripe checkout for a free learner, with a learn.shogo.ai return', async () => {
+    const st = freeState()
+    const { app } = makeApp(st)
+    const res = await checkout(app, { courseId: 'first-client', returnUrl: RETURN })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ url: 'https://checkout.stripe.com/c/pay/cs_test_1' })
+    expect(st.checkoutCalls).toHaveLength(1)
+    expect(st.checkoutCalls![0]).toMatchObject({
+      userId: 'u1',
+      email: 'u1@example.com',
+      workspaceId: 'ws-free',
+      cancelUrl: RETURN,
+      successUrl: `${RETURN}?purchased=first-client`,
+      offer: { courseId: 'first-client', priceUsd: 49, lookupKey: 'learn_course_first_client_v1' },
+    })
+  })
+
+  test('POST /checkout refuses what it should', async () => {
+    const st = freeState()
+    const { app } = makeApp(st)
+    expect((await checkout(app, { courseId: 'first-client', returnUrl: RETURN }, null)).status).toBe(401)
+    expect((await checkout(app, { courseId: 'start-here', returnUrl: RETURN })).status).toBe(404)
+    expect((await checkout(app, { courseId: 'solo-founder', returnUrl: RETURN })).status).toBe(404)
+    expect((await checkout(app, { courseId: 'first-client', returnUrl: 'https://evil.example/x' })).status).toBe(400)
+    st.checkoutResult = { error: 'price_not_provisioned' }
+    expect((await checkout(app, { courseId: 'first-client', returnUrl: RETURN })).status).toBe(503)
+    st.rateAllowed = false
+    expect((await checkout(app, { courseId: 'first-client', returnUrl: RETURN })).status).toBe(429)
+  })
+
+  test('POST /checkout is a 409 when the learner already has the course', async () => {
+    const st = baseState()
+    const { app } = makeApp(st)
+    const res = await checkout(app, { courseId: 'first-client', returnUrl: RETURN })
+    expect(res.status).toBe(409)
+    expect(st.checkoutCalls ?? []).toHaveLength(0)
+  })
+
+  function fakeDb() {
+    const rows: any[] = []
+    return {
+      rows,
+      courseEnrollment: {
+        findUnique: async ({ where }: any) => rows.find((r) => r.stripeCheckoutSessionId === where.stripeCheckoutSessionId) ?? null,
+        create: async ({ data }: any) => {
+          const row = { id: `e${rows.length + 1}`, ...data }
+          rows.push(row)
+          return row
+        },
+        updateMany: async ({ where, data }: any) => {
+          const hit = rows.filter((r) => where.stripeCheckoutSessionId.in.includes(r.stripeCheckoutSessionId) && r.status === where.status)
+          for (const r of hit) Object.assign(r, data)
+          return { count: hit.length }
+        },
+      },
+    }
+  }
+
+  const PAID = {
+    id: 'cs_1',
+    payment_status: 'paid' as const,
+    metadata: { offer: LEARN_COURSE_OFFER, learnCourseId: 'paid-app', userId: 'u1', workspaceId: 'ws-free' },
+  }
+
+  test('the webhook records one active enrollment per paid session, and ignores everything else', async () => {
+    const db = fakeDb()
+    expect(await recordLearnPurchase(db, PAID, new Date(NOW))).toEqual({ recorded: true, enrollmentId: 'e1', courseId: 'learn:paid-app' })
+    expect(db.rows[0]).toMatchObject({ courseId: 'learn:paid-app', userId: 'u1', status: 'active', source: 'stripe', stripeCheckoutSessionId: 'cs_1' })
+    expect(await recordLearnPurchase(db, PAID)).toEqual({ recorded: false, reason: 'duplicate' })
+    expect(await recordLearnPurchase(db, { ...PAID, id: 'cs_2', payment_status: 'unpaid' })).toEqual({ recorded: false, reason: 'unpaid' })
+    expect(await recordLearnPurchase(db, { ...PAID, id: 'cs_3', metadata: { offer: 'solo_founder' } })).toEqual({ recorded: false, reason: 'not_learn' })
+    expect(await recordLearnPurchase(db, { ...PAID, id: 'cs_4', metadata: { ...PAID.metadata, learnCourseId: 'start-here' } }))
+      .toEqual({ recorded: false, reason: 'unknown_course' })
+    expect(db.rows).toHaveLength(1)
+  })
+
+  test('a full refund closes the enrollment; a partial refund does not', async () => {
+    const db = fakeDb()
+    await recordLearnPurchase(db, PAID)
+    const stripe: any = { checkout: { sessions: { list: async () => ({ data: [{ id: 'cs_1', metadata: PAID.metadata }] }) } } }
+    expect(await handleLearnRefund({ db, stripe, charge: { amount: 4900, amount_refunded: 1000, payment_intent: 'pi_1', metadata: {} } }))
+      .toEqual({ closed: 0 })
+    expect(db.rows[0].status).toBe('active')
+    expect(await handleLearnRefund({ db, stripe, charge: { amount: 4900, amount_refunded: 4900, payment_intent: 'pi_1', metadata: {} } }))
+      .toEqual({ closed: 1 })
+    expect(db.rows[0].status).toBe('refunded')
+    expect(await handleLearnRefund({ db, stripe, charge: { amount: 4900, amount_refunded: 4900, payment_intent: 'pi_1', metadata: {} } }))
+      .toEqual({ closed: 0 })
+  })
+
+  test('checkout params: one-time card payment, offer metadata on the session and the payment', () => {
+    const p = buildLearnCheckoutParams({
+      offer: learnStandaloneOffer('paid-app')!,
+      priceId: 'price_1',
+      userId: 'u1',
+      workspaceId: 'ws1',
+      userEmail: 'a@b.c',
+      successUrl: 's',
+      cancelUrl: 'c',
+    })
+    expect(p.mode).toBe('payment')
+    expect(p.line_items).toEqual([{ price: 'price_1', quantity: 1 }])
+    expect(p.metadata).toEqual({ offer: 'learn_course', learnCourseId: 'paid-app', userId: 'u1', workspaceId: 'ws1' })
+    expect(p.payment_intent_data?.metadata).toEqual(p.metadata)
+    expect(learnStandaloneOffer('start-here')).toBeNull()
   })
 })

@@ -15,6 +15,10 @@
  *               without Pro being named anywhere)
  *  - `purchase` an active `CourseEnrollment` for `enrollmentCourseId`, in any
  *               workspace the learner belongs to. Plan does not matter.
+ *
+ * A `plan` course can also be sold on its own (`standalone`): a one-time
+ * payment that unlocks that course for life, recorded as a `CourseEnrollment`
+ * for `learnPurchaseCourseId(course)`. Either path opens it.
  */
 
 import { PLAN_RANK, type PlanId } from './usage-plans'
@@ -23,8 +27,25 @@ import { SOLO_FOUNDER_COURSE_ID } from './solo-founder-course'
 export type LearnAccessRule =
   | { kind: 'public' }
   | { kind: 'account' }
-  | { kind: 'plan'; minPlan: Exclude<PlanId, 'free' | 'pro'> }
+  | { kind: 'plan'; minPlan: Exclude<PlanId, 'free' | 'pro'>; standalone?: LearnStandaloneOffer }
   | { kind: 'purchase'; enrollmentCourseId: string; offer: string }
+
+/** A one-time purchase of one course. The Stripe price is found by `lookupKey`. */
+export interface LearnStandaloneOffer {
+  courseId: string
+  title: string
+  priceUsd: number
+  lookupKey: string
+}
+
+/** `CourseEnrollment.courseId` for a standalone purchase of a learn course. */
+export function learnPurchaseCourseId(courseId: string): string {
+  return `learn:${courseId}`
+}
+
+function standalone(courseId: string, title: string, priceUsd: number): LearnStandaloneOffer {
+  return { courseId, title, priceUsd, lookupKey: `learn_course_${courseId.replace(/-/g, '_')}_v1` }
+}
 
 export interface LearnCourse {
   id: string
@@ -36,9 +57,19 @@ export const LEARN_COURSES: readonly LearnCourse[] = [
   { id: 'agents-for-everyone', access: { kind: 'public' } },
   { id: 'start-here', access: { kind: 'account' } },
   { id: 'ai-teammates', access: { kind: 'account' } },
-  { id: 'agent-team-playbook', access: { kind: 'plan', minPlan: 'basic' } },
-  { id: 'first-client', access: { kind: 'plan', minPlan: 'basic' } },
-  { id: 'paid-app', access: { kind: 'plan', minPlan: 'basic' } },
+  // Standalone prices sit below a year of Basic ($78), which includes all three.
+  {
+    id: 'agent-team-playbook',
+    access: { kind: 'plan', minPlan: 'basic', standalone: standalone('agent-team-playbook', 'Agent Team Playbook', 49) },
+  },
+  {
+    id: 'first-client',
+    access: { kind: 'plan', minPlan: 'basic', standalone: standalone('first-client', 'Land your first AI client', 49) },
+  },
+  {
+    id: 'paid-app',
+    access: { kind: 'plan', minPlan: 'basic', standalone: standalone('paid-app', 'Ship a paid app in 14 days', 49) },
+  },
   {
     id: 'solo-founder',
     access: { kind: 'purchase', enrollmentCourseId: SOLO_FOUNDER_COURSE_ID, offer: 'solo_founder' },
@@ -96,6 +127,8 @@ export interface LearnAccessDecision {
   requiredPlan?: string
   /** For `purchase_required`: the checkout offer that unlocks it. */
   offer?: string
+  /** When the course can also be bought on its own: its one-time price. */
+  standalone?: { priceUsd: number }
 }
 
 export function decideLearnAccess(
@@ -103,11 +136,12 @@ export function decideLearnAccess(
   learner: { signedIn: boolean; planId: PlanId; enrolledCourseIds: ReadonlySet<string> },
 ): LearnAccessDecision {
   if (rule.kind === 'public') return { hasAccess: true, reason: 'public' }
+  const buyable = rule.kind === 'plan' && rule.standalone ? { standalone: { priceUsd: rule.standalone.priceUsd } } : {}
   if (!learner.signedIn) {
     return {
       hasAccess: false,
       reason: 'signed_out',
-      ...(rule.kind === 'plan' ? { requiredPlan: rule.minPlan } : {}),
+      ...(rule.kind === 'plan' ? { requiredPlan: rule.minPlan, ...buyable } : {}),
       ...(rule.kind === 'purchase' ? { offer: rule.offer } : {}),
     }
   }
@@ -115,9 +149,11 @@ export function decideLearnAccess(
     case 'account':
       return { hasAccess: true, reason: 'account' }
     case 'plan':
-      return PLAN_RANK[learner.planId] >= PLAN_RANK[rule.minPlan]
-        ? { hasAccess: true, reason: 'plan' }
-        : { hasAccess: false, reason: 'plan_required', requiredPlan: rule.minPlan }
+      if (PLAN_RANK[learner.planId] >= PLAN_RANK[rule.minPlan]) return { hasAccess: true, reason: 'plan' }
+      if (rule.standalone && learner.enrolledCourseIds.has(learnPurchaseCourseId(rule.standalone.courseId))) {
+        return { hasAccess: true, reason: 'purchased' }
+      }
+      return { hasAccess: false, reason: 'plan_required', requiredPlan: rule.minPlan, ...buyable }
     case 'purchase':
       return learner.enrolledCourseIds.has(rule.enrollmentCourseId)
         ? { hasAccess: true, reason: 'purchased' }

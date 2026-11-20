@@ -15,6 +15,8 @@
  *  - `POST /certificate`  grade a course's final check; on a pass, return a
  *    signed certificate id. Signed-in learners only.
  *  - `GET  /certificate/:id`  public verification of a certificate id.
+ *  - `POST /checkout`  Stripe Checkout for a course sold on its own; the
+ *    webhook (`lib/learn-purchase.ts`) records the enrollment.
  *
  * Every route authenticates itself (learn token, or a Studio session for the
  * same-origin case), so `/api/learn/` is a gate-public prefix.
@@ -30,7 +32,9 @@ import {
   gradeLearnCheck,
   learnCourseById,
   type LearnAccessDecision,
+  type LearnStandaloneOffer,
 } from '../config/learn-catalog'
+import { learnStandaloneOffer } from '../lib/learn-purchase'
 import { PLAN_RANK, normalizePlanId, type PlanId } from '../config/usage-plans'
 import {
   LEARN_COOKIE_NAME,
@@ -55,6 +59,8 @@ const MAX_MESSAGES = 20
 const MAX_MESSAGE_CHARS = 4000
 const MAX_CONTEXT_CHARS = 16000
 const CERT_ATTEMPTS_PER_DAY = 20
+const CHECKOUTS_PER_HOUR = 20
+const HOUR_MS = 60 * 60 * 1000
 
 export interface LearnUser {
   id: string
@@ -76,10 +82,19 @@ export interface LearnRoutesDeps {
   getEnrollments: (
     userId: string,
     workspaceIds: string[],
-  ) => Promise<Array<{ courseId: string; progress: unknown; completedAt: Date | null }>>
+  ) => Promise<Array<{ courseId: string; userId?: string; progress: unknown; completedAt: Date | null }>>
   takeRateLimit: (key: string, max: number, windowMs: number) => Promise<{ allowed: boolean; retryAfterSeconds: number }>
   /** One coach completion; throws when no model is available. */
   generateCoachReply: (input: { system: string; messages: CoachMessage[] }) => Promise<string>
+  /** Creates the Stripe Checkout for a standalone course. Absent when Stripe is not configured. */
+  createCourseCheckout?: (input: {
+    offer: LearnStandaloneOffer
+    userId: string
+    email: string
+    workspaceId: string
+    successUrl: string
+    cancelUrl: string
+  }) => Promise<{ url: string } | { error: 'price_not_provisioned' }>
   frontendUrl: () => string
   now?: () => number
 }
@@ -190,11 +205,14 @@ export function learnRoutes(deps: LearnRoutesDeps) {
 
   async function learnerState(userId: string) {
     const workspaceIds = await deps.getWorkspaceIds(userId)
-    const [planIds, enrollments] = await Promise.all([
+    const [planIds, allEnrollments] = await Promise.all([
       Promise.all(workspaceIds.map((id) => deps.getEffectivePlanId(id).catch(() => 'free'))),
       deps.getEnrollments(userId, workspaceIds),
     ])
-    return { planId: bestPlanId(planIds), enrollments }
+    // A standalone course purchase is personal: it never unlocks the course for
+    // the buyer's teammates the way a workspace offer does.
+    const enrollments = allEnrollments.filter((e) => !e.courseId.startsWith('learn:') || e.userId === userId)
+    return { planId: bestPlanId(planIds), enrollments, workspaceIds }
   }
 
   app.get('/sso', async (c) => {
@@ -336,6 +354,48 @@ export function learnRoutes(deps: LearnRoutesDeps) {
       total: result.total,
     })
     return c.json({ ...result, passMark: rule.passMark, certificate: { id, name } })
+  })
+
+  app.post('/checkout', async (c) => {
+    c.header('Cache-Control', 'no-store')
+    const learner = await resolveLearner(c)
+    if (!learner) return c.json({ error: 'Sign in with your Shogo account to buy this course.' }, 401)
+    const body = (await c.req.json().catch(() => null)) as { courseId?: unknown; returnUrl?: unknown } | null
+    const offer = learnStandaloneOffer(typeof body?.courseId === 'string' ? body.courseId : '')
+    const course = offer ? learnCourseById(offer.courseId) : undefined
+    if (!offer || !course) return c.json({ error: 'This course is not sold on its own.' }, 404)
+    const returnUrl = safeLearnReturn(typeof body?.returnUrl === 'string' ? body.returnUrl : null)
+    if (!returnUrl) return c.json({ error: 'returnUrl must be a learn.shogo.ai URL.' }, 400)
+
+    const { planId, enrollments, workspaceIds } = await learnerState(learner.user.id)
+    const decision = decideLearnAccess(course.access, {
+      signedIn: true,
+      planId,
+      enrolledCourseIds: new Set(enrollments.map((e) => e.courseId)),
+    })
+    if (decision.hasAccess) return c.json({ error: 'You already have this course.', access: decision }, 409)
+    const workspaceId = workspaceIds[0]
+    if (!workspaceId) return c.json({ error: 'Open Shogo once to create your workspace, then try again.' }, 409)
+
+    const rl = await deps.takeRateLimit(`learn-checkout:${learner.user.id}`, CHECKOUTS_PER_HOUR, HOUR_MS)
+    if (!rl.allowed) {
+      c.header('Retry-After', String(rl.retryAfterSeconds))
+      return c.json({ error: 'Too many checkout attempts. Try again in a little while.' }, 429)
+    }
+    if (!deps.createCourseCheckout) return c.json({ error: 'Purchases are not available right now.' }, 503)
+
+    const success = new URL(returnUrl)
+    success.searchParams.set('purchased', offer.courseId)
+    const result = await deps.createCourseCheckout({
+      offer,
+      userId: learner.user.id,
+      email: learner.user.email,
+      workspaceId,
+      successUrl: success.toString(),
+      cancelUrl: returnUrl,
+    })
+    if ('error' in result) return c.json({ error: 'This course is not on sale yet.' }, 503)
+    return c.json({ url: result.url })
   })
 
   app.get('/certificate/:id', (c) => {

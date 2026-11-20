@@ -15,7 +15,7 @@ import { readdir, stat, mkdir, appendFile } from 'fs/promises'
 import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync, readFileSync, realpathSync } from 'fs'
 import { auth } from './auth'
 import { resolveSubscriptionContext, selectPlanItem } from './services/stripe-subscription-sync.service'
-import { resolveCheckoutPriceId, normalizeCheckoutPlanId } from './services/stripe-price-lookup.service'
+import { resolveCheckoutPriceId, normalizeCheckoutPlanId, lookupPriceIdByLookupKey } from './services/stripe-price-lookup.service'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import type { InstanceSizeName } from './config/instance-sizes'
 import { resolveWorkspaceDiskMiB, workspaceDiskIncludedGiB } from './config/instance-sizes'
@@ -57,6 +57,7 @@ import { inviteLinkRoutes } from './routes/invite-links'
 import { invitationInfoRoutes } from './routes/invitation-info'
 import { learnRoutes, withLearnCookie, type LearnRoutesDeps } from './routes/learn'
 import { generateLearnCoachReply } from './lib/learn-coach-model'
+import { LEARN_COURSE_OFFER, buildLearnCheckoutParams, handleLearnRefund, recordLearnPurchase } from './lib/learn-purchase'
 import { takeRateLimit } from './lib/chat-limits'
 import { rbacRoutes } from './routes/rbac'
 import { appActionsRoutes } from './routes/app-actions'
@@ -966,10 +967,20 @@ const learnDeps: LearnRoutesDeps = {
   getEnrollments: (userId, workspaceIds) =>
     prisma.courseEnrollment.findMany({
       where: { status: 'active', OR: [{ userId }, { workspaceId: { in: workspaceIds } }] },
-      select: { courseId: true, progress: true, completedAt: true },
+      select: { courseId: true, userId: true, progress: true, completedAt: true },
     }),
   takeRateLimit,
   generateCoachReply: generateLearnCoachReply,
+  createCourseCheckout: async ({ offer, userId, email, workspaceId, successUrl, cancelUrl }) => {
+    if (!stripe) return { error: 'price_not_provisioned' as const }
+    const priceId = await lookupPriceIdByLookupKey(stripe, offer.lookupKey)
+    if (!priceId) return { error: 'price_not_provisioned' as const }
+    const session = await stripe.checkout.sessions.create(
+      buildLearnCheckoutParams({ offer, priceId, userId, workspaceId, userEmail: email, successUrl, cancelUrl }),
+    )
+    if (!session.url) throw new Error('Stripe returned a checkout session without a URL')
+    return { url: session.url }
+  },
   frontendUrl: getFrontendUrl,
 }
 
@@ -9861,6 +9872,13 @@ app.post('/api/webhooks/stripe', async (c) => {
           metadata: session.metadata,
         })
 
+        // A standalone learn.shogo.ai course: one-time payment, no subscription.
+        if (session.metadata?.offer === LEARN_COURSE_OFFER) {
+          const result = await recordLearnPurchase(prisma as any, session)
+          console.log('[Webhook] learn course purchase:', { sessionId: session.id, ...result })
+          break
+        }
+
         // Handle instance size add-on checkout
         if (session.metadata?.checkoutType === 'instance' || session.metadata?.checkoutType === 'capacity') {
           const rawSize =
@@ -10223,6 +10241,12 @@ app.post('/api/webhooks/stripe', async (c) => {
             }
           } catch (err: any) {
             console.error('[Webhook] Solo Founder refund handling failed:', err?.message ?? err)
+          }
+          try {
+            const learnRefund = await handleLearnRefund({ db: prisma as any, stripe, charge: obj })
+            if (learnRefund.closed) console.log('[Webhook] learn course purchase refunded:', { chargeId, closed: learnRefund.closed })
+          } catch (err: any) {
+            console.error('[Webhook] learn course refund handling failed:', err?.message ?? err)
           }
         }
         break
