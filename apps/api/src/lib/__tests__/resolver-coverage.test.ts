@@ -77,6 +77,7 @@ const EXEMPT: Record<string, string> = {
   socialAutomation: 'Mutated only via /api/workspaces/:workspaceId/social/automations* (create, pause/resume, delete) — resolved by path workspaceId; the relay records a desktop-created row and verifies ownership of it by zernioResourceId.',
   socialAutomationRun: 'Append-only execution rows written as a side effect of the provider run webhook (keyed on the globally unique execution id) — never mutated via REST.',
   chatInstallation: 'Mutated via /api/workspaces/:workspaceId/chat-installations routes (path workspaceId, admin-gated), the Slack OAuth callback (workspaceId from signed OAuth state), and the `connect <code>` chat command (workspaceId from a signed connect code).',
+  whatsAppNumberBinding: 'Written only by /api/channels/whatsapp/connect/complete (workspaceId/projectId from the signed connect state), updated by the signed Meta platform webhook (which forwards each change to the binding\'s home region via chat-region-pin) and deleted via /api/internal/projects/:projectId/channels/whatsapp/bindings/... — never mutated via a standalone /api/<resource>/:id route.',
   chatReminder: 'Mutated via workspace-scoped chat reminder routes — resolved by path workspaceId.',
   chatUserSettings: 'Mutated via workspace-scoped chat settings routes — resolved by path workspaceId.',
   conversationMember: 'Mutated only via /api/conversations/:id/... (members, join, leave, agents) — resolved by the conversations lookup.',

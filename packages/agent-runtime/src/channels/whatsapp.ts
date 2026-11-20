@@ -22,8 +22,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join, extname } from 'path'
 import type { ChannelAdapter, IncomingMessage, ChannelStatus } from '../types'
 import { transcribeAudioBuffer } from '../lib/transcribe'
+import { WHATSAPP_GRAPH_VERSION, verifyMetaSignature } from '@shogo/shared-runtime/whatsapp-graph'
 
-const WHATSAPP_API = 'https://graph.facebook.com/v22.0'
+const WHATSAPP_API = `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}`
 const MEDIA_SIZE_CAP_BYTES = 25 * 1024 * 1024
 const DEDUPE_MAX = 5_000
 const DEDUPE_TTL_MS = 48 * 60 * 60 * 1000
@@ -154,6 +155,17 @@ export class WhatsAppAdapter implements ChannelAdapter {
   private displayPhoneNumber: string = ''
   private dedupe: DedupeStore | null = null
 
+  // Platform (Meta Tech Provider) credential source
+  /** 'own' = customer's own Meta app config (SHO-460 behaviour, default).
+   *  'platform' = Shogo Tech Provider flow (SHO-463). Token is fetched from API.
+   */
+  private credentialSource: 'own' | 'platform' = 'own'
+  private projectId: string = ''
+  private wabaId: string = ''
+  private coexistenceMode = false
+  /** Contacts display-name map (populated from smb_app_state_sync webhooks) */
+  private contactNames: Map<string, string> = new Map()
+
   private statusCounts: StatusCounts = { sent: 0, delivered: 0, read: 0, failed: 0 }
   private lastFailure: FailureEntry | null = null
   private pausedContacts: Map<string, PauseEntry> = new Map()
@@ -174,9 +186,53 @@ export class WhatsAppAdapter implements ChannelAdapter {
     if (config?.handoffPauseMinutes) {
       this.handoffPauseMs = parseInt(config.handoffPauseMinutes, 10) * 60 * 1000
     }
+    if (config?.credentialSource === 'platform') {
+      this.credentialSource = 'platform'
+      this.projectId = config.projectId || ''
+      this.wabaId = config.wabaId || ''
+      this.displayPhoneNumber = config.displayPhoneNumber || ''
+    }
+  }
+
+  /**
+   * Fetch the access token from the internal API for platform-credential channels.
+   * Token is kept in memory only.
+   */
+  private async fetchPlatformToken(): Promise<void> {
+    const { deriveApiUrl, getInternalHeaders } = await import('../internal-api')
+    const apiUrl = deriveApiUrl()
+    if (!apiUrl) throw new Error('Cannot fetch WhatsApp credentials: API URL is not configured')
+    const path = `/api/internal/projects/${encodeURIComponent(this.projectId)}/channels/whatsapp/credentials?phoneNumberId=${encodeURIComponent(this.phoneNumberId)}`
+    const res = await fetch(`${apiUrl}${path}`, { headers: getInternalHeaders(), signal: AbortSignal.timeout(10_000) })
+    const json = await res.json().catch(() => null) as any
+    if (!res.ok) throw new Error(json?.error ?? `WhatsApp credentials fetch failed: HTTP ${res.status}`)
+    this.accessToken = json.accessToken
+    if (json.wabaId) this.wabaId = json.wabaId
   }
 
   async connect(config: Record<string, string>): Promise<void> {
+    if (config.credentialSource === 'platform') {
+      this.credentialSource = 'platform'
+      this.phoneNumberId = config.phoneNumberId
+      this.projectId = config.projectId || ''
+      this.wabaId = config.wabaId || ''
+      this.displayPhoneNumber = config.displayPhoneNumber || ''
+      if (config.handoffPauseMinutes) {
+        this.handoffPauseMs = parseInt(config.handoffPauseMinutes, 10) * 60 * 1000
+      }
+      if (config._workspaceDir) this.workspaceDir = config._workspaceDir
+
+      if (!this.phoneNumberId) throw new Error('WhatsApp phone number ID is required')
+      await this.fetchPlatformToken()
+
+      this.dedupe = new DedupeStore(this.workspaceDir)
+      WhatsAppAdapter.instances.set(this.phoneNumberId, this)
+      this.connected = true
+      this.error = undefined
+      console.log(`[WhatsApp/platform] Connected as ${this.displayPhoneNumber || this.phoneNumberId}`)
+      return
+    }
+
     this.accessToken = config.accessToken
     this.phoneNumberId = config.phoneNumberId
     this.appSecret = config.appSecret || ''
@@ -216,6 +272,19 @@ export class WhatsAppAdapter implements ChannelAdapter {
     this.pausedContacts.clear()
     this.connected = false
     console.log('[WhatsApp] Disconnected')
+  }
+
+  /** For platform channels: re-fetch token once on 190/401, then propagate. */
+  private async graphPostWithTokenRefresh(url: string, body: unknown): Promise<unknown> {
+    try {
+      return await graphPost(url, body, this.accessToken)
+    } catch (err: any) {
+      if (this.credentialSource === 'platform' && (err?.metaCode === 190 || err?.message?.includes('401'))) {
+        await this.fetchPlatformToken()
+        return graphPost(url, body, this.accessToken)
+      }
+      throw err
+    }
   }
 
   async sendMessage(recipientPhone: string, content: string): Promise<void> {
@@ -288,7 +357,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
     return {
       type: 'whatsapp',
       connected: this.connected,
-      error: !this.appSecret && this.connected ? 'add appSecret to receive messages' : this.error,
+      error: (this.credentialSource === 'own' && !this.appSecret && this.connected) ? 'add appSecret to receive messages' : this.error,
       metadata: {
         phoneNumberId: this.phoneNumberId,
         displayNumber: this.displayPhoneNumber,
@@ -296,11 +365,26 @@ export class WhatsAppAdapter implements ChannelAdapter {
         statusCounts: this.statusCounts,
         lastFailure: this.lastFailure,
         pausedContacts: paused,
+        credentialSource: this.credentialSource,
+        ...(this.credentialSource === 'platform' ? {
+          wabaId: this.wabaId,
+          coexistence: this.coexistenceMode,
+        } : {}),
       },
     }
   }
 
   // ── Coexistence helpers ───────────────────────────────────────────────────
+
+  /** Persist contact names to disk so they survive restarts. */
+  private saveContactNames() {
+    if (!this.workspaceDir || this.contactNames.size === 0) return
+    try {
+      const filePath = join(this.workspaceDir, '.shogo', 'channels', 'whatsapp-contacts.json')
+      mkdirSync(join(this.workspaceDir, '.shogo', 'channels'), { recursive: true })
+      writeFileSync(filePath, JSON.stringify(Object.fromEntries(this.contactNames)), 'utf-8')
+    } catch { /* non-fatal */ }
+  }
 
   private pauseContact(phone: string) {
     const existing = this.pausedContacts.get(phone)
@@ -456,6 +540,45 @@ export class WhatsAppAdapter implements ChannelAdapter {
           continue
         }
 
+        // ── Coexistence: history webhook ─────────────────────────────────
+        if (field === 'history' && value?.messages) {
+          const MAX_HISTORY = 100
+          const msgs = Array.isArray(value.messages) ? value.messages.slice(-MAX_HISTORY) : []
+          for (const msg of msgs) {
+            const from = msg.from ?? msg.wa_id ?? 'unknown'
+            const text = msg.text?.body || msg.caption || `[${msg.type ?? 'media'}]`
+            const ts = msg.timestamp ? parseInt(msg.timestamp, 10) * 1000 : Date.now()
+            this.messageHandler?.({
+              text,
+              channelId: from,
+              channelType: 'whatsapp',
+              senderId: msg.from_me ? 'owner' : from,
+              senderName: msg.from_me ? 'Owner' : (this.contactNames.get(from) || from),
+              timestamp: ts,
+              metadata: { suppressTurn: true, historical: true },
+            })
+          }
+          continue
+        }
+
+        // ── Coexistence: contact sync ────────────────────────────────────
+        if (field === 'smb_app_state_sync' && value?.contacts) {
+          for (const contact of (value.contacts as any[])) {
+            const id = contact.wa_id ?? contact.id
+            const name = contact.profile?.name ?? contact.name
+            if (id && name) this.contactNames.set(id, name)
+          }
+          this.saveContactNames()
+          continue
+        }
+
+        // ── account_update PARTNER_REMOVED ────────────────────────────────
+        if (field === 'account_update' && value?.event === 'PARTNER_REMOVED') {
+          this.error = `WhatsApp access was revoked — reconnect (${value.disconnection_info?.reason ?? 'partner_removed'})`
+          this.connected = false
+          continue
+        }
+
         // ── Inbound messages ──────────────────────────────────────────────
         if (field !== 'messages' || !value?.messages) continue
 
@@ -469,9 +592,10 @@ export class WhatsAppAdapter implements ChannelAdapter {
           if (this.dedupe?.has(msg.id)) continue
           this.dedupe?.add(msg.id)
 
-          const contact = value.contacts?.find((c: any) => c.wa_id === msg.from)
-          const senderName = contact?.profile?.name || msg.from
-          const from = msg.from as string
+          // In coexistence, `from` may be absent and only a business-scoped `user_id` present.
+          const from = (msg.from || msg.user_id) as string
+          const contact = value.contacts?.find((c: any) => c.wa_id === from || c.user_id === from)
+          const senderName = contact?.profile?.name || this.contactNames.get(from) || from
           const ts = msg.timestamp ? parseInt(msg.timestamp, 10) * 1000 : Date.now()
 
           this.lastInboundMsgId.set(from, msg.id)
@@ -578,6 +702,11 @@ export class WhatsAppAdapter implements ChannelAdapter {
               continue
             }
             default: {
+              // 131060 is expected coexistence noise — log only
+              const errorCode = msg.errors?.[0]?.code
+              if (errorCode === 131060) {
+                continue
+              }
               console.log(`[WhatsApp] Unsupported message type: ${msg.type}`)
               continue
             }
@@ -699,6 +828,85 @@ export class WhatsAppAdapter implements ChannelAdapter {
     // Legacy alias
     app.get('/webhooks/whatsapp', handleGet)
     app.post('/webhooks/whatsapp', handlePost)
+
+    // ── Platform relay route (SHO-463) ─────────────────────────────────
+    // Receives already-verified payloads from the platform webhook on the API.
+    // The API has already checked the HMAC; this is behind runtime-token auth
+    // (not isPublicChannelIngressPath).
+    app.post('/agent/channels/whatsapp/relay', async (c: any) => {
+      let body: any
+      try { body = await c.req.json() } catch { return c.text('Bad Request', 400) }
+
+      setImmediate(() => {
+        for (const entry of (body.entry || [])) {
+          for (const change of (entry.changes || [])) {
+            const changePhoneId = change?.value?.metadata?.phone_number_id
+            if (changePhoneId) {
+              const targetAdapter = WhatsAppAdapter.instances.get(changePhoneId)
+              if (targetAdapter) {
+                targetAdapter.handleWebhook({ entry: [{ ...entry, changes: [change] }] })
+                  .catch((err: any) => console.error('[WhatsApp/relay] handleWebhook error:', err))
+              }
+            }
+          }
+        }
+      })
+
+      return c.text('OK', 200)
+    })
+  }
+
+  /**
+   * Reconcile platform bindings on gateway start.
+   * Called by the channel gateway after all channels from config.json have been loaded.
+   * Fetches the API's binding list for this project and hot-connects any that are missing.
+   */
+  static async reconcilePlatformBindings(opts: {
+    projectId: string
+    connectChannel: (type: string, config: Record<string, string>) => Promise<void>
+  }): Promise<void> {
+    if (!opts.projectId) return
+    const { deriveApiUrl, getInternalHeaders } = await import('../internal-api')
+    const apiUrl = deriveApiUrl()
+    if (!apiUrl) return
+
+    try {
+      const res = await fetch(
+        `${apiUrl}/api/internal/projects/${encodeURIComponent(opts.projectId)}/channels/whatsapp/bindings`,
+        { headers: getInternalHeaders(), signal: AbortSignal.timeout(10_000) },
+      )
+      if (!res.ok) return
+      const { bindings } = await res.json() as { bindings: Array<{
+        phoneNumberId: string; wabaId: string; displayPhoneNumber?: string;
+        status: string; statusReason?: string;
+      }> }
+
+      for (const binding of bindings) {
+        const existing = WhatsAppAdapter.instances.get(binding.phoneNumberId)
+        if (existing) {
+          // Already connected; update status if needed
+          if (binding.status === 'disconnected' || binding.status === 'needs_reconnect') {
+            existing.error = `WhatsApp access was revoked — reconnect (${binding.statusReason ?? binding.status})`
+            existing.connected = false
+          }
+          continue
+        }
+
+        if (binding.status !== 'active') continue
+
+        await opts.connectChannel('whatsapp', {
+          credentialSource: 'platform',
+          phoneNumberId: binding.phoneNumberId,
+          wabaId: binding.wabaId,
+          displayPhoneNumber: binding.displayPhoneNumber ?? '',
+          projectId: opts.projectId,
+        }).catch((err: any) => {
+          console.warn(`[WhatsApp/reconcile] Failed to reconnect ${binding.phoneNumberId}:`, err?.message)
+        })
+      }
+    } catch (err: any) {
+      console.warn('[WhatsApp/reconcile] Binding reconcile failed:', err?.message)
+    }
   }
 }
 

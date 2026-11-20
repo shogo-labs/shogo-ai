@@ -209,6 +209,7 @@ import {
 } from './middleware/auth'
 import { governsAllProjects, type Permission } from '@shogo/authz'
 import { decide, getAccess, loadAccess } from './lib/authz'
+import { whatsappEmbeddedSignupFeatureFlag } from './lib/whatsapp-platform'
 import {
   describeProjectDisk,
   instanceMinScale,
@@ -1104,6 +1105,9 @@ app.get('/api/config', async (c) => {
     mobileAgentShell: localMode,
     // Kill switch: a super-admin can turn boards off instance-wide without a deploy.
     workBoards: true,
+    // True when WHATSAPP_META_APP_ID/SECRET/ES_CONFIG_ID are set (cloud) or the
+    // user is signed in to Shogo Cloud (desktop — the real check is on cloud).
+    whatsappEmbeddedSignup: whatsappEmbeddedSignupFeatureFlag(localMode),
   }
 
   // Super-admin overrides from PlatformSetting (absence = use default).
@@ -1780,6 +1784,12 @@ app.route('/api', chatMentionRoutes({ resolveUserId: getAuthUserId }))
 // Workspace-level Slack base agent. Slack's Events API must terminate at one
 // stable API URL, then route each request to an enabled project runtime.
 app.route('/api', slackAgentRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
+
+// WhatsApp platform routes (Meta Tech Provider — Embedded Signup)
+{
+  const { whatsappChannelRoutes } = await import('./routes/channels-whatsapp')
+  app.route('/api', whatsappChannelRoutes({ resolveUserId: getAuthUserId }))
+}
 startTunnelHeartbeat()
 
 // A blocked event loop here is invisible from the outside except as a tunnel
