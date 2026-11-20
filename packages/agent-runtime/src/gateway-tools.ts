@@ -11110,10 +11110,12 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
     name: 'social_media',
     description:
       `Look up a public social profile or its recent posts (views, likes, comments, shares), ` +
+      `search for reels beating their creator's normal view counts (outlier score), ` +
       `or work a workspace's connected accounts: connect one, publish and schedule posts, ` +
       `read the calendar and analytics, and run the inbox. ` +
       `Enabled lookup platforms: ${platformList}. ` +
       `Actions: "profile" and "recent_posts" take a handle; ` +
+      `"search" takes platform + query (keyword or #hashtag; Instagram is hashtag-only), optional period (1d|7d|30d|90d|180d|all, default 30d) and limit, and score:true to rank results by outlier score (views ÷ creator median views — costs one lookup per new creator, max 10 scored); ` +
       `"connect" takes a platform and returns a sign-in LINK to give the person — never ask for or accept a username, password or 2FA code; ` +
       `the account it creates belongs to this project, so another project's agent cannot see or post to it (a workspace-shared account is usable by every project); ` +
       `to add a second account on a platform that is already connected, pass expected_username — Instagram always shows its own login page for a new connect, so the person can pick the account to add; ` +
@@ -11135,6 +11137,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         [
           Type.Literal('profile'),
           Type.Literal('recent_posts'),
+          Type.Literal('search'),
           Type.Literal('inbox'),
           Type.Literal('reply'),
           Type.Literal('comment_reply'),
@@ -11150,7 +11153,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         ],
         {
           description:
-            'profile | recent_posts | inbox | reply | comment_reply | automate | connect | accounts | audio | post | posts | delete | calendar | analytics',
+            'profile | recent_posts | search | inbox | reply | comment_reply | automate | connect | accounts | audio | post | posts | delete | calendar | analytics',
         },
       ),
       platform: Type.Optional(
@@ -11163,6 +11166,8 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       limit: Type.Optional(Type.Number({
         description: 'How many posts or inbox rows to return (1-50, default 20).',
       })),
+      period: Type.Optional(Type.String({ description: 'For action "search": time window — 1d|7d|30d|90d|180d|all (default 30d).' })),
+      score: Type.Optional(Type.Boolean({ description: 'For action "search": rank results by outlier score (views ÷ creator median). Costs one baseline lookup per creator, max 10.' })),
       kind: Type.Optional(Type.Union([Type.Literal('dms'), Type.Literal('comments')], {
         description: 'For action "inbox": which half of the inbox to list.',
       })),
@@ -11335,6 +11340,8 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         status?: unknown
         from?: unknown
         to?: unknown
+        period?: unknown
+        score?: unknown
       }
       const action = String(params.action ?? '')
       const allowed = enabledSocialPlatforms(ctx.config)
@@ -11872,10 +11879,50 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
           error: `Platform "${platform || 'unknown'}" is not enabled. Enabled platforms: ${allowed.join(', ') || 'none'}.`,
         })
       }
+      if (action === 'search') {
+        const proxyUrl = process.env.TOOLS_PROXY_URL
+        const proxyToken = process.env.AI_PROXY_TOKEN
+        if (!proxyUrl || !proxyToken) {
+          return textResult({
+            error: 'Social media search is unavailable.',
+            suggestion: 'Configure TOOLS_PROXY_URL and AI_PROXY_TOKEN.',
+          })
+        }
+        const query = String(params.query ?? '').trim()
+        if (!query) return textResult({ error: 'query is required for action "search".' })
+        const period = typeof params.period === 'string' ? params.period : '30d'
+        const scoreFlag = params.score === true
+        const cacheKey = webCacheKey('social-search', JSON.stringify({ platform, query: query.toLowerCase(), period, limit, score: scoreFlag }))
+        const cachedSearch = await webCacheGet<AgentToolResult<any>>(cacheKey)
+        if (cachedSearch) return cachedSearch
+
+        try {
+          const response = await fetch(`${proxyUrl.replace(/\/$/, '')}/social/${platform}/search`, {
+            method: 'POST',
+            headers: { 'x-api-key': proxyToken, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query, period, limit, score: scoreFlag }),
+            signal: AbortSignal.timeout(30_000),
+          })
+          const data = await response.json().catch(() => ({}))
+          if (!response.ok) {
+            return textResult({
+              error: (data as any)?.error || `Social search failed: HTTP ${response.status}`,
+              code: (data as any)?.code,
+              platform,
+            })
+          }
+          const result = textResult(data)
+          await webCachePut(cacheKey, result, SOCIAL_CACHE_TTL_SECONDS)
+          return result
+        } catch (err: any) {
+          return textResult({ error: `Social search failed: ${err?.message ?? err}`, platform })
+        }
+      }
+
       if (action !== 'profile' && action !== 'recent_posts') {
         return textResult({
           error:
-            'action must be profile, recent_posts, connect, accounts, post, posts, calendar, analytics, inbox, reply, comment_reply or automate.',
+            'action must be profile, recent_posts, search, connect, accounts, post, posts, calendar, analytics, inbox, reply, comment_reply or automate.',
         })
       }
       const handle = String(params.handle ?? '').trim().replace(/^@+/, '')

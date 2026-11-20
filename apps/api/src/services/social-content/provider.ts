@@ -38,6 +38,56 @@ export interface NormalizedPost {
   shares: number
 }
 
+/** A search result post — NormalizedPost plus creator context. */
+export interface NormalizedSearchResult extends NormalizedPost {
+  creator: {
+    handle: string
+    /** Provider-stable user id, when available (e.g. IG numeric pk). */
+    userId: string | null
+    /** Follower count, when available (TikTok `get_author_stats=true`). */
+    followers: number | null
+  }
+  /** Video duration in seconds. null when the provider omits it. */
+  durationSec: number | null
+}
+
+/**
+ * Accumulates EnsembleData `units_charged` headers across a request.
+ * Passed into provider methods so callers can bill real units rather
+ * than estimates. The `units` field starts at 0 and is incremented by
+ * each upstream call.
+ */
+export interface UnitMeter {
+  units: number
+}
+
+/** Parameters for `searchPosts`. */
+export interface SearchPostsOptions {
+  query: string
+  /** 'keyword' (TikTok only) or 'hashtag' (both platforms). */
+  kind: 'keyword' | 'hashtag'
+  /** Period in days (0 = all time). Instagram hashtag has no native period — filter client-side. */
+  periodDays: number
+  limit: number
+  meter?: UnitMeter
+}
+
+/** Parameters for `creatorBaseline`. */
+export interface CreatorBaselineOptions {
+  handle: string
+  /** Provider-stable user id (skips the 10-unit detailed-info call when present). */
+  userId?: string | null
+  meter?: UnitMeter
+}
+
+/** Baseline stats for a creator's normal view count. */
+export interface CreatorBaseline {
+  /** Median views across the sample. null when fewer than 3 posts with views > 0. */
+  medianViews: number | null
+  /** Number of posts in the sample. */
+  sample: number
+}
+
 /** Public profile fields used for ownership verification. */
 export interface NormalizedProfile {
   /** Provider's stable user id (survives a handle rename). */
@@ -81,7 +131,7 @@ export interface SocialContentProvider {
    * ownership-verification flow (look for the bio code) and to capture a
    * stable `providerUserId`.
    */
-  getProfile(platform: SocialPlatform, handle: string): Promise<NormalizedProfile>
+  getProfile(platform: SocialPlatform, handle: string, meter?: UnitMeter): Promise<NormalizedProfile>
 
   /**
    * List the account's most-recent posts (newest first), capped at
@@ -92,5 +142,27 @@ export interface SocialContentProvider {
     platform: SocialPlatform,
     handle: string,
     limit: number,
+    meter?: UnitMeter,
   ): Promise<NormalizedPost[]>
+
+  /**
+   * Search for posts/reels by keyword or hashtag. TikTok supports both
+   * keyword and hashtag; Instagram supports hashtag only (a plain keyword
+   * is compacted to a hashtag and `query_used` reflects what was sent).
+   */
+  searchPosts(platform: SocialPlatform, opts: SearchPostsOptions): Promise<{
+    results: NormalizedSearchResult[]
+    queryUsed: string
+  }>
+
+  /**
+   * Compute a creator's baseline (median views) from their recent posts.
+   * TikTok: 1 unit via /tt/user/posts. Instagram: /instagram/user/reels by
+   * userId when present (skips the 10-unit detailed-info call), falling back
+   * to listRecentPosts. Returns null medianViews when fewer than 3 valid posts.
+   */
+  creatorBaseline(
+    platform: SocialPlatform,
+    opts: CreatorBaselineOptions,
+  ): Promise<CreatorBaseline>
 }
