@@ -26,6 +26,7 @@ import { ACTIVITY_FILTERS, buildFeed, canStopRunningChat, groupFeed, relativeTim
 import { stopRunningChat } from '../../lib/stop-running-chat'
 import { AgentAvatar } from '../team-chat/AgentAvatar'
 import type { AgentTask } from '../../lib/api'
+import { RunPeekHover } from './RunPeekHover'
 import type { InboxKind } from '../../lib/team-chat-api'
 
 const KIND_ICON: Record<InboxKind, typeof AtSign> = {
@@ -317,8 +318,8 @@ export function RunningNow({
         const chat = entry.agent?.chat
         const second = [entry.context, entry.preview].filter((part) => !!part).join(' · ')
         return (
+          <RunPeekHover key={entry.id} workspaceId={workspaceId} chat={chat ?? undefined}>
           <Pressable
-            key={entry.id}
             accessibilityRole="button"
             accessibilityLabel={`${entry.title}, ${entry.agent?.state === 'queued' ? 'queued' : 'running'}`}
             onPress={() => onOpen(entry)}
@@ -363,6 +364,7 @@ export function RunningNow({
               </Pressable>
             ) : null}
           </Pressable>
+          </RunPeekHover>
         )
       })}
     </View>

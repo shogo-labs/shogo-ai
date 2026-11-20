@@ -12,6 +12,7 @@ export type {
   GoalDeliverable,
   GoalEventRecord,
   AgentTaskSummary,
+  WorkspaceActiveChatPeek,
 } from './types'
 export {
   isApprovalPending,

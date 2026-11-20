@@ -18,6 +18,7 @@ import { AgentAvatar } from '../team-chat/AgentAvatar'
 import { buddyAvatarColor } from '../team-chat/BuddyAvatar'
 import { DrawnCheckmark } from '../ui/DrawnCheckmark'
 import { GlassCard } from '../ui/GlassCard'
+import { RunPeekHoverById } from '../activity/RunPeekHover'
 
 const AMBER = '#f59e0b'
 const SETTLED_MS = 1800
@@ -150,7 +151,7 @@ export function AgentRowItem({ row, workspaceId, onOpen, onPeek, onDecide }: Age
     <View className="overflow-hidden rounded-[18px] border border-border bg-card">{body}</View>
   )
 
-  if (!swipeable) return <View className="px-3 pb-2">{card}</View>
+  if (!swipeable) return <RunPeekHoverById workspaceId={workspaceId} chatSessionId={row.state === 'running' ? row.chatSessionId : null}><View className="px-3 pb-2">{card}</View></RunPeekHoverById>
 
   return (
     <View className="px-3 pb-2">

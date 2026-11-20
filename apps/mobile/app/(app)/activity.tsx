@@ -21,6 +21,7 @@ import { readableAgentTaskError, taskStatusLabel } from '../../lib/agent-task-ui
 import { PersonalActivityScreen } from '../../components/personal/PersonalActivityScreen'
 import { WorkspaceChromeSkeletonRows } from '../../components/layout/WorkspaceChromeSkeleton'
 import { TabScreen } from '../../components/layout/TabScreenHeader'
+import { RunPeekHover } from '../../components/activity/RunPeekHover'
 import { ActivityFeed } from '../../components/activity/ActivityFeed'
 import { WEB_WIDE_MIN_WIDTH } from '../../lib/native-phone-layout'
 import {
@@ -320,7 +321,8 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
                 ? `#${chat.conversationName}`
                 : chat.projectHidden ? 'Companion' : chat.projectName || 'Workspace chat'
               return (
-                <View key={`${chat.chatSessionId}:${chat.turnId}`} className="mx-4 mt-3">
+                <RunPeekHover key={`${chat.chatSessionId}:${chat.turnId}`} workspaceId={workspace?.id} chat={chat}>
+                <View className="mx-4 mt-3">
                   <ActivityCard
                     tone="primary"
                     icon={<AgentAvatar name={agent} projectId={chat.projectId} workspaceId={workspace?.id ?? null} size={30} />}
@@ -347,6 +349,7 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
                     onPress={() => openActiveChat(router, chat)}
                   />
                 </View>
+                </RunPeekHover>
               )
             })}
           </>}
