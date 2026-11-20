@@ -26,7 +26,12 @@
  */
 
 import { prisma } from '../lib/prisma'
-import { MODEL_DOLLAR_COSTS, getModelBillingModel } from '@shogo/model-catalog'
+import { MODEL_DOLLAR_COSTS, getModelBillingModel, getModelDollarCosts } from '@shogo/model-catalog'
+
+/** `updatedBy` value written by `scripts/seed-db-models.ts`. Rows with this
+ *  value carry Shogo-authoritative pricing (including dated step rates) and
+ *  must not be clobbered by the LiteLLM bulk refresh. */
+const SEED_USER = 'seed:db-models'
 
 const LITELLM_URL =
   'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
@@ -144,7 +149,7 @@ async function ensureSnapshot(force = false): Promise<void> {
 /** Per-family list-price fallback so a model is never billed at $0. */
 function bucketPricing(id: string): ResolvedPricing {
   const billing = getModelBillingModel(id)
-  const costs = (MODEL_DOLLAR_COSTS as any)[billing] ?? MODEL_DOLLAR_COSTS.sonnet
+  const costs = getModelDollarCosts(billing)
   return {
     inputPerMillion: costs.inputPerMillion,
     cachedInputPerMillion: costs.cachedInputPerMillion,
@@ -232,10 +237,15 @@ export async function refreshModelPricingFromLiteLLM(userId: string): Promise<Pr
     id: string
     apiModel: string
     contextWindow: number | null
+    updatedBy: string | null
   }>
 
   let updated = 0
   for (const row of rows) {
+    // Skip rows owned by the seed script: they carry Shogo-authoritative pricing
+    // (including the Dec-1 Carbon/Argon step) and must not be overwritten by
+    // LiteLLM's snapshot, which may have stale or different rates.
+    if (row.updatedBy === SEED_USER) continue
     const hit = lookupLiteLLM(row.id, row.apiModel)
     if (!hit) continue
     await (prisma as any).modelDefinition.update({

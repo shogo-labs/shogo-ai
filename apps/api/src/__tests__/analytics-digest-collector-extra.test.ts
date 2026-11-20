@@ -44,6 +44,7 @@ mock.module('../services/analytics.service', () => ({
 const aiState: { text?: string; throws?: boolean; throwMsg?: string; resolverReturnsNull?: boolean } = {}
 mock.module('@shogo/model-catalog', () => ({
   getAgentModeOverrides: () => ({}),
+  getModelDollarCosts: (_m: string, _at?: Date) => ({ inputPerMillion: 0, outputPerMillion: 0, cachedInputPerMillion: 0, cacheWritePerMillion: 0 }),
   getAutoTierOverrides: () => ({}),
   getMaxOutputTokens: (_: string) => 4096,
   resolveAgentModeDefault: (mode: string) => (mode === 'basic' ? 'claude-haiku-4-5' : 'claude-sonnet-4-6'),
