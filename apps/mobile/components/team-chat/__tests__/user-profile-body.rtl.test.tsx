@@ -262,3 +262,49 @@ describe('UserProfileBody', () => {
     expect(huddles).toEqual([])
   })
 })
+
+describe('UserProfileBody: Shogo Learn', () => {
+  const learn = {
+    xp: 260,
+    level: { index: 3, name: 'Maker', min: 250, next: { name: 'Operator', min: 400 } },
+    streak: { current: 4, longest: 6 },
+    lessonsCompleted: 12,
+    coursesCompleted: 2,
+    badgeCount: 5,
+    badgeTotal: 17,
+    badges: [
+      { id: 'streak-3', name: 'Three in a row', description: 'Learned on 3 days in a row.', icon: 'calendar', hue: 15, earnedAt: '2026-11-19T10:00:00.000Z' },
+      { id: 'first-lesson', name: 'First step', description: 'Finished your first lesson.', icon: 'footprints', hue: 25, earnedAt: '2026-11-15T10:00:00.000Z' },
+    ],
+    url: 'https://learn.shogo.ai',
+  }
+
+  test("shows a teammate's level, XP, streak and badges", async () => {
+    card = { ...card, learn }
+    render(<UserProfileBody workspaceId="ws" userId="u-ana" />)
+    await screen.findByText('Ana Lopez')
+    expect(document.querySelector('[data-rn-shim="learn-profile"], [data-testid="learn-profile"]')).toBeTruthy()
+    expect(screen.getByText('Maker')).toBeTruthy()
+    expect(screen.getByText(/260 XP/)).toBeTruthy()
+    expect(screen.getByText('4-day streak')).toBeTruthy()
+    expect(screen.getByText(/12 lessons · 2 courses/)).toBeTruthy()
+    expect(screen.getByText('5 of 17 badges')).toBeTruthy()
+    expect(screen.getByText('Three in a row')).toBeTruthy()
+    expect(screen.getByText('First step')).toBeTruthy()
+    expect(screen.getByLabelText('Open Shogo Learn')).toBeTruthy()
+  })
+
+  test('says nothing about learning for someone who has not started', async () => {
+    card = { ...card, learn: null }
+    render(<UserProfileBody workspaceId="ws" userId="u-ana" />)
+    await screen.findByText('Ana Lopez')
+    expect(screen.queryByText('Shogo Learn')).toBeNull()
+  })
+
+  test('on your own card the link goes to your learn profile', async () => {
+    card = { ...card, isSelf: true, learn }
+    render(<UserProfileBody workspaceId="ws" userId="u-ana" />)
+    await screen.findByText('Ana Lopez')
+    expect(screen.getByLabelText('Open your Shogo Learn profile')).toBeTruthy()
+  })
+})

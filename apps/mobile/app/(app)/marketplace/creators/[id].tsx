@@ -30,6 +30,8 @@ import {
 } from '../../../../components/marketplace'
 import { useMarketplaceGridLayout, MARKETPLACE_GRID_PAD_X, marketplaceGridCellClass } from '../../../../hooks/useGridColumns'
 import { openExternalLink } from '../../../../lib/open-external-link';
+import { LearnProfileSection } from '../../../../components/learn/LearnProfileSection'
+import type { LearnProfileSummary } from '../../../../lib/learn-badge-art'
 
 interface CreatorPublicProfile {
   id: string
@@ -50,6 +52,7 @@ interface CreatorPublicProfile {
     earnedAt: string
     metadata: unknown
   }>
+  learn?: LearnProfileSummary | null
 }
 
 interface CreatorListing {
@@ -383,6 +386,13 @@ export default observer(function CreatorProfileScreen() {
                 </ScrollView>
               </View>
             )}
+
+            {/* Shogo Learn */}
+            {profile.learn ? (
+              <View className="mb-8">
+                <LearnProfileSection learn={profile.learn} name={profile.id} padded />
+              </View>
+            ) : null}
 
             {/* Featured agent */}
             {featured && (
