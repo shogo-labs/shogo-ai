@@ -226,6 +226,7 @@ import type {
   GoalPlanStep as SharedGoalPlanStep,
   GoalDeliverable as SharedGoalDeliverable,
   AgentTaskSummary as SharedAgentTaskSummary,
+  WorkspaceActiveChatPeek as SharedActiveChatPeek,
 } from '@shogo/shared-app'
 
 export type PersonalGoalStatus = SharedGoalStatus
@@ -238,6 +239,7 @@ export type PersonalGoalEvent = SharedGoalEventRecord
 export type PersonalGoalPlanStep = SharedGoalPlanStep
 export type PersonalGoalDeliverable = SharedGoalDeliverable
 export type PersonalAgentTaskSummary = SharedAgentTaskSummary
+export type ActiveChatPeek = SharedActiveChatPeek
 
 /** A marketplace creator's admin stats: marketplace metrics + platform spend. */
 export interface AdminCreatorStat {
@@ -2718,6 +2720,18 @@ export const api = {
       `/api/workspaces/${encodeURIComponent(workspaceId)}/active-chats`,
     )
     return res.data?.chats ?? []
+  },
+
+  async getActiveChatPeek(
+    http: HttpClient,
+    workspaceId: string,
+    chatSessionId: string,
+  ): Promise<ActiveChatPeek | null> {
+    const res = await http.get<ActiveChatPeek | { error: string }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/active-chats/${encodeURIComponent(chatSessionId)}/peek`,
+    )
+    if (!res.ok || (res.data && 'error' in res.data)) return null
+    return res.data as ActiveChatPeek
   },
 
   /** Attach a project to an existing workspace session. */
