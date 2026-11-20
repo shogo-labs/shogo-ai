@@ -1,5 +1,5 @@
 -- Migration: learn.shogo.ai progress and badges (desktop/SQLite track).
--- Mirrors prisma/migrations/20261120120000_learn_progress_badges.
+-- Mirrors prisma/migrations/20261120130000_learn_progress_badges.
 
 -- CreateTable
 CREATE TABLE "learn_lesson_completions" (

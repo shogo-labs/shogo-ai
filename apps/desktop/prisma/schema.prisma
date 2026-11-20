@@ -114,6 +114,10 @@ model Workspace {
   // UTC day through which the disk add-on has been billed. Unused on desktop
   // (local mode has no billing job); kept for schema parity.
   diskAddonBilledThrough DateTime?
+  // Who may invite people to this workspace (SHO-454). "members" (the default
+  // when null) lets any Editor invite as Editor or Viewer; "admins" restricts
+  // inviting to owners and admins. Viewers can never invite.
+  invitePolicy String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -127,13 +131,14 @@ model Workspace {
   courseEnrollments   CourseEnrollment[]
   usageWallets    UsageWallet[]
   usageEvents     UsageEvent[]
-  starredProjects StarredProject[]
-  agentTasks      AgentTask[]
-  agentSchedules  AgentSchedule[]
-  agentProfile    WorkspaceAgentProfile?
-  goals           Goal[]
-  accessPolicies  AccessPolicy[]
-  accessAuditEvents AccessAuditEvent[]
+  starredProjects        StarredProject[]
+  agentTasks             AgentTask[]
+  agentSchedules         AgentSchedule[]
+  agentProfile           WorkspaceAgentProfile?
+  goals                  Goal[]
+  accessPolicies         AccessPolicy[]
+  accessAuditEvents      AccessAuditEvent[]
+  whatsappNumberBindings WhatsAppNumberBinding[]
 
   @@map("workspaces")
 }
@@ -1313,5 +1318,46 @@ model VmMeterCursor {
   @@unique([hostId, vmId, assignedAt])
   @@index([lastSeenAt])
   @@map("vm_meter_cursors")
+}
+
+// =============================================================================
+// WHATSAPP PLATFORM BINDINGS (Meta Tech Provider — Embedded Signup)
+// =============================================================================
+
+model WhatsAppNumberBinding {
+  id                 String    @id @default(cuid())
+  workspaceId        String
+  projectId          String
+  instanceId         String?
+
+  phoneNumberId        String    @unique
+  wabaId               String
+  businessId           String?
+  displayPhoneNumber   String?
+  verifiedName         String?
+
+  coexistence Boolean @default(false)
+
+  tokenEncrypted       String
+  pinEncrypted         String?
+
+  contactsSyncRequestId  String?
+  historySyncRequestId   String?
+  syncStartedAt          DateTime?
+
+  status       String @default("active")
+  statusReason String?
+
+  connectedByUserId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([wabaId])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("whatsapp_number_bindings")
 }
 

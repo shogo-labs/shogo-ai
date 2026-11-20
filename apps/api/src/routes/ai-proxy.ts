@@ -2308,7 +2308,7 @@ export function bridgeVideoContentBlocks(
   return mutated ? next : messages
 }
 
-function buildOpenAICompatibleBody(
+export function buildOpenAICompatibleBody(
   request: ChatCompletionRequest,
   modelConfig: ModelConfig,
   extra: Record<string, unknown>,
@@ -2327,6 +2327,12 @@ function buildOpenAICompatibleBody(
   if (max_tokens !== undefined) {
     if (modelConfig.provider === 'openai') body.max_completion_tokens = max_tokens
     else body.max_tokens = max_tokens
+  } else if (modelConfig.provider === 'google') {
+    // Gemini's synchronous completions endpoint silently truncates output at
+    // 65 536 tokens; exceeding it requires background execution (not supported
+    // here). Inject the catalog cap so callers that omit max_tokens still get a
+    // predictable limit instead of relying on Google's server default.
+    body.max_tokens = getMaxOutputTokens(request.model)
   }
 
   // Chat Completions is the compatibility fallback for native OpenAI models.

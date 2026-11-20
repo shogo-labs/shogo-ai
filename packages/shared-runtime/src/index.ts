@@ -468,3 +468,9 @@ export {
   isDigestPinnedImageRef,
   digestOfImageRef,
 } from './published-image-ref'
+
+export {
+  WHATSAPP_GRAPH_VERSION,
+  WHATSAPP_API_BASE,
+  verifyMetaSignature,
+} from './whatsapp-graph'

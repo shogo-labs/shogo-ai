@@ -86,10 +86,37 @@ describe('project invite link', () => {
     expect(wsLink.status).toBe(400)
   })
 
-  test('editors cannot create invite links; admins cannot exceed their role', async () => {
-    expect((await call(app, as(w.users.member), 'POST', '/api/invite-links', { workspaceId: w.workspaceA, role: 'viewer' })).status).toBe(403)
+  test('workspace links follow the invite policy; project links keep the manager rule', async () => {
+    // Default policy (NULL reads as "members"): an Editor may mint a workspace
+    // link, but only for a role they could hand out themselves (SHO-454).
+    expect((await call(app, as(w.users.member), 'POST', '/api/invite-links', { workspaceId: w.workspaceA, role: 'viewer' })).status).toBe(200)
+    expect((await call(app, as(w.users.member), 'POST', '/api/invite-links', { workspaceId: w.workspaceA, role: 'member' })).status).toBe(200)
+    expect((await call(app, as(w.users.member), 'POST', '/api/invite-links', { workspaceId: w.workspaceA, role: 'admin' })).status).toBe(403)
+    // A Viewer never may.
+    expect((await call(app, as(w.users.viewer), 'POST', '/api/invite-links', { workspaceId: w.workspaceA, role: 'viewer' })).status).toBe(403)
+    // Project links keep the manager rule: a project member cannot mint one.
     expect((await call(app, as(w.users.guestEditor), 'POST', '/api/invite-links', { projectId: w.projects.restricted, role: 'viewer' })).status).toBe(403)
+    // An admin may still invite as admin.
     expect((await call(app, as(w.users.admin), 'POST', '/api/invite-links', { workspaceId: w.workspaceA, role: 'admin' })).status).toBe(200)
+  })
+
+  test('an admins-only policy takes workspace links back to managers', async () => {
+    await db.workspace.update({ where: { id: w.workspaceA }, data: { invitePolicy: 'admins' } })
+    try {
+      expect((await call(app, as(w.users.member), 'POST', '/api/invite-links', { workspaceId: w.workspaceA, role: 'viewer' })).status).toBe(403)
+      expect((await call(app, as(w.users.member), 'GET', `/api/invite-links?workspaceId=${w.workspaceA}`)).status).toBe(403)
+      expect((await call(app, as(w.users.admin), 'POST', '/api/invite-links', { workspaceId: w.workspaceA, role: 'viewer' })).status).toBe(200)
+    } finally {
+      await db.workspace.update({ where: { id: w.workspaceA }, data: { invitePolicy: null } })
+    }
+  })
+
+  test('an Editor may read the workspace link they may create', async () => {
+    const created = await call(app, as(w.users.member), 'POST', '/api/invite-links', { workspaceId: w.workspaceA, role: 'viewer' })
+    expect(created.status).toBe(200)
+    const list = await call(app, as(w.users.member), 'GET', `/api/invite-links?workspaceId=${w.workspaceA}`)
+    expect(list.status).toBe(200)
+    expect(list.body.items.map((l: any) => l.id)).toContain(created.body.data.id)
   })
 
   test('a project admin may share their restricted project by link', async () => {

@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Platform, Pressable, ScrollView, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
-import { ChevronLeft, Upload, X } from 'lucide-react-native'
+import { ChevronLeft, Filter, Upload, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
 import type { MentionTarget } from '../chat/file-links'
@@ -36,6 +36,11 @@ import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
 import { usePhoneChromeOverlay } from '../layout/PhoneChromeOverlay'
 import { GlassBlurTarget } from '../ui/LiquidGlassBackdrop'
 import { MakeCardSheet } from '../boards/MakeCardSheet'
+import { useMemberMessages } from '../../hooks/useMemberMessages'
+import { memberForKey, memberFromKey } from '../../lib/member-messages'
+import { AgentAvatar } from './AgentAvatar'
+import { UserAvatar } from './UserAvatar'
+import type { ConversationMember } from '../../lib/team-chat-api'
 import type { WorkItem } from '../../lib/work-boards-api'
 
 const api = teamChatApi()
@@ -69,6 +74,11 @@ export interface TimelinePaneProps {
   topInset?: number
   /** Open a card made from a message here. "Make a card" only shows when this is set. */
   onOpenCard?: (item: WorkItem) => void
+  /** Filter the timeline to one member's messages (\ / \). Only
+   * valid on the main scope (no \), not on #activity. */
+  memberFilter?: string | null
+  onChangeMemberFilter?: (from: string) => void
+  onClearMemberFilter?: () => void
 }
 
 /** Files dropped anywhere on a web pane go to the composer. */
@@ -201,6 +211,9 @@ export function TimelinePane(props: TimelinePaneProps) {
   }, [cardNotice])
   const canMakeCards = !!props.onOpenCard && (conversation.kind === 'public' || conversation.kind === 'private') && conversation.canReply
   const showActivityFilters = conversation.kind === 'activity' && !threadRootId
+  // Member filter: active only on the main scope (not threads, not #activity).
+  const memberFilterKey = !threadRootId && !showActivityFilters ? (props.memberFilter ?? null) : null
+  const memberData = useMemberMessages(workspaceId, memberFilterKey ? conversation.id : null, memberFilterKey)
   const channelList = useConversationList(showActivityFilters ? workspaceId : null)
   const channelDirectory = useChannelDirectory(workspaceId)
   const [activityFilter, setActivityFilter] = useState<ActivityFilterState>(EMPTY_ACTIVITY_FILTER)
@@ -236,7 +249,8 @@ export function TimelinePane(props: TimelinePaneProps) {
     if (unreadTotal !== null || !unread || summaryUnread === undefined) return
     setUnreadTotal(summaryUnread)
   }, [unreadTotal, unread, summaryUnread])
-  useMarkReadWhileVisible(threadRootId || !conversation.joined ? null : conversation.id, newestSeq, visible, readPaused)
+  // Pause mark-read while filtered: the user hasn't seen everyone else's messages.
+  useMarkReadWhileVisible(threadRootId || !conversation.joined || !!memberFilterKey ? null : conversation.id, newestSeq, visible, readPaused)
 
   const onMarkUnread = useCallback((m: ChatMessage) => {
     const afterSeq = Math.max(0, m.seq - 1)
@@ -442,10 +456,57 @@ export function TimelinePane(props: TimelinePaneProps) {
   // covers, so the newest message clears the composer at rest while everything
   // older scrolls behind the transparent band above it.
   const listInsets = {
-    top: floating ? (showActivityFilters ? 0 : topInset) + threadHeaderHeight : 0,
+    top: floating ? (showActivityFilters || memberFilterKey ? 0 : topInset) + threadHeaderHeight : 0,
     bottom: footerHeight,
   }
-  const list = (
+  // When filtered by member, sort the returned messages ascending (oldest first)
+  // so MessageList renders them newest-at-bottom, same as the live timeline.
+  const memberMessages = useMemo(
+    () => memberFilterKey ? [...memberData.messages].sort((a, b) => a.seq - b.seq) : null,
+    [memberFilterKey, memberData.messages],
+  )
+  const memberFilteredState = memberMessages
+    ? { messages: memberMessages, hasMoreOlder: memberData.hasMore, streaming: timeline.state.streaming }
+    : null
+  const memberFilterName = useMemo(() => {
+    if (!memberFilterKey) return null
+    const member = memberForKey(conversation.members, memberFilterKey)
+    return member?.name?.trim() || (member?.type === 'agent' ? 'Agent' : 'Former member')
+  }, [memberFilterKey, conversation.members])
+  const list = memberFilteredState ? (
+    <MessageList
+      state={memberFilteredState}
+      loading={memberData.loading}
+      me={me}
+      names={names}
+      mentionables={mentionables}
+      channelMemberIds={channelMemberIds}
+      canManage={conversation.canManage}
+      canPin={conversation.canReply}
+      workspaceId={workspaceId}
+      inThread={false}
+      header={props.header}
+      emptyText={isChannel ? `${memberFilterName ?? 'This member'} hasn't posted in #${conversation.name} yet.` : `${memberFilterName ?? 'This member'} hasn't posted in this conversation yet.`}
+      onLoadOlder={memberData.hasMore ? () => void memberData.loadMore() : undefined}
+      onReply={props.onOpenThread}
+      onReact={onReact}
+      onEdit={onEdit}
+      onDelete={onDelete}
+      onRetry={timeline.retry}
+      onDiscard={timeline.discard}
+      onOpenSession={props.onOpenSession}
+      onOpenProjectPane={props.onOpenProjectPane}
+      onOpenProfile={props.onOpenProfile}
+      onMentionPress={mentionPress}
+      onMakeCard={canMakeCards ? setCardFrom : undefined}
+      showThreadContext
+      unreadAfterSeq={null}
+      unreadNotLoaded={false}
+      unreadCount={null}
+      highlightId={highlight}
+      insets={listInsets}
+    />
+  ) : (
     <MessageList
       state={{ ...timeline.state, messages: visibleMessages }}
       loading={timeline.loading}
@@ -483,7 +544,70 @@ export function TimelinePane(props: TimelinePaneProps) {
       insets={listInsets}
     />
   )
-  const filterBar = showActivityFilters ? (
+  const memberFilterBar = memberFilterKey ? (
+    <View
+      className="shrink-0 grow-0 border-b border-border/60"
+      style={floating && topInset ? { marginTop: topInset } : undefined}
+      testID="member-filter-bar"
+    >
+      {/* Active-filter chip: avatar + "From {Name}" + × */}
+      <View className="flex-row items-center gap-2 px-3 py-2">
+        <Filter size={14} className="text-muted-foreground" />
+        <Text className="min-w-0 flex-1 text-sm font-semibold text-foreground" numberOfLines={1}>
+          From {memberFilterName ?? 'member'}
+        </Text>
+        <Pressable
+          onPress={props.onClearMemberFilter}
+          accessibilityRole="button"
+          accessibilityLabel="Clear member filter"
+          testID="member-filter-clear"
+          className="rounded-md p-1 active:bg-muted"
+        >
+          <X size={16} className="text-muted-foreground" />
+        </Pressable>
+      </View>
+      {/* Member switcher */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerClassName="gap-1.5 px-3 pb-2"
+        testID="member-filter-switcher"
+      >
+        {conversation.members.map((m: ConversationMember) => {
+          const key = memberFromKey(m)
+          const active = key === memberFilterKey
+          const mname = m.name?.trim() || (m.type === 'agent' ? 'Agent' : 'Member')
+          return (
+            <Pressable
+              key={m.id}
+              onPress={() => props.onChangeMemberFilter?.(key)}
+              accessibilityRole="button"
+              accessibilityLabel={`Filter by ${mname}`}
+              accessibilityState={{ selected: active }}
+              testID={`member-filter-switch-${key}`}
+              className={cn(
+                'flex-row items-center gap-1.5 rounded-full border px-2 py-1 active:bg-muted',
+                active ? 'border-primary bg-primary/10' : 'border-border',
+              )}
+            >
+              {m.type === 'agent' ? (
+                <AgentAvatar name={mname} projectId={m.projectId} workspaceId={workspaceId} size={18} />
+              ) : (
+                <UserAvatar name={mname} image={m.image} size={18} />
+              )}
+              <Text
+                className={cn('max-w-32 text-xs', active ? 'font-semibold text-foreground' : 'text-muted-foreground')}
+                numberOfLines={1}
+              >
+                {mname}
+              </Text>
+            </Pressable>
+          )
+        })}
+      </ScrollView>
+    </View>
+  ) : null
+  const filterBar = memberFilterKey ? memberFilterBar : showActivityFilters ? (
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}

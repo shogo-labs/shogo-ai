@@ -28,7 +28,8 @@
     "./published-schema": "./src/published-schema.ts",
     "./byte-range": "./src/byte-range.ts",
     "./published-image-ref": "./src/published-image-ref.ts",
-    "./standalone": "./src/standalone.ts"
+    "./standalone": "./src/standalone.ts",
+    "./whatsapp-graph": "./src/whatsapp-graph.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

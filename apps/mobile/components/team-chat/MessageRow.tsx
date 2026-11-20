@@ -141,6 +141,9 @@ export interface MessageRowProps {
   onMakeCard?: (message: ChatMessage) => void
   /** Briefly emphasized after opening a link to it. */
   highlighted?: boolean
+  /** In a filtered list, show "replied to a thread" for all thread replies
+   * (not only `alsoSentToChannel` ones) and make the badge tappable. */
+  showThreadContext?: boolean
 }
 
 /**
@@ -1258,11 +1261,24 @@ function MessageRowImpl(props: MessageRowProps) {
           </View>
         )}
 
-        {message.threadRootId && message.alsoSentToChannel && !inThread && (
-          <View className="flex-row items-center gap-1">
-            <CornerDownRight size={11} className="text-muted-foreground" />
-            <Text className="text-[11px] text-muted-foreground">replied to a thread</Text>
-          </View>
+        {message.threadRootId && (message.alsoSentToChannel || props.showThreadContext) && !inThread && (
+          props.showThreadContext && props.onReply ? (
+            <Pressable
+              onPress={() => props.onReply!(message)}
+              accessibilityRole="button"
+              accessibilityLabel="Replied to a thread — tap to open"
+              testID={"thread-context-" + message.id}
+              className="flex-row items-center gap-1 self-start"
+            >
+              <CornerDownRight size={11} className="text-muted-foreground" />
+              <Text className="text-[11px] text-muted-foreground">replied to a thread</Text>
+            </Pressable>
+          ) : (
+            <View className="flex-row items-center gap-1">
+              <CornerDownRight size={11} className="text-muted-foreground" />
+              <Text className="text-[11px] text-muted-foreground">replied to a thread</Text>
+            </View>
+          )
         )}
 
         {deleted ? (

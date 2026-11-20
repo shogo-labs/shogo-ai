@@ -24,7 +24,7 @@ mock.module('lucide-react-native', () => {
   const Icon = () => createElement('span')
   return {
     Bell: Icon, Bot: Icon, ChevronDown: Icon, ChevronRight: Icon, Hash: Icon, Keyboard: Icon, Lock: Icon,
-    NotebookText: Icon, Pencil: Icon, Plus: Icon, Radio: Icon, Search: Icon, Users: Icon,
+    NotebookText: Icon, Pencil: Icon, Plus: Icon, Radio: Icon, Search: Icon, UserPlus: Icon, Users: Icon,
   }
 })
 mock.module(resolve(here, '../TeamChatSidebarProvider'), () => ({ useTeamChatNav: () => chat }))
@@ -35,6 +35,15 @@ mock.module(resolve(here, '../../../lib/team-chat-api'), () => ({
   absoluteApiUrl: (url: string) => url,
   conversationTitle: (c: any) => c.name ?? 'DM',
   isSelfDm: () => false,
+}))
+// SHO-454: the panel asks whether the caller may invite, and opens the shared
+// invite dialog. Both are shell-level concerns this suite does not exercise.
+mock.module(resolve(here, '../../../hooks/usePermissions'), () => ({
+  usePermissions: () => ({ can: () => false, canInvite: false, loading: false }),
+}))
+mock.module(resolve(here, '../../workspace/invite-dialog-context'), () => ({
+  useInviteDialog: () => ({ openInviteDialog: () => {}, closeInviteDialog: () => {} }),
+  useInviteDialogOptional: () => null,
 }))
 
 const { ChannelsPanel } = await import('../panels/ChannelsPanel')

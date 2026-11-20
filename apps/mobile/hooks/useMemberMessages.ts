@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * One member's messages in a conversation — top-level posts and thread replies
- * — newest first, paged backwards (SHO-419). Refetches the first page when that
- * member posts, so the pane stays live while it is open.
+ * — newest first, paged backwards (SHO-419). Keeps loaded pages on realtime
+ * events instead of reloading the first page (SHO-458).
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { teamChatApi, type ChatMessage } from '../lib/team-chat-api'
@@ -28,7 +28,14 @@ export function useMemberMessages(workspaceId: string | null, conversationId: st
     try {
       const page = await api.messages(conversationId, { from, limit: PAGE_SIZE })
       if (gen !== generation.current) return
-      setMessages(page.messages)
+      setMessages((prev) => {
+        // Merge: keep any older pages already loaded beyond the first page.
+        const oldestSeqInPage = page.messages[page.messages.length - 1]?.seq ?? 0
+        const olderPages = prev.filter(
+          (m) => m.seq < oldestSeqInPage && !page.messages.some((p) => p.id === m.id),
+        )
+        return [...page.messages, ...olderPages]
+      })
       setHasMore(page.hasMore)
       setError(null)
     } catch (err) {
@@ -65,13 +72,26 @@ export function useMemberMessages(workspaceId: string | null, conversationId: st
 
   useTeamChatEvents(workspaceId, (event) => {
     if (!conversationId || !from) return
-    if (event.type === 'ready') return void reload()
-    if (event.type !== 'message.created' && event.type !== 'message.updated') return
     if (event.conversationId !== conversationId) return
-    // A message by someone else only matters if it is already on the list (an
-    // edit or a delete of one of this member's rows).
-    if (!isFromMember(event.message, from) && !messages.some((m) => m.id === event.message.id)) return
-    void reload()
+    if (event.type === 'ready') {
+      void reload()
+      return
+    }
+    if (event.type === 'message.created') {
+      if (!isFromMember(event.message, from)) return
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === event.message.id)) return prev
+        // Insert newest-first: new messages go to the front.
+        return [event.message, ...prev]
+      })
+      return
+    }
+    if (event.type === 'message.updated') {
+      setMessages((prev) => {
+        if (!prev.some((m) => m.id === event.message.id)) return prev
+        return prev.map((m) => (m.id === event.message.id ? event.message : m))
+      })
+    }
   })
 
   return { messages, loading, loadingMore, error, hasMore, loadMore, reload }

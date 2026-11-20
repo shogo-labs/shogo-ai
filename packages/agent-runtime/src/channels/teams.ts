@@ -5,34 +5,39 @@
  *
  * Connects to Microsoft Teams via the Bot Framework REST API.
  * Teams POSTs "Activity" objects to a messaging endpoint; the adapter
- * authenticates outbound replies using an Azure AD app token.
- *
- * **No public URL is needed during local development** — you can use ngrok
- * to tunnel the agent runtime and set the tunnel URL as the bot's messaging
- * endpoint in the Azure Bot resource.
+ * authenticates outbound replies using an Azure AD app token and validates
+ * inbound JWTs via botframework-auth.ts (WebCrypto RS256, no new dependency).
  *
  * Config:
  *   appId       — Microsoft App ID (from Azure Bot registration)
  *   appPassword — Microsoft App Password (client secret)
+ *   tenantId    — (optional) Directory (tenant) ID; enables single-tenant mode
+ *   botName     — (optional) Display name shown in welcome messages
  *
  * The messaging endpoint is automatically registered at:
  *   POST /agent/channels/teams/messages
  */
 
 import type { ChannelAdapter, IncomingMessage, ChannelStatus } from '../types'
+import { validateBotFrameworkJwt } from './botframework-auth'
 
-const OAUTH_URL = 'https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token'
+const BF_OAUTH_URL = 'https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token'
+const AAD_OAUTH_URL_TEMPLATE = 'https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token'
 const BOT_FRAMEWORK_SCOPE = 'https://api.botframework.com/.default'
+
+/** Max conversation refs kept in memory and on disk. */
+const MAX_REFS = 5000
 
 interface TeamsConversationRef {
   serviceUrl: string
   conversationId: string
-  activityId?: string
+  tenantId?: string
 }
 
 export class TeamsAdapter implements ChannelAdapter {
   private appId: string = ''
   private appPassword: string = ''
+  private tenantId: string | undefined
   private messageHandler: ((msg: IncomingMessage) => void) | null = null
   private connected = false
   private error: string | undefined
@@ -41,30 +46,41 @@ export class TeamsAdapter implements ChannelAdapter {
   private accessToken: string = ''
   private tokenExpiry: number = 0
 
+  /** In-memory conversation refs (conversationId → ref). */
   private conversations = new Map<string, TeamsConversationRef>()
+
+  /** Directory where refs are persisted (.shogo/channels/). */
+  private workspaceDir: string | undefined
 
   constructor(config?: Record<string, string>) {
     if (config?.appId) this.appId = config.appId
     if (config?.appPassword) this.appPassword = config.appPassword
+    if (config?.tenantId) this.tenantId = config.tenantId
   }
 
   // ---------------------------------------------------------------------------
   // ChannelAdapter interface
   // ---------------------------------------------------------------------------
 
-  async connect(config: Record<string, string>): Promise<void> {
+  async connect(config: Record<string, string>, workspaceDir?: string): Promise<void> {
     this.appId = config.appId
     this.appPassword = config.appPassword
+    this.tenantId = config.tenantId || undefined
+    this.workspaceDir = workspaceDir
 
     if (!this.appId) throw new Error('Microsoft App ID is required')
     if (!this.appPassword) throw new Error('Microsoft App Password is required')
 
     await this.getAccessToken()
 
+    this.loadRefs()
     this.connected = true
     this.error = undefined
     this.botName = config.botName || 'Shogo Agent'
-    console.log(`[Teams] Connected as ${this.botName} (appId: ${this.appId.substring(0, 8)}...)`)
+    console.log(
+      `[Teams] Connected as ${this.botName} (appId: ${this.appId.substring(0, 8)}..., ` +
+      `mode: ${this.tenantId ? `single-tenant ${this.tenantId.substring(0, 8)}...` : 'multi-tenant'})`
+    )
   }
 
   async disconnect(): Promise<void> {
@@ -78,8 +94,7 @@ export class TeamsAdapter implements ChannelAdapter {
   async sendMessage(channelId: string, content: string): Promise<void> {
     const ref = this.conversations.get(channelId)
     if (!ref) {
-      console.error(`[Teams] No conversation reference for channel: ${channelId}`)
-      return
+      throw new Error(`[Teams] no conversation with ${channelId} yet: the user has to message the bot first`)
     }
 
     const token = await this.getAccessToken()
@@ -102,7 +117,11 @@ export class TeamsAdapter implements ChannelAdapter {
 
     if (!res.ok) {
       const body = await res.text()
-      console.error(`[Teams] Failed to send message (${res.status}): ${body}`)
+      let code: string | undefined
+      try { code = (JSON.parse(body) as any)?.error?.code } catch { /* noop */ }
+      throw new Error(
+        `[Teams] send failed (${res.status}${code ? ` ${code}` : ''}): ${body.slice(0, 200)}`
+      )
     }
   }
 
@@ -128,7 +147,15 @@ export class TeamsAdapter implements ChannelAdapter {
       body: JSON.stringify(activity),
     })
 
-    return res.ok
+    if (!res.ok) {
+      const body = await res.text()
+      let code: string | undefined
+      try { code = (JSON.parse(body) as any)?.error?.code } catch { /* noop */ }
+      throw new Error(
+        `[Teams] edit failed (${res.status}${code ? ` ${code}` : ''}): ${body.slice(0, 200)}`
+      )
+    }
+    return true
   }
 
   async sendTyping(channelId: string): Promise<void> {
@@ -165,6 +192,7 @@ export class TeamsAdapter implements ChannelAdapter {
         appId: this.appId ? `${this.appId.substring(0, 8)}...` : undefined,
         botName: this.botName,
         conversations: this.conversations.size,
+        tenantMode: this.tenantId ? 'single-tenant' : 'multi-tenant',
       },
     }
   }
@@ -186,16 +214,20 @@ export class TeamsAdapter implements ChannelAdapter {
       return { status: 400, body: { error: 'Invalid activity: missing serviceUrl or conversation' } }
     }
 
-    this.conversations.set(conversationId, {
-      serviceUrl: serviceUrl.endsWith('/') ? serviceUrl : `${serviceUrl}/`,
+    // Record conversation ref (from validated activity only — called after JWT check)
+    const normalizedServiceUrl = serviceUrl.endsWith('/') ? serviceUrl : `${serviceUrl}/`
+    const ref: TeamsConversationRef = {
+      serviceUrl: normalizedServiceUrl,
       conversationId,
-      activityId,
-    })
+      tenantId: activity.channelData?.tenant?.id,
+    }
+    this.conversations.set(conversationId, ref)
+    this.persistRefs()
 
     switch (activity.type) {
       case 'message': {
-        const text = activity.text || ''
-        const cleanText = this.stripMentions(text, activity)
+        const rawText = activity.text || ''
+        const cleanText = this.stripMentions(rawText, activity)
 
         if (cleanText.trim() && this.messageHandler) {
           this.messageHandler({
@@ -226,11 +258,10 @@ export class TeamsAdapter implements ChannelAdapter {
         )
 
         if (botWasAdded) {
-          try {
-            await this.sendMessage(conversationId, `👋 Hi! I'm **${this.botName}**. How can I help you?`)
-          } catch (err: any) {
-            console.error('[Teams] Failed to send welcome message:', err.message)
-          }
+          // Send welcome after returning 200 (detached)
+          this.sendMessage(conversationId, `👋 Hi! I'm **${this.botName}**. How can I help you?`).catch(
+            (err: any) => console.error('[Teams] Failed to send welcome message:', err.message)
+          )
         }
         return { status: 200 }
       }
@@ -247,6 +278,17 @@ export class TeamsAdapter implements ChannelAdapter {
   // Azure AD Token Management
   // ---------------------------------------------------------------------------
 
+  private oauthUrl(): string {
+    if (this.tenantId) {
+      return AAD_OAUTH_URL_TEMPLATE.replace('{tenantId}', this.tenantId)
+    }
+    // Test authority override
+    if (process.env.NODE_ENV === 'test' && process.env.SHOGO_TEAMS_TEST_AUTHORITY) {
+      return `${process.env.SHOGO_TEAMS_TEST_AUTHORITY}/oauth2/v2.0/token`
+    }
+    return BF_OAUTH_URL
+  }
+
   private async getAccessToken(): Promise<string> {
     if (this.accessToken && Date.now() < this.tokenExpiry - 5 * 60 * 1000) {
       return this.accessToken
@@ -259,7 +301,7 @@ export class TeamsAdapter implements ChannelAdapter {
       scope: BOT_FRAMEWORK_SCOPE,
     })
 
-    const res = await fetch(OAUTH_URL, {
+    const res = await fetch(this.oauthUrl(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
@@ -279,6 +321,48 @@ export class TeamsAdapter implements ChannelAdapter {
     this.accessToken = data.access_token
     this.tokenExpiry = Date.now() + data.expires_in * 1000
     return this.accessToken
+  }
+
+  // ---------------------------------------------------------------------------
+  // Conversation ref persistence
+  // ---------------------------------------------------------------------------
+
+  private refsPath(): string | undefined {
+    if (!this.workspaceDir) return undefined
+    // Avoid importing path at module load time (stays portable)
+    const sep = this.workspaceDir.includes('/') ? '/' : '\\'
+    return `${this.workspaceDir}${sep}.shogo${sep}channels${sep}teams-conversations.json`
+  }
+
+  private loadRefs(): void {
+    const p = this.refsPath()
+    if (!p) return
+    try {
+      const { existsSync, readFileSync } = require('fs') as typeof import('fs')
+      if (!existsSync(p)) return
+      const raw = JSON.parse(readFileSync(p, 'utf-8')) as TeamsConversationRef[]
+      for (const ref of raw) {
+        if (ref.conversationId) this.conversations.set(ref.conversationId, ref)
+      }
+    } catch (err: any) {
+      console.warn('[Teams] Could not load conversation refs:', err.message)
+    }
+  }
+
+  private persistRefs(): void {
+    const p = this.refsPath()
+    if (!p) return
+    try {
+      const { mkdirSync, writeFileSync } = require('fs') as typeof import('fs')
+      const dir = p.substring(0, p.lastIndexOf(p.includes('/') ? '/' : '\\'))
+      mkdirSync(dir, { recursive: true })
+
+      // Newest-first, bounded at MAX_REFS
+      const entries = Array.from(this.conversations.values()).slice(-MAX_REFS)
+      writeFileSync(p, JSON.stringify(entries, null, 2), 'utf-8')
+    } catch (err: any) {
+      console.warn('[Teams] Could not persist conversation refs:', err.message)
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -310,9 +394,36 @@ export class TeamsAdapter implements ChannelAdapter {
         return c.json({ error: 'Teams channel not configured' }, 503)
       }
 
-      const activity = await c.req.json()
-      const result = await adapter.handleActivity(activity)
-      return c.json(result.body || {}, result.status)
+      // Read raw body text first (needed for JSON parse after JWT check)
+      const rawBody = await c.req.text()
+
+      // Validate Bot Framework JWT before parsing the body
+      const authHeader = c.req.header('authorization') ?? c.req.header('Authorization')
+      let activity: any
+      try {
+        activity = JSON.parse(rawBody)
+      } catch {
+        return c.json({ error: 'invalid JSON body' }, 400)
+      }
+
+      const authResult = await validateBotFrameworkJwt(authHeader, {
+        appId: adapter.appId,
+        tenantId: adapter.tenantId,
+        channelId: activity.channelId ?? 'msteams',
+        serviceUrl: activity.serviceUrl ?? '',
+      })
+
+      if (!authResult.ok) {
+        console.warn(`[Teams] JWT rejected: ${authResult.reason}`)
+        return c.json({ error: 'Unauthorized' }, 401)
+      }
+
+      // ACK immediately — handle async
+      const ackResponse = c.json({}, 200)
+      adapter.handleActivity(activity).catch((err: any) =>
+        console.error('[Teams] handleActivity error:', err.message)
+      )
+      return ackResponse
     })
   }
 }

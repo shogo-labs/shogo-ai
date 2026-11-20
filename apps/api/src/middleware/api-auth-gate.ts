@@ -70,6 +70,26 @@ export function isAllowedUnauthWebchatProxyPath(path: string): boolean {
     relative.startsWith('/agent/channels/webchat/events/')
 }
 
+/**
+ * True when the path is a public channel ingress endpoint that authenticates
+ * via its own protocol (HMAC-SHA256 for WhatsApp) rather than a Shogo session.
+ * Add new channels here as they are made publicly reachable.
+ *
+ * Unit-tested in apps/api/src/__tests__/agent-proxy-whatsapp-ingress.test.ts
+ */
+export function isPublicChannelIngressPath(path: string): boolean {
+  // Only exact paths that authenticate via their own protocol
+  // (HMAC-SHA256 for WhatsApp, Bot Framework JWT for Teams).
+  const match = path.match(/^\/api\/projects\/[^/]+\/agent-proxy(\/.*)$/)
+  if (!match) return false
+  const relative = match[1]
+  return (
+    relative === '/agent/channels/whatsapp/webhook' ||
+    relative === '/webhooks/whatsapp' ||
+    relative === '/agent/channels/teams/messages'
+  )
+}
+
 // Proxies onto a user's own app server: the public preview
 // (`{id}.preview.<base>` and `{port}--{id}.preview.<base>`, routed here by the
 // preview-router Worker) and a metal published site's `/api/*`. The browser's
@@ -223,6 +243,7 @@ export function isGatePublicPath(path: string): boolean {
   if (isPublicPath(path)) return true
   if (GATE_PUBLIC_PREFIXES.some((p) => path.startsWith(p))) return true
   if (isAllowedUnauthWebchatProxyPath(path)) return true
+  if (isPublicChannelIngressPath(path)) return true
   if (isTokenGatedThumbnailPath(path)) return true
   if (isTokenGatedChatAttachmentPath(path)) return true
   if (isTokenGatedConversationFilePath(path)) return true
@@ -246,6 +267,12 @@ export function isGatePublicPath(path: string): boolean {
   // returning from GitHub has no Shogo session; the HMAC-signed `state` and
   // the OAuth code are verified in services/github-authorize.ts.
   if (path === '/api/github/callback') return true
+  // WhatsApp platform routes (SHO-463). Auth is the signed state token or
+  // HMAC-SHA256 app secret — verified inside the handlers themselves.
+  if (path === '/api/channels/whatsapp/connect') return true
+  if (path === '/api/channels/whatsapp/connect/complete') return true
+  if (path === '/api/channels/whatsapp/webhook') return true
+  if (path === '/api/channels/whatsapp/connect-link/instance') return true
   return false
 }
 

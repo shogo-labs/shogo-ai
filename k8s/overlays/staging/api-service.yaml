@@ -729,6 +729,33 @@ spec:
                   name: api-secrets
                   key: SLACK_APP_ID
                   optional: true
+            # WhatsApp Tech Provider (SHO-463). Optional so the pod boots before
+            # the secrets exist; until set the feature flag is false and the
+            # route returns 412.
+            - name: WHATSAPP_META_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: WHATSAPP_META_APP_ID
+                  optional: true
+            - name: WHATSAPP_META_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: WHATSAPP_META_APP_SECRET
+                  optional: true
+            - name: WHATSAPP_ES_CONFIG_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: WHATSAPP_ES_CONFIG_ID
+                  optional: true
+            - name: WHATSAPP_WEBHOOK_VERIFY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: WHATSAPP_WEBHOOK_VERIFY_TOKEN
+                  optional: true
             # OpenRouter key for the model-provider fallback. Every deploy job
             # writes it into api-secrets; without this reader the cloud never
             # saw it (SHO-453).

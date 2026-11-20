@@ -137,8 +137,10 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
     setupUrl: 'https://developers.facebook.com/docs/whatsapp/cloud-api/get-started',
     setupLabel: 'Meta WhatsApp Setup',
     fields: [
-      { key: 'accessToken', label: 'Access Token', placeholder: 'From Meta Business', secret: true },
-      { key: 'phoneNumberId', label: 'Phone Number ID', placeholder: 'From WhatsApp API setup', secret: false },
+      { key: 'accessToken', label: 'Access Token (System User)', placeholder: 'Permanent system-user token from Meta Business', secret: true },
+      { key: 'phoneNumberId', label: 'Phone Number ID', placeholder: 'From WhatsApp API Setup', secret: false },
+      { key: 'appSecret', label: 'App Secret', placeholder: 'From Meta App Settings → Basic → App Secret', secret: true },
+      { key: 'verifyToken', label: 'Verify Token (optional)', placeholder: 'Auto-generated if left blank', secret: false },
     ],
   },
   email: {
@@ -174,7 +176,12 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
     emoji: '🟦',
     setupUrl: 'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade',
     setupLabel: 'Azure App Registrations',
-    fields: [],
+    fields: [
+      { key: 'appId', label: 'Application (client) ID', placeholder: 'From Azure App Registration', secret: false },
+      { key: 'appPassword', label: 'Client Secret', placeholder: 'From Certificates & secrets', secret: true },
+      { key: 'tenantId', label: 'Directory (tenant) ID (optional for multi-tenant)', placeholder: 'Required for single-tenant bots (post-2025)', secret: false },
+      { key: 'botName', label: 'Bot Name (optional)', placeholder: 'Shogo Agent', secret: false },
+    ],
   },
   webchat: {
     name: 'WebChat Widget',
@@ -207,6 +214,12 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
   const [formError, setFormError] = useState<string | null>(null)
   const [copiedSnippet, setCopiedSnippet] = useState(false)
   const [copiedWebhookUrl, setCopiedWebhookUrl] = useState(false)
+  const [copiedWhatsAppCallbackUrl, setCopiedWhatsAppCallbackUrl] = useState(false)
+  const [copiedWhatsAppVerifyToken, setCopiedWhatsAppVerifyToken] = useState(false)
+  const [waConnecting, setWaConnecting] = useState(false)
+  const [waConnectError, setWaConnectError] = useState<string | null>(null)
+  const [showWaAdvanced, setShowWaAdvanced] = useState(false)
+  const [copiedTeamsEndpoint, setCopiedTeamsEndpoint] = useState(false)
   const [phoneExpanded, setPhoneExpanded] = useState(false)
   const [slackAgentConfig, setSlackAgentConfig] = useState<{
     installed: boolean
@@ -229,6 +242,16 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
    */
   const publicWebhookUrl = API_URL
     ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/webhook/incoming`
+    : null
+
+  /** WhatsApp webhook callback URL — same proxy path, different suffix. */
+  const whatsappCallbackUrl = API_URL
+    ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/whatsapp/webhook`
+    : null
+
+  /** Teams messaging endpoint — paste this into the Azure Bot configuration. */
+  const teamsMessagingEndpoint = API_URL
+    ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/teams/messages`
     : null
 
   /**
@@ -878,6 +901,122 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                     </View>
                   )}
 
+                  {/* WhatsApp: callback URL + verify token (shown when connected) */}
+                  {type === 'whatsapp' && isConnected && (
+                    <View className="px-3 pb-3 border-t border-border">
+                      <View className="mt-3 gap-3">
+                        <Text className="text-[11px] font-medium text-foreground">
+                          Meta webhook configuration
+                        </Text>
+                        <Text className="text-[10px] text-muted-foreground">
+                          Paste these into Meta Developer Portal → WhatsApp → Configuration, then subscribe to <Text className="font-mono">messages</Text> and <Text className="font-mono">smb_message_echoes</Text> fields.
+                        </Text>
+
+                        {whatsappCallbackUrl && (
+                          <View className="gap-1.5">
+                            <Text className="text-[10px] font-medium text-foreground">Callback URL</Text>
+                            <View className="bg-muted/50 rounded-md p-2.5 border border-border">
+                              <Text className="text-[10px] text-foreground font-mono" selectable>
+                                {whatsappCallbackUrl}
+                              </Text>
+                            </View>
+                            <Pressable
+                              onPress={async () => {
+                                await Clipboard.setStringAsync(whatsappCallbackUrl)
+                                setCopiedWhatsAppCallbackUrl(true)
+                                setTimeout(() => setCopiedWhatsAppCallbackUrl(false), 2000)
+                              }}
+                              className="self-start flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                            >
+                              {copiedWhatsAppCallbackUrl ? (
+                                <>
+                                  <Check size={12} className="text-emerald-500" />
+                                  <Text className="text-[10px] text-emerald-500">Copied!</Text>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy size={12} className="text-muted-foreground" />
+                                  <Text className="text-[10px] text-muted-foreground">Copy URL</Text>
+                                </>
+                              )}
+                            </Pressable>
+                          </View>
+                        )}
+
+                        {channels.find((ch) => ch.type === 'whatsapp')?.metadata?.verifyToken && (
+                          <View className="gap-1.5">
+                            <Text className="text-[10px] font-medium text-foreground">Verify Token</Text>
+                            <View className="bg-muted/50 rounded-md p-2.5 border border-border">
+                              <Text className="text-[10px] text-foreground font-mono" selectable>
+                                {String(channels.find((ch) => ch.type === 'whatsapp')?.metadata?.verifyToken ?? '')}
+                              </Text>
+                            </View>
+                            <Pressable
+                              onPress={async () => {
+                                const token = String(channels.find((ch) => ch.type === 'whatsapp')?.metadata?.verifyToken ?? '')
+                                await Clipboard.setStringAsync(token)
+                                setCopiedWhatsAppVerifyToken(true)
+                                setTimeout(() => setCopiedWhatsAppVerifyToken(false), 2000)
+                              }}
+                              className="self-start flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                            >
+                              {copiedWhatsAppVerifyToken ? (
+                                <>
+                                  <Check size={12} className="text-emerald-500" />
+                                  <Text className="text-[10px] text-emerald-500">Copied!</Text>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy size={12} className="text-muted-foreground" />
+                                  <Text className="text-[10px] text-muted-foreground">Copy Token</Text>
+                                </>
+                              )}
+                            </Pressable>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  )}
+
+                  {/* Teams: messaging endpoint (shown when connected) */}
+                  {type === 'teams' && isConnected && teamsMessagingEndpoint && (
+                    <View className="px-3 pb-3 border-t border-border">
+                      <View className="mt-3 gap-2">
+                        <Text className="text-[11px] font-medium text-foreground">
+                          Messaging endpoint
+                        </Text>
+                        <Text className="text-[10px] text-muted-foreground">
+                          Paste this into Azure Bot → Configuration → Messaging endpoint, then enable the Teams channel.
+                        </Text>
+                        <View className="bg-muted/50 rounded-md p-2.5 border border-border">
+                          <Text className="text-[10px] text-foreground font-mono" selectable>
+                            {teamsMessagingEndpoint}
+                          </Text>
+                        </View>
+                        <Pressable
+                          onPress={async () => {
+                            await Clipboard.setStringAsync(teamsMessagingEndpoint)
+                            setCopiedTeamsEndpoint(true)
+                            setTimeout(() => setCopiedTeamsEndpoint(false), 2000)
+                          }}
+                          className="self-start flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                        >
+                          {copiedTeamsEndpoint ? (
+                            <>
+                              <Check size={12} className="text-emerald-500" />
+                              <Text className="text-[10px] text-emerald-500">Copied!</Text>
+                            </>
+                          ) : (
+                            <>
+                              <Copy size={12} className="text-muted-foreground" />
+                              <Text className="text-[10px] text-muted-foreground">Copy URL</Text>
+                            </>
+                          )}
+                        </Pressable>
+                      </View>
+                    </View>
+                  )}
+
                   {/* WebChat embed snippet (shown when connected) */}
                   {type === 'webchat' && isConnected && agentUrl && (
                     <View className="px-3 pb-3 border-t border-border">
@@ -1002,8 +1141,56 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                     </View>
                   )}
 
+                  {/* WhatsApp: Connect with Meta (one-click, platform flow) */}
+                  {type === 'whatsapp' && isExpanded && !isConnected && features.whatsappEmbeddedSignup && !showWaAdvanced && (
+                    <View className="px-3 pb-3 border-t border-border">
+                      <View className="mt-3 gap-2">
+                        <Pressable
+                          onPress={async () => {
+                            setWaConnectError(null)
+                            setWaConnecting(true)
+                            try {
+                              const res = await agentFetch(`/api/projects/${projectId}/channels/whatsapp/connect-link`, {
+                                method: 'POST',
+                              })
+                              if (!res.ok) {
+                                const body = await res.json().catch(() => ({})) as any
+                                setWaConnectError(body?.error ?? `Error ${res.status}`)
+                                return
+                              }
+                              const { url } = await res.json() as { url: string }
+                              openExternalLink(url)
+                            } catch (e: any) {
+                              setWaConnectError(e?.message ?? 'Network error')
+                            } finally {
+                              setWaConnecting(false)
+                            }
+                          }}
+                          disabled={waConnecting}
+                          className="flex-row items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-[#25d366] active:opacity-80"
+                        >
+                          {waConnecting && <ActivityIndicator size="small" color="#fff" />}
+                          <Text className="text-sm font-semibold text-white">
+                            {waConnecting ? 'Opening…' : 'Connect with Meta'}
+                          </Text>
+                        </Pressable>
+                        <Text className="text-[10px] text-muted-foreground text-center">
+                          Works with a number on the WhatsApp Business app — your phone keeps working.
+                        </Text>
+                        {waConnectError && (
+                          <Text className="text-[10px] text-destructive text-center">{waConnectError}</Text>
+                        )}
+                        <Pressable onPress={() => setShowWaAdvanced(true)} className="self-center mt-1">
+                          <Text className="text-[10px] text-muted-foreground underline">
+                            Use my own Meta app ▸
+                          </Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  )}
+
                   {/* Expandable config form */}
-                  {isExpanded && !isConnected && hasForm && (
+                  {isExpanded && !isConnected && hasForm && (type !== 'whatsapp' || !features.whatsappEmbeddedSignup || showWaAdvanced) && (
                     <View className="px-3 pb-3 border-t border-border">
                       <View className="mt-3 gap-2.5">
                         {def.fields.map(field => (

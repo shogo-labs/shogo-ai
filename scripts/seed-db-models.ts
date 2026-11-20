@@ -101,6 +101,7 @@
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../apps/api/src/lib/prisma'
 import { encryptSecret, isSecretCryptoConfigured } from '../apps/api/src/lib/secret-crypto'
+import { getModelEntry, getModelDollarCosts } from '../packages/agent/src/model-catalog'
 
 const SEED_USER = 'seed:db-models'
 
@@ -833,6 +834,75 @@ async function seedGptLive1(): Promise<void> {
   console.log('[seed-db-models] Upserted GPT-Live 1')
 }
 
+/**
+ * Seed all Google Gemini models. Rates are sourced from `getModelDollarCosts`
+ * (which honours the Dec-1 and Jan-1 price steps), so re-running on or after
+ * 2026-12-01 automatically updates Carbon and Argon to their post-step prices.
+ *
+ * | id                     | enabled | notes                              |
+ * |------------------------|---------|------------------------------------|
+ * | gemini-4-carbon        | true    | new flagship reasoner              |
+ * | gemini-4-neon          | true    | fast frontier                      |
+ * | gemini-4-argon         | true    | original flagship, still current   |
+ * | gemini-4-hydrogen      | true    | everyday / subagent tier           |
+ * | gemini-3.8-flash       | true    | default `gemini` alias             |
+ * | gemini-3.5-flash-lite  | true    | cheapest Gemini                    |
+ * | gemini-3.1-pro-preview | false   | legacy; kept routable but not in picker |
+ */
+async function seedGemini(): Promise<void> {
+  type GeminiRow = {
+    id: string
+    enabled: boolean
+    sortOrder: number
+    generation?: string
+    description?: string
+  }
+
+  const models: GeminiRow[] = [
+    { id: 'gemini-4-carbon',       enabled: true,  sortOrder: 10 },
+    { id: 'gemini-4-neon',         enabled: true,  sortOrder: 20 },
+    { id: 'gemini-4-argon',        enabled: true,  sortOrder: 30 },
+    { id: 'gemini-4-hydrogen',     enabled: true,  sortOrder: 40 },
+    { id: 'gemini-3.8-flash',      enabled: true,  sortOrder: 50 },
+    { id: 'gemini-3.5-flash-lite', enabled: true,  sortOrder: 60 },
+    // Legacy: Carbon/Argon supersede 3.1 Pro. Stays routable (admin can
+    // enable it) but is not shown in the default picker.
+    { id: 'gemini-3.1-pro-preview', enabled: false, sortOrder: 0, generation: 'legacy' },
+  ]
+
+  for (const { id, enabled, sortOrder, generation } of models) {
+    const entry = getModelEntry(id)
+    if (!entry) {
+      console.error(`[seed-db-models] WARNING: no catalog entry for ${id} — skipping`)
+      continue
+    }
+    const costs = getModelDollarCosts(entry.billingModel)
+    const common = {
+      displayName:         entry.displayName,
+      shortDisplayName:    entry.shortDisplayName,
+      tier:                entry.tier,
+      family:              entry.family,
+      generation:          generation ?? entry.generation,
+      maxOutputTokens:     entry.maxOutputTokens,
+      contextWindow:       entry.contextWindow ?? null,
+      reasoningEffort:     entry.reasoningEffort ?? null,
+      description:         entry.description ?? null,
+      aliases:             [id],
+      inputPerMillion:     costs.inputPerMillion,
+      cachedInputPerMillion: costs.cachedInputPerMillion,
+      cacheWritePerMillion: costs.cacheWritePerMillion,
+      outputPerMillion:    costs.outputPerMillion,
+      updatedBy:           SEED_USER,
+    }
+    await upsertModel(
+      { provider: 'google', apiModel: id },
+      { providerId: null, sortOrder, enabled, ...common },
+      omit(common, ['enabled']),
+    )
+    console.log(`[seed-db-models] Upserted ${entry.displayName} (apiModel=${id})`)
+  }
+}
+
 export const SEEDERS: Array<[string, () => Promise<void>]> = [
   ['opus-4-8', seedOpus48],
   ['opus-5-5', seedOpus55],
@@ -851,6 +921,7 @@ export const SEEDERS: Array<[string, () => Promise<void>]> = [
   ['gpt-5.6-sol', seedGptSol56],
   ['gpt-5.6-luna', seedGptLuna56],
   ['gpt-5.6-terra', seedGptTerra],
+  ['gemini', seedGemini],
 ]
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
