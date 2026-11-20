@@ -64,6 +64,8 @@ const prismaDouble = {
     findFirst: async ({ where }: { where: Row }) => subscriptions.find((s) => matches(s, where)) ?? null,
   },
   signupRiskAssessment: {
+    // SHO-459: banned-linked count resolves linked ids first.
+    findMany: async () => [],
     findUnique: async ({ where }: { where: Row }) => assessments.get(where.userId) ?? null,
     findFirst: async ({ where }: { where: Row }) => assessmentRows().find((r) => matches(r, where)) ?? null,
     count: async ({ where }: { where: Row }) => assessmentRows().filter((r) => matches(r, where)).length,

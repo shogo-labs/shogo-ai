@@ -163,6 +163,8 @@ mock.module('../lib/prisma', () => ({
     // device-id path can be asserted end to end (SHO-440).
     signupRiskAssessment: {
       count: async () => 0,
+      // SHO-459: the banned-linked count resolves linked user ids first.
+      findMany: async () => [],
       upsert: async (args: any) => {
         riskState.upserts.push(args)
         return args.create

@@ -97,6 +97,8 @@ const prismaStub = {
     },
   },
   signupRiskAssessment: {
+    // SHO-459: banned-linked count resolves linked ids first.
+    findMany: async () => [],
     findUnique: async (args: any) => riskAssessments.get(args.where.userId) ?? null,
   },
   usageWallet: {

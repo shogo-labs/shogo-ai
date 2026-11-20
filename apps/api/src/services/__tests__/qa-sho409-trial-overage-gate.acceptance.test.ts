@@ -308,6 +308,8 @@ const prismaApi: any = {
     findMany: async () => [],
   },
   signupRiskAssessment: {
+    // SHO-459: banned-linked count resolves linked ids first.
+    findMany: async () => [],
     findUnique: async () => null,
     findFirst: async () => null,
   },
