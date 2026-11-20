@@ -15,6 +15,7 @@ mock.module('../services/chat-turn-state.service', () => ({
     projectHidden: false,
     startedAt: new Date('2026-09-23T05:00:00.000Z'),
   }],
+  peekActiveChatTurn: async () => ({ error: 'not_running' }),
 }))
 
 const profile = {
