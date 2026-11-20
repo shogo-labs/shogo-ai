@@ -676,10 +676,12 @@ describe('buildProjectEnv — auto tier overrides', () => {
     getAutoTierOverridesMock.mockImplementation(() => ({}))
     const env = await buildProjectEnv('proj-auto-empty')
     expect(env.AGENT_AUTO_TIER_MAP).toBeDefined()
+    // Premium deliberately shares the standard model: with no admin setting
+    // there is nothing that justifies a Sonnet-class price (SHO-481).
     expect(JSON.parse(env.AGENT_AUTO_TIER_MAP!)).toEqual({
       economy: { id: 'gpt-5.4-nano', provider: 'openai' },
       standard: { id: 'claude-haiku-4-5-20251001', provider: 'anthropic' },
-      premium: { id: 'claude-sonnet-4-6', provider: 'anthropic' },
+      premium: { id: 'claude-haiku-4-5-20251001', provider: 'anthropic' },
     })
   })
 

@@ -14,7 +14,10 @@ import { isModelVisibleForWorkspace } from './workspace-models.service'
 import { isModelAccessibleForWorkspace } from '../lib/model-access'
 import { getMergedModelEntrySync, resolveModelLabel, resolveModelLabelSync } from './model-registry.service'
 import { recordAccessEvent, allowedAutoTiers, resolveRunModelFor } from './access-policy.service'
-import { resolveEffectiveAgentModelDefaults } from '../lib/runtime/agent-model-defaults'
+import {
+  resolveInstanceAgentModelDefaults,
+  type AgentModelEntry,
+} from '../lib/runtime/agent-model-defaults'
 import { getRbacMode } from '../lib/authz/mode'
 
 const db = prisma as any
@@ -78,9 +81,10 @@ export interface RunModelResolution {
    * The Auto tier map narrowed to this person, or `null` when the run is not on
    * Auto. The runtime's process-wide `AGENT_AUTO_TIER_MAP` is one map for the
    * whole workspace, so a per-person cap has to ride on the turn: with this
-   * map, `resolveAutoDowngrade` can only walk models the person may use.
+   * map, `resolveAutoDowngrade` can only walk models the person may use. Each
+   * tier carries its provider so an opaque (cloud) id keeps its routing.
    */
-  autoTiers: Record<string, string> | null
+  autoTiers: Record<string, AgentModelEntry> | null
 }
 
 /**
@@ -173,22 +177,37 @@ function withLabels(downgrade: { from: string; to: string }): {
 
 /**
  * The Auto tier map for this person, or `null` when the run is not on Auto.
- * Every tier maps to a model they may use, so an Auto fallback cannot land
+ * Resolved from the *instance's* defaults — the connected cloud's on a desktop
+ * (SHO-481: the local map used to win and send complex straight to Sonnet) —
+ * and every tier maps to a model they may use, so an Auto fallback cannot land
  * outside their set (AC3).
  */
 async function autoTiersFor(
   workspaceId: string,
   actingUserId: string,
   configured: string,
-): Promise<Record<string, string> | null> {
+): Promise<Record<string, AgentModelEntry> | null> {
   if (configured !== AUTO_MODEL_ID) return null
-  const defaults = await resolveEffectiveAgentModelDefaults(workspaceId).catch(() => null)
+  const defaults = await resolveInstanceAgentModelDefaults(workspaceId).catch(() => null)
   if (!defaults) return null
   const configuredTiers: Record<string, string> = {}
   for (const [tier, entry] of Object.entries(defaults.autoTiers)) {
     if (entry?.id) configuredTiers[tier] = entry.id
   }
-  return allowedAutoTiers(workspaceId, actingUserId, configuredTiers)
+  const narrowed = await allowedAutoTiers(workspaceId, actingUserId, configuredTiers)
+  if (!narrowed) return null
+  const out: Record<string, AgentModelEntry> = {}
+  for (const [tier, id] of Object.entries(narrowed)) {
+    const source = (defaults.autoTiers as Record<string, AgentModelEntry | undefined>)[tier]
+    out[tier] = source?.id === id
+      ? {
+          id,
+          ...(source.provider ? { provider: source.provider } : {}),
+          ...(source.upstream ? { upstream: source.upstream } : {}),
+        }
+      : { id }
+  }
+  return out
 }
 
 /**
