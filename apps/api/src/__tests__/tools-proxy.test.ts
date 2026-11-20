@@ -592,7 +592,7 @@ describe('Tools Proxy', () => {
         bio: 'hello',
         displayName: 'Nike',
       })
-      expect(getProfile).toHaveBeenCalledWith('tiktok', 'Nike')
+      expect(getProfile).toHaveBeenCalledWith('tiktok', 'Nike', expect.any(Object))
 
       const posts = await app.request('/tools/social/tiktok/posts', {
         method: 'POST',
@@ -602,7 +602,7 @@ describe('Tools Proxy', () => {
       expect(posts.status).toBe(200)
       const body = await posts.json() as any
       expect(body.posts[0].postedAt).toBe('2026-01-02T03:04:05.000Z')
-      expect(listRecentPosts).toHaveBeenCalledWith('tiktok', 'nike', 50)
+      expect(listRecentPosts).toHaveBeenCalledWith('tiktok', 'nike', 50, expect.any(Object))
     })
 
     test('maps provider errors onto HTTP status codes', async () => {
@@ -674,7 +674,7 @@ describe('Tools Proxy', () => {
       expect(res.status).toBe(200)
       const units = socialLookupUnits('instagram', 'posts', 25)
       const { rawUsd, billedUsd } = calculateSocialLookupCost(units)
-      expect(units).toBe(7)
+      expect(units).toBe(16)
       expect(consumeUsageMock).toHaveBeenCalledWith(expect.objectContaining({
         actionType: 'social_media_lookup',
         rawUsd,

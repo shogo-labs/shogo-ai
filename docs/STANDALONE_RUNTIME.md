@@ -144,7 +144,7 @@ the table does not list, or the table lists one the code no longer reads.
 
 <!-- BEGIN GENERATED ENV TABLE -->
 
-The runtime reads 176 environment variables. This table is generated from the source by
+The runtime reads 177 environment variables. This table is generated from the source by
 `scripts/gen-runtime-env-doc.ts`; a test fails when the code and the table disagree.
 
 | Variable | Standalone | Default | Purpose |
@@ -296,6 +296,7 @@ The runtime reads 176 environment variables. This table is generated from the so
 | `SHOGO_SEARCH_ENABLED` | optional | `` | — |
 | `SHOGO_STANDALONE` | off unless set | — | Set to `1` to run with no Shogo API. Turns off every platform-bound caller. |
 | `SHOGO_STREAM_TRACE` | optional | — | — |
+| `SHOGO_TEAMS_TEST_AUTHORITY` | optional | — | — |
 | `SKILL_SERVER_PORT` | optional | — | — |
 | `SLASH_COMMAND_TOOL_CHAR_BUDGET` | optional | `16000` | — |
 | `STARTUP_TIME` | optional | — | — |

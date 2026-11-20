@@ -75,13 +75,15 @@ export function isAllowedUnauthWebchatProxyPath(path: string): boolean {
  * Unit-tested in apps/api/src/__tests__/agent-proxy-whatsapp-ingress.test.ts
  */
 export function isPublicChannelIngressPath(path: string): boolean {
-  // WhatsApp webhook: canonical + legacy alias
+  // Only exact paths that authenticate via their own protocol
+  // (HMAC-SHA256 for WhatsApp, Bot Framework JWT for Teams).
   const match = path.match(/^\/api\/projects\/[^/]+\/agent-proxy(\/.*)$/)
   if (!match) return false
   const relative = match[1]
   return (
     relative === '/agent/channels/whatsapp/webhook' ||
-    relative === '/webhooks/whatsapp'
+    relative === '/webhooks/whatsapp' ||
+    relative === '/agent/channels/teams/messages'
   )
 }
 

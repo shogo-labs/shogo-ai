@@ -176,7 +176,12 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
     emoji: '🟦',
     setupUrl: 'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade',
     setupLabel: 'Azure App Registrations',
-    fields: [],
+    fields: [
+      { key: 'appId', label: 'Application (client) ID', placeholder: 'From Azure App Registration', secret: false },
+      { key: 'appPassword', label: 'Client Secret', placeholder: 'From Certificates & secrets', secret: true },
+      { key: 'tenantId', label: 'Directory (tenant) ID (optional for multi-tenant)', placeholder: 'Required for single-tenant bots (post-2025)', secret: false },
+      { key: 'botName', label: 'Bot Name (optional)', placeholder: 'Shogo Agent', secret: false },
+    ],
   },
   webchat: {
     name: 'WebChat Widget',
@@ -214,6 +219,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
   const [waConnecting, setWaConnecting] = useState(false)
   const [waConnectError, setWaConnectError] = useState<string | null>(null)
   const [showWaAdvanced, setShowWaAdvanced] = useState(false)
+  const [copiedTeamsEndpoint, setCopiedTeamsEndpoint] = useState(false)
   const [phoneExpanded, setPhoneExpanded] = useState(false)
   const [slackAgentConfig, setSlackAgentConfig] = useState<{
     installed: boolean
@@ -241,6 +247,11 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
   /** WhatsApp webhook callback URL — same proxy path, different suffix. */
   const whatsappCallbackUrl = API_URL
     ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/whatsapp/webhook`
+    : null
+
+  /** Teams messaging endpoint — paste this into the Azure Bot configuration. */
+  const teamsMessagingEndpoint = API_URL
+    ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/teams/messages`
     : null
 
   /**
@@ -963,6 +974,45 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                             </Pressable>
                           </View>
                         )}
+                      </View>
+                    </View>
+                  )}
+
+                  {/* Teams: messaging endpoint (shown when connected) */}
+                  {type === 'teams' && isConnected && teamsMessagingEndpoint && (
+                    <View className="px-3 pb-3 border-t border-border">
+                      <View className="mt-3 gap-2">
+                        <Text className="text-[11px] font-medium text-foreground">
+                          Messaging endpoint
+                        </Text>
+                        <Text className="text-[10px] text-muted-foreground">
+                          Paste this into Azure Bot → Configuration → Messaging endpoint, then enable the Teams channel.
+                        </Text>
+                        <View className="bg-muted/50 rounded-md p-2.5 border border-border">
+                          <Text className="text-[10px] text-foreground font-mono" selectable>
+                            {teamsMessagingEndpoint}
+                          </Text>
+                        </View>
+                        <Pressable
+                          onPress={async () => {
+                            await Clipboard.setStringAsync(teamsMessagingEndpoint)
+                            setCopiedTeamsEndpoint(true)
+                            setTimeout(() => setCopiedTeamsEndpoint(false), 2000)
+                          }}
+                          className="self-start flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                        >
+                          {copiedTeamsEndpoint ? (
+                            <>
+                              <Check size={12} className="text-emerald-500" />
+                              <Text className="text-[10px] text-emerald-500">Copied!</Text>
+                            </>
+                          ) : (
+                            <>
+                              <Copy size={12} className="text-muted-foreground" />
+                              <Text className="text-[10px] text-muted-foreground">Copy URL</Text>
+                            </>
+                          )}
+                        </Pressable>
                       </View>
                     </View>
                   )}

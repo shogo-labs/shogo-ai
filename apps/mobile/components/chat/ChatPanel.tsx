@@ -6080,7 +6080,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // the transcript paints, the local array must hold that many rows — a
       // shorter one is repaired with the full first page instead of staying
       // hidden until the next reopen.
-      if (body.total != null && body.total <= MESSAGE_PAGE_SIZE) {
+      //
+      // Guard skipped when the caller has no prior messages (current.length === 0):
+      // the client cannot assess whether rows are missing from an empty starting
+      // point, and firing the guard here sends an unnecessary full reload on the
+      // warm-reopen path before the in-memory cache is populated (SHO-450).
+      if (body.total != null && body.total <= MESSAGE_PAGE_SIZE && current.length > 0) {
         const seen = new Set(current.map((m) => String(m.id)))
         for (const row of items) if (row?.id) seen.add(String(row.id))
         if (seen.size < body.total) return false

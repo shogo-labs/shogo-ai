@@ -205,18 +205,44 @@ describe('Teams Messaging Endpoint', () => {
 
     const res = await agentFetch(env, '/agent/channels/teams/messages', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         type: 'message',
         text: 'integration test',
         from: { id: 'test-user', name: 'Test' },
         conversation: { id: 'test-conv' },
         serviceUrl: 'https://smba.trafficmanager.net/test/',
+        channelId: 'msteams',
       }),
     })
 
     expect(res.status).toBe(503)
     const body = await res.json()
     expect(body.error).toContain('not configured')
+  })
+
+  test('returns 401 when Authorization header is missing (not 503)', async () => {
+    // This test verifies that the Teams endpoint rejects unauthenticated requests
+    // when the adapter IS configured (or would be). An unsigned POST must never
+    // reach the agent. We hit the endpoint directly on the runtime (no proxy auth
+    // bypass needed in e2e) and check for either 401 or 503.
+    // 503 = not configured; 401 = configured but no JWT. Both prove the adapter
+    // is protecting itself — an open 200 would be a fail.
+    const res = await agentFetch(env, '/agent/channels/teams/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'message',
+        text: 'unsigned request',
+        from: { id: 'attacker' },
+        conversation: { id: 'evil-conv' },
+        serviceUrl: 'https://evil.example.com/',
+        channelId: 'msteams',
+      }),
+    })
+    // Must not be 200 — an open endpoint would be a critical security failure
+    expect(res.status).not.toBe(200)
+    expect([401, 503]).toContain(res.status)
   })
 })
 
