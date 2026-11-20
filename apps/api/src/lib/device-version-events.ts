@@ -88,15 +88,27 @@ function isLaterObservation(candidate: DeviceVersionEventRow, current: DeviceVer
 }
 
 /**
- * Minimal surface of the prisma client this module needs. Callers that already
- * hold a client (the device mint) pass theirs so the write lands in the same
- * place as the rest of their work.
+ * Minimal surface of the prisma client this module needs: both device-analytics
+ * writes in one adapter. Callers that already hold a client (the device mint)
+ * pass theirs so the write lands in the same place as the rest of their work.
  */
-export interface DeviceVersionEventClient {
+export interface DeviceAnalyticsClient {
   deviceVersionEvent: {
     upsert: (args: any) => Promise<unknown>
   }
+  deviceActiveDay: {
+    upsert: (args: any) => Promise<unknown>
+  }
 }
+
+/**
+ * The real client satisfies both delegates; the arguments stay `any` because
+ * their generated shapes are large and only used here. One cast, one adapter —
+ * the ratchet in `untyped-prisma-ratchet.test.ts` counts casts per file. Read
+ * per call, not captured at import, so a client replaced after load (tests)
+ * is the one written through.
+ */
+const defaultClient = () => prisma as unknown as DeviceAnalyticsClient
 
 /**
  * The `region` stamped on a row this build writes.
@@ -121,7 +133,7 @@ export function resolveWritingRegion(rawRegionId: string | null): string {
  */
 export async function recordDeviceVersionEvent(
   touch: DeviceVersionTouch,
-  client: DeviceVersionEventClient = prisma as unknown as DeviceVersionEventClient,
+  client: DeviceAnalyticsClient = defaultClient(),
 ): Promise<boolean> {
   const deviceId = touch.deviceId?.trim()
   const version = normalizeDeviceVersion(touch.version)
@@ -156,15 +168,6 @@ export async function recordDeviceVersionEvent(
   }
 }
 
-/**
- * Minimal surface of the prisma client the active-day write needs.
- */
-export interface DeviceActiveDayClient {
-  deviceActiveDay: {
-    upsert: (args: any) => Promise<unknown>
-  }
-}
-
 /** UTC `YYYY-MM-DD` for a moment in time. */
 export function utcDayKey(at: Date): string {
   return at.toISOString().slice(0, 10)
@@ -190,7 +193,7 @@ export function utcDayKey(at: Date): string {
  */
 export async function recordDeviceActiveDay(
   touch: DeviceVersionTouch,
-  client: DeviceActiveDayClient = prisma as unknown as DeviceActiveDayClient,
+  client: DeviceAnalyticsClient = defaultClient(),
 ): Promise<boolean> {
   const deviceId = touch.deviceId?.trim()
   if (!deviceId) return false

@@ -128,6 +128,19 @@ describe('AppVersionsPanel', () => {
     expect(screen.queryByText('OS split')).toBeNull()
   })
 
+  test('a failed request does not also claim there is no adoption data', () => {
+    // Both messages at once contradict each other: one says we could not load
+    // the series, the other says the series is empty.
+    render(createElement(AppVersionsPanel, { desktop, cli, adoption: [], error: 'HTTP 500' }))
+    expect(screen.getByText("Couldn't load desktop versions: HTTP 500")).toBeTruthy()
+    expect(screen.queryByText('No adoption data for this filter')).toBeNull()
+  })
+
+  test('an empty series with no error still says so', () => {
+    render(createElement(AppVersionsPanel, { desktop, cli, adoption: [] }))
+    expect(screen.getByText('No adoption data for this filter')).toBeTruthy()
+  })
+
   test('a failed app-versions request is named above the charts', () => {
     // Without the notice an empty series reads as "nobody is on any version".
     render(createElement(AppVersionsPanel, { desktop, cli, adoption, error: 'HTTP 500' }))

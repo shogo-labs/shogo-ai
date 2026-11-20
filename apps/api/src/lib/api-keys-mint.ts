@@ -31,8 +31,7 @@ import type { PrismaClient } from '@prisma/client'
 import {
   recordDeviceActiveDay,
   recordDeviceVersionEvent,
-  type DeviceActiveDayClient,
-  type DeviceVersionEventClient,
+  type DeviceAnalyticsClient,
 } from './device-version-events'
 import { getSignupTrustHold, SignupTrustHoldError } from './signup-trust'
 
@@ -181,30 +180,19 @@ export async function mintDeviceApiKey(
     })
   })
 
-  // Seed the per-(device, version) history at mint time so a fresh install is
-  // counted before its first heartbeat. Same helper as the heartbeat and the
-  // proxy touch — one insert point for every surface that reports a version.
-  await recordDeviceVersionEvent(
-    {
-      deviceId: apiKey.deviceId,
-      version: deviceAppVersion,
-      platform: devicePlatform,
-      seenAt: apiKey.createdAt ?? new Date(),
-    },
-    args.prisma as unknown as DeviceVersionEventClient,
-  )
-
-  // A fresh install is active today: seed the day row here too, so the trend
-  // line counts a device before its first heartbeat arrives.
-  await recordDeviceActiveDay(
-    {
-      deviceId: apiKey.deviceId,
-      version: deviceAppVersion,
-      platform: devicePlatform,
-      seenAt: apiKey.createdAt ?? new Date(),
-    },
-    args.prisma as unknown as DeviceActiveDayClient,
-  )
+  // Seed both analytics rows at mint time so a fresh install is counted before
+  // its first heartbeat. Same helpers as the heartbeat and the proxy touch —
+  // one insert point for every surface that reports a version or a day.
+  const analyticsClient = args.prisma as unknown as DeviceAnalyticsClient
+  const mintedAt = apiKey.createdAt ?? new Date()
+  const touch = {
+    deviceId: apiKey.deviceId,
+    version: deviceAppVersion,
+    platform: devicePlatform,
+    seenAt: mintedAt,
+  }
+  await recordDeviceVersionEvent(touch, analyticsClient)
+  await recordDeviceActiveDay(touch, analyticsClient)
 
   return { fullKey, apiKey, keyPrefix }
 }

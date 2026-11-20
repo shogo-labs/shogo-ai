@@ -408,7 +408,9 @@ export function AppVersionsPanel({
           />
           <StackedAreaLegend series={series} />
         </View>
-      ) : (
+      ) : error ? null : (
+        // With `error` set the notice above already says the series is missing;
+        // claiming "no adoption data" as well would contradict it.
         <Text className="text-xs text-muted-foreground">No adoption data for this filter</Text>
       )}
 
