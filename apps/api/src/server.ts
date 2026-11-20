@@ -173,7 +173,7 @@ import { resetCloudKeyState } from './lib/cloud-key-state'
 import { userProfileRoutes } from './routes/local-user'
 import { localCloudBillingRoutes } from './routes/local-cloud-billing'
 import { adminSignupRiskRoutes } from './routes/admin-signup-risk'
-import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, TRIAL_MAX_SEATS, TRIAL_SEAT_LIMIT_CODE, getChatAttachmentCap, getMonthlyIncludedForPlanAndPrice, promoCreditAvailableUsd, trialSeatLimitMessage } from './config/usage-plans'
+import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, TRIAL_MAX_SEATS, TRIAL_SEAT_LIMIT_CODE, WORKSPACE_LIMITS, getChatAttachmentCap, getMonthlyIncludedForPlanAndPrice, normalizePlanId, promoCreditAvailableUsd, trialSeatLimitMessage } from './config/usage-plans'
 import { meetingRoutes } from './routes/meetings'
 import { localProjectsRoutes } from './routes/local-projects'
 import { projectAttachmentRoutes } from './routes/project-attachments'
@@ -8423,19 +8423,28 @@ app.get('/api/billing/workspace-plan', async (c) => {
       // wins, otherwise an active super-admin grant's `planId` confers the
       // tier. `source` lets the client distinguish so it doesn't try to send
       // a grant-only workspace through Stripe portal/checkout flows.
-      const plans: Record<string, { planId: string; status: string | null; source: 'subscription' | 'grant' | 'free'; canManageChildren: boolean }> = {}
+      //
+      // `includedWorkspaces` carries the plan's workspace cap and how many are
+      // already in use (1 = the parent itself). The client uses it to decide
+      // whether to offer the pooled-creation flow and what to show at cap (SHO-474).
+      const plans: Record<string, { planId: string; status: string | null; source: 'subscription' | 'grant' | 'free'; canManageChildren: boolean; includedWorkspaces: { limit: number | null; used: number } }> = {}
       await Promise.all(ids.filter(id => allowedIds.has(id)).map(async (id) => {
-        const [sub, effective] = await Promise.all([
+        const [sub, effective, childCount] = await Promise.all([
           billingService.getSubscription(id),
           billingService.getEffectivePlanId(id),
+          prisma.workspace.count({ where: { parentWorkspaceId: id } }),
         ])
         const source: 'subscription' | 'grant' | 'free' =
           sub ? 'subscription' : effective !== 'free' ? 'grant' : 'free'
+        const planId = sub?.planId ?? effective
+        const normalizedPlan = normalizePlanId(planId) ?? 'free'
+        const wsLimit = WORKSPACE_LIMITS[normalizedPlan]
         plans[id] = {
-          planId: sub?.planId ?? effective,
+          planId,
           status: sub?.status ?? (source === 'grant' ? 'active' : null),
           source,
           canManageChildren: manageableIds.has(id),
+          includedWorkspaces: { limit: wsLimit, used: 1 + childCount },
         }
       }))
       return c.json({ ok: true, plans })

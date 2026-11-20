@@ -9,13 +9,16 @@
  *  - beforeDelete: guarding a parent that still has children.
  */
 
-import { beforeEach, describe, expect, it, mock } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 // --- Mocked dependencies of workspace.hooks ---------------------------------
 let ownedCount = 0
 let ownedCountByKind: Partial<Record<'personal' | 'team', number>> = {}
 let effectivePlan = 'business'
+// childCountByWorkspaceId controls what prisma.workspace.count returns for
+// each parentWorkspaceId when checkIncludedWorkspaceAllowance runs (SHO-474).
+let childCountByWorkspaceId: Record<string, number> = {}
 
 mock.module('../services/workspace.service', () => ({
   getUserOwnedWorkspaceCount: async (_userId: string, kind?: 'personal' | 'team') =>
@@ -41,6 +44,7 @@ let usersById: Record<string, { role: string }> = {}
 const updateCalls: { id: string; data: any }[] = []
 
 // The RBAC engine reads memberships through the global prisma client.
+// Also provides workspace.count for checkIncludedWorkspaceAllowance (SHO-474).
 const enginePrisma = {
   user: {
     findUnique: async ({ where }: any) => usersById[where.id] ?? null,
@@ -53,6 +57,10 @@ const enginePrisma = {
         .filter((m) => m.userId === where.userId)
         .map((m) => ({ role: m.role, projectId: null, isBillingAdmin: !!m.isBillingAdmin }))
     },
+  },
+  workspace: {
+    findUnique: async ({ where }: any) => workspacesById[where.id] ?? null,
+    count: async ({ where }: any) => childCountByWorkspaceId[where.parentWorkspaceId] ?? 0,
   },
 }
 mock.module('../lib/prisma', () => withPrismaExports({ prisma: enginePrisma }))
@@ -95,7 +103,15 @@ beforeEach(() => {
   effectivePlan = 'business'
   workspacesById = {}
   usersById = {}
+  childCountByWorkspaceId = {}
   updateCalls.length = 0
+  // Ensure cloud-mode enforcement runs (plan checks are skipped in local mode).
+  delete process.env.SHOGO_LOCAL_MODE
+})
+
+afterEach(() => {
+  // Restore whatever the outer environment had (may be 'true' on a dev box).
+  process.env.SHOGO_LOCAL_MODE = 'true'
 })
 
 describe('workspaceHooks.beforeCreate — child workspaces', () => {
@@ -149,8 +165,8 @@ describe('workspaceHooks.beforeCreate — child workspaces', () => {
     expect(res?.ok).toBe(true)
   })
 
-  it('rejects when the parent plan is below Business', async () => {
-    effectivePlan = 'pro'
+  it('rejects with plan_required when the parent plan is free', async () => {
+    effectivePlan = 'free'
     workspacesById['parent'] = {
       id: 'parent',
       parentWorkspaceId: null,
@@ -164,6 +180,83 @@ describe('workspaceHooks.beforeCreate — child workspaces', () => {
     )
     expect(res?.ok).toBe(false)
     expect(res?.error?.code).toBe('plan_required')
+    expect(res?.error?.message).toMatch(/Basic/)
+  })
+
+  it('allows a child under a Basic-plan owner when under the limit', async () => {
+    effectivePlan = 'basic' // Basic covers 3 total (1 parent + 2 children)
+    childCountByWorkspaceId['parent'] = 1 // 1 child already, used=2 < limit=3
+    workspacesById['parent'] = {
+      id: 'parent',
+      parentWorkspaceId: null,
+      members: [{ userId: 'u1', role: 'owner' }],
+    }
+    usersById['u1'] = { role: 'user' }
+
+    const res = await workspaceHooks.beforeCreate!(
+      { name: 'Team A' },
+      makeCtx({ userId: 'u1', body: { parentWorkspaceId: 'parent' } }),
+    )
+    expect(res?.ok).toBe(true)
+  })
+
+  it('rejects when a Basic parent is at its 3-workspace cap', async () => {
+    effectivePlan = 'basic' // limit=3, 2 existing children → used=3 >= limit
+    childCountByWorkspaceId['parent'] = 2
+    workspacesById['parent'] = {
+      id: 'parent',
+      parentWorkspaceId: null,
+      members: [{ userId: 'u1', role: 'owner' }],
+    }
+    usersById['u1'] = { role: 'user' }
+
+    const res = await workspaceHooks.beforeCreate!(
+      { name: 'Team A' },
+      makeCtx({ userId: 'u1', body: { parentWorkspaceId: 'parent' } }),
+    )
+    expect(res?.ok).toBe(false)
+    expect(res?.error?.code).toBe('workspace_limit_reached')
+    expect((res?.error as any)?.limit).toBe(3)
+    expect((res?.error as any)?.used).toBe(3)
+    expect((res?.error as any)?.nextPlanId).toBe('business')
+  })
+
+  it('allows a child under a Pro-plan owner within the 10-workspace limit', async () => {
+    effectivePlan = 'pro' // limit=10
+    childCountByWorkspaceId['parent'] = 5
+    workspacesById['parent'] = {
+      id: 'parent',
+      parentWorkspaceId: null,
+      members: [{ userId: 'u1', role: 'owner' }],
+    }
+    usersById['u1'] = { role: 'user' }
+
+    const res = await workspaceHooks.beforeCreate!(
+      { name: 'Team A' },
+      makeCtx({ userId: 'u1', body: { parentWorkspaceId: 'parent' } }),
+    )
+    expect(res?.ok).toBe(true)
+  })
+
+  it('rejects when a Pro parent is at its 10-workspace cap', async () => {
+    effectivePlan = 'pro' // limit=10, 9 children → used=10 >= limit
+    childCountByWorkspaceId['parent'] = 9
+    workspacesById['parent'] = {
+      id: 'parent',
+      parentWorkspaceId: null,
+      members: [{ userId: 'u1', role: 'owner' }],
+    }
+    usersById['u1'] = { role: 'user' }
+
+    const res = await workspaceHooks.beforeCreate!(
+      { name: 'Team A' },
+      makeCtx({ userId: 'u1', body: { parentWorkspaceId: 'parent' } }),
+    )
+    expect(res?.ok).toBe(false)
+    expect(res?.error?.code).toBe('workspace_limit_reached')
+    expect((res?.error as any)?.limit).toBe(10)
+    expect((res?.error as any)?.used).toBe(10)
+    expect((res?.error as any)?.nextPlanId).toBe('business')
   })
 
   it('rejects when the caller is not an owner/admin of the parent', async () => {
@@ -248,7 +341,7 @@ describe('workspaceHooks.beforeCreate — top-level workspaces (no parent)', () 
     )
     expect(res?.ok).toBe(false)
     expect(res?.error?.code).toBe('workspace_limit_reached')
-    expect(res?.error?.message).toMatch(/paid subscription/)
+    expect(res?.error?.message).toMatch(/Basic|free workspace/)
   })
 
   it('allows a free personal workspace for a user who already owns a team workspace', async () => {

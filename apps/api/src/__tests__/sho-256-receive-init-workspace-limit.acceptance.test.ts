@@ -97,7 +97,7 @@ describe('on the cloud, receive/init applies the create rule', () => {
     expect(res.status).toBe(400)
     const body = (await res.json()) as any
     expect(body.error.code).toBe('workspace_limit_reached')
-    expect(body.error.message).toMatch(/paid subscription/)
+    expect(body.error.message).toMatch(/Basic|free workspace/)
 
     expect(await ownedWorkspaceCount(userId)).toBe(before)
     expect(await db.workspace.count({ where: { name: 'Sneaky second workspace' } })).toBe(0)

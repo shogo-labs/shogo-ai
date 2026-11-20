@@ -67,7 +67,7 @@ export default function NewWorkspacePage() {
   const [pooledCreateOpen, setPooledCreateOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const goHome = useCallback(() => router.replace('/(app)'), [router])
-  const { parent: pooledWorkspaceParent, createPooledWorkspace } = usePooledWorkspaceCreation({
+  const { parent: pooledWorkspaceParent, atCapParent, plans, createPooledWorkspace } = usePooledWorkspaceCreation({
     workspaces: workspaces?.all ?? [],
     currentWorkspaceId: currentWorkspace?.id,
     enabled: true,
@@ -254,28 +254,58 @@ export default function NewWorkspacePage() {
             </View>
           </View>
 
-          {pooledWorkspaceParent && (
-            <Card className="mb-6 rounded-2xl border-primary/40 bg-primary/5">
-              <CardContent className="gap-3 p-5">
-                <Text className="text-base font-semibold text-foreground">
-                  Your plan includes unlimited workspaces
-                </Text>
-                <Text className="text-sm leading-5 text-muted-foreground">
-                  Create a workspace under {pooledWorkspaceParent.name || 'your plan'} at no extra cost. It shares usage, billing, and seats with the parent workspace.
-                </Text>
-                <Pressable
-                  onPress={() => setPooledCreateOpen(true)}
-                  className="min-h-11 items-center justify-center rounded-xl bg-primary px-4 active:bg-primary/80"
-                  accessibilityRole="button"
-                  accessibilityLabel="Create included workspace"
-                >
-                  <Text className="text-sm font-semibold text-primary-foreground">
-                    Create included workspace
+          {pooledWorkspaceParent && (() => {
+            const ws = plans[pooledWorkspaceParent.id]?.includedWorkspaces
+            const planId = plans[pooledWorkspaceParent.id]?.planId ?? ''
+            const isUnlimited = !ws || ws.limit === null
+            const planName = planId ? planId.charAt(0).toUpperCase() + planId.split('-')[0].slice(1) : 'Your plan'
+            const usageLabel = !isUnlimited && ws
+              ? `${planName} includes ${ws.limit} workspaces · ${ws.used} of ${ws.limit} used`
+              : undefined
+            return (
+              <Card className="mb-6 rounded-2xl border-primary/40 bg-primary/5">
+                <CardContent className="gap-3 p-5">
+                  <Text className="text-base font-semibold text-foreground">
+                    {isUnlimited ? 'Your plan includes unlimited workspaces' : `${planName} includes ${ws!.limit} workspaces`}
                   </Text>
-                </Pressable>
-              </CardContent>
-            </Card>
-          )}
+                  {usageLabel && (
+                    <Text className="text-xs font-medium text-primary">{usageLabel}</Text>
+                  )}
+                  <Text className="text-sm leading-5 text-muted-foreground">
+                    Create a workspace under {pooledWorkspaceParent.name || 'your plan'} at no extra cost. It shares usage, billing, and seats with the parent workspace.
+                  </Text>
+                  <Pressable
+                    onPress={() => setPooledCreateOpen(true)}
+                    className="min-h-11 items-center justify-center rounded-xl bg-primary px-4 active:bg-primary/80"
+                    accessibilityRole="button"
+                    accessibilityLabel="Create included workspace"
+                  >
+                    <Text className="text-sm font-semibold text-primary-foreground">
+                      Create included workspace
+                    </Text>
+                  </Pressable>
+                </CardContent>
+              </Card>
+            )
+          })()}
+
+          {!pooledWorkspaceParent && atCapParent && (() => {
+            const ws = plans[atCapParent.id]?.includedWorkspaces
+            const planId = plans[atCapParent.id]?.planId ?? ''
+            const planName = planId ? planId.charAt(0).toUpperCase() + planId.split('-')[0].slice(1) : 'Your plan'
+            return (
+              <Card className="mb-6 rounded-2xl border-amber-500/30 bg-amber-50/50 dark:bg-amber-950/20">
+                <CardContent className="gap-3 p-5">
+                  <Text className="text-base font-semibold text-foreground">
+                    {planName} workspace limit reached
+                  </Text>
+                  <Text className="text-sm leading-5 text-muted-foreground">
+                    You've used {ws?.used ?? '?'} of {ws?.limit ?? '?'} workspaces on {planName}. Upgrade {atCapParent.name || 'this workspace'} to Business for unlimited workspaces.
+                  </Text>
+                </CardContent>
+              </Card>
+            )
+          })()}
 
           {/* Workspace Name */}
           <Card className="mb-6 rounded-2xl border-border/80 bg-card">
