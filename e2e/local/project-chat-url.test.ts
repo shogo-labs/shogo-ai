@@ -23,6 +23,8 @@ const API = process.env.E2E_API_URL || "http://localhost:8002"
 let workspaceId = ""
 let projectId = ""
 let projectId2 = ""
+let project1Name = ""
+let project2Name = ""
 let seedIds2: string[] = []
 let alphaId = ""
 let bravoId = ""
@@ -131,6 +133,7 @@ test.describe("Project chat URL (local)", () => {
     })
     projectId = project.json?.data?.id ?? project.json?.id
     expect(projectId, JSON.stringify(project.json)).toBeTruthy()
+    project1Name = project.json?.data?.name ?? ""
 
     for (const name of ["Alpha", "Bravo"]) {
       const created = await apiJson(page, "POST", "/api/chat-sessions", {
@@ -173,6 +176,7 @@ test.describe("Project chat URL (local)", () => {
     })
     projectId2 = project2.json?.data?.id ?? project2.json?.id
     expect(projectId2, JSON.stringify(project2.json)).toBeTruthy()
+    project2Name = project2.json?.data?.name ?? ""
     for (const name of ["Charlie", "Delta"]) {
       const created = await apiJson(page, "POST", "/api/chat-sessions", {
         contextId: projectId2,
@@ -288,6 +292,43 @@ test.describe("Project chat URL (local)", () => {
     const url = new URL(page.url())
     expect(url.searchParams.get("newChat")).toBeNull()
     expect(url.searchParams.get("newChatNonce")).toBeNull()
+  })
+
+  test("the arrival query is spent once: leaving and returning does not replay it", async ({
+    page,
+  }) => {
+    // Chat creations are counted at the wire, so a replayed `newChat=1` shows up
+    // as a second one.
+    let creations = 0
+    page.on("request", (request) => {
+      if (request.method() === "POST" && /\/api\/chat-sessions(\?|$)/.test(request.url())) {
+        creations += 1
+      }
+    })
+
+    await prepare(page)
+    await openProject(page, `?newChat=1&newChatNonce=${Date.now()}`, projectId2)
+    // The arrival minted its chat and consumed the one-shot params.
+    await expect.poll(() => creations, { timeout: 40_000 }).toBeGreaterThan(0)
+    const afterArrival = creations
+    const arrivedChat = chatParam(page)
+    expect(arrivedChat && !seedIds2.includes(arrivedChat)).toBe(true)
+    expect(new URL(page.url()).searchParams.get("newChat")).toBeNull()
+
+    // Leave the project inside the app and come back the way a user does: the
+    // sidebar pushes another project, Back returns. Both are client-side, so
+    // this is still the page load from above and its arrival query is spent.
+    const sidebar = page.getByRole("navigation", { name: "App sidebar" }).first()
+    await sidebar.getByRole("link", { name: `Project: ${project1Name}` }).first().click()
+    await expect.poll(() => new URL(page.url()).pathname, { timeout: 40_000 }).toBe(
+      `/projects/${projectId}`,
+    )
+    await page.goBack()
+    await composer(page).waitFor({ state: "visible", timeout: 60_000 })
+
+    expect(creations, "revisiting the project must not mint another chat").toBe(afterArrival)
+    expect(chatParam(page), "the chat it opened must not be replaced").toBe(arrivedChat)
+    expect(new URL(page.url()).searchParams.get("newChat")).toBeNull()
   })
 
   test("an unknown chat id falls back to the project chat and corrects the URL", async ({ page }) => {

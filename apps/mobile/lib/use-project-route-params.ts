@@ -16,18 +16,26 @@
  * focused path is this project, so a screen pushed *on top* of the layout
  * cannot bleed its params in here.
  *
+ * That restore belongs to the page load, not to the mount. This layout
+ * remounts whenever the viewer leaves the project and comes back, and those
+ * in-app visits carry their own params — replaying the arrival query on them
+ * would re-send `initialMessage`, mint a second chat for `newChat=1`, and snap
+ * `tab`/`chatSessionId` back to the original link. So the query is peeked
+ * while unclaimed (any number of renders, StrictMode included) and claimed by
+ * exactly one effect per page load.
+ *
  * Restoring the value for rendering is not enough on its own: the URL is
  * serialised from the router's own state, so a key that only exists in the
- * merged object would be dropped again on the next write. Any restored key is
- * therefore also put back into the router state once, which is what keeps
+ * merged object would be dropped again on the next write. The claiming effect
+ * therefore also puts those keys into the router state, which is what keeps
  * `?tab=` in the address bar.
  *
  * The pure merge/guard function lives in `project-route-params-core.ts` so
  * unit tests can import it without resolving expo-router native modules.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { useLocalSearchParams, useGlobalSearchParams, usePathname, useRouter } from 'expo-router'
-import { arrivalQueryParamsForProject } from './arrival-url'
+import { claimArrivalQueryParams, peekArrivalQueryParamsForProject } from './arrival-url'
 export { mergeProjectRouteParams } from './project-route-params-core'
 import { mergeProjectRouteParams } from './project-route-params-core'
 
@@ -42,11 +50,27 @@ import { mergeProjectRouteParams } from './project-route-params-core'
 const NOT_RESTORED = new Set(['workspace', 'embed'])
 
 /**
+ * Keys of `merged` that only the arrival URL supplied, i.e. what the router
+ * lost on this page load.
+ */
+function restoredKeys(
+  merged: Record<string, unknown>,
+  supplied: Record<string, unknown>,
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(merged)) {
+    if (typeof value !== 'string' || NOT_RESTORED.has(key)) continue
+    if (supplied[key] === undefined) out[key] = value
+  }
+  return out
+}
+
+/**
  * Drop-in replacement for `useLocalSearchParams` in `_layout.tsx`.
  *
- * Returns the params that hold for both cold loads and in-app pushes, plus one
- * effect that puts any cold-load-only key back into the router state so the
- * URL keeps it.
+ * Returns the params that hold for both cold loads and in-app pushes. On the
+ * page load that opened this project, the arrival query is also put back into
+ * the router state once, so the URL keeps it.
  */
 export function useProjectRouteParams<
   T extends Record<string, string | string[]>,
@@ -61,7 +85,9 @@ export function useProjectRouteParams<
       : Array.isArray(local.id)
         ? local.id[0]
         : undefined
-  const arrivalParams = arrivalQueryParamsForProject(projectId)
+  // A read, not a take: RENDERING with the arrival query is fine on every
+  // render; only acting on it is once-per-page-load (the effect below).
+  const arrivalParams = peekArrivalQueryParamsForProject(projectId)
 
   const merged = mergeProjectRouteParams({
     local,
@@ -71,25 +97,21 @@ export function useProjectRouteParams<
     arrivalParams,
   })
 
-  // Keys that came only from the arrival URL. Captured once, from the first
-  // render's params: later renders reflect the state this hook writes.
-  const [restored] = useState<Record<string, string>>(() => {
-    const supplied: Record<string, unknown> = { ...global, ...local }
-    const out: Record<string, string> = {}
-    for (const [key, value] of Object.entries(merged)) {
-      if (typeof value !== 'string' || NOT_RESTORED.has(key)) continue
-      if (supplied[key] === undefined) out[key] = value
-    }
-    return out
-  })
+  // Derived every render rather than latched: the first render of a cold load
+  // can still be missing `id` (the store is populated by the leaf), so a
+  // captured-at-mount value could latch `{}` and never restore anything.
+  const restored = restoredKeys(merged, { ...global, ...local })
 
-  const restoredOnce = useRef(false)
+  const settled = useRef(false)
   useEffect(() => {
-    if (restoredOnce.current) return
+    if (settled.current || !projectId) return
+    settled.current = true
+    // Claimed even when there is nothing to restore, so a later in-app visit
+    // to this project cannot pick the arrival query up instead.
+    if (!claimArrivalQueryParams()) return
     if (Object.keys(restored).length === 0) return
-    restoredOnce.current = true
     router.setParams(restored)
-  }, [restored, router])
+  }, [projectId, restored, router])
 
   return merged
 }
