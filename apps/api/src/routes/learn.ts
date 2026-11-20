@@ -548,9 +548,13 @@ export function learnRoutes(deps: LearnRoutesDeps) {
       return c.json({ error: 'answers is required.' }, 400)
     }
 
-    const { level, enrollments } = await learnerState(learner.user.id)
+    const [{ level, enrollments }, done] = await Promise.all([learnerState(learner.user.id), completedByCourse(learner.user.id)])
     const decision = decideLearnAccess(course.access, { signedIn: true, level })
     if (!decision.hasAccess) return c.json({ error: lockedMessage(decision), access: decision }, 403)
+    const lesson = CERTIFICATE_LESSON[courseId]
+    if (lesson && !unlockedLessons(courseId, done[courseId] ?? []).includes(lesson)) {
+      return c.json({ error: 'Finish every lesson in this course before the final check.' }, 403)
+    }
 
     const rl = await deps.takeRateLimit(`learn-cert:${learner.user.id}`, CERT_ATTEMPTS_PER_DAY, DAY_MS)
     if (!rl.allowed) {
@@ -562,7 +566,6 @@ export function learnRoutes(deps: LearnRoutesDeps) {
     if (!result.passed) return c.json({ ...result, passMark: rule.passMark })
 
     const tz = cleanTz((body as { tz?: unknown }).tz)
-    const lesson = CERTIFICATE_LESSON[courseId]
     const certAdded = lesson ? await deps.recordCompletions(learner.user.id, [{ courseId, lessonId: lesson, day: learnerDay(new Date(now()), tz) }]) : 0
     const g = await gamification(learner.user.id, enrollments, tz, { certified: [courseId], added: certAdded > 0 ? [{ courseId, lessonId: lesson! }] : [] })
     const name = cleanCertificateName(body.name) || cleanCertificateName(learner.user.name) || 'Shogo learner'
