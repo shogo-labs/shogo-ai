@@ -39,6 +39,7 @@ import { computeUsageRoutes } from './routes/compute-usage'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
 import { conversationRoutes } from './routes/conversations'
 import { workBoardRoutes } from './routes/work-boards'
+import { mailRoutes, mailWebhookRoutes } from './routes/mail'
 import { accessPolicyRoutes } from './routes/access-policies'
 // Analytics routes are plain in-repo modules (Prisma only), so they mount in
 // local mode too. Loading them via server-cloud-deps left local 404ing.
@@ -1853,6 +1854,9 @@ void settleOrphanedAgentReplies(0).catch((err) => console.warn('[Channels] could
 registerBuiltInChatProviders()
 app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', workBoardRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', mailRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', mailWebhookRoutes())
+
 app.route('/api', accessPolicyRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', chatProviderRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))

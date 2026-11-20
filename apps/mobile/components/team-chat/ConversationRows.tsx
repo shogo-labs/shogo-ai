@@ -7,13 +7,14 @@
  */
 import { memo, useState, type ReactNode } from 'react'
 import { Pressable, Text, View } from 'react-native'
-import { Bot, ChevronDown, ChevronRight, Hash, Lock, Pencil, Plus, Radio, Users } from 'lucide-react-native'
+import { Bot, ChevronDown, ChevronRight, Hash, Lock, Mail, Pencil, Plus, Radio, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { densityFor } from '../../lib/phone-density'
 import { usePhoneLayout } from '../../lib/native-phone-layout'
 import { conversationTitle, isSelfDm, type ConversationSummary } from '../../lib/team-chat-api'
 import { isConversationUnread } from '../../lib/team-chat-counts'
 import { useHasDraft } from '../../hooks/useChatItems'
+import { useMailboxConversationIds } from '../../hooks/useMail'
 import { PresenceDot } from './PresenceDot'
 import { InlineMarkdown } from './InlineMarkdown'
 import { UserAvatar } from './UserAvatar'
@@ -26,7 +27,8 @@ export function hasAgent(c: Pick<ConversationSummary, 'participants'>): boolean 
   return (c.participants ?? []).some((p) => p.type === 'agent')
 }
 
-export function iconFor(c: ConversationSummary) {
+export function iconFor(c: ConversationSummary, isMailbox = false) {
+  if (isMailbox) return Mail
   if (c.kind === 'activity') return Radio
   if (c.kind === 'private') return Lock
   if (c.kind === 'public') return Hash
@@ -82,7 +84,8 @@ export const ConversationRowView = memo(function ConversationRowView({
   comfortable,
 }: ConversationRowProps & { comfortable: boolean }) {
   const density = densityFor(comfortable)
-  const Icon = iconFor(c)
+  const mailboxIds = useMailboxConversationIds(workspaceId)
+  const Icon = iconFor(c, mailboxIds.has(c.id))
   const unread = !active && isConversationUnread(c)
   const title = rowTitle(c)
   const peers = c.kind === 'dm' ? c.participants ?? [] : []
