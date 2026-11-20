@@ -33,7 +33,7 @@ const DEPARTMENT_LESSONS = ['jobs', 'set-up', 'workflow', 'guardrails', 'measure
 /** Lesson ids per course, in order. Must match the learn site's content. */
 export const LEARN_LESSONS: Readonly<Record<string, readonly string[]>> = {
   'agents-for-everyone': ['what-is-an-agent', 'good-at-bad-at', 'how-to-ask', 'first-agent', 'stay-safe', 'final-check'],
-  'start-here': ['what-an-agent-is', 'first-app', 'review-loop', 'save-data', 'share-it'],
+  'start-here': ['what-an-agent-is', 'shogo-words', 'first-app', 'review-loop', 'plan-first', 'save-data', 'share-it'],
   'ai-teammates': ['teammates-not-tools', 'where-to-talk', 'talking-to-agents', 'job-descriptions', 'delegation', 'humans-in-the-loop', 'routines'],
   'agent-team-playbook': ['team', 'roles', 'loop', 'review', 'lessons', 'reflect', 'cleanup', 'evals'],
   'first-client': ['the-offer', 'find-prospects', 'demo-in-a-day', 'show-dont-pitch', 'scope-and-price', 'deliver', 'apps-for-clients', 'keep-them'],
