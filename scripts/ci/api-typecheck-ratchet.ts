@@ -35,25 +35,38 @@ function normalizePath(path: string): string {
 }
 
 // The gate protects apps/api/src — only errors whose repo-relative path starts
-// here are counted. Errors in packages/* are excluded explicitly for three
-// reasons:
+// here are counted. Two further classes of error are explicitly excluded even
+// when they originate inside apps/api/src:
 //
-//   TS6059 rootDir / TS5097 allowImportingTsExtensions — these codes appear
-//   whenever tsc resolves a transitive import that lives outside apps/api's
-//   rootDir. They depend on the worktree/symlink layout of the CI runner
-//   (packages/… on main, ../wt-*/packages/… on a dev machine), so the same
-//   underlying state produces different baseline keys across environments and
-//   creates spurious "new error" noise that blocks unrelated PRs.
+//   TS6059 rootDir / TS5097 allowImportingTsExtensions — appear whenever tsc
+//   resolves a transitive import outside apps/api's rootDir. The key depends on
+//   the worktree/symlink layout of the CI runner, so the same code produces
+//   different baseline keys across environments (packages/X on main vs.
+//   ../wt-*/packages/X on a dev machine).
 //
-//   dist-vs-src TS2322 identity mismatches — same root cause: tsc picks up the
-//   dist/ build of an SDK package on some machines and the src/ on others,
-//   yielding structurally-identical but nominally-distinct types.
+//   dist-vs-src TS2322 identity mismatches — tsc picks up the dist/ build of an
+//   SDK package on some machines (pre-built locally) and the src/ on others (CI
+//   cold cache). The two types are structurally identical but nominally distinct,
+//   so tsc reports a TS2322. The error can appear in apps/api/src itself when
+//   cloud-content-sync.ts imports from the SDK and CI hasn't built it yet.
+//   Detected by: TS2322 message contains both packages/X/src/ and packages/X/dist/
+//   for the same X. A real TS2322 (wrong field name, wrong shape) will NOT match
+//   this pattern.
 //
-//   Broad exclusion is intentional. A real cross-package break still surfaces
-//   in apps/api/src itself (at the Prisma query, service call or route handler
-//   that uses the bad type); those errors ARE counted. Only the packages/* noise
-//   is excluded.
+//   Broad exclusion is intentional. A real cross-package break still surfaces at
+//   the Prisma query, service call or route handler in apps/api/src — those errors
+//   ARE counted.
 const API_SRC_PREFIX = 'apps/api/src/'
+
+// Returns true when a TS2322 message is a src-vs-dist nominal identity mismatch
+// (same package, one arm from /src/, the other from /dist/). These are build-
+// environment noise, not real type errors.
+function isSrcDistMismatch(code: string, message: string): boolean {
+  if (code !== 'TS2322') return false
+  const m = /packages\/([^/]+)\/src\//.exec(message)
+  if (!m) return false
+  return message.includes(`packages/${m[1]}/dist/`)
+}
 
 export function parseTscOutput(output: string): Baseline {
   const counts: Baseline = {}
@@ -67,6 +80,8 @@ export function parseTscOutput(output: string): Baseline {
     if (!normalized.startsWith(API_SRC_PREFIX)) continue
     // tsc continues long messages on indented lines; keep only the first.
     const message = first.split(REPO_ROOT).join('<repo>').replace(/\s+/g, ' ').trim()
+    // Exclude src-vs-dist TS2322 nominal identity noise — see note above.
+    if (isSrcDistMismatch(code, message)) continue
     const key = `${normalized} ${code} ${message}`
     counts[key] = (counts[key] ?? 0) + 1
   }
