@@ -86,6 +86,9 @@ export function isPublicChannelIngressPath(path: string): boolean {
     return true
   }
 
+  // Teams channel (Bot Framework JWT auth)
+  if (relative === '/agent/channels/teams/messages') return true
+
   // Generic webhook channel — POST incoming and GET outbox/<correlationId> only.
   // /health, /activity and /test stay behind login (they leak message previews
   // or run a live turn). The outbox segment must be exactly one path component

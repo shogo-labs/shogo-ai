@@ -28,7 +28,7 @@ export interface ChannelStatus {
 }
 
 export interface ChannelAdapter {
-  connect(config: Record<string, string>): Promise<void>
+  connect(config: Record<string, string>, workspaceDir?: string): Promise<void>
   disconnect(): Promise<void>
   sendMessage(channelId: string, content: string): Promise<void>
   /** Edit a previously sent message (for streaming updates). Returns false if unsupported. */
