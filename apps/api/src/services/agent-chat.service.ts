@@ -376,25 +376,22 @@ export async function listRecentAgentChats(
   // Projects this user can see (same visibility as listMentionables).
   const readable = await accessibleProjectsWhere({ userId, via: 'session' }, workspaceId)
 
-  // Sessions where the user sent at least one real message (not a project-call stub).
-  const userSentMessage = {
-    some: {
-      role: 'user',
-      agent: { not: PROJECT_CALL_MESSAGE_AGENT },
-      OR: [{ authorUserId: userId }, { authorUserId: null, session: { createdByUserId: userId } }],
-    },
-  }
+  // "The user sent at least one real message in this session."
+  // Uses the shared helper so the predicate stays in one place.
+  const userSentMessage = { some: agentChatMessageWhere(workspaceId, userId) }
 
-  const db = prisma as any
-  const sessions = (await db.chatSession.findMany({
+  // ChatSession has no `projectId` column: workspace chats use
+  // `contextType:'workspace'` + `workspaceId`, project chats use
+  // `contextType:'project'` + `contextId` (the projectId FK).
+  const sessions = (await (prisma as any).chatSession.findMany({
     where: {
       isArchived: false,
       messages: userSentMessage,
       OR: [
-        // Workspace-agent chats this user owns.
-        { workspaceId, projectId: null, createdByUserId: userId },
+        // Workspace-agent chats owned by this user in this workspace.
+        { contextType: 'workspace', workspaceId, createdByUserId: userId },
         // Project-agent chats in projects the user can see.
-        { project: { workspaceId, AND: readable } },
+        { contextType: 'project', project: { workspaceId, AND: readable }, createdByUserId: userId },
       ],
     },
     orderBy: { lastActiveAt: 'desc' },
@@ -403,13 +400,15 @@ export async function listRecentAgentChats(
       id: true,
       name: true,
       inferredName: true,
-      projectId: true,
+      contextType: true,
+      contextId: true,
       lastActiveAt: true,
       project: {
         select: { id: true, name: true },
       },
       messages: {
-        where: { role: { in: ['user', 'assistant'] }, deletedAt: null },
+        // No `deletedAt` column on ChatMessage — filter by role only.
+        where: { role: { in: ['user', 'assistant'] } },
         orderBy: { createdAt: 'desc' },
         take: 1,
         select: { content: true },
@@ -417,11 +416,15 @@ export async function listRecentAgentChats(
     },
   })) as any[]
 
+  // Resolve the workspace agent's display name once — avoids N async calls.
+  const wsAgentName = await agentDisplayName(workspaceId, null)
+
   // Deduplicate per agent when requested.
   const seen = new Set<string>()
   const result: RecentAgentChat[] = []
   for (const s of sessions) {
-    const agentKey: string = s.projectId ?? 'ws'
+    const projectId: string | null = s.contextType === 'project' ? (s.contextId ?? null) : null
+    const agentKey: string = projectId ?? 'ws'
     if (opts.perAgent) {
       if (seen.has(agentKey)) continue
       seen.add(agentKey)
@@ -430,9 +433,9 @@ export async function listRecentAgentChats(
     result.push({
       chatSessionId: s.id,
       title: s.name || s.inferredName || 'Untitled chat',
-      projectId: s.projectId,
+      projectId,
       agentKey,
-      agentName: s.project?.name ?? null,
+      agentName: projectId ? (s.project?.name ?? null) : wsAgentName,
       lastActiveAt: (s.lastActiveAt as Date).toISOString(),
       preview: rawPreview ? rawPreview.slice(0, 120) : null,
     })
