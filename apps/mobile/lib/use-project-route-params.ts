@@ -11,107 +11,116 @@
  * sees `{ id }` and `tab`, `chatSessionId` and `file` are simply undefined.
  *
  * The arrival URL recorded in `arrival-url.ts` is the only record of what the
- * viewer asked for, so each key the router lost is restored from it. Keys the
- * router does supply always win, and the leaf params are only read while the
- * focused path is this project, so a screen pushed *on top* of the layout
- * cannot bleed its params in here.
+ * viewer asked for, so it speaks for every key the router is not
+ * authoritatively carrying — including a `chatSessionId` the chat mirror has
+ * already filled with the project's pinned chat by first render (see
+ * `arrivalSpeaks` in `project-route-params-core.ts` for the exact rule).
  *
- * That restore belongs to the page load, not to the mount. This layout
- * remounts whenever the viewer leaves the project and comes back, and those
- * in-app visits carry their own params — replaying the arrival query on them
- * would re-send `initialMessage`, mint a second chat for `newChat=1`, and snap
- * `tab`/`chatSessionId` back to the original link. So the query is peeked
- * while unclaimed (any number of renders, StrictMode included) and claimed by
- * exactly one effect per page load.
+ * This hook only *reads*. Writing the query into the router state is the chat
+ * URL mirror's job (`lib/project-chat-url.ts`): it is the single writer of
+ * `?chatSessionId=`, and two owners of one address bar fight — a write here
+ * calculated from the pre-restore params is undone by the mirror's next write,
+ * and vice versa. So this hook reports the keys the URL has to keep
+ * (`preserved`) and the layout hands them to the mirror, which carries them on
+ * every write it makes for the life of the screen.
  *
- * Restoring the value for rendering is not enough on its own: the URL is
- * serialised from the router's own state, so a key that only exists in the
- * merged object would be dropped again on the next write. The claiming effect
- * therefore also puts those keys into the router state, which is what keeps
- * `?tab=` in the address bar.
+ * The arrival query is spent once per page load. This layout remounts whenever
+ * the viewer leaves the project and comes back, and those in-app visits carry
+ * their own params — replaying the arrival query on them would re-send
+ * `initialMessage`, mint a second chat for `newChat=1`, and snap
+ * `tab`/`chatSessionId` back to the original link. Both the arrival query and
+ * the mount's baseline are latched for the life of the mount, so claiming it
+ * cannot make a restored tab or chat vanish underneath the screen.
  *
- * The pure merge/guard function lives in `project-route-params-core.ts` so
- * unit tests can import it without resolving expo-router native modules.
+ * The pure merge/guard functions live in `project-route-params-core.ts` so unit
+ * tests can import them without resolving expo-router native modules.
  */
 import { useEffect, useRef } from 'react'
-import { useLocalSearchParams, useGlobalSearchParams, usePathname, useRouter } from 'expo-router'
+import { useLocalSearchParams, useGlobalSearchParams, usePathname } from 'expo-router'
 import { claimArrivalQueryParams, peekArrivalQueryParamsForProject } from './arrival-url'
-export { mergeProjectRouteParams } from './project-route-params-core'
-import { mergeProjectRouteParams } from './project-route-params-core'
+import {
+  mergeProjectRouteParams,
+  NOT_RESTORED_PARAMS,
+} from './project-route-params-core'
 
-/**
- * Arrival keys deliberately not pushed into the router state.
- *
- * `workspace` is the guarded "a link wants to move you" input (SHO-284,
- * `adoptableWorkspaceParam`); re-asserting it would hand that flow a workspace
- * on every cold load. `embed` is read straight from `location.search` by the
- * IDE embed checks. Neither is a parameter of the project route being restored.
- */
-const NOT_RESTORED = new Set(['workspace', 'embed'])
+export { mergeProjectRouteParams, NOT_RESTORED_PARAMS } from './project-route-params-core'
 
-/**
- * Keys of `merged` that only the arrival URL supplied, i.e. what the router
- * lost on this page load.
- */
-function restoredKeys(
-  merged: Record<string, unknown>,
-  supplied: Record<string, unknown>,
-): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const [key, value] of Object.entries(merged)) {
-    if (typeof value !== 'string' || NOT_RESTORED.has(key)) continue
-    if (supplied[key] === undefined) out[key] = value
-  }
-  return out
+export interface ProjectRouteParams<T> {
+  /** The params to read: the arrival URL's intent, then the router's own. */
+  params: T
+  /**
+   * Arrival keys the address bar still has to carry, i.e. what the URL writer
+   * must keep on every write. Empty for in-app navigations and for keys the
+   * screen has since changed itself.
+   */
+  preserved: Record<string, string>
+  /** The params the router supplied, i.e. what it would serialise the URL to. */
+  routerParams: T
 }
 
 /**
  * Drop-in replacement for `useLocalSearchParams` in `_layout.tsx`.
- *
- * Returns the params that hold for both cold loads and in-app pushes. On the
- * page load that opened this project, the arrival query is also put back into
- * the router state once, so the URL keeps it.
  */
 export function useProjectRouteParams<
   T extends Record<string, string | string[]>,
->(): T {
+>(): ProjectRouteParams<T> {
   const local = useLocalSearchParams<T>()
   const global = useGlobalSearchParams<T>()
   const pathname = usePathname()
-  const router = useRouter()
+  // The id is a path segment, so the focused leaf carries it too (`populateParams`
+  // copies path params onto the sibling routes). Reading both matters: the
+  // screen latches its state from these params on its FIRST render, and on a
+  // cold load that render can still be missing the layout's own params.
+  const rawId = local.id ?? global.id
   const projectId =
-    typeof local.id === 'string'
-      ? local.id
-      : Array.isArray(local.id)
-        ? local.id[0]
-        : undefined
-  // A read, not a take: RENDERING with the arrival query is fine on every
-  // render; only acting on it is once-per-page-load (the effect below).
-  const arrivalParams = peekArrivalQueryParamsForProject(projectId)
+    typeof rawId === 'string' ? rawId : Array.isArray(rawId) ? rawId[0] : undefined
 
-  const merged = mergeProjectRouteParams({
+  // Latched for the life of this mount, and only on a render that has arrival
+  // params, so an early render without `id` cannot freeze an empty set.
+  const latched = useRef<{
+    projectId: string
+    arrivalParams: Record<string, string>
+    baseline: T
+  } | null>(null)
+
+  const routerParams = { ...global, ...local } as T
+  const arrivalParams = peekArrivalQueryParamsForProject(projectId)
+  if (arrivalParams && projectId && latched.current?.projectId !== projectId) {
+    latched.current = { projectId, arrivalParams, baseline: routerParams }
+  }
+  const latchedArrival =
+    latched.current?.projectId === projectId ? latched.current : null
+
+  const params = mergeProjectRouteParams<T>({
     local,
     global,
     pathname,
     projectId,
-    arrivalParams,
+    arrivalParams: latchedArrival?.arrivalParams ?? arrivalParams,
+    baseline: latchedArrival?.baseline ?? routerParams,
   })
 
-  // Derived every render rather than latched: the first render of a cold load
-  // can still be missing `id` (the store is populated by the leaf), so a
-  // captured-at-mount value could latch `{}` and never restore anything.
-  const restored = restoredKeys(merged, { ...global, ...local })
+  // Every arrival key still in force, not only the ones the router had already
+  // dropped at first render: the writer drops keys it does not pass, and how
+  // much of the query survives the router's settle varies by URL (a reload of a
+  // settings link arrives with `tab` intact but loses it to the next write). A
+  // key drops out as soon as the screen changes that value itself — a tab
+  // click, a chat switch — because then the screen's value is the URL's.
+  const preserved: Record<string, string> = {}
+  for (const [key, value] of Object.entries(latchedArrival?.arrivalParams ?? {})) {
+    if (NOT_RESTORED_PARAMS.has(key)) continue
+    if (params[key] === value) preserved[key] = value
+  }
 
+  // Claims this page load's arrival query for the first project mount, even
+  // when nothing needed correcting, so a later in-app visit to this project
+  // cannot pick it up instead.
   const settled = useRef(false)
   useEffect(() => {
     if (settled.current || !projectId) return
     settled.current = true
-    // Claimed even when there is nothing to restore, so a later in-app visit
-    // to this project cannot pick the arrival query up instead.
-    if (!claimArrivalQueryParams()) return
-    if (Object.keys(restored).length === 0) return
-    router.setParams(restored)
-  }, [projectId, restored, router])
+    claimArrivalQueryParams()
+  }, [projectId])
 
-  return merged
+  return { params, preserved, routerParams }
 }

@@ -158,7 +158,27 @@ describe('mergeProjectRouteParams', () => {
     expect(result.chatScope).toBe('workspace')
   })
 
-  it('a key the router supplies wins over the arrival URL', () => {
+  it('the arrival URL wins over a chat the app pre-selected itself', () => {
+    // The real cold-load shape for `?chatSessionId=`: by first render the chat
+    // mirror has already named the project's pinned chat, so the router does
+    // supply an id — the app's invention, not the viewer's request. A
+    // fill-only-what-is-missing rule loses to it (SHO-174).
+    const local = params({ chatSessionId: 'chat-pinned' })
+    const global = params({})
+    const result = mergeProjectRouteParams({
+      local,
+      global,
+      pathname: PROJECT_PATH,
+      projectId: ID,
+      arrivalParams: { chatSessionId: 'chat-bravo' },
+      baseline: params({ chatSessionId: 'chat-pinned' }),
+    })
+    expect(result.chatSessionId).toBe('chat-bravo')
+  })
+
+  it('a key the screen changed itself wins over the arrival URL', () => {
+    // Settings on arrival, then the viewer clicks Canvas: the screen's value
+    // must stick, or the arrival URL would pin the tab forever.
     const local = params({ tab: 'canvas' })
     const global = params({})
     const result = mergeProjectRouteParams({
@@ -167,11 +187,12 @@ describe('mergeProjectRouteParams', () => {
       pathname: PROJECT_PATH,
       projectId: ID,
       arrivalParams: { tab: 'settings' },
+      baseline: params({ tab: 'settings' }),
     })
     expect(result.tab).toBe('canvas')
   })
 
-  it('a leaf key wins over the arrival URL', () => {
+  it('a leaf key the screen changed wins over the arrival URL', () => {
     const local = params({})
     const global = params({ tab: 'chat-fullscreen' })
     const result = mergeProjectRouteParams({
@@ -180,8 +201,24 @@ describe('mergeProjectRouteParams', () => {
       pathname: PROJECT_PATH,
       projectId: ID,
       arrivalParams: { tab: 'settings' },
+      baseline: params({}),
     })
     expect(result.tab).toBe('chat-fullscreen')
+  })
+
+  it('never resurrects workspace or embed from the arrival URL', () => {
+    const local = params({})
+    const global = params({})
+    const result = mergeProjectRouteParams({
+      local,
+      global,
+      pathname: PROJECT_PATH,
+      projectId: ID,
+      arrivalParams: { workspace: 'ws-1', embed: 'ide', tab: 'settings' },
+    })
+    expect(result.workspace).toBeUndefined()
+    expect(result.embed).toBeUndefined()
+    expect(result.tab).toBe('settings')
   })
 
   it('no arrival params: only local and leaf are used', () => {

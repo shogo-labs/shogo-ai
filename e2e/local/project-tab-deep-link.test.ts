@@ -21,6 +21,7 @@ const API = process.env.E2E_API_URL || "http://localhost:8002"
 
 let workspaceId = ""
 let projectId = ""
+let projectName = ""
 
 async function apiJson(page: Page, method: string, path: string, body?: unknown) {
   const res = await page.request.fetch(`${API}${path}`, {
@@ -69,6 +70,11 @@ async function prepare(page: Page) {
 }
 
 /** Tab param from the current URL. */
+/** The pane the screen says it is showing (mirrored into `?navTab=`). */
+function navTabParam(page: Page): string | null {
+  return new URL(page.url()).searchParams.get("navTab")
+}
+
 function tabParam(page: Page): string | null {
   return new URL(page.url()).searchParams.get("tab")
 }
@@ -99,6 +105,7 @@ test.describe("Project tab deep link (local, SHO-174)", () => {
       settings: JSON.stringify({ activeMode: "canvas", techStackId: "react-app" }),
     })
     projectId = project.json?.data?.id ?? project.json?.id
+    projectName = project.json?.data?.name ?? ""
     expect(projectId, JSON.stringify(project.json)).toBeTruthy()
 
     await page.close()
@@ -128,24 +135,39 @@ test.describe("Project tab deep link (local, SHO-174)", () => {
 
     await page.reload()
     await page.getByTestId("settings-nav-machine").waitFor({ state: "visible", timeout: 60_000 })
-    expect(tabParam(page)).toBe("settings")
+    // The address bar is written by an effect, so poll for it as the test above
+    // does rather than sampling the URL the instant Settings paints.
+    await expect.poll(() => tabParam(page), { timeout: 10_000 }).toBe("settings")
   })
 
   test("cold load ?tab=files lands on Files panel (AC1)", async ({ page }) => {
     await prepare(page)
     await page.goto(`/projects/${projectId}?tab=files`)
-    // The Files panel renders a file tree; we probe for the panel heading
-    await page.getByRole("heading", { name: /files/i }).first().waitFor({ state: "visible", timeout: 60_000 })
+    // The screen mirrors the pane it is actually showing into `?navTab=`, which
+    // proves the deep link selected Files without depending on the file tree's
+    // markup (that panel has no stable heading and needs a live runtime).
+    await expect.poll(() => navTabParam(page), { timeout: 60_000 }).toBe("files")
     await expect.poll(() => tabParam(page), { timeout: 10_000 }).toBe("files")
   })
 
-  test("in-app push to settings is unaffected (AC5)", async ({ page }) => {
+  test("in-app tab intent still wins over the arrival URL (AC5)", async ({ page }) => {
     await prepare(page)
-    // Start on canvas via a cold load
-    await page.goto(`/projects/${projectId}`)
-    await page.waitForLoadState("networkidle")
-    // The sidebar settings click uses router.push with tab: 'settings'
-    await page.getByRole("link", { name: /settings/i }).first().click()
+    // Arrive on Settings from the link, so the address bar carries `tab=settings`.
+    await page.goto(`/projects/${projectId}?tab=settings`)
     await page.getByTestId("settings-nav-machine").waitFor({ state: "visible", timeout: 60_000 })
+
+    // The sidebar project row is the in-app tab switch: on the project that is
+    // already open it does `router.setParams({ tab, tabNonce })` rather than a
+    // push (ProjectTreeItem `openProject`), which is the AC5 path.
+    await page
+      .getByRole("navigation", { name: "App sidebar" })
+      .getByRole("link", { name: `Project: ${projectName}` })
+      .first()
+      .click()
+
+    // The in-app intent lands on the project's landing tab, not the one the
+    // arrival URL asked for: the restore must not pin the tab for the session.
+    await expect.poll(() => navTabParam(page), { timeout: 30_000 }).toBe("canvas")
+    await expect.poll(() => tabParam(page), { timeout: 10_000 }).toBe("canvas")
   })
 })

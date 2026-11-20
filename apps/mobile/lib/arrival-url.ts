@@ -36,10 +36,20 @@
  *
  * Empty on native, where there is no address bar to lose.
  */
-const ARRIVAL_HREF =
-  typeof window !== 'undefined' && typeof window.location?.href === 'string'
-    ? window.location.href
-    : ''
+/**
+ * The href a document was loaded with, given the ambient value.
+ *
+ * Extracted so the native/empty case is exercised by a unit test instead of by
+ * whatever globals the test runner happens to expose — the mobile suite runs
+ * with a `window`, so `typeof window === 'undefined'` is never true there.
+ */
+export function captureArrivalHref(value: string | null | undefined): string {
+  return typeof value === 'string' ? value : ''
+}
+
+const ARRIVAL_HREF = captureArrivalHref(
+  typeof window !== 'undefined' ? window.location?.href : undefined,
+)
 
 /**
  * Whether this page load has already used its arrival query. Passed
@@ -51,29 +61,6 @@ export interface ArrivalClaim {
 
 /** The claim for this page load. */
 export const PAGE_LOAD_ARRIVAL_CLAIM: ArrivalClaim = { claimed: false }
-
-/** The href this document was loaded with (empty on native). */
-export function arrivalHref(): string {
-  return ARRIVAL_HREF
-}
-
-/**
- * Query parameters this document was loaded with, or `null` when there are
- * none to read (native, or an href that will not parse).
- */
-export function arrivalQueryParams(): Record<string, string> | null {
-  if (!ARRIVAL_HREF) return null
-  try {
-    const url = new URL(ARRIVAL_HREF)
-    const params: Record<string, string> = {}
-    url.searchParams.forEach((value, key) => {
-      params[key] = value
-    })
-    return Object.keys(params).length > 0 ? params : null
-  } catch {
-    return null
-  }
-}
 
 /**
  * Query parameters from the arrival URL, but only when that URL was this

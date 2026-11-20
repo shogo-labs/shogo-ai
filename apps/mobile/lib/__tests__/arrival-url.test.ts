@@ -9,9 +9,8 @@
  */
 import { describe, expect, it } from 'bun:test'
 import {
-  arrivalHref,
-  arrivalQueryParams,
   arrivalQueryParamsForProject,
+  captureArrivalHref,
   claimArrivalQueryParams,
   peekArrivalQueryParamsForProject,
   type ArrivalClaim,
@@ -25,9 +24,20 @@ function freshClaim(): ArrivalClaim {
 }
 
 describe('arrival-url', () => {
-  it('is empty when there is no document (native / bun)', () => {
-    expect(arrivalHref()).toBe('')
-    expect(arrivalQueryParams()).toBeNull()
+  it('captures nothing when the document has no href (native)', () => {
+    expect(captureArrivalHref(undefined)).toBe('')
+    expect(captureArrivalHref(null)).toBe('')
+    expect(captureArrivalHref('')).toBe('')
+  })
+
+  it('captures the href it is given', () => {
+    expect(captureArrivalHref('http://localhost/projects/proj-abc?tab=settings')).toBe(
+      'http://localhost/projects/proj-abc?tab=settings',
+    )
+  })
+
+  it('restores nothing from a document with no href', () => {
+    expect(arrivalQueryParamsForProject(ID, captureArrivalHref(undefined))).toBeNull()
   })
 
   it('scopes params to the project in the arrival path', () => {

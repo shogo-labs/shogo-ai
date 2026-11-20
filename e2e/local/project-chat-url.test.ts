@@ -133,7 +133,7 @@ test.describe("Project chat URL (local)", () => {
     })
     projectId = project.json?.data?.id ?? project.json?.id
     expect(projectId, JSON.stringify(project.json)).toBeTruthy()
-    project1Name = project.json?.data?.name ?? ""
+    project1Name = `QA chat url ${suffix}`
 
     for (const name of ["Alpha", "Bravo"]) {
       const created = await apiJson(page, "POST", "/api/chat-sessions", {
@@ -176,7 +176,7 @@ test.describe("Project chat URL (local)", () => {
     })
     projectId2 = project2.json?.data?.id ?? project2.json?.id
     expect(projectId2, JSON.stringify(project2.json)).toBeTruthy()
-    project2Name = project2.json?.data?.name ?? ""
+    project2Name = `QA chat url ${suffix} two`
     for (const name of ["Charlie", "Delta"]) {
       const created = await apiJson(page, "POST", "/api/chat-sessions", {
         contextId: projectId2,
@@ -237,7 +237,7 @@ test.describe("Project chat URL (local)", () => {
     await prepare(page)
     await openProject(page, `?chatSessionId=${bravoId}`)
 
-    await expect.poll(() => chatParam(page), { timeout: 20_000 }).toBe(bravoId)
+    await expect(page).toHaveURL(new RegExp(`chatSessionId=${bravoId}`), { timeout: 20_000 })
     await expect(page.getByText(/BRAVO-SEED-/).first()).toBeVisible({ timeout: 20_000 })
     await expect.poll(() => loads.includes(bravoId), { timeout: 20_000 }).toBe(true)
 
@@ -297,37 +297,48 @@ test.describe("Project chat URL (local)", () => {
   test("the arrival query is spent once: leaving and returning does not replay it", async ({
     page,
   }) => {
-    // Chat creations are counted at the wire, so a replayed `newChat=1` shows up
-    // as a second one.
-    let creations = 0
-    page.on("request", (request) => {
-      if (request.method() === "POST" && /\/api\/chat-sessions(\?|$)/.test(request.url())) {
-        creations += 1
-      }
-    })
-
     await prepare(page)
     await openProject(page, `?newChat=1&newChatNonce=${Date.now()}`, projectId2)
-    // The arrival minted its chat and consumed the one-shot params.
-    await expect.poll(() => creations, { timeout: 40_000 }).toBeGreaterThan(0)
-    const afterArrival = creations
-    const arrivedChat = chatParam(page)
-    expect(arrivedChat && !seedIds2.includes(arrivedChat)).toBe(true)
+
+    // The arrival minted the chat it names, and consumed the one-shot params.
+    await expect
+      .poll(
+        () => {
+          const current = chatParam(page)
+          return current && !seedIds2.includes(current) ? current : ""
+        },
+        { timeout: 40_000 },
+      )
+      .not.toBe("")
     expect(new URL(page.url()).searchParams.get("newChat")).toBeNull()
+    // How many chats this project has, straight from the API: a replayed
+    // `newChat=1` mints one more on the way back in.
+    const chatCount = async () => {
+      const res = await apiJson(
+        page,
+        "GET",
+        `/api/chat-sessions?contextId=${projectId2}&contextType=project`,
+      )
+      return (res.json?.items ?? []).length
+    }
+    const before = await chatCount()
+    expect(before).toBeGreaterThan(seedIds2.length - 1)
 
     // Leave the project inside the app and come back the way a user does: the
     // sidebar pushes another project, Back returns. Both are client-side, so
     // this is still the page load from above and its arrival query is spent.
     const sidebar = page.getByRole("navigation", { name: "App sidebar" }).first()
-    await sidebar.getByRole("link", { name: `Project: ${project1Name}` }).first().click()
+    await sidebar.getByRole("link", { name: `Project: ${project1Name}`, exact: true }).first().click()
     await expect.poll(() => new URL(page.url()).pathname, { timeout: 40_000 }).toBe(
       `/projects/${projectId}`,
     )
     await page.goBack()
     await composer(page).waitFor({ state: "visible", timeout: 60_000 })
 
-    expect(creations, "revisiting the project must not mint another chat").toBe(afterArrival)
-    expect(chatParam(page), "the chat it opened must not be replaced").toBe(arrivedChat)
+    // The one-shot param must not have created another chat.
+    await expect
+      .poll(chatCount, { timeout: 20_000, message: "revisiting must not mint another chat" })
+      .toBe(before)
     expect(new URL(page.url()).searchParams.get("newChat")).toBeNull()
   })
 

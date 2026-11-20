@@ -11,40 +11,15 @@
  */
 
 /**
- * Merges global (leaf) params with local (layout segment) params, guarded by
- * pathname so that a screen pushed on top of the project layout cannot bleed
- * its params into the mounted layout, then restores any query key the arrival
- * URL carried that the router no longer supplies.
+ * Arrival keys that are never treated as route params to restore.
  *
- * @param local       Params from `useLocalSearchParams` (the layout's own segment).
- * @param global      Params from `useGlobalSearchParams` (the focused leaf).
- * @param pathname    `usePathname()` — the current focused path.
- * @param projectId   The `[id]` segment value from the layout route.
- * @param arrivalParams Query parameters of the URL this document was loaded
- *                      with (already scoped to this project), or null.
- *
- * ### Why `arrivalParams` is needed
- *
- * expo-router's linking layer writes its navigation state into the address bar
- * while it mounts, and on a cold load it does that twice: the arrival URL is
- * written correctly, then the navigator settles on its initial route and the
- * path collapses to that route with the whole query dropped — before the
- * project screen renders (SHO-174). The state that survives keeps the path
- * segment params (`id`, leaked onto the sibling index route by
- * `populateParams`) but not the query, so by the time this layout mounts:
- *
- *   - `useGlobalSearchParams()` returns `{ id }` — not empty, so an
- *     "is the store ready" check cannot detect the loss
- *   - `usePathname()` returns the project path, likewise intact
- *   - `tab`, `chatSessionId` and `file` are simply gone
- *
- * The arrival URL is therefore the only remaining record of what the viewer
- * asked for. Each missing key is filled from it individually: a single lost
- * key is restored even though its siblings survived, which is what a
- * ready-store check keyed on the whole param object cannot express. A key the
- * router does supply always wins, so in-app navigations are unaffected.
+ * `workspace` is the guarded "a link wants to move you" input (SHO-284,
+ * `adoptableWorkspaceParam`); `embed` is read straight from `location.search`
+ * by the IDE embed checks. Neither is a parameter of the project route.
  */
-export function mergeProjectRouteParams<T extends Record<string, unknown>>(input: {
+export const NOT_RESTORED_PARAMS: ReadonlySet<string> = new Set(['workspace', 'embed'])
+
+export interface ProjectRouteParamsInput<T extends Record<string, unknown>> {
   local: T
   global: T
   pathname: string
@@ -54,23 +29,72 @@ export function mergeProjectRouteParams<T extends Record<string, unknown>>(input
    * project's route. Pass null on native or when unavailable.
    */
   arrivalParams?: Record<string, string> | null
-}): T {
-  const { local, global: leaf, pathname, projectId, arrivalParams } = input
-  if (!projectId) return local
+  /**
+   * The params the router supplied on this mount's first render. A key whose
+   * value is still this is one the app has not acted on since the page loaded,
+   * so the arrival URL may still speak for it. Defaults to the current params.
+   */
+  baseline?: T
+}
 
+/** Params the router itself supplied, i.e. what the URL would serialise to. */
+function routerParams<T extends Record<string, unknown>>(
+  local: T,
+  leaf: T,
+  pathname: string,
+  projectId: string | undefined,
+): T {
   // Only trust the focused leaf while the focused path is this project: a
   // screen pushed on top of the layout must not bleed its params in here.
-  const onThisProject = pathname.includes(`/projects/${projectId}`)
-  const merged: Record<string, unknown> = onThisProject
-    ? { ...leaf, ...local }
-    : { ...local }
+  const onThisProject = !!projectId && pathname.includes(`/projects/${projectId}`)
+  return (onThisProject ? { ...leaf, ...local } : { ...local }) as T
+}
 
+/**
+ * Does the router's value for `key` still stand for the viewer's arrival
+ * request, rather than something this page decided afterwards?
+ *
+ * - nothing supplied: the router dropped it on the way in (the query collapse)
+ *   — the arrival URL is the only record, so it speaks;
+ * - supplied and unchanged since the first render: still the value the app had
+ *   before it acted, so it is not the viewer's doing — the arrival URL speaks.
+ *   This is the `chatSessionId` case: by first render the chat mirror has
+ *   already named the project's pinned chat, and a "fill only what is missing"
+ *   rule loses to it;
+ * - supplied and changed since the first render: this screen wrote it (a tab
+ *   click, a chat switch, the chat mirror) — the screen wins, and stays won.
+ */
+function arrivalSpeaks(
+  key: string,
+  supplied: Record<string, unknown>,
+  baseline: Record<string, unknown>,
+): boolean {
+  if (supplied[key] === undefined) return true
+  return supplied[key] === baseline[key]
+}
+
+/**
+ * The params that hold for both cold loads and in-app pushes: the router's own
+ * params, with the arrival URL speaking for every key the router is not
+ * authoritatively carrying (see `arrivalSpeaks`).
+ *
+ * While the arrival query is unclaimed it corrects the router's params; once
+ * claimed, `arrivalParams` is null again and this is a plain local-over-leaf
+ * merge, so in-app pushes behave exactly as before.
+ */
+export function mergeProjectRouteParams<T extends Record<string, unknown>>(
+  input: ProjectRouteParamsInput<T>,
+): T {
+  const { local, global: leaf, pathname, projectId, arrivalParams } = input
+
+  const merged = routerParams(local, leaf, pathname, projectId) as Record<string, unknown>
+  const baseline = (input.baseline ?? merged) as Record<string, unknown>
   if (!arrivalParams) return merged as T
 
-  // Fill individual gaps. `id` is a path segment and always present, so it can
-  // never be restored here; the query keys are the ones that go missing.
   for (const [key, value] of Object.entries(arrivalParams)) {
-    if (merged[key] === undefined) merged[key] = value
+    if (NOT_RESTORED_PARAMS.has(key)) continue
+    if (!arrivalSpeaks(key, merged, baseline)) continue
+    merged[key] = value
   }
   return merged as T
 }
