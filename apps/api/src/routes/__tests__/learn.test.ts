@@ -216,6 +216,14 @@ describe('course access rules', () => {
     expect(unlockedLessons('nope', [])).toEqual([])
   })
 
+  test('Start here: the Shogo words come before the first app; planning comes after the review loop', () => {
+    expect(LEARN_LESSONS['start-here']).toEqual(['what-an-agent-is', 'shogo-words', 'first-app', 'review-loop', 'plan-first', 'save-data', 'share-it'])
+    expect(unlockedLessons('start-here', ['what-an-agent-is'])).toEqual(['what-an-agent-is', 'shogo-words'])
+    // A learner who finished the old five lessons keeps them all open and is sent to the first new lesson.
+    const old = ['what-an-agent-is', 'first-app', 'review-loop', 'save-data', 'share-it']
+    expect(unlockedLessons('start-here', old)).toEqual(['what-an-agent-is', 'shogo-words', 'first-app', 'review-loop', 'save-data', 'share-it'])
+  })
+
   test('held level has no gaps', () => {
     expect(heldLevel([])).toBe(0)
     expect(heldLevel(['level-1', 'level-2'])).toBe(2)
@@ -667,9 +675,9 @@ describe('gamification rules', () => {
     const course = 'start-here'
     const completions = LEARN_LESSONS[course].map((lessonId) => ({ courseId: course, lessonId, day: '2026-11-20' }))
     const stats = computeLearnStats({ completions, badgeIds: ['first-lesson', 'course-start-here'], today: '2026-11-20' })
-    expect(stats.lessonsCompleted).toBe(5)
+    expect(stats.lessonsCompleted).toBe(7)
     expect(stats.coursesCompleted).toEqual(['start-here'])
-    expect(stats.xp).toBe(5 * 10 + 50 + 20 + 20)
+    expect(stats.xp).toBe(7 * 10 + 50 + 20 + 20)
     expect(stats.rank.name).toBe('Kindling')
     expect(rankFor(0).next).toEqual({ name: 'Ember', min: 40 })
     expect(rankFor(99999).next).toBeNull()
