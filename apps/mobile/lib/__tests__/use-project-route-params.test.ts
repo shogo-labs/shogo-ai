@@ -109,4 +109,86 @@ describe('mergeProjectRouteParams', () => {
     })
     expect(result.embed).toBe('ide')
   })
+
+  // --- first-render fallback: store not yet ready (global = {}) ---
+
+  it('first-render: global empty + arrivalHref delivers chatSessionId', () => {
+    const local = params({})
+    const global = {} as Params
+    const result = mergeProjectRouteParams({
+      local,
+      global,
+      pathname: '/',
+      projectId: ID,
+      arrivalHref: `http://localhost:3000/projects/${ID}?chatSessionId=chat-bravo`,
+    })
+    expect(result.chatSessionId).toBe('chat-bravo')
+    expect(result.id).toBe(ID)
+  })
+
+  it('first-render: global empty + arrivalHref delivers tab=settings', () => {
+    const local = params({})
+    const global = {} as Params
+    const result = mergeProjectRouteParams({
+      local,
+      global,
+      pathname: '/',
+      projectId: ID,
+      arrivalHref: `http://localhost:3000/projects/${ID}?tab=settings`,
+    })
+    expect(result.tab).toBe('settings')
+  })
+
+  it('first-render: global empty + arrivalHref delivers multiple params', () => {
+    const local = params({})
+    const global = {} as Params
+    const result = mergeProjectRouteParams({
+      local,
+      global,
+      pathname: '/',
+      projectId: ID,
+      arrivalHref: `http://localhost:3000/projects/${ID}?chatSessionId=abc&chatScope=workspace`,
+    })
+    expect(result.chatSessionId).toBe('abc')
+    expect(result.chatScope).toBe('workspace')
+  })
+
+  it('first-render: global empty, local wins over arrivalHref', () => {
+    const local = params({ tab: 'canvas' })
+    const global = {} as Params
+    const result = mergeProjectRouteParams({
+      local,
+      global,
+      pathname: '/',
+      projectId: ID,
+      arrivalHref: `http://localhost:3000/projects/${ID}?tab=settings`,
+    })
+    expect(result.tab).toBe('canvas')
+  })
+
+  it('first-render: global empty, arrivalHref for wrong project — only local', () => {
+    const local = params({})
+    const global = {} as Params
+    const result = mergeProjectRouteParams({
+      local,
+      global,
+      pathname: '/',
+      projectId: ID,
+      arrivalHref: `http://localhost:3000/projects/other-project?chatSessionId=xyz`,
+    })
+    expect(result.chatSessionId).toBeUndefined()
+  })
+
+  it('first-render: global empty, no arrivalHref — only local', () => {
+    const local = params({})
+    const global = {} as Params
+    const result = mergeProjectRouteParams({
+      local,
+      global,
+      pathname: '/',
+      projectId: ID,
+    })
+    expect(result.chatSessionId).toBeUndefined()
+    expect(result.id).toBe(ID)
+  })
 })
