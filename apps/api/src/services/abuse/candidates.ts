@@ -61,44 +61,93 @@ export async function gatherCandidates(
   since: Date,
   clusterKeys: Map<string, string>,
 ): Promise<AbuseCandidate[]> {
-  // 1. Users who had turns in the last 24h, excluding banned, internal and paid.
-  const activeTurns: Array<{
+  type TurnRow = {
     userId: string
     userText: string | null
     assistantText: string | null
     id: string
     source: string
     createdAt: Date
-  }> = await db.$queryRaw`
-    SELECT
-      pt."userId",
-      pt."id",
-      pt."source",
-      pt."firstAt" as "createdAt",
-      LEFT(pt."userText", 2000) as "userText",
-      RIGHT(pt."assistantText", 1500) as "assistantText"
-    FROM proxy_turns pt
-    JOIN users u ON u.id = pt."userId"
-    WHERE
-      pt."firstAt" >= ${since}
-      AND pt."userId" IS NOT NULL
-      AND u."bannedAt" IS NULL
-      AND u.role = 'user'
-      AND u.email NOT ILIKE '%@shogo.ai'
-      AND u.email NOT ILIKE '%@getodin.ai'
-      AND NOT EXISTS (
-        SELECT 1 FROM members m
-        JOIN subscriptions s ON s."workspaceId" = m."workspaceId"
-        WHERE m."userId" = pt."userId"
-          AND s.status IN ('active','trialing','past_due')
-      )
-      AND NOT EXISTS (
-        SELECT 1 FROM workspace_grants wg
-        WHERE wg."userId" = pt."userId"
-          AND (wg."expiresAt" IS NULL OR wg."expiresAt" > NOW())
-      )
-    ORDER BY pt."firstAt" DESC
-  `
+  }
+
+  // 1. Users who had turns in the last 24h, excluding banned, internal and paid.
+  // Falls back gracefully when the migration hasn't been applied yet (pre-migration
+  // prod: `u."bannedAt"` doesn't exist — PG error 42703). The dry-run replay needs
+  // to work against an unmigrated database; without --apply the results are read-only.
+  let activeTurns: TurnRow[]
+  try {
+    activeTurns = await db.$queryRaw`
+      SELECT
+        pt."userId",
+        pt."id",
+        pt."source",
+        pt."firstAt" as "createdAt",
+        LEFT(pt."userText", 2000) as "userText",
+        RIGHT(pt."assistantText", 1500) as "assistantText"
+      FROM proxy_turns pt
+      JOIN users u ON u.id = pt."userId"
+      WHERE
+        pt."firstAt" >= ${since}
+        AND pt."userId" IS NOT NULL
+        AND u."bannedAt" IS NULL
+        AND u.role = 'user'
+        AND u.email NOT ILIKE '%@shogo.ai'
+        AND u.email NOT ILIKE '%@getodin.ai'
+        AND NOT EXISTS (
+          SELECT 1 FROM members m
+          JOIN subscriptions s ON s."workspaceId" = m."workspaceId"
+          WHERE m."userId" = pt."userId"
+            AND s.status IN ('active','trialing','past_due')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM workspace_grants wg
+          JOIN members mwg ON mwg."workspaceId" = wg."workspaceId"
+          WHERE mwg."userId" = pt."userId"
+            AND (wg."expiresAt" IS NULL OR wg."expiresAt" > NOW())
+        )
+      ORDER BY pt."firstAt" DESC
+    `
+  } catch (err: any) {
+    // Pre-migration fallback: if the bannedAt column doesn't exist yet (42703),
+    // retry without the filter. Already-banned users may appear as candidates in
+    // dry-run mode, which is acceptable — they won't be re-banned.
+    const pgMsg = String(err?.meta?.driverAdapterError?.cause?.originalMessage ?? err?.message ?? '')
+    if (err?.code === 'P2010' && (err?.meta?.driverAdapterError?.cause?.kind === 'ColumnNotFound' || pgMsg.includes('bannedAt'))) {
+      console.warn('[abuse-check] bannedAt column not found — running pre-migration fallback (dry-run only)')
+      activeTurns = await db.$queryRaw`
+        SELECT
+          pt."userId",
+          pt."id",
+          pt."source",
+          pt."firstAt" as "createdAt",
+          LEFT(pt."userText", 2000) as "userText",
+          RIGHT(pt."assistantText", 1500) as "assistantText"
+        FROM proxy_turns pt
+        JOIN users u ON u.id = pt."userId"
+        WHERE
+          pt."firstAt" >= ${since}
+          AND pt."userId" IS NOT NULL
+          AND u.role = 'user'
+          AND u.email NOT ILIKE '%@shogo.ai'
+          AND u.email NOT ILIKE '%@getodin.ai'
+          AND NOT EXISTS (
+            SELECT 1 FROM members m
+            JOIN subscriptions s ON s."workspaceId" = m."workspaceId"
+            WHERE m."userId" = pt."userId"
+              AND s.status IN ('active','trialing','past_due')
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM workspace_grants wg
+            JOIN members mwg ON mwg."workspaceId" = wg."workspaceId"
+            WHERE mwg."userId" = pt."userId"
+              AND (wg."expiresAt" IS NULL OR wg."expiresAt" > NOW())
+          )
+        ORDER BY pt."firstAt" DESC
+      `
+    } else {
+      throw err
+    }
+  }
 
   // 2. Group turns by userId.
   const byUser = new Map<
