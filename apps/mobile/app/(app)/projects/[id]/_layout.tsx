@@ -39,7 +39,8 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
-import { useLocalSearchParams, useRouter, Stack } from "expo-router";
+import { useRouter, Stack } from "expo-router";
+import { useProjectRouteParams } from "../../../../lib/use-project-route-params";
 import { observer } from "mobx-react-lite";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { LinearGradient } from "expo-linear-gradient";
@@ -273,7 +274,7 @@ const CANVAS_ERROR_LOG_TAIL = 30;
 
 export default observer(function ProjectLayout() {
   csMark("project:layout:render");
-  const params = useLocalSearchParams<{
+  const params = useProjectRouteParams<{
     id: string;
     chatSessionId?: string;
     fromConversation?: string;
@@ -343,11 +344,7 @@ export default observer(function ProjectLayout() {
     csMark("project:open-attempt", { projectId, openAttemptId });
     return () => clearOpenAttemptId(openAttemptId);
   }, [openAttemptId, projectId]);
-  const isIdeChatEmbed =
-    params.embed === "ide" ||
-    (Platform.OS === "web" &&
-      typeof window !== "undefined" &&
-      new URLSearchParams(window.location.search).get("embed") === "ide");
+  const isIdeChatEmbed = params.embed === "ide";
   const { width, height, isPhone: nativePhone } = useNativePhoneWindow();
   const isWide = width >= WIDE_BREAKPOINT;
   const insets = useSafeAreaInsets();
