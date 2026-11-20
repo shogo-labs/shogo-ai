@@ -60,6 +60,18 @@ export interface ChildLedgerEntry {
    */
   commandFingerprint: string
   startedAt: number
+  /**
+   * PID of the runtime process that owns this child (SHO-468). Stamped
+   * automatically by `addChildLedgerEntry` from `process.pid` when not
+   * provided. Optional so ledgers written before this fix still parse.
+   */
+  ownerPid?: number
+  /**
+   * Command-line fingerprint of the owner process, captured at stamp time.
+   * Used by `reapChildLedger` with `spareLiveOwners: true` to confirm that
+   * `ownerPid` still belongs to the same runtime and has not been reused.
+   */
+  ownerFingerprint?: string
 }
 
 export interface ChildLedgerOptions {
@@ -78,7 +90,9 @@ function isEntry(value: unknown): value is ChildLedgerEntry {
     Number.isInteger(entry.pid) && (entry.pid as number) > 0 &&
     typeof entry.label === 'string' &&
     typeof entry.commandFingerprint === 'string' &&
-    typeof entry.startedAt === 'number'
+    typeof entry.startedAt === 'number' &&
+    (entry.ownerPid === undefined || (Number.isInteger(entry.ownerPid) && (entry.ownerPid as number) > 0)) &&
+    (entry.ownerFingerprint === undefined || typeof entry.ownerFingerprint === 'string')
   )
 }
 
@@ -183,13 +197,38 @@ function withLedgerLock<T>(workspaceDir: string, fn: () => T): T {
   }
 }
 
+/**
+ * Cached fingerprint of this process's own command line, read once and reused
+ * for every entry we stamp. `null` means it could not be read.
+ */
+let _ownFingerprint: string | null | undefined
+
+function readOwnFingerprint(): string | null {
+  if (_ownFingerprint !== undefined) return _ownFingerprint
+  try {
+    const cmd = defaultReadProcessCommand(process.pid)
+    _ownFingerprint = cmd ? commandFingerprint(cmd) : null
+  } catch {
+    _ownFingerprint = null
+  }
+  return _ownFingerprint
+}
+
 /** Record a group we just started. Replaces any entry for the same pid. */
 export function addChildLedgerEntry(workspaceDir: string, entry: ChildLedgerEntry): void {
+  // Stamp ownerPid/ownerFingerprint so the timer sweep can tell a live
+  // runtime's children from true orphans (SHO-468).
+  const fp = readOwnFingerprint()
+  const stamped: ChildLedgerEntry = {
+    ownerPid: process.pid,
+    ...(fp !== null ? { ownerFingerprint: fp } : {}),
+    ...entry,
+  }
   withLedgerLock(workspaceDir, () => {
     const existing = readChildLedger(workspaceDir).filter(
-      (candidate) => candidate.pid !== entry.pid && candidate.pgid !== entry.pgid && isAlive(candidate.pid),
+      (candidate) => candidate.pid !== stamped.pid && candidate.pgid !== stamped.pgid && isAlive(candidate.pid),
     )
-    writeAll(workspaceDir, [...existing, entry])
+    writeAll(workspaceDir, [...existing, stamped])
   })
 }
 
@@ -245,6 +284,29 @@ export interface ReapChildLedgerOptions {
   /** Kill a recorded group. Defaults to `kill(-pgid, SIGKILL)` then the pid. */
   killGroup?: (entry: ChildLedgerEntry) => void
   logger?: Pick<Console, 'warn' | 'log'>
+  /**
+   * When `true`, spare any entry whose `ownerPid` is still alive and still
+   * running the same command (`ownerFingerprint`). Use this for timer sweeps so
+   * a running runtime's live children are never signalled (SHO-468).
+   *
+   * Default `false` → today's behaviour. Used by all stop/exit paths.
+   *
+   * Edge case accepted by design: a runtime that was just SIGKILLed may still
+   * read as alive briefly; its children are spared on this pass and reaped on
+   * the next tick (≤ interval).
+   */
+  spareLiveOwners?: boolean
+  /**
+   * When `spareLiveOwners` is `true`, controls how entries that carry no
+   * `ownerPid` (written before SHO-468) are treated.
+   *
+   * `false` (default for the timer sweep) → spare them: a legacy entry that
+   * we cannot attribute to a dead runtime is not reaped.
+   *
+   * `true` (boot sweep) → reap them: at boot the previous API is gone, so
+   * owner-less entries are legitimate orphans from the last session.
+   */
+  reapOwnerless?: boolean
 }
 
 export interface ReapChildLedgerResult {
@@ -252,6 +314,11 @@ export interface ReapChildLedgerResult {
   reaped: ChildLedgerEntry[]
   /** Entries dropped because their process is gone or their pid was reused. */
   dropped: ChildLedgerEntry[]
+  /**
+   * Entries skipped because their owner is still alive (SHO-468). They remain
+   * in the ledger for the next pass.
+   */
+  spared: ChildLedgerEntry[]
 }
 
 function defaultReadProcessCommand(pid: number): string | null {
@@ -294,7 +361,7 @@ export function reapChildLedger(
   opts: ReapChildLedgerOptions = {},
 ): ReapChildLedgerResult {
   const entries = readChildLedger(workspaceDir)
-  const result: ReapChildLedgerResult = { reaped: [], dropped: [] }
+  const result: ReapChildLedgerResult = { reaped: [], dropped: [], spared: [] }
   if (entries.length === 0) return result
 
   const readCommand = opts.readProcessCommand ?? defaultReadProcessCommand
@@ -310,6 +377,52 @@ export function reapChildLedger(
       result.dropped.push(entry)
       continue
     }
+
+    // spareLiveOwners: before signalling, check whether the runtime that owns
+    // this entry is still running. If it is, the entry is a live child of a
+    // live runtime — not an orphan — and must be left alone (SHO-468).
+    if (opts.spareLiveOwners) {
+      if (entry.ownerPid === undefined) {
+        // Legacy entry written before SHO-468 — no owner to check.
+        if (!opts.reapOwnerless) {
+          result.spared.push(entry)
+          continue
+        }
+        // reapOwnerless = true (boot sweep): treat it as a normal candidate.
+      } else if (isAlive(entry.ownerPid)) {
+        // Owner pid is live — read its command line to rule out pid reuse.
+        let ownerCmd: string | null = null
+        let ownerReadFailed = false
+        try {
+          ownerCmd = readCommand(entry.ownerPid)
+        } catch {
+          ownerReadFailed = true
+        }
+        if (ownerReadFailed || ownerCmd === null) {
+          // Can't read owner's command — spare (safe direction: one missed
+          // reap on this pass beats killing a live job).
+          result.spared.push(entry)
+          continue
+        }
+        if (entry.ownerFingerprint) {
+          const currentNorm = normalizeCommand(ownerCmd)
+          const fpNorm = normalizeCommand(entry.ownerFingerprint)
+          if (currentNorm.length > 0 && fpNorm.length > 0 && currentNorm.includes(fpNorm)) {
+            // Owner is alive and still the same process — spare.
+            result.spared.push(entry)
+            continue
+          }
+          // fingerprint mismatch: ownerPid was reused — fall through to reap.
+        } else {
+          // Owner alive but no fingerprint to verify pid reuse — spare.
+          result.spared.push(entry)
+          continue
+        }
+      }
+      // Owner is dead (or its pid was reused and fingerprint mismatched) —
+      // fall through to the normal reap path below.
+    }
+
     let command: string | null = null
     try {
       command = readCommand(entry.pid)
