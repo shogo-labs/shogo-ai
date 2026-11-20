@@ -21,7 +21,7 @@ import { readableAgentTaskError, taskStatusLabel } from '../../lib/agent-task-ui
 import { PersonalActivityScreen } from '../../components/personal/PersonalActivityScreen'
 import { WorkspaceChromeSkeletonRows } from '../../components/layout/WorkspaceChromeSkeleton'
 import { TabScreen } from '../../components/layout/TabScreenHeader'
-import { RunPeekHover } from '../../components/activity/RunPeekHover'
+import { RunPeekHover, RunPeekHoverTask } from '../../components/activity/RunPeekHover'
 import { ActivityFeed } from '../../components/activity/ActivityFeed'
 import { WEB_WIDE_MIN_WIDTH } from '../../lib/native-phone-layout'
 import {
@@ -303,7 +303,8 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
             </View>
           ) : <>
             {active.map((task) => (
-            <View key={task.id} className="mx-4 mt-3">
+            <RunPeekHoverTask key={task.id} workspaceId={workspace?.id} task={task}>
+            <View className="mx-4 mt-3">
               <ActivityCard
                 tone="primary"
                 icon={<Clock3 size={19} className="text-primary" />}
@@ -314,6 +315,7 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
                 onPress={() => openTaskChat(task)}
               />
             </View>
+            </RunPeekHoverTask>
             ))}
             {runningChats.map((chat) => {
               const agent = chat.agentName?.trim() || chat.projectName || 'Agent'

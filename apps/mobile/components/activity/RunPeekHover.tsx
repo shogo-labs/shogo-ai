@@ -23,7 +23,7 @@ import { Platform, Text, View } from 'react-native'
 import type { ReactNode } from 'react'
 import { cn } from '@shogo/shared-ui/primitives'
 import { elapsedLabel } from '../../lib/activity-feed'
-import type { ActiveChatTurn } from '../../lib/api'
+import type { ActiveChatTurn, AgentTask } from '../../lib/api'
 import { useRunPeek } from '../../hooks/useRunPeek'
 
 const OPEN_DELAY_MS = 350
@@ -51,6 +51,22 @@ export function RunPeekHover({
       {children}
     </RunPeekHoverWeb>
   )
+}
+
+/**
+ * Task-row variant: no fetch, card data comes from the row itself.
+ */
+export function RunPeekHoverTask({
+  workspaceId,
+  task,
+  children,
+}: {
+  workspaceId: string | null | undefined
+  task: Pick<AgentTask, 'title' | 'projectName' | 'status' | 'currentStep' | 'startedAt' | 'createdAt'>
+  children: ReactNode
+}) {
+  if (Platform.OS !== 'web') return <>{children}</>
+  return <RunPeekHoverWeb workspaceId={workspaceId} task={task}>{children}</RunPeekHoverWeb>
 }
 
 /**
@@ -84,7 +100,7 @@ export function RunPeekHoverById({
   )
 }
 
-function RunPeekHoverWeb({ workspaceId, chat, children }: { workspaceId: string | null | undefined; chat: RowMeta['chat']; children: ReactNode }) {
+function RunPeekHoverWeb({ workspaceId, chat, task, children }: { workspaceId: string | null | undefined; chat?: RowMeta['chat']; task?: Pick<AgentTask, 'title' | 'projectName' | 'status' | 'currentStep' | 'startedAt' | 'createdAt'>; children: ReactNode }) {
   const [open, setOpen] = useState(false)
   const [anchor, setAnchor] = useState<{ rowRight: number; rowTop: number; rowBottom: number } | null>(null)
   const openTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -146,10 +162,10 @@ function RunPeekHoverWeb({ workspaceId, chat, children }: { workspaceId: string 
   useEffect(() => () => { clear('both') }, [])
 
   const peek = useRunPeek({
-    open,
+    open: open && !!chat,
     workspaceId,
-    chatSessionId: chat.chatSessionId,
-    turnId: chat.turnId,
+    chatSessionId: chat?.chatSessionId,
+    turnId: chat?.turnId,
     onDone: () => { setOpen(false); setAnchor(null) },
   })
 
@@ -179,7 +195,7 @@ function RunPeekHoverWeb({ workspaceId, chat, children }: { workspaceId: string 
               boxShadow: '0 4px 24px rgba(0,0,0,0.18)',
             },
           },
-          <PeekCard chat={chat} peek={peek} />,
+          <PeekCard chat={chat} peek={peek} task={task} />,
         ),
         document.body,
       )
@@ -207,10 +223,32 @@ function RunPeekHoverWeb({ workspaceId, chat, children }: { workspaceId: string 
 function PeekCard({
   chat,
   peek,
+  task,
 }: {
-  chat: RowMeta['chat']
-  peek: ReturnType<typeof useRunPeek>
+  chat?: RowMeta['chat']
+  peek?: ReturnType<typeof useRunPeek>
+  task?: Pick<AgentTask, 'title' | 'projectName' | 'status' | 'currentStep' | 'startedAt' | 'createdAt'>
 }) {
+  if (task) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-3 shadow-lg">
+        <View className="flex-row flex-wrap items-center gap-1 pb-1.5">
+          <Text className="text-xs font-medium text-muted-foreground">{task.projectName || 'Agent task'}</Text>
+          <Text className="text-xs text-muted-foreground">·</Text>
+          <ElapsedTick startedAt={task.startedAt ?? task.createdAt} />
+        </View>
+        <Text className="text-sm font-semibold text-foreground pb-1">{task.title}</Text>
+        {task.currentStep ? (
+          <View className="mt-1.5 rounded-lg bg-muted/50 px-2.5 py-2">
+            <Text className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground pb-0.5">Running</Text>
+            <Text className="text-xs text-foreground leading-5" numberOfLines={8}>{task.currentStep}</Text>
+          </View>
+        ) : null}
+        <Text className="pt-2 text-[10px] text-muted-foreground/60">Click to open</Text>
+      </View>
+    )
+  }
+  if (!chat || !peek) return null
   const agentName = chat.agentName?.trim() || chat.projectName || 'Agent'
   const where = chat.conversationName
     ? `#${chat.conversationName}`
