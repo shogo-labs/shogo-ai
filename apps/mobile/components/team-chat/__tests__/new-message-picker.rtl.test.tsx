@@ -5,6 +5,7 @@ import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { createReactNativeMock } from '../../../test/react-native-mock'
+import { inviteDialogContextStub, invitePermissionsStub, inviteStub } from '../../../test/invite-dialog-stub'
 
 const dms: Array<{ workspaceId: string; userIds: string[] }> = []
 const selfDms: Array<{ workspaceId: string; userId: string }> = []
@@ -33,7 +34,12 @@ mock.module('../../../lib/huddle-call', () => ({
   joinHuddleCall: async (input: any) => void huddles.push(input),
 }))
 mock.module('@shogo/shared-ui/primitives', () => ({ cn: (...a: unknown[]) => a.filter(Boolean).join(' ') }))
+// Spread the real module: `mock.module` replaces it for every file in this
+// process, so a partial stub breaks the other team-chat suites that run after
+// this one (they need `nativeCookieHeader` and friends).
+const realTeamChatApi = await import('../../../lib/team-chat-api')
 mock.module('../../../lib/team-chat-api', () => ({
+  ...realTeamChatApi,
   absoluteApiUrl: (url: string) => url,
   teamChatApi: () => ({
     openDm: async (workspaceId: string, userIds: string[]) => {
@@ -47,7 +53,16 @@ mock.module('../../../lib/team-chat-api', () => ({
   }),
 }))
 mock.module('../AgentAvatar', () => ({ AgentAvatar: () => createElement('span', { 'data-rn-shim': 'agent-avatar' }) }))
-mock.module('../PresenceDot', () => ({ PresenceDot: () => createElement('span', { 'data-rn-shim': 'presence' }) }))
+const realPresenceDot = await import('../PresenceDot')
+mock.module('../PresenceDot', () => ({
+  ...realPresenceDot,
+  PresenceDot: () => createElement('span', { 'data-rn-shim': 'presence' }),
+}))
+// The picker offers "Invite x to Workspace" through the app shell's dialog
+// (SHO-454); these tests render it on its own, so stub the context and the
+// permissions hook it reads `canInvite` from.
+mock.module('../../workspace/invite-dialog-context', inviteDialogContextStub)
+mock.module('../../../hooks/usePermissions', invitePermissionsStub)
 
 const { NewMessagePicker, filterRecipients } = await import('../NewMessagePicker')
 
@@ -76,6 +91,7 @@ afterEach(() => {
   dms.length = 0
   selfDms.length = 0
   huddles.length = 0
+  inviteStub.reset()
 })
 
 describe('filterRecipients', () => {
@@ -158,5 +174,29 @@ describe('NewMessagePicker', () => {
     await waitFor(() => expect(created).toEqual([{ id: 'people-dm' }]))
     expect(dms).toEqual([{ workspaceId: 'ws-1', userIds: ['u-ana', 'u-ben'] }])
     expect(huddles).toEqual([{ conversationId: 'people-dm', workspaceId: 'ws-1', label: 'Ana Lopez, Ben Okafor' }])
+  })
+
+  // SHO-454 acceptance 4: an address that is not a member is an invitation,
+  // not a dead end.
+  test('an email that is nobody here offers to invite them, with the address filled in', () => {
+    inviteStub.canInvite = true
+    renderPicker()
+    fireEvent.change(screen.getByLabelText('Search people'), { target: { value: 'new@example.com' } })
+
+    fireEvent.click(screen.getByLabelText('Invite new@example.com'))
+    expect(inviteStub.opened).toEqual([{ workspaceId: 'ws-1', emails: ['new@example.com'] }])
+  })
+
+  test('no invite row when the caller cannot invite, or when the search is not an address', () => {
+    inviteStub.canInvite = false
+    renderPicker()
+    fireEvent.change(screen.getByLabelText('Search people'), { target: { value: 'new@example.com' } })
+    expect(screen.queryByLabelText('Invite new@example.com')).toBeNull()
+
+    inviteStub.canInvite = true
+    cleanup()
+    renderPicker()
+    fireEvent.change(screen.getByLabelText('Search people'), { target: { value: 'ana' } })
+    expect(screen.queryByLabelText('Invite someone new')).toBeNull()
   })
 })

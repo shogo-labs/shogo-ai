@@ -49,6 +49,7 @@ export const WorkspaceModel = types
     movedAt: types.optional(types.number, 0),
     runtimeDiskGiB: types.optional(types.number, 0),
     diskAddonBilledThrough: types.optional(types.number, 0),
+    invitePolicy: types.optional(types.string, ""),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     projects: types.optional(types.array(types.safeReference(types.late(() => ProjectModel))), []),

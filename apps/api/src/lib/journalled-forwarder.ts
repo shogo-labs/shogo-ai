@@ -11,10 +11,30 @@
  * batch is exactly the chunks that arrived meanwhile — a slow database grows the
  * batch instead of stalling the stream.
  *
+ * Two things keep that from costing a row per frame (SHO-319):
+ *
+ *   - a chunk that carries nothing but `data-turn-seq` heartbeats is forwarded
+ *     but never journalled. It is a transient frame: replay drops it and
+ *     re-derives the seq from the frames around it, so storing it buys nothing.
+ *     It still goes out in queue order — forwarding it early would let a
+ *     reconnect resume at a seq whose content is not durable yet.
+ *   - a batch is held for `JOURNAL_BATCH_WINDOW_MS` before it is written, so a
+ *     token burst becomes one row instead of one row per delta. `drain()` flushes
+ *     immediately, so the end of a stream is never delayed by the window.
+ *
  * Both relays (`/projects/:id/chat` and `/workspaces/:id/chat`) use this, so the
  * ordering guarantee has one implementation and one test.
  */
+import { TURN_SEQ_EVENT_TYPE } from '@shogo-ai/sdk/stream-buffer'
 import type { TurnJournalWriter } from '../services/chat-turn-journal'
+
+/**
+ * How long a batch waits for company before it is written.
+ *
+ * Long enough that the deltas of one token burst land in a single row, short
+ * enough that it is invisible next to the round trip the client already pays.
+ */
+export const JOURNAL_BATCH_WINDOW_MS = 25
 
 export interface JournalledForwarderOptions {
   /** The turn's journal. Null when the turn has no id to journal under. */
@@ -40,12 +60,50 @@ export interface JournalledForwarder {
   readonly batches: number
 }
 
+const decoder = new TextDecoder()
+
+/**
+ * Whether a chunk is nothing but complete `data-turn-seq` events.
+ *
+ * Deliberately strict: every event in the chunk must be a single-line
+ * `data: {json}` whose `type` is the seq heartbeat. A chunk holding a partial
+ * SSE frame, a content event, or anything unparseable is journalled as it
+ * always was — a split frame has to replay byte-identical, and a chunk that
+ * merely *contains* a heartbeat also contains content that must be durable.
+ */
+export function isTransientOnlyChunk(chunk: Uint8Array): boolean {
+  const text = decoder.decode(chunk)
+  // Cheap pre-filter: most chunks are content and never mention the heartbeat.
+  if (!text.includes(TURN_SEQ_EVENT_TYPE)) return false
+  // A trailing partial event means the frame is split across chunks.
+  if (!text.endsWith('\n\n')) return false
+  const events = text.split('\n\n')
+  // `split` leaves an empty tail for the trailing separator.
+  events.pop()
+  if (events.length === 0) return false
+  for (const event of events) {
+    if (!event.startsWith('data: ')) return false
+    const payload = event.slice(6)
+    if (!payload.startsWith('{')) return false
+    try {
+      const parsed = JSON.parse(payload)
+      if (parsed?.type !== TURN_SEQ_EVENT_TYPE) return false
+    } catch {
+      return false
+    }
+  }
+  return true
+}
+
 export function createJournalledForwarder({
   journal,
   forward,
 }: JournalledForwarderOptions): JournalledForwarder {
   let pending: Uint8Array[] = []
-  let scheduled = false
+  /** A chain link is queued to drain `pending`. */
+  let flushQueued = false
+  /** The batch window is open; `pending` is not being written yet. */
+  let windowTimer: ReturnType<typeof setTimeout> | null = null
   let chain: Promise<void> = Promise.resolve()
 
   const drainOnce = async (): Promise<void> => {
@@ -55,22 +113,49 @@ export function createJournalledForwarder({
       // The write-ahead step: nothing in `batch` is forwarded until this
       // resolves. `append` never throws and never blocks longer than its retry
       // budget — a database outage must not freeze the person's stream.
-      if (journal) await journal.append(batch)
+      if (journal) {
+        const durable = batch.filter((chunk) => !isTransientOnlyChunk(chunk))
+        if (durable.length > 0) await journal.append(durable)
+      }
       for (const chunk of batch) forward(chunk)
     }
+  }
+
+  const queueFlush = () => {
+    if (flushQueued) return
+    flushQueued = true
+    chain = chain.then(() => {
+      flushQueued = false
+      if (windowTimer) {
+        clearTimeout(windowTimer)
+        windowTimer = null
+      }
+      return drainOnce()
+    })
   }
 
   return {
     push(chunk) {
       pending.push(chunk)
-      if (scheduled) return
-      scheduled = true
-      chain = chain.then(() => {
-        scheduled = false
-        return drainOnce()
-      })
+      if (flushQueued || windowTimer) return
+      // No journal means nothing to wait for: forward on the next microtask,
+      // exactly as before, so a turn without a turn id pays no added latency.
+      if (!journal) {
+        queueFlush()
+        return
+      }
+      windowTimer = setTimeout(() => {
+        windowTimer = null
+        queueFlush()
+      }, JOURNAL_BATCH_WINDOW_MS)
     },
     async drain() {
+      // The stream is ending: do not wait out the window.
+      if (windowTimer) {
+        clearTimeout(windowTimer)
+        windowTimer = null
+      }
+      queueFlush()
       // A push that arrived while the previous drain was finishing scheduled
       // another link; awaiting the chain covers it.
       let seen: Promise<void>

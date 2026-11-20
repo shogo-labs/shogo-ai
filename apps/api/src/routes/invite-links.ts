@@ -16,7 +16,6 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import {
   canAssignProjectRole,
-  canAssignWorkspaceRole,
   isWorkspaceRole,
   toProjectRole,
 } from '@shogo/authz'
@@ -24,6 +23,7 @@ import { z } from 'zod'
 import { getAccess, principalOf } from '../lib/authz'
 import { parseBody } from '../lib/parse-body'
 import { prisma } from '../lib/prisma'
+import { canInviteToWorkspace } from '../lib/workspace-invite-policy'
 import { assertTrialSeatRoom } from '../services/billing.service'
 import { trialSeatLimitMessage } from '../config/usage-plans'
 
@@ -48,8 +48,26 @@ const createLinkBody = z
     workspaceId: z.string().min(1).optional(),
     role: z.string().optional(),
     email: z.string().trim().nullish(),
+    /**
+     * How long the link stays valid (SHO-454). 7 days by default, 30 on
+     * request, or `null` for a link that never expires. Anything else is a
+     * 400 rather than a silently different lifetime.
+     */
+    expiresInDays: z.union([z.literal(7), z.literal(30), z.null()]).optional(),
   })
   .refine((b) => b.projectId || b.workspaceId, { message: 'projectId or workspaceId required' })
+
+export { createLinkBody }
+
+/**
+ * When a link created now stops working. A link is a bearer credential, so it
+ * expires unless the caller asked for a permanent one; 7 days is the default
+ * the dialog shows (SHO-454).
+ */
+export function linkExpiresAt(expiresInDays: number | null | undefined, now = Date.now()): Date | null {
+  const days = expiresInDays === undefined ? 7 : expiresInDays
+  return days === null ? null : new Date(now + days * 24 * 60 * 60 * 1000)
+}
 
 const patchLinkBody = z.object({ enabled: z.boolean({ message: 'enabled (boolean) required' }) })
 
@@ -65,6 +83,21 @@ const forbidden = (c: Context, message = 'You cannot manage invite links here') 
 async function canManageScope(c: Context, scope: Scope): Promise<boolean> {
   const access = await getAccess(c, scope.projectId ? { projectId: scope.projectId } : { workspaceId: scope.workspaceId })
   return access.permissions.has(scope.projectId ? 'project.members:manage' : 'workspace.members:manage')
+}
+
+/**
+ * Whether the caller may invite in this scope at all (SHO-454). A project keeps
+ * the manager rule; a workspace goes through `canInviteToWorkspace`, so an
+ * Editor counts while the workspace's policy allows it.
+ */
+async function canInviteInScope(c: Context, scope: Scope): Promise<boolean> {
+  if (scope.projectId) return canManageScope(c, scope)
+  const access = await getAccess(c, { workspaceId: scope.workspaceId })
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: scope.workspaceId },
+    select: { invitePolicy: true },
+  })
+  return canInviteToWorkspace(access, workspace)
 }
 
 async function linkScope(link: { projectId: string | null; workspaceId: string | null }): Promise<Scope | null> {
@@ -105,8 +138,15 @@ export function inviteLinkRoutes(config: InviteLinkRoutesConfig = {}): Hono {
         return fail(c, 400, 'bad_request', 'role must be admin, member or viewer')
       }
       const access = await getAccess(c, { workspaceId: scope.workspaceId })
-      if (!canAssignWorkspaceRole(access, requested)) {
-        return forbidden(c, 'Only admins and owners can create invite links')
+      const workspace = await prisma.workspace.findUnique({
+        where: { id: scope.workspaceId },
+        select: { invitePolicy: true },
+      })
+      // Owners and admins keep the no-escalation rule; an Editor may create a
+      // link as Editor or Viewer while the workspace's policy allows it
+      // (SHO-454). A Viewer never can.
+      if (!canInviteToWorkspace(access, workspace, requested)) {
+        return forbidden(c, 'You cannot create an invite link with this role')
       }
       // A trialing workspace never holds more than TRIAL_MAX_SEATS seats
       // (SHO-422). Refuse the link here rather than at accept time; acceptance
@@ -118,8 +158,12 @@ export function inviteLinkRoutes(config: InviteLinkRoutesConfig = {}): Hono {
       role = requested
     }
 
+    // A link is a bearer credential, so it expires unless the caller asked for
+    // a permanent one (SHO-454). 7 days is the default the dialog shows.
+    const expiresAt = linkExpiresAt(body.expiresInDays)
+
     const link = await prisma.inviteLink.create({
-      data: { projectId: scope.projectId, workspaceId: scope.workspaceId, role, createdBy: userId },
+      data: { projectId: scope.projectId, workspaceId: scope.workspaceId, role, createdBy: userId, expiresAt },
     })
 
     if (body.email) {
@@ -143,7 +187,10 @@ export function inviteLinkRoutes(config: InviteLinkRoutesConfig = {}): Hono {
     if (!projectId && !workspaceId) return c.json({ ok: true, items: [] })
 
     const scope = await linkScope({ projectId: projectId ?? null, workspaceId: workspaceId ?? null })
-    if (!scope || !(await canManageScope(c, scope))) return forbidden(c)
+    if (!scope) return forbidden(c)
+    // Reading a link is what "Copy link" needs, so anyone who may invite may
+    // read it (SHO-454). Creating, resetting and disabling stay manager-only.
+    if (!(await canManageScope(c, scope)) && !(await canInviteInScope(c, scope))) return forbidden(c)
 
     const where = scope.projectId ? { projectId: scope.projectId } : { workspaceId: scope.workspaceId, projectId: null }
     const links = await prisma.inviteLink.findMany({ where, orderBy: { createdAt: 'desc' } })

@@ -8,7 +8,7 @@
 import { createElement, useState } from 'react'
 import { Platform, Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
-import { Bell, Bot, Folder, Hash, Home, Mail, MessagesSquare, Mic, MoreHorizontal, Plus, Search, Shield, Target } from 'lucide-react-native'
+import { Bell, Bot, Folder, Hash, Home, Mail, MessagesSquare, Mic, MoreHorizontal, Plus, Search, Shield, Target, UserPlus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import type { ReactNode } from 'react'
 import type { SidebarTabId } from '@shogo/shared-app'
@@ -101,11 +101,15 @@ export interface IconRailProps {
   switcher?: ReactNode
   /** Shown only while workspace invitations are waiting. */
   invites?: { count: number; onPress: () => void }
+  /** Opens the invite dialog (SHO-454). Absent when the caller cannot invite. */
+  onInvite?: () => void
+  /** Highlight the invite button: the caller is the only human member. */
+  inviteHighlight?: boolean
   /** A search button, for workspaces whose rail has no list panel with its own. */
   onSearch?: () => void
 }
 
-export function IconRail({ tabs, active, badges, dots, onSelect, showAdmin, switcher, invites, onSearch }: IconRailProps) {
+export function IconRail({ tabs, active, badges, dots, onSelect, showAdmin, switcher, invites, onInvite, inviteHighlight, onSearch }: IconRailProps) {
   const router = useRouter()
   return (
     <View role="navigation" accessibilityLabel="Workspace tabs" className="relative z-20 w-16 shrink-0 items-center bg-sidebar pb-3 pt-3">
@@ -148,6 +152,22 @@ export function IconRail({ tabs, active, badges, dots, onSelect, showAdmin, swit
       </View>
 
       <View className="mt-auto w-full items-center gap-3">
+        {onInvite && (
+          <RailTooltip label={inviteHighlight ? "You're the only one here. Invite your team." : "Invite people"}>
+            <Pressable
+              testID="rail-invite-people"
+              accessibilityRole="button"
+              accessibilityLabel="Invite people"
+              onPress={onInvite}
+              className={cn(
+                'h-9 w-9 items-center justify-center rounded-xl',
+                inviteHighlight ? 'bg-primary/15 active:bg-primary/25' : 'active:bg-sidebar-accent',
+              )}
+            >
+              <UserPlus size={18} className={inviteHighlight ? 'text-primary' : 'text-sidebar-foreground/70'} />
+            </Pressable>
+          </RailTooltip>
+        )}
         {invites && invites.count > 0 && (
           <RailTooltip label="Workspace invitations">
             <Pressable accessibilityRole="button" accessibilityLabel={`Workspace invitations, ${invites.count} waiting`} onPress={invites.onPress} className="h-9 w-9 items-center justify-center rounded-xl active:bg-sidebar-accent">
