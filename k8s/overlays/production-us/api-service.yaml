@@ -716,7 +716,6 @@ spec:
                   name: api-secrets
                   key: WHATSAPP_WEBHOOK_VERIFY_TOKEN
                   optional: true
-                  optional: true
             # OpenRouter key for the model-provider fallback. Every deploy job
             # writes it into api-secrets; without this reader the cloud never
             # saw it (SHO-453).

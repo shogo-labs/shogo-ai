@@ -392,7 +392,6 @@ spec:
                   name: api-secrets
                   key: WHATSAPP_WEBHOOK_VERIFY_TOKEN
                   optional: true
-                  optional: true
             - name: ZERNIO_API_KEY
               valueFrom:
                 secretKeyRef:
