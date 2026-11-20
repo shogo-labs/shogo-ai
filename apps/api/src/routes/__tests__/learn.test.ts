@@ -21,6 +21,7 @@ import {
 } from '../../lib/learn-token'
 import { bestPlanId, learnRoutes, withLearnCookie, type LearnRoutesDeps } from '../learn'
 import {
+  CERTIFICATE_LESSON,
   LEARN_BADGES,
   LEARN_LESSONS,
   SELF_PACED_COURSES,
@@ -122,6 +123,15 @@ function baseState(): FakeState {
 function grantLevels(state: FakeState, userId: string, n: number) {
   state.badges ??= []
   for (let i = 1; i <= n; i++) state.badges.push({ userId, badgeId: `level-${i}`, earnedAt: new Date(NOW - 86_400_000) })
+}
+
+/** Mark every lesson before a course's final check as done, so the check can be taken. */
+function finishLessons(state: FakeState, userId = 'u1', courseId = 'agents-for-everyone'): FakeState {
+  state.completions ??= []
+  for (const lessonId of LEARN_LESSONS[courseId]!.filter((l) => l !== CERTIFICATE_LESSON[courseId])) {
+    state.completions.push({ userId, courseId, lessonId, day: '2026-11-19', completedAt: new Date(NOW - 86_400_000) })
+  }
+  return state
 }
 
 function res_noStore(res: Response) {
@@ -444,8 +454,26 @@ describe('certificates', () => {
     })
   }
 
+  test('the final check opens only after every lesson before it is done, and a refusal does not use up an attempt', async () => {
+    const state = baseState()
+    let attempts = 0
+    const { app, deps } = makeApp(state)
+    const take = deps.takeRateLimit
+    deps.takeRateLimit = async (...args) => (attempts++, take(...args))
+    const early = await post(app, { courseId: 'agents-for-everyone', answers: PASS })
+    expect(early.status).toBe(403)
+    expect(((await early.json()) as any).error).toBe('Finish every lesson in this course before the final check.')
+    expect(attempts).toBe(0)
+    expect(state.badges ?? []).toEqual([])
+    finishLessons(state)
+    state.completions = state.completions!.filter((c) => c.lessonId !== 'good-at-bad-at')
+    expect((await post(app, { courseId: 'agents-for-everyone', answers: PASS })).status).toBe(403)
+    finishLessons(state)
+    expect((await post(app, { courseId: 'agents-for-everyone', answers: PASS })).status).toBe(200)
+  })
+
   test('a pass returns a certificate that verifies publicly, with the chosen name and no email', async () => {
-    const { app } = makeApp(baseState())
+    const { app } = makeApp(finishLessons(baseState()))
     const res = await post(app, { courseId: 'agents-for-everyone', answers: { ...PASS, q6: 'a' }, name: '  Grace\u0000 Hopper ' })
     expect(res.status).toBe(200)
     const body = (await res.json()) as any
@@ -473,13 +501,13 @@ describe('certificates', () => {
   })
 
   test('falls back to the account name when none is given', async () => {
-    const { app } = makeApp(baseState())
+    const { app } = makeApp(finishLessons(baseState()))
     const body = (await (await post(app, { courseId: 'agents-for-everyone', answers: PASS })).json()) as any
     expect(body.certificate.name).toBe('Ada')
   })
 
   test('a fail returns the score and which questions missed, but no certificate and no answer key', async () => {
-    const { app } = makeApp(baseState())
+    const { app } = makeApp(finishLessons(baseState()))
     const res = await post(app, { courseId: 'agents-for-everyone', answers: { q1: 'a', q2: 'c' } })
     const body = (await res.json()) as any
     expect(body).toMatchObject({ passed: false, score: 1, total: 6 })
@@ -490,7 +518,7 @@ describe('certificates', () => {
 
   test('requires sign-in, a known course, answers, and respects the daily cap', async () => {
     const state = baseState()
-    const { app } = makeApp(state)
+    const { app } = makeApp(finishLessons(state))
     expect((await post(app, { courseId: 'agents-for-everyone', answers: PASS }, null)).status).toBe(401)
     expect((await post(app, { courseId: 'start-here', answers: PASS })).status).toBe(404)
     expect((await post(app, { courseId: 'agents-for-everyone' })).status).toBe(400)
@@ -501,7 +529,7 @@ describe('certificates', () => {
   })
 
   test('rejects forged, tampered and cross-purpose ids', async () => {
-    const { app } = makeApp(baseState())
+    const { app } = makeApp(finishLessons(baseState()))
     const real = mintLearnCertificate({ userId: 'u1', courseId: 'agents-for-everyone', name: 'Ada', issuedAt: 1, score: 6, total: 6 })
     expect(verifyLearnCertificate(real)?.name).toBe('Ada')
     const [v, , sig] = real.split('.')
@@ -788,7 +816,7 @@ describe('progress, XP and badges on the account', () => {
   })
 
   test('passing the final check completes its lesson and earns Shogo Certified Level 1', async () => {
-    const st = freeLearner()
+    const st = finishLessons(freeLearner())
     st.badges = []
     const { app } = makeApp(st)
     const rule = LEARN_CERTIFICATES['agents-for-everyone']
@@ -796,8 +824,9 @@ describe('progress, XP and badges on the account', () => {
     const r = (await (await post(app, '/certificate', { courseId: 'agents-for-everyone', answers, tz: 'UTC' })).json()) as any
     expect(r.passed).toBe(true)
     expect(r.newBadges.map((b: any) => b.id)).toEqual(expect.arrayContaining(['certified-agents-for-everyone', 'first-lesson', 'level-1']))
-    expect(r.stats.completedLessons['agents-for-everyone']).toEqual(['final-check'])
-    expect(r.stats.xp).toBe(10 + 100 + 20 + 20 + 100)
+    expect([...r.stats.completedLessons['agents-for-everyone']].sort()).toEqual([...LEARN_LESSONS['agents-for-everyone']!].sort())
+    // 6 lessons, the course, the certificate, first-lesson + course + founding badges, Level 1
+    expect(r.stats.xp).toBe(6 * 10 + 50 + 100 + 20 + 20 + 20 + 100)
     expect(r.level).toBe(1)
     expect(r.levelUp).toEqual({ level: 1, title: 'Explorer' })
     const me = (await (await app.request('/api/learn/me', { headers: H() })).json()) as any
