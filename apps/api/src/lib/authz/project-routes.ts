@@ -54,6 +54,7 @@ export const PROJECT_ROUTE_RULES: readonly ProjectRouteRule[] = [
     paths: [
       '/auth-config', '/auth-users/:userId', '/preferred-instance',
       '/github', '/github/authorize', '/github/connect',
+      '/channels/whatsapp/connect-link',
     ],
     permission: 'project.settings:manage',
   },
