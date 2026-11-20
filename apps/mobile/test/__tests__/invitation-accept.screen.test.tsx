@@ -181,7 +181,16 @@ describe('SHO-83 — /invitations/[id]/accept renders instead of "Unmatched Rout
   test('criterion 4: signed in as a different account — clear message, Sign out, nothing accepted', async () => {
     signedIn('someone-else')
     acceptInvitation.mockImplementationOnce(async () => {
-      throw Object.assign(new Error('Access denied'), { status: 403, code: 'FORBIDDEN' })
+      throw Object.assign(new Error('This invitation was sent to a different email address.'), {
+        status: 403,
+        code: 'FORBIDDEN',
+        details: {
+          error: {
+            code: 'wrong_account',
+            message: 'This invitation was sent to a different email address.',
+          },
+        },
+      })
     })
     render(createElement(InvitationAcceptScreen))
     const user = userEvent.setup()
@@ -196,6 +205,84 @@ describe('SHO-83 — /invitations/[id]/accept renders instead of "Unmatched Rout
     expect(loadAll).not.toHaveBeenCalled()
     // The invited address is never printed — the info payload has no email.
     expect(document.body.textContent).not.toContain('@example.com')
+  })
+
+  // SHO-455: the copy is chosen from the server's own `code`, not the status.
+  // A bare 403 used to be read as "wrong account", which told a first-time
+  // invitee their link was for someone else.
+  test('a bare 403 is not "wrong account" — it falls back to the generic copy', async () => {
+    signedIn()
+    acceptInvitation.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('Access denied'), { status: 403, code: 'FORBIDDEN' })
+    })
+    render(createElement(InvitationAcceptScreen))
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: /accept invitation/i }))
+
+    expect(await screen.findByText(/couldn't accept this invitation/i)).toBeTruthy()
+    expect(screen.queryByText(/different email address/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /sign out/i })).toBeNull()
+    // The raw hook string never reaches the screen.
+    expect(screen.queryByText(/access denied/i)).toBeNull()
+  })
+
+  test('a trial seat limit shows the server message and keeps the accept button', async () => {
+    signedIn()
+    acceptInvitation.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('This workspace is limited to 3 seats'), {
+        status: 409,
+        code: 'TRIAL_SEAT_LIMIT',
+        details: {
+          error: { code: 'trial_seat_limit', message: 'This workspace is limited to 3 seats' },
+        },
+      })
+    })
+    render(createElement(InvitationAcceptScreen))
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: /accept invitation/i }))
+
+    expect(await screen.findByText(/limited to 3 seats/i)).toBeTruthy()
+    // The invite is still pending, so the invitee can retry.
+    expect(screen.getByRole('button', { name: /accept invitation/i })).toBeTruthy()
+  })
+
+  test('an expired code shows the expired copy', async () => {
+    signedIn()
+    acceptInvitation.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('Invitation has expired'), {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        details: { error: { code: 'expired', message: 'Invitation has expired' } },
+      })
+    })
+    render(createElement(InvitationAcceptScreen))
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: /accept invitation/i }))
+
+    expect(await screen.findByText(/this invitation has expired/i)).toBeTruthy()
+  })
+
+  test('an already-used invite says so instead of echoing the hook text', async () => {
+    signedIn()
+    acceptInvitation.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('Invitation can no longer be accepted'), {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        details: {
+          error: { code: 'bad_request', message: 'Invitation can no longer be accepted' },
+        },
+      })
+    })
+    render(createElement(InvitationAcceptScreen))
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: /accept invitation/i }))
+
+    expect(await screen.findByText(/this invitation has already been used/i)).toBeTruthy()
+    expect(screen.queryByText(/can no longer be accepted/i)).toBeNull()
   })
 
   test('criterion 3: accepting runs the shared domain action with the invited role, then lands in the app', async () => {

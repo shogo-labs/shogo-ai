@@ -114,6 +114,10 @@ model Workspace {
   // UTC day through which the disk add-on has been billed. Unused on desktop
   // (local mode has no billing job); kept for schema parity.
   diskAddonBilledThrough DateTime?
+  // Who may invite people to this workspace (SHO-454). "members" (the default
+  // when null) lets any Editor invite as Editor or Viewer; "admins" restricts
+  // inviting to owners and admins. Viewers can never invite.
+  invitePolicy String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

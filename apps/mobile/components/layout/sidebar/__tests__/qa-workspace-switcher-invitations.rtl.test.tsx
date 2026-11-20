@@ -17,6 +17,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test"
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { createElement } from "react"
 import { createReactNativeMock } from "../../../../test/react-native-mock"
+import { inviteDialogContextStub } from '../../../../test/invite-dialog-stub'
 
 mock.module("react-native", () =>
   createReactNativeMock({
@@ -49,6 +50,7 @@ mock.module("lucide-react-native", () => {
       "Plus",
       "Settings",
       "Sparkles",
+      "UserPlus",
       "Users",
       "Zap",
     ].map((n) => [n, Icon(n)]),
@@ -72,6 +74,7 @@ const domainStore = { workspaceCollection: { all: [], loadAll: loadAllWorkspaces
 const domainActions = { acceptInvitation, declineInvitation }
 
 mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
+  useDomainHttp: () => null,
   useDomainHttpOptional: () => http,
   getDomainHttpClient: () => http,
   useDomainOptional: () => domainStore,
@@ -112,9 +115,15 @@ mock.module(resolve(import.meta.dir, "../../../../hooks/useCloudSession"), () =>
   }),
 }))
 mock.module(resolve(import.meta.dir, "../../../../lib/workspace-route"), () => ({
+  canInviteHere: () => false,
+  inviteLinkUrl: (token: string) => `/invite/${token}`,
   isCloudWorkspace: () => false,
   useCloudWorkspaces: () => ({ signedIn: false, cloudUrl: null, reachable: true, user: null, workspaces: [] }),
 }))
+
+// The switcher offers "Invite people" through the app shell's dialog (SHO-454);
+// these tests render it on its own, so stub the context.
+mock.module(resolve(import.meta.dir, '../../../workspace/invite-dialog-context'), inviteDialogContextStub)
 
 const { WorkspaceMenuSection } = await import("../WorkspaceMenuSection")
 const { buildWorkspaceEntries, cloudWorkspaceKey } = await import("../../../../lib/workspace-entries")

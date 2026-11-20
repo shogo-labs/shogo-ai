@@ -152,12 +152,23 @@ test.describe("RBAC: workspace and project access", () => {
     expect(projectIds(list)).toEqual(expect.arrayContaining([openId, restrictedId]))
   })
 
-  test("members cannot escalate or manage invite links", async () => {
+  test("members cannot escalate invite links, but may read the one they can create", async () => {
+    // An Editor may invite as Editor or Viewer, never as admin (SHO-454).
     const adminLink = await api(teammate.page, "POST", "/api/invite-links", { workspaceId, role: "admin" })
     expect(adminLink.status).toBe(403)
 
+    // Reading is what "Copy link" needs, so an Editor may read the workspace link.
     const listLinks = await api(teammate.page, "GET", `/api/invite-links?workspaceId=${workspaceId}`)
-    expect(listLinks.status).toBe(403)
+    expect(listLinks.status, JSON.stringify(listLinks.body)).toBe(200)
+
+    // Resetting and disabling stay manager-only.
+    const existing = listLinks.body.items?.[0]
+    if (existing) {
+      const reset = await api(teammate.page, "PATCH", `/api/invite-links/${existing.id}`, { enabled: false })
+      expect(reset.status).toBe(403)
+      const removed = await api(teammate.page, "DELETE", `/api/invite-links/${existing.id}`)
+      expect(removed.status).toBe(403)
+    }
   })
 
   test("restricting a project hides it from workspace members", async () => {
