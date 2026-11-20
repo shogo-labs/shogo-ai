@@ -41,7 +41,7 @@ import {
   isNativePlatform,
 } from '../../lib/native-phone-layout'
 import { SegmentedFilter } from "../../components/phone/SegmentedFilter";
-import { AppVersionsPanel, type InstallSegment } from '../../components/analytics/AppVersionsPanel'
+import { AppVersionsPanel, type InstallSegment, type AppVersionAdoptionPoint } from '../../components/analytics/AppVersionsPanel'
 import {
   ActiveDevicesPanel,
   type ActiveDevicesData,
@@ -54,6 +54,7 @@ import {
   type SpendTimeseriesData,
   type SpendGroupBy,
   type SpendMetric,
+  type DeviceActivityTimeseries,
 } from '../../components/analytics/SharedAnalytics'
 
 const API_BASE = `${API_URL}/api/admin`
@@ -100,6 +101,15 @@ interface AppInstallsData {
     newLast30d: number
     distinctUsers: number
   }
+}
+
+interface AppVersionsData {
+  generatedAt: string
+  deployedVersion: string | null
+  windowDays: number
+  desktop: InstallSegment
+  cli: InstallSegment
+  adoption: AppVersionAdoptionPoint[]
 }
 
 interface GrowthDataPoint {
@@ -383,7 +393,7 @@ function InstallSegmentCard({
   )
 }
 
-function AppInstallsCard({ data, loading }: { data: AppInstallsData | null; loading: boolean }) {
+function AppInstallsCard({ data, loading, adoption }: { data: AppInstallsData | null; loading: boolean; adoption: AppVersionAdoptionPoint[] }) {
   const { width } = useWindowDimensions()
   const stackMetrics = isNativePlatform() && width < NATIVE_STACK_METRICS_MAX_WIDTH
 
@@ -447,7 +457,7 @@ function AppInstallsCard({ data, loading }: { data: AppInstallsData | null; load
           </>
         )}
       </View>
-      {data && <View className="mt-3"><AppVersionsPanel desktop={data.desktop} cli={data.cli} /></View>}
+      {data && <View className="mt-3"><AppVersionsPanel desktop={data.desktop} cli={data.cli} adoption={adoption} /></View>}
       {data && (
         <Text className="text-xs text-muted-foreground mt-3">
           {data.totals.newLast30d.toLocaleString()} new in 30d · {data.totals.distinctUsers.toLocaleString()} users
@@ -805,6 +815,14 @@ export default function AdminDashboard() {
     data: null,
     loading: true,
   })
+  const [deviceTrend, setDeviceTrend] = useState<{ data: DeviceActivityTimeseries | null; loading: boolean }>({
+    data: null,
+    loading: true,
+  })
+  const [appVersions, setAppVersions] = useState<{ data: AppVersionsData | null; loading: boolean }>({
+    data: null,
+    loading: true,
+  })
   const [growth, setGrowth] = useState<{ data: GrowthDataPoint[] | null; loading: boolean }>({
     data: null,
     loading: true,
@@ -886,6 +904,22 @@ export default function AdminDashboard() {
     setAppDevices({ data, loading: false })
   }, [trackAppDevices])
 
+  const trackDeviceTrend = usePanelSequence()
+  const loadDeviceTrend = useCallback(async () => {
+    setDeviceTrend((s) => ({ ...s, loading: true }))
+    const data = await trackDeviceTrend(() => fetchAdminJson<DeviceActivityTimeseries>('/analytics/devices-timeseries', { days: '30' }))
+    if (data === SUPERSEDED) return
+    setDeviceTrend({ data, loading: false })
+  }, [trackDeviceTrend])
+
+  const trackAppVersions = usePanelSequence()
+  const loadAppVersions = useCallback(async () => {
+    setAppVersions((s) => ({ ...s, loading: true }))
+    const data = await trackAppVersions(() => fetchAdminJson<AppVersionsData>('/analytics/app-versions', { days: '30' }))
+    if (data === SUPERSEDED) return
+    setAppVersions({ data, loading: false })
+  }, [trackAppVersions])
+
   const trackGrowth = usePanelSequence()
   const loadGrowth = useCallback(async () => {
     setGrowth((s) => ({ ...s, loading: true }))
@@ -952,6 +986,8 @@ export default function AdminDashboard() {
       loadActiveUsers(),
       loadAppInstalls(),
       loadAppDevices(),
+      loadDeviceTrend(),
+      loadAppVersions(),
       loadGrowth(),
       loadUsage(),
       loadActiveUsersTs(),
@@ -964,6 +1000,8 @@ export default function AdminDashboard() {
     loadActiveUsers,
     loadAppInstalls,
     loadAppDevices,
+    loadDeviceTrend,
+    loadAppVersions,
     loadGrowth,
     loadUsage,
     loadActiveUsersTs,
@@ -987,6 +1025,14 @@ export default function AdminDashboard() {
   useEffect(() => {
     void loadAppDevices()
   }, [loadAppDevices])
+
+  useEffect(() => {
+    void loadDeviceTrend()
+  }, [loadDeviceTrend])
+
+  useEffect(() => {
+    void loadAppVersions()
+  }, [loadAppVersions])
 
   useEffect(() => {
     void loadGrowth()
@@ -1157,12 +1203,17 @@ export default function AdminDashboard() {
 
       {/* Row 3: Signed-in app install and activity metrics */}
       <View className="mb-6">
-        <AppInstallsCard data={appInstalls.data} loading={appInstalls.loading} />
+        <AppInstallsCard data={appInstalls.data} loading={appInstalls.loading} adoption={appVersions.data?.adoption ?? []} />
       </View>
 
       {/* Row 3b: Which devices are actually alive */}
       <View className="mb-6">
-        <ActiveDevicesPanel data={appDevices.data} loading={appDevices.loading} />
+        <ActiveDevicesPanel
+          data={appDevices.data}
+          loading={appDevices.loading}
+          trend={deviceTrend.data}
+          trendLoading={deviceTrend.loading}
+        />
       </View>
 
       {/* Row 4: Growth over time (Daily / Cumulative) */}

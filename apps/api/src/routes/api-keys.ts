@@ -38,7 +38,12 @@ import {
   hashApiKey,
   mintDeviceApiKey,
 } from '../lib/api-keys-mint'
-import { normalizeDeviceVersion, recordDeviceVersionEvent } from '../lib/device-version-events'
+import {
+  normalizeDeviceVersion,
+  recordDeviceActiveDay,
+  recordDeviceVersionEvent,
+  utcDayKey,
+} from '../lib/device-version-events'
 import { getAccess } from '../lib/authz'
 import { getSignupTrustHold, signupTrustHoldPayload } from '../lib/signup-trust'
 
@@ -352,6 +357,15 @@ export function apiKeyRoutes() {
       })
     }
 
+    if (touch.recordActiveDay) {
+      await recordDeviceActiveDay({
+        deviceId: apiKey.deviceId,
+        version: touch.version,
+        platform: apiKey.devicePlatform,
+        seenAt: now,
+      })
+    }
+
     return c.json({ ok: true })
   })
 
@@ -397,7 +411,17 @@ export function planApiKeyTouch(
     /** Refresh `lastSeenAt` for any key kind (the heartbeat's historical behaviour). */
     alwaysTouchLastSeen?: boolean
   },
-): { data: Record<string, unknown> | null; recordVersion: boolean; version: string | null } {
+): {
+  data: Record<string, unknown> | null
+  recordVersion: boolean
+  version: string | null
+  /**
+   * True on the first touch of a UTC day for a device key. The caller then
+   * writes one `device_active_days` row, so the per-day count costs at most
+   * one write per key per day instead of one per request (SHO-160).
+   */
+  recordActiveDay: boolean
+} {
   const now = opts.now.getTime()
   const stale = (at: Date | null | undefined, interval: number) => at == null || now - at.getTime() >= interval
   const isDevice = stored.kind === 'device'
@@ -424,10 +448,17 @@ export function planApiKeyTouch(
     ('lastSeenAt' in data && windowOf(stored.lastSeenAt.getTime()) !== windowOf(now))
   )
 
+  // A device is active on a UTC day the first time anything touches its key
+  // that day. `lastSeenAt` is the throttle (it is what the heartbeat already
+  // writes), so a second touch the same day costs no extra write.
+  const recordActiveDay =
+    isDevice && (stored.lastSeenAt == null || utcDayKey(stored.lastSeenAt) !== utcDayKey(opts.now))
+
   return {
     data: Object.keys(data).length > 0 ? data : null,
     recordVersion,
     version: reported,
+    recordActiveDay,
   }
 }
 
@@ -502,6 +533,15 @@ export async function resolveApiKey(
 
   if (touch.recordVersion) {
     recordDeviceVersionEvent({
+      deviceId: apiKey.deviceId,
+      version: touch.version,
+      platform: apiKey.devicePlatform,
+      seenAt: now,
+    }).catch(() => {})
+  }
+
+  if (touch.recordActiveDay) {
+    recordDeviceActiveDay({
       deviceId: apiKey.deviceId,
       version: touch.version,
       platform: apiKey.devicePlatform,

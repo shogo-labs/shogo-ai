@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Admin → Active devices: per-machine list.
+ * Admin → Active devices: last-seen bar chart + disclosure (SHO-477).
  *
- * The version table says which builds are installed; this list says which
- * machines are still running. These assertions cover what an operator reads off
- * it: the online/active/dormant headline, dormant keys hidden until asked for,
- * the idle age, and the OS / CLI filters.
+ * The old panel showed a flat per-device table by default. The new one shows a
+ * recency bar chart; the per-device list is hidden until "Show devices" is
+ * tapped. These assertions cover: headline, bar chart bucket labels, the
+ * disclosure toggle, dormant-key gating, OS/CLI chips, and unit tests for
+ * `bucketDevicesByRecency`.
  */
 
 import { describe, expect, mock, test } from 'bun:test'
@@ -25,7 +26,7 @@ mock.module('@shogo/shared-ui/primitives', () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(' '),
 }))
 
-const { ActiveDevicesPanel, formatIdle } = await import('../ActiveDevicesPanel')
+const { ActiveDevicesPanel, formatIdle, bucketDevicesByRecency } = await import('../ActiveDevicesPanel')
 
 const device = (over: Record<string, any> = {}) => ({
   id: 'a1b2c3d4e5',
@@ -69,39 +70,60 @@ const data = (over: Record<string, any> = {}) => ({
 })
 
 describe('ActiveDevicesPanel', () => {
-  test('headline reports online now, active in window and live keys', () => {
+  test('headline reports online now, active in window and dormant count', () => {
     render(createElement(ActiveDevicesPanel, { data: data() }))
-    expect(screen.getByText('1 online now · 4 active in 30d · 189 live keys')).toBeTruthy()
+    expect(screen.getByText('1 online now · 4 active in 30d · 155 dormant')).toBeTruthy()
     expect(screen.getByText(/155 of 189 keys are dormant/)).toBeTruthy()
     expect(screen.getByText(/heartbeat in the last 15 min/)).toBeTruthy()
   })
 
-  test('online and recently-seen devices render, dormant keys stay hidden', () => {
+  test('recency bar chart labels are visible', () => {
     render(createElement(ActiveDevicesPanel, { data: data() }))
+    for (const label of ['Online now', 'Today', '1–7 days', '7–30 days', 'Dormant']) {
+      expect(screen.getByText(label)).toBeTruthy()
+    }
+  })
+
+  test('per-device list is hidden until "Show devices" is pressed', () => {
+    render(createElement(ActiveDevicesPanel, { data: data() }))
+    // Devices are behind the disclosure by default.
+    expect(screen.queryByText('online-1')).toBeNull()
+    expect(screen.queryByText('ok-2')).toBeNull()
+    // The toggle button is visible.
+    expect(screen.getByText(/Show devices/)).toBeTruthy()
+  })
+
+  test('pressing "Show devices" reveals the online and recently-seen rows', () => {
+    render(createElement(ActiveDevicesPanel, { data: data() }))
+    fireEvent.click(screen.getByText(/Show devices/))
     expect(screen.getByText('online-1')).toBeTruthy()
     expect(screen.getByText('ok-2')).toBeTruthy()
-    // 1.12.7 is 90 days idle — hidden until asked for.
+    // 1.12.7 is 90 days idle — still hidden until dormant toggle.
     expect(screen.queryByText('dormant-5')).toBeNull()
     expect(screen.getByText('Showing 4 of 5 devices')).toBeTruthy()
   })
 
-  test('toggling dormant keys reveals the stale ones with their idle age', () => {
+  test('toggling dormant keys after opening the list reveals the stale ones', () => {
     render(createElement(ActiveDevicesPanel, { data: data() }))
+    fireEvent.click(screen.getByText(/Show devices/))
     fireEvent.click(screen.getByText(/Show dormant keys/))
     expect(screen.getByText('dormant-5')).toBeTruthy()
     expect(screen.getByText('90d')).toBeTruthy()
   })
 
-  test('beta and CLI devices are labelled, not merged into desktop', () => {
+  test('beta and CLI devices are labelled inside the per-device list', () => {
     render(createElement(ActiveDevicesPanel, { data: data() }))
+    fireEvent.click(screen.getByText(/Show devices/))
     expect(screen.getByText('Beta')).toBeTruthy()
     expect(screen.getByText('CLI')).toBeTruthy()
-    expect(screen.getByText('Windows')).toBeTruthy()
+    // 'Windows' appears in both the bar chart OS legend and the device row osLabel.
+    expect(screen.getAllByText('Windows').length).toBeGreaterThan(0)
   })
 
   test('the CLI chip narrows the list to CLI devices', () => {
     render(createElement(ActiveDevicesPanel, { data: data() }))
     fireEvent.click(screen.getByText('CLI · 1'))
+    fireEvent.click(screen.getByText(/Show devices/))
     expect(screen.getByText('shogo-cli/1.4.0')).toBeTruthy()
     expect(screen.queryByText('online-1')).toBeNull()
     expect(screen.queryByText('ok-2')).toBeNull()
@@ -110,6 +132,54 @@ describe('ActiveDevicesPanel', () => {
   test('no data does not crash the panel', () => {
     render(createElement(ActiveDevicesPanel, { data: null }))
     expect(screen.getByText('No device data')).toBeTruthy()
+  })
+
+  test('renders the devices trend with "Tracking since" once there are two days', () => {
+    const trend = {
+      trackingSince: '2026-10-20',
+      points: [
+        { date: '2026-10-20', daily: 2, weekly: 2, monthly: 2, byOs: { macos: 2, windows: 0, linux: 0, unknown: 0 }, byClient: { desktop: 2, cli: 0 } },
+        { date: '2026-10-21', daily: 3, weekly: 3, monthly: 3, byOs: { macos: 2, windows: 1, linux: 0, unknown: 0 }, byClient: { desktop: 2, cli: 1 } },
+      ],
+    }
+    render(createElement(ActiveDevicesPanel, { data: data(), trend }))
+    expect(screen.getByText('Active devices over time')).toBeTruthy()
+    expect(screen.getByText(/Tracking since/)).toBeTruthy()
+  })
+
+  test('says when collection started while there is under two days of data', () => {
+    const trend = {
+      trackingSince: '2026-10-21',
+      points: [
+        { date: '2026-10-21', daily: 2, weekly: 2, monthly: 2, byOs: { macos: 2, windows: 0, linux: 0, unknown: 0 }, byClient: { desktop: 2, cli: 0 } },
+      ],
+    }
+    render(createElement(ActiveDevicesPanel, { data: data(), trend }))
+    expect(screen.getByText(/Collecting data since/)).toBeTruthy()
+  })
+
+  test('days before trackingSince are not drawn, so one tracked day is not a trend', () => {
+    // 30 zero-filled days from the API, but the table only started yesterday:
+    // trimming to `trackingSince` must leave one point, not thirty zeros.
+    const points = Array.from({ length: 30 }, (_, i) => {
+      const d = new Date('2026-09-22T00:00:00Z')
+      d.setUTCDate(d.getUTCDate() + i)
+      return {
+        date: d.toISOString().slice(0, 10),
+        daily: d.toISOString().slice(0, 10) === '2026-10-21' ? 4 : 0,
+        weekly: 4,
+        monthly: 4,
+        byOs: { macos: 4, windows: 0, linux: 0, unknown: 0 },
+        byClient: { desktop: 4, cli: 0 },
+      }
+    })
+    render(createElement(ActiveDevicesPanel, { data: data(), trend: { trackingSince: '2026-10-21', points } }))
+    expect(screen.getByText(/Collecting data since/)).toBeTruthy()
+  })
+
+  test('a null trend (never recorded) does not crash the panel', () => {
+    render(createElement(ActiveDevicesPanel, { data: data(), trend: null }))
+    expect(screen.getByText(/Collecting data/)).toBeTruthy()
   })
 })
 
@@ -123,5 +193,40 @@ describe('formatIdle', () => {
     expect(formatIdle(5, false)).toBe('5h')
     expect(formatIdle(72, false)).toBe('3d')
     expect(formatIdle(null, false)).toBe('never')
+  })
+})
+
+describe('bucketDevicesByRecency', () => {
+  test('buckets sum to the full device count', () => {
+    const devices = [
+      device({ id: 'd1', online: true, idleHours: 0 }),
+      device({ id: 'd2', idleHours: 3 }),
+      device({ id: 'd3', idleHours: 30 }),
+      device({ id: 'd4', idleHours: 100 }),
+      device({ id: 'd5', idleHours: null }),
+    ]
+    const buckets = bucketDevicesByRecency(devices)
+    const total = buckets.reduce((s, b) => s + b.total, 0)
+    expect(total).toBe(devices.length)
+  })
+
+  test('"Online now" bucket agrees with device.online flag', () => {
+    const devices = [
+      device({ id: 'on', online: true, idleHours: 0 }),
+      device({ id: 'off', online: false, idleHours: 2 }),
+    ]
+    const buckets = bucketDevicesByRecency(devices)
+    const online = buckets.find((b) => b.label === 'Online now')!
+    expect(online.total).toBe(1)
+  })
+
+  test('"Dormant" covers > 30d idle and null lastSeen', () => {
+    const devices = [
+      device({ id: 'stale', idleHours: 24 * 31 }),
+      device({ id: 'never', idleHours: null }),
+    ]
+    const buckets = bucketDevicesByRecency(devices)
+    const dormant = buckets.find((b) => b.label === 'Dormant')!
+    expect(dormant.total).toBe(2)
   })
 })

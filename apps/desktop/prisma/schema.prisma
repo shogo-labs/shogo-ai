@@ -1393,3 +1393,34 @@ model WhatsAppNumberBinding {
   @@map("whatsapp_number_bindings")
 }
 
+
+/// One row per device per UTC day it was seen (heartbeat, proxy call or mint).
+///
+/// Mirrors `prisma/schema.local.prisma`. `api_keys` keeps only each key's *last*
+/// heartbeat, so "how many machines were alive on 3 November" could not be
+/// answered; this records the first touch of each UTC day and bumps
+/// `lastSeenAt` on later ones.
+///
+/// Region-scoped with random ids like `device_version_events` (SHO-142): nothing
+/// ever passes `id`, and `region` is part of the unique key.
+model DeviceActiveDay {
+  id          String   @id @default(cuid())
+  /// Region that wrote the row (`REGION_ID`, or `local` in single-region and
+  /// desktop mode). Always set; never NULL.
+  region      String
+  deviceId    String
+  /// UTC `YYYY-MM-DD` — the day this device was active.
+  day         String
+  /// macos | windows | linux | unknown
+  os          String   @default("unknown")
+  /// desktop | cli | unknown
+  client      String   @default("desktop")
+  /// The version reported on this day, when one was in hand.
+  version     String?
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime
+
+  @@unique([region, deviceId, day])
+  @@index([day])
+  @@map("device_active_days")
+}

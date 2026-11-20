@@ -17,7 +17,7 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test'
 // Set before the module graph loads `./region`, which snapshots REGION_ID.
 process.env.REGION_ID = 'us-ashburn-1'
 
-const store: { upserts: any[] } = { upserts: [] }
+const store: { upserts: any[]; activeUpserts: any[] } = { upserts: [], activeUpserts: [] }
 let shouldThrow = false
 
 mock.module('../prisma', () => ({
@@ -29,11 +29,24 @@ mock.module('../prisma', () => ({
         return { id: 'dve-1', ...args.create }
       }),
     },
+    deviceActiveDay: {
+      upsert: mock(async (args: any) => {
+        if (shouldThrow) throw new Error('db down')
+        store.activeUpserts.push(args)
+        return { id: 'dad-1', ...args.create }
+      }),
+    },
   },
 }))
 
-const { recordDeviceVersionEvent, normalizeDeviceVersion, resolveWritingRegion, MAX_DEVICE_VERSION_LENGTH } =
-  await import('../device-version-events')
+const {
+  recordDeviceVersionEvent,
+  recordDeviceActiveDay,
+  utcDayKey,
+  normalizeDeviceVersion,
+  resolveWritingRegion,
+  MAX_DEVICE_VERSION_LENGTH,
+} = await import('../device-version-events')
 const { RAW_REGION_ID } = await import('../region')
 
 /** Whatever this process resolved at load — `local` when REGION_ID is unset. */
@@ -41,6 +54,7 @@ const REGION = resolveWritingRegion(RAW_REGION_ID)
 
 beforeEach(() => {
   store.upserts.length = 0
+  store.activeUpserts.length = 0
   shouldThrow = false
 })
 
@@ -149,5 +163,86 @@ describe('normalizeDeviceVersion', () => {
     expect(normalizeDeviceVersion('  2.3.6  ')).toBe('2.3.6')
     expect(normalizeDeviceVersion(null)).toBeNull()
     expect(normalizeDeviceVersion('9'.repeat(80))?.length).toBe(MAX_DEVICE_VERSION_LENGTH)
+  })
+})
+
+describe('recordDeviceActiveDay', () => {
+  test('keys the row on (region, deviceId, UTC day) and normalises OS/client', async () => {
+    const seenAt = new Date('2026-11-03T07:00:00.000Z')
+
+    await recordDeviceActiveDay({
+      deviceId: 'device-1',
+      version: '2.3.6-beta.20261020t083308',
+      platform: 'darwin-arm64',
+      seenAt,
+    })
+
+    expect(store.activeUpserts).toHaveLength(1)
+    expect(store.activeUpserts[0].where).toEqual({
+      region_deviceId_day: { region: REGION, deviceId: 'device-1', day: '2026-11-03' },
+    })
+    expect(store.activeUpserts[0].create).toMatchObject({
+      region: REGION,
+      deviceId: 'device-1',
+      day: '2026-11-03',
+      os: 'macos',
+      client: 'desktop',
+      version: '2.3.6-beta.20261020t083308',
+      firstSeenAt: seenAt,
+      lastSeenAt: seenAt,
+    })
+  })
+
+  test('never passes an id, and `region` + `day` are never rewritten by the update half', async () => {
+    await recordDeviceActiveDay({ deviceId: 'device-1', version: '2.3.6' })
+    const args = store.activeUpserts[0]
+    expect(args.create.id).toBeUndefined()
+    expect(args.update.id).toBeUndefined()
+    expect(args.update.region).toBeUndefined()
+    expect(args.update.day).toBeUndefined()
+    expect(args.update.firstSeenAt).toBeUndefined()
+  })
+
+  test('a re-sighting the same day only bumps lastSeenAt (and version when reported)', async () => {
+    const first = new Date('2026-11-03T01:00:00.000Z')
+    const later = new Date('2026-11-03T18:00:00.000Z')
+
+    await recordDeviceActiveDay({ deviceId: 'device-1', version: '2.3.5', platform: 'darwin', seenAt: first })
+    // A version-less touch cannot tell desktop from CLI, so it must not
+    // downgrade the client the first call established.
+    await recordDeviceActiveDay({ deviceId: 'device-1', platform: 'darwin', seenAt: later })
+
+    expect(store.activeUpserts).toHaveLength(2)
+    expect(store.activeUpserts[1].where.region_deviceId_day.day).toBe('2026-11-03')
+    expect(store.activeUpserts[1].update).toEqual({
+      os: 'macos',
+      lastSeenAt: later,
+    })
+  })
+
+  test('a touch with no device is skipped', async () => {
+    expect(await recordDeviceActiveDay({ deviceId: null })).toBe(false)
+    expect(await recordDeviceActiveDay({ deviceId: '   ' })).toBe(false)
+    expect(store.activeUpserts).toHaveLength(0)
+  })
+
+  test('a version is optional — activity without one still counts', async () => {
+    expect(await recordDeviceActiveDay({ deviceId: 'device-1', platform: 'win32-x64' })).toBe(true)
+    // `parseClient` cannot name the client without a version, and this module
+    // does not invent a second rule — the read folds it into desktop.
+    expect(store.activeUpserts[0].create).toMatchObject({ os: 'windows', version: null })
+  })
+
+  test('never breaks auth when the write fails', async () => {
+    shouldThrow = true
+    expect(await recordDeviceActiveDay({ deviceId: 'device-1' })).toBe(false)
+  })
+})
+
+describe('utcDayKey', () => {
+  test('is the UTC day, not the local one', () => {
+    expect(utcDayKey(new Date('2026-11-03T00:00:00.000Z'))).toBe('2026-11-03')
+    expect(utcDayKey(new Date('2026-11-03T23:59:59.999Z'))).toBe('2026-11-03')
+    expect(utcDayKey(new Date('2026-11-04T00:00:00.000Z'))).toBe('2026-11-04')
   })
 })

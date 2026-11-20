@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Admin → App Installs: OS×version panel.
+ * Admin → App Installs: chart-based versions panel (SHO-477).
  *
- * Regression cover for the old card, which sliced versions/platforms to 4 rows
- * and rendered `darwin-arm64` as its own OS. These assertions are about what an
- * admin actually sees: the on-latest headline, every version (no truncation),
- * the Beta chip, and the OS / CLI filters.
+ * Covers the new chart surface: headline, filter chips, area chart presence
+ * (via its legend labels), version-share bar, and OS ring heading.
  */
 
 import { describe, expect, mock, test } from 'bun:test'
@@ -75,51 +73,64 @@ const cli: any = {
   versions: [versionRow({ version: 'shogo-cli/unknown', devices: 2 })],
 }
 
+/** Minimal adoption fixture — 2 days, desktop+CLI, mixed OS. */
+const adoption: any[] = [
+  { date: '2026-10-20', version: '2.3.6', channel: 'stable', client: 'desktop', os: 'macos', devices: 1 },
+  { date: '2026-10-20', version: '2.3.6', channel: 'stable', client: 'desktop', os: 'windows', devices: 1 },
+  { date: '2026-10-20', version: '2.3.5', channel: 'stable', client: 'desktop', os: 'macos', devices: 1 },
+  { date: '2026-10-20', version: 'shogo-cli/unknown', channel: 'stable', client: 'cli', os: 'unknown', devices: 2 },
+  { date: '2026-10-21', version: '2.3.6', channel: 'stable', client: 'desktop', os: 'macos', devices: 2 },
+  { date: '2026-10-21', version: '2.3.5', channel: 'stable', client: 'desktop', os: 'windows', devices: 1 },
+  { date: '2026-10-21', version: 'shogo-cli/unknown', channel: 'stable', client: 'cli', os: 'unknown', devices: 2 },
+]
+
 describe('AppVersionsPanel', () => {
   test('leads with how many desktops are on the deployed release', () => {
-    render(createElement(AppVersionsPanel, { desktop, cli }))
+    render(createElement(AppVersionsPanel, { desktop, cli, adoption }))
     expect(screen.getByText('2 of 6 desktop devices on 2.3.6 (33%)')).toBeTruthy()
     expect(screen.getByText('Compared against the release this API is running.')).toBeTruthy()
   })
 
-  test('lists every version instead of truncating to four', () => {
-    render(createElement(AppVersionsPanel, { desktop, cli }))
-    for (const version of ['2.3.6', '2.3.5', '2.2.0', '1.5.1', '2.3.4-beta.20261018t122519']) {
-      expect(screen.getAllByText(version).length).toBeGreaterThan(0)
-    }
+  test('shows "Devices on each version" label and version share bar when adoption is present', () => {
+    render(createElement(AppVersionsPanel, { desktop, cli, adoption }))
+    expect(screen.getByText('Devices on each version')).toBeTruthy()
+    expect(screen.getByText('Version share today')).toBeTruthy()
   })
 
-  test('marks beta installs and keeps them out of the stable row', () => {
-    render(createElement(AppVersionsPanel, { desktop, cli }))
-    expect(screen.getByText('Beta')).toBeTruthy()
-    expect(screen.getAllByText('2.3.6').length).toBe(1)
-  })
-
-  test('shows the macOS / Windows / Linux columns and their per-OS totals', () => {
-    render(createElement(AppVersionsPanel, { desktop, cli }))
-    // Column headers of the OS×version table.
-    for (const label of ['Version', 'macOS', 'Windows', 'Linux', 'Last seen']) {
-      expect(screen.getByText(label)).toBeTruthy()
-    }
-    // Chip labels carry the normalised per-OS totals (3 macOS, 2 Windows, 1 Linux).
+  test('shows all five OS/CLI filter chips with correct device counts', () => {
+    render(createElement(AppVersionsPanel, { desktop, cli, adoption }))
+    expect(screen.getByRole('button', { name: 'All · 6' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'macOS · 3' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Windows · 2' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Linux · 1' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'CLI · 2' })).toBeTruthy()
   })
 
-  test('OS chips filter the table down to devices on that OS', () => {
-    render(createElement(AppVersionsPanel, { desktop, cli }))
-    fireEvent.click(screen.getByRole('button', { name: /Windows/ }))
-    expect(screen.queryByText('1.5.1')).toBeNull()
-    expect(screen.getAllByText('2.3.6').length).toBe(1)
+  test('"All" adoption shows desktop version labels in the legend', () => {
+    render(createElement(AppVersionsPanel, { desktop, cli, adoption }))
+    // The area chart legend renders series labels as plain text.
+    expect(screen.getAllByText('2.3.6').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('2.3.5').length).toBeGreaterThan(0)
   })
 
-  test('the CLI chip shows the CLI segment, not the desktop one', () => {
+  test('"CLI" chip adoption shows only CLI series in the legend', () => {
+    render(createElement(AppVersionsPanel, { desktop, cli, adoption }))
+    fireEvent.click(screen.getByRole('button', { name: 'CLI · 2' }))
+    // CLI version should appear in the legend.
+    expect(screen.getAllByText('shogo-cli/unknown').length).toBeGreaterThan(0)
+  })
+
+  test('OS ring heading visible for "All" and hidden for "CLI"', () => {
+    render(createElement(AppVersionsPanel, { desktop, cli, adoption }))
+    expect(screen.getByText('OS split')).toBeTruthy()
+    // Switch to CLI — ring heading disappears
+    fireEvent.click(screen.getByRole('button', { name: 'CLI · 2' }))
+    expect(screen.queryByText('OS split')).toBeNull()
+  })
+
+  test('no adoption data shows graceful message', () => {
     render(createElement(AppVersionsPanel, { desktop, cli }))
-    fireEvent.click(screen.getByRole('button', { name: /CLI/ }))
-    expect(screen.getByText('shogo-cli/unknown')).toBeTruthy()
-    expect(screen.queryByText('1.5.1')).toBeNull()
-    expect(screen.queryByText('2.3.5')).toBeNull()
+    expect(screen.getByText('No adoption data for this filter')).toBeTruthy()
   })
 
   test('says so when the deployment pins no release tag', () => {

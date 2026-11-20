@@ -72,12 +72,19 @@ describe('mintDeviceApiKey', () => {
     const createCalls: any[] = []
     const txCalls: any[] = []
     const versionEventCalls: any[] = []
+    const activeDayCalls: any[] = []
     let existing = opts.existingRows ?? []
     const stub = {
       deviceVersionEvent: {
         upsert: async (args: any) => {
           versionEventCalls.push(args)
           return { id: 'dve_1', ...args.create }
+        },
+      },
+      deviceActiveDay: {
+        upsert: async (args: any) => {
+          activeDayCalls.push(args)
+          return { id: 'dad_1', ...args.create }
         },
       },
       $transaction: async (fn: any) => {
@@ -108,7 +115,7 @@ describe('mintDeviceApiKey', () => {
         return fn(tx)
       },
     } as any
-    return { stub, updateManyCalls, createCalls, txCalls, versionEventCalls, get rows() { return existing } }
+    return { stub, updateManyCalls, createCalls, txCalls, versionEventCalls, activeDayCalls, get rows() { return existing } }
   }
 
   it('seeds the (region, device, version) install history at mint time', async () => {
@@ -135,6 +142,31 @@ describe('mintDeviceApiKey', () => {
       client: 'desktop',
       channel: 'stable',
     })
+  })
+
+  it('seeds the device-active day at mint time so a fresh install counts today', async () => {
+    const { stub, activeDayCalls } = makePrismaStub()
+    await mintDeviceApiKey({
+      prisma: stub,
+      workspaceId: 'w1',
+      userId: 'u1',
+      deviceId: 'd1',
+      devicePlatform: 'darwin-arm64',
+      deviceAppVersion: '2.3.6',
+    })
+
+    expect(activeDayCalls).toHaveLength(1)
+    const call = activeDayCalls[0]
+    expect(call.where.region_deviceId_day).toMatchObject({ region: REGION, deviceId: 'd1' })
+    expect(call.where.region_deviceId_day.day).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(call.create).toMatchObject({
+      region: REGION,
+      deviceId: 'd1',
+      os: 'macos',
+      client: 'desktop',
+      version: '2.3.6',
+    })
+    expect(call.create.id).toBeUndefined()
   })
 
   it('mints a device key inside one transaction', async () => {

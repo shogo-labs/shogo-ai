@@ -155,3 +155,77 @@ export async function recordDeviceVersionEvent(
     return false
   }
 }
+
+/**
+ * Minimal surface of the prisma client the active-day write needs.
+ */
+export interface DeviceActiveDayClient {
+  deviceActiveDay: {
+    upsert: (args: any) => Promise<unknown>
+  }
+}
+
+/** UTC `YYYY-MM-DD` for a moment in time. */
+export function utcDayKey(at: Date): string {
+  return at.toISOString().slice(0, 10)
+}
+
+/**
+ * Upsert one row per (region, deviceId, UTC day): the first touch of the day
+ * inserts, every later one only bumps `lastSeenAt` (and re-states `os`,
+ * `client` or `version` when the caller actually knows them).
+ *
+ * A device counts as active on a day if anything touched its key that day —
+ * heartbeat, proxy call or mint. Callers gate on `planApiKeyTouch`'s
+ * `recordActiveDay`, so this runs at most once per key per day rather than on
+ * every request; the upsert is idempotent either way, which keeps it correct
+ * when two regions both observe the device.
+ *
+ * A touch that carries no version cannot tell a desktop app from a CLI worker
+ * (`parseClient` returns `unknown`), so the `update` half leaves that column
+ * alone: a version-less proxy call must not downgrade what the day's heartbeat
+ * already established.
+ *
+ * Analytics must never break auth, so a storage failure is swallowed.
+ */
+export async function recordDeviceActiveDay(
+  touch: DeviceVersionTouch,
+  client: DeviceActiveDayClient = prisma as unknown as DeviceActiveDayClient,
+): Promise<boolean> {
+  const deviceId = touch.deviceId?.trim()
+  if (!deviceId) return false
+
+  const region = resolveWritingRegion(RAW_REGION_ID)
+  const { os } = parseDevicePlatform(touch.platform)
+  const version = normalizeDeviceVersion(touch.version)
+  const deviceClient = parseClient(version, touch.platform)
+  const seenAt = touch.seenAt ?? new Date()
+  const day = utcDayKey(seenAt)
+
+  try {
+    await client.deviceActiveDay.upsert({
+      where: { region_deviceId_day: { region, deviceId, day } },
+      create: {
+        region,
+        deviceId,
+        day,
+        os,
+        client: deviceClient,
+        version,
+        firstSeenAt: seenAt,
+        lastSeenAt: seenAt,
+      },
+      // `region` + `day` are the lookup key and are never in `update`.
+      update: {
+        lastSeenAt: seenAt,
+        ...(os !== 'unknown' ? { os } : {}),
+        ...(deviceClient !== 'unknown' ? { client: deviceClient } : {}),
+        ...(version ? { version } : {}),
+      },
+    })
+    return true
+  } catch (error) {
+    console.warn('[device-version] failed to record active day:', error)
+    return false
+  }
+}

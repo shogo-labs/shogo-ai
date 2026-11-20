@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * SHO-114 contract test — the panels render the payload the API actually sends.
+ * SHO-114 / SHO-477 contract test — the panels render the payload the API sends.
  *
- * The sibling `AppVersionsPanel.rtl.test.tsx` asserts against a hand-written
- * fixture, so a renamed field (`versions` → `byVersion`, `os.macos` →
- * `os.mac`) would keep both suites green while the admin page rendered blanks.
- * This one renders `fixtures/qa-app-installs.json`, which was captured from the
- * real service against a production-shaped SQLite row set (8 platform
- * spellings, 2 CLI keys, one device in two workspaces, one version-less touch
- * on an older row). Regenerate it with
+ * Uses `fixtures/qa-app-installs.json`, captured from the real service against
+ * a production-shaped SQLite row set (8 platform spellings, 2 CLI keys, one
+ * device in two workspaces). Regenerate it with
  * `apps/api/src/__tests__/qa-install-identity.acceptance.test.ts`.
+ *
+ * Since SHO-477 the panels are chart-based: version rows no longer appear as
+ * plain text in the HTML. These assertions cover the shape (payload contract),
+ * the headline and chip counts (computed from `versions[].os`), and the
+ * per-device disclosure gate.
  */
 
 import { describe, expect, mock, test } from 'bun:test'
@@ -47,8 +48,8 @@ describe('admin install panel — real API payload', () => {
     expect(payload.devices.devices).toBeArray()
   })
 
-  test('headline, chip totals and every version row render from the real payload', () => {
-    render(createElement(AppVersionsPanel, payload.installs))
+  test('headline and chip totals render from the real payload (SHO-477: chart-based, no version-row table)', () => {
+    render(createElement(AppVersionsPanel, { ...payload.installs, adoption: [] }))
 
     // "N of M on <tag>" — production's answer for the fixture.
     expect(screen.getByText('6 of 14 desktop devices on 2.3.6 (43%)')).toBeTruthy()
@@ -60,42 +61,21 @@ describe('admin install panel — real API payload', () => {
     expect(screen.getByRole('button', { name: 'Linux · 2' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'CLI · 2' })).toBeTruthy()
 
-    // All six (version, channel) rows — 4 would be the old truncation.
-    for (const version of ['2.3.6', '2.2.27', '1.12.7', '2.3.5', '2.2.24', '2.3.6-beta.20261020t083308']) {
-      expect(screen.getAllByText(version).length, version).toBeGreaterThan(0)
-    }
-    // Exactly one beta row, and it is the only Beta chip.
-    expect(screen.getAllByText('Beta')).toHaveLength(1)
+    // Without adoption data the chart gracefully says so rather than crashing.
+    expect(screen.getByText('No adoption data for this filter')).toBeTruthy()
   })
 
-  test('the CLI chip shows the CLI segment and never the desktop versions', () => {
-    render(createElement(AppVersionsPanel, payload.installs))
-    fireEvent.click(screen.getByRole('button', { name: 'CLI · 2' }))
-    expect(screen.getByText('shogo-cli/unknown')).toBeTruthy()
-    expect(screen.queryByText('1.12.7')).toBeNull()
-    expect(screen.queryByText('2.2.27')).toBeNull()
-  })
-
-  test('the per-version macOS column reflects darwin, darwin-arm64 and darwin-x64', () => {
-    render(createElement(AppVersionsPanel, payload.installs))
-    fireEvent.click(screen.getByRole('button', { name: 'macOS · 5' }))
-    // Every macOS device in the fixture, across the three spellings.
-    expect(screen.getAllByText('2.3.6').length).toBe(1)
-    for (const version of ['2.2.27', '1.12.7', '2.3.6-beta.20261020t083308']) {
-      expect(screen.getAllByText(version).length, version).toBeGreaterThan(0)
-    }
-    // No Windows-only or Linux-only build in the macOS view.
-    expect(screen.queryByText('2.3.5')).toBeNull()
-    expect(screen.queryByText('2.2.24')).toBeNull()
-  })
-
-  test('the device list renders one row per machine with its version and OS', () => {
+  test('the device headline renders from the real payload', () => {
     render(createElement(ActiveDevicesPanel, { data: payload.devices }))
-    // The shared react-native mock renders `testID` as `data-rn-shim`.
-    const rows = document.querySelectorAll('[data-rn-shim="active-device-row"]')
-    expect(rows.length).toBe(payload.devices.devices.length)
     expect(document.querySelector('[data-rn-shim="active-devices-headline"]')).toBeTruthy()
-    // The mislabelled device is reported on the version it actually moved to.
-    expect(screen.getAllByText('2.3.6').length).toBeGreaterThan(0)
+  })
+
+  test('per-device list is hidden behind "Show devices" disclosure', () => {
+    render(createElement(ActiveDevicesPanel, { data: payload.devices }))
+    // No device rows visible until the user opens the disclosure.
+    expect(document.querySelectorAll('[data-rn-shim="active-device-row"]').length).toBe(0)
+    // After opening…
+    fireEvent.click(screen.getByText(/Show devices/))
+    expect(document.querySelectorAll('[data-rn-shim="active-device-row"]').length).toBeGreaterThan(0)
   })
 })

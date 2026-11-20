@@ -393,6 +393,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       '`region` is part of the unique key, so two regions can never mint the same key: the row written in US is (us-ashburn-1, device, version) and the one in EU is (eu-*, device, version). A peer\'s row is a second tag for the same (device, version) rather than a conflict, and the analytics reader collapses tags through a `Set` (analytics.service.ts adoption series). Before 2026-10-22 the key was (deviceId, version) — an insert/insert there aborts the apply worker, which is exactly what took `sub_from_us` down (SHO-142) and why this is no longer "a conflict is deduped by the unique index".',
   },
   {
+    key: 'DeviceActiveDay.(day,deviceId,region)',
+    category: 'request_scoped',
+    reason:
+      '`region` is part of the unique key, so two regions can never mint the same key: a device active in US writes (us-ashburn-1, device, day) and the same device active again from EU writes (eu-*, device, day). A peer row is a second tag for the same (device, day) rather than a conflict, and the analytics reader collapses tags per (device, day), keeping the newest `lastSeenAt` (analytics.service.ts getDeviceActivityTimeseries). Written from the same request paths that gate DeviceVersionEvent — heartbeat proxy touch, resolveApiKey and mint.',
+  },
+  {
     key: 'Huddle.roomName',
     category: 'random_secret',
     reason: 'LiveKit room name embeds the huddle row\'s random UUID (hd_<workspaceId>_<huddleId>); collision astronomically improbable.',

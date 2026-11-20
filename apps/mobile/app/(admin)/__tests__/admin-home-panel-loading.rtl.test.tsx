@@ -95,6 +95,8 @@ const payload = (path: string): unknown => {
     const totals = { totalDevices: 1, active: { d1: 1, d7: 1, d30: 1 }, newLast30d: 0, distinctUsers: 1 }
     return { desktop: segment, cli: null, ios: segment, android: segment, totals }
   }
+  if (path === '/analytics/app-versions') return { deployedVersion: null, windowDays: 30, desktop: {}, cli: {}, adoption: [] }
+  if (path === '/analytics/devices-timeseries') return { trackingSince: null, points: [] }
   if (path === '/analytics/infra-current') return { live: null, snapshot: null }
   // These three panels render a chart straight off the array.
   if (path === '/analytics/infra-history') return []
@@ -127,12 +129,14 @@ describe('admin home page', () => {
   test('a super admin loads each panel once, including the two infra panels', async () => {
     render(<AdminHomePage />)
 
-    await waitFor(() => expect(paths).toHaveLength(10))
+    await waitFor(() => expect(paths).toHaveLength(12))
     for (const path of [
       '/analytics/overview',
       '/analytics/active-users',
       '/analytics/app-installs',
       '/analytics/devices',
+      '/analytics/devices-timeseries',
+      '/analytics/app-versions',
       '/analytics/growth',
       '/analytics/usage-summary',
       '/analytics/active-users-timeseries',
@@ -148,19 +152,19 @@ describe('admin home page', () => {
     role = 'admin'
     render(<AdminHomePage />)
 
-    await waitFor(() => expect(paths).toHaveLength(8))
+    await waitFor(() => expect(paths).toHaveLength(10))
     expect(callsFor('/analytics/infra-current')).toBe(0)
     expect(callsFor('/analytics/infra-history')).toBe(0)
   })
 
   test('changing the spend grouping refetches only the spend panel', async () => {
     const { getByTestId } = render(<AdminHomePage />)
-    await waitFor(() => expect(paths).toHaveLength(10))
+    await waitFor(() => expect(paths).toHaveLength(12))
 
     fireEvent.click(getByTestId('spend-group'))
     await waitFor(() => expect(callsFor('/analytics/spend-timeseries')).toBe(2))
 
-    expect(paths).toHaveLength(11)
+    expect(paths).toHaveLength(13)
     expect(callsFor('/analytics/overview')).toBe(1)
     expect(callsFor('/analytics/growth')).toBe(1)
     expect(callsFor('/analytics/usage-summary')).toBe(1)
