@@ -50,6 +50,7 @@ import {
   type LevelEvidence,
 } from '../config/learn-levels'
 import {
+  DEPARTMENTS,
   CERTIFICATE_LESSON,
   LEARN_BADGES,
   LEARN_LESSONS,
@@ -348,7 +349,7 @@ export function learnRoutes(deps: LearnRoutesDeps) {
 
   app.get('/lessons', (c) => {
     c.header('Cache-Control', 'public, max-age=300')
-    return c.json({ lessons: LEARN_LESSONS, badges: LEARN_BADGES, ranks: RANKS, levels: LEARN_LEVELS, xp: XP })
+    return c.json({ lessons: LEARN_LESSONS, badges: LEARN_BADGES, ranks: RANKS, levels: LEARN_LEVELS, xp: XP, departments: DEPARTMENTS })
   })
 
   app.post('/progress', async (c) => {

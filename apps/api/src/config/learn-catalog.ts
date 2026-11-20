@@ -18,7 +18,7 @@
 
 import type { PlanId } from './usage-plans'
 import { SOLO_FOUNDER_COURSE_ID } from './solo-founder-course'
-import { LEARN_LESSONS } from './learn-gamification'
+import { DEPARTMENTS, LEARN_LESSONS } from './learn-gamification'
 import { courseLevel } from './learn-levels'
 
 export type LearnAccessRule = { kind: 'public' } | { kind: 'level'; requires: number }
@@ -43,6 +43,8 @@ export const LEARN_COURSES: readonly LearnCourse[] = [
   track('paid-app'),
   track('first-client'),
   track('solo-founder'),
+  // Department certificates sit beside the ladder and open at Level 1 (Explorer).
+  ...DEPARTMENTS.map((d): LearnCourse => ({ id: d.id, access: { kind: 'level', requires: 1 } })),
 ]
 
 /**
@@ -68,6 +70,46 @@ export const LEARN_CERTIFICATES: Record<string, LearnCertificateRule> = {
     courseTitle: 'AI agents for everyone',
     passMark: 5,
     answers: { q1: 'b', q2: 'c', q3: 'b', q4: 'c', q5: 'd', q6: 'b' },
+  },
+  'ai-for-marketing': {
+    courseTitle: 'AI for Marketing',
+    passMark: 5,
+    answers: { q1: 'c', q2: 'a', q3: 'd', q4: 'b', q5: 'c', q6: 'b' },
+  },
+  'ai-for-sales': {
+    courseTitle: 'AI for Sales',
+    passMark: 5,
+    answers: { q1: 'b', q2: 'd', q3: 'a', q4: 'c', q5: 'b', q6: 'a' },
+  },
+  'ai-for-support': {
+    courseTitle: 'AI for Customer Support',
+    passMark: 5,
+    answers: { q1: 'd', q2: 'b', q3: 'c', q4: 'a', q5: 'd', q6: 'c' },
+  },
+  'ai-for-people': {
+    courseTitle: 'AI for People and HR',
+    passMark: 5,
+    answers: { q1: 'a', q2: 'c', q3: 'b', q4: 'd', q5: 'a', q6: 'b' },
+  },
+  'ai-for-finance': {
+    courseTitle: 'AI for Finance',
+    passMark: 5,
+    answers: { q1: 'c', q2: 'b', q3: 'd', q4: 'a', q5: 'c', q6: 'd' },
+  },
+  'ai-for-operations': {
+    courseTitle: 'AI for Operations',
+    passMark: 5,
+    answers: { q1: 'b', q2: 'a', q3: 'c', q4: 'd', q5: 'b', q6: 'c' },
+  },
+  'ai-for-engineering': {
+    courseTitle: 'AI for Engineering',
+    passMark: 5,
+    answers: { q1: 'd', q2: 'c', q3: 'a', q4: 'b', q5: 'd', q6: 'a' },
+  },
+  'ai-for-devops': {
+    courseTitle: 'AI for DevOps',
+    passMark: 5,
+    answers: { q1: 'a', q2: 'd', q3: 'b', q4: 'c', q5: 'a', q6: 'b' },
   },
 }
 
