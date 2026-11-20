@@ -1832,13 +1832,25 @@ export class AgentGateway {
     // Backfill a widget key for an already-connected webchat channel that has
     // none (channels connected from the Studio panel before SHO-380 never got
     // one), so existing embeds start working without a reconnect.
-    const webchatConfigPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
-    if (webchatConfigPath) {
+    const sharedConfigPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
+    if (sharedConfigPath) {
       const { backfillWebchatWidgetSecret } = await import('./channels/webchat-key')
-      const widgetSecret = backfillWebchatWidgetSecret(webchatConfigPath)
+      const widgetSecret = backfillWebchatWidgetSecret(sharedConfigPath)
       if (widgetSecret) {
         const entry = this.config.channels.find((c) => c.type === 'webchat')
         if (entry) entry.config = { ...entry.config, widgetSecret }
+      }
+
+      // Backfill a secret for any webhook channel that was saved before SHO-462
+      // (when the secret was optional). The channel rejects every request without
+      // one, so a missing secret at boot means no one can call it; generating
+      // one here makes existing channels work without a reconnect.
+      const { backfillChannelSecret } = await import('./channels/channel-secret')
+      const { generateWebhookSecret } = await import('./channels/webhook')
+      const webhookSecret = backfillChannelSecret(sharedConfigPath, 'webhook', 'secret', generateWebhookSecret)
+      if (webhookSecret) {
+        const entry = this.config.channels.find((c) => c.type === 'webhook')
+        if (entry) entry.config = { ...entry.config, secret: webhookSecret }
       }
     }
 

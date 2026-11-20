@@ -4,6 +4,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Prisma } from '../generated/prisma-pg/client'
 import { prisma } from '../lib/prisma'
+import { loadNamesForTexts, renderMentionsAsText } from './conversation-mentions'
 
 /**
  * A turn whose heartbeat is older than this is treated as dead (API process
@@ -514,4 +515,208 @@ async function conversationReplies(sessionIds: string[]) {
     if (row) bySession.set(sessionIds[index], row)
   })
   return bySession
+}
+
+/** Stable shape returned by the peek endpoint. All nullable fields may be absent. */
+export type ActiveChatPeek = {
+  chatSessionId: string
+  turnId: string
+  title: string
+  agentName: string | null
+  startedAt: Date
+  where: {
+    kind: string
+    conversationId: string | null
+    conversationName: string | null
+    threadRootId: string | null
+  }
+  card: { key: string; title: string; column: string } | null
+  trigger: { authorName: string; authorType: string; text: string; createdAt: Date } | null
+  reply: { text: string; updatedAt: Date } | null
+  hidden: boolean
+}
+
+const TRIGGER_TRIM = 1_000
+const REPLY_TRIM = 600
+
+/**
+ * Lightweight detail for one active run, fetched on hover only.
+ * Returns null when the session has no active turn (the row just finished — the
+ * client closes the card cleanly on a null response).
+ */
+export async function peekActiveChatTurn(
+  workspaceId: string,
+  chatSessionId: string,
+  viewerUserId: string | null,
+): Promise<ActiveChatPeek | null> {
+  // Verify the session belongs to this workspace and has an active turn.
+  const session = await prisma.chatSession.findFirst({
+    where: {
+      id: chatSessionId,
+      OR: [{ workspaceId }, { project: { workspaceId } }],
+    },
+    select: {
+      id: true,
+      name: true,
+      inferredName: true,
+      activeTurnId: true,
+      activeTurnStartedAt: true,
+      workspaceId: true,
+      createdByUserId: true,
+      project: { select: { id: true, name: true } },
+    },
+  })
+  if (!session || !session.activeTurnId || !session.activeTurnStartedAt) return null
+
+  const ws = session.workspaceId ?? workspaceId
+
+  // The latest agent reply in team chat for this session.
+  const agentReply = await prisma.conversationMessage.findFirst({
+    where: { agentSessionId: chatSessionId, authorType: 'agent', deletedAt: null },
+    orderBy: { createdAt: 'desc' },
+    select: {
+      id: true,
+      text: true,
+      updatedAt: true,
+      conversationId: true,
+      threadRootId: true,
+      createdAt: true,
+      conversation: { select: { kind: true, name: true, slug: true } },
+    },
+  })
+
+  const agentName = session.project?.name ?? null
+
+  // No conversation reply — this is a project/workspace direct chat session.
+  if (!agentReply) {
+    // Privacy: a session with a createdByUserId is private unless the viewer is
+    // that user.
+    const hidden = !!session.createdByUserId
+      && session.createdByUserId !== viewerUserId
+
+    // Trigger: last user ChatMessage before the turn started.
+    const chatTriggerRow = hidden ? null : await prisma.chatMessage.findFirst({
+      where: { sessionId: chatSessionId, role: 'user', createdAt: { lt: session.activeTurnStartedAt } },
+      orderBy: { createdAt: 'desc' },
+      select: { content: true, createdAt: true },
+    })
+
+    // Reply: last assistant ChatMessage since the turn started.
+    const chatReplyRow = hidden ? null : await prisma.chatMessage.findFirst({
+      where: { sessionId: chatSessionId, role: 'assistant', createdAt: { gte: session.activeTurnStartedAt } },
+      orderBy: { createdAt: 'desc' },
+      select: { content: true, updatedAt: true },
+    })
+
+    const triggerText = chatTriggerRow?.content?.trim()
+
+    return {
+      chatSessionId,
+      turnId: session.activeTurnId,
+      title: session.name || session.inferredName || 'Chat',
+      agentName,
+      startedAt: session.activeTurnStartedAt,
+      where: { kind: 'chat', conversationId: null, conversationName: null, threadRootId: null },
+      card: null,
+      trigger: chatTriggerRow && triggerText
+        ? {
+            authorName: 'User',
+            authorType: 'user',
+            text: triggerText.slice(-TRIGGER_TRIM),
+            createdAt: chatTriggerRow.createdAt,
+          }
+        : null,
+      reply: chatReplyRow?.content?.trim()
+        ? { text: chatReplyRow.content.trim().slice(-REPLY_TRIM), updatedAt: chatReplyRow.updatedAt }
+        : null,
+      hidden,
+    }
+  }
+
+  // Conversation-based run. Check privacy.
+  let canViewText = true
+  if (viewerUserId) {
+    const isOpen = agentReply.conversation.kind === 'public' || agentReply.conversation.kind === 'activity'
+    if (!isOpen) {
+      const membership = await prisma.conversationMember.findFirst({
+        where: { conversationId: agentReply.conversationId, userId: viewerUserId },
+        select: { id: true },
+      })
+      if (!membership) canViewText = false
+    }
+  }
+
+  // Card for this thread (key + title + columnId), then column name separately.
+  const cardRow = agentReply.threadRootId
+    ? await prisma.workItem.findFirst({
+        where: { threadRootMessageId: agentReply.threadRootId },
+        orderBy: { createdAt: 'desc' },
+        select: { key: true, title: true, columnId: true },
+      })
+    : null
+  const columnRow = cardRow
+    ? await prisma.boardColumn.findUnique({ where: { id: cardRow.columnId }, select: { name: true } })
+    : null
+
+  // Trigger: newest non-deleted non-agent-reply message in the same thread
+  // created before the agent's reply.
+  const triggerRow = canViewText
+    ? await prisma.conversationMessage.findFirst({
+        where: {
+          conversationId: agentReply.conversationId,
+          threadRootId: agentReply.threadRootId,
+          id: { not: agentReply.id },
+          deletedAt: null,
+          createdAt: { lt: agentReply.createdAt },
+        },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          text: true,
+          createdAt: true,
+          authorType: true,
+          authorUserId: true,
+          authorAgentRef: true,
+        },
+      })
+    : null
+
+  let renderedTrigger: ActiveChatPeek['trigger'] = null
+  if (triggerRow) {
+    // Render mention tokens as names (workspace agent name not needed for peek display).
+    const names = await loadNamesForTexts(prisma, ws, [triggerRow.text ?? ''])
+    const text = renderMentionsAsText(triggerRow.text ?? '', names).trim().slice(-TRIGGER_TRIM)
+    let authorName = 'User'
+    if (triggerRow.authorType === 'user' && triggerRow.authorUserId) {
+      const user = await prisma.user.findUnique({
+        where: { id: triggerRow.authorUserId! },
+        select: { name: true, email: true },
+      })
+      authorName = user?.name || user?.email || 'User'
+    } else if (triggerRow.authorType !== 'user') {
+      authorName = (triggerRow.authorAgentRef as { name?: string } | null)?.name ?? 'Agent'
+    }
+    renderedTrigger = text
+      ? { authorName, authorType: triggerRow.authorType, text, createdAt: triggerRow.createdAt }
+      : null
+  }
+
+  const replyText = canViewText ? agentReply.text?.trim() : null
+
+  return {
+    chatSessionId,
+    turnId: session.activeTurnId,
+    title: session.name || session.inferredName || 'Chat',
+    agentName,
+    startedAt: session.activeTurnStartedAt,
+    where: {
+      kind: agentReply.conversation.kind,
+      conversationId: agentReply.conversationId,
+      conversationName: agentReply.conversation.name || agentReply.conversation.slug,
+      threadRootId: agentReply.threadRootId,
+    },
+    card: cardRow && columnRow ? { key: cardRow.key, title: cardRow.title, column: columnRow.name } : null,
+    trigger: renderedTrigger,
+    reply: replyText ? { text: replyText.slice(-REPLY_TRIM), updatedAt: agentReply.updatedAt } : null,
+    hidden: !canViewText,
+  }
 }

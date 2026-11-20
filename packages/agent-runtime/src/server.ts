@@ -183,7 +183,7 @@ import {
   type PortBridgeWsData,
   type PortHttpWsData,
 } from './port-bridge'
-import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postCheckpointShaRemap, postWorkspaceNotification, postWorktreeStatus, postPlanMirror } from './internal-api'
+import { deriveApiUrl, derivePublicApiUrl, getInternalHeaders, postCheckpointRecord, postCheckpointShaRemap, postWorkspaceNotification, postWorktreeStatus, postPlanMirror } from './internal-api'
 import { acceptsAppToolToken } from './app-runtime-token'
 import {
   detachMemberFromRootRepo,
@@ -243,7 +243,7 @@ import { parseHistorySeed, seedEmptySessionFromHistory } from './history-seed'
 import { modelDowngradeNotice, parseModelDowngrade } from './model-downgrade'
 import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
-import { WebhookAdapter } from './channels/webhook'
+import { WebhookAdapter, generateWebhookSecret } from './channels/webhook'
 import { pushCanvasRuntimeError, getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { recordCanvasRuntimeErrorEscaped } from './canvas-slo'
 import {
@@ -1480,11 +1480,20 @@ if (typeof (streamReaperTimer as any)?.unref === 'function') (streamReaperTimer 
 WhatsAppAdapter.registerWebhookRoutes(app)
 
 // Register Webhook/HTTP channel routes
-WebhookAdapter.registerRoutes(app, () => {
-  if (!agentGateway) return null
-  const adapter = agentGateway.getChannel('webhook')
-  return adapter && adapter.getStatus().connected ? adapter as any : null
-})
+WebhookAdapter.registerRoutes(
+  app,
+  () => {
+    if (!agentGateway) return null
+    const adapter = agentGateway.getChannel('webhook')
+    return adapter && adapter.getStatus().connected ? adapter as any : null
+  },
+  (correlationId: string) => {
+    const projectId = process.env.PROJECT_ID
+    const publicApiUrl = derivePublicApiUrl()
+    if (!publicApiUrl || !projectId) return null
+    return `${publicApiUrl}/api/projects/${projectId}/agent-proxy/agent/channels/webhook/outbox/${encodeURIComponent(correlationId)}`
+  },
+)
 
 // Hot-connect a channel at runtime (called by MCP tool after writing config.json)
 app.post('/agent/channels/hot-connect', async (c) => {
@@ -1558,6 +1567,26 @@ app.get('/agent/status', (c) => {
     const entry = (status as any).channels.find((ch: any) => ch.type === 'webchat')
     if (entry) {
       entry.metadata = { ...(entry.metadata ?? {}), widgetKey: webchatKey }
+    }
+  }
+  // Webhook: expose secret + public URLs in owner-only status (never on public
+  // health endpoint). Follows the widgetKey pattern above (SHO-462).
+  const webhookAdapter = agentGateway?.getChannel('webhook') as WebhookAdapter | undefined
+  const webhookSecret = webhookAdapter?.getSecret()
+  if (webhookSecret && Array.isArray((status as any).channels)) {
+    const entry = (status as any).channels.find((ch: any) => ch.type === 'webhook')
+    if (entry) {
+      const projectId = process.env.PROJECT_ID
+      const publicApiUrl = derivePublicApiUrl()
+      const proxyBase = publicApiUrl && projectId
+        ? `${publicApiUrl}/api/projects/${projectId}/agent-proxy`
+        : null
+      entry.metadata = {
+        ...(entry.metadata ?? {}),
+        webhookSecret,
+        incomingUrl: proxyBase ? `${proxyBase}/agent/channels/webhook/incoming` : null,
+        outboxBaseUrl: proxyBase ? `${proxyBase}/agent/channels/webhook/outbox/` : null,
+      }
     }
   }
   return c.json(status)
@@ -1865,6 +1894,12 @@ app.post('/agent/channels/connect', async (c) => {
       const savedWebchat = fileConfig.channels.find((ch: any) => ch.type === 'webchat')?.config
       channelConfig.widgetSecret = resolveWebchatWidgetSecret(channelConfig, savedWebchat)
     }
+    if (type === 'webhook') {
+      // Keep or generate the secret — reconnecting must not rotate it (SHO-462).
+      const { resolveChannelSecret } = await import('./channels/channel-secret')
+      const savedWebhook = fileConfig.channels.find((ch: any) => ch.type === 'webhook')?.config
+      channelConfig.secret = resolveChannelSecret(channelConfig, savedWebhook, 'secret', generateWebhookSecret)
+    }
     const channelEntry = { type, config: channelConfig, model: channelModel }
     const existing = fileConfig.channels.findIndex((ch: any) => ch.type === type)
     if (existing >= 0) {
@@ -1882,6 +1917,7 @@ app.post('/agent/channels/connect', async (c) => {
       type,
       message: `${type} channel connected`,
       ...(type === 'webchat' ? { widgetKey: channelConfig.widgetSecret } : {}),
+      ...(type === 'webhook' ? { secret: channelConfig.secret } : {}),
     })
   } catch (error: any) {
     return c.json({ error: error.message || `Failed to connect ${type}` }, 500)

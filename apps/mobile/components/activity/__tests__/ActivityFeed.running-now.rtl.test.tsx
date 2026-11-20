@@ -37,6 +37,12 @@ mock.module('../../team-chat/AgentAvatar', () => ({
     createElement('span', { 'data-testid': `avatar-${name}`, 'data-project': projectId ?? 'workspace' }, name),
 }))
 
+mock.module('../RunPeekHover', () => ({
+  RunPeekHover: ({ children }: { children: unknown }) => children,
+  RunPeekHoverById: ({ children }: { children: unknown }) => children,
+  RunPeekHoverTask: ({ children }: { children: unknown }) => children,
+}))
+
 const stopRunningChat = mock(async () => true)
 mock.module('../../../lib/stop-running-chat', () => ({ stopRunningChat }))
 

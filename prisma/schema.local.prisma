@@ -59,6 +59,8 @@ model User {
   agentTasks                 AgentTask[]
   agentSchedules             AgentSchedule[]
   starredProjects            StarredProject[]
+  learnLessonCompletions     LearnLessonCompletion[]
+  learnBadges                LearnBadge[]
   apiKeys                    ApiKey[]
   creatorProfile             CreatorProfile?
   signupAttribution          SignupAttribution?
@@ -5319,6 +5321,41 @@ model AbuseFlag {
   @@index([status, createdAt])
   @@index([clusterKey])
   @@map("abuse_flags")
+}
+
+/// A learn.shogo.ai lesson the learner marked complete. Progress for every
+/// learn course except Solo Founder (whose progress lives on its course
+/// board, see CourseEnrollment.progress). XP, levels and streaks are derived
+/// from these rows; nothing about them is stored.
+model LearnLessonCompletion {
+  id          String   @id @default(uuid())
+  userId      String
+  courseId    String
+  lessonId    String
+  /// The learner's own calendar day (YYYY-MM-DD), for streaks.
+  day         String
+  completedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, courseId, lessonId])
+  @@index([userId, completedAt])
+  @@map("learn_lesson_completions")
+}
+
+/// A badge earned on learn.shogo.ai. Awarded by the API only, once per badge.
+model LearnBadge {
+  id       String   @id @default(uuid())
+  userId   String
+  /// Key from `LEARN_BADGES` in apps/api/src/config/learn-gamification.ts.
+  badgeId  String
+  earnedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, badgeId])
+  @@index([userId])
+  @@map("learn_badges")
 }
 
 // =============================================================================

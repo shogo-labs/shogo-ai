@@ -585,6 +585,8 @@ describe('getCreatorPublicProfile', () => {
         { badgeType: 'popular_10', earnedAt: new Date(2024, 6, 1), metadata: { foo: 1 } },
         { badgeType: 'first_agent', earnedAt: new Date(2024, 0, 1), metadata: null },
       ],
+      // No learn tables in this fake database: the profile still loads, without learning.
+      learn: null,
     })
   })
 })

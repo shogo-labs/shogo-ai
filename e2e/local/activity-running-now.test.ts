@@ -230,3 +230,112 @@ test.describe('Running now rows (local mode)', () => {
     await expect(page.locator('[data-testid="stop-chat-personal"]')).toBeVisible()
   })
 })
+
+test.describe('Running now peek card (SHO-466)', () => {
+  test('hovering a row shows the peek card with trigger text', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 })
+    const team = await enterTeamWorkspace(page)
+    test.skip(!team, 'local test environment has no team workspace')
+
+    const chats = runs()
+    await mockActiveChats(page, chats)
+    // Mock the peek endpoint
+    const peekCalled: string[] = []
+    await page.route('**/api/workspaces/*/active-chats/*/peek**', async (route) => {
+      peekCalled.push(route.request().url())
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          chatSessionId: 'chat-card',
+          turnId: 'turn-card',
+          title: 'SHO-466 hover test run',
+          agentName: 'Shogo Dev 3',
+          startedAt: minutesAgo(5),
+          where: { kind: 'public', conversationId: 'conv-shogo-dev', conversationName: 'shogo-dev', threadRootId: 'root-1' },
+          card: { key: 'SHO-466', title: 'Hover peek', column: 'In Development' },
+          trigger: { authorName: 'Russell', authorType: 'user', text: 'SHO-466 is yours: implement the peek hover', createdAt: minutesAgo(5) },
+          reply: { text: 'Working on it, checking the service layer…', updatedAt: minutesAgo(1) },
+          hidden: false,
+        }),
+      })
+    })
+
+    await page.goto('/activity')
+    await expect(page.getByText('Running now', { exact: false }).first()).toBeVisible({ timeout: 30_000 })
+
+    // No peek call before hover
+    expect(peekCalled).toHaveLength(0)
+
+    // Hover the first running row
+    const firstRow = page.locator('[data-testid^="running-avatar-"]').first()
+    await firstRow.hover()
+
+    // After ~400 ms the card should appear
+    await expect(page.locator('[data-testid="run-peek-card"]')).toBeVisible({ timeout: 5_000 })
+
+    // Card content
+    await expect(page.locator('[data-testid="run-peek-card"]')).toContainText('SHO-466 hover test run')
+    await expect(page.locator('[data-testid="run-peek-card"]')).toContainText('Russell')
+    await expect(page.locator('[data-testid="run-peek-card"]')).toContainText('SHO-466 is yours: implement the peek hover')
+    await expect(page.locator('[data-testid="run-peek-card"]')).toContainText('Working on it')
+
+    // Peek was called
+    expect(peekCalled.length).toBeGreaterThan(0)
+  })
+
+  test('private row shows "Private conversation" and no message text', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 })
+    const team = await enterTeamWorkspace(page)
+    test.skip(!team, 'local test environment has no team workspace')
+
+    const chats = runs()
+    await mockActiveChats(page, chats)
+    await page.route('**/api/workspaces/*/active-chats/*/peek**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          chatSessionId: 'chat-card',
+          turnId: 'turn-card',
+          title: 'Private run',
+          agentName: 'Shogo Dev 3',
+          startedAt: minutesAgo(5),
+          where: { kind: 'private', conversationId: 'conv-private', conversationName: null, threadRootId: null },
+          card: null,
+          trigger: null,
+          reply: null,
+          hidden: true,
+        }),
+      })
+    })
+
+    await page.goto('/activity')
+    await expect(page.getByText('Running now', { exact: false }).first()).toBeVisible({ timeout: 30_000 })
+
+    const firstRow = page.locator('[data-testid^="running-avatar-"]').first()
+    await firstRow.hover()
+    await expect(page.locator('[data-testid="run-peek-card"]')).toBeVisible({ timeout: 5_000 })
+    await expect(page.locator('[data-testid="run-peek-card"]')).toContainText('Private conversation')
+    await expect(page.locator('[data-testid="run-peek-card"]')).not.toContainText('Woke by')
+  })
+
+  test('no peek request fires without hover', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 })
+    const team = await enterTeamWorkspace(page)
+    test.skip(!team, 'local test environment has no team workspace')
+
+    await mockActiveChats(page, runs())
+    const peeked: string[] = []
+    await page.route('**/api/workspaces/*/active-chats/*/peek**', async (route) => {
+      peeked.push(route.request().url())
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
+    })
+
+    await page.goto('/activity')
+    await expect(page.getByText('Running now', { exact: false }).first()).toBeVisible({ timeout: 30_000 })
+    // Wait a full poll cycle — no peek should have fired
+    await page.waitForTimeout(6_000)
+    expect(peeked).toHaveLength(0)
+  })
+})

@@ -176,7 +176,7 @@ export function WorkspaceFileViewer({
           setState({ status: "preview", kind, url: objectUrl })
         })
         .catch(fail)
-    } else if (Platform.OS !== "web" && kind === "slides") {
+    } else if (Platform.OS !== "web" && (kind === "slides" || kind === "document")) {
       readFirst(sources, (client, readPath) => client.readFileBytes(readPath))
         .then(({ value: bytes, source: hit }) => {
           if (cancelled) return
@@ -365,7 +365,8 @@ function Body({
       return (
         <FileContentView
           kind={state.kind}
-          slidesBytes={state.bytes}
+          slidesBytes={state.kind === "slides" ? state.bytes : undefined}
+          documentBytes={state.kind === "document" ? state.bytes : undefined}
           name={name}
           path={path}
           readOnly

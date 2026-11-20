@@ -13700,15 +13700,17 @@ const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: stri
     requiredKeys: [],
     guide: [
       '## Webhook / HTTP Setup',
-      'No external accounts needed. Optionally provide a shared secret for authentication.',
+      'No external accounts needed. A shared secret is generated automatically if you do not provide one.',
       '',
-      'Connect: channel_connect({ type: "webhook", config: { secret: "your-shared-secret" } })',
+      'Connect: channel_connect({ type: "webhook" })',
+      'Or with a custom secret: channel_connect({ type: "webhook", config: { secret: "your-secret" } })',
       '',
-      'Once connected, external services can POST to /agent/channels/webhook/incoming with:',
-      '  - Header: Authorization: Bearer your-shared-secret',
-      '  - Body: { "message": "...", "channelId": "default", "mode": "sync" }',
+      'After connecting, external services POST to the returned incomingUrl with:',
+      '  X-Webhook-Secret: <your-secret>',
+      '  Content-Type: application/json',
+      '  Body: { "message": "..." }',
       '',
-      'Works with Zapier, Make, n8n, or any HTTP-capable service.',
+      'No shogo_sk_* API key is needed. Works with Zapier, Make, n8n, or any HTTP client.',
     ].join('\n'),
   },
   teams: {
@@ -13892,6 +13894,24 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
         channelConfig.widgetSecret = resolveWebchatWidgetSecret(channelConfig, savedWebchat)
       }
 
+      if (type === 'webhook') {
+        // Keep the secret already saved in config.json so a reconnect does not
+        // rotate it (SHO-462). Generate one if none is provided or saved.
+        const { existsSync, readFileSync } = await import('fs')
+        const { join } = await import('path')
+        const { resolveChannelSecret } = await import('./channels/channel-secret')
+        const { generateWebhookSecret } = await import('./channels/webhook')
+        const configPath = join(ctx.workspaceDir, 'config.json')
+        let savedWebhook: Record<string, string> | undefined
+        if (existsSync(configPath)) {
+          try {
+            const saved = JSON.parse(readFileSync(configPath, 'utf-8'))
+            savedWebhook = saved?.channels?.find((c: any) => c.type === 'webhook')?.config
+          } catch { /* ignore a malformed config; a fresh secret is still correct */ }
+        }
+        channelConfig.secret = resolveChannelSecret(channelConfig, savedWebhook, 'secret', generateWebhookSecret)
+      }
+
       try {
         const { existsSync, readFileSync, writeFileSync } = await import('fs')
         const { join } = await import('path')
@@ -13977,6 +13997,45 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
             })
           }
 
+          if (type === 'webhook') {
+            const projectId = ctx.projectId ? (projectScopedId(ctx.projectId) ? ctx.projectId : null) : null
+            let incomingUrl: string | null = null
+            let outboxBaseUrl: string | null = null
+            if (process.env.KUBERNETES_SERVICE_HOST && projectId) {
+              const apiUrl = derivePublicApiUrl()
+              const proxyBase = `${apiUrl}/api/projects/${projectId}/agent-proxy`
+              incomingUrl = `${proxyBase}/agent/channels/webhook/incoming`
+              outboxBaseUrl = `${proxyBase}/agent/channels/webhook/outbox/`
+            }
+            const curlExample = incomingUrl
+              ? `curl -X POST "${incomingUrl}" -H "X-Webhook-Secret: ${channelConfig.secret}" -H "Content-Type: application/json" -d '{"message":"Hello agent!"}'`
+              : `curl -X POST "http://localhost:${process.env.PORT || '8080'}/agent/channels/webhook/incoming" -H "X-Webhook-Secret: ${channelConfig.secret}" -H "Content-Type: application/json" -d '{"message":"Hello agent!"}'`
+            return textResult({
+              ok: true,
+              secret: channelConfig.secret,
+              incomingUrl,
+              outboxBaseUrl,
+              message: [
+                'Webhook channel connected!',
+                '',
+                incomingUrl
+                  ? `Incoming URL: ${incomingUrl}`
+                  : 'Incoming URL: use the cloud project URL — desktop tunnels relay to the same path.',
+                `Secret: ${channelConfig.secret}`,
+                '',
+                'Send requests with:',
+                '  X-Webhook-Secret: <secret>',
+                '  Content-Type: application/json',
+                '  Body: { "message": "..." }',
+                '',
+                'No shogo_sk_* API key needed.',
+                '',
+                'Example curl:',
+                curlExample,
+              ].join('\n'),
+            })
+          }
+
           if (type === 'teams') {
             // Return the messaging endpoint URL so the user can paste it into
             // the Azure Bot configuration. Works for cloud and paired desktop.
@@ -14004,11 +14063,7 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
 
           return textResult({
             ok: true,
-            message:
-              `${type} channel connected and live. ` +
-              (type === 'webhook'
-                ? 'External services can now POST to /agent/channels/webhook/incoming'
-                : `The ${type} adapter is now receiving messages.`),
+            message: `${type} channel connected and live. The ${type} adapter is now receiving messages.`,
           })
         } catch (err: any) {
           return textResult({

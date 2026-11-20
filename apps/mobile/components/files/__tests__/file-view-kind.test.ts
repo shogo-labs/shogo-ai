@@ -40,6 +40,14 @@ describe("fileViewKind: the extension decides", () => {
     ["old.ppt", "binary"],
     ["talk.key", "binary"],
     ["open.odp", "binary"],
+    // Word documents are renderable now; legacy formats stay binary (SHO-467).
+    ["report.docx", "document"],
+    ["LETTER.DOCM", "document"],
+    ["template.dotx", "document"],
+    ["template.dotm", "document"],
+    ["old.doc", "binary"],
+    ["text.rtf", "text"],
+    ["text.odt", "binary"],
     ["Makefile", "text"],
   ])("%s is %s", (name, expected) => {
     expect(fileViewKind(name)).toBe(expected as never)
@@ -69,6 +77,11 @@ describe("fileViewKind: the MIME type fills the gaps", () => {
     ["untitled", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "slides"],
     ["untitled", "application/vnd.openxmlformats-officedocument.presentationml.slideshow", "slides"],
     ["untitled", "application/vnd.ms-powerpoint", "text"],
+    // Word documents (SHO-467): OOXML types open as document; legacy types do not.
+    ["untitled", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "document"],
+    ["untitled", "application/vnd.openxmlformats-officedocument.wordprocessingml.template", "document"],
+    ["untitled", "application/msword", "text"],
+    ["untitled", "application/vnd.oasis.opendocument.text", "text"],
   ])("%s served as %s is %s", (name, mime, expected) => {
     expect(fileViewKind(name, mime)).toBe(expected as never)
   })

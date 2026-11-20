@@ -482,10 +482,11 @@ export const PUBLIC_PATTERNS: RegExp[] = [
   // tenant data. Matching the exact path keeps the rest of `/api/social/*`
   // (accounts, posts, inbox) behind `requireAuth`.
   /^\/api\/social\/connect\/return$/,
-  // The slides viewer is a static page with an opaque origin and no network:
-  // it renders the bytes the app posts into it, so there is no tenant data to
-  // gate (SHO-426). Matching the exact path keeps `/api/viewers/*` closed.
+  // Office viewers are static pages with an opaque origin and no network:
+  // they render the bytes the app posts into them, so there is no tenant data
+  // to gate (SHO-426, SHO-467). Exact-path matching keeps `/api/viewers/*` closed.
   /^\/api\/viewers\/slides$/,
+  /^\/api\/viewers\/document$/,
 ]
 
 /** True when `path` is public for `requireAuth` (prefix or pattern list). */

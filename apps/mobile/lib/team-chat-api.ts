@@ -5,6 +5,7 @@
  * (`/api/workspaces/:workspaceId/conversations`, `/api/conversations/:id`,
  * `/api/conversation-messages/:id`).
  */
+import type { LearnProfileSummary } from './learn-badge-art'
 import type { BuddyLook } from '@shogo/shared-app/buddy-look'
 import type { HttpClient } from '@shogo-ai/sdk'
 import { getSDKHttpClient } from '@shogo/shared-app/domain'
@@ -342,6 +343,8 @@ export interface UserCard {
   localTime: string | null
   localTimeLabel: string | null
   status: UserStatus | null
+  /** Shogo Learn level and badges; null until they start learning. */
+  learn?: LearnProfileSummary | null
 }
 
 export interface UserGroup {
