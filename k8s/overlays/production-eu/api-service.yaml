@@ -375,6 +375,12 @@ spec:
               value: "https://studio.shogo.ai"
             - name: ALLOWED_ORIGINS
               value: "https://studio.shogo.ai,https://eu.studio.shogo.ai"
+            # learn.shogo.ai sign-in (routes/learn.ts, lib/learn-token.ts): the
+            # learn-only cookie is set on this parent domain; never the session.
+            - name: LEARN_COOKIE_DOMAIN
+              value: ".shogo.ai"
+            - name: LEARN_ORIGINS
+              value: "https://learn.shogo.ai"
             # Public hostname the desktop should use for the on-demand
             # tunnel WebSocket. Points at the regional EU api ksvc via
             # api-tunnel-ingress.yaml so the WS Upgrade bypasses the

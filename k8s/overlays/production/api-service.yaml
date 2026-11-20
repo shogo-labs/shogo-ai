@@ -207,6 +207,12 @@ spec:
               value: "https://studio.shogo.ai"
             - name: ALLOWED_ORIGINS
               value: "https://studio.shogo.ai,https://shogo.ai,https://eu.studio.shogo.ai"
+            # learn.shogo.ai sign-in (routes/learn.ts, lib/learn-token.ts): the
+            # learn-only cookie is set on this parent domain; never the session.
+            - name: LEARN_COOKIE_DOMAIN
+              value: ".shogo.ai"
+            - name: LEARN_ORIGINS
+              value: "https://learn.shogo.ai"
             - name: REDIS_URL
               value: "redis://redis-master.shogo-system:6379"
             - name: DATABASE_URL

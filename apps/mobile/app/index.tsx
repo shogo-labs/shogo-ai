@@ -8,6 +8,7 @@ import { usePlatformConfig } from '../lib/platform-config'
 import { API_URL } from '../lib/api'
 import { autoSignInLocally } from '../lib/auth-client'
 import { appRedirectHref } from '../lib/root-redirect'
+import { peekLearnReturn, resumeLearnReturn } from '../lib/learn-return'
 
 export default function RootIndex() {
   const { isAuthenticated, isLoading: authLoading, refreshSession } = useAuth()
@@ -20,6 +21,12 @@ export default function RootIndex() {
   const [checkingOnboarding, setCheckingOnboarding] = useState(false)
   const [autoSigningIn, setAutoSigningIn] = useState(false)
   const autoSignInAttempted = useRef(false)
+  // A sign-in that started on learn.shogo.ai goes back there (lib/learn-return).
+  // Onboarding is skipped for this hop; it still runs the next time Studio opens.
+  const pendingLearnReturn = useMemo(() => peekLearnReturn() !== null, [])
+  useEffect(() => {
+    if (pendingLearnReturn && isAuthenticated && !authLoading) resumeLearnReturn(API_URL ?? '')
+  }, [pendingLearnReturn, isAuthenticated, authLoading])
   const isIdeEmbed = useMemo(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return false
     return new URLSearchParams(window.location.search).get('embed') === 'ide'
@@ -74,6 +81,13 @@ export default function RootIndex() {
   }
 
   if (isAuthenticated) {
+    if (pendingLearnReturn) {
+      return (
+        <View className="flex-1 items-center justify-center bg-background">
+          <ActivityIndicator size="large" />
+        </View>
+      )
+    }
     if (!isIdeEmbed && onboardingCompleted === false) {
       return <Redirect href="/(onboarding)" />
     }
