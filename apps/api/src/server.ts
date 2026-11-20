@@ -57,6 +57,9 @@ import { createInviteLinkAfterAccept } from './routes/invite-link-after-accept'
 import { inviteLinkRoutes } from './routes/invite-links'
 import { invitationResendRoutes } from './routes/invitation-resend'
 import { invitationInfoRoutes } from './routes/invitation-info'
+import { learnRoutes, withLearnCookie, type LearnRoutesDeps } from './routes/learn'
+import { generateLearnCoachReply } from './lib/learn-coach-model'
+import { takeRateLimit } from './lib/chat-limits'
 import { rbacRoutes } from './routes/rbac'
 import { appActionsRoutes } from './routes/app-actions'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
@@ -951,7 +954,90 @@ app.use('/api/*', homeRegionWriteProxy)
 
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
-app.on(['GET', 'POST'], '/api/auth/*', async (c) => toNativeAuthHandback(await auth.handler(c.req.raw)))
+// learn.shogo.ai (see routes/learn.ts). `getSession` is shared with the auth
+// wrapper below, which keeps the learn cookie in step with the Studio session.
+const learnDeps: LearnRoutesDeps = {
+  getSession: async (headers) => {
+    const s = await auth.api.getSession({ headers })
+    return s?.user && s?.session ? { userId: s.user.id, sessionId: s.session.id } : null
+  },
+  isSessionLive: async (sessionId, userId) => {
+    const row = await prisma.session.findUnique({ where: { id: sessionId }, select: { userId: true, expiresAt: true } })
+    return !!row && row.userId === userId && row.expiresAt.getTime() > Date.now()
+  },
+  getUser: (userId) => prisma.user.findUnique({ where: { id: userId }, select: { id: true, name: true, email: true, image: true } }),
+  getWorkspaceIds: async (userId) => {
+    const rows = await prisma.member.findMany({ where: { userId, workspaceId: { not: null } }, select: { workspaceId: true } })
+    return [...new Set(rows.map((r) => r.workspaceId as string))]
+  },
+  getEffectivePlanId: (workspaceId) =>
+    typeof billingService.getEffectivePlanId === 'function' ? billingService.getEffectivePlanId(workspaceId) : Promise.resolve('free'),
+  getEnrollments: (userId, workspaceIds) =>
+    prisma.courseEnrollment.findMany({
+      where: { status: 'active', OR: [{ userId }, { workspaceId: { in: workspaceIds } }] },
+      select: { courseId: true, progress: true, completedAt: true },
+    }),
+  takeRateLimit,
+  generateCoachReply: generateLearnCoachReply,
+  listCompletions: (userId) =>
+    prisma.learnLessonCompletion.findMany({
+      where: { userId },
+      select: { courseId: true, lessonId: true, day: true, completedAt: true },
+    }),
+  recordCompletions: async (userId, rows) => {
+    if (!rows.length) return 0
+    const existing = await prisma.learnLessonCompletion.findMany({
+      where: { userId, OR: rows.map((r) => ({ courseId: r.courseId, lessonId: r.lessonId })) },
+      select: { courseId: true, lessonId: true },
+    })
+    const have = new Set(existing.map((e) => `${e.courseId}/${e.lessonId}`))
+    let added = 0
+    for (const r of rows) {
+      if (have.has(`${r.courseId}/${r.lessonId}`)) continue
+      try {
+        await prisma.learnLessonCompletion.create({ data: { userId, courseId: r.courseId, lessonId: r.lessonId, day: r.day } })
+        added++
+      } catch (err: any) {
+        // A concurrent request recorded it first; the unique key keeps one row.
+        if (err?.code !== 'P2002') throw err
+      }
+    }
+    return added
+  },
+  listBadges: (userId) => prisma.learnBadge.findMany({ where: { userId }, select: { badgeId: true, earnedAt: true } }),
+  awardBadges: async (userId, badgeIds) => {
+    for (const badgeId of badgeIds) {
+      try {
+        await prisma.learnBadge.create({ data: { userId, badgeId } })
+      } catch (err: any) {
+        if (err?.code !== 'P2002') throw err
+      }
+    }
+  },
+  getLevelEvidence: async (userId, workspaceIds) => {
+    const [publishedApps, agentCards] = await Promise.all([
+      prisma.project.count({ where: { createdBy: userId, publishedAt: { not: null }, workspaceId: { in: workspaceIds } } }),
+      prisma.workItem.findMany({
+        where: {
+          workspaceId: { in: workspaceIds },
+          completedAt: { not: null },
+          assigneeAgentRef: { not: null },
+          OR: [{ createdById: userId }, { board: { createdById: userId } }],
+        },
+        select: { assigneeAgentRef: true },
+        take: 5000,
+      }),
+    ])
+    return {
+      publishedApps,
+      agentCardsDone: agentCards.length,
+      agentsWithDoneCards: new Set(agentCards.map((w) => w.assigneeAgentRef)).size,
+    }
+  },
+  frontendUrl: getFrontendUrl,
+}
+
+app.on(['GET', 'POST'], '/api/auth/*', async (c) => withLearnCookie(c.req.raw, toNativeAuthHandback(await auth.handler(c.req.raw)), learnDeps))
 
 // Health check — includes Redis status for multi-pod deployments.
 // When tunnel-redis is in a degraded state (init completed but publisher
@@ -10844,6 +10930,7 @@ app.get('/api/invite-links/:token/info', async (c) => {
 // `/:id/info` can't fall through to the generated `GET /:id` (which requires
 // an authenticated session and the invitation to belong to the caller).
 app.route('/api/invitations', invitationInfoRoutes())
+app.route('/api/learn', learnRoutes(learnDeps))
 
 // Custom chat-message extension endpoints (truncate-from, etc.).
 // MUST be mounted BEFORE the generated routes so Hono matches the

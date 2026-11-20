@@ -641,6 +641,19 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'One enrollment per user per course, upserted by `soloFounderService.enroll()`; a user is homed to one region and both writers (`checkout.session.completed` and `customer.subscription.created`) resolve to that same home.',
   },
+  // --- learn.shogo.ai progress + badges -------------------------------------
+  {
+    key: 'LearnLessonCompletion.(courseId,lessonId,userId)',
+    category: 'request_scoped',
+    reason:
+      "Written only by the learner's own POST /api/learn/progress (+ /progress/import, /certificate). The route inserts missing rows and treats P2002 as already-done, so a cross-region retry converges on the one row; no cron writes it.",
+  },
+  {
+    key: 'LearnBadge.(badgeId,userId)',
+    category: 'request_scoped',
+    reason:
+      "Awarded inside the learner's own learn request (progress, import, certificate, /me) after recomputing from their rows; insert-if-missing with P2002 ignored, so a duplicate award from a retry is a no-op. No cron writes it.",
+  },
   {
     key: 'LiveSessionMeter.sessionId',
     category: 'external_global_id',

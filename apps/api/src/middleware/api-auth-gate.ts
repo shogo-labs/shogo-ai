@@ -49,6 +49,9 @@ export const GATE_PUBLIC_PREFIXES = [
   // tab came back from the platform and carries no Shogo session; the handler is
   // display-only and writes nothing, so there is nothing to protect.
   '/api/social/connect/return',
+  // learn.shogo.ai: every route authenticates itself with the learn token or a
+  // Studio session, and `/me` answers signed-out visitors too (routes/learn.ts).
+  '/api/learn/',
 ]
 
 function isWebchatProxyPath(path: string): boolean {
