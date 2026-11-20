@@ -11,7 +11,7 @@ import { Hono } from 'hono'
 import type { Permission } from '@shogo/authz'
 import { AudioTranscodeError, getTranscodedAudio } from '../lib/audio-transcode'
 import { prisma } from '../lib/prisma'
-import { loadAccess as loadAuthzAccess } from '../lib/authz'
+import { enforceAbility, loadAccess as loadAuthzAccess } from '../lib/authz'
 import { canReceive, subscribeWorkspaceEvents } from '../lib/conversation-bus'
 import {
   MAX_CONVERSATION_FILE_BYTES,
@@ -397,6 +397,11 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const auth = await requireWorkspace(c)
     if (auth instanceof Response) return auth
     const body = await readJson(c)
+    // A private channel is the ability; a public one is not (SHO-417).
+    if (body.kind === 'private') {
+      const denied = await enforceAbility(c, auth.workspaceId, auth.userId, 'channels.private:create')
+      if (denied) return denied
+    }
     try {
       const conversation = await createChannel({
         workspaceId: auth.workspaceId,
@@ -425,6 +430,12 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       if (agent) {
         // An agent DM is a project chat with that agent now (SHO-412). Older
         // clients get the chat to open instead of a DM.
+        //
+        // A shipped client cannot be taught to follow `chatSessionId`, so the
+        // only thing it will show is `error.message` — make it an instruction
+        // the person can act on rather than a description of our data model,
+        // and carry the store links for a client that can render them
+        // (SHO-433: v2.5.x clients hit this on every message to an agent).
         await assertAgentInWorkspace(auth.workspaceId, agent, auth.userId)
         const { openAgentChatSession } = await import('../services/agent-chat.service')
         const chat = await openAgentChatSession(auth.workspaceId, auth.userId, agent.projectId)
@@ -432,10 +443,14 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
           {
             error: {
               code: 'moved_to_project_chat',
-              message: 'A message to an agent is a project chat with that agent now.',
+              message: 'Update Shogo to keep messaging your agents — this version can no longer start an agent chat.',
             },
             chatSessionId: chat.id,
             projectId: agent.projectId,
+            upgrade: {
+              required: true,
+              playStoreUrl: 'https://play.google.com/store/apps/details?id=ai.shogo.mobile',
+            },
           },
           410,
         )
@@ -1700,6 +1715,10 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
   router.post(`${base}/:channel/messages`, async (c) => {
     const auth = await config.authorize(c)
     if (auth instanceof Response) return auth
+    // Posting as an agent needs the ability (SHO-417). A call with no person
+    // behind it (a service account) stays unscoped, like every other check.
+    const denied = await enforceAbility(c, auth.workspaceId, auth.userId, 'agent.channels:send')
+    if (denied) return denied
     const body = await readJson(c)
     const projectId = await agentIdentity(auth, body.projectId)
     const limited = await rateLimited(c, `agent:${auth.workspaceId}:${projectId ?? 'ws'}`, CHAT_RATE_LIMITS.agentPost)

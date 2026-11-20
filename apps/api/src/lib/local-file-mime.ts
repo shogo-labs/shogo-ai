@@ -19,6 +19,28 @@ export const MIME_TYPES: Record<string, string> = {
   '.json': 'application/json',
   '.md': 'text/markdown',
   '.pdf': 'application/pdf',
+  // Presentations: the browser-based slides viewer decides from the
+  // extension, but a labelled response keeps every other consumer honest
+  // (SHO-426). Macros never run — the renderer only reads the XML.
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.pptm': 'application/vnd.openxmlformats-officedocument.presentationml.presentation.macroEnabled.12',
+  '.ppsx': 'application/vnd.openxmlformats-officedocument.presentationml.slideshow',
+  '.ppsm': 'application/vnd.openxmlformats-officedocument.presentationml.slideshow.macroEnabled.12',
+  '.potx': 'application/vnd.openxmlformats-officedocument.presentationml.template',
+  '.potm': 'application/vnd.openxmlformats-officedocument.presentationml.template.macroEnabled.12',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.odp': 'application/vnd.oasis.opendocument.presentation',
+  '.key': 'application/vnd.apple.keynote',
+  // Word documents: the browser-based document viewer decides from the
+  // extension, but a labelled response keeps every other consumer honest
+  // (SHO-467). Macros never run — the renderer only reads the XML.
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.docm': 'application/vnd.ms-word.document.macroEnabled.12',
+  '.dotx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
+  '.dotm': 'application/vnd.ms-word.template.macroEnabled.12',
+  '.doc': 'application/msword',
+  '.rtf': 'application/rtf',
+  '.odt': 'application/vnd.oasis.opendocument.text',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.txt': 'text/plain',

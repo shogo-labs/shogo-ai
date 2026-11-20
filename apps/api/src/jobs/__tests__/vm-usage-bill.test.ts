@@ -4,13 +4,15 @@
 /**
  * Workspace compute pricing + hourly bill (SHO-424).
  *
- * The number here is the invoice. Russell's rates are $0.10/vCPU-hour and
- * $0.005/GiB-hour, charged only for the seconds a VM was doing something a
+ * The number here is the invoice. Russell's rates are $0.07/vCPU-hour and
+ * $0.012/GiB-hour, charged only for the seconds a VM was doing something a
  * person or their agent asked for — the idle-suspend tail is metered so the
  * dashboard can show it, and costs nothing.
  *
  * What these pin:
- *  - the arithmetic (a 2 vCPU / 4 GiB VM is exactly $0.22 per active hour),
+ *  - the arithmetic (a 2 vCPU / 4 GiB VM is exactly $0.188 per active hour),
+ *  - the split between the two components, so a future re-cut cannot swap them
+ *    without a test noticing,
  *  - idle seconds costing nothing while still being reported as metered,
  *  - the never-billed causes (`published` would double-charge against
  *    published_hosting; `rewarm`/`prewarm` are the platform's own work),
@@ -62,12 +64,26 @@ function row(fields: Partial<{
 }
 
 describe('compute pricing', () => {
-  it('prices the standard 2 vCPU / 4 GiB VM at $0.22 per active hour', () => {
+  it('prices the standard 2 vCPU / 4 GiB VM at $0.188 per active hour', () => {
     const cost = computeVmCost({ vcpus: 2, memMiB: 4096, agentSeconds: 0, appSeconds: 3600, idleSeconds: 0, cause: 'user_open' })
-    expect(cost.vcpuUsd).toBeCloseTo(0.2, 10)
-    expect(cost.memoryUsd).toBeCloseTo(0.02, 10)
-    expect(cost.totalUsd).toBeCloseTo(0.22, 10)
+    expect(cost.vcpuUsd).toBeCloseTo(0.14, 10)
+    expect(cost.memoryUsd).toBeCloseTo(0.048, 10)
+    expect(cost.totalUsd).toBeCloseTo(0.188, 10)
     expect(cost.billedSeconds).toBe(3600)
+  })
+
+  it('prices the two components separately, so a re-cut cannot swap them unnoticed', () => {
+    // 1 vCPU / 1 GiB for an hour: the two rates, added.
+    const small = computeVmCost({ vcpus: 1, memMiB: 1024, agentSeconds: 3600, appSeconds: 0, idleSeconds: 0, cause: 'user_open' })
+    expect(small.vcpuUsd).toBeCloseTo(0.07, 10)
+    expect(small.memoryUsd).toBeCloseTo(0.012, 10)
+    expect(small.totalUsd).toBeCloseTo(0.082, 10)
+
+    // Memory alone: 8 GiB-hours is 8 × $0.012, with no vCPU component.
+    const memoryOnly = computeVmCost({ vcpus: 0, memMiB: 8192, agentSeconds: 3600, appSeconds: 0, idleSeconds: 0, cause: 'user_open' })
+    expect(memoryOnly.gibHours).toBeCloseTo(8, 10)
+    expect(memoryOnly.vcpuUsd).toBe(0)
+    expect(memoryOnly.memoryUsd).toBeCloseTo(0.096, 10)
   })
 
   it('scales with the size the host actually booted', () => {
@@ -75,7 +91,7 @@ describe('compute pricing', () => {
     // Half an hour of a machine twice the size = the same money.
     expect(cost.vcpuHours).toBeCloseTo(2, 10)
     expect(cost.gibHours).toBeCloseTo(4, 10)
-    expect(cost.totalUsd).toBeCloseTo(0.22, 10)
+    expect(cost.totalUsd).toBeCloseTo(0.188, 10)
   })
 
   it('charges nothing for the idle tail but still counts it as metered', () => {
@@ -90,7 +106,7 @@ describe('compute pricing', () => {
     const cost = computeVmCost({ vcpus: 2, memMiB: 4096, agentSeconds: 600, appSeconds: 600, idleSeconds: 2400, cause: 'user_open' })
     expect(cost.billedSeconds).toBe(1200)
     expect(cost.freeSeconds).toBe(2400)
-    expect(cost.totalUsd).toBeCloseTo(0.22 / 3, 10)
+    expect(cost.totalUsd).toBeCloseTo(0.188 / 3, 10)
   })
 
   it('never bills a cause the platform already paid for', () => {
@@ -149,27 +165,27 @@ describe('priceWorkspaceHour', () => {
     ])
 
     // Two half-hours of the standard size = one standard hour.
-    expect(priced.chargedUsd).toBeCloseTo(0.22, 6)
+    expect(priced.chargedUsd).toBeCloseTo(0.188, 6)
     expect(priced.agentSeconds).toBe(1800)
     expect(priced.appSeconds).toBe(1800)
     expect(Object.keys(priced.byProject).sort()).toEqual(['proj-1', 'proj-2'])
-    expect(priced.byProject['proj-1'].chargedUsd).toBeCloseTo(0.11, 6)
-    expect(priced.byProject['proj-2'].chargedUsd).toBeCloseTo(0.11, 6)
+    expect(priced.byProject['proj-1'].chargedUsd).toBeCloseTo(0.094, 6)
+    expect(priced.byProject['proj-2'].chargedUsd).toBeCloseTo(0.094, 6)
   })
 
   it('reports the idle tail as not billed rather than folding it into the charge', () => {
     const priced = priceWorkspaceHour([row({ appSeconds: 1800, idleSeconds: 1800 })])
-    expect(priced.chargedUsd).toBeCloseTo(0.11, 6)
+    expect(priced.chargedUsd).toBeCloseTo(0.094, 6)
     // What the full hour would have cost minus what it did: the platform ate it.
-    expect(priced.byState.idleNotBilledUsd).toBeCloseTo(0.11, 6)
-    expect(priced.freeUsd).toBeCloseTo(0.11, 6)
+    expect(priced.byState.idleNotBilledUsd).toBeCloseTo(0.094, 6)
+    expect(priced.freeUsd).toBeCloseTo(0.094, 6)
     expect(priced.idleSeconds).toBe(1800)
   })
 
   it('charges nothing for a workspace-hour that was entirely idle', () => {
     const priced = priceWorkspaceHour([row({ idleSeconds: 3600 })])
     expect(priced.chargedUsd).toBe(0)
-    expect(priced.freeUsd).toBeCloseTo(0.22, 6)
+    expect(priced.freeUsd).toBeCloseTo(0.188, 6)
   })
 
   it('charges nothing for a platform-caused row', () => {
@@ -188,6 +204,6 @@ describe('priceWorkspaceHour', () => {
     ])
     expect(priced.byProject['']).toBeDefined()
     expect(priced.byProject['proj-1']).toBeDefined()
-    expect(priced.chargedUsd).toBeCloseTo(0.44, 6)
+    expect(priced.chargedUsd).toBeCloseTo(0.376, 6)
   })
 })

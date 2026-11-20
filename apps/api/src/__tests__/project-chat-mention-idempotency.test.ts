@@ -22,12 +22,15 @@ const sessions = new Map<string, any>()
 const queued: any[] = []
 
 mock.module('@shogo/model-catalog', () => ({
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
   getModelTier: (_modelId: string) => 'standard',
   resolveModelId: (mode: string) => mode || 'claude-haiku-4-5',
   MODEL_CATALOG: {},
   getModelEntry: (_id: string) => null,
   MODEL_DOLLAR_COSTS: {} as Record<string, any>,
   calculateDollarCost: () => 0,
+  getModelDollarCosts: (_m: string, _at?: Date) => ({ inputPerMillion: 0, outputPerMillion: 0, cachedInputPerMillion: 0, cacheWritePerMillion: 0 }),
   getModelBillingModel: (id: string) => id,
   resolveAgentModeDefault: (mode: string) => mode,
   AUTO_MODEL_ID: 'auto',

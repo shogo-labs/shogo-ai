@@ -15,9 +15,9 @@ import { previewLanguageFor, type PreviewLanguage } from "../project/panels/ide/
 import { LANG_BY_EXT, extOf } from "../project/panels/ide/workspace/language"
 
 /**
- * `image | sqlite | pdf | audio | video | font` render through the IDE's
- * preview components; `markdown` gets Preview + Source; `text` is Monaco;
- * `binary` is the honest "no preview" + download.
+ * `image | sqlite | pdf | audio | video | font | slides | document` render
+ * through the IDE's preview components; `markdown` gets Preview + Source;
+ * `text` is Monaco; `binary` is the honest "no preview" + download.
  */
 export type FileViewKind = PreviewLanguage | "markdown" | "text" | "binary"
 
@@ -53,6 +53,17 @@ function kindFromMime(mime?: string | null): FileViewKind | null {
   if (value === "application/pdf") return "pdf"
   if (value.startsWith("font/") || FONT_MIMES.has(value)) return "font"
   if (SQLITE_MIMES.has(value)) return "sqlite"
+  // OOXML presentations only. A legacy `.ppt` / `.key` has no renderer, so it
+  // stays binary and the viewer explains why (SHO-426).
+  if (value.startsWith("application/vnd.openxmlformats-officedocument.presentationml.")) return "slides"
+  // OOXML word-processing documents. Legacy `.doc` / `.odt` / `.rtf` have no
+  // renderer, so they stay binary or text (SHO-467).
+  if (
+    value === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    value === "application/vnd.openxmlformats-officedocument.wordprocessingml.template" ||
+    value === "application/vnd.ms-word.document.macroenabled.12" ||
+    value === "application/vnd.ms-word.template.macroenabled.12"
+  ) return "document"
   if (value.startsWith("text/")) return "text"
   if (value.endsWith("+json") || value.endsWith("+xml") || value.endsWith("+yaml")) return "text"
   if (TEXTUAL_APPLICATION_MIMES.has(value)) return "text"
@@ -91,6 +102,16 @@ const MIME_BY_EXT: Record<string, string> = {
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
   ".pdf": "application/pdf",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".pptm": "application/vnd.openxmlformats-officedocument.presentationml.presentation.macroEnabled.12",
+  ".ppsx": "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+  ".ppsm": "application/vnd.openxmlformats-officedocument.presentationml.slideshow.macroEnabled.12",
+  ".potx": "application/vnd.openxmlformats-officedocument.presentationml.template",
+  ".potm": "application/vnd.openxmlformats-officedocument.presentationml.template.macroEnabled.12",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".docm": "application/vnd.ms-word.document.macroEnabled.12",
+  ".dotx": "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+  ".dotm": "application/vnd.ms-word.template.macroEnabled.12",
   ".mp4": "video/mp4",
   ".m4v": "video/mp4",
   ".webm": "video/webm",

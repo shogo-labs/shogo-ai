@@ -262,21 +262,48 @@ export async function sendTrialUnavailableEmail(params: {
   workspaceName: string
   planName: string
   dashboardUrl: string
-  /** `blocked_duplicate_card` | `blocked_duplicate_user` | `blocked_prepaid_card` | `blocked_seat_limit` | null */
+  /**
+   * `blocked_duplicate_card` | `blocked_duplicate_user` |
+   * `blocked_duplicate_network` | `blocked_prepaid_card` | `blocked_seat_limit`
+   * for a trial, `solo_founder_prepaid` for a refunded Solo Founder purchase.
+   */
   reason?: string | null
+  /** Override the subject/heading (the Solo Founder refund reuses this template). */
+  subjectLine?: string
+  heading?: string
+  /** Override what the body says happened to the money. */
+  chargeLine?: string
+  /** Override the explanation body. */
+  reasonMessage?: string
 }): Promise<{ success: boolean; error?: string }> {
   const reasonMessage =
-    params.reason === 'blocked_prepaid_card'
-      ? "Free trials need a debit or credit card — prepaid cards can't start a trial. You can still upgrade with this card, or start the trial with a different card."
-      : params.reason === 'blocked_seat_limit'
-        ? `Free trials include up to ${TRIAL_MAX_SEATS} seats. Start a paid plan to add more, or start the trial again with ${TRIAL_MAX_SEATS} seats or fewer.`
-        : "This card or account has already used a free trial. You can still subscribe without a trial."
+    params.reasonMessage ??
+    (params.reason === 'solo_founder_prepaid'
+      ? "Prepaid cards can't be used for the Solo Founder offer, so we cancelled the subscription and refunded your payment in full. You can buy it again with a credit or debit card."
+      : params.reason === 'blocked_prepaid_card'
+        ? "Free trials need a debit or credit card — prepaid cards can't start a trial. You can still upgrade with this card, or start the trial with a different card."
+        : params.reason === 'blocked_seat_limit'
+          ? `Free trials include up to ${TRIAL_MAX_SEATS} seats. Start a paid plan to add more, or start the trial again with ${TRIAL_MAX_SEATS} seats or fewer.`
+          : params.reason === 'blocked_duplicate_network'
+            ? "A free trial has already been started from this network. You can still subscribe without a trial."
+            : 'This card or account has already used a free trial. You can still subscribe without a trial.')
   return sendTemplateEmail('trial-unavailable', params.to, {
     workspaceName: params.workspaceName,
     planName: params.planName,
     dashboardUrl: params.dashboardUrl,
     reason: params.reason ?? null,
     reasonMessage,
+    ...(params.subjectLine
+      ? { subjectLine: params.subjectLine }
+      : { subjectLine: `Your ${params.workspaceName} trial could not be started` }),
+    ...(params.heading ? { heading: params.heading } : {}),
+    chargeLine:
+      params.chargeLine ??
+      (params.reason === 'solo_founder_prepaid'
+        // The offer charged the card and then refunded it, so the trial copy
+        // ("nothing was charged") would contradict the paragraph above it.
+        ? 'We charged your card and refunded it in full.'
+        : 'Nothing was charged.'),
   })
 }
 

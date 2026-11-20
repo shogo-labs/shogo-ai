@@ -42,6 +42,20 @@ const AGENT_VISIBLE_SOURCES = [
  */
 const ALLOWED_LITERALS = new Set<string>([])
 
+/**
+ * Templates whose agents are deliberately pinned away from `auto`, keyed by
+ * their directory under `templates/`, with why.
+ *
+ * The Solo Founder OS ships to someone who just paid $99 for a year of Shogo:
+ * the economy model is part of what they bought, and a premium default would
+ * spend their weekly window on a beginner's empty boards. They can change it
+ * afterwards in the workspace. An unknown id falls back to Auto at install
+ * time, so a retired model degrades rather than blocks.
+ */
+const PINNED_TEMPLATE_MODELS: Record<string, string> = {
+  'companies/solo-founder-os': 'hoshi-2-0',
+}
+
 function walk(dir: string, match: (p: string) => boolean, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     if (entry === 'node_modules') continue
@@ -96,12 +110,21 @@ describe('bundled templates pin only auto', () => {
     const yamlFiles = walk(TEMPLATES_DIR, (p) => p.endsWith('shogo-system.yaml'))
     const offenders: string[] = []
     for (const file of yamlFiles) {
+      const templateDir = relative(TEMPLATES_DIR, file).replace(/\\/g, '/').replace(/\/shogo-system\.yaml$/, '')
+      const pinned = PINNED_TEMPLATE_MODELS[templateDir]
       for (const line of readFileSync(file, 'utf-8').split('\n')) {
         const m = /^\s*model:\s*(\S+)\s*$/.exec(line)
-        if (m && m[1] !== 'auto') offenders.push(`${relative(RUNTIME_ROOT, file)} -> ${m[1]}`)
+        if (m && m[1] !== 'auto' && m[1] !== pinned) offenders.push(`${relative(RUNTIME_ROOT, file)} -> ${m[1]}`)
       }
     }
     expect(offenders).toEqual([])
+  })
+
+  test('the pinned exceptions still exist and are still pinned', () => {
+    for (const [dir, model] of Object.entries(PINNED_TEMPLATE_MODELS)) {
+      const file = join(TEMPLATES_DIR, dir, 'shogo-system.yaml')
+      expect({ dir, pinned: readFileSync(file, 'utf-8').includes(`model: ${model}`) }).toEqual({ dir, pinned: true })
+    }
   })
 
   test('every agent frontmatter model is auto', () => {

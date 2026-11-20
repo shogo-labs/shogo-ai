@@ -60,6 +60,10 @@ export interface HostScalars {
     assigned: number
     suspended: number
     fcProcs?: number
+    /** Assigned-set residency split (active vs evictable); disjoint, sum to
+     * `assigned`. Absent on older agents. See MetalHostRegistration.load. */
+    active?: number
+    evictable?: number
     /** Assigned-set liveness decomposition (app-users / agent-turns / idle-tail);
      * disjoint buckets that sum to `assigned`. Absent on older agents. */
     liveness?: { appActive: number; agentActive: number; idleTail: number }

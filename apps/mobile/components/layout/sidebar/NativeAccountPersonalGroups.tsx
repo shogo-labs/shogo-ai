@@ -6,7 +6,7 @@
  */
 
 import { useState } from "react";
-import { Linking, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import {
   ExternalLink,
   LogOut,
@@ -22,6 +22,7 @@ import { PHONE_DENSITY } from "../../../lib/phone-density";
 import { AccountSettingsGroup, AccountSettingsRow } from "./AccountSettingsGroup";
 import { CHANGELOG_URL, DOCS_URL, themeDisplayName } from "../../../lib/theme-choices";
 import { ThemeChoiceList } from "./ThemeChoiceList";
+import { openExternalLink } from "../../../lib/open-external-link";
 
 export function NativeAccountPersonalGroups({
   onSignOut,
@@ -80,7 +81,7 @@ export function NativeAccountPersonalGroups({
           icon={<ExternalLink size={iconSize} className={iconClass} />}
           label="Docs"
           onPress={() => {
-            Linking.openURL(DOCS_URL);
+            openExternalLink(DOCS_URL);
             onClose();
           }}
         />
@@ -89,7 +90,7 @@ export function NativeAccountPersonalGroups({
           label="What's New"
           separator={false}
           onPress={() => {
-            Linking.openURL(CHANGELOG_URL);
+            openExternalLink(CHANGELOG_URL);
             onClose();
           }}
         />

@@ -18,9 +18,12 @@ import { describe, expect, test } from "bun:test"
 import {
   computeRecoveryBackoff,
   decideStallRecovery,
+  decideStallTrip,
+  DEFAULT_STALL_KEEP_ALIVES,
   getStallRecoveryEffects,
   markStuckToolsInterrupted,
   shouldAutoRecoverStalledTurn,
+  turnEndedOnServer,
 } from "../stall-recovery"
 
 describe("decideStallRecovery", () => {
@@ -128,6 +131,61 @@ describe("decideStallRecovery", () => {
         state: "error",
         output: { error: "Connection interrupted" },
       })
+  })
+})
+
+describe("decideStallTrip", () => {
+  // The watchdog used to call stop() the moment client-side time crossed the
+  // threshold. Every recorded trip sat at ~133 s against the 120 s `submitted`
+  // threshold — exactly a healthy turn that had not written a byte yet — and
+  // stop() on a live turn is what the person saw as "Runtime unreachable".
+  test("a turn the runtime still runs is never aborted", () => {
+    expect(decideStallTrip({ turnStatus: "active", answered: true })).toBe(
+      "stay-attached",
+    )
+    // Budget is configurable; the default is one fresh window.
+    expect(
+      decideStallTrip({ turnStatus: "active", answered: true, keptAlive: 3, maxKeptAlive: 5 }),
+    ).toBe("stay-attached")
+  })
+
+  test("a live turn whose body delivers nothing for a second window is reattached, not killed", () => {
+    const decision = decideStallTrip({
+      turnStatus: "active",
+      answered: true,
+      keptAlive: DEFAULT_STALL_KEEP_ALIVES,
+    })
+    expect(decision).toBe("stop-and-reattach")
+    // Reattaching is the recovery path, so it must not sound like a give-up.
+    expect(decision).not.toBe("stop")
+  })
+
+  test("a turn that already ended server-side reloads history instead of stopping with a banner", () => {
+    for (const turnStatus of ["completed", "failed", "aborted"] as const) {
+      expect(decideStallTrip({ turnStatus, answered: true })).toBe(
+        "stop-and-reload",
+      )
+    }
+  })
+
+  test("a terminal status the probe could not actually read is not evidence the turn ended", () => {
+    // A failed probe collapses to `unknown`; even if something claims a
+    // terminal status without an answer, the panel must not pretend the reply
+    // is on its way to the screen.
+    expect(decideStallTrip({ turnStatus: "unknown", answered: true })).toBe("stop")
+    expect(decideStallTrip({ turnStatus: "unknown", answered: false })).toBe("stop")
+    expect(decideStallTrip({ turnStatus: "completed", answered: false })).toBe(
+      "stop",
+    )
+  })
+
+  test("turnEndedOnServer only covers the statuses the runtime reports for a finished turn", () => {
+    for (const turnStatus of ["completed", "failed", "aborted"] as const) {
+      expect(turnEndedOnServer(turnStatus)).toBe(true)
+    }
+    for (const turnStatus of ["active", "unknown"] as const) {
+      expect(turnEndedOnServer(turnStatus)).toBe(false)
+    }
   })
 })
 

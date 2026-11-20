@@ -6,7 +6,7 @@
  * replies (streaming text, the tool in use, Stop).
  */
 import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Image, Linking, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
+import { Image, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
 import { createPortal } from 'react-dom'
 import { useRouter } from 'expo-router'
 import * as Clipboard from 'expo-clipboard'
@@ -78,6 +78,7 @@ import { customEmojiFor, jumboEmojiCodes, useCustomEmoji } from '../../hooks/use
 import { useEditRequest } from '../../hooks/useChatShortcuts'
 import { useMobileWorkspaceChrome } from '../layout/MobileWorkspaceChromeContext'
 import { HuddleWakeNote, huddleWakeBlockOf } from './HuddleWakeNote'
+import { openExternalLink } from '../../lib/open-external-link';
 
 export const QUICK_REACTIONS = ['👍', '✅', '👀', '🎉', '❤️', '😂']
 
@@ -142,6 +143,9 @@ export interface MessageRowProps {
   onMakeCard?: (message: ChatMessage) => void
   /** Briefly emphasized after opening a link to it. */
   highlighted?: boolean
+  /** In a filtered list, show "replied to a thread" for all thread replies
+   * (not only `alsoSentToChannel` ones) and make the badge tappable. */
+  showThreadContext?: boolean
 }
 
 /**
@@ -267,7 +271,7 @@ function UnfurlCards({ message }: { message: ChatMessage }) {
       {live.map((u) => (
         <Pressable
           key={u.url}
-          onPress={() => Linking.openURL(u.url)}
+          onPress={() => openExternalLink(u.url)}
           accessibilityRole="link"
           accessibilityLabel={`Link preview: ${u.title}`}
           className="max-w-[520px] flex-row gap-3 rounded-md border-l-4 border-border bg-muted/30 py-2 pl-3 pr-2 active:bg-muted"
@@ -1109,7 +1113,7 @@ function MessageRowImpl(props: MessageRowProps) {
     const open = () => {
       if (!target) return
       if (target.type === 'url') {
-        void Linking.openURL(target.url)
+        void openExternalLink(target.url)
         return
       }
       // An activity line about a channel message opens it the way any other
@@ -1262,11 +1266,24 @@ function MessageRowImpl(props: MessageRowProps) {
           </View>
         )}
 
-        {message.threadRootId && message.alsoSentToChannel && !inThread && (
-          <View className="flex-row items-center gap-1">
-            <CornerDownRight size={11} className="text-muted-foreground" />
-            <Text className="text-[11px] text-muted-foreground">replied to a thread</Text>
-          </View>
+        {message.threadRootId && (message.alsoSentToChannel || props.showThreadContext) && !inThread && (
+          props.showThreadContext && props.onReply ? (
+            <Pressable
+              onPress={() => props.onReply!(message)}
+              accessibilityRole="button"
+              accessibilityLabel="Replied to a thread — tap to open"
+              testID={"thread-context-" + message.id}
+              className="flex-row items-center gap-1 self-start"
+            >
+              <CornerDownRight size={11} className="text-muted-foreground" />
+              <Text className="text-[11px] text-muted-foreground">replied to a thread</Text>
+            </Pressable>
+          ) : (
+            <View className="flex-row items-center gap-1">
+              <CornerDownRight size={11} className="text-muted-foreground" />
+              <Text className="text-[11px] text-muted-foreground">replied to a thread</Text>
+            </View>
+          )
         )}
 
         {deleted ? (

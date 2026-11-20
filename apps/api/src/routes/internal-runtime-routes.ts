@@ -26,7 +26,7 @@ import {
 } from '../services/checkpoint.service'
 import { prisma } from '../lib/prisma'
 import type { Permission } from '@shogo/authz'
-import { accessibleProjectsWhere, decide, getRbacMode, loadAccess, resolveAgentActor } from '../lib/authz'
+import { accessibleProjectsWhere, decide, enforceAbility, getRbacMode, loadAccess, resolveAgentActor } from '../lib/authz'
 import {
   authorizeAttachmentAction,
   filterReadableAttachments,
@@ -1544,17 +1544,22 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.post('/projects/:projectId/shared-files', async (c) => {
     const projectId = c.req.param('projectId')
     if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
-    if (!(await validateAuth(c, projectId))) {
+    const identity = await authenticate(c, projectId)
+    if (!identity) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
-    return mintSharedFileLink(c, projectId, async () => {
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { workspaceId: true },
-      })
-      if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
-      return { projectId, workspaceId: project.workspaceId }
+    // Validate the path before the project lookup: a malformed request is a 400
+    // whatever the project turns out to be, and it must not depend on a row.
+    const request = await readSharedFileRequest(c)
+    if (request instanceof Response) return request
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
     })
+    if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
+    const denied = await enforceWorkspaceAbility(c, identity, project.workspaceId, 'project.files:share_public')
+    if (denied) return denied
+    return mintSharedFileLink(c, projectId, request, async () => ({ projectId, workspaceId: project.workspaceId }))
   })
 
   /**
@@ -1567,17 +1572,21 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.post('/workspaces/:workspaceId/shared-files', async (c) => {
     const workspaceId = c.req.param('workspaceId')
     if (!workspaceId) return c.json({ error: 'Missing workspaceId' }, 400)
-    if (!(await authorizeWorkspaceRuntimeRequest(c, workspaceId))) {
+    const identity = await authorizeWorkspaceRuntimeRequest(c, workspaceId)
+    if (!identity) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
-    return mintSharedFileLink(c, `workspace ${workspaceId}`, async () => ({ workspaceId }))
+    const request = await readSharedFileRequest(c)
+    if (request instanceof Response) return request
+    const denied = await enforceWorkspaceAbility(c, identity, workspaceId, 'project.files:share_public')
+    if (denied) return denied
+    return mintSharedFileLink(c, `workspace ${workspaceId}`, request, async () => ({ workspaceId }))
   })
 
-  async function mintSharedFileLink(
+  /** The path and lifetime a shared-file mint asks for, or a 400 response. */
+  async function readSharedFileRequest(
     c: Context,
-    label: string,
-    loadScope: () => Promise<{ projectId?: string; workspaceId: string } | Response>,
-  ): Promise<Response> {
+  ): Promise<{ path: string; expiresInDays: number } | Response> {
     const body = await c.req.json().catch(() => null) as {
       path?: unknown
       expiresInDays?: unknown
@@ -1598,7 +1607,16 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       typeof body?.expiresInDays === 'number' && Number.isFinite(body.expiresInDays)
         ? Math.floor(body.expiresInDays)
         : 7
-    const expiresInDays = Math.max(1, Math.min(7, requestedDays))
+    return { path, expiresInDays: Math.max(1, Math.min(7, requestedDays)) }
+  }
+
+  async function mintSharedFileLink(
+    c: Context,
+    label: string,
+    request: { path: string; expiresInDays: number },
+    loadScope: () => Promise<{ projectId?: string; workspaceId: string } | Response>,
+  ): Promise<Response> {
+    const { path, expiresInDays } = request
     const now = Math.floor(Date.now() / 1000)
 
     try {
@@ -1755,7 +1773,16 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.get('/projects/:projectId/github/cli-credentials', async (c) => {
     const projectId = c.req.param('projectId')
     if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
-    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const projectWorkspace = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
+    })
+    if (projectWorkspace) {
+      const denied = await enforceWorkspaceAbility(c, identity, projectWorkspace.workspaceId, 'project.secrets:read')
+      if (denied) return denied
+    }
 
     try {
       if (!loadGitHub) {
@@ -1876,7 +1903,16 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.post('/projects/:projectId/integrations/resolve', async (c) => {
     const projectId = c.req.param('projectId')
     if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
-    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const projectWorkspace = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
+    })
+    if (projectWorkspace) {
+      const denied = await enforceWorkspaceAbility(c, identity, projectWorkspace.workspaceId, 'integrations:connect')
+      if (denied) return denied
+    }
     const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
     const provider = typeof body?.provider === 'string' ? body.provider.trim() : ''
     const op = body?.op === 'read' ? 'read' : 'write'
@@ -2560,6 +2596,24 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     return null
   }
 
+  /**
+   * The ability gate for an internal route (SHO-417). Resolves the person the
+   * call acts for and refuses when they lack `permission` — the server half of
+   * the runtime's tool filter. A service account with no person stays unscoped,
+   * like every other internal check.
+   */
+  async function enforceWorkspaceAbility(
+    c: Context,
+    identity: InternalIdentity,
+    workspaceId: string,
+    permission: Permission,
+  ): Promise<Response | null> {
+    if (identity.kind === 'sa') return null
+    const actor = await resolveAgentActor(c, identity, { workspaceId })
+    if (!actor?.principal.userId || actor.unscoped) return null
+    return enforceAbility(c, workspaceId, actor.principal.userId, permission)
+  }
+
   function lifecycleErrorResponse(c: Context, err: unknown): Response {
     const anyErr = err as { name?: string; code?: string; message?: string }
     if (anyErr?.name === 'WorkspaceConfigError') {
@@ -2918,6 +2972,43 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     } catch (err) {
       return lifecycleErrorResponse(c, err)
     }
+  })
+
+  /**
+   * GET /api/internal/workspaces/:workspaceId/access/effective
+   *
+   * The acting person's effective access in this workspace: the ability set the
+   * runtime's tool gate filters on, plus the model grant and limits the settings
+   * UI explains. `abilities: null` means "unknown" — no person behind the turn,
+   * or a caller that is not a member — and the runtime treats that as "allow
+   * everything", because the server still refuses each call on its own.
+   */
+  app.get('/workspaces/:workspaceId/access/effective', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const authz = await authorizeLifecycleWorkspace(c, workspaceId)
+    if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+    const actor = await resolveAgentActor(c, authz.identity, { workspaceId })
+    if (!actor?.principal.userId || actor.unscoped) {
+      return c.json({ workspaceId, abilities: null, reason: 'no_actor' })
+    }
+    const { getEffectiveAccess } = await import('../services/access-policy.service')
+    const access = await getEffectiveAccess(workspaceId, actor.principal.userId)
+    if (!access) return c.json({ workspaceId, abilities: null, reason: 'not_a_member' })
+    return c.json({
+      workspaceId,
+      userId: access.userId,
+      role: access.role,
+      abilities: [...access.abilities],
+      models: {
+        tiers: access.models.tiers ? [...access.models.tiers] : null,
+        ids: access.models.ids ? [...access.models.ids] : null,
+      },
+      defaultModelId: access.defaultModelId,
+      spendCapUsd: access.spendCapUsd,
+      spendPeriod: access.spendPeriod,
+      requestsPerHour: access.requestsPerHour,
+      reasons: access.reasons,
+    })
   })
 
   /**
@@ -3487,6 +3578,8 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         403,
       )
     }
+    const abilityDenied = await enforceAbility(c, workspaceId, ticket.userId, 'instance.commands:run')
+    if (abilityDenied) return abilityDenied
     if ((await getWorkspaceKind(workspaceId)) !== 'personal') {
       return c.json(
         {
@@ -3646,6 +3739,12 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ error: { code: 'bad_request', message: 'args must be an object' } }, 400)
     }
     const tool = body.tool.trim()
+    // The target project's own permission is the gate: `project:read` for a
+    // read-only tool, `project:update` for a mutating one. This is not a
+    // paired-desktop command, so it must not also require
+    // `instance.commands:run` — that ability is for running commands on the
+    // caller's own machine, and requiring it here locked read-only viewers out
+    // of reading files in projects they can see (SHO-353).
     const denied = await enforceProjectPermission(
       c, authz.identity, authz.workspaceId, projectId, remoteToolPermission(tool),
     )
@@ -3918,6 +4017,140 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const { postInterruptedResume } = await import('../services/chat-resume.service')
     const result = await postInterruptedResume(chatSessionId, { toolName, resume })
     return c.json(result)
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/channels/whatsapp/connect-link
+   *
+   * Runtime-token auth. Called by the agent gateway's channel_connect tool
+   * when the user calls channel_connect({ type: "whatsapp", config: {} }).
+   */
+  app.post('/projects/:projectId/channels/whatsapp/connect-link', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+
+    const { whatsappEmbeddedSignupAvailable } = await import('../lib/whatsapp-platform')
+    if (!whatsappEmbeddedSignupAvailable()) {
+      return c.json({ code: 'whatsapp_embedded_signup_unavailable', error: 'WhatsApp Embedded Signup is not configured on this server.' }, 412)
+    }
+
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
+    })
+    if (!project) return c.json({ error: 'Project not found' }, 404)
+
+    const { issueConnectLinkForRuntime } = await import('../routes/channels-whatsapp')
+    return issueConnectLinkForRuntime(c, {
+      workspaceId: project.workspaceId,
+      projectId,
+      userId: 'runtime',
+      instanceId: null,
+    })
+  })
+
+  /**
+   * GET /api/internal/projects/:projectId/channels/whatsapp/credentials
+   *
+   * Returns the decrypted access token for a platform-bound WhatsApp number.
+   * Runtime-token auth only; never logged.
+   */
+  app.get('/projects/:projectId/channels/whatsapp/credentials', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+
+    const phoneNumberId = c.req.query('phoneNumberId')
+    if (!phoneNumberId) return c.json({ error: 'phoneNumberId is required' }, 400)
+
+    const { decryptSecret } = await import('../lib/secret-crypto')
+    const { WHATSAPP_GRAPH_VERSION } = await import('@shogo/shared-runtime/whatsapp-graph')
+
+    const binding = await prisma.whatsAppNumberBinding.findUnique({
+      where: { phoneNumberId },
+      select: { projectId: true, wabaId: true, tokenEncrypted: true, status: true },
+    })
+    if (!binding) return c.json({ error: 'No binding found for this phoneNumberId', code: 'not_found' }, 404)
+    if (binding.projectId !== projectId) return c.json({ error: 'Binding belongs to a different project' }, 403)
+    if (binding.status !== 'active') return c.json({ error: `Binding status: ${binding.status}`, code: 'not_active' }, 409)
+
+    let accessToken: string
+    try {
+      accessToken = decryptSecret(binding.tokenEncrypted)
+    } catch {
+      return c.json({ error: 'Failed to decrypt access token' }, 500)
+    }
+
+    return c.json({ ok: true, accessToken, wabaId: binding.wabaId, graphVersion: WHATSAPP_GRAPH_VERSION })
+  })
+
+  /**
+   * GET /api/internal/projects/:projectId/channels/whatsapp/bindings
+   *
+   * List active WhatsApp bindings for this project (for reconcile-on-start).
+   */
+  app.get('/projects/:projectId/channels/whatsapp/bindings', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+
+    const bindings = await prisma.whatsAppNumberBinding.findMany({
+      where: { projectId },
+      select: {
+        phoneNumberId: true, wabaId: true, displayPhoneNumber: true,
+        verifiedName: true, coexistence: true, status: true, statusReason: true,
+        syncStartedAt: true, contactsSyncRequestId: true, historySyncRequestId: true,
+      },
+    })
+    return c.json({ ok: true, bindings })
+  })
+
+  /**
+   * DELETE /api/internal/projects/:projectId/channels/whatsapp/bindings/:phoneNumberId
+   *
+   * Remove a platform binding (called on channel_disconnect of a platform channel).
+   * Best-effort unsubscribes the WABA from Shogo's app if no other binding shares it.
+   */
+  app.delete('/projects/:projectId/channels/whatsapp/bindings/:phoneNumberId', async (c) => {
+    const projectId = c.req.param('projectId')
+    const phoneNumberId = c.req.param('phoneNumberId')
+    if (!projectId || !phoneNumberId) return c.json({ error: 'Missing params' }, 400)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+
+    const binding = await prisma.whatsAppNumberBinding.findUnique({
+      where: { phoneNumberId },
+      select: { id: true, projectId: true, wabaId: true, tokenEncrypted: true },
+    })
+    if (!binding) return c.json({ ok: true, message: 'No binding found' })
+    if (binding.projectId !== projectId) return c.json({ error: 'Binding belongs to a different project' }, 403)
+
+    // Check if any other binding uses the same WABA
+    const otherBindings = await prisma.whatsAppNumberBinding.count({
+      where: { wabaId: binding.wabaId, phoneNumberId: { not: phoneNumberId } },
+    })
+
+    if (otherBindings === 0) {
+      // Best-effort WABA unsubscribe
+      try {
+        const { decryptSecret } = await import('../lib/secret-crypto')
+        const { WHATSAPP_API_BASE } = await import('@shogo/shared-runtime/whatsapp-graph')
+        const accessToken = decryptSecret(binding.tokenEncrypted)
+        await fetch(`${WHATSAPP_API_BASE}/${binding.wabaId}/subscribed_apps`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${accessToken}` },
+        })
+      } catch (err: any) {
+        console.warn('[WhatsApp] WABA unsubscribe failed (non-fatal):', err?.message)
+      }
+    }
+
+    await prisma.whatsAppNumberBinding.delete({ where: { phoneNumberId } })
+    return c.json({ ok: true })
   })
 
   return app

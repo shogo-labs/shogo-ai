@@ -41,7 +41,6 @@ import {
   Alert,
   AppState,
   Dimensions,
-  Linking,
   View,
   Text,
   Pressable,
@@ -76,18 +75,22 @@ import {
 } from "./optimistic-echo"
 import { usePersistedMessageIds } from "./use-persisted-message-ids"
 import { usageLimitNoticeFor } from "./usage-limit-notice"
-import { getAuthUserSnapshot } from "../../contexts/auth"
+import { useAuthOptional, getAuthUserSnapshot } from "../../contexts/auth"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import {
   extractTextContent,
   formatErrorMessage,
   isTunnelDisconnectError,
   isClientNetworkFailure,
+  isChatUnauthorizedError,
   formatToolName,
   getToolCategory,
   ERROR_CODE_MESSAGES,
+  CHAT_SESSION_EXPIRED_MESSAGE,
+  SHOGO_TELEMETRY_TAG,
   buildChatStreamErrorReport,
   isReactUpdateDepthError,
+  shouldInterruptStuckToolsOnStreamError,
 } from "@shogo/shared-app/chat"
 import {
   useChatTransportConfig,
@@ -111,6 +114,12 @@ import {
   useSDKHttpOptional,
 } from "@shogo/shared-app/domain"
 import { decideMessagesPropagation } from "./messages-propagation"
+import {
+  refusalIsFor,
+  refusedSendFor,
+  withoutRefusedSend,
+  type RefusedSend,
+} from "./session-refusal"
 import { resolveHistoryPaint, resolveLiveTurnAttach } from "./history-paint"
 import { mergeTranscriptRows, sortTranscriptRows } from "./transcript-merge"
 import { assistantRowsAtSend, findTurnReplyRow, shouldPaintReconciledHistory } from "./reconcile-reply-row"
@@ -138,7 +147,7 @@ import { useNotifyOnTurnComplete } from "./useNotifyOnTurnComplete"
 import {
   isLiveTurnOtherThan,
   probeChatTurn,
-  probeChatTurnStatus,
+  probeChatTurnBounded,
   type ChatTurnSnapshot,
   type ChatTurnStatus,
 } from "./probe-turn-status"
@@ -169,9 +178,11 @@ import {
 } from "./retry-triage"
 import {
   computeRecoveryBackoff,
+  decideStallTrip,
   getStallRecoveryEffects,
   markStuckToolsInterrupted,
   shouldAutoRecoverStalledTurn,
+  turnEndedOnServer,
 } from "./stall-recovery"
 import { recordAutoResumeAttempt } from "./auto-resume-circuit-breaker"
 import { followNextTurn } from "./next-turn-follow"
@@ -188,6 +199,7 @@ import {
   messageTurnKey,
   replayTurnMessage,
   withResumeReplayReset,
+  type Reauthorize,
   type ReplayTurnStart,
 } from "./resume-replay-transport"
 import { resolveRejoinView } from "./rejoin-view"
@@ -408,6 +420,7 @@ import {
   workspaceExperience,
   type WorkspaceExperienceComposer,
 } from "@shogo/shared-app"
+import { openExternalLink } from "../../lib/open-external-link";
 
 /** Full composer (model picker + interaction modes, no forced mode) — the default for team workspaces and any caller that doesn't pass `composer`. */
 const DEFAULT_CHAT_COMPOSER: WorkspaceExperienceComposer =
@@ -1333,6 +1346,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
     router.push("/(app)/billing?trial=business" as any)
   }, [router])
 
+  // A refused session is only actionable as a sign-in. Handing it to the auth
+  // provider — whose cleared user is what makes the app shell route a
+  // signed-out person to the sign-in screen — keeps this panel from having to
+  // know that route (SHO-431). `useAuthOptional` because the panel also renders
+  // inside popover portals that sit above the provider tree.
+  const refreshSession = useAuthOptional()?.refreshSession
+  const handleSignInAgain = useCallback(() => {
+    setSessionExpired(false)
+    void refreshSession?.()
+  }, [refreshSession])
+
   // A held account (SHO-416) is told to verify, not to pay. The email comes
   // from the auth snapshot so this stays a plain callback (no extra hook).
   const handleVerifyEmailClick = useCallback(() => {
@@ -1345,7 +1369,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   }, [router])
 
   const handleContactSupportClick = useCallback(() => {
-    void Linking.openURL("mailto:support@shogo.ai?subject=Account%20under%20review").catch(() => {})
+    void openExternalLink("mailto:support@shogo.ai?subject=Account%20under%20review")
   }, [])
 
   // Panel state
@@ -2473,6 +2497,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const recoveredTurnIdRef = useRef<string | null>(null)
   const renderDepthErrorTurnIdRef = useRef<string | null>(null)
   const stallRecoveryRef = useRef<(() => void) | null>(null)
+  // One `/turn` probe at a time from the stall watchdog: the 15 s tick would
+  // otherwise stack probes while a slow one is still in flight.
+  const stallTripProbeRef = useRef(false)
+  // How many trips this turn has already been kept alive for, so a body that
+  // is dead while the runtime still runs the turn is reattached instead of
+  // waited on forever (see `DEFAULT_STALL_KEEP_ALIVES`).
+  const stallKeepAliveRef = useRef<{ turnId: string | null; count: number }>({
+    turnId: null,
+    count: 0,
+  })
   const currentSessionIdRef = useRef<string | null>(null)
   currentSessionIdRef.current = currentSessionId
 
@@ -2564,6 +2598,48 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // render instead of only when one of the other transport inputs changes.
   const getClientTurnId = useCallback(() => pendingClientTurnIdRef.current, [])
 
+  // Re-establishing a session the API just refused (SHO-431).
+  //
+  // `getSession` revalidates against the API, refreshes the cookie cache and —
+  // on native — rewrites the stored cookie that `nativeHeaders` reads from, so
+  // the retried request carries a fresh credential. `disableCookieCache` is
+  // what makes the answer authoritative: replaying the cache that just got us
+  // a 401 would report "signed in" and retry with the same dead credential.
+  //
+  // Behind a ref because `chatTransport` is memoized on `transportConfig`
+  // alone; a changing callback identity would tear down `useChat`'s transport
+  // mid-chat.
+  const reauthorizeChatRef = useRef<Reauthorize>(async () => false)
+  // What the last refresh actually established, kept for the refused-session
+  // report: a second `getSession()` would answer from the 120 s cookie cache
+  // (apps/api/src/auth.ts) and could claim "signed in" right after a refusal —
+  // the one fact that separates a genuine expiry from a credential the device
+  // never had (SHO-431). Reset for every send in `deliverMessage`.
+  const sessionRefreshRef = useRef<{ ok: boolean } | null>(null)
+  // The send the API refused, recorded by `onError` because the SDK resolves a
+  // refused send instead of throwing it (see session-refusal.ts).
+  const refusedSendRef = useRef<RefusedSend | null>(null)
+  const reauthorizeChat = useCallback(async (): Promise<boolean> => {
+    // A direct-to-runtime request carries no platform session to refresh: a
+    // 401 there is the runtime's own token, not the person's sign-in.
+    if (localAgentUrl) return false
+    try {
+      const { data } = await authClient.getSession({
+        query: { disableCookieCache: true },
+      })
+      const ok = Boolean(data?.user)
+      sessionRefreshRef.current = { ok }
+      return ok
+    } catch (err) {
+      console.warn("[ChatPanel] session refresh after a 401 failed:", err)
+      sessionRefreshRef.current = { ok: false }
+      return false
+    }
+  }, [localAgentUrl])
+  useEffect(() => {
+    reauthorizeChatRef.current = reauthorizeChat
+  }, [reauthorizeChat])
+
   const transportConfig = useChatTransportConfig({
     apiBaseUrl: API_URL!,
     projectId,
@@ -2598,6 +2674,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             new DefaultChatTransport(transportConfig),
             (start) => beforeResumeReplayRef.current(start),
             (message) => applyResumeSnapshotRef.current(message),
+            () => reauthorizeChatRef.current(),
           )
         : undefined,
     [transportConfig],
@@ -2634,7 +2711,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     messages: (cachedMessagesRef.current as UIMessage[] | null) ?? undefined,
     resume: false,
     experimental_throttle: 50,
-    onError: (err) => {
+    onError: async (err) => {
       // Stream failures are recoverable UI state: the retry affordance below
       // handles them. React Native treats console.error as a development
       // exception and opens LogBox over the conversation, so retain a visible
@@ -2652,6 +2729,39 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // separate "stuck with no error" case (`chat_stall_watchdog_tripped`).
       if (isReactUpdateDepthError(err)) {
         renderDepthErrorTurnIdRef.current = currentTurnIdRef.current
+      }
+      // A session refusal is not a stream defect: it never reached the runtime,
+      // and the transport already asked for a fresh session and replayed the
+      // request once (resume-replay-transport.ts). Getting here means the
+      // person really is signed out, so prompt for a sign-in and file the event
+      // under its own fingerprint — keeping it out of the generic stream-error
+      // issue is what lets that issue's rate actually fall (SHO-431).
+      if (isChatUnauthorizedError(err)) {
+        // Recorded before anything is awaited: this callback is where the SDK
+        // delivers a refused send (it resolves the send itself, see
+        // session-refusal.ts), and the send path reads this back to put the
+        // person's text in the composer. `setSessionExpired` alone was not
+        // enough — with no throw to catch, the restore never ran (QA round 1).
+        refusedSendRef.current = refusedSendFor(pendingClientTurnIdRef.current)
+        setSessionExpired(true)
+        Sentry.captureException(err, {
+          level: "warning",
+          tags: {
+            [SHOGO_TELEMETRY_TAG]: "chat_session_expired",
+            projectId: projectId ?? "(none)",
+            chatSessionId: currentSessionIdRef.current ?? "(none)",
+          },
+          extra: {
+            // The one fact that separates a real expiry from a credential that
+            // never reached the device: after the one refresh the transport
+            // made, does this client hold a session the API will honour? Read
+            // from that refresh's authoritative answer, not a cached one.
+            sessionAfterRefresh: sessionRefreshRef.current?.ok ?? false,
+            lastSeq: turnLastSeqRef.current,
+          },
+          fingerprint: ["chat_session_expired"],
+        })
+        return
       }
       try {
         const report = buildChatStreamErrorReport(err, {
@@ -2677,7 +2787,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
         )
       }
 
-      setMessages((prev) => markStuckToolsInterrupted(prev))
+      // A render-depth error is React refusing to keep re-rendering, not a
+      // stream defect, and writing to the message store here is what re-enters
+      // the render that just blew up: `setMessages` notifies the AI SDK's
+      // store, which forces a synchronous re-render of the same tree, which
+      // throws again and lands back in this callback. That is how one #185
+      // became 450 Sentry events from a single session (JAVASCRIPT-REACT-5S).
+      // The turn id is already recorded above and `shouldAutoRecoverStalledTurn`
+      // reads it to skip auto-recovery, so there is nothing left to do here.
+      if (shouldInterruptStuckToolsOnStreamError(err)) {
+        setMessages((prev) => markStuckToolsInterrupted(prev))
+      }
     },
     onData: async (dataPart) => {
       const activePlanStream = isActivePanelRef.current ? planStream : null
@@ -4306,6 +4426,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
   } | null>(null)
   const [errorBannerExpanded, setErrorBannerExpanded] = useState(false)
   const [errorDismissed, setErrorDismissed] = useState(false)
+  // Set when the API refused a send because the session was gone and asking
+  // for a fresh one did not bring it back (SHO-431). Drives the sign-in prompt
+  // in place of the generic error banner, so a signed-out person gets a way
+  // back in instead of an error they cannot act on.
+  const [sessionExpired, setSessionExpired] = useState(false)
   const [tunnelReconnecting, setTunnelReconnecting] = useState(false)
   // Non-null while the runtime's agent loop is "parked" waiting for internet
   // connectivity to return (see `data-connectivity-wait` handling in
@@ -4348,6 +4473,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       return "Connection to desktop instance lost. Reconnecting\u2026"
     if (isTunnelError)
       return "Connection to desktop instance lost. Tap Reconnect to retry."
+    if (sessionExpired) return CHAT_SESSION_EXPIRED_MESSAGE
     if (streamAutoRecovering)
       return "Connection interrupted. Reconnecting\u2026"
     return (
@@ -4359,6 +4485,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     isTunnelError,
     tunnelReconnecting,
     streamAutoRecovering,
+    sessionExpired,
   ])
   useEffect(() => {
     setErrorBannerExpanded(false)
@@ -5205,7 +5332,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           .filter((p) => p.notify && !p.stale && !isFinishedProcess(p))
           .map((p) => p.id ?? p.runId)
       },
-      probeTurn: () => {
+      probeTurn: async () => {
         const turnUrl = buildChatTurnUrl(
           API_URL!,
           projectId,
@@ -5213,12 +5340,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
           currentSessionId,
           chatWorkspaceId,
         )
-        return probeChatTurnStatus({
-          url: turnUrl,
-          fetch: expoFetch,
-          headers: nativeHeaders ? nativeHeaders() : undefined,
-          credentials: Platform.OS === "web" ? "include" : undefined,
-        })
+        return (
+          await probeChatTurnBounded({
+            url: turnUrl,
+            fetch: expoFetch,
+            headers: nativeHeaders ? nativeHeaders() : undefined,
+            credentials: Platform.OS === "web" ? "include" : undefined,
+          })
+        ).status
       },
       // Reload first: the live stream carries only the reply, and the wake's
       // `[Task update]` row has to be in place for it to attach to.
@@ -5283,7 +5412,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }
 
     void pollForLateTurn({
-      probe: () => {
+      probe: async () => {
         const turnUrl = buildChatTurnUrl(
           API_URL!,
           projectId,
@@ -5291,12 +5420,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
           currentSessionId,
           chatWorkspaceId,
         )
-        return probeChatTurnStatus({
-          url: turnUrl,
-          fetch: expoFetch,
-          headers: nativeHeaders ? nativeHeaders() : undefined,
-          credentials: Platform.OS === "web" ? "include" : undefined,
-        })
+        return (
+          await probeChatTurnBounded({
+            url: turnUrl,
+            fetch: expoFetch,
+            headers: nativeHeaders ? nativeHeaders() : undefined,
+            credentials: Platform.OS === "web" ? "include" : undefined,
+          })
+        ).status
       },
       attach: () => guardedAutoResumeStream("live-turn-probe"),
       reload: refreshPersistedResponse,
@@ -5949,7 +6080,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       // the transcript paints, the local array must hold that many rows — a
       // shorter one is repaired with the full first page instead of staying
       // hidden until the next reopen.
-      if (body.total != null && body.total <= MESSAGE_PAGE_SIZE) {
+      //
+      // Guard skipped when the caller has no prior messages (current.length === 0):
+      // the client cannot assess whether rows are missing from an empty starting
+      // point, and firing the guard here sends an unnecessary full reload on the
+      // warm-reopen path before the in-memory cache is populated (SHO-450).
+      if (body.total != null && body.total <= MESSAGE_PAGE_SIZE && current.length > 0) {
         const seen = new Set(current.map((m) => String(m.id)))
         for (const row of items) if (row?.id) seen.add(String(row.id))
         if (seen.size < body.total) return false
@@ -7077,9 +7213,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // (`setOptimisticUserInput`) that already ran before this is called. The
   // user row itself is written by the chat route, idempotently on the
   // message id, so a retried POST cannot duplicate it (SHO-274).
-  // Non-network failures (auth, usage limit,
-  // 5xx, etc. — the server DID respond) still propagate normally so the
-  // existing error banner handles them.
+  //
+  // Almost nothing the request can do reaches the `catch`: `Chat.sendMessage`
+  // reports a transport failure to `onError`, sets the status to "error" (which
+  // is what paints the banner) and resolves. The catch only sees a failure
+  // raised before the request is on the wire.
+  //
+  // A refused session is the case that needed more than a banner: it is
+  // detected from what `onError` recorded, not from a throw, and the text is
+  // handed back through the return value so the caller can put it in the
+  // composer. `handleInputSubmit` does not await this, so a throw here would
+  // only have produced an unhandled rejection carrying the raw error envelope —
+  // which is exactly what filled Sentry (SHO-431).
   const deliverMessage = useCallback(
     async (
       messagePayload: {
@@ -7093,17 +7238,39 @@ const ChatPanelContent = observer(function ChatPanelContent({
       },
       bodyExtra: Record<string, unknown>,
       opts?: { queuedId?: string },
-    ) => {
+    ): Promise<{ sessionExpired: true } | void> => {
       const clientTurnId =
         typeof bodyExtra.clientTurnId === "string"
           ? bodyExtra.clientTurnId
           : undefined
       pendingClientTurnIdRef.current = clientTurnId
       joinedStreamRef.current = false
+      // Both describe THIS request: the refresh the transport may ask for, and
+      // the refusal `onError` may report. Nothing from an earlier send carries
+      // over.
+      sessionRefreshRef.current = null
+      refusedSendRef.current = null
       try {
         await sendMessage(messagePayload, { body: bodyExtra })
+        // A refused send got here by resolving too, so ask what `onError` saw.
+        // The turn id keeps a refusal that landed after the person moved on
+        // from restoring this send's text.
+        if (refusalIsFor(refusedSendRef.current, clientTurnId)) {
+          return { sessionExpired: true }
+        }
       } catch (err) {
-        if (!isClientNetworkFailure(err)) throw err
+        if (!isClientNetworkFailure(err)) {
+          // A 401 does not come through here any more (the SDK reports it to
+          // `onError` above). Kept as the guard for an SDK that starts
+          // rethrowing again: report it the same way rather than letting the
+          // envelope reach the person.
+          if (isChatUnauthorizedError(err)) {
+            console.warn("[ChatPanel] Send refused — the session is gone:", err)
+            setSessionExpired(true)
+            return { sessionExpired: true }
+          }
+          throw err
+        }
 
         console.warn(
           "[ChatPanel] Send failed on a network error — queueing for automatic retry once back online:",
@@ -7169,6 +7336,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       releaseStopSnapshot()
       stoppedTurnIdRef.current = null
       setEmptyResponseError(null)
+      setSessionExpired(false)
       setErrorDismissed(false)
       userInitiatedStopRef.current = false
 
@@ -7381,7 +7549,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // This window is starting a turn: any reconcile still retrying for the
         // previous one must not paint over it (SHO-325).
         turnGenerationRef.current += 1
-        await deliverMessage(messagePayload, bodyExtra)
+        const outcome = await deliverMessage(messagePayload, bodyExtra)
+        if (outcome?.sessionExpired) {
+          // The send never reached the server, so its row was never written and
+          // the bubble above is this window's only copy. Put the text back in
+          // the composer so signing in again does not cost the person the
+          // message they already typed (SHO-431). The original `trimmedContent`
+          // is restored, not `messagePayload.text`, which may carry injected
+          // workspace context (`enrichMessage`).
+          //
+          // The bubble goes with it: `sendMessage` appended the message before
+          // the request went out, and with the text back in the composer a
+          // bubble for a message that was never sent is the same message twice
+          // (and cannot survive the next history paint anyway).
+          clearOptimisticEcho(trimmedContent)
+          setMessages((current) => withoutRefusedSend(current))
+          setRestoreDraftRequest({
+            nonce: Date.now(),
+            content: trimmedContent,
+            files: files && files.length > 0 ? files : undefined,
+            focus: false,
+          })
+        }
       } catch (err) {
         console.error("[ChatPanel] Failed to send message:", err)
         throw err
@@ -7412,6 +7601,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       maybeAutoNameSession,
       releaseStopSnapshot,
       showOptimisticEcho,
+      clearOptimisticEcho,
+      setMessages,
       sessionMessages,
     ],
   )
@@ -7483,11 +7674,25 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // and set the optimistic bubble on the FIRST attempt; re-running it
         // here would duplicate both. `deliverMessage` re-queues (doesn't
         // throw) on a repeat network failure, so this "succeeds" either way.
-        await deliverMessage(
+        const outcome = await deliverMessage(
           nextMessage.offlineRetry.messagePayload,
           nextMessage.offlineRetry.bodyExtra,
           { queuedId: nextMessage.id },
         )
+        if (outcome?.sessionExpired) {
+          // Same rule as a first attempt: the refusal cost the person their
+          // message, so put the queued text back where they can re-send it
+          // after signing in (SHO-431) — and drop the bubble the redelivery
+          // pushed, so the text exists in one place only.
+          clearOptimisticEcho(nextMessage.content)
+          setMessages((current) => withoutRefusedSend(current))
+          setRestoreDraftRequest({
+            nonce: Date.now(),
+            content: nextMessage.content,
+            files: nextMessage.files,
+            focus: false,
+          })
+        }
         // An offline retry that fails again never starts a real stream, so
         // the `isStreaming` falling-edge effect below will never fire for
         // it — reset here so the next online-restored tick can pick the
@@ -7513,6 +7718,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
     currentSessionId,
     editingQueuedId,
     messageQueue,
+    clearOptimisticEcho,
+    setMessages,
   ])
 
   // Process queue when streaming completes
@@ -7729,7 +7936,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       const now = Date.now()
       const lastProgressAt = lastChatProgressAtRef.current
       if (
-        isChatStalled({
+        !isChatStalled({
           status,
           lastProgressAt,
           now,
@@ -7738,9 +7945,159 @@ const ChatPanelContent = observer(function ChatPanelContent({
             document.visibilityState === "hidden",
         })
       ) {
-        const elapsedMs = now - lastProgressAt
+        return
+      }
+      const elapsedMs = now - lastProgressAt
+
+      // Client-side time alone does not say the turn is dead: a cold pod, a
+      // large prompt build or a provider TTFB leaves the stream legitimately
+      // silent past the threshold, and a half-open socket looks identical.
+      // Ask the runtime before aborting anything — every recorded trip sat at
+      // threshold + one 15 s tick (~133 s), and `stop()` on a live turn is what
+      // turned long replies into "Runtime unreachable — tap retry" on web, iOS
+      // and Android (Sentry REACT-38, SHOGO-ANDROID-16, SHOGO-IOS-Q).
+      if (stallTripProbeRef.current) return
+      stallTripProbeRef.current = true
+      const stalledSessionId = currentSessionId
+      const stalledTurnId = currentTurnIdRef.current
+      const probeUrl =
+        stalledSessionId && API_URL ? buildChatTurnUrl(
+          API_URL,
+          projectId,
+          localAgentUrl,
+          stalledSessionId,
+          chatWorkspaceId,
+        ) : null
+      void (async () => {
+        let snapshot: ChatTurnSnapshot | null = null
+        try {
+          if (probeUrl) {
+            snapshot = await probeChatTurnBounded({
+              url: probeUrl,
+              fetch: expoFetch,
+              headers: nativeHeaders ? nativeHeaders() : undefined,
+              credentials: Platform.OS === "web" ? "include" : undefined,
+            })
+          }
+        } catch {
+          snapshot = null
+        } finally {
+          stallTripProbeRef.current = false
+        }
+
+        // The world may have moved on while the probe was in flight. A probe
+        // answers about ONE turn: if turn A finished during the probe and a
+        // queued send already started turn B, A's terminal answer must not
+        // `stop()` B — the session check alone let that through.
+        if (
+          !isStreamingRef.current ||
+          currentSessionIdRef.current !== stalledSessionId ||
+          currentTurnIdRef.current !== stalledTurnId
+        ) {
+          return
+        }
+
+        const keptAliveSoFar =
+          stallKeepAliveRef.current.turnId === stalledTurnId
+            ? stallKeepAliveRef.current.count
+            : 0
+        const decision = decideStallTrip({
+          turnStatus: snapshot?.status ?? "unknown",
+          answered: Boolean(snapshot?.answered),
+          keptAlive: keptAliveSoFar,
+        })
+        stallKeepAliveRef.current =
+          decision === "stay-attached"
+            ? { turnId: stalledTurnId, count: keptAliveSoFar + 1 }
+            : { turnId: stalledTurnId, count: 0 }
+
+        if (decision === "stay-attached") {
+          // The runtime still owns this turn — give it a fresh window instead
+          // of aborting work the person is waiting for.
+          console.warn(
+            `[ChatPanel] stall watchdog: ${elapsedMs}ms without bytes, but turn ${stalledTurnId} is still active server-side — staying attached`,
+          )
+          lastChatProgressAtRef.current = Date.now()
+          try {
+            Sentry.captureMessage("chat_stall_probe_kept_alive", {
+              level: "warning",
+              tags: {
+                projectId: projectId ?? "(none)",
+                chatSessionId: stalledSessionId ?? "(none)",
+                chatStatus: status,
+              },
+              extra: {
+                elapsedMs,
+                turnId: stalledTurnId,
+                lastSeq: turnLastSeqRef.current,
+              },
+            })
+          } catch (err) {
+            console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+          }
+          return
+        }
+
+        if (decision === "stop-and-reattach") {
+          // The turn is running but this body has delivered nothing for two
+          // full windows: the socket is dead. Drop it (which does NOT stop the
+          // turn — the runtime buffers it and the API persists it) so the
+          // falling-edge recovery can reattach from the buffer. No banner: the
+          // reply is still coming.
+          console.warn(
+            `[ChatPanel] stall watchdog: turn ${stalledTurnId} is active but this stream delivered nothing for ${elapsedMs}ms — dropping the dead body to reattach`,
+          )
+          try {
+            Sentry.captureMessage("chat_stall_probe_reattached", {
+              level: "warning",
+              tags: {
+                projectId: projectId ?? "(none)",
+                chatSessionId: stalledSessionId ?? "(none)",
+                chatStatus: status,
+              },
+              extra: {
+                elapsedMs,
+                turnId: stalledTurnId,
+                lastSeq: turnLastSeqRef.current,
+                keptAlive: keptAliveSoFar,
+              },
+            })
+          } catch (err) {
+            console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+          }
+          stallWatchdogTrippedRef.current = false
+          try {
+            void stop()
+          } catch (err) {
+            console.warn("[ChatPanel] stall watchdog stop() threw:", err)
+          }
+          return
+        }
+
+        if (decision === "stop-and-reload") {
+          // The turn already finished server-side: the reply is saved and the
+          // body on this device is simply dead. Unwedge the composer and paint
+          // what the server has — "runtime unreachable" would be a lie, and a
+          // Retry would re-run work that already produced a reply.
+          console.warn(
+            `[ChatPanel] stall watchdog: turn ${stalledTurnId} ended server-side (${snapshot?.status}) — reloading saved history`,
+          )
+          try {
+            void stop()
+          } catch (err) {
+            console.warn("[ChatPanel] stall watchdog stop() threw:", err)
+          }
+          setTimeout(() => {
+            if (currentSessionIdRef.current !== stalledSessionId) return
+            // History-only reload: the turn is over, so there is no live turn
+            // to probe for (`refreshHistoryRef` skips that probe by design).
+            refreshHistoryRef.current()
+          }, 500)
+          return
+        }
+
         console.warn(
-          `[ChatPanel] stall watchdog tripped — status=${status} pinned for ${elapsedMs}ms with no progress; calling stop() to recover`,
+          `[ChatPanel] stall watchdog tripped — status=${status} pinned for ${elapsedMs}ms with no progress and the turn probe did not confirm a live turn; calling stop() to recover`,
         )
         // Surface in Sentry so this class of bug is visible in the
         // dashboard instead of having to be reconstructed from kube
@@ -7766,6 +8123,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
               streamingThresholdMs: DEFAULT_STREAMING_STALL_MS,
               lastProgressAt,
               now,
+              turnId: stalledTurnId,
+              lastSeq: turnLastSeqRef.current,
+              probeAnswered: Boolean(snapshot?.answered),
+              probeStatus: snapshot?.status ?? "unknown",
             },
           })
         } catch (err) {
@@ -7780,10 +8141,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
         } catch (err) {
           console.warn("[ChatPanel] stall watchdog stop() threw:", err)
         }
-      }
+      })()
     }, intervalMs)
     return () => clearInterval(timer)
-  }, [isStreaming, status, stop, projectId, currentSessionId, isActive])
+  }, [
+    isStreaming,
+    status,
+    stop,
+    projectId,
+    currentSessionId,
+    isActive,
+    localAgentUrl,
+    chatWorkspaceId,
+    expoFetch,
+    nativeHeaders,
+  ])
 
   // Hydrate the queue for the active session from the per-session cache when
   // the session changes. Previously this effect *cleared* the queue on every
@@ -8740,12 +9112,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
             currentSessionId,
             chatWorkspaceId,
           )
-          turnStatus = await probeChatTurnStatus({
-            url: turnUrl,
-            fetch: expoFetch,
-            headers: nativeHeaders ? nativeHeaders() : undefined,
-            credentials: Platform.OS === "web" ? "include" : undefined,
-          })
+          turnStatus = (
+            await probeChatTurnBounded({
+              url: turnUrl,
+              fetch: expoFetch,
+              headers: nativeHeaders ? nativeHeaders() : undefined,
+              credentials: Platform.OS === "web" ? "include" : undefined,
+            })
+          ).status
         } catch {
           turnStatus = "unknown"
         }
@@ -8811,7 +9185,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
     const recoverySessionId = currentSessionId
     const recoveryTurnId = currentTurnIdRef.current
     const fromSeqAtStall = turnLastSeqRef.current
-    const MAX_ATTEMPTS = 4
+    // A warm-pool/pod transition or a buffer that is republished a beat after
+    // the stream died both look like `unknown` for tens of seconds. Four quick
+    // probes covered ~9 s and then declared the turn dead (Sentry REACT-5Z /
+    // SHOGO-ANDROID-V: "gave up after 4 attempts", one at fromSeq 1802) while
+    // the runtime was still running it. Twelve probes with the existing capped
+    // backoff (0.6 + 1.2 + 2.4 + 5×9 s ≈ 50 s) covers those transitions.
+    const MAX_ATTEMPTS = 12
 
     setStreamAutoRecovering(true)
     void (async () => {
@@ -8827,7 +9207,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
             return
           }
 
-          let turnStatus: ChatTurnStatus = "unknown"
+          let snapshot: ChatTurnSnapshot = {
+            status: "unknown",
+            turnId: null,
+            answered: false,
+          }
           try {
             const turnUrl = buildChatTurnUrl(
               API_URL,
@@ -8836,15 +9220,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
               recoverySessionId,
               chatWorkspaceId,
             )
-            turnStatus = await probeChatTurnStatus({
+            snapshot = await probeChatTurnBounded({
               url: turnUrl,
               fetch: expoFetch,
               headers: nativeHeaders ? nativeHeaders() : undefined,
               credentials: Platform.OS === "web" ? "include" : undefined,
             })
           } catch {
-            turnStatus = "unknown"
+            snapshot = { status: "unknown", turnId: null, answered: false }
           }
+          const turnStatus = snapshot.status
 
           // Re-check liveness after the await — the world may have changed.
           if (
@@ -8874,29 +9259,42 @@ const ChatPanelContent = observer(function ChatPanelContent({
             setMessages((prev) =>
               markStuckToolsInterrupted(prev, "Connection interrupted"),
             )
-            // The stall watchdog reports its own trips; this give-up path
-            // (stream ended without turn-complete and could not be
-            // reattached) shows the same banner, so report it separately.
-            try {
-              Sentry.captureMessage("chat_stall_recovery_gave_up", {
-                level: "warning",
-                tags: {
-                  projectId: projectId ?? "(none)",
-                  chatSessionId: recoverySessionId,
-                  turnStatus,
-                },
-                extra: {
-                  attempt,
-                  maxAttempts: MAX_ATTEMPTS,
-                  turnId: recoveryTurnId,
-                  fromSeq: fromSeqAtStall,
-                  isLocalAgent: !!localAgentUrl,
-                },
-              })
-            } catch (err) {
-              console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+            // The runtime answered and says the turn is over: the reply (or
+            // the reason it failed) is saved, so paint it instead of claiming
+            // the runtime is unreachable and asking for a Retry that would
+            // start the work again.
+            const ended = snapshot.answered && turnEndedOnServer(turnStatus)
+            if (ended) {
+              console.log(
+                `[ChatPanel] auto-recovery: turn ${recoveryTurnId} ended server-side (${turnStatus}) — reloading saved history`,
+              )
+              void catchUpAfterTurnEndedRef.current?.()
+            } else {
+              // The stall watchdog reports its own trips; this give-up path
+              // (stream ended without turn-complete and could not be
+              // reattached) shows the same banner, so report it separately.
+              try {
+                Sentry.captureMessage("chat_stall_recovery_gave_up", {
+                  level: "warning",
+                  tags: {
+                    projectId: projectId ?? "(none)",
+                    chatSessionId: recoverySessionId,
+                    turnStatus,
+                  },
+                  extra: {
+                    attempt,
+                    maxAttempts: MAX_ATTEMPTS,
+                    turnId: recoveryTurnId,
+                    fromSeq: fromSeqAtStall,
+                    isLocalAgent: !!localAgentUrl,
+                    probeAnswered: snapshot.answered,
+                  },
+                })
+              } catch (err) {
+                console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+              }
             }
-            if (effects.showRetryBanner) {
+            if (effects.showRetryBanner && !ended) {
               setErrorDismissed(false)
               setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE)
             }
@@ -10156,6 +10554,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const errorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (usageLimitView?.variant === "blocked") return null
     if (!(
+      sessionExpired ||
       ((error || emptyResponseError) && !errorDismissed) ||
       streamAutoRecovering
     ))
@@ -10164,7 +10563,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
       id: "error",
       kind: "status",
       order: 16,
-      title: isTunnelError ? "Connection lost" : "Error",
+      title: sessionExpired
+        ? "Session expired"
+        : isTunnelError
+          ? "Connection lost"
+          : "Error",
       icon: AlertCircle,
       accent: "warning",
       defaultExpanded: true,
@@ -10172,8 +10575,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
         setEmptyResponseError(null)
         setErrorDismissed(true)
       },
-      headerActions:
-        tunnelReconnecting || streamAutoRecovering ? (
+      headerActions: sessionExpired ? (
+        <Pressable
+          onPress={handleSignInAgain}
+          accessibilityRole="button"
+          accessibilityLabel="Sign in again to continue this conversation"
+          className="rounded-md border border-destructive/30 px-2 py-1"
+        >
+          <Text className="text-xs font-medium text-destructive">Sign in</Text>
+        </Pressable>
+      ) : tunnelReconnecting || streamAutoRecovering ? (
           <Text
             className={cn(
               "text-xs font-medium",
@@ -10293,10 +10704,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
     streamAutoRecovering,
     isTunnelError,
     tunnelReconnecting,
+    sessionExpired,
     errorBannerExpanded,
     errorBannerText,
     errorBannerNeedsReadMore,
     handleRetry,
+    handleSignInAgain,
     clearActiveInstance,
     usageLimitView,
   ])

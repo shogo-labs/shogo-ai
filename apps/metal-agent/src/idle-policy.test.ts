@@ -14,7 +14,7 @@ function input(over: Partial<IdleWindowInput> = {}): IdleWindowInput {
     now: NOW,
     staleAfterMs: 105_000,
     aggressiveMs: AGGRESSIVE,
-    assigned: 10,
+    active: 10,
     maxVms: 80,
     hostGuardPct: 80,
     standalone: false,
@@ -38,18 +38,25 @@ describe('resolveIdleWindow', () => {
   })
 
   test('a host near its VM cap goes aggressive whatever the region says', () => {
-    expect(resolveIdleWindow(input({ assigned: 64 }))).toEqual({
+    expect(resolveIdleWindow(input({ active: 64 }))).toEqual({
       idleMs: AGGRESSIVE,
       tier: 'aggressive',
       reason: 'host_guard',
       directiveTier: 'relaxed',
     })
-    expect(resolveIdleWindow(input({ assigned: 63 })).reason).toBe('directive')
+    expect(resolveIdleWindow(input({ active: 63 })).reason).toBe('directive')
+  })
+
+  test('idle-resident VMs do not trip the host guard — only active ones do', () => {
+    // The guard reads the ACTIVE count (SHO-444). A host holding 200 resident
+    // VMs of which 3 are in use is not near its cap: the other 197 are
+    // evictable, so they are free room and must not narrow the window.
+    expect(resolveIdleWindow(input({ active: 3 })).reason).toBe('directive')
   })
 
   test('never widens an aggressive directive', () => {
     const d = { idleMs: 60_000, tier: 'aggressive' as const, receivedAt: NOW }
-    expect(resolveIdleWindow(input({ directive: d, assigned: 79 })).idleMs).toBe(60_000)
+    expect(resolveIdleWindow(input({ directive: d, active: 79 })).idleMs).toBe(60_000)
   })
 
   test('standalone hosts keep the static window', () => {

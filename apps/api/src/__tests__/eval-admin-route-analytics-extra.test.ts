@@ -18,6 +18,9 @@ mock.module('../middleware/super-admin', () => ({
   requireSuperAdmin: async (_c: any, next: any) => next(),
 }))
 mock.module('@shogo/model-catalog', () => ({
+  getAgentModeOverrides: () => ({}),
+  getModelDollarCosts: (_m: string, _at?: Date) => ({ inputPerMillion: 0, outputPerMillion: 0, cachedInputPerMillion: 0, cacheWritePerMillion: 0 }),
+  getAutoTierOverrides: () => ({}),
   MODEL_CATALOG: { 'claude-sonnet-4-5': {}, 'gpt-4o': {} },
   MODEL_ALIASES: { sonnet: 'claude-sonnet-4-5' },
 }))

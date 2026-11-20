@@ -245,6 +245,13 @@ const prismaApi: any = {
           (where.role === undefined || m.role === where.role) &&
           (where.projectId === undefined || m.projectId === where.projectId),
       ) ?? null,
+    findMany: async ({ where }: any) =>
+      members.filter(
+        (m) =>
+          (where.workspaceId === undefined || m.workspaceId === where.workspaceId) &&
+          (where.projectId === undefined || m.projectId === where.projectId) &&
+          (where.userId?.not === undefined || m.userId !== where.userId.not),
+      ),
   },
   workspace: {
     findUnique: async ({ where }: any) => workspaces.get(where.id) ?? null,
@@ -298,9 +305,13 @@ const prismaApi: any = {
       redemptions.push(fresh)
       return fresh
     },
+    findMany: async () => [],
   },
   signupRiskAssessment: {
+    // SHO-459: banned-linked count resolves linked ids first.
+    findMany: async () => [],
     findUnique: async () => null,
+    findFirst: async () => null,
   },
   $transaction: async (fn: any) => fn(prismaApi),
 }

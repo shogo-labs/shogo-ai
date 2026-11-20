@@ -114,6 +114,30 @@ describe('ERROR_CODE_MESSAGES', () => {
     expect(ERROR_CODE_MESSAGES.trial_seat_limit).toMatch(/end your trial/i)
     expect(fillErrorCodeMessage('trial_seat_limit', { maxSeats: 5 })).toMatch(/5 seats/i)
   })
+
+  // SHO-417: the workspace rate limit is set per role/group/member, so the
+  // client copy must carry the number the API sent — a generic "slow down"
+  // line would hide the only thing the person needs to judge when to retry.
+  it('rate_limited names the hourly limit the API set', () => {
+    expect(fillErrorCodeMessage('rate_limited', { requestsPerHour: 20 })).toMatch(/20 requests per hour/i)
+  })
+
+  // A per-route throttle (chat send, file share) also answers `rate_limited`
+  // but sends no hourly number. The fill fails on the missing value, so the
+  // caller shows the server's own message rather than a half-filled template.
+  it('rate_limited falls back to the server message when no limit is sent', () => {
+    expect(fillErrorCodeMessage('rate_limited', {})).toBeNull()
+    expect(fillErrorCodeMessage('rate_limited', undefined)).toBeNull()
+  })
+
+  // The two shapes the API actually sends, end to end through the formatter.
+  it('a workspace 429 shows its hourly limit; a router throttle shows its own reason', () => {
+    const policyBody = JSON.stringify({ error: { code: 'rate_limited', requestsPerHour: 20, message: 'Rate limit reached (20/hour).' } })
+    expect(formatErrorMessage(policyBody)).toBe(ERROR_CODE_MESSAGES.rate_limited.replace('{requestsPerHour}', '20'))
+
+    const throttleBody = JSON.stringify({ error: { code: 'rate_limited', message: 'Slow down a moment.' } })
+    expect(formatErrorMessage(throttleBody)).toBe('Slow down a moment.')
+  })
 })
 
 describe('isTunnelDisconnectError', () => {
@@ -182,6 +206,14 @@ describe('formatErrorMessage', () => {
 
   it('returns raw message when not JSON and no pattern match', () => {
     expect(formatErrorMessage('Some random error')).toBe('Some random error')
+  })
+
+  // The AI SDK throws `new Error('')` when a failed chat request carried no
+  // body, so the banner rendered as nothing at all — Android users reported a
+  // send that failed "with no message" (SHOGO-ANDROID-5).
+  it('never renders an empty message as an empty banner', () => {
+    expect(formatErrorMessage('')).toBe('The request failed. Please tap Retry to try again.')
+    expect(formatErrorMessage('   ')).toBe('The request failed. Please tap Retry to try again.')
   })
 })
 

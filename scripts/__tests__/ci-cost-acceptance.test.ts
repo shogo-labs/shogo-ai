@@ -60,10 +60,28 @@ function retentionDays(yaml: string, artifact: string): number | null {
 describe('SHO-104 · the E2E matrix cannot come back on merge_queue or push', () => {
   const ci = read('ci.yml')
 
-  it('runs only on a pull request that touches app code', () => {
+  it('runs on a pull request that touches app code, and on the nightly schedule — never on push or merge_queue', () => {
     const e2e = job(ci, 'e2e-local')
-    expect(e2e).toContain("if: github.event_name == 'pull_request' && needs.prelude.outputs.app == 'true'")
+    expect(e2e).toContain(
+      "if: (github.event_name == 'pull_request' || github.event_name == 'schedule') && needs.prelude.outputs.app == 'true'",
+    )
     expect(e2e).toContain('needs: prelude')
+    // The cost guard this card exists for: a push or merge_group run of the
+    // matrix is what SHO-104 removed. The nightly schedule is the only
+    // addition (SHO-447), and it is one run a day, not one per push.
+    const e2eCode = job(code('ci.yml'), 'e2e-local')
+    expect(e2eCode).not.toContain("github.event_name == 'push'")
+    expect(e2eCode).not.toContain("github.event_name == 'merge_group'")
+  })
+
+  it('gives the nightly its own concurrency group, so a push cannot cancel it', () => {
+    // A nightly a push to main can cancel is a nightly that reports nothing on
+    // the day it matters (SHO-447).
+    expect(ci).toContain("schedule:\n    - cron: '17 3 * * *'")
+    expect(ci).toContain("github.event_name == 'schedule' && 'nightly'")
+    expect(ci).toContain(
+      "cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
+    )
   })
 
   it('stays out of the required aggregator, whose name and needs are what branch protection expects', () => {

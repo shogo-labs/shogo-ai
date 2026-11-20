@@ -56,11 +56,15 @@ mock.module('@shogo/model-catalog', () => ({
   getModelEntry: (_id: string) => null,
   MODEL_DOLLAR_COSTS: {} as Record<string, any>,
   calculateDollarCost: () => 0,
+  getModelDollarCosts: (_m: string, _at?: Date) => ({ inputPerMillion: 0, outputPerMillion: 0, cachedInputPerMillion: 0, cacheWritePerMillion: 0 }),
   getModelBillingModel: (id: string) => id,
   resolveAgentModeDefault: (mode: string) => mode,
   AUTO_MODEL_ID: 'auto',
   isAutoModel: (id: string) => id === 'auto',
   inferProviderFromModel: (_id: string, fallback: string) => fallback,
+  // The RBAC run-model path reads these; a partial mock must still answer them.
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
 }))
 
 mock.module('../services/cost-analytics.service', () => ({

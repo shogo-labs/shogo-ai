@@ -51,6 +51,8 @@ mock.module('../lib/prisma', () => withPrismaExports({
     },
     // The trust gate's two reads.
     signupRiskAssessment: {
+      // SHO-459: banned-linked count resolves linked ids first.
+      findMany: async () => [],
       findUnique: async () => (held ? HIGH : LOW),
     },
     user: {

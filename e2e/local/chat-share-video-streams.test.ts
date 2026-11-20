@@ -110,6 +110,10 @@ function corsHeaders(route: Route): Record<string, string> {
     "access-control-allow-credentials": "true",
     "access-control-allow-headers": "*",
     "access-control-allow-methods": "GET, OPTIONS",
+    // `Content-Range` is not CORS-safelisted, so the pane reads the size from
+    // the probe's `bytes 0-0/<total>` only when it is exposed — which is what
+    // the real API does (`apps/api/src/server.ts`, the `/api/f/*` route).
+    "access-control-expose-headers": "content-range, content-length, accept-ranges",
     "cache-control": "private, no-store",
   }
 }

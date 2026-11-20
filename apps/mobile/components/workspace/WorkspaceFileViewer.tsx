@@ -53,6 +53,8 @@ type ViewState =
   | { status: "loading" }
   | { status: "text"; kind: "text" | "markdown"; text: string; truncated: boolean }
   | { status: "preview"; kind: FileViewKind; url: string }
+  /** A deck the phone reads itself, handed to its WebView as bytes. */
+  | { status: "preview-bytes"; kind: FileViewKind; bytes: ArrayBuffer }
   | { status: "native-image" }
   | { status: "unavailable" }
   | { status: "missing" }
@@ -172,6 +174,14 @@ export function WorkspaceFileViewer({
           setReadSource(hit)
           objectUrl = URL.createObjectURL(blob)
           setState({ status: "preview", kind, url: objectUrl })
+        })
+        .catch(fail)
+    } else if (Platform.OS !== "web" && (kind === "slides" || kind === "document")) {
+      readFirst(sources, (client, readPath) => client.readFileBytes(readPath))
+        .then(({ value: bytes, source: hit }) => {
+          if (cancelled) return
+          setReadSource(hit)
+          setState({ status: "preview-bytes", kind, bytes: bytes.buffer as ArrayBuffer })
         })
         .catch(fail)
     } else if (Platform.OS !== "web" && kind === "image") {
@@ -343,6 +353,20 @@ function Body({
         <FileContentView
           kind={state.kind}
           url={state.url}
+          name={name}
+          path={path}
+          readOnly
+          themeMode={isDark ? "dark" : "light"}
+          pathKey={viewerPathKey(path)}
+          testID="workspace-file-preview"
+        />
+      )
+    case "preview-bytes":
+      return (
+        <FileContentView
+          kind={state.kind}
+          slidesBytes={state.kind === "slides" ? state.bytes : undefined}
+          documentBytes={state.kind === "document" ? state.bytes : undefined}
           name={name}
           path={path}
           readOnly

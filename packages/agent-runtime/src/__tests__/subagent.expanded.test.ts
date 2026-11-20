@@ -80,6 +80,8 @@ mock.module('../model-router', () => ({
 }))
 
 mock.module('@shogo/model-catalog', () => ({
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
   inferProviderFromModel: (m: string, fallback?: string) =>
     m?.startsWith('gpt') ? 'openai' : m?.startsWith('claude') ? 'anthropic' : (fallback || 'anthropic'),
 }))

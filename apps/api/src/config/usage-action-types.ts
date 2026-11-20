@@ -53,6 +53,8 @@ export const BILLED_USAGE_ACTION_TYPES = {
   vm_compute: 'hosting',
   // Workspace drive above the tier's included GiB (SHO-401).
   disk_addon: 'storage',
+  // S3 bytes above the tier's storage allowance, billed as GB-months (SHO-423).
+  storage: 'storage',
   social_account_monthly: 'social',
   social_dm: 'social',
   social_x_api: 'social',
@@ -69,14 +71,15 @@ export type BilledUsageActionType = keyof typeof BILLED_USAGE_ACTION_TYPES
 /**
  * Recorded but never billed to a user, so never shown on the Usage dashboard:
  *  - `ai_proxy_internal` — legacy internal completion tag.
- *  - `title_generation` / `analytics_digest` — server-side internal completions
- *    (`INTERNAL_USAGE_TAGS` in `routes/ai-proxy.ts`).
+ *  - `title_generation` / `analytics_digest` / `learn_coach` — server-side
+ *    internal completions (`INTERNAL_USAGE_TAGS` in `routes/ai-proxy.ts`).
  *  - `signup_credit_expired` / `signup_credit_revoked` — wallet adjustments.
  */
 export const NON_BILLED_USAGE_ACTION_TYPES = [
   'ai_proxy_internal',
   'title_generation',
   'analytics_digest',
+  'learn_coach',
   'signup_credit_expired',
   'signup_credit_revoked',
 ] as const
@@ -152,6 +155,7 @@ export function usageCategoryLabel(category: UsageCategory): string {
 export const USAGE_ACTION_LABELS: Partial<Record<BilledUsageActionType, string>> = {
   published_hosting: 'Published hosting',
   disk_addon: 'Disk add-on',
+  storage: 'Storage',
   social_account_monthly: 'Social: account',
   social_dm: 'Social: DM',
   social_x_api: 'Social: X API',

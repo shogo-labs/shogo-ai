@@ -43,6 +43,8 @@ export interface SignupRiskFeatures {
   ipLinkedAccounts: number
   /** Other signups from the same IP or device in the burst window. */
   burstSignups: number
+  /** Banned accounts sharing the new signup's ipPrefix, deviceId, or emailCanonical. */
+  bannedLinkedAccounts: number
 }
 
 export interface SignupRiskSignal {
@@ -129,6 +131,19 @@ function ipClusterWeight(otherAccounts: number): number {
   return 0
 }
 
+/**
+ * Signals that tie this account to another one. The trusted-provider credit is
+ * withheld when any of them fired: a farm that signs up through Google would
+ * otherwise cancel its own IP/device match (SHO-440).
+ */
+const LINKING_SIGNALS: ReadonlySet<string> = new Set([
+  'canonical_email_collision',
+  'device_linked_account',
+  'ip_cluster_2plus',
+  'ip_cluster_4plus',
+  'signup_burst_10m',
+])
+
 export function scoreSignupRisk(f: SignupRiskFeatures): SignupRiskResult {
   const blockedDomain = isBlockedEmailDomain(f.email)
   // A blocked domain is also disposable. The hard block normally rejects it
@@ -159,9 +174,16 @@ export function scoreSignupRisk(f: SignupRiskFeatures): SignupRiskResult {
   else if (ipWeight === SIGNUP_RISK_WEIGHTS.ipCluster2) add('ip_cluster_2plus', ipWeight)
   if (f.burstSignups > 0) add('signup_burst_10m', SIGNUP_RISK_WEIGHTS.signupBurst10m)
   if (randomLocalPart) add('random_local_part', SIGNUP_RISK_WEIGHTS.randomLookingLocalPart)
+  // SHO-459: a new signup linked to a banned account is high risk — hold it.
+  // Weight 60 pushes the score to the 'high' band regardless of other signals.
+  if (f.bannedLinkedAccounts > 0) add('banned_linked_account', 60)
   // Social sign-in is only Google and Apple (see `auth.ts`), both of which
-  // verify the mailbox before Shogo sees it.
-  if (f.provider === 'social') add('trusted_oauth_provider', SIGNUP_RISK_WEIGHTS.trustedOAuthProvider)
+  // verify the mailbox before Shogo sees it. The credit is withheld when
+  // anything else links this account to another one, so a Google sign-up on a
+  // farmed IP or device cannot discount its own match (SHO-440).
+  if (f.provider === 'social' && !signals.some((s) => LINKING_SIGNALS.has(s.name))) {
+    add('trusted_oauth_provider', SIGNUP_RISK_WEIGHTS.trustedOAuthProvider)
+  }
 
   return finalize(f, signals, {
     disposableDomain,

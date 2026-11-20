@@ -16,6 +16,8 @@ import {
   shouldReportChatError,
   buildChatStreamErrorReport,
   isReactUpdateDepthError,
+  shouldInterruptStuckToolsOnStreamError,
+  chatErrorMessage,
   SHOGO_TELEMETRY_TAG,
 } from '../chat-error-telemetry'
 
@@ -92,6 +94,30 @@ describe('classifyChatError', () => {
   })
 })
 
+describe('shouldInterruptStuckToolsOnStreamError', () => {
+  /**
+   * Sentry JAVASCRIPT-REACT-5S: 450 events from one session. `onError` wrote
+   * to the AI SDK's message store, which notified React, which forced a
+   * synchronous re-render of the tree that had just thrown, which threw again
+   * and landed back in `onError`. The store write is what has to be skipped
+   * for a render-depth error; every other error still closes stuck spinners.
+   */
+  test('skips the message-store write for a render-depth error', () => {
+    expect(shouldInterruptStuckToolsOnStreamError(new Error('Maximum update depth exceeded.'))).toBe(false)
+    expect(
+      shouldInterruptStuckToolsOnStreamError(
+        new Error('Minified React error #185; visit https://react.dev/errors/185'),
+      ),
+    ).toBe(false)
+  })
+
+  test('still closes stuck spinners for every other stream error', () => {
+    expect(shouldInterruptStuckToolsOnStreamError(new TypeError('Failed to fetch'))).toBe(true)
+    expect(shouldInterruptStuckToolsOnStreamError(new Error('boom'))).toBe(true)
+    expect(shouldInterruptStuckToolsOnStreamError({ name: 'AbortError', message: 'aborted' })).toBe(true)
+  })
+})
+
 describe('shouldReportChatError', () => {
   test('reports connection + other, skips user aborts and expected states', () => {
     expect(shouldReportChatError(new TypeError('Failed to fetch'))).toBe(true)
@@ -152,5 +178,41 @@ describe('buildChatStreamErrorReport', () => {
     expect(report!.class).toBe('other')
     expect(report!.tags.projectId).toBe('(none)')
     expect(report!.tags.turnId).toBe('(none)')
+  })
+})
+
+describe('an error with no text is still identifiable', () => {
+  // The AI SDK does `new Error(await response.text())` for a failed chat
+  // request; an empty body makes that `new Error('')`. Sentry grouped those as
+  // "Error: No error message" with rawMessage "" (SHOGO-ANDROID-5: 447 events
+  // across 108 users) — nothing to debug from and nothing to show the person.
+  test('chatErrorMessage never returns an empty string', () => {
+    expect(chatErrorMessage(new Error(''))).toBe('unknown error (no message)')
+    expect(chatErrorMessage({ message: '' })).toBe('unknown error (no message)')
+    expect(chatErrorMessage(null)).toBe('unknown error (no message)')
+  })
+
+  test('falls back to the name, the cause, then the code', () => {
+    expect(chatErrorMessage(Object.assign(new Error(''), { name: 'TimeoutError' }))).toBe('TimeoutError')
+    expect(chatErrorMessage(new Error('', { cause: new Error('socket hang up') }))).toBe('socket hang up')
+    expect(chatErrorMessage({ message: '', code: 'ERR_NETWORK' })).toBe('chat error ERR_NETWORK')
+  })
+
+  test('a blank error still reports, flagged as having carried no text', () => {
+    const report = buildChatStreamErrorReport(new Error(''), { turnId: 'turn-9' })
+    expect(report).not.toBeNull()
+    expect(report!.extra.rawMessage).toBe('unknown error (no message)')
+    expect(report!.extra.emptyMessage).toBe(true)
+    expect(report!.tags.turnId).toBe('turn-9')
+  })
+
+  test('a real message is reported as-is and the cause is kept', () => {
+    const err = new Error('The chat request failed (HTTP 502).', {
+      cause: new Error('upstream reset'),
+    })
+    const report = buildChatStreamErrorReport(err)
+    expect(report!.extra.rawMessage).toBe('The chat request failed (HTTP 502).')
+    expect(report!.extra.emptyMessage).toBe(false)
+    expect(report!.extra.errorCause).toBe('upstream reset')
   })
 })

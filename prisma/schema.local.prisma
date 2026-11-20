@@ -44,9 +44,14 @@ model User {
   // null for users who never got that far.
   firstCapHitAt               DateTime?
   firstPreviewSeenAt          DateTime?
+  bannedAt                    DateTime?
+  banReason                   String?
+  bannedByUserId              String?
   createdAt                   DateTime @default(now())
   updatedAt                   DateTime @updatedAt
 
+  abuseFlagsAsSubject        AbuseFlag[] @relation("AbuseFlagUser")
+  abuseFlagsAsDecider        AbuseFlag[] @relation("AbuseFlagDecider")
   sessions                   Session[]
   accounts                   Account[]
   members                    Member[]
@@ -54,6 +59,8 @@ model User {
   agentTasks                 AgentTask[]
   agentSchedules             AgentSchedule[]
   starredProjects            StarredProject[]
+  learnLessonCompletions     LearnLessonCompletion[]
+  learnBadges                LearnBadge[]
   apiKeys                    ApiKey[]
   creatorProfile             CreatorProfile?
   signupAttribution          SignupAttribution?
@@ -200,6 +207,10 @@ model Workspace {
   // daily `disk_addon` job advances it in the same transaction as the debit, so
   // a rerun the same day charges nothing.
   diskAddonBilledThrough DateTime?
+  // Who may invite people to this workspace (SHO-454). "members" (the default
+  // when null) lets any Editor invite as Editor or Viewer; "admins" restricts
+  // inviting to owners and admins. Viewers can never invite.
+  invitePolicy      String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -212,11 +223,13 @@ model Workspace {
   inviteLinks            InviteLink[]
   folders                Folder[]
   subscriptions          Subscription[]
+  courseEnrollments      CourseEnrollment[]
   instanceSubscription   InstanceSubscription?
   usageWallets           UsageWallet[]
   usageEvents            UsageEvent[]
   liveSessionMeters      LiveSessionMeter[]
   storageUsage           StorageUsage?
+  storageUsageDaily      StorageUsageDaily[]
   starredProjects        StarredProject[]
   integrationGrants      UserIntegrationWorkspaceGrant[]
   agentTasks             AgentTask[]
@@ -247,6 +260,8 @@ model Workspace {
   workItems              WorkItem[]
   plans                  Plan[]
   modelVisibility        WorkspaceModelVisibility[]
+  accessPolicies         AccessPolicy[]
+  accessAuditEvents      AccessAuditEvent[]
   slackInstallation      SlackWorkspaceInstallation?
   agentProfile           WorkspaceAgentProfile?
   goals                  Goal[]
@@ -263,6 +278,7 @@ model Workspace {
   socialAutomations      SocialAutomation[]
   socialAutomationRuns   SocialAutomationRun[]
   rootSecrets            WorkspaceRootSecret[]
+  whatsappNumberBindings WhatsAppNumberBinding[]
 
   @@index([parentWorkspaceId])
   @@index([machineInstanceId])
@@ -1481,7 +1497,13 @@ model StorageUsage {
   id               String   @id @default(uuid())
   workspaceId      String   @unique
   totalBytes       BigInt   @default(0)
+  /// Total minus the platform-overhead categories (quarantine archives, metal
+  /// VM snapshots) — the bytes a customer is actually billed for (SHO-423).
+  billableBytes    BigInt   @default(0)
   projectCount     Int      @default(0)
+  /// Per-category and per-project byte breakdown from the last pass (SHO-423).
+  /// JSON-encoded in SQLite (`{ categories, projects, unmeasured }`).
+  breakdown        String?
   lastCalculatedAt DateTime
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -1489,6 +1511,37 @@ model StorageUsage {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@map("storage_usage")
+}
+
+/// One row per workspace per UTC day, written by the 6h storage pass with the
+/// MAXIMUM bytes seen that day (SHO-423). The daily storage bill job reads the
+/// completed days and charges the GB-months above the tier allowance, then
+/// stamps `billedAt` — so a rerun never double-charges. Region-local (excluded
+/// from logical replication, like `storage_usage`): each region only measures
+/// the workspaces it is home to.
+model StorageUsageDaily {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  /// UTC midnight of the day these numbers describe.
+  day            DateTime
+  totalBytes     BigInt    @default(0)
+  billableBytes  BigInt    @default(0)
+  /// The workspace instance tier's `storageLimitBytes` at measurement time.
+  allowanceBytes BigInt    @default(0)
+  breakdown      String?
+  /// USD this day accrued. Filled in `shadow` mode too, so the projected
+  /// revenue can be compared against Stripe before money moves.
+  chargedUsd     Float?
+  /// Set once the debit landed (enforce) or was recorded (shadow). Null = unbilled.
+  billedAt       DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, day])
+  @@index([day])
+  @@map("storage_usage_daily")
 }
 
 // =============================================================================
@@ -2229,6 +2282,59 @@ model WorkspaceModelVisibility {
 }
 
 // ============================================================================
+// Workspace RBAC (SHO-417) — SQLite mirror of prisma/schema.prisma.
+// Json? → String? (JSON-encoded), enums → String.
+// ============================================================================
+
+model AccessPolicy {
+  id          String @id @default(uuid())
+  workspaceId String
+  /// `role` | `group` | `member`
+  subjectType String
+  /// Role name, `UserGroup.id`, or `User.id` — polymorphic, so no FK.
+  subjectId   String
+  /// JSON array of ability names. Null on a role row = the built-in default.
+  abilities   String?
+  /// JSON array of model tiers. Null with `modelIds` null = everything.
+  modelTiers  String?
+  /// JSON array of explicit model ids.
+  modelIds    String?
+  defaultModelId  String?
+  spendCapUsd     Float?
+  /// `day` | `week` | `month`
+  spendPeriod     String?
+  requestsPerHour Int?
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, subjectType, subjectId])
+  @@index([workspaceId])
+  @@map("access_policies")
+}
+
+model AccessAuditEvent {
+  id               String   @id @default(uuid())
+  workspaceId      String
+  actorUserId      String?
+  onBehalfOfUserId String?
+  kind             String
+  permission       String?
+  modelId          String?
+  subject          String?
+  detail           String?
+  createdAt        DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, kind, createdAt])
+  @@map("access_audit_events")
+}
+
+// ============================================================================
 // DB-defined model catalog (super-admin managed; augments the static
 // MODEL_CATALOG shipped in code). See packages/agent/src/model-catalog.
 // SQLite: Json? → String? (JSON-encoded), enums → String.
@@ -2406,9 +2512,10 @@ model Instance {
   updatedAt     DateTime  @updatedAt
 
   workspace           Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  remoteActions       RemoteAction[]
-  pushSubscriptions   PushSubscription[]
-  preferredByProjects Project[]          @relation("ProjectPreferredInstance")
+  remoteActions          RemoteAction[]
+  pushSubscriptions      PushSubscription[]
+  preferredByProjects    Project[]          @relation("ProjectPreferredInstance")
+  whatsappNumberBindings WhatsAppNumberBinding[]
 
   @@unique([workspaceId, userId, hostname])
   @@index([workspaceId])
@@ -5389,6 +5496,39 @@ model MailAccount {
   @@map("mail_accounts")
 }
 
+/// One purchase of a paid course (SHO-428). See prisma/schema.prisma for full
+/// semantics; local mode has no Stripe, so rows come from the license-key and
+/// admin paths (and a cloud-synced workspace's own row).
+model CourseEnrollment {
+  id                      String    @id @default(uuid())
+  /// Stable course key, e.g. `solo-founder-v1`.
+  courseId                String
+  userId                  String
+  workspaceId             String
+  /// stripe | license_key | admin
+  source                  String
+  stripeCheckoutSessionId String?   @unique
+  stripeSubscriptionId    String?
+  /// active | rejected_prepaid | refunded
+  status                  String
+  purchasedAt             DateTime
+  /// pending | installed | failed
+  installStatus           String    @default("pending")
+  installError            String?
+  packBindings            Json?
+  courseBoardId           String?
+  progress                Json?
+  completedAt             DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, courseId])
+  @@index([workspaceId])
+  @@map("course_enrollments")
+}
+
 /// The workspace root's `.env*` files, sealed at rest (SHO-384).
 ///
 /// A cloud `ws:` runtime rebuilds its root from `git archive HEAD`, which never
@@ -5419,4 +5559,108 @@ model WorkspaceRootSecret {
 
   @@index([workspaceId])
   @@map("workspace_root_secrets")
+}
+
+model AbuseFlag {
+  id              String    @id @default(uuid())
+  userId          String
+  runDate         String
+  category        String
+  severity        Int
+  confidence      String
+  summary         String
+  evidence        Json
+  clusterKey      String?
+  status          String    @default("flagged")
+  decidedByUserId String?
+  decidedAt       DateTime?
+  digestId        String?
+  model           String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user            User      @relation("AbuseFlagUser", fields: [userId], references: [id], onDelete: Cascade)
+  decidedBy       User?     @relation("AbuseFlagDecider", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, runDate, category])
+  @@index([status, createdAt])
+  @@index([clusterKey])
+  @@map("abuse_flags")
+}
+
+/// A learn.shogo.ai lesson the learner marked complete. Progress for every
+/// learn course except Solo Founder (whose progress lives on its course
+/// board, see CourseEnrollment.progress). XP, levels and streaks are derived
+/// from these rows; nothing about them is stored.
+model LearnLessonCompletion {
+  id          String   @id @default(uuid())
+  userId      String
+  courseId    String
+  lessonId    String
+  /// The learner's own calendar day (YYYY-MM-DD), for streaks.
+  day         String
+  completedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, courseId, lessonId])
+  @@index([userId, completedAt])
+  @@map("learn_lesson_completions")
+}
+
+/// A badge earned on learn.shogo.ai. Awarded by the API only, once per badge.
+model LearnBadge {
+  id       String   @id @default(uuid())
+  userId   String
+  /// Key from `LEARN_BADGES` in apps/api/src/config/learn-gamification.ts.
+  badgeId  String
+  earnedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, badgeId])
+  @@index([userId])
+  @@map("learn_badges")
+}
+
+// =============================================================================
+// WHATSAPP PLATFORM BINDINGS (Meta Tech Provider — Embedded Signup)
+// =============================================================================
+
+model WhatsAppNumberBinding {
+  id                 String    @id @default(cuid())
+  workspaceId        String
+  projectId          String
+  instanceId         String?
+
+  phoneNumberId        String    @unique
+  wabaId               String
+  businessId           String?
+  displayPhoneNumber   String?
+  verifiedName         String?
+
+  coexistence Boolean @default(false)
+
+  tokenEncrypted       String
+  pinEncrypted         String?
+
+  contactsSyncRequestId  String?
+  historySyncRequestId   String?
+  syncStartedAt          DateTime?
+
+  status       String @default("active")
+  statusReason String?
+
+  connectedByUserId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  instance  Instance? @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@index([wabaId])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("whatsapp_number_bindings")
 }

@@ -14,12 +14,14 @@ import { getCurrencyForCountry, formatPrice, SUPPORTED_CURRENCIES } from './conf
 import { getExchangeRates, convertPrice } from './services/exchange-rate.service'
 import { buildRegionalPlans } from './config/regional-plan-pricing'
 import * as billingService from './services/billing.service'
+import * as billingSummaryService from './services/billing-summary.service'
 import * as appleIap from './services/apple-iap.service'
 import * as instanceService from './services/instance.service'
 import * as storageService from './services/storage.service'
 import * as nodeMetricsService from './services/node-metrics.service'
 import * as affiliateService from './services/affiliate.service'
 import * as trialService from './services/trial.service'
+import * as soloFounderService from './services/solo-founder.service'
 import * as signupCreditService from './services/signup-credit.service'
 import {
   sendPlanUpgradedEmail,
@@ -83,12 +85,14 @@ export {
   convertPrice,
   buildRegionalPlans,
   billingService,
+  billingSummaryService,
   appleIap,
   instanceService,
   storageService,
   nodeMetricsService,
   affiliateService,
   trialService,
+  soloFounderService,
   signupCreditService,
   sendPlanUpgradedEmail,
   sendTrialEndingEmail,

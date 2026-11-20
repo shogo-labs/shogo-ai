@@ -100,10 +100,46 @@ export function readClientIp(headers: HeaderSource): string | null {
 const DEVICE_ID_HEADER = 'x-shogo-device-id'
 const DEVICE_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/
 
+/**
+ * First-party cookie carrying the same device id as `DEVICE_ID_HEADER`.
+ *
+ * Google and Apple sign-ups are created on `/callback/:provider`, a top-level
+ * redirect the client cannot attach headers to, so the header alone left every
+ * OAuth signup with `deviceId: null` (SHO-440). `auth.ts` sets this cookie on
+ * `/sign-in/social` and `/sign-up/email` when the request carries a valid
+ * header; the browser then sends it back on the callback and on checkout.
+ */
+export const DEVICE_ID_COOKIE = 'shogo.device_id'
+
+/** One cookie value from a raw `Cookie:` header, URL-decoded. */
+export function readCookie(headers: HeaderSource, name: string): string | null {
+  const raw = readHeader(headers, 'cookie')
+  if (!raw) return null
+  for (const part of raw.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq < 0) continue
+    if (part.slice(0, eq).trim() !== name) continue
+    const value = part.slice(eq + 1).trim()
+    try {
+      return decodeURIComponent(value)
+    } catch {
+      return value
+    }
+  }
+  return null
+}
+
+/** The first valid device id: the header wins, then the cookie. */
+export function readDeviceId(headers: HeaderSource): string | null {
+  for (const candidate of [readHeader(headers, DEVICE_ID_HEADER), readCookie(headers, DEVICE_ID_COOKIE)]) {
+    if (candidate && DEVICE_ID_PATTERN.test(candidate)) return candidate
+  }
+  return null
+}
+
 export function readSignupRequestInfo(headers: HeaderSource): SignupRequestInfo {
   const ip = readClientIp(headers)
-  const rawDevice = readHeader(headers, DEVICE_ID_HEADER)
-  const deviceId = rawDevice && DEVICE_ID_PATTERN.test(rawDevice) ? rawDevice : null
+  const deviceId = readDeviceId(headers)
   return {
     ip,
     ipPrefix: ip ? ipPrefixFor(ip) : null,
@@ -162,8 +198,38 @@ export async function collectSignupRiskFeatures(params: {
     where: { emailCanonical: canonical, id: { not: params.userId } },
   })
 
-  const [ipLinkedAccounts, deviceLinkedAccounts, burstSignups, canonicalCollisions] =
-    await Promise.all([linkedByIp, linkedByDevice, burst, collisions])
+  // SHO-459: count banned accounts sharing ip/device/email to hold linked signups.
+  // SignupRiskAssessment has no relation to User, so resolve the linked ids first.
+  const bannedLinked = (async () => {
+    const linkedIds =
+      ipPrefix || deviceId
+        ? (
+            await prisma.signupRiskAssessment.findMany({
+              where: {
+                userId: { not: params.userId },
+                OR: [
+                  ...(ipPrefix ? [{ ipPrefix }] : []),
+                  ...(deviceId ? [{ deviceId }] : []),
+                ],
+              },
+              select: { userId: true },
+            })
+          ).map((row) => row.userId)
+        : []
+    return prisma.user.count({
+      where: {
+        bannedAt: { not: null },
+        id: { not: params.userId },
+        OR: [
+          { emailCanonical: canonical },
+          ...(linkedIds.length ? [{ id: { in: linkedIds } }] : []),
+        ],
+      },
+    })
+  })()
+
+  const [ipLinkedAccounts, deviceLinkedAccounts, burstSignups, canonicalCollisions, bannedLinkedAccounts] =
+    await Promise.all([linkedByIp, linkedByDevice, burst, collisions, bannedLinked])
 
   return {
     email: params.email,
@@ -174,6 +240,7 @@ export async function collectSignupRiskFeatures(params: {
     deviceLinkedAccounts,
     ipLinkedAccounts,
     burstSignups,
+    bannedLinkedAccounts: bannedLinkedAccounts as number,
   }
 }
 
@@ -225,6 +292,66 @@ export async function recordSignupRiskAssessment(params: {
       update: payload,
     }),
   ])
+}
+
+export const SIGNUP_RISK_BACKFILL_WINDOW_DAYS = 7
+export const SIGNUP_RISK_BACKFILL_BATCH = 200
+
+/**
+ * Bounded, idempotent sweep that scores accounts created in the last
+ * SIGNUP_RISK_BACKFILL_WINDOW_DAYS days that have no SignupRiskAssessment row.
+ *
+ * Uses bare userId lookups against `signupRiskAssessment` (no User relation —
+ * that relation does not exist and would throw PrismaClientValidationError as
+ * in SHO-459). Returns the number of accounts scored.
+ */
+export async function runSignupRiskBackfill(options: { now?: Date; batchSize?: number } = {}): Promise<number> {
+  const now = options.now ?? new Date()
+  const batchSize = options.batchSize ?? SIGNUP_RISK_BACKFILL_BATCH
+  const windowStart = new Date(now.getTime() - SIGNUP_RISK_BACKFILL_WINDOW_DAYS * 24 * 60 * 60 * 1000)
+
+  // Find recent users.
+  const recentUsers = await prisma.user.findMany({
+    where: { createdAt: { gte: windowStart } },
+    select: { id: true, email: true, emailVerified: true },
+    take: batchSize,
+    orderBy: { createdAt: 'asc' },
+  })
+  if (recentUsers.length === 0) return 0
+
+  // Find which of those already have an assessment (bare userId query — no relation).
+  const scoredIds = new Set(
+    (
+      await prisma.signupRiskAssessment.findMany({
+        where: { userId: { in: recentUsers.map((u) => u.id) } },
+        select: { userId: true },
+      })
+    ).map((r) => r.userId),
+  )
+
+  const unscored = recentUsers.filter((u) => !scoredIds.has(u.id))
+  if (unscored.length === 0) return 0
+
+  let scored = 0
+  for (const user of unscored) {
+    try {
+      await assessNewSignup({
+        userId: user.id,
+        email: user.email,
+        provider: 'credential', // unknown at backfill time; least-trusted default
+        emailVerified: Boolean(user.emailVerified),
+        headers: null,
+        now,
+      })
+      scored++
+    } catch (err: any) {
+      console.error(`[signup-risk] backfill_failed userId=${user.id}`, err?.message ?? err)
+    }
+  }
+  if (scored > 0) {
+    console.log(`[signup-risk] backfill scored ${scored}/${unscored.length} unscored accounts`)
+  }
+  return scored
 }
 
 /** Score a new signup end to end: collect, score, persist. */

@@ -105,6 +105,10 @@ const ANALYTICS_DIGEST_PATH = join(
   REPO_ROOT,
   'apps/api/src/lib/analytics-digest-collector.ts',
 )
+const ABUSE_CHECK_JOB_PATH = join(
+  REPO_ROOT,
+  'apps/api/src/lib/abuse-check-job.ts',
+)
 const GLOBAL_JOB_LOCK_PATH = join(
   REPO_ROOT,
   'apps/api/src/lib/global-job-lock.ts',
@@ -204,6 +208,13 @@ const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
     file: 'apps/api/src/jobs/run-agent-task-dispatch.ts',
     reason:
       'Each region dispatches only AgentTask rows whose workspace is owned by that region via homeRegionWorkspaceWhere(); this keeps queued claims, stale-lease updates, and runtime writes in the workspace home region.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
+    fn: 'runStorageUsageBill',
+    file: 'apps/api/src/jobs/storage-usage-bill.ts',
+    reason:
+      'storage_usage_daily is region-local and each pass measures only the workspaces this region homes, so both the read set and the wallet debit are already home-partitioned via homeRegionWorkspaceWhere(). A global lock would let one region bill days it cannot see (SHO-345); claimRegionPeriod only de-dupes pods inside the region.',
     partitionKeyColumn: 'Workspace.homeRegion',
   },
   {
@@ -512,6 +523,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'workspace-models.service.ts setAllowedModelIds deletes+recreates a workspace\'s allowlist in one transaction from an owner/admin PUT request; per-workspace, not a global/cron writer.',
   },
   {
+    key: 'AccessPolicy.(subjectId,subjectType,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'One policy per subject per workspace, upserted by access-policy.service.ts from an owner/admin PUT in the workspace home region; a cross-region duplicate needs a failover mid-write and the upsert is idempotent.',
+  },
+  {
     key: 'GitHubConnection.projectId',
     category: 'single_tenant_upsert',
     reason: 'github.service.ts:309 upserts on projectId from a user request.',
@@ -605,6 +622,42 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'Stripe webhook is single-source per Stripe account; collision needs cross-region webhook redelivery.',
   },
+  // --- WhatsApp Embedded Signup (SHO-463) ----------------------------------
+  {
+    key: 'WhatsAppNumberBinding.phoneNumberId',
+    category: 'external_global_id',
+    reason:
+      'channels-whatsapp.ts connect-link callback: upserts a binding keyed on the Meta-assigned phone_number_id. ' +
+      'The id is global and unique within Meta, assigned before the Shogo row is created. ' +
+      'Two concurrent inserts for the same number would require the same user to complete two Embedded Signup ' +
+      'flows for the same WABA number simultaneously — not a cron writer and not a cross-region leader-election path.',
+  },
+  // --- Solo Founder course (SHO-428) ---------------------------------------
+  {
+    key: 'CourseEnrollment.stripeCheckoutSessionId',
+    category: 'external_global_id',
+    reason:
+      'Stripe-assigned checkout session id; the fulfillment write happens only in `checkout.session.completed`, whose one ingest path is the same as `Subscription.stripeSubscriptionId`. The unique is what makes a redelivered event land on the existing enrollment instead of installing the course twice.',
+  },
+  {
+    key: 'CourseEnrollment.(courseId,userId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'One enrollment per user per course, upserted by `soloFounderService.enroll()`; a user is homed to one region and both writers (`checkout.session.completed` and `customer.subscription.created`) resolve to that same home.',
+  },
+  // --- learn.shogo.ai progress + badges -------------------------------------
+  {
+    key: 'LearnLessonCompletion.(courseId,lessonId,userId)',
+    category: 'request_scoped',
+    reason:
+      "Written only by the learner's own POST /api/learn/progress (+ /progress/import, /certificate). The route inserts missing rows and treats P2002 as already-done, so a cross-region retry converges on the one row; no cron writes it.",
+  },
+  {
+    key: 'LearnBadge.(badgeId,userId)',
+    category: 'request_scoped',
+    reason:
+      "Awarded inside the learner's own learn request (progress, import, certificate, /me) after recomputing from their rows; insert-if-missing with P2002 ignored, so a duplicate award from a retry is a no-op. No cron writes it.",
+  },
   {
     key: 'LiveSessionMeter.sessionId',
     category: 'external_global_id',
@@ -640,6 +693,13 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'cron_locked',
     reason:
       'Written by recalculateAllStorageUsage (boot + 6h cron) and only by that cron. Wrapped in withGlobalJobLock (de-dupes pods within a region) and filtered to homeRegionWorkspaceWhere() (PERF-8), so each region upserts only its own home workspaces and the workspaceId unique never collides across regions.',
+    writer: 'storage-recalculate-all',
+  },
+  {
+    key: 'StorageUsageDaily.(day,workspaceId)',
+    category: 'cron_locked',
+    reason:
+      'Inserted only by upsertDailyRow inside recalculateAllStorageUsage, the same withGlobalJobLock-ed, homeRegionWorkspaceWhere()-filtered pass as storage_usage; the table is region-local (excluded from shogo_all_pub), so two regions can never insert the same (workspace, day).',
     writer: 'storage-recalculate-all',
   },
   {
@@ -701,6 +761,14 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'request_scoped',
     reason:
       'creator-gamification.service.ts:189 creates; non-atomic check-then-create. P2 follow-up.',
+  },
+  // --- Abuse detection (SHO-459) -------------------------------------------
+  {
+    key: 'AbuseFlag.(category,runDate,userId)',
+    category: 'cron_locked',
+    reason:
+      'One flag per user per category per day, written only by runAbuseCheck which runs under withGlobalJobLock(abuse-check-daily); single-region scheduler (shouldScheduleAbuseCheck) pins to the main region.',
+    writer: 'abuse-check-daily',
   },
   // --- Native MLM affiliate program -----------------------------------------
   {
@@ -1342,6 +1410,7 @@ function enumerateCronEntries(): CronEntry[] {
   const extras: Array<{ fn: string; file: string }> = [
     { fn: 'recalculateAllStorageUsage', file: STORAGE_SERVICE_PATH },
     { fn: 'generateDigest', file: ANALYTICS_DIGEST_PATH },
+    { fn: 'runAbuseCheck', file: ABUSE_CHECK_JOB_PATH },
   ]
   for (const extra of extras) {
     if (!existsSync(extra.file)) continue

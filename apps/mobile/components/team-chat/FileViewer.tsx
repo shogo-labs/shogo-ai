@@ -16,7 +16,7 @@
  * such, rather than as an opaque chip that only offers a download.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { ActivityIndicator, Image, Linking, Platform, Pressable, ScrollView, Text, View } from 'react-native'
+import { ActivityIndicator, Image, Platform, Pressable, ScrollView, Text, View } from 'react-native'
 import { AlertCircle, ClipboardCopy, Download, ExternalLink } from 'lucide-react-native'
 import { attachmentDownloadUrl, downloadAttachment } from '../../lib/attachment-download'
 import { formatFileSize } from '../../lib/composer-attachments'
@@ -32,6 +32,7 @@ import { useResolvedTheme } from '../../contexts/theme'
 import { FileContentView, viewerPathKey } from '../files/FileContentView'
 import { fileViewKind } from '../files/file-view-kind'
 import { VoiceNotePlayer } from './VoiceNotePlayer'
+import { openExternalLink } from '../../lib/open-external-link';
 
 const api = teamChatApi()
 
@@ -48,10 +49,14 @@ export function FileViewer({ attachmentId, fallbackName }: FileViewerProps) {
     | { status: 'ready'; file: ConversationFileMeta }
     | { status: 'error'; message: string }
   >({ status: 'loading' })
+  // An office file whose renderer failed still has its extracted text, so the
+  // viewer shows that rather than an empty frame (SHO-426, SHO-467).
+  const [renderFailed, setRenderFailed] = useState(false)
 
   useEffect(() => {
     let live = true
     setState({ status: 'loading' })
+    setRenderFailed(false)
     api
       .fileMeta(attachmentId)
       .then(({ file }) => {
@@ -100,9 +105,10 @@ export function FileViewer({ attachmentId, fallbackName }: FileViewerProps) {
   if (file.size === 0) return <EmptyFileView file={file} />
   const meta = fileTypeMeta(file.name, file.mimeType)
   const kind = fileViewKind(file.name, file.mimeType)
-  // An office document has no renderer, but the server already extracted its
-  // text: show that rather than an opaque chip that only offers a download.
-  const shown = kind === 'binary' && file.hasText ? 'text' : kind
+  // An office document whose renderer failed or has no renderer still has its
+  // extracted text: show that rather than an opaque chip or an empty frame.
+  const renderKind = kind === 'slides' || kind === 'document'
+  const shown = (kind === 'binary' || (renderKind && renderFailed)) && file.hasText ? 'text' : kind
   const url = absoluteApiUrl(file.url)
 
   const nativeImage = (
@@ -134,8 +140,8 @@ export function FileViewer({ attachmentId, fallbackName }: FileViewerProps) {
           <TextView
             file={file}
             kind={shown}
-            themeMode={isDark ? 'dark' : 'light'}
-            extracted={kind === 'binary'}
+          themeMode={isDark ? 'dark' : 'light'}
+          extracted={kind === 'binary' || renderKind}
           />
         ) : shown === 'binary' ? (
           <DownloadView file={file} label={meta.label} />
@@ -148,6 +154,7 @@ export function FileViewer({ attachmentId, fallbackName }: FileViewerProps) {
             readOnly
             themeMode={isDark ? 'dark' : 'light'}
             pathKey={viewerPathKey(`attachment:${file.id}`)}
+            onPreviewError={() => setRenderFailed(true)}
             nativeImage={nativeImage}
             download={<DownloadButton url={url} name={file.name} />}
             testID="file-viewer-content"
@@ -340,7 +347,7 @@ function OpenInBrowser({ url }: { url: string }) {
     <Pressable
       onPress={() => {
         if (Platform.OS === 'web') window.open(url, '_blank', 'noopener,noreferrer')
-        else void Linking.openURL(url).catch(() => {})
+        else void openExternalLink(url)
       }}
       accessibilityRole="button"
       accessibilityLabel="Open in browser"

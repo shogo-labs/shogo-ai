@@ -29,6 +29,9 @@ export interface PlatformConfig {
     mobileAgentShell: boolean
     /** Channel boards, cards and My work. */
     workBoards: boolean
+    /** True when the WhatsApp Embedded Signup (Meta Tech Provider) flow is available.
+     *  Cloud: based on API env vars. Desktop: based on cloud auth status. */
+    whatsappEmbeddedSignup: boolean
   }
 }
 
@@ -49,6 +52,7 @@ const CLOUD_CONFIG: PlatformConfig = {
     agentShell: false,
     mobileAgentShell: false,
     workBoards: true,
+    whatsappEmbeddedSignup: false,
   },
 }
 
@@ -69,14 +73,13 @@ const LOCAL_CONFIG: PlatformConfig = {
     agentShell: true,
     mobileAgentShell: true,
     workBoards: true,
+    whatsappEmbeddedSignup: false,
   },
 }
 
-export function isLocalMode(): boolean {
-  if (process.env.EXPO_PUBLIC_LOCAL_MODE === 'true') return true
-  if (Platform.OS !== 'web' || typeof window === 'undefined') return false
-  return !!(window as any).shogoDesktop?.isDesktop
-}
+import { isLocalMode } from './local-mode'
+
+export { isLocalMode }
 
 /**
  * Whether the client should route new "home" chats through the

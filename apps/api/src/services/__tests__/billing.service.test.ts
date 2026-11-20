@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock, setSystemTime } from 'bun:test'
 import * as realStripePrices from '../../config/stripe-prices'
-import { TRIAL_MAX_SEATS } from '../../config/usage-plans'
+import { SOLO_FOUNDER_OVERAGE_CAP_USD, TRIAL_MAX_SEATS } from '../../config/usage-plans'
 
 // ============================================================================
 // In-memory prisma mock
@@ -80,7 +80,8 @@ const grants = new Map<string, Grant[]>() // by workspaceId
 const usageEvents: UsageEvent[] = []
 const billingAccounts = new Map<string, BillingAccount>()
 const members: Member[] = []
-const workspaces = new Map<string, { id: string; name: string; slug: string; parentWorkspaceId?: string | null }>()
+const workspaces = new Map<string, { id: string; name: string; slug: string; parentWorkspaceId?: string | null; hostInstanceId?: string | null }>()
+const instances = new Map<string, { id: string; workspaceId: string; userId: string | null }>()
 
 let usageEventCreateImpl: (data: any) => Promise<any> | any = (data) => {
   const ev: UsageEvent = {
@@ -303,6 +304,9 @@ const prismaApi = {
       })
     },
   },
+  instance: {
+    findUnique: async ({ where }: any) => instances.get(where.id) ?? null,
+  },
   workspace: {
     findUnique: async ({ where }: any) => workspaces.get(where.id) ?? null,
     findMany: async ({ where }: any) => {
@@ -398,6 +402,7 @@ beforeEach(() => {
   billingAccounts.clear()
   members.length = 0
   workspaces.clear()
+  instances.clear()
   stripeCalls.length = 0
   logs.length = 0
   usageEventCreateImpl = (data) => {
@@ -630,6 +635,16 @@ describe('allocateMonthlyIncluded', () => {
     wallets.set('w1', freshWallet({ overageHardLimitUsd: 250 }))
     const w = await billing.allocateMonthlyIncluded('w1', 'pro', 1)
     expect(w.overageHardLimitUsd).toBe(250)
+  })
+  // SHO-428 AC6: the $50 cap the Solo Founder offer applies is not the
+  // grant-only default ($5), so the monthly reset must leave it alone — the
+  // promise in the checkout disclosure is "$50/mo", not "until the first
+  // reset". Annual subscriptions refill monthly, and every refill lands here.
+  it('keeps the Solo Founder $50 cap through the monthly reset', async () => {
+    wallets.set('w1', freshWallet({ overageHardLimitUsd: SOLO_FOUNDER_OVERAGE_CAP_USD }))
+    const w = await billing.allocateMonthlyIncluded('w1', 'business', 1)
+    expect(w.overageHardLimitUsd).toBe(SOLO_FOUNDER_OVERAGE_CAP_USD)
+    expect(w.alertsSentThisPeriod).toEqual({})
   })
   it('basic single user ignores seats > 1', async () => {
     const w = await billing.allocateMonthlyIncluded('w1', 'basic', 5)
@@ -2087,6 +2102,78 @@ describe('pooled child workspaces', () => {
     // Counting from either the parent or a child yields the family total.
     expect(await billing.countActiveWorkspaceMembers('parent')).toBe(2)
     expect(await billing.countActiveWorkspaceMembers('child')).toBe(2)
+  })
+})
+
+// ============================================================================
+// Desktop-hosted workspaces (SHO-472): plan inherited from host's workspace
+// ============================================================================
+// A workspace with hostInstanceId set has no subscription of its own.
+// resolveBillingWorkspaceId must follow hostInstanceId → Instance.workspaceId
+// so the host's entitlement is used for model-tier and usage-window checks.
+describe('desktop-hosted workspace inherits the host workspace plan (SHO-472)', () => {
+  function setupHosted({
+    instanceUserId = 'russell',
+    instanceMemberOfHosted = true,
+  }: { instanceUserId?: string | null; instanceMemberOfHosted?: boolean } = {}) {
+    // Hosted workspace: no subscription, no grant — only a hostInstanceId.
+    workspaces.set('hosted', {
+      id: 'hosted',
+      name: 'Local User Personal',
+      slug: 'hosted',
+      parentWorkspaceId: null,
+      hostInstanceId: 'inst-1',
+    })
+    // The desktop owner's cloud workspace — has an enterprise grant.
+    workspaces.set('odin', {
+      id: 'odin',
+      name: 'Odin AI',
+      slug: 'odin',
+      parentWorkspaceId: null,
+    })
+    // The pairing instance: registered under the owner's cloud workspace.
+    instances.set('inst-1', { id: 'inst-1', workspaceId: 'odin', userId: instanceUserId ?? null })
+    // Owner is a member of the hosted workspace (the safety guard).
+    if (instanceMemberOfHosted && instanceUserId) {
+      members.push({ workspaceId: 'hosted', userId: instanceUserId, projectId: null })
+    }
+    // Enterprise grant on the host's cloud workspace (not on the hosted workspace).
+    const future = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+    grants.set('odin', [{ id: 'g1', workspaceId: 'odin', freeSeats: 0, monthlyIncludedUsd: 0, planId: 'enterprise', startsAt: new Date(0), expiresAt: future }])
+  }
+
+  it('resolveBillingWorkspaceId returns the host workspace id', async () => {
+    setupHosted()
+    expect(await billing.resolveBillingWorkspaceId('hosted')).toBe('odin')
+  })
+
+  it('getEffectivePlanId for a hosted workspace resolves to the host plan', async () => {
+    setupHosted()
+    expect(await billing.getEffectivePlanId('hosted')).toBe('enterprise')
+  })
+
+  it('workspace-plan paidTier is true for a hosted workspace whose host has a grant', async () => {
+    setupHosted()
+    wallets.set('odin', freshWallet({ workspaceId: 'odin' }))
+    const status = await billing.getOverageStatus('hosted')
+    expect(status.paidTier).toBe(true)
+  })
+
+  it('falls back to the hosted workspace plan when the instance owner is not a member', async () => {
+    setupHosted({ instanceMemberOfHosted: false })
+    // No membership → safety guard blocks the hop → resolve to self → free
+    expect(await billing.resolveBillingWorkspaceId('hosted')).toBe('hosted')
+    expect(await billing.getEffectivePlanId('hosted')).toBe('free')
+  })
+
+  it('falls back when the instance has no userId (legacy row)', async () => {
+    setupHosted({ instanceUserId: null })
+    expect(await billing.resolveBillingWorkspaceId('hosted')).toBe('hosted')
+  })
+
+  it('falls back when the instance row is missing (unpaired or deleted)', async () => {
+    workspaces.set('hosted', { id: 'hosted', name: 'Orphan', slug: 'orphan', parentWorkspaceId: null, hostInstanceId: 'gone' })
+    expect(await billing.resolveBillingWorkspaceId('hosted')).toBe('hosted')
   })
 })
 

@@ -183,6 +183,23 @@ export {
   ensureLfsRepoSetup,
   autoTrackLargeFiles,
   lfsPushAll,
+  lfsPushIncremental,
+  lfsObjectsInRange,
+  lfsRemoteHasObjects,
+  pushLfsObjectIds,
+  classifyLfsFailure,
+  parseLfsPointer,
+  hasLocalLfsObject,
+  localLfsObjectPath,
+  LfsPushError,
+  LfsPushRunner,
+  LFS_PUSH_CHUNK,
+  type LfsFailureReason,
+  type LfsMissingObject,
+  type LfsObjectRef,
+  type LfsPushJob,
+  type LfsPushProgress,
+  type LfsPushResult,
   lfsPull,
   lfsRemoteConfigFromEnv,
   migrateOffloadedAssetsToLfs,
@@ -451,3 +468,9 @@ export {
   isDigestPinnedImageRef,
   digestOfImageRef,
 } from './published-image-ref'
+
+export {
+  WHATSAPP_GRAPH_VERSION,
+  WHATSAPP_API_BASE,
+  verifyMetaSignature,
+} from './whatsapp-graph'

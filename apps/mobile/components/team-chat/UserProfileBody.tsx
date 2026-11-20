@@ -22,6 +22,7 @@ import { joinHuddleCall } from '../../lib/huddle-call'
 import { directConversations } from '../../lib/dm-list'
 import { UserAvatar } from './UserAvatar'
 import { openConversationTarget } from '../../lib/team-chat-nav'
+import { LearnProfileSection } from '../learn/LearnProfileSection'
 
 const api = teamChatApi()
 
@@ -204,6 +205,8 @@ export function UserProfileBody({
       ) : null}
 
       {error ? <Text className="text-xs text-destructive">{error}</Text> : null}
+
+      <LearnProfileSection learn={card.learn} isSelf={card.isSelf} name={card.id} />
 
       <View className="gap-1">
         <Text className="text-[11px] font-semibold uppercase text-muted-foreground">Contact information</Text>

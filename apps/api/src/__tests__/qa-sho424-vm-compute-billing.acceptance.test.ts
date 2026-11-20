@@ -182,12 +182,12 @@ describe('a heartbeat becomes rows, and the rows become one charge', () => {
     // Shadow: the hour is priced and stamped, and nothing is charged.
     const shadow = await runVmUsageBill(billAt)
     expect(shadow.mode).toBe('shadow')
-    expect(shadow.totalUsd).toBeCloseTo(0.11, 6) // half an hour of 2 vCPU / 4 GiB
+    expect(shadow.totalUsd).toBeCloseTo(0.094, 6) // half an hour of 2 vCPU / 4 GiB
     expect(consumeCalls).toHaveLength(0)
     expect(await usageEvents(seeded.workspaceId)).toHaveLength(0)
 
     const stamped = (await rowsFor(seeded.workspaceId)).slice(before)
-    expect(stamped[0].chargedUsd).toBeCloseTo(0.11, 6)
+    expect(stamped[0].chargedUsd).toBeCloseTo(0.094, 6)
     expect(stamped[0].billedAt).not.toBeNull()
 
     // A rerun for a later hour has nothing left to do.
@@ -210,7 +210,7 @@ describe('a heartbeat becomes rows, and the rows become one charge', () => {
 
     const summary = await runVmUsageBill(billAt)
     expect(summary.totalUsd).toBe(0)
-    expect(summary.freeUsd).toBeCloseTo(0.22, 6)
+    expect(summary.freeUsd).toBeCloseTo(0.188, 6)
 
     const rows = (await rowsFor(seeded.workspaceId)).filter((r: any) => r.hostId === HOST && r.idleSeconds === 3600)
     expect(rows[0].idleSeconds).toBe(3600)
@@ -276,9 +276,9 @@ describe('enforce charges once per workspace-hour', () => {
 
     const summary = await runVmUsageBill(billAt)
     expect(summary.mode).toBe('enforce')
-    expect(summary.totalUsd).toBeCloseTo(0.22, 6)
+    expect(summary.totalUsd).toBeCloseTo(0.188, 6)
     expect(consumeCalls).toHaveLength(1)
-    expect(consumeCalls[0]).toMatchObject({ workspaceId: ws.id, actionType: 'vm_compute', billedUsd: 0.22 })
+    expect(consumeCalls[0]).toMatchObject({ workspaceId: ws.id, actionType: 'vm_compute', billedUsd: 0.188 })
     expect(consumeCalls[0].actionMetadata).toMatchObject({ agentSeconds: 0, appSeconds: 3600, idleSeconds: 0 })
 
     // A rerun for a later hour charges nothing more: the rows are stamped.
@@ -315,7 +315,7 @@ describe('enforce charges once per workspace-hour', () => {
     // The next hour retries and succeeds.
     consumeResult = () => ({ success: true })
     const retried = await runVmUsageBill(nextHour())
-    expect(retried.totalUsd).toBeCloseTo(0.22, 6)
+    expect(retried.totalUsd).toBeCloseTo(0.188, 6)
     expect(consumeCalls).toHaveLength(2)
   })
 
@@ -356,7 +356,7 @@ describe('enforce charges once per workspace-hour', () => {
     // One row priced by both paths: `computeVmCost` (the job) and the route's
     // `priceWorkspaceHour` (the UI). They must not be able to disagree.
     const cost = computeVmCost({ vcpus: 4, memMiB: 8192, agentSeconds: 900, appSeconds: 900, idleSeconds: 1800, cause: 'user_open' })
-    expect(roundUsd(cost.totalUsd)).toBeCloseTo(0.22, 6)
+    expect(roundUsd(cost.totalUsd)).toBeCloseTo(0.188, 6)
     expect(cost.billedSeconds).toBe(1800)
     expect(cost.freeSeconds).toBe(1800)
   })
@@ -378,6 +378,8 @@ describe('GET /workspaces/:id/compute-usage', () => {
     expect(owner.status).toBe(200)
     const ownerBody: any = await owner.json()
     expect(ownerBody.mode).toBe('shadow')
+    // The rate card the UI renders comes from here, so pin it at the wire.
+    expect(ownerBody.rates).toEqual({ vcpuHour: 0.07, gibHour: 0.012, idleBilling: 'none' })
     expect(ownerBody.totals.totalVmHours).toBeGreaterThan(0)
     expect(ownerBody.totals.estimatedUsd).toBeGreaterThan(0)
     expect(Array.isArray(ownerBody.byProject)).toBe(true)
@@ -445,6 +447,7 @@ describe('GET /api/admin/compute', () => {
     // `{ ok, data }` — the admin app's fetchAdminJson unwraps `.data`.
     expect(body.ok).toBe(true)
     expect(body.data.mode).toBe('shadow')
+    expect(body.data.rates).toEqual({ vcpuHour: 0.07, gibHour: 0.012, idleBilling: 'none' })
     expect(body.data.totals.vmHours).toBeGreaterThan(0)
     expect(body.data.totals.stampedUsd).toBeGreaterThan(0)
     expect(Array.isArray(body.data.byCause)).toBe(true)

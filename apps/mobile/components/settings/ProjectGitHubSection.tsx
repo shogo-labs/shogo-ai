@@ -2,10 +2,11 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useEffect, useState } from "react";
-import { Linking, Pressable, TextInput, View } from "react-native";
+import { Pressable, TextInput, View } from "react-native";
 import { API_URL } from "../../lib/api";
 import { Text } from "./account-sheet-chrome";
 import { IntegrationActsAsSection } from "./IntegrationActsAsSection";
+import { openExternalLink } from "../../lib/open-external-link";
 
 interface GitHubConnectionInfo {
   repoFullName: string;
@@ -85,7 +86,7 @@ export function ProjectGitHubSection({ projectId }: { projectId: string }) {
       });
       if (!res.ok) throw new Error(await errorMessage(res, "Could not start GitHub authorization"));
       const body = await res.json();
-      await Linking.openURL(body.url);
+      await openExternalLink(body.url);
       setNotice("Finish authorizing in GitHub. You'll come back to this project when it's done.");
     } catch (err: any) {
       setError(err?.message ?? "Could not start GitHub authorization");

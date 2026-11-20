@@ -32,6 +32,10 @@ export interface WideSidebarProps {
   /** The workspace tile at the top of the rail. */
   switcher?: ReactNode
   invites?: { count: number; onPress: () => void }
+  /** Opens the invite dialog (SHO-454). Absent when the caller cannot invite. */
+  onInvite?: () => void
+  /** Highlight the invite button: the caller is the only human member. */
+  inviteHighlight?: boolean
   onSearch?: () => void
   /** Called on every rail tab click, including a re-click of the selected tab. */
   onSelectTab?: (tab: SidebarTabId) => void
@@ -44,7 +48,7 @@ export interface WideSidebarProps {
   renderPanel: (tab: SidebarTabId, hidePanel: () => void) => ReactNode
 }
 
-export function WideSidebar({ workspaceId, tabs, kind, showAdmin, switcher, invites, onSearch, onSelectTab, panelTabs, renderPanel }: WideSidebarProps) {
+export function WideSidebar({ workspaceId, tabs, kind, showAdmin, switcher, invites, onInvite, inviteHighlight, onSearch, onSelectTab, panelTabs, renderPanel }: WideSidebarProps) {
   const router = useRouter()
   const pathname = usePathname()
   const chat = useTeamChatNav()
@@ -89,7 +93,7 @@ export function WideSidebar({ workspaceId, tabs, kind, showAdmin, switcher, invi
     // whatever the rail draws outside its 64px width (its hover labels; only the
     // gap between the two still showed a sliver of one while the panel was closed).
     <View className="relative z-10 h-full flex-row">
-      <IconRail tabs={available} active={tab} badges={badges} dots={dots} onSelect={select} showAdmin={showAdmin} switcher={switcher} invites={invites} onSearch={onSearch} />
+      <IconRail tabs={available} active={tab} badges={badges} dots={dots} onSelect={select} showAdmin={showAdmin} switcher={switcher} invites={invites} onInvite={onInvite} inviteHighlight={inviteHighlight} onSearch={onSearch} />
       {panelShown && (
         <View className="my-1.5 ml-1.5 w-64 overflow-hidden rounded-l-xl border-y border-l border-r border-sidebar-border bg-sidebar-panel">
           {renderPanel(tab, () => setPanelHidden(true))}

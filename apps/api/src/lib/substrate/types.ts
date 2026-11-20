@@ -38,6 +38,20 @@ export interface RuntimeStatus {
   /** Resolved runtime URL when known. */
   url?: string
   message?: string
+  /**
+   * Whether this runtime's work has reached durable storage. Metal only, and
+   * only while a VM is assigned: a cold boot restores the durable copy, so a
+   * runtime that is not durable is one stop away from losing the user's
+   * changes (SHO-442). Knative has no equivalent and omits it.
+   */
+  durability?: {
+    state: 'ok' | 'saving-failing' | 'untrusted'
+    /** When the current state began: the last good save, or the VM's start. */
+    since: number
+    /** When this VM's HEAD last reached the durable repo, if it ever did. */
+    lastSavedAt?: number
+    reason?: string
+  }
 }
 
 export interface ResolveOpts {

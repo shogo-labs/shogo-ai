@@ -8,10 +8,12 @@ import { EmailNotVerifiedError } from '@shogo/shared-app/auth'
 import { useTheme } from '../../contexts/theme'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { trackSignUp, trackLogin } from '../../lib/tracking'
+import { markNewSignup, readCometToken, storeCometToken } from '../../lib/cometly'
 import { discardPendingSignupAttribution, flushSignupAttribution, queueSignupAttribution } from '../../lib/attribution'
 import { api, createHttpClient, API_URL } from '../../lib/api'
 import { getPasswordResetRedirectUrl } from '../../lib/password-reset-redirect'
 import { resolveAuthCallbackUrl } from '../../lib/auth-callback-url'
+import { openExternalLink } from '../../lib/open-external-link'
 import { LoginScreen } from '@shogo/shared-ui/screens'
 import { LoginShowcase } from '../../components/auth/LoginShowcase'
 import { EnvironmentVersionTrigger } from '../../components/settings/EnvironmentPicker'
@@ -112,6 +114,8 @@ export default function SignInScreen() {
           : undefined
       const result = await signUp(name, email, password, verifyCallback ? { callbackURL: verifyCallback } : undefined)
       trackSignUp('email')
+      // The first authenticated page reports Cometly's `custom_event_2`.
+      markNewSignup()
       sendEmailAttribution()
       if (result.requiresVerification) {
         router.replace({ pathname: '/(auth)/verify-email', params: { email, next: nextPath !== '/' ? nextPath : undefined } as any })
@@ -125,6 +129,11 @@ export default function SignInScreen() {
     // Queue before the redirect. The app shell posts after the round trip,
     // and only if the account was just created.
     queueSignupAttribution('google')
+    // Cometly (SHO-441): park the pixel's click token where the OAuth callback
+    // can read it — the server reports the sign-up with it. No pixel (blocked,
+    // native, still loading) means no cookie, and sign-in is unaffected.
+    const cometToken = readCometToken()
+    if (cometToken) storeCometToken(cometToken)
     try { sessionStorage.setItem('oauth_pending', 'google') } catch {}
     // Pass an absolute callbackURL built from `?next=…` so post-OAuth
     // users return to e.g. /auth/cli-link?state=… instead of `/`.
@@ -218,6 +227,7 @@ export default function SignInScreen() {
         isLoading={isLoading}
         error={error}
         onClearError={clearError}
+        onOpenExternalLink={openExternalLink}
         colorScheme={resolvedColorScheme}
         desktopShowcase={
           Platform.OS === 'web' ? <LoginShowcase colorScheme={resolvedColorScheme} /> : undefined

@@ -104,7 +104,11 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
         const streamsInPlace = namedKind === "video" || namedKind === "audio"
         const nativeDocument =
           Platform.OS !== "web" && (namedKind === "image" || namedKind === "pdf")
-        if (streamsInPlace || nativeDocument) {
+        // Office files are never buffered here: the viewer buffers them itself,
+        // under its own size cap, so a 300 MB file is refused before it lands
+        // in memory (SHO-426 slides, SHO-467 documents).
+        const deck = namedKind === "slides" || namedKind === "document"
+        if (streamsInPlace || nativeDocument || deck) {
           const probe = await fetch(source, {
             credentials: "include",
             headers: { Range: "bytes=0-0" },

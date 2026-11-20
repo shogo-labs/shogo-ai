@@ -481,7 +481,12 @@ jobs:
         working-directory: apps/mobile
         run: npx expo prebuild --platform android --clean
         env:
+          # `EXPO_UPDATES_CHANNEL` pins the binary to its own EAS Update branch
+          # and `SENTRY_PROJECT` names the Sentry project this platform's
+          # native uploads belong to; `app.config.js` bakes both into the
+          # generated native project (see apps/mobile/config/expo-env-config.js).
           EXPO_UPDATES_CHANNEL: ${{ needs.check-fingerprint.outputs.environment }}
+          SENTRY_PROJECT: shogo-android
           EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
           EXPO_PUBLIC_APP_VERSION: ${{ needs.check-fingerprint.outputs.app_version }}
@@ -542,21 +547,6 @@ jobs:
                       abiFilters "armeabi-v7a", "arm64-v8a"\
                   }' build.gradle
 
-      - name: Ensure Sentry CLI binary
-        working-directory: apps/mobile
-        run: |
-          SENTRY_CLI="node_modules/@sentry/cli/bin/sentry-cli"
-          if [ -x "$SENTRY_CLI" ] && "$SENTRY_CLI" --version 2>/dev/null; then
-            echo "Sentry CLI binary works"
-          else
-            echo "Sentry CLI binary missing or broken, creating no-op stub..."
-            mkdir -p "$(dirname "$SENTRY_CLI")"
-            printf '#!/bin/bash\necho "sentry-cli stub: skipping upload"\nexit 0\n' > "$SENTRY_CLI"
-            chmod +x "$SENTRY_CLI"
-            echo "Stub created at $SENTRY_CLI"
-            "$SENTRY_CLI" --version
-          fi
-
       - name: Build AAB
         working-directory: apps/mobile/android
         run: ./gradlew bundleRelease -x lintVitalAnalyzeRelease -x lintVitalRelease
@@ -570,125 +560,152 @@ jobs:
           # Sentry release tag that gets baked into the JS bundle inside the
           # AAB. Must match the release we upload sourcemaps for below.
           EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          # Turn the plugin's own upload off here instead of leaving it to a
+          # no-op sentry-cli. It uploads `--release <appId>@<version>+<code>
+          # --dist <versionCode>` (sentry.gradle.kts), which no event ever
+          # reports — `Sentry.init` sends `release: <sha>`, `dist: 'android'`
+          # — so an upload from that task can never be matched. The step below
+          # uploads with the pair the app actually reports. This used to be
+          # done by overwriting node_modules/@sentry/cli/bin/sentry-cli with a
+          # stub that exited 0, which also (silently) disarmed the step below.
+          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
 
-      - name: Upload JS sourcemaps to Sentry (optional, non-fatal)
-        # The Sentry-injected Gradle bundle task is replaced with a no-op
-        # stub above ("Ensure Sentry CLI binary"), so the AAB ships without
-        # debug-id-stamped JS. We re-run Metro post-build to regenerate the
-        # bundle + packager map, compose with the Hermes bytecode map (which
-        # `bundleRelease` already produced), and upload to Sentry.
+      - name: Upload JS sourcemaps to Sentry
+        # Android events are only symbolicated if the artifacts are uploaded
+        # under the exact release/dist the app reports at runtime:
+        # `Sentry.init({ release: EXPO_PUBLIC_BUILD_HASH, dist: Platform.OS })`
+        # in apps/mobile/app/_layout.tsx — that is `<sha>` + `android`, which
+        # is what this step uploads with.
         #
-        # Without this, Android stack frames for native release `${SHA}`
-        # arrive as fully-minified `index.android.bundle 1:NNNNN` columns
-        # in events — see Sentry JAVASCRIPT-REACT-K (Worklets initialization
-        # fatal) for an example we couldn't symbolicate without it.
+        # The artifacts are the ones `bundleRelease` just produced, at the paths
+        # RN 0.86 writes (`packages/gradle-plugin` TaskConfiguration.kt):
+        #   generated/assets/react/release/index.android.bundle        (shipped)
+        #   generated/sourcemaps/react/release/index.android.bundle.map
+        #   intermediates/sourcemaps/react/release/…packager.map      (debug id)
+        # With Hermes on (`minifyEnabled = !hermesEnabled`) the bundle at that
+        # path IS the shipped bytecode, and RN's own bundle task already
+        # composed the bytecode->source map (BundleHermesCTask runs
+        # compose-source-maps.js whenever hermesFlags keeps
+        # `-output-source-map`, which is the RN default). So nothing is
+        # re-bundled or composed here: an earlier revision looked for an
+        # `index.android.bundle.hbc.map`, which this plugin version never
+        # writes, and silently fell back to a packager map that maps nothing.
         #
-        # `--minify false` is not optional: the Gradle bundle task sets
-        # `minifyEnabled = !hermesEnabled` (RN 0.86 `TaskConfiguration.kt`),
-        # so with Hermes on the shipped bundle is unminified. A minified
-        # re-bundle produces a map whose positions don't match it (SHO-290).
+        # No `sourcemaps inject`: the Metro serializer (`getSentryExpoConfig`
+        # in metro.config.js) already stamped a debug id into the shipped
+        # bundle, and injecting rewrites Hermes bytecode into a stub (see the
+        # OTA step above, SHO-290). Only the debug id is carried onto the
+        # composed map, which is what @sentry/react-native's own upload task
+        # does (`scripts/copy-debugid.js`).
         #
-        # Non-fatal: same rationale as the iOS dSYM step.
+        # A release build must never ship blind: for a tag / production build
+        # a missing token, a missing artifact, a missing sentry-cli or a failed
+        # upload fails the job instead of printing a warning and submitting to
+        # Play. Staging stays non-fatal so a Sentry hiccup can't block the loop.
         working-directory: apps/mobile
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: shogo-ai
           SENTRY_PROJECT: shogo-android
           SENTRY_LOG_LEVEL: info
-          EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
-          EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
-          EXPO_PUBLIC_SENTRY_DSN_ANDROID: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_ANDROID }}
           EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
+          SENTRY_UPLOAD_REQUIRED: ${{ startsWith(github.ref, 'refs/tags/') || needs.check-fingerprint.outputs.environment == 'production' }}
+          # The CLI repair below is a `bun install` at the repo root, so it can
+          # run @vscode/ripgrep's postinstall — which needs an authenticated
+          # token or it flakes with a shared-quota 403
+          # (`scripts/check-ci-bun-install-token.ts`).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set +e
-          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
-            echo "::notice title=Sentry sourcemap upload (Android)::SENTRY_AUTH_TOKEN secret not configured — skipping."
+          set -u
+          fail_upload() {
+            echo "::error title=Sentry sourcemap upload (Android)::$1"
             {
               echo "## Sentry sourcemap upload (Android)"
               echo ""
-              echo "_Skipped — \`SENTRY_AUTH_TOKEN\` secret not configured._"
+              echo "_FAILED — $1_"
             } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          # 1. Regenerate bundle + Metro packager map (the Gradle build's
-          #    intermediate artifacts get cleaned by gradle on subsequent
-          #    invocations, and the Sentry stub means none of them have
-          #    debug-ids anyway — easier to redo than to scavenge).
-          BUNDLE_DIR="$RUNNER_TEMP/android-bundle"
-          mkdir -p "$BUNDLE_DIR"
-          bunx expo export:embed \
-            --platform android \
-            --dev false \
-            --minify false \
-            --reset-cache \
-            --bundle-output "$BUNDLE_DIR/index.android.bundle" \
-            --sourcemap-output "$BUNDLE_DIR/index.android.bundle.packager.map" \
-            --assets-dest "$BUNDLE_DIR/assets" \
-            --entry-file index.js
-          EXPORT_RC=$?
-          if [ "$EXPORT_RC" -ne 0 ]; then
-            echo "::warning title=Sentry sourcemap upload (Android)::expo export:embed exited $EXPORT_RC — skipping upload."
-            {
-              echo "## Sentry sourcemap upload (Android)"
-              echo ""
-              echo "_Skipped — \`expo export:embed\` exited $EXPORT_RC._"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          # 2. If Hermes is enabled (the project default for RN 0.81), the
-          #    Gradle build produced an `index.android.bundle.hbc.map` that
-          #    maps Hermes bytecode columns -> packager-map columns. Compose
-          #    it with the packager map from step 1 to get a single
-          #    bytecode-to-source map that Sentry can consume directly.
-          HBC_MAP=$(find android/app/build/generated/sourcemaps -name 'index.android.bundle.hbc.map' | head -1)
-          MAP_TO_UPLOAD="$BUNDLE_DIR/index.android.bundle.map"
-          if [ -n "$HBC_MAP" ] && [ -f "$HBC_MAP" ]; then
-            echo "Composing packager map + Hermes bytecode map: $HBC_MAP"
-            node ./node_modules/react-native/scripts/compose-source-maps.js \
-              "$BUNDLE_DIR/index.android.bundle.packager.map" \
-              "$HBC_MAP" \
-              -o "$MAP_TO_UPLOAD"
-            COMPOSE_RC=$?
-            if [ "$COMPOSE_RC" -ne 0 ]; then
-              echo "::warning title=Sentry sourcemap upload (Android)::compose-source-maps.js exited $COMPOSE_RC; falling back to packager map."
-              cp "$BUNDLE_DIR/index.android.bundle.packager.map" "$MAP_TO_UPLOAD"
+            if [ "$SENTRY_UPLOAD_REQUIRED" = "true" ]; then
+              echo "This is a release build: Android stack traces would be unreadable, so it must not ship."
+              exit 1
             fi
-          else
-            echo "Hermes hbc.map not found — uploading raw packager map (assumes JSC, not Hermes)."
-            cp "$BUNDLE_DIR/index.android.bundle.packager.map" "$MAP_TO_UPLOAD"
-          fi
-          rm -f "$BUNDLE_DIR/index.android.bundle.packager.map"
+            echo "Staging build: continuing without Android symbolication."
+            exit 0
+          }
 
+          if [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
+            fail_upload "SENTRY_AUTH_TOKEN is not configured"
+          fi
+
+          # A working sentry-cli or nothing: never substitute a stub, because a
+          # stub exits 0 and this step then reports a successful upload that
+          # never happened (that is exactly how Android stacks stayed
+          # `index.android.bundle:1` while the summary claimed success).
+          is_real_cli() {
+            "$@" --version 2>/dev/null | grep -qE '^sentry-cli [0-9]+\.[0-9]+\.[0-9]+'
+          }
           SENTRY_CLI="./node_modules/.bin/sentry-cli"
-          [ -x "$SENTRY_CLI" ] || SENTRY_CLI="bunx @sentry/cli"
-          # See android.yml OTA step for the `--ext bundle` rationale.
-          $SENTRY_CLI sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" \
-            --ext bundle --ext map "$BUNDLE_DIR"
+          if ! is_real_cli "$SENTRY_CLI"; then
+            echo "Packaged sentry-cli is missing or unusable — installing @sentry/cli"
+            bun install --no-save @sentry/cli@^3 >/dev/null 2>&1 || true
+          fi
+          if ! is_real_cli "$SENTRY_CLI"; then
+            SENTRY_CLI="bunx @sentry/cli"
+          fi
+          if ! is_real_cli $SENTRY_CLI; then
+            fail_upload "no working sentry-cli (node_modules/.bin/sentry-cli and bunx @sentry/cli both unusable)"
+          fi
+
+          BUNDLE="android/app/build/generated/assets/react/release/index.android.bundle"
+          COMPOSED="android/app/build/generated/sourcemaps/react/release/index.android.bundle.map"
+          PACKAGER="android/app/build/intermediates/sourcemaps/react/release/index.android.bundle.packager.map"
+
+          [ -f "$BUNDLE" ] || fail_upload "no shipped bundle at $BUNDLE — did createBundleReleaseJsAndAssets run for the release variant?"
+          [ -f "$COMPOSED" ] || fail_upload "no composed source map at $COMPOSED — the bundle task only writes it while hermesFlags keeps -output-source-map"
+          [ -f "$PACKAGER" ] || fail_upload "no packager source map at $PACKAGER, so the composed map cannot carry the bundle's debug id"
+
+          SENTRY_RN_DIR=$(dirname "$(node -p "require.resolve('@sentry/react-native/package.json')")")
+          node "$SENTRY_RN_DIR/scripts/copy-debugid.js" "$PACKAGER" "$COMPOSED"
+          DEBUG_ID=$(node "$SENTRY_RN_DIR/scripts/has-sourcemap-debugid.js" "$COMPOSED" | tail -1)
+          echo "Sentry debug id: $DEBUG_ID"
+
+          # Upload the shipped pair untouched, named exactly as the frames name
+          # them (`app:///index.android.bundle`).
+          OUT="$RUNNER_TEMP/sentry-android"
+          mkdir -p "$OUT"
+          cp "$BUNDLE" "$OUT/index.android.bundle"
+          cp "$COMPOSED" "$OUT/index.android.bundle.map"
+
+          # `--bundle`/`--bundle-sourcemap` registers the pair the way
+          # `sentry-cli react-native gradle --bundle --sourcemap` does, and
+          # `--debug-id-reference` is required because the bundle is Hermes
+          # bytecode: the CLI cannot read the id out of it, so without the flag
+          # it emits no reference and the event never resolves.
+          # The exit status of this call *is* the proof: `--strict` fails when a
+          # source map cannot be uploaded, and `--wait-for` fails when the server
+          # rejects or cannot process the artifact bundle. Do not follow it with
+          # `sentry-cli releases files <release> list` — that subcommand does not
+          # exist in the CLI 3.x releases command (only
+          # archive/delete/finalize/info/list/new/propose-version/restore/
+          # set-commits), and since 3.x uploads through the chunk-upload /
+          # artifact-bundle API the legacy release-files endpoint would not list
+          # them either. A post-upload probe that always reports "nothing here"
+          # fails every release build *after* a successful upload.
           $SENTRY_CLI sourcemaps upload \
+            --bundle "$OUT/index.android.bundle" \
+            --bundle-sourcemap "$OUT/index.android.bundle.map" \
+            --debug-id-reference --strict \
+            --wait-for 300 \
             --release "$EXPO_PUBLIC_BUILD_HASH" \
             --dist android \
-            --ext bundle --ext map \
-            --strip-prefix "$GITHUB_WORKSPACE" \
-            "$BUNDLE_DIR"
-          UPLOAD_RC=$?
-          if [ "$UPLOAD_RC" -eq 0 ]; then
-            {
-              echo "## Sentry sourcemap upload (Android)"
-              echo ""
-              echo "Uploaded JS bundle + composed sourcemap to Sentry (release=\`$EXPO_PUBLIC_BUILD_HASH\`, dist=\`android\`)."
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::warning title=Sentry sourcemap upload (Android)::sentry-cli exited $UPLOAD_RC — release continuing."
-            {
-              echo "## Sentry sourcemap upload (Android)"
-              echo ""
-              echo "_Failed (sentry-cli exit $UPLOAD_RC)._"
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-          exit 0
+            --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" \
+            --url-prefix "app:///" \
+            || fail_upload "sourcemaps upload failed (release=$EXPO_PUBLIC_BUILD_HASH, dist=android)"
+
+          {
+            echo "## Sentry sourcemap upload (Android)"
+            echo ""
+            echo "Uploaded the shipped bundle + composed sourcemap (release=\`$EXPO_PUBLIC_BUILD_HASH\`, dist=\`android\`, debug id=\`$DEBUG_ID\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload AAB artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

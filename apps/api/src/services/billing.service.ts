@@ -91,22 +91,59 @@ export async function getSubscriptions(workspaceId: string) {
  * Resolve the workspace whose billing primitives (subscription, usage wallet,
  * grants, seats) actually govern `workspaceId`.
  *
- * A "child" workspace (one with a `parentWorkspaceId`) pools its parent's
- * plan, wallet, and seats — it has no subscription/wallet of its own. For such
- * a workspace this returns the parent id; otherwise it returns the id
- * unchanged. The `system` sentinel and local mode are passed through.
+ * Two cases beyond the workspace itself:
  *
- * Hierarchy is intentionally a single level: only Business/Enterprise (top-level)
- * workspaces may have children, so we never need to walk more than one hop.
+ * 1. **Child workspace** (`parentWorkspaceId` set): pools the parent's plan,
+ *    wallet and seats — it has no subscription/wallet of its own.
+ *
+ * 2. **Desktop-hosted workspace** (`hostInstanceId` set, SHO-285): the
+ *    workspace's compute runs on a paired desktop. The desktop registers as an
+ *    `Instance` whose `workspaceId` is the owner's cloud workspace (which
+ *    carries the actual subscription or grant). Without this branch a hosted
+ *    workspace always resolves to Free even when the host desktop has a paid
+ *    entitlement, locking every non-economy model for mobile users.
+ *    Safety guard: we only follow the hop when the instance's `userId` is a
+ *    member of the hosted workspace, so an unpaired or reassigned machine
+ *    cannot lend its entitlement to a workspace its owner isn't part of.
+ *
+ * Hierarchy is intentionally a single level (never recurse): only
+ * Business/Enterprise workspaces may have children, and a hosted workspace
+ * always lives under a cloud workspace that has a subscription/grant directly.
  */
 export async function resolveBillingWorkspaceId(workspaceId: string): Promise<string> {
   if (isLocalMode) return workspaceId
   if (workspaceId === SYSTEM_WORKSPACE_ID) return workspaceId
   const ws = await prisma.workspace.findUnique({
     where: { id: workspaceId },
-    select: { parentWorkspaceId: true },
+    select: { parentWorkspaceId: true, hostInstanceId: true },
   });
-  return ws?.parentWorkspaceId ?? workspaceId;
+  if (!ws) return workspaceId;
+
+  // Case 1: child workspace pools the parent.
+  if (ws.parentWorkspaceId) return ws.parentWorkspaceId;
+
+  // Case 2: desktop-hosted workspace — inherit the host desktop's entitlement.
+  if (ws.hostInstanceId) {
+    const instance = await prisma.instance.findUnique({
+      where: { id: ws.hostInstanceId },
+      select: { workspaceId: true, userId: true },
+    });
+    // Only lend the host's plan when the instance owner is a member of the
+    // hosted workspace, and when the host workspace differs from the workspace
+    // itself (guards against trivial self-references).
+    if (
+      instance?.userId &&
+      instance.workspaceId !== workspaceId
+    ) {
+      const membership = await prisma.member.findFirst({
+        where: { workspaceId, userId: instance.userId, projectId: null },
+        select: { id: true },
+      });
+      if (membership) return instance.workspaceId;
+    }
+  }
+
+  return workspaceId;
 }
 
 /** The reads `resolvePromoCreditSource` needs, from `prisma` or a tx client. */

@@ -28,13 +28,21 @@ export interface ChannelStatus {
 }
 
 export interface ChannelAdapter {
-  connect(config: Record<string, string>): Promise<void>
+  connect(config: Record<string, string>, workspaceDir?: string): Promise<void>
   disconnect(): Promise<void>
   sendMessage(channelId: string, content: string): Promise<void>
   /** Edit a previously sent message (for streaming updates). Returns false if unsupported. */
   editMessage?(channelId: string, messageId: string, content: string): Promise<boolean>
   /** Send a typing indicator. Called periodically during agent turns. */
   sendTyping?(channelId: string): Promise<void>
+  /**
+   * Send a template message. Only supported by adapters that implement it
+   * (currently WhatsApp). Other adapters leave this undefined.
+   */
+  sendTemplate?(
+    channelId: string,
+    template: { name: string; language: string; components?: unknown[] }
+  ): Promise<void>
   onMessage(handler: (msg: IncomingMessage) => void): void
   getStatus(): ChannelStatus
 }

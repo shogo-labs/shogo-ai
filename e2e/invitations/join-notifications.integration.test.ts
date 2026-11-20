@@ -137,16 +137,16 @@ async function seedWorld(): Promise<World> {
   }
 }
 
-/** The client's accept sequence (domain-actions.acceptInvitation): flip the invitation, then create the member. */
+/** The client's accept sequence (domain-actions.acceptInvitation): create the member, then mark the invitation accepted. */
 async function acceptInvitation(world: World, invitationId: string) {
-  const patched = await call(world.invitee.id, 'PATCH', `/invitations/${invitationId}`, { status: 'accepted' })
-  expect(patched.status).toBe(200)
   const created = await call(world.invitee.id, 'POST', '/members', {
     userId: world.invitee.id,
     workspaceId: world.workspaceId,
     role: 'member',
   })
   expect(created.status).toBe(201)
+  const patched = await call(world.invitee.id, 'PATCH', `/invitations/${invitationId}`, { status: 'accepted' })
+  expect(patched.status).toBe(200)
   return created.json.data
 }
 

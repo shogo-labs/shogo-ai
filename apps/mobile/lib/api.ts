@@ -8,6 +8,7 @@ import { authClient } from './auth-client'
 import { defaultLocalAccess, type LocalAccessPrefs } from './local-access'
 import { routeUrl } from './workspace-route'
 import { usageLogCsvUrl } from './usage-log-csv'
+import { billingApiBase } from '@shogo/shared-app/hooks'
 
 export { API_URL } from './api-url'
 
@@ -75,6 +76,24 @@ export interface WorkspacePermissionsData {
   role: WorkspaceRole | null
   isSuperAdmin: boolean
   permissions: Permission[]
+  /** Who may invite (SHO-454): `members` (any Editor) or `admins`. */
+  invitePolicy?: 'members' | 'admins'
+  /** The one boolean every invite entry point gates on. */
+  canInvite?: boolean
+}
+
+/** A workspace join link (`/api/invite-links`), as the invite dialog reads it. */
+export interface WorkspaceInviteLink {
+  id: string
+  token: string
+  role: 'owner' | 'admin' | 'member' | 'viewer'
+  workspaceId: string | null
+  projectId: string | null
+  enabled: boolean
+  expiresAt: string | null
+  useCount: number
+  createdBy: string
+  createdAt: string
 }
 
 /** `GET /api/projects/:id/permissions` payload. */
@@ -207,6 +226,7 @@ import type {
   GoalPlanStep as SharedGoalPlanStep,
   GoalDeliverable as SharedGoalDeliverable,
   AgentTaskSummary as SharedAgentTaskSummary,
+  WorkspaceActiveChatPeek as SharedActiveChatPeek,
 } from '@shogo/shared-app'
 
 export type PersonalGoalStatus = SharedGoalStatus
@@ -219,6 +239,7 @@ export type PersonalGoalEvent = SharedGoalEventRecord
 export type PersonalGoalPlanStep = SharedGoalPlanStep
 export type PersonalGoalDeliverable = SharedGoalDeliverable
 export type PersonalAgentTaskSummary = SharedAgentTaskSummary
+export type ActiveChatPeek = SharedActiveChatPeek
 
 /** A marketplace creator's admin stats: marketplace metrics + platform spend. */
 export interface AdminCreatorStat {
@@ -337,6 +358,50 @@ export interface CheckoutParams {
   trial?: boolean
 }
 
+/**
+ * `POST /api/billing/checkout` body for the $99 Solo Founder offer (SHO-428).
+ * Same route as a plan checkout, but the server owns plan, seats, interval,
+ * the course line and the first-year discount, so none of them are sent.
+ */
+export interface SoloFounderCheckoutParams {
+  workspaceId: string
+  offer: 'solo_founder'
+  /** Buyer's own Stripe promotion code, instead of the default $78 coupon. */
+  promoCode?: string
+  userEmail?: string
+  referralId?: string
+  successUrl?: string
+  cancelUrl?: string
+}
+
+/** `GET /api/billing/solo-founder` — what the Billing panel shows for the offer. */
+export interface SoloFounderState {
+  ok: boolean
+  offer: 'solo_founder'
+  pricing: {
+    businessAnnualUsd: number
+    courseUsd: number
+    firstYearDiscountUsd: number
+    firstYearUsd: number
+    renewalUsd: number
+    overageCapUsd: number
+  }
+  enrolled: boolean
+  /** Enrollment status: 'active' once paid, 'rejected_prepaid' when refused. */
+  status: string | null
+  /** Pack install: 'pending' | 'installing' | 'installed' | 'failed'. */
+  installStatus: string | null
+  installError: string | null
+  courseBoardId: string | null
+  courseChannelId: string | null
+  totalLessons: number
+  completedLessons: string[]
+  completedAt: string | null
+  eligibility:
+    | { eligible: true }
+    | { eligible: false; code: 'offer_not_eligible' | 'already_enrolled' | 'risk_review'; reason: string }
+}
+
 export interface WorkspaceCheckoutParams {
   workspaceName: string
   planId: string
@@ -429,7 +494,43 @@ export interface BillingInvoice {
   hostedInvoiceUrl: string | null
   invoicePdf: string | null
   description: string | null
+  /** Tax included in `total`, when Stripe reports it. */
+  tax?: number | null
+  /** `total` before tax, when Stripe reports it. */
+  totalExcludingTax?: number | null
   lines: { description: string | null; amount: number }[]
+}
+
+/**
+ * `POST /api/billing/change-plan/preview` — what a plan change costs before the
+ * customer confirms it (SHO-451).
+ */
+export interface PlanChangePreview {
+  planId: string
+  billingInterval: 'monthly' | 'annual'
+  seats: number
+  /** Recurring amount the workspace pays today. */
+  currentPriceUsd: number
+  /** Recurring amount after the change. */
+  newPriceUsd: number
+  /** Charged today for the proration. */
+  prorationUsd: number
+  /** ISO timestamp the change takes effect. */
+  effectiveAt: string
+  /** What the next renewal will be. */
+  nextInvoiceUsd: number
+  /** Unix seconds the preview was computed at; sent back on apply. */
+  prorationDate: number
+}
+
+/** `POST /api/billing/change-plan` result. */
+export interface PlanChangeResult {
+  ok: true
+  planId: string
+  billingInterval: 'monthly' | 'annual'
+  seats: number
+  status: string
+  currentPeriodEnd: string | null
 }
 
 /** One DNS record a user must add to point a custom domain at their app. */
@@ -847,6 +948,20 @@ export const api = {
     return res.data
   },
 
+  /** Start the $99 Solo Founder checkout. Server answers with a Checkout URL. */
+  async createSoloFounderCheckout(http: HttpClient, params: SoloFounderCheckoutParams) {
+    const res = await http.post<{ url?: string; sessionId?: string }>('/api/billing/checkout', params)
+    return res.data
+  },
+
+  /** The Solo Founder offer's state for this workspace (also retries a lost install). */
+  async getSoloFounderState(http: HttpClient, workspaceId: string) {
+    const res = await http.get<SoloFounderState>(
+      `/api/billing/solo-founder?workspaceId=${encodeURIComponent(workspaceId)}`
+    )
+    return res.data
+  },
+
   async createWorkspaceCheckout(http: HttpClient, params: WorkspaceCheckoutParams) {
     const res = await http.post<{ url?: string }>('/api/billing/workspace-checkout', params)
     return res.data
@@ -949,6 +1064,70 @@ export const api = {
       `/api/billing/invoices?workspaceId=${encodeURIComponent(workspaceId)}&limit=${limit}`,
     )
     return res.data?.invoices ?? []
+  },
+
+  /**
+   * POST /api/billing/change-plan/preview — what a plan change costs before the
+   * customer confirms it. Never opens a second Checkout.
+   */
+  async previewPlanChange(
+    http: HttpClient,
+    params: {
+      workspaceId: string
+      planId: string
+      billingInterval: 'monthly' | 'annual'
+      seats?: number
+      localMode?: boolean
+    },
+  ) {
+    const { localMode, ...body } = params
+    const res = await http.post<PlanChangePreview & { ok?: boolean }>(
+      `${billingApiBase(Boolean(localMode))}/change-plan/preview`,
+      body,
+    )
+    return res.data
+  },
+
+  /**
+   * POST /api/billing/change-plan — apply the change to the existing Stripe
+   * subscription. `prorationDate` comes from the preview so the charge matches
+   * what the customer was shown.
+   */
+  async changePlan(
+    http: HttpClient,
+    params: {
+      workspaceId: string
+      planId: string
+      billingInterval: 'monthly' | 'annual'
+      seats?: number
+      prorationDate?: number
+      localMode?: boolean
+    },
+  ) {
+    const { localMode, ...body } = params
+    const res = await http.post<PlanChangeResult>(
+      `${billingApiBase(Boolean(localMode))}/change-plan`,
+      body,
+    )
+    return res.data
+  },
+
+  /** POST /api/billing/cancel — cancel at period end; access runs to the end. */
+  async cancelSubscription(http: HttpClient, workspaceId: string, localMode = false) {
+    const res = await http.post<{ ok?: boolean; cancelAtPeriodEnd?: boolean; accessEndsAt?: string | null }>(
+      `${billingApiBase(localMode)}/cancel`,
+      { workspaceId },
+    )
+    return res.data
+  },
+
+  /** POST /api/billing/resume — undo a scheduled cancellation. */
+  async resumeSubscription(http: HttpClient, workspaceId: string, localMode = false) {
+    const res = await http.post<{ ok?: boolean; cancelAtPeriodEnd?: boolean; accessEndsAt?: string | null }>(
+      `${billingApiBase(localMode)}/resume`,
+      { workspaceId },
+    )
+    return res.data
   },
 
   /** GET /api/notifications/unread-count — unread inbox count for the bell badge. */
@@ -2543,6 +2722,18 @@ export const api = {
     return res.data?.chats ?? []
   },
 
+  async getActiveChatPeek(
+    http: HttpClient,
+    workspaceId: string,
+    chatSessionId: string,
+  ): Promise<ActiveChatPeek | null> {
+    const res = await http.get<ActiveChatPeek | { error: string }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/active-chats/${encodeURIComponent(chatSessionId)}/peek`,
+    )
+    if (!res.ok || (res.data && 'error' in res.data)) return null
+    return res.data as ActiveChatPeek
+  },
+
   /** Attach a project to an existing workspace session. */
   async attachProject(
     http: HttpClient,
@@ -3486,6 +3677,92 @@ export const api = {
   async getWorkspacePermissions(http: HttpClient, workspaceId: string) {
     const res = await http.get<{ ok?: boolean; data?: WorkspacePermissionsData }>(
       `/api/workspaces/${encodeURIComponent(workspaceId)}/permissions`,
+    )
+    return res.data?.data ?? null
+  },
+
+  /**
+   * GET /api/invite-links?workspaceId= — the workspace's shareable join links.
+   * The workspaceId rides in the query so a desktop cloud workspace routes the
+   * call through `/api/cloud/<id>` (SHO-454).
+   */
+  async getWorkspaceInviteLinks(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ ok?: boolean; items?: WorkspaceInviteLink[] }>(
+      `/api/invite-links?workspaceId=${encodeURIComponent(workspaceId)}`,
+    )
+    return res.data?.items ?? []
+  },
+
+  /** POST /api/invite-links — create a workspace join link with a role and expiry. */
+  async createWorkspaceInviteLink(
+    http: HttpClient,
+    params: { workspaceId: string; role: 'admin' | 'member' | 'viewer'; expiresInDays?: 7 | 30 | null },
+  ) {
+    const res = await http.post<{ ok?: boolean; data?: WorkspaceInviteLink }>(
+      `/api/invite-links?workspaceId=${encodeURIComponent(params.workspaceId)}`,
+      {
+        workspaceId: params.workspaceId,
+        role: params.role,
+        expiresInDays: params.expiresInDays === undefined ? 7 : params.expiresInDays,
+      },
+    )
+    return res.data?.data ?? null
+  },
+
+  /** PATCH /api/invite-links/:id — enable or disable a link (managers only). */
+  async setWorkspaceInviteLinkEnabled(http: HttpClient, workspaceId: string, linkId: string, enabled: boolean) {
+    await http.patch(
+      `/api/invite-links/${encodeURIComponent(linkId)}?workspaceId=${encodeURIComponent(workspaceId)}`,
+      { enabled },
+    )
+  },
+
+  /** DELETE /api/invite-links/:id — revoke a link (managers only). */
+  async deleteWorkspaceInviteLink(http: HttpClient, workspaceId: string, linkId: string) {
+    await http.delete(
+      `/api/invite-links/${encodeURIComponent(linkId)}?workspaceId=${encodeURIComponent(workspaceId)}`,
+    )
+  },
+
+  /**
+   * PATCH /api/workspaces/:id/invite-policy — who may invite (SHO-454).
+   * Owners and admins only (`workspace.settings:manage`).
+   */
+  async setWorkspaceInvitePolicy(
+    http: HttpClient,
+    workspaceId: string,
+    invitePolicy: 'members' | 'admins',
+  ) {
+    await http.patch(`/api/workspaces/${encodeURIComponent(workspaceId)}/invite-policy`, { invitePolicy })
+  },
+
+  /**
+   * POST /api/invitations — invite one address to a workspace by email.
+   *
+   * The `workspaceId` goes in the query as well as the body on purpose: on the
+   * desktop, `routePath` only rewrites a call to `/api/cloud/<id>/…` when the
+   * path or the query names the workspace, so a body-only workspaceId would
+   * send a cloud workspace's invitation to the local server (SHO-454).
+   */
+  async sendInvitation(
+    http: HttpClient,
+    params: { workspaceId: string; email: string; role: 'admin' | 'member' | 'viewer' },
+  ) {
+    const res = await http.post<{ ok?: boolean; data?: unknown }>(
+      `/api/invitations?workspaceId=${encodeURIComponent(params.workspaceId)}`,
+      { email: params.email, role: params.role, workspaceId: params.workspaceId, status: 'pending' },
+    )
+    return res.data?.data ?? null
+  },
+
+  /**
+   * POST /api/invitations/:id/resend — send a pending invitation's email again
+   * and push its expiry out another 7 days (SHO-454).
+   */
+  async resendInvitation(http: HttpClient, workspaceId: string, invitationId: string) {
+    const res = await http.post<{ ok?: boolean; data?: unknown }>(
+      `/api/invitations/${encodeURIComponent(invitationId)}/resend?workspaceId=${encodeURIComponent(workspaceId)}`,
+      {},
     )
     return res.data?.data ?? null
   },

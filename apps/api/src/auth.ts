@@ -25,6 +25,7 @@ import { getFrontendUrl } from "./lib/cloud-urls"
 import { homeRegionForNewUser } from "./lib/region"
 import { E2E_BOOTSTRAP_HEADER, isE2eBootstrapRequest } from "./lib/e2e-bootstrap-secret"
 import { isBlockedEmailDomain } from "./services/signup-risk-scoring"
+import { DEVICE_ID_COOKIE, readDeviceId } from "./services/signup-risk.service"
 import { checkSignupRateLimit, checkVerificationEmailRateLimit } from "./lib/signup-rate-limit"
 import { invalidateSignupTrustHold, getSignupTrustHold } from "./lib/signup-trust"
 import { getSharedRedis } from "./lib/tunnel-redis"
@@ -296,6 +297,45 @@ const signupRateLimitPlugin: BetterAuthPlugin = {
             },
             { "Retry-After": String(verdict.retryAfterSeconds) },
           )
+        }),
+      },
+    ],
+  },
+}
+
+/**
+ * Persist the client's device id in a first-party cookie (SHO-440).
+ *
+ * Google and Apple sign-ups are created on `/callback/:provider`, a top-level
+ * redirect that cannot carry the `x-shogo-device-id` header, so those accounts
+ * were scored with no device signal at all. The header *is* present on the
+ * request that starts the flow, so the cookie is set there and the browser
+ * sends it back on the callback and on every later checkout.
+ */
+const DEVICE_ID_COOKIE_MAX_AGE_SECONDS = 365 * 24 * 60 * 60
+
+const deviceIdCookiePlugin: BetterAuthPlugin = {
+  id: "shogo-device-id-cookie",
+  hooks: {
+    after: [
+      {
+        matcher(ctx) {
+          return ctx.path === "/sign-in/social" || ctx.path === "/sign-up/email"
+        },
+        handler: createAuthMiddleware(async (ctx) => {
+          const request = ctx.request as Request | undefined
+          const deviceId = readDeviceId(ctx.headers ?? request?.headers ?? null)
+          if (!deviceId) return
+          // Same domain/secure attributes as the session cookie, so the cookie
+          // is sent to the API host on the OAuth callback and on checkout.
+          const sessionAttributes = (ctx.context as any)?.authCookies?.sessionToken?.attributes ?? {}
+          ctx.setCookie(DEVICE_ID_COOKIE, deviceId, {
+            ...sessionAttributes,
+            httpOnly: true,
+            sameSite: "lax",
+            path: "/",
+            maxAge: DEVICE_ID_COOKIE_MAX_AGE_SECONDS,
+          })
         }),
       },
     ],
@@ -624,7 +664,7 @@ export const auth = betterAuth({
     return origins
   },
 
-  plugins: [expo(), projectAuthPlugin, signupRateLimitPlugin],
+  plugins: [expo(), projectAuthPlugin, signupRateLimitPlugin, deviceIdCookiePlugin],
 
   rateLimit: {
     window: 60,
@@ -707,6 +747,26 @@ export const auth = betterAuth({
   // Database hooks for auto-creating personal workspace on user signup
   // Task: task-org-002
   databaseHooks: {
+    session: {
+      create: {
+        /** Refuse session creation for banned users (covers all sign-in paths). */
+        before: async (session) => {
+          if (!isLocalMode && session.userId) {
+            const user = await prisma.user.findUnique({
+              where: { id: session.userId },
+              select: { bannedAt: true },
+            })
+            if (user?.bannedAt) {
+              throw new APIError('FORBIDDEN', {
+                code: 'ACCOUNT_SUSPENDED',
+                message: 'Account suspended. Contact support@shogo.ai.',
+              })
+            }
+          }
+          return { data: session }
+        },
+      },
+    },
     user: {
       create: {
         /**
@@ -809,6 +869,8 @@ export const auth = betterAuth({
               cookieHeader:
                 ctx?.request?.headers?.get?.('cookie') ?? ctx?.headers?.get?.('cookie') ?? '',
               method: signupProviderFromPath(ctx?.path),
+              email: user.email,
+              name: user.name,
             })
           } catch (err) {
             console.warn('[Attribution] signup attribution on signup failed', err)
@@ -898,16 +960,24 @@ export const auth = betterAuth({
           // verification emails to bot inboxes, and Loops started returning 429s.
           let heldSignup = false
           if (!isLocalMode) {
+            const signupRiskParams = {
+              userId: user.id,
+              email: user.email,
+              provider: signupProviderFromPath(ctx?.path),
+              emailVerified: Boolean(user.emailVerified),
+              headers: ctx?.request?.headers ?? ctx?.headers ?? null,
+            }
             try {
               const { assessNewSignup } = await import('./services/signup-risk.service')
               const { applyInitialSignupCredit } = await import('./services/signup-credit.service')
-              const risk = await assessNewSignup({
-                userId: user.id,
-                email: user.email,
-                provider: signupProviderFromPath(ctx?.path),
-                emailVerified: Boolean(user.emailVerified),
-                headers: ctx?.request?.headers ?? ctx?.headers ?? null,
-              })
+              // One retry on transient failure (a single DB blip should not cost the gate).
+              let risk
+              try {
+                risk = await assessNewSignup(signupRiskParams)
+              } catch {
+                await new Promise((r) => setTimeout(r, 500))
+                risk = await assessNewSignup(signupRiskParams)
+              }
               await applyInitialSignupCredit({ userId: user.id, result: risk })
               heldSignup = risk.band === 'high' && !user.emailVerified
               if (!heldSignup) {
@@ -917,10 +987,19 @@ export const auth = betterAuth({
                   score: risk.score,
                 }).catch(() => {})
               }
-            } catch (err) {
+            } catch (err: any) {
               // An assessment failure leaves the account unheld, so the emails
               // below go out exactly as they did before this gate existed.
               console.error(`[signup-risk] assessment failed for ${user.email}`, err)
+              // Stable marker line (grepable by dashboards) + analytics event so
+              // failures become countable without manual pod-log inspection.
+              console.error(
+                `[signup-risk] assessment_failed userId=${user.id} provider=${signupRiskParams.provider}`,
+              )
+              trackEvent(user.id, 'signup_risk_failed', {
+                provider: signupRiskParams.provider,
+                message: err?.message ?? String(err),
+              }).catch(() => {})
             }
           }
 

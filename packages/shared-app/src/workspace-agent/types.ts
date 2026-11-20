@@ -236,3 +236,25 @@ export interface AgentTaskSummary {
   createdAt: string
   updatedAt: string
 }
+
+/**
+ * Detail returned by `GET /workspaces/:id/active-chats/:sessionId/peek` on
+ * hover, so the client can show a card with more context without polling.
+ */
+export interface WorkspaceActiveChatPeek {
+  chatSessionId: string
+  turnId: string
+  title: string
+  agentName: string | null
+  startedAt: string
+  where: {
+    kind: string
+    conversationId: string | null
+    conversationName: string | null
+    threadRootId: string | null
+  }
+  card: { key: string; title: string; column: string } | null
+  trigger: { authorName: string; authorType: string; text: string; createdAt: string } | null
+  reply: { text: string; updatedAt: string } | null
+  hidden: boolean
+}

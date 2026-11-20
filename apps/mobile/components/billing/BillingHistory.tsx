@@ -6,11 +6,14 @@
  * Lets users see what they were charged (amount, date, status) and open the
  * hosted invoice / PDF without leaving the app or opening the Stripe portal.
  * Renders nothing while empty so free / never-charged workspaces stay clean.
+ *
+ * The billing page shows the last three with a "View all" toggle (SHO-451);
+ * the full list is one tap away rather than a wall of rows above the fold.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { View, Text, Pressable } from 'react-native'
 import * as WebBrowser from 'expo-web-browser'
-import { Receipt, ExternalLink } from 'lucide-react-native'
+import { Receipt, ExternalLink, FileText } from 'lucide-react-native'
 import { Card, CardContent, Skeleton } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../contexts/domain'
 import { api, type BillingInvoice } from '../../lib/api'
@@ -45,18 +48,31 @@ function statusStyle(status: string | null): { pill: string; text: string } {
   }
 }
 
-export function BillingHistory({ workspaceId }: { workspaceId: string | undefined }) {
+export function BillingHistory({
+  workspaceId,
+  limit = 12,
+  showViewAll = false,
+}: {
+  workspaceId: string | undefined
+  /** How many invoices to show before "View all" is tapped. */
+  limit?: number
+  /** Render a "View all" toggle that loads the full recent list. */
+  showViewAll?: boolean
+}) {
   const http = useDomainHttp()
   const [invoices, setInvoices] = useState<BillingInvoice[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+
+  const fetchLimit = expanded ? 12 : limit
 
   const load = useCallback(async () => {
     if (!workspaceId) return
     setIsLoading(true)
     setError(false)
     try {
-      const rows = await api.listInvoices(http, workspaceId)
+      const rows = await api.listInvoices(http, workspaceId, fetchLimit)
       setInvoices(rows)
     } catch (e) {
       console.error('[Billing] Failed to load invoices:', e)
@@ -64,7 +80,7 @@ export function BillingHistory({ workspaceId }: { workspaceId: string | undefine
     } finally {
       setIsLoading(false)
     }
-  }, [http, workspaceId])
+  }, [http, workspaceId, fetchLimit])
 
   useEffect(() => {
     void load()
@@ -73,6 +89,8 @@ export function BillingHistory({ workspaceId }: { workspaceId: string | undefine
   // Stay out of the way until there's something to show (free / never-charged
   // workspaces). Surface only the loading skeleton, then real rows.
   if (!isLoading && !error && invoices.length === 0) return null
+
+  const hasMore = showViewAll && !expanded && invoices.length >= limit
 
   return (
     <Card className="mb-4">
@@ -108,6 +126,11 @@ export function BillingHistory({ workspaceId }: { workspaceId: string | undefine
                       {formatDate(inv.created)}
                       {inv.number ? ` · ${inv.number}` : ''}
                     </Text>
+                    {inv.tax != null && inv.tax > 0 ? (
+                      <Text className="text-[11px] text-muted-foreground">
+                        incl. {formatAmount(inv.tax, inv.currency)} tax
+                      </Text>
+                    ) : null}
                   </View>
                   <View className="flex-row items-center gap-2">
                     <View className={`rounded-full px-2 py-0.5 ${badge.pill}`}>
@@ -115,6 +138,15 @@ export function BillingHistory({ workspaceId }: { workspaceId: string | undefine
                         {inv.status ?? 'unknown'}
                       </Text>
                     </View>
+                    {inv.invoicePdf ? (
+                      <Pressable
+                        onPress={() => WebBrowser.openBrowserAsync(inv.invoicePdf!)}
+                        hitSlop={8}
+                        accessibilityLabel="Download invoice PDF"
+                      >
+                        <FileText size={14} className="text-muted-foreground" />
+                      </Pressable>
+                    ) : null}
                     {url ? <ExternalLink size={14} className="text-muted-foreground" /> : null}
                   </View>
                 </View>
@@ -127,6 +159,11 @@ export function BillingHistory({ workspaceId }: { workspaceId: string | undefine
                 <View key={inv.id}>{RowInner}</View>
               )
             })}
+            {hasMore ? (
+              <Pressable onPress={() => setExpanded(true)} className="pt-2" testID="billing-view-all">
+                <Text className="text-xs font-medium text-primary">View all invoices</Text>
+              </Pressable>
+            ) : null}
           </View>
         )}
       </CardContent>

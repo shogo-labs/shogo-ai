@@ -8,7 +8,7 @@
  */
 
 import { memo, useState, useCallback, useMemo, useRef, useEffect } from "react"
-import { View, Text, Image, Pressable, Linking, Platform } from "react-native"
+import { View, Text, Image, Pressable, Platform } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { FileText } from "lucide-react-native"
 import type { UIMessage } from "@ai-sdk/react"
@@ -77,6 +77,8 @@ import {
   remoteProjectPathMap,
   resolveTurnFilePath,
 } from "../remote-project-paths"
+import { openExternalLink } from "../../../lib/open-external-link";
+import { decodeDataUrlText } from "../../../lib/data-url";
 
 /**
  * Throttle a streaming value so heavy downstream work (markdown parsing, part
@@ -400,10 +402,19 @@ function FileThumbnail({
   const servedFile = useMemo(() => parseInAppFileHref(url), [url])
   const openFile = useCallback(() => {
     if (servedFile && openShareFile) openShareFile(servedFile)
-    else Linking.openURL(url)
+    else void openExternalLink(url)
   }, [openShareFile, servedFile, url])
 
   const handlePress = useCallback(async () => {
+    // A `data:` URL is the file itself, not an address: Android throws on it
+    // (`Could not open URL 'data:…'`, SHOGO-ANDROID-1D), so the bytes are
+    // decoded here and shown in the app's own viewer (SHO-436).
+    const inline = decodeDataUrlText(url)
+    if (inline) {
+      setFileContent(inline.text)
+      setShowModal(true)
+      return
+    }
     if (!isTextLike) {
       openFile()
       return

@@ -25,6 +25,9 @@
 import { expect, test, type Page } from "@playwright/test"
 import { openTeamHome } from "./helpers"
 
+// This spec has its own CI job (`E2E (chat send body size)` in ci.yml); the
+// shard jobs exclude it via `OWN_ENTRY_SPECS` in playwright.config.ts (SHO-450).
+
 test.use({ video: "off", trace: "off" })
 
 /** Turns in the fixture: well past a page, with tool output on every one. */

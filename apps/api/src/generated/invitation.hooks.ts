@@ -15,6 +15,7 @@ import { getFrontendUrl } from "../lib/cloud-urls"
 import { canAssignProjectRole, canAssignWorkspaceRole, isWorkspaceRole, toProjectRole } from "@shogo/authz"
 import type { Principal } from "../lib/authz"
 import { hookAccess, hookCan, hookRequire } from "../lib/authz/hooks"
+import { canGrantWorkspaceRole, canInviteToWorkspace } from "../lib/workspace-invite-policy"
 import { assertTrialSeatRoom } from "../services/billing.service"
 import { trialSeatLimitMessage } from "../config/usage-plans"
 
@@ -73,6 +74,10 @@ async function getUserEmail(prisma: any, userId: string): Promise<string | null>
 /**
  * Whether the caller may invite (or manage invitations) at this scope, and,
  * when `role` is given, grant that role without escalating past their own.
+ *
+ * This is the *manager* rule: changing roles, removing members and revoking
+ * other people's invitations. Inviting itself is looser for a workspace — see
+ * `canInviteHere`, which also lets an Editor invite under the default policy.
  */
 async function canManageInvite(
   ctx: HookContext,
@@ -88,9 +93,31 @@ async function canManageInvite(
   if (opts.workspaceId) {
     const access = await hookAccess(ctx, { workspaceId: opts.workspaceId })
     if (role === undefined) return access.permissions.has('workspace.members:manage')
-    return isWorkspaceRole(role) && canAssignWorkspaceRole(access, role)
+    return canGrantWorkspaceRole(access, role)
   }
   return false
+}
+
+/**
+ * Whether the caller may create an invitation at this scope (SHO-454).
+ *
+ * A project invitation keeps the manager rule. A workspace invitation goes
+ * through `canInviteToWorkspace`, so an Editor can invite as Editor or Viewer
+ * while the workspace's `invitePolicy` allows it, and a Viewer never can.
+ */
+async function canInviteHere(
+  ctx: HookContext,
+  opts: { workspaceId?: string | null; projectId?: string | null },
+  role?: string,
+): Promise<boolean> {
+  if (opts.projectId) return canManageInvite(ctx, opts, role)
+  if (!opts.workspaceId) return false
+  const access = await hookAccess(ctx, { workspaceId: opts.workspaceId })
+  const workspace = await ctx.prisma.workspace.findUnique({
+    where: { id: opts.workspaceId },
+    select: { invitePolicy: true },
+  })
+  return canInviteToWorkspace(access, workspace, role)
 }
 
 /**
@@ -266,7 +293,7 @@ export const invitationHooks: InvitationHooks = {
     }
     if (!input.role) input.role = 'member'
 
-    if (!(await canManageInvite(ctx, { workspaceId: input.workspaceId, projectId }, input.role))) {
+    if (!(await canInviteHere(ctx, { workspaceId: input.workspaceId, projectId }, input.role))) {
       return { ok: false, error: { code: "forbidden", message: "You cannot invite with this role" } }
     }
 
@@ -292,6 +319,27 @@ export const invitationHooks: InvitationHooks = {
     if (!input.invitedBy && userId) input.invitedBy = userId
 
     if (input.email) input.email = input.email.toLowerCase()
+
+    // Inviting someone who is already in the scope creates a dead invite: the
+    // accept path refuses with `already_member` and the link can never be used
+    // (SHO-455). Refuse it here, where the inviter can see why.
+    if (input.email) {
+      const invitee = await ctx.prisma.user.findUnique({
+        where: { email: input.email },
+        select: { id: true },
+      })
+      if (invitee) {
+        const alreadyMember = await ctx.prisma.member.findFirst({
+          where: projectId
+            ? { userId: invitee.id, projectId }
+            : { userId: invitee.id, workspaceId: input.workspaceId, projectId: null },
+          select: { id: true },
+        })
+        if (alreadyMember) {
+          return { ok: false, error: { code: "already_member", message: `${input.email} is already a member` } }
+        }
+      }
+    }
 
     // Duplicate check. Only an active (non-expired) pending invite blocks a
     // re-invite; a pending row whose expiresAt is in the past is treated as
@@ -444,6 +492,18 @@ export const invitationHooks: InvitationHooks = {
       return { ok: false, error: { code: "bad_request", message: "Unsupported invitation update" } }
     }
 
+    // An accept is only ever the invitee's own action. A caller whose email is
+    // not the invited address — typically an admin signed in as themselves while
+    // opening someone else's link — must not be told "Admins can only cancel or
+    // reopen invitations": that is the wrong diagnosis, and it is the raw text
+    // the accept page used to show (SHO-455).
+    if (input.status === 'accepted') {
+      return {
+        ok: false,
+        error: { code: "wrong_account", message: "This invitation was sent to a different email address." },
+      }
+    }
+
     // Admin operations: never let a role change escalate past the caller.
     const scope = { workspaceId: invitation.workspaceId, projectId: invitation.projectId }
     if (!(await canManageInvite(ctx, scope, invitation.role))) {
@@ -477,7 +537,13 @@ export const invitationHooks: InvitationHooks = {
     }
 
     if (!(await canManageInvite(ctx, { workspaceId: invitation.workspaceId, projectId: invitation.projectId }))) {
-      return { ok: false, error: { code: "forbidden", message: "Only admins and owners can delete invitations" } }
+      // An Editor may revoke an invitation they created themselves, while the
+      // workspace's policy still lets them invite (SHO-454). Revoking anyone
+      // else's stays a manager action.
+      const ownInvite = !!invitation.invitedBy && invitation.invitedBy === userId
+      if (!ownInvite || !(await canInviteHere(ctx, { workspaceId: invitation.workspaceId, projectId: invitation.projectId }))) {
+        return { ok: false, error: { code: "forbidden", message: "Only admins and owners can delete invitations" } }
+      }
     }
 
     return { ok: true }

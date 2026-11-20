@@ -31,6 +31,9 @@ model User {
   lastSeenAnnouncementVersion String?
   onboardingIntent    String?
   buddyLook           String?
+  bannedAt            DateTime?
+  banReason           String?
+  bannedByUserId      String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -42,8 +45,37 @@ model User {
   agentTasks      AgentTask[]
   agentSchedules  AgentSchedule[]
   mobilePushSubscriptions MobilePushSubscription[]
+  abuseFlagsAsSubject AbuseFlag[] @relation("AbuseFlagUser")
+  abuseFlagsAsDecider AbuseFlag[] @relation("AbuseFlagDecider")
 
   @@map("users")
+}
+
+model AbuseFlag {
+  id              String    @id @default(uuid())
+  userId          String
+  runDate         String
+  category        String
+  severity        Int
+  confidence      String
+  summary         String
+  evidence        Json
+  clusterKey      String?
+  status          String    @default("flagged")
+  decidedByUserId String?
+  decidedAt       DateTime?
+  digestId        String?
+  model           String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user            User      @relation("AbuseFlagUser", fields: [userId], references: [id], onDelete: Cascade)
+  decidedBy       User?     @relation("AbuseFlagDecider", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, runDate, category])
+  @@index([status, createdAt])
+  @@index([clusterKey])
+  @@map("abuse_flags")
 }
 
 model Session {
@@ -114,6 +146,10 @@ model Workspace {
   // UTC day through which the disk add-on has been billed. Unused on desktop
   // (local mode has no billing job); kept for schema parity.
   diskAddonBilledThrough DateTime?
+  // Who may invite people to this workspace (SHO-454). "members" (the default
+  // when null) lets any Editor invite as Editor or Viewer; "admins" restricts
+  // inviting to owners and admins. Viewers can never invite.
+  invitePolicy String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -124,15 +160,71 @@ model Workspace {
   inviteLinks     InviteLink[]
   folders         Folder[]
   subscriptions   Subscription[]
+  courseEnrollments   CourseEnrollment[]
   usageWallets    UsageWallet[]
   usageEvents     UsageEvent[]
-  starredProjects StarredProject[]
-  agentTasks      AgentTask[]
-  agentSchedules  AgentSchedule[]
-  agentProfile    WorkspaceAgentProfile?
-  goals           Goal[]
+  starredProjects        StarredProject[]
+  agentTasks             AgentTask[]
+  agentSchedules         AgentSchedule[]
+  agentProfile           WorkspaceAgentProfile?
+  goals                  Goal[]
+  accessPolicies         AccessPolicy[]
+  accessAuditEvents      AccessAuditEvent[]
+  whatsappNumberBindings WhatsAppNumberBinding[]
 
   @@map("workspaces")
+}
+
+// ============================================================================
+// Workspace RBAC (SHO-417) — desktop mirror of prisma/schema.local.prisma.
+// ============================================================================
+
+model AccessPolicy {
+  id          String @id @default(uuid())
+  workspaceId String
+  /// `role` | `group` | `member`
+  subjectType String
+  /// Role name, `UserGroup.id`, or `User.id` — polymorphic, so no FK.
+  subjectId   String
+  /// JSON array of ability names. Null on a role row = the built-in default.
+  abilities   String?
+  /// JSON array of model tiers. Null with `modelIds` null = everything.
+  modelTiers  String?
+  /// JSON array of explicit model ids.
+  modelIds    String?
+  defaultModelId  String?
+  spendCapUsd     Float?
+  /// `day` | `week` | `month`
+  spendPeriod     String?
+  requestsPerHour Int?
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, subjectType, subjectId])
+  @@index([workspaceId])
+  @@map("access_policies")
+}
+
+model AccessAuditEvent {
+  id               String   @id @default(uuid())
+  workspaceId      String
+  actorUserId      String?
+  onBehalfOfUserId String?
+  kind             String
+  permission       String?
+  modelId          String?
+  subject          String?
+  detail           String?
+  createdAt        DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, kind, createdAt])
+  @@map("access_audit_events")
 }
 
 model WorkspaceAgentProfile {
@@ -1184,6 +1276,39 @@ model LocalConfig {
 }
 
 // =============================================================================
+// COURSES (SHO-428)
+// ======================================================================
+
+
+/// One purchase of a paid course. Same shape as the cloud model in
+/// prisma/schema.prisma; local mode has no Stripe, so rows come from the
+/// license-key / admin paths and from a cloud-synced workspace.
+model CourseEnrollment {
+  id                      String    @id @default(uuid())
+  courseId                String
+  userId                  String
+  workspaceId             String
+  source                  String
+  stripeCheckoutSessionId String?   @unique
+  stripeSubscriptionId    String?
+  status                  String
+  purchasedAt             DateTime
+  installStatus           String    @default("pending")
+  installError            String?
+  packBindings            Json?
+  courseBoardId           String?
+  progress                Json?
+  completedAt             DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, courseId])
+  @@index([workspaceId])
+  @@map("course_enrollments")
+}
+// =============================================================================
 // VM COMPUTE METERING (SHO-424) — mirrored from prisma/schema.local.prisma
 // =============================================================================
 // Empty in local mode: compute billing is a cloud concern and the hourly job
@@ -1225,5 +1350,46 @@ model VmMeterCursor {
   @@unique([hostId, vmId, assignedAt])
   @@index([lastSeenAt])
   @@map("vm_meter_cursors")
+}
+
+// =============================================================================
+// WHATSAPP PLATFORM BINDINGS (Meta Tech Provider — Embedded Signup)
+// =============================================================================
+
+model WhatsAppNumberBinding {
+  id                 String    @id @default(cuid())
+  workspaceId        String
+  projectId          String
+  instanceId         String?
+
+  phoneNumberId        String    @unique
+  wabaId               String
+  businessId           String?
+  displayPhoneNumber   String?
+  verifiedName         String?
+
+  coexistence Boolean @default(false)
+
+  tokenEncrypted       String
+  pinEncrypted         String?
+
+  contactsSyncRequestId  String?
+  historySyncRequestId   String?
+  syncStartedAt          DateTime?
+
+  status       String @default("active")
+  statusReason String?
+
+  connectedByUserId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([wabaId])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("whatsapp_number_bindings")
 }
 

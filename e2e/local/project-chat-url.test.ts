@@ -16,6 +16,7 @@
  *   E2E_LOCAL_START_STACK=1 npx playwright test --config e2e/local/playwright.config.ts project-chat-url
  */
 import { expect, test, type Page } from "@playwright/test"
+import { writeActiveWorkspaceSelection } from "./helpers"
 
 const API = process.env.E2E_API_URL || "http://localhost:8002"
 
@@ -77,10 +78,9 @@ async function stubProjectRuntime(page: Page) {
 }
 
 async function useTeamWorkspace(page: Page) {
-  await page.evaluate((id) => {
-    localStorage.setItem("shogo:active-workspace-id", id)
-    localStorage.setItem("shogo:active-workspace-kind", "team")
-  }, workspaceId)
+  // Both stores: this tab has already booted, so its own `sessionStorage`
+  // selection is what the app reads and the shared default alone moves nothing.
+  await page.evaluate(writeActiveWorkspaceSelection, [workspaceId, "team"] as const)
 }
 
 /** Stub the runtime, land on the app (localStorage needs a document) and pick the team workspace. */
@@ -228,11 +228,7 @@ test.describe("Project chat URL (local)", () => {
     expect(await page.evaluate(() => history.length)).toBe(entriesBefore)
   })
 
-  // SHO-174: a cold load of ?chatSessionId=<chat> opens the project's pinned
-  // chat, not the one in the URL — on origin/main too, i.e. this PR neither
-  // causes nor fixes the read side. Kept as fixme so it starts enforcing the
-  // moment SHO-174 lands instead of either going red or being deleted.
-  test.fixme("a copied URL opens that exact chat, and a reload keeps it", async ({ page }) => {
+  test("a copied URL opens that exact chat, and a reload keeps it", async ({ page }) => {
     const loads = trackChatLoads(page)
     await prepare(page)
     await openProject(page, `?chatSessionId=${bravoId}`)

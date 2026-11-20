@@ -46,6 +46,15 @@ const PPTX = zipSync({
   ),
 })
 
+const ODP = zipSync({
+  'content.xml': enc(
+    '<office:document-content><office:body><office:presentation>'
+    + '<draw:page draw:name="page1"><text:p>Agenda</text:p><text:p>Budget</text:p></draw:page>'
+    + '<draw:page draw:name="page2"><text:p>Wrap up</text:p></draw:page>'
+    + '</office:presentation></office:body></office:document-content>',
+  ),
+})
+
 const XLSX = zipSync({
   'xl/sharedStrings.xml': enc('<sst><si><t>Region</t></si><si><t>EMEA</t></si><si><t>APAC</t></si></sst>'),
   'xl/workbook.xml': enc('<workbook><sheets><sheet name="Q3" sheetId="1"/></sheets></workbook>'),
@@ -120,6 +129,23 @@ describe('what the extractor derives from a file', () => {
     const content = await fileText.extractAttachmentContent(PPTX, PPTX_MIME, 'deck.pptx')
     expect(content.text).toBe('Kickoff\nGoals\nRoadmap')
     expect(content.preview).toMatchObject({ kind: 'slides', title: 'Kickoff', bullets: ['Goals'], count: 2 })
+  })
+
+  test('every OOXML deck extension reads as the same deck (SHO-426)', async () => {
+    for (const name of ['deck.pptm', 'deck.ppsx', 'deck.ppsm', 'deck.potx', 'deck.potm']) {
+      const content = await fileText.extractAttachmentContent(PPTX, '', name)
+      expect(content.preview).toMatchObject({ kind: 'slides', title: 'Kickoff', count: 2 })
+    }
+  })
+
+  test('an OpenDocument deck becomes per-slide text, labelled as a deck (SHO-426)', async () => {
+    const content = await fileText.extractAttachmentContent(
+      ODP,
+      'application/vnd.oasis.opendocument.presentation',
+      'pitch.odp',
+    )
+    expect(content.text).toBe('Agenda\nBudget\nWrap up')
+    expect(content.preview).toMatchObject({ kind: 'slides', title: 'Agenda', bullets: ['Budget'], count: 2 })
   })
 
   test('a spreadsheet becomes a real grid with its sheet name, not a bag of strings', async () => {

@@ -67,6 +67,7 @@ import { sendMemberRemovedEmail } from "../services/email.service"
 import { assertTrialSeatRoom, syncSeatsFromMembership } from "../services/billing.service"
 import { trialSeatLimitMessage } from "../config/usage-plans"
 import { removeMembership } from "../services/membership.service"
+import { invalidateAccess } from "../services/access-policy.service"
 
 const userInclude = {
   user: {
@@ -121,6 +122,10 @@ export const memberHooks: MemberHooks = {
   afterCreate: async (record, ctx) => {
     if (!record.workspaceId || record.projectId) return
 
+    // A re-added member may still have a cached entry from before they left
+    // (SHO-417, AC2).
+    invalidateAccess(record.workspaceId)
+
     // Cursor-style active-seat billing: when an accepted member joins the
     // workspace, bump the Stripe seat quantity (and local Subscription /
     // UsageWallet allocation). Project-only memberships don't bill seats.
@@ -137,6 +142,15 @@ export const memberHooks: MemberHooks = {
         prisma: ctx.prisma,
       }))
       .catch(() => {})
+  },
+
+  /**
+   * A role change swaps which role policy applies, so the member's cached
+   * access must go (SHO-417, AC2). `beforeUpdate` has already validated it.
+   */
+  afterUpdate: async (record, ctx) => {
+    if (!record.workspaceId || record.projectId) return
+    invalidateAccess(record.workspaceId)
   },
 
   beforeGet: async (id, ctx) => {
@@ -216,19 +230,31 @@ export const memberHooks: MemberHooks = {
       isBillingAdmin: !!input.isBillingAdmin,
     }
 
-    // Self-join via accepted invitation: the invitation decides the role.
+    // Self-join via invitation: the invitation decides the role.
+    //
+    // The client creates the member *before* it marks the invitation accepted
+    // (SHO-422, so a refused seat does not burn the link), so on a first accept
+    // the row is still `pending` here. Matching only `accepted` made every
+    // first-time accept fall through to the role check and 403 (SHO-455).
     if (input.userId === userId) {
       const user = await ctx.prisma.user.findUnique({ where: { id: userId }, select: { email: true } })
       if (user) {
-        const invitation = await ctx.prisma.invitation.findFirst({
-          where: {
-            email: user.email.toLowerCase(),
-            status: 'accepted',
-            ...(projectId ? { projectId } : { workspaceId, projectId: null }),
-          },
-          orderBy: { updatedAt: 'desc' },
-          select: { role: true },
-        })
+        const email = user.email.toLowerCase()
+        const scope = projectId ? { projectId } : { workspaceId, projectId: null }
+        // The invite being consumed right now is `pending`; an `accepted` one is
+        // a replay of an accept that already created the member. A pending row
+        // past its `expiresAt` is expired and must not grant a join.
+        const invitation =
+          (await ctx.prisma.invitation.findFirst({
+            where: { email, ...scope, status: 'pending', expiresAt: { gt: new Date() } },
+            orderBy: { updatedAt: 'desc' },
+            select: { role: true },
+          })) ??
+          (await ctx.prisma.invitation.findFirst({
+            where: { email, ...scope, status: 'accepted' },
+            orderBy: { updatedAt: 'desc' },
+            select: { role: true },
+          }))
         if (invitation) {
           const role = projectId ? toProjectRole(invitation.role) : invitation.role
           if (!role) return { ok: false, error: { code: "bad_request", message: "Invalid invitation role" } }

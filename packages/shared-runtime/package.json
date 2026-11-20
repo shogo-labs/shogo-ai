@@ -13,6 +13,7 @@
     "./publish-timeouts": "./src/publish-timeouts.ts",
     "./project-transfer-limits": "./src/project-transfer-limits.ts",
     "./repo-bundles": "./src/repo-bundles.ts",
+    "./repo-reconcile": "./src/repo-reconcile.ts",
     "./shogo-state-paths": "./src/shogo-state-paths.ts",
     "./checkpoint-repo-repair": "./src/checkpoint-repo-repair.ts",
     "./sse-keepalive": "./src/sse-keepalive.ts",
@@ -27,7 +28,8 @@
     "./published-schema": "./src/published-schema.ts",
     "./byte-range": "./src/byte-range.ts",
     "./published-image-ref": "./src/published-image-ref.ts",
-    "./standalone": "./src/standalone.ts"
+    "./standalone": "./src/standalone.ts",
+    "./whatsapp-graph": "./src/whatsapp-graph.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

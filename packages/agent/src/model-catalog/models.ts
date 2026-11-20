@@ -36,6 +36,7 @@ export type BillingModel =
   | 'gpt-6-astra' | 'gpt-6-sol' | 'gpt-6-luna' | 'gpt-5.6-sol' | 'gpt-5.6-terra' | 'gpt-5.6-luna' | 'gpt-live-1'
   | 'claude-opus-5-5' | 'claude-haiku-5-5'
   | 'gemini-3-1-pro' | 'gemini-3-8-flash' | 'gemini-3-5-flash-lite' | 'gemini-4-argon'
+  | 'gemini-4-carbon' | 'gemini-4-neon' | 'gemini-4-hydrogen'
 export type AgentMode = 'basic' | 'advanced'
 
 /**
@@ -246,6 +247,13 @@ export interface VideoModelEntry {
   usdPerSecondByResolution?: Record<string, number>
   /** Most reference images (character/object elements) one request accepts. */
   maxReferenceImages: number
+  /** Most reference audio clips (recorded voice tracks) one request accepts. 0 when the model takes none. */
+  maxReferenceAudio: number
+  /**
+   * Endpoint that takes reference images and audio together, so a clip can
+   * lip-sync to a recorded voice. Absent when the model has no such endpoint.
+   */
+  referenceToVideoApiModel?: string
   bestFor?: string
   /** Still routable but superseded — see `ImageModelEntry.deprecated`. */
   deprecated?: boolean
@@ -667,6 +675,21 @@ export const MODEL_CATALOG = {
   // steps up above 200k input tokens ($4/$18 per 1M vs $2/$12) and
   // `MODEL_DOLLAR_COSTS` is a flat per-bucket table, so serving the long
   // context would be billed at the short-context rate. Cap it instead.
+  'gemini-4-carbon': {
+    id: 'gemini-4-carbon',
+    provider: 'google',
+    apiModel: 'gemini-4-carbon',
+    displayName: 'Gemini 4 Carbon',
+    shortDisplayName: 'Carbon',
+    tier: 'premium',
+    family: 'gemini',
+    generation: 'current',
+    billingModel: 'gemini-4-carbon',
+    contextWindow: 1_048_576,
+    maxOutputTokens: 65_536,
+    reasoningEffort: 'medium',
+    description: "Google's strongest reasoner: deep maths, complex software engineering and long-horizon agentic tasks.",
+  },
   'gemini-4-argon': {
     id: 'gemini-4-argon',
     provider: 'google',
@@ -678,9 +701,39 @@ export const MODEL_CATALOG = {
     generation: 'current',
     billingModel: 'gemini-4-argon',
     contextWindow: 1_048_576,
-    maxOutputTokens: 1_048_576,
+    maxOutputTokens: 65_536,
     reasoningEffort: 'high',
-    description: 'Google\'s flagship reasoner: complex software engineering, deep maths and long-decode generation up to 1M tokens.',
+    description: "Google's flagship reasoner: complex software engineering, deep maths and multimodal analysis.",
+  },
+  'gemini-4-neon': {
+    id: 'gemini-4-neon',
+    provider: 'google',
+    apiModel: 'gemini-4-neon',
+    displayName: 'Gemini 4 Neon',
+    shortDisplayName: 'Neon',
+    tier: 'premium',
+    family: 'gemini',
+    generation: 'current',
+    billingModel: 'gemini-4-neon',
+    contextWindow: 1_048_576,
+    maxOutputTokens: 65_536,
+    reasoningEffort: 'medium',
+    description: 'Fast frontier model: low-latency reasoning for time-sensitive agent turns.',
+  },
+  'gemini-4-hydrogen': {
+    id: 'gemini-4-hydrogen',
+    provider: 'google',
+    apiModel: 'gemini-4-hydrogen',
+    displayName: 'Gemini 4 Hydrogen',
+    shortDisplayName: 'Hydrogen',
+    tier: 'standard',
+    family: 'gemini',
+    generation: 'current',
+    billingModel: 'gemini-4-hydrogen',
+    contextWindow: 1_048_576,
+    maxOutputTokens: 65_536,
+    reasoningEffort: 'low',
+    description: 'Everyday workhorse: fast, affordable, and capable enough for most agent sub-tasks.',
   },
   'gemini-3.1-pro-preview': {
     id: 'gemini-3.1-pro-preview',
@@ -928,6 +981,7 @@ export const GOOGLE_VIDEO_MODELS = {
     defaultResolution: '720p',
     usdPerSecondByResolution: { '360p': 0.023, '720p': 0.07, '1080p': 0.104, '4k': 0.209 },
     maxReferenceImages: 6,
+    maxReferenceAudio: 0,
     audio: true,
     lastFrame: true,
     endpoints: ['gemini-omni-1.2-flash'],

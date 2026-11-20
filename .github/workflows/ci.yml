@@ -43,14 +43,25 @@ on:
   # build that motivated it. Manual dispatch gives a fresh run against the
   # current file without pushing a no-op commit to main.
   workflow_dispatch:
+  # The local-mode E2E matrix used to be PR-only (see the `e2e-local` job), so a
+  # regression in it could only be seen on someone's PR — and when it went red
+  # on every PR nobody could tell which PR caused it, so it sat red for weeks
+  # (SHO-447). A nightly run on main gives the same suite a home where a red is
+  # attributable to a commit on main, and where it is caught before it reaches a
+  # PR. One run of the matrix is ~250 runner-minutes (~$1.50), not the ~7,950
+  # min/day the PR runs cost, so this is cheap.
+  schedule:
+    - cron: '17 3 * * *'
 
 permissions: {}
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
-  # Preserve cache-populating main runs; superseded PR and merge-group runs
-  # are safe to cancel.
-  cancel-in-progress: ${{ github.event_name != 'push' }}
+  # The nightly gets its own group so it never cancels, or queues behind, a
+  # push/PR run on main.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || (github.head_ref || github.ref_name) }}
+  # Preserve cache-populating main runs and the nightly local-mode run;
+  # superseded PR and merge-group runs are safe to cancel.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 jobs:
   # One prelude instead of two. Both answers below are needed before anything
@@ -333,6 +344,13 @@ jobs:
           TYPECHECK_EXCLUDE: apps/mobile
         run: bun run typecheck
 
+      # apps/api is in run-typecheck.ts's EXPECTED_FAIL set, so the step above
+      # skips it. This gates it on *new* errors against a baseline of the
+      # existing debt (SHO-459 shipped invalid Prisma queries that tsc flags).
+      - name: Typecheck apps/api/src (no new errors vs baseline)
+        if: needs.prelude.outputs.verified != 'true'
+        run: bun scripts/ci/api-typecheck-ratchet.ts
+
       - name: Higgsfield docs drift
         if: needs.prelude.outputs.verified != 'true'
         # The committed vendor snapshot is the contract for every media endpoint
@@ -592,21 +610,39 @@ jobs:
     # DB. These specs previously only ran on developer machines.
     name: ${{ matrix.name }}
     needs: prelude
-    # PR-only, and app-code PRs only. This matrix is not in the required `ci`
-    # aggregator's `needs`, so on `merge_group` and `push` it gates nothing —
-    # it only burns runner slots (15,905 min ≈ $95 gross over two days). A
-    # docs-only PR cannot change local-mode behaviour either. Do not add it to
-    # the aggregator.
-    if: github.event_name == 'pull_request' && needs.prelude.outputs.app == 'true'
+    # PRs, plus the nightly run on main (SHO-447). This matrix is not in the
+    # required `ci` aggregator's `needs`, so on `merge_group` and `push` it
+    # gates nothing — it only burns runner slots (15,905 min ≈ $95 gross over
+    # two days). A docs-only PR cannot change local-mode behaviour either. Do
+    # not add it to the aggregator.
+    #
+    # It used to be PR-only, which meant a regression here could only be seen
+    # on someone's PR: when it went red on every PR nobody could tell which PR
+    # caused it, so it sat red for weeks (SHO-447). The nightly `schedule` run
+    # on main is where a red is attributable to a commit, and where it is
+    # caught before it reaches a PR. `prelude` reports `app=true` for any
+    # non-PR event, so the nightly runs the whole matrix.
+    if: (github.event_name == 'pull_request' || github.event_name == 'schedule') && needs.prelude.outputs.app == 'true'
     # Playwright 1.58 has no ubuntu26.04 deps; unpin when @playwright/test supports it
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: 'E2E (local mode) (1/3)', shard: '1/3' }
-          - { name: 'E2E (local mode) (2/3)', shard: '2/3' }
-          - { name: 'E2E (local mode) (3/3)', shard: '3/3' }
+          - { name: 'E2E (local mode) (1/5)', shard: '1/5' }
+          - { name: 'E2E (local mode) (2/5)', shard: '2/5' }
+          - { name: 'E2E (local mode) (3/5)', shard: '3/5' }
+          - { name: 'E2E (local mode) (4/5)', shard: '4/5' }
+          - { name: 'E2E (local mode) (5/5)', shard: '5/5' }
+          # chat-return-to-live-chat (SHO-450): the two heaviest non-fake-model
+          # files in shard 2/5 on run 44494233963 were chat-return-to-live-chat
+          # (5.5m) and chat-resume-replay-storm (3.1m), leaving only 0.9m of
+          # headroom. Moving them to their own jobs drops shard 2/5 from 34.1m
+          # to ≈25m and gives each of their own jobs ≈13m (5–6m test + ≈8m
+          # boot), well within the 35m cap. Neither spec needs the fake model:
+          # both mock the turn at the browser level.
+          - { name: 'E2E (chat return to live)', spec: 'chat-return-to-live-chat' }
+          - { name: 'E2E (chat resume storm)', spec: 'chat-resume-replay-storm' }
           # These specs all need the API pointed at the fake model, which
           # would change every other spec, so they get stacks of their own.
           # They are FOUR jobs, not one (SHO-251): on one worker, all 27 tests
@@ -694,16 +730,34 @@ jobs:
           # Left in the shards it was never reached: shard 3 hit its 40m cap
           # before the file started, so AC1's e2e proof ran nowhere (SHO-122).
           - { name: 'E2E (chat send body size)', spec: 'chat-send-body-size' }
+          # slides-preview (SHO-426) shares the chat mock and needs no model: it
+          # renders a real 3-slide deck in a sandboxed frame from the team-chat
+          # viewer and from a `share_file` chip. Own entry, not a place in the
+          # shards — shard 3 has hit its 35 min cap in both runs since the spec
+          # landed, so the file was never reached and proved nothing (SHO-122);
+          # alone it measures ~3 min on a booted stack.
+          - { name: 'E2E (slides preview)', spec: 'slides-preview' }
     permissions:
       contents: read
     # 35, not 60: a wedged E2E job holds the whole merge queue for the length
     # of this cap (23:55–01:25Z on 2026-10-20, three entries, ~75 min). Measured
-    # on a green PR run: local shards 11–13 min, so 35 keeps ~10 min of headroom
-    # and still halves the worst case. One number for the whole matrix on
+    # on green PR run 44494233963: shards 16–34 min (1/5 20.0m, 2/5 34.1m,
+    # 3/5 17.3m, 4/5 22.5m, 5/5 16.1m), so after the SHO-450 rebalance that
+    # moves the two heaviest shard-2 files to own jobs, the expected range drops
+    # to 16–26m with ≥ 9 min of headroom. One number for the whole matrix on
     # purpose: the chat jobs measure 15, 7, 9 and 5 min on CI (SHO-251), all
     # well under 60% of it, and a per-entry cap via `${{ matrix.timeout }}`
     # turned out to mean NO cap at all for entries without the key — a job ran
     # 39 min until its run was superseded. Keep this a literal.
+    #
+    # The shards are FIVE, not three, since 2026-11-19 (SHO-383): the local
+    # suite grew to ~378 tests and every one of the three shards was at this cap
+    # in the same run — 1/3 passed at 33m49s, 2/3 at 30m05s, and 3/3 was
+    # cancelled at 35m18s with 23 of its 126 tests never reached. That is not a
+    # hang: a local test measures ~17–20 s plus ~5 min of stack boot, so the
+    # third of the suite that each job got simply cost more than 35 min. SHO-450
+    # rebalanced shard 2/5 (measured at 34.1m, 0.9m headroom) by moving its two
+    # heaviest files to own-entry jobs; the five-shard count stays the same.
     timeout-minutes: 35
 
     steps:
@@ -766,6 +820,12 @@ jobs:
         if: ${{ !matrix.spec }}
         env:
           E2E_LOCAL_START_STACK: '1'
+          # Specs that have their own entry in this matrix are listed in
+          # `OWN_ENTRY_SPECS` in e2e/local/playwright.config.ts, which adds
+          # them to `testIgnore` when this is set so they are neither run nor
+          # counted in the shard's file total. Add a new own-entry spec there,
+          # not in the spec file itself (SHO-450).
+          E2E_SHARD: ${{ matrix.shard }}
         run: npx playwright test --config e2e/local/playwright.config.ts --project=chromium --shard=${{ matrix.shard }}
 
       - name: Run e2e/local (${{ matrix.spec }})

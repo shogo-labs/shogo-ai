@@ -168,7 +168,11 @@ describe('AC2 — every documented endpoint and field reaches a model', () => {
           wrong.push(`${entry.id} → ${endpoint} is not documented`)
           continue
         }
-        if (!allowed.includes(documented.kind)) {
+        // The vendor classes every `*/reference-to-video` endpoint `other`, so a
+        // model's declared reference endpoint is the one place `other` is right.
+        // Everything else a model declares must still be a generation endpoint.
+        const isReference = kind === 'video' && entry.referenceToVideoApiModel === endpoint
+        if (!allowed.includes(documented.kind) && !(isReference && documented.kind === 'other')) {
           wrong.push(`${entry.id} → ${endpoint} is a '${documented.kind}' endpoint, not a '${kind}' one`)
         }
       }

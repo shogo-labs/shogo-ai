@@ -5,7 +5,6 @@ import Markdown, { Renderer } from "react-native-marked";
 import type { MarkedStyles } from "react-native-marked";
 import { useColorScheme } from "nativewind";
 import {
-  Linking,
   ScrollView,
   Text,
   useWindowDimensions,
@@ -30,6 +29,7 @@ import {
 import { MarkdownMediaNative } from "./MarkdownMediaNative";
 import { useShareFileOpener, type ShareFileTarget } from "./share-file-context";
 import { parseInAppFileHref } from "../../lib/share-file-links";
+import { openExternalLink } from "../../lib/open-external-link";
 import { withHardBreaks } from "../../lib/markdown-breaks";
 import { normalizeRichTextPaste } from "../../lib/rich-text-paste";
 import { usePhoneLayout } from "../../lib/native-phone-layout";
@@ -476,7 +476,7 @@ class NativePhoneMarkdownRenderer extends Renderer {
           accessibilityRole="link"
           key={this.getKey()}
           onPress={() => {
-            if (!handle(href)) void Linking.openURL(href).catch(() => {});
+            if (!handle(href)) void openExternalLink(href);
           }}
           style={styles}
         >

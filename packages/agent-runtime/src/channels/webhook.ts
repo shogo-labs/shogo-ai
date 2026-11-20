@@ -11,27 +11,97 @@
  *   POST /agent/channels/webhook/incoming
  *   Body: { "message": "...", "senderId?": "...", "senderName?": "...",
  *           "callbackUrl?": "https://...", "metadata?": {...} }
- *   → Sync mode (no callbackUrl):  returns { "reply": "..." }
- *   → Async mode (with callbackUrl): returns 202, POSTs reply to callbackUrl
+ *   → Sync mode (no callbackUrl):         200 { reply, correlationId }
+ *   → Sync mode (timeout):                202 { status: "pending", correlationId, outboxUrl }
+ *   → Async mode (with callbackUrl):      202 { status: "accepted" }
  *
  * Auth:
- *   If a `secret` is configured, requests must include:
- *     Authorization: Bearer <secret>   OR   X-Webhook-Secret: <secret>
+ *   Every request must include the channel secret in X-Webhook-Secret.
+ *   A personal shogo_sk_* API key is NOT needed — the cloud agent-proxy
+ *   lets this endpoint through without one (SHO-462).
  *
  * Outbound (sendMessage):
  *   If the channelId is a URL (starts with http), POSTs the reply there.
  *   Otherwise, queues it for the next poll from that channelId.
  *
  * Config keys:
- *   secret          — shared secret for authenticating inbound requests (optional)
+ *   secret          — shared secret for authenticating inbound requests (auto-generated if absent)
  *   callbackUrl     — default callback URL for async replies (optional)
  *   callbackHeaders — JSON-encoded headers to send with callbacks (optional)
  */
 
+import { timingSafeEqual, createHash, randomBytes } from 'crypto'
 import type { ChannelAdapter, IncomingMessage, ChannelStatus } from '../types'
 
+// ---------------------------------------------------------------------------
+// Outbox — bounded in-memory store for poll-based consumers
+// ---------------------------------------------------------------------------
+
+/** Outbox entry with a TTL timestamp */
+interface OutboxEntry {
+  message: string
+  expiresAt: number
+}
+
+const MAX_OUTBOX_IDS = 1_000
+const MAX_OUTBOX_MESSAGES_PER_ID = 100
+const OUTBOX_TTL_MS = 24 * 60 * 60 * 1_000 // 24 h
+
 /** Pending outbound messages keyed by channelId for poll-based consumers */
-const outboxes = new Map<string, string[]>()
+const outboxes = new Map<string, OutboxEntry[]>()
+
+function outboxPut(channelId: string, message: string): void {
+  // Prune expired entries from this id first
+  const now = Date.now()
+  const existing = outboxes.get(channelId) ?? []
+  const fresh = existing.filter((e) => e.expiresAt > now)
+
+  fresh.push({ message, expiresAt: now + OUTBOX_TTL_MS })
+
+  // Per-id cap: drop oldest first
+  const capped = fresh.length > MAX_OUTBOX_MESSAGES_PER_ID
+    ? fresh.slice(fresh.length - MAX_OUTBOX_MESSAGES_PER_ID)
+    : fresh
+
+  if (capped.length < fresh.length) {
+    console.warn(`[Webhook] Outbox for ${channelId.slice(0, 40)} hit ${MAX_OUTBOX_MESSAGES_PER_ID}-message cap; oldest entries dropped`)
+  }
+
+  outboxes.set(channelId, capped)
+
+  // Global id cap: evict the least-recently-written id
+  if (outboxes.size > MAX_OUTBOX_IDS) {
+    const first = outboxes.keys().next()
+    if (!first.done) {
+      outboxes.delete(first.value)
+      console.warn('[Webhook] Outbox id cap (1000) reached; oldest id evicted')
+    }
+  }
+}
+
+function outboxDrain(channelId: string): string[] {
+  const now = Date.now()
+  const entries = outboxes.get(channelId) ?? []
+  const live = entries.filter((e) => e.expiresAt > now)
+  outboxes.delete(channelId)
+  return live.map((e) => e.message)
+}
+
+// ---------------------------------------------------------------------------
+// Constant-time secret comparison
+// ---------------------------------------------------------------------------
+
+/** Hash both values with SHA-256, then compare with timingSafeEqual so length
+ *  differences don't leak via timing. */
+function secretEqual(a: string, b: string): boolean {
+  const ha = createHash('sha256').update(a).digest()
+  const hb = createHash('sha256').update(b).digest()
+  return timingSafeEqual(ha, hb)
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 /** A single entry in the webhook activity log */
 export interface WebhookActivityEntry {
@@ -48,9 +118,13 @@ export interface WebhookActivityEntry {
 
 const MAX_ACTIVITY_LOG = 50
 
+// ---------------------------------------------------------------------------
+// Adapter
+// ---------------------------------------------------------------------------
+
 export class WebhookAdapter implements ChannelAdapter {
   private messageHandler: ((msg: IncomingMessage) => void) | null = null
-  private connected = false
+  connected = false
   private error: string | undefined
   private secret: string = ''
   private defaultCallbackUrl: string = ''
@@ -66,11 +140,14 @@ export class WebhookAdapter implements ChannelAdapter {
     timer: ReturnType<typeof setTimeout>
   }>()
 
-  /** Reply timeout in ms (default: 120s — agent tool loops can take a while) */
+  /** Reply timeout in ms (default: 120 s — agent tool loops can take a while) */
   private replyTimeoutMs = 120_000
 
   async connect(config: Record<string, string>): Promise<void> {
-    this.secret = config.secret || ''
+    if (!config.secret) {
+      throw new Error('Webhook channel requires a secret. Pass secret: "..." to channel_connect or POST /agent/channels/connect.')
+    }
+    this.secret = config.secret
     this.defaultCallbackUrl = config.callbackUrl || ''
 
     if (config.callbackHeaders) {
@@ -87,10 +164,7 @@ export class WebhookAdapter implements ChannelAdapter {
 
     this.connected = true
     this.error = undefined
-    console.log(
-      `[Webhook] Channel ready (secret: ${this.secret ? 'configured' : 'none'}, ` +
-      `defaultCallback: ${this.defaultCallbackUrl || 'none'})`
-    )
+    console.log('[Webhook] Channel ready (secret: configured)')
   }
 
   async disconnect(): Promise<void> {
@@ -99,7 +173,6 @@ export class WebhookAdapter implements ChannelAdapter {
       pending.resolve('[Webhook disconnected]')
     }
     this.pendingReplies.clear()
-    outboxes.clear()
     this.connected = false
     console.log('[Webhook] Disconnected')
   }
@@ -134,10 +207,7 @@ export class WebhookAdapter implements ChannelAdapter {
       return
     }
 
-    if (!outboxes.has(channelId)) {
-      outboxes.set(channelId, [])
-    }
-    outboxes.get(channelId)!.push(content)
+    outboxPut(channelId, content)
   }
 
   onMessage(handler: (msg: IncomingMessage) => void): void {
@@ -152,11 +222,18 @@ export class WebhookAdapter implements ChannelAdapter {
       metadata: {
         messageCount: this.messageCount,
         pendingReplies: this.pendingReplies.size,
-        authenticated: !!this.secret,
         hasSecret: !!this.secret,
         recentActivity: this.activityLog.slice(-20),
       },
     }
+  }
+
+  /**
+   * Expose the secret value for the owner-only `/agent/status` endpoint.
+   * Never surfaced on public endpoints.
+   */
+  getSecret(): string {
+    return this.secret
   }
 
   /** Get the full activity log (for the dedicated activity endpoint) */
@@ -176,12 +253,18 @@ export class WebhookAdapter implements ChannelAdapter {
   // Inbound message handling (called by the server route)
   // ---------------------------------------------------------------------------
 
-  verifyAuth(authHeader?: string, secretHeader?: string): boolean {
-    if (!this.secret) return true
-    return (
-      authHeader === `Bearer ${this.secret}` ||
-      secretHeader === this.secret
-    )
+  /**
+   * Verify the channel secret from the X-Webhook-Secret header.
+   *
+   * - No secret configured → always false (defence in depth; the backfill at
+   *   gateway start means this shouldn't happen in practice).
+   * - Comparison uses SHA-256 + timingSafeEqual so length differences don't
+   *   leak via timing.
+   */
+  verifyAuth(secretHeader?: string): boolean {
+    if (!this.secret) return false
+    if (!secretHeader) return false
+    return secretEqual(secretHeader, this.secret)
   }
 
   async processIncoming(body: {
@@ -190,7 +273,7 @@ export class WebhookAdapter implements ChannelAdapter {
     senderName?: string
     callbackUrl?: string
     metadata?: Record<string, unknown>
-  }): Promise<{ reply: string; async: boolean }> {
+  }): Promise<{ reply: string; async: boolean; correlationId: string; timedOut?: boolean }> {
     if (!this.messageHandler) {
       throw new Error('Webhook channel not initialized — no message handler')
     }
@@ -224,7 +307,7 @@ export class WebhookAdapter implements ChannelAdapter {
         status: 'success',
       })
       this.messageHandler(msg)
-      return { reply: '', async: true }
+      return { reply: '', async: true, correlationId }
     }
 
     // Sync mode: wait for the agent's reply
@@ -240,15 +323,12 @@ export class WebhookAdapter implements ChannelAdapter {
     }
     this.logActivity(activityEntry)
 
-    return new Promise<{ reply: string; async: false }>((resolve) => {
+    return new Promise<{ reply: string; async: false; correlationId: string; timedOut?: boolean }>((resolve) => {
       const timer = setTimeout(() => {
         this.pendingReplies.delete(correlationId)
         activityEntry.status = 'timeout'
         activityEntry.durationMs = Date.now() - startTime
-        resolve({
-          reply: 'Request timed out — the agent took too long to respond.',
-          async: false,
-        })
+        resolve({ reply: '', async: false, correlationId, timedOut: true })
       }, this.replyTimeoutMs)
 
       this.pendingReplies.set(correlationId, {
@@ -256,7 +336,7 @@ export class WebhookAdapter implements ChannelAdapter {
           activityEntry.status = 'success'
           activityEntry.replyPreview = reply.length > 120 ? reply.slice(0, 120) + '…' : reply
           activityEntry.durationMs = Date.now() - startTime
-          resolve({ reply, async: false })
+          resolve({ reply, async: false, correlationId })
         },
         timer,
       })
@@ -275,26 +355,36 @@ export class WebhookAdapter implements ChannelAdapter {
   }
 
   drainOutbox(channelId: string): string[] {
-    const msgs = outboxes.get(channelId) || []
-    outboxes.delete(channelId)
-    return msgs
+    return outboxDrain(channelId)
   }
 
   // ---------------------------------------------------------------------------
   // Static: register Hono routes for webhook ingress
   // ---------------------------------------------------------------------------
 
-  static registerRoutes(app: any, getAdapter: () => WebhookAdapter | null): void {
+  /**
+   * Register the webhook Hono routes.
+   *
+   * @param app         Hono app instance
+   * @param getAdapter  Returns the connected WebhookAdapter (or null)
+   * @param getPublicOutboxUrl  Given a correlationId, returns the public
+   *   outbox URL (e.g. `https://api.shogo.ai/api/projects/.../outbox/<id>`),
+   *   or null when no public URL is available (desktop not signed in to cloud).
+   */
+  static registerRoutes(
+    app: any,
+    getAdapter: () => WebhookAdapter | null,
+    getPublicOutboxUrl?: (correlationId: string) => string | null,
+  ): void {
     app.post('/agent/channels/webhook/incoming', async (c: any) => {
       const adapter = getAdapter()
       if (!adapter || !adapter.connected) {
         return c.json({ error: 'Webhook channel not connected' }, 503)
       }
 
-      const auth = c.req.header('authorization') || ''
-      const secret = c.req.header('x-webhook-secret') || ''
-      if (!adapter.verifyAuth(auth, secret)) {
-        return c.json({ error: 'Unauthorized' }, 401)
+      const secretHeader = c.req.header('x-webhook-secret') || ''
+      if (!adapter.verifyAuth(secretHeader)) {
+        return c.json({ error: 'Unauthorized — send the channel secret in X-Webhook-Secret' }, 401)
       }
 
       let body: any
@@ -328,33 +418,38 @@ export class WebhookAdapter implements ChannelAdapter {
         })
 
         if (result.async) {
+          return c.json({ status: 'accepted', correlationId: result.correlationId }, 202)
+        }
+
+        if (result.timedOut) {
+          const outboxUrl = getPublicOutboxUrl ? getPublicOutboxUrl(result.correlationId) : null
           return c.json({
-            status: 'accepted',
-            message: 'Message received. Reply will be sent to the callback URL.',
+            status: 'pending',
+            correlationId: result.correlationId,
+            ...(outboxUrl ? { outboxUrl } : {}),
           }, 202)
         }
 
-        return c.json({ reply: result.reply })
+        return c.json({ reply: result.reply, correlationId: result.correlationId })
       } catch (err: any) {
         console.error('[Webhook] Processing error:', err.message)
         return c.json({ error: `Processing failed: ${err.message}` }, 500)
       }
     })
 
-    app.get('/agent/channels/webhook/outbox/:channelId', (c: any) => {
+    app.get('/agent/channels/webhook/outbox/:correlationId', (c: any) => {
       const adapter = getAdapter()
       if (!adapter || !adapter.connected) {
         return c.json({ error: 'Webhook channel not connected' }, 503)
       }
 
-      const auth = c.req.header('authorization') || ''
-      const secret = c.req.header('x-webhook-secret') || ''
-      if (!adapter.verifyAuth(auth, secret)) {
-        return c.json({ error: 'Unauthorized' }, 401)
+      const secretHeader = c.req.header('x-webhook-secret') || ''
+      if (!adapter.verifyAuth(secretHeader)) {
+        return c.json({ error: 'Unauthorized — send the channel secret in X-Webhook-Secret' }, 401)
       }
 
-      const channelId = c.req.param('channelId')
-      const messages = adapter.drainOutbox(channelId)
+      const correlationId = c.req.param('correlationId')
+      const messages = adapter.drainOutbox(correlationId)
       return c.json({ messages })
     })
 
@@ -407,6 +502,7 @@ export class WebhookAdapter implements ChannelAdapter {
         return c.json({
           ok: true,
           reply: result.reply,
+          correlationId: result.correlationId,
           async: result.async,
         })
       } catch (err: any) {
@@ -414,4 +510,9 @@ export class WebhookAdapter implements ChannelAdapter {
       }
     })
   }
+}
+
+/** Generate a new webhook secret: 32 random bytes as hex. */
+export function generateWebhookSecret(): string {
+  return randomBytes(32).toString('hex')
 }

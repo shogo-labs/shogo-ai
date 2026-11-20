@@ -8,7 +8,7 @@
  * Platform-agnostic (pure React hooks).
  */
 
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
+import { createContext, useContext, useRef, useState, useEffect, useCallback, type ReactNode } from 'react'
 import type { AuthClient } from './client'
 import { signupFetchOptions } from './signup-device-id'
 import { EmailNotVerifiedError, shouldReportAuthError, toAuthRequestError } from './auth-error'
@@ -127,12 +127,53 @@ export interface AuthProviderProps {
    * resources it doesn't have access to.
    */
   onSignOut?: () => void
+  /**
+   * What the auth client does with the URL `/sign-in/social` returns.
+   *
+   * `false` (default — native): `@better-auth/expo` opens the OAuth browser
+   * sheet and awaits it, so `signIn.social` resolves **after** the round trip —
+   * but it also resolves that way when the sheet was merely dismissed, which is
+   * why a native miss is only reported once the sheet was open for
+   * `MIN_NATIVE_OAUTH_SHEET_MS`.
+   *
+   * `true` (web): the client sets `window.location.href` to the provider URL.
+   * The page navigates, but the promise still resolves first — so the session
+   * read that follows it runs before Google is even contacted and reports
+   * `session_missing` on a round trip that has not happened yet (SHO-430).
+   */
+  socialSignInNavigatesPage?: boolean
 }
 
-export function AuthProvider({ authClient, children, onSignOut, onAuthError }: AuthProviderProps) {
+/** A URL the browser will navigate to, as opposed to one it would ignore. */
+function isWebUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url)
+}
+
+/**
+ * How long the native OAuth sheet has to stay up before a round trip that ends
+ * without a session is believed.
+ *
+ * A dismissed sheet and a broken hand-back are the same thing from here:
+ * `ASWebAuthenticationSession` resolves `{ type: 'cancel' }`, `@better-auth/expo`
+ * returns from its `onSuccess` hook without touching the response
+ * (`dist/client.js`, `if (result.type !== "success") return`), and
+ * `signIn.social` resolves with the provider URL and no user either way. The
+ * only remaining signal is how long the sheet was open.
+ *
+ * Nobody crosses Google's account screen in two seconds, but the App Review
+ * crawler that tapped on a strict 2 s rhythm did — those are the iOS
+ * `session_missing` events that were really dismissals (SHO-430).
+ */
+export const MIN_NATIVE_OAUTH_SHEET_MS = 2000
+
+export function AuthProvider({ authClient, children, onSignOut, onAuthError, socialSignInNavigatesPage = false }: AuthProviderProps) {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // One social sign-in at a time: a second tap opens a second browser sheet,
+  // which dismisses (Android) or throws out of (iOS) the first, killing a round
+  // trip that was still in flight (SHO-430).
+  const socialSignInInFlight = useRef(false)
 
   // Keep the no-context snapshot in step with what the tree sees, including
   // the sign-out case (user becomes null while the provider stays mounted).
@@ -140,10 +181,31 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError }: A
   useEffect(() => () => { moduleAuthUser = null }, [])
 
   useEffect(() => {
-    authClient.getSession().then(({ data }) => {
-      if (data?.user) setUser(data.user as AuthUser)
-      setIsLoading(false)
-    }).catch(() => setIsLoading(false))
+    // A failed session read is not the same answer as "no session". The user
+    // comes back from Stripe (or any other top-level navigation) with a valid
+    // cookie; if the first `get-session` dies — a dropped connection, a 5xx
+    // from the pod it landed on — treating it as signed out sends them to the
+    // sign-in screen with the session still on the device (SHO-430). Ask once
+    // more before believing it.
+    let cancelled = false
+    const loadSession = async (attempt: number): Promise<void> => {
+      try {
+        const { data } = await authClient.getSession()
+        if (cancelled) return
+        if (data?.user) setUser(data.user as AuthUser)
+        setIsLoading(false)
+      } catch {
+        if (cancelled) return
+        if (attempt === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 300))
+          if (!cancelled) await loadSession(1)
+          return
+        }
+        setIsLoading(false)
+      }
+    }
+    void loadSession(0)
+    return () => { cancelled = true }
   }, [authClient])
 
   const handleSignIn = useCallback(async (email: string, password: string) => {
@@ -210,7 +272,16 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError }: A
   }, [authClient, onAuthError])
 
   const handleSignInWithGoogle = useCallback(async (opts?: { callbackURL?: string }) => {
+    // A second social sign-in while one is in flight is never what the person
+    // meant, and it breaks the first one: `openAuthSessionAsync` throws
+    // `WebBrowserAlreadyOpenException` on iOS and `dismissAuthSession()` closes
+    // the sheet on Android. One at a time, with the buttons disabled for the
+    // duration (SHO-430).
+    if (socialSignInInFlight.current) return
+    socialSignInInFlight.current = true
+    setIsLoading(true)
     setError(null)
+    const sheetStartedAt = Date.now()
     const origin = getFrontendOrigin()
     // Better Auth bounces the user to `callbackURL` after the OAuth
     // round-trip. If a caller passed one (e.g. the desktop cloud-login
@@ -225,7 +296,7 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError }: A
       const result = await (authClient as any).signIn.social({
         provider: 'google',
         callbackURL,
-      })
+      }, signupFetchOptions())
       if (result?.error) {
         console.error('[Auth] Google sign-in error:', result.error)
         setError(result.error.message || 'Google sign-in failed')
@@ -236,6 +307,39 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError }: A
         setUser(result.data.user as AuthUser)
         return
       }
+      const redirectUrl = (result?.data as { url?: unknown } | undefined)?.url
+      const redirectIssued =
+        (result?.data as { redirect?: unknown } | undefined)?.redirect === true &&
+        typeof redirectUrl === 'string' &&
+        redirectUrl.length > 0
+      if (redirectIssued && socialSignInNavigatesPage) {
+        // The client has already sent this page to the provider. The round trip
+        // has not started yet, so a session read here can only answer "no
+        // session" — the false failure behind the web Sentry noise (SHO-430).
+        // A URL the browser would ignore is the one case worth reporting: the
+        // person stays on this screen and nothing else will explain why.
+        if (!isWebUrl(redirectUrl)) {
+          const message = 'Google sign-in could not start'
+          setError(message)
+          onAuthError?.(
+            new Error(`Google sign-in returned a URL the browser cannot follow: ${redirectUrl}`),
+            { provider: 'google', stage: 'sign_in' },
+          )
+        }
+        return
+      }
+      if (!socialSignInNavigatesPage) {
+        // Native: the sheet has already opened and closed. Under two seconds it
+        // was dismissed — the crawler taps, or a person backing out — and there
+        // is no round trip to read a session for. Reporting that as
+        // `session_missing` is what put an App Review tap in Sentry, and saying
+        // nothing is what made the sheet look broken (SHO-430).
+        const sheetMs = Date.now() - sheetStartedAt
+        if (sheetMs < MIN_NATIVE_OAUTH_SHEET_MS) {
+          setError('Google sign-in was closed before it finished. Tap Continue with Google to try again.')
+          return
+        }
+      }
       // Fallback: re-fetch session (expo plugin stores token in SecureStore
       // but the promise may not return user data directly)
       const { data } = await authClient.getSession()
@@ -244,7 +348,9 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError }: A
         return
       }
       // The provider round trip reported success but no session reached the
-      // device. Nothing throws here, so without this the failure is invisible.
+      // device. Nothing throws here, so without this the failure is invisible —
+      // and without the message the person sees a tap that did nothing.
+      setError('Google sign-in completed without a session. Tap Continue with Google to try again.')
       onAuthError?.(
         new Error('Google sign-in completed without a session'),
         { provider: 'google', stage: 'session_missing' },
@@ -253,10 +359,17 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError }: A
       console.error('[Auth] Google sign-in exception:', e)
       setError(e.message || 'Google sign-in failed')
       onAuthError?.(e, { provider: 'google', stage: 'sign_in' })
+    } finally {
+      socialSignInInFlight.current = false
+      setIsLoading(false)
     }
-  }, [authClient, onAuthError])
+  }, [authClient, onAuthError, socialSignInNavigatesPage])
 
   const handleSignInWithApple = useCallback(async ({ idToken, nonce }: { idToken: string; nonce?: string }) => {
+    // Same rule as Google: a second tap while the native Apple sheet is open
+    // must not start a second exchange (SHO-430).
+    if (socialSignInInFlight.current) return
+    socialSignInInFlight.current = true
     setError(null)
     setIsLoading(true)
     try {
@@ -267,12 +380,11 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError }: A
       const result = await (authClient as any).signIn.social({
         provider: 'apple',
         idToken: { token: idToken, ...(nonce ? { nonce } : {}) },
-      })
+      }, signupFetchOptions())
       if (result?.error) {
-        const msg = result.error.message || 'Apple sign-in failed'
-        setError(msg)
-        onAuthError?.(result.error, { provider: 'apple', stage: 'sign_in' })
-        throw new Error(msg)
+        // Thrown so it lands in the one catch below, which is what reports it —
+        // reporting here too sent an Apple failure to Sentry twice.
+        throw new Error(result.error.message || 'Apple sign-in failed')
       }
       if (result?.data?.user) {
         setUser(result.data.user as AuthUser)
@@ -283,6 +395,7 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError }: A
         setUser(data.user as AuthUser)
         return
       }
+      setError('Apple sign-in completed without a session. Please try again.')
       onAuthError?.(
         new Error('Apple sign-in completed without a session'),
         { provider: 'apple', stage: 'session_missing' },
@@ -292,6 +405,7 @@ export function AuthProvider({ authClient, children, onSignOut, onAuthError }: A
       onAuthError?.(e, { provider: 'apple', stage: 'sign_in' })
       throw e
     } finally {
+      socialSignInInFlight.current = false
       setIsLoading(false)
     }
   }, [authClient, onAuthError])

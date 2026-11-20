@@ -9,10 +9,12 @@
  * was doing something a user asked for. Idle-tail seconds are metered (so the
  * dashboard can show them) and cost nothing.
  *
- * The numbers are Russell's (2026-11-18): $0.10/vCPU-h + $0.005/GiB-h, so the
- * standard 2 vCPU / 4 GiB VM is $0.22 per active hour and $0 idle. There is no
- * separate included-hours allowance — `consumeUsage` draws from the plan's
- * existing included USD, then the wallet, like every other usage type.
+ * The numbers are Russell's (2026-11-19, re-cut from SHO-424's $0.10 + $0.005
+ * to market shape): $0.07/vCPU-h + $0.012/GiB-h, so the standard 2 vCPU / 4 GiB
+ * VM is $0.188 per active hour and $0 idle. RAM is priced high and CPU low
+ * because RAM is what limits how many VMs fit on a 512 GB `s3-large-x86` host.
+ * There is no separate included-hours allowance — `consumeUsage` draws from the
+ * plan's existing included USD, then the wallet, like every other usage type.
  *
  * `computeVmCost` is pure and shared by the hourly job, the workspace estimate
  * and the tests, so the number a customer is shown is the number they are
@@ -46,8 +48,8 @@ export interface VmPricing {
 }
 
 export const VM_PRICING: VmPricing = {
-  vcpuHour: 0.1,
-  gibHour: 0.005,
+  vcpuHour: 0.07,
+  gibHour: 0.012,
   idleBilling: 'none',
   neverBilledCauses: ['rewarm', 'prewarm', 'published'],
 }

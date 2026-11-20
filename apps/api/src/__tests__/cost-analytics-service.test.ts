@@ -255,6 +255,12 @@ const MODEL_ALIASES_STUB: Record<string, string> = {
   haiku: 'claude-haiku-4-5',
 }
 mock.module('@shogo/model-catalog', () => ({
+  AUTO_MODEL_ID: 'auto',
+  isAutoModel: (id: string) => id === 'auto',
+  inferProviderFromModel: (_id: string, fallback: string) => fallback,
+  MODEL_CATALOG: {},
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
   resolveModelId: (s: string) => MODEL_ALIASES_STUB[s] ?? s,
   getModelTier: () => ({ name: 'medium', includeBudget: 0, overageRate: 0 }),
   getModelBillingModel: (s: string) => s,
@@ -272,6 +278,18 @@ mock.module('@shogo/model-catalog', () => ({
   calculateDollarCost: (model: string, inT: number, outT: number, cachedT: number) => {
     const cost = (inT * 3 + outT * 15 + cachedT * 1) / 1_000_000
     return cost
+  },
+  getModelDollarCosts: (m: string, _at?: Date) => {
+    const costs: Record<string, any> = {
+      'claude-haiku-4-5': { inputPerMillion: 1, outputPerMillion: 5, cachedInputPerMillion: 0.1, cacheWritePerMillion: 1.25 },
+      'claude-sonnet-4-6': { inputPerMillion: 3, outputPerMillion: 15, cachedInputPerMillion: 0.3, cacheWritePerMillion: 3.75 },
+      'claude-opus-4-7': { inputPerMillion: 15, outputPerMillion: 75, cachedInputPerMillion: 1.5, cacheWritePerMillion: 18.75 },
+      'gpt-5.4-nano': { inputPerMillion: 0.1, outputPerMillion: 0.4, cachedInputPerMillion: 0.01, cacheWritePerMillion: 0 },
+      haiku: { inputPerMillion: 1, outputPerMillion: 5, cachedInputPerMillion: 0.1, cacheWritePerMillion: 1.25 },
+      sonnet: { inputPerMillion: 3, outputPerMillion: 15, cachedInputPerMillion: 0.3, cacheWritePerMillion: 3.75 },
+      opus: { inputPerMillion: 15, outputPerMillion: 75, cachedInputPerMillion: 1.5, cacheWritePerMillion: 18.75 },
+    }
+    return costs[m] ?? { inputPerMillion: 0, outputPerMillion: 0, cachedInputPerMillion: 0, cacheWritePerMillion: 0 }
   },
 }))
 

@@ -164,6 +164,9 @@ const agentFetchPath = require.resolve('../lib/agent-fetch')
 mock.module(agentFetchPath, () => ({
   agentFetch: (input: RequestInfo | URL, init?: RequestInit) =>
     (g.__shogoAgentFetchHandler as AgentFetchHandler)(input, init),
+  // A download streamed by `expo-file-system` takes headers instead of a
+  // `RequestInit`; under test there is no session to attach (SHO-434).
+  nativeAuthHeaders: () => ({}),
 }))
 
 // `authed-event-source` transitively loads `auth-client` → `better-auth`

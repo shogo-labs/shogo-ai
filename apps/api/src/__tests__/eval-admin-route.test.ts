@@ -39,6 +39,9 @@ mock.module('../middleware/super-admin', () => ({
 // ─── Model catalog mock (so VALID_MODELS isn't empty) ─────────────────
 
 mock.module('@shogo/model-catalog', () => ({
+  getAgentModeOverrides: () => ({}),
+  getModelDollarCosts: (_m: string, _at?: Date) => ({ inputPerMillion: 0, outputPerMillion: 0, cachedInputPerMillion: 0, cacheWritePerMillion: 0 }),
+  getAutoTierOverrides: () => ({}),
   MODEL_CATALOG: { 'claude-sonnet-4-5': {}, 'gpt-4o': {} },
   MODEL_ALIASES: { sonnet: 'claude-sonnet-4-5', haiku: 'claude-haiku-4-5' },
 }))

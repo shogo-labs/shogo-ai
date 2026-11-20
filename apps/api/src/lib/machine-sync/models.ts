@@ -45,6 +45,10 @@ export const MIRROR_MODELS: readonly string[] = [
   'AgentConfig',
   'ProjectAgent',
   'WorkspaceAgentProfile',
+  // Workspace RBAC (SHO-417): who may use which models and abilities. The
+  // desktop enforces the same policy, so the rows travel both ways. The audit
+  // trail does not — it is a per-machine record of what happened here.
+  'AccessPolicy',
 
   // ── Chat ──
   'ChatSession',
@@ -148,6 +152,7 @@ const NEVER_CREDENTIALS = [
   'SlackProjectRoutingRule',
   'ChatInstallation',
   'ChatIdentityLink',
+  'WhatsAppNumberBinding', // Meta business token; cloud owns the platform webhook
   'Invitation',
   'InviteLink',
   'WorkspaceGrant',
@@ -168,6 +173,9 @@ const NEVER_BILLING = [
   'UsageEvent',
   'InstanceSubscription',
   'StorageUsage',
+  // Money/metering, never synced: each region measures and bills only the
+  // workspaces it homes, so a peer's copy would just overwrite the day's peak.
+  'StorageUsageDaily',
   'VoiceCallMeter',
   'LiveSessionMeter',
   'AgentCostMetric',
@@ -188,6 +196,18 @@ const NEVER_BILLING = [
   'MarketplaceReview',
   'MarketplaceTransaction',
   'TrialRedemption', // card-backed trial, keyed by Stripe ids
+  // SHO-428: the $99 Solo Founder purchase — the checkout session, the
+  // subscription it became, `status` (active / rejected_prepaid / refunded)
+  // and the refund. Same shape as TrialRedemption: created by the Stripe
+  // webhook on the cloud and never something a desktop may claim. The pack it
+  // installs (channels, boards, agents) syncs as ordinary content; `progress`
+  // is written where the row lives, so the Course board and its gate work on a
+  // desktop but lesson progress is read from the cloud panel.
+  'CourseEnrollment',
+  // learn.shogo.ai progress and badges: per person (no workspace), written only
+  // by the cloud /api/learn routes, so a desktop reads them from the cloud.
+  'LearnLessonCompletion',
+  'LearnBadge',
   // SHO-308: the metered minutes behind `published_hosting` — the input to
   // consumeUsage, so the cloud's own accounting, never a synced row.
   'PublishedUsageMinute',
@@ -208,6 +228,7 @@ const NEVER_BILLING = [
 
 const NEVER_CLOUD_PLATFORM = [
   'Instance', // the cloud's machine registry
+  'AbuseFlag', // the cloud's trust-and-safety ban record
   'SignupRiskAssessment', // the cloud's signup anti-abuse record
   'RemoteAction', // the cloud's audit trail
   'EventDelivery',
@@ -227,6 +248,10 @@ const NEVER_CLOUD_PLATFORM = [
   'NativeAppCredential',
   'NativeSigningCredential',
   'ProjectAuthConfig', // published-site auth, cloud-served
+  // SHO-417: the RBAC audit trail is a per-machine record of denials and
+  // policy changes. Syncing it would merge two machines' histories into one
+  // and make "who was denied here" unanswerable.
+  'AccessAuditEvent',
   'ProjectAuthSignIn',
   'PlatformSetting',
   'ModelProvider',

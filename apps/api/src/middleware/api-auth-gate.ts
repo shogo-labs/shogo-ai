@@ -49,6 +49,9 @@ export const GATE_PUBLIC_PREFIXES = [
   // tab came back from the platform and carries no Shogo session; the handler is
   // display-only and writes nothing, so there is nothing to protect.
   '/api/social/connect/return',
+  // learn.shogo.ai: every route authenticates itself with the learn token or a
+  // Studio session, and `/me` answers signed-out visitors too (routes/learn.ts).
+  '/api/learn/',
 ]
 
 function isWebchatProxyPath(path: string): boolean {
@@ -65,6 +68,49 @@ export function isAllowedUnauthWebchatProxyPath(path: string): boolean {
     relative === '/agent/channels/webchat/session' ||
     relative === '/agent/channels/webchat/message' ||
     relative.startsWith('/agent/channels/webchat/events/')
+}
+
+/**
+ * True when the path is a public channel ingress endpoint that authenticates
+ * via its own protocol (HMAC-SHA256 for WhatsApp; shared secret header for
+ * webhook) rather than a Shogo session.
+ * Add new channels here as they are made publicly reachable.
+ *
+ * Unit-tested in apps/api/src/__tests__/agent-proxy-whatsapp-ingress.test.ts
+ * and apps/api/src/__tests__/agent-proxy-webhook-ingress.test.ts
+ */
+export function isPublicChannelIngressPath(path: string): boolean {
+  const match = path.match(/^\/api\/projects\/[^/]+\/agent-proxy(\/.*)$/)
+  if (!match) return false
+  const relative = match[1]
+
+  // WhatsApp webhook (canonical + legacy alias) and Teams (Bot Framework JWT).
+  if (
+    relative === '/agent/channels/whatsapp/webhook' ||
+    relative === '/webhooks/whatsapp' ||
+    relative === '/agent/channels/teams/messages'
+  ) {
+    return true
+  }
+
+  // Teams channel (Bot Framework JWT auth)
+  if (relative === '/agent/channels/teams/messages') return true
+
+  // Generic webhook channel — POST incoming and GET outbox/<correlationId> only.
+  // /health, /activity and /test stay behind login (they leak message previews
+  // or run a live turn). The outbox segment must be exactly one path component
+  // with no slashes, no "..", no path traversal.
+  if (relative === '/agent/channels/webhook/incoming') return true
+  const outboxMatch = relative.match(/^\/agent\/channels\/webhook\/outbox\/([^/]+)$/)
+  if (outboxMatch) {
+    const seg = outboxMatch[1]
+    // Reject empty segment, dotdot, or anything that looks like path traversal
+    if (seg && seg !== '..' && !seg.includes('/') && !seg.includes('%2f') && !seg.includes('%2F')) {
+      return true
+    }
+  }
+
+  return false
 }
 
 // Proxies onto a user's own app server: the public preview
@@ -220,6 +266,7 @@ export function isGatePublicPath(path: string): boolean {
   if (isPublicPath(path)) return true
   if (GATE_PUBLIC_PREFIXES.some((p) => path.startsWith(p))) return true
   if (isAllowedUnauthWebchatProxyPath(path)) return true
+  if (isPublicChannelIngressPath(path)) return true
   if (isTokenGatedThumbnailPath(path)) return true
   if (isTokenGatedChatAttachmentPath(path)) return true
   if (isTokenGatedConversationFilePath(path)) return true
@@ -243,6 +290,12 @@ export function isGatePublicPath(path: string): boolean {
   // returning from GitHub has no Shogo session; the HMAC-signed `state` and
   // the OAuth code are verified in services/github-authorize.ts.
   if (path === '/api/github/callback') return true
+  // WhatsApp platform routes (SHO-463). Auth is the signed state token or
+  // HMAC-SHA256 app secret — verified inside the handlers themselves.
+  if (path === '/api/channels/whatsapp/connect') return true
+  if (path === '/api/channels/whatsapp/connect/complete') return true
+  if (path === '/api/channels/whatsapp/webhook') return true
+  if (path === '/api/channels/whatsapp/connect-link/instance') return true
   return false
 }
 

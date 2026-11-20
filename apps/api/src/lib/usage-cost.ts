@@ -18,6 +18,7 @@ import {
   getModelEntry,
   resolveAgentModeDefault,
   MODEL_DOLLAR_COSTS,
+  getModelDollarCosts,
   calculateDollarCost,
   type ModelTier,
   type AgentMode,
@@ -207,7 +208,7 @@ export function calculateUsageCost(
   }
 
   const model = resolveModel(modelOrAgentMode)
-  const costs = MODEL_DOLLAR_COSTS[model]
+  const costs = getModelDollarCosts(model)
   const rawUsd =
     (inputTokens * costs.inputPerMillion / 1_000_000) +
     (cacheWriteTokens * costs.cacheWritePerMillion / 1_000_000) +
@@ -559,24 +560,33 @@ export function calculate3dUsageCost(creditsConsumed: number): UsageCostResult {
 export const SOCIAL_LOOKUP_USD_PER_UNIT = 0.0025
 
 export type SocialLookupPlatform = 'instagram' | 'tiktok'
-export type SocialLookupOp = 'profile' | 'posts'
+export type SocialLookupOp = 'profile' | 'posts' | 'search' | 'baseline'
 
 /**
  * Estimated EnsembleData units for one agent lookup.
  *
- * Must stay aligned with `ensembledata-provider.ts`: a profile is one
- * request. Recent posts page ~10 items per request (`depth`). TikTok posts
- * are one request at that depth. Instagram posts also resolve the profile,
- * then fetch the posts feed and the reels feed.
+ * Must stay aligned with `ensembledata-provider.ts`:
+ * - profile: 1 request (TikTok) or 1 request (IG detailed-info, 10 units on pricing page)
+ * - posts (TikTok): ceil(limit/10) requests at ~10 items each
+ * - posts (IG): 10 (detailed-info) + 2 × ceil(limit/10) (posts + reels feeds)
+ * - search (TikTok): ceil(limit/20) requests at ~20 items each
+ * - search (IG hashtag): limit requests (EnsembleData charges per post returned)
+ * - baseline (TikTok): 1 request (depth=1)
+ * - baseline (IG): 12 requests (reels by user id) or falls back to posts cost
  */
 export function socialLookupUnits(
   platform: SocialLookupPlatform,
   op: SocialLookupOp,
   limit: number,
 ): number {
-  if (op === 'profile') return 1
+  if (op === 'profile') return platform === 'instagram' ? 10 : 1
+  if (op === 'baseline') return platform === 'tiktok' ? 1 : 12
+  if (op === 'search') {
+    return platform === 'tiktok' ? Math.ceil(limit / 20) : limit
+  }
+  // posts
   const depth = Math.max(1, Math.ceil(limit / 10))
-  return platform === 'tiktok' ? depth : 1 + 2 * depth
+  return platform === 'tiktok' ? depth : 10 + 2 * depth
 }
 
 export function calculateSocialLookupCost(units: number): UsageCostResult {

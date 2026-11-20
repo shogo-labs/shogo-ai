@@ -11,7 +11,7 @@
  *   1. GET  /api/invitations/<id>/info   (public; workspace/project/role/status)
  *   2. Signed out -> /sign-in?next=/invitations/<id>/accept, then back here
  *   3. Signed in  -> the same `acceptInvitation` sequence Settings uses
- *                    (PATCH invitation -> create member), then land at `/`
+ *                    (create member -> mark invitation accepted), then land at `/`
  *
  * Acceptance goes through `useDomainActions().acceptInvitation` on purpose: it
  * is the one accept path, and it is what fires seat sync and the join mails.
@@ -52,6 +52,51 @@ function roleLabel(role: string | undefined): string {
   if (role === 'admin') return 'an Admin'
   if (role === 'member') return 'an Editor'
   return `a ${role}`
+}
+
+/**
+ * What to show when the accept fails.
+ *
+ * Branch on the server's own `code` (the SDK keeps the raw body in `details`),
+ * never on the HTTP status alone: 403 covers both "wrong account" and a plain
+ * permission refusal, and 400 covers both an already-used invite and a
+ * malformed update. Treating every 403 as "different email" is what told a
+ * first-time invitee their link was for someone else (SHO-455).
+ */
+function acceptFailure(err: unknown): { wrongAccount: boolean; text: string } {
+  const e = err as
+    | {
+        status?: number
+        code?: string
+        message?: string
+        details?: { error?: { code?: string; message?: string } }
+      }
+    | null
+    | undefined
+  const serverCode = e?.details?.error?.code
+  const message = e?.details?.error?.message ?? e?.message ?? ''
+
+  if (serverCode === 'wrong_account') {
+    return {
+      wrongAccount: true,
+      text: 'This invitation was sent to a different email address. Sign in with the address the invitation was sent to.',
+    }
+  }
+  if (serverCode === 'trial_seat_limit') {
+    return { wrongAccount: false, text: message || 'This workspace has no free seats right now.' }
+  }
+  if (serverCode === 'expired') {
+    return { wrongAccount: false, text: 'This invitation has expired. Ask an admin to send a new one.' }
+  }
+  // The hook answers `bad_request` for both "already used" and a malformed
+  // update, so the message is the only thing that separates them.
+  if (serverCode === 'bad_request' && /no longer be accepted/i.test(message)) {
+    return { wrongAccount: false, text: 'This invitation has already been used.' }
+  }
+  return {
+    wrongAccount: false,
+    text: "Couldn't accept this invitation. Try again, or ask an admin to send a new one.",
+  }
 }
 
 function Frame({ children }: { children: React.ReactNode }) {
@@ -154,19 +199,7 @@ function AcceptPanel({ invitationId, info }: { invitationId: string; info: Invit
       await workspaces.loadAll().catch(() => undefined)
       setAccepted(true)
     } catch (err: any) {
-      const message = String(err?.message ?? '')
-      if (err?.status === 403 || err?.code === 'FORBIDDEN') {
-        setFailure({
-          wrongAccount: true,
-          text: 'This invitation was sent to a different email address. Sign in with the address the invitation was sent to.',
-        })
-      } else if (/expired/i.test(message)) {
-        setFailure({ wrongAccount: false, text: 'This invitation has expired. Ask an admin to send a new one.' })
-      } else if (/no longer be accepted/i.test(message)) {
-        setFailure({ wrongAccount: false, text: 'This invitation has already been used.' })
-      } else {
-        setFailure({ wrongAccount: false, text: message || 'Failed to accept this invitation.' })
-      }
+      setFailure(acceptFailure(err))
     } finally {
       setIsAccepting(false)
     }

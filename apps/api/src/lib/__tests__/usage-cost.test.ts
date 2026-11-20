@@ -11,12 +11,15 @@ const stubCosts: Record<string, any> = {
   opus:   { inputPerMillion: 15, outputPerMillion: 75, cacheWritePerMillion: 18.75, cachedInputPerMillion: 1.5 },
 }
 mock.module('@shogo/model-catalog', () => ({
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
   MODEL_DOLLAR_COSTS: stubCosts,
   getModelTier: (_: string) => 'pro',
   getModelBillingModel: (id: string) => (id in stubCosts ? id : 'unknown-billing'),
   getModelEntry: (id: string) => (id in stubCosts ? { id } : undefined),
   resolveAgentModeDefault: (mode: string) => (mode === 'advanced' ? 'sonnet' : 'haiku'),
   calculateDollarCost: () => 0,
+  getModelDollarCosts: (m: string, _at?: Date) => stubCosts[m] ?? stubCosts['sonnet'],
 }))
 
 const {

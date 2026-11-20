@@ -13,7 +13,8 @@
     "./hooks": "./src/hooks/index.ts",
     "./services": "./src/services/index.ts",
     "./chat": "./src/chat/index.ts",
-    "./buddy-look": "./src/buddy-look.ts"
+    "./buddy-look": "./src/buddy-look.ts",
+    "./lib/app-activity": "./src/lib/app-activity.ts"
   },
   "scripts": {
     "test": "bun --no-env-file test",

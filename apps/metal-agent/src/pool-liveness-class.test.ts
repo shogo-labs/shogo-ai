@@ -67,8 +67,19 @@ describe('pool per-class liveness classification', () => {
 
     const s = pool.status()
 
-    expect(s.liveness).toEqual({ agentActive: 1, appActive: 1, idleTail: 2, unhealthy: 0 })
+    // `active`/`evictable` are the residency split (SHO-444). This pool has
+    // idle-suspend disabled (METAL_IDLE_SUSPEND_MS=0), so nothing is evictable —
+    // an operator who turned the reaper off did not ask for evictions either.
+    expect(s.liveness).toEqual({
+      agentActive: 1,
+      appActive: 1,
+      idleTail: 2,
+      unhealthy: 0,
+      active: 4,
+      evictable: 0,
+    })
     expect(s.liveness.agentActive + s.liveness.appActive + s.liveness.idleTail).toBe(s.assigned.length)
+    expect(s.liveness.active + s.liveness.evictable).toBe(s.assigned.length)
   })
 
   test('status() exposes per-class idle ages on each assigned entry', () => {

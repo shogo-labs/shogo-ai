@@ -91,10 +91,14 @@ function useGoogleCtaTheme(colorScheme?: 'light' | 'dark') {
 function GoogleContinueButton({
   onPress,
   colorScheme,
+  disabled,
   nativeLanding = false,
 }: {
   onPress: () => void
   colorScheme?: 'light' | 'dark'
+  /** Disabled while a social sign-in is in flight: a second tap dismisses the
+   *  OAuth sheet the first one opened (SHO-430). */
+  disabled?: boolean
   nativeLanding?: boolean
 }) {
   const theme = useGoogleCtaTheme(colorScheme)
@@ -105,6 +109,8 @@ function GoogleContinueButton({
     <Pressable
       role="button"
       accessibilityLabel="Continue with Google"
+      aria-disabled={disabled}
+      disabled={disabled}
       onPress={onPress}
       style={{
         width: '100%',
@@ -118,6 +124,7 @@ function GoogleContinueButton({
         borderWidth: 1,
         backgroundColor: fill,
         borderColor: stroke,
+        opacity: disabled ? 0.5 : 1,
       }}
     >
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
@@ -240,10 +247,32 @@ type Tab = 'signin' | 'signup'
 const PRIVACY_URL = 'https://shogo.ai/privacy'
 const TERMS_URL = 'https://shogo.ai/terms'
 
-function openExternalUrl(url: string) {
-  Linking.openURL(url).catch(() => {
-    RNAlert.alert("Couldn't open link", url)
+/**
+ * The consent notice's Privacy / Terms links.
+ *
+ * A host that can present an in-app browser passes `onOpenExternalLink`; the
+ * mobile app hands in `expo-web-browser`'s `openBrowserAsync`, which is what
+ * keeps the policy on screen instead of handing it to another app. Without
+ * that prop — the web and desktop panels — a browser tab is the right target.
+ *
+ * Failures are logged, never alerted: the alert this replaces was raised on a
+ * device where the link did not open at all, so App Review saw a policy link
+ * that could not be read (SHO-430).
+ */
+function defaultOpenExternalLink(url: string): void {
+  if (typeof window !== 'undefined' && typeof window.open === 'function') {
+    window.open(url, '_blank', 'noopener,noreferrer')
+    return
+  }
+  Linking.openURL(url).catch((error) => {
+    console.warn('[LoginScreen] link did not open', url, error)
   })
+}
+
+function resolveOpenExternalLink(
+  onOpenExternalLink?: (url: string) => void,
+): (url: string) => void {
+  return onOpenExternalLink ?? defaultOpenExternalLink
 }
 
 const CONSENT_ONE_LINE_STYLE = { fontSize: 11, lineHeight: 14, textAlign: 'center' } as const
@@ -259,7 +288,11 @@ const CONSENT_LINK_UNDERLINED_STYLE = {
   textDecorationLine: 'underline',
 } as const
 
-function ConsentNotice({ singleLine = false }: { singleLine?: boolean } = {}) {
+function ConsentNotice({
+  singleLine = false,
+  onOpenExternalLink,
+}: { singleLine?: boolean; onOpenExternalLink?: (url: string) => void } = {}) {
+  const openLink = resolveOpenExternalLink(onOpenExternalLink)
   const linkStyle = singleLine ? CONSENT_LINK_STYLE : CONSENT_LINK_UNDERLINED_STYLE
   return (
     <Text
@@ -273,7 +306,7 @@ function ConsentNotice({ singleLine = false }: { singleLine?: boolean } = {}) {
       <Text
         className="text-brand-landing"
         style={linkStyle}
-        onPress={() => openExternalUrl(PRIVACY_URL)}
+        onPress={() => openLink(PRIVACY_URL)}
         accessibilityRole="link"
         accessibilityLabel="Privacy Policy"
       >
@@ -283,7 +316,7 @@ function ConsentNotice({ singleLine = false }: { singleLine?: boolean } = {}) {
       <Text
         className="text-brand-landing"
         style={linkStyle}
-        onPress={() => openExternalUrl(TERMS_URL)}
+        onPress={() => openLink(TERMS_URL)}
         accessibilityRole="link"
         accessibilityLabel="Terms of Use"
       >
@@ -323,6 +356,16 @@ export interface LoginScreenProps {
   loginHeroImageDark?: ImageSourcePropType
   /** Right-hand panel for wide desktop web windows; without it the form is centered. */
   desktopShowcase?: React.ReactNode
+  /**
+   * Opens a link from the consent notice (Privacy Policy / Terms of Use).
+   *
+   * The mobile app hands in `expo-web-browser`'s `openBrowserAsync` so the
+   * policy opens *inside* the app. `Linking.openURL` on iOS hands the URL to
+   * another app and failed outright on the device in App Review, where the only
+   * outcome was the "Couldn't open link" alert — a Guideline 5.1.1 rejection
+   * risk (SHO-430). Without this prop the panel opens a browser tab.
+   */
+  onOpenExternalLink?: (url: string) => void
 }
 
 function isValidEmail(email: string): boolean {
@@ -694,9 +737,11 @@ function NativeMobileLoginPanel({
   isLoading,
   error,
   onClearError,
+  onOpenExternalLink,
   colorScheme,
   heroSource,
 }: LoginScreenProps & { heroSource: ImageSourcePropType }) {
+  const openLink = resolveOpenExternalLink(onOpenExternalLink)
   const [activeTab, setActiveTab] = useState<Tab>('signin')
   const [showEmailForm, setShowEmailForm] = useState(false)
   const [dismissed, setDismissed] = useState(false)
@@ -875,7 +920,7 @@ function NativeMobileLoginPanel({
           ) : null}
           {onGoogleSignIn ? (
             <View style={{ marginBottom: 12 }}>
-              <GoogleContinueButton onPress={onGoogleSignIn} colorScheme="dark" nativeLanding />
+              <GoogleContinueButton onPress={onGoogleSignIn} colorScheme="dark" nativeLanding disabled={isLoading} />
             </View>
           ) : null}
           <Pressable
@@ -905,7 +950,7 @@ function NativeMobileLoginPanel({
           >
             By continuing, you agree to Shogo&apos;s{' '}
             <Text
-              onPress={() => openExternalUrl(PRIVACY_URL)}
+              onPress={() => openLink(PRIVACY_URL)}
               accessibilityRole="link"
               style={{ color: '#C7C7CC' }}
             >
@@ -913,7 +958,7 @@ function NativeMobileLoginPanel({
             </Text>
             {' '}and{' '}
             <Text
-              onPress={() => openExternalUrl(TERMS_URL)}
+              onPress={() => openLink(TERMS_URL)}
               accessibilityRole="link"
               style={{ color: '#C7C7CC' }}
             >
@@ -1089,7 +1134,7 @@ function NativeMobileLoginPanel({
           )}
 
           <View className="mt-5">
-            <ConsentNotice singleLine />
+            <ConsentNotice singleLine onOpenExternalLink={openLink} />
           </View>
         </View>
       </ScrollView>
@@ -1106,6 +1151,7 @@ function CompactWebLoginPanel({
   onForgotPassword,
   isLoading,
   error,
+  onOpenExternalLink,
   colorScheme,
   heroSource,
 }: LoginScreenProps & { heroSource: ImageSourcePropType }) {
@@ -1197,7 +1243,7 @@ function CompactWebLoginPanel({
                 />
               )}
 
-              <View className="mt-4"><ConsentNotice /></View>
+              <View className="mt-4"><ConsentNotice onOpenExternalLink={onOpenExternalLink} /></View>
 
               {(onGoogleSignIn || onAppleSignIn) ? (
                 <>
@@ -1211,7 +1257,7 @@ function CompactWebLoginPanel({
                       <AppleContinueButton onPress={onAppleSignIn} colorScheme={colorScheme} disabled={isLoading} />
                     </View>
                   ) : null}
-                  {onGoogleSignIn ? <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} /> : null}
+                  {onGoogleSignIn ? <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} disabled={isLoading} /> : null}
                 </>
               ) : null}
             </CardContent>
@@ -1228,7 +1274,7 @@ const shogoRadialCursor = require('../../../../apps/mobile/assets/ic_playstore_l
 const loginHeroLight = require('../../../../apps/mobile/assets/login/shogo-login3.jpg')
 const loginHeroDark = require('../../../../apps/mobile/assets/login/shogo-login3.jpg')
 
-function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onAppleSignIn, onForgotPassword, isLoading, error, onClearError, colorScheme }: LoginScreenProps) {
+function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onAppleSignIn, onForgotPassword, isLoading, error, onClearError, onOpenExternalLink, colorScheme }: LoginScreenProps) {
   const [activeTab, setActiveTab] = useState<Tab>('signin')
   const [dismissed, setDismissed] = useState(false)
   const scrollRef = useRef<ScrollView>(null)
@@ -1313,7 +1359,7 @@ function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onAppleSignIn, o
           }
 
           <View className="mt-4">
-            <ConsentNotice />
+            <ConsentNotice onOpenExternalLink={onOpenExternalLink} />
           </View>
 
           {(onGoogleSignIn || onAppleSignIn) ? (
@@ -1329,7 +1375,7 @@ function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onAppleSignIn, o
                 </View>
               ) : null}
               {onGoogleSignIn ? (
-                <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} />
+                <GoogleContinueButton onPress={onGoogleSignIn} colorScheme={colorScheme} disabled={isLoading} />
               ) : null}
             </>
           ) : null}
