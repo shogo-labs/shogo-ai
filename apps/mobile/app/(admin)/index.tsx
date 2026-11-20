@@ -205,6 +205,22 @@ async function fetchAdminJson<T>(path: string, params?: Record<string, string>):
   }
 }
 
+/**
+ * Like `fetchAdminJson`, but a failed request throws instead of resolving to
+ * `null`. A chart that renders its empty state on failure reads as "no data",
+ * which is why the two panels added in SHO-477 use this and show a notice.
+ */
+async function fetchAdminJsonStrict<T>(
+  path: string,
+  params?: Record<string, string>,
+): Promise<T | null> {
+  const qs = params ? '?' + new URLSearchParams(params).toString() : ''
+  const res = await fetch(`${API_BASE}${path}${qs}`, { credentials: 'include' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const json = await res.json()
+  return json.data ?? null
+}
+
 // ---------------------------------------------------------------------------
 // Components
 // ---------------------------------------------------------------------------
@@ -393,7 +409,7 @@ function InstallSegmentCard({
   )
 }
 
-function AppInstallsCard({ data, loading, adoption }: { data: AppInstallsData | null; loading: boolean; adoption: AppVersionAdoptionPoint[] }) {
+function AppInstallsCard({ data, loading, adoption, versionsError }: { data: AppInstallsData | null; loading: boolean; adoption: AppVersionAdoptionPoint[]; versionsError?: string | null }) {
   const { width } = useWindowDimensions()
   const stackMetrics = isNativePlatform() && width < NATIVE_STACK_METRICS_MAX_WIDTH
 
@@ -457,7 +473,7 @@ function AppInstallsCard({ data, loading, adoption }: { data: AppInstallsData | 
           </>
         )}
       </View>
-      {data && <View className="mt-3"><AppVersionsPanel desktop={data.desktop} cli={data.cli} adoption={adoption} /></View>}
+      {data && <View className="mt-3"><AppVersionsPanel desktop={data.desktop} cli={data.cli} adoption={adoption} error={versionsError} /></View>}
       {data && (
         <Text className="text-xs text-muted-foreground mt-3">
           {data.totals.newLast30d.toLocaleString()} new in 30d · {data.totals.distinctUsers.toLocaleString()} users
@@ -823,6 +839,8 @@ export default function AdminDashboard() {
     data: null,
     loading: true,
   })
+  const [versionsError, setVersionsError] = useState<string | null>(null)
+  const [trendError, setTrendError] = useState<string | null>(null)
   const [growth, setGrowth] = useState<{ data: GrowthDataPoint[] | null; loading: boolean }>({
     data: null,
     loading: true,
@@ -907,17 +925,29 @@ export default function AdminDashboard() {
   const trackDeviceTrend = usePanelSequence()
   const loadDeviceTrend = useCallback(async () => {
     setDeviceTrend((s) => ({ ...s, loading: true }))
-    const data = await trackDeviceTrend(() => fetchAdminJson<DeviceActivityTimeseries>('/analytics/devices-timeseries', { days: '30' }))
-    if (data === SUPERSEDED) return
-    setDeviceTrend({ data, loading: false })
+    try {
+      const data = await trackDeviceTrend(() => fetchAdminJsonStrict<DeviceActivityTimeseries>('/analytics/devices-timeseries', { days: '30' }))
+      if (data === SUPERSEDED) return
+      setTrendError(null)
+      setDeviceTrend({ data, loading: false })
+    } catch (err) {
+      setTrendError(err instanceof Error ? err.message : 'Request failed')
+      setDeviceTrend({ data: null, loading: false })
+    }
   }, [trackDeviceTrend])
 
   const trackAppVersions = usePanelSequence()
   const loadAppVersions = useCallback(async () => {
     setAppVersions((s) => ({ ...s, loading: true }))
-    const data = await trackAppVersions(() => fetchAdminJson<AppVersionsData>('/analytics/app-versions', { days: '30' }))
-    if (data === SUPERSEDED) return
-    setAppVersions({ data, loading: false })
+    try {
+      const data = await trackAppVersions(() => fetchAdminJsonStrict<AppVersionsData>('/analytics/app-versions', { days: '30' }))
+      if (data === SUPERSEDED) return
+      setVersionsError(null)
+      setAppVersions({ data, loading: false })
+    } catch (err) {
+      setVersionsError(err instanceof Error ? err.message : 'Request failed')
+      setAppVersions({ data: null, loading: false })
+    }
   }, [trackAppVersions])
 
   const trackGrowth = usePanelSequence()
@@ -1203,7 +1233,12 @@ export default function AdminDashboard() {
 
       {/* Row 3: Signed-in app install and activity metrics */}
       <View className="mb-6">
-        <AppInstallsCard data={appInstalls.data} loading={appInstalls.loading} adoption={appVersions.data?.adoption ?? []} />
+        <AppInstallsCard
+          data={appInstalls.data}
+          loading={appInstalls.loading}
+          adoption={appVersions.data?.adoption ?? []}
+          versionsError={versionsError}
+        />
       </View>
 
       {/* Row 3b: Which devices are actually alive */}
@@ -1213,6 +1248,7 @@ export default function AdminDashboard() {
           loading={appDevices.loading}
           trend={deviceTrend.data}
           trendLoading={deviceTrend.loading}
+          trendError={trendError}
         />
       </View>
 

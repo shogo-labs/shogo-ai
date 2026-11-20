@@ -15,6 +15,7 @@ import {
   ActiveDevicesTrendChart,
   type DeviceActivityTimeseries,
 } from './SharedAnalytics'
+import { LoadErrorNotice } from './LoadErrorNotice'
 
 export type ActiveDeviceClient = 'desktop' | 'cli' | 'unknown'
 export type ActiveDeviceOs = 'macos' | 'windows' | 'linux' | 'unknown'
@@ -202,12 +203,15 @@ export function ActiveDevicesPanel({
   loading = false,
   trend = null,
   trendLoading = false,
+  trendError = null,
 }: {
   data: ActiveDevicesData | null
   loading?: boolean
   /** Devices-active-per-day series; null while it has never been recorded. */
   trend?: DeviceActivityTimeseries | null
   trendLoading?: boolean
+  /** Set when `/analytics/devices-timeseries` failed, so a flat chart isn't read as "no devices". */
+  trendError?: string | null
 }) {
   const [filter, setFilter] = useState<FilterKey>('all')
   const [showDormant, setShowDormant] = useState(false)
@@ -228,14 +232,18 @@ export function ActiveDevicesPanel({
     [filteredDevices, showDormant, windowDays],
   )
 
-  const counts = useMemo(
-    () => ({
+  // Every count below comes from the same filtered set, so the headline's three
+  // numbers add up and never pair a chip-filtered online count with a global
+  // dormant one. `dormant` uses the API's rule (`!isActiveWithin`).
+  const counts = useMemo(() => {
+    const active = filteredDevices.filter((d) => isActiveWithin(d, windowDays)).length
+    return {
       total: filteredDevices.length,
       online: filteredDevices.filter((d) => d.online).length,
-      active: filteredDevices.filter((d) => isActiveWithin(d, windowDays)).length,
-    }),
-    [filteredDevices, windowDays],
-  )
+      active,
+      dormant: filteredDevices.length - active,
+    }
+  }, [filteredDevices, windowDays])
 
   const recencyBuckets = useMemo(
     () => bucketDevicesByRecency(filteredDevices),
@@ -249,20 +257,23 @@ export function ActiveDevicesPanel({
         <Text className="text-sm font-semibold text-foreground">Active devices</Text>
         <Text className="text-base font-bold text-foreground" testID="active-devices-headline">
           {data
-            ? `${counts.online.toLocaleString()} online now · ${counts.active.toLocaleString()} active in ${windowDays}d · ${(data.totals.dormant).toLocaleString()} dormant`
+            ? `${counts.online.toLocaleString()} online now · ${counts.active.toLocaleString()} active in ${windowDays}d · ${counts.dormant.toLocaleString()} dormant`
             : loading
               ? 'Loading devices…'
               : 'No device data'}
         </Text>
         <Text className="text-xs text-muted-foreground">
           {data
-            ? `Online means a heartbeat in the last ${data.onlineWindowMinutes} min (desktop every 5 min, mobile on foreground). ${data.totals.dormant.toLocaleString()} of ${data.totals.devices.toLocaleString()} keys are dormant.`
+            ? `Online means a heartbeat in the last ${data.onlineWindowMinutes} min (desktop every 5 min, mobile on foreground). Across all keys, ${data.totals.dormant.toLocaleString()} of ${data.totals.devices.toLocaleString()} are dormant.`
             : 'A device counts as online when its heartbeat is recent.'}
         </Text>
       </View>
 
       {/* Active devices over time (SHO-477 section 5) */}
-      <ActiveDevicesTrendChart data={trend} loading={trendLoading} />
+      <View className="gap-1">
+        <ActiveDevicesTrendChart data={trend} loading={trendLoading} />
+        <LoadErrorNotice errors={trendError ? { 'the device activity trend': trendError } : {}} />
+      </View>
 
       {/* Filter chips */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>

@@ -128,6 +128,25 @@ describe('AppVersionsPanel', () => {
     expect(screen.queryByText('OS split')).toBeNull()
   })
 
+  test('a failed app-versions request is named above the charts', () => {
+    // Without the notice an empty series reads as "nobody is on any version".
+    render(createElement(AppVersionsPanel, { desktop, cli, adoption, error: 'HTTP 500' }))
+    expect(screen.getByText("Couldn't load desktop versions: HTTP 500")).toBeTruthy()
+    // The charts below still render from the data that did arrive.
+    expect(screen.getByText('Devices on each version')).toBeTruthy()
+  })
+
+  test('a beta version is labelled in the adoption legend', () => {
+    const withBeta = [
+      ...adoption,
+      { date: '2026-10-21', version: '2.3.4-beta.20261018t122519', channel: 'beta', client: 'desktop', os: 'windows', devices: 1 },
+    ]
+    render(createElement(AppVersionsPanel, { desktop, cli, adoption: withBeta }))
+    expect(screen.getAllByText('2.3.4-beta.20261018t122519 (beta)').length).toBeGreaterThan(0)
+    // The same version's share-bar entry uses the same label.
+    expect(document.body.textContent).toContain('1 device ·')
+  })
+
   test('no adoption data shows graceful message', () => {
     render(createElement(AppVersionsPanel, { desktop, cli }))
     expect(screen.getByText('No adoption data for this filter')).toBeTruthy()

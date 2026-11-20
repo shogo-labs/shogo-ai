@@ -70,11 +70,26 @@ const data = (over: Record<string, any> = {}) => ({
 })
 
 describe('ActiveDevicesPanel', () => {
-  test('headline reports online now, active in window and dormant count', () => {
+  test('headline counts every number from the same device set', () => {
     render(createElement(ActiveDevicesPanel, { data: data() }))
-    expect(screen.getByText('1 online now · 4 active in 30d · 155 dormant')).toBeTruthy()
-    expect(screen.getByText(/155 of 189 keys are dormant/)).toBeTruthy()
+    // Five devices in the payload: one online, four active in 30d, one dormant.
+    expect(screen.getByText('1 online now · 4 active in 30d · 1 dormant')).toBeTruthy()
+    // The global total is named as global, so it can't be read as this chip's count.
+    expect(screen.getByText(/Across all keys, 155 of 189 are dormant/)).toBeTruthy()
     expect(screen.getByText(/heartbeat in the last 15 min/)).toBeTruthy()
+  })
+
+  test('a chip filter keeps the headline, bars and dormant count on that chip', () => {
+    render(createElement(ActiveDevicesPanel, { data: data() }))
+    fireEvent.click(screen.getByRole('button', { name: 'Windows · 1' }))
+    // The only Windows device is 30 h idle: not online, not active in 30d? it is
+    // (30 h < 30 d), so it is active and nothing on this chip is dormant.
+    expect(screen.getByText('0 online now · 1 active in 30d · 0 dormant')).toBeTruthy()
+  })
+
+  test('a failed device-activity trend is named, not shown as a flat line', () => {
+    render(createElement(ActiveDevicesPanel, { data: data(), trendError: 'HTTP 500' }))
+    expect(screen.getByText("Couldn't load the device activity trend: HTTP 500")).toBeTruthy()
   })
 
   test('recency bar chart labels are visible', () => {

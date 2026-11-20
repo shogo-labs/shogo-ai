@@ -14,11 +14,18 @@
  */
 
 import { useMemo, useState } from 'react'
-import { Pressable, ScrollView, Text, useWindowDimensions, View } from 'react-native'
-import Svg, { Circle, G } from 'react-native-svg'
+import { Pressable, ScrollView, Text, View } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { STACKED_PALETTE, StackedAreaChart, type StackedDay, type StackedSeries } from './StackedAreaChart'
-import { shareRingSegments, seriesColor } from '../../lib/engagement-utils'
+import {
+  STACKED_PALETTE,
+  StackedAreaChart,
+  StackedAreaLegend,
+  type StackedDay,
+  type StackedSeries,
+} from './StackedAreaChart'
+import { ShareRing, type ShareRingRow } from './ShareRing'
+import { LoadErrorNotice } from './LoadErrorNotice'
+import { seriesColor } from '../../lib/engagement-utils'
 
 export type DeviceOsKey = 'macos' | 'windows' | 'linux' | 'unknown'
 export type ReleaseChannel = 'stable' | 'beta'
@@ -92,8 +99,6 @@ const FILTERS: Array<{ key: FilterKey; label: string }> = [
 const OS_LABELS: Record<string, string> = { macos: 'macOS', windows: 'Windows', linux: 'Linux' }
 const OS_KEYS: Array<Exclude<DeviceOsKey, 'unknown'>> = ['macos', 'windows', 'linux']
 
-const WIDE_LAYOUT_MIN_WIDTH = 640
-
 /** Max version series shown individually; the rest fold into "Older". */
 const MAX_VERSION_SERIES = 5
 
@@ -144,10 +149,14 @@ function buildVersionSeries(
   const topVersions = ranked.slice(0, MAX_VERSION_SERIES).map(([v]) => v)
   const hasOlder = ranked.length > MAX_VERSION_SERIES
 
+  // A version is beta when any point reporting it carries the beta channel;
+  // the legend says so, since a beta user sees the same number either way.
+  const betaVersions = new Set(points.filter((p) => p.channel === 'beta').map((p) => p.version))
+
   // Assign stable colors: deployed version → STACKED_PALETTE[0].
   const series: StackedSeries[] = topVersions.map((v, i) => ({
     id: v,
-    label: v,
+    label: betaVersions.has(v) ? `${v} (beta)` : v,
     color: seriesColor(v === 'Other' ? '__never__' : v, i, STACKED_PALETTE),
   }))
   if (hasOlder) {
@@ -209,59 +218,27 @@ function todayShareData(
 
 const OS_RING_SIZE = 100
 const OS_RING_STROKE = 14
-const OS_RING_RADIUS = (OS_RING_SIZE - OS_RING_STROKE) / 2
 const OS_RING_PALETTE = ['#3b82f6', '#10b981', '#f97316', '#94a3b8']
 
 function OsRing({ counts }: { counts: Array<{ os: string; devices: number }> }) {
   const total = counts.reduce((s, r) => s + r.devices, 0)
   if (total === 0) return null
 
-  const shares = counts.map((r) => ({ id: r.os, pct: (r.devices / total) * 100 }))
-  const segments = shareRingSegments(shares, OS_RING_RADIUS)
+  const rows: ShareRingRow[] = counts.map((r, i) => ({
+    id: r.os,
+    label: OS_LABELS[r.os] ?? r.os,
+    value: r.devices,
+    pct: (r.devices / total) * 100,
+    color: OS_RING_PALETTE[i % OS_RING_PALETTE.length],
+  }))
 
   return (
-    <View className="flex-row items-center gap-4 flex-wrap">
-      <View style={{ width: OS_RING_SIZE, height: OS_RING_SIZE }}>
-        <Svg width={OS_RING_SIZE} height={OS_RING_SIZE}>
-          <G rotation={-90} origin={`${OS_RING_SIZE / 2}, ${OS_RING_SIZE / 2}`}>
-            <Circle
-              cx={OS_RING_SIZE / 2}
-              cy={OS_RING_SIZE / 2}
-              r={OS_RING_RADIUS}
-              stroke="#94a3b8"
-              strokeOpacity={0.15}
-              strokeWidth={OS_RING_STROKE}
-              fill="none"
-            />
-            {segments.map((seg, i) => (
-              <Circle
-                key={seg.id}
-                cx={OS_RING_SIZE / 2}
-                cy={OS_RING_SIZE / 2}
-                r={OS_RING_RADIUS}
-                fill="none"
-                stroke={OS_RING_PALETTE[i % OS_RING_PALETTE.length]}
-                strokeWidth={OS_RING_STROKE}
-                strokeDasharray={`${seg.dash} ${seg.gap}`}
-                strokeDashoffset={seg.offset}
-              />
-            ))}
-          </G>
-        </Svg>
-      </View>
-      <View className="flex-1 min-w-[120px] gap-1.5">
-        {counts.map((r, i) => (
-          <View key={r.os} className="flex-row items-center gap-2">
-            <View className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: OS_RING_PALETTE[i % OS_RING_PALETTE.length] }} />
-            <Text className="text-xs text-foreground flex-1">{OS_LABELS[r.os] ?? r.os}</Text>
-            <Text className="text-xs text-muted-foreground">{r.devices.toLocaleString()}</Text>
-            <Text className="text-xs font-medium text-foreground w-10 text-right">
-              {((r.devices / total) * 100).toFixed(1)}%
-            </Text>
-          </View>
-        ))}
-      </View>
-    </View>
+    <ShareRing
+      rows={rows}
+      size={OS_RING_SIZE}
+      stroke={OS_RING_STROKE}
+      formatValue={(n) => n.toLocaleString()}
+    />
   )
 }
 
@@ -278,6 +255,7 @@ function VersionShareBar({
 }) {
   if (shares.length === 0) return null
   const colorMap = new Map(series.map((s) => [s.id, s.color]))
+  const labelMap = new Map(series.map((s) => [s.id, s.label]))
 
   return (
     <View className="gap-2">
@@ -294,8 +272,10 @@ function VersionShareBar({
         {shares.map((s) => (
           <View key={s.id} className="flex-row items-center gap-1.5">
             <View className="h-2 w-2 rounded-full" style={{ backgroundColor: colorMap.get(s.id) ?? OLDER_COLOR }} />
-            <Text className="text-xs text-foreground">{s.id === '__older__' ? 'Older' : s.id}</Text>
-            <Text className="text-xs text-muted-foreground">· {s.pct.toFixed(1)}%</Text>
+            <Text className="text-xs text-foreground">{labelMap.get(s.id) ?? s.id}</Text>
+            <Text className="text-xs text-muted-foreground">
+              · {s.devices.toLocaleString()} {pluralize(s.devices, 'device')} · {s.pct.toFixed(1)}%
+            </Text>
           </View>
         ))}
       </View>
@@ -311,13 +291,15 @@ export function AppVersionsPanel({
   desktop,
   cli,
   adoption = [],
+  error = null,
 }: {
   desktop: InstallSegment
   cli?: InstallSegment | null
   adoption?: AppVersionAdoptionPoint[]
+  /** Set when `/analytics/app-versions` failed, so an empty chart isn't read as "no data". */
+  error?: string | null
 }) {
   const [filter, setFilter] = useState<FilterKey>('all')
-  const { width } = useWindowDimensions()
 
   const activeSegment: InstallSegment | null = filter === 'cli' ? (cli ?? null) : desktop
 
@@ -355,6 +337,8 @@ export function AppVersionsPanel({
 
   return (
     <View className="rounded-xl border border-border/50 bg-muted/20 p-4 gap-4">
+      <LoadErrorNotice errors={error ? { 'desktop versions': error } : {}} />
+
       {/* Headline */}
       <View className="gap-1">
         <Text className="text-sm font-semibold text-foreground">Desktop versions</Text>
@@ -422,6 +406,7 @@ export function AppVersionsPanel({
             formatTooltip={(n) => String(Math.round(n))}
             markToday={false}
           />
+          <StackedAreaLegend series={series} />
         </View>
       ) : (
         <Text className="text-xs text-muted-foreground">No adoption data for this filter</Text>

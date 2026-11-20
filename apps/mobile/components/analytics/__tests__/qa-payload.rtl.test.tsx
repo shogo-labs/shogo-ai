@@ -10,8 +10,9 @@
  *
  * Since SHO-477 the panels are chart-based: version rows no longer appear as
  * plain text in the HTML. These assertions cover the shape (payload contract),
- * the headline and chip counts (computed from `versions[].os`), and the
- * per-device disclosure gate.
+ * the headline and chip counts (computed from `versions[].os`), the adoption
+ * chart drawn from the captured `adoption[]` (it carries `client`/`os` since
+ * SHO-477, which is what the chips filter), and the per-device disclosure gate.
  */
 
 import { describe, expect, mock, test } from 'bun:test'
@@ -49,7 +50,7 @@ describe('admin install panel — real API payload', () => {
   })
 
   test('headline and chip totals render from the real payload (SHO-477: chart-based, no version-row table)', () => {
-    render(createElement(AppVersionsPanel, { ...payload.installs, adoption: [] }))
+    render(createElement(AppVersionsPanel, { ...payload.installs, adoption: payload.versions.adoption }))
 
     // "N of M on <tag>" — production's answer for the fixture.
     expect(screen.getByText('6 of 14 desktop devices on 2.3.6 (43%)')).toBeTruthy()
@@ -61,8 +62,28 @@ describe('admin install panel — real API payload', () => {
     expect(screen.getByRole('button', { name: 'Linux · 2' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'CLI · 2' })).toBeTruthy()
 
-    // Without adoption data the chart gracefully says so rather than crashing.
-    expect(screen.getByText('No adoption data for this filter')).toBeTruthy()
+    // The captured adoption series renders the chart rather than the empty state.
+    expect(screen.queryByText('No adoption data for this filter')).toBeNull()
+    expect(screen.getByText('Devices on each version')).toBeTruthy()
+    expect(screen.getByText('Version share today')).toBeTruthy()
+  })
+
+  test('the adoption chart draws the captured series, beta included (AC9)', () => {
+    render(createElement(AppVersionsPanel, { ...payload.installs, adoption: payload.versions.adoption }))
+
+    // Every desktop version in the captured series is a legend entry; the beta
+    // one is labelled, so a beta user is distinguishable from a stable one.
+    expect(screen.getAllByText('2.2.27').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('2.3.6').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('2.3.6-beta.20261020t083308 (beta)').length).toBeGreaterThan(0)
+
+    // CLI is its own series and the "All" chip excludes it.
+    expect(screen.queryByText('shogo-cli/unknown')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'CLI · 2' }))
+    expect(screen.getAllByText('shogo-cli/unknown').length).toBeGreaterThan(0)
+
+    // The share bar carries devices, not just percentages.
+    expect(document.body.textContent).toContain('1 device ·')
   })
 
   test('the device headline renders from the real payload', () => {
