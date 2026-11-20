@@ -29,6 +29,7 @@ import { ConversationRowView, PanelLink, PanelSectionHeader } from '../team-chat
 import { TabScreen, useTabScreenScroll } from '../layout/TabScreenHeader'
 import { WorkspaceSidebarAvatar } from '../layout/WorkspaceSidebarAvatar'
 import { recentProjects } from './recentProjects'
+import { getPinnedProjectIds } from '../../lib/project-prefs-store'
 
 function useFocused(): boolean {
   const [focused, setFocused] = useState(true)
@@ -110,7 +111,11 @@ export const MobileHomeFeed = observer(function MobileHomeFeed() {
   const scroll = useTabScreenScroll()
   const { chat, activity, failed, mentions, starred, unread, openEntry } = useHomeSignals({ polling: focused })
   const workspaceId = chat.workspaceId
-  const recent = useMemo(() => recentProjects(projects.all as any[], workspace?.id), [projects.all, workspace?.id])
+  const pinnedProjectIds = useMemo(() => new Set(getPinnedProjectIds()), [])
+  const recent = useMemo(
+    () => recentProjects(projects.all as any[], workspace?.id, undefined, pinnedProjectIds),
+    [projects.all, workspace?.id, pinnedProjectIds],
+  )
   const { rows, refreshApprovals } = useAgentRows({
     workspaceId,
     agents: chat.mentionables?.agents,

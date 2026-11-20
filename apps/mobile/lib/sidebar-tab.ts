@@ -43,6 +43,7 @@ export function tabForPathname(pathname: string, conversations: TabConversation[
   if (/^\/(projects|project-chat|project-surface|new-project)(\/|$)/.test(path)) return 'projects'
   if (/^\/agent(\/|$)/.test(path)) return 'home'
   if (/^\/side-chats(\/|$)/.test(path)) return 'home'
+  if (/^\/chats(\/|$)/.test(path)) return 'home'
   if (/^\/activity(\/|$)/.test(path)) return 'activity'
   if (/^\/more(\/|$)/.test(path)) return 'more'
   if (/^\/meetings(\/|$)/.test(path)) return 'meetings'
