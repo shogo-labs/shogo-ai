@@ -17,7 +17,11 @@ export interface LearnBadgeSummary {
 
 export interface LearnProfileSummary {
   xp: number
-  level: { index: number; name: string; min: number; next: { name: string; min: number } | null }
+  /** Shogo Certified level held (0 = none yet) and its title. */
+  certifiedLevel: number
+  certifiedTitle: string | null
+  /** XP rank: for momentum only, never a certified level. */
+  rank: { index: number; name: string; min: number; next: { name: string; min: number } | null }
   streak: { current: number; longest: number }
   lessonsCompleted: number
   coursesCompleted: number

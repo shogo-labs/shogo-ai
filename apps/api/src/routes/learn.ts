@@ -7,16 +7,20 @@
  *    Studio session into the learn cookie (see `lib/learn-token.ts`) and sends
  *    the browser back. Signed out: back with `learn_sso=none` when
  *    `prompt=none`, otherwise to Studio sign-in, which returns here.
- *  - `GET  /me`     who the learner is, their plan, and per-course access and
- *    progress. The learn site's server functions call it with the learner's
+ *  - `GET  /me`     who the learner is, their Shogo Certified level, and
+ *    per-course access, open lessons and progress. The learn site's server functions call it with the learner's
  *    token before serving any gated lesson.
  *  - `POST /coach`  one reply from the lesson coach: Socratic, lesson-scoped,
  *    capped per learner per day by plan, and only for courses they can open.
  *  - `POST /certificate`  grade a course's final check; on a pass, return a
  *    signed certificate id. Signed-in learners only.
  *  - `GET  /certificate/:id`  public verification of a certificate id.
- *  - `POST /checkout`  Stripe Checkout for a course sold on its own; the
- *    webhook (`lib/learn-purchase.ts`) records the enrollment.
+ *  - `GET  /level`   the learner's level and what each level still needs,
+ *    with evidence read from their own workspaces.
+ *  - `POST /level/claim`  award a level whose requirements are all met, and
+ *    return its signed certificate id.
+ *
+ * Every course is free: access comes from the learner's level (`learn-levels.ts`).
  *
  * Every route authenticates itself (learn token, or a Studio session for the
  * same-origin case), so `/api/learn/` is a gate-public prefix.
@@ -28,18 +32,28 @@ import {
   LEARN_CERTIFICATES,
   LEARN_COURSES,
   LEARN_COACH_DAILY_LIMIT,
+  SOLO_FOUNDER_ENROLLMENT_ID,
   decideLearnAccess,
   gradeLearnCheck,
   learnCourseById,
+  unlockedLessons,
   type LearnAccessDecision,
-  type LearnStandaloneOffer,
 } from '../config/learn-catalog'
-import { learnStandaloneOffer } from '../lib/learn-purchase'
+import {
+  LEARN_LEVELS,
+  heldLevel,
+  learnLevel,
+  levelBadgeId,
+  levelCertificateCourseId,
+  levelFromCertificateCourseId,
+  levelRequirements,
+  type LevelEvidence,
+} from '../config/learn-levels'
 import {
   CERTIFICATE_LESSON,
   LEARN_BADGES,
   LEARN_LESSONS,
-  LEVELS,
+  RANKS,
   SELF_PACED_COURSES,
   XP,
   computeLearnStats,
@@ -74,11 +88,10 @@ const MAX_MESSAGES = 20
 const MAX_MESSAGE_CHARS = 4000
 const MAX_CONTEXT_CHARS = 16000
 const CERT_ATTEMPTS_PER_DAY = 20
-const CHECKOUTS_PER_HOUR = 20
+const LEVEL_CLAIMS_PER_DAY = 30
 const PROGRESS_WRITES_PER_DAY = 300
 const IMPORT_MAX_ITEMS = 60
 const IMPORT_MAX_AGE_DAYS = 400
-const HOUR_MS = 60 * 60 * 1000
 
 export interface LearnUser {
   id: string
@@ -104,15 +117,8 @@ export interface LearnRoutesDeps {
   takeRateLimit: (key: string, max: number, windowMs: number) => Promise<{ allowed: boolean; retryAfterSeconds: number }>
   /** One coach completion; throws when no model is available. */
   generateCoachReply: (input: { system: string; messages: CoachMessage[] }) => Promise<string>
-  /** Creates the Stripe Checkout for a standalone course. Absent when Stripe is not configured. */
-  createCourseCheckout?: (input: {
-    offer: LearnStandaloneOffer
-    userId: string
-    email: string
-    workspaceId: string
-    successUrl: string
-    cancelUrl: string
-  }) => Promise<{ url: string } | { error: 'price_not_provisioned' }>
+  /** What the learner has built and run in their own workspaces (levels 2 and 3). */
+  getLevelEvidence: (userId: string, workspaceIds: string[]) => Promise<LevelEvidence>
   frontendUrl: () => string
   /** Lessons the learner marked complete on learn.shogo.ai (`learn_lesson_completions`). */
   listCompletions: (userId: string) => Promise<Array<{ courseId: string; lessonId: string; day: string; completedAt: Date }>>
@@ -230,20 +236,18 @@ export function learnRoutes(deps: LearnRoutesDeps) {
 
   async function learnerState(userId: string) {
     const workspaceIds = await deps.getWorkspaceIds(userId)
-    const [planIds, allEnrollments] = await Promise.all([
+    const [planIds, enrollments, badges] = await Promise.all([
       Promise.all(workspaceIds.map((id) => deps.getEffectivePlanId(id).catch(() => 'free'))),
       deps.getEnrollments(userId, workspaceIds),
+      deps.listBadges(userId),
     ])
-    // A standalone course purchase is personal: it never unlocks the course for
-    // the buyer's teammates the way a workspace offer does.
-    const enrollments = allEnrollments.filter((e) => !e.courseId.startsWith('learn:') || e.userId === userId)
-    return { planId: bestPlanId(planIds), enrollments, workspaceIds }
+    return { planId: bestPlanId(planIds), enrollments, workspaceIds, level: heldLevel(badges.map((b) => b.badgeId)) }
   }
 
   /**
-   * Progress, XP, level, streak and badges for a learner, awarding any badge
-   * they now qualify for. Solo Founder lessons come from its enrollment
-   * (course board) and count for XP, but not for streaks (no day).
+   * Progress, XP, rank, streak, badges and Shogo Certified level for a learner,
+   * awarding any badge they now qualify for. Past Solo Founder buyers' board
+   * progress counts for XP, but not for streaks (no day).
    */
   async function gamification(
     userId: string,
@@ -254,13 +258,10 @@ export function learnRoutes(deps: LearnRoutesDeps) {
     const certified = opts.certified ?? []
     const [rows, held] = await Promise.all([deps.listCompletions(userId), deps.listBadges(userId)])
     const completions: CompletionRow[] = rows.map((r) => ({ courseId: r.courseId, lessonId: r.lessonId, day: r.day }))
-    const solo = LEARN_COURSES.find((c) => c.id === 'solo-founder')
-    if (solo?.access.kind === 'purchase') {
-      const enrollmentCourseId = solo.access.enrollmentCourseId
-      for (const e of enrollments.filter((x) => x.courseId === enrollmentCourseId)) {
-        const list = (e.progress as { completedLessons?: unknown } | null)?.completedLessons
-        if (Array.isArray(list)) for (const id of list) if (typeof id === 'string') completions.push({ courseId: 'solo-founder', lessonId: id })
-      }
+    const soloEnrollments = enrollments.filter((x) => x.courseId === SOLO_FOUNDER_ENROLLMENT_ID)
+    for (const e of soloEnrollments) {
+      const list = (e.progress as { completedLessons?: unknown } | null)?.completedLessons
+      if (Array.isArray(list)) for (const id of list) if (typeof id === 'string') completions.push({ courseId: 'solo-founder', lessonId: id })
     }
     const today = learnerDay(new Date(now()), tz)
     const heldIds = new Set(held.map((b) => b.badgeId))
@@ -273,6 +274,7 @@ export function learnRoutes(deps: LearnRoutesDeps) {
     const fresh = qualifyingBadges(before, {
       certified: [...certified, ...[...heldIds].filter((b) => b.startsWith('certified-')).map((b) => b.slice('certified-'.length))],
       firstActivityDay,
+      soloFounderBuyer: soloEnrollments.length > 0,
     }).filter((b) => !heldIds.has(b))
     if (fresh.length) await deps.awardBadges(userId, fresh)
     const earnedAt = new Date(now())
@@ -280,11 +282,16 @@ export function learnRoutes(deps: LearnRoutesDeps) {
       .filter((b) => learnBadgeById(b.id))
       .sort((a, b) => a.earnedAt.getTime() - b.earnedAt.getTime())
     const stats = fresh.length ? computeLearnStats({ completions, badgeIds: badges.map((b) => b.id), today }) : before
+    const level = heldLevel(badges.map((b) => b.id))
+    const priorLevel = heldLevel(heldIds)
     return {
       stats,
+      level,
+      levelUp: level > priorLevel ? { level, title: learnLevel(level)!.title } : null,
+      soloFounderBuyer: soloEnrollments.length > 0,
       badges: badges.map((b) => ({ id: b.id, earnedAt: b.earnedAt.toISOString() })),
       newBadges: fresh.map((id) => ({ ...learnBadgeById(id)!, earnedAt: earnedAt.toISOString() })),
-      levelUp: stats.level.index > prior.level.index,
+      rankUp: stats.rank.index > prior.rank.index,
       lastCompletedAt: Object.fromEntries(
         Object.keys(stats.completedLessons).map((course) => {
           const times = rows.filter((r) => r.courseId === course).map((r) => r.completedAt.getTime())
@@ -304,25 +311,43 @@ export function learnRoutes(deps: LearnRoutesDeps) {
     }
   }
 
-  /** Why a learner can't record this lesson, or null when they can. */
-  function lessonProblem(courseId: string, lessonId: string, access: LearnAccessDecision | null): { status: 400 | 403 | 404; error: string } | null {
+  /** Why a learner can't record this lesson, or null when they can. `completed` = lessons already done in that course. */
+  function lessonProblem(
+    courseId: string,
+    lessonId: string,
+    access: LearnAccessDecision | null,
+    completed: readonly string[],
+  ): { status: 400 | 403 | 404; error: string } | null {
     if (!SELF_PACED_COURSES.includes(courseId) || !LEARN_LESSONS[courseId]?.includes(lessonId)) {
       return { status: 404, error: 'Unknown lesson.' }
     }
     if (CERTIFICATE_LESSON[courseId] === lessonId) return { status: 400, error: 'Pass the final check to complete this lesson.' }
-    if (!access?.hasAccess) return { status: 403, error: 'Your plan does not include this course.' }
+    if (!access?.hasAccess) return { status: 403, error: lockedMessage(access) }
+    if (!unlockedLessons(courseId, completed).includes(lessonId)) return { status: 403, error: 'Finish the lesson before this one first.' }
     return null
   }
 
-  function accessFor(courseId: string, planId: PlanId, enrollments: Array<{ courseId: string }>): LearnAccessDecision | null {
+  function lockedMessage(access: LearnAccessDecision | null): string {
+    const need = access?.requiredLevel ? learnLevel(access.requiredLevel) : undefined
+    return need ? `Earn Shogo Certified Level ${need.level} (${need.title}) to open this course.` : 'This course is locked.'
+  }
+
+  function accessFor(courseId: string, level: number): LearnAccessDecision | null {
     const course = learnCourseById(courseId)
     if (!course) return null
-    return decideLearnAccess(course.access, { signedIn: true, planId, enrolledCourseIds: new Set(enrollments.map((e) => e.courseId)) })
+    return decideLearnAccess(course.access, { signedIn: true, level })
+  }
+
+  /** course id → lessons done, from the learner's own completion rows. */
+  async function completedByCourse(userId: string): Promise<Record<string, string[]>> {
+    const out: Record<string, string[]> = {}
+    for (const r of await deps.listCompletions(userId)) (out[r.courseId] ??= []).push(r.lessonId)
+    return out
   }
 
   app.get('/lessons', (c) => {
     c.header('Cache-Control', 'public, max-age=300')
-    return c.json({ lessons: LEARN_LESSONS, badges: LEARN_BADGES, levels: LEVELS, xp: XP })
+    return c.json({ lessons: LEARN_LESSONS, badges: LEARN_BADGES, ranks: RANKS, levels: LEARN_LEVELS, xp: XP })
   })
 
   app.post('/progress', async (c) => {
@@ -332,8 +357,8 @@ export function learnRoutes(deps: LearnRoutesDeps) {
     const body = (await c.req.json().catch(() => null)) as { courseId?: unknown; lessonId?: unknown; tz?: unknown } | null
     const courseId = typeof body?.courseId === 'string' ? body.courseId : ''
     const lessonId = typeof body?.lessonId === 'string' ? body.lessonId : ''
-    const { planId, enrollments } = await learnerState(learner.user.id)
-    const problem = lessonProblem(courseId, lessonId, accessFor(courseId, planId, enrollments))
+    const [{ level, enrollments }, done] = await Promise.all([learnerState(learner.user.id), completedByCourse(learner.user.id)])
+    const problem = lessonProblem(courseId, lessonId, accessFor(courseId, level), done[courseId] ?? [])
     if (problem) return c.json({ error: problem.error }, problem.status)
     const rl = await deps.takeRateLimit(`learn-progress:${learner.user.id}`, PROGRESS_WRITES_PER_DAY, DAY_MS)
     if (!rl.allowed) {
@@ -355,16 +380,24 @@ export function learnRoutes(deps: LearnRoutesDeps) {
     const tz = cleanTz(body?.tz)
     const today = learnerDay(new Date(now()), tz)
     const oldest = learnerDay(new Date(now() - IMPORT_MAX_AGE_DAYS * DAY_MS), tz)
-    const { planId, enrollments } = await learnerState(learner.user.id)
+    const [{ level, enrollments }, done] = await Promise.all([learnerState(learner.user.id), completedByCourse(learner.user.id)])
     const rows: Array<{ courseId: string; lessonId: string; day: string }> = []
     const seen = new Set<string>()
-    for (const item of body.items.slice(0, IMPORT_MAX_ITEMS) as Array<Record<string, unknown>>) {
+    // In course order, so each imported lesson can open the next one.
+    const order = (i: Record<string, unknown>) => {
+      const list = LEARN_LESSONS[String(i?.courseId)] ?? []
+      const at = list.indexOf(String(i?.lessonId))
+      return at < 0 ? Number.MAX_SAFE_INTEGER : at
+    }
+    const items = (body.items.slice(0, IMPORT_MAX_ITEMS) as Array<Record<string, unknown>>).slice().sort((a, b) => order(a) - order(b))
+    for (const item of items) {
       const courseId = typeof item?.courseId === 'string' ? item.courseId : ''
       const lessonId = typeof item?.lessonId === 'string' ? item.lessonId : ''
-      if (lessonProblem(courseId, lessonId, accessFor(courseId, planId, enrollments))) continue
       const key = `${courseId}/${lessonId}`
       if (seen.has(key)) continue
+      if (lessonProblem(courseId, lessonId, accessFor(courseId, level), done[courseId] ?? [])) continue
       seen.add(key)
+      ;(done[courseId] ??= []).push(lessonId)
       const day = typeof item?.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(item.day) && item.day >= oldest && item.day <= today ? item.day : today
       rows.push({ courseId, lessonId, day })
     }
@@ -427,40 +460,27 @@ export function learnRoutes(deps: LearnRoutesDeps) {
     if (!learner) {
       const courses: Record<string, LearnAccessDecision> = {}
       for (const course of LEARN_COURSES) {
-        courses[course.id] = decideLearnAccess(course.access, {
-          signedIn: false,
-          planId: 'free',
-          enrolledCourseIds: new Set(),
-        })
+        courses[course.id] = decideLearnAccess(course.access, { signedIn: false, level: 0 })
       }
-      return c.json({ signedIn: false, courses })
+      return c.json({ signedIn: false, courses, catalog: { levels: LEARN_LEVELS } })
     }
     const { planId, enrollments } = await learnerState(learner.user.id)
-    const enrolled = new Set(enrollments.map((e) => e.courseId))
     const g = await gamification(learner.user.id, enrollments, cleanTz(c.req.query('tz')))
-    const courses: Record<string, LearnAccessDecision & { progress?: { completedLessons: string[]; completedAt: string | null } }> = {}
+    type CourseState = LearnAccessDecision & { unlockedLessons?: string[]; progress?: { completedLessons: string[]; completedAt: string | null } }
+    const courses: Record<string, CourseState> = {}
     for (const course of LEARN_COURSES) {
-      const decision = decideLearnAccess(course.access, { signedIn: true, planId, enrolledCourseIds: enrolled })
-      if (course.access.kind === 'purchase' && decision.hasAccess) {
-        const rule = course.access
-        const completed = new Set<string>()
-        let completedAt: string | null = null
-        for (const e of enrollments.filter((x) => x.courseId === rule.enrollmentCourseId)) {
-          const list = (e.progress as { completedLessons?: unknown } | null)?.completedLessons
-          if (Array.isArray(list)) for (const id of list) if (typeof id === 'string') completed.add(id)
-          if (e.completedAt) completedAt = e.completedAt.toISOString()
+      const decision: CourseState = decideLearnAccess(course.access, { signedIn: true, level: g.level })
+      const done = g.stats.completedLessons[course.id]
+      if (decision.hasAccess && LEARN_LESSONS[course.id]) decision.unlockedLessons = unlockedLessons(course.id, done ?? [])
+      if (done) {
+        decision.progress = {
+          completedLessons: done,
+          completedAt: g.stats.coursesCompleted.includes(course.id) ? (g.lastCompletedAt[course.id] ?? null) : null,
         }
-        courses[course.id] = { ...decision, progress: { completedLessons: [...completed], completedAt } }
-      } else if (SELF_PACED_COURSES.includes(course.id) && g.stats.completedLessons[course.id]) {
-        const done = g.stats.completedLessons[course.id]
-        courses[course.id] = {
-          ...decision,
-          progress: { completedLessons: done, completedAt: g.stats.coursesCompleted.includes(course.id) ? g.lastCompletedAt[course.id] : null },
-        }
-      } else {
-        courses[course.id] = decision
       }
+      courses[course.id] = decision
     }
+    const next = learnLevel(g.level + 1)
     return c.json({
       signedIn: true,
       user: learner.user,
@@ -470,7 +490,16 @@ export function learnRoutes(deps: LearnRoutesDeps) {
       stats: g.stats,
       badges: g.badges,
       newBadges: g.newBadges,
-      catalog: { badges: LEARN_BADGES, levels: LEVELS },
+      certification: {
+        level: g.level,
+        title: learnLevel(g.level)?.title ?? null,
+        next: next
+          ? { level: next.level, title: next.title, claimable: next.claimable, requirements: levelRequirements(next.level, { heldLevel: g.level, completedLessons: g.stats.completedLessons }) }
+          : null,
+        perks: { freeExpertAttempt: g.soloFounderBuyer },
+      },
+      levelUp: g.levelUp,
+      catalog: { badges: LEARN_BADGES, ranks: RANKS, levels: LEARN_LEVELS },
     })
   })
 
@@ -482,13 +511,9 @@ export function learnRoutes(deps: LearnRoutesDeps) {
     const course = learnCourseById(parsed.courseId)
     if (!course) return c.json({ error: `Unknown course: ${parsed.courseId}` }, 404)
 
-    const { planId, enrollments } = await learnerState(learner.user.id)
-    const decision = decideLearnAccess(course.access, {
-      signedIn: true,
-      planId,
-      enrolledCourseIds: new Set(enrollments.map((e) => e.courseId)),
-    })
-    if (!decision.hasAccess) return c.json({ error: 'Your plan does not include this course.', access: decision }, 403)
+    const { planId, level } = await learnerState(learner.user.id)
+    const decision = decideLearnAccess(course.access, { signedIn: true, level })
+    if (!decision.hasAccess) return c.json({ error: lockedMessage(decision), access: decision }, 403)
 
     const limit = LEARN_COACH_DAILY_LIMIT[planId]
     const rl = await deps.takeRateLimit(`learn-coach:${learner.user.id}`, limit, DAY_MS)
@@ -522,13 +547,9 @@ export function learnRoutes(deps: LearnRoutesDeps) {
       return c.json({ error: 'answers is required.' }, 400)
     }
 
-    const { planId, enrollments } = await learnerState(learner.user.id)
-    const decision = decideLearnAccess(course.access, {
-      signedIn: true,
-      planId,
-      enrolledCourseIds: new Set(enrollments.map((e) => e.courseId)),
-    })
-    if (!decision.hasAccess) return c.json({ error: 'Your plan does not include this course.', access: decision }, 403)
+    const { level, enrollments } = await learnerState(learner.user.id)
+    const decision = decideLearnAccess(course.access, { signedIn: true, level })
+    if (!decision.hasAccess) return c.json({ error: lockedMessage(decision), access: decision }, 403)
 
     const rl = await deps.takeRateLimit(`learn-cert:${learner.user.id}`, CERT_ATTEMPTS_PER_DAY, DAY_MS)
     if (!rl.allowed) {
@@ -552,61 +573,91 @@ export function learnRoutes(deps: LearnRoutesDeps) {
       score: result.score,
       total: result.total,
     })
-    return c.json({ ...result, passMark: rule.passMark, certificate: { id, name }, stats: g.stats, newBadges: g.newBadges, levelUp: g.levelUp })
+    return c.json({
+      ...result,
+      passMark: rule.passMark,
+      certificate: { id, name },
+      stats: g.stats,
+      newBadges: g.newBadges,
+      level: g.level,
+      levelUp: g.levelUp,
+      rankUp: g.rankUp,
+    })
   })
 
-  app.post('/checkout', async (c) => {
+  /** Requirements for every level, with evidence from the learner's own workspaces. */
+  async function levelReport(userId: string) {
+    const { workspaceIds, enrollments } = await learnerState(userId)
+    const [g, evidence] = await Promise.all([gamification(userId, enrollments, null), deps.getLevelEvidence(userId, workspaceIds)])
+    const levels = LEARN_LEVELS.map((def) => {
+      const requirements = levelRequirements(def.level, { heldLevel: g.level, completedLessons: g.stats.completedLessons, evidence })
+      return {
+        ...def,
+        held: g.level >= def.level,
+        requirements,
+        ready: def.claimable && g.level === def.level - 1 && requirements.every((r) => r.ok),
+      }
+    })
+    return { g, levels }
+  }
+
+  app.get('/level', async (c) => {
     c.header('Cache-Control', 'no-store')
     const learner = await resolveLearner(c)
-    if (!learner) return c.json({ error: 'Sign in with your Shogo account to buy this course.' }, 401)
-    const body = (await c.req.json().catch(() => null)) as { courseId?: unknown; returnUrl?: unknown } | null
-    const offer = learnStandaloneOffer(typeof body?.courseId === 'string' ? body.courseId : '')
-    const course = offer ? learnCourseById(offer.courseId) : undefined
-    if (!offer || !course) return c.json({ error: 'This course is not sold on its own.' }, 404)
-    const returnUrl = safeLearnReturn(typeof body?.returnUrl === 'string' ? body.returnUrl : null)
-    if (!returnUrl) return c.json({ error: 'returnUrl must be a learn.shogo.ai URL.' }, 400)
+    if (!learner) return c.json({ error: 'Sign in with your Shogo account to see your level.' }, 401)
+    const { g, levels } = await levelReport(learner.user.id)
+    return c.json({ level: g.level, levels, perks: { freeExpertAttempt: g.soloFounderBuyer } })
+  })
 
-    const { planId, enrollments, workspaceIds } = await learnerState(learner.user.id)
-    const decision = decideLearnAccess(course.access, {
-      signedIn: true,
-      planId,
-      enrolledCourseIds: new Set(enrollments.map((e) => e.courseId)),
-    })
-    if (decision.hasAccess) return c.json({ error: 'You already have this course.', access: decision }, 409)
-    const workspaceId = workspaceIds[0]
-    if (!workspaceId) return c.json({ error: 'Open Shogo once to create your workspace, then try again.' }, 409)
-
-    const rl = await deps.takeRateLimit(`learn-checkout:${learner.user.id}`, CHECKOUTS_PER_HOUR, HOUR_MS)
+  app.post('/level/claim', async (c) => {
+    c.header('Cache-Control', 'no-store')
+    const learner = await resolveLearner(c)
+    if (!learner) return c.json({ error: 'Sign in with your Shogo account to claim a level.' }, 401)
+    const body = (await c.req.json().catch(() => null)) as { level?: unknown; name?: unknown } | null
+    const def = learnLevel(Number(body?.level))
+    if (!def) return c.json({ error: 'Unknown level.' }, 404)
+    if (def.level === 1) return c.json({ error: 'Level 1 is earned by passing the final check of AI agents for everyone.' }, 400)
+    if (!def.claimable) return c.json({ error: `Level ${def.level} (${def.title}) is judged by people and opens in 2027.` }, 400)
+    const rl = await deps.takeRateLimit(`learn-level:${learner.user.id}`, LEVEL_CLAIMS_PER_DAY, DAY_MS)
     if (!rl.allowed) {
       c.header('Retry-After', String(rl.retryAfterSeconds))
-      return c.json({ error: 'Too many checkout attempts. Try again in a little while.' }, 429)
+      return c.json({ error: 'Too many claims today. Try again tomorrow.' }, 429)
     }
-    if (!deps.createCourseCheckout) return c.json({ error: 'Purchases are not available right now.' }, 503)
-
-    const success = new URL(returnUrl)
-    success.searchParams.set('purchased', offer.courseId)
-    const result = await deps.createCourseCheckout({
-      offer,
+    const { g, levels } = await levelReport(learner.user.id)
+    const row = levels.find((l) => l.level === def.level)!
+    if (g.level >= def.level) return c.json({ error: `You already hold Level ${def.level}.`, level: g.level }, 409)
+    if (!row.ready) return c.json({ error: 'Not every requirement is met yet.', requirements: row.requirements }, 422)
+    await deps.awardBadges(learner.user.id, [levelBadgeId(def.level)])
+    const name = cleanCertificateName(body?.name) || cleanCertificateName(learner.user.name) || 'Shogo learner'
+    const id = mintLearnCertificate({
       userId: learner.user.id,
-      email: learner.user.email,
-      workspaceId,
-      successUrl: success.toString(),
-      cancelUrl: returnUrl,
+      courseId: levelCertificateCourseId(def.level),
+      name,
+      issuedAt: Math.floor(now() / 1000),
+      score: row.requirements.length,
+      total: row.requirements.length,
     })
-    if ('error' in result) return c.json({ error: 'This course is not on sale yet.' }, 503)
-    return c.json({ url: result.url })
+    const badge = learnBadgeById(levelBadgeId(def.level))!
+    return c.json({
+      level: def.level,
+      title: def.title,
+      certificate: { id, name },
+      newBadges: [{ ...badge, earnedAt: new Date(now()).toISOString() }],
+    })
   })
 
   app.get('/certificate/:id', (c) => {
     const cert = verifyLearnCertificate(c.req.param('id'))
     const rule = cert ? LEARN_CERTIFICATES[cert.courseId] : undefined
-    if (!cert || !rule) return c.json({ valid: false }, 404)
+    const level = cert ? levelFromCertificateCourseId(cert.courseId) : undefined
+    if (!cert || (!rule && !level)) return c.json({ valid: false }, 404)
     c.header('Cache-Control', 'public, max-age=3600')
     return c.json({
       valid: true,
       name: cert.name,
       courseId: cert.courseId,
-      courseTitle: rule.courseTitle,
+      courseTitle: level ? `Shogo Certified ${level.title}` : rule!.courseTitle,
+      level: level ? { level: level.level, title: level.title } : cert.courseId === 'agents-for-everyone' ? { level: 1, title: 'Explorer' } : null,
       issuedAt: new Date(cert.issuedAt * 1000).toISOString(),
       score: cert.score,
       total: cert.total,

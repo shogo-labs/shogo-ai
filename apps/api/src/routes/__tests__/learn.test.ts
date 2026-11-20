@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { Hono } from 'hono'
-import { decideLearnAccess, gradeLearnCheck, learnPurchaseCourseId, LEARN_CERTIFICATES, LEARN_COACH_DAILY_LIMIT } from '../../config/learn-catalog'
-import { LEARN_COURSE_OFFER, buildLearnCheckoutParams, handleLearnRefund, learnStandaloneOffer, recordLearnPurchase } from '../../lib/learn-purchase'
+import { decideLearnAccess, gradeLearnCheck, learnCourseById, unlockedLessons, LEARN_CERTIFICATES, LEARN_COACH_DAILY_LIMIT } from '../../config/learn-catalog'
+import { LEARN_LEVELS, heldLevel, type LevelEvidence } from '../../config/learn-levels'
 import { SOLO_FOUNDER_COURSE_ID } from '../../config/solo-founder-course'
 import {
   LEARN_COOKIE_NAME,
@@ -26,7 +26,7 @@ import {
   SELF_PACED_COURSES,
   computeLearnStats,
   learnerDay,
-  levelFor,
+  rankFor,
   qualifyingBadges,
   streakOf,
 } from '../../config/learn-gamification'
@@ -59,8 +59,7 @@ interface FakeState {
   enrollments: Array<{ userId: string; workspaceId: string; courseId: string; progress: unknown; completedAt: Date | null }>
   rateAllowed: boolean
   coachCalls: Array<{ system: string; messages: unknown[] }>
-  checkoutCalls?: any[]
-  checkoutResult?: { url: string } | { error: 'price_not_provisioned' }
+  evidence?: LevelEvidence
   completions?: Array<{ userId: string; courseId: string; lessonId: string; day: string; completedAt: Date }>
   badges?: Array<{ userId: string; badgeId: string; earnedAt: Date }>
   clock?: number
@@ -81,10 +80,7 @@ function makeApp(state: FakeState) {
       return 'What do you see on the Publish dialog right now?'
     },
     frontendUrl: () => 'https://studio.shogo.ai',
-    createCourseCheckout: async (input) => {
-      ;(state.checkoutCalls ??= []).push(input)
-      return state.checkoutResult ?? { url: 'https://checkout.stripe.com/c/pay/cs_test_1' }
-    },
+    getLevelEvidence: async () => state.evidence ?? { publishedApps: 0, agentCardsDone: 0, agentsWithDoneCards: 0 },
     listCompletions: async (userId) => (state.completions ?? []).filter((r) => r.userId === userId),
     recordCompletions: async (userId, rows) => {
       state.completions ??= []
@@ -120,6 +116,16 @@ function baseState(): FakeState {
     rateAllowed: true,
     coachCalls: [],
   }
+}
+
+/** Give a learner Shogo Certified levels 1..n. */
+function grantLevels(state: FakeState, userId: string, n: number) {
+  state.badges ??= []
+  for (let i = 1; i <= n; i++) state.badges.push({ userId, badgeId: `level-${i}`, earnedAt: new Date(NOW - 86_400_000) })
+}
+
+function res_noStore(res: Response) {
+  return res.headers.get('cache-control')
 }
 
 function tokenFor(userId = 'u1', sessionId = 's1') {
@@ -171,20 +177,40 @@ describe('learn token', () => {
 })
 
 describe('course access rules', () => {
-  const learner = (planId: any, enrolled: string[] = []) => ({ signedIn: true, planId, enrolledCourseIds: new Set(enrolled) })
-
-  test('plan courses go by rank, so a legacy Pro seat counts as Basic+', () => {
-    const rule = { kind: 'plan', minPlan: 'basic' } as const
-    expect(decideLearnAccess(rule, learner('free')).hasAccess).toBe(false)
-    expect(decideLearnAccess(rule, learner('basic')).hasAccess).toBe(true)
-    expect(decideLearnAccess(rule, learner('pro')).hasAccess).toBe(true)
-    expect(decideLearnAccess(rule, learner('business')).hasAccess).toBe(true)
+  test('every course is free: public, or opened by the level below its track', () => {
+    const rule = (id: string) => learnCourseById(id)!.access
+    expect(rule('library')).toEqual({ kind: 'public' })
+    expect(rule('agents-for-everyone')).toEqual({ kind: 'public' })
+    expect(rule('start-here')).toEqual({ kind: 'level', requires: 1 })
+    expect(rule('ai-teammates')).toEqual({ kind: 'level', requires: 1 })
+    expect(rule('agent-team-playbook')).toEqual({ kind: 'level', requires: 2 })
+    for (const id of ['paid-app', 'first-client', 'solo-founder']) expect(rule(id)).toEqual({ kind: 'level', requires: 3 })
   })
 
-  test('purchase-only courses ignore the plan', () => {
-    const rule = { kind: 'purchase', enrollmentCourseId: SOLO_FOUNDER_COURSE_ID, offer: 'solo_founder' } as const
-    expect(decideLearnAccess(rule, learner('enterprise'))).toEqual({ hasAccess: false, reason: 'purchase_required', offer: 'solo_founder' })
-    expect(decideLearnAccess(rule, learner('free', [SOLO_FOUNDER_COURSE_ID])).hasAccess).toBe(true)
+  test('a level rule: signed out, below, at and above the level', () => {
+    const rule = { kind: 'level', requires: 2 } as const
+    expect(decideLearnAccess(rule, { signedIn: false, level: 5 })).toEqual({ hasAccess: false, reason: 'signed_out', requiredLevel: 2 })
+    expect(decideLearnAccess(rule, { signedIn: true, level: 1 })).toEqual({ hasAccess: false, reason: 'level_required', requiredLevel: 2 })
+    expect(decideLearnAccess(rule, { signedIn: true, level: 2 })).toEqual({ hasAccess: true, reason: 'level' })
+    expect(decideLearnAccess(rule, { signedIn: true, level: 6 })).toEqual({ hasAccess: true, reason: 'level' })
+    expect(decideLearnAccess({ kind: 'public' }, { signedIn: false, level: 0 })).toEqual({ hasAccess: true, reason: 'public' })
+  })
+
+  test('lessons open in order: everything finished plus the next one', () => {
+    const l = LEARN_LESSONS['start-here']
+    expect(unlockedLessons('start-here', [])).toEqual([l[0]])
+    expect(unlockedLessons('start-here', [l[0]])).toEqual([l[0], l[1]])
+    expect(unlockedLessons('start-here', l)).toEqual(l)
+    // A lesson finished out of order (old progress) stays open; the gap is next.
+    expect(unlockedLessons('start-here', [l[0], l[2]])).toEqual([l[0], l[1], l[2]])
+    expect(unlockedLessons('nope', [])).toEqual([])
+  })
+
+  test('held level has no gaps', () => {
+    expect(heldLevel([])).toBe(0)
+    expect(heldLevel(['level-1', 'level-2'])).toBe(2)
+    expect(heldLevel(['level-1', 'level-3'])).toBe(1)
+    expect(heldLevel(['level-2', 'level-3'])).toBe(0)
   })
 
   test('bestPlanId picks the highest tier across workspaces', () => {
@@ -202,34 +228,41 @@ describe('GET /api/learn/me', () => {
     const body: any = await res.json()
     expect(body.signedIn).toBe(false)
     expect(body.courses.library.hasAccess).toBe(true)
-    expect(body.courses['start-here']).toEqual({ hasAccess: false, reason: 'signed_out' })
-    expect(body.courses['ai-teammates']).toEqual({ hasAccess: false, reason: 'signed_out' })
-    expect(body.courses['solo-founder'].offer).toBe('solo_founder')
+    expect(body.courses['agents-for-everyone']).toEqual({ hasAccess: true, reason: 'public' })
+    expect(body.courses['start-here']).toEqual({ hasAccess: false, reason: 'signed_out', requiredLevel: 1 })
+    expect(body.courses['solo-founder']).toEqual({ hasAccess: false, reason: 'signed_out', requiredLevel: 3 })
+    expect(body.catalog.levels).toHaveLength(6)
   })
 
-  test('learn token: best plan across workspaces, purchase access with progress', async () => {
+  test('learn token: level decides access, lessons open in order, plan only sets the coach cap', async () => {
     const state = baseState()
-    state.enrollments.push({
-      userId: 'someone-else',
-      workspaceId: 'ws-biz',
-      courseId: SOLO_FOUNDER_COURSE_ID,
-      progress: { completedLessons: ['m0', 'm1'] },
-      completedAt: null,
-    })
     const { app } = makeApp(state)
-    const res = await app.request('/api/learn/me', { headers: { [LEARN_TOKEN_HEADER]: tokenFor() } })
-    const body: any = await res.json()
+    const me = async () => (await (await app.request('/api/learn/me', { headers: { [LEARN_TOKEN_HEADER]: tokenFor() } })).json()) as any
+    let body = await me()
     expect(body.signedIn).toBe(true)
     expect(body.plan.id).toBe('business')
     expect(body.coach.dailyLimit).toBe(LEARN_COACH_DAILY_LIMIT.business)
-    expect(body.courses['agent-team-playbook'].hasAccess).toBe(true)
-    expect(body.courses['ai-teammates']).toEqual({ hasAccess: true, reason: 'account' })
-    expect(body.courses['solo-founder']).toMatchObject({
-      hasAccess: true,
-      reason: 'purchased',
-      progress: { completedLessons: ['m0', 'm1'], completedAt: null },
-    })
-    expect(res.headers.get('cache-control')).toBe('no-store')
+    // A Business plan opens nothing on its own any more.
+    expect(body.courses['start-here']).toEqual({ hasAccess: false, reason: 'level_required', requiredLevel: 1 })
+    expect(body.courses['agents-for-everyone']).toEqual({ hasAccess: true, reason: 'public', unlockedLessons: ['what-is-an-agent'] })
+    expect(body.certification).toMatchObject({ level: 0, title: null, next: { level: 1, title: 'Explorer', claimable: true } })
+
+    grantLevels(state, 'u1', 1)
+    body = await me()
+    expect(body.certification).toMatchObject({ level: 1, title: 'Explorer', next: { level: 2, title: 'Builder' } })
+    expect(body.courses['start-here']).toEqual({ hasAccess: true, reason: 'level', unlockedLessons: ['what-an-agent-is'] })
+    expect(body.courses['agent-team-playbook']).toEqual({ hasAccess: false, reason: 'level_required', requiredLevel: 2 })
+    expect(res_noStore(await app.request('/api/learn/me', { headers: { [LEARN_TOKEN_HEADER]: tokenFor() } }))).toBe('no-store')
+  })
+
+  test('past Solo Founder buyers keep their board progress, the founding badge and a free Expert attempt', async () => {
+    const state = baseState()
+    state.enrollments.push({ userId: 'u1', workspaceId: 'ws-biz', courseId: SOLO_FOUNDER_COURSE_ID, progress: { completedLessons: ['m0', 'm1'] }, completedAt: null })
+    const { app } = makeApp(state)
+    const body = (await (await app.request('/api/learn/me', { headers: { [LEARN_TOKEN_HEADER]: tokenFor() } })).json()) as any
+    expect(body.courses['solo-founder']).toMatchObject({ hasAccess: false, reason: 'level_required', requiredLevel: 3, progress: { completedLessons: ['m0', 'm1'] } })
+    expect(body.certification.perks).toEqual({ freeExpertAttempt: true })
+    expect(body.newBadges.map((b: any) => b.id)).toContain('founding-learner')
   })
 
   test('the cookie works the same as the header', async () => {
@@ -315,7 +348,8 @@ describe('POST /api/learn/coach', () => {
     expect((await post(app, 'start-here')).status).toBe(401)
     expect((await post(app, 'solo-founder', tokenFor())).status).toBe(403)
     state.rateAllowed = false
-    const limited = await post(app, 'start-here', tokenFor())
+    expect((await post(app, 'start-here', tokenFor())).status).toBe(403)
+    const limited = await post(app, 'agents-for-everyone', tokenFor())
     expect(limited.status).toBe(429)
     expect(limited.headers.get('retry-after')).toBe('3600')
     expect(state.coachCalls).toHaveLength(0)
@@ -324,6 +358,7 @@ describe('POST /api/learn/coach', () => {
   test('answers with the guarded, lesson-scoped prompt', async () => {
     const state = baseState()
     const { app } = makeApp(state)
+    grantLevels(state, 'u1', 1)
     const res = await post(app, 'start-here', tokenFor())
     expect(res.status).toBe(200)
     expect(((await res.json()) as any).reply).toContain('Publish dialog')
@@ -410,6 +445,7 @@ describe('certificates', () => {
       name: 'Grace Hopper',
       courseId: 'agents-for-everyone',
       courseTitle: 'AI agents for everyone',
+      level: { level: 1, title: 'Explorer' },
       issuedAt: new Date(Math.floor(NOW / 1000) * 1000).toISOString(),
       score: 5,
       total: 6,
@@ -473,161 +509,98 @@ describe('certificates', () => {
   })
 
   test('the new courses are on the catalog with the right access', () => {
-    expect(decideLearnAccess({ kind: 'public' }, { signedIn: false, planId: 'free', enrolledCourseIds: new Set() }).hasAccess).toBe(true)
     expect(gradeLearnCheck(LEARN_CERTIFICATES['agents-for-everyone'], PASS)).toEqual({ score: 6, total: 6, wrong: [], passed: true })
   })
 })
 
 
-describe('standalone course purchases', () => {
-  const RETURN = 'https://learn.shogo.ai/courses/first-client/the-offer/'
-
-  function freeState(): FakeState {
-    const st = baseState()
-    st.workspaces = { u1: ['ws-free'] }
-    return st
-  }
-
-  async function checkout(app: Hono, body: unknown, token: string | null = tokenFor()) {
-    return app.request('/api/learn/checkout', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...(token ? { [LEARN_TOKEN_HEADER]: token } : {}) },
-      body: JSON.stringify(body),
-    })
-  }
-
-  test('a plan course with a standalone offer: plan or purchase opens it, and the price is shown otherwise', () => {
-    const rule = { kind: 'plan', minPlan: 'basic', standalone: { courseId: 'first-client', title: 'x', priceUsd: 49, lookupKey: 'k' } } as const
-    expect(decideLearnAccess(rule, { signedIn: false, planId: 'free', enrolledCourseIds: new Set() })).toEqual({
-      hasAccess: false, reason: 'signed_out', requiredPlan: 'basic', standalone: { priceUsd: 49 },
-    })
-    expect(decideLearnAccess(rule, { signedIn: true, planId: 'free', enrolledCourseIds: new Set() })).toEqual({
-      hasAccess: false, reason: 'plan_required', requiredPlan: 'basic', standalone: { priceUsd: 49 },
-    })
-    expect(decideLearnAccess(rule, { signedIn: true, planId: 'free', enrolledCourseIds: new Set([learnPurchaseCourseId('first-client')]) }))
-      .toEqual({ hasAccess: true, reason: 'purchased' })
-    expect(decideLearnAccess(rule, { signedIn: true, planId: 'basic', enrolledCourseIds: new Set() }))
-      .toEqual({ hasAccess: true, reason: 'plan' })
-  })
-
-  test('/me: a purchase unlocks the course for the buyer only, never their teammates', async () => {
-    const st = freeState()
-    st.workspaces.u2 = ['ws-free']
-    st.sessions.s2 = { userId: 'u2', live: true }
-    st.enrollments = [{ userId: 'u2', workspaceId: 'ws-free', courseId: 'learn:first-client', progress: null, completedAt: null }]
-    const { app } = makeApp(st)
-    const me = async (token: string) =>
-      (await (await app.request('/api/learn/me', { headers: { [LEARN_TOKEN_HEADER]: token } })).json()) as any
-    expect((await me(tokenFor('u2', 's2'))).courses['first-client']).toEqual({ hasAccess: true, reason: 'purchased' })
-    expect((await me(tokenFor('u1', 's1'))).courses['first-client']).toMatchObject({ hasAccess: false, standalone: { priceUsd: 49 } })
-    expect((await me(tokenFor('u1', 's1'))).courses['paid-app']).toMatchObject({ hasAccess: false, standalone: { priceUsd: 49 } })
-  })
-
-  test('POST /checkout creates a Stripe checkout for a free learner, with a learn.shogo.ai return', async () => {
-    const st = freeState()
-    const { app } = makeApp(st)
-    const res = await checkout(app, { courseId: 'first-client', returnUrl: RETURN })
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ url: 'https://checkout.stripe.com/c/pay/cs_test_1' })
-    expect(st.checkoutCalls).toHaveLength(1)
-    expect(st.checkoutCalls![0]).toMatchObject({
-      userId: 'u1',
-      email: 'u1@example.com',
-      workspaceId: 'ws-free',
-      cancelUrl: RETURN,
-      successUrl: `${RETURN}?purchased=first-client`,
-      offer: { courseId: 'first-client', priceUsd: 49, lookupKey: 'learn_course_first_client_v1' },
-    })
-  })
-
-  test('POST /checkout refuses what it should', async () => {
-    const st = freeState()
-    const { app } = makeApp(st)
-    expect((await checkout(app, { courseId: 'first-client', returnUrl: RETURN }, null)).status).toBe(401)
-    expect((await checkout(app, { courseId: 'start-here', returnUrl: RETURN })).status).toBe(404)
-    expect((await checkout(app, { courseId: 'solo-founder', returnUrl: RETURN })).status).toBe(404)
-    expect((await checkout(app, { courseId: 'first-client', returnUrl: 'https://evil.example/x' })).status).toBe(400)
-    st.checkoutResult = { error: 'price_not_provisioned' }
-    expect((await checkout(app, { courseId: 'first-client', returnUrl: RETURN })).status).toBe(503)
-    st.rateAllowed = false
-    expect((await checkout(app, { courseId: 'first-client', returnUrl: RETURN })).status).toBe(429)
-  })
-
-  test('POST /checkout is a 409 when the learner already has the course', async () => {
-    const st = baseState()
-    const { app } = makeApp(st)
-    const res = await checkout(app, { courseId: 'first-client', returnUrl: RETURN })
-    expect(res.status).toBe(409)
-    expect(st.checkoutCalls ?? []).toHaveLength(0)
-  })
-
-  function fakeDb() {
-    const rows: any[] = []
-    return {
-      rows,
-      courseEnrollment: {
-        findUnique: async ({ where }: any) => rows.find((r) => r.stripeCheckoutSessionId === where.stripeCheckoutSessionId) ?? null,
-        create: async ({ data }: any) => {
-          const row = { id: `e${rows.length + 1}`, ...data }
-          rows.push(row)
-          return row
-        },
-        updateMany: async ({ where, data }: any) => {
-          const hit = rows.filter((r) => where.stripeCheckoutSessionId.in.includes(r.stripeCheckoutSessionId) && r.status === where.status)
-          for (const r of hit) Object.assign(r, data)
-          return { count: hit.length }
-        },
-      },
+describe('Shogo Certified levels', () => {
+  const H = (userId = 'u1', sessionId = 's1') => ({ 'content-type': 'application/json', [LEARN_TOKEN_HEADER]: tokenFor(userId, sessionId) })
+  const claim = (app: Hono, body: unknown, headers: Record<string, string> = H()) =>
+    app.request('/api/learn/level/claim', { method: 'POST', headers, body: JSON.stringify(body) })
+  const finish = (state: FakeState, ...courses: string[]) => {
+    state.completions ??= []
+    for (const courseId of courses) {
+      for (const lessonId of LEARN_LESSONS[courseId]) state.completions.push({ userId: 'u1', courseId, lessonId, day: '2026-11-19', completedAt: new Date(NOW) })
     }
   }
 
-  const PAID = {
-    id: 'cs_1',
-    payment_status: 'paid' as const,
-    metadata: { offer: LEARN_COURSE_OFFER, learnCourseId: 'paid-app', userId: 'u1', workspaceId: 'ws-free' },
-  }
-
-  test('the webhook records one active enrollment per paid session, and ignores everything else', async () => {
-    const db = fakeDb()
-    expect(await recordLearnPurchase(db, PAID, new Date(NOW))).toEqual({ recorded: true, enrollmentId: 'e1', courseId: 'learn:paid-app' })
-    expect(db.rows[0]).toMatchObject({ courseId: 'learn:paid-app', userId: 'u1', status: 'active', source: 'stripe', stripeCheckoutSessionId: 'cs_1' })
-    expect(await recordLearnPurchase(db, PAID)).toEqual({ recorded: false, reason: 'duplicate' })
-    expect(await recordLearnPurchase(db, { ...PAID, id: 'cs_2', payment_status: 'unpaid' })).toEqual({ recorded: false, reason: 'unpaid' })
-    expect(await recordLearnPurchase(db, { ...PAID, id: 'cs_3', metadata: { offer: 'solo_founder' } })).toEqual({ recorded: false, reason: 'not_learn' })
-    expect(await recordLearnPurchase(db, { ...PAID, id: 'cs_4', metadata: { ...PAID.metadata, learnCourseId: 'start-here' } }))
-      .toEqual({ recorded: false, reason: 'unknown_course' })
-    expect(db.rows).toHaveLength(1)
+  test('the ladder: 6 levels, 1–3 claimable online, 5–6 carry an exam fee and renew', () => {
+    expect(LEARN_LEVELS.map((l) => l.title)).toEqual(['Explorer', 'Builder', 'Operator', 'Professional', 'Expert', 'Architect'])
+    expect(LEARN_LEVELS.filter((l) => l.claimable).map((l) => l.level)).toEqual([1, 2, 3])
+    expect(LEARN_LEVELS.filter((l) => l.feeUsd).map((l) => [l.level, l.feeUsd, l.renewYears])).toEqual([[5, 299, 2], [6, 499, 2]])
+    // Badge names come from the same titles.
+    for (const l of LEARN_LEVELS) expect(LEARN_BADGES.find((b) => b.id === `level-${l.level}`)?.name).toBe(`Shogo Certified ${l.title}`)
+    // Every course on a track exists on the catalog.
+    for (const l of LEARN_LEVELS) for (const c of l.courses) expect(learnCourseById(c)).toBeDefined()
   })
 
-  test('a full refund closes the enrollment; a partial refund does not', async () => {
-    const db = fakeDb()
-    await recordLearnPurchase(db, PAID)
-    const stripe: any = { checkout: { sessions: { list: async () => ({ data: [{ id: 'cs_1', metadata: PAID.metadata }] }) } } }
-    expect(await handleLearnRefund({ db, stripe, charge: { amount: 4900, amount_refunded: 1000, payment_intent: 'pi_1', metadata: {} } }))
-      .toEqual({ closed: 0 })
-    expect(db.rows[0].status).toBe('active')
-    expect(await handleLearnRefund({ db, stripe, charge: { amount: 4900, amount_refunded: 4900, payment_intent: 'pi_1', metadata: {} } }))
-      .toEqual({ closed: 1 })
-    expect(db.rows[0].status).toBe('refunded')
-    expect(await handleLearnRefund({ db, stripe, charge: { amount: 4900, amount_refunded: 4900, payment_intent: 'pi_1', metadata: {} } }))
-      .toEqual({ closed: 0 })
+  test('GET /level: sign-in required; requirements carry workspace evidence', async () => {
+    const state = baseState()
+    const { app } = makeApp(state)
+    expect((await app.request('/api/learn/level')).status).toBe(401)
+    grantLevels(state, 'u1', 1)
+    state.evidence = { publishedApps: 1, agentCardsDone: 3, agentsWithDoneCards: 1 }
+    const r = (await (await app.request('/api/learn/level', { headers: H() })).json()) as any
+    expect(r.level).toBe(1)
+    const two = r.levels.find((l: any) => l.level === 2)
+    expect(two.requirements.find((q: any) => q.id === 'published-app')).toMatchObject({ ok: true, detail: '1 published' })
+    expect(two.ready).toBe(false)
+    const three = r.levels.find((l: any) => l.level === 3)
+    expect(three.requirements.find((q: any) => q.id === 'agent-cards')).toMatchObject({ ok: false, detail: '3 of 5' })
+    expect(r.levels.find((l: any) => l.level === 5)).toMatchObject({ claimable: false, feeUsd: 299, held: false })
   })
 
-  test('checkout params: one-time card payment, offer metadata on the session and the payment', () => {
-    const p = buildLearnCheckoutParams({
-      offer: learnStandaloneOffer('paid-app')!,
-      priceId: 'price_1',
-      userId: 'u1',
-      workspaceId: 'ws1',
-      userEmail: 'a@b.c',
-      successUrl: 's',
-      cancelUrl: 'c',
-    })
-    expect(p.mode).toBe('payment')
-    expect(p.line_items).toEqual([{ price: 'price_1', quantity: 1 }])
-    expect(p.metadata).toEqual({ offer: 'learn_course', learnCourseId: 'paid-app', userId: 'u1', workspaceId: 'ws1' })
-    expect(p.payment_intent_data?.metadata).toEqual(p.metadata)
-    expect(learnStandaloneOffer('start-here')).toBeNull()
+  test('Level 2 needs Level 1, every track lesson and a published app; then it is awarded with a verifiable certificate', async () => {
+    const state = baseState()
+    const { app } = makeApp(state)
+    expect((await claim(app, { level: 2 })).status).toBe(422)
+    grantLevels(state, 'u1', 1)
+    finish(state, 'start-here', 'ai-teammates')
+    const noApp = await claim(app, { level: 2 })
+    expect(noApp.status).toBe(422)
+    expect(((await noApp.json()) as any).requirements.find((q: any) => !q.ok).id).toBe('published-app')
+
+    state.evidence = { publishedApps: 1, agentCardsDone: 0, agentsWithDoneCards: 0 }
+    const ok = await claim(app, { level: 2, name: 'Grace Hopper' })
+    expect(ok.status).toBe(200)
+    const body = (await ok.json()) as any
+    expect(body).toMatchObject({ level: 2, title: 'Builder', certificate: { name: 'Grace Hopper' } })
+    expect(body.newBadges[0].id).toBe('level-2')
+    const cert = (await (await app.request(`/api/learn/certificate/${body.certificate.id}`)).json()) as any
+    expect(cert).toMatchObject({ valid: true, name: 'Grace Hopper', courseId: 'level-2', courseTitle: 'Shogo Certified Builder', level: { level: 2, title: 'Builder' } })
+
+    const me = (await (await app.request('/api/learn/me', { headers: H() })).json()) as any
+    expect(me.certification.level).toBe(2)
+    expect(me.courses['agent-team-playbook']).toMatchObject({ hasAccess: true, unlockedLessons: ['team'] })
+    expect((await claim(app, { level: 2 })).status).toBe(409)
+  })
+
+  test('Level 3 needs 5 cards finished by at least 2 different agents', async () => {
+    const state = baseState()
+    const { app } = makeApp(state)
+    grantLevels(state, 'u1', 2)
+    finish(state, 'agent-team-playbook')
+    state.evidence = { publishedApps: 1, agentCardsDone: 9, agentsWithDoneCards: 1 }
+    const one = await claim(app, { level: 3 })
+    expect(one.status).toBe(422)
+    expect(((await one.json()) as any).requirements.filter((q: any) => !q.ok).map((q: any) => q.id)).toEqual(['agent-team'])
+    state.evidence.agentsWithDoneCards = 2
+    expect((await claim(app, { level: 3 })).status).toBe(200)
+    expect(heldLevel(state.badges!.filter((b) => b.userId === 'u1').map((b) => b.badgeId))).toBe(3)
+  })
+
+  test('claims refuse what they should', async () => {
+    const state = baseState()
+    const { app } = makeApp(state)
+    expect((await claim(app, { level: 2 }, { 'content-type': 'application/json' })).status).toBe(401)
+    expect((await claim(app, { level: 9 })).status).toBe(404)
+    expect((await claim(app, { level: 1 })).status).toBe(400)
+    expect((await claim(app, { level: 4 })).status).toBe(400)
+    expect((await claim(app, { level: 5 })).status).toBe(400)
+    state.rateAllowed = false
+    expect((await claim(app, { level: 2 })).status).toBe(429)
+    expect(state.badges ?? []).toHaveLength(0)
   })
 })
 
@@ -647,22 +620,22 @@ describe('gamification rules', () => {
     expect(learnerDay(at, 'Not/AZone')).toBe('2026-11-20')
   })
 
-  test('XP: 10 a lesson, 50 a finished course, badge XP on top; levels follow', () => {
+  test('XP: 10 a lesson, 50 a finished course, badge XP on top; ranks follow', () => {
     const course = 'start-here'
     const completions = LEARN_LESSONS[course].map((lessonId) => ({ courseId: course, lessonId, day: '2026-11-20' }))
     const stats = computeLearnStats({ completions, badgeIds: ['first-lesson', 'course-start-here'], today: '2026-11-20' })
     expect(stats.lessonsCompleted).toBe(5)
     expect(stats.coursesCompleted).toEqual(['start-here'])
     expect(stats.xp).toBe(5 * 10 + 50 + 20 + 20)
-    expect(stats.level.name).toBe('Builder')
-    expect(levelFor(0).next).toEqual({ name: 'Explorer', min: 40 })
-    expect(levelFor(99999).next).toBeNull()
+    expect(stats.rank.name).toBe('Kindling')
+    expect(rankFor(0).next).toEqual({ name: 'Ember', min: 40 })
+    expect(rankFor(99999).next).toBeNull()
   })
 
-  test('finishing everything reaches the top level', () => {
+  test('finishing everything reaches the top rank', () => {
     const completions = Object.entries(LEARN_LESSONS).flatMap(([courseId, ls]) => ls.map((lessonId) => ({ courseId, lessonId, day: '2026-11-20' })))
     const all = computeLearnStats({ completions, badgeIds: LEARN_BADGES.map((b) => b.id), today: '2026-11-20' })
-    expect(all.level.next).toBeNull()
+    expect(all.rank.next).toBeNull()
   })
 
   test('badges come from progress: first lesson, course graduate, foundations, founding learner', () => {
@@ -670,16 +643,21 @@ describe('gamification rules', () => {
     const completions = free.flatMap((courseId) => LEARN_LESSONS[courseId].map((lessonId) => ({ courseId, lessonId, day: '2026-11-20' })))
     const stats = computeLearnStats({ completions, badgeIds: [], today: '2026-11-20' })
     const got = qualifyingBadges(stats, { certified: ['agents-for-everyone'], firstActivityDay: '2026-11-20' })
-    for (const b of ['first-lesson', 'lessons-10', 'course-start-here', 'course-ai-teammates', 'course-agents-for-everyone', 'certified-agents-for-everyone', 'foundations', 'founding-learner']) {
+    for (const b of ['first-lesson', 'lessons-10', 'course-start-here', 'course-ai-teammates', 'course-agents-for-everyone', 'certified-agents-for-everyone', 'level-1', 'foundations', 'founding-learner']) {
       expect(got).toContain(b)
     }
     expect(qualifyingBadges(stats, { firstActivityDay: '2027-02-01' })).not.toContain('founding-learner')
     for (const id of got) expect(LEARN_BADGES.some((b) => b.id === id)).toBe(true)
   })
 
-  test('every self-paced course has lessons; solo founder is board-tracked', () => {
+  test('every course is self-paced on learn.shogo.ai, Solo Founder included', () => {
     for (const c of SELF_PACED_COURSES) expect(LEARN_LESSONS[c].length).toBeGreaterThan(0)
-    expect(SELF_PACED_COURSES).not.toContain('solo-founder')
+    expect(SELF_PACED_COURSES).toContain('solo-founder')
+  })
+
+  test('XP rank names never reuse a Shogo Certified level title', () => {
+    const titles = new Set(LEARN_LEVELS.map((l) => l.title))
+    for (let xp = 0; xp < 2000; xp += 10) expect(titles.has(rankFor(xp).name)).toBe(false)
   })
 })
 
@@ -692,33 +670,36 @@ describe('progress, XP and badges on the account', () => {
     const st = baseState()
     st.workspaces = { u1: ['ws-free'], u2: ['ws-free'] }
     st.sessions.s2 = { userId: 'u2', live: true }
+    grantLevels(st, 'u1', 1)
     return st
   }
 
   test('marking a lesson complete saves it to the account and awards first badges', async () => {
     const st = freeLearner()
     const { app } = makeApp(st)
-    const res = await post(app, '/progress', { courseId: 'start-here', lessonId: 'first-app', tz: 'America/Los_Angeles' })
+    const res = await post(app, '/progress', { courseId: 'start-here', lessonId: 'what-an-agent-is', tz: 'America/Los_Angeles' })
     expect(res.status).toBe(200)
     const body = (await res.json()) as any
     expect(body.added).toBe(true)
-    expect(body.completedLessons).toEqual(['first-app'])
+    expect(body.completedLessons).toEqual(['what-an-agent-is'])
     expect(body.newBadges.map((b: any) => b.id).sort()).toEqual(['first-lesson', 'founding-learner'])
-    expect(body.stats.xp).toBe(10 + 20 + 20)
-    expect(body.levelUp).toBe(true)
-    expect(st.completions).toEqual([{ userId: 'u1', courseId: 'start-here', lessonId: 'first-app', day: '2026-11-20', completedAt: new Date(NOW) }])
+    // Level 1's badge XP (100) is already held.
+    expect(body.stats.xp).toBe(100 + 10 + 20 + 20)
+    expect(body.rankUp).toBe(true)
+    expect(body.levelUp).toBeNull()
+    expect(st.completions).toEqual([{ userId: 'u1', courseId: 'start-here', lessonId: 'what-an-agent-is', day: '2026-11-20', completedAt: new Date(NOW) }])
 
-    const again = (await (await post(app, '/progress', { courseId: 'start-here', lessonId: 'first-app' })).json()) as any
+    const again = (await (await post(app, '/progress', { courseId: 'start-here', lessonId: 'what-an-agent-is' })).json()) as any
     expect(again.added).toBe(false)
     expect(again.newBadges).toEqual([])
-    expect(again.levelUp).toBe(false)
-    expect(st.badges).toHaveLength(2)
+    expect(again.rankUp).toBe(false)
+    expect(st.badges).toHaveLength(3)
   })
 
   test('progress is per learner: a teammate in the same workspace starts at zero', async () => {
     const st = freeLearner()
     const { app } = makeApp(st)
-    await post(app, '/progress', { courseId: 'start-here', lessonId: 'first-app' })
+    await post(app, '/progress', { courseId: 'start-here', lessonId: 'what-an-agent-is' })
     const me2 = (await (await app.request('/api/learn/me', { headers: H('u2', 's2') })).json()) as any
     expect(me2.stats.lessonsCompleted).toBe(0)
     expect(me2.badges).toEqual([])
@@ -727,13 +708,20 @@ describe('progress, XP and badges on the account', () => {
   test('refuses what it should', async () => {
     const st = freeLearner()
     const { app } = makeApp(st)
-    expect((await post(app, '/progress', { courseId: 'start-here', lessonId: 'first-app' }, { 'content-type': 'application/json' })).status).toBe(401)
+    expect((await post(app, '/progress', { courseId: 'start-here', lessonId: 'what-an-agent-is' }, { 'content-type': 'application/json' })).status).toBe(401)
     expect((await post(app, '/progress', { courseId: 'start-here', lessonId: 'nope' })).status).toBe(404)
-    expect((await post(app, '/progress', { courseId: 'solo-founder', lessonId: 'm1' })).status).toBe(404)
     expect((await post(app, '/progress', { courseId: 'agents-for-everyone', lessonId: 'final-check' })).status).toBe(400)
-    expect((await post(app, '/progress', { courseId: 'paid-app', lessonId: 'day-1-pick' })).status).toBe(403)
+    // Locked course: the error names the level that opens it.
+    const locked = await post(app, '/progress', { courseId: 'paid-app', lessonId: 'day-1-pick' })
+    expect(locked.status).toBe(403)
+    expect(((await locked.json()) as any).error).toBe('Earn Shogo Certified Level 3 (Operator) to open this course.')
+    expect((await post(app, '/progress', { courseId: 'solo-founder', lessonId: 'm0' })).status).toBe(403)
+    // Lessons open in order.
+    const early = await post(app, '/progress', { courseId: 'start-here', lessonId: 'first-app' })
+    expect(early.status).toBe(403)
+    expect(((await early.json()) as any).error).toBe('Finish the lesson before this one first.')
     st.rateAllowed = false
-    expect((await post(app, '/progress', { courseId: 'start-here', lessonId: 'first-app' })).status).toBe(429)
+    expect((await post(app, '/progress', { courseId: 'start-here', lessonId: 'what-an-agent-is' })).status).toBe(429)
     expect(st.completions ?? []).toHaveLength(0)
   })
 
@@ -775,6 +763,7 @@ describe('progress, XP and badges on the account', () => {
       { courseId: 'agents-for-everyone', lessonId: 'good-at-bad-at', day: '2031-01-01' },
       { courseId: 'agents-for-everyone', lessonId: 'final-check' },
       { courseId: 'paid-app', lessonId: 'day-1-pick' },
+      { courseId: 'start-here', lessonId: 'review-loop' },
       { courseId: 'nope', lessonId: 'x' },
     ]
     const r = (await (await post(app, '/progress/import', { items, tz: 'UTC' })).json()) as any
@@ -783,23 +772,28 @@ describe('progress, XP and badges on the account', () => {
     expect((await post(app, '/progress/import', { items: 'x' })).status).toBe(400)
   })
 
-  test('passing the final check completes its lesson and awards the certificate badge (+100 XP)', async () => {
+  test('passing the final check completes its lesson and earns Shogo Certified Level 1', async () => {
     const st = freeLearner()
+    st.badges = []
     const { app } = makeApp(st)
     const rule = LEARN_CERTIFICATES['agents-for-everyone']
     const answers = { ...rule.answers }
     const r = (await (await post(app, '/certificate', { courseId: 'agents-for-everyone', answers, tz: 'UTC' })).json()) as any
     expect(r.passed).toBe(true)
-    expect(r.newBadges.map((b: any) => b.id)).toEqual(expect.arrayContaining(['certified-agents-for-everyone', 'first-lesson']))
+    expect(r.newBadges.map((b: any) => b.id)).toEqual(expect.arrayContaining(['certified-agents-for-everyone', 'first-lesson', 'level-1']))
     expect(r.stats.completedLessons['agents-for-everyone']).toEqual(['final-check'])
-    expect(r.stats.xp).toBe(10 + 100 + 20 + 20)
+    expect(r.stats.xp).toBe(10 + 100 + 20 + 20 + 100)
+    expect(r.level).toBe(1)
+    expect(r.levelUp).toEqual({ level: 1, title: 'Explorer' })
+    const me = (await (await app.request('/api/learn/me', { headers: H() })).json()) as any
+    expect(me.courses['start-here'].hasAccess).toBe(true)
   })
 
   test('badge share links: only for held badges, publicly verifiable, tamper-proof', async () => {
     const st = freeLearner()
     const { app } = makeApp(st)
     expect((await post(app, '/badge-share', { badgeId: 'first-lesson' })).status).toBe(404)
-    await post(app, '/progress', { courseId: 'start-here', lessonId: 'first-app' })
+    await post(app, '/progress', { courseId: 'start-here', lessonId: 'what-an-agent-is' })
     const share = (await (await post(app, '/badge-share', { badgeId: 'first-lesson', name: 'Ada Lovelace' })).json()) as any
     expect(share.name).toBe('Ada Lovelace')
     const v = (await (await app.request(`/api/learn/badge/${share.id}`)).json()) as any
@@ -816,5 +810,7 @@ describe('progress, XP and badges on the account', () => {
     const r = (await (await app.request('/api/learn/lessons')).json()) as any
     expect(r.lessons['start-here']).toEqual(LEARN_LESSONS['start-here'])
     expect(r.badges.length).toBe(LEARN_BADGES.length)
+    expect(r.levels.map((l: any) => l.level)).toEqual([1, 2, 3, 4, 5, 6])
+    expect(r.ranks[0].name).toBe('Spark')
   })
 })

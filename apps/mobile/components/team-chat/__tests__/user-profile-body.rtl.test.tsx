@@ -266,7 +266,9 @@ describe('UserProfileBody', () => {
 describe('UserProfileBody: Shogo Learn', () => {
   const learn = {
     xp: 260,
-    level: { index: 3, name: 'Maker', min: 250, next: { name: 'Operator', min: 400 } },
+    certifiedLevel: 2,
+    certifiedTitle: 'Builder',
+    rank: { index: 3, name: 'Flame', min: 250, next: { name: 'Blaze', min: 400 } },
     streak: { current: 4, longest: 6 },
     lessonsCompleted: 12,
     coursesCompleted: 2,
@@ -279,12 +281,14 @@ describe('UserProfileBody: Shogo Learn', () => {
     url: 'https://learn.shogo.ai',
   }
 
-  test("shows a teammate's level, XP, streak and badges", async () => {
+  test("shows a teammate's certified level, XP rank, streak and badges", async () => {
     card = { ...card, learn }
     render(<UserProfileBody workspaceId="ws" userId="u-ana" />)
     await screen.findByText('Ana Lopez')
     expect(document.querySelector('[data-rn-shim="learn-profile"], [data-testid="learn-profile"]')).toBeTruthy()
-    expect(screen.getByText('Maker')).toBeTruthy()
+    expect(screen.getByText(/Shogo Certified Builder/)).toBeTruthy()
+    expect(screen.getByText(/Level 2/)).toBeTruthy()
+    expect(screen.getByText(/Flame rank/)).toBeTruthy()
     expect(screen.getByText(/260 XP/)).toBeTruthy()
     expect(screen.getByText('4-day streak')).toBeTruthy()
     expect(screen.getByText(/12 lessons · 2 courses/)).toBeTruthy()

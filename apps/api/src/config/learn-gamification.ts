@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * learn.shogo.ai progress, XP, levels, streaks and badges.
+ * learn.shogo.ai progress, XP, ranks, streaks and badges.
+ *
+ * XP ranks are for fun and momentum only. "Level" on Shogo Learn means a
+ * Shogo Certified level (`learn-levels.ts`), which XP can never raise.
  *
  * Everything here is pure: the API feeds it the learner's rows
  * (`learn_lesson_completions`, `learn_badges`, Solo Founder enrollment
  * progress) and stores only the badges it says are newly earned. XP, level
- * and streak are always recomputed, never stored, so rule changes apply to
+ * and rank and streak are always recomputed, never stored, so rule changes apply to
  * everyone at once.
  */
 
@@ -18,30 +21,41 @@ export const LEARN_LESSONS: Readonly<Record<string, readonly string[]>> = {
   'agent-team-playbook': ['team', 'roles', 'loop', 'review', 'lessons', 'reflect', 'cleanup', 'evals'],
   'first-client': ['the-offer', 'find-prospects', 'demo-in-a-day', 'show-dont-pitch', 'scope-and-price', 'deliver', 'apps-for-clients', 'keep-them'],
   'paid-app': ['day-1-pick', 'days-2-3-core-loop', 'days-4-5-data', 'days-6-7-payments', 'days-8-9-test', 'days-10-11-publish', 'days-12-13-stores', 'day-14-launch'],
-  // Progress for this one comes from its course board (CourseEnrollment.progress).
+  // Past Solo Founder buyers also have progress on their Studio course board (CourseEnrollment.progress).
   'solo-founder': ['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10', 'capstone'],
 }
 
 /** Courses whose lessons the learner marks complete on learn.shogo.ai. */
-export const SELF_PACED_COURSES = Object.keys(LEARN_LESSONS).filter((c) => c !== 'solo-founder')
+export const SELF_PACED_COURSES = Object.keys(LEARN_LESSONS)
 
 /** Lessons a passed final check completes on its own. */
 export const CERTIFICATE_LESSON: Readonly<Record<string, string>> = { 'agents-for-everyone': 'final-check' }
 
 const FREE_COURSES = ['agents-for-everyone', 'start-here', 'ai-teammates'] as const
+
+/** Badge art for the Shogo Certified levels. Titles must match `learn-levels.ts` (a test checks). */
+const LEVEL_BADGES = [
+  { level: 1, title: 'Explorer', hue: 155 },
+  { level: 2, title: 'Builder', hue: 25 },
+  { level: 3, title: 'Operator', hue: 250 },
+  { level: 4, title: 'Professional', hue: 285 },
+  { level: 5, title: 'Expert', hue: 45 },
+  { level: 6, title: 'Architect', hue: 0 },
+] as const
 const FOUNDING_BEFORE = '2027-01-01'
 
 export const XP = { lesson: 10, course: 50, badge: 20, certificate: 100 } as const
 
-export const LEVELS: ReadonlyArray<{ min: number; name: string }> = [
-  { min: 0, name: 'Curious' },
-  { min: 40, name: 'Explorer' },
-  { min: 120, name: 'Builder' },
-  { min: 250, name: 'Maker' },
-  { min: 400, name: 'Operator' },
-  { min: 600, name: 'Shipper' },
-  { min: 850, name: 'Architect' },
-  { min: 1100, name: 'Founder' },
+/** XP ranks. Named so none can be mistaken for a Shogo Certified level title. */
+export const RANKS: ReadonlyArray<{ min: number; name: string }> = [
+  { min: 0, name: 'Spark' },
+  { min: 40, name: 'Ember' },
+  { min: 120, name: 'Kindling' },
+  { min: 250, name: 'Flame' },
+  { min: 400, name: 'Blaze' },
+  { min: 600, name: 'Bonfire' },
+  { min: 850, name: 'Beacon' },
+  { min: 1100, name: 'Supernova' },
 ]
 
 export interface LearnBadgeDef {
@@ -86,8 +100,16 @@ export const LEARN_BADGES: readonly LearnBadgeDef[] = [
     xp: XP.badge,
   })),
   { id: 'certified-agents-for-everyone', name: 'Certified: AI agents for everyone', description: 'Passed the final check of AI agents for everyone.', icon: 'award', hue: 155, xp: XP.certificate },
-  { id: 'foundations', name: 'Foundations', description: 'Finished all three free courses.', icon: 'blocks', hue: 200, xp: XP.badge },
+  { id: 'foundations', name: 'Foundations', description: 'Finished AI agents for everyone, Start here and Work with AI teammates.', icon: 'blocks', hue: 200, xp: XP.badge },
   { id: 'founding-learner', name: 'Founding learner', description: 'Learning on Shogo Learn in its first months.', icon: 'sparkles', hue: 45, xp: XP.badge },
+  ...LEVEL_BADGES.map((l) => ({
+    id: `level-${l.level}`,
+    name: `Shogo Certified ${l.title}`,
+    description: `Earned Shogo Certified Level ${l.level}: ${l.title}.`,
+    icon: 'award',
+    hue: l.hue,
+    xp: XP.certificate,
+  })),
 ]
 
 export function learnBadgeById(id: string): LearnBadgeDef | undefined {
@@ -103,7 +125,7 @@ export interface CompletionRow {
 
 export interface LearnStats {
   xp: number
-  level: { index: number; name: string; min: number; next: { name: string; min: number } | null }
+  rank: { index: number; name: string; min: number; next: { name: string; min: number } | null }
   streak: { current: number; longest: number; activeToday: boolean }
   lessonsCompleted: number
   /** course id → completed lesson ids, in course order. */
@@ -142,11 +164,11 @@ export function streakOf(days: Iterable<string>, today: string): LearnStats['str
   return { current, longest, activeToday }
 }
 
-export function levelFor(xp: number): LearnStats['level'] {
+export function rankFor(xp: number): LearnStats['rank'] {
   let index = 0
-  for (let i = 0; i < LEVELS.length; i++) if (xp >= LEVELS[i].min) index = i
-  const next = LEVELS[index + 1] ?? null
-  return { index, name: LEVELS[index].name, min: LEVELS[index].min, next: next ? { name: next.name, min: next.min } : null }
+  for (let i = 0; i < RANKS.length; i++) if (xp >= RANKS[i].min) index = i
+  const next = RANKS[index + 1] ?? null
+  return { index, name: RANKS[index].name, min: RANKS[index].min, next: next ? { name: next.name, min: next.min } : null }
 }
 
 export function computeLearnStats(input: {
@@ -168,14 +190,17 @@ export function computeLearnStats(input: {
     input.completions.map((c) => c.day).filter((d): d is string => !!d),
     input.today,
   )
-  return { xp, level: levelFor(xp), streak, lessonsCompleted, completedLessons, coursesCompleted }
+  return { xp, rank: rankFor(xp), streak, lessonsCompleted, completedLessons, coursesCompleted }
 }
 
 /**
  * Badges the learner qualifies for from their progress. `certified` lists
  * courses whose final check they passed. The caller awards the ones not held.
  */
-export function qualifyingBadges(stats: LearnStats, opts: { certified?: Iterable<string>; firstActivityDay?: string | null } = {}): string[] {
+export function qualifyingBadges(
+  stats: LearnStats,
+  opts: { certified?: Iterable<string>; firstActivityDay?: string | null; soloFounderBuyer?: boolean } = {},
+): string[] {
   const out: string[] = []
   const selfPacedTotal = SELF_PACED_COURSES.reduce((n, c) => n + LEARN_LESSONS[c].length, 0)
   const selfPacedDone = SELF_PACED_COURSES.reduce((n, c) => n + (stats.completedLessons[c]?.length ?? 0), 0)
@@ -187,8 +212,13 @@ export function qualifyingBadges(stats: LearnStats, opts: { certified?: Iterable
   if (stats.streak.longest >= 7) out.push('streak-7')
   if (stats.streak.longest >= 30) out.push('streak-30')
   for (const c of stats.coursesCompleted) out.push(`course-${c}`)
-  for (const c of opts.certified ?? []) if (learnBadgeById(`certified-${c}`)) out.push(`certified-${c}`)
+  const certified = [...(opts.certified ?? [])]
+  for (const c of certified) if (learnBadgeById(`certified-${c}`)) out.push(`certified-${c}`)
+  // Passing the final check of AI agents for everyone is Shogo Certified Level 1.
+  if (certified.includes('agents-for-everyone')) out.push('level-1')
   if (FREE_COURSES.every((c) => stats.coursesCompleted.includes(c))) out.push('foundations')
   if (stats.lessonsCompleted >= 1 && opts.firstActivityDay && opts.firstActivityDay < FOUNDING_BEFORE) out.push('founding-learner')
+  // Solo Founder bought the course before it was free: they keep the founding badge.
+  if (opts.soloFounderBuyer) out.push('founding-learner')
   return out
 }

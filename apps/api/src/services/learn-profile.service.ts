@@ -1,21 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * A person's Shogo Learn summary (level, XP, streak, badges) for the places
+ * A person's Shogo Learn summary (Shogo Certified level, XP rank, streak, badges) for the places
  * Shogo shows people: the workspace profile card and the public creator
  * profile. Read-only: badges are only ever awarded by the /api/learn routes.
  * Uses the same rules as learn.shogo.ai, so the numbers match the site.
  */
 import { prisma } from '../lib/prisma'
 import { LEARN_BADGES, computeLearnStats, learnBadgeById, learnerDay, type CompletionRow } from '../config/learn-gamification'
-import { LEARN_COURSES } from '../config/learn-catalog'
+import { SOLO_FOUNDER_ENROLLMENT_ID } from '../config/learn-catalog'
+import { heldLevel, learnLevel } from '../config/learn-levels'
 
 export const LEARN_SITE_URL = 'https://learn.shogo.ai'
 const SHOWN_BADGES = 8
 
 export interface LearnProfileSummary {
+  /** Shogo Certified level held (0 = none yet) and its title. */
+  certifiedLevel: number
+  certifiedTitle: string | null
   xp: number
-  level: { index: number; name: string; next: { name: string; min: number } | null; min: number }
+  rank: { index: number; name: string; next: { name: string; min: number } | null; min: number }
   streak: { current: number; longest: number }
   lessonsCompleted: number
   coursesCompleted: number
@@ -38,14 +42,11 @@ export async function loadLearnProfile(
   opts: { tz?: string | null; now?: number; db?: LearnProfileDb } = {},
 ): Promise<LearnProfileSummary | null> {
   const db = (opts.db ?? prisma) as LearnProfileDb
-  const solo = LEARN_COURSES.find((c) => c.id === 'solo-founder')
-  const soloEnrollmentId = solo?.access.kind === 'purchase' ? solo.access.enrollmentCourseId : null
+  const soloEnrollmentId = SOLO_FOUNDER_ENROLLMENT_ID
   const [rows, badges, enrollments] = await Promise.all([
     db.learnLessonCompletion.findMany({ where: { userId }, select: { courseId: true, lessonId: true, day: true } }),
     db.learnBadge.findMany({ where: { userId }, select: { badgeId: true, earnedAt: true }, orderBy: { earnedAt: 'desc' } }),
-    soloEnrollmentId
-      ? db.courseEnrollment.findMany({ where: { userId, courseId: soloEnrollmentId, status: 'active' }, select: { progress: true } })
-      : Promise.resolve([]),
+    db.courseEnrollment.findMany({ where: { userId, courseId: soloEnrollmentId, status: 'active' }, select: { progress: true } }),
   ])
   const completions: CompletionRow[] = rows.map((r) => ({ courseId: r.courseId, lessonId: r.lessonId, day: r.day }))
   for (const e of enrollments) {
@@ -59,9 +60,12 @@ export async function loadLearnProfile(
     badgeIds: known.map((b) => b.badgeId),
     today: learnerDay(new Date(opts.now ?? Date.now()), opts.tz),
   })
+  const certifiedLevel = heldLevel(known.map((b) => b.badgeId))
   return {
+    certifiedLevel,
+    certifiedTitle: learnLevel(certifiedLevel)?.title ?? null,
     xp: stats.xp,
-    level: stats.level,
+    rank: stats.rank,
     streak: { current: stats.streak.current, longest: stats.streak.longest },
     lessonsCompleted: stats.lessonsCompleted,
     coursesCompleted: stats.coursesCompleted.length,

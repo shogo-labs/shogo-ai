@@ -7,74 +7,50 @@
  * decides access itself: its server functions ask `/api/learn/me` and only
  * serve a gated lesson when this catalog says the learner has it.
  *
- * Access kinds:
- *  - `public`   anyone, signed in or not
- *  - `account`  any Shogo account, including Free
- *  - `plan`     the learner's best plan across their workspaces is at least
- *               `minPlan` (by `PLAN_RANK`, so a legacy Pro seat counts as Basic+
- *               without Pro being named anywhere)
- *  - `purchase` an active `CourseEnrollment` for `enrollmentCourseId`, in any
- *               workspace the learner belongs to. Plan does not matter.
- *
- * A `plan` course can also be sold on its own (`standalone`): a one-time
- * payment that unlocks that course for life, recorded as a `CourseEnrollment`
- * for `learnPurchaseCourseId(course)`. Either path opens it.
+ * Every course is free. Access is earned, not bought (see `learn-levels.ts`):
+ *  - `public`  anyone, signed in or not
+ *  - `level`   a signed-in learner holding Shogo Certified level `requires`
+ *              or higher (level 0 = any Shogo account)
+ * Inside a course, lessons open in order: the next lesson opens when the one
+ * before it is finished (`unlockedLessons`). The first lesson of every course
+ * is a public preview on the site.
  */
 
-import { PLAN_RANK, type PlanId } from './usage-plans'
+import type { PlanId } from './usage-plans'
 import { SOLO_FOUNDER_COURSE_ID } from './solo-founder-course'
+import { LEARN_LESSONS } from './learn-gamification'
+import { courseLevel } from './learn-levels'
 
-export type LearnAccessRule =
-  | { kind: 'public' }
-  | { kind: 'account' }
-  | { kind: 'plan'; minPlan: Exclude<PlanId, 'free' | 'pro'>; standalone?: LearnStandaloneOffer }
-  | { kind: 'purchase'; enrollmentCourseId: string; offer: string }
-
-/** A one-time purchase of one course. The Stripe price is found by `lookupKey`. */
-export interface LearnStandaloneOffer {
-  courseId: string
-  title: string
-  priceUsd: number
-  lookupKey: string
-}
-
-/** `CourseEnrollment.courseId` for a standalone purchase of a learn course. */
-export function learnPurchaseCourseId(courseId: string): string {
-  return `learn:${courseId}`
-}
-
-function standalone(courseId: string, title: string, priceUsd: number): LearnStandaloneOffer {
-  return { courseId, title, priceUsd, lookupKey: `learn_course_${courseId.replace(/-/g, '_')}_v1` }
-}
+export type LearnAccessRule = { kind: 'public' } | { kind: 'level'; requires: number }
 
 export interface LearnCourse {
   id: string
   access: LearnAccessRule
 }
 
+/** A course on level N's track needs level N − 1. */
+function track(id: string): LearnCourse {
+  const level = courseLevel(id)
+  return { id, access: level <= 1 ? { kind: 'public' } : { kind: 'level', requires: level - 1 } }
+}
+
 export const LEARN_COURSES: readonly LearnCourse[] = [
   { id: 'library', access: { kind: 'public' } },
-  { id: 'agents-for-everyone', access: { kind: 'public' } },
-  { id: 'start-here', access: { kind: 'account' } },
-  { id: 'ai-teammates', access: { kind: 'account' } },
-  // Standalone prices sit below a year of Basic ($78), which includes all three.
-  {
-    id: 'agent-team-playbook',
-    access: { kind: 'plan', minPlan: 'basic', standalone: standalone('agent-team-playbook', 'Agent Team Playbook', 49) },
-  },
-  {
-    id: 'first-client',
-    access: { kind: 'plan', minPlan: 'basic', standalone: standalone('first-client', 'Land your first AI client', 49) },
-  },
-  {
-    id: 'paid-app',
-    access: { kind: 'plan', minPlan: 'basic', standalone: standalone('paid-app', 'Ship a paid app in 14 days', 49) },
-  },
-  {
-    id: 'solo-founder',
-    access: { kind: 'purchase', enrollmentCourseId: SOLO_FOUNDER_COURSE_ID, offer: 'solo_founder' },
-  },
+  track('agents-for-everyone'),
+  track('start-here'),
+  track('ai-teammates'),
+  track('agent-team-playbook'),
+  track('paid-app'),
+  track('first-client'),
+  track('solo-founder'),
 ]
+
+/**
+ * Solo Founder's Studio offer (a discounted Business year with a course board)
+ * records a `CourseEnrollment` with this id. The lessons no longer need it; its
+ * board progress still counts, and past buyers keep a perk.
+ */
+export const SOLO_FOUNDER_ENROLLMENT_ID = SOLO_FOUNDER_COURSE_ID
 
 /**
  * Courses that end in a graded check and award a certificate. The questions
@@ -109,7 +85,7 @@ export function learnCourseById(id: string): LearnCourse | undefined {
   return LEARN_COURSES.find((c) => c.id === id)
 }
 
-/** Coach replies per learner per UTC day, by plan. Purchases ride on the plan they include. */
+/** Coach replies per learner per UTC day, by plan. */
 export const LEARN_COACH_DAILY_LIMIT: Record<PlanId, number> = {
   free: 10,
   basic: 40,
@@ -118,45 +94,38 @@ export const LEARN_COACH_DAILY_LIMIT: Record<PlanId, number> = {
   enterprise: 200,
 }
 
-export type LearnAccessReason = 'public' | 'signed_out' | 'account' | 'plan' | 'plan_required' | 'purchased' | 'purchase_required'
+export type LearnAccessReason = 'public' | 'signed_out' | 'level' | 'level_required'
 
 export interface LearnAccessDecision {
   hasAccess: boolean
   reason: LearnAccessReason
-  /** For `plan_required`: the plan that unlocks it. */
-  requiredPlan?: string
-  /** For `purchase_required`: the checkout offer that unlocks it. */
-  offer?: string
-  /** When the course can also be bought on its own: its one-time price. */
-  standalone?: { priceUsd: number }
+  /** The Shogo Certified level that opens it (for `signed_out` and `level_required`). */
+  requiredLevel?: number
 }
 
-export function decideLearnAccess(
-  rule: LearnAccessRule,
-  learner: { signedIn: boolean; planId: PlanId; enrolledCourseIds: ReadonlySet<string> },
-): LearnAccessDecision {
+export function decideLearnAccess(rule: LearnAccessRule, learner: { signedIn: boolean; level: number }): LearnAccessDecision {
   if (rule.kind === 'public') return { hasAccess: true, reason: 'public' }
-  const buyable = rule.kind === 'plan' && rule.standalone ? { standalone: { priceUsd: rule.standalone.priceUsd } } : {}
-  if (!learner.signedIn) {
-    return {
-      hasAccess: false,
-      reason: 'signed_out',
-      ...(rule.kind === 'plan' ? { requiredPlan: rule.minPlan, ...buyable } : {}),
-      ...(rule.kind === 'purchase' ? { offer: rule.offer } : {}),
+  if (!learner.signedIn) return { hasAccess: false, reason: 'signed_out', requiredLevel: rule.requires }
+  return learner.level >= rule.requires
+    ? { hasAccess: true, reason: 'level' }
+    : { hasAccess: false, reason: 'level_required', requiredLevel: rule.requires }
+}
+
+/**
+ * Lessons the learner may open in a course they have access to: everything they
+ * finished, plus the first lesson they haven't. The first lesson is always open.
+ */
+export function unlockedLessons(courseId: string, completed: readonly string[]): string[] {
+  const lessons = LEARN_LESSONS[courseId] ?? []
+  const done = new Set(completed)
+  const out: string[] = []
+  let nextOpen = false
+  for (const lesson of lessons) {
+    if (done.has(lesson)) out.push(lesson)
+    else if (!nextOpen) {
+      out.push(lesson)
+      nextOpen = true
     }
   }
-  switch (rule.kind) {
-    case 'account':
-      return { hasAccess: true, reason: 'account' }
-    case 'plan':
-      if (PLAN_RANK[learner.planId] >= PLAN_RANK[rule.minPlan]) return { hasAccess: true, reason: 'plan' }
-      if (rule.standalone && learner.enrolledCourseIds.has(learnPurchaseCourseId(rule.standalone.courseId))) {
-        return { hasAccess: true, reason: 'purchased' }
-      }
-      return { hasAccess: false, reason: 'plan_required', requiredPlan: rule.minPlan, ...buyable }
-    case 'purchase':
-      return learner.enrolledCourseIds.has(rule.enrollmentCourseId)
-        ? { hasAccess: true, reason: 'purchased' }
-        : { hasAccess: false, reason: 'purchase_required', offer: rule.offer }
-  }
+  return out
 }

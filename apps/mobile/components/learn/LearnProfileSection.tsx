@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * A person's Shogo Learn level, XP, streak and badges, shown wherever Shogo
+ * A person's Shogo Certified level, XP rank, streak and badges, shown wherever Shogo
  * shows a person (workspace profile card, creator profile). The data comes
  * with that person's card from the API; nothing renders until they start
  * learning.
@@ -25,9 +25,10 @@ export function LearnProfileSection({
   padded?: boolean
 }) {
   if (!learn) return null
-  const pct = learn.level.next
-    ? Math.max(4, Math.round(((learn.xp - learn.level.min) / (learn.level.next.min - learn.level.min)) * 100))
+  const pct = learn.rank.next
+    ? Math.max(4, Math.round(((learn.xp - learn.rank.min) / (learn.rank.next.min - learn.rank.min)) * 100))
     : 100
+  const certified = learn.certifiedLevel > 0 && learn.certifiedTitle
   const link = isSelf ? `${learn.url}/profile/` : `${learn.url}/`
   const px = padded ? 'px-5' : ''
   return (
@@ -48,13 +49,21 @@ export function LearnProfileSection({
       <View className={padded ? 'px-5' : ''}>
         <View className="rounded-xl border border-border bg-card p-3 gap-2.5">
           <View className="flex-row items-center gap-3">
-            <View className="h-10 w-10 items-center justify-center rounded-full bg-primary/10">
-              <Text testID="learn-profile-level" className="text-base font-bold text-primary">{learn.level.index + 1}</Text>
+            <View
+              accessibilityLabel={certified ? `Shogo Certified Level ${learn.certifiedLevel}` : 'Not certified yet'}
+              className={`h-10 w-10 items-center justify-center rounded-full ${certified ? 'bg-primary' : 'bg-primary/10'}`}
+            >
+              <Text testID="learn-profile-level" className={`text-base font-bold ${certified ? 'text-primary-foreground' : 'text-primary'}`}>
+                {certified ? learn.certifiedLevel : '–'}
+              </Text>
             </View>
             <View className="min-w-0 flex-1">
               <Text className="text-sm font-semibold text-foreground">
-                {learn.level.name}
-                <Text className="text-xs font-normal text-muted-foreground">  ·  {learn.xp} XP</Text>
+                {certified ? `Shogo Certified ${learn.certifiedTitle}` : 'Learning on Shogo Learn'}
+                {certified ? <Text className="text-xs font-normal text-muted-foreground">  ·  Level {learn.certifiedLevel}</Text> : null}
+              </Text>
+              <Text className="mt-0.5 text-xs text-muted-foreground">
+                {learn.rank.name} rank  ·  {learn.xp} XP
               </Text>
               <View className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted">
                 <View className="h-full rounded-full bg-primary" style={{ width: `${pct}%` }} />

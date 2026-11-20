@@ -29,7 +29,7 @@ describe('loadLearnProfile', () => {
     expect(await loadLearnProfile('u1', { db: fakeDb({}), now: NOW })).toBeNull()
   })
 
-  test('level, XP, streak and recent badges, with the same numbers as learn.shogo.ai', async () => {
+  test('XP rank, streak and recent badges, with the same numbers as learn.shogo.ai', async () => {
     const db = fakeDb({
       completions: LEARN_LESSONS['start-here'].map((lessonId, i) => ({ userId: 'u1', courseId: 'start-here', lessonId, day: `2026-11-${16 + i}` })),
       badges: [
@@ -43,13 +43,23 @@ describe('loadLearnProfile', () => {
     expect(p.lessonsCompleted).toBe(5)
     expect(p.coursesCompleted).toBe(1)
     expect(p.xp).toBe(5 * 10 + 50 + 20 + 20)
-    expect(p.level.name).toBe('Builder')
+    expect(p.rank.name).toBe('Kindling')
+    expect(p.certifiedLevel).toBe(0)
+    expect(p.certifiedTitle).toBeNull()
     expect(p.streak).toEqual({ current: 5, longest: 5 })
     expect(p.badgeCount).toBe(2)
     expect(p.badgeTotal).toBe(LEARN_BADGES.length)
     expect(p.badges.map((b) => b.id)).toEqual(['course-start-here', 'first-lesson'])
     expect(p.badges[0]).toMatchObject({ name: 'Start here graduate', icon: 'graduation' })
     expect(p.url).toBe('https://learn.shogo.ai')
+  })
+
+  test('certified level comes from held level badges, without gaps', async () => {
+    const at = new Date('2026-11-20T10:00:00Z')
+    const gap = fakeDb({ badges: [{ userId: 'u1', badgeId: 'level-1', earnedAt: at }, { userId: 'u1', badgeId: 'level-3', earnedAt: at }] })
+    expect((await loadLearnProfile('u1', { db: gap, now: NOW }))!).toMatchObject({ certifiedLevel: 1, certifiedTitle: 'Explorer' })
+    const two = fakeDb({ badges: [{ userId: 'u1', badgeId: 'level-1', earnedAt: at }, { userId: 'u1', badgeId: 'level-2', earnedAt: at }] })
+    expect((await loadLearnProfile('u1', { db: two, now: NOW }))!).toMatchObject({ certifiedLevel: 2, certifiedTitle: 'Builder' })
   })
 
   test('Solo Founder lessons from the course board count toward XP', async () => {
