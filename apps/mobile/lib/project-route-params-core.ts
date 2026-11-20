@@ -6,38 +6,43 @@
  * tests can import it without triggering native module resolution.
  *
  * The companion hook `useProjectRouteParams` (in use-project-route-params.ts)
- * wires this to expo-router's `useLocalSearchParams` / `useGlobalSearchParams`.
+ * wires this to expo-router's `useLocalSearchParams` / `useGlobalSearchParams`
+ * and to the arrival URL captured in `arrival-url.ts`.
  */
 
 /**
  * Merges global (leaf) params with local (layout segment) params, guarded by
  * pathname so that a screen pushed on top of the project layout cannot bleed
- * its params into the mounted layout.
+ * its params into the mounted layout, then restores any query key the arrival
+ * URL carried that the router no longer supplies.
  *
  * @param local       Params from `useLocalSearchParams` (the layout's own segment).
  * @param global      Params from `useGlobalSearchParams` (the focused leaf).
  * @param pathname    `usePathname()` — the current focused path.
  * @param projectId   The `[id]` segment value from the layout route.
- * @param arrivalHref `window.location.href` captured once at mount (web only).
+ * @param arrivalParams Query parameters of the URL this document was loaded
+ *                      with (already scoped to this project), or null.
  *
- * ### Why `arrivalHref` is needed
+ * ### Why `arrivalParams` is needed
  *
- * expo-router's `store.routeInfo` starts as `defaultRouteInfo` (params: {},
- * pathname: '/') and is only updated after the focused **leaf** route's
- * `BaseRoute` renders and calls `store.setFocusedState()`.  The project layout
- * renders BEFORE its leaf child, so on the very first render:
- *   - `useGlobalSearchParams()` returns `{}` (store not yet ready)
- *   - `usePathname()` returns `'/'`
+ * expo-router's linking layer writes its navigation state into the address bar
+ * while it mounts, and on a cold load it does that twice: the arrival URL is
+ * written correctly, then the navigator settles on its initial route and the
+ * path collapses to that route with the whole query dropped — before the
+ * project screen renders (SHO-174). The state that survives keeps the path
+ * segment params (`id`, leaked onto the sibling index route by
+ * `populateParams`) but not the query, so by the time this layout mounts:
  *
- * Both `useState` initializers and the tab-intent effect would therefore see
- * empty params, causing chatSessionId / tab / file captures to be null/undefined
- * before the leaf finally populates the store.
+ *   - `useGlobalSearchParams()` returns `{ id }` — not empty, so an
+ *     "is the store ready" check cannot detect the loss
+ *   - `usePathname()` returns the project path, likewise intact
+ *   - `tab`, `chatSessionId` and `file` are simply gone
  *
- * `window.location.href` is set synchronously by the browser and is always
- * correct at mount time — it is the ground truth regardless of React rendering
- * order. When `global` is empty we fall back to parsing it, then on subsequent
- * renders (after the leaf renders and store.routeInfo is set) the normal path
- * takes over.
+ * The arrival URL is therefore the only remaining record of what the viewer
+ * asked for. Each missing key is filled from it individually: a single lost
+ * key is restored even though its siblings survived, which is what a
+ * ready-store check keyed on the whole param object cannot express. A key the
+ * router does supply always wins, so in-app navigations are unaffected.
  */
 export function mergeProjectRouteParams<T extends Record<string, unknown>>(input: {
   local: T
@@ -45,34 +50,27 @@ export function mergeProjectRouteParams<T extends Record<string, unknown>>(input
   pathname: string
   projectId: string | undefined
   /**
-   * `window.location.href` captured once at hook mount (web only).
-   * Pass an empty string on native or when unavailable.
+   * Query parameters of the document's arrival URL, when that URL was this
+   * project's route. Pass null on native or when unavailable.
    */
-  arrivalHref?: string
+  arrivalParams?: Record<string, string> | null
 }): T {
-  const { local, global: leaf, pathname, projectId, arrivalHref } = input
+  const { local, global: leaf, pathname, projectId, arrivalParams } = input
   if (!projectId) return local
 
-  // On the first render, before the leaf's BaseRoute calls setFocusedState(),
-  // useGlobalSearchParams() returns {} and usePathname() returns '/'.
-  // Detect this by checking whether global has ANY keys: an initialised store
-  // always has at least `id` on the focused route for a project path.
-  const isStoreNotReady = Object.keys(leaf as object).length === 0
-  if (isStoreNotReady) {
-    if (!arrivalHref) return local
-    let url: URL | null = null
-    try { url = new URL(arrivalHref) } catch { return local }
-    // Only use the arrival URL when we are actually on this project's path.
-    if (!url.pathname.includes(`/projects/${projectId}`)) return local
-    // All query params from the URL, with local segment params winning.
-    const urlParams = Object.fromEntries(url.searchParams) as T
-    return { ...urlParams, ...local }
-  }
+  // Only trust the focused leaf while the focused path is this project: a
+  // screen pushed on top of the layout must not bleed its params in here.
+  const onThisProject = pathname.includes(`/projects/${projectId}`)
+  const merged: Record<string, unknown> = onThisProject
+    ? { ...leaf, ...local }
+    : { ...local }
 
-  // Normal path: guard against a screen pushed on top of this layout.
-  if (!pathname.includes(`/projects/${projectId}`)) return local
-  // Local params win: an in-app router.push sets params on the layout segment
-  // itself, so local will carry the values and they should not be overridden.
-  // For cold loads, local only has { id } and leaf carries everything else.
-  return { ...leaf, ...local }
+  if (!arrivalParams) return merged as T
+
+  // Fill individual gaps. `id` is a path segment and always present, so it can
+  // never be restored here; the query keys are the ones that go missing.
+  for (const [key, value] of Object.entries(arrivalParams)) {
+    if (merged[key] === undefined) merged[key] = value
+  }
+  return merged as T
 }

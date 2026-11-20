@@ -110,83 +110,89 @@ describe('mergeProjectRouteParams', () => {
     expect(result.embed).toBe('ide')
   })
 
-  // --- first-render fallback: store not yet ready (global = {}) ---
+  // --- arrival-URL restore: the router's settle dropped the query ---
+  //
+  // This is the shape the bug actually has. The navigator keeps the path
+  // segment (`id`) but loses the query before the layout mounts, so the leaf
+  // is non-empty — a "params came back empty" check never fires (SHO-174).
 
-  it('first-render: global empty + arrivalHref delivers chatSessionId', () => {
+  it('restores every key when the router kept only the path segment', () => {
     const local = params({})
-    const global = {} as Params
+    const global = params({})
     const result = mergeProjectRouteParams({
       local,
       global,
-      pathname: '/',
+      pathname: PROJECT_PATH,
       projectId: ID,
-      arrivalHref: `http://localhost:3000/projects/${ID}?chatSessionId=chat-bravo`,
+      arrivalParams: { tab: 'settings' },
     })
-    expect(result.chatSessionId).toBe('chat-bravo')
+    expect(result.tab).toBe('settings')
     expect(result.id).toBe(ID)
   })
 
-  it('first-render: global empty + arrivalHref delivers tab=settings', () => {
+  it('restores a single lost key while its siblings survived', () => {
     const local = params({})
-    const global = {} as Params
+    const global = params({})
     const result = mergeProjectRouteParams({
       local,
       global,
-      pathname: '/',
+      pathname: PROJECT_PATH,
       projectId: ID,
-      arrivalHref: `http://localhost:3000/projects/${ID}?tab=settings`,
+      arrivalParams: { chatSessionId: 'chat-bravo', file: 'src/index.ts' },
     })
-    expect(result.tab).toBe('settings')
+    expect(result.chatSessionId).toBe('chat-bravo')
+    expect(result.file).toBe('src/index.ts')
   })
 
-  it('first-render: global empty + arrivalHref delivers multiple params', () => {
+  it('restores across several params', () => {
     const local = params({})
-    const global = {} as Params
+    const global = params({})
     const result = mergeProjectRouteParams({
       local,
       global,
       pathname: '/',
       projectId: ID,
-      arrivalHref: `http://localhost:3000/projects/${ID}?chatSessionId=abc&chatScope=workspace`,
+      arrivalParams: { chatSessionId: 'abc', chatScope: 'workspace' },
     })
     expect(result.chatSessionId).toBe('abc')
     expect(result.chatScope).toBe('workspace')
   })
 
-  it('first-render: global empty, local wins over arrivalHref', () => {
+  it('a key the router supplies wins over the arrival URL', () => {
     const local = params({ tab: 'canvas' })
-    const global = {} as Params
+    const global = params({})
     const result = mergeProjectRouteParams({
       local,
       global,
-      pathname: '/',
+      pathname: PROJECT_PATH,
       projectId: ID,
-      arrivalHref: `http://localhost:3000/projects/${ID}?tab=settings`,
+      arrivalParams: { tab: 'settings' },
     })
     expect(result.tab).toBe('canvas')
   })
 
-  it('first-render: global empty, arrivalHref for wrong project — only local', () => {
+  it('a leaf key wins over the arrival URL', () => {
     const local = params({})
-    const global = {} as Params
+    const global = params({ tab: 'chat-fullscreen' })
     const result = mergeProjectRouteParams({
       local,
       global,
-      pathname: '/',
+      pathname: PROJECT_PATH,
       projectId: ID,
-      arrivalHref: `http://localhost:3000/projects/other-project?chatSessionId=xyz`,
+      arrivalParams: { tab: 'settings' },
     })
-    expect(result.chatSessionId).toBeUndefined()
+    expect(result.tab).toBe('chat-fullscreen')
   })
 
-  it('first-render: global empty, no arrivalHref — only local', () => {
+  it('no arrival params: only local and leaf are used', () => {
     const local = params({})
-    const global = {} as Params
+    const global = params({})
     const result = mergeProjectRouteParams({
       local,
       global,
-      pathname: '/',
+      pathname: PROJECT_PATH,
       projectId: ID,
+      arrivalParams: null,
     })
     expect(result.chatSessionId).toBeUndefined()
     expect(result.id).toBe(ID)
