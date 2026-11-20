@@ -44,6 +44,8 @@ mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
     deleteProject: mock(async () => {}),
   }),
   useDomainHttp: () => ({}),
+  useDomainHttpOptional: () => ({}),
+  getDomainHttpClient: () => ({}),
 }));
 mock.module(resolve(import.meta.dir, "../../../../lib/api"), () => ({
   api: {
@@ -83,6 +85,7 @@ mock.module("lucide-react-native", () => {
     PinOff: Icon,
     Plus: Icon,
     Trash2: Icon,
+    UserPlus: Icon,
     X: Icon,
   };
 });

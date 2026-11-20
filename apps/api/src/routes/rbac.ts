@@ -35,6 +35,7 @@ import { getAccess, principalOf } from '../lib/authz'
 import { setProjectVisibility } from '../lib/authz/project-access'
 import { parseBody } from '../lib/parse-body'
 import { prisma } from '../lib/prisma'
+import { canInviteToWorkspace, normalizeInvitePolicy } from '../lib/workspace-invite-policy'
 import { invitationHooks } from '../generated/invitation.hooks'
 
 const USER_SELECT = { id: true, name: true, email: true, image: true } as const
@@ -51,6 +52,10 @@ const projectRole = z.unknown().transform((value, ctx): ProjectRole => {
 
 const visibilityBody = z.object({
   visibility: z.enum(['workspace', 'restricted'], { message: "visibility must be 'workspace' or 'restricted'" }),
+})
+
+const invitePolicyBody = z.object({
+  invitePolicy: z.enum(['members', 'admins'], { message: "invitePolicy must be 'members' or 'admins'" }),
 })
 
 const addMemberBody = z
@@ -80,7 +85,10 @@ export function rbacRoutes(): Hono {
     if (!principalOf(c).userId && principalOf(c).via !== 'tunnel') {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
-    const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId }, select: { id: true } })
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { id: true, invitePolicy: true },
+    })
     if (!workspace) return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
 
     const access = await getAccess(c, { workspaceId })
@@ -94,6 +102,10 @@ export function rbacRoutes(): Hono {
         role: access.workspaceRole,
         isSuperAdmin: access.isSuperAdmin,
         permissions: permissionList(access),
+        // Who may invite (SHO-454): the stored policy plus the one boolean the
+        // UI gates every entry point on.
+        invitePolicy: normalizeInvitePolicy(workspace.invitePolicy),
+        canInvite: canInviteToWorkspace(access, workspace),
       },
     })
   })
@@ -114,6 +126,32 @@ export function rbacRoutes(): Hono {
         permissions: permissionList(access),
       },
     })
+  })
+
+  /**
+   * PATCH /workspaces/:id/invite-policy — who may invite (SHO-454).
+   *
+   * A dedicated route rather than the generic workspace PATCH: the value is a
+   * closed set, and the permission is `workspace.settings:manage` (owners and
+   * admins), not `workspace:update`.
+   */
+  router.patch('/workspaces/:id/invite-policy', async (c) => {
+    const workspaceId = c.req.param('id')
+    if (!principalOf(c).userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    }
+    const access = await getAccess(c, { workspaceId })
+    if (!access.permissions.has('workspace.settings:manage')) {
+      return forbidden(c, 'Only workspace owners and admins can change who may invite')
+    }
+    const body = await parseBody(c, invitePolicyBody)
+    if (!body.ok) return body.response
+    const workspace = await prisma.workspace.update({
+      where: { id: workspaceId },
+      data: { invitePolicy: body.data.invitePolicy },
+      select: { id: true, invitePolicy: true },
+    })
+    return c.json({ ok: true, data: workspace })
   })
 
   router.patch('/projects/:projectId/visibility', async (c) => {

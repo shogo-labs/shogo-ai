@@ -105,6 +105,8 @@ mock.module('@shogo-ai/sdk/stream-buffer', () => {
     // Re-exported by `packages/shared-runtime/src/stream-buffer.ts`, so anything
     // that pulls in the shared-runtime barrel names it (SHO-291).
     TURN_COMPLETE_EVENT_TYPE: 'turn_complete',
+    // The real wire value: the relay's journal filter keys off it (SHO-319).
+    TURN_SEQ_EVENT_TYPE: 'data-turn-seq',
     encodeTurnCompleteFrame: (payload: any) =>
       `data: ${JSON.stringify({ type: 'turn_complete', ...payload })}\n\n`,
   }

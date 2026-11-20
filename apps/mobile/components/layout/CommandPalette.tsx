@@ -45,6 +45,7 @@ import {
   Sparkles,
   Radio,
   NotebookText,
+  UserPlus,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useProjectCollection } from '../../contexts/domain'
@@ -55,6 +56,7 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { usePermissions } from '../../hooks/usePermissions'
 import { useConversationList, useMentionables, useMyUserId } from '../../hooks/useTeamChat'
 import { conversationTitle, isSelfDm, teamChatApi, type ConversationSummary } from '../../lib/team-chat-api'
+import { useInviteDialog } from '../workspace/invite-dialog-context'
 
 // ─── Types ────────────────────────────────────────────────
 
@@ -173,7 +175,8 @@ export const CommandPalette = observer(function CommandPalette({
   const projects = useProjectCollection()
   const { localMode, features } = usePlatformConfig()
   const workspace = useActiveWorkspace()
-  const { can } = usePermissions({ workspaceId: workspace?.id })
+  const { can, canInvite } = usePermissions({ workspaceId: workspace?.id })
+  const inviteDialog = useInviteDialog()
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const inputRef = useRef<TextInput>(null)
@@ -263,6 +266,16 @@ export const CommandPalette = observer(function CommandPalette({
         category: 'settings',
         keywords: ['members', 'team', 'invite'],
       },
+      canInvite && {
+        id: 'invite-people',
+        label: 'Invite people',
+        description: 'Invite teammates by email or with a link',
+        icon: UserPlus,
+        href: '/(app)/settings?tab=people',
+        category: 'settings',
+        keywords: ['invite', 'people', 'teammate', 'member', 'add', 'link'],
+        run: () => inviteDialog.openInviteDialog(workspace?.id ?? null),
+      },
       !localMode && can('workspace.analytics:read') && {
         id: 'settings-analytics',
         label: 'Workspace Analytics',
@@ -290,7 +303,7 @@ export const CommandPalette = observer(function CommandPalette({
     }
 
     return items
-  }, [projects?.all, localMode, features.marketplace, isNativePhone, can])
+  }, [projects?.all, localMode, features.marketplace, isNativePhone, can, canInvite, inviteDialog, workspace?.id])
 
   const chatCommands = useChatCommands(query, visible)
 

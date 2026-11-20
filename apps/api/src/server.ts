@@ -54,6 +54,7 @@ import { startEventDeliveryWorker, stopEventDeliveryWorker } from './jobs/run-ev
 import { inviteLinkAcceptRoutes } from './routes/invite-link-accept'
 import { createInviteLinkAfterAccept } from './routes/invite-link-after-accept'
 import { inviteLinkRoutes } from './routes/invite-links'
+import { invitationResendRoutes } from './routes/invitation-resend'
 import { invitationInfoRoutes } from './routes/invitation-info'
 import { rbacRoutes } from './routes/rbac'
 import { appActionsRoutes } from './routes/app-actions'
@@ -225,6 +226,7 @@ import {
   apiAuthGate,
   allowUserAppProxyRequest,
   isAllowedUnauthWebchatProxyPath,
+  isPublicChannelIngressPath,
   isNonEdgeUserAppProxyRequest,
   isPublicPreviewRenderPath,
   isPublishedApiProxyPath,
@@ -910,6 +912,9 @@ app.use('/api/*', apiAuthGate)
 app.use('/api/projects/:projectId/*', async (c, next) => {
   const path = new URL(c.req.url).pathname
   if (isAllowedUnauthWebchatProxyPath(path)) {
+    return next()
+  }
+  if (isPublicChannelIngressPath(path)) {
     return next()
   }
   if (isTokenGatedThumbnailPath(path)) {
@@ -3702,9 +3707,10 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     path === '/agent/channels/webchat/session' ||
     path === '/agent/channels/webchat/message' ||
     path.startsWith('/agent/channels/webchat/events/')
+  const isChannelIngressPath = isPublicChannelIngressPath(c.req.path)
   let authedUserId: string | null = null
   let authedWorkspaceId: string | null = null
-  if (!isWebchatPath) {
+  if (!isWebchatPath && !isChannelIngressPath) {
     const userId = await getAuthUserId(c)
     if (!userId) {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
@@ -3824,6 +3830,10 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
           if (v) tunnelHeaders[h] = v
         }
       }
+      if (isChannelIngressPath) {
+        const sig = c.req.header('x-hub-signature-256')
+        if (sig) tunnelHeaders['x-hub-signature-256'] = sig
+      }
       const tunnelBody = c.req.method === 'GET' || c.req.method === 'HEAD'
         ? undefined
         : await c.req.text()
@@ -3865,6 +3875,10 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       const v = c.req.header(h)
       if (v) headers.set(h, v)
     }
+  }
+  if (isChannelIngressPath) {
+    const sig = c.req.header('x-hub-signature-256')
+    if (sig) headers.set('x-hub-signature-256', sig)
   }
   headers.set('x-runtime-token', runtimeToken)
 
@@ -10740,6 +10754,9 @@ app.route('/api', inviteLinkRoutes({
     }
   },
 }))
+
+// Resend a pending invitation's email and extend its expiry (SHO-454).
+app.route('/api', invitationResendRoutes())
 
 // Accept invite link (public-ish - requires auth but not membership)
 app.route('/api', inviteLinkAcceptRoutes({

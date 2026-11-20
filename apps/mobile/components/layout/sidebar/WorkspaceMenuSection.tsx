@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ActivityIndicator, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
-import { Cloud, CloudOff, ExternalLink, LogIn, LogOut, Plus, Settings, Sparkles, Users, Zap } from "lucide-react-native";
+import { Cloud, CloudOff, LogIn, LogOut, Plus, Settings, Sparkles, UserPlus, Zap } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import { usePostHogSafe } from "../../../contexts/posthog";
 import {
@@ -27,7 +27,8 @@ import { getDomainHttpClient, useDomainHttpOptional } from "../../../contexts/do
 import { isPhoneLayout } from "../../../lib/native-phone-layout";
 import { isInvitationExpired } from "../../../lib/api";
 import { usePendingInvitations } from "../../../lib/use-pending-invitations";
-import { openExternalLink } from "../../../lib/open-external-link";
+import { useInviteDialog } from "../../workspace/invite-dialog-context";
+import { usePermissions } from "../../../hooks/usePermissions";
 
 type PendingInvitations = ReturnType<typeof usePendingInvitations>;
 
@@ -275,6 +276,9 @@ export function WorkspaceMenuSection({
       ? "/(app)/account"
       : "/(app)/settings?tab=workspace";
   const currentIsCloud = !!localMode && isCloudWorkspace(currentWorkspace?.id);
+  // Inviting people (SHO-454): the dialog, gated on the server's `canInvite`.
+  const inviteDialog = useInviteDialog();
+  const { canInvite } = usePermissions({ workspaceId: currentWorkspace?.id });
 
   // Switching workspaces deliberately leaves runtimes warm, so an agent can be
   // mid-turn in a workspace the user just left. Say so here instead of letting
@@ -323,17 +327,11 @@ export function WorkspaceMenuSection({
     onNavigate("/(app)/settings");
     onClose();
   }, [onNavigate, onClose]);
+  // Inviting is the dialog, never Settings and never a browser (SHO-454).
   const openInvite = useCallback(() => {
     onClose();
-    // Desktop has no invite flow of its own; cloud workspaces manage members
-    // in the Shogo Cloud web app.
-    if (currentIsCloud && cloud.cloudUrl) {
-      const id = encodeURIComponent(currentWorkspace.id);
-      void openExternalLink(`${cloud.cloudUrl.replace(/\/+$/, "")}/settings?tab=people&workspace=${id}`);
-      return;
-    }
-    onNavigate("/(app)/settings?tab=people");
-  }, [onNavigate, onClose, currentIsCloud, cloud.cloudUrl, currentWorkspace?.id]);
+    inviteDialog.openInviteDialog(currentWorkspace?.id ?? null);
+  }, [onClose, inviteDialog, currentWorkspace?.id]);
 
   const identityHeader = currentWorkspace ? (
     <View className={cn("px-4", isNative ? "py-4" : "py-3")}>
@@ -418,21 +416,28 @@ export function WorkspaceMenuSection({
         <Settings size={14} className="text-muted-foreground" />
         <Text className="text-xs text-foreground">Settings</Text>
       </Pressable>
-      {(!localMode || (currentIsCloud && currentWorkspace?.kind !== "personal")) && (
-        <Pressable
-          onPress={openInvite}
-          accessibilityLabel={currentIsCloud ? "Manage in Shogo Cloud" : "Invite"}
-          className="h-8 flex-1 flex-row items-center justify-center gap-1.5 rounded-md border border-border active:bg-muted"
-        >
-          <Users size={14} className="text-muted-foreground" />
-          <Text className="text-xs text-foreground">
-            {currentIsCloud ? "Manage in Shogo Cloud" : "Invite"}
-          </Text>
-          {currentIsCloud && <ExternalLink size={12} className="text-muted-foreground" />}
-        </Pressable>
-      )}
     </View>
   ) : null;
+
+  // The first thing in the workspace menu: inviting people (SHO-454). It
+  // replaces the old "Invite" pill and the "Manage in Shogo Cloud" link that
+  // opened a browser.
+  const inviteRow =
+    currentWorkspace && canInvite ? (
+      <View className="px-3 pb-2 pt-1">
+        <Pressable
+          testID="workspace-menu-invite-people"
+          onPress={openInvite}
+          accessibilityLabel={`Invite people to ${workspaceLabel ?? "this workspace"}`}
+          className="h-9 flex-row items-center justify-center gap-1.5 rounded-md bg-primary active:opacity-90"
+        >
+          <UserPlus size={14} className="text-primary-foreground" />
+          <Text className="text-xs font-medium text-primary-foreground" numberOfLines={1}>
+            Invite people to {workspaceLabel ?? "this workspace"}
+          </Text>
+        </Pressable>
+      </View>
+    ) : null;
 
   const plan = includePlan && showBilling && currentWorkspace ? (
     <>
@@ -682,6 +687,7 @@ export function WorkspaceMenuSection({
   if (presentation === "workspace-menu") {
     return (
       <>
+        {inviteRow}
         {identityHeader}
         {identityPills}
         {plan}
@@ -701,6 +707,7 @@ export function WorkspaceMenuSection({
   if (isNative) {
     return (
       <>
+        {inviteRow}
         {identityHeader ? (
           <AccountSettingsGroup className="mt-2">{identityHeader}</AccountSettingsGroup>
         ) : null}
@@ -721,6 +728,7 @@ export function WorkspaceMenuSection({
 
   return (
     <>
+      {inviteRow}
       {identityHeader}
       {identityPills}
       {plan}

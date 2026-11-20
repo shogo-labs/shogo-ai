@@ -8113,24 +8113,38 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
 function createSendMessageTool(ctx: ToolContext): AgentTool {
   return {
     name: 'send_message',
-    description: 'Send a message through a connected messaging channel (telegram, discord, slack, whatsapp, email).',
+    description:
+      'Send a message through a connected messaging channel (telegram, discord, slack, whatsapp, email). ' +
+      'For WhatsApp: if the recipient is outside the 24-hour window, include `template` to send a template message instead. ' +
+      'Template messages are only supported by the whatsapp channel; calling with `template` on any other channel returns an error.',
     label: 'Send Message',
     parameters: Type.Object({
       channel: Type.String({
-        description: 'Channel type (e.g. "telegram", "discord")',
+        description: 'Channel type (e.g. "telegram", "discord", "whatsapp")',
       }),
       channelId: Type.String({ description: 'Target chat/channel ID' }),
       message: Type.String({ description: 'Message text to send' }),
+      template: Type.Optional(
+        Type.Object({
+          name: Type.String({ description: 'Template name registered in Meta' }),
+          language: Type.String({ description: 'BCP-47 language code, e.g. "en_US"' }),
+          components: Type.Optional(
+            Type.Array(Type.Any(), { description: 'Template component objects (header, body, buttons)' })
+          ),
+        }, { description: 'WhatsApp template message. Only supported by the whatsapp channel.' })
+      ),
     }),
     execute: async (_toolCallId, params) => {
       const {
         channel: channelType,
         channelId,
         message,
+        template,
       } = params as {
         channel: string
         channelId: string
         message: string
+        template?: { name: string; language: string; components?: unknown[] }
       }
 
       const adapter = ctx.channels.get(channelType)
@@ -8141,6 +8155,18 @@ function createSendMessageTool(ctx: ToolContext): AgentTool {
       const status = adapter.getStatus()
       if (!status.connected) {
         return textResult({ error: `Channel ${channelType} is not connected` })
+      }
+
+      if (template) {
+        if (!adapter.sendTemplate) {
+          return textResult({ error: `Channel ${channelType} does not support template messages. Only whatsapp does.` })
+        }
+        try {
+          await adapter.sendTemplate(channelId, template)
+          return textResult({ ok: true, channel: channelType, channelId, type: 'template' })
+        } catch (err: any) {
+          return textResult({ error: `Failed to send template: ${err.message}` })
+        }
       }
 
       try {
@@ -13599,15 +13625,23 @@ const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: stri
     ].join('\n'),
   },
   whatsapp: {
-    requiredKeys: ['accessToken', 'phoneNumberId', 'verifyToken'],
+    requiredKeys: ['accessToken', 'phoneNumberId', 'appSecret'],
     guide: [
       '## WhatsApp Setup',
-      '1. Go to https://developers.facebook.com and create or select an app',
-      '2. Add the WhatsApp product to your app',
-      '3. Under WhatsApp → API Setup → copy the Temporary Access Token and Phone Number ID',
-      "4. Choose a verify token (any string you make up) — you'll use it to verify the webhook",
-      '5. Connect: channel_connect({ type: "whatsapp", config: { accessToken: "YOUR_TOKEN", phoneNumberId: "YOUR_PHONE_ID", verifyToken: "YOUR_VERIFY_TOKEN" } })',
-      '6. After connecting, configure the webhook URL in Meta Developer Portal → WhatsApp → Configuration → Callback URL',
+      '1. Go to https://developers.facebook.com and create or select an app with WhatsApp added.',
+      '2. Under App Settings → Basic → App Secret — copy the App Secret.',
+      '3. Under WhatsApp → API Setup:',
+      '   - Copy the Phone Number ID.',
+      '   - For production, create a permanent System User token (the temporary token expires in 24 h).',
+      '     Go to Business Settings → System Users → Add → give it Admin role → Generate token → select your WhatsApp app, grant whatsapp_business_messaging + whatsapp_business_management.',
+      '4. Connect: channel_connect({ type: "whatsapp", config: { accessToken: "YOUR_SYSTEM_USER_TOKEN", phoneNumberId: "YOUR_PHONE_NUMBER_ID", appSecret: "YOUR_APP_SECRET" } })',
+      '   The connect result returns callbackUrl and verifyToken — use those in step 5.',
+      '   Optionally set verifyToken yourself; a random one is generated if omitted.',
+      '5. In Meta Developer Portal → WhatsApp → Configuration:',
+      '   - Set Callback URL to the callbackUrl from step 4.',
+      '   - Set Verify Token to the verifyToken from step 4.',
+      '   - Subscribe to webhook fields: messages, smb_message_echoes.',
+      '   - Click Verify and Save.',
     ].join('\n'),
   },
   webhook: {
@@ -13801,6 +13835,36 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
                 'The user can also find the embed snippet in the Channels panel.',
               ].join('\n'),
               embedSnippet: `<script src="${widgetUrl}"></script>`,
+            })
+          }
+
+          if (type === 'whatsapp') {
+            // Expose the callback URL and verifyToken so the agent can relay
+            // them to the user for the Meta webhook configuration step.
+            const whatsappAdapter = ctx.channels?.get('whatsapp')
+            const whatsappStatus = whatsappAdapter?.getStatus()
+            const verifyToken = (whatsappStatus?.metadata?.verifyToken as string | undefined) || channelConfig.verifyToken || ''
+            let callbackUrl: string | null = null
+            const projectId = ctx.projectId ? (projectScopedId(ctx.projectId) ? ctx.projectId : null) : null
+            if (process.env.KUBERNETES_SERVICE_HOST && projectId) {
+              const apiUrl = derivePublicApiUrl()
+              callbackUrl = `${apiUrl}/api/projects/${projectId}/agent-proxy/agent/channels/whatsapp/webhook`
+            }
+            return textResult({
+              ok: true,
+              message: [
+                'WhatsApp channel connected!',
+                '',
+                callbackUrl
+                  ? `Callback URL: ${callbackUrl}`
+                  : 'Callback URL: use the cloud project URL — desktop tunnels relay to the same path.',
+                `Verify Token: ${verifyToken}`,
+                '',
+                'Configure these in Meta Developer Portal → WhatsApp → Configuration.',
+                'Subscribe to webhook fields: messages, smb_message_echoes.',
+              ].join('\n'),
+              callbackUrl,
+              verifyToken,
             })
           }
 

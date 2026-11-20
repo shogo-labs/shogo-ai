@@ -28,6 +28,8 @@ import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
 import { PresenceDot, presenceLabel } from './PresenceDot'
 import { AgentAvatar } from './AgentAvatar'
 import { confirmsAddToChannel } from './AddToChannelConfirm'
+import { useInviteDialog } from '../workspace/invite-dialog-context'
+import { usePermissions } from '../../hooks/usePermissions'
 import { UserAvatar } from './UserAvatar'
 import { HuddleButton } from './Huddle'
 import { ChannelTabList, type ChannelTabItem } from './ChannelTabs'
@@ -1029,11 +1031,16 @@ function MembersModal({
 }) {
   const [filter, setFilter] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const inviteDialog = useInviteDialog()
+  const { canInvite } = usePermissions({ workspaceId: conversation.workspaceId })
   const memberUserIds = new Set(conversation.members.flatMap((m) => (m.type === 'user' ? [m.userId] : [])))
   const memberAgents = new Set(conversation.members.flatMap((m) => (m.type === 'agent' ? [m.projectId ?? 'ws'] : [])))
   const q = filter.trim().toLowerCase()
   const people = (mentionables?.people ?? []).filter((p) => !memberUserIds.has(p.id) && (!q || p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q)))
   const agents = (mentionables?.agents ?? []).filter((a) => !memberAgents.has(a.projectId ?? 'ws') && (!q || a.name.toLowerCase().includes(q)))
+  // Someone who is not in the workspace yet: offer to invite them (SHO-454).
+  const looksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(q)
+  const offerInvite = canInvite && !!q && (looksLikeEmail || (!people.length && !agents.length))
 
   const act = async (fn: () => Promise<unknown>) => {
     try {
@@ -1129,6 +1136,24 @@ function MembersModal({
                     <Text className="text-xs text-primary">Add</Text>
                   </Pressable>
                 ))}
+                {offerInvite && (
+                  <Pressable
+                    testID="members-modal-invite"
+                    onPress={() => {
+                      onClose()
+                      inviteDialog.openInviteDialog(conversation.workspaceId, {
+                        emails: looksLikeEmail ? [q] : undefined,
+                      })
+                    }}
+                    className="flex-row items-center gap-2 rounded-md px-1 py-1.5 active:bg-muted hover:bg-muted"
+                  >
+                    <UserPlus size={14} className="text-primary" />
+                    <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
+                      {looksLikeEmail ? `Invite ${q}` : 'Invite someone new'}
+                    </Text>
+                    <Text className="text-xs text-primary">Invite</Text>
+                  </Pressable>
+                )}
               </>
             )}
           </ScrollView>

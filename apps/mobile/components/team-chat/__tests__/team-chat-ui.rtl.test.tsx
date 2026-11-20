@@ -330,7 +330,10 @@ mock.module('@/components/ui/button', () => ({
     createElement('div', { role: 'button', 'aria-label': accessibilityLabel, onClick: onPress }, children),
   ButtonText: ({ children }: any) => createElement('div', null, children),
 }))
-mock.module('../../../lib/platform-config', () => ({ usePlatformConfig: () => ({ features: { billing: false, ezMode: false } }) }))
+mock.module('../../../lib/platform-config', () => ({
+  usePlatformConfig: () => ({ features: { billing: false, ezMode: false } }),
+  isLocalMode: () => false,
+}))
 // Dictation is unavailable in a DOM test, so `canRecord` is a switch: it is how
 // the composer's two voice affordances are told apart.
 const voiceInputState = { canRecord: false }
