@@ -25,7 +25,7 @@
  * The pure merge/guard function lives in `project-route-params-core.ts` so
  * unit tests can import it without resolving expo-router native modules.
  */
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useLocalSearchParams, useGlobalSearchParams, usePathname, useRouter } from 'expo-router'
 import { arrivalQueryParamsForProject } from './arrival-url'
 export { mergeProjectRouteParams } from './project-route-params-core'
@@ -71,27 +71,25 @@ export function useProjectRouteParams<
     arrivalParams,
   })
 
-  // Keys that came only from the arrival URL. Computed once, from the first
-  // render's params: later renders reflect the state this effect writes.
-  const restoredRef = useRef<Record<string, string> | null>(null)
-  if (restoredRef.current === null) {
+  // Keys that came only from the arrival URL. Captured once, from the first
+  // render's params: later renders reflect the state this hook writes.
+  const [restored] = useState<Record<string, string>>(() => {
     const supplied: Record<string, unknown> = { ...global, ...local }
-    const restored: Record<string, string> = {}
+    const out: Record<string, string> = {}
     for (const [key, value] of Object.entries(merged)) {
       if (typeof value !== 'string' || NOT_RESTORED.has(key)) continue
-      if (supplied[key] === undefined) restored[key] = value
+      if (supplied[key] === undefined) out[key] = value
     }
-    restoredRef.current = restored
-  }
+    return out
+  })
 
   const restoredOnce = useRef(false)
   useEffect(() => {
-    const restored = restoredRef.current
-    if (restoredOnce.current || !restored) return
+    if (restoredOnce.current) return
     if (Object.keys(restored).length === 0) return
     restoredOnce.current = true
     router.setParams(restored)
-  }, [router])
+  }, [restored, router])
 
   return merged
 }
