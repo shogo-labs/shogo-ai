@@ -26,6 +26,7 @@ import { REGION_ID, REGION_LABEL, REGION_PEERS, getPeer } from './lib/region'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
 import { slidesViewerRoutes } from './routes/slides-viewer'
+import { documentViewerRoutes } from './routes/document-viewer'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { pinChatToHomeRegion, pinProjectRoutesToHomeRegion } from './lib/chat-region-pin'
 import { RuntimeNotInHomeRegionError, runtimeNotInHomeRegionResponse } from './lib/runtime-home-region-guard'
@@ -688,11 +689,13 @@ app.use('/api/preview/:projectId/ports/:port/render/*', previewFrameStrip)
 // block it there while cloud (same origin) never noticed. Strip the framing
 // headers on the way out of secureHeaders, the same way the preview proxy
 // does (SHO-426).
-app.use('/api/viewers/slides', async (c, next) => {
-  await next()
-  c.res.headers.delete('X-Frame-Options')
-  c.res.headers.delete('Cross-Origin-Opener-Policy')
-})
+for (const viewerPath of ['/api/viewers/slides', '/api/viewers/document']) {
+  app.use(viewerPath, async (c, next) => {
+    await next()
+    c.res.headers.delete('X-Frame-Options')
+    c.res.headers.delete('Cross-Origin-Opener-Policy')
+  })
+}
 
 // Security headers — X-Content-Type-Options, X-Frame-Options, etc.
 app.use('*', secureHeaders({
@@ -1057,10 +1060,11 @@ app.get('/api/integrations/callback', (c) => {
   return c.html(html)
 })
 
-// The slides viewer page: a static, sandboxed document every file host frames
-// to render a PowerPoint deck (SHO-426). Same code for cloud and the desktop
-// local API, so the two can never drift.
+// Office viewer pages: static sandboxed documents every file host frames
+// to render office files (slides SHO-426, documents SHO-467). Same code for
+// cloud and desktop so the two can never drift.
 app.route('/api/viewers', slidesViewerRoutes())
+app.route('/api/viewers', documentViewerRoutes())
 
 // Platform config (tells frontend about local mode, enabled features, etc.)
 app.get('/api/config', async (c) => {
