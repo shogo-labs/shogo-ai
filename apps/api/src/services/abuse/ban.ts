@@ -23,8 +23,8 @@ async function stopUserRuntimes(userId: string): Promise<void> {
   try {
     const { getRuntimeManager } = await import('../../lib/runtime/manager')
     const mgr = getRuntimeManager()
-    const projects: Array<{ id: string }> = await (prisma as any).project.findMany({
-      where: { createdById: userId },
+    const projects = await prisma.project.findMany({
+      where: { createdBy: userId },
       select: { id: true },
     })
     await Promise.allSettled(projects.map((p) => mgr.stop(p.id, 'banned')))
@@ -36,19 +36,25 @@ async function stopUserRuntimes(userId: string): Promise<void> {
 /** Cancel any active Stripe trial for workspaces the user owns. */
 async function cancelUserTrials(userId: string): Promise<void> {
   try {
-    // Lazily import the billing module that holds the Stripe singleton.
-    // If Stripe is not configured this is a no-op.
-    const billingMod = await import('../../services/billing.service').catch(() => null)
-    const stripe = (billingMod as any)?.getStripeClient?.() ?? null
-    if (!stripe) return
+    // No Stripe key (local, CI) → nothing to cancel.
+    const key = process.env.STRIPE_SECRET_KEY
+    if (!key) return
+    const { default: Stripe } = await import('stripe')
+    const stripe = new Stripe(key)
 
-    const trials: Array<{ stripeSubscriptionId: string }> = await (prisma as any).trialRedemption.findMany({
-      where: {
-        status: 'trialing',
-        workspace: { members: { some: { userId, role: 'owner', projectId: null } } },
-      },
-      select: { stripeSubscriptionId: true },
+    // TrialRedemption has no relation to Workspace, so resolve owned workspaces first.
+    const owned = await prisma.member.findMany({
+      where: { userId, role: 'owner', projectId: null },
+      select: { workspaceId: true },
     })
+    const workspaceIds = owned.flatMap((m) => (m.workspaceId ? [m.workspaceId] : []))
+    if (!workspaceIds.length) return
+    const trials = (
+      await prisma.trialRedemption.findMany({
+        where: { status: 'trialing', workspaceId: { in: workspaceIds } },
+        select: { stripeSubscriptionId: true },
+      })
+    ).flatMap((t) => (t.stripeSubscriptionId ? [{ stripeSubscriptionId: t.stripeSubscriptionId }] : []))
 
     await Promise.allSettled(
       trials.map(async (t) => {
@@ -57,7 +63,7 @@ async function cancelUserTrials(userId: string): Promise<void> {
             cancel_at_period_end: true,
             metadata: { cancellation_reason: 'account_banned' },
           })
-          await (prisma as any).trialRedemption.updateMany({
+          await prisma.trialRedemption.updateMany({
             where: { stripeSubscriptionId: t.stripeSubscriptionId, status: 'trialing' },
             data: { status: 'ended' },
           })
@@ -91,7 +97,7 @@ export async function banUser(params: {
 }): Promise<BanResult> {
   if (isLocalMode()) return { alreadyBanned: false, sessionsDeleted: 0, keysRevoked: 0 }
 
-  const db = prisma as any
+  const db = prisma
   const { userId, reason, bannedByUserId, flagIds } = params
 
   // 1. Stamp bannedAt (idempotent — only writes on the first call).
@@ -152,7 +158,7 @@ export async function unbanUser(params: {
 }): Promise<void> {
   if (isLocalMode()) return
 
-  const db = prisma as any
+  const db = prisma
   const { userId, adminUserId } = params
 
   await db.user.update({
