@@ -34,6 +34,27 @@ function normalizePath(path: string): string {
   return relative(REPO_ROOT, abs).split('\\').join('/')
 }
 
+// The gate protects apps/api/src — only errors whose repo-relative path starts
+// here are counted. Errors in packages/* are excluded explicitly for three
+// reasons:
+//
+//   TS6059 rootDir / TS5097 allowImportingTsExtensions — these codes appear
+//   whenever tsc resolves a transitive import that lives outside apps/api's
+//   rootDir. They depend on the worktree/symlink layout of the CI runner
+//   (packages/… on main, ../wt-*/packages/… on a dev machine), so the same
+//   underlying state produces different baseline keys across environments and
+//   creates spurious "new error" noise that blocks unrelated PRs.
+//
+//   dist-vs-src TS2322 identity mismatches — same root cause: tsc picks up the
+//   dist/ build of an SDK package on some machines and the src/ on others,
+//   yielding structurally-identical but nominally-distinct types.
+//
+//   Broad exclusion is intentional. A real cross-package break still surfaces
+//   in apps/api/src itself (at the Prisma query, service call or route handler
+//   that uses the bad type); those errors ARE counted. Only the packages/* noise
+//   is excluded.
+const API_SRC_PREFIX = 'apps/api/src/'
+
 export function parseTscOutput(output: string): Baseline {
   const counts: Baseline = {}
   const lines = output.split('\n')
@@ -41,9 +62,12 @@ export function parseTscOutput(output: string): Baseline {
     const m = LINE.exec(lines[i].trimEnd())
     if (!m) continue
     const [, file, , , code, first] = m
+    const normalized = normalizePath(file)
+    // Only count errors in apps/api/src — see note above.
+    if (!normalized.startsWith(API_SRC_PREFIX)) continue
     // tsc continues long messages on indented lines; keep only the first.
     const message = first.split(REPO_ROOT).join('<repo>').replace(/\s+/g, ' ').trim()
-    const key = `${normalizePath(file)} ${code} ${message}`
+    const key = `${normalized} ${code} ${message}`
     counts[key] = (counts[key] ?? 0) + 1
   }
   return counts

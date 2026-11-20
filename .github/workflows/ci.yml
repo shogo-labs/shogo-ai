@@ -347,7 +347,7 @@ jobs:
       # apps/api is in run-typecheck.ts's EXPECTED_FAIL set, so the step above
       # skips it. This gates it on *new* errors against a baseline of the
       # existing debt (SHO-459 shipped invalid Prisma queries that tsc flags).
-      - name: Typecheck apps/api (no new errors)
+      - name: Typecheck apps/api/src (no new errors vs baseline)
         if: needs.prelude.outputs.verified != 'true'
         run: bun scripts/ci/api-typecheck-ratchet.ts
 
