@@ -83,50 +83,6 @@ async function useTeamWorkspace(page: Page) {
   await page.evaluate(writeActiveWorkspaceSelection, [workspaceId, "team"] as const)
 }
 
-/** Installs a history-API sniffer and console collector before any page script runs. */
-async function installInstrumentation(page: Page): Promise<() => Promise<string>> {
-  const consoleLogs: string[] = []
-
-  await page.addInitScript(() => {
-    const record = (method: string, url: string | URL) => {
-      const frames = (new Error().stack ?? "")
-        .split("\n")
-        .slice(1, 12)
-        .map((line) => line.trim().replace(/^at /, ""))
-        .join(" << ")
-      const entry = `${Date.now()} ${method} ${url} :: ${frames}`
-      ;(window as any).__sho174History = (window as any).__sho174History ?? []
-      ;(window as any).__sho174History.push(entry)
-    }
-    const orig = { push: history.pushState.bind(history), replace: history.replaceState.bind(history) }
-    history.pushState = function (data, title, url) {
-      record("push", url ?? location.href)
-      orig.push(data, title, url)
-    }
-    history.replaceState = function (data, title, url) {
-      record("replace", url ?? location.href)
-      orig.replace(data, title, url)
-    }
-  })
-
-  page.on("console", (msg) => {
-    if (msg.text().includes("SHO174")) consoleLogs.push(msg.text())
-  })
-
-  return async () => {
-    const browserHistory: string[] = await page
-      .evaluate(() => (window as any).__sho174History ?? [])
-      .catch(() => [])
-    return [
-      "=== SHO-174 instrumentation ===",
-      "--- history writes ---",
-      ...browserHistory,
-      "--- console (SHO174) ---",
-      ...consoleLogs,
-    ].join("\n")
-  }
-}
-
 /** Stub the runtime, land on the app (localStorage needs a document) and pick the team workspace. */
 async function prepare(page: Page) {
   await stubProjectRuntime(page)
@@ -273,18 +229,11 @@ test.describe("Project chat URL (local)", () => {
   })
 
   test("a copied URL opens that exact chat, and a reload keeps it", async ({ page }) => {
-    const getLog = await installInstrumentation(page)
     const loads = trackChatLoads(page)
     await prepare(page)
     await openProject(page, `?chatSessionId=${bravoId}`)
 
-    // Collect history writes from the page and print alongside the assertion
-    // so CI logs show exactly which URL writes happened and when.
-    try {
-      await expect.poll(() => chatParam(page), { timeout: 20_000 }).toBe(bravoId)
-    } finally {
-      console.log(await getLog())
-    }
+    await expect.poll(() => chatParam(page), { timeout: 20_000 }).toBe(bravoId)
     await expect(page.getByText(/BRAVO-SEED-/).first()).toBeVisible({ timeout: 20_000 })
     await expect.poll(() => loads.includes(bravoId), { timeout: 20_000 }).toBe(true)
 

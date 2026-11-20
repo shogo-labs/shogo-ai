@@ -198,8 +198,6 @@ const phoneStackScreenOptions = (canvas: string) => ({ route }: { route: { name:
         : PHONE_STACK_SCREEN_OPTIONS.animation,
 });
 
-const sho174RenderCount = { current: 0 };
-
 function AppLayoutInner() {
   csMark("app:layout:render");
   const { isAuthenticated, isLoading, user, refreshSession } = useAuth();
@@ -216,16 +214,6 @@ function AppLayoutInner() {
   const workspaces = useWorkspaceCollection();
   const router = useRouter();
   const pathname = usePathname();
-  // SHO-174 instrumentation
-  sho174RenderCount.current += 1;
-  if (typeof window !== "undefined") {
-    console.log("[SHO174] app-layout-render", JSON.stringify({
-      n: sho174RenderCount.current,
-      pathname,
-      href: window.location.href,
-      t: Date.now(),
-    }));
-  }
   const isIdeEmbed = useMemo(() => {
     if (Platform.OS !== "web" || typeof window === "undefined") return false;
     return new URLSearchParams(window.location.search).get("embed") === "ide";
