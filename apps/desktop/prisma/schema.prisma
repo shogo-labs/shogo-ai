@@ -31,6 +31,9 @@ model User {
   lastSeenAnnouncementVersion String?
   onboardingIntent    String?
   buddyLook           String?
+  bannedAt            DateTime?
+  banReason           String?
+  bannedByUserId      String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -42,8 +45,37 @@ model User {
   agentTasks      AgentTask[]
   agentSchedules  AgentSchedule[]
   mobilePushSubscriptions MobilePushSubscription[]
+  abuseFlagsAsSubject AbuseFlag[] @relation("AbuseFlagUser")
+  abuseFlagsAsDecider AbuseFlag[] @relation("AbuseFlagDecider")
 
   @@map("users")
+}
+
+model AbuseFlag {
+  id              String    @id @default(uuid())
+  userId          String
+  runDate         String
+  category        String
+  severity        Int
+  confidence      String
+  summary         String
+  evidence        Json
+  clusterKey      String?
+  status          String    @default("flagged")
+  decidedByUserId String?
+  decidedAt       DateTime?
+  digestId        String?
+  model           String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user            User      @relation("AbuseFlagUser", fields: [userId], references: [id], onDelete: Cascade)
+  decidedBy       User?     @relation("AbuseFlagDecider", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, runDate, category])
+  @@index([status, createdAt])
+  @@index([clusterKey])
+  @@map("abuse_flags")
 }
 
 model Session {

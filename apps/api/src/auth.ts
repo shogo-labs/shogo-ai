@@ -747,6 +747,26 @@ export const auth = betterAuth({
   // Database hooks for auto-creating personal workspace on user signup
   // Task: task-org-002
   databaseHooks: {
+    session: {
+      create: {
+        /** Refuse session creation for banned users (covers all sign-in paths). */
+        before: async (session) => {
+          if (!isLocalMode && session.userId) {
+            const user = await prisma.user.findUnique({
+              where: { id: session.userId },
+              select: { bannedAt: true },
+            })
+            if (user?.bannedAt) {
+              throw new APIError('FORBIDDEN', {
+                code: 'ACCOUNT_SUSPENDED',
+                message: 'Account suspended. Contact support@shogo.ai.',
+              })
+            }
+          }
+          return { data: session }
+        },
+      },
+    },
     user: {
       create: {
         /**

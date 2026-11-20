@@ -105,6 +105,10 @@ const ANALYTICS_DIGEST_PATH = join(
   REPO_ROOT,
   'apps/api/src/lib/analytics-digest-collector.ts',
 )
+const ABUSE_CHECK_JOB_PATH = join(
+  REPO_ROOT,
+  'apps/api/src/lib/abuse-check-job.ts',
+)
 const GLOBAL_JOB_LOCK_PATH = join(
   REPO_ROOT,
   'apps/api/src/lib/global-job-lock.ts',
@@ -758,6 +762,14 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'creator-gamification.service.ts:189 creates; non-atomic check-then-create. P2 follow-up.',
   },
+  // --- Abuse detection (SHO-459) -------------------------------------------
+  {
+    key: 'AbuseFlag.(category,runDate,userId)',
+    category: 'cron_locked',
+    reason:
+      'One flag per user per category per day, written only by runAbuseCheck which runs under withGlobalJobLock(abuse-check-daily); single-region scheduler (shouldScheduleAbuseCheck) pins to the main region.',
+    writer: 'abuse-check-daily',
+  },
   // --- Native MLM affiliate program -----------------------------------------
   {
     key: 'Affiliate.userId',
@@ -1353,6 +1365,7 @@ function enumerateCronEntries(): CronEntry[] {
   const extras: Array<{ fn: string; file: string }> = [
     { fn: 'recalculateAllStorageUsage', file: STORAGE_SERVICE_PATH },
     { fn: 'generateDigest', file: ANALYTICS_DIGEST_PATH },
+    { fn: 'runAbuseCheck', file: ABUSE_CHECK_JOB_PATH },
   ]
   for (const extra of extras) {
     if (!existsSync(extra.file)) continue

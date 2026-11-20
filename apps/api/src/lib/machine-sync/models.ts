@@ -228,6 +228,7 @@ const NEVER_BILLING = [
 
 const NEVER_CLOUD_PLATFORM = [
   'Instance', // the cloud's machine registry
+  'AbuseFlag', // the cloud's trust-and-safety ban record
   'SignupRiskAssessment', // the cloud's signup anti-abuse record
   'RemoteAction', // the cloud's audit trail
   'EventDelivery',

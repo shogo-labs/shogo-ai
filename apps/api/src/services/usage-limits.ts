@@ -39,6 +39,7 @@ export type UsageBlockReason =
   | 'overage_payment_pending'
   | 'email_verification_required'
   | 'account_review_required'
+  | 'account_banned'
   | 'overage_requires_payment'
   | 'usage_limit_reached'
 
@@ -85,6 +86,11 @@ export function usageLimitErrorPayload(reason: UsageBlockReason | undefined): { 
       return {
         code: 'account_review_required',
         message: 'Your account is under review. Contact support if you think this is a mistake.',
+      }
+    case 'account_banned':
+      return {
+        code: 'account_banned',
+        message: 'Your account has been suspended. Contact support if you think this is a mistake.',
       }
     case 'overage_requires_payment':
       return {

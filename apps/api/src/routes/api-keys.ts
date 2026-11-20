@@ -481,6 +481,10 @@ export async function resolveApiKey(
   if (!apiKey || apiKey.revokedAt) return null
   if (apiKey.expiresAt && apiKey.expiresAt < new Date()) return null
   if (apiKey.kind === 'app' && !opts?.allowAppTokens) return null
+  // Refuse banned users — the hold check covers this but resolveApiKey is
+  // called from routes outside authMiddleware, so check here too.
+  const hold = await getSignupTrustHold(apiKey.userId)
+  if (hold === 'account_banned') return null
 
   const now = new Date()
   const touch = planApiKeyTouch(apiKey, {

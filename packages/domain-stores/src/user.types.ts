@@ -24,6 +24,9 @@ export interface UserType {
   emailCanonical?: string
   firstCapHitAt?: Date
   firstPreviewSeenAt?: Date
+  bannedAt?: Date
+  banReason?: string
+  bannedByUserId?: string
   createdAt: Date
   updatedAt: Date
 }
@@ -43,6 +46,9 @@ export interface UserCreateInput {
   emailCanonical?: string
   firstCapHitAt?: Date
   firstPreviewSeenAt?: Date
+  bannedAt?: Date
+  banReason?: string
+  bannedByUserId?: string
 }
 
 export interface UserUpdateInput {
@@ -60,4 +66,7 @@ export interface UserUpdateInput {
   emailCanonical?: string
   firstCapHitAt?: Date
   firstPreviewSeenAt?: Date
+  bannedAt?: Date
+  banReason?: string
+  bannedByUserId?: string
 }
