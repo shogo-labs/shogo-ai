@@ -21,6 +21,7 @@ mock.module('@shogo-ai/sdk/model-catalog', () => ({
   getModelEntry: () => undefined,
   MODEL_DOLLAR_COSTS: {} as Record<string, any>,
   calculateDollarCost: () => 0,
+  getModelDollarCosts: (_m: string, _at?: Date) => ({ inputPerMillion: 0, outputPerMillion: 0, cachedInputPerMillion: 0, cacheWritePerMillion: 0 }),
   getModelBillingModel: (id: string) => id,
   resolveAgentModeDefault: (mode: string) => mode,
   getAgentModeOverrides: () => ({}),
