@@ -247,6 +247,16 @@ export async function runAbuseCheck(
 
 let abuseCheckTimer: ReturnType<typeof setTimeout> | null = null
 
+/** Run the signup-risk backfill sweep alongside the daily abuse check. */
+async function runSignupRiskBackfillSafe(): Promise<void> {
+  try {
+    const { runSignupRiskBackfill } = await import('../services/signup-risk.service')
+    await runSignupRiskBackfill()
+  } catch (err: any) {
+    console.error('[signup-risk] backfill job failed (non-fatal):', err?.message ?? err)
+  }
+}
+
 export function startAbuseCheckJob(prismaClient: PrismaClient): void {
   if (!shouldScheduleAbuseCheck()) {
     console.log(
@@ -266,6 +276,9 @@ export function startAbuseCheckJob(prismaClient: PrismaClient): void {
       } catch (err: any) {
         console.error('[abuse-check] Job failed:', err.message)
       }
+      // Backfill runs after the abuse check so any newly-scored accounts
+      // are already in `signupRiskAssessment` and are skipped.
+      await runSignupRiskBackfillSafe()
       scheduleNext()
     }, delay)
   }
