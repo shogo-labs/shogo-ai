@@ -170,3 +170,265 @@ describe('EnsembleDataProvider — error mapping', () => {
     expect(() => new EnsembleDataProvider({ token: '' })).toThrow(SocialProviderError)
   })
 })
+
+
+// ============================================================
+// Search + baseline + units_charged metering (SHO-465)
+// ============================================================
+
+describe('EnsembleDataProvider — units_charged metering', () => {
+  test('request() increments meter.units from units_charged header', async () => {
+    const { fn } = fakeFetch(() => {
+      const res = jsonResponse({ data: { user: { id: '1', signature: 'bio', nickname: 'test' } } })
+      // Simulate the units_charged header
+      return new Response(JSON.stringify({ data: { user: { id: '1', signature: 'bio', nickname: 'test' } } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json', 'units_charged': '3' },
+      })
+    })
+    const provider = new EnsembleDataProvider({ token: 't', fetchImpl: fn })
+    const meter = { units: 0 }
+    await provider.getProfile('tiktok', 'creator', meter)
+    expect(meter.units).toBe(3)
+  })
+
+  test('meter is unaffected when units_charged header is absent', async () => {
+    const { fn } = fakeFetch(() =>
+      jsonResponse({ data: { user: { id: '1', signature: '', nickname: 'test' } } }),
+    )
+    const provider = new EnsembleDataProvider({ token: 't', fetchImpl: fn })
+    const meter = { units: 0 }
+    await provider.getProfile('tiktok', 'creator', meter)
+    expect(meter.units).toBe(0)
+  })
+
+  test('meter accumulates across multiple requests', async () => {
+    const calls: string[] = []
+    const fn = (async (input: any) => {
+      calls.push(new URL(String(input)).pathname)
+      return new Response(
+        calls.length === 1
+          ? JSON.stringify({ data: { id: '99', biography: 'bio', full_name: 'User' } })
+          : JSON.stringify({ data: [] }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json', 'units_charged': '5' },
+        },
+      )
+    }) as unknown as typeof fetch
+
+    const provider = new EnsembleDataProvider({ token: 't', fetchImpl: fn })
+    const meter = { units: 0 }
+    await provider.listRecentPosts('instagram', 'user', 10, meter)
+    // Expects: detailed-info (5 units) + user/posts (5 units) + user/reels (5 units) = 15
+    expect(meter.units).toBe(15)
+  })
+})
+
+describe('EnsembleDataProvider — TikTok keyword search', () => {
+  test('searches keyword endpoint, normalizes aweme items, includes creator fields', async () => {
+    const { fn, calls } = fakeFetch((url) => {
+      expect(url.pathname).toBe('/apis/tt/keyword/search')
+      expect(url.searchParams.get('name')).toBe('ai agents')
+      expect(url.searchParams.get('get_author_stats')).toBe('1')
+      return jsonResponse({
+        data: [
+          {
+            aweme_id: 'vid1',
+            desc: 'AI agents tutorial',
+            create_time: 1700000000,
+            statistics: { play_count: 50000, digg_count: 2000, comment_count: 100, share_count: 50 },
+            author: { unique_id: 'aiCreator', uid: 'u1', follower_count: 100000 },
+            video: { duration: 30 },
+          },
+        ],
+      })
+    })
+    const provider = new EnsembleDataProvider({ token: 't', fetchImpl: fn })
+    const { results, queryUsed } = await provider.searchPosts('tiktok', {
+      query: 'ai agents',
+      kind: 'keyword',
+      periodDays: 30,
+      limit: 10,
+    })
+
+    expect(queryUsed).toBe('ai agents')
+    expect(results).toHaveLength(1)
+    expect(results[0].views).toBe(50000)
+    expect(results[0].creator.handle).toBe('aicreator')
+    expect(results[0].creator.followers).toBe(100000)
+    expect(results[0].durationSec).toBe(30)
+    expect(calls[0]).toContain('/tt/keyword/search')
+  })
+
+  test('TikTok hashtag search uses hashtag endpoint', async () => {
+    const { fn, calls } = fakeFetch((url) => {
+      expect(url.pathname).toBe('/apis/tt/hashtag/posts')
+      return jsonResponse({ data: [] })
+    })
+    const provider = new EnsembleDataProvider({ token: 't', fetchImpl: fn })
+    const { queryUsed } = await provider.searchPosts('tiktok', {
+      query: 'aiagents',
+      kind: 'hashtag',
+      periodDays: 7,
+      limit: 10,
+    })
+    expect(queryUsed).toBe('#aiagents')
+  })
+
+  test('dedupes by providerPostId across pages', async () => {
+    let page = 0
+    const { fn } = fakeFetch(() => {
+      page++
+      if (page === 1) {
+        return jsonResponse({
+          data: [{ aweme_id: 'vid1', desc: 'dup', create_time: 1700000000, statistics: { play_count: 100 }, author: { unique_id: 'h', uid: 'u1' }, video: { duration: 5 } }],
+          cursor: 'page2',
+        })
+      }
+      // Second page returns same id
+      return jsonResponse({
+        data: [{ aweme_id: 'vid1', desc: 'dup', create_time: 1700000000, statistics: { play_count: 100 }, author: { unique_id: 'h', uid: 'u1' }, video: { duration: 5 } }],
+      })
+    })
+    const provider = new EnsembleDataProvider({ token: 't', fetchImpl: fn })
+    const { results } = await provider.searchPosts('tiktok', {
+      query: 'test',
+      kind: 'keyword',
+      periodDays: 30,
+      limit: 10,
+    })
+    expect(results.filter((r) => r.providerPostId === 'vid1')).toHaveLength(1)
+  })
+
+  test('normalizes duration in ms (> 1000) to seconds', async () => {
+    const { fn } = fakeFetch(() =>
+      jsonResponse({
+        data: [{ aweme_id: 'v1', desc: '', create_time: 1700000000, statistics: { play_count: 1 }, author: { unique_id: 'h', uid: 'u1' }, video: { duration: 60000 } }],
+      }),
+    )
+    const provider = new EnsembleDataProvider({ token: 't', fetchImpl: fn })
+    const { results } = await provider.searchPosts('tiktok', { query: 'x', kind: 'keyword', periodDays: 0, limit: 5 })
+    expect(results[0].durationSec).toBe(60)
+  })
+})
+
+describe('EnsembleDataProvider — Instagram hashtag search', () => {
+  test('hits /instagram/hashtag/posts, compacts keyword to hashtag', async () => {
+    const { fn, calls } = fakeFetch((url) => {
+      expect(url.pathname).toBe('/apis/instagram/hashtag/posts')
+      expect(url.searchParams.get('name')).toBe('aiagents')
+      return jsonResponse({
+        medias: [
+          {
+            id: 'igpost1',
+            is_video: true,
+            shortcode: 'abc123',
+            taken_at_timestamp: 1700000000,
+            video_view_count: 25000,
+            like_count: 1200,
+            video_duration: 15,
+            owner: { username: 'igCreator', id: 'ig_uid1' },
+          },
+        ],
+      })
+    })
+    const provider = new EnsembleDataProvider({ token: 't', fetchImpl: fn })
+    const { results, queryUsed } = await provider.searchPosts('instagram', {
+      query: 'ai agents',
+      kind: 'hashtag',
+      periodDays: 0,
+      limit: 10,
+    })
+    expect(queryUsed).toBe('#aiagents')
+    expect(results).toHaveLength(1)
+    expect(results[0].views).toBe(25000)
+    expect(results[0].creator.handle).toBe('igcreator')
+    expect(results[0].durationSec).toBe(15)
+    expect(calls[0]).toContain('/instagram/hashtag/posts')
+  })
+
+  test('skips non-video IG posts', async () => {
+    const { fn } = fakeFetch(() =>
+      jsonResponse({
+        medias: [
+          { id: 'img1', is_video: false, taken_at_timestamp: 1700000000, owner: { username: 'h', id: 'u1' } },
+          { id: 'vid1', is_video: true, shortcode: 'vc1', taken_at_timestamp: 1700000000, video_view_count: 5000, owner: { username: 'h', id: 'u1' } },
+        ],
+      }),
+    )
+    const provider = new EnsembleDataProvider({ token: 't', fetchImpl: fn })
+    const { results } = await provider.searchPosts('instagram', { query: 'test', kind: 'hashtag', periodDays: 0, limit: 10 })
+    expect(results).toHaveLength(1)
+    expect(results[0].providerPostId).toBe('vid1')
+  })
+})
+
+describe('EnsembleDataProvider — creatorBaseline', () => {
+  test('TikTok: returns median of post view counts (depth=1)', async () => {
+    const { fn, calls } = fakeFetch((url) => {
+      expect(url.pathname).toBe('/apis/tt/user/posts')
+      return jsonResponse({
+        data: [
+          { aweme_id: 'a', statistics: { play_count: 10000 } },
+          { aweme_id: 'b', statistics: { play_count: 20000 } },
+          { aweme_id: 'c', statistics: { play_count: 30000 } },
+        ],
+      })
+    })
+    const provider = new EnsembleDataProvider({ token: 't', fetchImpl: fn })
+    const baseline = await provider.creatorBaseline('tiktok', { handle: 'creator' })
+    expect(baseline.medianViews).toBe(20000)
+    expect(baseline.sample).toBe(3)
+    // Should be depth=1
+    expect(calls[0]).toContain('depth=1')
+  })
+
+  test('TikTok: null medianViews when fewer than 3 posts have views', async () => {
+    const { fn } = fakeFetch(() =>
+      jsonResponse({ data: [{ aweme_id: 'a', statistics: { play_count: 10000 } }, { aweme_id: 'b', statistics: { play_count: 0 } }] }),
+    )
+    const provider = new EnsembleDataProvider({ token: 't', fetchImpl: fn })
+    const baseline = await provider.creatorBaseline('tiktok', { handle: 'creator' })
+    expect(baseline.medianViews).toBeNull()
+    expect(baseline.sample).toBe(1)
+  })
+
+  test('Instagram: uses user reels by userId (skips detailed-info)', async () => {
+    const { fn, calls } = fakeFetch((url) => {
+      expect(url.pathname).toBe('/apis/instagram/user/reels')
+      expect(url.searchParams.get('user_id')).toBe('12345')
+      return jsonResponse({
+        data: [
+          { media: { pk: 'r1', play_count: 5000 } },
+          { media: { pk: 'r2', play_count: 8000 } },
+          { media: { pk: 'r3', play_count: 11000 } },
+        ],
+      })
+    })
+    const provider = new EnsembleDataProvider({ token: 't', fetchImpl: fn })
+    const baseline = await provider.creatorBaseline('instagram', { handle: 'ig_user', userId: '12345' })
+    expect(baseline.medianViews).toBe(8000)
+    expect(baseline.sample).toBe(3)
+    expect(calls[0]).toContain('/instagram/user/reels')
+    // Must NOT hit detailed-info
+    expect(calls.every((c: string) => !c.includes('detailed-info'))).toBe(true)
+  })
+
+  test('baseline meter is incremented', async () => {
+    const fn = (async (input: any) => {
+      return new Response(
+        JSON.stringify({ data: [
+          { aweme_id: 'a', statistics: { play_count: 10000 } },
+          { aweme_id: 'b', statistics: { play_count: 20000 } },
+          { aweme_id: 'c', statistics: { play_count: 30000 } },
+        ] }),
+        { status: 200, headers: { 'content-type': 'application/json', 'units_charged': '1' } },
+      )
+    }) as unknown as typeof fetch
+    const provider = new EnsembleDataProvider({ token: 't', fetchImpl: fn })
+    const meter = { units: 0 }
+    await provider.creatorBaseline('tiktok', { handle: 'creator', meter })
+    expect(meter.units).toBe(1)
+  })
+})

@@ -19,8 +19,12 @@
  */
 
 import {
+  type CreatorBaseline,
+  type CreatorBaselineOptions,
   type NormalizedPost,
   type NormalizedProfile,
+  type NormalizedSearchResult,
+  type SearchPostsOptions,
   type SocialContentProvider,
   type SocialPlatform,
   SocialProviderError,
@@ -40,6 +44,24 @@ export class OfficialApiProvider implements SocialContentProvider {
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async listRecentPosts(_platform: SocialPlatform, _handle: string, _limit: number): Promise<NormalizedPost[]> {
+    throw new SocialProviderError(
+      'not_configured',
+      'Official IG Graph / TikTok Display provider is not implemented yet. ' +
+        'Set the affiliate.content.provider setting to ensembledata.',
+    )
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async searchPosts(_platform: SocialPlatform, _opts: SearchPostsOptions): Promise<{ results: NormalizedSearchResult[]; queryUsed: string }> {
+    throw new SocialProviderError(
+      'not_configured',
+      'Official IG Graph / TikTok Display provider is not implemented yet. ' +
+        'Set the affiliate.content.provider setting to ensembledata.',
+    )
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async creatorBaseline(_platform: SocialPlatform, _opts: CreatorBaselineOptions): Promise<CreatorBaseline> {
     throw new SocialProviderError(
       'not_configured',
       'Official IG Graph / TikTok Display provider is not implemented yet. ' +
