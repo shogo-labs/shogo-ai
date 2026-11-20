@@ -169,34 +169,82 @@ describe('TelegramAdapter', () => {
 // ════════════════════════════════════════════════════════════════════════════
 // WhatsApp
 // ════════════════════════════════════════════════════════════════════════════
+import { createHmac } from 'crypto'
+
+function makeWhatsAppSig(secret: string, body: string) {
+  return `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`
+}
+
 describe('WhatsAppAdapter', () => {
-  test('connect validates and registers instance; sendMessage posts text', async () => {
+  const BASE_CONFIG = { accessToken: 'AT', phoneNumberId: 'PN1', appSecret: 'SEC', verifyToken: 'tok' }
+
+  function connectFetch(extra?: FetchHandler) {
     setFetch((url, init) => {
       if (init?.method === 'POST') return res({ messages: [{ id: 'm1' }] })
+      if (extra) return extra(url, init)
       return res({ display_phone_number: '+1555', verified_name: 'Biz' })
     })
+  }
+
+  test('connect validates, registers instance, exposes verifyToken in status', async () => {
+    connectFetch()
     const a = new WhatsAppAdapter()
-    await a.connect({ accessToken: 'AT', phoneNumberId: 'PN' })
+    await a.connect(BASE_CONFIG)
     const st = a.getStatus()
     expect(st.connected).toBe(true)
     expect(st.metadata?.displayNumber).toBe('+1555')
-    await a.sendMessage('+1999', 'x'.repeat(5000))
-    const send = fetchCalls.find((c) => c.url.endsWith('/messages'))
-    expect(JSON.parse(send!.init.body).text.body.length).toBe(4096)
+    expect(st.metadata?.verifyToken).toBe('tok')
     await a.disconnect()
     expect(a.getStatus().connected).toBe(false)
   })
 
-  test('connect throws on missing creds', async () => {
+  test('connect auto-generates verifyToken when omitted', async () => {
+    connectFetch()
     const a = new WhatsAppAdapter()
-    await expect(a.connect({ phoneNumberId: 'P' } as any)).rejects.toThrow('access token is required')
-    await expect(a.connect({ accessToken: 'A' } as any)).rejects.toThrow('phone number ID is required')
+    await a.connect({ accessToken: 'AT', phoneNumberId: 'PN1', appSecret: 'SEC' })
+    const { verifyToken } = a.getStatus().metadata as any
+    expect(typeof verifyToken).toBe('string')
+    expect(verifyToken.length).toBeGreaterThan(8)
+    await a.disconnect()
   })
 
-  test('connect throws when validation request fails', async () => {
+  test('connect throws on missing accessToken, phoneNumberId, appSecret', async () => {
+    const a = new WhatsAppAdapter()
+    await expect(a.connect({ phoneNumberId: 'P', appSecret: 'S' } as any)).rejects.toThrow('access token is required')
+    await expect(a.connect({ accessToken: 'A', appSecret: 'S' } as any)).rejects.toThrow('phone number ID is required')
+    await expect(a.connect({ accessToken: 'A', phoneNumberId: 'P' } as any)).rejects.toThrow('appSecret is required')
+  })
+
+  test('connect throws when API validation fails', async () => {
     setFetch(() => res('bad', { ok: false }))
     const a = new WhatsAppAdapter()
-    await expect(a.connect({ accessToken: 'A', phoneNumberId: 'P' })).rejects.toThrow('validation failed')
+    await expect(a.connect(BASE_CONFIG)).rejects.toThrow('validation failed')
+  })
+
+  test('sendMessage splits long text into chunks and throws on API error', async () => {
+    connectFetch()
+    const a = new WhatsAppAdapter()
+    await a.connect(BASE_CONFIG)
+
+    // Success: 5000-char message → two POST calls (4096 + 904)
+    const sentBodies: string[] = []
+    setFetch((url, init) => {
+      if (init?.method === 'POST') {
+        sentBodies.push(JSON.parse(init.body).text.body)
+        return res({ messages: [{ id: 'x' }] })
+      }
+      return res({})
+    })
+    await a.sendMessage('+1999', 'x'.repeat(5000))
+    expect(sentBodies.length).toBe(2)
+    expect(sentBodies[0].length).toBe(4096)
+    expect(sentBodies[1].length).toBe(904)
+
+    // Error: API returns 400
+    setFetch(() => res({ error: { code: 131047, title: 'Re-engagement', message: 'outside window' } }, { ok: false, status: 400 }))
+    await expect(a.sendMessage('+1999', 'hi')).rejects.toThrow('131047')
+
+    await a.disconnect()
   })
 
   test('sendMessage throws when not connected', async () => {
@@ -204,48 +252,248 @@ describe('WhatsAppAdapter', () => {
     await expect(a.sendMessage('x', 'y')).rejects.toThrow('Not connected')
   })
 
-  test('handleWebhook routes text messages to handler and ignores non-text', () => {
+  test('sendTemplate sends template payload', async () => {
+    connectFetch()
     const a = new WhatsAppAdapter()
-    const got: IncomingMessage[] = []
-    a.onMessage((m) => got.push(m))
-    a.handleWebhook({ entry: [{ changes: [
-      { field: 'messages', value: { contacts: [{ wa_id: '111', profile: { name: 'Zed' } }], messages: [
-        { type: 'text', from: '111', text: { body: 'hey' }, timestamp: '1700000000' },
-        { type: 'image', from: '111' },
-      ] } },
-      { field: 'other', value: {} },
-    ] }] })
-    expect(got.length).toBe(1)
-    expect(got[0]).toMatchObject({ text: 'hey', senderId: '111', senderName: 'Zed' })
-    a.handleWebhook({}) // no entry → no-op
-    a.handleWebhook({ entry: [{ changes: [{ field: 'messages', value: {} }] }] }) // no messages
-    expect(got.length).toBe(1)
+    await a.connect(BASE_CONFIG)
+    setFetch((url, init) => {
+      if (init?.method === 'POST') return res({ messages: [{ id: 't1' }] })
+      return res({})
+    })
+    await a.sendTemplate('+1555', { name: 'hello_world', language: 'en_US' })
+    const sent = fetchCalls.find((c) => c.init?.method === 'POST')
+    const body = JSON.parse(sent!.init.body)
+    expect(body.type).toBe('template')
+    expect(body.template.name).toBe('hello_world')
+    await a.disconnect()
   })
 
-  test('registerWebhookRoutes wires GET verify + POST ingest', async () => {
+  test('handleWebhook: text message routes to handler with dedupe', async () => {
+    connectFetch()
+    const a = new WhatsAppAdapter()
+    await a.connect(BASE_CONFIG)
+    const got: IncomingMessage[] = []
+    a.onMessage((m) => got.push(m))
+
+    const payload = { entry: [{ changes: [
+      { field: 'messages', value: {
+        metadata: { phone_number_id: 'PN1' },
+        contacts: [{ wa_id: '111', profile: { name: 'Zed' } }],
+        messages: [{ id: 'msg1', type: 'text', from: '111', text: { body: 'hey' }, timestamp: '1700000000' }],
+      } },
+    ] }] }
+    await a.handleWebhook(payload)
+    expect(got.length).toBe(1)
+    expect(got[0]).toMatchObject({ text: 'hey', senderId: '111', senderName: 'Zed' })
+
+    // Dedupe: same message again
+    await a.handleWebhook(payload)
+    expect(got.length).toBe(1)
+
+    // No entry → no-op
+    await a.handleWebhook({})
+    expect(got.length).toBe(1)
+    await a.disconnect()
+  })
+
+  test('handleWebhook: reaction logs and runs no turn', async () => {
+    connectFetch()
+    const a = new WhatsAppAdapter()
+    await a.connect(BASE_CONFIG)
+    const got: IncomingMessage[] = []
+    a.onMessage((m) => got.push(m))
+    await a.handleWebhook({ entry: [{ changes: [{ field: 'messages', value: {
+      metadata: { phone_number_id: 'PN1' },
+      messages: [{ id: 'r1', type: 'reaction', from: '111', reaction: { emoji: '👍', message_id: 'x' } }],
+    } }] }] })
+    expect(got.length).toBe(0)
+    await a.disconnect()
+  })
+
+  test('handleWebhook: location, contacts, interactive (button_reply), button', async () => {
+    connectFetch()
+    const a = new WhatsAppAdapter()
+    await a.connect(BASE_CONFIG)
+    const got: IncomingMessage[] = []
+    a.onMessage((m) => got.push(m))
+
+    await a.handleWebhook({ entry: [{ changes: [{ field: 'messages', value: {
+      metadata: { phone_number_id: 'PN1' },
+      messages: [
+        { id: 'loc1', type: 'location', from: '1', location: { latitude: 37.7, longitude: -122.4, name: 'SF', address: 'CA' } },
+        { id: 'con1', type: 'contacts', from: '1', contacts: [{ name: { formatted_name: 'Alice' }, phones: [{ phone: '+1555' }] }] },
+        { id: 'int1', type: 'interactive', from: '1', interactive: { type: 'button_reply', button_reply: { id: 'btn_yes', title: 'Yes' } } },
+        { id: 'btn1', type: 'button', from: '1', button: { text: 'Start', payload: 'start_payload' } },
+      ],
+    } }] }] })
+    expect(got.length).toBe(4)
+    expect(got[0].text).toContain('Location:')
+    expect(got[0].text).toContain('37.7')
+    expect(got[1].text).toContain('Alice')
+    expect(got[1].text).toContain('+1555')
+    expect(got[2].text).toBe('Yes')
+    expect(got[2].metadata?.interactiveId).toBe('btn_yes')
+    expect(got[3].text).toBe('Start')
+    expect(got[3].metadata?.buttonPayload).toBe('start_payload')
+    await a.disconnect()
+  })
+
+  test('handleWebhook: statuses update counts', async () => {
+    connectFetch()
+    const a = new WhatsAppAdapter()
+    await a.connect(BASE_CONFIG)
+    await a.handleWebhook({ entry: [{ changes: [{ field: 'messages', value: {
+      metadata: { phone_number_id: 'PN1' },
+      statuses: [
+        { id: 's1', status: 'delivered', recipient_id: '+1' },
+        { id: 's2', status: 'read', recipient_id: '+1' },
+        { id: 's3', status: 'failed', recipient_id: '+1', errors: [{ code: 131047, title: 'Re-engagement' }] },
+      ],
+    } }] }] })
+    const meta = a.getStatus().metadata as any
+    expect(meta.statusCounts.delivered).toBe(1)
+    expect(meta.statusCounts.read).toBe(1)
+    expect(meta.statusCounts.failed).toBe(1)
+    expect(meta.lastFailure?.code).toBe(131047)
+    await a.disconnect()
+  })
+
+  test('handleWebhook: smb_message_echoes pauses contact; /resume lifts pause', async () => {
+    connectFetch()
+    const a = new WhatsAppAdapter()
+    await a.connect({ ...BASE_CONFIG, handoffPauseMinutes: '1' })
+    const got: IncomingMessage[] = []
+    a.onMessage((m) => got.push(m))
+
+    // Owner echo → pause contact '+2'
+    await a.handleWebhook({ entry: [{ changes: [{ field: 'smb_message_echoes', value: {
+      messages: [{ id: 'e1', to: '+2', text: { body: 'Owner reply' } }],
+    } }] }] })
+    expect(got.length).toBe(1)
+    expect(got[0].metadata?.suppressTurn).toBe(true)
+    expect(got[0].text).toContain('Owner replied from WhatsApp Business app')
+
+    // Inbound from paused contact
+    await a.handleWebhook({ entry: [{ changes: [{ field: 'messages', value: {
+      metadata: { phone_number_id: 'PN1' },
+      messages: [{ id: 'msg2', type: 'text', from: '+2', text: { body: 'user msg' } }],
+    } }] }] })
+    expect(got.length).toBe(2)
+    expect(got[1].metadata?.suppressTurn).toBe(true)
+
+    // Another contact unaffected
+    await a.handleWebhook({ entry: [{ changes: [{ field: 'messages', value: {
+      metadata: { phone_number_id: 'PN1' },
+      messages: [{ id: 'msg3', type: 'text', from: '+3', text: { body: 'other user' } }],
+    } }] }] })
+    expect(got.length).toBe(3)
+    expect(got[2].metadata?.suppressTurn).toBeFalsy()
+
+    // /resume from +2 lifts pause
+    setFetch((url, init) => {
+      if (init?.method === 'POST') return res({ messages: [{ id: 'x' }] })
+      return res({})
+    })
+    await a.handleWebhook({ entry: [{ changes: [{ field: 'messages', value: {
+      metadata: { phone_number_id: 'PN1' },
+      messages: [{ id: 'msg4', type: 'text', from: '+2', text: { body: '/resume' } }],
+    } }] }] })
+    // /resume sends a confirmation but doesn't add to `got`
+    expect(got.filter(m => m.channelId === '+2' && !m.metadata?.suppressTurn).length).toBe(0)
+
+    // After /resume, next message from +2 runs a normal turn
+    await a.handleWebhook({ entry: [{ changes: [{ field: 'messages', value: {
+      metadata: { phone_number_id: 'PN1' },
+      messages: [{ id: 'msg5', type: 'text', from: '+2', text: { body: 'back' } }],
+    } }] }] })
+    const unpaused = got.filter(m => m.channelId === '+2' && !m.metadata?.suppressTurn)
+    expect(unpaused.length).toBe(1)
+    expect(unpaused[0].text).toBe('back')
+    await a.disconnect()
+  })
+
+  test('registerWebhookRoutes: GET verify (canonical + alias) and POST signature check', async () => {
     const routes: Record<string, Function> = {}
     const app = {
       get: (p: string, h: Function) => { routes[`GET ${p}`] = h },
       post: (p: string, h: Function) => { routes[`POST ${p}`] = h },
     }
-    const a = new WhatsAppAdapter()
     setFetch(() => res({ display_phone_number: '+1', verified_name: 'B' }))
-    await a.connect({ accessToken: 'A', phoneNumberId: 'PN1', verifyToken: 'tok' })
+    const a = new WhatsAppAdapter()
+    await a.connect(BASE_CONFIG)
     WhatsAppAdapter.registerWebhookRoutes(app)
 
-    // GET verify success
-    const cGood = { req: { query: (k: string) => ({ 'hub.mode': 'subscribe', 'hub.verify_token': 'tok', 'hub.challenge': 'CHAL' } as any)[k] }, text: (t: string, s?: number) => ({ t, s }) }
-    expect(routes['GET /webhooks/whatsapp'](cGood)).toEqual({ t: 'CHAL', s: undefined })
-    // GET verify forbidden
-    const cBad = { req: { query: () => 'wrong' }, text: (t: string, s?: number) => ({ t, s }) }
-    expect(routes['GET /webhooks/whatsapp'](cBad)).toEqual({ t: 'Forbidden', s: 403 })
-    // POST ingest routes to adapter by phone_number_id
+    // ── GET canonical path ──
+    const good = { req: { query: (k: string) => ({ 'hub.mode': 'subscribe', 'hub.verify_token': 'tok', 'hub.challenge': 'CHAL' } as any)[k] }, text: (t: string, s?: number) => ({ t, s }) }
+    expect(routes['GET /agent/channels/whatsapp/webhook'](good)).toEqual({ t: 'CHAL', s: undefined })
+    // ── GET legacy alias ──
+    expect(routes['GET /webhooks/whatsapp'](good)).toEqual({ t: 'CHAL', s: undefined })
+    // ── GET wrong token → 403 ──
+    const bad = { req: { query: () => 'wrong' }, text: (t: string, s?: number) => ({ t, s }) }
+    expect(routes['GET /webhooks/whatsapp'](bad)).toEqual({ t: 'Forbidden', s: 403 })
+
+    // ── POST valid signature ──
+    const rawBody = JSON.stringify({ entry: [{ changes: [{ field: 'messages', value: {
+      metadata: { phone_number_id: 'PN1' },
+      messages: [{ id: 'pm1', type: 'text', from: '+9', text: { body: 'signed' } }],
+    } }] }] })
+    const sig = makeWhatsAppSig('SEC', rawBody)
     const got: IncomingMessage[] = []
     a.onMessage((m) => got.push(m))
-    const cPost = { req: { json: async () => ({ entry: [{ changes: [{ field: 'messages', value: { metadata: { phone_number_id: 'PN1' }, messages: [{ type: 'text', from: '9', text: { body: 'hi' } }] } }] }] }) }, text: (t: string, s?: number) => ({ t, s }) }
-    expect(await routes['POST /webhooks/whatsapp'](cPost)).toEqual({ t: 'OK', s: 200 })
+    setFetch((url, init) => {
+      if (init?.method === 'POST') return res({ messages: [{ id: 'x' }] })
+      return res({})
+    })
+    const cPost = {
+      req: {
+        header: (h: string) => h === 'x-hub-signature-256' ? sig : undefined,
+        text: async () => rawBody,
+      },
+      text: (t: string, s?: number) => ({ t, s }),
+    }
+    const result = await routes['POST /agent/channels/whatsapp/webhook'](cPost)
+    expect(result).toEqual({ t: 'OK', s: 200 })
+    // Allow setImmediate to fire
+    await new Promise((r) => setTimeout(r, 10))
     expect(got.length).toBe(1)
+    expect(got[0].text).toBe('signed')
+
+    // ── POST bad signature → 403 ──
+    const cBadSig = {
+      req: {
+        header: (h: string) => h === 'x-hub-signature-256' ? 'sha256=bad' : undefined,
+        text: async () => rawBody,
+      },
+      text: (t: string, s?: number) => ({ t, s }),
+    }
+    const r2 = await routes['POST /webhooks/whatsapp'](cBadSig)
+    expect(r2).toEqual({ t: 'Forbidden', s: 403 })
+
     await a.disconnect()
+  })
+
+  test('isPublicChannelIngressPath unit test: near-miss paths are rejected', () => {
+    // This is tested in api-auth-gate tests; kept here as a sanity reference.
+    // The actual function lives in apps/api/src/middleware/api-auth-gate.ts
+    const pid = 'proj-123'
+    const good = [
+      `/api/projects/${pid}/agent-proxy/agent/channels/whatsapp/webhook`,
+      `/api/projects/${pid}/agent-proxy/webhooks/whatsapp`,
+    ]
+    const bad = [
+      `/api/projects/${pid}/agent-proxy/agent/channels/whatsapp/webhook/extra`,
+      `/api/projects/${pid}/agent-proxy/agent/channels/whatsapp`,
+      `/api/projects/${pid}/agent-proxy/agent/channels/teams/messages`,
+    ]
+    // Inline the same regex the production function uses
+    function check(path: string) {
+      const m = path.match(/^\/api\/projects\/[^/]+\/agent-proxy(\/.*)$/)
+      if (!m) return false
+      const rel = m[1]
+      return rel === '/agent/channels/whatsapp/webhook' || rel === '/webhooks/whatsapp'
+    }
+    for (const p of good) expect(check(p)).toBe(true)
+    for (const p of bad) expect(check(p)).toBe(false)
   })
 })
 

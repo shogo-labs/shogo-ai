@@ -2608,6 +2608,19 @@ export class AgentGateway {
   async processMessage(input: IncomingMessage): Promise<void> {
     this.emitLog(`Channel message from ${input.channelType || 'unknown'}: "${(input.text || '').substring(0, 100)}"`)
     const sessionId = input.channelId || 'default'
+
+    // Coexistence handoff: add the message to session history without running
+    // an AI turn. Used by the WhatsApp adapter when the owner has taken over
+    // a conversation from the WhatsApp Business app (smb_message_echoes).
+    if (input.metadata?.suppressTurn) {
+      await this.sessionManager.getOrCreateAsync(sessionId)
+      if (input.text.trim()) {
+        const msg = { role: 'user', content: input.text, timestamp: Date.now() } as unknown as Message
+        this.sessionManager.addMessages(sessionId, msg)
+      }
+      return
+    }
+
     const qs = this.getQueueState(sessionId)
     // Same load-on-miss rule as the chat path: a channel turn on a cold pod
     // must read the stored conversation, not create an empty one (SHO-137).
@@ -7509,7 +7522,7 @@ export class AgentGateway {
       }
       case 'whatsapp': {
         const { WhatsAppAdapter } = await import('./channels/whatsapp')
-        adapter = new WhatsAppAdapter(config)
+        adapter = new WhatsAppAdapter({ ...config, _workspaceDir: this.workspaceDir })
         break
       }
       case 'webhook': {
