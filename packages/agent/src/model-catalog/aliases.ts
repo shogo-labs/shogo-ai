@@ -35,12 +35,22 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   'gpt54mini': 'gpt-5.4-mini',
 
   // Google shorthand aliases
+  // `gemini` and `gemini-flash` stay on 3.8 Flash — it's cheaper than
+  // Hydrogen until the Jan-1 step, and moving them would double the price of
+  // any workflow that uses the bare `gemini` alias without an explicit choice.
   'gemini': 'gemini-3.8-flash',
   'gemini-flash': 'gemini-3.8-flash',
-  'gemini-pro': 'gemini-3.1-pro-preview',
   'gemini-flash-lite': 'gemini-3.5-flash-lite',
+  // `gemini-pro` moves from 3.1 Pro Preview to Carbon (the new flagship).
+  'gemini-pro': 'gemini-4-carbon',
   'argon': 'gemini-4-argon',
   'gemini-argon': 'gemini-4-argon',
+  'carbon': 'gemini-4-carbon',
+  'gemini-carbon': 'gemini-4-carbon',
+  'neon': 'gemini-4-neon',
+  'gemini-neon': 'gemini-4-neon',
+  'hydrogen': 'gemini-4-hydrogen',
+  'gemini-hydrogen': 'gemini-4-hydrogen',
 }
 
 // ---------------------------------------------------------------------------

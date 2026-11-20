@@ -18,6 +18,7 @@ import {
   getModelEntry,
   resolveAgentModeDefault,
   MODEL_DOLLAR_COSTS,
+  getModelDollarCosts,
   calculateDollarCost,
   type ModelTier,
   type AgentMode,
@@ -207,7 +208,7 @@ export function calculateUsageCost(
   }
 
   const model = resolveModel(modelOrAgentMode)
-  const costs = MODEL_DOLLAR_COSTS[model]
+  const costs = getModelDollarCosts(model)
   const rawUsd =
     (inputTokens * costs.inputPerMillion / 1_000_000) +
     (cacheWriteTokens * costs.cacheWritePerMillion / 1_000_000) +
