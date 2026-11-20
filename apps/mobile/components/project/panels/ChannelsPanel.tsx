@@ -244,11 +244,6 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
     ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/whatsapp/webhook`
     : null
 
-  /** WhatsApp webhook callback URL — same proxy path, different suffix. */
-  const whatsappCallbackUrl = API_URL
-    ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/whatsapp/webhook`
-    : null
-
   /**
    * WebChat embed snippet. The widget script refuses to start without a
    * `?widgetKey=`, and the key is only exposed on the owner-only
