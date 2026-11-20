@@ -255,6 +255,10 @@ const MODEL_ALIASES_STUB: Record<string, string> = {
   haiku: 'claude-haiku-4-5',
 }
 mock.module('@shogo/model-catalog', () => ({
+  AUTO_MODEL_ID: 'auto',
+  isAutoModel: (id: string) => id === 'auto',
+  inferProviderFromModel: (_id: string, fallback: string) => fallback,
+  MODEL_CATALOG: {},
   getAgentModeOverrides: () => ({}),
   getAutoTierOverrides: () => ({}),
   resolveModelId: (s: string) => MODEL_ALIASES_STUB[s] ?? s,
