@@ -199,17 +199,34 @@ export async function collectSignupRiskFeatures(params: {
   })
 
   // SHO-459: count banned accounts sharing ip/device/email to hold linked signups.
-  const bannedLinked = (prisma as any).user.count({
-    where: {
-      bannedAt: { not: null },
-      id: { not: params.userId },
-      OR: [
-        ...(ipPrefix ? [{ signupRiskAssessment: { ipPrefix } }] : []),
-        ...(deviceId ? [{ signupRiskAssessment: { deviceId } }] : []),
-        { emailCanonical: canonical },
-      ],
-    },
-  })
+  // SignupRiskAssessment has no relation to User, so resolve the linked ids first.
+  const bannedLinked = (async () => {
+    const linkedIds =
+      ipPrefix || deviceId
+        ? (
+            await prisma.signupRiskAssessment.findMany({
+              where: {
+                userId: { not: params.userId },
+                OR: [
+                  ...(ipPrefix ? [{ ipPrefix }] : []),
+                  ...(deviceId ? [{ deviceId }] : []),
+                ],
+              },
+              select: { userId: true },
+            })
+          ).map((row) => row.userId)
+        : []
+    return prisma.user.count({
+      where: {
+        bannedAt: { not: null },
+        id: { not: params.userId },
+        OR: [
+          { emailCanonical: canonical },
+          ...(linkedIds.length ? [{ id: { in: linkedIds } }] : []),
+        ],
+      },
+    })
+  })()
 
   const [ipLinkedAccounts, deviceLinkedAccounts, burstSignups, canonicalCollisions, bannedLinkedAccounts] =
     await Promise.all([linkedByIp, linkedByDevice, burst, collisions, bannedLinked])
