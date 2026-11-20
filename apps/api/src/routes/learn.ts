@@ -67,7 +67,6 @@ import {
   LEARN_COOKIE_NAME,
   clearLearnCookieHeader,
   cleanCertificateName,
-  hostMatchesCookieDomain,
   learnCookieDomain,
   learnCookieHeader,
   learnTokenFromHeaders,
@@ -140,23 +139,25 @@ interface Learner {
   sessionId: string
 }
 
-function requestHost(headers: Headers): string {
-  return headers.get('x-forwarded-host') ?? headers.get('host') ?? ''
-}
-
 function isHttps(c: Context): boolean {
   const proto = c.req.header('x-forwarded-proto')
   if (proto) return proto.split(',')[0].trim() === 'https'
   return new URL(c.req.url).protocol === 'https:'
 }
 
-/** Cookie attributes for this request, or null when this host can't carry the learn cookie. */
+/**
+ * Cookie attributes for this request, or null when the learn cookie is off here.
+ *
+ * No check against the request's Host: in production the API sits behind
+ * Cloudflare and Knative, which hand it an internal hostname (not
+ * studio.shogo.ai), so a Host check refused every real sign-in. The browser
+ * already enforces the same rule: it drops a `Domain=.shogo.ai` cookie from
+ * any page that isn't on shogo.ai. `LEARN_COOKIE_DOMAIN` is set only in the
+ * shogo.ai clusters.
+ */
 function cookieTarget(c: Context): { domain: string | null; secure: boolean } | null {
   const domain = learnCookieDomain()
-  if (domain) {
-    if (!hostMatchesCookieDomain(requestHost(c.req.raw.headers), domain)) return null
-    return { domain, secure: true }
-  }
+  if (domain) return { domain, secure: true }
   // No parent domain configured: only local dev gets a host-only cookie.
   if (process.env.NODE_ENV === 'production') return null
   return { domain: null, secure: isHttps(c) }
@@ -679,9 +680,8 @@ export async function withLearnCookie(
   deps: Pick<LearnRoutesDeps, 'getSession'> & { now?: () => number },
 ): Promise<Response> {
   const domain = learnCookieDomain()
+  // No Host check, for the same reason as `cookieTarget`.
   if (!domain) return res
-  const host = req.headers.get('x-forwarded-host') ?? req.headers.get('host') ?? ''
-  if (!hostMatchesCookieDomain(host, domain)) return res
   const path = new URL(req.url).pathname
   const existing = readCookie(req.headers.get('cookie'), LEARN_COOKIE_NAME)
   const nowMs = deps.now ? deps.now() : Date.now()
