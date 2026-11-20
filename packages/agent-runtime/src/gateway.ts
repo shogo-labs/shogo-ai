@@ -7545,7 +7545,7 @@ export class AgentGateway {
     }
 
     adapter.onMessage((msg) => this.processMessage(msg))
-    await adapter.connect(config)
+    await adapter.connect(config, this.workspaceDir)
     this.channels.set(type, adapter)
     console.log(`[AgentGateway] Connected channel: ${type}`)
   }

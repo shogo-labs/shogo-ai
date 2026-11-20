@@ -13709,12 +13709,18 @@ const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: stri
   teams: {
     requiredKeys: ['appId', 'appPassword'],
     guide: [
-      '## Microsoft Teams Setup',
-      '1. Go to Azure Portal → Azure Bot Service → create a new Bot resource',
-      '2. Note the Microsoft App ID and create a client secret (App Password)',
-      '3. Set the messaging endpoint to: <agent-url>/agent/channels/teams/messages',
-      '4. Connect: channel_connect({ type: "teams", config: { appId: "YOUR_APP_ID", appPassword: "YOUR_SECRET", botName: "My Agent" } })',
-      '5. Install the bot in Teams via the Teams Admin Center or a Teams App manifest',
+      '## Microsoft Teams Setup (Single-Tenant Bot)',
+      '1. Go to Azure Portal → Azure Active Directory → App registrations → New registration',
+      '   Set Supported account types to "Accounts in this organizational directory only (Single tenant)"',
+      '2. Note the Application (client) ID and the Directory (tenant) ID',
+      '3. Under Certificates & secrets, create a new client secret — save it immediately',
+      '4. Go to Azure Bot Service → create a new Azure Bot; set the App Type to "Single Tenant" and paste the App ID',
+      '5. Connect: channel_connect({ type: "teams", config: { appId: "YOUR_APP_ID", appPassword: "YOUR_CLIENT_SECRET", tenantId: "YOUR_TENANT_ID", botName: "My Agent" } })',
+      '   The tool returns the messagingEndpoint — paste it into the Azure Bot → Configuration → Messaging endpoint',
+      '6. In Azure Bot → Channels → Microsoft Teams → enable and save',
+      '7. Install the bot via Teams Developer Portal or an app manifest',
+      '',
+      'Multi-tenant bots (created before 2025-07-31): omit tenantId from the config.',
     ].join('\n'),
   },
   webchat: {
@@ -13912,6 +13918,31 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
               ].join('\n'),
               callbackUrl,
               verifyToken,
+            })
+          }
+
+          if (type === 'teams') {
+            // Return the messaging endpoint URL so the user can paste it into
+            // the Azure Bot configuration. Works for cloud and paired desktop.
+            const projectId = ctx.projectId ? (projectScopedId(ctx.projectId) ? ctx.projectId : null) : null
+            let messagingEndpoint: string | null = null
+            if (process.env.KUBERNETES_SERVICE_HOST && projectId) {
+              const apiUrl = derivePublicApiUrl()
+              messagingEndpoint = `${apiUrl}/api/projects/${projectId}/agent-proxy/agent/channels/teams/messages`
+            }
+            return textResult({
+              ok: true,
+              message: [
+                'Microsoft Teams channel connected!',
+                '',
+                messagingEndpoint
+                  ? `Messaging endpoint: ${messagingEndpoint}`
+                  : 'Messaging endpoint: use the cloud project URL — desktop tunnels relay to the same path.',
+                '',
+                'Paste the messaging endpoint into Azure Bot → Configuration → Messaging endpoint.',
+                'Then enable the Teams channel in Azure Bot → Channels → Microsoft Teams.',
+              ].join('\n'),
+              messagingEndpoint,
             })
           }
 
