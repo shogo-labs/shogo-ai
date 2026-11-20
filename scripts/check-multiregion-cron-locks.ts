@@ -618,6 +618,16 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'Stripe webhook is single-source per Stripe account; collision needs cross-region webhook redelivery.',
   },
+  // --- WhatsApp Embedded Signup (SHO-463) ----------------------------------
+  {
+    key: 'WhatsAppNumberBinding.phoneNumberId',
+    category: 'external_global_id',
+    reason:
+      'channels-whatsapp.ts connect-link callback: upserts a binding keyed on the Meta-assigned phone_number_id. ' +
+      'The id is global and unique within Meta, assigned before the Shogo row is created. ' +
+      'Two concurrent inserts for the same number would require the same user to complete two Embedded Signup ' +
+      'flows for the same WABA number simultaneously — not a cron writer and not a cross-region leader-election path.',
+  },
   // --- Solo Founder course (SHO-428) ---------------------------------------
   {
     key: 'CourseEnrollment.stripeCheckoutSessionId',
