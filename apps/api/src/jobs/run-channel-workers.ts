@@ -22,6 +22,10 @@ import { chunkPendingAttachments, embedPendingChunks } from '../services/convers
 
 const DIGEST_INTERVAL_MS = 10 * 60 * 1000
 const SCHEDULER_INTERVAL_MS = 15_000
+/** Shogo Mail: the undo window is 10 s, so sends go out within a few seconds of it closing. */
+const MAIL_INTERVAL_MS = 5_000
+/** Domain re-checks and IMAP account pulls are slower work; each keeps its own due time. */
+const MAIL_SLOW_INTERVAL_MS = 60_000
 const INDEXER_INTERVAL_MS = 60_000
 const INDEXER_MAX_BATCHES = 5
 /** The hourly backstop that catches what the fast window cannot see. */
@@ -43,6 +47,25 @@ export async function runChannelScheduler(): Promise<void> {
   await withGlobalJobLock('channels-scheduler', async () => {
     await sendDueScheduledMessages()
     await fireDueReminders()
+  })
+}
+
+/** Send scheduled email whose undo window or send-later time passed, and wake snoozed threads. */
+export async function runMailSender(): Promise<void> {
+  await withGlobalJobLock('mail-sender', async () => {
+    const { sendDueMail, wakeSnoozedThreads } = await import('../services/mail/mail.service')
+    await sendDueMail()
+    await wakeSnoozedThreads()
+  })
+}
+
+/** Re-check domains still waiting on DNS, and pull new mail for connected IMAP accounts. */
+export async function runMailSync(): Promise<void> {
+  await withGlobalJobLock('mail-sync', async () => {
+    const { recheckPendingDomains } = await import('../services/mail/mail.service')
+    const { syncDueAccounts } = await import('../services/mail/imap-account')
+    await recheckPendingDomains()
+    await syncDueAccounts()
   })
 }
 
@@ -94,6 +117,8 @@ export function startChannelWorkers(): () => void {
   every(DIGEST_INTERVAL_MS, 'Email digest', runChannelEmailDigest)
   every(SCHEDULER_INTERVAL_MS, 'Scheduler', runChannelScheduler)
   every(INDEXER_INTERVAL_MS, 'Search indexer', runChannelIndexer)
+  every(MAIL_INTERVAL_MS, 'Mail sender', runMailSender)
+  every(MAIL_SLOW_INTERVAL_MS, 'Mail sync', runMailSync)
   return stopChannelWorkers
 }
 

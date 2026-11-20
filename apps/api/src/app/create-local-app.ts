@@ -28,6 +28,7 @@ import { workspaceMoveRoutes } from '../routes/workspace-moves'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from '../routes/workspace-meetings'
 import { conversationRoutes } from '../routes/conversations'
 import { workBoardRoutes } from '../routes/work-boards'
+import { mailRoutes } from '../routes/mail'
 import { configureConversationAgentDispatcher, settleOrphanedAgentReplies } from '../services/conversation-agent-dispatcher'
 import { sweepDeadTurnsOnLocalBoot } from '../services/chat-turn-state.service'
 import { scriptedAgentInvokeFromEnv } from '../services/conversation-agent-script'
@@ -205,6 +206,7 @@ export function createLocalApp(): LocalAppBundle {
     .catch((err) => console.warn('[ChatTurnJournal] boot sweep failed:', err?.message ?? err))
   app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
   app.route('/api', workBoardRoutes({ resolveUserId: getAuthUserId }))
+  app.route('/api', mailRoutes({ resolveUserId: getAuthUserId }))
   app.post('/api/webhooks/livekit', async (c) => {
     const { handleLiveKitWebhook } = await import('../services/huddle.service')
     const result = await handleLiveKitWebhook({ rawBody: await c.req.text(), authorization: c.req.header('authorization') })

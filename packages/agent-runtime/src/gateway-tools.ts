@@ -40,7 +40,8 @@ import { createGenerateImageTool, createMediaTools } from './media-tools'
 import { IMAGE_TOOL_NAMES, MUSIC_TOOL_NAMES, THREE_D_TOOL_NAMES } from './media-tool-names'
 import { createAgentRunTools, createChannelTools } from './channel-tools'
 import { createBoardTools } from './board-tools'
-import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, CHANNEL_TOOL_NAMES, PROBLEM_TOOL_NAMES } from './work-tool-names'
+import { createMailTools } from './mail-tools'
+import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, CHANNEL_TOOL_NAMES, MAIL_TOOL_NAMES, PROBLEM_TOOL_NAMES } from './work-tool-names'
 import { resolveRuntimeCapabilities } from './capability-status-prompt'
 import {
   copyToProjectAvailable,
@@ -12101,6 +12102,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
       }
     } else {
       tools.push(...createChannelTools(ctx))
+      tools.push(...createMailTools(ctx))
       // A project-anchored runtime speaks as that project's agent, not the workspace agent.
       if (!process.env.WORKSPACE_ANCHOR_PROJECT_ID) tools.push(...createAgentRunTools(ctx))
       tools.push(...createBoardTools(ctx))
@@ -12735,7 +12737,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
  * skill's declared tool list cannot pull them in by group name.
  */
 export const WORK_TOOL_GROUPS = {
-  team_chat: [...CHANNEL_TOOL_NAMES],
+  team_chat: [...CHANNEL_TOOL_NAMES, ...MAIL_TOOL_NAMES],
   boards: [...BOARD_TOOL_NAMES],
   board_admin: [...BOARD_ADMIN_TOOL_NAMES],
   triggers: ['trigger_create', 'trigger_update', 'trigger_delete', 'trigger_test'],

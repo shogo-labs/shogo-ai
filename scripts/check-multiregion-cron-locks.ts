@@ -1032,6 +1032,51 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'chat-providers/installations.ts linkIdentity upserts on the provider user id from a single user-initiated account-link callback.',
   },
   {
+    key: 'MailDomain.(domain,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason: 'Add-domain under Mail admin routes under /api/workspaces/:workspaceId/mail (resolved to the workspace home region): find-then-create per (workspace, domain).',
+  },
+  {
+    key: 'Mailbox.(domainId,localPart)',
+    category: 'single_tenant_upsert',
+    reason: 'Create-mailbox under Mail admin routes under /api/workspaces/:workspaceId/mail (resolved to the workspace home region): find-then-create per (domain, local part).',
+  },
+  {
+    key: 'Mailbox.conversationId',
+    category: 'request_scoped',
+    reason: 'The conversation is created in the same request that creates the mailbox (home region), so its id is fresh.',
+  },
+  {
+    key: 'MailThread.rootMessageId',
+    category: 'request_scoped',
+    reason: 'Written once when the thread root message is posted; inbound mail is forwarded to the workspace home region before it is stored (services/mail/mail-inbound.ts).',
+  },
+  {
+    key: 'MailMessage.(mailboxId,rfcMessageId)',
+    category: 'external_global_id',
+    reason: 'RFC Message-IDs are globally unique by construction (ours are <uuid@domain>); inbound replays are create-or-ignore in the home region.',
+  },
+  {
+    key: 'MailMessage.conversationMessageId',
+    category: 'request_scoped',
+    reason: 'Set in the same home-region request that posts the conversation message it describes.',
+  },
+  {
+    key: 'MailSender.(address,mailboxId)',
+    category: 'single_tenant_upsert',
+    reason: 'Screener decision upsert under Mail admin routes under /api/workspaces/:workspaceId/mail (resolved to the workspace home region).',
+  },
+  {
+    key: 'MailSuppression.(address,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason: 'Upserted by the provider event handler after the event is routed to the workspace home region, or by an admin under the mail routes.',
+  },
+  {
+    key: 'MailAccount.(address,mailboxId)',
+    category: 'single_tenant_upsert',
+    reason: 'Connect-account under Mail admin routes under /api/workspaces/:workspaceId/mail (resolved to the workspace home region): find-then-create per (mailbox, address).',
+  },
+  {
     key: 'ConversationMember.(conversationId,userId)',
     category: 'single_tenant_upsert',
     reason:
