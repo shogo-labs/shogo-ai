@@ -36,12 +36,12 @@ export interface LearnTokenPayload {
   exp: number
 }
 
-function learnSecret(): string {
+function learnSecret(purpose: string = 'shogo-learn-token-v1'): string {
   const base = process.env.LEARN_TOKEN_SECRET || process.env.BETTER_AUTH_SECRET
   if (!base) throw new Error('LEARN_TOKEN_SECRET or BETTER_AUTH_SECRET must be set to sign learn tokens')
-  // Derived, so a learn token can never verify as any other token signed with
-  // the same base secret.
-  return createHmac('sha256', base).update('shogo-learn-token-v1').digest('hex')
+  // Derived per purpose, so a learn token can never verify as any other token
+  // signed with the same base secret (or as a certificate, and vice versa).
+  return createHmac('sha256', base).update(purpose).digest('hex')
 }
 
 function b64url(input: Buffer | string): string {
@@ -175,4 +175,77 @@ export function learnTokenNeedsRenewal(token: string | null, now: number = Date.
   const payload = verifyLearnToken(token, now)
   if (!payload) return true
   return payload.exp * 1000 - now < (LEARN_TOKEN_TTL_SECONDS * 1000) / 2
+}
+
+
+const CERT_VERSION = 'c1'
+const CERT_PURPOSE = 'shogo-learn-certificate-v1'
+export const LEARN_CERT_NAME_MAX = 80
+
+export interface LearnCertificate {
+  /** Keyed hash of the user id (see `certificateSubject`), never the id itself: certificate links are public. */
+  subject: string
+  courseId: string
+  name: string
+  issuedAt: number
+  score: number
+  total: number
+}
+
+function signCert(body: string): string {
+  return createHmac('sha256', learnSecret(CERT_PURPOSE)).update(body).digest('base64url')
+}
+
+/** Stable, non-reversible handle for the learner a certificate belongs to. */
+export function certificateSubject(userId: string): string {
+  return createHmac('sha256', learnSecret(CERT_PURPOSE)).update(`subject:${userId}`).digest('base64url').slice(0, 22)
+}
+
+/** Display name for a certificate: printable, single-line, capped. */
+export function cleanCertificateName(raw: unknown): string {
+  if (typeof raw !== 'string') return ''
+  return raw
+    .replace(/\s+/g, ' ')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069]/g, '')
+    .trim()
+    .slice(0, LEARN_CERT_NAME_MAX)
+}
+
+/**
+ * A certificate is its own proof: the id is a signed payload, so verifying it
+ * needs no database row. It never expires and carries no email.
+ */
+export function mintLearnCertificate(cert: Omit<LearnCertificate, 'subject'> & { userId: string }): string {
+  const payload = b64url(
+    JSON.stringify({ h: certificateSubject(cert.userId), c: cert.courseId, n: cert.name, t: cert.issuedAt, s: cert.score, o: cert.total }),
+  )
+  const body = `${CERT_VERSION}.${payload}`
+  return `${body}.${signCert(body)}`
+}
+
+export function verifyLearnCertificate(id: string | null | undefined): LearnCertificate | null {
+  if (!id || typeof id !== 'string' || id.length > 1024) return null
+  const parts = id.split('.')
+  if (parts.length !== 3 || parts[0] !== CERT_VERSION) return null
+  const body = `${parts[0]}.${parts[1]}`
+  const expected = Buffer.from(signCert(body))
+  const given = Buffer.from(parts[2])
+  if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null
+  let raw: any
+  try {
+    raw = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
+  } catch {
+    return null
+  }
+  if (
+    typeof raw?.h !== 'string' ||
+    typeof raw?.c !== 'string' ||
+    typeof raw?.n !== 'string' ||
+    typeof raw?.t !== 'number' ||
+    typeof raw?.s !== 'number' ||
+    typeof raw?.o !== 'number'
+  ) {
+    return null
+  }
+  return { subject: raw.h, courseId: raw.c, name: raw.n, issuedAt: raw.t, score: raw.s, total: raw.o }
 }

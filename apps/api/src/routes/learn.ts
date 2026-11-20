@@ -12,6 +12,9 @@
  *    token before serving any gated lesson.
  *  - `POST /coach`  one reply from the lesson coach: Socratic, lesson-scoped,
  *    capped per learner per day by plan, and only for courses they can open.
+ *  - `POST /certificate`  grade a course's final check; on a pass, return a
+ *    signed certificate id. Signed-in learners only.
+ *  - `GET  /certificate/:id`  public verification of a certificate id.
  *
  * Every route authenticates itself (learn token, or a Studio session for the
  * same-origin case), so `/api/learn/` is a gate-public prefix.
@@ -20,9 +23,11 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import {
+  LEARN_CERTIFICATES,
   LEARN_COURSES,
   LEARN_COACH_DAILY_LIMIT,
   decideLearnAccess,
+  gradeLearnCheck,
   learnCourseById,
   type LearnAccessDecision,
 } from '../config/learn-catalog'
@@ -30,14 +35,17 @@ import { PLAN_RANK, normalizePlanId, type PlanId } from '../config/usage-plans'
 import {
   LEARN_COOKIE_NAME,
   clearLearnCookieHeader,
+  cleanCertificateName,
   hostMatchesCookieDomain,
   learnCookieDomain,
   learnCookieHeader,
   learnTokenFromHeaders,
   learnTokenNeedsRenewal,
+  mintLearnCertificate,
   mintLearnToken,
   readCookie,
   safeLearnReturn,
+  verifyLearnCertificate,
   verifyLearnToken,
 } from '../lib/learn-token'
 
@@ -46,6 +54,7 @@ const DAY_MS = 24 * 60 * 60 * 1000
 const MAX_MESSAGES = 20
 const MAX_MESSAGE_CHARS = 4000
 const MAX_CONTEXT_CHARS = 16000
+const CERT_ATTEMPTS_PER_DAY = 20
 
 export interface LearnUser {
   id: string
@@ -285,6 +294,64 @@ export function learnRoutes(deps: LearnRoutesDeps) {
       console.error('[learn] coach failed:', err?.message ?? err)
       return c.json({ error: 'The coach is unavailable right now. Try again in a minute.' }, 503)
     }
+  })
+
+  app.post('/certificate', async (c) => {
+    c.header('Cache-Control', 'no-store')
+    const learner = await resolveLearner(c)
+    if (!learner) return c.json({ error: 'Sign in with your Shogo account to get your certificate.' }, 401)
+    const body = (await c.req.json().catch(() => null)) as { courseId?: unknown; answers?: unknown; name?: unknown } | null
+    const courseId = typeof body?.courseId === 'string' ? body.courseId : ''
+    const rule = LEARN_CERTIFICATES[courseId]
+    const course = learnCourseById(courseId)
+    if (!rule || !course) return c.json({ error: 'This course has no certificate.' }, 404)
+    if (!body?.answers || typeof body.answers !== 'object' || Array.isArray(body.answers)) {
+      return c.json({ error: 'answers is required.' }, 400)
+    }
+
+    const { planId, enrollments } = await learnerState(learner.user.id)
+    const decision = decideLearnAccess(course.access, {
+      signedIn: true,
+      planId,
+      enrolledCourseIds: new Set(enrollments.map((e) => e.courseId)),
+    })
+    if (!decision.hasAccess) return c.json({ error: 'Your plan does not include this course.', access: decision }, 403)
+
+    const rl = await deps.takeRateLimit(`learn-cert:${learner.user.id}`, CERT_ATTEMPTS_PER_DAY, DAY_MS)
+    if (!rl.allowed) {
+      c.header('Retry-After', String(rl.retryAfterSeconds))
+      return c.json({ error: "You've used today's attempts. Try again tomorrow." }, 429)
+    }
+
+    const result = gradeLearnCheck(rule, body.answers as Record<string, unknown>)
+    if (!result.passed) return c.json({ ...result, passMark: rule.passMark })
+
+    const name = cleanCertificateName(body.name) || cleanCertificateName(learner.user.name) || 'Shogo learner'
+    const id = mintLearnCertificate({
+      userId: learner.user.id,
+      courseId,
+      name,
+      issuedAt: Math.floor(now() / 1000),
+      score: result.score,
+      total: result.total,
+    })
+    return c.json({ ...result, passMark: rule.passMark, certificate: { id, name } })
+  })
+
+  app.get('/certificate/:id', (c) => {
+    const cert = verifyLearnCertificate(c.req.param('id'))
+    const rule = cert ? LEARN_CERTIFICATES[cert.courseId] : undefined
+    if (!cert || !rule) return c.json({ valid: false }, 404)
+    c.header('Cache-Control', 'public, max-age=3600')
+    return c.json({
+      valid: true,
+      name: cert.name,
+      courseId: cert.courseId,
+      courseTitle: rule.courseTitle,
+      issuedAt: new Date(cert.issuedAt * 1000).toISOString(),
+      score: cert.score,
+      total: cert.total,
+    })
   })
 
   return app

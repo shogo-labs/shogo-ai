@@ -33,14 +33,46 @@ export interface LearnCourse {
 
 export const LEARN_COURSES: readonly LearnCourse[] = [
   { id: 'library', access: { kind: 'public' } },
+  { id: 'agents-for-everyone', access: { kind: 'public' } },
   { id: 'start-here', access: { kind: 'account' } },
   { id: 'ai-teammates', access: { kind: 'account' } },
   { id: 'agent-team-playbook', access: { kind: 'plan', minPlan: 'basic' } },
+  { id: 'first-client', access: { kind: 'plan', minPlan: 'basic' } },
+  { id: 'paid-app', access: { kind: 'plan', minPlan: 'basic' } },
   {
     id: 'solo-founder',
     access: { kind: 'purchase', enrollmentCourseId: SOLO_FOUNDER_COURSE_ID, offer: 'solo_founder' },
   },
 ]
+
+/**
+ * Courses that end in a graded check and award a certificate. The questions
+ * and options are public (they ship with the learn site); the answer key lives
+ * only here, so a pass is decided by the API.
+ */
+export interface LearnCertificateRule {
+  courseTitle: string
+  passMark: number
+  answers: Record<string, string>
+}
+
+export const LEARN_CERTIFICATES: Record<string, LearnCertificateRule> = {
+  'agents-for-everyone': {
+    courseTitle: 'AI agents for everyone',
+    passMark: 5,
+    answers: { q1: 'b', q2: 'c', q3: 'b', q4: 'c', q5: 'd', q6: 'b' },
+  },
+}
+
+export function gradeLearnCheck(
+  rule: LearnCertificateRule,
+  given: Record<string, unknown>,
+): { score: number; total: number; wrong: string[]; passed: boolean } {
+  const ids = Object.keys(rule.answers)
+  const wrong = ids.filter((id) => given[id] !== rule.answers[id])
+  const score = ids.length - wrong.length
+  return { score, total: ids.length, wrong, passed: score >= rule.passMark }
+}
 
 export function learnCourseById(id: string): LearnCourse | undefined {
   return LEARN_COURSES.find((c) => c.id === id)

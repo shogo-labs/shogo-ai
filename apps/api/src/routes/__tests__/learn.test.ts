@@ -2,16 +2,20 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { Hono } from 'hono'
-import { decideLearnAccess, LEARN_COACH_DAILY_LIMIT } from '../../config/learn-catalog'
+import { decideLearnAccess, gradeLearnCheck, LEARN_CERTIFICATES, LEARN_COACH_DAILY_LIMIT } from '../../config/learn-catalog'
 import { SOLO_FOUNDER_COURSE_ID } from '../../config/solo-founder-course'
 import {
   LEARN_COOKIE_NAME,
   LEARN_TOKEN_HEADER,
   LEARN_TOKEN_TTL_SECONDS,
+  certificateSubject,
+  cleanCertificateName,
   hostMatchesCookieDomain,
   learnTokenNeedsRenewal,
+  mintLearnCertificate,
   mintLearnToken,
   safeLearnReturn,
+  verifyLearnCertificate,
   verifyLearnToken,
 } from '../../lib/learn-token'
 import { bestPlanId, learnRoutes, withLearnCookie, type LearnRoutesDeps } from '../learn'
@@ -337,5 +341,100 @@ describe('withLearnCookie (Studio keeps the learn cookie in step)', () => {
     delete process.env.LEARN_COOKIE_DOMAIN
     const onHost = new Request('https://studio.shogo.ai/api/auth/get-session', { headers: { host: 'studio.shogo.ai' } })
     expect((await withLearnCookie(onHost, new Response('{}'), deps)).headers.get('set-cookie')).toBeNull()
+  })
+})
+
+describe('certificates', () => {
+  const PASS = { q1: 'b', q2: 'c', q3: 'b', q4: 'c', q5: 'd', q6: 'b' }
+
+  async function post(app: Hono, body: unknown, token: string | null = tokenFor()) {
+    return app.request('/api/learn/certificate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(token ? { [LEARN_TOKEN_HEADER]: token } : {}) },
+      body: JSON.stringify(body),
+    })
+  }
+
+  test('a pass returns a certificate that verifies publicly, with the chosen name and no email', async () => {
+    const { app } = makeApp(baseState())
+    const res = await post(app, { courseId: 'agents-for-everyone', answers: { ...PASS, q6: 'a' }, name: '  Grace\u0000 Hopper ' })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as any
+    expect(body).toMatchObject({ passed: true, score: 5, total: 6, wrong: ['q6'], passMark: 5 })
+    expect(body.certificate.name).toBe('Grace Hopper')
+
+    const check = await app.request(`/api/learn/certificate/${body.certificate.id}`)
+    expect(check.status).toBe(200)
+    const cert = (await check.json()) as any
+    expect(cert).toEqual({
+      valid: true,
+      name: 'Grace Hopper',
+      courseId: 'agents-for-everyone',
+      courseTitle: 'AI agents for everyone',
+      issuedAt: new Date(Math.floor(NOW / 1000) * 1000).toISOString(),
+      score: 5,
+      total: 6,
+    })
+    expect(JSON.stringify(cert)).not.toContain('@example.com')
+    expect(JSON.stringify(cert)).not.toContain('u1')
+    const payload = Buffer.from(body.certificate.id.split('.')[1], 'base64url').toString('utf8')
+    expect(payload).not.toContain('u1')
+    expect(JSON.parse(payload).h).toBe(certificateSubject('u1'))
+  })
+
+  test('falls back to the account name when none is given', async () => {
+    const { app } = makeApp(baseState())
+    const body = (await (await post(app, { courseId: 'agents-for-everyone', answers: PASS })).json()) as any
+    expect(body.certificate.name).toBe('Ada')
+  })
+
+  test('a fail returns the score and which questions missed, but no certificate and no answer key', async () => {
+    const { app } = makeApp(baseState())
+    const res = await post(app, { courseId: 'agents-for-everyone', answers: { q1: 'a', q2: 'c' } })
+    const body = (await res.json()) as any
+    expect(body).toMatchObject({ passed: false, score: 1, total: 6 })
+    expect(body.wrong).toEqual(['q1', 'q3', 'q4', 'q5', 'q6'])
+    expect(body.certificate).toBeUndefined()
+    expect(JSON.stringify(body)).not.toContain('"d"')
+  })
+
+  test('requires sign-in, a known course, answers, and respects the daily cap', async () => {
+    const state = baseState()
+    const { app } = makeApp(state)
+    expect((await post(app, { courseId: 'agents-for-everyone', answers: PASS }, null)).status).toBe(401)
+    expect((await post(app, { courseId: 'start-here', answers: PASS })).status).toBe(404)
+    expect((await post(app, { courseId: 'agents-for-everyone' })).status).toBe(400)
+    state.rateAllowed = false
+    const limited = await post(app, { courseId: 'agents-for-everyone', answers: PASS })
+    expect(limited.status).toBe(429)
+    expect(limited.headers.get('retry-after')).toBe('3600')
+  })
+
+  test('rejects forged, tampered and cross-purpose ids', async () => {
+    const { app } = makeApp(baseState())
+    const real = mintLearnCertificate({ userId: 'u1', courseId: 'agents-for-everyone', name: 'Ada', issuedAt: 1, score: 6, total: 6 })
+    expect(verifyLearnCertificate(real)?.name).toBe('Ada')
+    const [v, , sig] = real.split('.')
+    const forged = Buffer.from(JSON.stringify({ h: certificateSubject('u1'), c: 'agents-for-everyone', n: 'Mallory', t: 1, s: 6, o: 6 })).toString('base64url')
+    expect(verifyLearnCertificate(`${v}.${forged}.${sig}`)).toBeNull()
+    expect(verifyLearnCertificate(tokenFor())).toBeNull()
+    expect(verifyLearnToken(real, NOW)).toBeNull()
+    process.env.LEARN_TOKEN_SECRET = 'another-secret'
+    expect(verifyLearnCertificate(real)).toBeNull()
+    process.env.LEARN_TOKEN_SECRET = 'test-learn-secret'
+    expect((await app.request(`/api/learn/certificate/${v}.${forged}.${sig}`)).status).toBe(404)
+    expect((await app.request('/api/learn/certificate/garbage')).status).toBe(404)
+  })
+
+  test('names are single-line, printable and capped', () => {
+    expect(cleanCertificateName('a\nb\tc')).toBe('a b c')
+    expect(cleanCertificateName('x'.repeat(200))).toHaveLength(80)
+    expect(cleanCertificateName('\u202eevil')).toBe('evil')
+    expect(cleanCertificateName(42)).toBe('')
+  })
+
+  test('the new courses are on the catalog with the right access', () => {
+    expect(decideLearnAccess({ kind: 'public' }, { signedIn: false, planId: 'free', enrolledCourseIds: new Set() }).hasAccess).toBe(true)
+    expect(gradeLearnCheck(LEARN_CERTIFICATES['agents-for-everyone'], PASS)).toEqual({ score: 6, total: 6, wrong: [], passed: true })
   })
 })
