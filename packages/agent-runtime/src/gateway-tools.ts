@@ -13672,9 +13672,15 @@ const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: stri
     ].join('\n'),
   },
   whatsapp: {
-    requiredKeys: ['accessToken', 'phoneNumberId', 'appSecret'],
+    requiredKeys: [],
     guide: [
-      '## WhatsApp Setup',
+      '## WhatsApp — One-Click Setup (recommended)',
+      'channel_connect({ type: "whatsapp", config: {} })',
+      '  → Returns a connectUrl. Send it to the user. They click "Connect with Meta" in their browser,',
+      '    pick their WhatsApp Business account, and it\'s done. Works with numbers already on the',
+      '    WhatsApp Business app — the phone app keeps working.',
+      '',
+      '## WhatsApp — Bring Your Own Meta App (enterprise / on-prem)',
       '1. Go to https://developers.facebook.com and create or select an app with WhatsApp added.',
       '2. Under App Settings → Basic → App Secret — copy the App Secret.',
       '3. Under WhatsApp → API Setup:',
@@ -13683,7 +13689,6 @@ const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: stri
       '     Go to Business Settings → System Users → Add → give it Admin role → Generate token → select your WhatsApp app, grant whatsapp_business_messaging + whatsapp_business_management.',
       '4. Connect: channel_connect({ type: "whatsapp", config: { accessToken: "YOUR_SYSTEM_USER_TOKEN", phoneNumberId: "YOUR_PHONE_NUMBER_ID", appSecret: "YOUR_APP_SECRET" } })',
       '   The connect result returns callbackUrl and verifyToken — use those in step 5.',
-      '   Optionally set verifyToken yourself; a random one is generated if omitted.',
       '5. In Meta Developer Portal → WhatsApp → Configuration:',
       '   - Set Callback URL to the callbackUrl from step 4.',
       '   - Set Verify Token to the verifyToken from step 4.',
@@ -13819,6 +13824,57 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
             setup_guide: channelGuide.guide,
           })
         }
+      }
+
+      // ── WhatsApp: one-click (no own-app keys) → return a connect link ──────
+      if (type === 'whatsapp' && !channelConfig.accessToken) {
+        const apiUrl = derivePublicApiUrl()
+        const projectId = ctx.projectId ? (projectScopedId(ctx.projectId) ? ctx.projectId : null) : null
+        if (!apiUrl || !projectId) {
+          return textResult({
+            error: 'WhatsApp one-click setup requires Shogo Cloud. Set WHATSAPP_META_APP_ID, WHATSAPP_META_APP_SECRET, and WHATSAPP_ES_CONFIG_ID, or provide accessToken, phoneNumberId and appSecret to use your own Meta app.',
+            setup_guide: CHANNEL_SETUP_GUIDES.whatsapp.guide,
+          })
+        }
+        // Call the internal connect-link route
+        const { deriveApiUrl, getInternalHeaders } = await import('./internal-api')
+        const internalApiUrl = deriveApiUrl()
+        if (!internalApiUrl) {
+          return textResult({ error: 'Cannot reach internal API to generate WhatsApp connect link.', setup_guide: CHANNEL_SETUP_GUIDES.whatsapp.guide })
+        }
+        const res = await fetch(
+          `${internalApiUrl}/api/internal/projects/${encodeURIComponent(projectId)}/channels/whatsapp/connect-link`,
+          { method: 'POST', headers: getInternalHeaders() },
+        ).catch(() => null)
+        if (!res || !res.ok) {
+          const body = await res?.json().catch(() => null) as any
+          if (body?.code === 'whatsapp_embedded_signup_unavailable') {
+            return textResult({
+              error: `WhatsApp one-click is not configured on this server. ${body.error ?? ''}\n\nUse your own Meta app: provide accessToken, phoneNumberId, and appSecret.`,
+              setup_guide: CHANNEL_SETUP_GUIDES.whatsapp.guide,
+              own_app_guide: true,
+            })
+          }
+          return textResult({
+            error: `Failed to generate WhatsApp connect link: ${body?.error ?? 'unknown error'}`,
+            setup_guide: CHANNEL_SETUP_GUIDES.whatsapp.guide,
+          })
+        }
+        const { url, expiresAt } = await res.json() as { url: string; expiresAt: string }
+        return textResult({
+          ok: true,
+          status: 'awaiting_user',
+          connectUrl: url,
+          expiresAt,
+          message: [
+            'Send the user this link. They click **Connect with Meta** and finish in Meta\'s popup.',
+            'Works for numbers already on the WhatsApp Business app — their phone app keeps working.',
+            `channel_list shows it once done. Link expires at ${expiresAt}.`,
+            '',
+            `Connect URL: ${url}`,
+          ].join('\n'),
+          own_app_guide: CHANNEL_SETUP_GUIDES.whatsapp.guide,
+        })
       }
 
       if (type === 'webchat') {

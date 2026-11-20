@@ -268,6 +268,7 @@ model Workspace {
   socialAutomations      SocialAutomation[]
   socialAutomationRuns   SocialAutomationRun[]
   rootSecrets            WorkspaceRootSecret[]
+  whatsappNumberBindings WhatsAppNumberBinding[]
 
   @@index([parentWorkspaceId])
   @@index([machineInstanceId])
@@ -2501,9 +2502,10 @@ model Instance {
   updatedAt     DateTime  @updatedAt
 
   workspace           Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  remoteActions       RemoteAction[]
-  pushSubscriptions   PushSubscription[]
-  preferredByProjects Project[]          @relation("ProjectPreferredInstance")
+  remoteActions          RemoteAction[]
+  pushSubscriptions      PushSubscription[]
+  preferredByProjects    Project[]          @relation("ProjectPreferredInstance")
+  whatsappNumberBindings WhatsAppNumberBinding[]
 
   @@unique([workspaceId, userId, hostname])
   @@index([workspaceId])
@@ -5285,4 +5287,46 @@ model WorkspaceRootSecret {
 
   @@index([workspaceId])
   @@map("workspace_root_secrets")
+}
+
+// =============================================================================
+// WHATSAPP PLATFORM BINDINGS (Meta Tech Provider — Embedded Signup)
+// =============================================================================
+
+model WhatsAppNumberBinding {
+  id                 String    @id @default(cuid())
+  workspaceId        String
+  projectId          String
+  instanceId         String?
+
+  phoneNumberId        String    @unique
+  wabaId               String
+  businessId           String?
+  displayPhoneNumber   String?
+  verifiedName         String?
+
+  coexistence Boolean @default(false)
+
+  tokenEncrypted       String
+  pinEncrypted         String?
+
+  contactsSyncRequestId  String?
+  historySyncRequestId   String?
+  syncStartedAt          DateTime?
+
+  status       String @default("active")
+  statusReason String?
+
+  connectedByUserId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  instance  Instance? @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@index([wabaId])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("whatsapp_number_bindings")
 }

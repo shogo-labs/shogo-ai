@@ -178,6 +178,11 @@ jobs:
           if [ -n "${{ secrets.SLACK_SIGNING_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SLACK_SIGNING_SECRET="${{ secrets.SLACK_SIGNING_SECRET }}"); fi
           # Not read by the API today; plumbed for the future api_app_id check.
           if [ -n "${{ secrets.SLACK_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=SLACK_APP_ID="${{ secrets.SLACK_APP_ID }}"); fi
+          # WhatsApp Tech Provider (Embedded Signup flow — SHO-463).
+          if [ -n "${{ secrets.WHATSAPP_META_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_META_APP_ID="${{ secrets.WHATSAPP_META_APP_ID }}"); fi
+          if [ -n "${{ secrets.WHATSAPP_META_APP_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_META_APP_SECRET="${{ secrets.WHATSAPP_META_APP_SECRET }}"); fi
+          if [ -n "${{ secrets.WHATSAPP_ES_CONFIG_ID }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_ES_CONFIG_ID="${{ secrets.WHATSAPP_ES_CONFIG_ID }}"); fi
+          if [ -n "${{ secrets.WHATSAPP_WEBHOOK_VERIFY_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_WEBHOOK_VERIFY_TOKEN="${{ secrets.WHATSAPP_WEBHOOK_VERIFY_TOKEN }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
