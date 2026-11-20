@@ -2,20 +2,28 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * The DMs tab: conversations with people, newest first, with chips to narrow
- * it. A chat with an agent is a project chat, not a DM (SHO-412).
+ * it. Agents appear here as links to their chat histories (SHO-473); a chat
+ * with an agent is a project/workspace chat session, not a DM conversation.
  */
 import type { ConversationSummary } from './team-chat-api'
 import { isSelfDm } from './team-chat-api'
 
-export type DmFilter = 'all' | 'unreads' | 'people'
+export type DmFilter = 'all' | 'unreads' | 'people' | 'agents'
 
 export const DM_FILTERS: Array<{ id: DmFilter; label: string }> = [
   { id: 'all', label: 'All' },
   { id: 'unreads', label: 'Unreads' },
   { id: 'people', label: 'People' },
+  { id: 'agents', label: 'Agents' },
 ]
 
 export const isDirect = (c: Pick<ConversationSummary, 'kind'>): boolean => c.kind === 'dm' || c.kind === 'group_dm'
+
+/** True when every participant in a DM is an agent (a migrated agent-DM row). */
+export function isAgentDm(c: ConversationSummary): boolean {
+  const p = c.participants ?? []
+  return p.length > 0 && p.every((pp) => pp.type === 'agent')
+}
 
 const at = (c: ConversationSummary) => (c.lastMessageAt ? Date.parse(c.lastMessageAt) : 0)
 
@@ -24,15 +32,21 @@ export function directConversations(list: ConversationSummary[]): ConversationSu
   return list.filter((c) => isDirect(c) && !c.archivedAt).sort((a, b) => at(b) - at(a))
 }
 
+/** Person-only DMs (excludes agent-keyed conversations). */
+function peopleDms(list: ConversationSummary[]): ConversationSummary[] {
+  return directConversations(list).filter((c) => !isAgentDm(c))
+}
+
 export function filterDms(list: ConversationSummary[], filter: DmFilter): ConversationSummary[] {
-  const dms = directConversations(list)
   switch (filter) {
     case 'all':
-      return dms
+      return peopleDms(list) // agents rendered separately in the panel
     case 'unreads':
-      return dms.filter((c) => !c.muted && c.unreadCount > 0)
+      return peopleDms(list).filter((c) => !c.muted && c.unreadCount > 0)
     case 'people':
-      return dms
+      return peopleDms(list)
+    case 'agents':
+      return [] // agents not stored as conversations; panel renders them from useRecentAgentChats
   }
 }
 

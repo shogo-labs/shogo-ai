@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { ConversationSummary, Participant } from '../team-chat-api'
-import { directConversations, filterDms, recentContacts, splitStarredDms } from '../dm-list'
+import { directConversations, filterDms, isAgentDm, recentContacts, splitStarredDms } from '../dm-list'
 
 const person = (id: string): Participant => ({ type: 'user', id, name: id, image: null })
 const agent = (projectId: string): Participant => ({ type: 'agent', projectId, name: projectId })
@@ -47,17 +47,31 @@ describe('directConversations', () => {
   })
 })
 
+describe('isAgentDm', () => {
+  test('true when every participant is an agent', () => {
+    expect(isAgentDm(convo({ id: 'x', participants: [agent('p1')] }))).toBe(true)
+    expect(isAgentDm(convo({ id: 'x', participants: [person('a'), agent('p1')] }))).toBe(false)
+    expect(isAgentDm(convo({ id: 'x', participants: [person('a')] }))).toBe(false)
+  })
+})
+
 describe('filterDms', () => {
-  test('People is every direct conversation (there is no Agents chip any more, SHO-412)', () => {
-    expect(ids(filterDms(list, 'people'))).toEqual(['reviewer', 'eby', 'group', 'muted'])
+  test('People excludes agent-only conversations; Agents chip added in SHO-473', () => {
+    // 'reviewer' has only an agent participant → excluded from People
+    expect(ids(filterDms(list, 'people'))).toEqual(['eby', 'group', 'muted'])
+  })
+
+  test('Agents returns empty list (agent rows come from useRecentAgentChats, not conversations)', () => {
+    expect(filterDms(list, 'agents')).toEqual([])
   })
 
   test('Unreads leaves out muted conversations', () => {
     expect(ids(filterDms(list, 'unreads'))).toEqual(['reviewer', 'eby'])
   })
 
-  test('All is the whole list', () => {
-    expect(filterDms(list, 'all')).toEqual(directConversations(list))
+  test('All shows people DMs (agents rendered separately in panel)', () => {
+    // 'reviewer' has only an agent participant → excluded; 'old' is archived → excluded
+    expect(ids(filterDms(list, 'all'))).toEqual(['eby', 'group', 'muted'])
   })
 })
 
@@ -76,8 +90,9 @@ describe('splitStarredDms', () => {
   })
 
   test('the active chip narrows both groups', () => {
+    // 'reviewer' has only an agent participant → excluded from people filter
     expect(ids(splitStarredDms(withStar, 'people').starred)).toEqual(['ana', 'eby'])
-    expect(ids(splitStarredDms(withStar, 'people').others)).toEqual(['reviewer'])
+    expect(ids(splitStarredDms(withStar, 'people').others)).toEqual([])
   })
 
   test('channels and archived conversations stay out of both groups', () => {

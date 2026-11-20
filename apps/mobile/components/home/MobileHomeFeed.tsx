@@ -29,6 +29,11 @@ import { ConversationRowView, PanelLink, PanelSectionHeader } from '../team-chat
 import { TabScreen, useTabScreenScroll } from '../layout/TabScreenHeader'
 import { WorkspaceSidebarAvatar } from '../layout/WorkspaceSidebarAvatar'
 import { recentProjects } from './recentProjects'
+import { useRecentAgentChats } from '../../hooks/useRecentAgentChats'
+import { AgentAvatar } from '../team-chat/AgentAvatar'
+import { relativeTime } from '../../lib/activity-feed'
+import { agentChatRoute } from '../../lib/team-chat-nav'
+import type { RecentAgentChat } from '../../lib/api'
 import { getPinnedProjectIds } from '../../lib/project-prefs-store'
 
 function useFocused(): boolean {
@@ -44,6 +49,7 @@ function useFocused(): boolean {
 
 type HomeRow =
   | { key: string; kind: 'agents-section' }
+  | { key: string; kind: 'recent-chat'; chat: RecentAgentChat }
   | { key: string; kind: 'agents-panel' }
   | { key: string; kind: 'failed'; entry: ActivityEntry }
   | { key: string; kind: 'conversation'; conversation: ConversationSummary }
@@ -146,9 +152,21 @@ export const MobileHomeFeed = observer(function MobileHomeFeed() {
   )
   const openConversation = chat.openConversation
   const activeId = chat.activeId
+  const { chats: recentAgentChats } = useRecentAgentChats({ limit: 5, perAgent: true })
+  const wide = !comfortable
 
   const sections = useMemo<HomeSection[]>(() => {
     const list: HomeSection[] = []
+    if (recentAgentChats.length > 0) {
+      list.push({
+        key: 'recent-chats',
+        label: 'Recent chats',
+        addLabel: 'All',
+        onAdd: () => router.push({ pathname: '/(app)/c/dms', params: { filter: 'agents' } } as any),
+        fixed: true,
+        data: recentAgentChats.map((c) => ({ key: `recent-chat:${c.chatSessionId}`, kind: 'recent-chat' as const, chat: c })),
+      })
+    }
     if (workspaceId && rows.length > 0) {
       list.push({ key: 'agents-section', data: [{ key: 'agents-section', kind: 'agents-section' }] })
     }
@@ -202,7 +220,7 @@ export const MobileHomeFeed = observer(function MobileHomeFeed() {
       list.push({ key: 'agents-panel', data: [{ key: 'agents-panel', kind: 'agents-panel' }] })
     }
     return list
-  }, [workspaceId, rows.length, unlisted, mentions, starred, unread, recent, router, chat.enabled, channels])
+  }, [workspaceId, rows.length, unlisted, mentions, starred, unread, recent, router, chat.enabled, channels, recentAgentChats])
 
   // A collapsed section keeps its header and hands the list no rows.
   const visibleSections = useMemo<HomeSection[]>(
@@ -218,6 +236,31 @@ export const MobileHomeFeed = observer(function MobileHomeFeed() {
   const renderItem = useCallback(
     ({ item }: { item: HomeRow }) => {
       switch (item.kind) {
+        case 'recent-chat': {
+          const c = item.chat
+          const route = agentChatRoute({ projectId: c.projectId, sessionId: c.chatSessionId, wide })
+          return (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${c.title}${c.agentName ? `, ${c.agentName}` : ''}`}
+              onPress={() => router.push(route as any)}
+              className="flex-row items-center gap-3 rounded-md px-3 py-2.5 active:bg-accent/50"
+            >
+              <AgentAvatar
+                name={c.agentName ?? 'Agent'}
+                projectId={c.projectId}
+                workspaceId={workspaceId ?? null}
+                size={32}
+              />
+              <View className="min-w-0 flex-1">
+                <Text className="text-sm font-medium text-foreground" numberOfLines={1}>{c.title}</Text>
+                <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+                  {[c.agentName, relativeTime(Date.parse(c.lastActiveAt))].filter(Boolean).join(' · ')}
+                </Text>
+              </View>
+            </Pressable>
+          )
+        }
         case 'agents-section':
           return workspaceId ? <AgentsSection rows={rows} workspaceId={workspaceId} /> : null
         case 'agents-panel':
@@ -242,7 +285,7 @@ export const MobileHomeFeed = observer(function MobileHomeFeed() {
           return <Text className="px-3 py-1 text-sm text-muted-foreground">{item.text}</Text>
       }
     },
-    [workspaceId, rows, openEntry, activeId, openConversation, comfortable, openProject],
+    [workspaceId, rows, openEntry, activeId, openConversation, comfortable, openProject, wide, router],
   )
 
   const renderSectionHeader = useCallback(
