@@ -324,6 +324,21 @@ describe('GET /api/learn/sso', () => {
     const token = cookie.split(';')[0].slice(LEARN_COOKIE_NAME.length + 1)
     expect(verifyLearnToken(token, NOW)).toMatchObject({ userId: 'u1', sessionId: 's1' })
   })
+
+  test('signed in behind the production proxy: the API sees an internal Host and still sets the cookie', async () => {
+    // Regression: prod's API gets an internal hostname (Knative), never studio.shogo.ai,
+    // and a Host check answered every signed-in learner 404 "not configured on this host".
+    const state = baseState()
+    state.cookieSession = { userId: 'u1', sessionId: 's1' }
+    const { app } = makeApp(state)
+    const res = await app.request(`/api/learn/sso?return=${ret}`, { headers: { host: 'api.152.70.192.220.sslip.io' } })
+    expect(res.status).toBe(302)
+    expect(res.headers.get('set-cookie')).toContain('Domain=.shogo.ai')
+    // Still never on a host where the feature is off.
+    delete process.env.LEARN_COOKIE_DOMAIN
+    process.env.NODE_ENV = 'production'
+    expect((await app.request(`/api/learn/sso?return=${ret}`, { headers: { host: 'studio.shogo.ai' } })).status).toBe(404)
+  })
 })
 
 describe('POST /api/learn/coach', () => {
@@ -409,9 +424,9 @@ describe('withLearnCookie (Studio keeps the learn cookie in step)', () => {
     expect(res.headers.get('set-cookie')).toContain('Max-Age=0')
   })
 
-  test('no-op off the cookie domain, or when the feature is not configured', async () => {
-    const offHost = new Request('http://localhost:8002/api/auth/get-session', { headers: { host: 'localhost:8002' } })
-    expect((await withLearnCookie(offHost, new Response('{}'), deps)).headers.get('set-cookie')).toBeNull()
+  test('mints behind the production proxy (internal Host); no-op when the feature is not configured', async () => {
+    const internal = new Request('http://api.shogo-production-system.svc.cluster.local/api/auth/get-session', { headers: { host: 'api.152.70.192.220.sslip.io' } })
+    expect((await withLearnCookie(internal, new Response('{}'), deps)).headers.get('set-cookie')).toContain('Domain=.shogo.ai')
     delete process.env.LEARN_COOKIE_DOMAIN
     const onHost = new Request('https://studio.shogo.ai/api/auth/get-session', { headers: { host: 'studio.shogo.ai' } })
     expect((await withLearnCookie(onHost, new Response('{}'), deps)).headers.get('set-cookie')).toBeNull()
