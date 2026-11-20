@@ -32,6 +32,8 @@ const INVITEE_EMAIL = 'invitee@example.com'
 
 let invitations: InvitationRow[]
 let idCounter: number
+/** Rows the `member.findFirst` double answers from. */
+let members: { userId: string; workspaceId?: string | null; projectId?: string | null }[]
 
 function matchesScope(row: InvitationRow, where: any): boolean {
   if (where.id !== undefined && row.id !== where.id) return false
@@ -48,8 +50,10 @@ function makeCtx(userId = ADMIN_USER_ID) {
   const prisma = {
     user: {
       findUnique: async ({ where }: { where: any }) => {
-        if (where.id === INVITEE_USER_ID) return { email: INVITEE_EMAIL, role: 'user' }
-        if (where.id === ADMIN_USER_ID) return { email: 'admin@example.com', role: 'user' }
+        if (where.id === INVITEE_USER_ID) return { id: INVITEE_USER_ID, email: INVITEE_EMAIL, role: 'user' }
+        if (where.id === ADMIN_USER_ID) return { id: ADMIN_USER_ID, email: 'admin@example.com', role: 'user' }
+        if (where.email === INVITEE_EMAIL) return { id: INVITEE_USER_ID, email: INVITEE_EMAIL, role: 'user' }
+        if (where.email === 'admin@example.com') return { id: ADMIN_USER_ID, email: 'admin@example.com', role: 'user' }
         return null
       },
     },
@@ -61,6 +65,13 @@ function makeCtx(userId = ADMIN_USER_ID) {
         }
         return []
       },
+      findFirst: async ({ where }: { where: any }) =>
+        members.find(
+          (row) =>
+            row.userId === where.userId &&
+            (where.projectId === undefined || row.projectId === where.projectId) &&
+            (where.workspaceId === undefined || row.workspaceId === where.workspaceId),
+        ) ?? null,
     },
     project: {
       findUnique: async () => null,
@@ -94,6 +105,7 @@ function makeCtx(userId = ADMIN_USER_ID) {
 
 beforeEach(() => {
   invitations = []
+  members = []
   idCounter = 0
 })
 
@@ -162,6 +174,31 @@ describe('invitationHooks.beforeCreate duplicate check', () => {
 
     expect(result?.ok).toBe(true)
     expect(result?.data?.expiresAt).toBeInstanceOf(Date)
+  })
+
+  // SHO-455: an invite for someone already in the scope is a dead link — the
+  // accept path refuses with `already_member` and the invite can never be used.
+  test('inviting an existing workspace member is refused with already_member', async () => {
+    members.push({ userId: INVITEE_USER_ID, workspaceId: WORKSPACE_ID, projectId: null })
+
+    const result = await invitationHooks.beforeCreate!(
+      { email: INVITEE_EMAIL, workspaceId: WORKSPACE_ID, role: 'member' },
+      makeCtx() as any,
+    )
+
+    expect(result?.ok).toBe(false)
+    expect(result?.error?.code).toBe('already_member')
+    expect(result?.error?.message).toBe(`${INVITEE_EMAIL} is already a member`)
+    expect(invitations).toHaveLength(0)
+  })
+
+  test('an email with no user account is still invitable', async () => {
+    const result = await invitationHooks.beforeCreate!(
+      { email: 'stranger@example.com', workspaceId: WORKSPACE_ID, role: 'member' },
+      makeCtx() as any,
+    )
+
+    expect(result?.ok).toBe(true)
   })
 })
 
@@ -263,5 +300,42 @@ describe('invitationHooks.beforeUpdate invitee actions', () => {
 
     expect(result?.ok).toBe(true)
     expect(result?.data?.status).toBe('accepted')
+  })
+
+  // SHO-455: an admin signed in as themselves, opening a link addressed to
+  // someone else, used to fall into the admin branch and be told "Admins can
+  // only cancel or reopen invitations" — the raw text the accept page showed.
+  test('an admin accepting someone else\'s invite gets wrong_account, not the admin text', async () => {
+    const invitation = seedInvitation({
+      email: INVITEE_EMAIL,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    })
+
+    const result = await invitationHooks.beforeUpdate!(
+      invitation.id,
+      { status: 'accepted' },
+      makeCtx(ADMIN_USER_ID) as any,
+    )
+
+    expect(result?.ok).toBe(false)
+    expect(result?.error?.code).toBe('wrong_account')
+    expect(result?.error?.message).toBe('This invitation was sent to a different email address.')
+    expect(result?.error?.message).not.toContain('Admins can only cancel')
+  })
+
+  test('an admin can still cancel an invitation addressed to someone else', async () => {
+    const invitation = seedInvitation({
+      email: INVITEE_EMAIL,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    })
+
+    const result = await invitationHooks.beforeUpdate!(
+      invitation.id,
+      { status: 'cancelled' },
+      makeCtx(ADMIN_USER_ID) as any,
+    )
+
+    expect(result?.ok).toBe(true)
+    expect(result?.data?.status).toBe('cancelled')
   })
 })
