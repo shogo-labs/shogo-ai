@@ -89,7 +89,12 @@ async function installInstrumentation(page: Page): Promise<() => Promise<string>
 
   await page.addInitScript(() => {
     const record = (method: string, url: string | URL) => {
-      const entry = `${Date.now()} ${method} ${url}`
+      const frames = (new Error().stack ?? "")
+        .split("\n")
+        .slice(1, 12)
+        .map((line) => line.trim().replace(/^at /, ""))
+        .join(" << ")
+      const entry = `${Date.now()} ${method} ${url} :: ${frames}`
       ;(window as any).__sho174History = (window as any).__sho174History ?? []
       ;(window as any).__sho174History.push(entry)
     }
