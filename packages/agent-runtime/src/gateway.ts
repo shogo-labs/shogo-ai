@@ -320,25 +320,63 @@ function parseAutoTierOverride(raw: string | undefined): AutoTierOverride | unde
 
 /**
  * Parse the per-turn Auto tier map the API stamps on a chat body (SHO-417).
- * Accepts either `{ economy: 'model-id' }` (what the API sends) or the
- * `{ economy: { id } }` shape `AGENT_AUTO_TIER_MAP` uses, so one parser covers
- * both. Malformed input is ignored: the process map then applies.
+ * Accepts a plain `{ economy: 'model-id' }` (an older API), the
+ * `{ economy: { id, provider?, upstream? } }` shape the API now sends (the
+ * cloud's tier entries carry their provider, SHO-481), and the same object
+ * shape `AGENT_AUTO_TIER_MAP` uses, so one parser covers all of them.
+ * Malformed input is ignored: the process map then applies.
  */
-function parseTurnAutoTiers(raw: unknown): AutoTierOverride | undefined {
+export function parseTurnAutoTiers(raw: unknown): AutoTierOverride | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const src = raw as Record<string, unknown>
   const out: AutoTierOverride = {}
   for (const tier of ['economy', 'standard', 'premium'] as const) {
     const entry = src[tier]
-    const id =
-      typeof entry === 'string'
-        ? entry.trim()
-        : entry && typeof entry === 'object' && typeof (entry as { id?: unknown }).id === 'string'
-          ? ((entry as { id: string }).id).trim()
-          : ''
-    if (id) out[tier] = { id }
+    if (typeof entry === 'string') {
+      const id = entry.trim()
+      if (id) out[tier] = { id }
+      continue
+    }
+    if (!entry || typeof entry !== 'object') continue
+    const e = entry as Record<string, unknown>
+    const id = typeof e.id === 'string' ? e.id.trim() : ''
+    if (!id) continue
+    const provider = typeof e.provider === 'string' && e.provider.trim() ? e.provider.trim() : undefined
+    const upstream = typeof e.upstream === 'string' && e.upstream.trim() ? e.upstream.trim() : undefined
+    out[tier] = { id, provider, upstream }
   }
   return Object.keys(out).length > 0 ? out : undefined
+}
+
+/**
+ * Merge the per-turn map over the process-wide one. The per-turn map wins on
+ * the model id (it is the person/cap-narrowed one, SHO-417), but a tier whose
+ * id matches the process-wide entry inherits its provider/upstream: an opaque
+ * cloud id cannot be inferred from its own string, and the env map is where
+ * that routing lives (SHO-481).
+ */
+export function mergeAutoTierOverrides(
+  turn: AutoTierOverride | undefined,
+  processWide: AutoTierOverride | undefined,
+): AutoTierOverride | undefined {
+  if (!turn) return processWide
+  if (!processWide) return turn
+  const out: AutoTierOverride = {}
+  for (const tier of ['economy', 'standard', 'premium'] as const) {
+    const t = turn[tier]
+    const p = processWide[tier]
+    if (!t) {
+      if (p) out[tier] = p
+      continue
+    }
+    const inherited = p?.id === t.id ? p : undefined
+    out[tier] = {
+      id: t.id,
+      provider: t.provider ?? inherited?.provider,
+      upstream: t.upstream ?? inherited?.upstream,
+    }
+  }
+  return out
 }
 
 const FALLBACK_SUMMARIZER_MODEL = { id: 'claude-haiku-4-5', provider: 'anthropic' }
@@ -3677,8 +3715,9 @@ export class AgentGateway {
 
     if (autoRouting) {
       // A per-turn map (narrowed to the person this run acts for) wins over the
-      // process-wide one, so an Auto fallback cannot leave their effective set.
-      const tierOverride = this.turnAutoTiers ?? this.autoTierOverride
+      // process-wide one, so an Auto fallback cannot leave their effective set;
+      // it inherits the env map's provider for ids the two share (SHO-481).
+      const tierOverride = mergeAutoTierOverrides(this.turnAutoTiers, this.autoTierOverride)
       autoTiers = buildAutoTierMap(autoTierIds(tierOverride))
       autoProviderHints = autoTierProviderHints(tierOverride)
       const estimatedTokens = this.sessionManager.estimateTokens(session)
@@ -3849,7 +3888,7 @@ export class AgentGateway {
       effectiveModel: modelId,
       effectiveProvider: provider,
       autoRouting,
-      autoTierOverride: this.turnAutoTiers ?? this.autoTierOverride,
+      autoTierOverride: mergeAutoTierOverrides(this.turnAutoTiers, this.autoTierOverride),
       dualPlan,
       shellState: sessionId ? {
         getCwd: () => this.shellCwd.get(sessionId!) || this.initialShellCwd(sessionWorkspaceDir),

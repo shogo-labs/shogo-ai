@@ -93,7 +93,7 @@ import {
   type ModelTier,
 } from '@shogo/model-catalog'
 import { randomUUID } from 'node:crypto'
-import { resolveAutoTierModel, resolveEffectiveAgentModelDefaults } from '../lib/runtime/agent-model-defaults'
+import { resolveAutoTierModel, resolveInstanceAgentModelDefaults } from '../lib/runtime/agent-model-defaults'
 import { putVideoJob, getVideoJob, claimVideoCharge, type VideoJobRecord } from '../lib/video-job-store'
 import { put3dJob, get3dJob, claim3dCharge } from '../lib/3d-job-store'
 import {
@@ -481,9 +481,11 @@ export async function resolveRequestModel(
   }
   // `auto` must resolve inside the acting person's set, not the workspace's
   // (SHO-417, AC3): resolving to the workspace standard-tier model and then
-  // 403ing would refuse a request the person could have served.
+  // 403ing would refuse a request the person could have served. The tiers come
+  // from the instance's defaults (the connected cloud's on a desktop), so a
+  // cloud id is not narrowed back to a local one (SHO-481).
   if (userId) {
-    const defaults = await resolveEffectiveAgentModelDefaults(workspaceId)
+    const defaults = await resolveInstanceAgentModelDefaults(workspaceId)
     const configured = Object.fromEntries(
       Object.entries(defaults.autoTiers).map(([tier, entry]) => [tier, entry.id]),
     )
