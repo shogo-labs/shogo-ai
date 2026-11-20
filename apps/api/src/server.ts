@@ -1019,9 +1019,7 @@ const learnDeps: LearnRoutesDeps = {
   frontendUrl: getFrontendUrl,
 }
 
-app.on(['GET', 'POST'], '/api/auth/*', async (c) =>
-  withLearnCookie(c.req.raw, toNativeAuthHandback(await auth.handler(c.req.raw)), learnDeps),
-)
+app.on(['GET', 'POST'], '/api/auth/*', async (c) => withLearnCookie(c.req.raw, toNativeAuthHandback(await auth.handler(c.req.raw)), learnDeps))
 
 // Health check — includes Redis status for multi-pod deployments.
 // When tunnel-redis is in a degraded state (init completed but publisher
