@@ -13,6 +13,23 @@
  * everyone at once.
  */
 
+/**
+ * Department certificates: one course per team (marketing, sales…), outside
+ * the level ladder. Each opens at Shogo Certified Level 1 and has the same six
+ * lessons, so the certificate means the same thing in every department.
+ */
+export const DEPARTMENTS: ReadonlyArray<{ id: string; title: string; hue: number }> = [
+  { id: 'ai-for-marketing', title: 'AI for Marketing', hue: 330 },
+  { id: 'ai-for-sales', title: 'AI for Sales', hue: 140 },
+  { id: 'ai-for-support', title: 'AI for Customer Support', hue: 190 },
+  { id: 'ai-for-people', title: 'AI for People and HR', hue: 300 },
+  { id: 'ai-for-finance', title: 'AI for Finance', hue: 100 },
+  { id: 'ai-for-operations', title: 'AI for Operations', hue: 50 },
+  { id: 'ai-for-engineering', title: 'AI for Engineering', hue: 230 },
+  { id: 'ai-for-devops', title: 'AI for DevOps', hue: 10 },
+]
+const DEPARTMENT_LESSONS = ['jobs', 'set-up', 'workflow', 'guardrails', 'measure', 'final-check'] as const
+
 /** Lesson ids per course, in order. Must match the learn site's content. */
 export const LEARN_LESSONS: Readonly<Record<string, readonly string[]>> = {
   'agents-for-everyone': ['what-is-an-agent', 'good-at-bad-at', 'how-to-ask', 'first-agent', 'stay-safe', 'final-check'],
@@ -23,13 +40,17 @@ export const LEARN_LESSONS: Readonly<Record<string, readonly string[]>> = {
   'paid-app': ['day-1-pick', 'days-2-3-core-loop', 'days-4-5-data', 'days-6-7-payments', 'days-8-9-test', 'days-10-11-publish', 'days-12-13-stores', 'day-14-launch'],
   // Past Solo Founder buyers also have progress on their Studio course board (CourseEnrollment.progress).
   'solo-founder': ['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10', 'capstone'],
+  ...Object.fromEntries(DEPARTMENTS.map((d) => [d.id, DEPARTMENT_LESSONS])),
 }
 
 /** Courses whose lessons the learner marks complete on learn.shogo.ai. */
 export const SELF_PACED_COURSES = Object.keys(LEARN_LESSONS)
 
 /** Lessons a passed final check completes on its own. */
-export const CERTIFICATE_LESSON: Readonly<Record<string, string>> = { 'agents-for-everyone': 'final-check' }
+export const CERTIFICATE_LESSON: Readonly<Record<string, string>> = {
+  'agents-for-everyone': 'final-check',
+  ...Object.fromEntries(DEPARTMENTS.map((d) => [d.id, 'final-check'])),
+}
 
 const FREE_COURSES = ['agents-for-everyone', 'start-here', 'ai-teammates'] as const
 
@@ -77,10 +98,12 @@ const COURSE_TITLES: Record<string, string> = {
   'first-client': 'Land your first AI client',
   'paid-app': 'Ship a paid app in 14 days',
   'solo-founder': 'Solo Founder',
+  ...Object.fromEntries(DEPARTMENTS.map((d) => [d.id, d.title])),
 }
 const COURSE_HUES: Record<string, number> = {
   'agents-for-everyone': 155, 'start-here': 25, 'ai-teammates': 285, 'agent-team-playbook': 250,
   'first-client': 70, 'paid-app': 340, 'solo-founder': 200,
+  ...Object.fromEntries(DEPARTMENTS.map((d) => [d.id, d.hue])),
 }
 
 export const LEARN_BADGES: readonly LearnBadgeDef[] = [
@@ -99,7 +122,14 @@ export const LEARN_BADGES: readonly LearnBadgeDef[] = [
     hue: COURSE_HUES[c],
     xp: XP.badge,
   })),
-  { id: 'certified-agents-for-everyone', name: 'Certified: AI agents for everyone', description: 'Passed the final check of AI agents for everyone.', icon: 'award', hue: 155, xp: XP.certificate },
+  ...Object.keys(CERTIFICATE_LESSON).map((c) => ({
+    id: `certified-${c}`,
+    name: `Certified: ${COURSE_TITLES[c]}`,
+    description: `Passed the final check of ${COURSE_TITLES[c]}.`,
+    icon: 'award',
+    hue: COURSE_HUES[c],
+    xp: XP.certificate,
+  })),
   { id: 'foundations', name: 'Foundations', description: 'Finished AI agents for everyone, Start here and Work with AI teammates.', icon: 'blocks', hue: 200, xp: XP.badge },
   { id: 'founding-learner', name: 'Founding learner', description: 'Learning on Shogo Learn in its first months.', icon: 'sparkles', hue: 45, xp: XP.badge },
   ...LEVEL_BADGES.map((l) => ({
