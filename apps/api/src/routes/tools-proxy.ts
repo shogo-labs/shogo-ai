@@ -371,7 +371,7 @@ function recordSocialUsage(args: {
 }
 
 function isNonProjectSentinel(projectId: string): boolean {
-  return projectId === 'workspace' || projectId === 'api-key' || projectId === 'system'
+  return projectId === 'workspace' || projectId === 'api-key' || projectId === 'system' || projectId.startsWith('ws_')
 }
 
 function parseSocialHandle(raw: unknown): string | null {
