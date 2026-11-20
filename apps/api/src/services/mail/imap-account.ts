@@ -19,7 +19,7 @@ import { formatAddress, isValidAddress, normalizeAddress, readJson } from './cod
 import { MailError, ingestInbound, serializeAccount } from './mail.service'
 import { MailProviderError, type OutboundEmail } from './provider'
 
-const db = prisma as any
+const db = prisma
 
 /** Mail an account's first sync brings in; older history stays where it is. */
 const BACKFILL_MESSAGES = 50

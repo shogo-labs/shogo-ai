@@ -66,7 +66,7 @@ import {
 import { BOUNCE_WINDOW, UNDO_SEND_SECONDS, mailLimitsForPlan, reputationVerdict, type MailLimits } from './limits'
 import { getMailProvider, MailProviderError, sharedMailDomain, type DeliveryEvent, type OutboundAttachment, type OutboundEmail } from './provider'
 
-const db = prisma as any
+const db = prisma
 
 export class MailError extends Error {
   constructor(public status: 400 | 402 | 403 | 404 | 409 | 413 | 429 | 502 | 503, public code: string, message: string) {
@@ -357,7 +357,8 @@ export async function ensureSharedDomain(workspaceId: string) {
       data: { workspaceId, domain, mode: 'shogo', status: 'active', provider: 'shogo', records: '[]', verifiedAt: new Date() },
     })
   } catch {
-    return db.mailDomain.findUnique({ where: { workspaceId_domain: { workspaceId, domain } } })
+    // Lost a create race: the other request's row is there now.
+    return db.mailDomain.findUniqueOrThrow({ where: { workspaceId_domain: { workspaceId, domain } } })
   }
 }
 
@@ -702,7 +703,7 @@ async function listThreadsFor(mailbox: any, viewer: string | null, opts: { view?
       })
     : []
   const byThread = new Map<string, any>()
-  for (const m of latest) if (!byThread.has(m.threadId)) byThread.set(m.threadId, m)
+  for (const m of latest) if (m.threadId && !byThread.has(m.threadId)) byThread.set(m.threadId, m)
   return rows.map((r: any) => serializeThread(r, { latest: byThread.get(r.id), conversationId: mailbox.conversationId }))
 }
 
@@ -1291,7 +1292,7 @@ async function ingestInto(
   let thread: any = null
   if (refs.length) {
     const hit = await db.mailMessage.findFirst({ where: { mailboxId: mailbox.id, rfcMessageId: { in: refs }, threadId: { not: null } }, orderBy: { createdAt: 'desc' } })
-    if (hit) thread = await db.mailThread.findUnique({ where: { id: hit.threadId } })
+    if (hit?.threadId) thread = await db.mailThread.findUnique({ where: { id: hit.threadId } })
   }
   const normalized = normalizeSubject(subject)
   if (!thread && normalized && /^(re|aw|sv)\s*:/i.test(subject)) {

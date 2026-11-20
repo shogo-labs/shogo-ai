@@ -131,7 +131,7 @@ export function mailRoutes(config: MailRoutesConfig): Hono {
 
   async function mailboxIn(c: any) {
     const { prisma } = await import('../lib/prisma')
-    const row = await (prisma as any).mailbox.findUnique({ where: { id: c.req.param('mailboxId') }, select: { workspaceId: true } })
+    const row = await prisma.mailbox.findUnique({ where: { id: c.req.param('mailboxId') }, select: { workspaceId: true } })
     if (!row) throw new MailError(404, 'not_found', 'Mailbox not found')
     await assertWorkspace(c, row.workspaceId)
     return c.req.param('mailboxId') as string
@@ -261,7 +261,7 @@ export function agentMailRoutes(config: AgentMailRoutesConfig): Hono {
         const claimed = body.projectId ?? c.req.query('projectId')
         if (typeof claimed === 'string' && claimed) {
           const { prisma } = await import('../lib/prisma')
-          const project = await (prisma as any).project.findUnique({ where: { id: claimed }, select: { workspaceId: true } })
+          const project = await prisma.project.findUnique({ where: { id: claimed }, select: { workspaceId: true } })
           projectId = project?.workspaceId === auth.workspaceId ? claimed : null
         }
       }
