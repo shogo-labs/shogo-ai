@@ -3722,6 +3722,19 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     path === '/agent/channels/webchat/message' ||
     path.startsWith('/agent/channels/webchat/events/')
   const isChannelIngressPath = isPublicChannelIngressPath(c.req.path)
+  // Generic webhook channel is reachable without a Shogo session. If the
+  // caller sent `Authorization: Bearer <non-shogo_sk>` but no X-Webhook-Secret
+  // they are following the old docs — guide them to the right header.
+  const isWebhookIngressPath =
+    path === '/agent/channels/webhook/incoming' ||
+    /^\/agent\/channels\/webhook\/outbox\/[^/]+$/.test(path)
+  if (isWebhookIngressPath) {
+    const authHeader = c.req.header('authorization') || ''
+    const secretHeader = c.req.header('x-webhook-secret') || ''
+    if (authHeader.startsWith('Bearer ') && !authHeader.startsWith('Bearer shogo_sk_') && !secretHeader) {
+      return c.json({ error: 'Send the channel secret in the X-Webhook-Secret header (Authorization is not forwarded to the agent on this path)' }, 401)
+    }
+  }
   // Teams activities carry Bot Framework JWTs in Authorization; forward that
   // header to the runtime so botframework-auth.ts can validate it.
   const isTeamsIngressPath = path === '/agent/channels/teams/messages'
@@ -3855,6 +3868,10 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
           if (auth) tunnelHeaders['authorization'] = auth
         }
       }
+      if (isWebhookIngressPath) {
+        const webhookSecret = c.req.header('x-webhook-secret')
+        if (webhookSecret) tunnelHeaders['x-webhook-secret'] = webhookSecret
+      }
       const tunnelBody = c.req.method === 'GET' || c.req.method === 'HEAD'
         ? undefined
         : await c.req.text()
@@ -3904,6 +3921,10 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       const auth = c.req.header('authorization')
       if (auth) headers.set('authorization', auth)
     }
+  }
+  if (isWebhookIngressPath) {
+    const webhookSecret = c.req.header('x-webhook-secret')
+    if (webhookSecret) headers.set('x-webhook-secret', webhookSecret)
   }
   headers.set('x-runtime-token', runtimeToken)
 

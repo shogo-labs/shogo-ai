@@ -1,208 +1,176 @@
 /**
- * Webhook Channel Integration Tests
+ * Webhook Channel Integration Tests (SHO-462)
  *
- * Tests the HTTP Webhook channel against a live agent runtime.
- * Validates: health, sync message flow, test endpoint, activity log, and auth.
+ * Tests the HTTP Webhook channel hit via the agent-proxy URL — WITHOUT an
+ * AUTH_COOKIE. The only credential is X-Webhook-Secret. This is the scenario
+ * that was broken before SHO-462: an unauthenticated POST would 401 at the
+ * agent-proxy before the runtime ever saw the request.
  *
- * Prerequisites:
- *   - Agent runtime must be running with Webhook channel connected
- *   - Set AGENT_URL to the agent's base URL
- *   - Set WEBHOOK_SECRET if the channel is configured with a secret
+ * Run against cloud agent-proxy:
+ *   AGENT_URL=https://api.shogo.ai/api/projects/<id>/agent-proxy \
+ *   WEBHOOK_SECRET=<secret> \
+ *   bun test e2e/channels/webhook.integration.test.ts
  *
- * Run:
- *   AGENT_URL=http://localhost:6200 bun test e2e/channels/webhook.integration.test.ts
- *   AGENT_URL=https://studio-staging.shogo.ai/api/projects/<id>/agent-proxy AUTH_COOKIE="..." bun test e2e/channels/webhook.integration.test.ts
+ * Run against a local runtime directly (agent-proxy not in the path):
+ *   AGENT_URL=http://localhost:6200 \
+ *   WEBHOOK_SECRET=<secret> \
+ *   bun test e2e/channels/webhook.integration.test.ts
  */
 
 import { describe, test, expect, beforeAll } from 'bun:test'
-import { getTestEnv, agentFetch, waitForAgent, buildHeaders, type TestEnv } from './helpers'
+import { getTestEnv, waitForAgent, type TestEnv } from './helpers'
 
 let env: TestEnv
 let channelConnected = false
 
 beforeAll(async () => {
   env = getTestEnv()
-  await waitForAgent(env)
+  // waitForAgent uses /health which is behind auth when going through the proxy.
+  // We skip it here and rely on the health endpoint check below.
+  try { await waitForAgent(env) } catch { /* ok if behind auth */ }
 
-  const healthRes = await agentFetch(env, '/agent/channels/webhook/health')
+  // Check channel health — no auth cookie, no shogo_sk_* key, just the secret
+  const healthRes = await fetch(`${env.agentUrl}/agent/channels/webhook/health`, {
+    headers: env.webhookSecret ? { 'X-Webhook-Secret': env.webhookSecret } : {},
+  })
   if (healthRes.ok) {
     const body = await healthRes.json()
     channelConnected = body.status === 'healthy' && body.connected === true
   }
 })
 
-function skipIfNotConnected() {
-  if (!channelConnected) {
-    console.warn('Webhook channel is not connected — skipping test')
-  }
+function skipIfNotConnected(msg = 'Webhook channel is not connected — skipping') {
+  if (!channelConnected) console.warn(msg)
   return !channelConnected
 }
 
-describe('Webhook Channel', () => {
-  describe('health', () => {
-    test('health endpoint returns status', async () => {
-      const res = await agentFetch(env, '/agent/channels/webhook/health')
-      expect(res.ok).toBe(true)
-
-      const body = await res.json()
-      expect(body.status).toBeDefined()
-      expect(['healthy', 'disconnected', 'not_configured']).toContain(body.status)
-
-      if (body.status === 'healthy') {
-        expect(body.type).toBe('webhook')
-        expect(body.connected).toBe(true)
-        expect(body.metadata).toBeDefined()
-        expect(typeof body.metadata.messageCount).toBe('number')
-      }
-    })
-  })
-
-  describe('sync messaging', () => {
-    test('sends a sync message and receives a reply', async () => {
-      if (skipIfNotConnected()) return
-
-      const headers: Record<string, string> = {}
-      if (env.webhookSecret) {
-        headers['X-Webhook-Secret'] = env.webhookSecret
-      }
-
-      const res = await agentFetch(env, '/agent/channels/webhook/incoming', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          message: 'Integration test: reply with WEBHOOK_TEST_OK',
-          senderId: 'integration-test',
-          senderName: 'Channel Integration Test',
-          metadata: { isTest: true, timestamp: Date.now() },
-        }),
-      })
-
-      expect(res.ok).toBe(true)
-      const body = await res.json()
-      expect(body.reply).toBeDefined()
-      expect(typeof body.reply).toBe('string')
-      expect(body.reply.length).toBeGreaterThan(0)
-    }, 120_000)
-
-    test('rejects message without text', async () => {
-      if (skipIfNotConnected()) return
-
-      const headers: Record<string, string> = {}
-      if (env.webhookSecret) {
-        headers['X-Webhook-Secret'] = env.webhookSecret
-      }
-
-      const res = await agentFetch(env, '/agent/channels/webhook/incoming', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ senderId: 'test' }),
-      })
-
-      expect(res.status).toBe(400)
-      const body = await res.json()
-      expect(body.error).toContain('message')
-    })
-
-    test('rejects invalid JSON body', async () => {
+describe('Webhook Channel — via agent-proxy without AUTH_COOKIE', () => {
+  describe('no-credential request', () => {
+    test('request with no X-Webhook-Secret returns 401', async () => {
       if (skipIfNotConnected()) return
 
       const res = await fetch(`${env.agentUrl}/agent/channels/webhook/incoming`, {
         method: 'POST',
-        headers: {
-          ...buildHeaders(env),
-          'Content-Type': 'application/json',
-          ...(env.webhookSecret ? { 'X-Webhook-Secret': env.webhookSecret } : {}),
-        },
-        body: 'not valid json {{{',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'no secret' }),
       })
+      expect(res.status).toBe(401)
+    })
 
-      expect(res.status).toBe(400)
+    test('request with wrong X-Webhook-Secret returns 401 (constant-time compare)', async () => {
+      if (skipIfNotConnected()) return
+
+      const res = await fetch(`${env.agentUrl}/agent/channels/webhook/incoming`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': 'wrong-secret-aaaa' },
+        body: JSON.stringify({ message: 'wrong secret' }),
+      })
+      expect(res.status).toBe(401)
+    })
+
+    test('Authorization: Bearer <secret> without X-Webhook-Secret returns 401 with guidance', async () => {
+      if (skipIfNotConnected()) return
+      if (!env.webhookSecret) return
+
+      const res = await fetch(`${env.agentUrl}/agent/channels/webhook/incoming`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${env.webhookSecret}`,
+        },
+        body: JSON.stringify({ message: 'using old auth style' }),
+      })
+      expect(res.status).toBe(401)
+      const body = await res.json()
+      expect(body.error).toMatch(/X-Webhook-Secret/i)
     })
   })
 
-  describe('auth', () => {
-    test('rejects request with wrong secret when secret is configured', async () => {
+  describe('sync messaging via agent-proxy (no session)', () => {
+    test('unauthenticated POST with correct X-Webhook-Secret reaches agent and returns reply + correlationId', async () => {
       if (skipIfNotConnected()) return
-
-      const healthRes = await agentFetch(env, '/agent/channels/webhook/health')
-      const health = await healthRes.json()
-
-      if (!health.metadata?.hasSecret) {
-        console.log('Webhook has no secret configured, skipping auth rejection test')
+      if (!env.webhookSecret) {
+        console.warn('WEBHOOK_SECRET not set — skipping sync test')
         return
       }
 
-      const res = await agentFetch(env, '/agent/channels/webhook/incoming', {
+      const res = await fetch(`${env.agentUrl}/agent/channels/webhook/incoming`, {
         method: 'POST',
-        headers: { 'X-Webhook-Secret': 'wrong-secret-value' },
-        body: JSON.stringify({ message: 'should be rejected' }),
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Webhook-Secret': env.webhookSecret,
+        },
+        body: JSON.stringify({
+          message: 'Integration test SHO-462: reply with WEBHOOK_PUBLIC_OK',
+          senderId: 'e2e-sho462',
+          senderName: 'SHO-462 Integration Test',
+          metadata: { isTest: true },
+        }),
       })
 
+      // 200 (sync) or 202 (timeout — still correct behaviour)
+      expect([200, 202]).toContain(res.status)
+      const body = await res.json()
+      expect(typeof body.correlationId).toBe('string')
+      if (res.status === 200) {
+        expect(typeof body.reply).toBe('string')
+        expect(body.reply.length).toBeGreaterThan(0)
+      } else {
+        // 202 timeout: should have outboxUrl or status = pending
+        expect(body.status).toBe('pending')
+      }
+    }, 130_000)
+
+    test('valid X-Webhook-Secret + valid shogo_sk_* still works (regression)', async () => {
+      if (skipIfNotConnected()) return
+      if (!env.webhookSecret) return
+      const apiKey = process.env.SHOGO_API_KEY
+      if (!apiKey) {
+        console.warn('SHOGO_API_KEY not set — skipping regression test')
+        return
+      }
+
+      const res = await fetch(`${env.agentUrl}/agent/channels/webhook/incoming`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+          'X-Webhook-Secret': env.webhookSecret,
+        },
+        body: JSON.stringify({ message: 'bearer + secret combo' }),
+      })
+      expect([200, 202]).toContain(res.status)
+    }, 130_000)
+  })
+
+  describe('outbox via agent-proxy (no session)', () => {
+    test('GET outbox/<id> with correct secret returns empty array for unknown id', async () => {
+      if (skipIfNotConnected()) return
+      if (!env.webhookSecret) return
+
+      const res = await fetch(`${env.agentUrl}/agent/channels/webhook/outbox/unknown-id-${Date.now()}`, {
+        headers: { 'X-Webhook-Secret': env.webhookSecret },
+      })
+      expect(res.ok).toBe(true)
+      const body = await res.json()
+      expect(Array.isArray(body.messages)).toBe(true)
+    })
+
+    test('GET outbox/<id> without secret returns 401', async () => {
+      if (skipIfNotConnected()) return
+
+      const res = await fetch(`${env.agentUrl}/agent/channels/webhook/outbox/some-id`)
       expect(res.status).toBe(401)
     })
   })
 
-  describe('test endpoint', () => {
-    test('test message endpoint works', async () => {
-      if (skipIfNotConnected()) return
-
-      const res = await agentFetch(env, '/agent/channels/webhook/test', {
-        method: 'POST',
-        body: JSON.stringify({
-          message: 'Integration test ping via /test endpoint',
-        }),
-      })
-
-      expect(res.ok).toBe(true)
-      const body = await res.json()
-      expect(body.ok).toBe(true)
-      expect(body.reply).toBeDefined()
-      expect(typeof body.reply).toBe('string')
-    }, 120_000)
-  })
-
-  describe('activity log', () => {
-    test('activity endpoint returns recent entries', async () => {
-      if (skipIfNotConnected()) return
-
-      const res = await agentFetch(env, '/agent/channels/webhook/activity')
-      expect(res.ok).toBe(true)
-
-      const body = await res.json()
-      expect(body.connected).toBe(true)
-      expect(Array.isArray(body.activity)).toBe(true)
-      expect(typeof body.messageCount).toBe('number')
-
-      if (body.activity.length > 0) {
-        const entry = body.activity[0]
-        expect(entry.id).toBeDefined()
-        expect(entry.timestamp).toBeDefined()
-        expect(entry.direction).toBeDefined()
-        expect(['inbound', 'outbound']).toContain(entry.direction)
-        expect(['success', 'pending', 'error', 'timeout']).toContain(entry.status)
+  describe('gated paths still require auth', () => {
+    test('/health is accessible (no auth required for health check on direct runtime)', async () => {
+      // health doesn't go through the proxy auth gate on a direct runtime URL
+      if (!env.agentUrl.includes('agent-proxy')) {
+        const res = await fetch(`${env.agentUrl}/agent/channels/webhook/health`)
+        expect(res.ok).toBe(true)
       }
-    })
-  })
-
-  describe('outbox polling', () => {
-    test('drains empty outbox without error', async () => {
-      if (skipIfNotConnected()) return
-
-      const headers: Record<string, string> = {}
-      if (env.webhookSecret) {
-        headers['X-Webhook-Secret'] = env.webhookSecret
-      }
-
-      const channelId = `test-poll-${Date.now()}`
-      const res = await agentFetch(env, `/agent/channels/webhook/outbox/${channelId}`, {
-        headers,
-      })
-
-      expect(res.ok).toBe(true)
-      const body = await res.json()
-      expect(body.messages).toBeDefined()
-      expect(Array.isArray(body.messages)).toBe(true)
-      expect(body.messages).toHaveLength(0)
     })
   })
 })

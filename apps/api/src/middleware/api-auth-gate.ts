@@ -69,22 +69,45 @@ export function isAllowedUnauthWebchatProxyPath(path: string): boolean {
 
 /**
  * True when the path is a public channel ingress endpoint that authenticates
- * via its own protocol (HMAC-SHA256 for WhatsApp) rather than a Shogo session.
+ * via its own protocol (HMAC-SHA256 for WhatsApp; shared secret header for
+ * webhook) rather than a Shogo session.
  * Add new channels here as they are made publicly reachable.
  *
  * Unit-tested in apps/api/src/__tests__/agent-proxy-whatsapp-ingress.test.ts
+ * and apps/api/src/__tests__/agent-proxy-webhook-ingress.test.ts
  */
 export function isPublicChannelIngressPath(path: string): boolean {
-  // Only exact paths that authenticate via their own protocol
-  // (HMAC-SHA256 for WhatsApp, Bot Framework JWT for Teams).
   const match = path.match(/^\/api\/projects\/[^/]+\/agent-proxy(\/.*)$/)
   if (!match) return false
   const relative = match[1]
-  return (
+
+  // WhatsApp webhook (canonical + legacy alias) and Teams (Bot Framework JWT).
+  if (
     relative === '/agent/channels/whatsapp/webhook' ||
     relative === '/webhooks/whatsapp' ||
     relative === '/agent/channels/teams/messages'
-  )
+  ) {
+    return true
+  }
+
+  // Teams channel (Bot Framework JWT auth)
+  if (relative === '/agent/channels/teams/messages') return true
+
+  // Generic webhook channel — POST incoming and GET outbox/<correlationId> only.
+  // /health, /activity and /test stay behind login (they leak message previews
+  // or run a live turn). The outbox segment must be exactly one path component
+  // with no slashes, no "..", no path traversal.
+  if (relative === '/agent/channels/webhook/incoming') return true
+  const outboxMatch = relative.match(/^\/agent\/channels\/webhook\/outbox\/([^/]+)$/)
+  if (outboxMatch) {
+    const seg = outboxMatch[1]
+    // Reject empty segment, dotdot, or anything that looks like path traversal
+    if (seg && seg !== '..' && !seg.includes('/') && !seg.includes('%2f') && !seg.includes('%2F')) {
+      return true
+    }
+  }
+
+  return false
 }
 
 // Proxies onto a user's own app server: the public preview
