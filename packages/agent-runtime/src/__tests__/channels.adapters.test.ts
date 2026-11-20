@@ -628,60 +628,74 @@ describe('TeamsAdapter', () => {
 // Webhook
 // ════════════════════════════════════════════════════════════════════════════
 describe('WebhookAdapter', () => {
-  test('connect parses config; getStatus reflects secret + callback', async () => {
+  test('connect requires a secret; getStatus reflects it + callback', async () => {
     const a = new WebhookAdapter()
+    await expect(a.connect({})).rejects.toThrow('requires a secret')
     await a.connect({ secret: 's3cr3t', callbackUrl: 'https://cb', callbackHeaders: '{"X-Key":"v"}', replyTimeoutMs: '5000' })
     const st = a.getStatus()
     expect(st.connected).toBe(true)
     expect(st.metadata?.hasSecret).toBe(true)
+    // getSecret returns value (for /agent/status)
+    expect((a as any).getSecret()).toBe('s3cr3t')
+    // metadata never includes the raw secret
+    expect(JSON.stringify(st.metadata)).not.toContain('s3cr3t')
     await a.disconnect()
     expect(a.getStatus().connected).toBe(false)
   })
 
   test('connect tolerates invalid callbackHeaders JSON', async () => {
     const a = new WebhookAdapter()
-    await a.connect({ callbackHeaders: '{not json' })
+    await a.connect({ secret: 'x', callbackHeaders: '{not json' })
     expect(a.getStatus().connected).toBe(true)
   })
 
-  test('verifyAuth: open when no secret, bearer + header when set', async () => {
+  test('verifyAuth: false when no secret; secretHeader-only; constant-time compare', async () => {
     const a = new WebhookAdapter()
-    await a.connect({})
-    expect(a.verifyAuth()).toBe(true)
-    await a.connect({ secret: 'k' })
-    expect(a.verifyAuth('Bearer k')).toBe(true)
-    expect(a.verifyAuth(undefined, 'k')).toBe(true)
-    expect(a.verifyAuth('Bearer wrong', 'wrong')).toBe(false)
+    await a.connect({ secret: 'correct-secret' })
+    // No header → reject
+    expect(a.verifyAuth()).toBe(false)
+    expect(a.verifyAuth(undefined)).toBe(false)
+    // Wrong secret → reject (also checks different lengths don't bypass timingSafeEqual)
+    expect(a.verifyAuth('wrong')).toBe(false)
+    expect(a.verifyAuth('correct-secret-but-too-long')).toBe(false)
+    // Correct secret → accept
+    expect(a.verifyAuth('correct-secret')).toBe(true)
   })
 
-  test('processIncoming sync mode resolves when sendMessage delivers the reply', async () => {
+  test('processIncoming sync mode resolves with correlationId when sendMessage delivers the reply', async () => {
     const a = new WebhookAdapter()
-    await a.connect({})
-    let correlationId = ''
-    a.onMessage((m) => { correlationId = m.channelId })
+    await a.connect({ secret: 'k' })
+    let capturedCorrelationId = ''
+    a.onMessage((m) => { capturedCorrelationId = m.channelId })
     const p = a.processIncoming({ message: 'hi', senderId: 'u', senderName: 'U' })
     await new Promise((r) => setTimeout(r, 5))
-    await a.sendMessage(correlationId, 'the reply')
-    expect(await p).toEqual({ reply: 'the reply', async: false })
+    await a.sendMessage(capturedCorrelationId, 'the reply')
+    const result = await p
+    expect(result.reply).toBe('the reply')
+    expect(result.async).toBe(false)
+    expect(typeof result.correlationId).toBe('string')
+    expect(result.correlationId).toMatch(/^webhook-\d+-\d+$/)
     const log = a.getActivityLog()
     expect(log[log.length - 1]).toMatchObject({ status: 'success', replyPreview: 'the reply' })
   })
 
-  test('processIncoming async mode dispatches to callbackUrl and returns immediately', async () => {
+  test('processIncoming async mode returns correlationId and dispatches to callbackUrl', async () => {
     const a = new WebhookAdapter()
-    await a.connect({})
+    await a.connect({ secret: 'k' })
     const got: IncomingMessage[] = []
     a.onMessage((m) => got.push(m))
     const r = await a.processIncoming({ message: 'x'.repeat(200), callbackUrl: 'https://cb/reply' })
-    expect(r).toEqual({ reply: '', async: true })
+    expect(r.async).toBe(true)
+    expect(r.reply).toBe('')
+    expect(typeof r.correlationId).toBe('string')
     expect(got[0].channelId).toBe('https://cb/reply')
     const log = a.getActivityLog()
     expect(log[0].messagePreview.endsWith('…')).toBe(true)
   })
 
-  test('processIncoming sync mode times out when no reply arrives', async () => {
+  test('processIncoming sync mode times out and returns timedOut flag + correlationId', async () => {
     const a = new WebhookAdapter()
-    await a.connect({ replyTimeoutMs: '50' })
+    await a.connect({ secret: 'k', replyTimeoutMs: '50' })
     a.onMessage(() => { /* never replies */ })
     const realST = globalThis.setTimeout
     ;(globalThis as any).setTimeout = ((fn: any) => { fn(); return 0 }) as any
@@ -692,22 +706,23 @@ describe('WebhookAdapter', () => {
       ;(globalThis as any).setTimeout = realST
     }
     expect(r.async).toBe(false)
-    expect(r.reply).toContain('timed out')
+    expect(r.timedOut).toBe(true)
+    expect(r.reply).toBe('')
+    expect(typeof r.correlationId).toBe('string')
     const log = a.getActivityLog()
     expect(log[log.length - 1].status).toBe('timeout')
   })
 
   test('processIncoming throws without a handler', async () => {
     const a = new WebhookAdapter()
-    await a.connect({})
+    await a.connect({ secret: 'k' })
     await expect(a.processIncoming({ message: 'hi' })).rejects.toThrow('no message handler')
   })
 
   test('sendMessage to URL channelId POSTs callback; to plain id queues to outbox', async () => {
     setFetch(() => res({}))
     const a = new WebhookAdapter()
-    await a.connect({ callbackHeaders: '{"X-H":"1"}' })
-    await a.connect({}) // reset headers branch
+    await a.connect({ secret: 'k', callbackHeaders: '{"X-H":"1"}' })
     await a.sendMessage('https://cb/x', 'hello')
     expect(fetchCalls.some((c) => c.url === 'https://cb/x')).toBe(true)
     await a.sendMessage('plain-channel', 'queued1')
@@ -719,18 +734,18 @@ describe('WebhookAdapter', () => {
   test('sendMessage callback delivery failure is swallowed', async () => {
     setFetch(() => { throw new Error('net') })
     const a = new WebhookAdapter()
-    await a.connect({})
+    await a.connect({ secret: 'k' })
     await a.sendMessage('https://cb/x', 'hello') // should not throw
   })
 
-  test('registerRoutes: incoming sync/async/auth/validation + outbox/health/activity/test', async () => {
+  test('registerRoutes: 503 no adapter, 401 wrong secret, 200 with correlationId, 202 timeout, outbox, health', async () => {
     const routes: Record<string, Function> = {}
     const app = {
       get: (p: string, h: Function) => { routes[`GET ${p}`] = h },
       post: (p: string, h: Function) => { routes[`POST ${p}`] = h },
     }
     let adapter: WebhookAdapter | null = null
-    WebhookAdapter.registerRoutes(app, () => adapter)
+    WebhookAdapter.registerRoutes(app, () => adapter, (cid) => `https://api.shogo.ai/outbox/${cid}`)
     const ctx = (opts: { body?: any; headers?: Record<string, string>; param?: string; badJson?: boolean }) => ({
       req: {
         json: async () => { if (opts.badJson) throw new Error('bad'); return opts.body ?? {} },
@@ -739,6 +754,7 @@ describe('WebhookAdapter', () => {
       },
       json: (b: any, s?: number) => ({ b, s: s ?? 200 }),
     })
+
     // 503 when no adapter
     expect(await routes['POST /agent/channels/webhook/incoming'](ctx({}))).toMatchObject({ s: 503 })
     expect((routes['GET /agent/channels/webhook/health'](ctx({}))).b.status).toBe('not_configured')
@@ -748,30 +764,65 @@ describe('WebhookAdapter', () => {
     await adapter.connect({ secret: 'k' })
     adapter.onMessage((m) => { setTimeout(() => adapter!.sendMessage(m.channelId, 'auto-reply'), 1) })
 
-    // unauthorized
-    expect(await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: {}, body: { message: 'x' } }))).toMatchObject({ s: 401 })
-    // bad json
-    expect(await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: { authorization: 'Bearer k' }, badJson: true }))).toMatchObject({ s: 400 })
-    // missing message
-    expect(await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: { authorization: 'Bearer k' }, body: {} }))).toMatchObject({ s: 400 })
-    // sync success (auto-reply via handler)
+    // 401 — no secret header
+    expect(await routes['POST /agent/channels/webhook/incoming'](ctx({ body: { message: 'x' } }))).toMatchObject({ s: 401 })
+    // 401 — wrong secret
+    expect(await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: { 'x-webhook-secret': 'wrong' }, body: { message: 'x' } }))).toMatchObject({ s: 401 })
+    // 400 — bad json
+    expect(await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: { 'x-webhook-secret': 'k' }, badJson: true }))).toMatchObject({ s: 400 })
+    // 400 — missing message
+    expect(await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: { 'x-webhook-secret': 'k' }, body: {} }))).toMatchObject({ s: 400 })
+    // 200 sync success — reply + correlationId
     const ok = await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: { 'x-webhook-secret': 'k' }, body: { message: 'hello' } }))
     expect(ok.b.reply).toBe('auto-reply')
-    // async success
-    const acc = await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: { authorization: 'Bearer k' }, body: { message: 'hi', callbackUrl: 'https://cb' } }))
+    expect(typeof ok.b.correlationId).toBe('string')
+    // 202 async
+    const acc = await routes['POST /agent/channels/webhook/incoming'](ctx({ headers: { 'x-webhook-secret': 'k' }, body: { message: 'hi', callbackUrl: 'https://cb' } }))
     expect(acc).toMatchObject({ s: 202 })
-    // outbox
+    expect(typeof acc.b.correlationId).toBe('string')
+    // outbox: drain + 401 without secret
     await adapter.sendMessage('chanA', 'm1')
-    const ob = routes['GET /agent/channels/webhook/outbox/:channelId'](ctx({ headers: { authorization: 'Bearer k' }, param: 'chanA' }))
+    const ob = routes['GET /agent/channels/webhook/outbox/:correlationId'](ctx({ headers: { 'x-webhook-secret': 'k' }, param: 'chanA' }))
     expect(ob.b.messages).toEqual(['m1'])
-    // outbox unauthorized + 503
-    expect(routes['GET /agent/channels/webhook/outbox/:channelId'](ctx({ headers: {}, param: 'x' }))).toMatchObject({ s: 401 })
-    // health + activity connected
+    expect(routes['GET /agent/channels/webhook/outbox/:correlationId'](ctx({ headers: {}, param: 'x' }))).toMatchObject({ s: 401 })
+    // health + activity
     expect(routes['GET /agent/channels/webhook/health'](ctx({})).b.status).toBe('healthy')
     expect(routes['GET /agent/channels/webhook/activity'](ctx({})).b.connected).toBe(true)
     // test endpoint
     const t = await routes['POST /agent/channels/webhook/test'](ctx({ body: { message: 'ping' } }))
     expect(t.b.ok).toBe(true)
+    expect(typeof t.b.correlationId).toBe('string')
+  })
+
+  test('timeout route returns 202 with outboxUrl from getPublicOutboxUrl callback', async () => {
+    const routes: Record<string, Function> = {}
+    const app = {
+      get: (p: string, h: Function) => { routes[`GET ${p}`] = h },
+      post: (p: string, h: Function) => { routes[`POST ${p}`] = h },
+    }
+    const adapter = new WebhookAdapter()
+    await adapter.connect({ secret: 'k', replyTimeoutMs: '1' })
+    // Handler never replies → timeout immediately
+    const realST = globalThis.setTimeout
+    ;(globalThis as any).setTimeout = ((fn: any) => { fn(); return 0 }) as any
+    WebhookAdapter.registerRoutes(app, () => adapter, (cid) => `https://example.com/outbox/${cid}`)
+    try {
+      const ctx = (opts: any) => ({
+        req: {
+          json: async () => opts.body,
+          header: (k: string) => (opts.headers ?? {})[k.toLowerCase()],
+          param: () => '',
+        },
+        json: (b: any, s?: number) => ({ b, s: s ?? 200 }),
+      })
+      adapter.onMessage(() => { /* never replies */ })
+      const r = await routes['POST /agent/channels/webhook/incoming'](ctx({ body: { message: 'slow' }, headers: { 'x-webhook-secret': 'k' } }))
+      expect(r.s).toBe(202)
+      expect(r.b.status).toBe('pending')
+      expect(r.b.outboxUrl).toContain('/outbox/')
+    } finally {
+      ;(globalThis as any).setTimeout = realST
+    }
   })
 })
 

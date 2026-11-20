@@ -30,7 +30,7 @@ to install `shogo` on the machine that should handle the work and run
 
 :::tip Cloning a project
 Want a local copy of the project's workspace files on the machine ahead of
-time? Run `shogo project pull <projectId>` — see
+ntime? Run `shogo project pull <projectId>` — see
 [Cloning projects to a paired machine](../my-machines/project-pull). The
 worker also auto-clones on first request by default, so this is optional.
 :::
@@ -66,22 +66,24 @@ retries. (Set `policy: 'prefer'` if you want offline = cloud fallback.)
 
 ## 3. Add a webhook channel
 
-In studio, open **Channels → + Add channel → Webhook**, set a `secret`,
-and save. See [Webhook channel](./webhook-channel) for the full request
-shape.
+In studio, open **Channels → + Add channel → Webhook** and save. Leave the
+`secret` field blank to generate one automatically, or set your own. The
+secret and the incoming URL are shown in the Channels panel once connected.
+
+See [Webhook channel](./webhook-channel) for the full request shape.
 
 ## 4. Trigger it
 
 ```bash
 curl -X POST https://api.shogo.ai/api/projects/<projectId>/agent-proxy/agent/channels/webhook/incoming \
-  -H "Authorization: Bearer $SHOGO_API_KEY" \
-  -H "X-Webhook-Secret: $CHANNEL_SECRET" \
+  -H "X-Webhook-Secret: $WEBHOOK_SECRET" \
   -H "Content-Type: application/json" \
   -d '{"message": "Fix bug PROJ-123"}'
 ```
 
 The agent picks up the request **on your VPS**, runs its tool loop there,
-and returns the reply in the response body.
+and returns the reply in the response body. No `shogo_sk_*` API key is
+needed to call this endpoint.
 
 ## Wiring it to Jira (worked example)
 
@@ -92,7 +94,6 @@ and returns the reply in the response body.
    - URL: `https://api.shogo.ai/api/projects/<projectId>/agent-proxy/agent/channels/webhook/incoming`
    - Method: `POST`
    - Headers:
-     - `Authorization: Bearer <SHOGO_API_KEY>`
      - `X-Webhook-Secret: <CHANNEL_SECRET>`
      - `Content-Type: application/json`
    - Body:
@@ -107,16 +108,14 @@ and returns the reply in the response body.
 
 `callbackUrl` is optional — include it if you want Shogo to POST the
 agent's reply back asynchronously. Without it, the reply is returned
-synchronously in the response (default timeout: 120s).
+synchronously in the response (default timeout: 120 s; on timeout a 202
+with a `correlationId` and `outboxUrl` is returned instead).
 
 ## Security model
 
-- **Two layers of auth**:
-  - `Authorization: Bearer shogo_sk_*` — proves to Shogo Cloud that the
-    caller has access to the workspace and project.
-  - `X-Webhook-Secret` (or a second Bearer header inside the channel) —
-    proves to the channel itself that the caller is allowed to trigger it.
-    Verified inside your `agent-runtime`, not in the cloud.
+- **One credential**: `X-Webhook-Secret` proves the caller is allowed to
+  trigger this specific channel. It is verified inside your `agent-runtime`,
+  not in the cloud. No Shogo account credential is required.
 - **Where the code runs**: tool calls execute on your paired machine, not
   in a Shogo cloud pod. The cloud only sees encrypted bytes between the
   external caller and the worker.
@@ -128,8 +127,8 @@ synchronously in the response (default timeout: 120s).
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | `503 instance_offline` | Worker isn't running or tunnel dropped | Start `shogo worker start` and check the studio Machines page. |
-| `401 unauthorized` (from cloud) | Bad / revoked `shogo_sk_*` key | Mint a new key in **Settings → API Keys** and retry. |
-| `401` from the channel itself | Bad `X-Webhook-Secret` | Re-copy the secret from the channel editor. |
+| `401` from the channel | Bad or missing `X-Webhook-Secret` | Re-copy the secret from the Channels panel. |
+| `401` with message "Send the channel secret in the X-Webhook-Secret header" | Old docs said to send `Authorization: Bearer <secret>` | Move the secret to `X-Webhook-Secret` instead. |
 | Agent never replies | Channel not connected | Open the channel editor; `status` should be `connected`. |
 
 ## See also

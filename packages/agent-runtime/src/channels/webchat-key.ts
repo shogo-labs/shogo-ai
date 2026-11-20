@@ -12,7 +12,7 @@
  */
 
 import { randomUUID } from 'crypto'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { resolveChannelSecret, backfillChannelSecret } from './channel-secret'
 
 /**
  * Resolve the widget key for a webchat connect.
@@ -25,7 +25,7 @@ export function resolveWebchatWidgetSecret(
   incoming: Record<string, string> | undefined | null,
   saved: Record<string, string> | undefined | null,
 ): string {
-  return incoming?.widgetSecret || saved?.widgetSecret || randomUUID()
+  return resolveChannelSecret(incoming, saved, 'widgetSecret', randomUUID)
 }
 
 /**
@@ -39,27 +39,5 @@ export function resolveWebchatWidgetSecret(
  * channel or cannot be read/written.
  */
 export function backfillWebchatWidgetSecret(configPath: string): string | null {
-  if (!existsSync(configPath)) return null
-
-  let parsed: any
-  try {
-    parsed = JSON.parse(readFileSync(configPath, 'utf-8'))
-  } catch {
-    return null
-  }
-
-  const channels = Array.isArray(parsed?.channels) ? parsed.channels : []
-  const entry = channels.find((ch: any) => ch?.type === 'webchat')
-  if (!entry) return null
-
-  if (!entry.config || typeof entry.config !== 'object') entry.config = {}
-  if (entry.config.widgetSecret) return entry.config.widgetSecret as string
-
-  entry.config.widgetSecret = randomUUID()
-  try {
-    writeFileSync(configPath, JSON.stringify(parsed, null, 2), 'utf-8')
-  } catch {
-    return null
-  }
-  return entry.config.widgetSecret as string
+  return backfillChannelSecret(configPath, 'webchat', 'widgetSecret', randomUUID)
 }

@@ -162,10 +162,8 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
     setupLabel: 'Webhook channel docs',
     description: 'Trigger this agent from Jira, Linear, Zapier, n8n, or any HTTP client',
     fields: [
-      // Shared secret — REQUIRED for any externally-reachable channel. If
-      // blank the runtime rejects every inbound webhook with 401, which is
-      // the safer default than "open to the world".
-      { key: 'secret', label: 'Shared Secret', placeholder: 'A long random string (e.g. openssl rand -hex 32)', secret: true },
+      // Shared secret — leave blank to generate one automatically on connect.
+      { key: 'secret', label: 'Shared Secret (optional)', placeholder: 'Leave blank to generate one', secret: true },
       // Optional default callback URL — if set, every reply gets POSTed
       // back there instead of (or in addition to) returning synchronously.
       { key: 'callbackUrl', label: 'Default Callback URL (optional)', placeholder: 'https://your-app.example.com/agent-reply', secret: false },
@@ -209,6 +207,8 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
   const [formError, setFormError] = useState<string | null>(null)
   const [copiedSnippet, setCopiedSnippet] = useState(false)
   const [copiedWebhookUrl, setCopiedWebhookUrl] = useState(false)
+  const [copiedWebhookSecret, setCopiedWebhookSecret] = useState(false)
+  const [webhookSecretVisible, setWebhookSecretVisible] = useState(false)
   const [copiedWhatsAppCallbackUrl, setCopiedWhatsAppCallbackUrl] = useState(false)
   const [copiedWhatsAppVerifyToken, setCopiedWhatsAppVerifyToken] = useState(false)
   const [phoneExpanded, setPhoneExpanded] = useState(false)
@@ -219,21 +219,25 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
   const [slackAgentLoading, setSlackAgentLoading] = useState(false)
 
   /**
-   * Canonical, externally-callable webhook URL for this project.
+   * Canonical, externally-callable webhook incoming URL for this project.
    *
-   * This stays stable regardless of where the agent actually runs (cloud
-   * pod or a paired VPS via `client.machines.pinProject`), which is the
-   * whole point of the project-scoped agent-proxy. We compose it from the
-   * cloud `API_URL` and `projectId` directly — NOT from `agentUrl`, which
-   * may already be wrapped in `/api/instances/:id/p/` when the user has
-   * an active remote-instance selection. That wrapped form is a
-   * power-user escape hatch, never the URL you paste into Jira.
-   *
-   * See: apps/docs/docs/features/external-triggers/webhook-channel.md
+   * Preferred source: `incomingUrl` from `/agent/status` (SHO-462), which the
+   * runtime builds from its own `derivePublicApiUrl()` — correct for both cloud
+   * pods and paired-desktop tunnels. Fallback: compose from API_URL + projectId
+   * for the case where the status hasn't loaded yet.
    */
-  const publicWebhookUrl = API_URL
-    ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/webhook/incoming`
-    : null
+  const webhookChannel = channels.find((c) => c.type === 'webhook')
+  const publicWebhookUrl: string | null = (() => {
+    const fromStatus = webhookChannel?.metadata?.incomingUrl
+    if (typeof fromStatus === 'string' && fromStatus) return fromStatus
+    return API_URL
+      ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/webhook/incoming`
+      : null
+  })()
+  const webhookSecret: string | null = (() => {
+    const s = webhookChannel?.metadata?.webhookSecret
+    return typeof s === 'string' && s ? s : null
+  })()
 
   /** WhatsApp webhook callback URL — same proxy path, different suffix. */
   const whatsappCallbackUrl = API_URL
@@ -834,55 +838,105 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                     </View>
                   )}
 
-                  {/* Webhook public URL — visible whenever the user opens
-                      the channel, even before connecting, so they can wire
-                      external services in parallel. */}
-                  {type === 'webhook' && isExpanded && publicWebhookUrl && (
+                  {/* Webhook: incoming URL + secret — visible whenever expanded.
+                      URLs come from /agent/status (SHO-462) so they're always
+                      correct for cloud and paired-desktop tunnels. */}
+                  {type === 'webhook' && isExpanded && (publicWebhookUrl || webhookSecret) && (
                     <View className="px-3 pb-3 border-t border-border">
-                      <View className="mt-3 gap-2">
-                        <Text className="text-[11px] font-medium text-foreground">
-                          Public webhook URL
-                        </Text>
-                        <Text className="text-[10px] text-muted-foreground">
-                          Paste this into Jira, Linear, Zapier, n8n, or any caller. Always
-                          send <Text className="font-mono">Authorization: Bearer shogo_sk_…</Text>{' '}
-                          plus <Text className="font-mono">X-Webhook-Secret</Text> with the
-                          secret below.
-                        </Text>
-                        <View className="bg-muted/50 rounded-md p-2.5 border border-border">
-                          <Text className="text-[10px] text-foreground font-mono" selectable>
-                            {publicWebhookUrl}
-                          </Text>
-                        </View>
-                        <View className="flex-row items-center gap-2">
-                          <Pressable
-                            onPress={async () => {
-                              await Clipboard.setStringAsync(publicWebhookUrl)
-                              setCopiedWebhookUrl(true)
-                              setTimeout(() => setCopiedWebhookUrl(false), 2000)
-                            }}
-                            className="flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
-                          >
-                            {copiedWebhookUrl ? (
-                              <>
-                                <Check size={12} className="text-emerald-500" />
-                                <Text className="text-[10px] text-emerald-500">Copied!</Text>
-                              </>
-                            ) : (
-                              <>
-                                <Copy size={12} className="text-muted-foreground" />
-                                <Text className="text-[10px] text-muted-foreground">Copy URL</Text>
-                              </>
-                            )}
-                          </Pressable>
-                          <Pressable
-                            onPress={() => openExternalLink('https://docs.shogo.ai/docs/features/external-triggers/quickstart')}
-                            className="flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
-                          >
-                            <ExternalLink size={12} className="text-muted-foreground" />
-                            <Text className="text-[10px] text-muted-foreground">Quickstart</Text>
-                          </Pressable>
-                        </View>
+                      <View className="mt-3 gap-3">
+                        {publicWebhookUrl && (
+                          <View className="gap-1.5">
+                            <Text className="text-[11px] font-medium text-foreground">
+                              Incoming URL
+                            </Text>
+                            <Text className="text-[10px] text-muted-foreground">
+                              Paste into Jira, Zapier, n8n, or any caller. Send{' '}
+                              <Text className="font-mono">X-Webhook-Secret: {'<secret>'}</Text>
+                              {' '}— no API key needed.
+                            </Text>
+                            <View className="bg-muted/50 rounded-md p-2.5 border border-border">
+                              <Text className="text-[10px] text-foreground font-mono" selectable>
+                                {publicWebhookUrl}
+                              </Text>
+                            </View>
+                            <View className="flex-row items-center gap-2">
+                              <Pressable
+                                onPress={async () => {
+                                  await Clipboard.setStringAsync(publicWebhookUrl)
+                                  setCopiedWebhookUrl(true)
+                                  setTimeout(() => setCopiedWebhookUrl(false), 2000)
+                                }}
+                                className="flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                              >
+                                {copiedWebhookUrl ? (
+                                  <>
+                                    <Check size={12} className="text-emerald-500" />
+                                    <Text className="text-[10px] text-emerald-500">Copied!</Text>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy size={12} className="text-muted-foreground" />
+                                    <Text className="text-[10px] text-muted-foreground">Copy URL</Text>
+                                  </>
+                                )}
+                              </Pressable>
+                              <Pressable
+                                onPress={() => openExternalLink('https://docs.shogo.ai/docs/features/external-triggers/quickstart')}
+                                className="flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                              >
+                                <ExternalLink size={12} className="text-muted-foreground" />
+                                <Text className="text-[10px] text-muted-foreground">Quickstart</Text>
+                              </Pressable>
+                            </View>
+                          </View>
+                        )}
+                        {webhookSecret && (
+                          <View className="gap-1.5">
+                            <Text className="text-[11px] font-medium text-foreground">
+                              Shared Secret
+                            </Text>
+                            <Text className="text-[10px] text-muted-foreground">
+                              Send this in the{' '}
+                              <Text className="font-mono">X-Webhook-Secret</Text>
+                              {' '}header on every request.
+                            </Text>
+                            <View className="bg-muted/50 rounded-md p-2.5 border border-border flex-row items-center justify-between">
+                              <Text className="text-[10px] text-foreground font-mono flex-1" selectable={webhookSecretVisible}>
+                                {webhookSecretVisible ? webhookSecret : '•'.repeat(Math.min(webhookSecret.length, 32))}
+                              </Text>
+                              <Pressable
+                                onPress={() => setWebhookSecretVisible((v) => !v)}
+                                className="ml-2 p-1"
+                              >
+                                <Text className="text-[10px] text-muted-foreground">
+                                  {webhookSecretVisible ? 'Hide' : 'Show'}
+                                </Text>
+                              </Pressable>
+                            </View>
+                            <View className="flex-row items-center gap-2">
+                              <Pressable
+                                onPress={async () => {
+                                  await Clipboard.setStringAsync(webhookSecret)
+                                  setCopiedWebhookSecret(true)
+                                  setTimeout(() => setCopiedWebhookSecret(false), 2000)
+                                }}
+                                className="flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                              >
+                                {copiedWebhookSecret ? (
+                                  <>
+                                    <Check size={12} className="text-emerald-500" />
+                                    <Text className="text-[10px] text-emerald-500">Copied!</Text>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy size={12} className="text-muted-foreground" />
+                                    <Text className="text-[10px] text-muted-foreground">Copy Secret</Text>
+                                  </>
+                                )}
+                              </Pressable>
+                            </View>
+                          </View>
+                        )}
                       </View>
                     </View>
                   )}
