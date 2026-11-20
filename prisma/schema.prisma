@@ -6269,9 +6269,9 @@ model VmMeterCursor {
   vmId       String
   /// Epoch ms of the assignment, as the agent reported it.
   assignedAt BigInt
-  agentMs    Int      @default(0)
-  appMs      Int      @default(0)
-  idleMs     Int      @default(0)
+  agentMs    BigInt   @default(0)
+  appMs      BigInt   @default(0)
+  idleMs     BigInt   @default(0)
   /// Last counter that was turned into usage; kept so a stale cursor is
   /// prunable without guessing (see pruneClosedMeters' server-side twin).
   lastSeenAt DateTime @default(now())
