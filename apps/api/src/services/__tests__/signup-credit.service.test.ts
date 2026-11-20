@@ -88,6 +88,8 @@ const prismaDouble: Record<string, any> = {
     },
   },
   signupRiskAssessment: {
+    // SHO-459: banned-linked count resolves linked ids first.
+    findMany: async () => [],
     findUnique: async ({ where }: { where: Row }) => {
       const a = assessments.get(where.userId)
       return a ? { ...a } : null

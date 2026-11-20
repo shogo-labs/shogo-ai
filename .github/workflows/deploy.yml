@@ -73,6 +73,16 @@ on:
         required: false
         default: false
         type: boolean
+      emergency_skip_ci_gate:
+        description: 'Production only, outages: do not wait for the full CI suite (Lint, Typecheck, Test) on this commit. Requires emergency_reason. Combine with skip_staging_e2e_gate + force_rebuild_production for a hotfix branch.'
+        required: false
+        default: false
+        type: boolean
+      emergency_reason:
+        description: 'Required with emergency_skip_ci_gate: the incident and the PR being forced through (recorded on the run).'
+        required: false
+        default: ''
+        type: string
 
 # Production runs are serialized per ref here. Staging runs get a group of
 # their own so builds for successive commits overlap; the staging-rollout job
@@ -112,7 +122,35 @@ jobs:
       # run (which tested this exact commit on the queue's ref) and the push
       # run are re-read on every poll: a commit can arrive here while its
       # merge-queue run is still finishing.
+      - name: Emergency bypass of the CI gate
+        id: emergency
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.emergency_skip_ci_gate == 'true'
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment }}
+          REASON: ${{ github.event.inputs.emergency_reason }}
+          ACTOR: ${{ github.actor }}
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$ENVIRONMENT" != "production" ]; then
+            echo "::error::emergency_skip_ci_gate is production-only (staging deploys always wait for CI)"; exit 1
+          fi
+          if [ "${#REASON}" -lt 10 ]; then
+            echo "::error::emergency_skip_ci_gate needs emergency_reason (the incident and PR being forced through)"; exit 1
+          fi
+          echo "::warning title=CI gate bypassed::$ACTOR deployed $REF@${SHA:0:9} to production without waiting for CI: $REASON"
+          {
+            echo "## ⚠️ CI gate bypassed (emergency)"
+            echo ""
+            echo "- **Who:** $ACTOR"
+            echo "- **Ref:** \`$REF\` @ \`$SHA\`"
+            echo "- **Reason:** $REASON"
+            echo ""
+            echo "CI for this commit was still running or not yet green. Land the same change on main through the merge queue."
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Wait for CI to pass for this commit
+        if: steps.emergency.outcome != 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}

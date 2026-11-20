@@ -101,6 +101,8 @@ const prismaApi: any = {
       subscriptions.find((s) => s.workspaceId === where.workspaceId) ?? null,
   },
   signupRiskAssessment: {
+    // SHO-459: banned-linked count resolves linked ids first.
+    findMany: async () => [],
     findUnique: async () => null,
     findFirst: async () => null,
   },
