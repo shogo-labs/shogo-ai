@@ -738,6 +738,19 @@ describe('hasPaidSubscription / hasAdvancedModelAccess / isBusinessOrHigherPlan'
     expect(await billing.hasAdvancedModelAccess('ws-1')).toBe(false)
     expect(await billing.isBusinessOrHigherPlan('ws-1')).toBe(false)
   })
+
+  // SHO-472 regression: getEffectivePlanSource drives the client-side `source: 'grant'`
+  // that the useBillingData hook needs to build the synthetic subscription and
+  // unlock advanced models for grant workspaces (no Stripe row).
+  test('grant workspace: getEffectivePlanSource returns "grant" (no subscription)', async () => {
+    grantsByWs.set('ws-1', [{ freeSeats: 0, monthlyIncludedUsd: 0, planId: 'enterprise' }])
+    // Subscription path is free, grant wins → effective plan 'enterprise'
+    expect(await billing.getEffectivePlanId('ws-1')).toBe('enterprise')
+    expect(await billing.hasAdvancedModelAccess('ws-1')).toBe(true)
+    // Confirm: a Stripe row is absent, so the client must derive access from
+    // the workspace-plan response's `source: 'grant'` and `paidTier: true`.
+    expect(await billing.getSubscription('ws-1')).toBeNull()
+  })
 })
 
 describe('getEffectivePlanId', () => {

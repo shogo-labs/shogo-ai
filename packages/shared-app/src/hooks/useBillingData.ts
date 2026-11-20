@@ -6,7 +6,7 @@
  * Provides billing data from the SDK domain store. All values are in USD.
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useSDKDomain, useSDKHttp } from "../domain"
 import type { IDomainStore } from "@shogo/domain-stores"
 import { resolveUsageWindows } from "./usage-windows"
@@ -192,9 +192,17 @@ export function useBillingData(
   // Stripe's hosted invoice page.
   const [overagePayment, setOveragePayment] = useState<OveragePaymentPending | null>(null)
 
+  // Retry state for workspace-plan fetch recovery (SHO-472). When the
+  // endpoint is temporarily unavailable (e.g. a hotfix deploy), the hook
+  // retries with exponential backoff so models unlock without an app restart
+  // once the server recovers. Bounded at 3 attempts.
+  const workspacePlanRetryCount = useRef(0)
+  const workspacePlanRetryTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   useEffect(() => {
     if (!workspaceId || !store?.subscriptionCollection) { setIsLoadingSubscription(false); return }
     let cancelled = false
+    workspacePlanRetryCount.current = 0
     setIsLoadingSubscription(true)
     setError(null)
     // Load the Prisma Subscription row (Stripe-backed) AND the effective
@@ -246,13 +254,28 @@ export function useBillingData(
           }
         })
         .catch(() => {
-          // Non-fatal: if the endpoint fails the UI just falls back to the
-          // store-backed subscription view (current behavior pre-grants).
+          // Non-fatal: the UI falls back to the store-backed subscription.
+          // Schedule a retry with exponential backoff (5 s, 10 s, 20 s) so
+          // the grant-workspace model lock self-heals once the server
+          // recovers — without requiring an app restart (SHO-472).
+          if (!cancelled && workspacePlanRetryCount.current < 3) {
+            const delay = 5000 * (1 << workspacePlanRetryCount.current)
+            workspacePlanRetryCount.current += 1
+            workspacePlanRetryTimer.current = setTimeout(() => {
+              if (!cancelled) setSubscriptionRefetchCounter((n) => n + 1)
+            }, delay)
+          }
         }),
     ])
       .catch((err: any) => { if (!cancelled) setError(err instanceof Error ? err : new Error("Failed to load subscription")) })
       .finally(() => { if (!cancelled) setIsLoadingSubscription(false) })
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      if (workspacePlanRetryTimer.current !== null) {
+        clearTimeout(workspacePlanRetryTimer.current)
+        workspacePlanRetryTimer.current = null
+      }
+    }
   }, [workspaceId, store, subscriptionRefetchCounter, http])
 
   useEffect(() => {
@@ -434,7 +457,15 @@ export function useBillingData(
     effectivePlan?.source ?? (realSubscription ? "subscription" : "free")
 
   const hasActiveSubscription = subscription?.status === 'active' || subscription?.status === 'trialing'
-  const hasAdvancedModelAccess = hasActiveSubscription && subscription?.planId !== 'basic'
+  // A grant workspace has no Stripe Subscription row; `hasActiveSubscription`
+  // is derived from the synthetic subscription built from `effectivePlan`.
+  // As a defence-in-depth fallback for the window before that fetch resolves
+  // (or if `effectivePlan.source` is unexpected), `paidTier` from the same
+  // workspace-plan response also unlocks advanced models when the effective
+  // plan is not basic (SHO-472).
+  const hasAdvancedModelAccess =
+    (hasActiveSubscription && subscription?.planId !== 'basic') ||
+    (paidTier === true && effectivePlanId !== 'basic' && effectivePlanId !== 'free')
 
   return {
     subscription,
