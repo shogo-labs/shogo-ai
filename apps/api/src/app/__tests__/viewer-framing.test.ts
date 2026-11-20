@@ -17,10 +17,12 @@
 import { describe, expect, test } from 'bun:test'
 import { createApp } from '../create-app'
 import { slidesViewerRoutes } from '../../routes/slides-viewer'
+import { documentViewerRoutes } from '../../routes/document-viewer'
 
 function composeApp() {
   const app = createApp({ profile: 'local' })
   app.route('/api/viewers', slidesViewerRoutes())
+  app.route('/api/viewers', documentViewerRoutes())
   return app
 }
 
@@ -40,5 +42,17 @@ describe('slides viewer framing (SHO-426)', () => {
 
     expect(res.headers.get('x-frame-options')).toBe('SAMEORIGIN')
     expect(res.headers.get('cross-origin-opener-policy')).toBe('same-origin-allow-popups')
+  })
+})
+
+describe('document viewer framing (SHO-467)', () => {
+  test('is served without X-Frame-Options so the desktop frame may load it', async () => {
+    const res = await composeApp().request('/api/viewers/document')
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('x-frame-options')).toBeNull()
+    expect(res.headers.get('cross-origin-opener-policy')).toBeNull()
+    expect(res.headers.get('content-security-policy')).toContain('sandbox allow-scripts')
+    expect(res.headers.get('content-security-policy')).toContain("connect-src 'none'")
   })
 })

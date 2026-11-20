@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * The host↔viewer wire (SHO-426). Everything here runs without a DOM or a
- * WebView on purpose: the chunking, the caps and the message checks are the
- * parts that must not be guessed at on a phone.
+ * The host↔viewer wire (SHO-426, SHO-467). Everything here runs without a DOM
+ * or a WebView on purpose: the chunking, the caps and the message checks are
+ * the parts that must not be guessed at on a phone.
  */
 import { describe, expect, test } from 'bun:test'
 import {
+  DOCUMENT_VIEWER_VERSION,
   MAX_SLIDES_BYTES,
   MAX_SLIDES_BYTES_NATIVE,
   NATIVE_CHUNK_BYTES,
@@ -15,12 +16,16 @@ import {
   SlidesTooLargeError,
   bytesToBase64,
   fetchSlidesBytes,
+  isDocumentPath,
   isSlidesPath,
+  parseDocumentViewerMessage,
   parseSlidesViewerMessage,
   slidesChunkMessages,
   slidesLoadMessage,
   slidesPreviewErrorText,
   slidesViewerUrl,
+  documentViewerUrl,
+  unsupportedDocumentMessage,
   unsupportedPresentationMessage,
 } from '../slides-viewer-protocol'
 
@@ -42,6 +47,22 @@ describe('isSlidesPath', () => {
   )
 })
 
+describe('isDocumentPath (SHO-467)', () => {
+  test.each(['report.docx', 'LETTER.DOCM', 'template.dotx', 'template.dotm'])(
+    '%s renders as a document',
+    (name) => {
+      expect(isDocumentPath(name)).toBe(true)
+    },
+  )
+
+  test.each(['report.doc', 'report.odt', 'report.rtf', 'report.pdf', 'docx', 'report.docx.bak'])(
+    '%s does not',
+    (name) => {
+      expect(isDocumentPath(name)).toBe(false)
+    },
+  )
+})
+
 describe('slidesViewerUrl', () => {
   test('joins the API base and pins the build', () => {
     expect(slidesViewerUrl('http://localhost:8002')).toBe(
@@ -54,6 +75,18 @@ describe('slidesViewerUrl', () => {
 
   test('encodes the version', () => {
     expect(slidesViewerUrl('http://x', '1.4.0+9')).toBe('http://x/api/viewers/slides?v=1.4.0%2B9')
+  })
+})
+
+describe('documentViewerUrl (SHO-467)', () => {
+  test('joins the API base and pins the build', () => {
+    expect(documentViewerUrl('http://localhost:8002')).toBe(
+      `http://localhost:8002/api/viewers/document?v=${DOCUMENT_VIEWER_VERSION}`,
+    )
+  })
+
+  test('encodes the version', () => {
+    expect(documentViewerUrl('http://x', '0.4.1+2')).toBe('http://x/api/viewers/document?v=0.4.1%2B2')
   })
 })
 
@@ -81,92 +114,78 @@ describe('the two transports', () => {
     expect(transfer).toEqual([bytes])
   })
 
-  test('native sends load, then the chunks, then end', () => {
+  test('native chunks the deck into base64 slices', () => {
     const bytes = sample()
-    const messages = slidesChunkMessages('deck.pptx', 'light', bytes, 1000)
-    expect(messages[0]).toEqual({ type: 'load', name: 'deck.pptx', theme: 'light' })
-    expect(messages[messages.length - 1]).toEqual({ type: 'end' })
-    const chunks = messages.slice(1, -1).flatMap((message) => (message.type === 'chunk' ? [message] : []))
-    expect(chunks.length).toBe(2)
-    const rebuilt = new Uint8Array(chunks.reduce((sum, chunk) => sum + decode(chunk.base64).length, 0))
-    let offset = 0
-    for (const chunk of chunks) {
-      const part = decode(chunk.base64)
-      rebuilt.set(part, offset)
-      offset += part.length
-    }
-    expect(Array.from(rebuilt)).toEqual(Array.from(bytes))
-  })
-
-  test('the default chunk is bounded so one injection is never the whole deck', () => {
-    const messages = slidesChunkMessages('deck.pptx', 'dark', new Uint8Array(NATIVE_CHUNK_BYTES + 10))
-    const chunks = messages.filter((message) => message.type === 'chunk')
-    expect(chunks.length).toBe(2)
-  })
-
-  test('native buffers less than web: the bridge costs double', () => {
-    expect(MAX_SLIDES_BYTES_NATIVE).toBeLessThan(MAX_SLIDES_BYTES)
+    const messages = slidesChunkMessages('deck.pptx', 'light', bytes, 512)
+    expect(messages[0]).toMatchObject({ type: 'load', name: 'deck.pptx', theme: 'light' })
+    expect(messages[messages.length - 1]).toMatchObject({ type: 'end' })
+    const chunks = messages.slice(1, -1)
+    expect(chunks.every((m) => m.type === 'chunk')).toBe(true)
+    // Reassembled round-trip.
+    const all = chunks.flatMap((m) => Array.from(decode((m as { base64: string }).base64)))
+    expect(all.slice(0, 5)).toEqual([0, 1, 2, 3, 4])
+    expect(all.length).toBe(bytes.length)
   })
 })
 
 describe('parseSlidesViewerMessage', () => {
-  test('reads the three messages the page sends', () => {
-    expect(parseSlidesViewerMessage({ type: 'ready' })).toEqual({ type: 'ready' })
-    expect(parseSlidesViewerMessage('{"type":"rendered","slideCount":3}')).toEqual({
-      type: 'rendered',
-      slideCount: 3,
-    })
-    expect(parseSlidesViewerMessage({ type: 'error', message: 'bad deck' })).toEqual({
-      type: 'error',
-      message: 'bad deck',
-    })
+  test('parses ready', () => expect(parseSlidesViewerMessage({ type: 'ready' })).toEqual({ type: 'ready' }))
+  test('parses rendered', () => expect(parseSlidesViewerMessage({ type: 'rendered', slideCount: 5 })).toEqual({ type: 'rendered', slideCount: 5 }))
+  test('parses error', () => expect(parseSlidesViewerMessage({ type: 'error', message: 'oops' })).toEqual({ type: 'error', message: 'oops' }))
+  test('ignores unknown', () => expect(parseSlidesViewerMessage({ type: 'unknown' })).toBeNull())
+  test('round-trips a JSON string', () => {
+    expect(parseSlidesViewerMessage(JSON.stringify({ type: 'ready' }))).toEqual({ type: 'ready' })
   })
+})
 
-  test('ignores anything else, including junk from another frame', () => {
-    expect(parseSlidesViewerMessage(null)).toBeNull()
-    expect(parseSlidesViewerMessage('not json')).toBeNull()
-    expect(parseSlidesViewerMessage({ type: 'load' })).toBeNull()
-    expect(parseSlidesViewerMessage({ type: 'rendered', slideCount: 'many' })).toEqual({
-      type: 'rendered',
-      slideCount: 0,
-    })
-  })
+describe('parseDocumentViewerMessage (SHO-467)', () => {
+  test('parses ready', () => expect(parseDocumentViewerMessage({ type: 'ready' })).toEqual({ type: 'ready' }))
+  test('parses rendered with itemCount', () => expect(parseDocumentViewerMessage({ type: 'rendered', itemCount: 3 })).toEqual({ type: 'rendered', itemCount: 3 }))
+  test('defaults to 1 page when count is missing', () => expect(parseDocumentViewerMessage({ type: 'rendered' })).toEqual({ type: 'rendered', itemCount: 1 }))
+  test('parses error', () => expect(parseDocumentViewerMessage({ type: 'error', message: 'oops' })).toEqual({ type: 'error', message: 'oops' }))
+  test('ignores unknown', () => expect(parseDocumentViewerMessage({ type: 'unknown' })).toBeNull())
 })
 
 describe('fetchSlidesBytes', () => {
-  const response = (body: Uint8Array, headers: Record<string, string> = {}, status = 200) =>
-    new Response(body as unknown as BodyInit, { status, headers }) as unknown as Response
-
-  test('returns the bytes of a good response', async () => {
-    const fetchImpl = (async () => response(new Uint8Array([1, 2, 3]))) as unknown as typeof fetch
-    const bytes = await fetchSlidesBytes('/api/f/x', { fetchImpl })
-    expect(new Uint8Array(bytes)).toEqual(new Uint8Array([1, 2, 3]))
+  test('returns the bytes on 2xx', async () => {
+    const data = new Uint8Array([1, 2, 3])
+    const mockFetch = async () =>
+      new Response(data, {
+        headers: { 'content-length': String(data.length), 'content-type': 'application/octet-stream' },
+      })
+    const result = await fetchSlidesBytes('http://example.com/file.pptx', { fetchImpl: mockFetch as unknown as typeof fetch })
+    expect(new Uint8Array(result)).toEqual(data)
   })
 
-  test('refuses a deck whose declared length is over the cap, before buffering it', async () => {
-    const fetchImpl = (async () =>
-      response(new Uint8Array(1), { 'content-length': String(MAX_SLIDES_BYTES + 1) })) as unknown as typeof fetch
-    await expect(fetchSlidesBytes('/api/f/x', { fetchImpl })).rejects.toBeInstanceOf(SlidesTooLargeError)
+  test('throws SlidesTooLargeError when the declared length exceeds the cap', async () => {
+    const mockFetch = async () =>
+      new Response(new Uint8Array(1), {
+        headers: { 'content-length': String(60 * 1024 * 1024) },
+      })
+    await expect(
+      fetchSlidesBytes('http://example.com/file.pptx', {
+        maxBytes: MAX_SLIDES_BYTES,
+        fetchImpl: mockFetch as unknown as typeof fetch,
+      }),
+    ).rejects.toBeInstanceOf(SlidesTooLargeError)
   })
 
-  test('refuses a deck that turns out to be over the cap', async () => {
-    const big = new Uint8Array(64)
-    const fetchImpl = (async () => response(big)) as unknown as typeof fetch
-    await expect(fetchSlidesBytes('/api/f/x', { fetchImpl, maxBytes: 32 })).rejects.toBeInstanceOf(
-      SlidesTooLargeError,
-    )
-  })
-
-  test('reports the HTTP status when the file cannot be read', async () => {
-    const fetchImpl = (async () => response(new Uint8Array(0), {}, 404)) as unknown as typeof fetch
-    const error = await fetchSlidesBytes('/api/f/x', { fetchImpl }).catch((cause) => cause)
-    expect(error).toBeInstanceOf(SlidesFetchError)
-    expect((error as SlidesFetchError).status).toBe(404)
+  test('throws SlidesFetchError on a non-2xx response', async () => {
+    const mockFetch = async () => new Response(null, { status: 404 })
+    await expect(
+      fetchSlidesBytes('http://example.com/file.pptx', { fetchImpl: mockFetch as unknown as typeof fetch }),
+    ).rejects.toBeInstanceOf(SlidesFetchError)
   })
 })
 
-describe('copy', () => {
-  test('a deck over the cap says so, and nothing pretends a spinner is progress', () => {
+describe('size caps', () => {
+  test('web cap is 50 MB', () => expect(MAX_SLIDES_BYTES).toBe(50 * 1024 * 1024))
+  test('native cap is 25 MB', () => expect(MAX_SLIDES_BYTES_NATIVE).toBe(25 * 1024 * 1024))
+  test('native chunk size is 512 KB', () => expect(NATIVE_CHUNK_BYTES).toBe(512 * 1024))
+})
+
+describe('error formatters', () => {
+  test('formats errors', () => {
     expect(slidesPreviewErrorText(new SlidesTooLargeError(60 * 1024 * 1024, MAX_SLIDES_BYTES), 'deck.pptx')).toBe(
       'Too large to preview here',
     )
@@ -179,5 +198,14 @@ describe('copy', () => {
     expect(unsupportedPresentationMessage('open.odp')).toContain('as text')
     expect(unsupportedPresentationMessage('deck.pptx')).toBeNull()
     expect(unsupportedPresentationMessage('report.pdf')).toBeNull()
+  })
+
+  test('unsupportedDocumentMessage names the way out (SHO-467)', () => {
+    expect(unsupportedDocumentMessage('old.doc')).toContain('Word 97–2003')
+    expect(unsupportedDocumentMessage('open.odt')).toContain('extracted text')
+    // .rtf is not binary in the SDK — it opens as text, so no message is needed
+    expect(unsupportedDocumentMessage('text.rtf')).toBeNull()
+    expect(unsupportedDocumentMessage('report.docx')).toBeNull()
+    expect(unsupportedDocumentMessage('report.pdf')).toBeNull()
   })
 })

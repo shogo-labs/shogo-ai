@@ -50,6 +50,8 @@ const REQUIRED_LOCAL_ROUTES = [
   // The slides viewer (SHO-426): every file host frames it to render a deck, so
   // desktop must mount the same page cloud does.
   'GET /api/viewers/slides',
+  // The document viewer (SHO-467): same pattern for Word files.
+  'GET /api/viewers/document',
   // Settings-era Usage and the Analytics screen (Usage | Cost Optimizer) read
   // these on desktop; they 404'd when only server.ts (cloud) mounted them.
   'GET /api/workspaces/:workspaceId/analytics/usage-summary',
