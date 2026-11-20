@@ -23,6 +23,7 @@ const engine = {
   seeks: [] as number[],
   rates: [] as number[],
 }
+let playbackHandlers: { onPlaying?: () => void } = {}
 const downloads: Array<{ url: string; name: string }> = []
 const testDir = import.meta.dir
 
@@ -33,18 +34,21 @@ mock.module(resolve(testDir, "../../../lib/attachment-download"), () => ({
 }))
 
 mock.module(resolve(testDir, "../../../lib/voice-playback-engine"), () => ({
-  createVoicePlaybackEngine: () => ({
-    load: (url: string) => engine.loaded.push(url),
-    play: () => {
-      engine.plays += 1
-    },
-    pause: () => {
-      engine.pauses += 1
-    },
-    seek: (seconds: number) => engine.seeks.push(seconds),
-    setRate: (rate: number) => engine.rates.push(rate),
-    release: () => {},
-  }),
+  createVoicePlaybackEngine: (handlers: typeof playbackHandlers) => {
+    playbackHandlers = handlers
+    return {
+      load: (url: string) => engine.loaded.push(url),
+      play: () => {
+        engine.plays += 1
+      },
+      pause: () => {
+        engine.pauses += 1
+      },
+      seek: (seconds: number) => engine.seeks.push(seconds),
+      setRate: (rate: number) => engine.rates.push(rate),
+      release: () => {},
+    }
+  },
 }))
 
 // The real shared-ui pulls in react-native; only `cn` is needed here.
@@ -86,11 +90,13 @@ mock.module("react-native", () =>
       accessibilityActions: _accessibilityActions,
       accessibilityValue: _accessibilityValue,
       accessibilityRole,
+      accessibilityState,
       delayPressIn: _delayPressIn,
       ...props
     }: {
       accessibilityLabel?: string
       accessibilityRole?: string
+      accessibilityState?: { busy?: boolean }
       accessibilityActions?: unknown
       accessibilityValue?: unknown
       onAccessibilityAction?: unknown
@@ -108,6 +114,7 @@ mock.module("react-native", () =>
           ...props,
           role: accessibilityRole === "adjustable" ? "slider" : "button",
           "aria-label": accessibilityLabel,
+          "aria-busy": (accessibilityState as { busy?: boolean } | undefined)?.busy,
           ref: (node: Element) => {
             if (node && onLayout) layoutHandlers.set(node, onLayout)
             if (node) pressHandlers.set(node, { onPressIn, onPressMove, onPressOut })
@@ -211,6 +218,8 @@ describe('playing and pausing', () => {
     expect(engine.plays).toBe(1)
     expect(readVoicePlayback().isPlaying).toBe(true)
 
+    expect(screen.getByLabelText("Loading Voice note.m4a")).toBeTruthy()
+    act(() => playbackHandlers.onPlaying?.())
     fireEvent.click(screen.getByLabelText("Pause Voice note.m4a"))
     expect(engine.pauses).toBe(1)
     expect(readVoicePlayback().isPlaying).toBe(false)

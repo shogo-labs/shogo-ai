@@ -68,6 +68,19 @@ function blobToDataUrl(blob: Blob): Promise<string> {
   })
 }
 
+async function recordingMimeType(blob: Blob, declared: string): Promise<string> {
+  const header = new Uint8Array(await blob.slice(0, 12).arrayBuffer())
+  const ascii = (start: number, end: number) => String.fromCharCode(...header.slice(start, end))
+  if (ascii(4, 8) === 'ftyp') return 'audio/mp4'
+  if (header[0] === 0x1a && header[1] === 0x45 && header[2] === 0xdf && header[3] === 0xa3) {
+    return 'audio/webm'
+  }
+  if (ascii(0, 4) === 'OggS') return 'audio/ogg'
+  if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WAVE') return 'audio/wav'
+  const baseType = declared.split(';', 1)[0].trim().toLowerCase()
+  return baseType === 'video/webm' ? 'audio/webm' : baseType || 'audio/webm'
+}
+
 export function useVoiceNoteRecorder(): VoiceNoteRecorder {
   const [isRecording, setIsRecording] = useState(false)
   const [level, setLevel] = useState(0)
@@ -80,49 +93,73 @@ export function useVoiceNoteRecorder(): VoiceNoteRecorder {
   const chunksRef = useRef<Blob[]>([])
   const samplesRef = useRef<number[]>([])
   const startedAtRef = useRef(0)
+  // `MediaRecorder.stop()` completes asynchronously. Keep that completion
+  // single-flight so a timer tick, a tap, or unmount cannot detach the final
+  // `dataavailable` handler while the recorder is flushing its last chunk.
+  const finishingRef = useRef<Promise<RecordedVoiceNote | null> | null>(null)
 
   const release = useCallback(() => {
     if (timerRef.current) {
       clearInterval(timerRef.current)
       timerRef.current = null
     }
+    const recorder = recorderRef.current
+    recorderRef.current = null
+    if (recorder) {
+      recorder.ondataavailable = null
+      try { if (recorder.state !== 'inactive') recorder.stop() } catch {}
+    }
     streamRef.current?.getTracks().forEach((track) => track.stop())
     streamRef.current = null
     void audioContextRef.current?.close().catch(() => {})
     audioContextRef.current = null
-    recorderRef.current = null
   }, [])
 
   useEffect(() => () => release(), [release])
 
   const finish = useCallback(
-    async (discard: boolean) => {
-      const recorder = recorderRef.current
-      if (!recorder || recorder.state === "inactive") {
+    (discard: boolean): Promise<RecordedVoiceNote | null> => {
+      if (finishingRef.current) return finishingRef.current
+
+      const completion = (async (): Promise<RecordedVoiceNote | null> => {
+        const recorder = recorderRef.current
+        if (!recorder || recorder.state === "inactive") {
+          release()
+          setIsRecording(false)
+          return null
+        }
+        const durationMs = Date.now() - startedAtRef.current
+        const samples = samplesRef.current
+        const stopped = new Promise<void>((resolve) => {
+          recorder.onstop = () => resolve()
+        })
+        recorder.stop()
+        await stopped
+        const recordedType = recorder.mimeType || "audio/webm"
+        const recordedBlob = new Blob(chunksRef.current, { type: recordedType })
+        // Release the microphone before inspecting bytes or reading the data URL:
+        // either asynchronous step can fail and must not leave capture running.
         release()
         setIsRecording(false)
-        return null
-      }
-      const durationMs = Date.now() - startedAtRef.current
-      const samples = samplesRef.current
-      const stopped = new Promise<void>((resolve) => {
-        recorder.onstop = () => resolve()
-      })
-      recorder.stop()
-      await stopped
-      const mimeType = recorder.mimeType || "audio/webm"
-      const blob = new Blob(chunksRef.current, { type: mimeType })
-      release()
-      setIsRecording(false)
-      setLevel(0)
-      setElapsedMs(0)
-      chunksRef.current = []
-      samplesRef.current = []
+        setLevel(0)
+        setElapsedMs(0)
+        chunksRef.current = []
+        samplesRef.current = []
 
-      if (discard || durationMs < MIN_VOICE_NOTE_MS || !blob.size) return null
-      const dataUrl = await blobToDataUrl(blob)
-      const peaks = peaksToString(downsamplePeaks(samples)) ?? ""
-      return { dataUrl, mimeType, durationMs, peaks }
+        if (discard || durationMs < MIN_VOICE_NOTE_MS || !recordedBlob.size) return null
+        const mimeType = await recordingMimeType(recordedBlob, recordedType)
+        const blob = recordedBlob.type === mimeType
+          ? recordedBlob
+          : new Blob([recordedBlob], { type: mimeType })
+        const dataUrl = await blobToDataUrl(blob)
+        const peaks = peaksToString(downsamplePeaks(samples)) ?? ""
+        return { dataUrl, mimeType, durationMs, peaks }
+      })()
+      finishingRef.current = completion
+      void completion.finally(() => {
+        if (finishingRef.current === completion) finishingRef.current = null
+      })
+      return completion
     },
     [release],
   )
@@ -144,36 +181,41 @@ export function useVoiceNoteRecorder(): VoiceNoteRecorder {
     samplesRef.current = []
     startedAtRef.current = Date.now()
 
-    const mimeType = pickRecordingMimeType()
-    const recorder = new MediaRecorder(media, mimeType ? { mimeType } : undefined)
-    recorder.ondataavailable = (event) => {
-      if (event.data?.size) chunksRef.current.push(event.data)
+    try {
+      const mimeType = pickRecordingMimeType()
+      const recorder = new MediaRecorder(media, mimeType ? { mimeType } : undefined)
+      recorderRef.current = recorder
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size) chunksRef.current.push(event.data)
+      }
+      recorder.start()
+
+      // A live level meter doubles as the waveform: the same samples drive both.
+      const context = new AudioContext()
+      audioContextRef.current = context
+      const analyser = context.createAnalyser()
+      analyser.fftSize = 1024
+      context.createMediaStreamSource(media).connect(analyser)
+      const buffer = new Float32Array(analyser.fftSize)
+
+      timerRef.current = setInterval(() => {
+        analyser.getFloatTimeDomainData(buffer)
+        let sum = 0
+        for (let i = 0; i < buffer.length; i += 1) sum += buffer[i] * buffer[i]
+        const next = rmsToLevel(Math.sqrt(sum / buffer.length))
+        samplesRef.current.push(next)
+        setLevel(next)
+        const elapsed = Date.now() - startedAtRef.current
+        setElapsedMs(elapsed)
+        if (elapsed >= MAX_VOICE_NOTE_MS) void finish(false)
+      }, LEVEL_SAMPLE_MS)
+
+      setIsRecording(true)
+    } catch (error) {
+      release()
+      throw error
     }
-    recorder.start()
-
-    // A live level meter doubles as the waveform: the same samples drive both.
-    const context = new AudioContext()
-    audioContextRef.current = context
-    const analyser = context.createAnalyser()
-    analyser.fftSize = 1024
-    context.createMediaStreamSource(media).connect(analyser)
-    const buffer = new Float32Array(analyser.fftSize)
-
-    timerRef.current = setInterval(() => {
-      analyser.getFloatTimeDomainData(buffer)
-      let sum = 0
-      for (let i = 0; i < buffer.length; i += 1) sum += buffer[i] * buffer[i]
-      const next = rmsToLevel(Math.sqrt(sum / buffer.length))
-      samplesRef.current.push(next)
-      setLevel(next)
-      const elapsed = Date.now() - startedAtRef.current
-      setElapsedMs(elapsed)
-      if (elapsed >= MAX_VOICE_NOTE_MS) void finish(false)
-    }, LEVEL_SAMPLE_MS)
-
-    recorderRef.current = recorder
-    setIsRecording(true)
-  }, [finish])
+  }, [finish, release])
 
   return { isRecording, level, elapsedMs, start, stop, cancel }
 }

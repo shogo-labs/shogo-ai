@@ -35,6 +35,12 @@ describe('apiAuthGate', () => {
     }
   })
 
+  test('lets dictation reach its handler-level cloud/local auth check', async () => {
+    expect(isPublicPath('/api/dictation/transcribe')).toBe(true)
+    const res = await buildApp().fetch(new Request('http://x/api/dictation/transcribe', { method: 'POST' }))
+    expect(res.status).toBe(200)
+  })
+
   test('lets gate-only public prefixes and special paths through', () => {
     for (const prefix of GATE_PUBLIC_PREFIXES) {
       expect(isGatePublicPath(`${prefix}x`)).toBe(true)

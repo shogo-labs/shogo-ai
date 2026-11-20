@@ -9,13 +9,14 @@
  * attachment when available, or from audio metadata for older notes.
  */
 
-import { useCallback, useRef, useState } from "react"
-import { Modal, Platform, Pressable, Text, View, type GestureResponderEvent } from "react-native"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { ActivityIndicator, Modal, Platform, Pressable, Text, View, type GestureResponderEvent } from "react-native"
 import { Download, Pause, Play } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { downloadAttachment } from "../../lib/attachment-download"
 import {
   PLAYBACK_SPEEDS,
+  preloadVoiceNote,
   seekVoiceNote,
   seekVoiceNoteByMs,
   setVoiceNoteSpeed,
@@ -64,8 +65,10 @@ function playbackUrlForPlatform(url: string, mimeType?: string | null, name?: st
 export function VoiceNotePlayer({ attachmentId, url, mimeType, durationMs, peaks, name }: VoiceNotePlayerProps) {
   const playback = useVoicePlayback()
   const playbackUrl = playbackUrlForPlatform(url, mimeType, name)
+  const playerContainerRef = useRef<View>(null)
   const isActive = playback.activeId === attachmentId
   const isPlaying = isActive && playback.isPlaying
+  const isLoading = isActive && playback.isLoading
   const totalMs = playback.durationMs > 0 && isActive ? playback.durationMs : (durationMs ?? 0)
   const progress = isActive ? playbackProgress(playback.positionMs, totalMs) : 0
   const bars = waveformBars(peaks)
@@ -82,6 +85,28 @@ export function VoiceNotePlayer({ attachmentId, url, mimeType, durationMs, peaks
 
   const label = name?.trim() || "voice note"
   const currentPositionMs = isActive ? playback.positionMs : 0
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof IntersectionObserver === "undefined") return
+    const node = playerContainerRef.current as unknown as Element | null
+    if (!node) return
+
+    let releasePreload: (() => void) | null = null
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry?.isIntersecting) {
+        releasePreload ??= preloadVoiceNote(playbackUrl)
+      } else {
+        releasePreload?.()
+        releasePreload = null
+      }
+    }, { rootMargin: "180px 0px" })
+
+    observer.observe(node)
+    return () => {
+      observer.disconnect()
+      releasePreload?.()
+    }
+  }, [playbackUrl, isActive])
 
   const onToggle = useCallback(() => {
     toggleVoiceNote({ id: attachmentId, url: playbackUrl, durationMs })
@@ -199,6 +224,7 @@ export function VoiceNotePlayer({ attachmentId, url, mimeType, durationMs, peaks
 
   return (
     <View
+      ref={playerContainerRef}
       className="rounded-2xl border border-border bg-card px-3 py-2"
       style={{ minWidth: 252, maxWidth: 360 }}
     >
@@ -206,10 +232,13 @@ export function VoiceNotePlayer({ attachmentId, url, mimeType, durationMs, peaks
         <Pressable
           onPress={onToggle}
           accessibilityRole="button"
-          accessibilityLabel={isPlaying ? `Pause ${label}` : `Play ${label}`}
+          accessibilityLabel={isLoading ? `Loading ${label}` : isPlaying ? `Pause ${label}` : `Play ${label}`}
+          accessibilityState={{ busy: isLoading }}
           className="h-9 w-9 items-center justify-center rounded-full bg-primary active:opacity-80"
         >
-          {isPlaying ? (
+          {isLoading ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : isPlaying ? (
             <Pause size={15} className="text-primary-foreground" />
           ) : (
             <Play size={15} className="text-primary-foreground" />

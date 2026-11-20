@@ -651,6 +651,11 @@ describe('artifact presign', () => {
     expect(presignCalls[0].command.input.ResponseContentDisposition).toBeUndefined()
   })
 
+  it('read presign overrides stale object content type when requested', async () => {
+    await s3.getArtifactPresignedReadUrl('k', { responseContentType: 'audio/mp4' })
+    expect(presignCalls[0].command.input.ResponseContentType).toBe('audio/mp4')
+  })
+
   it('write presign honors bucket override option', async () => {
     await s3.getArtifactPresignedWriteUrl('k', { bucket: 'art-override' })
     expect(presignCalls[0].command.input.Bucket).toBe('art-override')

@@ -423,6 +423,9 @@ export const PUBLIC_PREFIXES = [
   '/api/invite-links/',
   '/api/internal/',
   '/api/local/',
+  // Dictation checks the auth mode in its handler: cloud requires a user
+  // session/tunnel; local desktop supports signed-out transcription.
+  '/api/dictation/',
   '/api/ai/',
   // Public OpenAI-compatible API — self-authenticates with a `shogo_sk_*` key.
   '/api/v1/',

@@ -42,7 +42,9 @@ const MESSAGES_GLOB = "**/api/chat-messages*"
 
 const BOOTSTRAP_PROMPT = "Build a tiny app for the resume-replay E2E"
 const BOOTSTRAP_REPLY = "Bootstrap done."
-const REPLY_MARKER = "the reply survived the repaint"
+// The saved row adds a suffix below, so reconciliation matches it as a
+// substantial prefix. Keep this above isReplyForTurn's 40-character floor.
+const REPLY_MARKER = "the reply survived the repaint and stayed in the transcript"
 const SAVED_SUFFIX = " (saved)"
 
 interface HistoryState {

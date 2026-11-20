@@ -28,7 +28,13 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { Slot, Stack, usePathname, useRouter } from "expo-router";
+import {
+  Slot,
+  Stack,
+  useGlobalSearchParams,
+  usePathname,
+  useRouter,
+} from "expo-router";
 import { useAuth } from "../../contexts/auth";
 import {
   isWorkspaceRuntimeEnabled,
@@ -86,6 +92,7 @@ import { useWorkspaceRemountKey } from "../../hooks/useWorkspaceRemountKey";
 import { sidebarOpenEvents } from "../../lib/sidebar-open-events";
 import { getCloudWorkspacesState, refreshCloudWorkspaces, subscribeCloudWorkspaces } from "../../lib/workspace-route";
 import { isConversationPath } from "../../lib/sidebar-tab";
+import { adoptableWorkspaceParam, setActiveWorkspaceId } from "../../lib/workspace-store";
 
 csMark("app:layout:module-load");
 
@@ -213,6 +220,10 @@ function AppLayoutInner() {
   const workspaces = useWorkspaceCollection();
   const router = useRouter();
   const pathname = usePathname();
+  const globalSearchParams = useGlobalSearchParams<{
+    workspace?: string | string[];
+    checkout?: string | string[];
+  }>();
   const isIdeEmbed = useMemo(() => {
     if (Platform.OS !== "web" || typeof window === "undefined") return false;
     return new URLSearchParams(window.location.search).get("embed") === "ide";
@@ -430,6 +441,58 @@ function AppLayoutInner() {
       console.error("[AppLayout] Failed to load workspaces:", error);
     });
   }, [isAuthenticated, workspaces]);
+
+  // A workspace link is an app-level request, independent of whether this
+  // route renders the sidebar. Resolve it from the signed-in user's list and
+  // persist it in this tab before the destination page finishes loading.
+  useEffect(() => {
+    if (
+      Platform.OS !== "web" ||
+      typeof window === "undefined" ||
+      !isAuthenticated ||
+      !workspaces
+    ) {
+      return;
+    }
+
+    // The app layout stays mounted as the user navigates between routes. Read
+    // Expo Router's global params so a workspace link opened in an existing
+    // tab is handled as well as a direct page load.
+    const workspaceParam = globalSearchParams.workspace;
+    const requestedWorkspaceId = Array.isArray(workspaceParam)
+      ? workspaceParam[0]
+      : workspaceParam;
+    if (
+      !requestedWorkspaceId ||
+      globalSearchParams.checkout !== undefined
+    ) {
+      return;
+    }
+
+    const url = new URL(window.location.href);
+    url.searchParams.delete("workspace");
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+
+    void workspaces
+      .loadAll()
+      .then(() => {
+        const ownWorkspaceIds = (workspaces.all ?? []).map((workspace: any) => workspace.id);
+        const workspaceId = adoptableWorkspaceParam(ownWorkspaceIds, requestedWorkspaceId);
+        if (workspaceId) setActiveWorkspaceId(workspaceId);
+      })
+      .catch((error: unknown) => {
+        console.error("[AppLayout] Failed to resolve workspace link:", error);
+      });
+  }, [
+    globalSearchParams.checkout,
+    globalSearchParams.workspace,
+    isAuthenticated,
+    workspaces,
+  ]);
 
   // Desktop signed in to Shogo Cloud: keep its cloud workspaces in the
   // switcher, re-checking on focus so newly joined ones appear, and reload

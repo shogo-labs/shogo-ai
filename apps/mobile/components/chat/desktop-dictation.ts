@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Chat-composer dictation inside the Electron desktop app.
+ * Chat-composer dictation in browser and Electron clients.
  *
- * Electron ships `webkitSpeechRecognition` but no speech backend behind it,
- * so the browser path always errors. Here we capture the mic ourselves,
- * encode a 16 kHz WAV and have the local API transcribe it.
+ * Browser speech-recognition services depend on an external network backend.
+ * Capture the mic directly, encode a 16 kHz WAV, and use Shogo's API instead.
  */
 
 import { API_URL } from '../../lib/api-url'
@@ -56,10 +55,27 @@ export async function startDesktopDictation(): Promise<DesktopDictation> {
     stream.getTracks().forEach((t) => t.stop())
     throw new Error('Audio capture is not available.')
   }
-  const ctx: AudioContext = new Ctx()
-  const source = ctx.createMediaStreamSource(stream)
-  // Same approach as live-audio.ts: no separate worklet module needed.
-  const processor = ctx.createScriptProcessor(4096, 1, 1)
+  let ctx: AudioContext
+  try {
+    ctx = new Ctx()
+  } catch (error) {
+    stream.getTracks().forEach((track) => track.stop())
+    throw error
+  }
+
+  let source: MediaStreamAudioSourceNode
+  let processor: ScriptProcessorNode
+  try {
+    source = ctx.createMediaStreamSource(stream)
+    // Same approach as live-audio.ts: no separate worklet module needed.
+    processor = ctx.createScriptProcessor(4096, 1, 1)
+    source.connect(processor)
+    processor.connect(ctx.destination)
+  } catch (error) {
+    stream.getTracks().forEach((track) => track.stop())
+    try { await ctx.close() } catch {}
+    throw error
+  }
   const sampleRate = ctx.sampleRate
   const parts: Float32Array[] = []
   let length = 0
@@ -71,8 +87,6 @@ export async function startDesktopDictation(): Promise<DesktopDictation> {
     parts.push(new Float32Array(input))
     length += input.length
   }
-  source.connect(processor)
-  processor.connect(ctx.destination)
   if (ctx.state === 'suspended') void ctx.resume().catch(() => {})
 
   const close = async () => {
@@ -103,9 +117,9 @@ export async function startDesktopDictation(): Promise<DesktopDictation> {
   }
 }
 
-/** POST the clip to the local API and return the transcript text. */
+/** POST the clip to Shogo's authenticated API and return the transcript text. */
 export async function transcribeDesktopClip(wav: Blob): Promise<string> {
-  const res = await fetch(`${API_URL}/api/local/transcribe`, {
+  const res = await fetch(`${API_URL}/api/dictation/transcribe`, {
     method: 'POST',
     headers: { 'Content-Type': 'audio/wav' },
     body: wav,

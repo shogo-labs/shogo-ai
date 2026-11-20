@@ -60,4 +60,3 @@ CREATE UNIQUE INDEX "storage_usage_daily_workspaceId_day_key" ON "storage_usage_
 -- RedefineIndex (accepted pre-existing drift) — the signup_attributions unique
 -- index rename the generator also emits is unrelated to this change and is
 -- deliberately not included here.
-

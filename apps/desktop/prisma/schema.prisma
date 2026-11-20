@@ -1318,4 +1318,3 @@ model VmMeterCursor {
   @@index([lastSeenAt])
   @@map("vm_meter_cursors")
 }
-

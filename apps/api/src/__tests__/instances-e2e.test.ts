@@ -125,6 +125,14 @@ mock.module('../lib/push-notifications', () => ({
   sendPushToInstance: mock(async () => {}),
   sendPushToUser: mock(async () => {}),
 }))
+// `instanceRoutes` imports the tunnel module, whose heartbeat payload includes
+// a best-effort machine snapshot. This route test exercises instance lifecycle
+// behavior with a deliberately small Prisma double, not the snapshot's SQLite
+// queries; leaving the real collector in place lets that unrelated background
+// work escape the test and query models this double does not implement.
+mock.module('../lib/machine-snapshot', () => ({
+  collectMachineSnapshot: mock(async () => ({})),
+}))
 
 // The viewing user must match the user that owns the machine (the API key
 // owner returned by resolveApiKey below), since machines are now scoped to

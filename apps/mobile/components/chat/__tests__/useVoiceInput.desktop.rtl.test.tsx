@@ -62,6 +62,23 @@ beforeEach(() => {
 })
 
 describe("useVoiceInput on desktop", () => {
+  test("does not open two microphone streams while permission is pending", async () => {
+    let finishPermission: (value: typeof session) => void = () => {}
+    startDesktopDictation.mockImplementation(() => new Promise((resolve) => {
+      finishPermission = resolve
+    }))
+    render(<Probe />)
+
+    await act(async () => {
+      const first = voice.toggleRecording()
+      await voice.toggleRecording()
+      finishPermission(session)
+      await first
+    })
+    expect(startDesktopDictation).toHaveBeenCalledTimes(1)
+    expect(voice.isRecording).toBe(true)
+  })
+
   test("records, transcribes via the local API, and never touches SpeechRecognition", async () => {
     render(<Probe />)
     expect(voice.canRecord).toBe(true)
