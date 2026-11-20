@@ -81,8 +81,12 @@ export function isPublicChannelIngressPath(path: string): boolean {
   if (!match) return false
   const relative = match[1]
 
-  // WhatsApp webhook: canonical + legacy alias
-  if (relative === '/agent/channels/whatsapp/webhook' || relative === '/webhooks/whatsapp') {
+  // WhatsApp webhook (canonical + legacy alias) and Teams (Bot Framework JWT).
+  if (
+    relative === '/agent/channels/whatsapp/webhook' ||
+    relative === '/webhooks/whatsapp' ||
+    relative === '/agent/channels/teams/messages'
+  ) {
     return true
   }
 

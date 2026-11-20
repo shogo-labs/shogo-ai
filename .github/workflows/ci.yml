@@ -627,6 +627,15 @@ jobs:
           - { name: 'E2E (local mode) (3/5)', shard: '3/5' }
           - { name: 'E2E (local mode) (4/5)', shard: '4/5' }
           - { name: 'E2E (local mode) (5/5)', shard: '5/5' }
+          # chat-return-to-live-chat (SHO-450): the two heaviest non-fake-model
+          # files in shard 2/5 on run 44494233963 were chat-return-to-live-chat
+          # (5.5m) and chat-resume-replay-storm (3.1m), leaving only 0.9m of
+          # headroom. Moving them to their own jobs drops shard 2/5 from 34.1m
+          # to ≈25m and gives each of their own jobs ≈13m (5–6m test + ≈8m
+          # boot), well within the 35m cap. Neither spec needs the fake model:
+          # both mock the turn at the browser level.
+          - { name: 'E2E (chat return to live)', spec: 'chat-return-to-live-chat' }
+          - { name: 'E2E (chat resume storm)', spec: 'chat-resume-replay-storm' }
           # These specs all need the API pointed at the fake model, which
           # would change every other spec, so they get stacks of their own.
           # They are FOUR jobs, not one (SHO-251): on one worker, all 27 tests
@@ -725,8 +734,10 @@ jobs:
       contents: read
     # 35, not 60: a wedged E2E job holds the whole merge queue for the length
     # of this cap (23:55–01:25Z on 2026-10-20, three entries, ~75 min). Measured
-    # on a green PR run: local shards 11–13 min, so 35 keeps ~10 min of headroom
-    # and still halves the worst case. One number for the whole matrix on
+    # on green PR run 44494233963: shards 16–34 min (1/5 20.0m, 2/5 34.1m,
+    # 3/5 17.3m, 4/5 22.5m, 5/5 16.1m), so after the SHO-450 rebalance that
+    # moves the two heaviest shard-2 files to own jobs, the expected range drops
+    # to 16–26m with ≥ 9 min of headroom. One number for the whole matrix on
     # purpose: the chat jobs measure 15, 7, 9 and 5 min on CI (SHO-251), all
     # well under 60% of it, and a per-entry cap via `${{ matrix.timeout }}`
     # turned out to mean NO cap at all for entries without the key — a job ran
@@ -737,11 +748,9 @@ jobs:
     # in the same run — 1/3 passed at 33m49s, 2/3 at 30m05s, and 3/3 was
     # cancelled at 35m18s with 23 of its 126 tests never reached. That is not a
     # hang: a local test measures ~17–20 s plus ~5 min of stack boot, so the
-    # third of the suite that each job got simply cost more than 35 min. At five
-    # shards the biggest one lands near 25–30 min and the retries a red spec
-    # costs (~2–3 min for three attempts) fit inside the cap again. Same cap,
-    # more jobs: raising the number would put the merge queue back in the hole
-    # this comment opens with.
+    # third of the suite that each job got simply cost more than 35 min. SHO-450
+    # rebalanced shard 2/5 (measured at 34.1m, 0.9m headroom) by moving its two
+    # heaviest files to own-entry jobs; the five-shard count stays the same.
     timeout-minutes: 35
 
     steps:
@@ -804,10 +813,11 @@ jobs:
         if: ${{ !matrix.spec }}
         env:
           E2E_LOCAL_START_STACK: '1'
-          # Specs that have their own entry in this matrix skip themselves when
-          # this is set, so they are not also run (and not also red) inside a
-          # shard. `slides-preview` and `chat-send-body-size` are the two today;
-          # a new own-entry spec goes on that list in its own file.
+          # Specs that have their own entry in this matrix are listed in
+          # `OWN_ENTRY_SPECS` in e2e/local/playwright.config.ts, which adds
+          # them to `testIgnore` when this is set so they are neither run nor
+          # counted in the shard's file total. Add a new own-entry spec there,
+          # not in the spec file itself (SHO-450).
           E2E_SHARD: ${{ matrix.shard }}
         run: npx playwright test --config e2e/local/playwright.config.ts --project=chromium --shard=${{ matrix.shard }}
 

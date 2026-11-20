@@ -29,12 +29,18 @@
  */
 
 import {
+  type CreatorBaseline,
+  type CreatorBaselineOptions,
   type NormalizedPost,
   type NormalizedProfile,
+  type NormalizedSearchResult,
+  type SearchPostsOptions,
   type SocialContentProvider,
   type SocialPlatform,
+  type UnitMeter,
   SocialProviderError,
 } from './provider'
+import { median } from './outlier'
 
 const DEFAULT_BASE_URL = 'https://ensembledata.com/apis'
 
@@ -80,7 +86,7 @@ export class EnsembleDataProvider implements SocialContentProvider {
 
   // --- low-level request --------------------------------------------------
 
-  private async request(endpoint: string, params: Record<string, string | number | undefined>): Promise<any> {
+  private async request(endpoint: string, params: Record<string, string | number | undefined>, meter?: UnitMeter): Promise<any> {
     const url = new URL(this.baseUrl + endpoint)
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v))
@@ -116,6 +122,13 @@ export class EnsembleDataProvider implements SocialContentProvider {
       throw new SocialProviderError('upstream', `EnsembleData HTTP ${res.status}`)
     }
 
+    if (meter) {
+      const charged = Number(res.headers.get('units_charged') ?? res.headers.get('x-units-charged') ?? '0')
+      if (Number.isFinite(charged) && charged > 0) {
+        meter.units += charged
+      }
+    }
+
     let json: Json
     try {
       json = (await res.json()) as Json
@@ -127,10 +140,10 @@ export class EnsembleDataProvider implements SocialContentProvider {
 
   // --- profile / verification --------------------------------------------
 
-  async getProfile(platform: SocialPlatform, handle: string): Promise<NormalizedProfile> {
+  async getProfile(platform: SocialPlatform, handle: string, meter?: UnitMeter): Promise<NormalizedProfile> {
     const h = normalizeHandle(handle)
     if (platform === 'tiktok') {
-      const data = await this.request('/tt/user/info', { username: h })
+      const data = await this.request('/tt/user/info', { username: h }, meter)
       const user = data?.user ?? data ?? {}
       return {
         providerUserId: strOrNull(user.id ?? user.uid ?? user.sec_uid ?? user.secUid),
@@ -145,7 +158,7 @@ export class EnsembleDataProvider implements SocialContentProvider {
     // ownership verification could never succeed. detailed-info returns the
     // user object directly under `data` (no `.user` nesting) and includes
     // `biography`, `full_name`, and the numeric `id` that listRecentPosts needs.
-    const data = await this.request('/instagram/user/detailed-info', { username: h })
+    const data = await this.request('/instagram/user/detailed-info', { username: h }, meter)
     const u = data?.user ?? data ?? {}
     return {
       providerUserId: strOrNull(u.id ?? u.pk ?? u.fbid),
@@ -156,24 +169,24 @@ export class EnsembleDataProvider implements SocialContentProvider {
 
   // --- posts --------------------------------------------------------------
 
-  async listRecentPosts(platform: SocialPlatform, handle: string, limit: number): Promise<NormalizedPost[]> {
+  async listRecentPosts(platform: SocialPlatform, handle: string, limit: number, meter?: UnitMeter): Promise<NormalizedPost[]> {
     const h = normalizeHandle(handle)
     const depth = Math.max(1, Math.ceil(limit / 10))
     if (platform === 'tiktok') {
-      const data = await this.request('/tt/user/posts', { username: h, depth })
+      const data = await this.request('/tt/user/posts', { username: h, depth }, meter)
       const items = asArray(data)
       return items.slice(0, limit).map((p) => normalizeTikTokPost(p, h))
     }
 
     // Instagram needs the numeric user id; resolve it first.
-    const profile = await this.getProfile('instagram', h)
+    const profile = await this.getProfile('instagram', h, meter)
     const userId = profile.providerUserId
     if (!userId) {
       throw new SocialProviderError('not_found', `Instagram user id not resolvable for @${h}`)
     }
     const [postsData, reelsData] = await Promise.all([
-      this.request('/instagram/user/posts', { user_id: userId, depth }).catch(swallowNotFound),
-      this.request('/instagram/user/reels', { user_id: userId, depth }).catch(swallowNotFound),
+      this.request('/instagram/user/posts', { user_id: userId, depth }, meter).catch(swallowNotFound),
+      this.request('/instagram/user/reels', { user_id: userId, depth }, meter).catch(swallowNotFound),
     ])
 
     const byId = new Map<string, NormalizedPost>()
@@ -188,6 +201,214 @@ export class EnsembleDataProvider implements SocialContentProvider {
       if (post) byId.set(post.providerPostId, post)
     }
     return Array.from(byId.values()).slice(0, limit)
+  }
+
+  // --- search -------------------------------------------------------------
+
+  async searchPosts(
+    platform: SocialPlatform,
+    opts: SearchPostsOptions,
+  ): Promise<{ results: NormalizedSearchResult[]; queryUsed: string }> {
+    const { query, kind, periodDays, limit: rawLimit, meter } = opts
+    const limit = Math.min(50, Math.max(1, Math.floor(rawLimit)))
+
+    if (platform === 'tiktok') {
+      return this._searchTikTok(query, kind, periodDays, limit, meter)
+    }
+    // Instagram: hashtag-only. Compact a plain keyword to a hashtag.
+    return this._searchInstagramHashtag(query, limit, periodDays, meter)
+  }
+
+  private async _searchTikTok(
+    query: string,
+    kind: 'keyword' | 'hashtag',
+    periodDays: number,
+    limit: number,
+    meter?: UnitMeter,
+  ): Promise<{ results: NormalizedSearchResult[]; queryUsed: string }> {
+    const name = query.replace(/^#+/, '')
+    const endpoint = kind === 'hashtag' ? '/tt/hashtag/posts' : '/tt/keyword/search'
+    const periodParam = kind === 'hashtag' ? undefined : periodDays  // hashtag has no native period
+
+    const results: NormalizedSearchResult[] = []
+    const seen = new Set<string>()
+    let cursor: string | undefined
+
+    // EnsembleData pages ~20 posts per call; cap at ceil(limit/20) pages.
+    const maxPages = Math.ceil(limit / 20) + 1
+    for (let page = 0; page < maxPages && results.length < limit; page++) {
+      const params: Record<string, string | number | undefined> = {
+        name,
+        ...(periodParam !== undefined ? { period: periodParam } : {}),
+        ...(cursor ? { cursor } : {}),
+        get_author_stats: 1,
+        sorting: 1,
+      }
+      const data = await this.request(endpoint, params, meter)
+      const items = asArray(kind === 'hashtag' ? (data?.videos ?? data) : data)
+      let hadNew = false
+      for (const item of items) {
+        const aweme = item?.aweme_info ?? item
+        const id = String(aweme?.aweme_id ?? aweme?.video?.id ?? '')
+        if (!id || seen.has(id)) continue
+        seen.add(id)
+        hadNew = true
+
+        const handle = (strOrNull(aweme?.author?.unique_id ?? aweme?.author?.uniqueId) ?? '').toLowerCase()
+        const followers = toNum(aweme?.author_stats?.follower_count ?? aweme?.author?.follower_count ?? aweme?.author?.followerCount)
+        const userId = strOrNull(aweme?.author?.uid ?? aweme?.author?.id)
+
+        // duration: may be in ms when > 1000
+        let durationSec: number | null = null
+        const rawDur = toNum(aweme?.video?.duration ?? aweme?.duration ?? 0)
+        if (rawDur > 0) {
+          durationSec = rawDur > 1000 ? Math.round(rawDur / 1000) : rawDur
+        }
+
+        const stats = aweme?.statistics ?? aweme?.stats ?? {}
+        const url = strOrNull(aweme?.share_url ?? aweme?.share_info?.share_url) ??
+          (id && handle ? `https://www.tiktok.com/@${handle}/video/${id}` : null)
+
+        // If periodDays > 0 and kind === 'hashtag', filter client-side
+        if (kind === 'hashtag' && periodDays > 0 && aweme?.create_time) {
+          const cutoff = Date.now() / 1000 - periodDays * 86400
+          if (toNum(aweme.create_time) < cutoff) continue
+        }
+
+        results.push({
+          providerPostId: id,
+          url,
+          caption: strOrNull(aweme?.desc ?? aweme?.content_desc),
+          postedAt: unixToDate(aweme?.create_time),
+          views: toNum(stats.play_count ?? stats.playCount),
+          likes: toNum(stats.digg_count ?? stats.diggCount),
+          comments: toNum(stats.comment_count ?? stats.commentCount),
+          shares: toNum(stats.share_count ?? stats.shareCount),
+          creator: { handle, userId, followers: followers || null },
+          durationSec,
+        })
+        if (results.length >= limit) break
+      }
+      cursor = strOrNull(data?.cursor ?? data?.extra?.cursor ?? null) ?? undefined
+      if (!cursor || !hadNew) break
+    }
+
+    const queryUsed = kind === 'hashtag' ? `#${name}` : name
+    return { results, queryUsed }
+  }
+
+  private async _searchInstagramHashtag(
+    query: string,
+    limit: number,
+    periodDays: number,
+    meter?: UnitMeter,
+  ): Promise<{ results: NormalizedSearchResult[]; queryUsed: string }> {
+    // Compact plain keyword to hashtag: "ai agents" → "aiagents"
+    const rawTag = query.replace(/^#+/, '').trim()
+    const hashtag = rawTag.replace(/\s+/g, '')
+    const queryUsed = `#${hashtag}`
+
+    const results: NormalizedSearchResult[] = []
+    const seen = new Set<string>()
+    let cursor: string | undefined
+    const maxPages = Math.ceil(limit / 20) + 1
+    const cutoff = periodDays > 0 ? Date.now() / 1000 - periodDays * 86400 : 0
+
+    for (let page = 0; page < maxPages && results.length < limit; page++) {
+      const data = await this.request('/instagram/hashtag/posts', {
+        name: hashtag,
+        ...(cursor ? { cursor } : {}),
+      }, meter)
+      const items = asArray(data?.medias ?? data?.posts ?? data)
+      let hadNew = false
+      for (const item of items) {
+        const media = item?.node ?? item
+        const id = String(media?.id ?? media?.pk ?? '')
+        if (!id || seen.has(id)) continue
+        seen.add(id)
+        hadNew = true
+
+        const isVideo = media?.is_video === true || media?.media_type === 2 || media?.product_type === 'clips'
+        if (!isVideo) continue  // non-video posts have no meaningful view count
+
+        // Filter by period client-side
+        const takenAt = toNum(media?.taken_at_timestamp ?? media?.taken_at)
+        if (cutoff > 0 && takenAt > 0 && takenAt < cutoff) continue
+
+        const shortcode = strOrNull(media?.shortcode ?? media?.code)
+        const url = shortcode ? `https://www.instagram.com/reel/${shortcode}/` : null
+
+        const ownerHandle = (strOrNull(media?.owner?.username ?? media?.owner?.handle) ?? '').toLowerCase()
+        const ownerId = strOrNull(media?.owner?.id ?? media?.owner?.pk)
+        const durationSec = media?.video_duration ? Math.round(toNum(media.video_duration)) : null
+
+        results.push({
+          providerPostId: id,
+          url,
+          caption: strOrNull(media?.edge_media_to_caption?.edges?.[0]?.node?.text ?? media?.caption),
+          postedAt: unixToDate(takenAt || null),
+          views: toNum(media?.video_view_count ?? media?.video_play_count ?? media?.play_count),
+          likes: toNum(media?.edge_media_preview_like?.count ?? media?.like_count),
+          comments: toNum(media?.edge_media_to_comment?.count ?? media?.comment_count),
+          shares: 0,
+          creator: { handle: ownerHandle, userId: ownerId, followers: null },
+          durationSec,
+        })
+        if (results.length >= limit) break
+      }
+      cursor = strOrNull(data?.end_cursor ?? data?.page_info?.end_cursor ?? null) ?? undefined
+      if (!cursor || !hadNew) break
+    }
+
+    return { results, queryUsed }
+  }
+
+  // --- creator baseline ---------------------------------------------------
+
+  async creatorBaseline(
+    platform: SocialPlatform,
+    opts: CreatorBaselineOptions,
+  ): Promise<CreatorBaseline> {
+    const { handle, userId, meter } = opts
+    const h = normalizeHandle(handle)
+
+    if (platform === 'tiktok') {
+      const data = await this.request('/tt/user/posts', { username: h, depth: 1 }, meter)
+      const items = asArray(data).slice(0, 12)
+      const viewCounts = items
+        .map((p: Json) => toNum((p.statistics ?? p.stats ?? {}).play_count ?? (p.statistics ?? p.stats ?? {}).playCount))
+        .filter((v: number) => v > 0)
+      return {
+        medianViews: viewCounts.length >= 3 ? median(viewCounts) : null,
+        sample: viewCounts.length,
+      }
+    }
+
+    // Instagram: use user id from the search result to avoid the 10-unit detailed-info call.
+    const resolvedUserId = userId ?? null
+    let reelsData: any
+    if (resolvedUserId) {
+      reelsData = await this.request('/instagram/user/reels', { user_id: resolvedUserId, depth: 1 }, meter).catch(swallowNotFound)
+    } else {
+      // Fall back to listRecentPosts (which calls detailed-info + posts + reels)
+      const posts = await this.listRecentPosts('instagram', h, 12, meter)
+      const viewCounts = posts.map((p) => p.views).filter((v) => v > 0)
+      return {
+        medianViews: viewCounts.length >= 3 ? median(viewCounts) : null,
+        sample: viewCounts.length,
+      }
+    }
+    const items = asArray(reelsData).slice(0, 12)
+    const viewCounts = items
+      .map((item: Json) => {
+        const media = item?.media ?? item
+        return toNum(media?.play_count ?? media?.view_count ?? media?.ig_play_count)
+      })
+      .filter((v: number) => v > 0)
+    return {
+      medianViews: viewCounts.length >= 3 ? median(viewCounts) : null,
+      sample: viewCounts.length,
+    }
   }
 }
 

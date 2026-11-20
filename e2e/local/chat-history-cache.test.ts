@@ -282,6 +282,63 @@ async function waitForStoredHistory(page: Page, timeoutMs = 20_000): Promise<num
   throw new Error("the device never stored this chat's history")
 }
 
+/**
+ * Wait until the durable slice has a string cursor AND the expected total. The
+ * warm-reopen path uses both: a null cursor falls through to the cold load, and
+ * a wrong total trips the count guard in `applyChatDelta`, each adding an extra
+ * page read (SHO-450). `seedHistoryCursor` writes the definitive values after
+ * the first page load; this ensures the reload does not race that write.
+ */
+async function waitForStoredCursor(
+  page: Page,
+  messageId: string,
+  total: number,
+  timeoutMs = 20_000,
+): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          async ({ id, expectedTotal }) => {
+            const db = await new Promise<IDBDatabase | null>((resolve) => {
+              const open = indexedDB.open("shogo-chat-history")
+              open.onsuccess = () => resolve(open.result)
+              open.onerror = () => resolve(null)
+              open.onblocked = () => resolve(null)
+            })
+            if (!db) return false
+            if (!db.objectStoreNames.contains("project")) {
+              db.close()
+              return false
+            }
+            return new Promise<boolean>((resolve) => {
+              const request = db
+                .transaction("project", "readonly")
+                .objectStore("project")
+                .getAll()
+              request.onsuccess = () => {
+                const found = request.result.some(
+                  (row: any) =>
+                    row.entry?.messages?.some((m: any) => m?.id === id) &&
+                    typeof row.entry.cursor === "string" &&
+                    row.entry.total === expectedTotal,
+                )
+                db.close()
+                resolve(found)
+              }
+              request.onerror = () => {
+                db.close()
+                resolve(false)
+              }
+            })
+          },
+          { id: messageId, expectedTotal: total },
+        ),
+      { timeout: timeoutMs, message: "the device stored the transcript with its delta cursor and correct total" },
+    )
+    .toBe(true)
+}
+
 test.describe("project chat keeps its history on the device", () => {
   test("a reopen paints from the device and asks only what changed", async ({ page }) => {
     const state = await installMocks(page)
@@ -672,6 +729,13 @@ test.describe("a workspace agent chat opens from the device", () => {
         message: "the screen stored the chat it opens",
       })
       .toBe(true)
+    // Ensure the durable slice has the definitive cursor + total before any
+    // reload. The warm-reopen path uses both: a null cursor bypasses the warm
+    // path and adds a page read; a wrong total trips applyChatDelta's count
+    // guard and forces a cold reload (SHO-450). `seedHistoryCursor` writes
+    // these after the first page load; without this poll the reload can race
+    // that write and always fall back to the cold path.
+    await waitForStoredCursor(page, "ws-1", state.total)
 
     // ── Reopening inside the app: back to the list, then forward into the chat
     // again — a client-side round trip, no document reload.

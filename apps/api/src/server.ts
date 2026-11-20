@@ -3721,6 +3721,9 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       return c.json({ error: 'Send the channel secret in the X-Webhook-Secret header (Authorization is not forwarded to the agent on this path)' }, 401)
     }
   }
+  // Teams activities carry Bot Framework JWTs in Authorization; forward that
+  // header to the runtime so botframework-auth.ts can validate it.
+  const isTeamsIngressPath = path === '/agent/channels/teams/messages'
   let authedUserId: string | null = null
   let authedWorkspaceId: string | null = null
   if (!isWebchatPath && !isChannelIngressPath) {
@@ -3846,6 +3849,10 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       if (isChannelIngressPath) {
         const sig = c.req.header('x-hub-signature-256')
         if (sig) tunnelHeaders['x-hub-signature-256'] = sig
+        if (isTeamsIngressPath) {
+          const auth = c.req.header('authorization')
+          if (auth) tunnelHeaders['authorization'] = auth
+        }
       }
       if (isWebhookIngressPath) {
         const webhookSecret = c.req.header('x-webhook-secret')
@@ -3896,6 +3903,10 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   if (isChannelIngressPath) {
     const sig = c.req.header('x-hub-signature-256')
     if (sig) headers.set('x-hub-signature-256', sig)
+    if (isTeamsIngressPath) {
+      const auth = c.req.header('authorization')
+      if (auth) headers.set('authorization', auth)
+    }
   }
   if (isWebhookIngressPath) {
     const webhookSecret = c.req.header('x-webhook-secret')

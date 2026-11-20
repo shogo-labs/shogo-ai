@@ -713,8 +713,8 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
   function isPublicChannelPath(path: string): boolean {
     if (publicPaths.has(path)) return true
     if (path.startsWith('/agent/channels/webchat/events/')) return true
-    if (path.startsWith('/agent/channels/whatsapp/')) return true
-    if (path.startsWith('/agent/channels/teams/')) return true
+    if (path === '/agent/channels/whatsapp/webhook') return true
+    if (path === '/agent/channels/teams/messages') return true
     if (path.startsWith('/agent/canvas/')) return true
     if (path.startsWith('/canvas/') || path === '/canvas') return true
     return false

@@ -42,8 +42,12 @@ import {
   getSocialContentProvider,
   SocialProviderError,
   type NormalizedPost,
+  type NormalizedSearchResult,
   type SocialPlatform,
+  type UnitMeter,
 } from '../services/social-content'
+import { outlierScore } from '../services/social-content/outlier'
+import { parseWorkspaceSettings } from '../lib/workspace-settings'
 
 // =============================================================================
 // Configuration
@@ -304,7 +308,12 @@ async function forwardLocalEmbedding(
 // =============================================================================
 
 const SOCIAL_PLATFORMS = new Set<SocialPlatform>(['instagram', 'tiktok'])
-const SOCIAL_OPS = new Set(['profile', 'posts'])
+const SOCIAL_OPS = new Set(['profile', 'posts', 'search'])
+
+// In-process TTL cache for creator baselines (platform:handle → baseline + timestamp)
+const BASELINE_CACHE_TTL_MS = 6 * 60 * 60 * 1000  // 6 hours
+const BASELINE_CACHE_MAX_ENTRIES = 2_000
+const baselineCache = new Map<string, { medianViews: number | null; sample: number; at: number }>()
 
 /**
  * Charge a successful lookup to the workspace. Fire-and-forget, like
@@ -319,14 +328,26 @@ function recordSocialUsage(args: {
   platform: SocialPlatform
   op: SocialLookupOp
   limit: number
+  /** Real units from EnsembleData units_charged headers. Falls back to estimate when 0. */
+  actualUnits?: number
+  actionExtra?: Record<string, unknown>
 }): void {
-  const units = socialLookupUnits(args.platform, args.op, args.limit)
+  const estimatedUnits = socialLookupUnits(args.platform, args.op, args.limit)
+  let units = estimatedUnits
+  if (args.actualUnits && args.actualUnits > 0) {
+    units = args.actualUnits
+  } else if (args.actualUnits === 0) {
+    console.warn(`[Tools Proxy] units_charged header missing for social ${args.platform} ${args.op} — using estimate`)
+  }
   const { rawUsd, billedUsd } = calculateSocialLookupCost(units)
   if (billedUsd === 0) return
 
+  // Sentinel projectIds ('workspace', 'api-key', 'system') have no Project FK.
+  const billingProjectId = isNonProjectSentinel(args.projectId) ? null : args.projectId
+
   void billingService.consumeUsage({
     workspaceId: args.workspaceId,
-    projectId: args.projectId.startsWith('ws_') ? null : args.projectId,
+    projectId: billingProjectId,
     memberId: args.userId || 'system',
     actionType: 'social_media_lookup',
     rawUsd,
@@ -336,6 +357,7 @@ function recordSocialUsage(args: {
       op: args.op,
       limit: args.limit,
       units,
+      ...(args.actionExtra ?? {}),
     },
   }).then((result) => {
     if (result.success) {
@@ -346,6 +368,10 @@ function recordSocialUsage(args: {
   }).catch((err) => {
     console.error('[Tools Proxy] Failed to charge social lookup:', err)
   })
+}
+
+function isNonProjectSentinel(projectId: string): boolean {
+  return projectId === 'workspace' || projectId === 'api-key' || projectId === 'system' || projectId.startsWith('ws_')
 }
 
 function parseSocialHandle(raw: unknown): string | null {
@@ -364,6 +390,22 @@ function parseSocialLimit(raw: unknown): number | null {
   return Math.min(50, Math.max(1, Math.floor(n)))
 }
 
+/** Parse a search query. Strips leading #→ hashtag kind, returns null when invalid. */
+function parseSocialQuery(raw: unknown): { query: string; kind: 'keyword' | 'hashtag' } | null {
+  if (typeof raw !== 'string') return null
+  const trimmed = raw.trim()
+  if (!trimmed || trimmed.length > 100) return null
+  if (trimmed.startsWith('#')) return { query: trimmed.slice(1).trim(), kind: 'hashtag' }
+  return { query: trimmed, kind: 'keyword' }
+}
+
+/** Parse period string to days. Defaults to 30. */
+function parseSocialPeriod(raw: unknown): number {
+  const map: Record<string, number> = { '1d': 1, '7d': 7, '30d': 30, '90d': 90, '180d': 180, all: 0 }
+  if (typeof raw === 'string' && raw in map) return map[raw]
+  return 30
+}
+
 function serializePost(post: NormalizedPost) {
   return {
     providerPostId: post.providerPostId,
@@ -377,7 +419,30 @@ function serializePost(post: NormalizedPost) {
   }
 }
 
-function socialErrorStatus(err: SocialProviderError): number {
+function serializeSearchResult(r: NormalizedSearchResult & {
+  outlierScore: number | null
+  creatorMedianViews: number | null
+  viewsPerFollower: number | null
+  scored: boolean
+}) {
+  return {
+    url: r.url,
+    creator_handle: r.creator.handle,
+    followers: r.creator.followers,
+    views: r.views,
+    likes: r.likes,
+    comments: r.comments,
+    shares: r.shares,
+    posted_at: r.postedAt ? r.postedAt.toISOString() : null,
+    caption: r.caption,
+    duration_sec: r.durationSec,
+    outlier_score: r.outlierScore,
+    creator_median_views: r.creatorMedianViews,
+    views_per_follower: r.viewsPerFollower,
+  }
+}
+
+function socialErrorStatus(err: SocialProviderError): 400 | 404 | 429 | 502 | 503 {
   switch (err.code) {
     case 'not_found':
       return 404
@@ -392,24 +457,55 @@ function socialErrorStatus(err: SocialProviderError): number {
 }
 
 /**
- * 403 when this project has the tool or the platform switched off.
- * Workspace-key callers (`ws_…`) already passed the check on the API
- * that owns the project (desktop forwards here after that), and cloud
- * does not have that project's settings.
+ * 403 when this project / workspace has the tool or the platform switched off.
+ *
+ * Handles three cases:
+ * 1. `ws_…` keys — desktop has already checked; pass through.
+ * 2. Sentinel projectIds ('workspace', 'api-key', 'system') — the token belongs to a
+ *    workspace runtime with no attached project. Read capabilities from Workspace.settings.
+ * 3. Normal project id but the project row was deleted (stale token) — same workspace fallback.
  */
 async function socialCapabilityDenied(
   projectId: string,
+  workspaceId: string,
   platform: SocialPlatform,
 ): Promise<Response | null> {
   if (projectId.startsWith('ws_')) return null
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { settings: true },
-  })
-  if (!project) {
-    return Response.json({ error: 'Project not found' }, { status: 403 })
+
+  let settings: unknown = null
+
+  if (!isNonProjectSentinel(projectId)) {
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { settings: true },
+    })
+    if (project) {
+      settings = project.settings
+    }
+    // project missing (deleted / stale token) → fall through to workspace check
   }
-  const caps = normalizeCapabilitySettings(parseProjectSettings(project.settings))
+
+  if (settings === null) {
+    // Sentinel or missing project: fall back to workspace settings
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { settings: true, name: true },
+    })
+    if (!workspace) {
+      return Response.json({ error: 'Workspace not found' }, { status: 403 })
+    }
+    const caps = normalizeCapabilitySettings(parseWorkspaceSettings(workspace.settings))
+    if (!caps.socialMediaEnabled) {
+      return Response.json({ error: `Social media tool is disabled for workspace "${workspace.name}"` }, { status: 403 })
+    }
+    const platformOn = platform === 'instagram' ? caps.socialInstagramEnabled : caps.socialTiktokEnabled
+    if (!platformOn) {
+      return Response.json({ error: `${platform} is disabled for workspace "${workspace.name}"` }, { status: 403 })
+    }
+    return null
+  }
+
+  const caps = normalizeCapabilitySettings(parseProjectSettings(settings))
   if (!caps.socialMediaEnabled) {
     return Response.json({ error: 'Social media tool is disabled for this project' }, { status: 403 })
   }
@@ -491,12 +587,195 @@ export function toolsProxyRoutes() {
     }
     if (!body) return c.json({ error: 'Request body must be a JSON object' }, 400)
 
-    const handle = parseSocialHandle(body.handle)
-    if (!handle) return c.json({ error: 'handle is required' }, 400)
+    // For search, handle is optional; query is required instead.
     const limit = parseSocialLimit(body.limit)
     if (limit === null) return c.json({ error: 'limit must be a number' }, 400)
 
-    const denied = await socialCapabilityDenied(auth.projectId, socialPlatform)
+    // --- search action (no handle required) --------------------------------
+    if (op === 'search') {
+      const parsed = parseSocialQuery(body.query)
+      if (!parsed) return c.json({ error: 'query is required (1–100 chars)' }, 400)
+
+      // Instagram is hashtag-only; compact keyword → hashtag
+      let { query, kind } = parsed
+      let queryUsedCompacted = false
+      if (socialPlatform === 'instagram' && kind === 'keyword') {
+        query = query.replace(/\s+/g, '')
+        kind = 'hashtag'
+        queryUsedCompacted = true
+      }
+
+      const periodDays = parseSocialPeriod(body.period)
+      const scoreEnabled = body.score === true
+
+      const denied = await socialCapabilityDenied(auth.projectId, auth.workspaceId, socialPlatform)
+      if (denied) return denied
+
+      if (isShogoCloudAuthed()) {
+        const headers = new Headers(c.req.raw.headers)
+        headers.delete('content-length')
+        headers.set('content-type', 'application/json')
+        const forwarded = new Request(c.req.url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ query: (kind === 'hashtag' ? '#' : '') + query, period: body.period, limit, score: scoreEnabled }),
+        })
+        return forwardToCloud(forwarded, 'social', `/${socialPlatform}/search`)
+      }
+
+      if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+        const balanceCheck = await billingService.checkUsageBalance(auth.workspaceId, 0.001, auth.userId)
+        if (!balanceCheck.ok) {
+          const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+          return c.json({ error: { message, type: 'billing_error', code } }, 402)
+        }
+      }
+
+      try {
+        const provider = await getSocialContentProvider()
+        const searchMeter: UnitMeter = { units: 0 }
+        const { results, queryUsed } = await provider.searchPosts(socialPlatform, {
+          query,
+          kind,
+          periodDays,
+          limit,
+          meter: searchMeter,
+        })
+
+        // --- outlier scoring (top 10 unique creators by views) ---
+        let scored: Array<NormalizedSearchResult & { outlierScore: number | null; creatorMedianViews: number | null; viewsPerFollower: number | null; scored: boolean }> = []
+        let scoredCreatorCount = 0
+        let cacheHits = 0
+
+        if (scoreEnabled) {
+          // Pick top 10 unique creators by views to baseline
+          const creatorOrder: string[] = []
+          const creatorViewMap = new Map<string, number>()
+          for (const r of results) {
+            const key = `${socialPlatform}:${r.creator.handle}`
+            if (!creatorViewMap.has(key)) {
+              creatorViewMap.set(key, 0)
+              creatorOrder.push(key)
+            }
+            creatorViewMap.set(key, Math.max(creatorViewMap.get(key)!, r.views))
+          }
+          const topCreatorKeys = creatorOrder
+            .sort((a, b) => (creatorViewMap.get(b) ?? 0) - (creatorViewMap.get(a) ?? 0))
+            .slice(0, 10)
+          const topCreatorSet = new Set(topCreatorKeys)
+
+          // Build baselines (with TTL cache)
+          const baselineMeter: UnitMeter = { units: 0 }
+          const baselineMap = new Map<string, { medianViews: number | null; sample: number }>()
+          for (const key of topCreatorSet) {
+            const cached = baselineCache.get(key)
+            if (cached && Date.now() - cached.at < BASELINE_CACHE_TTL_MS) {
+              baselineMap.set(key, { medianViews: cached.medianViews, sample: cached.sample })
+              cacheHits++
+              continue
+            }
+            const [, handle] = key.split(':')
+            // Find the userId from results for this creator (skips detailed-info on IG)
+            const matchingResult = results.find((r) => r.creator.handle === handle)
+            const userId = matchingResult?.creator.userId ?? null
+            try {
+              const baseline = await provider.creatorBaseline(socialPlatform, { handle, userId, meter: baselineMeter })
+              baselineMap.set(key, baseline)
+              // Update cache
+              if (baselineCache.size >= BASELINE_CACHE_MAX_ENTRIES) {
+                // Evict the oldest entry
+                const oldest = baselineCache.keys().next().value
+                if (oldest) baselineCache.delete(oldest)
+              }
+              baselineCache.set(key, { ...baseline, at: Date.now() })
+            } catch {
+              baselineMap.set(key, { medianViews: null, sample: 0 })
+            }
+          }
+          scoredCreatorCount = topCreatorSet.size - cacheHits
+
+          scored = results.map((r) => {
+            const key = `${socialPlatform}:${r.creator.handle}`
+            const isTopCreator = topCreatorSet.has(key)
+            const baseline = isTopCreator ? baselineMap.get(key) : null
+            const medianViews = baseline?.medianViews ?? null
+            // Exclude the result post from its own baseline when it appears in the sample
+            const oScore = outlierScore(r.views, medianViews)
+            const vpf = r.creator.followers && r.creator.followers > 0
+              ? Math.round((r.views / r.creator.followers) * 1000) / 1000
+              : null
+            return {
+              ...r,
+              outlierScore: oScore,
+              creatorMedianViews: medianViews,
+              viewsPerFollower: vpf,
+              scored: isTopCreator,
+            }
+          })
+
+          // Sort: outlier_score desc (nulls last), then views desc
+          scored.sort((a, b) => {
+            if (a.outlierScore !== null && b.outlierScore !== null) return b.outlierScore - a.outlierScore
+            if (a.outlierScore !== null) return -1
+            if (b.outlierScore !== null) return 1
+            return b.views - a.views
+          })
+
+          recordSocialUsage({
+            workspaceId: auth.workspaceId,
+            projectId: auth.projectId,
+            userId: auth.userId,
+            platform: socialPlatform,
+            op: 'search',
+            limit,
+            actualUnits: searchMeter.units + baselineMeter.units || undefined,
+            actionExtra: { query: queryUsed, score: true, scoredCreators: scoredCreatorCount, cacheHits },
+          })
+        } else {
+          scored = results.map((r) => ({
+            ...r,
+            outlierScore: null,
+            creatorMedianViews: null,
+            viewsPerFollower: r.creator.followers && r.creator.followers > 0
+              ? Math.round((r.views / r.creator.followers) * 1000) / 1000
+              : null,
+            scored: false,
+          }))
+          recordSocialUsage({
+            workspaceId: auth.workspaceId,
+            projectId: auth.projectId,
+            userId: auth.userId,
+            platform: socialPlatform,
+            op: 'search',
+            limit,
+            actualUnits: searchMeter.units || undefined,
+            actionExtra: { query: queryUsed, score: false },
+          })
+        }
+
+        return c.json({
+          platform: socialPlatform,
+          query: (kind === 'hashtag' ? '#' : '') + query,
+          query_used: queryUsed,
+          period: periodDays === 0 ? 'all' : `${periodDays}d`,
+          scored_creators: scoredCreatorCount,
+          units: searchMeter.units + (scoreEnabled ? 0 : 0),
+          results: scored.map(serializeSearchResult),
+        })
+      } catch (err) {
+        if (err instanceof SocialProviderError) {
+          return c.json({ error: err.message, code: err.code }, socialErrorStatus(err))
+        }
+        const message = err instanceof Error ? err.message : 'Social search failed'
+        return c.json({ error: message }, 502)
+      }
+    }
+
+    // --- profile / posts actions -------------------------------------------
+    const handle = parseSocialHandle(body.handle)
+    if (!handle) return c.json({ error: 'handle is required' }, 400)
+
+    const denied = await socialCapabilityDenied(auth.projectId, auth.workspaceId, socialPlatform)
     if (denied) return denied
 
     // Desktop forwards to cloud, which is the server that calls EnsembleData
@@ -534,12 +813,13 @@ export function toolsProxyRoutes() {
 
     try {
       const provider = await getSocialContentProvider()
+      const meter: UnitMeter = { units: 0 }
       const payload = socialOp === 'profile'
-        ? { platform: socialPlatform, handle, ...(await provider.getProfile(socialPlatform, handle)) }
+        ? { platform: socialPlatform, handle, ...(await provider.getProfile(socialPlatform, handle, meter)) }
         : {
             platform: socialPlatform,
             handle,
-            posts: (await provider.listRecentPosts(socialPlatform, handle, limit)).map(serializePost),
+            posts: (await provider.listRecentPosts(socialPlatform, handle, limit, meter)).map(serializePost),
           }
       recordSocialUsage({
         workspaceId: auth.workspaceId,
@@ -548,6 +828,7 @@ export function toolsProxyRoutes() {
         platform: socialPlatform,
         op: socialOp,
         limit,
+        actualUnits: meter.units || undefined,
       })
       return c.json(payload)
     } catch (err) {

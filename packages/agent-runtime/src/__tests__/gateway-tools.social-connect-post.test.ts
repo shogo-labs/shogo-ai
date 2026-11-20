@@ -693,3 +693,72 @@ describe('the capability gate', () => {
     expect(calls).toHaveLength(0)
   })
 })
+
+
+// ============================================================================
+// search action (SHO-465)
+// ============================================================================
+
+describe('search action', () => {
+  const lookupCtx = makeCtx({ config: { socialMediaEnabled: true, socialTiktokEnabled: true, socialInstagramEnabled: true, channels: [], model: { provider: 'anthropic', name: 'claude-sonnet-4-5' } } })
+
+  beforeEach(() => {
+    process.env.TOOLS_PROXY_URL = 'http://proxy.test'
+    process.env.AI_PROXY_TOKEN = 'test-token'
+  })
+
+  test('routes to /social/tiktok/search and returns results', async () => {
+    route(/\/social\/tiktok\/search/, {
+      platform: 'tiktok',
+      query: 'ai agents',
+      query_used: 'ai agents',
+      period: '30d',
+      scored_creators: 0,
+      units: 1,
+      results: [{ url: 'https://www.tiktok.com/@creator/video/v1', creator_handle: 'creator', views: 50000, likes: 1000, comments: 50, shares: 20, followers: 100000, duration_sec: 30, outlier_score: null, creator_median_views: null, views_per_follower: 0.5 }],
+    })
+    const result = await run({ action: 'search', platform: 'tiktok', query: 'ai agents' }, lookupCtx)
+    expect(calls[0].url).toContain('/social/tiktok/search')
+    const body = calls[0].body
+    expect(body.query).toBe('ai agents')
+    expect(result.results).toHaveLength(1)
+  })
+
+  test('sends score flag to the proxy', async () => {
+    route(/\/social\/tiktok\/search/, { platform: 'tiktok', query_used: 'ai', period: '7d', scored_creators: 0, units: 0, results: [] })
+    await run({ action: 'search', platform: 'tiktok', query: 'ai', period: '7d', score: true }, lookupCtx)
+    const body = calls[0].body
+    expect(body.score).toBe(true)
+    expect(body.period).toBe('7d')
+  })
+
+  test('cache key differs for different queries/periods', async () => {
+    // First call
+    route(/\/social\/tiktok\/search/, { results: [], query_used: 'q1', platform: 'tiktok', period: '30d', scored_creators: 0, units: 0 })
+    await run({ action: 'search', platform: 'tiktok', query: 'unique-query-sho465-a' }, lookupCtx)
+    // Second call with different query - should NOT use cache
+    route(/\/social\/tiktok\/search/, { results: [], query_used: 'q2', platform: 'tiktok', period: '30d', scored_creators: 0, units: 0 })
+    await run({ action: 'search', platform: 'tiktok', query: 'unique-query-sho465-b' }, lookupCtx)
+    expect(calls).toHaveLength(2)
+  })
+
+  test('returns error when query is empty', async () => {
+    const result = await run({ action: 'search', platform: 'tiktok', query: '' }, lookupCtx)
+    expect(result.error).toContain('query')
+  })
+
+  test('error when TOOLS_PROXY_URL is unset', async () => {
+    const saved = process.env.TOOLS_PROXY_URL
+    delete process.env.TOOLS_PROXY_URL
+    const result = await run({ action: 'search', platform: 'tiktok', query: 'test' }, lookupCtx)
+    expect(result.error).toBeDefined()
+    process.env.TOOLS_PROXY_URL = saved
+  })
+
+  test('search is routed BEFORE the handle-required guard', async () => {
+    // A search with no handle should NOT return "handle is required"
+    route(/\/social\/tiktok\/search/, { results: [], query_used: 'ai', platform: 'tiktok', period: '30d', scored_creators: 0, units: 0 })
+    const result = await run({ action: 'search', platform: 'tiktok', query: 'ai' }, lookupCtx)
+    expect(result.error).toBeUndefined()
+  })
+})
