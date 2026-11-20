@@ -30,7 +30,7 @@ to install `shogo` on the machine that should handle the work and run
 
 :::tip Cloning a project
 Want a local copy of the project's workspace files on the machine ahead of
-ntime? Run `shogo project pull <projectId>` — see
+time? Run `shogo project pull <projectId>` — see
 [Cloning projects to a paired machine](../my-machines/project-pull). The
 worker also auto-clones on first request by default, so this is optional.
 :::
