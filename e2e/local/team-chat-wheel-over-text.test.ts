@@ -34,6 +34,13 @@ let probe: string
 /** Replies in the thread, so the pane has somewhere to scroll. */
 const REPLIES = 26
 
+/**
+ * Top-level messages in the channel. Twelve short rows fit inside a 720px
+ * viewport with room to spare, so the timeline had no scroll range at all and
+ * the wheel had nothing to move — each row carries paragraph height as well.
+ */
+const TIMELINE_MESSAGES = 30
+
 interface Ancestor {
   tag: string
   overflowY: string
@@ -55,8 +62,20 @@ interface ProbeReport {
   samples: Sample[]
   /** Scrolling ancestors between the probe and the document, innermost first. */
   ancestors: Ancestor[]
-  /** The nearest vertical scroller the browser would move. */
-  scroller: { tag: string; scrollTop: number; range: number } | null
+  /**
+   * The nearest vertical scroller the browser would move, with the two facts
+   * that decide which way a wheel should carry it: RN-web inverts a chat list
+   * with `transform: scaleY(-1)`, so in an inverted list `deltaY > 0` (wheel
+   * toward the user) *decreases* `scrollTop` — the opposite of a plain one.
+   */
+  scroller: {
+    tag: string
+    scrollTop: number
+    range: number
+    transform: string
+    flexDirection: string
+    inverted: boolean
+  } | null
 }
 
 /**
@@ -113,7 +132,17 @@ const probeReport = (page: Page, text: string) =>
         ancestors.push({ tag: desc(current) ?? "", overflowY: style.overflowY, range })
       }
       if (!scroller && (style.overflowY === "auto" || style.overflowY === "scroll") && range > 1) {
-        scroller = { tag: desc(current) ?? "", scrollTop: current.scrollTop, range }
+        // `scaleY(-1)` (matrix d < 0) is how RN-web flips a chat list: the
+        // newest message sits at scrollTop 0, so a wheel down lowers scrollTop.
+        const flipped = /matrix\(([^)]+)\)/.exec(style.transform)?.[1].split(",").map(Number)[3] === -1
+        scroller = {
+          tag: desc(current) ?? "",
+          scrollTop: current.scrollTop,
+          range,
+          transform: style.transform,
+          flexDirection: style.flexDirection,
+          inverted: flipped || style.flexDirection === "column-reverse",
+        }
       }
       current = current.parentElement
     }
@@ -254,6 +283,34 @@ async function wheelOverText(page: Page, text: string, deltaY: number, label: st
   return { before, after, settled, wheelLog: wheelLog as any[] }
 }
 
+/**
+ * A wheel of `deltaY` must carry the timeline at least `min` pixels *the way
+ * that wheel points*. Which way that is depends on inversion: a plain scroller
+ * raises `scrollTop` for `deltaY > 0`, an inverted chat list lowers it. Reading
+ * the sign off the DOM keeps the assertion honest on both — and a wrong sign is
+ * itself a bug (the wheel moving the list backwards), so a bare `Math.abs`
+ * would hide it.
+ */
+function expectWheelMoved(
+  label: string,
+  sample: { before: number; after: number; settled: number },
+  deltaY: number,
+  inverted: boolean,
+  min = 40,
+) {
+  const expected = Math.sign(deltaY) * (inverted ? -1 : 1)
+  const moved = (sample.after - sample.before) * expected
+  console.log(
+    `[${label}] inverted=${inverted} moved=${sample.after - sample.before} ` +
+      `in-wheel-direction=${moved} drift=${sample.settled - sample.after}`,
+  )
+  expect(moved, `${label}: a wheel of ${deltaY} over reply text must move the timeline`).toBeGreaterThan(min)
+  expect(
+    Math.abs(sample.settled - sample.after),
+    `${label}: the timeline must stay where the wheel put it (no snap-back after 500 ms)`,
+  ).toBeLessThanOrEqual(2)
+}
+
 test.describe("a wheel over plain reply text moves the team-chat timeline", () => {
   test.describe.configure({ mode: "serial" })
 
@@ -293,11 +350,11 @@ test.describe("a wheel over plain reply text moves the team-chat timeline", () =
       threadRootId,
     })
     // A thread-free message so the channel timeline is taller than its pane.
-    for (let i = 0; i < 12; i += 1) {
+    for (let i = 0; i < TIMELINE_MESSAGES; i += 1) {
       const text =
-        i === 6
-          ? `channel-${probe} top-level prose for the timeline.`
-          : `channel message ${i} of 12 for ${suffix} with a couple of lines of body text.`
+        i === Math.floor(TIMELINE_MESSAGES / 2)
+          ? `channel-${probe} top-level prose for the timeline.\n\n${Array.from({ length: 10 }, (_, line) => `Timeline filler ${line} of the probe message ${suffix}.`).join("\n\n")}`
+          : `channel message ${i} of ${TIMELINE_MESSAGES} for ${suffix}.\n\n${Array.from({ length: 6 }, (_, line) => `Body line ${line} of channel message ${i}.`).join("\n\n")}`
       await api(seeder, "POST", `/api/conversations/${channelId}/messages`, { text })
     }
   })
@@ -320,18 +377,13 @@ test.describe("a wheel over plain reply text moves the team-chat timeline", () =
     await installWheelLog(page)
     const report = await probeReport(page, probe)
     console.log("THREAD PROBE", JSON.stringify(report, null, 1))
+    const inverted = !!report.scroller?.inverted
 
     const up = await wheelOverText(page, probe, -120, "thread-up")
-    expect(
-      up.after - up.before,
-      "wheel up over reply text must move the thread pane",
-    ).toBeGreaterThan(40)
+    expectWheelMoved("thread-up", up, -120, inverted)
 
     const down = await wheelOverText(page, probe, 900, "thread-down")
-    expect(
-      down.after - down.before,
-      "wheel down over reply text must move the thread pane",
-    ).toBeGreaterThan(40)
+    expectWheelMoved("thread-down", down, 900, inverted)
   })
 
   test("channel timeline: a wheel over reply text scrolls it", async ({ page }) => {
@@ -342,12 +394,13 @@ test.describe("a wheel over plain reply text moves the team-chat timeline", () =
     await installWheelLog(page)
     const report = await probeReport(page, timelineProbe)
     console.log("TIMELINE PROBE", JSON.stringify(report, null, 1))
+    const inverted = !!report.scroller?.inverted
 
     const up = await wheelOverText(page, timelineProbe, -120, "timeline-up")
-    expect(
-      up.after - up.before,
-      "wheel up over reply text must move the channel timeline",
-    ).toBeGreaterThan(40)
+    expectWheelMoved("timeline-up", up, -120, inverted)
+
+    const down = await wheelOverText(page, timelineProbe, 900, "timeline-down")
+    expectWheelMoved("timeline-down", down, 900, inverted)
   })
 })
 
