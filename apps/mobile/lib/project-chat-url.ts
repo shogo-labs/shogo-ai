@@ -101,7 +101,7 @@ export function resolveDeepLinkedChatSessionId(input: {
  * more than one pass, and the last pass — the one that drops the query — lands
  * roughly 0.6s after the document starts. These delays straddle that window.
  */
-const URL_REPAIR_DELAYS_MS = [100, 400, 900, 1600]
+const URL_REPAIR_DELAYS_MS = [900]
 
 export function withPreservedQuery(
   search: string,
@@ -263,10 +263,19 @@ export function useProjectChatUrlMirror(
   // A stale URL cannot be stale twice for the same intent: without this, a
   // write that the router cannot serialise would be re-attempted every render.
   const attemptedRef = useRef('')
+  // Repairs run on a timer, after the render that scheduled them: read the chat
+  // the screen is on *now* from this ref, never the one that render captured.
+  const liveChatRef = useRef(chatSessionId)
+  liveChatRef.current = chatSessionId
   const repairUrl = () => {
     if (!options.enabled || typeof window === 'undefined') return
-    const preserved = queryRef.current
-    if (!preserved) return
+    const preserved = { ...queryRef.current }
+    if (!preserved || Object.keys(preserved).length === 0) return
+    // Never re-assert a chat the screen has already left — a dead or foreign id
+    // from the link is corrected by the screen, and repairing it here would put
+    // the rejected id back into the address bar.
+    const preservedChat = preserved.chatSessionId
+    if (preservedChat && preservedChat !== liveChatRef.current) delete preserved.chatSessionId
     const next = withPreservedQuery(window.location.search, preserved)
     if (next === null) return
     window.history.replaceState(
