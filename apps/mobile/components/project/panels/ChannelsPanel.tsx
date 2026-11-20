@@ -211,6 +211,9 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
   const [copiedWebhookUrl, setCopiedWebhookUrl] = useState(false)
   const [copiedWhatsAppCallbackUrl, setCopiedWhatsAppCallbackUrl] = useState(false)
   const [copiedWhatsAppVerifyToken, setCopiedWhatsAppVerifyToken] = useState(false)
+  const [waConnecting, setWaConnecting] = useState(false)
+  const [waConnectError, setWaConnectError] = useState<string | null>(null)
+  const [showWaAdvanced, setShowWaAdvanced] = useState(false)
   const [phoneExpanded, setPhoneExpanded] = useState(false)
   const [slackAgentConfig, setSlackAgentConfig] = useState<{
     installed: boolean
@@ -1088,8 +1091,56 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                     </View>
                   )}
 
+                  {/* WhatsApp: Connect with Meta (one-click, platform flow) */}
+                  {type === 'whatsapp' && isExpanded && !isConnected && features.whatsappEmbeddedSignup && !showWaAdvanced && (
+                    <View className="px-3 pb-3 border-t border-border">
+                      <View className="mt-3 gap-2">
+                        <Pressable
+                          onPress={async () => {
+                            setWaConnectError(null)
+                            setWaConnecting(true)
+                            try {
+                              const res = await agentFetch(`/api/projects/${projectId}/channels/whatsapp/connect-link`, {
+                                method: 'POST',
+                              })
+                              if (!res.ok) {
+                                const body = await res.json().catch(() => ({})) as any
+                                setWaConnectError(body?.error ?? `Error ${res.status}`)
+                                return
+                              }
+                              const { url } = await res.json() as { url: string }
+                              openExternalLink(url)
+                            } catch (e: any) {
+                              setWaConnectError(e?.message ?? 'Network error')
+                            } finally {
+                              setWaConnecting(false)
+                            }
+                          }}
+                          disabled={waConnecting}
+                          className="flex-row items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-[#25d366] active:opacity-80"
+                        >
+                          {waConnecting && <ActivityIndicator size="small" color="#fff" />}
+                          <Text className="text-sm font-semibold text-white">
+                            {waConnecting ? 'Opening…' : 'Connect with Meta'}
+                          </Text>
+                        </Pressable>
+                        <Text className="text-[10px] text-muted-foreground text-center">
+                          Works with a number on the WhatsApp Business app — your phone keeps working.
+                        </Text>
+                        {waConnectError && (
+                          <Text className="text-[10px] text-destructive text-center">{waConnectError}</Text>
+                        )}
+                        <Pressable onPress={() => setShowWaAdvanced(true)} className="self-center mt-1">
+                          <Text className="text-[10px] text-muted-foreground underline">
+                            Use my own Meta app ▸
+                          </Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  )}
+
                   {/* Expandable config form */}
-                  {isExpanded && !isConnected && hasForm && (
+                  {isExpanded && !isConnected && hasForm && (type !== 'whatsapp' || !features.whatsappEmbeddedSignup || showWaAdvanced) && (
                     <View className="px-3 pb-3 border-t border-border">
                       <View className="mt-3 gap-2.5">
                         {def.fields.map(field => (

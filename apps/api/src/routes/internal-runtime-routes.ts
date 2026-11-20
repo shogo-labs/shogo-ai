@@ -4003,5 +4003,139 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     return c.json(result)
   })
 
+  /**
+   * POST /api/internal/projects/:projectId/channels/whatsapp/connect-link
+   *
+   * Runtime-token auth. Called by the agent gateway's channel_connect tool
+   * when the user calls channel_connect({ type: "whatsapp", config: {} }).
+   */
+  app.post('/projects/:projectId/channels/whatsapp/connect-link', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+
+    const { whatsappEmbeddedSignupAvailable } = await import('../lib/whatsapp-platform')
+    if (!whatsappEmbeddedSignupAvailable()) {
+      return c.json({ code: 'whatsapp_embedded_signup_unavailable', error: 'WhatsApp Embedded Signup is not configured on this server.' }, 412)
+    }
+
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
+    })
+    if (!project) return c.json({ error: 'Project not found' }, 404)
+
+    const { issueConnectLinkForRuntime } = await import('../routes/channels-whatsapp')
+    return issueConnectLinkForRuntime(c, {
+      workspaceId: project.workspaceId,
+      projectId,
+      userId: 'runtime',
+      instanceId: null,
+    })
+  })
+
+  /**
+   * GET /api/internal/projects/:projectId/channels/whatsapp/credentials
+   *
+   * Returns the decrypted access token for a platform-bound WhatsApp number.
+   * Runtime-token auth only; never logged.
+   */
+  app.get('/projects/:projectId/channels/whatsapp/credentials', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+
+    const phoneNumberId = c.req.query('phoneNumberId')
+    if (!phoneNumberId) return c.json({ error: 'phoneNumberId is required' }, 400)
+
+    const { decryptSecret } = await import('../lib/secret-crypto')
+    const { WHATSAPP_GRAPH_VERSION } = await import('@shogo/shared-runtime/whatsapp-graph')
+
+    const binding = await prisma.whatsAppNumberBinding.findUnique({
+      where: { phoneNumberId },
+      select: { projectId: true, wabaId: true, tokenEncrypted: true, status: true },
+    })
+    if (!binding) return c.json({ error: 'No binding found for this phoneNumberId', code: 'not_found' }, 404)
+    if (binding.projectId !== projectId) return c.json({ error: 'Binding belongs to a different project' }, 403)
+    if (binding.status !== 'active') return c.json({ error: `Binding status: ${binding.status}`, code: 'not_active' }, 409)
+
+    let accessToken: string
+    try {
+      accessToken = decryptSecret(binding.tokenEncrypted)
+    } catch {
+      return c.json({ error: 'Failed to decrypt access token' }, 500)
+    }
+
+    return c.json({ ok: true, accessToken, wabaId: binding.wabaId, graphVersion: WHATSAPP_GRAPH_VERSION })
+  })
+
+  /**
+   * GET /api/internal/projects/:projectId/channels/whatsapp/bindings
+   *
+   * List active WhatsApp bindings for this project (for reconcile-on-start).
+   */
+  app.get('/projects/:projectId/channels/whatsapp/bindings', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+
+    const bindings = await prisma.whatsAppNumberBinding.findMany({
+      where: { projectId },
+      select: {
+        phoneNumberId: true, wabaId: true, displayPhoneNumber: true,
+        verifiedName: true, coexistence: true, status: true, statusReason: true,
+        syncStartedAt: true, contactsSyncRequestId: true, historySyncRequestId: true,
+      },
+    })
+    return c.json({ ok: true, bindings })
+  })
+
+  /**
+   * DELETE /api/internal/projects/:projectId/channels/whatsapp/bindings/:phoneNumberId
+   *
+   * Remove a platform binding (called on channel_disconnect of a platform channel).
+   * Best-effort unsubscribes the WABA from Shogo's app if no other binding shares it.
+   */
+  app.delete('/projects/:projectId/channels/whatsapp/bindings/:phoneNumberId', async (c) => {
+    const projectId = c.req.param('projectId')
+    const phoneNumberId = c.req.param('phoneNumberId')
+    if (!projectId || !phoneNumberId) return c.json({ error: 'Missing params' }, 400)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+
+    const binding = await prisma.whatsAppNumberBinding.findUnique({
+      where: { phoneNumberId },
+      select: { id: true, projectId: true, wabaId: true, tokenEncrypted: true },
+    })
+    if (!binding) return c.json({ ok: true, message: 'No binding found' })
+    if (binding.projectId !== projectId) return c.json({ error: 'Binding belongs to a different project' }, 403)
+
+    // Check if any other binding uses the same WABA
+    const otherBindings = await prisma.whatsAppNumberBinding.count({
+      where: { wabaId: binding.wabaId, phoneNumberId: { not: phoneNumberId } },
+    })
+
+    if (otherBindings === 0) {
+      // Best-effort WABA unsubscribe
+      try {
+        const { decryptSecret } = await import('../lib/secret-crypto')
+        const { WHATSAPP_API_BASE } = await import('@shogo/shared-runtime/whatsapp-graph')
+        const accessToken = decryptSecret(binding.tokenEncrypted)
+        await fetch(`${WHATSAPP_API_BASE}/${binding.wabaId}/subscribed_apps`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${accessToken}` },
+        })
+      } catch (err: any) {
+        console.warn('[WhatsApp] WABA unsubscribe failed (non-fatal):', err?.message)
+      }
+    }
+
+    await prisma.whatsAppNumberBinding.delete({ where: { phoneNumberId } })
+    return c.json({ ok: true })
+  })
+
   return app
 }
