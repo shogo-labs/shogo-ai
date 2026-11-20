@@ -109,9 +109,9 @@ function pluralize(count: number, singular: string, plural = `${singular}s`): st
   return count === 1 ? singular : plural
 }
 
-function osTotal(segment: InstallSegment, key: Exclude<DeviceOsKey, 'unknown'>): number {
+function osTotal(rows: AppVersionRow[], key: Exclude<DeviceOsKey, 'unknown'>): number {
   let total = 0
-  for (const row of segment.versions ?? []) total += row.os[key] ?? 0
+  for (const row of rows) total += row.os[key] ?? 0
   return total
 }
 
@@ -327,11 +327,11 @@ export function AppVersionsPanel({
   const osCounts = useMemo(() => {
     if (filter === 'cli') return []
     if (filter !== 'all') {
-      const total = activeSegment ? osTotal(activeSegment, filter) : 0
+      const total = osTotal(activeSegment?.versions ?? [], filter)
       return total > 0 ? [{ os: filter, devices: total }] : []
     }
     return OS_KEYS
-      .map((key) => ({ os: key, devices: osTotal(desktop, key) }))
+      .map((key) => ({ os: key, devices: osTotal(desktop.versions ?? [], key) }))
       .filter((r) => r.devices > 0)
   }, [filter, desktop, activeSegment])
 
@@ -367,7 +367,7 @@ export function AppVersionsPanel({
               : chip.key === 'all'
                 ? desktop.totalDevices
                 : segmentForChip
-                  ? osTotal(segmentForChip, chip.key)
+                  ? osTotal(segmentForChip.versions ?? [], chip.key)
                   : 0
           return (
             <Pressable
