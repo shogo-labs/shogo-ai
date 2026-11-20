@@ -7,11 +7,21 @@ import { cn } from './cn'
 export interface CardProps {
   className?: string
   children: React.ReactNode
+  /**
+   * Forwarded to the underlying `View` so tests can use `getByTestId`.
+   * react-native-web only emits `data-testid` for a `testID` that actually
+   * lands on a host component, so a `testID` swallowed here is invisible to
+   * Playwright and to `tsc` (which rejects it at the call site).
+   */
+  testID?: string
 }
 
-export function Card({ className, children }: CardProps) {
+export function Card({ className, children, testID }: CardProps) {
   return (
-    <View className={cn('rounded-lg border border-border bg-card shadow-sm', className)}>
+    <View
+      className={cn('rounded-lg border border-border bg-card shadow-sm', className)}
+      testID={testID}
+    >
       {children}
     </View>
   )

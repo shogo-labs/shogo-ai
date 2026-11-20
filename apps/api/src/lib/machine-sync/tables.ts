@@ -21,6 +21,7 @@ export const MODEL_TABLE: Readonly<Record<string, string>> = {
   AgentConfig: 'agent_configs',
   ProjectAgent: 'project_agents',
   WorkspaceAgentProfile: 'workspace_agent_profiles',
+  AccessPolicy: 'access_policies',
   ChatSession: 'chat_sessions',
   ChatSessionProject: 'chat_session_projects',
   ChatMessage: 'chat_messages',

@@ -25,7 +25,12 @@ export const SIGNUP_RISK_WEIGHTS = {
   /** Another signup from the same IP or device in the last 10 minutes. */
   signupBurst10m: 20,
   randomLookingLocalPart: 15,
-  /** Google / Apple sign-in: the provider has already verified the mailbox. */
+  /**
+   * Google / Apple sign-in: the provider has already verified the mailbox.
+   * Applied only when no linking signal fired (no canonical-email collision,
+   * device match, IP cluster or signup burst) — otherwise a farmed Google
+   * sign-up would cancel its own IP/device match (SHO-440).
+   */
   trustedOAuthProvider: -15,
 } as const
 
@@ -98,6 +103,18 @@ export const BLOCKED_EMAIL_DOMAINS: ReadonlySet<string> = new Set([
   'archifun.com',
   'sssonar.com',
   'mapsguy.com',
+  // API-key farm, 2026-11-18: ~1,600 accounts in an hour, each signing up,
+  // minting a key named `shogo-farm-account-NNNN` and testing it once.
+  'euploading.com',
+  'arizarouter.dev',
+  'kalcer.dev',
+  'jublin.dev',
+  'gyukopo.dev',
+  'zekon.dev',
+  'dombasu.dev',
+  'rexhot.com',
+  'kasturi.cloud',
+  'satukataku.com',
 ])
 
 /**

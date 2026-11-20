@@ -27,6 +27,7 @@ import { initInstrumentation, traceOperation } from './instrumentation'
 import { createLogger } from './logger'
 import { configureAIProxy } from './ai-proxy'
 import { checkSelfAssign, POOL_ASSIGNMENT_MARKER } from './self-assign'
+import { resolveApiUrl, isStandalone } from './standalone'
 import { startTokenRefreshLoop, type TokenRefreshHandle } from './token-refresh'
 
 export interface RuntimeAppConfig {
@@ -464,17 +465,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
   const K8S_SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
 
   function deriveApiUrl(): string | null {
-    if (process.env.SHOGO_API_URL) return process.env.SHOGO_API_URL
-    if (process.env.API_URL) return process.env.API_URL
-    const proxyUrl = process.env.AI_PROXY_URL
-    if (proxyUrl) {
-      try {
-        const url = new URL(proxyUrl)
-        return `${url.protocol}//${url.host}`
-      } catch { /* invalid URL */ }
-    }
-    const systemNs = process.env.SYSTEM_NAMESPACE || 'shogo-system'
-    return `http://api.${systemNs}.svc.cluster.local`
+    return resolveApiUrl()
   }
 
   function getInternalAuthHeaders(): Record<string, string> {
@@ -591,6 +582,23 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       (secret): secret is string => Boolean(secret),
     )
     if (envSecrets.some((secret) => auth === `Bearer ${secret}` || runtimeToken === secret)) return null
+
+    // Standalone: `RUNTIME_AUTH_SECRET` is the only accepted token. There is no
+    // API to validate a scoped/preview token against, so the byte-compare above
+    // is the whole check — no slow path, no preview-token callback (SHO-418).
+    if (isStandalone()) {
+      logRuntimeAuthRejection(runtimeToken || (auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : ''), undefined, 'standalone')
+      return c.json(
+        {
+          error: 'Unauthorized — missing or invalid runtime token',
+          code: 'auth_mismatch',
+          tokenScope: tokenScopeOf(runtimeToken || (auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '')),
+          apiVerdict: 'standalone',
+        },
+        401,
+      )
+    }
+
     if (runtimeToken && config.acceptsScopedToken?.(c.req.path, runtimeToken)) return null
 
     const candidate = runtimeToken || (auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '')

@@ -53,6 +53,8 @@ const prismaCalls = {
 // @shogo/model-catalog re-exports from @shogo-ai/sdk/model-catalog which has no
 // built dist on this branch — stub before the dynamic import chain loads it.
 mock.module('@shogo/model-catalog', () => ({
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
   getModelTier: (_modelId: string) => 'standard',
   resolveModelId: (mode: string) => mode || 'claude-haiku-4-5',
   MODEL_CATALOG: {},

@@ -15,13 +15,7 @@
  * person typing still shows: `desktop-cloud-workspaces.test.ts` covers that
  * with a real second user.
  */
-import {
-  expect,
-  test,
-  type Browser,
-  type BrowserContext,
-  type Page,
-} from "@playwright/test"
+import { expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test"
 import { LOCAL_API_BASE, openTeamHome } from "./helpers"
 
 const suffix = Date.now().toString(36)
@@ -66,7 +60,7 @@ test.describe("Team chat: you never see your own typing", () => {
   test.describe.configure({ mode: "serial" })
   test.setTimeout(180_000)
 
-  let context: BrowserContext | undefined
+  let context: BrowserContext
   let windowA: Page
   let windowB: Page
   let workspaceId: string
@@ -74,15 +68,15 @@ test.describe("Team chat: you never see your own typing", () => {
   let threadRootId: string
 
   test.beforeAll(async ({ browser }: { browser: Browser }) => {
-    // browser.newPage() creates an owned context that cannot host a second
-    // page. This test deliberately uses two pages in one shared context.
-    const browserContext = await browser.newContext()
-    context = browserContext
-    windowA = await browserContext.newPage()
+    // Both windows must share one session, so one explicit context: the
+    // implicit context behind `browser.newPage()` refuses a second page
+    // ("Please use browser.newContext()").
+    context = await browser.newContext()
+    windowA = await context.newPage()
     await windowA.setViewportSize({ width: 1440, height: 900 })
     await openTeamHome(windowA)
     // A second window of the same signed-in user: same storage, its own socket.
-    windowB = await browserContext.newPage()
+    windowB = await context.newPage()
     await windowB.setViewportSize({ width: 1440, height: 900 })
 
     const workspaces = await apiJson(windowA, "GET", "/api/workspaces")

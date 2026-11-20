@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page, type Route } from "@playwright/test"
-import { readFileSync } from "node:fs"
-import { join } from "node:path"
 
 /**
  * Russell's bug, end to end: a picture or a clip an agent shared into chat was
@@ -24,8 +22,15 @@ import { join } from "node:path"
 
 const API = process.env.E2E_API_URL || "http://localhost:8002"
 
-/** A real-size image keeps the responsive preview assertion meaningful. */
-const PNG_BYTES = readFileSync(join(__dirname, "../../apps/mobile/assets/icon.png"))
+/**
+ * A real 240×160 PNG: a `<img>` only proves it drew when the bytes decode, and
+ * a card draws at the picture's own size — a 1×1 fixture would make the
+ * "fits the thread at 390px" measurement meaningless (it came out 3px wide).
+ */
+const PNG_BYTES = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAPAAAACgCAIAAAC9uXYyAAABRElEQVR42u3SQQ0AAAjEsFOETDQiBxV8SJMqWJbqgTciAYYGQ4OhwdAYGgwNhgZDg6ExNBgaDA2GBkNjaDA0GBoMDYbG0GBoMDQYGgyNocHQYGgwNBgaQ4OhwdBgaDA0hgZDg6HB0BgaDA2GBkODoTE0GBoMDYYGQ2NoMDQYGgwNhsbQYGgwNBgaDI2hwdBgaDA0GBpDg6HB0GBoMDSGBkODocHQYGgMDYYGQ4OhMTQYGgwNhgZDY2gwNBgaDA2GxtBgaDA0GBoMjaHB0GBoMDQYGkODocHQYGgwNIYGQ4OhwdBgaAwNhgZDg6ExtAoYGgwNhgZDY2gwNBgaDA2GxtBgaDA0GBoMjaHB0GBoMDQYGkODocHQYGgwNIYGQ4OhwdBgaAwNhgZDg6HB0BgaDA2GBkNjaDA0GBoMDYbG0GBoMDTcWJWAFZnlgHM7AAAAAElFTkSuQmCC",
+  "base64",
+)
 
 let frameCounter = 0
 function sseFrame(event: Record<string, unknown>): string {

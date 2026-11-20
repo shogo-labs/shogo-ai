@@ -38,8 +38,17 @@ import {
 import { verifyRuntimeToken } from '../lib/runtime-token'
 import { resolveApiKey } from './api-keys'
 import { resolveApiKeyForRequest } from '../lib/api-key-request'
+import { getSignupTrustHold, SignupTrustHoldError } from '../lib/signup-trust'
 import { getDbRoutingConfigSync, getMergedModelEntrySync, type ModelUpstreamFallback } from '../services/model-registry.service'
-import { isModelVisibleForWorkspace } from '../services/workspace-models.service'
+import {
+  allowedAutoTiers,
+  checkModelAccess,
+  getEffectiveAccess,
+  isModelAllowedFor,
+  recordAccessEvent,
+} from '../services/access-policy.service'
+import { REQUESTER_TICKET_HEADER, verifyRequesterTicketInWorkspace } from '../lib/requester-ticket'
+import { getRbacMode } from '../lib/authz/mode'
 import { isModelAccessibleForWorkspace } from '../lib/model-access'
 import { getNativeProviderApiKeySync } from '../services/provider-credentials.service'
 import {
@@ -84,7 +93,7 @@ import {
   type ModelTier,
 } from '@shogo/model-catalog'
 import { randomUUID } from 'node:crypto'
-import { resolveAutoTierModel } from '../lib/runtime/agent-model-defaults'
+import { resolveAutoTierModel, resolveEffectiveAgentModelDefaults } from '../lib/runtime/agent-model-defaults'
 import { putVideoJob, getVideoJob, claimVideoCharge, type VideoJobRecord } from '../lib/video-job-store'
 import { put3dJob, get3dJob, claim3dCharge } from '../lib/3d-job-store'
 import {
@@ -401,17 +410,17 @@ export function resolveModelApiKey(modelConfig: ModelConfig): string | null {
 }
 
 /**
- * OpenAI-shaped 403 for a model the workspace admin has hidden. Used on the
- * local path and before forwarding to Shogo Cloud, so a forwarded call can't
- * skip this workspace's allowlist.
+ * OpenAI-shaped 403 for a model the acting person may not use (SHO-417). The
+ * code is `model_not_allowed` so the app can say "ask an admin" instead of
+ * showing a raw provider error.
  */
 function modelNotVisibleResponse(c: any, model: string) {
   return c.json(
     {
       error: {
-        message: `Model '${model}' is not available for this workspace. A workspace admin has restricted the available models.`,
-        type: 'invalid_request_error',
-        code: 'model_not_visible',
+        message: `Model '${model}' is not available for you. Ask a workspace admin for access.`,
+        type: 'permission_error',
+        code: 'model_not_allowed',
       },
     },
     403
@@ -462,12 +471,24 @@ function resolveAgentModel(model: string): { resolvedModel: string; isLocal: boo
 export async function resolveRequestModel(
   model: string,
   workspaceId: string,
+  userId?: string | null,
 ): Promise<{ resolvedModel: string; isLocal: boolean }> {
   if (!isAutoModel(model)) return resolveAgentModel(model)
   // Local dev against an Ollama-style backend: same model `basic` maps to,
   // since the tier map's ids do not exist there.
   if (isLocalDev && process.env.LOCAL_LLM_BASE_URL) {
     return { resolvedModel: process.env.LOCAL_LLM_BASIC_MODEL || 'llama3', isLocal: true }
+  }
+  // `auto` must resolve inside the acting person's set, not the workspace's
+  // (SHO-417, AC3): resolving to the workspace standard-tier model and then
+  // 403ing would refuse a request the person could have served.
+  if (userId) {
+    const defaults = await resolveEffectiveAgentModelDefaults(workspaceId)
+    const configured = Object.fromEntries(
+      Object.entries(defaults.autoTiers).map(([tier, entry]) => [tier, entry.id]),
+    )
+    const narrowed = await allowedAutoTiers(workspaceId, userId, configured)
+    if (narrowed?.standard) return { resolvedModel: narrowed.standard, isLocal: false }
   }
   const entry = await resolveAutoTierModel(workspaceId, 'standard')
   return { resolvedModel: entry.id, isLocal: false }
@@ -2891,7 +2912,6 @@ function normalizeThinkingForModel(parsed: any, apiModel: string): void {
 import { generateLyriaMusic } from '../lib/lyria'
 import { calculateUsageCost, calculateMusicUsageCost, proxyModelToBillingModel, getModelTier } from '../lib/usage-cost'
 import * as billingService from '../services/billing-runtime'
-import { getProjectUser } from '../lib/project-user-context'
 import { accumulateUsage, accumulateImageUsage, accumulateVideoUsage, accumulate3dUsage, accumulateMusicUsage, getPendingBilledUsd, hasActiveSession } from '../lib/proxy-billing-session-runtime'
 import { placeHold as placeMediaHold, releaseHold as releaseMediaHold, sumHolds as sumMediaHolds, withSpendLock as withMediaSpendLock } from '../lib/media-spend-hold'
 import { isShogoCloudForwarding } from '../lib/cloud-forwarding'
@@ -2902,15 +2922,164 @@ export { buildUsageLimitInfo }
 /**
  * The seat a proxied request meters against. The live AI allowance is per
  * member (SHO-312), so the balance preflight must resolve the same identity the
- * UsageEvent is attributed to: the project's bound user when there is one, else
- * the token's user. `undefined` means there is no seat (internal usage) and the
- * workspace's free allowance applies.
+ * UsageEvent is attributed to: the person the request acts for (SHO-417),
+ * else the token's user. `undefined` means there is no seat (internal usage)
+ * and the workspace's free allowance applies.
+ *
+ * `getProjectUser` is deliberately gone: it was an in-memory "last person who
+ * chatted in this project" guess, wrong for concurrent people in one project,
+ * for multiple API pods and for schedule runs. The acting user is stamped on
+ * the payload once per request by `stampActingUser`.
  */
-function resolveUsageMemberId(tokenPayload: {
+/**
+ * The metering seat for a proxied request: the person the call acts for.
+ *
+ * Exported for the RBAC tests (AC4): the whole point of the change is that two
+ * people in one project resolve to two different seats, so the test drives this
+ * function rather than a copy of it.
+ */
+export function resolveUsageMemberId(tokenPayload: {
   projectId: string
   userId?: string | null
+  actingUserId?: string
 }): string | undefined {
-  return getProjectUser(tokenPayload.projectId) || tokenPayload.userId || undefined
+  return tokenPayload.actingUserId || tokenPayload.userId || undefined
+}
+
+/**
+ * Resolve the person a proxied request acts for and stamp it on the payload.
+ *
+ * A valid requester ticket wins — the runtime sends it on LLM calls too, so a
+ * turn started by person A in a project whose token belongs to person B is
+ * still A's turn. Without a ticket the token's user is the actor (a direct
+ * SDK call, a schedule run, a heartbeat). Never falls back to the workspace
+ * owner.
+ */
+async function stampActingUser(c: any, payload: ProxyTokenPayload): Promise<void> {
+  try {
+    const ticket = await verifyRequesterTicketInWorkspace(
+      c.req.header(REQUESTER_TICKET_HEADER),
+      payload.workspaceId,
+    )
+    payload.actingUserId = ticket?.userId || payload.userId || undefined
+  } catch {
+    payload.actingUserId = payload.userId || undefined
+  }
+}
+
+/**
+ * The model gate for one proxied request (SHO-417). Returns a denial response
+ * when the acting person may not use `modelId`, or `null` to proceed.
+ *
+ * The decision itself is `checkModelAccess` in the policy service — this only
+ * shapes the OpenAI-style 403 the proxy's callers expect. `auto` is not exempt:
+ * callers pass the concrete model `auto` resolved to.
+ */
+export async function enforceModelAccess(
+  c: any,
+  tokenPayload: ProxyTokenPayload,
+  modelId: string,
+): Promise<Response | null> {
+  // The workspace ceiling is checked even when no acting person can be
+  // resolved: it never depended on a member row, and a token without a user id
+  // must not be a way around the allowlist.
+  const userId = resolveUsageMemberId(tokenPayload)
+  const decision = await checkModelAccess(tokenPayload.workspaceId, userId, modelId, {
+    projectId: tokenPayload.projectId,
+    actorUserId: tokenPayload.userId ?? null,
+  })
+  if (decision.allowed) return null
+  return c.json(
+    {
+      error: {
+        message: decision.message,
+        type: 'permission_error',
+        code: decision.code,
+      },
+    },
+    403,
+  )
+}
+
+/**
+ * Spend cap and rate limit for the acting person (SHO-417), checked in the same
+ * preflight as the balance check. Caps are an admin ceiling *under* the plan's
+ * per-seat allowance, never above it. Returns a denial response or `null`.
+ */
+async function enforceSpendAndRate(
+  c: any,
+  tokenPayload: ProxyTokenPayload,
+): Promise<Response | null> {
+  const userId = resolveUsageMemberId(tokenPayload)
+  if (!userId) return null
+  const access = await getEffectiveAccess(tokenPayload.workspaceId, userId)
+  if (!access) return null
+
+  if (access.requestsPerHour != null) {
+    const since = new Date(Date.now() - 60 * 60 * 1000)
+    const count = await prisma.usageEvent.count({
+      where: { workspaceId: tokenPayload.workspaceId, memberId: userId, createdAt: { gte: since } },
+    })
+    if (count >= access.requestsPerHour) {
+      await recordAccessEvent({
+        workspaceId: tokenPayload.workspaceId,
+        kind: 'denied',
+        actorUserId: tokenPayload.userId ?? null,
+        onBehalfOfUserId: userId,
+        permission: 'models:use_all',
+        detail: { reason: 'rate_limited', limit: access.requestsPerHour, count },
+      })
+      return c.json(
+        {
+          error: {
+            message: `Rate limit reached (${access.requestsPerHour}/hour). Try again later or ask a workspace admin.`,
+            type: 'permission_error',
+            code: 'rate_limited',
+            requestsPerHour: access.requestsPerHour,
+            retryAfterSeconds: 60,
+          },
+        },
+        429,
+      )
+    }
+  }
+
+  if (access.spendCapUsd != null) {
+    const windowStart = spendWindowStart(access.spendPeriod)
+    const spent = await prisma.usageEvent.aggregate({
+      where: { workspaceId: tokenPayload.workspaceId, memberId: userId, createdAt: { gte: windowStart } },
+      _sum: { billedUsd: true },
+    })
+    const used = Number(spent._sum.billedUsd ?? 0)
+    if (used >= access.spendCapUsd) {
+      await recordAccessEvent({
+        workspaceId: tokenPayload.workspaceId,
+        kind: 'denied',
+        actorUserId: tokenPayload.userId ?? null,
+        onBehalfOfUserId: userId,
+        permission: 'models:use_all',
+        detail: { reason: 'spend_cap_reached', cap: access.spendCapUsd, used, period: access.spendPeriod },
+      })
+      return c.json(
+        {
+          error: {
+            message: `You've reached your $${access.spendCapUsd} ${access.spendPeriod ?? 'month'} spend cap. Ask a workspace admin to raise it.`,
+            type: 'permission_error',
+            code: 'spend_cap_reached',
+          },
+        },
+        402,
+      )
+    }
+  }
+  return null
+}
+
+function spendWindowStart(period: 'day' | 'week' | 'month' | null): Date {
+  const now = new Date()
+  if (period === 'day') return new Date(now.getTime() - 24 * 60 * 60 * 1000)
+  if (period === 'week') return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+  return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
 }
 
 /**
@@ -3043,7 +3212,7 @@ export async function recordUsage(
       // Record the model the cost was actually priced as (the real id for a
       // DB-priced model), not the collapsed bucket — Hoshi is not Haiku.
       const recordedModel = pricedAs ?? billingModel
-      const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
+      const billingUserId = resolveUsageMemberId(tokenPayload) || 'system'
       await prisma.usageEvent.create({
         data: {
           workspaceId: tokenPayload.workspaceId,
@@ -3092,7 +3261,7 @@ export async function recordUsage(
     // Record the model the cost was actually priced as (the real id for a
     // DB-priced model), not the collapsed bucket — Hoshi is not Haiku.
     const recordedModel = pricedAs ?? billingModel
-    const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
+    const billingUserId = resolveUsageMemberId(tokenPayload) || 'system'
     if (billingUserId === 'system') {
       console.warn(`[AI Proxy] ⚠️ No real userId for project ${tokenPayload.projectId} — billing as 'system'. Token userId: ${tokenPayload.userId}`)
     }
@@ -3528,7 +3697,7 @@ async function recordMediaUsage(tokenPayload: ProxyTokenPayload, charge: MediaCh
     const billingProjectId = isNonProjectSentinel(tokenPayload.projectId)
       ? null
       : (tokenPayload.projectId || null)
-    const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
+    const billingUserId = resolveUsageMemberId(tokenPayload) || 'system'
 
     // If a billing session is open for this project, fold the USD into the
     // session so the chat turn produces a single `chat_message` wallet debit
@@ -3852,6 +4021,7 @@ export async function listMediaModels(
         source_video: !!entry.sourceVideo,
         ...(entry.modes ? { modes: entry.modes } : {}),
         max_reference_images: entry.maxReferenceImages,
+        max_reference_audio: entry.maxReferenceAudio,
         last_frame: supportsLastFrame(entry),
         audio: !!entry.audio,
         endpoints: endpointsOf(entry),
@@ -3939,12 +4109,44 @@ export async function listMediaModels(
           ? await cachedHiggsfieldEstimate(higgsfieldKey, entry, request, signal)
           : null
         const rawUsd = estimate?.rawUsd ?? entry.usdPerRequest
+        // A reference-to-video call is priced on its own endpoint, so quote that
+        // one too. An endpoint that requires a reference image answers a
+        // media-less estimate with a validation error, which reads as `null`
+        // rather than a guessed figure.
+        let referenceUsd: number | null = null
+        if (entry.referenceToVideoApiModel) {
+          const referenceEstimate = await cachedHiggsfieldEstimate(
+            higgsfieldKey,
+            entry,
+            {
+              endpoint: entry.referenceToVideoApiModel,
+              input: {
+                prompt: 'a person talking to camera',
+                duration: entry.defaultDuration,
+                ...(entry.defaultResolution ? { resolution: entry.defaultResolution } : {}),
+              },
+            },
+            signal,
+          )
+          referenceUsd = referenceEstimate?.rawUsd !== undefined
+            ? roundUsd(calculateHiggsfieldUsageCost({ rawUsd: referenceEstimate.rawUsd }).billedUsd)
+            : null
+        }
         return {
           ...base,
           price: {
             unit: 'clip',
             usd: rawUsd !== undefined ? roundUsd(calculateHiggsfieldUsageCost({ rawUsd }).billedUsd) : null,
             ...(estimate?.rawUsd !== undefined ? { default_clip_usd: roundUsd(calculateHiggsfieldUsageCost({ rawUsd: estimate.rawUsd }).billedUsd), default_duration: entry.defaultDuration } : {}),
+            ...(entry.referenceToVideoApiModel
+              ? {
+                  reference_clip_usd: referenceUsd,
+                  reference_note:
+                    referenceUsd === null
+                      ? 'the vendor quotes no price for a reference-to-video call without media — ask /ai/v1/media/estimate with your reference_images / reference_audio_urls'
+                      : 'quoted with the default prompt and no reference media',
+                }
+              : {}),
             source: estimate ? estimate.source ?? 'estimate' : rawUsd !== undefined ? 'catalog' : 'unknown',
           },
         }
@@ -4144,7 +4346,7 @@ export async function recordTranscriptionUsage(
     const billingProjectId = isNonProjectSentinel(tokenPayload.projectId)
       ? null
       : (tokenPayload.projectId || null)
-    const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
+    const billingUserId = resolveUsageMemberId(tokenPayload) || 'system'
 
     const result = await billingService.consumeUsage({
       workspaceId: tokenPayload.workspaceId,
@@ -4460,6 +4662,7 @@ export function aiProxyRoutes() {
    */
   async function validateProxyAuth(c: any): Promise<ProxyTokenPayload | null> {
     const payload = await validateProxyAuthImpl(c)
+    if (payload) await stampActingUser(c, payload)
     touchRuntimeFor(payload)
     return payload
   }
@@ -4482,6 +4685,11 @@ export function aiProxyRoutes() {
         deviceAppVersion ? { deviceAppVersion } : undefined,
       )
       if (!resolved) return null
+      // A key minted before the trust gate still stops working while its user
+      // is held (SHO-416). Thrown, not `null`: a held key is not a bad
+      // credential, and the client needs the code to show a verify CTA.
+      const hold = await getSignupTrustHold(resolved.userId)
+      if (hold) throw new SignupTrustHoldError(hold)
       return {
         projectId: 'api-key',
         workspaceId: resolved.workspaceId,
@@ -4746,15 +4954,14 @@ export function aiProxyRoutes() {
     // below, which must send the cloud a concrete id rather than `auto`.
     const request: ChatCompletionRequest = await c.req.json()
     if (request?.model) {
-      request.model = (await resolveRequestModel(request.model, tokenPayload.workspaceId)).resolvedModel
+      request.model = (await resolveRequestModel(request.model, tokenPayload.workspaceId, resolveUsageMemberId(tokenPayload))).resolvedModel
     }
 
     // When Shogo Cloud key is configured, forward everything to the cloud
     if (isShogoCloudForwarding()) {
       try {
-        if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, request.model))) {
-          return modelNotVisibleResponse(c, request.model)
-        }
+        const denied = await enforceModelAccess(c, tokenPayload, request.model)
+        if (denied) return denied
         console.log(`[AI Proxy] Forwarding to Shogo Cloud: ${request.model} (stream: ${!!request.stream})`)
         return await forwardChatCompletionsToCloud(c, request, c.req.raw.signal)
       } catch (error: any) {
@@ -4775,6 +4982,8 @@ export function aiProxyRoutes() {
     // and for internal, non-billable completions). An already-admitted chat turn
     // that is still in flight is never re-gated mid-message (see isTurnInFlight).
     if (!isLocalDev && !internalUsage && !(await isTurnInFlight(c, tokenPayload))) {
+      const accessDenied = await enforceSpendAndRate(c, tokenPayload)
+      if (accessDenied) return accessDenied
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId, 0.001, resolveUsageMemberId(tokenPayload))
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
@@ -4900,12 +5109,12 @@ export function aiProxyRoutes() {
         }
       }
 
-      // Enforce workspace model visibility: a workspace admin may restrict the
-      // team to a subset of platform-visible models. Hidden models are blocked
-      // here too, so a member can't bypass the picker via a direct API call.
-      if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, request.model))) {
-        return modelNotVisibleResponse(c, request.model)
-      }
+      // Enforce the acting person's model grant (SHO-417): the workspace
+      // ceiling narrowed by their role, groups and own policy. A denied model
+      // is blocked here too, so a member can't bypass the picker via a direct
+      // API call. `auto` is not exempt — `request.model` is already concrete.
+      const modelDenied = await enforceModelAccess(c, tokenPayload, request.model)
+      if (modelDenied) return modelDenied
 
       // Enforce model tier: free/basic users can only use economy-tier models.
       // Local LLMs and BYOK OpenRouter calls are user-paid, so no tier check
@@ -5081,7 +5290,7 @@ export function aiProxyRoutes() {
     // cloud-forwarding branch below (see chat/completions).
     const body = await c.req.json()
     if (body?.model) {
-      body.model = (await resolveRequestModel(body.model, tokenPayload.workspaceId)).resolvedModel
+      body.model = (await resolveRequestModel(body.model, tokenPayload.workspaceId, resolveUsageMemberId(tokenPayload))).resolvedModel
     }
 
     // When a Shogo Cloud key is configured, forward to the cloud — the local
@@ -5090,9 +5299,8 @@ export function aiProxyRoutes() {
     // reasoning (Responses API) to work in cloud-proxy mode.
     if (isShogoCloudForwarding()) {
       try {
-        if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, body?.model))) {
-          return modelNotVisibleResponse(c, body?.model)
-        }
+        const denied = await enforceModelAccess(c, tokenPayload, body?.model)
+        if (denied) return denied
         console.log(`[AI Proxy] Forwarding Responses API to Shogo Cloud: ${body?.model} (stream: ${!!body?.stream})`)
         return await forwardResponsesToCloud(c, body, c.req.raw.signal)
       } catch (error: any) {
@@ -5106,6 +5314,8 @@ export function aiProxyRoutes() {
     const internalUsage = resolveInternalUsage(c, tokenPayload)
 
     if (!isLocalDev && !internalUsage && !(await isTurnInFlight(c, tokenPayload))) {
+      const accessDenied = await enforceSpendAndRate(c, tokenPayload)
+      if (accessDenied) return accessDenied
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId, 0.001, resolveUsageMemberId(tokenPayload))
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
@@ -5165,9 +5375,8 @@ export function aiProxyRoutes() {
         )
       }
 
-      if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
-        return modelNotVisibleResponse(c, requestedModel)
-      }
+      const responsesDenied = await enforceModelAccess(c, tokenPayload, resolvedModel)
+      if (responsesDenied) return responsesDenied
 
       const apiKey = getProviderApiKey(modelConfig.provider)
       if (!apiKey) {
@@ -5455,6 +5664,7 @@ export function aiProxyRoutes() {
    */
   async function validateAnthropicAuth(c: any): Promise<ProxyTokenPayload | null> {
     const payload = await validateAnthropicAuthImpl(c)
+    if (payload) await stampActingUser(c, payload)
     touchRuntimeFor(payload)
     return payload
   }
@@ -5472,6 +5682,9 @@ export function aiProxyRoutes() {
         deviceAppVersion ? { deviceAppVersion } : undefined,
       )
       if (!resolved) return null
+      // Same trust gate as the OpenAI-compatible path (SHO-416).
+      const hold = await getSignupTrustHold(resolved.userId)
+      if (hold) throw new SignupTrustHoldError(hold)
       return {
         projectId: 'api-key',
         workspaceId: resolved.workspaceId,
@@ -5517,12 +5730,10 @@ export function aiProxyRoutes() {
         // resolution, before the request leaves this machine.
         let forwardedModel: string | undefined
         try { forwardedModel = JSON.parse(body)?.model } catch { /* cloud reports malformed bodies */ }
-        const { resolvedModel: forwardedResolved, isLocal: forwardedIsLocal } = await resolveRequestModel(forwardedModel || 'advanced', tokenPayload.workspaceId)
-        if (!forwardedIsLocal && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, forwardedResolved))) {
-          return c.json(
-            { type: 'error', error: { type: 'invalid_request_error', message: `Model '${forwardedResolved}' is not available for this workspace. A workspace admin has restricted the available models.` } },
-            403
-          )
+        const { resolvedModel: forwardedResolved, isLocal: forwardedIsLocal } = await resolveRequestModel(forwardedModel || 'advanced', tokenPayload.workspaceId, resolveUsageMemberId(tokenPayload))
+        if (!forwardedIsLocal) {
+          const forwardedDenied = await enforceModelAccess(c, tokenPayload, forwardedResolved)
+          if (forwardedDenied) return forwardedDenied
         }
         const headers: Record<string, string> = {}
         for (const [key, value] of Object.entries(c.req.header())) {
@@ -5550,6 +5761,8 @@ export function aiProxyRoutes() {
     // Pre-check usage balance (skip in local dev and for internal usage). An
     // already-admitted chat turn still in flight is never re-gated mid-message.
     if (!isLocalDev && !internalUsage && !(await isTurnInFlight(c, tokenPayload))) {
+      const accessDenied = await enforceSpendAndRate(c, tokenPayload)
+      if (accessDenied) return accessDenied
       const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId, 0.001, resolveUsageMemberId(tokenPayload))
       if (!balanceCheck.ok) {
         const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
@@ -5573,16 +5786,14 @@ export function aiProxyRoutes() {
       const isStream = !!parsed.stream
       const chatSessionId = c.req.header('x-chat-session-id') || null
 
-      const { resolvedModel, isLocal } = await resolveRequestModel(requestModel, tokenPayload.workspaceId)
+      const { resolvedModel, isLocal } = await resolveRequestModel(requestModel, tokenPayload.workspaceId, resolveUsageMemberId(tokenPayload))
       console.log(`[AI Proxy] Anthropic pass-through: ${tokenPayload.projectId} → ${resolvedModel} (local: ${isLocal}, stream: ${isStream})`)
       const resolvedModelConfig = resolveModel(resolvedModel)
 
-      // Enforce workspace model visibility (see chat/completions for rationale).
-      if (!isLocal && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
-        return c.json(
-          { type: 'error', error: { type: 'invalid_request_error', message: `Model '${resolvedModel}' is not available for this workspace. A workspace admin has restricted the available models.` } },
-          403
-        )
+      // Enforce the acting person's model grant (see chat/completions for rationale).
+      if (!isLocal) {
+        const anthropicDenied = await enforceModelAccess(c, tokenPayload, resolvedModel)
+        if (anthropicDenied) return anthropicDenied
       }
 
       // Enforce model tier: free/basic users can only use economy-tier models.
@@ -6469,6 +6680,9 @@ export function aiProxyRoutes() {
         quality?: string
         prompt?: string
         audio?: boolean
+        /** Reference media, so a reference-to-video call is quoted on its own endpoint. */
+        reference_images?: string[]
+        reference_audio_urls?: string[]
         source_video_url?: string
         source_duration_seconds?: number
         preset_id?: string
@@ -6526,6 +6740,8 @@ export function aiProxyRoutes() {
           resolution: body.resolution,
           aspectRatio: body.aspect_ratio,
           audio: body.audio,
+          referenceUrls: body.reference_images,
+          referenceAudioUrls: body.reference_audio_urls,
           options: body.options,
         })
         const estimate = await higgsfieldEstimate(apiKey, request.endpoint, request.input, c.req.raw.signal, { entry: videoEntry })
@@ -6635,8 +6851,9 @@ export function aiProxyRoutes() {
    * POST /ai/v1/videos/generations - Submit a video job.
    *
    * Body: `{ prompt, model, duration?, aspect_ratio?, resolution?, audio?,
-   * start_image?, end_image?, reference_images?, source_video_url?, preset_id?,
-   * options? }` with images as data URIs (or public URLs). `options` carries
+   * start_image?, end_image?, reference_images?, reference_audio_urls?,
+   * source_video_url?, preset_id?, options? }` with images as data URIs (or
+   * public URLs) and reference audio as public https URLs. `options` carries
    * model-specific fields (`cfg_scale`, `multi_shots`, `multi_prompt`, `seed`, …)
    * — the proxy validates each against the endpoint's documented schema. Returns
    * `{ id }` right away; poll `GET /ai/v1/videos/:id`. Nothing is charged until
@@ -6676,6 +6893,8 @@ export function aiProxyRoutes() {
         start_image?: string
         end_image?: string
         reference_images?: string[]
+        /** Public https URLs of recorded voice tracks (reference-to-video lip-sync). */
+        reference_audio_urls?: string[]
         source_video_url?: string
         source_duration_seconds?: number
         preset_id?: string
@@ -6777,11 +6996,29 @@ export function aiProxyRoutes() {
           entry.maxReferenceImages === 0
             ? `${entry.displayName} does not accept reference images.`
             : `${entry.displayName} accepts at most ${entry.maxReferenceImages} reference image(s); got ${refs.length}.`,
-          'too_many_reference_images',
+          entry.maxReferenceImages === 0 ? 'reference_images_unsupported' : 'too_many_reference_images',
         )
       }
       if (entry.sourceVideo && entry.genjutsu !== 'restyle' && refs.length === 0) {
         return invalid(`${entry.displayName} needs at least 1 reference image (the subject to drive or swap in).`, 'missing_reference_images')
+      }
+      // Reference audio is uploaded by the caller (the tool), so it arrives as
+      // public URLs — never a data URI, which would be a 10 MB JSON body.
+      const referenceAudio = body.reference_audio_urls ?? []
+      if (!Array.isArray(referenceAudio) || referenceAudio.some((url) => typeof url !== 'string' || !/^https:\/\//i.test(url))) {
+        return invalid('reference_audio_urls must be public https URLs (upload the files first)', 'invalid_reference_audio')
+      }
+      if (referenceAudio.length > 0 && entry.maxReferenceAudio === 0) {
+        return invalid(
+          `${entry.displayName} takes no reference audio — pick a model whose list_media_models entry has max_reference_audio above 0.`,
+          'reference_audio_unsupported',
+        )
+      }
+      if (referenceAudio.length > entry.maxReferenceAudio) {
+        return invalid(
+          `${entry.displayName} accepts at most ${entry.maxReferenceAudio} reference audio clip(s); got ${referenceAudio.length}.`,
+          'too_many_reference_audio',
+        )
       }
 
       // ---- Google Gemini Omni ------------------------------------------------
@@ -6791,6 +7028,13 @@ export function aiProxyRoutes() {
       // upscale (a re-render at a higher resolution, the only upscaling Google
       // offers), with a prompt an edit, or an extend when `options.task` asks.
       if (entry.provider === 'google') {
+        if (!entry.apiModel) {
+          return c.json(
+            { error: { message: `${entry.displayName} has no upstream model id.`, type: 'server_error', code: 'provider_not_configured' } },
+            503
+          )
+        }
+
         let parent: VideoJobRecord | undefined
         const previousJobId = (body.previous_job_id ?? '').trim()
         if (previousJobId) {
@@ -6889,19 +7133,14 @@ export function aiProxyRoutes() {
           )
         }
 
-        // Validate first so callers get actionable 400s even when this server
-        // lacks Google credentials. Keep the config check ahead of fetching
-        // remote images and reserving spend.
+        // Only now, with the request itself known to be well formed: a bad
+        // request is a 400 on every stack, key or no key (SHO-383). Refusing it
+        // as `provider_not_configured` teaches an agent to go configure a key
+        // for a body that would be rejected anyway.
         const apiKey = getImageProviderApiKey('google')
         if (!apiKey) {
           return c.json(
             { error: { message: `Video provider 'google' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } },
-            503
-          )
-        }
-        if (!entry.apiModel) {
-          return c.json(
-            { error: { message: `${entry.displayName} has no upstream model id.`, type: 'server_error', code: 'provider_not_configured' } },
             503
           )
         }
@@ -7018,6 +7257,7 @@ export function aiProxyRoutes() {
         startImageUrl,
         endImageUrl,
         referenceUrls,
+        referenceAudioUrls: referenceAudio,
         sourceVideoUrl: body.source_video_url,
         presetId: body.preset_id,
         options: body.options,

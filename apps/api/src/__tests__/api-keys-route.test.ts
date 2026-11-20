@@ -29,6 +29,9 @@ const apiKeyFindMany = mock(async (_: any): Promise<any[]> => [])
 const apiKeyFindUnique = mock(async (_: any): Promise<any> => null)
 const apiKeyUpdate = mock(async (_: any): Promise<any> => ({}))
 const workspaceFindUnique = mock(async (_: any): Promise<any> => null)
+// The signup trust gate (SHO-416) reads these two. Default: no assessment row,
+// which is the "legacy user / scoring failed" case and must stay unheld.
+const signupRiskFindUnique = mock(async (_: any): Promise<any> => null)
 
 mock.module('../lib/prisma', () => ({
   prisma: {
@@ -41,6 +44,7 @@ mock.module('../lib/prisma', () => ({
       update: apiKeyUpdate,
     },
     workspace: { findUnique: workspaceFindUnique },
+    signupRiskAssessment: { findUnique: signupRiskFindUnique },
   },
   SubscriptionStatus: {
     active: 'active',
@@ -90,6 +94,7 @@ mock.module('../lib/api-keys-mint', () => ({
 // ─── load routes ──────────────────────────────────────────────────────────
 
 const { apiKeyRoutes, resolveApiKey } = await import('../routes/api-keys')
+const { _clearSignupTrustCacheForTests } = await import('../lib/signup-trust')
 
 function authedApp(user: { userId: string } | null = { userId: 'user-1' }) {
   const app = new Hono()
@@ -158,7 +163,24 @@ beforeEach(() => {
       deviceAppVersion: args.deviceAppVersion ?? null,
     },
   }))
+
+  // Unheld by default; the trust-gate tests below opt in.
+  signupRiskFindUnique.mockReset()
+  signupRiskFindUnique.mockImplementation(async () => null)
+  _clearSignupTrustCacheForTests()
+  process.env.SHOGO_LOCAL_MODE = 'false'
 })
+
+/** Make the caller a high-band, unverified signup — the farm's shape. */
+function holdCaller() {
+  signupRiskFindUnique.mockImplementation(async () => ({
+    band: 'high',
+    reviewDecision: null,
+    signals: { provider: 'credential' },
+  }))
+  userFindUnique.mockImplementation(async () => ({ role: 'user', emailVerified: false }))
+  _clearSignupTrustCacheForTests()
+}
 
 // ─── POST /api-keys ───────────────────────────────────────────────────────
 
@@ -205,6 +227,94 @@ describe('POST /api-keys — create user key', () => {
     expect(body.keyPrefix).toBe('shogo_sk_FULL_PL')
     expect(body.kind).toBe('user')
     expect(body.name).toBe('CI runner')
+  })
+
+  // ─── SHO-416: a held signup gets no credential ───────────────────────────
+
+  test('403 email_verification_required for a high-band unverified caller, and no key is created', async () => {
+    holdCaller()
+    const res = await authedApp().request('/api/api-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'shogo-farm-account-0001', workspaceId: 'ws-1' }),
+    })
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.error.code).toBe('email_verification_required')
+    expect(body.error.message).toContain('Verify your email')
+    expect(apiKeyCreate).not.toHaveBeenCalled()
+    expect(generateApiKeyMock).not.toHaveBeenCalled()
+  })
+
+  test('403 account_review_required once the email is verified but the band stays high', async () => {
+    signupRiskFindUnique.mockImplementation(async () => ({
+      band: 'high',
+      reviewDecision: null,
+      signals: { provider: 'credential' },
+    }))
+    userFindUnique.mockImplementation(async () => ({ role: 'user', emailVerified: true }))
+    _clearSignupTrustCacheForTests()
+
+    const res = await authedApp().request('/api/api-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws-1' }),
+    })
+    expect(res.status).toBe(403)
+    expect((await res.json()).error.code).toBe('account_review_required')
+    expect(apiKeyCreate).not.toHaveBeenCalled()
+  })
+
+  test('a low-band unverified caller still gets a key', async () => {
+    signupRiskFindUnique.mockImplementation(async () => ({
+      band: 'low',
+      reviewDecision: null,
+      signals: { provider: 'credential' },
+    }))
+    userFindUnique.mockImplementation(async () => ({ role: 'user', emailVerified: false }))
+    _clearSignupTrustCacheForTests()
+
+    const res = await authedApp().request('/api/api-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws-1' }),
+    })
+    expect(res.status).toBe(200)
+    expect(apiKeyCreate).toHaveBeenCalledTimes(1)
+  })
+
+  test('a Google/Apple sign-in is never held', async () => {
+    signupRiskFindUnique.mockImplementation(async () => ({
+      band: 'high',
+      reviewDecision: null,
+      signals: { provider: 'social' },
+    }))
+    userFindUnique.mockImplementation(async () => ({ role: 'user', emailVerified: true }))
+    _clearSignupTrustCacheForTests()
+
+    const res = await authedApp().request('/api/api-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws-1' }),
+    })
+    expect(res.status).toBe(200)
+  })
+
+  test('an admin-approved account is released', async () => {
+    signupRiskFindUnique.mockImplementation(async () => ({
+      band: 'high',
+      reviewDecision: 'approved',
+      signals: { provider: 'credential' },
+    }))
+    userFindUnique.mockImplementation(async () => ({ role: 'user', emailVerified: false }))
+    _clearSignupTrustCacheForTests()
+
+    const res = await authedApp().request('/api/api-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws-1' }),
+    })
+    expect(res.status).toBe(200)
   })
 
   test('name defaults to "Shogo Local" when omitted', async () => {

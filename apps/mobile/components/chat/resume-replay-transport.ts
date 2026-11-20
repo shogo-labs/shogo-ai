@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import type { ChatTransport, UIMessage } from "ai"
+import { isChatUnauthorizedError } from "@shogo/shared-app/chat"
 import { coalesceChunkBursts } from "./chunk-coalescer"
 import { TURN_STOPPED_PART_TYPE } from "./stopped-turn"
 
@@ -337,6 +338,12 @@ export function replayRebuildsMessage(args: {
 }
 
 /**
+ * A session that has to be re-established before a refused request can be
+ * replayed: `true` when the caller now holds a valid one.
+ */
+export type Reauthorize = () => Promise<boolean>
+
+/**
  * Also coalesces chunk bursts on both streams (see chunk-coalescer.ts): the
  * replay arrives as one burst, and a POST stream can carry one too when the
  * API resumes a cut turn server-side.
@@ -353,17 +360,41 @@ export function replayRebuildsMessage(args: {
  * turn's row (which must survive), and the reply shows twice (SHO-278). A
  * runtime that never sends the frame leaves it undefined, and the drop keeps
  * its old, conservative behaviour.
+ *
+ * `onUnauthorized` makes a refused session recoverable: when a request comes
+ * back 401, the session is re-established and the exact same request is sent
+ * once more. `X-Client-Turn-Id` is unchanged across the two attempts and the
+ * first never reached the runtime, so the replay cannot start a second turn.
+ * Only a 401 is retried here — a drop mid-stream belongs to the resume path,
+ * and anything else has already had its chance.
  */
 export function withResumeReplayReset<T extends UIMessage>(
   transport: ChatTransport<T>,
   beforeReplay: (start?: ReplayTurnStart) => void,
   onSnapshot?: (message: T) => void,
+  onUnauthorized?: Reauthorize,
 ): ChatTransport<T> {
+  /**
+   * Runs `attempt`, and when it was refused for want of a session asks
+   * `onUnauthorized` for one, then runs it again. A refusal that survives the
+   * fresh session is a genuine sign-out and is rethrown for the panel to turn
+   * into a sign-in prompt.
+   */
+  const withSessionRecovery = async <R>(attempt: () => Promise<R>): Promise<R> => {
+    try {
+      return await attempt()
+    } catch (err) {
+      if (!onUnauthorized || !isChatUnauthorizedError(err)) throw err
+      if (!(await onUnauthorized())) throw err
+      return attempt()
+    }
+  }
+
   return {
     sendMessages: async (options) =>
-      coalesceChunkBursts(await transport.sendMessages(options)),
+      coalesceChunkBursts(await withSessionRecovery(() => transport.sendMessages(options))),
     reconnectToStream: async (options) => {
-      const stream = await transport.reconnectToStream(options)
+      const stream = await withSessionRecovery(() => transport.reconnectToStream(options))
       if (!stream) return stream
       const deadline = Date.now() + SNAPSHOT_PEEK_MS
       // One chunk tells a snapshot apart from a replay. A replay then has to be

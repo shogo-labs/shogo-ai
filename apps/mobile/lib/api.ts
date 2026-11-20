@@ -8,6 +8,7 @@ import { authClient } from './auth-client'
 import { defaultLocalAccess, type LocalAccessPrefs } from './local-access'
 import { routeUrl } from './workspace-route'
 import { usageLogCsvUrl } from './usage-log-csv'
+import { billingApiBase } from '@shogo/shared-app/hooks'
 
 export { API_URL } from './api-url'
 
@@ -75,6 +76,24 @@ export interface WorkspacePermissionsData {
   role: WorkspaceRole | null
   isSuperAdmin: boolean
   permissions: Permission[]
+  /** Who may invite (SHO-454): `members` (any Editor) or `admins`. */
+  invitePolicy?: 'members' | 'admins'
+  /** The one boolean every invite entry point gates on. */
+  canInvite?: boolean
+}
+
+/** A workspace join link (`/api/invite-links`), as the invite dialog reads it. */
+export interface WorkspaceInviteLink {
+  id: string
+  token: string
+  role: 'owner' | 'admin' | 'member' | 'viewer'
+  workspaceId: string | null
+  projectId: string | null
+  enabled: boolean
+  expiresAt: string | null
+  useCount: number
+  createdBy: string
+  createdAt: string
 }
 
 /** `GET /api/projects/:id/permissions` payload. */
@@ -337,6 +356,50 @@ export interface CheckoutParams {
   trial?: boolean
 }
 
+/**
+ * `POST /api/billing/checkout` body for the $99 Solo Founder offer (SHO-428).
+ * Same route as a plan checkout, but the server owns plan, seats, interval,
+ * the course line and the first-year discount, so none of them are sent.
+ */
+export interface SoloFounderCheckoutParams {
+  workspaceId: string
+  offer: 'solo_founder'
+  /** Buyer's own Stripe promotion code, instead of the default $78 coupon. */
+  promoCode?: string
+  userEmail?: string
+  referralId?: string
+  successUrl?: string
+  cancelUrl?: string
+}
+
+/** `GET /api/billing/solo-founder` — what the Billing panel shows for the offer. */
+export interface SoloFounderState {
+  ok: boolean
+  offer: 'solo_founder'
+  pricing: {
+    businessAnnualUsd: number
+    courseUsd: number
+    firstYearDiscountUsd: number
+    firstYearUsd: number
+    renewalUsd: number
+    overageCapUsd: number
+  }
+  enrolled: boolean
+  /** Enrollment status: 'active' once paid, 'rejected_prepaid' when refused. */
+  status: string | null
+  /** Pack install: 'pending' | 'installing' | 'installed' | 'failed'. */
+  installStatus: string | null
+  installError: string | null
+  courseBoardId: string | null
+  courseChannelId: string | null
+  totalLessons: number
+  completedLessons: string[]
+  completedAt: string | null
+  eligibility:
+    | { eligible: true }
+    | { eligible: false; code: 'offer_not_eligible' | 'already_enrolled' | 'risk_review'; reason: string }
+}
+
 export interface WorkspaceCheckoutParams {
   workspaceName: string
   planId: string
@@ -429,7 +492,43 @@ export interface BillingInvoice {
   hostedInvoiceUrl: string | null
   invoicePdf: string | null
   description: string | null
+  /** Tax included in `total`, when Stripe reports it. */
+  tax?: number | null
+  /** `total` before tax, when Stripe reports it. */
+  totalExcludingTax?: number | null
   lines: { description: string | null; amount: number }[]
+}
+
+/**
+ * `POST /api/billing/change-plan/preview` — what a plan change costs before the
+ * customer confirms it (SHO-451).
+ */
+export interface PlanChangePreview {
+  planId: string
+  billingInterval: 'monthly' | 'annual'
+  seats: number
+  /** Recurring amount the workspace pays today. */
+  currentPriceUsd: number
+  /** Recurring amount after the change. */
+  newPriceUsd: number
+  /** Charged today for the proration. */
+  prorationUsd: number
+  /** ISO timestamp the change takes effect. */
+  effectiveAt: string
+  /** What the next renewal will be. */
+  nextInvoiceUsd: number
+  /** Unix seconds the preview was computed at; sent back on apply. */
+  prorationDate: number
+}
+
+/** `POST /api/billing/change-plan` result. */
+export interface PlanChangeResult {
+  ok: true
+  planId: string
+  billingInterval: 'monthly' | 'annual'
+  seats: number
+  status: string
+  currentPeriodEnd: string | null
 }
 
 /** One DNS record a user must add to point a custom domain at their app. */
@@ -770,17 +869,29 @@ export interface PublishedEnvironmentMetrics {
   projectionUsd: number
 }
 
-/** `GET/PUT /api/projects/:id/disk` (SHO-349). */
+/** `GET/PUT /api/projects/:id/disk` and `/api/workspaces/:id/disk` (SHO-349, SHO-401). */
 export interface ProjectDiskState {
   /** What the project asked for; null = never set (fleet default). */
   requestedGiB: number | null
-  /** The size in force, clamped to the tier ceiling. */
+  /** The size in force, clamped to the ceiling. */
   effectiveGiB: number
   defaultGiB: number
-  /** Largest size this workspace's tier may ask for. */
+  /** GiB this tier includes before the paid add-on. */
+  includedGiB: number
+  /** Largest size this workspace may ask for (200 when it can buy the add-on). */
   maxGiB: number
+  /** GiB above the tier's included amount — the part that is billed. */
+  addonGiB: number
+  /** USD per GiB-month for the add-on. */
+  pricePerGiBMonthUsd: number
+  /** Monthly price of the current add-on GiB. */
+  addonMonthlyUsd: number
   canIncrease: boolean
-  reason?: string
+  reason?: 'plan_ceiling' | 'plan_required'
+  /** True when this workspace may buy disk above what its tier includes. */
+  canBuyAddon: boolean
+  /** Why not, when `canBuyAddon` is false. */
+  buyBlockedReason?: 'plan_required' | 'usage_limit_reached'
   /** Live usage from the guest; null while the project isn't running. */
   usage: { usedBytes: number; totalBytes: number; measuredAt: string } | null
   substrate: 'metal' | 'knative' | 'local'
@@ -832,6 +943,20 @@ export const api = {
 
   async createCheckoutSession(http: HttpClient, params: CheckoutParams) {
     const res = await http.post<{ url?: string }>('/api/billing/checkout', params)
+    return res.data
+  },
+
+  /** Start the $99 Solo Founder checkout. Server answers with a Checkout URL. */
+  async createSoloFounderCheckout(http: HttpClient, params: SoloFounderCheckoutParams) {
+    const res = await http.post<{ url?: string; sessionId?: string }>('/api/billing/checkout', params)
+    return res.data
+  },
+
+  /** The Solo Founder offer's state for this workspace (also retries a lost install). */
+  async getSoloFounderState(http: HttpClient, workspaceId: string) {
+    const res = await http.get<SoloFounderState>(
+      `/api/billing/solo-founder?workspaceId=${encodeURIComponent(workspaceId)}`
+    )
     return res.data
   },
 
@@ -917,12 +1042,90 @@ export const api = {
     return res.data
   },
 
+  /**
+   * POST /api/billing/end-trial — end a free trial and pay now (SHO-422).
+   * Owners and billing admins only. `status` is Stripe's subscription status
+   * after the change; `latestInvoiceStatus` says whether the charge went
+   * through (`paid`) or is still open (`open`/`draft`).
+   */
+  async endTrial(http: HttpClient, workspaceId: string) {
+    const res = await http.post<{ ok?: boolean; status?: string; latestInvoiceStatus?: string | null }>(
+      `/api/billing/end-trial?workspaceId=${encodeURIComponent(workspaceId)}`,
+      {},
+    )
+    return res.data
+  },
+
   /** GET /api/billing/invoices — recent Stripe invoices for the workspace. */
   async listInvoices(http: HttpClient, workspaceId: string, limit = 12) {
     const res = await http.get<{ ok?: boolean; invoices?: BillingInvoice[] }>(
       `/api/billing/invoices?workspaceId=${encodeURIComponent(workspaceId)}&limit=${limit}`,
     )
     return res.data?.invoices ?? []
+  },
+
+  /**
+   * POST /api/billing/change-plan/preview — what a plan change costs before the
+   * customer confirms it. Never opens a second Checkout.
+   */
+  async previewPlanChange(
+    http: HttpClient,
+    params: {
+      workspaceId: string
+      planId: string
+      billingInterval: 'monthly' | 'annual'
+      seats?: number
+      localMode?: boolean
+    },
+  ) {
+    const { localMode, ...body } = params
+    const res = await http.post<PlanChangePreview & { ok?: boolean }>(
+      `${billingApiBase(Boolean(localMode))}/change-plan/preview`,
+      body,
+    )
+    return res.data
+  },
+
+  /**
+   * POST /api/billing/change-plan — apply the change to the existing Stripe
+   * subscription. `prorationDate` comes from the preview so the charge matches
+   * what the customer was shown.
+   */
+  async changePlan(
+    http: HttpClient,
+    params: {
+      workspaceId: string
+      planId: string
+      billingInterval: 'monthly' | 'annual'
+      seats?: number
+      prorationDate?: number
+      localMode?: boolean
+    },
+  ) {
+    const { localMode, ...body } = params
+    const res = await http.post<PlanChangeResult>(
+      `${billingApiBase(Boolean(localMode))}/change-plan`,
+      body,
+    )
+    return res.data
+  },
+
+  /** POST /api/billing/cancel — cancel at period end; access runs to the end. */
+  async cancelSubscription(http: HttpClient, workspaceId: string, localMode = false) {
+    const res = await http.post<{ ok?: boolean; cancelAtPeriodEnd?: boolean; accessEndsAt?: string | null }>(
+      `${billingApiBase(localMode)}/cancel`,
+      { workspaceId },
+    )
+    return res.data
+  },
+
+  /** POST /api/billing/resume — undo a scheduled cancellation. */
+  async resumeSubscription(http: HttpClient, workspaceId: string, localMode = false) {
+    const res = await http.post<{ ok?: boolean; cancelAtPeriodEnd?: boolean; accessEndsAt?: string | null }>(
+      `${billingApiBase(localMode)}/resume`,
+      { workspaceId },
+    )
+    return res.data
   },
 
   /** GET /api/notifications/unread-count — unread inbox count for the bell badge. */
@@ -1041,17 +1244,6 @@ export const api = {
     return res.data
   },
 
-  async createInstanceCheckout(http: HttpClient, params: {
-    workspaceId: string
-    instanceSize: string
-    billingInterval: string
-    successUrl?: string
-    cancelUrl?: string
-  }) {
-    const res = await http.post<{ url?: string }>('/api/billing/instance-checkout', params)
-    return res.data
-  },
-
   async createInstancePortal(http: HttpClient, workspaceId: string, returnUrl?: string) {
     const res = await http.post<{ url?: string }>(
       `/api/billing/instance-portal?workspaceId=${encodeURIComponent(workspaceId)}`,
@@ -1062,6 +1254,17 @@ export const api = {
 
   async getWorkspaceInstance(http: HttpClient, workspaceId: string) {
     const res = await http.get<any>(`/api/workspaces/${workspaceId}/instance`)
+    return res.data
+  },
+
+  /**
+   * This period's metered VM compute (SHO-424). The server decides how much to
+   * return: owners/admins get the per-project, per-size and per-state split, a
+   * member gets the period total only. Instance sizes are no longer sold, so
+   * this replaces the old size-purchase cards.
+   */
+  async getWorkspaceComputeUsage(http: HttpClient, workspaceId: string) {
+    const res = await http.get<any>(`/api/workspaces/${workspaceId}/compute-usage`)
     return res.data
   },
 
@@ -1470,6 +1673,21 @@ export const api = {
   async updateProjectDisk(http: HttpClient, projectId: string, sizeGiB: number) {
     const res = await http.put<ProjectDiskState & { growError?: string }>(
       `/api/projects/${projectId}/disk`,
+      { sizeGiB },
+    )
+    return res.data
+  },
+
+  /** Workspace-runtime drive size + live usage (SHO-401, Settings → Workspace → Disk). */
+  async getWorkspaceDisk(http: HttpClient, workspaceId: string) {
+    const res = await http.get<ProjectDiskState>(`/api/workspaces/${workspaceId}/disk`)
+    return res.data
+  },
+
+  /** Ask for a bigger workspace-runtime drive. Errors carry the server's message. */
+  async updateWorkspaceDisk(http: HttpClient, workspaceId: string, sizeGiB: number) {
+    const res = await http.put<ProjectDiskState & { growError?: string }>(
+      `/api/workspaces/${workspaceId}/disk`,
       { sizeGiB },
     )
     return res.data
@@ -3445,6 +3663,92 @@ export const api = {
   async getWorkspacePermissions(http: HttpClient, workspaceId: string) {
     const res = await http.get<{ ok?: boolean; data?: WorkspacePermissionsData }>(
       `/api/workspaces/${encodeURIComponent(workspaceId)}/permissions`,
+    )
+    return res.data?.data ?? null
+  },
+
+  /**
+   * GET /api/invite-links?workspaceId= — the workspace's shareable join links.
+   * The workspaceId rides in the query so a desktop cloud workspace routes the
+   * call through `/api/cloud/<id>` (SHO-454).
+   */
+  async getWorkspaceInviteLinks(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ ok?: boolean; items?: WorkspaceInviteLink[] }>(
+      `/api/invite-links?workspaceId=${encodeURIComponent(workspaceId)}`,
+    )
+    return res.data?.items ?? []
+  },
+
+  /** POST /api/invite-links — create a workspace join link with a role and expiry. */
+  async createWorkspaceInviteLink(
+    http: HttpClient,
+    params: { workspaceId: string; role: 'admin' | 'member' | 'viewer'; expiresInDays?: 7 | 30 | null },
+  ) {
+    const res = await http.post<{ ok?: boolean; data?: WorkspaceInviteLink }>(
+      `/api/invite-links?workspaceId=${encodeURIComponent(params.workspaceId)}`,
+      {
+        workspaceId: params.workspaceId,
+        role: params.role,
+        expiresInDays: params.expiresInDays === undefined ? 7 : params.expiresInDays,
+      },
+    )
+    return res.data?.data ?? null
+  },
+
+  /** PATCH /api/invite-links/:id — enable or disable a link (managers only). */
+  async setWorkspaceInviteLinkEnabled(http: HttpClient, workspaceId: string, linkId: string, enabled: boolean) {
+    await http.patch(
+      `/api/invite-links/${encodeURIComponent(linkId)}?workspaceId=${encodeURIComponent(workspaceId)}`,
+      { enabled },
+    )
+  },
+
+  /** DELETE /api/invite-links/:id — revoke a link (managers only). */
+  async deleteWorkspaceInviteLink(http: HttpClient, workspaceId: string, linkId: string) {
+    await http.delete(
+      `/api/invite-links/${encodeURIComponent(linkId)}?workspaceId=${encodeURIComponent(workspaceId)}`,
+    )
+  },
+
+  /**
+   * PATCH /api/workspaces/:id/invite-policy — who may invite (SHO-454).
+   * Owners and admins only (`workspace.settings:manage`).
+   */
+  async setWorkspaceInvitePolicy(
+    http: HttpClient,
+    workspaceId: string,
+    invitePolicy: 'members' | 'admins',
+  ) {
+    await http.patch(`/api/workspaces/${encodeURIComponent(workspaceId)}/invite-policy`, { invitePolicy })
+  },
+
+  /**
+   * POST /api/invitations — invite one address to a workspace by email.
+   *
+   * The `workspaceId` goes in the query as well as the body on purpose: on the
+   * desktop, `routePath` only rewrites a call to `/api/cloud/<id>/…` when the
+   * path or the query names the workspace, so a body-only workspaceId would
+   * send a cloud workspace's invitation to the local server (SHO-454).
+   */
+  async sendInvitation(
+    http: HttpClient,
+    params: { workspaceId: string; email: string; role: 'admin' | 'member' | 'viewer' },
+  ) {
+    const res = await http.post<{ ok?: boolean; data?: unknown }>(
+      `/api/invitations?workspaceId=${encodeURIComponent(params.workspaceId)}`,
+      { email: params.email, role: params.role, workspaceId: params.workspaceId, status: 'pending' },
+    )
+    return res.data?.data ?? null
+  },
+
+  /**
+   * POST /api/invitations/:id/resend — send a pending invitation's email again
+   * and push its expiry out another 7 days (SHO-454).
+   */
+  async resendInvitation(http: HttpClient, workspaceId: string, invitationId: string) {
+    const res = await http.post<{ ok?: boolean; data?: unknown }>(
+      `/api/invitations/${encodeURIComponent(invitationId)}/resend?workspaceId=${encodeURIComponent(workspaceId)}`,
+      {},
     )
     return res.data?.data ?? null
   },

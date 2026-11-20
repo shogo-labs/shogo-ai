@@ -20,6 +20,44 @@ interface MarketplaceInstallResponse {
 // ============================================================================
 
 /**
+ * Star toggles in flight, keyed by `userId:projectId`, valued by the state the
+ * toggle is heading for. A double tap fires two toggles before the first write
+ * settles; the second used to see the first's optimistic row and delete it, so
+ * the project ended up unstarred and the API answered "Project is already
+ * starred" (SHO-437).
+ */
+const starTogglesInFlight = new Map<string, boolean>()
+
+/**
+ * The API answers a duplicate star with `{ error: { code: 'already_starred' } }`.
+ * The SDK keeps the raw body in `details`, so the code is the reliable signal;
+ * the message is the fallback for a body that lost its code.
+ */
+function isAlreadyStarredError(error: unknown): boolean {
+  const e = error as
+    | { details?: { error?: { code?: unknown } }; message?: unknown }
+    | null
+    | undefined
+  if (e?.details?.error?.code === 'already_starred') return true
+  return e?.message === 'Project is already starred'
+}
+
+/**
+ * The API answers a member create for someone who is already in the scope with
+ * `409 { error: { code: 'already_member' } }`. For an accept that is not a
+ * failure: the membership the invitation was asking for already exists, so the
+ * only thing left to do is consume the invitation (SHO-455).
+ */
+function isAlreadyMemberError(error: unknown): boolean {
+  const e = error as
+    | { details?: { error?: { code?: unknown } }; message?: unknown }
+    | null
+    | undefined
+  if (e?.details?.error?.code === 'already_member') return true
+  return e?.message === 'User is already a member'
+}
+
+/**
  * Create domain actions that can be attached to the store.
  * Call these from your components using the store instance.
  *
@@ -259,16 +297,30 @@ export function createDomainActions(store: IDomainStore) {
         throw new Error("Invitation not found")
       }
 
+      // Create the membership first, then consume the invitation. A refused
+      // join (409 `trial_seat_limit`, SHO-422) must leave the invitation
+      // pending: flipping it to accepted before the member exists burns the
+      // invitee's only link and blocks the retry the error message asks for.
+      //
+      // `already_member` is not a failure here. The invitee may have joined
+      // through another path (a second invite, an admin add, a replayed accept),
+      // and the membership the invitation asks for is already in place — so
+      // consume the invitation and report success instead of dead-ending on a
+      // raw hook string (SHO-455).
+      try {
+        await store.memberCollection.create({
+          userId,
+          workspaceId: data.workspaceId,
+          role: data.role as any,
+          isBillingAdmin: false,
+          ...(data.projectId ? { projectId: data.projectId } : {}),
+        })
+      } catch (error) {
+        if (!isAlreadyMemberError(error)) throw error
+      }
+
       await store.invitationCollection.update(invitationId, {
         status: "accepted",
-      })
-
-      await store.memberCollection.create({
-        userId,
-        workspaceId: data.workspaceId,
-        role: data.role as any,
-        isBillingAdmin: false,
-        ...(data.projectId ? { projectId: data.projectId } : {}),
       })
 
       return data
@@ -305,17 +357,34 @@ export function createDomainActions(store: IDomainStore) {
     // =========================================================================
 
     /**
-     * Toggle star status for a project
+     * Toggle star status for a project.
+     *
+     * Idempotent under a double tap: while a toggle for the same
+     * user + project is in flight, a second call reports the state the first
+     * is heading for and sends nothing. A star the server already has is the
+     * outcome the caller wanted, not a failure (SHO-437).
      */
     toggleStarProject: async (projectId: string, userId: string, workspaceId?: string) => {
+      const key = `${userId}:${projectId}`
+      const inFlight = starTogglesInFlight.get(key)
+      if (inFlight !== undefined) return inFlight
+
       const existing = store.starredProjectCollection.all.find(
         (s: any) => s.projectId === projectId && s.userId === userId
       )
 
       if (existing) {
-        await store.starredProjectCollection.delete(existing.id)
-        return false // unstarred
-      } else {
+        starTogglesInFlight.set(key, false)
+        try {
+          await store.starredProjectCollection.delete(existing.id)
+          return false // unstarred
+        } finally {
+          starTogglesInFlight.delete(key)
+        }
+      }
+
+      starTogglesInFlight.set(key, true)
+      try {
         const wsId = workspaceId
           ?? store.projectCollection.all.find((p: any) => p.id === projectId)?.workspaceId
           ?? ''
@@ -325,6 +394,19 @@ export function createDomainActions(store: IDomainStore) {
           workspaceId: wsId,
         })
         return true // starred
+      } catch (error) {
+        if (!isAlreadyStarredError(error)) throw error
+        // The server already has this star (another device, or a collection
+        // that had not loaded it). Refresh so the UI shows the real row; a
+        // failed refresh must not turn a successful star into an error.
+        try {
+          await store.starredProjectCollection.loadAll({ userId })
+        } catch {
+          // Best effort — the star is on the server either way.
+        }
+        return true
+      } finally {
+        starTogglesInFlight.delete(key)
       }
     },
 

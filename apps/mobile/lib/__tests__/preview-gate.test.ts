@@ -34,6 +34,14 @@ import {
   previewRecoveryAttempts,
   recordPreviewRecovery,
   resetPreviewRecoveryAttempts,
+  resolveCanvasGate,
+  BASE_TIMEOUT_MS,
+  API_WAIT_TIMEOUT_MS,
+  START_MAX_ATTEMPTS,
+  START_RETRY_DELAYS_MS,
+  shouldAttemptPreviewStart,
+  nextPreviewStartDelayMs,
+  type CanvasGateInput,
 } from '../preview-gate'
 
 describe('API gate latch (survives canvas remounts)', () => {
@@ -527,5 +535,111 @@ describe('PREVIEW_ACTIVE_PING_MS', () => {
     // The API pins a preview for 3 minutes; a minute leaves two misses of slack.
     expect(PREVIEW_ACTIVE_PING_MS).toBeLessThanOrEqual(60_000)
     expect(PREVIEW_ACTIVE_PING_MS * 2).toBeLessThan(3 * 60_000)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// SHO-406: one canvas gate for the project screen and the phone's surface
+// ---------------------------------------------------------------------------
+
+const AGENT_URL = 'https://studio.shogo.ai/api/projects/abc/agent-proxy'
+
+/** A gate input that is "runtime resolved, nothing known yet". */
+function gateInput(over: Partial<CanvasGateInput> = {}): CanvasGateInput {
+  return {
+    agentUrl: AGENT_URL,
+    phase: 'idle',
+    running: false,
+    apiReady: false,
+    apiLatched: false,
+    baseTimedOut: false,
+    apiWaitElapsed: false,
+    ...over,
+  }
+}
+
+describe('resolveCanvasGate', () => {
+  test('no runtime URL yet is waiting-runtime, not a spinner with no end', () => {
+    expect(resolveCanvasGate(gateInput({ agentUrl: null }))).toBe('waiting-runtime')
+  })
+
+  test('a runtime that never resolves times out instead of spinning forever', () => {
+    expect(resolveCanvasGate(gateInput({ agentUrl: null, baseTimedOut: true }))).toBe('timed-out')
+  })
+
+  test('a 5xx status poll past the base timeout is timed-out (AC 1)', () => {
+    // The poll hook records `lastStatusError`; the gate only needs the clock.
+    expect(resolveCanvasGate(gateInput({ baseTimedOut: true }))).toBe('timed-out')
+  })
+
+  test('a failed start past the base timeout is timed-out, not starting (AC 2)', () => {
+    expect(
+      resolveCanvasGate(gateInput({ running: false, baseTimedOut: true })),
+    ).toBe('timed-out')
+  })
+
+  test('phase "failed" is terminal and wins over every clock (AC 3)', () => {
+    expect(resolveCanvasGate(gateInput({ phase: 'failed' }))).toBe('failed')
+    expect(resolveCanvasGate(gateInput({ phase: 'failed', baseTimedOut: true }))).toBe('failed')
+    expect(resolveCanvasGate(gateInput({ phase: 'failed', running: true }))).toBe('failed')
+  })
+
+  test('running with no API sidecar shows the canvas after the API wait (AC 4)', () => {
+    expect(resolveCanvasGate(gateInput({ running: true }))).toBe('starting')
+    expect(resolveCanvasGate(gateInput({ running: true, apiWaitElapsed: true }))).toBe('ready')
+  })
+
+  test('a latched API gate shows the canvas without waiting', () => {
+    expect(resolveCanvasGate(gateInput({ running: true, apiLatched: true }))).toBe('ready')
+  })
+
+  test('hydrateRebuildPending keeps it starting until the rebuild lands (AC 5)', () => {
+    // `resolveRunning` reports false while a post-hydrate rebuild is pending, so
+    // the caller passes running:false even though the template answers running.
+    expect(resolveCanvasGate(gateInput({ running: false, apiReady: true }))).toBe('starting')
+  })
+
+  test('mode "no-project" still shows "No canvas yet" (AC 5)', () => {
+    expect(resolveCanvasGate(gateInput({ noProject: true }))).toBe('no-project')
+    expect(resolveCanvasGate(gateInput({ noProject: true, baseTimedOut: true }))).toBe('no-project')
+  })
+
+  test('native loads the tokenized document without the status poll', () => {
+    expect(
+      resolveCanvasGate(gateInput({ running: false, nativeBaseReady: true, apiLatched: true })),
+    ).toBe('ready')
+    // ...but still waits for the API sidecar, exactly like the project screen.
+    expect(resolveCanvasGate(gateInput({ nativeBaseReady: true }))).toBe('starting')
+  })
+
+  test('a serving dev server is never "timed-out" — the sidecar has its own clock', () => {
+    expect(resolveCanvasGate(gateInput({ running: true, baseTimedOut: true }))).toBe('starting')
+  })
+
+  test('the base timeout is longer than the API wait', () => {
+    expect(BASE_TIMEOUT_MS).toBeGreaterThan(API_WAIT_TIMEOUT_MS)
+  })
+})
+
+describe('/preview/start retry policy', () => {
+  test('a failed start is retried, up to the cap', () => {
+    expect(shouldAttemptPreviewStart(0)).toBe(true)
+    expect(shouldAttemptPreviewStart(1)).toBe(true)
+    expect(shouldAttemptPreviewStart(START_MAX_ATTEMPTS - 1)).toBe(true)
+    expect(shouldAttemptPreviewStart(START_MAX_ATTEMPTS)).toBe(false)
+    expect(shouldAttemptPreviewStart(START_MAX_ATTEMPTS + 5)).toBe(false)
+  })
+
+  test('the backoff grows and then clamps', () => {
+    expect(nextPreviewStartDelayMs(1)).toBe(START_RETRY_DELAYS_MS[0])
+    expect(nextPreviewStartDelayMs(2)).toBe(START_RETRY_DELAYS_MS[1])
+    expect(nextPreviewStartDelayMs(3)).toBe(START_RETRY_DELAYS_MS[2])
+    // Never indexes past the schedule, however many attempts are reported.
+    expect(nextPreviewStartDelayMs(99)).toBe(START_RETRY_DELAYS_MS[START_RETRY_DELAYS_MS.length - 1])
+    expect(nextPreviewStartDelayMs(0)).toBe(START_RETRY_DELAYS_MS[0])
+  })
+
+  test('more than one attempt is allowed — a single fire-and-forget POST was the bug', () => {
+    expect(START_MAX_ATTEMPTS).toBeGreaterThan(1)
   })
 })

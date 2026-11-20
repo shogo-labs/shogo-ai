@@ -74,7 +74,10 @@ async function goHome(page: Page, attempts = 8): Promise<Locator> {
  */
 async function activeWorkspaceId(page: Page): Promise<string | null | undefined> {
   try {
-    return await page.evaluate(() => localStorage.getItem("shogo:active-workspace-id"))
+    // The tab's own selection wins over the shared default (SHO-390).
+    return await page.evaluate(
+      () => sessionStorage.getItem("shogo:active-workspace-id") ?? localStorage.getItem("shogo:active-workspace-id"),
+    )
   } catch (error) {
     const message = String(error)
     if (/Execution context was destroyed|Cannot find context with specified id|navigat/i.test(message)) {

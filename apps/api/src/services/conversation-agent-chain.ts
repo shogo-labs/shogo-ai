@@ -12,7 +12,6 @@
  */
 
 import { prisma } from '../lib/prisma'
-import { getProjectUser } from '../lib/project-user-context'
 import { agentKey, type AgentTarget } from './conversation-mentions'
 
 const db = prisma as any
@@ -167,10 +166,24 @@ export async function setThreadOwner(rootMessageId: string, owner: AgentTarget, 
   await db.conversationMessage.update({ where: { id: rootMessageId }, data: { agentChain: next } })
 }
 
-/** Who pays for a chain no person started (heartbeats, webhooks): the project's last user, else the workspace owner. */
+/**
+ * Who pays for a chain no person started (heartbeats, webhooks): the project's
+ * creator, else the workspace owner.
+ *
+ * This used to read `getProjectUser` — an in-memory "last person who chatted in
+ * this project" — which is a guess: it is per process, expires after an hour,
+ * and names whoever happened to speak last rather than anyone who asked for the
+ * work. The creator is the person the run belongs to, and the owner is the
+ * person who answers for the workspace when there is no creator.
+ */
 export async function fallbackBillingUser(workspaceId: string, projectId: string | null): Promise<string | null> {
-  const recent = projectId ? getProjectUser(projectId) : undefined
-  if (recent) return recent
+  if (projectId) {
+    const project = await db.project.findUnique({
+      where: { id: projectId },
+      select: { createdBy: true },
+    })
+    if (project?.createdBy) return project.createdBy
+  }
   const owner = await db.member.findFirst({
     where: { workspaceId, projectId: null, role: 'owner' },
     orderBy: { createdAt: 'asc' },

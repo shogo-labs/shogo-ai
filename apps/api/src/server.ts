@@ -14,16 +14,18 @@ import { fileURLToPath } from 'url'
 import { readdir, stat, mkdir, appendFile } from 'fs/promises'
 import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync, readFileSync, realpathSync } from 'fs'
 import { auth } from './auth'
-import type { PaidInstanceSize } from './config/stripe-prices'
 import { resolveSubscriptionContext, selectPlanItem } from './services/stripe-subscription-sync.service'
 import { resolveCheckoutPriceId, normalizeCheckoutPlanId } from './services/stripe-price-lookup.service'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import type { InstanceSizeName } from './config/instance-sizes'
+import { resolveWorkspaceDiskMiB, workspaceDiskIncludedGiB } from './config/instance-sizes'
+import { diskAddonMonthlyUsd } from './config/disk-pricing'
 import * as workspaceService from './services/workspace.service'
 import * as workspaceModelsService from './services/workspace-models.service'
 import { REGION_ID, REGION_LABEL, REGION_PEERS, getPeer } from './lib/region'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
+import { slidesViewerRoutes } from './routes/slides-viewer'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { pinChatToHomeRegion, pinProjectRoutesToHomeRegion } from './lib/chat-region-pin'
 import { RuntimeNotInHomeRegionError, runtimeNotInHomeRegionResponse } from './lib/runtime-home-region-guard'
@@ -32,9 +34,11 @@ import { workspaceRootRoutes } from './routes/workspace-root'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { workspaceExportRoutes } from './routes/workspace-export'
 import { workspaceMoveRoutes } from './routes/workspace-moves'
+import { computeUsageRoutes } from './routes/compute-usage'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
 import { conversationRoutes } from './routes/conversations'
 import { workBoardRoutes } from './routes/work-boards'
+import { accessPolicyRoutes } from './routes/access-policies'
 // Analytics routes are plain in-repo modules (Prisma only), so they mount in
 // local mode too. Loading them via server-cloud-deps left local 404ing.
 import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
@@ -50,6 +54,7 @@ import { startEventDeliveryWorker, stopEventDeliveryWorker } from './jobs/run-ev
 import { inviteLinkAcceptRoutes } from './routes/invite-link-accept'
 import { createInviteLinkAfterAccept } from './routes/invite-link-after-accept'
 import { inviteLinkRoutes } from './routes/invite-links'
+import { invitationResendRoutes } from './routes/invitation-resend'
 import { invitationInfoRoutes } from './routes/invitation-info'
 import { rbacRoutes } from './routes/rbac'
 import { appActionsRoutes } from './routes/app-actions'
@@ -157,13 +162,14 @@ import {
   resolvePlatformVisibleModels,
   resolvePlatformVisibleModelsForRequest,
 } from './services/visible-models.service'
+import { allowedModelIdsFor, invalidateAccess } from './services/access-policy.service'
 import { localAuthRoutes } from './routes/local-auth'
 import { loadPlatformModelSetting, platformModelSettingRoutes } from './routes/platform-model-setting'
 import { resetCloudKeyState } from './lib/cloud-key-state'
 import { userProfileRoutes } from './routes/local-user'
 import { localCloudBillingRoutes } from './routes/local-cloud-billing'
 import { adminSignupRiskRoutes } from './routes/admin-signup-risk'
-import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, getChatAttachmentCap, getMonthlyIncludedForPlanAndPrice, promoCreditAvailableUsd } from './config/usage-plans'
+import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, TRIAL_MAX_SEATS, TRIAL_SEAT_LIMIT_CODE, getChatAttachmentCap, getMonthlyIncludedForPlanAndPrice, promoCreditAvailableUsd, trialSeatLimitMessage } from './config/usage-plans'
 import { meetingRoutes } from './routes/meetings'
 import { dictationRoutes } from './routes/dictation'
 import { DICTATION_MAX_BYTES } from './services/meeting.service'
@@ -193,7 +199,9 @@ import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
 import { isMidCutoverStatus } from './services/published-cutover.service'
+import { readSignupRequestInfo } from './services/signup-risk.service'
 import { deployedAppVersionOrUnknown } from './lib/app-version'
+import { toNativeAuthHandback } from './lib/auth-handback'
 // Auth middleware for generated routes
 import {
   authMiddleware,
@@ -208,6 +216,8 @@ import {
   instanceMinScale,
   planDiskChange,
   readRuntimeDiskUsage,
+  readWorkspaceRuntimeDiskUsage,
+  resolveDiskAddonEligibility,
 } from './services/project-disk.service'
 import {
   describeProjectMachine,
@@ -218,6 +228,7 @@ import {
   apiAuthGate,
   allowUserAppProxyRequest,
   isAllowedUnauthWebchatProxyPath,
+  isPublicChannelIngressPath,
   isNonEdgeUserAppProxyRequest,
   isPublicPreviewRenderPath,
   isPublishedApiProxyPath,
@@ -244,6 +255,7 @@ const Stripe: any = cloud.Stripe ?? class LocalStripeUnavailable {
   }
 }
 const billingService: any = cloud.billingService ?? {}
+const billingSummaryService: any = cloud.billingSummaryService ?? {}
 const appleIap: any = cloud.appleIap ?? {}
 const instanceService: any = cloud.instanceService ?? {}
 const storageService: any = cloud.storageService ?? {}
@@ -257,14 +269,12 @@ const SUPPORTED_CURRENCIES: any = cloud.SUPPORTED_CURRENCIES ?? []
 const getExchangeRates: any = cloud.getExchangeRates ?? (async () => ({}))
 const convertPrice: any = cloud.convertPrice ?? ((value: unknown) => value)
 const buildRegionalPlans: any = cloud.buildRegionalPlans ?? (() => [])
-const INSTANCE_SIZES: any = cloud.INSTANCE_SIZES ?? {}
-const INSTANCE_SIZE_ORDER: any = cloud.INSTANCE_SIZE_ORDER ?? []
-const getInstanceDisplayPrice: any = cloud.getInstanceDisplayPrice ?? (() => undefined)
 const sendPlanUpgradedEmail: any = cloud.sendPlanUpgradedEmail ?? (async () => {})
 const sendTrialEndingEmail: any = cloud.sendTrialEndingEmail ?? (async () => {})
 const sendTrialUnavailableEmail: any = cloud.sendTrialUnavailableEmail ?? (async () => {})
 const trialService: any = cloud.trialService ?? {}
 const signupCreditService: any = cloud.signupCreditService ?? {}
+const soloFounderService: any = cloud.soloFounderService ?? {}
 const sendInvitationEmail: any = cloud.sendInvitationEmail ?? (async () => {})
 const sendProjectInviteEmail: any = cloud.sendProjectInviteEmail ?? (async () => {})
 const sendMemberRemovedEmail: any = cloud.sendMemberRemovedEmail ?? (async () => {})
@@ -675,6 +685,17 @@ app.use('/api/preview/:projectId/render/*', previewFrameStrip)
 app.use('/api/preview/:projectId/ports/:port/render', previewFrameStrip)
 app.use('/api/preview/:projectId/ports/:port/render/*', previewFrameStrip)
 
+// The slides viewer is framed by every file host, and on desktop the app and
+// the API are different origins (app :8081, API :8002), so SAMEORIGIN would
+// block it there while cloud (same origin) never noticed. Strip the framing
+// headers on the way out of secureHeaders, the same way the preview proxy
+// does (SHO-426).
+app.use('/api/viewers/slides', async (c, next) => {
+  await next()
+  c.res.headers.delete('X-Frame-Options')
+  c.res.headers.delete('Cross-Origin-Opener-Policy')
+})
+
 // Security headers — X-Content-Type-Options, X-Frame-Options, etc.
 app.use('*', secureHeaders({
   xFrameOptions: 'SAMEORIGIN',
@@ -903,6 +924,9 @@ app.use('/api/projects/:projectId/*', async (c, next) => {
   if (isAllowedUnauthWebchatProxyPath(path)) {
     return next()
   }
+  if (isPublicChannelIngressPath(path)) {
+    return next()
+  }
   if (isTokenGatedThumbnailPath(path)) {
     return next()
   }
@@ -933,7 +957,7 @@ app.use('/api/*', homeRegionWriteProxy)
 
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
-app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
+app.on(['GET', 'POST'], '/api/auth/*', async (c) => toNativeAuthHandback(await auth.handler(c.req.raw)))
 
 // Health check — includes Redis status for multi-pod deployments.
 // When tunnel-redis is in a degraded state (init completed but publisher
@@ -1042,6 +1066,11 @@ app.get('/api/integrations/callback', (c) => {
 </body></html>`
   return c.html(html)
 })
+
+// The slides viewer page: a static, sandboxed document every file host frames
+// to render a PowerPoint deck (SHO-426). Same code for cloud and the desktop
+// local API, so the two can never drift.
+app.route('/api/viewers', slidesViewerRoutes())
 
 // Platform config (tells frontend about local mode, enabled features, etc.)
 app.get('/api/config', async (c) => {
@@ -1702,6 +1731,9 @@ app.route('/api', cliAuthRoutes())
 
 // Remote Control — Instance registry, tunnel proxy, audit trail, push subscriptions
 app.route('/api', instanceRoutes())
+// Workspace compute usage (SHO-424): metered microVM time × machine size,
+// billed as `vm_compute`. Owner/admin sees the split, a member the total.
+app.route('/api', computeUsageRoutes())
 // A paired desktop's own workspaces, owner-only (`/api/machines…`).
 app.route('/api', machineRoutes())
 app.route('/api', remoteAuditRoutes())
@@ -1738,6 +1770,7 @@ void settleOrphanedAgentReplies(0).catch((err) => console.warn('[Channels] could
 registerBuiltInChatProviders()
 app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', workBoardRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', accessPolicyRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', chatProviderRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))
 // Resume queued agent tasks after API restarts and keep dueAt-backed work
@@ -3104,13 +3137,18 @@ app.get('/api/projects/:projectId/runtime/status', async (c) => {
       if (isMetalEnabled() && isMetalEligibleProject(projectId)) {
         const { MetalSubstrate } = await import('./lib/substrate/metal-substrate')
         const s = await new MetalSubstrate().getStatus(projectId)
+        // Durability says whether this VM's work has reached the durable repo.
+        // A cold boot restores the durable copy, so a runtime that is not
+        // durable is one stop away from losing the user's changes — the UI
+        // needs to say so (SHO-442). Absent when the project has no assigned VM.
+        const durability = s.durability
         if (!s.exists) {
           return c.json({ projectId, status: 'not_found', message: 'Project runtime not created yet', ready: false })
         }
         if (!s.ready) {
-          return c.json({ projectId, status: 'starting', message: 'Project runtime is starting...', ready: false, replicas: s.replicas })
+          return c.json({ projectId, status: 'starting', message: 'Project runtime is starting...', ready: false, replicas: s.replicas, ...(durability ? { durability } : {}) })
         }
-        return c.json({ projectId, status: 'running', message: 'Project runtime is ready', ready: true, replicas: s.replicas, url: s.url })
+        return c.json({ projectId, status: 'running', message: 'Project runtime is ready', ready: true, replicas: s.replicas, url: s.url, ...(durability ? { durability } : {}) })
       }
     } catch (error: any) {
       console.error('[Runtime] Metal status failed, falling back:', error?.message ?? error)
@@ -3680,9 +3718,10 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     path === '/agent/channels/webchat/session' ||
     path === '/agent/channels/webchat/message' ||
     path.startsWith('/agent/channels/webchat/events/')
+  const isChannelIngressPath = isPublicChannelIngressPath(c.req.path)
   let authedUserId: string | null = null
   let authedWorkspaceId: string | null = null
-  if (!isWebchatPath) {
+  if (!isWebchatPath && !isChannelIngressPath) {
     const userId = await getAuthUserId(c)
     if (!userId) {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
@@ -3802,6 +3841,10 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
           if (v) tunnelHeaders[h] = v
         }
       }
+      if (isChannelIngressPath) {
+        const sig = c.req.header('x-hub-signature-256')
+        if (sig) tunnelHeaders['x-hub-signature-256'] = sig
+      }
       const tunnelBody = c.req.method === 'GET' || c.req.method === 'HEAD'
         ? undefined
         : await c.req.text()
@@ -3843,6 +3886,10 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       const v = c.req.header(h)
       if (v) headers.set(h, v)
     }
+  }
+  if (isChannelIngressPath) {
+    const sig = c.req.header('x-hub-signature-256')
+    if (sig) headers.set('x-hub-signature-256', sig)
   }
   headers.set('x-runtime-token', runtimeToken)
 
@@ -4229,6 +4276,7 @@ app.get('/api/projects/:projectId/disk', async (c) => {
   }
   const instanceSize = (project.workspace?.instanceSize ?? 'micro') as InstanceSizeName
   const substrate = await projectDiskSubstrate(projectId)
+  const eligibility = await resolveDiskAddonEligibility(workspaceId)
   // Never wake a VM just to measure it: a stopped project answers with the
   // size only, and the panel says usage appears while the project is running.
   const usage = substrate === 'metal' ? await readRuntimeDiskUsage(projectId, workspaceId) : null
@@ -4238,6 +4286,8 @@ app.get('/api/projects/:projectId/disk', async (c) => {
       requestedGiB: project.workspaceDiskGiB,
       instanceSize,
       substrate,
+      canBuyAddon: eligibility.canBuyAddon,
+      buyBlockedReason: eligibility.buyBlockedReason,
       usage,
     }),
   )
@@ -4280,9 +4330,41 @@ app.put('/api/projects/:projectId/disk', async (c) => {
     return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
   }
   const instanceSize = (project.workspace?.instanceSize ?? 'micro') as InstanceSizeName
-  const plan = planDiskChange(body.sizeGiB, instanceSize)
+  const eligibility = await resolveDiskAddonEligibility(workspaceId)
+  const currentEffectiveGiB = resolveWorkspaceDiskMiB(project.workspaceDiskGiB, instanceSize) / 1024
+  const plan = planDiskChange(body.sizeGiB, instanceSize, {
+    canBuyAddon: eligibility.canBuyAddon,
+    currentEffectiveGiB,
+  })
   if (!plan.ok) {
     return c.json({ error: { code: plan.code, message: plan.message } }, plan.status)
+  }
+
+  // Wallet pre-flight: growing the add-on must be affordable for a month. A
+  // shrink is refused above, so the delta is never negative. Local mode has no
+  // wallet and no charge.
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+    const includedGiB = workspaceDiskIncludedGiB(instanceSize)
+    const newAddonGiB = Math.max(0, plan.sizeGiB - includedGiB)
+    const currentAddonGiB = Math.max(0, currentEffectiveGiB - includedGiB)
+    const deltaMonthlyUsd = diskAddonMonthlyUsd(newAddonGiB) - diskAddonMonthlyUsd(currentAddonGiB)
+    if (deltaMonthlyUsd > 0) {
+      const { getUsdBalance } = await import('./lib/voice-cost')
+      const balance = await getUsdBalance(workspaceId).catch(() => 0)
+      if (balance < deltaMonthlyUsd) {
+        return c.json(
+          {
+            error: {
+              code: 'usage_limit_reached',
+              message: `Not enough available usage to buy ${newAddonGiB} GiB of extra disk. It costs $${deltaMonthlyUsd.toFixed(2)}/mo. Add funds or upgrade your plan.`,
+              requiredUsd: deltaMonthlyUsd,
+              availableUsd: balance,
+            },
+          },
+          402,
+        )
+      }
+    }
   }
 
   await prisma.project.update({
@@ -4298,10 +4380,17 @@ app.put('/api/projects/:projectId/disk', async (c) => {
   if (substrate === 'metal') {
     try {
       const { resizeProjectRuntime } = await import('./lib/substrate/router')
-      await resizeProjectRuntime(projectId, {
+      const outcomes = await resizeProjectRuntime(projectId, {
         disk: `${plan.sizeGiB}Gi`,
         minScale: instanceMinScale(instanceSize),
       })
+      // A live runtime that answered 'unsupported' (or whose host call failed)
+      // never saw the new size — report it instead of a silent 200 (SHO-401).
+      const failed = (outcomes ?? []).find((o) => o.error || o.disk === 'unsupported')
+      if (failed) {
+        growError = failed.error ?? `the live runtime did not grow (${failed.disk})`
+        console.warn(`[ProjectDisk] live grow for ${projectId} did not apply:`, growError)
+      }
     } catch (err: any) {
       growError = err?.message ?? String(err)
       console.warn(`[ProjectDisk] live grow for ${projectId} failed:`, growError)
@@ -4314,9 +4403,164 @@ app.put('/api/projects/:projectId/disk', async (c) => {
       requestedGiB: plan.sizeGiB,
       instanceSize,
       substrate,
+      canBuyAddon: eligibility.canBuyAddon,
+      buyBlockedReason: eligibility.buyBlockedReason,
       usage,
     }),
     // The column is saved either way; a failed live grow retries on next open.
+    ...(growError ? { growError } : {}),
+  })
+})
+
+// =============================================================================
+// Workspace-runtime disk (SHO-401), for Settings → Workspace → Disk.
+//
+// A bare `ws:<workspaceId>` runtime has its own workspace drive, sized by
+// Workspace.runtimeDiskGiB (falling back to the largest member project's
+// setting). Only these routes write it — the generic workspace PATCH drops it
+// (see generated/workspace.hooks.ts). Owner/admin only, like the project route.
+// =============================================================================
+
+async function workspaceDiskSubstrate(): Promise<'local' | 'metal' | 'knative'> {
+  if (process.env.SHOGO_LOCAL_MODE === 'true' || !process.env.KUBERNETES_SERVICE_HOST) return 'local'
+  try {
+    const { isMetalEnabled } = await import('./lib/metal-eligibility')
+    return isMetalEnabled() ? 'metal' : 'knative'
+  } catch {
+    return 'knative'
+  }
+}
+
+app.get('/api/workspaces/:workspaceId/disk', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const access = await loadAccess({ userId, via: 'session' as const }, { workspaceId })
+  if (!access.exists) {
+    return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+  }
+  if (!access.permissions.has('workspace:read')) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
+  }
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { runtimeDiskGiB: true, instanceSize: true },
+  })
+  if (!workspace) {
+    return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+  }
+  const instanceSize = (workspace.instanceSize ?? 'micro') as InstanceSizeName
+  const substrate = await workspaceDiskSubstrate()
+  const eligibility = await resolveDiskAddonEligibility(workspaceId)
+  const usage = substrate === 'metal' ? await readWorkspaceRuntimeDiskUsage(workspaceId) : null
+  return c.json(
+    describeProjectDisk({
+      requestedGiB: workspace.runtimeDiskGiB,
+      instanceSize,
+      substrate,
+      canBuyAddon: eligibility.canBuyAddon,
+      buyBlockedReason: eligibility.buyBlockedReason,
+      usage,
+    }),
+  )
+})
+
+app.put('/api/workspaces/:workspaceId/disk', async (c) => {
+  const workspaceId = c.req.param('workspaceId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const access = await loadAccess({ userId, via: 'session' as const }, { workspaceId })
+  if (!access.exists) {
+    return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+  }
+  // Raising disk is a spend decision: workspace owners/admins only.
+  if (!governsAllProjects(access.workspaceRole)) {
+    return c.json(
+      { error: { code: 'forbidden', message: 'Only workspace owners and admins can change disk size' } },
+      403,
+    )
+  }
+  const body = await c.req
+    .json<{ sizeGiB?: number | string }>()
+    .catch(() => ({}) as { sizeGiB?: number | string })
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { runtimeDiskGiB: true, instanceSize: true },
+  })
+  if (!workspace) {
+    return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
+  }
+  const instanceSize = (workspace.instanceSize ?? 'micro') as InstanceSizeName
+  const eligibility = await resolveDiskAddonEligibility(workspaceId)
+  const currentEffectiveGiB = resolveWorkspaceDiskMiB(workspace.runtimeDiskGiB, instanceSize) / 1024
+  const plan = planDiskChange(body.sizeGiB, instanceSize, {
+    canBuyAddon: eligibility.canBuyAddon,
+    currentEffectiveGiB,
+  })
+  if (!plan.ok) {
+    return c.json({ error: { code: plan.code, message: plan.message } }, plan.status)
+  }
+
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+    const includedGiB = workspaceDiskIncludedGiB(instanceSize)
+    const newAddonGiB = Math.max(0, plan.sizeGiB - includedGiB)
+    const currentAddonGiB = Math.max(0, currentEffectiveGiB - includedGiB)
+    const deltaMonthlyUsd = diskAddonMonthlyUsd(newAddonGiB) - diskAddonMonthlyUsd(currentAddonGiB)
+    if (deltaMonthlyUsd > 0) {
+      const { getUsdBalance } = await import('./lib/voice-cost')
+      const balance = await getUsdBalance(workspaceId).catch(() => 0)
+      if (balance < deltaMonthlyUsd) {
+        return c.json(
+          {
+            error: {
+              code: 'usage_limit_reached',
+              message: `Not enough available usage to buy ${newAddonGiB} GiB of extra disk. It costs $${deltaMonthlyUsd.toFixed(2)}/mo. Add funds or upgrade your plan.`,
+              requiredUsd: deltaMonthlyUsd,
+              availableUsd: balance,
+            },
+          },
+          402,
+        )
+      }
+    }
+  }
+
+  await prisma.workspace.update({
+    where: { id: workspaceId },
+    data: { runtimeDiskGiB: plan.sizeGiB },
+  })
+
+  const substrate = await workspaceDiskSubstrate()
+  let growError: string | undefined
+  if (substrate === 'metal') {
+    try {
+      const { resizeWorkspaceRuntime } = await import('./lib/substrate/router')
+      const outcomes = await resizeWorkspaceRuntime(workspaceId, { disk: `${plan.sizeGiB}Gi` })
+      const failed = outcomes.find((o) => o.error || o.disk === 'unsupported')
+      if (failed) {
+        growError = failed.error ?? `the live runtime did not grow (${failed.disk})`
+        console.warn(`[WorkspaceDisk] live grow for ${workspaceId} did not apply:`, growError)
+      }
+    } catch (err: any) {
+      growError = err?.message ?? String(err)
+      console.warn(`[WorkspaceDisk] live grow for ${workspaceId} failed:`, growError)
+    }
+  }
+
+  const usage = substrate === 'metal' ? await readWorkspaceRuntimeDiskUsage(workspaceId) : null
+  return c.json({
+    ...describeProjectDisk({
+      requestedGiB: plan.sizeGiB,
+      instanceSize,
+      substrate,
+      canBuyAddon: eligibility.canBuyAddon,
+      buyBlockedReason: eligibility.buyBlockedReason,
+      usage,
+    }),
     ...(growError ? { growError } : {}),
   })
 })
@@ -6623,7 +6867,7 @@ app.all('/api/admin/regions/:regionId/*', async (c) => {
 // GET /api/admin/metal/fleet — desired baseline vs live registry + drift.
 app.get('/api/admin/metal/fleet', async (c) => {
   try {
-    const { getMetalFleetStatus, MAX_VMS_PER_HOST } = await import('./lib/metal-warm-pool-controller')
+    const { getMetalFleetStatus, MAX_VMS_PER_HOST, activeLoad } = await import('./lib/metal-warm-pool-controller')
     const { getHomeFleetEnv, fleetEnvKey, METAL_FLEET } = await import('./config/metal-fleet')
     const { getMetalHostRecordMap } = await import('./lib/metal-fleet-hosts')
 
@@ -6667,24 +6911,49 @@ app.get('/api/admin/metal/fleet', async (c) => {
       .filter((h) => !desiredIds.has(h.hostId))
       .map((h) => ({ hostId: h.hostId, region: h.region, kind: 'burst' as const, present: true, provisioned: true, live: h }))
 
-    // Region rollups (utilization for burst decisions). utilPct is assigned live
+    // Region rollups (utilization for burst decisions). utilPct is ACTIVE live
     // microVMs over REAL capacity (live hosts × MAX_VMS_PER_HOST), NOT the
     // warm-pool poolSize (which is just the idle pre-boot target and made util
     // read >100% on lightly-loaded regions). poolSize is still surfaced for ops.
+    // `assigned` is the resident total and `evictable` the warm-but-free part of
+    // it (SHO-444), so the gap between utilPct and assignedUtilPct IS the bucket.
     const byRegion: Record<
       string,
-      { hosts: number; live: number; assigned: number; poolSize: number; capacity: number; utilPct: number }
+      {
+        hosts: number
+        live: number
+        assigned: number
+        active: number
+        evictable: number
+        poolSize: number
+        capacity: number
+        utilPct: number
+        assignedUtilPct: number
+      }
     > = {}
     for (const h of status.hosts) {
-      const r = (byRegion[h.region] ||= { hosts: 0, live: 0, assigned: 0, poolSize: 0, capacity: 0, utilPct: 0 })
+      const r = (byRegion[h.region] ||= {
+        hosts: 0,
+        live: 0,
+        assigned: 0,
+        active: 0,
+        evictable: 0,
+        poolSize: 0,
+        capacity: 0,
+        utilPct: 0,
+        assignedUtilPct: 0,
+      })
       r.hosts++
       r.live++
       r.assigned += h.load?.assigned ?? 0
+      r.active += activeLoad(h)
+      r.evictable += h.load?.evictable ?? 0
       r.poolSize += h.capacity?.poolSize ?? 0
     }
     for (const r of Object.values(byRegion)) {
       r.capacity = r.live * MAX_VMS_PER_HOST
-      r.utilPct = r.capacity > 0 ? Math.round((r.assigned / r.capacity) * 100) : 0
+      r.utilPct = r.capacity > 0 ? Math.round((r.active / r.capacity) * 100) : 0
+      r.assignedUtilPct = r.capacity > 0 ? Math.round((r.assigned / r.capacity) * 100) : 0
     }
 
     return c.json({
@@ -7765,16 +8034,34 @@ function planDisplayName(planId: string): string {
   return planId.charAt(0).toUpperCase() + planId.slice(1)
 }
 
-/** Fire-and-forget: the trial checkout was cancelled as a duplicate; tell the owner. */
-function notifyTrialBlocked(workspaceId: string, planId: string): void {
+/**
+ * Fire-and-forget: the trial checkout was cancelled (duplicate card/user, or a
+ * prepaid card); tell the owner why.
+ */
+function notifyTrialBlocked(workspaceId: string, planId: string, reason: string | null): void {
   workspaceOwnerContact(workspaceId)
     .then((owner) => owner && sendTrialUnavailableEmail({
       to: owner.email,
       workspaceName: owner.workspaceName,
       planName: planDisplayName(planId),
       dashboardUrl: `${getFrontendUrl()}/billing`,
+      reason,
     }))
     .catch((err: any) => console.error('[Webhook] trial-unavailable email failed:', err?.message ?? err))
+}
+
+/**
+ * The 400 body for a trial checkout that asked for more seats than a trial may
+ * hold (SHO-422). One code, one message, on both checkout routes.
+ */
+function trialSeatLimitResponse(c: any) {
+  return c.json({
+    error: {
+      code: TRIAL_SEAT_LIMIT_CODE,
+      message: trialSeatLimitMessage(TRIAL_MAX_SEATS),
+      maxSeats: TRIAL_MAX_SEATS,
+    },
+  }, 400)
 }
 
 app.post('/api/billing/checkout', async (c) => {
@@ -7787,9 +8074,25 @@ app.post('/api/billing/checkout', async (c) => {
     const userId = authCtx?.userId as string | undefined
 
     const body = await c.req.json()
-    const { workspaceId, planId, seats: rawSeats, billingInterval, userEmail, referralId, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl, trial: wantsTrial } = body
+    const {
+      workspaceId,
+      planId,
+      seats: rawSeats,
+      billingInterval: requestedInterval,
+      userEmail,
+      referralId,
+      successUrl: clientSuccessUrl,
+      cancelUrl: clientCancelUrl,
+      trial: wantsTrial,
+      // `offer: 'solo_founder'` is the $99 Solo Founder checkout (SHO-428). It is
+      // the same route, not a second one: membership, affiliate attribution and
+      // the success/cancel URLs are the same, and the server decides every
+      // value the client would otherwise send.
+      offer: requestedOffer,
+      promoCode,
+    } = body
 
-    if (!workspaceId || !planId || !billingInterval) {
+    if (!workspaceId || (!requestedOffer && (!planId || !requestedInterval))) {
       return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
     }
 
@@ -7797,18 +8100,67 @@ app.post('/api/billing/checkout', async (c) => {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
 
-    if (planId !== 'basic' && planId !== 'pro' && planId !== 'business') {
+    // A workspace that already has a live Stripe subscription must change that
+    // subscription, not start a second Checkout (SHO-451). A second Checkout
+    // created a second subscription; `syncFromStripe` upserts by workspaceId,
+    // so the new row overwrote the old one and the original kept billing.
+    // Grant-only workspaces have no Stripe subscription and keep Checkout.
+    const billingWorkspaceId = await billingService.resolveBillingWorkspaceId(workspaceId)
+    const existingSubscription = await prisma.subscription.findFirst({
+      where: {
+        workspaceId: billingWorkspaceId,
+        status: { in: ['active', 'trialing', 'past_due'] },
+      },
+      select: { planId: true },
+    })
+    if (existingSubscription) {
+      return c.json({
+        error: {
+          code: 'already_subscribed',
+          message: 'This workspace already has a subscription. Use Change plan to switch plans.',
+          planId: existingSubscription.planId,
+        },
+      }, 409)
+    }
+
+    const isSoloFounder = requestedOffer === soloFounderService.SOLO_FOUNDER_OFFER
+
+    if (!isSoloFounder && planId !== 'basic' && planId !== 'pro' && planId !== 'business') {
       return c.json({ error: { code: 'invalid_plan', message: `Unknown plan: ${planId}` } }, 400)
     }
     // Pro is retired (SHO-339/SHO-397). Older web, desktop and Android builds
     // still post `pro`; remap it to Business so they land on the price we
     // actually sell instead of a 400 or the retired $20 price.
-    const checkoutPlanId = normalizeCheckoutPlanId(planId)
-    if (checkoutPlanId !== planId) {
+    const checkoutPlanId = isSoloFounder ? 'business' : normalizeCheckoutPlanId(planId)
+    if (!isSoloFounder && checkoutPlanId !== planId) {
       console.log(`[Billing] ${planId} checkout remapped to ${checkoutPlanId}`)
     }
+    const billingInterval: 'monthly' | 'annual' = isSoloFounder ? 'annual' : requestedInterval
     // Basic is single-user, always 1 seat. Business defaults to 1, can be more.
-    const seats = checkoutPlanId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
+    // The Solo Founder offer is one person, one seat, no exceptions.
+    const seats = checkoutPlanId === 'basic' || isSoloFounder ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
+
+    if (isSoloFounder) {
+      const eligibility = await soloFounderService.checkEligibility({ userId, workspaceId })
+      if (!eligibility.eligible) {
+        const status = soloFounderService.SOLO_FOUNDER_ERROR_STATUS[eligibility.reason]
+        return c.json(
+          {
+            error: {
+              code: eligibility.code,
+              message: soloFounderService.eligibilityMessage(eligibility.reason),
+              reason: eligibility.reason,
+            },
+          },
+          status as any,
+        )
+      }
+    }
+
+    // A trial never holds more than TRIAL_MAX_SEATS seats (SHO-422). Refuse
+    // rather than quietly charging them: they asked for a trial, and a paid
+    // checkout is a different decision. Paid checkouts keep any seat count.
+    if (wantsTrial && seats > TRIAL_MAX_SEATS) return trialSeatLimitResponse(c)
 
     // Resolved from the configured id, or by `lookup_key` when the v2.5.0
     // price's id has not been deployed as an env var yet (SHO-339). Never
@@ -7825,22 +8177,72 @@ app.post('/api/billing/checkout', async (c) => {
       planId: checkoutPlanId,
       billingInterval,
       seats: String(seats),
+      ...(isSoloFounder ? { offer: soloFounderService.SOLO_FOUNDER_OFFER } : {}),
     }
 
     // Use client-provided URLs (native apps pass deep link URLs), fall back to web URLs
     const frontendUrl = getFrontendUrl()
     const successUrl = clientSuccessUrl
-      || `${frontendUrl}/?workspace=${workspaceId}&checkout=success&session_id={CHECKOUT_SESSION_ID}`
+      || (isSoloFounder
+        // Land the buyer in #course, not on a generic billing page.
+        ? `${frontendUrl}/?workspace=${workspaceId}&checkout=success&offer=solo_founder&session_id={CHECKOUT_SESSION_ID}`
+        : `${frontendUrl}/?workspace=${workspaceId}&checkout=success&session_id={CHECKOUT_SESSION_ID}`)
     const cancelUrl = clientCancelUrl
       || `${frontendUrl}/?workspace=${workspaceId}&checkout=canceled`
 
     const affiliateOverrides = await affiliateCheckoutOverrides(userId)
+
+    if (isSoloFounder) {
+      // The course line and the first-year discount are provisioned objects,
+      // resolved by lookup on every attempt. A missing one is a 503 — the offer
+      // never quietly falls back to "just a year of Business for $156".
+      const coursePriceId = await soloFounderService.resolveCoursePriceId(stripe)
+      if (!coursePriceId) {
+        return c.json({ error: { code: 'price_not_provisioned', message: 'The Solo Founder course price has not been created in Stripe yet' } }, 503)
+      }
+      let discount: StripeTypes.Checkout.SessionCreateParams.Discount
+      if (promoCode) {
+        try {
+          const promotion = await soloFounderService.resolveOfferPromotionCode(stripe, String(promoCode))
+          discount = { promotion_code: promotion.promotionCodeId }
+        } catch (err: any) {
+          if (err instanceof soloFounderService.InvalidPromoCodeError) {
+            return c.json({ error: { code: 'invalid_promo_code', message: err.message } }, 400)
+          }
+          throw err
+        }
+      } else {
+        const couponId = await soloFounderService.resolveFirstYearCouponId(stripe)
+        if (!couponId) {
+          return c.json({ error: { code: 'price_not_provisioned', message: 'The Solo Founder first-year coupon has not been created in Stripe yet' } }, 503)
+        }
+        discount = { coupon: couponId }
+      }
+
+      const subscriptionMetadata = { ...metadata, ...(affiliateOverrides.metadata ?? {}) }
+      const session = await stripe.checkout.sessions.create(
+        soloFounderService.buildSoloFounderCheckoutParams({
+          priceId,
+          coursePriceId,
+          discount,
+          successUrl,
+          cancelUrl,
+          metadata: subscriptionMetadata,
+          userEmail,
+          referralId,
+          customerCreation: affiliateOverrides.customer_creation ?? null,
+        }),
+      )
+      return c.json({ sessionId: session.id, url: session.url, offer: soloFounderService.SOLO_FOUNDER_OFFER }, 200)
+    }
+
     const trialFields = await trialService.buildCheckoutTrialFields({
       wantsTrial: Boolean(wantsTrial),
       userId,
       workspaceId,
       planId: checkoutPlanId,
       metadata,
+      request: readSignupRequestInfo(c.req.raw.headers),
       affiliate: affiliateOverrides,
     })
 
@@ -7863,6 +8265,8 @@ app.post('/api/billing/checkout', async (c) => {
 
     return c.json({ sessionId: session.id, url: session.url }, 200)
   } catch (error: any) {
+    // The second seat check in `buildCheckoutTrialFields` (SHO-422).
+    if (error?.code === TRIAL_SEAT_LIMIT_CODE) return trialSeatLimitResponse(c)
     console.error('[Billing] Checkout error:', error)
     return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
   }
@@ -7939,7 +8343,11 @@ app.get('/api/billing/workspace-plan', async (c) => {
         ? prisma.signupRiskAssessment.findUnique({ where: { userId: cloudUserId }, select: { decision: true } })
         : null,
       !sub && cloudUserId
-        ? trialService.trialEligibility({ userId: cloudUserId, workspaceId })
+        ? trialService.trialEligibility({
+            userId: cloudUserId,
+            workspaceId,
+            request: readSignupRequestInfo(c.req.raw.headers),
+          })
         : { eligible: false },
     ])
     const promoEmailVerified = Boolean(promoUser?.emailVerified)
@@ -7983,6 +8391,10 @@ app.get('/api/billing/workspace-plan', async (c) => {
       // has since expired — surface a reactivate prompt instead of "enable
       // usage-based pricing".
       paidTier: overageStatus.paidTier,
+      // Whether the card has paid a real invoice. A trialing workspace is a
+      // paid tier but has never been charged, so overage is not trusted yet —
+      // surface this so the UI can explain why on-demand usage is paused.
+      overageTrusted: overageStatus.overageTrusted,
       overageHardLimitUsd: wallet?.overageHardLimitUsd ?? null,
       overageAccumulatedUsd: wallet?.overageAccumulatedUsd ?? 0,
       // Current overage block: the most unpaid overage the workspace can
@@ -8013,6 +8425,9 @@ app.get('/api/billing/workspace-plan', async (c) => {
       // Free = 100 MB per chat attachment; Basic+ = 500 MB.
       limits: {
         chatAttachmentBytes: getChatAttachmentCap(sub?.planId ?? effective),
+        // Most seats a trial may hold (SHO-422), so the client never hardcodes
+        // the number: the trial button disables above it.
+        trialMaxSeats: TRIAL_MAX_SEATS,
       },
     })
   } catch (error: any) {
@@ -8072,6 +8487,11 @@ app.post('/api/billing/workspace-checkout', async (c) => {
     }
     const seats = checkoutPlanId === 'basic' ? 1 : Math.max(1, Math.floor(Number(rawSeats) || 1))
 
+    // A trial never holds more than TRIAL_MAX_SEATS seats (SHO-422). Checked
+    // before `createPaidWorkspace` so a refused trial leaves no orphan
+    // workspace behind.
+    if (wantsTrial && seats > TRIAL_MAX_SEATS) return trialSeatLimitResponse(c)
+
     const priceId = await resolveCheckoutPriceId(stripe, checkoutPlanId as 'basic' | 'pro' | 'business', billingInterval as 'monthly' | 'annual')
     if (!priceId) {
       return c.json({ error: { code: 'price_not_provisioned', message: `The ${checkoutPlanId} ${billingInterval} price has not been created in Stripe yet` } }, 503)
@@ -8109,6 +8529,7 @@ app.post('/api/billing/workspace-checkout', async (c) => {
       workspaceId: newWorkspaceId,
       planId: checkoutPlanId,
       metadata,
+      request: readSignupRequestInfo(c.req.raw.headers),
       affiliate: affiliateOverrides,
     })
 
@@ -8127,6 +8548,8 @@ app.post('/api/billing/workspace-checkout', async (c) => {
 
     return c.json({ sessionId: session.id, url: session.url, workspaceId: newWorkspaceId }, 200)
   } catch (error: any) {
+    // The second seat check in `buildCheckoutTrialFields` (SHO-422).
+    if (error?.code === TRIAL_SEAT_LIMIT_CODE) return trialSeatLimitResponse(c)
     console.error('[Billing] Workspace checkout error:', error)
     return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
   }
@@ -8263,6 +8686,27 @@ app.post('/api/billing/verify-checkout', async (c) => {
       current_period_end?: number
     }
 
+    // Trial seat cap (SHO-422): a session opened before the deploy, or one made
+    // in the Stripe dashboard, can arrive here with more seats than a trial may
+    // hold. Block it like any other refused trial and report the refusal.
+    if (stripeSubscription.status === 'trialing') {
+      const cap = await trialService.enforceTrialSeatCap({
+        stripe,
+        event: 'created',
+        workspaceId,
+        planId,
+        subscriptionId: stripeSubscription.id,
+        stripeCustomerId: session.customer as string,
+        seats,
+        seatItemId: selectPlanItem(stripeSubscription as any)?.id ?? null,
+      })
+      if (cap.action === 'blocked') {
+        console.warn('[Billing] Trial blocked over the seat cap:', workspaceId, seats)
+        notifyTrialBlocked(workspaceId, planId, 'blocked_seat_limit')
+      }
+      if (cap.action !== 'none') return trialSeatLimitResponse(c)
+    }
+
     const now = Date.now()
     const currentPeriodStart = stripeSubscription.current_period_start
       ? stripeSubscription.current_period_start * 1000
@@ -8270,6 +8714,31 @@ app.post('/api/billing/verify-checkout', async (c) => {
     const currentPeriodEnd = stripeSubscription.current_period_end
       ? stripeSubscription.current_period_end * 1000
       : now + (30 * 24 * 60 * 60 * 1000)
+
+    // The buyer's return trip provisions the same subscription the webhooks do,
+    // so the prepaid refusal has to hold here too (SHO-428) — otherwise landing
+    // back in the app would buy the year the webhook just refunded.
+    if (session.metadata?.offer === soloFounderService.SOLO_FOUNDER_OFFER) {
+      const refusal = await soloFounderService.refuseIfPrepaidOffer({
+        stripe,
+        workspaceId,
+        userId: (c.get('auth') as any)?.userId ?? session.metadata?.userId ?? null,
+        subscriptionId: stripeSubscription.id,
+        purchasedAt: new Date((session.created || Math.floor(Date.now() / 1000)) * 1000),
+      })
+      if (refusal.refused) {
+        return c.json({
+          error: {
+            code: 'prepaid_refused',
+            // Only claim the money is back when it actually is. A refund that
+            // did not go through is recorded and retried by the next delivery.
+            message: refusal.refundId
+              ? 'That card cannot be used for this offer. The payment was refunded in full and your plan is still Free.'
+              : 'That card cannot be used for this offer, so your plan is still Free. The refund has not completed yet — it is retried automatically, and it will appear on your statement once it does.',
+          },
+        }, 402)
+      }
+    }
 
     await billingService.syncFromStripe({
       stripeSubscriptionId: stripeSubscription.id,
@@ -8287,10 +8756,55 @@ app.post('/api/billing/verify-checkout', async (c) => {
     await billingService.allocateMonthlyIncluded(workspaceId, planId, seats)
     console.log('[Billing] Verify-checkout: subscription provisioned for workspace:', workspaceId, 'plan:', planId, 'seats:', seats)
 
+    // The Solo Founder purchase also owns a course, and its install runs after
+    // the webhook returns 200. If that install was lost, the buyer's return trip
+    // is where it recovers (SHO-428).
+    if (session.metadata?.offer === soloFounderService.SOLO_FOUNDER_OFFER) {
+      const uid = (c.get('auth') as any)?.userId as string | undefined
+      if (uid) {
+        soloFounderService.retryInstallIfNeeded({ userId: uid, workspaceId }).catch((err: any) =>
+          console.error('[Billing] Solo Founder install retry failed:', err?.message ?? err),
+        )
+      }
+    }
+
     return c.json({ ok: true, workspaceId, planId, seats, billingInterval, amountPaid, currency }, 200)
   } catch (error: any) {
     console.error('[Billing] Verify-checkout error:', error)
     return c.json({ error: { code: 'verify_error', message: error.message } }, 500)
+  }
+})
+
+/**
+ * The $99 Solo Founder offer's state for the billing panel (SHO-428): whether
+ * the caller is enrolled, how the install went, where the Course board is, and
+ * which lessons are done. Also retries a pending/failed install, so opening
+ * Billing recovers a lost background install.
+ */
+app.get('/api/billing/solo-founder', async (c) => {
+  try {
+    const userId = (c.get('auth') as any)?.userId as string | undefined
+    const workspaceId = new URL(c.req.url).searchParams.get('workspaceId')
+    if (!workspaceId) return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+    const [state, eligibility] = await Promise.all([
+      userId
+        ? soloFounderService.retryInstallIfNeeded({ userId, workspaceId })
+        : soloFounderService.getOfferState({ workspaceId }),
+      soloFounderService.checkEligibility({ userId, workspaceId }),
+    ])
+    return c.json({
+      ok: true,
+      offer: soloFounderService.SOLO_FOUNDER_OFFER,
+      pricing: soloFounderService.SOLO_FOUNDER_PRICING,
+      ...state,
+      eligibility,
+    })
+  } catch (error: any) {
+    console.error('[Billing] solo-founder state error:', error)
+    return c.json({ error: { code: 'offer_state_failed', message: error.message } }, 500)
   }
 })
 
@@ -8387,6 +8901,71 @@ app.post('/api/billing/portal', async (c) => {
   }
 })
 
+/**
+ * End a free trial and pay now (SHO-422).
+ *
+ * A trial is capped at `TRIAL_MAX_SEATS` seats, so the way to buy more is to
+ * end the trial and start the paid plan. Stripe charges the subscription
+ * immediately; the existing `invoice.payment_succeeded` path does the
+ * trial -> paid conversion (`markTrialConverted`, monthly allocation). If the
+ * charge fails the subscription goes `past_due`/`incomplete` per Stripe and
+ * this route says so — it never reports success it did not get.
+ *
+ * Owners and billing admins only. No agent tool: this is a billing-page action.
+ */
+app.post('/api/billing/end-trial', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+
+    const auth = c.get('auth') as any
+    const userId = auth?.userId
+    if (!userId) return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+
+    const url = new URL(c.req.url)
+    const body = await c.req.json().catch(() => ({} as any))
+    const workspaceId = url.searchParams.get('workspaceId') ?? body?.workspaceId
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+
+    const member = await prisma.member.findFirst({
+      where: { workspaceId, userId, projectId: null },
+      select: { role: true, isBillingAdmin: true },
+    })
+    if (!billingService.canManageBilling(member)) {
+      return c.json({ error: { code: 'forbidden', message: 'Only owners and billing admins can end a trial' } }, 403)
+    }
+
+    const billingWorkspaceId = await billingService.resolveBillingWorkspaceId(workspaceId)
+    const sub = await prisma.subscription.findFirst({
+      where: { workspaceId: billingWorkspaceId, status: 'trialing' },
+      select: { stripeSubscriptionId: true },
+    })
+    if (!sub) {
+      return c.json({ error: { code: 'not_trialing', message: 'This workspace is not on a free trial.' } }, 409)
+    }
+
+    const { status, latestInvoiceStatus } = await trialService.endTrialNow({
+      stripe,
+      stripeSubscriptionId: sub.stripeSubscriptionId,
+    })
+
+    console.log('[Billing] Trial ended by owner:', {
+      workspaceId: billingWorkspaceId,
+      subscriptionId: sub.stripeSubscriptionId,
+      status,
+      latestInvoiceStatus,
+    })
+
+    return c.json({ ok: true, status, latestInvoiceStatus }, 200)
+  } catch (error: any) {
+    console.error('[Billing] End-trial error:', error)
+    return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
 // In-app billing history: recent Stripe invoices for a workspace, sanitized
 // for the client. Lets users see what they were charged (and grab the hosted
 // invoice / PDF) without leaving the app or opening the Stripe portal.
@@ -8431,6 +9010,11 @@ app.get('/api/billing/invoices', async (c) => {
       hostedInvoiceUrl: inv.hosted_invoice_url ?? null,
       invoicePdf: inv.invoice_pdf ?? null,
       description: inv.description ?? null,
+      // Tax is reported per invoice; a VAT-registered customer needs to see it
+      // on the row, not only on the PDF (SHO-451).
+      tax: typeof inv.tax === 'number' ? inv.tax / 100 : null,
+      totalExcludingTax:
+        typeof inv.total_excluding_tax === 'number' ? inv.total_excluding_tax / 100 : null,
       lines: (inv.lines?.data ?? []).map((line: any) => ({
         description: line.description ?? null,
         amount: (line.amount ?? 0) / 100,
@@ -8441,6 +9025,184 @@ app.get('/api/billing/invoices', async (c) => {
   } catch (error: any) {
     console.error('[Billing] invoices error:', error)
     return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+// ============================================================
+// Billing summary + in-app plan change (SHO-451)
+// ============================================================
+
+/**
+ * Turn a `BillingError` from `billing-summary.service` into its HTTP shape.
+ * Anything else is a 500 with the real message — never a 200 with `{}`.
+ */
+function billingServiceError(c: any, error: any, fallbackCode: string) {
+  const BillingError = billingSummaryService.BillingError
+  if (BillingError && error instanceof BillingError) {
+    return c.json({ error: { code: error.code, message: error.message } }, error.status)
+  }
+  console.error(`[Billing] ${fallbackCode}:`, error)
+  return c.json(
+    { error: { code: fallbackCode, message: error?.message ?? 'Billing request failed' } },
+    500,
+  )
+}
+
+/**
+ * Owner / admin / billing-admin gate for the routes that spend money on the
+ * workspace's card. Mirrors `/api/billing/end-trial`.
+ */
+async function requireBillingManager(c: any, workspaceId: string) {
+  const userId = (c.get('auth') as any)?.userId as string | undefined
+  if (!userId) {
+    return {
+      response: c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401),
+    }
+  }
+  const member = await prisma.member.findFirst({
+    where: { workspaceId, userId, projectId: null },
+    select: { role: true, isBillingAdmin: true },
+  })
+  if (!billingService.canManageBilling(member)) {
+    return {
+      response: c.json(
+        { error: { code: 'forbidden', message: 'Only owners and billing admins can change billing' } },
+        403,
+      ),
+    }
+  }
+  return { userId }
+}
+
+/**
+ * What the billing page's summary card and payment banner need: plan, seats,
+ * period, next invoice, card on file, and any payment problem. Grant-only and
+ * free workspaces get nulls rather than a 404.
+ */
+app.get('/api/billing/summary', async (c) => {
+  try {
+    const workspaceId = new URL(c.req.url).searchParams.get('workspaceId')
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+    const summary = await billingSummaryService.getBillingSummary({ workspaceId, stripe })
+    return c.json({ ok: true, ...summary })
+  } catch (error: any) {
+    return billingServiceError(c, error, 'summary_failed')
+  }
+})
+
+/**
+ * Price a plan change before the customer confirms it: old price, new price,
+ * what is charged today, and when it takes effect.
+ */
+app.post('/api/billing/change-plan/preview', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+    const body = await c.req.json().catch(() => ({} as any))
+    const workspaceId = body?.workspaceId
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    const gate = await requireBillingManager(c, workspaceId)
+    if (gate.response) return gate.response
+
+    const preview = await billingSummaryService.previewPlanChange({
+      workspaceId,
+      stripe,
+      planId: body.planId,
+      billingInterval: body.billingInterval,
+      seats: body.seats,
+    })
+    return c.json({ ok: true, ...preview })
+  } catch (error: any) {
+    return billingServiceError(c, error, 'change_plan_preview_failed')
+  }
+})
+
+/**
+ * Apply a plan change to the existing Stripe subscription. Never creates a
+ * second subscription — that was the bug this route exists to remove.
+ */
+app.post('/api/billing/change-plan', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+    const body = await c.req.json().catch(() => ({} as any))
+    const workspaceId = body?.workspaceId
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    const gate = await requireBillingManager(c, workspaceId)
+    if (gate.response) return gate.response
+
+    const result = await billingSummaryService.applyPlanChange({
+      workspaceId,
+      stripe,
+      planId: body.planId,
+      billingInterval: body.billingInterval,
+      seats: body.seats,
+      prorationDate: body.prorationDate,
+    })
+    return c.json(result)
+  } catch (error: any) {
+    return billingServiceError(c, error, 'change_plan_failed')
+  }
+})
+
+/** Self-serve cancel: access runs to the end of the paid period. */
+app.post('/api/billing/cancel', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+    const body = await c.req.json().catch(() => ({} as any))
+    const workspaceId = body?.workspaceId
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    const gate = await requireBillingManager(c, workspaceId)
+    if (gate.response) return gate.response
+
+    const result = await billingSummaryService.setCancelAtPeriodEnd({
+      workspaceId,
+      stripe,
+      cancel: true,
+    })
+    return c.json(result)
+  } catch (error: any) {
+    return billingServiceError(c, error, 'cancel_failed')
+  }
+})
+
+/** Undo a scheduled cancellation. */
+app.post('/api/billing/resume', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+    const body = await c.req.json().catch(() => ({} as any))
+    const workspaceId = body?.workspaceId
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    const gate = await requireBillingManager(c, workspaceId)
+    if (gate.response) return gate.response
+
+    const result = await billingSummaryService.setCancelAtPeriodEnd({
+      workspaceId,
+      stripe,
+      cancel: false,
+    })
+    return c.json(result)
+  } catch (error: any) {
+    return billingServiceError(c, error, 'resume_failed')
   }
 })
 
@@ -8484,19 +9246,14 @@ app.get('/api/billing/regional-pricing', async (c) => {
 })
 
 // =============================================================================
-// Instance size add-on routes
+// Instance size routes
+//
+// The sizes are no longer a purchasable add-on (SHO-424): they remain the
+// admin-set CAP on what a workspace may run at once (pooled memory budget in
+// lib/workspace-compute-budget.ts) and the label the settings page shows. The
+// webhook below still resolves a size from an in-flight legacy checkout, so a
+// subscription created before the switch still lands on a real tier.
 // =============================================================================
-
-function resolvePaidInstanceSizeFromCheckoutBody(raw: string): PaidInstanceSize | null {
-  const legacy: Record<string, PaidInstanceSize> = {
-    basic: 'small',
-    pro: 'medium',
-    business: 'large',
-  }
-  if (legacy[raw]) return legacy[raw]
-  const paid: readonly string[] = ['small', 'medium', 'large', 'xlarge']
-  return paid.includes(raw) ? (raw as PaidInstanceSize) : null
-}
 
 function resolveInstanceSizeFromStripeMetadata(raw: string): InstanceSizeName | null {
   const legacy: Record<string, InstanceSizeName> = {
@@ -8510,70 +9267,22 @@ function resolveInstanceSizeFromStripeMetadata(raw: string): InstanceSizeName | 
   return all.includes(raw) ? (raw as InstanceSizeName) : null
 }
 
+// Instance sizes are no longer sold (SHO-424, Russell 2026-11-18): compute is
+// billed on the VM time a workspace actually uses (vcpu-hour + GiB-hour, agent
+// and app time only) instead of a flat monthly size. The route is kept as an
+// explicit 410 rather than deleted so an old client — a cached web bundle, a
+// desktop build — gets a truthful answer instead of a 404 it might retry.
 app.post('/api/billing/instance-checkout', async (c) => {
-  try {
-    if (!stripe) {
-      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
-    }
-
-    const body = await c.req.json()
-    const rawSize = body.instanceSize ?? body.capacityTier
-    const { workspaceId, billingInterval, successUrl: clientSuccessUrl, cancelUrl: clientCancelUrl } = body
-
-    if (!workspaceId || !rawSize || !billingInterval) {
-      return c.json({ error: { code: 'invalid_request', message: 'Missing required fields' } }, 400)
-    }
-
-    const instanceSize = resolvePaidInstanceSizeFromCheckoutBody(String(rawSize))
-    if (!instanceSize) {
-      return c.json({ error: { code: 'invalid_tier', message: 'Invalid instance size' } }, 400)
-    }
-
-    if (!await verifyWorkspaceMembership(c, workspaceId)) {
-      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
-    }
-
-    const priceId = getInstancePriceId(instanceSize, billingInterval as 'monthly' | 'annual')
-    if (!priceId) {
-      return c.json({ error: { code: 'invalid_plan', message: `No instance price found for ${instanceSize} ${billingInterval}` } }, 400)
-    }
-
-    const auth = c.get('auth') as any
-    const userEmail = auth?.email
-
-    const metadata: Record<string, string> = {
-      workspaceId,
-      instanceSize,
-      billingInterval,
-      checkoutType: 'instance',
-    }
-
-    const frontendUrl = getFrontendUrl()
-    const successUrl = clientSuccessUrl
-      || `${frontendUrl}/?workspace=${workspaceId}&instance_checkout=success&session_id={CHECKOUT_SESSION_ID}`
-    const cancelUrl = clientCancelUrl
-      || `${frontendUrl}/?workspace=${workspaceId}&instance_checkout=canceled`
-
-    const userIdForAffiliate = (c.get('auth') as any)?.userId as string | undefined
-    const affiliateOverrides = await affiliateCheckoutOverrides(userIdForAffiliate)
-    const sessionMetadata = { ...metadata, ...(affiliateOverrides.metadata ?? {}) }
-
-    const session = await stripe.checkout.sessions.create({
-      mode: 'subscription',
-      line_items: [{ price: priceId, quantity: 1 }],
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-      metadata: sessionMetadata,
-      ...(userEmail && { customer_email: userEmail }),
-      ...(affiliateOverrides.customer_creation && { customer_creation: affiliateOverrides.customer_creation }),
-      ...(affiliateOverrides.subscription_data && { subscription_data: affiliateOverrides.subscription_data }),
-    })
-
-    return c.json({ sessionId: session.id, url: session.url }, 200)
-  } catch (error: any) {
-    console.error('[Instance] Checkout error:', error)
-    return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
-  }
+  return c.json(
+    {
+      error: {
+        code: 'instance_sizes_retired',
+        message:
+          'Instance sizes are no longer sold. Compute is billed on the VM time a workspace uses — see Settings → Compute for the current period.',
+      },
+    },
+    410,
+  )
 })
 
 app.post('/api/billing/instance-portal', async (c) => {
@@ -8628,29 +9337,32 @@ app.post('/api/billing/instance-portal', async (c) => {
 // write). Hard enforcement of "can't use a hidden model" lives in the AI proxy.
 
 // GET /api/workspaces/:id/visible-models — resolved set for this workspace
-// (platform-visible ∩ workspace allowlist). Any member may read it (drives the
-// chat picker). `allowedModelIds` is the raw allowlist: `null` = inherit all.
+// (platform-visible ∩ workspace allowlist ∩ the member's own grant). Any member
+// may read it (drives the chat picker). `allowedModelIds` is the raw workspace
+// allowlist: `null` = inherit all.
 app.get('/api/workspaces/:id/visible-models', async (c) => {
   try {
     const workspaceId = c.req.param('id')
-    if (!(await verifyWorkspaceMembership(c, workspaceId))) {
+    const userId = await verifyWorkspaceMembership(c, workspaceId)
+    if (!userId) {
       return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
     }
 
     const platform = await resolvePlatformVisibleModelsForRequest()
     const allowed = await workspaceModelsService.getAllowedModelIds(workspaceId)
+    const ceiling = workspaceModelsService.filterToAllowlist(platform, allowed)
 
-    if (allowed === null) {
-      // Inherit: the workspace sees everything the platform exposes.
-      return c.json({ ...platform, allowedModelIds: null })
-    }
+    // The picker must not offer a model the person cannot use (SHO-417). A
+    // member with no policy row resolves to their role default, which is the
+    // whole ceiling, so this is a no-op for them.
+    const personal = await allowedModelIdsFor(workspaceId, userId)
+    const narrowed = workspaceModelsService.filterToAllowlist(ceiling, new Set(personal))
 
-    const narrowed = workspaceModelsService.filterToAllowlist(platform, allowed)
     return c.json({
       catalogIds: platform.catalogIds,
       catalogModels: narrowed.catalogModels,
       openrouterModels: narrowed.openrouterModels,
-      allowedModelIds: Array.from(allowed),
+      allowedModelIds: allowed === null ? null : Array.from(allowed),
     })
   } catch (error: any) {
     console.error('[WorkspaceModels] Get visible-models error:', error)
@@ -8732,12 +9444,6 @@ app.get('/api/workspaces/:id/instance', async (c) => {
             cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
           }
         : null,
-      sizes: INSTANCE_SIZE_ORDER.map((t: any) => ({
-        name: t,
-        ...INSTANCE_SIZES[t],
-        displayPriceMonthly: getInstanceDisplayPrice(t, 'monthly'),
-        displayPriceAnnual: getInstanceDisplayPrice(t, 'annual'),
-      })),
     })
   } catch (error: any) {
     console.error('[Instance] Get instance error:', error)
@@ -8772,11 +9478,22 @@ app.get('/api/workspaces/:id/storage', async (c) => {
   try {
     const workspaceId = c.req.param('id')
 
-    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+    const userId = await verifyWorkspaceMembership(c, workspaceId)
+    if (!userId) {
       return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
     }
 
-    const storage = await storageService.getStorageUsage(workspaceId)
+    // Owner/admin (and a billing admin) get the full picture: category
+    // breakdown, real per-project bytes, history and the month-to-date
+    // estimate. A plain member keeps the total-only view — the breakdown names
+    // every project in the workspace, including ones they cannot open (SHO-423).
+    const access = await getAccess(c, { workspaceId })
+    const detail =
+      access.workspaceRole === 'owner' ||
+      access.workspaceRole === 'admin' ||
+      access.permissions.has('workspace.billing:manage')
+
+    const storage = await storageService.getStorageUsage(workspaceId, { detail })
     if (!storage) {
       return c.json({ error: { code: 'not_found', message: 'Workspace not found' } }, 404)
     }
@@ -8881,9 +9598,27 @@ app.post('/api/webhooks/stripe', async (c) => {
         })
         const wsId = resolved?.workspaceId
         const metaPlanId = resolved?.planId
+        // Solo Founder (SHO-428): a prepaid card is refused here as well as in
+        // `checkout.session.completed`, because Stripe may deliver this event
+        // first. Without this the plan and its allowance would be provisioned
+        // before the refusal that follows. The call is idempotent, so whichever
+        // event comes second finds the refusal already recorded and provisions
+        // nothing.
+        if (wsId && subscription.metadata?.offer === soloFounderService.SOLO_FOUNDER_OFFER) {
+          const refusal = await soloFounderService.refuseIfPrepaidOffer({
+            stripe,
+            workspaceId: wsId,
+            userId: subscription.metadata?.userId ?? null,
+            subscriptionId: subscription.id,
+          })
+          if (refusal.refused) {
+            console.log('[Webhook] Solo Founder prepaid subscription left unprovisioned:', subscription.id)
+            break
+          }
+        }
         if (wsId && metaPlanId) {
           try {
-            const quantity = resolved.seats
+            let quantity = resolved.seats
             const billingInterval = (subscription.metadata?.billingInterval as 'monthly' | 'annual') || 'monthly'
 
             // Free trial: enforce one trial per card/user before provisioning.
@@ -8899,12 +9634,37 @@ app.post('/api/webhooks/stripe', async (c) => {
               })
               if (trialOutcome === 'blocked' || trialOutcome === 'already_blocked') {
                 if (trialOutcome === 'blocked') {
-                  console.warn('[Webhook] Trial blocked (card or account already used a trial):', wsId)
-                  notifyTrialBlocked(wsId, metaPlanId)
+                  const reason = await trialService.getTrialBlockStatus(wsId)
+                  console.warn('[Webhook] Trial blocked:', wsId, reason)
+                  notifyTrialBlocked(wsId, metaPlanId, reason)
                 }
                 break
               }
             }
+
+            // Trial seat cap (SHO-422). A trialing subscription never holds more
+            // than TRIAL_MAX_SEATS seats: `created` over the cap is blocked like
+            // any other refused trial, `updated` over it is clamped back.
+            if (subscription.status === 'trialing') {
+              const cap = await trialService.enforceTrialSeatCap({
+                stripe,
+                event: event.type === 'customer.subscription.created' ? 'created' : 'updated',
+                workspaceId: wsId,
+                planId: metaPlanId,
+                subscriptionId: subscription.id,
+                stripeCustomerId: subscription.customer as string,
+                seats: quantity,
+                seatItemId: selectPlanItem(subscription as any)?.id ?? null,
+              })
+              if (cap.action === 'blocked') {
+                console.warn('[Webhook] Trial blocked over the seat cap:', wsId, quantity)
+                notifyTrialBlocked(wsId, metaPlanId, 'blocked_seat_limit')
+                break
+              }
+              if (cap.action === 'already_blocked') break
+              if (cap.action === 'clamped') quantity = cap.seats
+            }
+
             const now = Date.now()
             const currentPeriodStart = subscription.current_period_start
               ? subscription.current_period_start * 1000
@@ -9049,6 +9809,27 @@ app.post('/api/webhooks/stripe', async (c) => {
         } catch (err: any) {
           console.error('[Webhook] Failed to mark trial ended:', err.message)
         }
+        // Invoice the sub-block overage remainder at subscription end. Without
+        // this it carries forward forever: `chargeOverageBlocks` defers while
+        // the sub is not active, and nothing else ever bills it. `final`
+        // ignores the row's status, so it works after the cancel above.
+        try {
+          const localSub = await prisma.subscription.findFirst({
+            where: { stripeSubscriptionId: subscription.id },
+            select: { workspaceId: true },
+          })
+          if (localSub?.workspaceId) {
+            const invoiced = await billingService.chargeOverage(localSub.workspaceId, 'final')
+            if (invoiced > 0) {
+              console.log('[Webhook] Final overage invoice at subscription end:', {
+                subscriptionId: subscription.id,
+                workspaceId: localSub.workspaceId,
+              })
+            }
+          }
+        } catch (err: any) {
+          console.error('[Webhook] Failed to invoice final overage:', err.message)
+        }
         try {
           const instanceSub = await instanceService.findInstanceSubscriptionByStripeId(subscription.id)
           if (instanceSub) {
@@ -9140,6 +9921,29 @@ app.post('/api/webhooks/stripe', async (c) => {
               ? stripeSubscription.current_period_end * 1000
               : now + (30 * 24 * 60 * 60 * 1000)
 
+            // Solo Founder (SHO-428): the cheap year of Business must not be a
+            // prepaid card. Checkout cannot filter by funding type, so the card
+            // is read here, before anything is provisioned: cancel, refund the
+            // first invoice in full, write a rejected enrollment, tell the
+            // owner, and leave the workspace exactly as it was.
+            if (session.metadata?.offer === soloFounderService.SOLO_FOUNDER_OFFER) {
+              const refusal = await soloFounderService.refuseIfPrepaidOffer({
+                stripe,
+                workspaceId,
+                userId: session.metadata?.userId ?? null,
+                subscriptionId: stripeSubscription.id,
+                purchasedAt: new Date((session.created || Math.floor(Date.now() / 1000)) * 1000),
+              })
+              if (refusal.refused) {
+                console.log('[Webhook] Solo Founder prepaid purchase refused:', {
+                  workspaceId,
+                  refunded: !!refusal.refundId,
+                  refundId: refusal.refundId,
+                })
+                break
+              }
+            }
+
             // Free trial: record it first (one trial per user/workspace/card). A
             // card already used for a trial elsewhere gets cancelled inside
             // recordTrialStart, so skip provisioning entirely in that case.
@@ -9155,11 +9959,31 @@ app.post('/api/webhooks/stripe', async (c) => {
               })
               if (trialOutcome === 'blocked' || trialOutcome === 'already_blocked') {
                 if (trialOutcome === 'blocked') {
-                  console.warn('[Webhook] Trial blocked (card or account already used a trial):', workspaceId)
-                  notifyTrialBlocked(workspaceId, planId)
+                  const reason = await trialService.getTrialBlockStatus(workspaceId)
+                  console.warn('[Webhook] Trial blocked:', workspaceId, reason)
+                  notifyTrialBlocked(workspaceId, planId, reason)
                 }
                 break
               }
+              // Trial seat cap (SHO-422): a session opened before the deploy, or
+              // one made in the Stripe dashboard, can still arrive with 123
+              // seats. Block it like any other refused trial — no wallet.
+              const cap = await trialService.enforceTrialSeatCap({
+                stripe,
+                event: 'created',
+                workspaceId,
+                planId,
+                subscriptionId: stripeSubscription.id,
+                stripeCustomerId: session.customer as string,
+                seats: checkoutSeats,
+                seatItemId: planItem?.id ?? null,
+              })
+              if (cap.action === 'blocked') {
+                console.warn('[Webhook] Trial blocked over the seat cap:', workspaceId, checkoutSeats)
+                notifyTrialBlocked(workspaceId, planId, 'blocked_seat_limit')
+                break
+              }
+              if (cap.action === 'already_blocked') break
             }
 
             await billingService.syncFromStripe({
@@ -9185,6 +10009,33 @@ app.post('/api/webhooks/stripe', async (c) => {
             } else {
               await billingService.allocateMonthlyIncluded(workspaceId, planId, checkoutSeats, checkoutPriceId)
               console.log('[Webhook] Subscription created + monthly included USD allocated for workspace:', workspaceId, 'plan:', planId, 'seats:', checkoutSeats)
+            }
+
+            // Solo Founder fulfilment (SHO-428): the plan is provisioned above,
+            // so now the course. The enrollment row is written synchronously and
+            // the install (which creates projects) runs after this webhook has
+            // returned — a lost install is retried by `verify-checkout` and the
+            // offer panel. `enroll()` is idempotent, so a redelivery or the
+            // sibling subscription event cannot duplicate it.
+            if (session.metadata?.offer === soloFounderService.SOLO_FOUNDER_OFFER) {
+              const offerUserId = session.metadata?.userId
+                || (await prisma.member.findFirst({
+                  where: { workspaceId, projectId: null, role: 'owner' },
+                  select: { userId: true },
+                }))?.userId
+              if (offerUserId) {
+                await soloFounderService.enroll({
+                  workspaceId,
+                  userId: offerUserId,
+                  source: 'stripe',
+                  stripeCheckoutSessionId: session.id,
+                  stripeSubscriptionId: stripeSubscription.id,
+                  purchasedAt: new Date((session.created || Math.floor(Date.now() / 1000)) * 1000),
+                })
+                console.log('[Webhook] Solo Founder enrollment written for workspace:', workspaceId)
+              } else {
+                console.error('[Webhook] Solo Founder purchase with no owner to enroll:', { workspaceId, sessionId: session.id })
+              }
             }
 
             // Send plan-upgraded email to workspace owner
@@ -9246,6 +10097,18 @@ app.post('/api/webhooks/stripe', async (c) => {
             console.log('[Webhook] Overage invoice paid:', { workspaceId: overageWorkspaceId, invoiceId: invoice.id, settled })
           } catch (err: any) {
             console.error('[Webhook] Failed to settle overage invoice:', err.message)
+          }
+        }
+        // The card has now paid a real invoice, so overage is trusted from here
+        // on (SHO-409). A trial's $0 invoices never set this.
+        if (customerId) {
+          try {
+            const count = await billingService.markSubscriptionFirstPaid(customerId, invoice.amount_paid ?? 0)
+            if (count > 0) {
+              console.log('[Webhook] Marked subscription firstPaidAt:', { customerId, count })
+            }
+          } catch (err: any) {
+            console.error('[Webhook] Failed to set firstPaidAt:', err?.message ?? err)
           }
         }
         if (customerId && subscriptionId) {
@@ -9336,6 +10199,22 @@ app.post('/api/webhooks/stripe', async (c) => {
             )
           } catch (err: any) {
             console.error('[Webhook] affiliate clawback failed:', err?.message ?? err)
+          }
+        }
+        // The 30-day guarantee: a full refund of the offer's first invoice
+        // closes the course. Partial refunds, renewals and other charges are
+        // left alone, and a redelivery is a no-op (SHO-446).
+        if (event.type === 'charge.refunded') {
+          try {
+            const refund = await soloFounderService.handleOfferChargeRefunded({ stripe, charge: obj })
+            if (refund.refunded) {
+              console.log('[Webhook] Solo Founder enrollment refunded:', {
+                subscriptionId: refund.subscriptionId,
+                chargeId,
+              })
+            }
+          } catch (err: any) {
+            console.error('[Webhook] Solo Founder refund handling failed:', err?.message ?? err)
           }
         }
         break
@@ -9711,6 +10590,12 @@ app.post('/api/workspaces/:id/leave', async (c) => {
   }
 
   await prisma.member.deleteMany({ where: { userId, workspaceId } })
+  // Leaving drops the member's own access policy and their cached access
+  // (SHO-417, plan §1 cascade + AC2).
+  await prisma.accessPolicy
+    .deleteMany({ where: { workspaceId, subjectType: 'member', subjectId: userId } })
+    .catch(() => {})
+  invalidateAccess(workspaceId)
 
   // Active-seat billing: leaving a workspace removes a paid seat.
   billingService.syncSeatsFromMembership(workspaceId).catch((err: any) =>
@@ -9880,6 +10765,9 @@ app.route('/api', inviteLinkRoutes({
     }
   },
 }))
+
+// Resend a pending invitation's email and extend its expiry (SHO-454).
+app.route('/api', invitationResendRoutes())
 
 // Accept invite link (public-ish - requires auth but not membership)
 app.route('/api', inviteLinkAcceptRoutes({
@@ -10799,6 +11687,12 @@ setTimeout(async () => {
   }
 }, 15_000)
 
+// Move every existing agent DM into a project chat, once (SHO-412). Each
+// workspace migrates only in its homeRegion; the worker defers itself.
+import('./services/agent-chat.service')
+  .then(({ startAgentDmMigration }) => startAgentDmMigration())
+  .catch((err: any) => console.error('[AgentDmMigration] Failed to start (non-fatal):', err?.message ?? err))
+
 // The hidden LiveKit fallback for huddle notes. It runs in this process (rtc-node
 // works under Bun, in the API and in the desktop's API), and is a no-op when
 // LiveKit is not configured, so cloud and desktop take the same path.
@@ -10845,6 +11739,35 @@ setTimeout(async () => {
         '[SocialAccountMonthly] failed to schedule the account meter (non-fatal):',
         err?.message ?? err,
       )
+    }
+  })()
+}
+
+// Disk add-on daily meter — `disk_addon` (SHO-401). Charges workspace drive
+// above the tier's included GiB once per UTC day, home-region partitioned, with
+// a per-workspace watermark so a rerun is a no-op. Local mode is a no-op.
+{
+  ;(async () => {
+    try {
+      const { startDiskAddonDailyCron } = await import('./jobs/disk-addon-daily')
+      startDiskAddonDailyCron()
+    } catch (err: any) {
+      console.error('[DiskAddon] failed to schedule the disk add-on meter (non-fatal):', err?.message ?? err)
+    }
+  })()
+}
+
+// Storage bill — `storage` (SHO-423). Turns each completed day of
+// `StorageUsageDaily` into a GB-month charge above the tier allowance, once per
+// UTC day, home-region partitioned, idempotent through `billedAt`. Shadow mode
+// (the default) records the charge without debiting. Local mode is a no-op.
+{
+  ;(async () => {
+    try {
+      const { startStorageUsageBillCron } = await import('./jobs/storage-usage-bill')
+      startStorageUsageBillCron()
+    } catch (err: any) {
+      console.error('[StorageBill] failed to schedule the storage meter (non-fatal):', err?.message ?? err)
     }
   })()
 }
@@ -10949,6 +11872,22 @@ setTimeout(async () => {
         '[PublishedUsage] failed to schedule meter/biller (non-fatal):',
         err?.message ?? err,
       )
+    }
+  })()
+}
+
+// Workspace compute billing (SHO-424): prices every closed hour of metal VM
+// running time (size × time, agent/app time only — the idle tail is free) into
+// one `consumeUsage` per workspace-hour. Shadow mode by default: it fills
+// `VmUsageHour.chargedUsd` and logs the total without charging until
+// VM_BILLING_MODE=enforce.
+{
+  ;(async () => {
+    try {
+      const { startVmUsageBillCron } = await import('./jobs/vm-usage-bill')
+      startVmUsageBillCron()
+    } catch (err: any) {
+      console.error('[VmUsageBill] failed to schedule biller (non-fatal):', err?.message ?? err)
     }
   })()
 }

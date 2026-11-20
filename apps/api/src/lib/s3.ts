@@ -563,33 +563,35 @@ export async function writeTextToS3(
   }))
 }
 
-/**
- * List all objects (files) recursively under a prefix.
- */
-export async function listAllObjectsInS3(prefix: string, bucket?: string): Promise<Array<{
+/** One object from a listing, as every caller of the `list*` helpers sees it. */
+export interface ListedObject {
   key: string
   relativePath: string
   size: number
   lastModified?: Date
   /** S3 ETag, quotes stripped. For a single-part upload this is the object's MD5. */
   etag?: string
-}>> {
-  const client = getS3Client()
-  const effectiveBucket = bucket || getS3Bucket()
+}
 
-  const objects: Array<{
-    key: string
-    relativePath: string
-    size: number
-    lastModified?: Date
-    etag?: string
-  }> = []
+/**
+ * Page through `ListObjectsV2` under `prefix` and return every object.
+ *
+ * Takes the client explicitly so the artifact bucket (which can live on a
+ * different endpoint, see `getArtifactS3Client`) is listed through its own
+ * client — `listAllObjectsInS3` would sign for the schema bucket's host.
+ */
+export async function listAllObjectsWith(
+  client: S3Client,
+  bucket: string,
+  prefix: string,
+): Promise<ListedObject[]> {
+  const objects: ListedObject[] = []
 
   let continuationToken: string | undefined
 
   do {
     const response = await client.send(new ListObjectsV2Command({
-      Bucket: effectiveBucket,
+      Bucket: bucket,
       Prefix: prefix,
       ContinuationToken: continuationToken,
     }))
@@ -610,6 +612,22 @@ export async function listAllObjectsInS3(prefix: string, bucket?: string): Promi
   } while (continuationToken)
 
   return objects
+}
+
+/**
+ * List all objects (files) recursively under a prefix.
+ */
+export async function listAllObjectsInS3(prefix: string, bucket?: string): Promise<ListedObject[]> {
+  return listAllObjectsWith(getS3Client(), bucket || getS3Bucket(), prefix)
+}
+
+/**
+ * List objects from the artifact bucket through the artifact client.
+ * `getArtifactBucket()` falls back to the schema bucket when artifact storage
+ * isn't split out, so this is correct in both deployment shapes.
+ */
+export async function listAllArtifactObjects(prefix: string): Promise<ListedObject[]> {
+  return listAllObjectsWith(getArtifactS3Client(), getArtifactBucket(), prefix)
 }
 
 // ============================================================================

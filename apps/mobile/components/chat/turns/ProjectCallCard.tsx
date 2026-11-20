@@ -10,7 +10,7 @@
  * the project otherwise.
  */
 import { useEffect, useMemo, useState, useCallback } from "react";
-import { Linking, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { cn } from "@shogo/shared-ui/primitives";
 import {
@@ -25,6 +25,7 @@ import type { ToolCallData } from "../tools/types";
 import { ChatMarkdown } from "../ChatMarkdown";
 import { useChatContextSafe } from "../ChatContext";
 import { AgentAvatar } from "../../team-chat/AgentAvatar";
+import { openExternalLink } from "../../../lib/open-external-link";
 
 export interface ProjectCallCardProps {
   tool: ToolCallData;
@@ -354,7 +355,7 @@ export function ProjectCallCard({ tool, className }: ProjectCallCardProps) {
             {view.deliverables.map((d) => (
               <Pressable
                 key={d.href}
-                onPress={() => void Linking.openURL(d.href)}
+                onPress={() => void openExternalLink(d.href)}
                 accessibilityRole="link"
                 accessibilityLabel={`Open ${d.href}`}
                 className="flex-row items-center gap-1 rounded-full border border-border/60 px-2 py-1 active:bg-muted"

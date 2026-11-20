@@ -19,7 +19,8 @@ let http: object
 let nextResult: () => Promise<FetchResult> = async () => ({ permissions: [] })
 
 mock.module(resolve(import.meta.dir, '../../contexts/domain'), () => ({
-  useDomainHttp: () => http,
+  useDomainHttpOptional: () => http,
+  getDomainHttpClient: () => http,
 }))
 
 mock.module(resolve(import.meta.dir, '../../lib/api'), () => ({

@@ -47,6 +47,8 @@ mock.module('child_process', () => ({
 }))
 
 mock.module('@shogo/model-catalog', () => ({
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
   getMaxOutputTokens: () => 8192,
 }))
 

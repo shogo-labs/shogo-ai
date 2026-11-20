@@ -43,12 +43,41 @@ const NON_REPORTED_CLASSES: ReadonlySet<ChatErrorClass> = new Set(['user-abort',
 
 /** Best-effort message extraction from an unknown thrown value. */
 export function chatErrorMessage(err: unknown): string {
+  const message = messageOf(err)
+  if (message.trim()) return message
+  // An `Error` with no text carries no cause we can read (`new Error(await
+  // response.text())` against an empty body is exactly this). Fall back to the
+  // parts that still identify the failure, then to a fixed label — never to an
+  // empty string, which Sentry groups as "Error: No error message" and the
+  // panel renders as a blank banner (SHOGO-ANDROID-5).
+  const name = chatErrorName(err)
+  if (name && name !== 'Error') return name
+  const cause = messageOf((err as { cause?: unknown } | null)?.cause)
+  if (cause.trim()) return cause
+  const code = codeOf(err)
+  if (code) return `chat error ${code}`
+  const text = String(err ?? '').trim()
+  if (text && text !== 'Error' && text !== '[object Object]') return text
+  return 'unknown error (no message)'
+}
+
+function messageOf(err: unknown): string {
   if (typeof err === 'string') return err
   if (err && typeof err === 'object') {
     const m = (err as { message?: unknown }).message
     if (typeof m === 'string') return m
   }
-  return String(err ?? '')
+  return ''
+}
+
+function codeOf(err: unknown): string {
+  if (!err || typeof err !== 'object') return ''
+  const e = err as { code?: unknown; status?: unknown; statusCode?: unknown }
+  for (const value of [e.code, e.status, e.statusCode]) {
+    if (typeof value === 'string' && value) return value
+    if (typeof value === 'number') return String(value)
+  }
+  return ''
 }
 
 function chatErrorName(err: unknown): string {
@@ -85,12 +114,18 @@ const EXPECTED_PATTERNS = [
   /\bentitlement_expired\b/i,
   /\boverage_cap_reached\b/i,
   /\boverage_payment_pending\b/i,
+  /\bemail_verification_required\b/i,
+  /\baccount_review_required\b/i,
+  /\boverage_requires_payment\b/i,
   /usage limit reached/i,
   /usage-based pricing/i,
   /sending messages too quickly/i,
   /billing entitlement has expired/i,
   /spending cap for this period/i,
   /usage charge hasn't been paid/i,
+  /verify your email to start using ai/i,
+  /your account is under review/i,
+  /on-demand usage starts after your first payment/i,
 ]
 
 // Stream-decoding failures thrown by the AI SDK's SSE/JSON reader
@@ -126,6 +161,21 @@ export function isReactUpdateDepthError(err: unknown): boolean {
   const message = chatErrorMessage(err)
   const name = chatErrorName(err)
   return REACT_UPDATE_DEPTH_PATTERNS.some((pattern) => pattern.test(message) || pattern.test(name))
+}
+
+/**
+ * Whether a stream error should close the UI-side tool spinners by writing to
+ * the message store.
+ *
+ * A render-depth error must not. `setMessages` notifies the AI SDK's store,
+ * which forces a synchronous re-render of the tree that just threw, which
+ * throws again and lands back in the same `onError` — one #185 became 450
+ * Sentry events from a single session (JAVASCRIPT-REACT-5S). The turn id is
+ * recorded separately and `shouldAutoRecoverStalledTurn` already skips
+ * recovery for it, so the store write is the only thing left to skip.
+ */
+export function shouldInterruptStuckToolsOnStreamError(err: unknown): boolean {
+  return !isReactUpdateDepthError(err)
 }
 
 function isParseError(name: string, message: string): boolean {
@@ -225,6 +275,7 @@ export function buildChatStreamErrorReport(
   if (NON_REPORTED_CLASSES.has(cls)) return null
 
   const rawMessage = chatErrorMessage(err)
+  const causeMessage = messageOf((err as { cause?: unknown } | null)?.cause)
   const tags: Record<string, string> = {
     [SHOGO_TELEMETRY_TAG]: 'chat_stream_error',
     chatErrorClass: cls,
@@ -243,6 +294,10 @@ export function buildChatStreamErrorReport(
     extra: {
       rawMessage,
       errorName: chatErrorName(err),
+      // Still measurable: how often the thrown value carried no text at all
+      // (`rawMessage` is now a readable fallback, not the original blank).
+      emptyMessage: messageOf(err).trim() === '',
+      ...(causeMessage.trim() ? { errorCause: causeMessage } : {}),
       lastSeq: ctx.lastSeq ?? null,
       recovered: ctx.recovered ?? false,
       phase: ctx.phase ?? 'stream',

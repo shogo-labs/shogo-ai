@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ActivityIndicator, Alert, Animated, Easing, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
-import { Archive, Bell, BellOff, Bot, Check, ChevronLeft, ChevronRight, FileText, FolderOpen, Hash, Lock, LogOut, MoreHorizontal, Paperclip, Pencil, PanelRight, Pin, Radio, Sparkles, Star, Trash2, UserCircle, UserPlus, Users, X } from 'lucide-react-native'
+import { Archive, Bell, BellOff, Check, ChevronLeft, ChevronRight, FileText, Filter, Hash, Lock, LogOut, MoreHorizontal, Paperclip, Pencil, Pin, Radio, Sparkles, Star, Trash2, UserPlus, Users, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { LiquidGlassBackdrop } from '../ui/LiquidGlassBackdrop'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
@@ -12,7 +12,6 @@ import { MarkdownText } from '../chat/MarkdownText'
 import { WebTooltip } from '../chat/WebTooltip'
 import {
   conversationTitle,
-  isAgentDm,
   teamChatApi,
   type CatchUpResult,
   type ChatMessage,
@@ -22,12 +21,15 @@ import {
   type Participant,
 } from '../../lib/team-chat-api'
 import { mentionNames, renderMentionsMarkdown } from '../../lib/team-chat-state'
+import { memberFromKey } from '../../lib/member-messages'
 import { useUserStatus } from '../../hooks/useChatPrefs'
 import { usePresence } from '../../hooks/usePresence'
 import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
 import { PresenceDot, presenceLabel } from './PresenceDot'
 import { AgentAvatar } from './AgentAvatar'
 import { confirmsAddToChannel } from './AddToChannelConfirm'
+import { useInviteDialog } from '../workspace/invite-dialog-context'
+import { usePermissions } from '../../hooks/usePermissions'
 import { UserAvatar } from './UserAvatar'
 import { HuddleButton } from './Huddle'
 import { ChannelTabList, type ChannelTabItem } from './ChannelTabs'
@@ -76,11 +78,11 @@ export interface ConversationHeaderProps {
   /** Phone: the channel's tabs, listed in the details panel instead of a strip under the header. */
   tabsMenu?: { items: ChannelTabItem[]; onAddBoard?: () => void }
   onBack?: () => void
-  /** Show the agent's project beside the conversation. Only passed on wide screens. */
-  onOpenProjectPane?: (projectId: string, name: string) => void
   onOpenFiles?: () => void
   /** Open the channel doc. Passed for channels that support one. */
   onOpenDoc?: () => void
+  /** Open "Messages from <member>" for one member (`user:<id>` / `agent:<id>`). */
+  onOpenMemberMessages?: (from: string) => void
   onLayout?: (event: LayoutChangeEvent) => void
 }
 
@@ -94,7 +96,7 @@ function confirm(title: string, message: string): Promise<boolean> {
   )
 }
 
-export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, onDeleted, floating, onBack, onOpenProjectPane, onOpenFiles, onOpenDoc, onLayout, tabsMenu }: ConversationHeaderProps) {
+export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, onDeleted, floating, onBack, onOpenFiles, onOpenDoc, onOpenMemberMessages, onLayout, tabsMenu }: ConversationHeaderProps) {
   const insets = useSafeAreaInsets()
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const router = useRouter()
@@ -162,7 +164,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
   const peerId = dmPeer?.type === 'user' && dmPeer.self !== true ? dmPeer.id : null
   const peerStatus = useUserStatus(conversation.workspaceId, peerId)
   const peerPresence = usePresence(conversation.workspaceId, peerId)
-  const Icon = conversation.kind === 'activity' ? Radio : conversation.kind === 'private' ? Lock : isChannel ? Hash : isAgentDm({ kind: conversation.kind, participants }) ? Bot : Users
+  const Icon = conversation.kind === 'activity' ? Radio : conversation.kind === 'private' ? Lock : isChannel ? Hash : Users
 
   const run = async (fn: () => Promise<unknown>) => {
     try {
@@ -186,32 +188,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     }
   }
 
-  const agentDm = isAgentDm({ kind: conversation.kind, participants })
-  const agentPeer = agentDm ? participants.find((p) => p.type === 'agent') : undefined
-  const agentProjectId = agentPeer?.type === 'agent' ? agentPeer.projectId : null
-  const agentName = agentPeer?.type === 'agent' ? agentPeer.name ?? 'Agent' : 'Agent'
-  const openProject = () => router.push({ pathname: '/(app)/projects/[id]', params: { id: agentProjectId! } } as any)
-
   const actions: HeaderAction[] = []
-  if (agentPeer) {
-    actions.push({
-      key: 'agent-profile',
-      label: 'View profile',
-      icon: (s) => <UserCircle size={s} className="text-muted-foreground" />,
-      onPress: () => router.push({ pathname: '/(app)/agents/[key]', params: { key: agentProjectId ?? 'ws' } } as any),
-    })
-  }
-  if (agentProjectId) {
-    actions.push({ key: 'open-project', label: 'Open project', icon: (s) => <FolderOpen size={s} className="text-muted-foreground" />, onPress: openProject })
-    if (onOpenProjectPane) {
-      actions.push({
-        key: 'project-pane',
-        label: 'Show in side panel',
-        icon: (s) => <PanelRight size={s} className="text-muted-foreground" />,
-        onPress: () => onOpenProjectPane(agentProjectId, agentName),
-      })
-    }
-  }
   if (onOpenDoc && floating && !tabsMenu) {
     actions.push({
       key: 'doc',
@@ -250,6 +227,21 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
   }
   if (onOpenFiles && conversation.kind !== 'activity') {
     actions.push({ key: 'files', label: 'Files', icon: (s) => <Paperclip size={s} className="text-muted-foreground" />, onPress: onOpenFiles })
+  }
+  // "Filter by member" opens the pane on you when you are in the channel, so
+  // the switcher is already showing a list; otherwise on the first member.
+  const defaultMemberFrom = (() => {
+    const mine = conversation.members.find((m) => m.type === 'user' && m.userId === me)
+    const first = mine ?? conversation.members[0]
+    return first ? memberFromKey(first) : null
+  })()
+  if (onOpenMemberMessages && defaultMemberFrom && conversation.kind !== 'activity') {
+    actions.push({
+      key: 'member-messages',
+      label: 'Filter by member',
+      icon: (s) => <Filter size={s} className="text-muted-foreground" />,
+      onPress: () => onOpenMemberMessages(defaultMemberFrom),
+    })
   }
   actions.push({
     key: 'catchup',
@@ -304,8 +296,6 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     </View>
   ) : selfPeer ? (
     <UserAvatar name={selfPeer.name} image={selfPeer.image} size={20} />
-  ) : agentPeer?.type === 'agent' ? (
-    <AgentAvatar name={agentName} projectId={agentProjectId} workspaceId={conversation.workspaceId} size={20} />
   ) : (
     <Icon size={16} className="text-muted-foreground" />
   )
@@ -419,6 +409,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
           mentionables={mentionables}
           onClose={() => setMembersOpen(false)}
           onChanged={onChanged}
+          onOpenMemberMessages={onOpenMemberMessages}
         />
       )}
     </>
@@ -496,11 +487,6 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
             style={{ opacity: chromeOpacity }}
             pointerEvents={panelMounted ? 'none' : 'box-none'}
           >
-            {agentProjectId ? (
-              <GlassButton label="Open project" onPress={openProject}>
-                <FolderOpen size={18} className="text-foreground" />
-              </GlassButton>
-            ) : null}
             <HuddleButton conversation={conversation} me={me} label={title} floating />
             <GlassButton label={catchUpAction.label} onPress={catchUpAction.onPress}>
               {catchUpAction.icon(18)}
@@ -1035,19 +1021,26 @@ function MembersModal({
   mentionables,
   onClose,
   onChanged,
+  onOpenMemberMessages,
 }: {
   conversation: ConversationDetail
   mentionables: Mentionables | null
   onClose: () => void
   onChanged: () => void
+  onOpenMemberMessages?: (from: string) => void
 }) {
   const [filter, setFilter] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const inviteDialog = useInviteDialog()
+  const { canInvite } = usePermissions({ workspaceId: conversation.workspaceId })
   const memberUserIds = new Set(conversation.members.flatMap((m) => (m.type === 'user' ? [m.userId] : [])))
   const memberAgents = new Set(conversation.members.flatMap((m) => (m.type === 'agent' ? [m.projectId ?? 'ws'] : [])))
   const q = filter.trim().toLowerCase()
   const people = (mentionables?.people ?? []).filter((p) => !memberUserIds.has(p.id) && (!q || p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q)))
   const agents = (mentionables?.agents ?? []).filter((a) => !memberAgents.has(a.projectId ?? 'ws') && (!q || a.name.toLowerCase().includes(q)))
+  // Someone who is not in the workspace yet: offer to invite them (SHO-454).
+  const looksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(q)
+  const offerInvite = canInvite && !!q && (looksLikeEmail || (!people.length && !agents.length))
 
   const act = async (fn: () => Promise<unknown>) => {
     try {
@@ -1083,6 +1076,20 @@ function MembersModal({
                   {m.name ?? 'Agent'}
                   {m.type === 'agent' ? <Text className="text-xs text-muted-foreground">{`  replies on ${m.agentTrigger}`}</Text> : null}
                 </Text>
+                {onOpenMemberMessages ? (
+                  <Pressable
+                    onPress={() => {
+                      onClose()
+                      onOpenMemberMessages(memberFromKey(m))
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Messages from ${m.name ?? 'Agent'}`}
+                    testID={`member-messages-open-${memberFromKey(m)}`}
+                    className="rounded-md px-1.5 py-0.5 active:bg-muted"
+                  >
+                    <Text className="text-xs text-primary">Messages</Text>
+                  </Pressable>
+                ) : null}
                 {conversation.canManage && (
                   <Pressable onPress={() => act(() => api.removeMember(conversation.id, m.id))} accessibilityLabel={`Remove ${m.name ?? 'agent'}`}>
                     <Text className="text-xs text-destructive">Remove</Text>
@@ -1129,6 +1136,24 @@ function MembersModal({
                     <Text className="text-xs text-primary">Add</Text>
                   </Pressable>
                 ))}
+                {offerInvite && (
+                  <Pressable
+                    testID="members-modal-invite"
+                    onPress={() => {
+                      onClose()
+                      inviteDialog.openInviteDialog(conversation.workspaceId, {
+                        emails: looksLikeEmail ? [q] : undefined,
+                      })
+                    }}
+                    className="flex-row items-center gap-2 rounded-md px-1 py-1.5 active:bg-muted hover:bg-muted"
+                  >
+                    <UserPlus size={14} className="text-primary" />
+                    <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
+                      {looksLikeEmail ? `Invite ${q}` : 'Invite someone new'}
+                    </Text>
+                    <Text className="text-xs text-primary">Invite</Text>
+                  </Pressable>
+                )}
               </>
             )}
           </ScrollView>

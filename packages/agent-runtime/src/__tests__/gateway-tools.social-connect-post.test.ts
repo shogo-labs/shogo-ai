@@ -246,8 +246,23 @@ describe('accounts', () => {
       username: 'russell.shogo',
       active: true,
       needs_reconnect: false,
+      owner: 'shared',
     })
     expect(result.accounts[1].needs_reconnect).toBe(true)
+  })
+
+  test('marks an account a project owns as project-owned, not shared', async () => {
+    route(/POST .*\/social\/accounts\/sync$/, {
+      accounts: [
+        { id: 'acct_1', platform: 'instagram', username: 'russell.shogo', isActive: true },
+        { id: 'acct_2', platform: 'instagram', username: 'engage', isActive: true, projectId: 'proj_1' },
+      ],
+    })
+
+    const result = await run({ action: 'accounts' })
+
+    expect(result.accounts[0].owner).toBe('shared')
+    expect(result.accounts[1].owner).toBe('project')
   })
 })
 
@@ -328,6 +343,24 @@ describe('the inbox', () => {
     const query = new URL(calls[0].url).searchParams
     expect(query.get('platform')).toBe('tiktok')
     expect(query.get('unread')).toBe('true')
+  })
+
+  test('an account another project owns is reported as that, not as another workspace', async () => {
+    // `account_out_of_scope` used to be caught by the `profile_out_of_scope`
+    // arm, so a project agent was told the account belonged to another
+    // workspace — wrong on both counts, and the project-specific branch below
+    // it was unreachable.
+    route(
+      /GET .*\/social\/inbox/,
+      { error: { code: 'account_out_of_scope', message: 'That account belongs to another project.' } },
+      403,
+    )
+
+    const result = await run({ action: 'inbox', kind: 'dms', platform: 'instagram' })
+
+    expect(result.code).toBe('account_out_of_scope')
+    expect(result.suggestion).toContain('another project')
+    expect(result.suggestion).not.toContain('another workspace')
   })
 
   test('a platform the workspace turned off is refused, and nothing is called', async () => {

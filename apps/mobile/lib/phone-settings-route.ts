@@ -27,6 +27,12 @@ export type PhoneSettingsOptions = {
   isDesktop?: boolean
   /** Chat preferences are a team-workspace tab only. */
   teamChat?: boolean
+  /**
+   * Whether this person may open the Analytics screen. Workspace analytics are
+   * owner/admin only, so a member's `?tab=analytics|costs` link lands on the
+   * Account screen instead of a page that would only 403.
+   */
+  canViewAnalytics?: boolean
 }
 
 export type PhoneSettingsTarget = {
@@ -115,7 +121,8 @@ export function phoneSettingsTarget(
   options: PhoneSettingsOptions = {},
 ): PhoneSettingsTarget {
   const tab = firstPhoneSettingsParam(params.tab)
-  if (tab === 'analytics' || tab === 'costs') {
+  const analyticsTab = tab === 'analytics' || tab === 'costs'
+  if (analyticsTab && options.canViewAnalytics !== false) {
     return {
       pathname: '/(app)/analytics',
       params: { view: tab === 'costs' ? 'costs' : 'usage' },
@@ -128,7 +135,9 @@ export function phoneSettingsTarget(
     const single = firstPhoneSettingsParam(value)
     if (single) forwarded[key] = single
   }
-  if (tab) forwarded.tab = resolvePhoneSettingsTab(tab, options)
+  // A member has no analytics surface: drop the tab rather than open a sheet
+  // that does not exist.
+  if (tab && !analyticsTab) forwarded.tab = resolvePhoneSettingsTab(tab, options)
   return { pathname: '/(app)/account', params: forwarded }
 }
 

@@ -25,21 +25,19 @@
   window.__shogoCanvasBridgeLoaded = true
 
   // -------------------------------------------------------------------------
-  // Phone / narrow preview layout
+  // Narrow-preview safety net
   // -------------------------------------------------------------------------
-  // Agent UIs are often authored as desktop dashboards (`grid-cols-2/3/4`).
-  // Studio desktop iframes stay wide, so these rules only apply at
-  // CANVAS_PHONE_MAX_WIDTH_PX (Studio's phone / narrow preview breakpoint).
-  // Existing canvases pick this up on reload — no per-project rebuild.
+  // Shogo does NOT rewrite the app's layout. It used to inject `!important`
+  // rules at phone width that collapsed every `grid-cols-2…6` to one column,
+  // un-truncated `.truncate`, rewrote `[role=tablist]` and turned `flex
+  // h-screen` shells into columns — so agents fought CSS they never wrote and
+  // a deliberate 2-up stat row rendered wrong (SHO-371, absorbing SHO-378).
+  //
+  // The only thing left is a no-`!important` guard against horizontal overflow.
+  // Layout problems are caught at write time instead: `read_lints` warns on a
+  // bare `grid-cols-3+` and on a fixed-width sidebar in a `flex h-screen` shell
+  // with no `md:flex-row`, and the mobile-first prompt covers new code.
   var RESPONSIVE_STYLE_ID = '__shogo-canvas-responsive'
-  // Keep this in sync with apps/mobile/lib/native-phone-layout.ts.
-  var CANVAS_PHONE_MAX_WIDTH_PX = 767
-  var FLEX_VIEWPORT_SHELLS = [
-    '.flex.h-screen',
-    '.flex.min-h-screen',
-    '.flex.h-dvh',
-    '.flex.min-h-dvh',
-  ]
 
   function injectStyleTag(id, css) {
     if (document.getElementById(id)) return
@@ -49,32 +47,7 @@
     ;(document.head || document.documentElement).appendChild(style)
   }
 
-  injectStyleTag(RESPONSIVE_STYLE_ID, [
-    'html, body { max-width: 100%; }',
-    '@media (max-width: ' + CANVAS_PHONE_MAX_WIDTH_PX + 'px) {',
-    '  html, body { overflow-x: hidden; }',
-    '  .grid.grid-cols-2,',
-    '  .grid.grid-cols-3,',
-    '  .grid.grid-cols-4,',
-    '  .grid.grid-cols-5,',
-    '  .grid.grid-cols-6 {',
-    '    grid-template-columns: repeat(1, minmax(0, 1fr)) !important;',
-    '  }',
-    '  .grid > * { min-width: 0; }',
-    '  .truncate { overflow: visible; text-overflow: unset; white-space: normal; }',
-    '  [role="tablist"] { overflow-x: auto; flex-wrap: nowrap; }',
-    '  ' + FLEX_VIEWPORT_SHELLS.join(',\n  ') + ' {',
-    '    flex-direction: column !important;',
-    '    height: auto !important;',
-    '    min-height: 100dvh;',
-    '  }',
-    '  ' + FLEX_VIEWPORT_SHELLS.map(function (sel) { return sel + ' > :first-child' }).join(',\n  ') + ' {',
-    '    width: 100% !important;',
-    '    max-width: 100% !important;',
-    '    flex: none !important;',
-    '  }',
-    '}',
-  ].join('\n'))
+  injectStyleTag(RESPONSIVE_STYLE_ID, 'html, body { max-width: 100%; }')
 
   // -------------------------------------------------------------------------
   // Update bar

@@ -107,6 +107,17 @@ model Workspace {
   slug        String   @unique
   description String?
   ssoSettings String?
+  // Workspace-runtime workspace-drive size (GiB) for a bare `ws:<id>` runtime
+  // (SHO-401). Unused on desktop (a local runtime uses the machine's own disk);
+  // kept for schema parity with the cloud track.
+  runtimeDiskGiB Int?
+  // UTC day through which the disk add-on has been billed. Unused on desktop
+  // (local mode has no billing job); kept for schema parity.
+  diskAddonBilledThrough DateTime?
+  // Who may invite people to this workspace (SHO-454). "members" (the default
+  // when null) lets any Editor invite as Editor or Viewer; "admins" restricts
+  // inviting to owners and admins. Viewers can never invite.
+  invitePolicy String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -117,6 +128,7 @@ model Workspace {
   inviteLinks     InviteLink[]
   folders         Folder[]
   subscriptions   Subscription[]
+  courseEnrollments   CourseEnrollment[]
   usageWallets    UsageWallet[]
   usageEvents     UsageEvent[]
   starredProjects StarredProject[]
@@ -124,8 +136,62 @@ model Workspace {
   agentSchedules  AgentSchedule[]
   agentProfile    WorkspaceAgentProfile?
   goals           Goal[]
+  accessPolicies  AccessPolicy[]
+  accessAuditEvents AccessAuditEvent[]
 
   @@map("workspaces")
+}
+
+// ============================================================================
+// Workspace RBAC (SHO-417) — desktop mirror of prisma/schema.local.prisma.
+// ============================================================================
+
+model AccessPolicy {
+  id          String @id @default(uuid())
+  workspaceId String
+  /// `role` | `group` | `member`
+  subjectType String
+  /// Role name, `UserGroup.id`, or `User.id` — polymorphic, so no FK.
+  subjectId   String
+  /// JSON array of ability names. Null on a role row = the built-in default.
+  abilities   String?
+  /// JSON array of model tiers. Null with `modelIds` null = everything.
+  modelTiers  String?
+  /// JSON array of explicit model ids.
+  modelIds    String?
+  defaultModelId  String?
+  spendCapUsd     Float?
+  /// `day` | `week` | `month`
+  spendPeriod     String?
+  requestsPerHour Int?
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, subjectType, subjectId])
+  @@index([workspaceId])
+  @@map("access_policies")
+}
+
+model AccessAuditEvent {
+  id               String   @id @default(uuid())
+  workspaceId      String
+  actorUserId      String?
+  onBehalfOfUserId String?
+  kind             String
+  permission       String?
+  modelId          String?
+  subject          String?
+  detail           String?
+  createdAt        DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, kind, createdAt])
+  @@map("access_audit_events")
 }
 
 model WorkspaceAgentProfile {
@@ -557,6 +623,9 @@ model Subscription {
   billingInterval      String
   currentPeriodStart   DateTime
   currentPeriodEnd     DateTime
+  // When this subscription's card first paid a real (amount_paid > 0) invoice.
+  // Null while trialing. See prisma/schema.prisma for full semantics.
+  firstPaidAt          DateTime?
   cancelAtPeriodEnd    Boolean  @default(false)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
@@ -631,6 +700,9 @@ model ChatSession {
   // Owner of a personal workspace-agent chat. Null for project chats and
   // chats created before ownership existed.
   createdByUserId     String?
+  // A person's chat with one agent, keyed
+  // `a:<workspaceId>:<userId>:<projectId|ws>` (SHO-412).
+  directKey           String?
   isPrimary           Boolean  @default(false)
   phase               String?
   claudeCodeSessionId String?
@@ -655,6 +727,8 @@ model ChatSession {
   @@index([contextType, contextId])
   @@index([activeTurnHeartbeatAt])
   @@index([createdByUserId])
+  // One chat per person per agent per workspace (SHO-412).
+  @@unique([directKey])
   @@map("chat_sessions")
 }
 
@@ -1166,4 +1240,81 @@ model LocalConfig {
   updatedAt DateTime @updatedAt
 
   @@map("local_config")
+}
+
+// =============================================================================
+// COURSES (SHO-428)
+// ======================================================================
+
+
+/// One purchase of a paid course. Same shape as the cloud model in
+/// prisma/schema.prisma; local mode has no Stripe, so rows come from the
+/// license-key / admin paths and from a cloud-synced workspace.
+model CourseEnrollment {
+  id                      String    @id @default(uuid())
+  courseId                String
+  userId                  String
+  workspaceId             String
+  source                  String
+  stripeCheckoutSessionId String?   @unique
+  stripeSubscriptionId    String?
+  status                  String
+  purchasedAt             DateTime
+  installStatus           String    @default("pending")
+  installError            String?
+  packBindings            Json?
+  courseBoardId           String?
+  progress                Json?
+  completedAt             DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, courseId])
+  @@index([workspaceId])
+  @@map("course_enrollments")
+}
+// =============================================================================
+// VM COMPUTE METERING (SHO-424) — mirrored from prisma/schema.local.prisma
+// =============================================================================
+// Empty in local mode: compute billing is a cloud concern and the hourly job
+// no-ops locally. Present so the desktop track carries the same shape.
+
+model VmUsageHour {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  projectId    String    @default("")
+  hour         DateTime
+  hostId       String
+  vcpus        Int
+  memMiB       Int
+  cause        String    @default("user_open")
+  agentSeconds Int       @default(0)
+  appSeconds   Int       @default(0)
+  idleSeconds  Int       @default(0)
+  chargedUsd   Float?
+  billedAt     DateTime?
+
+  @@unique([workspaceId, projectId, hour, hostId, vcpus, memMiB, cause])
+  @@index([workspaceId, hour])
+  @@index([billedAt])
+  @@index([hour])
+  @@map("vm_usage_hours")
+}
+
+model VmMeterCursor {
+  id         String   @id @default(cuid())
+  hostId     String
+  vmId       String
+  assignedAt BigInt
+  agentMs    Int      @default(0)
+  appMs      Int      @default(0)
+  idleMs     Int      @default(0)
+  lastSeenAt DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([hostId, vmId, assignedAt])
+  @@index([lastSeenAt])
+  @@map("vm_meter_cursors")
 }

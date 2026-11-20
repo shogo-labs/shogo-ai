@@ -4,6 +4,18 @@ import { Platform } from 'react-native'
 import { authClient } from './auth-client'
 
 /**
+ * The headers a native request to an authenticated URL needs, for a caller that
+ * cannot use `fetch` — a download streamed to disk by `expo-file-system`, which
+ * takes headers but no request init. Web needs none: the browser sends the
+ * session cookie itself.
+ */
+export function nativeAuthHeaders(): Record<string, string> {
+  if (Platform.OS === 'web') return {}
+  const cookie = (authClient as any).getCookie?.()
+  return cookie ? { Cookie: cookie } : {}
+}
+
+/**
  * Wraps `fetch` with the correct auth credentials for agent-proxy requests.
  *
  * On web: adds `credentials: 'include'` so the browser sends session cookies

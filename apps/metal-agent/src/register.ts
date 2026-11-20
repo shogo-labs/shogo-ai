@@ -17,9 +17,9 @@
  * route new projects here until the next successful heartbeat.
  */
 
-import { readFileSync } from 'fs'
 import { config } from './config'
 import { rootDiskUsage } from './disk'
+import { hostMemory } from './host-memory'
 import { currentIdleWindow, setIdleDirective, type IdleDirective } from './idle-policy'
 import { metrics, M } from './metrics'
 import type { MetalWarmPool } from './pool'
@@ -49,22 +49,11 @@ function stagedRootfsReport(pool: MetalWarmPool) {
   }
 }
 
-/** MemTotal / MemAvailable from /proc/meminfo, in MiB. Undefined off Linux. */
-export function hostMemory(meminfo?: string): { totalMiB: number; availableMiB: number } | undefined {
-  let text = meminfo
-  if (text === undefined) {
-    try {
-      text = readFileSync('/proc/meminfo', 'utf8')
-    } catch {
-      return undefined
-    }
-  }
-  const kb = (field: string) => Number(new RegExp(`^${field}:\\s+(\\d+) kB`, 'm').exec(text!)?.[1])
-  const total = kb('MemTotal')
-  const available = kb('MemAvailable')
-  if (!(total > 0) || !(available >= 0)) return undefined
-  return { totalMiB: Math.round(total / 1024), availableMiB: Math.round(available / 1024) }
-}
+/**
+ * MemTotal / MemAvailable from /proc/meminfo, in MiB. Undefined off Linux.
+ * Re-exported from host-memory.ts, which pool.ts also reads (see there).
+ */
+export { hostMemory } from './host-memory'
 
 function payload(pool: MetalWarmPool, opts: { restarting?: boolean } = {}) {
   const s = pool.status()
@@ -104,10 +93,25 @@ function payload(pool: MetalWarmPool, opts: { restarting?: boolean } = {}) {
     // exactly as before for any consumer that hasn't been updated to read
     // per-class data yet — it always mirrors the 'standard' entry.
     classes: s.classes,
+    // Billing: every assigned VM's cumulative running time by liveness class,
+    // the workspace key + machine size it actually booted, and why it was
+    // started, plus the closed VMs whose final counters the control plane has
+    // not acked yet. Cumulative per VM, so a heartbeat lost in transit costs
+    // nothing — the next one carries the total.
+    meter: s.meter,
     load: {
       available: s.available,
       assigned: s.assigned.length,
       suspended: s.suspended.length,
+      // The assigned set split by whether each VM is holding a slot someone
+      // needs (`active`) or is only warm (`evictable`). Disjoint, and they sum
+      // to `assigned`. The control plane counts ACTIVE VMs as capacity — an
+      // idle-resident VM is free room, not demand — so the idle tier, placement
+      // order and the burst scaler stop buying hosts to hold VMs nobody uses.
+      // `assigned` stays the total resident count (back-compat, and the
+      // process-leak check compares it to fcProcs).
+      active: s.liveness.active,
+      evictable: s.liveness.evictable,
       // Live firecracker processes. Should equal available+assigned; a growing
       // gap is the churn process-leak fingerprint (the control plane turns this
       // into a fleet-wide alarm so a recurrence is caught without SSH).
@@ -142,14 +146,25 @@ function payload(pool: MetalWarmPool, opts: { restarting?: boolean } = {}) {
     // 2026-10-31). Old agents simply omit this.
     rootDisk: rootDisk,
     metrics: metrics.snapshot().counters,
+    // Gauges are STATE, not totals, and the control plane cannot derive them
+    // from anything else it receives. Without this the durability gauges
+    // (untrusted VMs, oldest untrusted age, worst unsaved age) never left the
+    // host, so the incident that lost a day and a half of work had no signal
+    // anywhere (SHO-442). Old agents simply omit this.
+    gauges: metrics.snapshot().gauges,
     // Only meaningful when the reaper runs; the control plane's hysteresis reads `directiveTier`.
-    idle: config.idleSuspendMs > 0 ? currentIdleWindow(s.assigned.length) : undefined,
+    idle: config.idleSuspendMs > 0 ? currentIdleWindow(s.liveness.active) : undefined,
     ts: Date.now(),
   }
 }
 
 interface RegisterResponse {
   ok?: boolean
+  /**
+   * Highest `meter.seq` the control plane ingested. Closed-VM rows older than
+   * this are dropped; anything newer is re-sent on the next heartbeat.
+   */
+  meterAck?: number
   /** Version this host should be running (pull-based deploy). */
   desired?: DesiredAgent | null
   /** Idle-suspend window for this host (see idle-policy.ts). */
@@ -247,6 +262,10 @@ export function startRegistration(pool: MetalWarmPool): () => void {
     if (stopped) return
     const res = await announce(pool)
     if (res) console.log(`[metal-agent] registered (heartbeat every ${config.registerIntervalMs}ms)`)
+    // Stop re-sending the final counters of VMs the control plane has already
+    // ingested. Checked before the rootfs/self-update work below, which can
+    // restart the process and lose whatever is still unacked.
+    if (res?.meterAck) pool.ackMeters(res.meterAck)
     if (res?.idleSuspend) setIdleDirective(res.idleSuspend)
     // A staged rootfs switches on the control plane's word, or on our own once
     // it has waited too long. Checked even when the heartbeat failed, so a host

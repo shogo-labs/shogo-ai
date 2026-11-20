@@ -57,6 +57,7 @@ import {
   Laptop,
   SlidersHorizontal,
   Check,
+  UserPlus,
 } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import type { PrimaryNavId, SidebarTabId } from "@shogo/shared-app";
@@ -77,6 +78,8 @@ import {
   useDomainActions,
   useDomainHttp,
 } from "../../../contexts/domain";
+import { useInviteDialog } from "../../workspace/invite-dialog-context";
+import { usePermissions } from "../../../hooks/usePermissions";
 import { useBillingData } from "@shogo/shared-app/hooks";
 import { api } from "../../../lib/api";
 import { trackPurchase } from "../../../lib/tracking";
@@ -369,6 +372,33 @@ export const AppSidebar = observer(function AppSidebar({
 
   const activeWorkspaceId = currentWorkspace?.id ?? selectedWorkspaceId;
   const experience = useWorkspaceExperience();
+
+  // Inviting people (SHO-454): one dialog, opened from the rail, the drawer and
+  // the workspace menu. `canInvite` is the server's answer for this caller.
+  const inviteDialog = useInviteDialog();
+  const { canInvite } = usePermissions({ workspaceId: activeWorkspaceId });
+  const showInvite = canInvite && experience.kind === "team";
+  const [onlyOneHere, setOnlyOneHere] = useState(false);
+  useEffect(() => {
+    if (!showInvite || !activeWorkspaceId || !http) {
+      setOnlyOneHere(false);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getWorkspaceMembers(http, activeWorkspaceId)
+      .then((items) => {
+        if (cancelled) return;
+        const humans = new Set(
+          items.map((m) => m.user?.id).filter((id): id is string => !!id),
+        );
+        setOnlyOneHere(humans.size <= 1);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [showInvite, activeWorkspaceId, http]);
 
   const billingData = useBillingData(
     features.billing ? currentWorkspace?.id : undefined,
@@ -814,6 +844,11 @@ export const AppSidebar = observer(function AppSidebar({
   const onNavPress = useCallback(() => {
     if (!isWide) closeNativeDrawer();
   }, [closeNativeDrawer, isWide]);
+
+  const openInvite = useCallback(() => {
+    inviteDialog.openInviteDialog(activeWorkspaceId);
+    onNavPress();
+  }, [inviteDialog, activeWorkspaceId, onNavPress]);
 
   const handleNewChat = useCallback(async () => {
     if (!user?.id || !activeWorkspaceId) return;
@@ -1565,6 +1600,42 @@ export const AppSidebar = observer(function AppSidebar({
           </View>
         )}
 
+        {/* Invite people (SHO-454). The wide layout keeps this in the rail. */}
+        {tab === null && showInvite && !collapsed && (
+          <View className={cn("px-2", isNativeDrawer ? "pt-3" : "pt-2")}>
+            <Pressable
+              testID="sidebar-invite-people"
+              onPress={openInvite}
+              accessibilityLabel="Invite people"
+              className={cn(
+                "flex-row items-center rounded-md",
+                isNativeDrawer ? "min-h-[56px] gap-3 px-4 py-3" : "gap-2 px-3 py-2",
+                onlyOneHere ? "bg-primary/10" : "active:bg-muted",
+              )}
+            >
+              <UserPlus
+                size={isNativeDrawer ? drawerDensity.icon.lg : 16}
+                className={onlyOneHere ? "text-primary" : "text-muted-foreground"}
+              />
+              <View className="flex-1">
+                <Text
+                  className={cn(
+                    "font-medium text-foreground",
+                    drawerDensity.text.body,
+                  )}
+                >
+                  Invite people
+                </Text>
+                {onlyOneHere && (
+                  <Text className={cn("text-muted-foreground", drawerDensity.text.label)}>
+                    You&apos;re the only one here. Invite your team.
+                  </Text>
+                )}
+              </View>
+            </Pressable>
+          </View>
+        )}
+
         {/* Workspace menu + invites. The wide layout keeps these in the rail. */}
         {tab === null && (
         <View
@@ -1651,6 +1722,8 @@ export const AppSidebar = observer(function AppSidebar({
         showAdmin={hasAdminAccess}
         switcher={renderAccountMenu({ tile: true, collapsed: true })}
         invites={{ count: pendingInvites.length, onPress: () => setInboxOpen(true) }}
+        onInvite={showInvite ? openInvite : undefined}
+        inviteHighlight={onlyOneHere}
         // A personal workspace's other tabs are pages the rail already names, so
         // only Home (the chats) and More open a list; search then lives on the rail.
         panelTabs={!experience.resolved ? [] : experience.kind === "personal" ? ["home", "more"] : undefined}

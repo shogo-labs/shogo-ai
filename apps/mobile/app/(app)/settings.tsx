@@ -16,7 +16,6 @@ import {
   Pressable,
   Modal,
   ActivityIndicator,
-  Linking,
   Platform,
   StyleSheet,
   useWindowDimensions,
@@ -30,6 +29,7 @@ import {
   Users as UsersIcon,
   Boxes as BoxesIcon,
   Shield as ShieldIcon,
+  ShieldCheck as ShieldCheckIcon,
   User as UserIcon,
   ExternalLink as ExternalLinkIcon,
   Trash2 as Trash2Icon,
@@ -47,6 +47,7 @@ import {
   Download as DownloadIcon,
   Monitor as MonitorIcon,
   Laptop as LaptopIcon,
+  HardDrive as HardDriveIcon,
   Paintbrush as PaintbrushIcon,
   RefreshCw as RefreshCwIcon,
   KeyRound as KeyRoundIcon,
@@ -73,10 +74,12 @@ import {
   type IDomainStore,
 } from "../../contexts/domain";
 import { useDomainActions } from "@shogo/shared-app/domain";
+import { formatApiError } from "@shogo/shared-app/chat";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { usePooledWorkspaceCreation } from "../../hooks/usePooledWorkspaceCreation";
-import { usePermissions } from "../../hooks/usePermissions";
+import { usePermissions, invalidatePermissions } from "../../hooks/usePermissions";
+import { useInviteDialog } from "../../components/workspace/invite-dialog-context";
 import { setActiveWorkspaceId } from "../../lib/workspace-store";
 import {
   api,
@@ -109,6 +112,7 @@ import { EVENTS, trackEvent } from "../../lib/analytics";
 import { SecuritySettingsPanel } from "../../components/security/SecuritySettingsPanel";
 import { ComputerAndFilesPanel } from "../../components/settings/ComputerAndFilesPanel";
 import { ComputeTab } from "../../components/settings/ComputeTab";
+import { DiskSettings } from "../../components/settings/DiskSettings";
 import { LocalCloudBillingTab } from "../../components/settings/LocalCloudBillingTab";
 import { UpdatesTab } from "../../components/settings/UpdatesTab";
 import { EnvironmentVersionTrigger } from "../../components/settings/EnvironmentPicker";
@@ -116,6 +120,7 @@ import { IntegrationsTab } from "../../components/settings/IntegrationsTab";
 import { AutomationsTab } from "../../components/settings/AutomationsTab";
 import { WorkspaceExportView } from "../../components/settings/WorkspaceExportView";
 import { WorkspaceModelsTab } from "../../components/settings/WorkspaceModelsTab";
+import { WorkspaceAccessTab } from "../../components/settings/WorkspaceAccessTab";
 import { RemoteControlTab } from "../../components/settings/RemoteControlTab";
 import { SetSpendLimitDialog } from "../../components/billing/SetSpendLimitDialog";
 import { MemberUsageDetail } from "../../components/settings/MemberUsageDetail";
@@ -165,6 +170,8 @@ import { useNotificationPermission } from "../../lib/notifications/useNotificati
 import type { NotificationPermissionState } from "../../lib/notifications/chat-notifier";
 import { useRequireBiometricApproval } from "../../lib/approval-lock";
 import { useDualPlan } from "../../lib/dual-plan-preference";
+import { openExternalLink } from "../../lib/open-external-link";
+import { isCloudWorkspace } from "../../lib/workspace-route";
 
 const latestAnnouncedRelease = whatsNewCatalog.find((release) => release.announce);
 
@@ -174,6 +181,7 @@ const SETTINGS_ICON_MAP = {
   Users: UsersIcon,
   Boxes: BoxesIcon,
   Shield: ShieldIcon,
+  ShieldCheck: ShieldCheckIcon,
   User: UserIcon,
   ExternalLink: ExternalLinkIcon,
   Trash2: Trash2Icon,
@@ -191,6 +199,7 @@ const SETTINGS_ICON_MAP = {
   Download: DownloadIcon,
   Monitor: MonitorIcon,
   Laptop: LaptopIcon,
+  HardDrive: HardDriveIcon,
   Paintbrush: PaintbrushIcon,
   RefreshCw: RefreshCwIcon,
 } as const;
@@ -204,9 +213,12 @@ const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
   people: "Users",
   chat: "MessageSquare",
   models: "Boxes",
+  access: "ShieldCheck",
   integrations: "Plug",
   automations: "Zap",
   "remote-control": "Monitor",
+  data: "Server",
+  disk: "HardDrive",
   account: "User",
   security: "Shield",
   "computer-files": "Laptop",
@@ -243,6 +255,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
   "people",
   "chat",
   "models",
+  "access",
   "integrations",
   "automations",
   "remote-control",
@@ -257,6 +270,7 @@ const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
   "workspace",
   "chat",
   "models",
+  "access",
   "integrations",
   "automations",
   "remote-control",
@@ -346,6 +360,7 @@ function SettingsSidebar({
   showBilling = true,
   localMode = false,
   teamChat = false,
+  showPeople,
 }: {
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
@@ -356,6 +371,12 @@ function SettingsSidebar({
   localMode?: boolean;
   /** Chat preferences only exist in a team workspace. */
   teamChat?: boolean;
+  /**
+   * Whether the People tab exists. Defaults to the cloud rule; a desktop
+   * cloud workspace passes `true` so members are managed in the app, not in a
+   * browser (SHO-454).
+   */
+  showPeople?: boolean;
 }) {
   const { ArrowLeft } = useSettingsIcons();
   const tabItem = (id: TabId): SidebarItem => ({
@@ -363,12 +384,15 @@ function SettingsSidebar({
     label: settingsTab(id).label,
   });
 
+  const peopleVisible = showPeople ?? !(localMode || !showBilling);
+
   const workspaceItems: SidebarItem[] = [
-    ...(!(localMode || !showBilling) ? [tabItem("people")] : []),
+    ...(peopleVisible ? [tabItem("people")] : []),
     ...(teamChat ? [tabItem("chat")] : []),
     tabItem("models"),
     tabItem("integrations"),
     tabItem("automations"),
+    tabItem("disk"),
     tabItem("remote-control"),
     ...(showBilling
       ? [
@@ -1576,12 +1600,53 @@ const PeopleTab = observer(function PeopleTab() {
   const http = useDomainHttp();
   const currentWorkspace = useActiveWorkspace();
   const toast = useToast();
+  const { can, canInvite, workspaceRole, invitePolicy } = usePermissions({
+    workspaceId: currentWorkspace?.id,
+  });
+  // Inviting is the shared dialog, never a second modal (SHO-454).
+  const inviteDialog = useInviteDialog();
+  // Workspace analytics are owner/admin only; a member's People tab must not
+  // fire the two workspace-wide usage reads (they would only 403).
+  const canViewMemberAnalytics = can("workspace.analytics:read");
 
   const [subTab, setSubTab] = useState<PeopleSubTab>("all");
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<string>("all");
   const [showRoleFilter, setShowRoleFilter] = useState(false);
-  const [showInviteModal, setShowInviteModal] = useState(false);
+  // Who may invite (SHO-454). Owners and admins can restrict it to admins.
+  const canManageSettings = can("workspace.settings:manage");
+  const [policy, setPolicy] = useState<"members" | "admins">(invitePolicy ?? "members");
+  const [savingPolicy, setSavingPolicy] = useState(false);
+  useEffect(() => {
+    if (invitePolicy) setPolicy(invitePolicy);
+  }, [invitePolicy]);
+  const changePolicy = useCallback(
+    async (next: "members" | "admins") => {
+      if (!currentWorkspace?.id || !http || next === policy) return;
+      const previous = policy;
+      setPolicy(next);
+      setSavingPolicy(true);
+      try {
+        await api.setWorkspaceInvitePolicy(http, currentWorkspace.id, next);
+        invalidatePermissions({ workspaceId: currentWorkspace.id });
+      } catch (err) {
+        setPolicy(previous);
+        toast.show({
+          placement: "top",
+          duration: 4000,
+          render: ({ id }: { id: string }) => (
+            <Toast nativeID={id} variant="outline" action="error">
+              <ToastTitle>Could not change who can invite</ToastTitle>
+              <ToastDescription>{formatApiError(err)}</ToastDescription>
+            </Toast>
+          ),
+        });
+      } finally {
+        setSavingPolicy(false);
+      }
+    },
+    [currentWorkspace?.id, http, policy, toast],
+  );
   const [sortField, setSortField] = useState<SortField>("onDemand");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [isLoading, setIsLoading] = useState(true);
@@ -1649,20 +1714,22 @@ const PeopleTab = observer(function PeopleTab() {
           setUserMap(map);
         } catch {}
 
-        try {
-          const usage = await api.getMemberUsageStats(http, ws.id, {
-            period: memberUsagePeriod,
-          });
-          setMemberUsage(usage);
-        } catch {}
+        if (canViewMemberAnalytics) {
+          try {
+            const usage = await api.getMemberUsageStats(http, ws.id, {
+              period: memberUsagePeriod,
+            });
+            setMemberUsage(usage);
+          } catch {}
 
-        try {
-          const insights = await api.getMemberInsights(http, ws.id, {
-            period: memberUsagePeriod,
-          });
-          setMemberInsights(insights);
-        } catch {
-          setMemberInsights({ rows: [], total: 0 });
+          try {
+            const insights = await api.getMemberInsights(http, ws.id, {
+              period: memberUsagePeriod,
+            });
+            setMemberInsights(insights);
+          } catch {
+            setMemberInsights({ rows: [], total: 0 });
+          }
         }
       }
     } catch {}
@@ -1674,6 +1741,7 @@ const PeopleTab = observer(function PeopleTab() {
     http,
     currentWorkspace?.id,
     memberUsagePeriod,
+    canViewMemberAnalytics,
   ]);
 
   useEffect(() => {
@@ -1797,12 +1865,8 @@ const PeopleTab = observer(function PeopleTab() {
     }
   };
 
-  const { can, workspaceRole } = usePermissions({
-    workspaceId: currentWorkspace?.id,
-  });
   const canManageMembers = can("workspace.members:manage");
   const isOwner = workspaceRole === "owner";
-  const canViewMemberAnalytics = can("workspace.analytics:read");
   const canManageMember = (member: { role?: string; userId?: string }) =>
     canManageMemberRow(
       { canManageMembers, isOwner, isSelf: member.userId === user?.id },
@@ -2094,7 +2158,11 @@ const PeopleTab = observer(function PeopleTab() {
 
       {filteredMembers.map((member: any) => {
         const isCurrentUser = member.userId === user?.id;
-        const canSeeInsight = canViewMemberAnalytics || isCurrentUser;
+        // The workspace usage columns come from the admin-only endpoints, so a
+        // member sees a dash for every row — including their own, whose real
+        // numbers live in Profile → Usage (`/me/analytics/*`). Rendering "0%"
+        // from an unfetched table would be a wrong number, not a hidden one.
+        const canSeeInsight = canViewMemberAnalytics;
         const canEditMember = canManageMember(member);
         const insight = memberInsightMap.get(member.userId);
         const avatarColor = ROLE_COLORS[member.role] || "bg-primary";
@@ -2399,7 +2467,7 @@ const PeopleTab = observer(function PeopleTab() {
     if (typeof window !== "undefined") {
       window.open(url, "_blank", "noopener");
     } else {
-      Linking.openURL(url);
+      openExternalLink(url);
     }
   };
 
@@ -2479,6 +2547,40 @@ const PeopleTab = observer(function PeopleTab() {
         ))}
       </View>
 
+      {/* Who can invite (SHO-454). Owners and admins only. */}
+      {canManageSettings && (
+        <View className="mb-4 flex-row items-center justify-between gap-3 rounded-lg border border-border bg-card px-4 py-3">
+          <View className="min-w-0 flex-1">
+            <Text className="text-sm font-medium text-foreground">Who can invite</Text>
+            <Text className="text-xs text-muted-foreground">
+              {policy === "admins"
+                ? "Only owners and admins can invite people."
+                : "Anyone except Viewers can invite people as Editor or Viewer."}
+            </Text>
+          </View>
+          <View className="flex-row items-center gap-1 rounded-lg border border-border p-1">
+            {(["members", "admins"] as const).map((option) => (
+              <Pressable
+                key={option}
+                disabled={savingPolicy}
+                onPress={() => void changePolicy(option)}
+                accessibilityRole="radio"
+                aria-checked={policy === option}
+                accessibilityLabel={option === "members" ? "Anyone except Viewers" : "Admins only"}
+                className={cn(
+                  "rounded-md px-2.5 py-1.5",
+                  policy === option && "bg-muted",
+                )}
+              >
+                <Text className="text-xs text-foreground">
+                  {option === "members" ? "Anyone except Viewers" : "Admins only"}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      )}
+
       {/* Controls row */}
       <View
         className={cn(
@@ -2552,9 +2654,9 @@ const PeopleTab = observer(function PeopleTab() {
           <View className="flex-1" />
         )}
 
-        {canManageMembers && (
+        {canInvite && (
           <Pressable
-            onPress={() => setShowInviteModal(true)}
+            onPress={() => inviteDialog.openInviteDialog(currentWorkspace?.id ?? null)}
             className={cn(
               "flex-row items-center gap-1.5 px-3 bg-primary rounded-lg",
               isMobilePeopleLayout ? "w-full justify-center h-11" : "h-9"
@@ -2705,9 +2807,9 @@ const PeopleTab = observer(function PeopleTab() {
                     <Text className="text-base font-medium text-foreground mb-2">
                       No invitations found
                     </Text>
-                    {canManageMembers && (
+                    {canInvite && (
                       <Pressable
-                        onPress={() => setShowInviteModal(true)}
+                        onPress={() => inviteDialog.openInviteDialog(currentWorkspace?.id ?? null)}
                         className="flex-row items-center gap-1.5 mt-2 px-4 py-2 border border-border rounded-lg"
                       >
                         <UserPlus size={14} className="text-foreground" />
@@ -2801,18 +2903,8 @@ const PeopleTab = observer(function PeopleTab() {
         </Pressable>
       </Modal>
 
-      {/* Invite Members Modal */}
-      <InviteMembersModal
-        visible={showInviteModal}
-        onClose={() => {
-          setShowInviteModal(false);
-          loadPeopleData();
-        }}
-        workspaceId={resolvedWs?.id || currentWorkspace?.id || ""}
-        workspaceName={resolvedWs?.name || currentWorkspace?.name || ""}
-        actions={actions}
-      />
-
+      {/* Inviting is the shared dialog (SHO-454); the People list refreshes
+          when it closes so a new pending invite shows up. */}
       <Modal
         visible={revokeInvitationTarget !== null}
         transparent
@@ -2974,401 +3066,6 @@ const PeopleTab = observer(function PeopleTab() {
   );
 });
 
-/** RN Modal on iOS needs explicit layout + `overFullScreen`; NativeWind flex inside Modal is unreliable on device. */
-const inviteMembersModalStyles = StyleSheet.create({
-  nativeOverlay: {
-    flex: 1,
-  },
-  backdrop: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: "rgba(0, 0, 0, 0.5)",
-  },
-  centerRegion: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    width: "100%",
-  },
-  card: {
-    width: "100%",
-    maxWidth: 448,
-    zIndex: 10,
-    overflow: "visible",
-  },
-  cardCompact: {
-    maxHeight: "92%",
-  },
-});
-
-function InviteMembersModal({
-  visible,
-  onClose,
-  workspaceId,
-  workspaceName,
-  actions,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  workspaceId: string;
-  workspaceName: string;
-  actions: ReturnType<typeof useDomainActions>;
-}) {
-  const { X, ChevronDown } = useSettingsIcons();
-  const { width, height } = useWindowDimensions();
-  const insets = useSafeAreaInsets();
-  const compactInviteModal = width < SETTINGS_WIDE_BREAKPOINT;
-  /** iOS: never put actions as sibling below a bounded ScrollView — RCTScrollView draws a hard edge that clips/overlaps the footer. */
-  const nativeCompactScrollMaxHeight = Math.min(height * 0.78, 560);
-
-  const workspaces = useWorkspaceCollection();
-  const { subscription } = useBillingData(workspaceId);
-  const [emailInput, setEmailInput] = useState("");
-  const [role, setRole] = useState<string>("member");
-  const [showRolePicker, setShowRolePicker] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const INVITE_ROLES = [
-    { value: "member", label: "Editor" },
-    { value: "admin", label: "Admin" },
-    { value: "viewer", label: "Viewer" },
-  ];
-
-  const selectedRoleLabel =
-    INVITE_ROLES.find((r) => r.value === role)?.label || "Editor";
-
-  const parseEmails = (input: string): string[] => {
-    return input
-      .split(/[,;\s]+/)
-      .map((e) => e.trim().toLowerCase())
-      .filter((e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
-  };
-
-  const validEmails = parseEmails(emailInput);
-  const canSubmit = validEmails.length > 0 && !isSubmitting;
-
-  /**
-   * Per-seat monthly cost on the active subscription. We only compute it when
-   * there's an active paid subscription; on free/Basic the seat hint is a
-   * no-op. The actual seat sync happens server-side in
-   * `syncSeatsFromMembership` once an invitee accepts.
-   */
-  const seatHint = useMemo(() => {
-    const planId = subscription?.planId?.toLowerCase?.() ?? "";
-    const isPaidSeatPlan =
-      planId.startsWith("pro") || planId.startsWith("business");
-    if (!isPaidSeatPlan) return null;
-    const pricing = planId.startsWith("business")
-      ? PLAN_PRICING.business
-      : PLAN_PRICING.pro;
-    const interval =
-      subscription?.billingInterval === "annual" ? "annual" : "monthly";
-    const perSeatMonthly =
-      interval === "annual" ? Math.round(pricing.annual / 12) : pricing.monthly;
-    const incomingCount = validEmails.length;
-    return {
-      perSeatMonthly,
-      incomingCount,
-      planLabel: planId.startsWith("business") ? "Business" : "Pro",
-    };
-  }, [subscription, validEmails.length]);
-
-  const handleSubmit = async () => {
-    if (!canSubmit) return;
-    let resolvedWsId = workspaceId;
-    if (!resolvedWsId) {
-      const ws = workspaces.all[0];
-      resolvedWsId = ws?.id || "";
-    }
-    if (!resolvedWsId) {
-      setError("Workspace not loaded yet. Please close and try again.");
-      return;
-    }
-    setIsSubmitting(true);
-    setError(null);
-    try {
-      for (const email of validEmails) {
-        await actions.sendInvitation({
-          email,
-          role: role as any,
-          workspaceId: resolvedWsId,
-        });
-      }
-      setEmailInput("");
-      setRole("member");
-      onClose();
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to send invitation"
-      );
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleClose = () => {
-    setEmailInput("");
-    setRole("member");
-    setError(null);
-    setShowRolePicker(false);
-    onClose();
-  };
-
-  const inviteFormFields = (
-    <>
-      <View className="flex-row items-center justify-between mb-1">
-        <Text className="text-lg font-semibold text-foreground">
-          Invite members
-        </Text>
-        <Pressable onPress={handleClose} className="p-1 -mr-1">
-          <X size={20} className="text-muted-foreground" />
-        </Pressable>
-      </View>
-
-      <Text className="text-sm text-muted-foreground mb-5">
-        Invite members to your workspace by email
-      </Text>
-
-      {error && (
-        <View className="bg-destructive/10 border border-destructive/30 rounded-lg p-3 mb-4">
-          <Text className="text-destructive text-sm">{error}</Text>
-        </View>
-      )}
-
-      <Text className="text-sm font-medium text-foreground mb-1.5">Email</Text>
-      <View className="border border-border rounded-lg mb-4">
-        <TextInput
-          value={emailInput}
-          onChangeText={(t) => {
-            setEmailInput(t);
-            setError(null);
-          }}
-          placeholder="example1@example.com, example2@example.com"
-          autoCapitalize="none"
-          autoCorrect={false}
-          editable={!isSubmitting}
-          className="px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground web:outline-none"
-        />
-      </View>
-
-      <Text className="text-sm font-medium text-foreground mb-1.5">Role</Text>
-      <View
-        className={cn("relative z-50", compactInviteModal ? "mb-4" : "mb-6")}
-      >
-        <Pressable
-          onPress={() => setShowRolePicker(!showRolePicker)}
-          className="flex-row items-center justify-between h-10 px-3 rounded-lg border border-border"
-        >
-          <Text className="text-sm text-foreground">{selectedRoleLabel}</Text>
-          <ChevronDown size={14} className="text-muted-foreground" />
-        </Pressable>
-        {showRolePicker && (
-          <View
-            className={cn(
-              "bg-background border border-border rounded-lg shadow-lg overflow-hidden",
-              Platform.OS === "web"
-                ? "absolute top-11 left-0 right-0 z-50"
-                : "mt-1"
-            )}
-          >
-            {INVITE_ROLES.map((r) => (
-              <Pressable
-                key={r.value}
-                onPress={() => {
-                  setRole(r.value);
-                  setShowRolePicker(false);
-                }}
-                className={cn("px-3 py-2.5", role === r.value && "bg-accent")}
-              >
-                <Text
-                  className={cn(
-                    "text-sm",
-                    role === r.value
-                      ? "text-foreground font-medium"
-                      : "text-foreground"
-                  )}
-                >
-                  {r.label}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-        )}
-      </View>
-
-      {seatHint && (
-        <View
-          className={cn(
-            "rounded-lg bg-muted/40 border border-border p-3",
-            compactInviteModal ? "mb-4" : "mb-6"
-          )}
-        >
-          <Text className="text-xs text-foreground">
-            {seatHint.incomingCount > 0
-              ? `Each accepted invite adds a ${
-                  seatHint.planLabel
-                } seat at ${formatUsd(
-                  seatHint.perSeatMonthly
-                )}/seat/mo (prorated immediately). Pending invites are not billed — ${
-                  seatHint.incomingCount
-                } seat${
-                  seatHint.incomingCount === 1 ? "" : "s"
-                } would be added if all accept.`
-              : `Each accepted invite adds a ${
-                  seatHint.planLabel
-                } seat at ${formatUsd(
-                  seatHint.perSeatMonthly
-                )}/seat/mo (prorated immediately). Pending invites are not billed.`}
-          </Text>
-        </View>
-      )}
-    </>
-  );
-
-  const inviteFormActions = (
-    <View className="flex-row gap-3">
-      <Pressable
-        onPress={handleClose}
-        disabled={isSubmitting}
-        className="flex-1 h-10 rounded-lg border border-border items-center justify-center"
-      >
-        <Text className="text-sm font-medium text-foreground">Cancel</Text>
-      </Pressable>
-      <Pressable
-        onPress={handleSubmit}
-        disabled={!canSubmit}
-        className={cn(
-          "flex-1 h-10 rounded-lg items-center justify-center",
-          canSubmit ? "bg-primary" : "bg-muted"
-        )}
-      >
-        {isSubmitting ? (
-          <ActivityIndicator size="small" color="white" />
-        ) : (
-          <Text
-            className={cn(
-              "text-sm font-medium",
-              canSubmit ? "text-primary-foreground" : "text-muted-foreground"
-            )}
-          >
-            Invite
-          </Text>
-        )}
-      </Pressable>
-    </View>
-  );
-
-  const inviteModalInner = compactInviteModal ? (
-    Platform.OS === "web" ? (
-      <>
-        <ScrollView
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-          nestedScrollEnabled
-          className="max-h-[420px]"
-        >
-          {inviteFormFields}
-        </ScrollView>
-        {inviteFormActions}
-      </>
-    ) : (
-      <ScrollView
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-        keyboardDismissMode="interactive"
-        style={{ maxHeight: nativeCompactScrollMaxHeight }}
-        contentContainerClassName="pb-1"
-      >
-        <View>
-          {inviteFormFields}
-          <View className="mt-5">{inviteFormActions}</View>
-        </View>
-      </ScrollView>
-    )
-  ) : (
-    <>
-      {inviteFormFields}
-      {inviteFormActions}
-    </>
-  );
-
-  const inviteCardWeb = (
-    <Pressable
-      onPress={(e) => e.stopPropagation()}
-      className={cn(
-        "bg-background rounded-xl w-full max-w-md shadow-xl overflow-visible z-10",
-        compactInviteModal ? "p-5 max-h-[92%]" : "p-6"
-      )}
-    >
-      {inviteModalInner}
-    </Pressable>
-  );
-
-  if (Platform.OS === "web") {
-    return (
-      <Modal
-        visible={visible}
-        transparent
-        animationType="fade"
-        onRequestClose={handleClose}
-      >
-        <Pressable
-          onPress={handleClose}
-          className={cn(
-            "flex-1 bg-black/50 justify-center",
-            compactInviteModal
-              ? "px-4 py-6"
-              : "items-center justify-center px-6"
-          )}
-        >
-          {inviteCardWeb}
-        </Pressable>
-      </Modal>
-    );
-  }
-
-  return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      presentationStyle={Platform.OS === "ios" ? "overFullScreen" : undefined}
-      statusBarTranslucent
-      onRequestClose={handleClose}
-    >
-      <View style={inviteMembersModalStyles.nativeOverlay}>
-        <Pressable
-          style={inviteMembersModalStyles.backdrop}
-          onPress={handleClose}
-        />
-        <View
-          style={[
-            inviteMembersModalStyles.centerRegion,
-            {
-              paddingTop: insets.top,
-              paddingBottom: insets.bottom,
-              paddingHorizontal: compactInviteModal ? 16 : 24,
-            },
-          ]}
-          pointerEvents="box-none"
-        >
-          <View
-            style={[
-              inviteMembersModalStyles.card,
-              compactInviteModal ? inviteMembersModalStyles.cardCompact : null,
-            ]}
-            className={cn(
-              "bg-background rounded-xl shadow-xl",
-              compactInviteModal ? "p-5" : "p-6"
-            )}
-          >
-            {inviteModalInner}
-          </View>
-        </View>
-      </View>
-    </Modal>
-  );
-}
 
 // ============================================================================
 // BILLING TAB
@@ -3559,6 +3256,9 @@ function BillingTab() {
   const router = useRouter();
   const http = useDomainHttp();
   const workspace = useActiveWorkspace();
+  const { can } = usePermissions({ workspaceId: workspace?.id });
+  // Workspace analytics are owner/admin only; a member has no page to open.
+  const canViewAnalytics = can("workspace.analytics:read");
   const { subscription, effectiveBalance, usageWindows, refetchUsageWallet } =
     useBillingData(workspace?.id);
   const [instanceLabel, setInstanceLabel] = useState<string | null>(null);
@@ -3769,17 +3469,19 @@ function BillingTab() {
                 Manage Plan
               </Text>
             </Button>
-            <Button
-              variant="outline"
-              onPress={() =>
-                router.push("/(app)/analytics" as any)
-              }
-              className="flex-1"
-            >
-              <Text className="text-foreground font-medium">
-                View detailed usage
-              </Text>
-            </Button>
+            {canViewAnalytics ? (
+              <Button
+                variant="outline"
+                onPress={() =>
+                  router.push("/(app)/analytics" as any)
+                }
+                className="flex-1"
+              >
+                <Text className="text-foreground font-medium">
+                  View detailed usage
+                </Text>
+              </Button>
+            ) : null}
           </View>
         </CardContent>
       </Card>
@@ -4089,7 +3791,7 @@ export function WorkspaceAccountActions({
             <Pressable
               accessibilityRole="link"
               accessibilityLabel="Open documentation"
-              onPress={() => void Linking.openURL(DOCS_URL)}
+              onPress={() => void openExternalLink(DOCS_URL)}
               className={cn(
                 sidebar
                   ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
@@ -4102,7 +3804,7 @@ export function WorkspaceAccountActions({
             <Pressable
               accessibilityRole="link"
               accessibilityLabel="Open What's New"
-              onPress={() => void Linking.openURL(CHANGELOG_URL)}
+              onPress={() => void openExternalLink(CHANGELOG_URL)}
               className={cn(
                 sidebar
                   ? "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5 active:bg-muted"
@@ -4179,6 +3881,33 @@ export function WorkspaceAccountActions({
   );
 }
 
+/**
+ * Settings → Workspace → Disk (SHO-401). The workspace runtime's own drive,
+ * editable by owners/admins. Read-only for everyone else.
+ */
+const WorkspaceDiskTab = observer(function WorkspaceDiskTab() {
+  const http = useDomainHttp();
+  const currentWorkspace = useActiveWorkspace();
+  const { can } = usePermissions({ workspaceId: currentWorkspace?.id });
+  if (!currentWorkspace?.id || !http) {
+    return (
+      <View className="flex-1 items-center justify-center p-6">
+        <Text className="text-sm text-muted-foreground">No workspace selected.</Text>
+      </View>
+    );
+  }
+  if (!can("workspace:update")) {
+    return (
+      <View className="flex-1 items-center justify-center p-6">
+        <Text className="text-sm text-muted-foreground">
+          Only workspace owners and admins can change the workspace disk.
+        </Text>
+      </View>
+    );
+  }
+  return <DiskSettings scope="workspace" workspaceId={currentWorkspace.id} http={http} />;
+});
+
 export const SettingsContent = observer(function SettingsContent({
   activeTab,
   localMode = false,
@@ -4198,9 +3927,11 @@ export const SettingsContent = observer(function SettingsContent({
   return (
     <>
       {activeTab === "workspace" && <WorkspaceSettingsTab />}
+      {activeTab === "disk" && <WorkspaceDiskTab />}
       {activeTab === "people" && !isLocal && <PeopleTab />}
       {activeTab === "chat" && <ChatPreferencesTab highlightSection={section} />}
       {activeTab === "models" && <WorkspaceModelsTab />}
+      {activeTab === "access" && <WorkspaceAccessTab />}
       {activeTab === "integrations" && <IntegrationsTab />}
       {activeTab === "automations" && (
         <AutomationsTab
@@ -4250,6 +3981,12 @@ export default observer(function SettingsPage({
   const workspaces = useWorkspaceCollection();
   const { features, localMode } = usePlatformConfig();
   const teamChat = useWorkspaceExperience().kind === "team";
+  const activeWorkspace = useActiveWorkspace();
+  const { can } = usePermissions({ workspaceId: activeWorkspace?.id });
+  const canViewAnalytics = can("workspace.analytics:read");
+  // A desktop cloud workspace manages its members in the app, so the People
+  // tab exists there even though the desktop itself is in local mode (SHO-454).
+  const showPeopleTab = !(localMode || !features.billing) || isCloudWorkspace(activeWorkspace?.id);
   const phoneTarget = phoneSettingsTarget(
     params as Record<string, string | string[] | undefined>,
     {
@@ -4258,6 +3995,7 @@ export default observer(function SettingsPage({
       platform: Platform.OS,
       isDesktop: IS_DESKTOP_CLIENT,
       teamChat,
+      canViewAnalytics,
     },
   );
 
@@ -4270,13 +4008,15 @@ export default observer(function SettingsPage({
   useEffect(() => {
     // The phone redirect already targets Analytics — never navigate twice.
     if (isPhoneSurface) return;
+    // Members have no analytics surface: leave them on Settings.
+    if (!canViewAnalytics) return;
     if (params.tab === "analytics" || params.tab === "costs") {
       router.replace({
         pathname: "/(app)/analytics",
         params: { view: params.tab === "costs" ? "costs" : "usage" },
       } as any);
     }
-  }, [isPhoneSurface, params.tab, router]);
+  }, [isPhoneSurface, params.tab, router, canViewAnalytics]);
 
   useEffect(() => {
     if (isPhoneSurface) return;
@@ -4333,6 +4073,7 @@ export default observer(function SettingsPage({
             showBilling={features.billing}
             localMode={localMode}
             teamChat={teamChat}
+            showPeople={showPeopleTab}
           />
         </View>
         <ScrollView
@@ -4354,7 +4095,7 @@ export default observer(function SettingsPage({
                 </Text>
               </View>
               <Pressable
-                onPress={() => Linking.openURL(DOCS_URL)}
+                onPress={() => openExternalLink(DOCS_URL)}
                 className="flex-row items-center gap-1.5 rounded-lg px-2 py-1.5 active:bg-muted"
               >
                 <ExternalLink size={14} className="text-muted-foreground" />

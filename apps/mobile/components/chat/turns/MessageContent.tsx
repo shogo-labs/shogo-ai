@@ -14,7 +14,6 @@ import {
   Text,
   Image,
   Pressable,
-  Linking,
   Platform,
   useWindowDimensions,
 } from "react-native"
@@ -31,14 +30,14 @@ import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
 import { VideoPreviewModal } from "../VideoPreviewModal"
 import { useShareFileOpener } from "../share-file-context"
 import { parseInAppFileHref } from "../../../lib/share-file-links"
+import { decodeDataUrlText } from "../../../lib/data-url"
+import { openExternalLink } from "../../../lib/open-external-link"
 import { downloadImage, isShogoDesktop } from "../chatImageActions"
 import { usePhoneLayout, usePhoneLayoutOverride } from "../../../lib/native-phone-layout"
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { useAgentImageSource } from "../../../lib/agent-image-source"
-import { fitChatImage } from "./image-sizing"
-import { useNaturalImageSize } from "./image-natural-size"
-import { useMeasuredWidth } from "./use-measured-width"
+import { CHAT_IMAGE_MAX_WIDTH, fitChatImage } from "./image-sizing"
 import { stripAskUserAnswerMarker } from "./askUserAnswers"
 import { stripBuildBriefMarker } from "./buildBrief"
 
@@ -56,6 +55,11 @@ export interface MessageContentProps {
 interface ImagePart {
   url: string
   mediaType: string
+  /** Pixel size stored with the part, so the box is final on the first frame. */
+  width?: number
+  height?: number
+  /** Small preview the thumbnail paints instead of the original. */
+  previewUrl?: string
 }
 
 interface FilePart {
@@ -115,6 +119,15 @@ function extractImageParts(message: UIMessage): ImagePart[] {
     .map((part) => ({
       url: part.url,
       mediaType: part.mediaType,
+      ...(typeof part.width === "number" && part.width > 0
+        ? { width: part.width }
+        : {}),
+      ...(typeof part.height === "number" && part.height > 0
+        ? { height: part.height }
+        : {}),
+      ...(typeof part.previewUrl === "string" && part.previewUrl
+        ? { previewUrl: part.previewUrl }
+        : {}),
     }))
 }
 
@@ -139,24 +152,44 @@ function extractFileParts(message: UIMessage): FilePart[] {
 
 function ImageThumbnail({
   url,
+  previewUrl,
+  width,
+  height,
   mediaType,
   index,
-  containerWidth,
 }: {
   url: string
+  /** Small preview to paint instead of the original, when one was stored. */
+  previewUrl?: string
+  /** Stored pixel size of the original; absent on messages sent before SHO-407. */
+  width?: number
+  height?: number
   mediaType: string
   index: number
-  /** Width of the row the thumbnail sits in, so it fits the pane, not the window. */
-  containerWidth?: number | null
 }) {
   const [hasError, setHasError] = useState(false)
   const [showModal, setShowModal] = useState(false)
-  const imageSource = useAgentImageSource(url)
-  const naturalSize = useNaturalImageSize(imageSource?.uri ?? url)
+  // A preview can outlive its usefulness (a workspace that was wiped) while the
+  // original is still served from chat-attachment storage. Falling back keeps
+  // the photo visible instead of leaving a broken box.
+  const [previewFailed, setPreviewFailed] = useState(false)
+  const displayUrl = previewUrl && !previewFailed ? previewUrl : url
+  const imageSource = useAgentImageSource(displayUrl)
+  // The box is decided from the stored size alone. A message sent before sizes
+  // were stored gets a fixed box that never resizes: measuring it would change
+  // the content height after the first layout, which is what made a resumed
+  // chat jump (SHO-407).
+  //
+  // It is deliberately *not* sized against the measured row width. That width
+  // arrives from `onLayout`, which on web is a ResizeObserver callback that runs
+  // after the first paint, so a box sized from it is wrong on the first frame
+  // and grows under the reader. Instead the box carries the widest it may be
+  // plus its aspect ratio, and `maxWidth: "100%"` lets the layout engine fit it
+  // to the row — width and height resolved together, in one pass, for any pane.
   const box = fitChatImage({
-    naturalWidth: naturalSize.size?.width,
-    naturalHeight: naturalSize.size?.height,
-    containerWidth,
+    naturalWidth: width,
+    naturalHeight: height,
+    containerWidth: CHAT_IMAGE_MAX_WIDTH,
   })
   const [contextMenu, setContextMenu] = useState<{
     x: number
@@ -183,6 +216,14 @@ function ImageThumbnail({
   const handleDownloadImage = useCallback(() => {
     void downloadImage(url, `image-attachment-${index + 1}`, mediaType)
   }, [index, mediaType, url])
+
+  const handleImageError = useCallback(() => {
+    if (previewUrl && !previewFailed) {
+      setPreviewFailed(true)
+      return
+    }
+    setHasError(true)
+  }, [previewFailed, previewUrl])
 
   if (hasError) {
     return (
@@ -212,15 +253,22 @@ function ImageThumbnail({
       >
         <View
           className="rounded-lg overflow-hidden border border-border/40 bg-muted/30"
-          style={{ width: box.width, height: box.height }}
+          // `maxWidth` fits the box to a pane narrower than its cap, and
+          // `aspectRatio` derives the height from whatever width the layout
+          // engine settles on — so the box is final on the first frame and an
+          // image load can never change the content height.
+          style={{
+            width: box.width,
+            maxWidth: "100%",
+            aspectRatio: box.width / box.height,
+          }}
         >
           {imageSource ? (
             <Image
               source={imageSource}
               resizeMode={box.cropped ? "cover" : "contain"}
               accessibilityLabel={`Image attachment ${index + 1}`}
-              onError={() => setHasError(true)}
-              onLoad={naturalSize.onLoad}
+              onError={handleImageError}
               style={{ width: "100%", height: "100%" }}
             />
           ) : null}
@@ -281,12 +329,21 @@ function DocumentThumbnail({
   const servedFile = useMemo(() => parseInAppFileHref(url), [url])
   const openFile = useCallback(() => {
     if (servedFile && openShareFile) openShareFile(servedFile)
-    else Linking.openURL(url)
+    else void openExternalLink(url)
   }, [openShareFile, servedFile, url])
 
   const handlePress = useCallback(async () => {
     if (isVideo) {
       setShowVideoModal(true)
+      return
+    }
+    // A `data:` URL is the file itself, not an address: Android throws on it
+    // (`Could not open URL 'data:…'`, SHOGO-ANDROID-1D), so the bytes are
+    // decoded here and shown in the app's own viewer (SHO-436).
+    const inline = decodeDataUrlText(url)
+    if (inline) {
+      setFileContent(inline.text)
+      setShowModal(true)
       return
     }
     if (!isTextLike) {
@@ -449,9 +506,6 @@ export function MessageContent({
     isUser && content && !hasAttachments
       ? analyzeContent(content).isLong
       : false
-  // Attachments fit the width the message actually got — a split view or side
-  // pane is narrower than the window.
-  const attachmentRow = useMeasuredWidth()
 
   // For assistants we keep the original "transparent, padded" style.
   // For users we render full-width and let EditableUserMessage own
@@ -471,7 +525,7 @@ export function MessageContent({
       images.length > 0 || files.length > 0 ? (
         // A full-width wrapper so the row's width is the pane's even when the
         // bubble aligns its children to the end.
-        <View className="w-full" onLayout={attachmentRow.onLayout}>
+        <View className="w-full">
           <View
             className={cn(
               "flex-row flex-wrap gap-2",
@@ -482,9 +536,15 @@ export function MessageContent({
               <ImageThumbnail
                 key={`${message.id}-img-${i}`}
                 url={resolveChatAttachmentUrl(img.url)}
+                previewUrl={
+                  img.previewUrl
+                    ? resolveChatAttachmentUrl(img.previewUrl)
+                    : undefined
+                }
+                width={img.width}
+                height={img.height}
                 mediaType={img.mediaType}
                 index={i}
-                containerWidth={attachmentRow.width}
               />
             ))}
             {files.map((file, i) => (
@@ -569,15 +629,21 @@ export function MessageContent({
         </MarkdownText>
       ) : null}
       {(images.length > 0 || files.length > 0) && (
-        <View onLayout={attachmentRow.onLayout}>
+        <View>
           <View className="flex-row flex-wrap gap-2">
             {images.map((img, i) => (
               <ImageThumbnail
                 key={`${message.id}-img-${i}`}
                 url={resolveChatAttachmentUrl(img.url)}
+                previewUrl={
+                  img.previewUrl
+                    ? resolveChatAttachmentUrl(img.previewUrl)
+                    : undefined
+                }
+                width={img.width}
+                height={img.height}
                 mediaType={img.mediaType}
                 index={i}
-                containerWidth={attachmentRow.width}
               />
             ))}
             {files.map((file, i) => (

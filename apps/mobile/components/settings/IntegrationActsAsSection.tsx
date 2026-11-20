@@ -2,9 +2,10 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useEffect, useState } from "react";
-import { Linking, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
 import { API_URL } from "../../lib/api";
 import { Text } from "./account-sheet-chrome";
+import { openExternalLink } from "../../lib/open-external-link";
 
 type ChainStep = "requester" | "ask" | "approve" | "delegate" | "shared" | "deny";
 type Unconnected = "ask" | "shared" | "deny";
@@ -204,7 +205,7 @@ export function IntegrationActsAsSection({ projectId, provider = "github" }: { p
       });
       const body = await res.json().catch(() => null);
       if (!res.ok) {
-        if (body?.error?.connectUrl) void Linking.openURL(body.error.connectUrl);
+        if (body?.error?.connectUrl) void openExternalLink(body.error.connectUrl);
         throw new Error(body?.error?.message ?? "Could not save");
       }
       await load();
@@ -347,7 +348,7 @@ export function IntegrationActsAsSection({ projectId, provider = "github" }: { p
                 accessibilityRole="button"
                 accessibilityLabel={`Connect my ${label} account`}
                 disabled={busy}
-                onPress={() => void Linking.openURL(`${base}/${encodeURIComponent(provider)}/connect`)}
+                onPress={() => void openExternalLink(`${base}/${encodeURIComponent(provider)}/connect`)}
                 className="rounded-lg border border-border px-3 py-1.5 disabled:opacity-50"
               >
                 <Text className="text-xs text-foreground">{`Connect my ${label} account`}</Text>

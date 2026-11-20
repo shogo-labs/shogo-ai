@@ -48,11 +48,48 @@ describe('bare-root routes resolve the anchor-aware PreviewManager', () => {
     expect(body).toContain('getAnchorProjectId()')
   })
 
+  test('both /api proxies share one on-demand ensure helper', () => {
+    for (const [method, path] of [['all', '/api/*'], ['all', '/p/:projectId/api/*']] as Array<[string, string]>) {
+      const body = handlerBody(method, path)
+      expect(body).toContain('resolveApiProxyTarget(pm)')
+      // The old crashed-only recovery + 3s grace block must be gone from both.
+      expect(body).not.toContain('maybeRecoverApiServer')
+      expect(body).not.toContain('API_PROXY_STARTUP_WAIT_MS')
+    }
+  })
+
+  test('both /preview/stop routes record a deliberate stop', () => {
+    expect(handlerBody('post', '/preview/stop')).toContain('markStoppedByUser()')
+    expect(handlerBody('post', '/p/:projectId/preview/stop')).toContain('markStoppedByUser()')
+  })
+
+  test('a tool resolving a mounted project file goes through resolveApiServerTarget', () => {
+    const start = source.indexOf('function resolveApiServerTarget(')
+    expect(start).toBeGreaterThan(-1)
+    const body = source.slice(start, source.indexOf('\nfunction', start + 1))
+    // Mount table first (a folder-linked project's real folder is outside
+    // WORKSPACE_DIR), then the merged-root layout, anchor as the fallback.
+    expect(body).toContain('parseWorkspaceMounts()')
+    expect(body).toContain('getWorkspacePreviewManager(')
+    expect(body).toContain('getRootPreviewManager()')
+  })
+
+  test('both /api proxies forward the caller\'s headers, Authorization included', () => {
+    // SHO-403 AC8: the runtime hop must not strip auth. The strip (if any)
+    // belongs upstream at the edge/API preview proxy — SHO-372.
+    for (const path of ['/api/*', '/p/:projectId/api/*']) {
+      const body = handlerBody('all', path)
+      expect(body).toContain('headers: c.req.raw.headers')
+    }
+  })
+
   test('gateway build-complete wiring uses the anchor-aware manager', () => {
     const start = source.indexOf('async function startGateway(')
     const end = source.indexOf('\nfunction', start + 1)
     const body = source.slice(start, end < 0 ? undefined : end)
-    expect(body).toContain('agentGateway.attachApiServer(getRootPreviewManager())')
-    expect(body).not.toContain('agentGateway.attachApiServer(getPreviewManager())')
+    // The anchor PM plus the host that can resolve a MOUNTED project — a tool
+    // editing `<otherProject>/custom-routes.ts` must not sync the anchor.
+    expect(body).toContain('agentGateway.attachApiServer(getRootPreviewManager(), buildApiServerHost())')
+    expect(body).not.toContain('agentGateway.attachApiServer(getPreviewManager()')
   })
 })

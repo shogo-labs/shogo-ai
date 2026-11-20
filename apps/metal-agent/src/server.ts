@@ -32,7 +32,14 @@ import { type GuardedInterval, guardedInterval } from './guarded-interval'
 import { HYDRATE_STREAM_PREFIX } from './hydrate-proxy'
 import { currentIdleWindow } from './idle-policy'
 import { M, metrics } from './metrics'
-import { ForeignMemberError, MetalWarmPool, StagedRootfsUnavailableError, type SuspendOutcome } from './pool'
+import {
+  ForeignMemberError,
+  MetalWarmPool,
+  StagedRootfsUnavailableError,
+  isVmCause,
+  type SuspendOutcome,
+  type VmCause,
+} from './pool'
 import { PortForward } from './port-forward'
 import { announceRestarting, reportPlacement, startRegistration } from './register'
 import { RequestDrain } from './request-drain'
@@ -43,6 +50,13 @@ const pool = new MetalWarmPool()
 // back http://{publicHost}:{port}. No-op (returns the private guest URL) unless
 // METAL_PUBLIC_HOST is set.
 const fwd = new PortForward()
+// An on-demand eviction (SHO-444) suspends a warm VM to make room for another
+// project's assign. The project is no longer resident here, so drop its DNAT
+// forward and tell the control plane now rather than at the next heartbeat.
+pool.onEvicted = (projectId) => {
+  fwd.remove(projectId)
+  reportPlacement('suspended', projectId)
+}
 if (fwd.enabled) console.log(`[metal-agent] public port-forward on: ${config.publicHost}:${config.fwdPortBase}-${config.fwdPortBase + config.fwdPortSpan - 1} allow=${config.fwdAllowCidr || 'any'}`)
 
 // Packet filter on our own control port, under the METAL_AUTH_MODE bearer.
@@ -97,6 +111,12 @@ function stoppedResponse(projectId: string, outcome: SuspendOutcome) {
   if (outcome.kind === 'retired') {
     reportPlacement('cold', projectId, { refresh: 'stale-rootfs' })
     return { ok: true, suspended: false, retired: true }
+  }
+  // Refused: the VM's current HEAD is not in the durable repo, so stopping it
+  // would cold-start over unsaved work. It is still running — say so, so the
+  // control plane retries instead of believing it is stopped (SHO-442).
+  if (outcome.kind === 'refused') {
+    return { ok: true, suspended: false, refused: true, reason: outcome.reason }
   }
   // A pre-warmed snapshot doesn't change what serves the project's next open.
   if (!outcome.staged) reportPlacement('suspended', projectId)
@@ -176,7 +196,7 @@ async function handle(req: Request, srv: PeerLookup): Promise<Response> {
       }
 
       if (path === '/assign' && req.method === 'POST') {
-        const { projectId, workspaceId, attachedProjectIds, anchorProjectId, env, rootfs } = await json(req)
+        const { projectId, workspaceId, attachedProjectIds, anchorProjectId, env, rootfs, cause } = await json(req)
         if (!projectId && !workspaceId) return Response.json({ error: 'projectId or workspaceId required' }, { status: 400 })
         // An anchored project preview must receive its own merged-root VM.
         // A workspace-only key is reserved for workspace-session runtimes.
@@ -187,8 +207,14 @@ async function handle(req: Request, srv: PeerLookup): Promise<Response> {
         // Resume-or-assign under one singleflight key (no double cold-boot on a
         // concurrent burst). A stale/cold miss falls through to a fresh assign.
         // `rootfs: 'staged'` is the switch-over pre-warm (see pool.openStaged).
+        // Why this VM is being started, for billing. An older control plane sends
+        // nothing: `user_open` is the safe default (billable), and the agent
+        // never trusts the label for anything but the price.
+        const vmCause: VmCause = isVmCause(cause) ? cause : 'user_open'
         const r =
-          rootfs === 'staged' ? await pool.openStaged(runtimeKey, env ?? {}, bind) : await pool.open(runtimeKey, env ?? {}, bind)
+          rootfs === 'staged'
+            ? await pool.openStaged(runtimeKey, env ?? {}, bind)
+            : await pool.open(runtimeKey, env ?? {}, bind, { cause: vmCause })
         if (r.mode === 'prewarmed') return Response.json(r)
         const url = await fwd.ensure(runtimeKey, r.handle.guestIp)
         return Response.json(assignResponseBody(r, url))
@@ -217,7 +243,7 @@ async function handle(req: Request, srv: PeerLookup): Promise<Response> {
         const r = await pool.resume(projectId, env ?? {})
         if (!r) return Response.json({ error: 'no restorable snapshot (cold miss)' }, { status: 409 })
         const url = await fwd.ensure(projectId, r.assigned.handle.guestIp)
-        return Response.json({ url, source: r.source, readyMs: r.readyMs })
+        return Response.json({ url, source: r.source, readyMs: r.readyMs, suspendReason: r.suspendReason })
       }
 
       if (path === '/touch' && req.method === 'POST') {
@@ -465,7 +491,7 @@ if (config.idleSuspendMs > 0) {
       })
       .catch((err) => console.error('[metal-agent] api watchdog error:', err?.message ?? err))
       .then(() => {
-        const w = currentIdleWindow(pool.status().assigned.length)
+        const w = currentIdleWindow(pool.status().liveness.active)
         if (w.tier !== lastIdleTier || w.reason !== lastIdleReason) {
           console.log(`[metal-agent] idle window: ${w.tier} ${w.idleMs}ms (${w.reason})`)
           lastIdleTier = w.tier
@@ -488,6 +514,14 @@ if (config.idleSuspendMs > 0) {
         if (retired.length) console.log(`[metal-agent] idle-retired (stale rootfs): ${retired.join(', ')}`)
       })
       .catch((err) => console.error('[metal-agent] idle reap error:', err?.message ?? err))
+      // Keep a couple of slots free so most assigns never pay for an on-demand
+      // eviction (SHO-444). Runs after the idle pass, so a VM the window already
+      // suspended is not evicted twice; `onEvicted` handles the forward/placement.
+      .then(() => pool.evictForHeadroom())
+      .then((ids) => {
+        if (ids.length) console.log(`[metal-agent] evicted for headroom: ${ids.join(', ')}`)
+      })
+      .catch((err) => console.error('[metal-agent] headroom eviction error:', err?.message ?? err))
       .then(() => pool.rotateStale())
       .then(({ retired, alwaysOn }) => {
         for (const id of retired) {

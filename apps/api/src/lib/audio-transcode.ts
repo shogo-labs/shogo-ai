@@ -18,31 +18,76 @@ let cachedBytes = 0
 let activeConversions = 0
 const conversionQueue: Array<() => void> = []
 
+interface Mp4Box {
+  type: string
+  payloadStart: number
+  end: number
+}
+
+function mp4Boxes(bytes: Uint8Array, start: number, end: number): Mp4Box[] | null {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const boxes: Mp4Box[] = []
+  for (let offset = start; offset < end;) {
+    if (offset + 8 > end) return null
+    let size = view.getUint32(offset)
+    let headerSize = 8
+    if (size === 1) {
+      if (offset + 16 > end) return null
+      size = Number(view.getBigUint64(offset + 8))
+      headerSize = 16
+    } else if (size === 0) {
+      size = end - offset
+    }
+    if (!Number.isSafeInteger(size) || size < headerSize || offset + size > end) return null
+    boxes.push({
+      type: String.fromCharCode(...bytes.subarray(offset + 4, offset + 8)),
+      payloadStart: offset + headerSize,
+      end: offset + size,
+    })
+    offset += size
+  }
+  return boxes
+}
+
+function hasAacSampleEntry(bytes: Uint8Array, box: Mp4Box): boolean {
+  // `stsd` is a FullBox followed by an entry count and fixed-size sample
+  // entries. Only an `mp4a` sample entry proves that an MP4 is AAC audio;
+  // searching arbitrary `moov` bytes can misidentify video metadata as AAC.
+  if (box.payloadStart + 8 > box.end) return false
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const entryCount = view.getUint32(box.payloadStart + 4)
+  let offset = box.payloadStart + 8
+  for (let index = 0; index < entryCount; index += 1) {
+    if (offset + 8 > box.end) return false
+    const size = view.getUint32(offset)
+    if (size < 8 || offset + size > box.end) return false
+    if (String.fromCharCode(...bytes.subarray(offset + 4, offset + 8)) === 'mp4a') return true
+    offset += size
+  }
+  return false
+}
+
+function hasAacSampleEntryInContainer(bytes: Uint8Array, start: number, end: number): boolean {
+  const boxes = mp4Boxes(bytes, start, end)
+  if (!boxes) return false
+  for (const box of boxes) {
+    if (box.type === 'stsd' && hasAacSampleEntry(bytes, box)) return true
+    if (box.type === 'trak' || box.type === 'mdia' || box.type === 'minf' || box.type === 'stbl') {
+      if (hasAacSampleEntryInContainer(bytes, box.payloadStart, box.end)) return true
+    }
+  }
+  return false
+}
+
 function isAacMp4(bytes: Uint8Array): boolean {
   if (bytes.byteLength < 16 || String.fromCharCode(...bytes.subarray(4, 8)) !== 'ftyp') return false
 
   // An MP4 container alone does not guarantee an iOS-compatible audio codec.
-  // Look for the AAC sample entry in its movie metadata, never in media data.
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  for (let offset = 0; offset + 8 <= bytes.byteLength;) {
-    const boxSize = view.getUint32(offset)
-    if (boxSize < 8 || offset + boxSize > bytes.byteLength) return false
-    const kind = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8))
-    if (kind === 'moov') {
-      // This deliberately checks for the `mp4a` sample-entry marker without
-      // fully parsing stsd/esds. It is a lightweight signature check and can
-      // false-positive if those bytes appear elsewhere in the moov metadata.
-      const end = offset + boxSize - 4
-      for (let i = offset + 8; i <= end; i += 1) {
-        if (bytes[i] === 0x6d && bytes[i + 1] === 0x70 && bytes[i + 2] === 0x34 && bytes[i + 3] === 0x61) {
-          return true
-        }
-      }
-      return false
-    }
-    offset += boxSize
-  }
-  return false
+  // Read the `stsd` sample-description box under each track instead of looking
+  // for an `mp4a` byte sequence anywhere in movie metadata.
+  const boxes = mp4Boxes(bytes, 0, bytes.byteLength)
+  const movie = boxes?.find((box) => box.type === 'moov')
+  return !!movie && hasAacSampleEntryInContainer(bytes, movie.payloadStart, movie.end)
 }
 
 export class AudioTranscodeError extends Error {

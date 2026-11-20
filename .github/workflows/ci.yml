@@ -43,14 +43,25 @@ on:
   # build that motivated it. Manual dispatch gives a fresh run against the
   # current file without pushing a no-op commit to main.
   workflow_dispatch:
+  # The local-mode E2E matrix used to be PR-only (see the `e2e-local` job), so a
+  # regression in it could only be seen on someone's PR — and when it went red
+  # on every PR nobody could tell which PR caused it, so it sat red for weeks
+  # (SHO-447). A nightly run on main gives the same suite a home where a red is
+  # attributable to a commit on main, and where it is caught before it reaches a
+  # PR. One run of the matrix is ~250 runner-minutes (~$1.50), not the ~7,950
+  # min/day the PR runs cost, so this is cheap.
+  schedule:
+    - cron: '17 3 * * *'
 
 permissions: {}
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
-  # Preserve cache-populating main runs; superseded PR and merge-group runs
-  # are safe to cancel.
-  cancel-in-progress: ${{ github.event_name != 'push' }}
+  # The nightly gets its own group so it never cancels, or queues behind, a
+  # push/PR run on main.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || (github.head_ref || github.ref_name) }}
+  # Preserve cache-populating main runs and the nightly local-mode run;
+  # superseded PR and merge-group runs are safe to cancel.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 jobs:
   # One prelude instead of two. Both answers below are needed before anything
@@ -414,6 +425,23 @@ jobs:
         if: needs.prelude.outputs.verified != 'true'
         run: bun run check:whats-new
 
+      - name: Check generated domain-stores match the Prisma schema
+        if: needs.prelude.outputs.verified != 'true'
+        # `packages/domain-stores/src/{*.model,*.types,*.collection}.ts` are
+        # generated from prisma/schema.prisma, tracked in git, and written by
+        # `bun install`'s postinstall. Adding a schema field without committing
+        # the regenerated output leaves the next person's `bun install` with a
+        # dirty tree they did not cause (SHO-412 left `ChatSession.directKey`
+        # out, SHO-415). Nothing else reads these files against the schema, so
+        # without this check the drift is silent and permanent.
+        #
+        # The check compares against HEAD, not the working tree: this job's own
+        # `bun install` already ran the generator over the checkout, so a
+        # working-tree comparison could only ever pass and a stale commit would
+        # sail through (QA, SHO-415 round 1). It regenerates in memory and never
+        # writes, so it cannot itself create the drift it is looking for.
+        run: bun run check:domain-stores
+
       - name: Check multi-region cron locks + unique-key classification
         if: needs.prelude.outputs.verified != 'true'
         # Guards against the 2026-05-21 analytics_digests poison-pill class
@@ -575,25 +603,33 @@ jobs:
     # DB. These specs previously only ran on developer machines.
     name: ${{ matrix.name }}
     needs: prelude
-    # PR-only, and app-code PRs only. This matrix is not in the required `ci`
-    # aggregator's `needs`, so on `merge_group` and `push` it gates nothing —
-    # it only burns runner slots (15,905 min ≈ $95 gross over two days). A
-    # docs-only PR cannot change local-mode behaviour either. Do not add it to
-    # the aggregator.
-    if: github.event_name == 'pull_request' && needs.prelude.outputs.app == 'true'
+    # PRs, plus the nightly run on main (SHO-447). This matrix is not in the
+    # required `ci` aggregator's `needs`, so on `merge_group` and `push` it
+    # gates nothing — it only burns runner slots (15,905 min ≈ $95 gross over
+    # two days). A docs-only PR cannot change local-mode behaviour either. Do
+    # not add it to the aggregator.
+    #
+    # It used to be PR-only, which meant a regression here could only be seen
+    # on someone's PR: when it went red on every PR nobody could tell which PR
+    # caused it, so it sat red for weeks (SHO-447). The nightly `schedule` run
+    # on main is where a red is attributable to a commit, and where it is
+    # caught before it reaches a PR. `prelude` reports `app=true` for any
+    # non-PR event, so the nightly runs the whole matrix.
+    if: (github.event_name == 'pull_request' || github.event_name == 'schedule') && needs.prelude.outputs.app == 'true'
     # Playwright 1.58 has no ubuntu26.04 deps; unpin when @playwright/test supports it
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: 'E2E (local mode) (1/3)', shard: '1/3' }
-          - { name: 'E2E (local mode) (2/3)', shard: '2/3' }
-          - { name: 'E2E (local mode) (3/3)', shard: '3/3' }
-          # These specs need a dedicated local-mode stack rather than a seat in
-          # the generic shards. Most need the fake model; workspace-per-tab is
-          # isolated because its full UI suite pushes a shard past its 35m cap.
-          # They are separate jobs, not one (SHO-251): on one worker, all 27 tests
+          - { name: 'E2E (local mode) (1/5)', shard: '1/5' }
+          - { name: 'E2E (local mode) (2/5)', shard: '2/5' }
+          - { name: 'E2E (local mode) (3/5)', shard: '3/5' }
+          - { name: 'E2E (local mode) (4/5)', shard: '4/5' }
+          - { name: 'E2E (local mode) (5/5)', shard: '5/5' }
+          # These specs all need the API pointed at the fake model, which
+          # would change every other spec, so they get stacks of their own.
+          # They are FOUR jobs, not one (SHO-251): on one worker, all 27 tests
           # could not finish inside the cap, so every run was cancelled at 35
           # min — still inside the first file, `chat-resume-on-send`, which is
           # 14 of the 27 tests at a 240 s per-test timeout. Nothing hung; the
@@ -673,10 +709,18 @@ jobs:
           # again through the refocus catch-up. Left in the shards it would
           # `test.skip` itself and run nowhere (SHO-122).
           - { name: 'E2E (chat two windows)', spec: 'chat-two-window-sync' }
-          # SHO-390's four tab/workspace scenarios are expensive once they run
-          # past setup. Keep their coverage, but give them a fresh stack rather
-          # than pushing the generic local-mode shard past its 35m job limit.
-          - { name: 'E2E (workspace per tab)', spec: 'workspace-per-tab' }
+          # chat-send-body-size (SHO-402) asserts on the request the composer
+          # puts on the wire, so it needs no model — but it does need to run.
+          # Left in the shards it was never reached: shard 3 hit its 40m cap
+          # before the file started, so AC1's e2e proof ran nowhere (SHO-122).
+          - { name: 'E2E (chat send body size)', spec: 'chat-send-body-size' }
+          # slides-preview (SHO-426) shares the chat mock and needs no model: it
+          # renders a real 3-slide deck in a sandboxed frame from the team-chat
+          # viewer and from a `share_file` chip. Own entry, not a place in the
+          # shards — shard 3 has hit its 35 min cap in both runs since the spec
+          # landed, so the file was never reached and proved nothing (SHO-122);
+          # alone it measures ~3 min on a booted stack.
+          - { name: 'E2E (slides preview)', spec: 'slides-preview' }
     permissions:
       contents: read
     # 35, not 60: a wedged E2E job holds the whole merge queue for the length
@@ -687,6 +731,17 @@ jobs:
     # well under 60% of it, and a per-entry cap via `${{ matrix.timeout }}`
     # turned out to mean NO cap at all for entries without the key — a job ran
     # 39 min until its run was superseded. Keep this a literal.
+    #
+    # The shards are FIVE, not three, since 2026-11-19 (SHO-383): the local
+    # suite grew to ~378 tests and every one of the three shards was at this cap
+    # in the same run — 1/3 passed at 33m49s, 2/3 at 30m05s, and 3/3 was
+    # cancelled at 35m18s with 23 of its 126 tests never reached. That is not a
+    # hang: a local test measures ~17–20 s plus ~5 min of stack boot, so the
+    # third of the suite that each job got simply cost more than 35 min. At five
+    # shards the biggest one lands near 25–30 min and the retries a red spec
+    # costs (~2–3 min for three attempts) fit inside the cap again. Same cap,
+    # more jobs: raising the number would put the merge queue back in the hole
+    # this comment opens with.
     timeout-minutes: 35
 
     steps:
@@ -749,7 +804,12 @@ jobs:
         if: ${{ !matrix.spec }}
         env:
           E2E_LOCAL_START_STACK: '1'
-        run: npx playwright test --config e2e/local/playwright.config.ts --project=chromium --grep-invert 'SHO-390' --shard=${{ matrix.shard }}
+          # Specs that have their own entry in this matrix skip themselves when
+          # this is set, so they are not also run (and not also red) inside a
+          # shard. `slides-preview` and `chat-send-body-size` are the two today;
+          # a new own-entry spec goes on that list in its own file.
+          E2E_SHARD: ${{ matrix.shard }}
+        run: npx playwright test --config e2e/local/playwright.config.ts --project=chromium --shard=${{ matrix.shard }}
 
       - name: Run e2e/local (${{ matrix.spec }})
         if: ${{ matrix.spec }}
@@ -1179,6 +1239,15 @@ jobs:
       - name: Analytics rollups (Postgres)
         working-directory: apps/api
         run: bun --no-env-file test src/__tests__/analytics-rollups.golden.test.ts
+
+      # SHO-419: the "messages from <member>" filter is raw SQL in two dialects
+      # too — `json_extract` with `?` placeholders on SQLite, `->>` with `$n` on
+      # Postgres — and the agent half only exists in that statement. `test` runs
+      # this file on SQLite; here it runs on Postgres, which is the half the
+      # cloud reads.
+      - name: Member message filter (Postgres)
+        working-directory: apps/api
+        run: bun --no-env-file test src/__tests__/conversation-member-messages.integration.test.ts
 
       # SHO-39: the tracked-call store has to behave identically on both
       # tracks. The `test` job runs this same file on SQLite; here it runs on

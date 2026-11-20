@@ -37,6 +37,7 @@
     "@opentelemetry/exporter-metrics-otlp-http": "^0.213.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.213.0",
     "@opentelemetry/instrumentation-http": "^0.213.0",
+    "@aiden0z/pptx-renderer": "1.4.0",
     "@opentelemetry/instrumentation-undici": "^0.23.0",
     "@opentelemetry/resources": "^2.5.1",
     "@opentelemetry/sdk-logs": "^0.213.0",

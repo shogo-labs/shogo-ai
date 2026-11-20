@@ -31,9 +31,11 @@ import { HydrateProxy } from './hydrate-proxy'
 import { classConfig, config, isVmClassSupported, VM_CLASSES, type VmClass } from './config'
 import { allocatedBytes, diskUsage, type DiskUsage } from './disk'
 import { DataDriveProvisioner, WORKSPACE_DRIVE_SUFFIX } from './data-drive'
+import { hostFullness, resolveMemReserveMiB, selectEvictionVictim } from './evict'
 import { FcApi } from './fc-api'
 import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
 import { planEvictions, type EvictionCandidate } from './gc-policy'
+import { hostMemory } from './host-memory'
 import { LiveRegistry, pidAlive, type MemberDataState } from './live-registry'
 import { M, metrics } from './metrics'
 import { tapIndex, existingTapIndices, TAP_NET_CAPACITY, type VmNet } from './net'
@@ -89,6 +91,7 @@ import {
   parseRepoManifest,
   type RepoManifest,
   type RepoManifestBundle,
+  type RepoManifestLfsMissing,
 } from './vendor/repo-bundles'
 import { readSerialTail } from './serial-watcher'
 import { stagedRootfsPath } from './self-update'
@@ -110,6 +113,17 @@ const PRESIGN_TTL_SEC = 30 * 60
  */
 export const REPO_STAGING_DIR = '.shogo/local/repo-staging'
 
+/**
+ * Side dir the durable history is materialized into before an UNTRUSTED VM is
+ * reconciled with it (SHO-442). Never the live `.git`: the reconcile only reads
+ * it, and a failure must leave the workspace exactly as it was.
+ */
+export const REPO_RECONCILE_DIR = '.shogo/local/repo-reconcile'
+
+/** Backoff between reconcile attempts for an untrusted VM. */
+const REPO_HEAL_MIN_BACKOFF_MS = 60_000
+const REPO_HEAL_MAX_BACKOFF_MS = 30 * 60_000
+
 /** Outcome of one bundle-format persist. `unchanged` means durable already. */
 type RepoPersist = 'written' | 'unchanged' | 'quarantined' | 'lost' | 'empty'
 
@@ -120,10 +134,26 @@ interface RepoBundleExport {
   refs: Record<string, string>
   config: string
   rootCommitAt: number | null
+  /** Pointers whose bytes are on neither side; the history still exported. */
+  lfsMissing?: RepoManifestLfsMissing[]
 }
 
 /** The guest refused a bundle export because its LFS objects could not be pushed. */
 export class RepoBundleLfsPushError extends Error {}
+
+/**
+ * The guest's LFS push is still running (202). Not a failure: the next export
+ * joins the same job, so a slow push finishes once instead of restarting
+ * (SHO-442). Never a reason to fall back to the tarball.
+ */
+export class RepoBundleLfsPendingError extends Error {}
+
+/**
+ * A stop was refused because the VM's current HEAD is not in the durable repo
+ * (SHO-442). The VM keeps running; the next sweep retries. Never a reason to
+ * drop the VM.
+ */
+export class RepoNotDurableError extends Error {}
 
 /** Guests before `code` was added only send the message. */
 function isLfsPushFailure(body: string): boolean {
@@ -421,13 +451,34 @@ export interface ProjectStatus {
   assignedAt?: number
   lastRealActivityAt?: number
   realIdleMs?: number
+  /** Wall-clock of the last real user request, and how long ago that was. */
+  lastUserActivityAt?: number
+  userIdleMs?: number
   activeStreams?: number
   /** The guest's own verdict on whether real agent work is running. */
   busy?: boolean
+  /** Reports busy, but no user activity for longer than the busy-idle ceiling. */
+  busyIdle?: boolean
   /** Rootfs the running guest booted from (assigned) or the local snapshot was taken on (suspended). */
   snapshotRootfsIdentity?: string
   /** A pre-warmed snapshot on the staged rootfs is held for this key (see `stagedSuspended`). */
   stagedSnapshotIdentity?: string
+  /**
+   * Whether a cold boot would restore this VM's latest work (SHO-442). The UI
+   * shows a banner for anything but `ok`, and the alert fires on `untrusted` or
+   * on `saving-failing` for more than 30 minutes.
+   */
+  durability?: ProjectDurability
+}
+
+/** Git durability of a running VM, as the API and the UI see it. */
+export interface ProjectDurability {
+  state: 'ok' | 'saving-failing' | 'untrusted'
+  /** When the current state began: the last good save, or the VM's start. */
+  since: number
+  /** When this VM's HEAD last reached the durable repo, if it ever did. */
+  lastSavedAt?: number
+  reason?: string
 }
 
 /** How a suspend request ended (see `suspendOrRetire`). */
@@ -435,10 +486,85 @@ export type SuspendOutcome =
   | { kind: 'suspended'; s: SuspendedVm; staged: boolean }
   /** Booted from a superseded rootfs: backed up and stopped without a snapshot. */
   | { kind: 'retired' }
+  /**
+   * Refused: the VM's current HEAD is not in the durable repo, so stopping it
+   * would cold-start over unsaved work (SHO-442). It keeps running.
+   */
+  | { kind: 'refused'; reason: string }
+
+/**
+ * Whether an assigned VM is holding a slot someone needs (`active`) or is only
+ * warm (`evictable`). See `MetalWarmPool.vmResidency`.
+ */
+export type VmResidency = 'active' | 'evictable'
+
+/**
+ * Why a VM was suspended. `idle` is the reaper's window; `evicted` is an
+ * on-demand suspend to make room for an assign/resume on the same host (see
+ * `makeRoom`). Carried on the snapshot so a resume can label its wake latency
+ * with what it is paying for.
+ */
+export type SuspendReason = 'idle' | 'evicted'
 
 /** `open({ rootfs: 'staged' })` on a host that holds no staged rootfs for the class. */
 export class StagedRootfsUnavailableError extends Error {
   readonly code = 'no_staged_rootfs'
+}
+
+/**
+ * Why a VM was started, as told by the control plane on `/assign`. Billing
+ * reads this: most causes are billable running time, but `rewarm`/`prewarm`/
+ * `published` are platform overhead (see `config/vm-pricing.ts` in apps/api).
+ * `user_open` is the default so an older caller that sends nothing is still
+ * metered rather than lost.
+ */
+export type VmCause = 'user_open' | 'agent_wake' | 'schedule' | 'published' | 'rewarm' | 'prewarm'
+
+export const VM_CAUSES: readonly VmCause[] = [
+  'user_open',
+  'agent_wake',
+  'schedule',
+  'published',
+  'rewarm',
+  'prewarm',
+]
+
+export function isVmCause(v: unknown): v is VmCause {
+  return typeof v === 'string' && (VM_CAUSES as readonly string[]).includes(v)
+}
+
+/**
+ * Cumulative running time of ONE VM since it was assigned, in milliseconds, by
+ * why it was running. Advanced on each heartbeat/reaper tick from the same
+ * classification `classifyAssigned` buckets the fleet by, and never reset for
+ * the life of the VM — so a heartbeat the control plane never receives costs
+ * nothing, the next one carries the full total.
+ */
+export interface VmMeter {
+  agentMs: number
+  appMs: number
+  idleMs: number
+  /** Wall-clock of the last advance. Elapsed since here is what the next tick charges. */
+  advancedAt: number
+}
+
+/** One VM's meter as reported to the control plane (see `meterReport`). */
+export interface VmMeterReport {
+  runtimeKey: string
+  vmId: string
+  assignedAt: number
+  /** CPU count the host actually booted (the handler's), never the env accounting. */
+  vcpus: number
+  /** MiB the host actually booted. */
+  memMiB: number
+  vmClass: string
+  cause: VmCause
+  alwaysOn: boolean
+  agentMs: number
+  appMs: number
+  idleMs: number
+  /** Set once the VM stopped being assigned; the row is held until the control plane acks it. */
+  endedAt?: number
 }
 
 export interface AssignedVm {
@@ -446,6 +572,10 @@ export interface AssignedVm {
   handle: FcVmHandle
   assignedAt: number
   lastTouchedAt: number
+  /** Why this VM was started (billing). Undefined on an adopted VM = `user_open`. */
+  cause?: VmCause
+  /** Billing counters (see {@link VmMeter}); created on the first tick. */
+  meter?: VmMeter
   /** Snapshot files this VM was restored from; protected from orphan reclaim. */
   restoredFrom?: { vmstate: string; mem: string }
   /**
@@ -481,6 +611,46 @@ export interface AssignedVm {
    * first request.
    */
   lastRealActivityAt?: number
+  /**
+   * Wall-clock (ms) of the last time a PERSON used this VM, on a clock that only
+   * real user requests move. `lastRealActivityAt` cannot serve this purpose: it
+   * is stamped on every poll where the guest reports busy, so a guest stuck
+   * reporting `busy: true` always looks freshly active and a ceiling on it would
+   * never fire.
+   *
+   * Advances only where the guest's per-class signals advance — an app request,
+   * an agent turn, or (for a legacy guest) the catch-all. It does NOT move on
+   * `vmBusy`, `lastTouchedAt`, `touch()`, or a failed poll. Seeded to `now` at
+   * assign/resume, and corrected from the guest's own report on the first
+   * baselining poll so a host restart does not hand a 47h-idle VM another
+   * ceiling (see `reapIdle`).
+   */
+  lastUserActivityAt?: number
+  /**
+   * Set only by `adopt()`: this VM's real-activity history did not survive the
+   * host restart, so `lastUserActivityAt` was seeded to `now` and the first
+   * per-class report must correct it from the guest's own clock.
+   *
+   * Deliberately NOT set by assign or resume. Both are a user action happening
+   * right now, so `now` is the truth; correcting a resume from the snapshot's
+   * frozen `lastAppRequestAt`/`lastAgentRequestAt` would suspend a VM the
+   * moment it came back, because the reaper polls and reaps in the same tick
+   * and the page load that triggered the resume only bumps `lastAppRequestAt`
+   * for `/api/*` (SHO-420 QA round 1).
+   */
+  needsUserActivityBaseline?: boolean
+  /**
+   * Wall-clock (ms) the current unbroken busy streak started: set by the first
+   * successful poll that reports busy, cleared by any successful poll that does
+   * not. A failed poll leaves it alone. The busy-idle ceiling requires this to
+   * be past the ceiling too, so a real turn driven by something other than an
+   * app request or `/agent/chat` (a project call, a trigger hook, a webchat or
+   * channel message) is not frozen mid-stream just because no person has used
+   * the VM for hours. A stuck guest never reports not-busy, so its streak only
+   * grows. On adopt it is seeded from the baselined `lastUserActivityAt`, so a
+   * deploy does not hand a stuck guest another full ceiling.
+   */
+  busySince?: number
   /** Wall-clock of the last periodic source backup (in memory only; see exportAllSource). */
   lastPeriodicSourceBackupAt?: number
   /**
@@ -701,6 +871,15 @@ export interface AssignedVm {
   repoExportRetryAt?: number
   /** Consecutive periodic `.git` export failures, for backoff. */
   repoExportFailures?: number
+  /** HEAD whose `.git` was last copied to `conflict/` while untrusted (SHO-442). */
+  repoQuarantinedHeadSha?: string
+  /** Key of the last quarantine copy written for this VM (SHO-442). */
+  repoQuarantineKey?: string
+  /** Consecutive failed reconcile attempts, and when to try again (SHO-442). */
+  repoHealFailures?: number
+  repoHealRetryAt?: number
+  /** When this VM's HEAD last reached the durable repo (for the unsaved-age gauge). */
+  repoLastSavedAt?: number
   /** First consecutive `/pool/activity` failure (undefined while polls succeed). */
   activityPollFailedAt?: number
   /** Last health/activity poll outcome. `false` = assigned-but-unhealthy. */
@@ -842,6 +1021,14 @@ export interface SuspendedVm {
   workspaceOrigin?: 'template' | 'backup' | 'snapshot'
   /** See CacheEntry.durablePending. */
   durablePending?: boolean
+  /**
+   * Why this VM was suspended: the reaper's idle window (`idle`) or an
+   * on-demand eviction to make room for another assign on this host
+   * (`evicted`). A resume reports it back so wake latency can be split by what
+   * the user is paying for — an evicted VM's resume is the cost of the bucket.
+   * Absent on snapshots taken before this shipped.
+   */
+  suspendReason?: SuspendReason
 }
 
 export interface GcReport {
@@ -893,6 +1080,16 @@ function yieldToEventLoop(): Promise<void> {
  * an observability window — it does not affect suspend/reap decisions.
  */
 const APP_ACTIVE_WINDOW_MS = 120_000
+
+/**
+ * How long a stopped VM's final meter is retried before it is dropped, and how
+ * many of them are held at once. The counters are cumulative, so the control
+ * plane normally ingests a closed VM on the very first heartbeat that carries
+ * it; these bounds only matter for a control plane that is unreachable for an
+ * hour or a busy host that churns more than 2,000 VMs inside one.
+ */
+const CLOSED_METER_TTL_MS = 60 * 60_000
+const MAX_CLOSED_METERS = 2_000
 
 /**
  * Hard ceiling on a hydrate deadline, whatever the per-MiB budget works out to.
@@ -1123,6 +1320,12 @@ export class MetalWarmPool {
   private assigned = new Map<string, AssignedVm>()
   private suspended = new Map<string, SuspendedVm>()
   /**
+   * Projects a concurrent assign/resume has already picked to evict (SHO-444).
+   * Two opens on a full host must evict two DIFFERENT VMs, not race for the
+   * same longest-idle one and leave the host still full.
+   */
+  private evicting = new Set<string>()
+  /**
    * Snapshots taken on the STAGED rootfs (pre-warm before a switch), kept apart
    * from `suspended` so the project's current snapshot keeps serving opens
    * until activation promotes these. Local only: never pushed durably while
@@ -1150,6 +1353,13 @@ export class MetalWarmPool {
   /** Collapses concurrent suspend calls for the same project. */
   private suspendFlight = new Singleflight<SuspendedVm>()
   private recycleFlight = new Singleflight<RecycleReport>()
+  /**
+   * Billing meters: the seq of the newest report the control plane has seen, the
+   * VM rows that stopped being assigned but which no heartbeat has acked yet
+   * (their final counters live only here), and the seq each was last sent with.
+   */
+  private meterSeq = 0
+  private closedMeters: Array<VmMeterReport & { lastSentSeq?: number }> = []
   private autoRecycleHistory = new Map<string, number[]>()
   /**
    * Serializes writable-state exports per project. The periodic exporter and
@@ -1562,6 +1772,13 @@ export class MetalWarmPool {
         // adopted VM on its original assignedAt would suspend the live set on
         // every rolling deploy.
         lastRealActivityAt: Date.now(),
+        // Same fresh seed, but the first baselining poll corrects it from the
+        // guest's own report — otherwise every metal-agent deploy would hand a
+        // VM that has been idle for days another full busy-idle ceiling. Only
+        // adopt needs that correction: assign and resume are a user action
+        // happening now, so their `now` seed is already the truth.
+        lastUserActivityAt: Date.now(),
+        needsUserActivityBaseline: true,
         restoredFrom: e.restoredFrom,
         bootRootfsIdentity: e.bootRootfsIdentity,
         workspaceOrigin: e.workspaceOrigin,
@@ -1939,12 +2156,13 @@ export class MetalWarmPool {
     projectId: string,
     env: Record<string, string> = {},
     bind?: { workspaceId?: string; attachedProjectIds?: string[] },
+    opts: { cause?: VmCause } = {},
   ): Promise<OpenResult> {
     ;({ env, bind } = this.ownMembersOnly(projectId, env, bind))
-    const r = await this.openOnce(projectId, env, bind, null)
+    const r = await this.openOnce(projectId, env, bind, null, opts.cause)
     // Joined a concurrent staged open that had nothing to boot: this caller
     // needs a running VM, so open again (now as the flight's owner).
-    if (r.mode === 'prewarmed') return this.open(projectId, env, bind)
+    if (r.mode === 'prewarmed') return this.open(projectId, env, bind, opts)
     return r
   }
 
@@ -1962,7 +2180,9 @@ export class MetalWarmPool {
     ;({ env, bind } = this.ownMembersOnly(projectId, env, bind))
     const staged = this.stagedRootfs(this.resolveVmClass(projectId, env))
     if (!staged) throw new StagedRootfsUnavailableError(`no staged rootfs on this host for ${projectId}`)
-    return this.openOnce(projectId, env, bind, staged)
+    // A staged open is always the switch-over pre-warm, whatever the caller
+    // labelled it: it exists to fill the new image, not to serve a user.
+    return this.openOnce(projectId, env, bind, staged, 'prewarm')
   }
 
   private async openOnce(
@@ -1970,6 +2190,7 @@ export class MetalWarmPool {
     env: Record<string, string>,
     bind: { workspaceId?: string; attachedProjectIds?: string[] } | undefined,
     staged: { path: string; identity: string } | null,
+    cause: VmCause = 'user_open',
   ): Promise<OpenResult | PrewarmedResult> {
     const r = await this.openFlight.run(projectId, async (): Promise<OpenResult | PrewarmedResult> => {
       const timer = new PhaseTimer()
@@ -2068,19 +2289,20 @@ export class MetalWarmPool {
       if (staged) {
         // Never resume here: the current snapshot stays the project's serving
         // copy until activation, and this boot is on the new image.
-        const a = await this.assign(projectId, env, bind, timer, staged)
+        const a = await this.assign(projectId, env, bind, timer, staged, cause)
         return done({ handle: a.handle, mode: 'assigned', bootRootfsIdentity: staged.identity })
       }
       let staleReason: StaleReason | undefined
       if (await timer.time('can_resume', () => this.canResume(projectId))) {
         try {
-          const res = await this.resume(projectId, env, timer)
+          const res = await this.resume(projectId, env, timer, cause)
           if (res)
             return done({
               handle: res.assigned.handle,
               mode: 'resumed',
               source: res.source,
               readyMs: res.readyMs,
+              suspendReason: res.suspendReason,
               bootRootfsIdentity: this.bootRootfsIdentity(res.assigned),
             })
           staleReason = this.lastStaleReason.get(projectId) ?? 'no_snapshot'
@@ -2100,7 +2322,7 @@ export class MetalWarmPool {
         staleReason = 'no_snapshot'
       }
       this.lastStaleReason.delete(projectId)
-      const a = await this.assign(projectId, env, bind, timer)
+      const a = await this.assign(projectId, env, bind, timer, undefined, cause)
       return done({ handle: a.handle, mode: 'assigned', staleReason, bootRootfsIdentity: this.bootRootfsIdentity(a) })
     })
     if (r?.mode === 'prewarmed') return r
@@ -2147,6 +2369,7 @@ export class MetalWarmPool {
       mode: r.mode,
       ...(r.source ? { source: r.source } : {}),
       ...(r.staleReason ? { staleReason: r.staleReason } : {}),
+      ...(r.suspendReason ? { suspendReason: r.suspendReason } : {}),
       phases: r.phases ?? {},
       totalMs: r.totalMs ?? 0,
       ...(repo ? { repo } : {}),
@@ -2172,6 +2395,7 @@ export class MetalWarmPool {
     bind?: { workspaceId?: string; attachedProjectIds?: string[] },
     timer = new PhaseTimer(),
     staged?: { path: string; identity: string },
+    cause: VmCause = 'user_open',
   ): Promise<AssignedVm> {
     ;({ env, bind } = this.ownMembersOnly(projectId, env, bind))
     const vmClass = this.resolveVmClass(projectId, env)
@@ -2181,6 +2405,16 @@ export class MetalWarmPool {
     // Pool VMs boot from the current image at the class's size, so a staged
     // boot or a project that needs a bigger VM always starts fresh.
     const bigger = vmBootSize(env, classConfig(this.cfg, vmClass))
+    // Make room BEFORE claiming/booting: a host full of warm VMs serves this
+    // project by suspending the longest-idle one, instead of the control plane
+    // buying another host to hold VMs nobody is using (SHO-444). Never fails the
+    // assign — see `makeRoom`.
+    await timer.time('evict_wait', () =>
+      this.makeRoom({
+        exclude: projectId,
+        vmMemMiB: bigger?.memoryMB ?? classConfig(this.cfg, vmClass).memMiB,
+      }),
+    )
     let vm = staged || bigger ? null : this.claim(vmClass)
     if (!vm) {
       const t0 = performance.now()
@@ -2194,7 +2428,7 @@ export class MetalWarmPool {
       )
       timer.add('boot', performance.now() - t0 - waited)
     }
-    return this.assignVm(projectId, env, bind, timer, vm, staged?.identity)
+    return this.assignVm(projectId, env, bind, timer, vm, staged?.identity, cause)
   }
 
   private resolveVmClass(projectId: string, env: Record<string, string>): VmClass {
@@ -2224,6 +2458,7 @@ export class MetalWarmPool {
     timer: PhaseTimer,
     vm: PooledVm,
     stagedIdentity: string | undefined,
+    cause: VmCause,
   ): Promise<AssignedVm> {
     // The claimed/booted VM is now off the pool and not yet in `assigned`. If
     // the guest /pool/assign call fails or times out we must stop it, or its FC
@@ -2257,9 +2492,12 @@ export class MetalWarmPool {
       handle: vm.handle,
       assignedAt: now,
       stateSince: now,
+      cause,
+      meter: { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: now },
       repoHydratePending: true,
       lastTouchedAt: now,
       lastRealActivityAt: now,
+      lastUserActivityAt: now,
       // Warm VMs never outlive the agent process (prepareForRestart kills
       // them), so this one booted from the image this process was started on.
       bootRootfsIdentity: stagedIdentity ?? this.classRootfsIdentity(vm.handle.vmClass),
@@ -2315,6 +2553,7 @@ export class MetalWarmPool {
       }
     } catch (err: any) {
       console.error(`[pool] hydrate-from-backup failed for ${projectId} — failing open (NOT serving template):`, err?.message ?? err)
+      this.closeMeter(a)
       this.assigned.delete(projectId)
       this.live.remove(projectId)
       await this.mgr.stopVM(vm.handle).catch(() => {})
@@ -2333,6 +2572,7 @@ export class MetalWarmPool {
         }
       } catch (err: any) {
         console.error(`[pool] workspace member hydrate failed for ${projectId}:`, err?.message ?? err)
+        this.closeMeter(a)
         this.assigned.delete(projectId)
         this.live.remove(projectId)
         await this.mgr.stopVM(vm.handle).catch(() => {})
@@ -3222,10 +3462,14 @@ export class MetalWarmPool {
     return null
   }
 
-  protected async fetchRepoExport(handle: FcVmHandle, token?: string): Promise<RepoExport | null> {
+  protected async fetchRepoExport(
+    handle: FcVmHandle,
+    token?: string,
+    opts: { skipLfsPush?: boolean } = {},
+  ): Promise<RepoExport | null> {
     const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
     try {
-      return await this.readRepoExport(handle, token, dl)
+      return await this.readRepoExport(handle, token, dl, opts)
     } catch (err) {
       dl.abort(err)
       throw err
@@ -3238,10 +3482,15 @@ export class MetalWarmPool {
     handle: FcVmHandle,
     token: string | undefined,
     dl: { signal: AbortSignal },
+    opts: { skipLfsPush?: boolean } = {},
   ): Promise<RepoExport | null> {
     const res = await fetch(`${handle.agentUrl}/pool/export-repo`, {
       method: 'POST',
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(opts.skipLfsPush ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(opts.skipLfsPush ? { body: JSON.stringify({ skipLfsPush: true }) } : {}),
       signal: dl.signal,
     })
     if (res.status === 204) return null
@@ -3297,13 +3546,19 @@ export class MetalWarmPool {
     if (a.repoHydratePending) return false
     const lineage = this.repoLineageOf(a)
     if (lineage.kind === 'untrusted') {
-      metrics.inc(M.repoRefused)
-      return false
+      // An untrusted VM used to save NOTHING for the rest of its life, which is
+      // how a day and a half of work was lost (SHO-442). It cannot write the
+      // real repo, but its `.git` still goes to `conflict/` — the floor that
+      // keeps the work durable until the reconcile heals it.
+      return this.quarantineRepo(a)
     }
     const head = a.repoHeadSha
     const bundled = await this.storeRepoBundles(a)
     if (bundled !== null) {
-      if (bundled !== 'lost' && head && a.repoHeadSha === head) a.repoExportedHeadSha = head
+      if (bundled !== 'lost' && head && a.repoHeadSha === head) {
+        a.repoExportedHeadSha = head
+        a.repoLastSavedAt = Date.now()
+      }
       return bundled === 'written'
     }
     let exported: RepoExport | null
@@ -3321,18 +3576,226 @@ export class MetalWarmPool {
       const sha = exported.sha256 ?? (await repoBodySha256(exported.bytes))
       if (sha === a.repoExportSha) {
         metrics.inc(M.repoExportUnchanged)
-        if (head && a.repoHeadSha === head) a.repoExportedHeadSha = head
+        if (head && a.repoHeadSha === head) {
+          a.repoExportedHeadSha = head
+          a.repoLastSavedAt = Date.now()
+        }
         return false
       }
       const out = await this.storeRepoBytes(a, exported.bytes, exported.rootCommitAt)
       if (out !== 'lost') {
         a.repoExportSha = sha
-        if (head && a.repoHeadSha === head) a.repoExportedHeadSha = head
+        if (head && a.repoHeadSha === head) {
+          a.repoExportedHeadSha = head
+          a.repoLastSavedAt = Date.now()
+        }
       }
       return out === 'written'
     } finally {
       exported.dispose?.()
     }
+  }
+
+  /**
+   * Copy an UNTRUSTED VM's `.git` to `conflict/<projectId>/…-repo.tar.gz`.
+   *
+   * The tarball carries `.git/lfs/objects` itself, so the LFS push is skipped:
+   * the point is to get the bytes somewhere durable NOW, not to wait on a push
+   * that may be the very thing that failed. `storeRepoBytes` sees the untrusted
+   * lineage and diverts the upload to the quarantine key.
+   *
+   * Runs on every HEAD change (see `exportAllRepos`), so the copy tracks the
+   * work instead of freezing at the moment trust was lost.
+   */
+  protected async quarantineRepo(a: AssignedVm): Promise<boolean> {
+    let exported: RepoExport | null
+    try {
+      exported = await this.fetchRepoExport(a.handle, a.runtimeToken, { skipLfsPush: true })
+    } catch (err: any) {
+      console.error(`[pool] quarantine export for ${a.projectId} failed:`, err?.message ?? err)
+      return false
+    }
+    if (!exported) return false
+    try {
+      const out = await this.storeRepoBytes(a, exported.bytes, exported.rootCommitAt)
+      if (out === 'quarantined') {
+        metrics.inc(M.repoQuarantine)
+        a.repoQuarantinedHeadSha = a.repoHeadSha
+        this.writeLive(a)
+        console.error(
+          `[pool] quarantined the repo of UNTRUSTED ${a.projectId} at HEAD ${a.repoHeadSha?.slice(0, 12) ?? 'unknown'} ` +
+            `(${repoBodySize(exported.bytes)} bytes) — durable repo left intact`,
+        )
+        return true
+      }
+      if (out === 'lost') {
+        console.error(`[pool] quarantine export for ${a.projectId} reached nowhere durable`)
+      }
+      return false
+    } finally {
+      exported.dispose?.()
+    }
+  }
+
+  /**
+   * Re-attach an UNTRUSTED VM to the durable history (SHO-442).
+   *
+   * Downloads the durable repo into a side staging dir, then asks the guest to
+   * write a commit whose tree is its CURRENT working tree and whose parents are
+   * `[durable HEAD, live HEAD]`. No file is rewritten, so a busy workspace is
+   * fine. On success the VM descends from the durable repo again and normal
+   * saves resume; on failure it stays untrusted and the next sweep retries.
+   */
+  protected async healUntrustedRepo(a: AssignedVm): Promise<boolean> {
+    if (!a.repoUntrustedReason || a.repoHydratePending) return false
+    if (this.assigned.get(a.projectId) !== a) return false
+    const now = Date.now()
+    if (a.repoHealRetryAt && now < a.repoHealRetryAt) return false
+
+    const fail = (reason: string) => {
+      a.repoHealFailures = (a.repoHealFailures ?? 0) + 1
+      a.repoHealRetryAt = now + Math.min(REPO_HEAL_MAX_BACKOFF_MS, REPO_HEAL_MIN_BACKOFF_MS * 2 ** (a.repoHealFailures - 1))
+      console.warn(`[pool] repo heal for ${a.projectId} deferred (${reason}); next attempt ${new Date(a.repoHealRetryAt).toISOString()}`)
+      return false
+    }
+
+    const env: Record<string, string> = a.runtimeToken ? { RUNTIME_AUTH_SECRET: a.runtimeToken } : {}
+    let probe: { reconcile?: boolean } | null
+    try {
+      probe = await this.callRepoHydrated(a.handle, env, { probe: true }, Math.min(this.cfg.hydrateTimeoutMs, 10_000))
+    } catch (err: any) {
+      return fail(`probe failed: ${err?.message ?? err}`)
+    }
+    if (probe?.reconcile !== true) return fail('guest cannot reconcile')
+
+    const read = await this.repoManifest(a.projectId).catch(() => null)
+    const ref = read ? null : await this.repoRef(a.projectId).catch(() => null)
+    if (!read && !ref) return fail('no durable repo to reconcile against')
+
+    try {
+      if (read) {
+        const bundles = await this.presignRepoBundles(a.projectId, read.manifest)
+        const totalBytes = bundles.reduce((n, b) => n + b.bytes, 0)
+        const downloadMs = Math.max(this.cfg.hydrateTimeoutMs, this.hydrateBudgetMs(totalBytes))
+        await this.callRepoBundlesHydrate(
+          a.handle,
+          env,
+          {
+            stagingDir: REPO_RECONCILE_DIR,
+            manifest: read.manifest,
+            bundles: bundles.map(({ sha256, url }) => ({ sha256, url })),
+            timeoutMs: downloadMs,
+          },
+          downloadMs + this.repoHydratedSlackMs,
+        )
+      } else if (ref) {
+        await this.applyArchive(a.handle, env, ref, `${a.projectId} reconcile repo`, REPO_RECONCILE_DIR)
+      }
+
+      const res = await fetch(`${a.handle.agentUrl}/pool/repo-reconcile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(a.runtimeToken ? { Authorization: `Bearer ${a.runtimeToken}` } : {}) },
+        body: JSON.stringify({ stagingDir: REPO_RECONCILE_DIR, timeoutMs: this.cfg.hydrateTimeoutMs }),
+        signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs + this.repoHydratedSlackMs),
+      })
+      if (res.status === 404) return fail('guest has no reconcile route')
+      if (!res.ok) return fail(`guest refused (${res.status}): ${(await res.text().catch(() => '')).slice(0, 200)}`)
+      const body = (await res.json().catch(() => ({}))) as { head?: string }
+
+      a.repoUntrustedReason = undefined
+      a.repoParentEtag = read?.etag ?? ref?.etag ?? a.repoParentEtag
+      a.repoLinked = true
+      a.repoHealFailures = 0
+      a.repoHealRetryAt = undefined
+      a.repoHeadSha = body.head ?? a.repoHeadSha
+      a.repoExportedHeadSha = undefined
+      a.repoExportSha = undefined
+      this.writeLive(a)
+      metrics.inc(M.repoHealed)
+      console.log(
+        `[pool] healed UNTRUSTED ${a.projectId}: live history re-attached to the durable repo at ` +
+          `${body.head?.slice(0, 12) ?? 'unknown'} — normal saves resume`,
+      )
+      return true
+    } catch (err: any) {
+      return fail(err?.message ?? String(err))
+    }
+  }
+
+  /**
+   * Whether a cold boot would restore this VM's current HEAD.
+   *
+   * The one predicate every "stop this VM" path consults (SHO-442): not
+   * untrusted, no hydrate in flight, and the durable repo holds the HEAD the
+   * guest last reported. A quarantine copy does NOT count — a cold boot
+   * restores the durable copy, not `conflict/`.
+   */
+  repoDurable(a: AssignedVm): boolean {
+    // Nothing to lose: the guest reports no commits at all, so its files are
+    // the source backup's already. This holds whatever the lineage says — an
+    // untrusted VM that never made a commit is not a risk to stop.
+    if (!a.repoHeadSha) return true
+    // A restore still in flight is not a distrust: the guest is serving the
+    // SOURCE's `.git` while the durable history downloads. Commits are
+    // suppressed while it runs (`checkpointGuest` is a no-op) and the working
+    // tree is already in the source backup, so a cold boot starts from exactly
+    // the same place. Refusing instead would pin a VM whose download never
+    // finishes (SHO-442).
+    if (this.repoRestoring(a)) return true
+    if (a.repoUntrustedReason) return false
+    return a.repoExportedHeadSha === a.repoHeadSha
+  }
+
+  /** The assign-time restore has not landed yet; see `repoDurable`. */
+  private repoRestoring(a: AssignedVm): boolean {
+    return a.repoHydratePending === true && a.repoUntrustedReason === REPO_DEFERRED_REASON
+  }
+
+  /** Seconds since this VM's HEAD last reached the durable repo (0 when durable). */
+  private repoUnsavedSeconds(a: AssignedVm, now = Date.now()): number {
+    if (this.repoDurable(a)) return 0
+    return Math.max(0, Math.round((now - (a.repoLastSavedAt ?? a.assignedAt)) / 1000))
+  }
+
+  /**
+   * What the UI and the alert need to know about this VM's git durability
+   * (SHO-442). `saving-failing` is the state the incident sat in for a day and
+   * a half with nothing showing it.
+   */
+  private durabilityOf(a: AssignedVm): ProjectDurability {
+    const lastSavedAt = a.repoLastSavedAt
+    const untrusted = a.repoUntrustedReason && !this.repoRestoring(a) ? a.repoUntrustedReason : undefined
+    if (untrusted) {
+      return {
+        state: 'untrusted',
+        since: lastSavedAt ?? a.assignedAt,
+        ...(lastSavedAt ? { lastSavedAt } : {}),
+        reason: untrusted,
+      }
+    }
+    if (!this.repoDurable(a)) {
+      return {
+        state: 'saving-failing',
+        since: lastSavedAt ?? a.assignedAt,
+        ...(lastSavedAt ? { lastSavedAt } : {}),
+        reason: 'latest changes not saved yet',
+      }
+    }
+    return { state: 'ok', since: lastSavedAt ?? a.assignedAt, ...(lastSavedAt ? { lastSavedAt } : {}) }
+  }
+
+  /**
+   * Refuse to stop a VM whose current HEAD is not in the durable repo. The VM
+   * keeps running (on the old image if needed) and the next sweep retries —
+   * never a cold start over unsaved work.
+   */
+  private refuseUndurable(a: AssignedVm, action: string): void {
+    metrics.inc(M.repoDurabilityRefused)
+    console.error(
+      `[pool] REFUSED to ${action} ${a.projectId}: its current HEAD is not in the durable repo ` +
+        `(untrusted=${a.repoUntrustedReason ?? 'no'}, head=${a.repoHeadSha?.slice(0, 12) ?? 'unknown'}, ` +
+        `exported=${a.repoExportedHeadSha?.slice(0, 12) ?? 'none'}). Keeping it running; the next sweep retries.`,
+    )
   }
 
   /**
@@ -3365,6 +3828,7 @@ export class MetalWarmPool {
           return 'written'
         }
         metrics.inc(M.repoConflict)
+        if (outcome.quarantineKey) a.repoQuarantineKey = outcome.quarantineKey
         console.error(
           `[pool] REFUSED to overwrite repo.git.tar.gz for ${a.projectId} — lineage ` +
             `(etag=${a.repoParentEtag ?? 'none'}) does not match. Quarantined at ${outcome.quarantineKey}.`,
@@ -3372,6 +3836,7 @@ export class MetalWarmPool {
         return outcome.quarantineKey ? 'quarantined' : 'lost'
       case 'refused':
         metrics.inc(M.repoRefused)
+        if (outcome.quarantineKey) a.repoQuarantineKey = outcome.quarantineKey
         return outcome.quarantineKey ? 'quarantined' : 'lost'
       case 'too-large':
         metrics.inc(M.repoTooLarge)
@@ -3464,6 +3929,9 @@ export class MetalWarmPool {
     try {
       exported = await this.exportRepoBundle(a, since)
     } catch (err) {
+      // A push still running is a retry, never a fallback: the tarball path
+      // would re-run the same push and time out again (SHO-442).
+      if (err instanceof RepoBundleLfsPendingError) throw err
       // The tarball still carries `.git/lfs/objects`; a bundle cannot, so the
       // project stays unmigrated until its LFS push succeeds.
       if (!current && err instanceof RepoBundleLfsPushError) {
@@ -3483,6 +3951,13 @@ export class MetalWarmPool {
     if (compact && exported.bundle?.kind === 'base') metrics.inc(M.repoBundleCompactions)
     const bundles = nextBundleChain(current?.manifest.bundles ?? null, exported.bundle)
     if (bundles.length === 0) return 'empty'
+    if (exported.lfsMissing?.length) {
+      metrics.inc(M.repoLfsMissing, exported.lfsMissing.length)
+      console.error(
+        `[pool] ${a.projectId}: ${exported.lfsMissing.length} LFS object(s) are missing on both sides — ` +
+          `history exported, content lost: ${exported.lfsMissing.flatMap((m) => m.paths).slice(0, 10).join(', ')}`,
+      )
+    }
     const next = parseRepoManifest({
       v: 1,
       head: exported.head,
@@ -3490,6 +3965,7 @@ export class MetalWarmPool {
       config: exported.config,
       rootCommitAt: exported.rootCommitAt,
       bundles,
+      ...(exported.lfsMissing?.length ? { lfsMissing: exported.lfsMissing } : {}),
     })
     if (current && sameManifestState(current.manifest, next)) return 'unchanged'
     return this.writeRepoManifest(a, next)
@@ -3529,6 +4005,15 @@ export class MetalWarmPool {
       signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
     })
     if (res.status === 404) return null
+    // 202: the guest's LFS push is still running. The next sweep joins the same
+    // job, so this is a retry, not a failure — and never a tarball fallback.
+    if (res.status === 202) {
+      const body = (await res.json().catch(() => ({}))) as { pushedOids?: number; totalOids?: number }
+      metrics.inc(M.repoBundleLfsPending)
+      throw new RepoBundleLfsPendingError(
+        `lfs push still running for ${a.projectId} (${body.pushedOids ?? 0}/${body.totalOids ?? '?'} objects)`,
+      )
+    }
     if (!res.ok) {
       const text = await res.text()
       const message = `/pool/export-repo-bundle failed (${res.status}): ${text}`
@@ -4014,7 +4499,7 @@ export class MetalWarmPool {
     env: Record<string, string>,
     body: { probe: true } | { stagingDir: string; timeoutMs?: number; keepPaths?: string[]; ifIdle?: boolean },
     waitMs: number = this.cfg.hydrateTimeoutMs,
-  ): Promise<{ deadline?: boolean; bundles?: boolean; ifIdle?: boolean } | null> {
+  ): Promise<{ deadline?: boolean; bundles?: boolean; ifIdle?: boolean; reconcile?: boolean } | null> {
     const token = env.RUNTIME_AUTH_SECRET
     const res = await fetch(`${handle.agentUrl}/pool/repo-hydrated`, {
       method: 'POST',
@@ -4024,7 +4509,7 @@ export class MetalWarmPool {
     })
     if (res.status === 404) return null
     if (!res.ok) throw new RepoHydrateRefusedError(res.status, await res.text())
-    return ((await res.json().catch(() => ({}))) ?? {}) as { deadline?: boolean; bundles?: boolean; ifIdle?: boolean }
+    return ((await res.json().catch(() => ({}))) ?? {}) as { deadline?: boolean; bundles?: boolean; ifIdle?: boolean; reconcile?: boolean }
   }
 
   protected repoRef(projectId: string): Promise<ArchiveRef | null> {
@@ -4044,7 +4529,18 @@ export class MetalWarmPool {
   async exportAllRepos(now = Date.now()): Promise<number> {
     let n = 0
     for (const a of this.assigned.values()) {
-      if (a.repoUntrustedReason) continue
+      // An untrusted VM cannot write the durable repo, but it must still save:
+      // its `.git` goes to `conflict/` on every HEAD change, and the reconcile
+      // below tries to heal it back to a normal writer (SHO-442). A restore
+      // still in flight is skipped: its `.git` is the source's, so there is
+      // nothing new to copy yet.
+      if (a.repoUntrustedReason && !this.repoRestoring(a)) {
+        if (a.repoHeadSha && a.repoHeadSha !== a.repoQuarantinedHeadSha) {
+          if (await this.quarantineRepo(a)) n++
+        }
+        await this.healUntrustedRepo(a)
+        continue
+      }
       if (a.repoHeadSha && a.repoHeadSha === a.repoExportedHeadSha) continue
       if (a.repoExportRetryAt && now < a.repoExportRetryAt) continue
       try {
@@ -4730,7 +5226,7 @@ export class MetalWarmPool {
    * intact so a same-host resume still works. Heavy steps run under the
    * host-wide semaphore; concurrent suspends for one project collapse.
    */
-  async suspend(projectId: string): Promise<SuspendedVm> {
+  async suspend(projectId: string, opts: { reason?: SuspendReason } = {}): Promise<SuspendedVm> {
     if (this.recycleFlight.has(projectId)) throw new Error(`project ${projectId} is being recycled`)
     return this.suspendFlight.run(projectId, async () => {
       const a = this.assigned.get(projectId)
@@ -4747,6 +5243,7 @@ export class MetalWarmPool {
       // the latest source and push it to the durable S3 backup so a resume on a
       // DIFFERENT metal machine (snapshot miss) still cold-hydrates real source.
       // Best-effort — the snapshot below is the primary cross-host resume path.
+      let finalBackupFailed = false
       if (!untouchedPrewarm) {
         if (a.projectId.startsWith('ws:')) {
           // A legacy VM's foreign members are only in this guest; once suspended,
@@ -4754,28 +5251,37 @@ export class MetalWarmPool {
           await this.drainForeignMembersOf(a, 3_000).catch((err) =>
             console.error(`[pool] draining foreign members of ${a.projectId} failed:`, err?.message ?? err),
           )
-          await this.saveWorkspaceMembersToStore(a)
+          const failed = await this.saveWorkspaceMembersToStore(a).catch((err) => {
+            console.error(`[pool] source backup for ${a.projectId} failed:`, err?.message ?? err)
+            return [{ projectId: a.projectId, reason: err?.message ?? String(err) }]
+          })
+          if (failed.length) finalBackupFailed = true
         } else {
-          await this.saveBackupToStore(a).catch((err) =>
-            console.error(`[pool] source backup for ${a.projectId} failed (snapshot still durable):`, err?.message ?? err),
-          )
+          const out = await this.saveBackupToStore(a).catch((err) => {
+            console.error(`[pool] source backup for ${a.projectId} failed (snapshot still durable):`, err?.message ?? err)
+            return 'lost' as const
+          })
+          if (out === 'lost') finalBackupFailed = true
         }
 
         // Same for writable state (database + uploads), and for the same reason:
         // the snapshot is not a backup. A rootfs rebuild invalidates every
         // snapshot at once, and the cold boot that follows restores source only —
         // so without this the user's data is gone.
-        await this.saveProjectDataToStore(a, { final: true }).catch((err) =>
-          console.error(`[pool] writable-state backup for ${a.projectId} failed:`, err?.message ?? err),
-        )
+        await this.saveProjectDataToStore(a, { final: true }).catch((err) => {
+          finalBackupFailed = true
+          console.error(`[pool] writable-state backup for ${a.projectId} failed:`, err?.message ?? err)
+        })
 
-        await this.saveHomeStateToStore(a, { final: true }).catch((err) =>
-          console.error(`[pool] home-directory backup for ${a.projectId} failed:`, err?.message ?? err),
-        )
+        await this.saveHomeStateToStore(a, { final: true }).catch((err) => {
+          finalBackupFailed = true
+          console.error(`[pool] home-directory backup for ${a.projectId} failed:`, err?.message ?? err)
+        })
 
-        await this.saveRepoToStore(a).catch((err) =>
-          console.error(`[pool] repo backup for ${a.projectId} failed:`, err?.message ?? err),
-        )
+        await this.saveRepoToStore(a).catch((err) => {
+          finalBackupFailed = true
+          console.error(`[pool] repo backup for ${a.projectId} failed:`, err?.message ?? err)
+        })
 
         // Server-backed published VM: also flush the live writable state to the
         // published-data bucket so a resume on a DIFFERENT host (snapshot miss)
@@ -4787,6 +5293,26 @@ export class MetalWarmPool {
         }
       }
 
+      // Never stop a VM whose current HEAD is not in the durable repo: a cold
+      // boot restores the durable copy, so suspending here is how a day and a
+      // half of work disappeared (SHO-442). The VM keeps running and the next
+      // sweep retries; the alert fires on the unsaved age.
+      if (!untouchedPrewarm && !this.repoDurable(a)) {
+        this.refuseUndurable(a, 'suspend')
+        throw new RepoNotDurableError(
+          `refusing to suspend ${a.projectId}: its current HEAD is not in the durable repo`,
+        )
+      }
+      // A snapshot from a superseded rootfs can never be pushed, so the final
+      // backups are the only copy. If any of them failed, stopping would drop
+      // the work — refuse instead of "skipping the durable push".
+      if (!untouchedPrewarm && finalBackupFailed && this.bootSnapshotIsStale(a)) {
+        this.refuseUndurable(a, 'suspend (stale rootfs, a final backup failed)')
+        throw new RepoNotDurableError(
+          `refusing to suspend ${a.projectId}: a final backup failed and its snapshot is from a superseded rootfs`,
+        )
+      }
+
       await this.callGuestHook(a.handle.agentUrl, 'quiesce', this.cfg.quiesceTimeoutMs, a.runtimeToken)
       let snapshot: FcSnapshot
       try {
@@ -4796,6 +5322,7 @@ export class MetalWarmPool {
         await this.callGuestHook(a.handle.agentUrl, 'rehydrate', this.cfg.rehydrateTimeoutMs, a.runtimeToken)
         throw err
       }
+      this.closeMeter(a)
       this.assigned.delete(projectId)
       this.live.remove(projectId) // no longer a live process — snapshot is the source of truth
       const now = Date.now()
@@ -4817,6 +5344,7 @@ export class MetalWarmPool {
         memberSourceEtags: this.trustedMemberSourceEtags(a),
         repoEtag: this.trustedRepoEtag(a),
         workspaceOrigin: a.workspaceOrigin,
+        suspendReason: opts.reason,
       }
       const untrustedSource = this.sourceUntrustedReason(a)
 
@@ -4958,7 +5486,7 @@ export class MetalWarmPool {
    * A recycle that refuses (busy, a backup failed) falls back to a plain
    * suspend, which keeps today's behavior: the work is safe either way.
    */
-  async suspendOrRetire(projectId: string): Promise<SuspendOutcome> {
+  async suspendOrRetire(projectId: string, opts: { reason?: SuspendReason } = {}): Promise<SuspendOutcome> {
     const a = this.assigned.get(projectId)
     if (a && this.rootfsGeneration(this.bootRootfsIdentity(a), a.handle.vmClass) === 'stale') {
       const r = await this.recycle(projectId, { reason: 'stale-rootfs' })
@@ -4969,8 +5497,15 @@ export class MetalWarmPool {
       }
       console.warn(`[pool] retiring ${projectId} aborted (${JSON.stringify(r.steps.at(-1))}) — suspending instead`)
     }
-    const s = await this.suspend(projectId)
-    return { kind: 'suspended', s, staged: this.stagedSuspended.get(projectId) === s }
+    try {
+      const s = await this.suspend(projectId, opts)
+      return { kind: 'suspended', s, staged: this.stagedSuspended.get(projectId) === s }
+    } catch (err) {
+      // A refused stop is an answer, not an error: the VM keeps running and the
+      // control plane must not treat it as stopped (SHO-442).
+      if (err instanceof RepoNotDurableError) return { kind: 'refused', reason: err.message }
+      throw err
+    }
   }
 
   private writeIndex(s: SuspendedVm, index = this.index): void {
@@ -5003,6 +5538,7 @@ export class MetalWarmPool {
       repoEtag: s.repoEtag,
       workspaceOrigin: s.workspaceOrigin,
       durablePending: s.durablePending,
+      suspendReason: s.suspendReason,
       v: 1,
     }
     index.put(e)
@@ -5025,6 +5561,12 @@ export class MetalWarmPool {
    */
   private localSnapshotIsStale(s: SuspendedVm): boolean {
     return !!s.rootfsIdentity && s.rootfsIdentity !== this.classRootfsIdentity(s.snapshot.vmClass ?? 'standard')
+  }
+
+  /** Whether a snapshot taken from this VM right now could never be pushed. */
+  private bootSnapshotIsStale(a: AssignedVm): boolean {
+    const identity = this.bootRootfsIdentity(a)
+    return !!identity && identity !== this.classRootfsIdentity(a.handle.vmClass)
   }
 
   /**
@@ -5137,15 +5679,28 @@ export class MetalWarmPool {
     projectId: string,
     env: Record<string, string> = {},
     timer = new PhaseTimer(),
+    cause: VmCause = 'user_open',
   ): Promise<{
     assigned: AssignedVm
     apiMs: number
     readyMs: number
     source: 'local' | 'store'
+    /** Why the snapshot was taken: the idle window, or an on-demand eviction. */
+    suspendReason?: SuspendReason
     /** Workspace-drive size (MiB) re-asserted after the restore, when requested. */
     drive?: number | null
   } | null> {
     ;({ env } = this.ownMembersOnly(projectId, env))
+    // Make room before restoring: a resume is a VM coming back onto this host,
+    // so it needs the same slot/RAM an assign does (SHO-444). The snapshot's own
+    // size is not known until it is pulled, so the class default is the estimate
+    // — close enough for a reserve, and the memory trigger is off by default.
+    await timer.time('evict_wait', () =>
+      this.makeRoom({
+        exclude: projectId,
+        vmMemMiB: classConfig(this.cfg, vmClassFromEnv(env)).memMiB,
+      }),
+    )
     let s = this.suspended.get(projectId)
     let source: 'local' | 'store' = 'local'
     let repair: SnapshotDrift[] = []
@@ -5345,8 +5900,11 @@ export class MetalWarmPool {
       projectId,
       handle,
       assignedAt: now,
+      cause,
+      meter: { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: now },
       lastTouchedAt: now,
       lastRealActivityAt: now,
+      lastUserActivityAt: now,
       restoredFrom: { vmstate: s.snapshot.snapshotPath, mem: s.snapshot.memFilePath },
       // The restored guest runs the image its snapshot was taken on (already
       // gated fresh above); unstamped legacy snapshots count as current.
@@ -5408,7 +5966,7 @@ export class MetalWarmPool {
         )
     }
     metrics.inc(source === 'local' ? M.resumeLocalHits : M.resumeStoreHits)
-    return { assigned: a, apiMs, readyMs: apiMs + readyMs, source, drive: wantDriveMiB ?? null }
+    return { assigned: a, apiMs, readyMs: apiMs + readyMs, source, suspendReason: s.suspendReason, drive: wantDriveMiB ?? null }
   }
 
   /**
@@ -5562,6 +6120,9 @@ export class MetalWarmPool {
           if (this.vmBusy(a)) {
             a.lastTouchedAt = now // an active turn is activity
             a.lastRealActivityAt = now
+            // Deliberately NOT lastUserActivityAt: a guest that wrongly reports
+            // busy would then look freshly used forever, and the busy-idle
+            // ceiling could never fire (SHO-420).
           }
           // Did the catch-all counter move since the previous poll? Captured
           // before we overwrite it, because the legacy fallback below needs it.
@@ -5590,6 +6151,26 @@ export class MetalWarmPool {
           // VM a fresh window on every agent restart.
           const baselining = reportsPerClass && a.perClassActivity !== true
           if (reportsPerClass) a.perClassActivity = true
+          if (baselining && a.needsUserActivityBaseline) {
+            // Only an ADOPTED VM needs this. The registry does not carry the
+            // guest's real-activity history across a restart, so adopt seeded
+            // lastUserActivityAt to `now`; without this correction every deploy
+            // would hand a VM that has been idle for days another full ceiling.
+            // A fresh assign or a resume is a user action happening now, so its
+            // `now` seed is already the truth — correcting it from the
+            // snapshot's frozen timestamps would suspend the VM on the very
+            // first reaper pass after it came back (SHO-420 QA round 1).
+            // Guest clock skew is seconds; the ceiling is hours.
+            const reported = [appAt, agentAt].filter((t): t is number => typeof t === 'number')
+            if (reported.length) a.lastUserActivityAt = Math.min(now, Math.max(...reported))
+            // The streak's start did not survive the restart either. A guest
+            // busy now with no user since the baseline is assumed busy since
+            // then; otherwise every deploy restarts a stuck guest's streak.
+            if (this.vmBusy(a) && a.busySince === undefined) a.busySince = a.lastUserActivityAt
+          }
+          if (reportsPerClass) a.needsUserActivityBaseline = false
+          if (this.vmBusy(a)) a.busySince ??= now
+          else a.busySince = undefined
 
           if (typeof appAt === 'number') {
             const advanced = appAt > (a.lastAppRequestAt ?? 0)
@@ -5597,6 +6178,7 @@ export class MetalWarmPool {
             if (advanced && !baselining) {
               a.lastTouchedAt = now
               a.lastRealActivityAt = now // an end user hit the app
+              a.lastUserActivityAt = now
             }
           }
           if (typeof agentAt === 'number') {
@@ -5605,6 +6187,7 @@ export class MetalWarmPool {
             if (advanced && !baselining) {
               a.lastTouchedAt = now
               a.lastRealActivityAt = now // someone talked to the agent
+              a.lastUserActivityAt = now
             }
           }
           if (typeof body.appRequestCount === 'number') a.appRequestCount = body.appRequestCount
@@ -5623,6 +6206,7 @@ export class MetalWarmPool {
           // best available proxy for a user and must keep the VM alive.
           if (!a.perClassActivity && catchAllAdvanced) {
             a.lastRealActivityAt = now
+            a.lastUserActivityAt = now
           }
         } catch {
           a.lastTouchedAt = now // fail open: never evict on missing data
@@ -5707,6 +6291,31 @@ export class MetalWarmPool {
   }
 
   /**
+   * Whether this VM is past the busy-idle ceiling: it reports busy, but no
+   * person has used it for `busyIdleCeilingMs`. This is the escape hatch for a
+   * guest that wrongly reports `busy: true` (or leaks `activeStreams`) — it
+   * would otherwise never be idle-suspended, never rotate onto a fixed image,
+   * and hold host RAM forever (SHO-420).
+   *
+   * Deliberately excluded:
+   *   - `alwaysOn` VMs (paid, never idle-suspended).
+   *   - guests without per-class activity: their only signal is the catch-all,
+   *     which our own export sweeps move, so idle cannot be told from used.
+   *   - `busyIdleCeilingMs <= 0` (operator disabled it).
+   */
+  private pastBusyIdleCeiling(a: AssignedVm, now = Date.now()): boolean {
+    const ceiling = this.cfg.busyIdleCeilingMs
+    if (!(ceiling > 0)) return false
+    if (a.alwaysOn || a.perClassActivity !== true) return false
+    if (!this.vmBusy(a)) return false
+    const userIdleAt = a.lastUserActivityAt ?? a.assignedAt
+    // Both clocks: no person for the ceiling AND busy without a break for it.
+    // A turn that started recently (a project call, a hook, a webchat message)
+    // is real work even when no person has used the VM for hours.
+    return now - userIdleAt >= ceiling && now - (a.busySince ?? userIdleAt) >= ceiling
+  }
+
+  /**
    * Suspend assigned VMs that have been idle past the threshold. Driven by the
    * reaper timer in server.ts. Returns the projectIds that were suspended.
    */
@@ -5714,8 +6323,15 @@ export class MetalWarmPool {
     idleMs = this.cfg.idleSuspendMs,
     opts: { maxPerPass?: number; tier?: string; retired?: string[] } = {},
   ): Promise<string[]> {
-    if (idleMs <= 0) return []
+    if (idleMs <= 0) {
+      metrics.gauge(M.busyIdleVms, 0)
+      return []
+    }
     const now = Date.now()
+    // Final tick before anything is suspended: a VM's last running seconds are
+    // metered while it is still assigned, so suspending it never loses billable
+    // time (`closeMeter` is the belt to this braces).
+    this.advanceMeters(now)
     const idleFor = (a: AssignedVm) => now - (a.lastRealActivityAt ?? a.assignedAt)
     // Always-on projects (paid tiers) are never idle-suspended — the parity for
     // Knative's min-scale=1. They still resume fine if the agent restarts, but
@@ -5727,9 +6343,25 @@ export class MetalWarmPool {
     // external request bumping lastTouchedAt, so also skip any VM the last
     // activity poll saw mid-stream — never snapshot away an active agent
     // message. (The reaper timer polls activity immediately before this.)
+    //
+    // The second clause is the busy-idle ceiling: a VM whose guest keeps
+    // reporting busy but which no person has used for hours is suspended
+    // anyway, overriding `busy`, `activeStreams`, `activeTurns` and tasks.
     const stale = [...this.assigned.values()]
-      .filter((a) => !a.alwaysOn && idleFor(a) >= idleMs && !this.vmBusy(a))
+      .filter(
+        (a) =>
+          !a.alwaysOn &&
+          ((idleFor(a) >= idleMs && !this.vmBusy(a)) || this.pastBusyIdleCeiling(a, now)),
+      )
       .sort((x, y) => idleFor(y) - idleFor(x))
+    // VMs the reaper would have suspended if their guest did not report busy.
+    metrics.gauge(
+      M.busyIdleVms,
+      [...this.assigned.values()].filter(
+        (a) => !a.alwaysOn && this.vmBusy(a) && now - (a.lastUserActivityAt ?? a.assignedAt) >= idleMs,
+      ).length,
+    )
+    for (const id of this.busyIdleCeilingLogged) if (!this.assigned.has(id)) this.busyIdleCeilingLogged.delete(id)
     const cap = opts.maxPerPass ?? this.cfg.reapMaxPerPass ?? 0
     if (cap > 0 && stale.length > cap) {
       metrics.inc(M.idleReapDeferred, stale.length - cap)
@@ -5737,16 +6369,180 @@ export class MetalWarmPool {
     }
     const done: string[] = []
     for (const a of stale) {
+      const byCeiling = this.pastBusyIdleCeiling(a, now)
+      if (byCeiling && !this.busyIdleCeilingLogged.has(a.projectId)) {
+        this.busyIdleCeilingLogged.add(a.projectId)
+        const hours = (ms: number) => (ms / 3_600_000).toFixed(1)
+        console.warn(
+          `[pool] busy-idle ceiling: suspending ${a.projectId} — reports busy ` +
+            `(busy=${a.busy}, activeStreams=${a.activeStreams ?? 0}, activeTurns=${a.activeTurns}) ` +
+            `but no user activity for ${hours(now - (a.lastUserActivityAt ?? a.assignedAt))}h ` +
+            `(ceiling ${hours(this.cfg.busyIdleCeilingMs)}h)`,
+        )
+      }
       try {
-        const outcome = await this.suspendOrRetire(a.projectId)
+        const outcome = await this.suspendOrRetire(a.projectId, { reason: 'idle' })
         if (outcome.kind === 'retired') opts.retired?.push(a.projectId)
-        else done.push(a.projectId)
+        else if (outcome.kind === 'refused') {
+          // Not stopped: its HEAD is not durable yet. Leave it running and let
+          // the next sweep retry (SHO-442).
+          continue
+        } else done.push(a.projectId)
         metrics.inc(`${M.idleSuspendedByTier}{tier="${opts.tier ?? 'static'}"}`)
+        if (byCeiling) metrics.inc(M.busyIdleCeilingSuspended)
       } catch (err: any) {
         console.error(`[pool] idle-suspend failed for ${a.projectId}:`, err?.message ?? err)
       }
     }
     return done
+  }
+
+  /**
+   * Make room for one more VM on this host by suspending the longest-idle
+   * evictable ones (SHO-444).
+   *
+   * Called at the top of `assign()` and `resume()`, before the VM is claimed or
+   * restored, so a full host serves the incoming project instead of the control
+   * plane buying another host to hold VMs nobody is using. Also called by the
+   * reaper's headroom pass, which keeps most assigns from ever paying for this.
+   *
+   * Never fails an assign: if nothing is evictable the caller proceeds exactly
+   * as before (the host has always accepted an assign it has no room for) and
+   * `evict_none_available` increments, which is the signal that the host is
+   * genuinely full of work rather than of warm VMs.
+   *
+   * Returns the projectIds actually suspended.
+   */
+  async makeRoom(opts: {
+    /** The project being assigned/resumed — never evict it. */
+    exclude: string
+    /** RAM the incoming VM will occupy, for the memory trigger. */
+    vmMemMiB: number
+    /**
+     * Metric label for the eviction. Defaults to the fullness trigger
+     * (`mem` | `slots`); the headroom pass passes `headroom` so its evictions
+     * are distinguishable from ones an assign had to pay for.
+     */
+    label?: 'mem' | 'slots' | 'headroom'
+    /** Cap on evictions for this call; defaults to METAL_EVICT_MAX_PER_ASSIGN. */
+    max?: number
+    /**
+     * Keep this many VMs' worth of room free rather than just one VM's (the
+     * reaper's headroom pass). 0 = make room for exactly the incoming VM.
+     */
+    headroomSlots?: number
+  }): Promise<string[]> {
+    const cap = opts.max ?? this.cfg.evictMaxPerAssign
+    if (!(cap > 0)) return []
+    const headroom = Math.max(0, opts.headroomSlots ?? 0)
+    const mem = this.hostMemoryNow()
+    const reserve = resolveMemReserveMiB(this.cfg.evictMemReserveMiB, mem?.totalMiB)
+    const evicted: string[] = []
+    // VMs this call must not pick again. `evicting` only covers the duration of
+    // one attempt, so a refused or failed stop would otherwise be re-selected
+    // on the next iteration and burn the whole cap on one VM (SHO-444).
+    const skip = new Set([opts.exclude])
+    for (let i = 0; i < cap; i++) {
+      const full = hostFullness({
+        resident: this.assigned.size + headroom,
+        residentCap: this.cfg.maxResidentVmsPerHost,
+        memAvailableMiB: mem?.availableMiB,
+        vmMemMiB: opts.vmMemMiB * (1 + headroom),
+        memReserveMiB: reserve,
+      })
+      if (!full.full) break
+      const now = Date.now()
+      const candidates = [...this.assigned.values()]
+        .filter((a) => this.vmResidency(a, now) === 'evictable')
+        .map((a) => ({ projectId: a.projectId, idleMs: now - (a.lastRealActivityAt ?? a.assignedAt) }))
+      const victim = selectEvictionVictim({
+        candidates,
+        exclude: skip,
+        evicting: this.evicting,
+      })
+      if (!victim) {
+        metrics.inc(M.evictNoneAvailable)
+        console.warn(
+          `[pool] host full (${full.reason}) for ${opts.exclude} but nothing is evictable — ` +
+            `${this.assigned.size} resident, all active`,
+        )
+        break
+      }
+      this.evicting.add(victim.projectId)
+      try {
+        // Re-check immediately before suspending: the VM may have become active
+        // between selection and here (a user clicked, a turn started). Skipping
+        // it costs one loop iteration; suspending it would drop live work.
+        const a = this.assigned.get(victim.projectId)
+        if (!a || this.vmResidency(a, Date.now()) !== 'evictable') continue
+        const outcome = await this.suspendOrRetire(victim.projectId, { reason: 'evicted' })
+        if (outcome.kind === 'retired') {
+          // Retired off a superseded rootfs: the control plane re-warms it, so
+          // it is not a suspend and must not be counted as one.
+          metrics.inc(`${M.evictions}{reason="retired"}`)
+        } else if (outcome.kind === 'refused') {
+          // SHO-442: the VM's git history is not durable yet, so the stop was
+          // refused and it is still running. Not an eviction — try the next
+          // candidate rather than counting a VM that never left.
+          skip.add(victim.projectId)
+          console.warn(`[pool] eviction of ${victim.projectId} refused (${outcome.reason}) — trying the next`)
+          continue
+        } else {
+          evicted.push(victim.projectId)
+          metrics.inc(`${M.evictions}{reason="${opts.label ?? full.reason}"}`)
+          console.log(
+            `[pool] evicted ${victim.projectId} (idle ${Math.round(victim.idleMs / 1000)}s) ` +
+              `to make room for ${opts.exclude} — host full on ${full.reason}`,
+          )
+        }
+        this.onEvicted?.(victim.projectId)
+      } catch (err: any) {
+        // A suspend that refuses (e.g. SHO-442's "HEAD not durable") must not
+        // fail the incoming assign: try the next candidate.
+        skip.add(victim.projectId)
+        console.warn(`[pool] eviction of ${victim.projectId} failed, trying the next:`, err?.message ?? err)
+      } finally {
+        this.evicting.delete(victim.projectId)
+      }
+    }
+    return evicted
+  }
+
+  /**
+   * Called after an on-demand eviction suspends a VM, so the host can drop its
+   * DNAT forward and tell the control plane the project is no longer resident
+   * here. A callback because pool.ts must not import register.ts (which imports
+   * pool.ts); server.ts wires it to `fwd.remove` + `reportPlacement`.
+   */
+  onEvicted?: (projectId: string) => void
+
+  /**
+   * The host's memory as the eviction policy sees it. A seam so a test can
+   * inject a meminfo instead of needing a Linux host.
+   */
+  protected hostMemoryNow(): { totalMiB: number; availableMiB: number } | undefined {
+    return hostMemory()
+  }
+
+  /**
+   * The reaper's proactive headroom pass: keep `METAL_EVICT_HEADROOM_SLOTS`
+   * VMs' worth of room free so most assigns never pay for an on-demand
+   * eviction (a backup + snapshot on the incoming open's path).
+   *
+   * Counted against the same per-pass cap as `reapIdle`, so a host that is
+   * suddenly over-full cannot spend one pass evicting everything.
+   */
+  async evictForHeadroom(): Promise<string[]> {
+    const slots = this.cfg.evictHeadroomSlots
+    if (!(slots > 0)) return []
+    const cap = this.cfg.reapMaxPerPass > 0 ? Math.min(this.cfg.reapMaxPerPass, slots) : slots
+    return this.makeRoom({
+      exclude: '',
+      vmMemMiB: this.cfg.memMiB,
+      label: 'headroom',
+      max: cap,
+      headroomSlots: slots,
+    })
   }
 
   /**
@@ -5818,6 +6614,8 @@ export class MetalWarmPool {
   private staleSince = new Map<string, number>()
   /** A rotation that aborted (a backup failed) waits until then: each attempt re-runs every backup. */
   private rotateRetryAt = new Map<string, number>()
+  /** VMs already reported by the busy-idle ceiling, so a failed suspend logs once, not every pass. */
+  private busyIdleCeilingLogged = new Set<string>()
 
   /**
    * Tear down a tracked VM: drop it from the assigned map + adopt-on-restart
@@ -5827,6 +6625,7 @@ export class MetalWarmPool {
    * which is the intended self-heal once durability has a current copy.
    */
   private async discardDeadVm(a: AssignedVm, why: string): Promise<void> {
+    this.closeMeter(a)
     this.assigned.delete(a.projectId)
     this.live.remove(a.projectId)
     await this.rescueWorkspace(a, why)
@@ -6009,7 +6808,59 @@ export class MetalWarmPool {
     const target = Math.min(Math.floor(targetMiB), cap)
     if (!(target > 0)) return 'unchanged'
     const fromMiB = this.driveProvisioner.sizeMiB(path)
-    if (fromMiB >= target) return 'unchanged'
+    if (fromMiB >= target) {
+      // The file is already big enough — but the guest may never have seen it.
+      // A grow whose PATCH /drives failed (SHO-401) leaves the file grown and
+      // the guest at the old size, and every later open would otherwise answer
+      // 'unchanged' forever. Compare against what the guest actually mounts and
+      // converge when it is clearly behind.
+      const guest = await this.guestDriveUsage(a)
+      if (!guest) return 'unchanged'
+      const guestMiB = Math.floor(guest.totalBytes / (1024 * 1024))
+      if (!this.guestIsBehind(fromMiB, guestMiB)) return 'unchanged'
+      return this.driveLock.run(a.handle.id, async () => {
+        const currentFile = this.driveProvisioner.sizeMiB(path)
+        const nowGuest = await this.guestDriveUsage(a)
+        if (!nowGuest) return 'unchanged'
+        const nowGuestMiB = Math.floor(nowGuest.totalBytes / (1024 * 1024))
+        if (!this.guestIsBehind(currentFile, nowGuestMiB)) return 'unchanged'
+
+        const t0 = Date.now()
+        let frozen = false
+        try {
+          const freeze = await this.guestDriveOp(a, 'freeze')
+          if (freeze === 'unsupported') {
+            console.warn(`[pool] guest for ${a.projectId} has no /pool/workspace-drive — not converging the drive`)
+            return 'unsupported'
+          }
+          frozen = true
+          // No ftruncate: the file is already the right size. Just tell the VM
+          // its backing file changed, then let it resize the filesystem.
+          await new FcApi(a.handle.socketPath).patchDrive('workspace', path)
+          await this.guestDriveOp(a, 'thaw')
+          frozen = false
+          await this.guestDriveOp(a, 'resize')
+          metrics.inc(`${M.workspaceDriveGrow}{result="converged"}`)
+          metrics.gauge(M.workspaceDriveGrowMs, Date.now() - t0)
+          console.log(
+            `[pool] converged workspace drive for ${a.projectId} ${nowGuestMiB}MiB → ${currentFile}MiB ` +
+              `(guest was behind the file, ${Date.now() - t0}ms)`,
+          )
+          return { fromMiB: nowGuestMiB, toMiB: currentFile }
+        } catch (err: any) {
+          metrics.inc(`${M.workspaceDriveGrow}{result="error"}`)
+          console.error(
+            `[pool] workspace-drive converge for ${a.projectId} to ${currentFile}MiB failed:`,
+            err?.message ?? err,
+          )
+          throw err
+        } finally {
+          if (frozen) {
+            await this.guestDriveOp(a, 'thaw').catch(() => {})
+          }
+        }
+      })
+    }
 
     return this.driveLock.run(a.handle.id, async () => {
       // Re-read inside the lock: a queued grow may have already done the work.
@@ -6056,6 +6907,35 @@ export class MetalWarmPool {
         }
       }
     })
+  }
+
+  /**
+   * True when the guest's mounted filesystem is clearly smaller than the
+   * backing file — i.e. a grow the VM never saw. ext4 metadata makes the guest
+   * total a little under the file size, so only a shortfall of more than 5% or
+   * 1 GiB counts (SHO-401).
+   */
+  private guestIsBehind(fileMiB: number, guestMiB: number): boolean {
+    const shortMiB = fileMiB - guestMiB
+    return shortMiB > Math.max(0.05 * fileMiB, 1024)
+  }
+
+  /** GET /pool/workspace-drive on the guest — the size the VM actually mounts. */
+  private async guestDriveUsage(
+    a: AssignedVm,
+  ): Promise<{ usedBytes: number; totalBytes: number } | null> {
+    try {
+      const res = await fetch(`${a.handle.agentUrl}/pool/workspace-drive`, {
+        headers: { ...(a.runtimeToken ? { Authorization: `Bearer ${a.runtimeToken}` } : {}) },
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!res.ok) return null
+      const body = (await res.json().catch(() => ({}))) as { usedBytes?: number; totalBytes?: number }
+      if (typeof body.usedBytes !== 'number' || typeof body.totalBytes !== 'number') return null
+      return { usedBytes: body.usedBytes, totalBytes: body.totalBytes }
+    } catch {
+      return null
+    }
   }
 
   /** POST /pool/workspace-drive on the guest. `'unsupported'` on 404/409. */
@@ -6579,6 +7459,26 @@ export class MetalWarmPool {
     metrics.gauge(M.assignedAgentActive, cls.agentActive)
     metrics.gauge(M.assignedIdleTail, cls.idleTail)
     metrics.gauge(M.assignedUnhealthy, cls.unhealthy)
+    metrics.gauge(M.assignedActive, cls.active)
+    metrics.gauge(M.assignedEvictable, cls.evictable)
+
+    // Git durability (SHO-442): how many VMs cannot save, how long the oldest
+    // has been that way, and the worst unsaved age. These are the numbers the
+    // alert reads — the incident ran for a day and a half with none of them.
+    const now = Date.now()
+    let untrusted = 0
+    let oldestUntrustedSec = 0
+    let worstUnsavedSec = 0
+    for (const a of this.assigned.values()) {
+      if (a.repoUntrustedReason) {
+        untrusted++
+        oldestUntrustedSec = Math.max(oldestUntrustedSec, Math.round((now - (a.repoLastSavedAt ?? a.assignedAt)) / 1000))
+      }
+      worstUnsavedSec = Math.max(worstUnsavedSec, this.repoUnsavedSeconds(a, now))
+    }
+    metrics.gauge(M.repoUntrustedVms, untrusted)
+    metrics.gauge(M.repoUntrustedOldestSec, oldestUntrustedSec)
+    metrics.gauge(M.repoUnsavedSeconds, worstUnsavedSec)
 
     // Only dm mode has exception stores to run out of; the other rootfs modes
     // give each VM its own file and fail with an ordinary ENOSPC.
@@ -6606,21 +7506,178 @@ export class MetalWarmPool {
    * {@link APP_ACTIVE_WINDOW_MS}, and `idleTail` otherwise (running but neither
    * being used nor edited — the 30-min idle-suspend tail). agent-active wins
    * when a VM is both, so the buckets are disjoint and sum to `assigned.size`.
+   *
+   * `active` / `evictable` are the OTHER decomposition of the same set (see
+   * {@link vmResidency}): whether the VM is holding a slot someone needs, or is
+   * only warm. They are disjoint and also sum to `assigned.size`, and they are
+   * what the control plane counts as capacity — an idle-resident VM is free
+   * room, not demand.
    */
   private classifyAssigned(
     now = Date.now(),
-  ): { appActive: number; agentActive: number; idleTail: number; unhealthy: number } {
+  ): {
+    appActive: number
+    agentActive: number
+    idleTail: number
+    unhealthy: number
+    active: number
+    evictable: number
+  } {
     let appActive = 0
     let agentActive = 0
     let idleTail = 0
     let unhealthy = 0
+    let active = 0
+    let evictable = 0
     for (const a of this.assigned.values()) {
       if (a.lastHealthOk === false) unhealthy++
-      if ((a.activeStreams ?? 0) > 0) agentActive++
-      else if (a.lastAppRequestAt && now - a.lastAppRequestAt <= APP_ACTIVE_WINDOW_MS) appActive++
+      const cls = this.vmMeterClass(a, now)
+      if (cls === 'agent') agentActive++
+      else if (cls === 'app') appActive++
       else idleTail++
+      if (this.vmResidency(a, now) === 'evictable') evictable++
+      else active++
     }
-    return { appActive, agentActive, idleTail, unhealthy }
+    return { appActive, agentActive, idleTail, unhealthy, active, evictable }
+  }
+
+  /**
+   * Whether this assigned VM is holding a slot someone needs (`active`) or is
+   * only warm (`evictable`).
+   *
+   * The third state Russell asked for: an idle VM stays resident — instant
+   * resume, no snapshot restore — but counts as FREE capacity, and is suspended
+   * early only when an assign/resume on this host actually needs the room (see
+   * `makeRoom`). Before this, an idle VM was either resident (counted as used,
+   * which is what made the burst scaler buy hosts to hold VMs nobody was using)
+   * or suspended (a resume on the user's next click).
+   *
+   * `evictable` is deliberately the same threshold as the aggressive idle
+   * window (`METAL_IDLE_SUSPEND_MS`, 15m): a VM the reaper would already have
+   * suspended in a busy region is exactly the one that may be evicted early in
+   * a quiet one. No new knob, and the two can never disagree about "idle".
+   *
+   * Never evictable: `alwaysOn` (paid, never idle-suspended), a busy guest
+   * (`vmBusy` — an agent turn, a live stream, a background task), and anything
+   * inside the window. With idle-suspend disabled (`METAL_IDLE_SUSPEND_MS=0`)
+   * nothing is evictable either: an operator who turned the reaper off did not
+   * ask for VMs to be suspended on someone else's assign.
+   */
+  protected vmResidency(a: AssignedVm, now = Date.now()): VmResidency {
+    if (!(this.cfg.idleSuspendMs > 0)) return 'active'
+    if (a.alwaysOn || this.vmBusy(a)) return 'active'
+    return now - (a.lastRealActivityAt ?? a.assignedAt) >= this.cfg.idleSuspendMs ? 'evictable' : 'active'
+  }
+
+  /**
+   * Liveness class of ONE VM: an in-flight agent turn wins, then recent end-user
+   * app traffic, else the idle tail. `classifyAssigned` buckets the fleet with
+   * exactly this, and the billing meter charges time to exactly this — one
+   * classifier, so the fleet gauges and the bill can never disagree.
+   */
+  private vmMeterClass(a: AssignedVm, now: number): 'agent' | 'app' | 'idle' {
+    if ((a.activeStreams ?? 0) > 0) return 'agent'
+    if (a.lastAppRequestAt && now - a.lastAppRequestAt <= APP_ACTIVE_WINDOW_MS) return 'app'
+    return 'idle'
+  }
+
+  /**
+   * Advance every assigned VM's cumulative counters by the time since its last
+   * tick, in its current class. Called by `status()` (the heartbeat) and
+   * `reapIdle()` (before it suspends anything), so a VM's final tick is taken
+   * while it is still assigned and its full running time is reported.
+   *
+   * The counters are cumulative per VM, never reset: a heartbeat the control
+   * plane drops loses nothing, because the next one carries the total and the
+   * control plane diff's it against its own cursor.
+   */
+  advanceMeters(now = Date.now()): void {
+    for (const a of this.assigned.values()) this.advanceOneMeter(a, now)
+  }
+
+  private advanceOneMeter(a: AssignedVm, now: number): VmMeter {
+    const m = (a.meter ??= { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: a.assignedAt })
+    // Clamped: a clock step backwards must not subtract metered time.
+    const elapsed = Math.max(0, now - m.advancedAt)
+    m.advancedAt = now
+    if (elapsed > 0) {
+      const cls = this.vmMeterClass(a, now)
+      if (cls === 'agent') m.agentMs += elapsed
+      else if (cls === 'app') m.appMs += elapsed
+      else m.idleMs += elapsed
+    }
+    return m
+  }
+
+  /**
+   * Final tick + park a VM's counters in the closed list, so the heartbeat still
+   * reports its running time after it leaves `assigned` (suspend, retire,
+   * destroy, a dead-VM discard). The row is dropped once the control plane acks
+   * the seq that carried it — bounded by {@link MAX_CLOSED_METERS} rows and
+   * {@link CLOSED_METER_TTL_MS}, so a control plane that never acks cannot grow
+   * the agent's memory without limit.
+   */
+  private closeMeter(a: AssignedVm, now = Date.now()): void {
+    const m = this.advanceOneMeter(a, now)
+    const row: VmMeterReport & { lastSentSeq?: number } = {
+      ...this.meterRow(a, m),
+      endedAt: now,
+    }
+    this.closedMeters.push(row)
+    if (this.closedMeters.length > MAX_CLOSED_METERS) {
+      this.closedMeters.splice(0, this.closedMeters.length - MAX_CLOSED_METERS)
+    }
+  }
+
+  private meterRow(a: AssignedVm, m: VmMeter): VmMeterReport {
+    return {
+      runtimeKey: a.projectId,
+      vmId: a.handle.id,
+      assignedAt: a.assignedAt,
+      // The size the host ACTUALLY booted, not the API's env accounting: a host
+      // boots the class default (or the project's vmMemoryMiB override), which
+      // is what occupies the machine and so what the workspace pays for.
+      vcpus: a.handle.vcpus,
+      memMiB: a.handle.memoryMB,
+      vmClass: a.handle.vmClass,
+      cause: a.cause ?? 'user_open',
+      alwaysOn: !!a.alwaysOn,
+      agentMs: Math.round(m.agentMs),
+      appMs: Math.round(m.appMs),
+      idleMs: Math.round(m.idleMs),
+    }
+  }
+
+  /**
+   * The heartbeat's billing block: every assigned VM's cumulative counters plus
+   * the stored workspace key and machine size the control plane cannot know, and
+   * the closed rows it has not acked. `seq` is monotonic; the control plane
+   * replies with `meterAck: seq` on the NEXT register response.
+   */
+  meterReport(now = Date.now()): {
+    seq: number
+    vms: VmMeterReport[]
+    closed: VmMeterReport[]
+  } {
+    this.advanceMeters(now)
+    this.pruneClosedMeters(now)
+    const seq = ++this.meterSeq
+    const vms = [...this.assigned.values()].map((a) => this.meterRow(a, a.meter!))
+    for (const c of this.closedMeters) c.lastSentSeq = seq
+    return { seq, vms, closed: this.closedMeters.map(({ lastSentSeq, ...row }) => row) }
+  }
+
+  /**
+   * Drop closed rows the control plane has confirmed it ingested. Rows created
+   * after the report that carried `seq` keep their row (no `lastSentSeq`).
+   */
+  ackMeters(seq: number): void {
+    if (!Number.isFinite(seq) || seq <= 0) return
+    this.closedMeters = this.closedMeters.filter((c) => c.lastSentSeq == null || c.lastSentSeq > seq)
+  }
+
+  private pruneClosedMeters(now: number): void {
+    this.closedMeters = this.closedMeters.filter((c) => (c.endedAt ?? now) + CLOSED_METER_TTL_MS > now)
   }
 
   /**
@@ -6754,6 +7811,7 @@ export class MetalWarmPool {
           }
         }
       }
+      this.closeMeter(a)
       this.assigned.delete(projectId)
       this.live.remove(projectId)
       stoppedVm = true
@@ -6943,7 +8001,15 @@ export class MetalWarmPool {
     await run('repo', async () => {
       if (a.repoHydratePending) return null
       if (this.repoLineageOf(a).kind === 'untrusted') {
-        return `git history is untrusted (${a.repoUntrustedReason ?? 'unknown'}); durable repo left as is`
+        // A cold boot restores the durable copy, so this is still a failed step
+        // (a non-forced recycle aborts). But the work must exist somewhere: the
+        // quarantine copy is written first, and its key goes in the report
+        // (SHO-442).
+        const quarantined = await this.quarantineRepo(a)
+        return (
+          `git history is untrusted (${a.repoUntrustedReason ?? 'unknown'}); durable repo left as is` +
+          (quarantined ? `; quarantined at ${a.repoQuarantineKey ?? 'conflict/'}` : '; quarantine FAILED')
+        )
       }
       // Joining an in-flight periodic export would hand back its boolean, not
       // our outcome — so if our closure did not run, run again once it ends.
@@ -7055,10 +8121,14 @@ export class MetalWarmPool {
         assignedAt: a.assignedAt,
         lastRealActivityAt: a.lastRealActivityAt ?? a.assignedAt,
         realIdleMs: now - (a.lastRealActivityAt ?? a.assignedAt),
+        lastUserActivityAt: a.lastUserActivityAt ?? a.assignedAt,
+        userIdleMs: now - (a.lastUserActivityAt ?? a.assignedAt),
         activeStreams: a.activeStreams ?? 0,
         busy: this.vmBusy(a),
+        busyIdle: this.vmBusy(a) && this.pastBusyIdleCeiling(a, now),
         snapshotRootfsIdentity: this.bootRootfsIdentity(a),
         ...(staged ? { stagedSnapshotIdentity: staged.rootfsIdentity } : {}),
+        durability: this.durabilityOf(a),
       }
     }
     const s = this.suspended.get(projectId)
@@ -7104,6 +8174,12 @@ export class MetalWarmPool {
     return {
       store: this.store.kind,
       idleSuspendMs: this.cfg.idleSuspendMs,
+      busyIdleCeilingMs: this.cfg.busyIdleCeilingMs,
+      // Billing: every assigned VM's cumulative running time by class, plus the
+      // closed VMs the control plane has not acked. The control plane ingests it
+      // from the heartbeat; `meter` is here (not only in register.ts) so /vms
+      // shows exactly what the last heartbeat carried.
+      meter: this.meterReport(now),
       rootfsCow: this.cfg.rootfsCow,
       disk: this.disk(),
       cache: { localCount: this.suspended.size, stagedCount: this.stagedSuspended.size, localBytes: this.cacheBytes() },
@@ -7132,11 +8208,20 @@ export class MetalWarmPool {
         // What reapIdle actually compares against idleSuspendMs. Diverges from
         // idleMs by however much routing polls / fail-open have touched the VM.
         realIdleMs: now - (a.lastRealActivityAt ?? a.assignedAt),
+        // The clock the busy-idle ceiling reads: only real user requests move it,
+        // so a guest stuck reporting busy cannot keep it fresh.
+        userIdleMs: now - (a.lastUserActivityAt ?? a.assignedAt),
         // Per-class liveness (see AssignedVm). `*IdleMs: null` = no request of
         // that class observed yet; `busy` (or `activeStreams>0` for an older
         // guest) = an agent turn in flight.
         activeStreams: a.activeStreams ?? 0,
         busy: this.vmBusy(a),
+        // `active` = holding a slot someone needs; `evictable` = warm but free
+        // capacity, suspended early only when an assign here needs the room.
+        residency: this.vmResidency(a, now),
+        // Reports busy, but no user activity past the ceiling: the reaper will
+        // suspend it on its next pass.
+        busyIdle: this.vmBusy(a) && this.pastBusyIdleCeiling(a, now),
         appIdleMs: a.lastAppRequestAt ? now - a.lastAppRequestAt : null,
         appRequestCount: a.appRequestCount ?? 0,
         agentIdleMs: a.lastAgentRequestAt ? now - a.lastAgentRequestAt : null,
@@ -7202,6 +8287,13 @@ export interface OpenResult {
   totalMs?: number
   /** Cold boot only: why no snapshot was resumed. */
   staleReason?: StaleReason
+  /**
+   * Resume only: why the snapshot being restored was taken — the idle window
+   * (`idle`) or an on-demand eviction (`evicted`). The control plane labels its
+   * wake-latency metric with it, so the cost of the "ready to suspend" bucket is
+   * measurable instead of assumed.
+   */
+  suspendReason?: SuspendReason
   /** Fresh assign only: how the git history restore went. */
   repo?: RepoRestoreInfo
   /** `reused` only: the open this VM came from, if nobody received it (see reportOpen). */
@@ -7214,6 +8306,7 @@ export interface LateWake {
   mode: 'assigned' | 'resumed'
   source?: 'local' | 'store'
   staleReason?: StaleReason
+  suspendReason?: SuspendReason
   phases: Record<string, number>
   totalMs: number
   repo?: RepoRestoreInfo

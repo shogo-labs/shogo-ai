@@ -129,6 +129,16 @@ function tryWrite(dir: string, rel: string): boolean {
   }
 }
 
+/**
+ * Drive the sync until it parks. Parking needs 20 consecutive failures with the
+ * *same* first line, and a slow Windows runner can interleave a different one
+ * (a git child that has just exited still holds a handle on the repo), which
+ * resets the streak — so the budget is attempts, not the exact count.
+ */
+async function flushUntilParked(sync: GitWorkspaceSync, attempts = 60): Promise<void> {
+  for (let i = 0; i < attempts && !sync.isParked; i++) await sync.flush()
+}
+
 describe('a real repository that cannot be made durable', () => {
   let dir: string
   let logs: string[]
@@ -184,9 +194,9 @@ describe('a real repository that cannot be made durable', () => {
       logger: logger(),
     })
 
-    for (let i = 0; i < 20; i++) await sync.flush()
+    await flushUntilParked(sync)
 
-    expect(sync.isParked).toBe(true)
+    expect(sync.isParked, logs.join('\n')).toBe(true)
     expect(parks).toHaveLength(1)
     expect(parks[0].reason).toContain('object store unreachable')
     expect(parks[0].consecutiveFailures).toBeGreaterThanOrEqual(20)
@@ -231,8 +241,8 @@ describe('a real repository that cannot be made durable', () => {
       logger: logger(),
     })
 
-    for (let i = 0; i < 20; i++) await sync.flush()
-    expect(sync.isParked).toBe(true)
+    await flushUntilParked(sync)
+    expect(sync.isParked, logs.join('\n')).toBe(true)
 
     // Backoff timers scheduled before the park can still fire while the loop
     // runs, so snapshot the counter once the sync is parked rather than

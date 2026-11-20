@@ -17,7 +17,8 @@ export const dictationRoutes = new Hono()
 dictationRoutes.post('/dictation/transcribe', async (c) => {
   const localMode = process.env.SHOGO_LOCAL_MODE === 'true'
   const auth = c.get('auth') as { isAuthenticated?: boolean; userId?: string; via?: string } | undefined
-  if (!localMode && (!auth?.isAuthenticated || !auth.userId)) {
+  const userId = auth?.userId
+  if (!localMode && (!auth?.isAuthenticated || !userId)) {
     return c.json({ error: 'Please sign in to use voice typing.' }, 401)
   }
   // Runtime and API-key identities can carry an owner's userId without being
@@ -62,7 +63,12 @@ dictationRoutes.post('/dictation/transcribe', async (c) => {
       return c.json({ text: result.text })
     }
 
-    const workspaceId = await resolvePersonalWorkspaceId(auth.userId)
+    // The cloud-only guard above requires a user ID. Keep the explicit check
+    // here so the authenticated identity cannot be lost during future routing
+    // changes, and so the token is never minted for an absent principal.
+    if (!userId) return c.json({ error: 'Please sign in to use voice typing.' }, 401)
+
+    const workspaceId = await resolvePersonalWorkspaceId(userId)
     if (!workspaceId) {
       return c.json({ error: 'A personal workspace is required for voice typing.' }, 404)
     }
@@ -70,7 +76,7 @@ dictationRoutes.post('/dictation/transcribe', async (c) => {
     const proxyToken = await generateProxyToken(
       'workspace',
       workspaceId,
-      auth.userId,
+      userId,
       5 * 60 * 1000,
     )
     const result = await transcribeDictation(audio, {

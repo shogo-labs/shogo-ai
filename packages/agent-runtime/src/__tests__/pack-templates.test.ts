@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * The pack catalogue is data: 13 packs, each a valid `shogo-system.yaml` plus
+ * The pack catalogue is data: 14 packs, each a valid `shogo-system.yaml` plus
  * questions the install wizard can render. These tests keep a typo in a
  * channel name, an unanswered prompt or a stale generated file from reaching a
  * listing.
@@ -17,11 +17,15 @@ const TEMPLATES_DIR = join(import.meta.dir, '..', '..', 'templates')
 describe('pack templates', () => {
   const packs = listPackTemplates()
 
-  test('the catalogue has 13 packs with unique ids', () => {
-    expect(packs).toHaveLength(13)
-    expect(new Set(packs.map((p) => p.id)).size).toBe(13)
+  test('the catalogue has 14 packs with unique ids', () => {
+    expect(packs).toHaveLength(14)
+    expect(new Set(packs.map((p) => p.id)).size).toBe(14)
     expect(getPackTemplate('self-evolving')?.name).toBe('Self Evolving')
     expect(getPackTemplate('department-engineering')).toBeTruthy()
+    expect(getPackTemplate('department-build')).toBeTruthy()
+    // The course is what a purchase installs, never something anyone installs
+    // on its own — #course + the Coach must not be a public pack.
+    expect(getPackTemplate('department-course')).toBeNull()
   })
 
   test('every pack parses as a manifest with schedules and setup', () => {

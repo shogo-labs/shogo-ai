@@ -9,6 +9,7 @@ import { createReactNativeMock } from '../../../test/react-native-mock'
 const routed: any[] = []
 const saved: Array<{ projectId: string | null; look: any }> = []
 const localLooks: Array<{ projectId: string | null; look: any }> = []
+const opened: Array<{ projectId: string | null }> = []
 let canEdit = true
 let windowWidth = 1280
 /** A registry UUID: the API sends the label, so this must never reach the screen. */
@@ -49,7 +50,10 @@ mock.module('../../../lib/team-chat-api', () => ({
       saved.push({ projectId, look })
       return look
     },
-    openAgentDm: async () => ({ id: 'dm-1' }),
+    openAgentChat: async (_ws: string, projectId: string | null) => {
+      opened.push({ projectId })
+      return { chatSessionId: 'chat-1', projectId }
+    },
   }),
 }))
 const { resolveAgentLook } = await import('@shogo/shared-app/buddy-look')
@@ -82,6 +86,7 @@ afterEach(() => {
   routed.length = 0
   saved.length = 0
   localLooks.length = 0
+  opened.length = 0
   canEdit = true
   windowWidth = 1280
 })
@@ -152,21 +157,23 @@ describe('AgentProfileScreen', () => {
     render(<AgentProfileScreen workspaceId="ws" agentKey="ws" />)
     await screen.findByText('Sends invoices')
     expect(screen.queryByLabelText('Open project')).toBeNull()
-    expect(screen.queryByLabelText('Show in side panel')).toBeNull()
   })
 
-  test('the side panel link needs a wide screen and opens the DM with the project pane', async () => {
+  test('Open chat lands in the project chat with the agent (SHO-412)', async () => {
     windowWidth = 600
     render(<AgentProfileScreen workspaceId="ws" agentKey="proj-1" />)
     await screen.findByText('Sends invoices')
-    expect(screen.queryByLabelText('Show in side panel')).toBeNull()
+    fireEvent.click(screen.getByLabelText('Open chat'))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(opened).toEqual([{ projectId: 'proj-1' }])
+    expect(routed).toEqual([{ pathname: '/(app)/project-chat/[id]', params: { id: 'proj-1', chatSessionId: 'chat-1' } }])
     cleanup()
 
     windowWidth = 1280
     render(<AgentProfileScreen workspaceId="ws" agentKey="proj-1" />)
     await screen.findByText('Sends invoices')
-    fireEvent.click(screen.getByLabelText('Show in side panel'))
+    fireEvent.click(screen.getByLabelText('Open chat'))
     await new Promise((r) => setTimeout(r, 0))
-    expect(routed).toEqual([{ pathname: '/(app)/c/[conversationId]', params: { conversationId: 'dm-1', project: 'proj-1' } }])
+    expect(routed.at(-1)).toEqual({ pathname: '/(app)/projects/[id]', params: { id: 'proj-1', chatSessionId: 'chat-1' } })
   })
 })

@@ -1,0 +1,96 @@
+# SigNoz alert: a metal runtime's work has been unsaved for over 30 minutes
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts` (POST /api/v2/rules).
+#
+# Why: the 2026-11-14 incident had no signal at all. Every repo save on a
+# media-heavy workspace failed with `lfs-push-failed`, the host timed out, and
+# the user kept working for a day and a half on a VM whose HEAD had never
+# reached durable storage. Nothing counted "how long has this work existed only
+# inside a guest", so nobody could have paged on it.
+#
+# `metal_repo_unsaved_seconds` is the node-agent gauge of the worst age, across
+# assigned VMs, of a HEAD that is not in the durable repo. It is reported on the
+# heartbeat and surfaces as
+# `metal.host.gauge{counter="metal_repo_unsaved_seconds"}`.
+#
+# 30 minutes is the card's threshold: long enough that a normal save cycle never
+# trips it, short enough that a stuck save is caught while the user is still
+# working rather than after the next cold boot.
+#
+# A healthy fleet has no series at all (old agents omit `gauges`). Do NOT set
+# alertOnAbsent: absent means "not reporting", not "everything is saved".
+
+alert: MetalRepoUnsaved
+alertType: METRIC_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    unit: s
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          aggregations:
+            - metricName: metal.host.gauge
+              spaceAggregation: max
+              timeAggregation: max
+          filter:
+            expression: "counter = 'metal_repo_unsaved_seconds'"
+          groupBy:
+            - name: host_id
+              fieldContext: attribute
+              fieldDataType: string
+          legend: "{{host_id}} worst unsaved age"
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: critical
+        op: above
+        matchType: on_average
+        target: 1800
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 5m
+    frequency: 1m
+labels:
+  severity: critical
+  team: platform
+  incident_class: metal
+notificationSettings:
+  groupBy: [host_id]
+  renotify:
+    enabled: true
+    interval: 1h
+    alertStates: [firing]
+annotations:
+  summary: "Metal runtime work unsaved for over 30 min ({{host_id}})"
+  description: |
+    A microVM on this host has a HEAD that has not reached the durable repo for
+    more than 30 minutes. The user's files exist only inside that guest: a cold
+    boot, a suspend, or a recycle restores the older durable copy.
+
+    The stop paths now refuse to drop such a VM (`metal_repo_durability_refused_total`
+    climbs and the VM keeps running), so the work is not being deleted — but it
+    is also not being saved, and the VM is pinned until it is.
+
+    Triage:
+    1. `metal_repo_bundle_lfs_pending_total` — is the LFS push still running
+       (202, joined by the next export) or has it stopped?
+    2. `metal_repo_lfs_missing_total` — objects whose bytes are on neither side.
+       Those are real loss; the export still writes the history and names the
+       paths in the manifest.
+    3. The guest log for the export's `reason` (`auth` | `timeout` |
+       `missing-objects` | `network` | `presign` | `other`) — the 503 body now
+       carries the full stderr.
+    4. Object storage health and reachability from this host's region.
+
+    Runbook: docs/runbooks/metal-fleet.md

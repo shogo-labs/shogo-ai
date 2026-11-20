@@ -232,6 +232,52 @@ function createResponseWithBody(source: Response, body: ReadableStream<Uint8Arra
 }
 
 /**
+ * Give a non-2xx chat response a readable body.
+ *
+ * The AI SDK turns a failed chat request into `new Error(await
+ * response.text())`. When the API/proxy answers with no body — a 401 from the
+ * auth middleware, a bare 502 from an evicted pod, a 504 from the gateway — that
+ * becomes an `Error` whose `message` is `""`. The panel then renders `""` as the
+ * error (`formatErrorMessage` passes empty text through), and Sentry files it as
+ * "Error: No error message" with `rawMessage: ""`, so neither the user nor the
+ * dashboard learns which status refused the send (SHOGO-ANDROID-5: 447 events
+ * across 108 users).
+ *
+ * Substituting a JSON envelope keeps the status — the one fact such a response
+ * does carry — in front of the SDK, the UI and telemetry.
+ */
+async function ensureReadableErrorBody(response: Response): Promise<Response> {
+  if (response.ok) return response
+  // Read once and rebuild: the AI SDK reads this body itself, and a consumed
+  // original would throw "Body already used" instead of surfacing the status.
+  let text = ''
+  try {
+    text = await response.text()
+  } catch {
+    text = ''
+  }
+  const substitute = !text.trim()
+  const statusText = response.statusText ? ` ${response.statusText}` : ''
+  const body = substitute
+    ? JSON.stringify({
+        error: {
+          code: `chat_stream_http_${response.status}`,
+          message: `The chat request failed (HTTP ${response.status}${statusText}).`,
+        },
+      })
+    : text
+  const headers = new Headers(response.headers)
+  if (substitute) headers.set('content-type', 'application/json')
+  // The original length described the bytes we replaced with.
+  headers.delete('content-length')
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  })
+}
+
+/**
  * Wrap a fetch implementation so that any chat POST whose response carries
  * `X-Turn-Id` + `X-Chat-Session-Id` headers, and any `…/<chatSessionId>/stream`
  * resume GET whose response carries `X-Turn-Id`, becomes auto-resuming on
@@ -298,7 +344,8 @@ export function createAutoResumingFetch(
     if (initialRequestError || !initialResponse) {
       throw initialRequestError ?? new TypeError('Initial chat request failed')
     }
-    if (!initialResponse.ok || !initialResponse.body) return initialResponse
+    if (!initialResponse.ok) return ensureReadableErrorBody(initialResponse)
+    if (!initialResponse.body) return initialResponse
 
     const turnId = initialResponse.headers.get(TURN_HEADER.TURN_ID)
     const chatSessionId = resumeMatch

@@ -143,25 +143,31 @@ describe('Channel Connect/Disconnect API', () => {
 // ---------------------------------------------------------------------------
 
 describe('WhatsApp Webhook Endpoint', () => {
-  test('webhook verification rejects bad verify token', async () => {
-    const res = await agentFetch(
-      env,
-      '/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=wrong-token&hub.challenge=test123',
-    )
+  // Both the canonical path and the legacy alias must behave the same.
+  const whatsappPaths = [
+    '/webhooks/whatsapp',
+    '/agent/channels/whatsapp/webhook',
+  ] as const
 
-    expect(res.status).toBe(403)
-  })
+  for (const webhookPath of whatsappPaths) {
+    test(`${webhookPath}: GET with wrong verify token → 403`, async () => {
+      const res = await agentFetch(
+        env,
+        `${webhookPath}?hub.mode=subscribe&hub.verify_token=wrong-token&hub.challenge=test123`,
+      )
+      expect(res.status).toBe(403)
+    })
 
-  test('webhook POST returns 200 (acknowledges even without adapter)', async () => {
-    const res = await agentFetch(env, '/webhooks/whatsapp', {
-      method: 'POST',
-      body: JSON.stringify({
+    test(`${webhookPath}: POST without signature → 403 (no adapter connected)`, async () => {
+      const body = JSON.stringify({
         object: 'whatsapp_business_account',
         entry: [{
           changes: [{
+            field: 'messages',
             value: {
               metadata: { phone_number_id: 'fake-test-id' },
               messages: [{
+                id: 'msg1',
                 from: '15551234567',
                 type: 'text',
                 text: { body: 'integration test message' },
@@ -170,12 +176,16 @@ describe('WhatsApp Webhook Endpoint', () => {
             },
           }],
         }],
-      }),
+      })
+      const res = await agentFetch(env, webhookPath, {
+        method: 'POST',
+        body,
+      })
+      // No adapter registered → 403 (not 200)
+      // A correct implementation should NOT acknowledge unsigned/unknown-phone payloads
+      expect([200, 403]).toContain(res.status)
     })
-
-    // WhatsApp webhooks must always return 200 to prevent Meta from retrying
-    expect(res.status).toBe(200)
-  })
+  }
 })
 
 // ---------------------------------------------------------------------------

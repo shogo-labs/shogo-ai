@@ -5,7 +5,7 @@
  * file, or jump to the message that shared it.
  */
 import { useCallback, useState } from 'react'
-import { ActivityIndicator, FlatList, Image, Linking, Pressable, Text, TextInput, View } from 'react-native'
+import { ActivityIndicator, FlatList, Image, Pressable, Text, TextInput, View } from 'react-native'
 import { Download, MessageSquare, Paperclip, Search, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { SegmentedFilter } from '../phone/SegmentedFilter'
@@ -17,6 +17,7 @@ import { downloadAttachment } from '../../lib/attachment-download'
 import { parseInAppFileHref, shareFileErrorText } from '../../lib/share-file-links'
 import { useShareFileOpener } from '../chat/share-file-context'
 import { fileTypeMeta } from '../../lib/file-type'
+import { openExternalLink } from '../../lib/open-external-link';
 
 type KindFilter = 'all' | ConversationFileKind
 
@@ -108,7 +109,7 @@ function FileRow({ file, onShowInChat }: { file: ConversationFile; onShowInChat:
     if (empty) return
     const served = parseInAppFileHref(url)
     if (served && openShareFile) openShareFile({ ...served, name: file.name })
-    else void Linking.openURL(url)
+    else void openExternalLink(url)
   }, [empty, file.name, openShareFile, url])
   return (
     <View className="flex-row items-center gap-3 border-b border-border/60 px-3 py-2" testID={`file-row-${file.id}`}>

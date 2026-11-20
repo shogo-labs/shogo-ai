@@ -25,6 +25,10 @@ export function assignResponseBody(r: OpenResult, url: string) {
     phases: r.phases,
     totalMs: r.totalMs,
     staleReason: r.staleReason,
+    // Resume only: why the snapshot was taken (`idle` | `evicted`). The control
+    // plane labels its wake-latency metric with it, so the cost of the "ready to
+    // suspend" bucket is measurable instead of assumed.
+    suspendReason: r.suspendReason,
     bootRootfsIdentity: r.bootRootfsIdentity,
     repo: r.repo,
     lateWake: r.lateWake,

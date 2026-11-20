@@ -43,6 +43,8 @@ mock.module('../services/analytics.service', () => ({
 // AI-analysis branches can be driven deterministically without a real provider.
 const aiState: { text?: string; throws?: boolean; throwMsg?: string; resolverReturnsNull?: boolean } = {}
 mock.module('@shogo/model-catalog', () => ({
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
   getMaxOutputTokens: (_: string) => 4096,
   resolveAgentModeDefault: (mode: string) => (mode === 'basic' ? 'claude-haiku-4-5' : 'claude-sonnet-4-6'),
 }))

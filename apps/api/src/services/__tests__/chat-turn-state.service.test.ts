@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { describe, expect, mock, test } from 'bun:test'
+import { beforeEach, describe, expect, mock, test } from 'bun:test'
 
 const update = mock(async () => ({}))
 const updateMany = mock(async () => ({ count: 1 }))
 const findMany = mock(async () => [])
 const findUnique = mock(async (): Promise<unknown> => null)
 const findMessage = mock(async (): Promise<unknown> => null)
+const findCards = mock(async (): Promise<unknown[]> => [])
+const findProfile = mock(async (): Promise<unknown> => null)
+const findMember = mock(async (): Promise<unknown> => null)
 mock.module('../../lib/prisma', () => ({
   prisma: {
     chatSession: { update, updateMany, findMany, findUnique },
@@ -15,6 +18,11 @@ mock.module('../../lib/prisma', () => ({
     // marker, and a turn-end hands the session on through it (SHO-341).
     chatQueuedMessage: { findFirst: async () => null, findMany: async () => [] },
     conversationMessage: { findFirst: findMessage },
+    // The card a reply's thread belongs to, the workspace agent's name and the
+    // viewer's role: one query each, whatever the number of live runs (SHO-425).
+    workItem: { findMany: findCards, findFirst: async () => null },
+    workspaceAgentProfile: { findUnique: findProfile },
+    member: { findFirst: findMember },
   },
 }))
 
@@ -41,6 +49,13 @@ const {
 } = await import('../chat-turn-state.service')
 
 const CLEARED = { activeTurnId: null, activeTurnStartedAt: null, activeTurnHeartbeatAt: null }
+
+// The join mocks are shared by every listing test; only their calls matter.
+beforeEach(() => {
+  findCards.mockClear()
+  findProfile.mockClear()
+  findMember.mockClear()
+})
 
 describe('chat-turn-state service', () => {
   test('marks a turn active and returns its id', async () => {
@@ -97,6 +112,7 @@ describe('chat-turn-state service', () => {
 
   test('lists fresh project and workspace chats with display metadata', async () => {
     const startedAt = new Date('2026-09-23T05:00:00.000Z')
+    findProfile.mockResolvedValueOnce({ name: 'Shogo' })
     findMany.mockResolvedValueOnce([
       {
         id: 'session-project',
@@ -128,6 +144,7 @@ describe('chat-turn-state service', () => {
         projectName: 'Website',
         projectHidden: false,
         startedAt,
+        agentName: 'Website',
       },
       {
         chatSessionId: 'session-workspace',
@@ -138,6 +155,7 @@ describe('chat-turn-state service', () => {
         projectName: null,
         projectHidden: false,
         startedAt,
+        agentName: 'Shogo',
       },
     ])
     expect(findMany).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -180,6 +198,7 @@ describe('chat-turn-state service', () => {
         projectName: 'Shogo DevOps',
         projectHidden: true,
         startedAt,
+        agentName: 'Shogo DevOps',
         conversationId: 'conv-ops',
         threadRootId: 'thread-1',
         messageId: 'msg-newest',
@@ -197,6 +216,59 @@ describe('chat-turn-state service', () => {
         conversation: { select: { name: true, slug: true, kind: true } },
       },
     })
+  })
+
+  test('names the card and the agent on every run, in one card query however many runs', async () => {
+    const startedAt = new Date('2026-10-12T18:00:00.000Z')
+    findMany.mockResolvedValueOnce([
+      { id: 'session-a', name: null, inferredName: '#shogo-dev: @agent fix it', isPrimary: false, activeTurnId: 'turn-a', activeTurnStartedAt: startedAt, project: { id: 'proj-dev2', name: 'Shogo Dev 2', hidden: false } },
+      { id: 'session-b', name: null, inferredName: '#shogo-dev: @agent plan it', isPrimary: false, activeTurnId: 'turn-b', activeTurnStartedAt: startedAt, project: { id: 'proj-dev1', name: 'Shogo Dev 1', hidden: false } },
+      { id: 'session-c', name: null, inferredName: '#shogo-dev: @agent review it', isPrimary: false, activeTurnId: 'turn-c', activeTurnStartedAt: startedAt, project: { id: 'proj-dev2', name: 'Shogo Dev 2', hidden: false } },
+    ] as never)
+    findMessage
+      .mockResolvedValueOnce({ id: 'msg-a', conversationId: 'conv-1', threadRootId: 'thread-card', conversation: { name: 'shogo-dev', slug: 'shogo-dev', kind: 'public' } })
+      .mockResolvedValueOnce({ id: 'msg-b', conversationId: 'conv-1', threadRootId: 'thread-chat', conversation: { name: 'shogo-dev', slug: 'shogo-dev', kind: 'public' } })
+      .mockResolvedValueOnce({ id: 'msg-c', conversationId: 'conv-1', threadRootId: 'thread-card', conversation: { name: 'shogo-dev', slug: 'shogo-dev', kind: 'public' } })
+    findCards.mockResolvedValueOnce([
+      { threadRootMessageId: 'thread-card', key: 'SHO-421', title: 'A full PR from an empty channel' },
+      { threadRootMessageId: 'thread-chat', key: 'SHO-420', title: 'A metal VM that reports busy' },
+    ])
+
+    const chats = await listActiveChatTurns('workspace-1', { viewerUserId: 'user-1' })
+
+    // Two runs of Shogo Dev 2 are told apart by their cards, not by their label.
+    expect(chats.map((chat) => [chat.agentName, chat.card?.key])).toEqual([
+      ['Shogo Dev 2', 'SHO-421'],
+      ['Shogo Dev 1', 'SHO-420'],
+      ['Shogo Dev 2', 'SHO-421'],
+    ])
+    // One query for every card behind every live reply, not one per row.
+    expect(findCards).toHaveBeenCalledTimes(1)
+    expect(findCards).toHaveBeenCalledWith(expect.objectContaining({
+      where: { threadRootMessageId: { in: ['thread-card', 'thread-chat'] } },
+    }))
+    expect(findMember).toHaveBeenCalledTimes(1)
+  })
+
+  test('a viewer is told not to stop a run; a member is not told anything extra', async () => {
+    const startedAt = new Date('2026-10-12T18:00:00.000Z')
+    findMany.mockResolvedValue([
+      { id: 'session-a', name: null, inferredName: 'Chat', isPrimary: false, activeTurnId: 'turn-a', activeTurnStartedAt: startedAt, project: { id: 'proj-dev2', name: 'Shogo Dev 2', hidden: false } },
+    ] as never)
+    findMember.mockResolvedValueOnce({ role: 'viewer' })
+    const viewer = await listActiveChatTurns('workspace-1', { viewerUserId: 'user-1' })
+    expect(viewer[0].canStop).toBe(false)
+
+    findMember.mockResolvedValueOnce({ role: 'member' })
+    const member = await listActiveChatTurns('workspace-1', { viewerUserId: 'user-2' })
+    expect(member[0].canStop).toBe(true)
+
+    // Nobody asked on behalf of a viewer: nothing to decide, nothing to send.
+    findMember.mockClear()
+    const internal = await listActiveChatTurns('workspace-1')
+    expect(internal[0].canStop).toBeUndefined()
+    expect(findMember).not.toHaveBeenCalled()
+    findMany.mockResolvedValue([] as never)
   })
 
   test('uses a five-minute heartbeat window by default', async () => {

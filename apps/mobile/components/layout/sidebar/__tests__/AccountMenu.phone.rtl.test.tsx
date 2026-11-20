@@ -6,6 +6,8 @@ import { describe, expect, mock, test } from "bun:test"
 import { fireEvent, render, screen } from "@testing-library/react"
 import { createElement } from "react"
 import { createReactNativeMock } from "../../../../test/react-native-mock"
+import * as lucideStub from "../../../../test/stubs/lucide-react-native"
+import { inviteDialogContextStub, invitePermissionsStub, inviteStub } from '../../../../test/invite-dialog-stub'
 
 mock.module("react-native", () =>
   createReactNativeMock({
@@ -35,6 +37,10 @@ mock.module("lucide-react-native", () => {
       return createElement("span", { "data-icon": name })
     }
   return {
+    // Every icon the app imports must resolve, not just the ones this test
+    // asserts on: `lib/settings-tabs.ts` is in the AccountMenu import graph and
+    // a hand-enumerated list breaks the whole file the moment it gains an icon.
+    ...lucideStub,
     Check: Icon("Check"),
     ChevronDown: Icon("ChevronDown"),
     ChevronRight: Icon("ChevronRight"),
@@ -86,6 +92,7 @@ mock.module(resolve(import.meta.dir, "../../../../contexts/theme"), () => ({
   useTheme: () => ({ theme: "dark", setTheme: () => {} }),
 }))
 mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
+  useDomainHttp: () => null,
   useDomainHttpOptional: () => null,
   getDomainHttpClient: () => null,
   useDomainOptional: () => null,
@@ -137,6 +144,11 @@ mock.module(resolve(import.meta.dir, "../../../../lib/api"), () => ({
 mock.module(resolve(import.meta.dir, "../../../billing/UsageWindows"), () => ({
   CompactUsageWindows: () => null,
 }))
+
+// The switcher offers "Invite people" through the app shell's dialog (SHO-454);
+// these tests render it on its own, so stub the context.
+mock.module(resolve(import.meta.dir, '../../../workspace/invite-dialog-context'), inviteDialogContextStub)
+mock.module(resolve(import.meta.dir, '../../../../hooks/usePermissions'), invitePermissionsStub)
 
 const { AccountMenu, AccountMenuBody, ACCOUNT_SCREEN_HREF } = await import("../AccountMenu")
 const { buildWorkspaceEntries, cloudWorkspaceKey } = await import("../../../../lib/workspace-entries")
@@ -252,6 +264,7 @@ describe("AccountMenuBody native grouping", () => {
   })
 
   test("wide web popover stays a flat ungrouped menu", () => {
+    inviteStub.canInvite = true
     render(<AccountMenuBody {...bodyProps} isNative={false} />)
 
     expect(screen.getByText("All workspaces")).toBeTruthy()
@@ -262,7 +275,7 @@ describe("AccountMenuBody native grouping", () => {
     expect(screen.queryByLabelText("Profile")).toBeNull()
     expect(screen.queryByLabelText("Sign out")).toBeNull()
     expect(screen.getByText("Settings")).toBeTruthy()
-    expect(screen.getByText("Invite")).toBeTruthy()
+    expect(screen.getByText("Invite people to Ashutosh Personal")).toBeTruthy()
   })
 })
 

@@ -1,17 +1,32 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * A team workspace with something in every sidebar tab: a channel, two agents
- * (one answers the person's DM, so the DM arrives unread with a preview), and
+ * A team workspace with something in every sidebar tab: a channel, a person who
+ * messaged the user (so the DM arrives unread with a preview), two agents, and
  * a failed agent task for the Activity and Home "Needs you" views.
+ *
+ * The DM is person-to-person: a chat with an agent is a project chat now
+ * (SHO-412), so an agent DM is no longer something the app can show in the DMs
+ * tab. The second person is written straight to the local database because
+ * local mode refuses a second sign-up (see `huddle-seed-user.ts`).
  *
  * Agent replies are scripted (SHOGO_CHANNEL_AGENT_SCRIPT, local mode only), the
  * same mechanism team-chat-agents.test.ts uses.
  */
+import { execFileSync } from "child_process"
 import { mkdirSync, writeFileSync } from "fs"
 import { dirname, resolve } from "path"
 import { expect, type Page } from "@playwright/test"
-import { LOCAL_API_BASE } from "./helpers"
+import { LOCAL_API_BASE, writeActiveWorkspaceSelection } from "./helpers"
+
+const REPO = resolve(__dirname, "../..")
+// Same resolution as `playwright.config.ts`'s `localDbPath`: the seed has to
+// write to the database the stack booted, and `E2E_LOCAL_DB` is how a run picks
+// a different one.
+const DATABASE_URL =
+  process.env.E2E_LOCAL_DATABASE_URL ||
+  `file:${resolve(REPO, process.env.E2E_LOCAL_DB || "test-results/e2e-local.db")}`
+const PEER = { email: "team-nav-peer@example.com", password: "team-nav-peer-pass", name: "Bea Partner" }
 
 export const SCRIPT_PATH =
   process.env.SHOGO_CHANNEL_AGENT_SCRIPT || resolve(__dirname, "../../test-results/team-chat-agents.script.json")
@@ -21,12 +36,15 @@ export interface TeamNavSeed {
   workspaceId: string
   channelName: string
   channelId: string
-  /** The agent that answered the DM. */
-  dmAgent: string
-  dmAgentProjectId: string
+  /** The person who messaged the user, so the DM arrives unread with a preview. */
+  dmPeer: string
+  dmPeerId: string
   dmId: string
   dmReply: string
-  /** A second agent with no DM yet. */
+  /** An agent, for the Agents tab and the project page. */
+  dmAgent: string
+  dmAgentProjectId: string
+  /** A second agent with no chat yet. */
   idleAgent: string
   idleAgentProjectId: string
   projectIds: string[]
@@ -42,30 +60,6 @@ export async function api(page: Page, method: string, path: string, body?: unkno
   return { status: res.status(), json, retryAfter: res.headers()["retry-after"] }
 }
 
-/**
- * A seed write that must land. The local-mode API rate-limits human posts
- * (`CHAT_RATE_LIMITS.message`: 60 per user per minute), and
- * team-home-phone-perf.test.ts posts 150 messages as that same local user just
- * before this seed runs — so the DM post came back 429, nothing was posted, no
- * scripted agent replied, and the unread badge waited 30s for a message that
- * never existed (SHO-222). Wait the window out instead of seeding nothing.
- */
-async function postThatMustLand(page: Page, path: string, body: unknown, what: string) {
-  for (let attempt = 1; ; attempt += 1) {
-    const res = await api(page, "POST", path, body)
-    if (res.status === 429 && attempt <= 6) {
-      const waitMs = Math.max(1, Number(res.retryAfter) || 10) * 1000
-      console.log(`[team-nav-seed] ${what} hit the message rate limit; retrying in ${waitMs / 1000}s`)
-      await new Promise((r) => setTimeout(r, waitMs))
-      continue
-    }
-    if (res.status < 200 || res.status >= 300) {
-      throw new Error(`${what} failed: ${res.status} ${JSON.stringify(res.json)}`)
-    }
-    return res
-  }
-}
-
 export async function teamWorkspaceId(page: Page): Promise<string> {
   const res = await api(page, "GET", "/api/workspaces")
   const rows = (res.json?.items ?? res.json?.data?.items ?? []) as Array<{ id: string; kind?: string }>
@@ -75,31 +69,60 @@ export async function teamWorkspaceId(page: Page): Promise<string> {
 }
 
 /**
- * The scripted agent's reply is what makes the DM unread, and every spec that
+ * The second person's message is what makes the DM unread, and every spec that
  * reads the dock or the rail badge needs it to already exist. Waiting here, in
  * the seed, keeps the wait off the badge assertion: a red there then means the
- * badge is broken, not that the reply was late (SHO-222).
+ * badge is broken, not that the message was late (SHO-222).
  */
-export async function waitForDmReply(page: Page, seed: TeamNavSeed, timeoutMs = 90_000): Promise<number> {
+export async function waitForDmMessage(page: Page, seed: TeamNavSeed, timeoutMs = 30_000): Promise<number> {
   const started = Date.now()
   await expect
     .poll(
       async () => {
         const res = await api(page, "GET", `/api/conversations/${seed.dmId}/messages`)
-        const rows = (res.json?.messages ?? []) as Array<{ text?: string; agentStatus?: string | null }>
-        return rows.find((m) => (m.text ?? "").includes(seed.dmReply))?.agentStatus ?? null
+        const rows = (res.json?.messages ?? []) as Array<{ text?: string }>
+        return rows.some((m) => (m.text ?? "").includes(seed.dmReply))
       },
       {
         timeout: timeoutMs,
-        message: `the scripted agent "${seed.dmAgent}" never finished its reply to the seeded DM within ${timeoutMs / 1000}s`,
+        message: `"${seed.dmPeer}" never posted the seeded DM message within ${timeoutMs / 1000}s`,
       },
     )
-    .toBe("done")
+    .toBe(true)
   const elapsed = Date.now() - started
-  // Keep this: the first CI runs are the only measurement of how long a
-  // scripted reply actually takes on a runner (SHO-222).
-  console.log(`[team-nav-seed] DM reply after ${elapsed}ms`)
+  // Keep this: the first CI runs are the only measurement of how long a seeded
+  // message actually takes on a runner (SHO-222).
+  console.log(`[team-nav-seed] DM message after ${elapsed}ms`)
   return elapsed
+}
+
+/** Adds the second person to the local team workspace and returns their id. */
+function seedPeer(): string {
+  const out = execFileSync(
+    "bun",
+    ["--no-env-file", resolve(__dirname, "huddle-seed-user.ts"), PEER.email, PEER.password, PEER.name],
+    { cwd: REPO, env: { ...process.env, DATABASE_URL }, encoding: "utf8" },
+  )
+  return JSON.parse(out.trim().split("\n").pop()!).userId
+}
+
+/** Posts the DM message as the second person, in their own session. */
+async function postAsPeer(page: Page, conversationId: string, text: string): Promise<void> {
+  const browser = page.context().browser()
+  if (!browser) throw new Error("the seed needs a browser to sign in as the second person")
+  const context = await browser.newContext()
+  try {
+    const signedIn = await context.request.post(`${LOCAL_API_BASE}/api/auth/sign-in/email`, {
+      data: { email: PEER.email, password: PEER.password },
+    })
+    if (!signedIn.ok()) throw new Error(`peer sign-in failed: ${signedIn.status()} ${await signedIn.text()}`)
+    const posted = await context.request.post(`${LOCAL_API_BASE}/api/conversations/${conversationId}/messages`, {
+      data: { text },
+    })
+    if (!posted.ok()) throw new Error(`peer message failed: ${posted.status()} ${await posted.text()}`)
+  } finally {
+    await context.close()
+  }
 }
 
 export async function seedTeamNav(page: Page): Promise<TeamNavSeed> {
@@ -134,17 +157,19 @@ export async function seedTeamNav(page: Page): Promise<TeamNavSeed> {
   const channelId = channel.json?.conversation?.id
   if (!channelId) throw new Error(`channel create failed: ${JSON.stringify(channel.json)}`)
 
-  const dm = await api(page, "POST", `/api/workspaces/${workspaceId}/dms`, { agent: { projectId: projectIds[0] } })
+  const dmPeerId = seedPeer()
+  const dm = await api(page, "POST", `/api/workspaces/${workspaceId}/dms`, { userIds: [dmPeerId] })
   const dmId = dm.json?.conversation?.id
-  if (!dmId) throw new Error(`agent dm failed: ${JSON.stringify(dm.json)}`)
-  await postThatMustLand(page, `/api/conversations/${dmId}/messages`, { text: "any flaky tests lately?" }, "the seeded DM message")
+  if (!dmId) throw new Error(`person dm failed: ${JSON.stringify(dm.json)}`)
+  await postAsPeer(page, dmId, dmReply)
 
   const seed: TeamNavSeed = {
-    suffix, workspaceId, channelName, channelId, dmAgent, dmAgentProjectId: projectIds[0]!, dmId, dmReply,
-    idleAgent, idleAgentProjectId: projectIds[1]!, projectIds,
+    suffix, workspaceId, channelName, channelId,
+    dmPeer: PEER.name, dmPeerId, dmId, dmReply,
+    dmAgent, dmAgentProjectId: projectIds[0]!, idleAgent, idleAgentProjectId: projectIds[1]!, projectIds,
   }
-  // Do not return until the reply exists: every caller reads the unread badge.
-  await waitForDmReply(page, seed)
+  // Do not return until the message exists: every caller reads the unread badge.
+  await waitForDmMessage(page, seed)
   return seed
 }
 
@@ -154,10 +179,10 @@ export async function cleanupTeamNav(page: Page, seed: TeamNavSeed): Promise<voi
 
 /** Make the team workspace the active one (Local mode opens Personal). */
 export async function activateTeamWorkspace(page: Page, workspaceId: string): Promise<void> {
-  await page.addInitScript((id) => {
-    localStorage.setItem("shogo:active-workspace-id", id)
-    localStorage.setItem("shogo:active-workspace-kind", JSON.stringify({ id, kind: "team" }))
-  }, workspaceId)
+  // Both stores: a tab that has already booted keeps its own `sessionStorage`
+  // selection and ignores the shared default, so seeding `localStorage` alone
+  // leaves it on Personal (SHO-390).
+  await page.addInitScript(writeActiveWorkspaceSelection, [workspaceId, "team"] as const)
 }
 
 /**

@@ -21,7 +21,7 @@
 import { Hono } from 'hono'
 import type { Permission } from '@shogo/authz'
 import { AUTO_MODEL_ID } from '@shogo/model-catalog'
-import { decide, loadAccess, principalOf, resolveAgentActor, type AgentCaller, type Principal } from '../lib/authz'
+import { decide, enforceAbility, loadAccess, principalOf, resolveAgentActor, type AgentCaller, type Principal } from '../lib/authz'
 import { ConversationError, resolveNotifyConversation, resolveNotifyThread } from '../services/conversation.service'
 import { listActiveChatTurns } from '../services/chat-turn-state.service'
 import {
@@ -291,7 +291,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     ) {
       return forbidden(c, 'Only the schedule creator or a workspace admin can change this schedule')
     }
-    return null
+    return enforceAbility(c, auth.workspaceId, actor, 'schedule:manage')
   }
 
   router.get('/workspaces/:workspaceId/agent-profile', async (c) => {
@@ -468,6 +468,8 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     if (!(await userCan(c, auth.workspaceId, userId, SCHEDULE_CREATOR_PERMISSION))) {
       return forbidden(c, 'Viewers cannot create schedules')
     }
+    const denied = await enforceAbility(c, auth.workspaceId, userId, 'schedule:manage')
+    if (denied) return denied
     if (
       !body ||
       typeof body.name !== 'string' ||
@@ -610,6 +612,8 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     if (trigger.ownerUserId !== actor && !(await userCan(c, auth.workspaceId, actor, SCHEDULE_ADMIN_PERMISSION))) {
       return forbidden(c, 'Only the trigger creator or a workspace admin can change this trigger')
     }
+    const denied = await enforceAbility(c, auth.workspaceId, actor, 'trigger:manage')
+    if (denied) return denied
     return { actor, trigger }
   }
 
@@ -642,6 +646,8 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     if (!(await userCan(c, auth.workspaceId, userId, SCHEDULE_CREATOR_PERMISSION))) {
       return forbidden(c, 'Viewers cannot create triggers')
     }
+    const abilityDenied = await enforceAbility(c, auth.workspaceId, userId, 'trigger:manage')
+    if (abilityDenied) return abilityDenied
     const targetDenied = await requireProjectUpdate(c, userId, body.targetProjectId)
     if (targetDenied) return targetDenied
     try {
@@ -837,7 +843,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     if (auth instanceof Response) return auth
     const parsedLimit = Number(c.req.query('limit') || 100)
     const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(Math.trunc(parsedLimit), 1), 200) : 100
-    return c.json({ activity: await listWorkspaceActivity(auth.workspaceId, limit) })
+    return c.json({ activity: await listWorkspaceActivity(auth.workspaceId, limit, { viewerUserId: auth.userId }) })
   })
 
   // "What did PERSON work on today?" Owners and admins only. Backs the
@@ -861,6 +867,8 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     if (!(await userCan(c, auth.workspaceId, actor, 'workspace.analytics:read'))) {
       return forbidden(c, 'Only workspace owners and admins can look up what a teammate worked on')
     }
+    const denied = await enforceAbility(c, auth.workspaceId, actor, 'members.activity:read')
+    if (denied) return denied
 
     const target = c.req.query('user')?.trim()
     if (!target) {
@@ -948,7 +956,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
   router.get('/workspaces/:workspaceId/active-chats', async (c) => {
     const auth = await authorize(c)
     if (auth instanceof Response) return auth
-    const chats = await listActiveChatTurns(auth.workspaceId)
+    const chats = await listActiveChatTurns(auth.workspaceId, { viewerUserId: auth.userId })
     return c.json({ chats })
   })
 

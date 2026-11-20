@@ -13,7 +13,7 @@
  * with an Agent Gateway that makes the configured agent "alive."
  */
 
-import { resolve, dirname, join, extname, basename } from 'path'
+import { resolve, dirname, join, extname, basename, isAbsolute, relative, sep } from 'path'
 import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
@@ -40,6 +40,10 @@ import {
   appendFileSync,
 } from 'fs'
 import { hydrateWorkspaceMembers, type MemberSync } from './workspace-hydration'
+import {
+  getWorkspaceRootSecretsSync,
+  type WorkspaceRootSecretSync,
+} from './workspace-secrets-sync'
 import {
   resolveMemberTechStackId,
   applyMemberTechStackMarker,
@@ -97,6 +101,9 @@ import {
   ensureLfsRepoSetup,
   autoTrackLargeFiles,
   lfsPushAll,
+  lfsPushIncremental,
+  LfsPushError,
+  LfsPushRunner,
   lfsPull,
   lfsRemoteConfigFromEnv,
   migrateOffloadedAssetsToLfs,
@@ -105,8 +112,12 @@ import {
   checkGitUsable,
   type CloudSyncMode,
   wrapSseStreamWithKeepalive,
+  assertStandaloneEnv,
+  isStandalone,
+  pinnedAgentModel,
 } from '@shogo/shared-runtime'
 import { traceStream } from '@shogo/shared-runtime/stream-trace'
+import { reconcileRepoHistory } from '@shogo/shared-runtime/repo-reconcile'
 import {
   buildRepoBundle,
   materializeRepoFromBundles,
@@ -155,7 +166,6 @@ import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
 import { ensureDurableTaskLogs } from './task-log-durability'
 import { resolveDistFile, staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
-import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, handlePtyUpgrade } from './pty-ws-handler'
 import {
@@ -182,6 +192,7 @@ import {
   type GitHubWorkspaceOpInput,
 } from './github-workspace-git'
 import { isHostMediatedDurability } from './host-durability'
+import { noteRepoExportFailed, noteRepoExportSucceeded } from './repo-durability-prompt'
 import { executeRemoteTool } from './remote-tools'
 import { guardRemoteDeviceCall, remoteDeviceApprovalCategory } from './remote-device-guard'
 import {
@@ -228,7 +239,8 @@ import {
 } from './workspace-members'
 import { startWorkspaceRootSync } from './workspace-root-sync'
 import { seedEmptyChatSession } from './file-attachment-utils'
-import { parseHistorySeed } from './history-seed'
+import { parseHistorySeed, seedEmptySessionFromHistory } from './history-seed'
+import { modelDowngradeNotice, parseModelDowngrade } from './model-downgrade'
 import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
 import { WebhookAdapter } from './channels/webhook'
@@ -271,6 +283,20 @@ const MONOREPO_ROOT = resolve(__dirname, '../../..')
 // =============================================================================
 // Configuration
 // =============================================================================
+
+// Standalone mode (`SHOGO_STANDALONE=1`): a partner runs this runtime on its own
+// cluster with no Shogo API behind it. Validate the contract before anything
+// else reads the env, so a misconfigured pod fails once with one message naming
+// every missing variable instead of booting into a half-working state.
+if (isStandalone()) {
+  assertStandaloneEnv()
+  if (!process.env.PROJECT_ID) process.env.PROJECT_ID = 'standalone'
+  const pin = pinnedAgentModel()
+  console.log(
+    `[agent-runtime] standalone mode: no Shogo API, model pinned to ${pin?.provider}:${pin?.id}, ` +
+      `project=${process.env.PROJECT_ID}`,
+  )
+}
 
 let WORKSPACE_DIR = process.env.WORKSPACE_DIR || process.env.AGENT_DIR || process.env.PROJECT_DIR || '/app/workspace'
 if (applyGitSafeDirectoryEnv()) {
@@ -501,6 +527,13 @@ let publishedDataSyncInstance: PublishedDataSync | null = null
 let workspaceMemberSyncs: Map<string, import('@shogo/shared-runtime').S3Sync> = new Map()
 
 /**
+ * Keeps the workspace root's `.env*` in the API's encrypted store (SHO-384).
+ * Null unless the API attached one — desktop and metal runtimes keep their root
+ * on disk (desktop) or in the home archive (metal).
+ */
+let workspaceRootSecretSync: WorkspaceRootSecretSync | null = null
+
+/**
  * Whether real Git LFS is active for this pod. Scoped to `git_only` (the
  * pod-owned default): the LFS object-offload step is wired into that mode's
  * `afterCommit` durability path, and LFS attributes are only written for
@@ -510,6 +543,46 @@ let workspaceMemberSyncs: Map<string, import('@shogo/shared-runtime').S3Sync> = 
  */
 function isLfsActive(): boolean {
   return resolveCloudSyncMode() === 'git_only'
+}
+
+/**
+ * The LFS push runs as a background job keyed by the export's target tips and
+ * HEAD (SHO-442). A media-heavy push takes minutes; the host's export request
+ * is bounded at 60 s. Joining the same job on the next request means a slow
+ * push finishes once instead of restarting from zero on every save.
+ */
+const lfsPushRunner = new LfsPushRunner({ logger: console })
+
+/** How long an export request waits for the push before answering 202. */
+const LFS_PUSH_WAIT_MS = 20_000
+
+/**
+ * Start (or join) the push for this export and wait up to `waitMs`.
+ * `'pending'` means the job is still running: the caller answers 202 and the
+ * host retries, joining the same job.
+ */
+async function awaitLfsPush(
+  dir: string,
+  tips: string[] | null,
+  waitMs: number,
+): Promise<{ state: 'done' | 'failed' | 'pending'; job: import('@shogo/shared-runtime').LfsPushJob } | null> {
+  if (!isLfsActive() || !existsSync(join(dir, '.git'))) return null
+  const cfg = lfsRemoteConfigFromEnv(dir)
+  if (!cfg) return null
+  const job = await lfsPushRunner.run(cfg, tips)
+  const state = await lfsPushRunner.settle(job, waitMs)
+  return { state, job }
+}
+
+/** The 503 body for a failed push: the reason, the real stderr, and what is missing. */
+function lfsPushFailureBody(err: LfsPushError) {
+  return {
+    error: `lfs push failed (${err.reason}): ${err.message}`,
+    code: 'lfs-push-failed',
+    reason: err.reason,
+    stderr: err.stderr.slice(0, 16_000),
+    missing: err.missing,
+  }
 }
 
 /**
@@ -2149,39 +2222,31 @@ app.post('/agent/chat', async (c) => {
       console.log(`[AgentRuntime][chat] seeded ${seeded} history message(s) for session ${chatSessionKey}`)
     }
   }
-  // A server-initiated turn (background-task wake, queued message, scheduled
-  // run, team-chat dispatch) carries exactly one message, so the block above
-  // never runs and a session with no local copy starts from the wake note
-  // alone. The API sends the conversation it already stores as `historySeed`
-  // for exactly that case (SHO-137).
+  // A one-message turn is the normal shape of an app send now: the client posts
+  // only the message being sent, and the API attaches the conversation it
+  // already stores as `historySeed` (SHO-402). The seed is applied only to a
+  // session that holds nothing — a warm session is never re-seeded (SHO-137).
   if (allMessages.length <= 1) {
     const seed = parseHistorySeed(body.historySeed)
-    const restored = seed && (sessionManager.get(chatSessionKey)?.messages.length ?? 0) === 0
-    if (seed && restored) {
-      const seeded = seedEmptyChatSession(
-        sessionManager,
-        chatSessionKey,
-        seed.messages.map((m) => ({ role: m.role, parts: [{ type: 'text', text: m.text }] })),
-        { label: 'chat_history' },
+    const { restored, summary } = seedEmptySessionFromHistory(seed, {
+      messageCount: () => sessionManager.get(chatSessionKey)?.messages.length ?? 0,
+      appendSeed: (messages) =>
+        seedEmptyChatSession(
+          sessionManager,
+          chatSessionKey,
+          messages.map((m) => ({ role: m.role, parts: [{ type: 'text', text: m.text }] })),
+          { label: 'chat_history' },
+        ),
+      currentSummary: () => sessionManager.get(chatSessionKey)?.compactedSummary ?? null,
+      setSummary: (value) => {
+        sessionManager.setCompactedSummary(chatSessionKey, value, { replace: true })
+      },
+    })
+    if (restored > 0 || summary) {
+      console.log(
+        `[AgentRuntime][chat] restored ${restored} message(s) and ${summary ? 'a summary' : 'no summary'} ` +
+          `from historySeed for session ${chatSessionKey}`,
       )
-      if (seed.summary) {
-        // The durable summary must win over a runtime copy that covers less.
-        // The runtime has no watermark of its own (its counts are not the
-        // API's `ChatMessage` counts), so the comparable signal is coverage:
-        // a longer durable block folds more of the conversation. Every runtime
-        // compaction is also written back to the API, so it is never the older
-        // copy for long (SHO-137 round 3, R4).
-        const runtimeSummary = sessionManager.get(chatSessionKey)?.compactedSummary ?? null
-        sessionManager.setCompactedSummary(chatSessionKey, seed.summary, {
-          replace: !runtimeSummary || seed.summary.trim().length > runtimeSummary.trim().length,
-        })
-      }
-      if (seeded > 0 || seed.summary) {
-        console.log(
-          `[AgentRuntime][chat] restored ${seeded} message(s) and ${seed.summary ? 'a summary' : 'no summary'} ` +
-            `from historySeed for session ${chatSessionKey}`,
-        )
-      }
     }
   }
 
@@ -2196,6 +2261,10 @@ app.post('/agent/chat', async (c) => {
   // session override so the Account prompt line names the model this turn
   // actually sends (SHO-145).
   const modelDisplayName = (body.modelDisplayName as string | undefined) || undefined
+  // SHO-417: the API moved this run off the agent's configured model because it
+  // is above the person the run acts for. The reply says so in code, before the
+  // model writes anything — never by asking the model to mention it.
+  const modelDowngrade = parseModelDowngrade(body.modelDowngrade)
   const confirmedPlan = body.confirmedPlan || undefined
   const dualPlan = body.dualPlan === true
   // Which surface this chat belongs to. The API proxy stamps it (workspace
@@ -2215,6 +2284,9 @@ app.post('/agent/chat', async (c) => {
   // Always replace: the gateway is a process singleton, so a missing
   // `viewer` must clear the previous request's phone/desktop hint.
   agentGateway!.setViewerContext(body.viewer)
+  // Same for the Auto tier map: the API narrows it to the person this run acts
+  // for, and a request without one must fall back to the process map (SHO-417).
+  agentGateway!.setTurnAutoTiers(body.autoTiers)
   agentGateway!.setAccountContext(parseAccountContext(body))
 
   const chatUserId = c.req.header('X-User-Id') || body.userId || undefined
@@ -2231,6 +2303,16 @@ app.post('/agent/chat', async (c) => {
     console.log(`[AgentChat] Session ${chatSessionKey} free after ${waitedMs}ms`)
   }
   const turn = bufferedTurns.start(chatSessionKey, async (writer) => {
+    if (modelDowngrade) {
+      const noticeId = `text-${Date.now()}-downgrade`
+      writer.write({ type: 'text-start', id: noticeId } as any)
+      writer.write({
+        type: 'text-delta',
+        id: noticeId,
+        delta: modelDowngradeNotice(modelDowngrade),
+      } as any)
+      writer.write({ type: 'text-end', id: noticeId } as any)
+    }
     await agentGateway!.processChatMessageStream(userText || '', writer, {
       modelOverride,
       modelProvider,
@@ -2941,6 +3023,17 @@ function getPreviewManager(): PreviewManager {
 const workspacePreviewManagers = new Map<string, PreviewManager>()
 
 /**
+ * Projects a person stopped on purpose (`POST /p/:id/preview/stop`).
+ *
+ * `/p/:id/preview/stop` deliberately drops the cached manager so a later
+ * start rebuilds from a clean instance — which would otherwise erase the
+ * "stopped on purpose" flag and let the next `/api/*` request or agent turn
+ * start a project the user had just stopped. Cleared by that project's
+ * `/preview/start` and `/preview/restart`.
+ */
+const stoppedByUserProjects = new Set<string>()
+
+/**
  * The full set of project ids this runtime will serve a preview for: the
  * boot-time attached list (`WORKSPACE_RUNTIME_PROJECT_IDS`, from
  * `WORKSPACE_PROJECT_IDS` env) PLUS anything the meta-agent has mounted live
@@ -3010,6 +3103,7 @@ function getWorkspacePreviewManager(projectId: string): PreviewManager | null {
       onLogLine: recordConsoleLogLine,
     })
     workspacePreviewManagers.set(projectId, pm)
+    if (stoppedByUserProjects.has(projectId)) pm.markStoppedByUser()
   }
   return pm
 }
@@ -3053,6 +3147,59 @@ function getRootPreviewManager(): PreviewManager {
     if (wpm) return wpm
   }
   return getPreviewManager()
+}
+
+/**
+ * The project whose API server a tool or API call means.
+ *
+ * `ref` may be a project id, a mount folder name, or a path inside a project
+ * (absolute, or relative to `WORKSPACE_DIR`) — that last form is what makes
+ * an edit to `<mountedProject>/custom-routes.ts` or
+ * `<mountedProject>/prisma/schema.prisma` sync and restart THAT project
+ * instead of the anchor. Anything unrecognised (or absent) resolves to the
+ * anchor, matching every pre-existing caller.
+ */
+function resolveApiServerTarget(ref?: string): PreviewManager | null {
+  if (!ref) return getRootPreviewManager()
+  if (!IS_WORKSPACE_RUNTIME) return getPreviewManager()
+
+  const mounts = parseWorkspaceMounts()
+  const anchorId = getAnchorProjectId()
+  const forProject = (projectId: string): PreviewManager | null =>
+    projectId === anchorId ? getRootPreviewManager() : getWorkspacePreviewManager(projectId)
+
+  // A project id or a mount's folder name.
+  if (mounts.some((m) => m.projectId === ref) || ref === anchorId) return forProject(ref)
+  const byMount = mounts.find((m) => m.mount === ref)
+  if (byMount) return byMount.kind === 'folder' ? getRootPreviewManager() : forProject(byMount.projectId)
+
+  // A path inside a project: match against each mount's host path first (a
+  // folder-linked project's real folder is outside WORKSPACE_DIR), then
+  // against the merged-root layout.
+  const abs = isAbsolute(ref) ? ref : join(WORKSPACE_DIR, ref)
+  for (const mount of mounts) {
+    if (mount.kind === 'folder') continue
+    if (abs === mount.path || abs.startsWith(mount.path + sep)) return forProject(mount.projectId)
+  }
+  const rel = relative(WORKSPACE_DIR, abs)
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return getRootPreviewManager()
+  const first = rel.split(sep)[0]
+  const owner = mounts.find((m) => m.mount === first)
+  if (owner) return owner.kind === 'folder' ? getRootPreviewManager() : forProject(owner.projectId)
+  return getRootPreviewManager()
+}
+
+/** The `ApiServerHost` the gateway resolves projects through (see `attachApiServer`). */
+function buildApiServerHost(): import('./preview-manager').ApiServerHost {
+  return {
+    resolve: (ref?: string) => resolveApiServerTarget(ref),
+    all: () => {
+      if (!IS_WORKSPACE_RUNTIME) return [getPreviewManager()]
+      return effectiveWorkspaceProjectIds()
+        .map((projectId) => getWorkspacePreviewManager(projectId))
+        .filter((pm): pm is PreviewManager => pm != null)
+    },
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3117,6 +3264,8 @@ app.post('/preview/start', async (c) => {
 
 app.post('/preview/stop', (c) => {
   const pm = getRootPreviewManager()
+  // Deliberate stop: on-demand starts (`/api/*`, agent turns) must not undo it.
+  pm.markStoppedByUser()
   pm.stop()
   return c.json({ ok: true })
 })
@@ -3465,9 +3614,15 @@ app.post('/pool/export-repo', async (c) => {
     const destinationDir = resolvePoolWorkspaceDir(body?.dir)
     await flushGitBeforeExport(destinationDir)
     let excludeLfsObjects = false
-    if (isLfsActive()) {
-      const lfsCfg = lfsRemoteConfigFromEnv(destinationDir)
-      if (lfsCfg) excludeLfsObjects = await lfsPushAll(lfsCfg)
+    // `skipLfsPush` is the quarantine export (SHO-442): an untrusted VM's
+    // `.git` must be copied somewhere durable NOW, and the tarball carries
+    // `.git/lfs/objects` itself, so waiting on a push would only delay it.
+    if (body?.skipLfsPush !== true) {
+      const waitMs = Math.min(Math.max(Number(body?.waitMs) || LFS_PUSH_WAIT_MS, 0), 120_000)
+      const push = await awaitLfsPush(destinationDir, null, waitMs)
+      // Only a finished push lets the tarball drop the local object store;
+      // otherwise the bytes would be durable nowhere.
+      excludeLfsObjects = push?.state === 'done'
     }
     const packed = await packRepoArchive(destinationDir, tmp, { excludeLfsObjects })
     if (!packed) return c.body(null, 204)
@@ -3515,7 +3670,10 @@ app.post('/pool/repo-hydrated', async (c) => {
   // tarball when a manifest exists, so it refuses instead of guessing.
   // `ifIdle` means this guest honours `ifIdle` below, so the host may hand the
   // project out before its history arrives and swap it in afterwards.
-  if (body?.probe === true) return c.json({ ok: true, supported: true, deadline: true, bundles: true, ifIdle: true })
+  // `reconcile` means this guest can re-attach a live history to the durable
+  // one (`/pool/repo-reconcile`), which is how an UNTRUSTED VM heals instead of
+  // never saving again (SHO-442).
+  if (body?.probe === true) return c.json({ ok: true, supported: true, deadline: true, bundles: true, ifIdle: true, reconcile: true })
   let stagingDir: string
   try {
     stagingDir = resolvePoolWorkspaceDir(body?.stagingDir)
@@ -3602,7 +3760,7 @@ function sameRepoSnapshot(a: RepoSnapshotFields, b: RepoSnapshotFields): boolean
 
 app.post('/pool/export-repo-bundle', async (c) => {
   sweepSpool()
-  let body: { dir?: unknown; since?: unknown; full?: unknown }
+  let body: { dir?: unknown; since?: unknown; full?: unknown; waitMs?: unknown }
   try {
     body = (await c.req.json().catch(() => ({}))) as typeof body
     const destinationDir = resolvePoolWorkspaceDir(body?.dir)
@@ -3614,13 +3772,33 @@ app.post('/pool/export-repo-bundle', async (c) => {
     await flushGitBeforeExport(destinationDir)
     // A workspace runtime keeps its members' repos in subfolders and drops
     // the root `.git`, so the root can have no repo and nothing to push.
+    //
+    // The push is a background job (SHO-442): a media-heavy history takes
+    // minutes, so the request waits only `waitMs` and then answers 202 with
+    // progress. The next call joins the same job instead of starting over, and
+    // a host that stopped waiting cannot make it restart.
+    let lfsMissing: import('@shogo/shared-runtime').LfsMissingObject[] = []
     if (isLfsActive() && existsSync(join(destinationDir, '.git'))) {
-      const lfsCfg = lfsRemoteConfigFromEnv(destinationDir)
-      // Bundles never carry LFS objects, so a failed push fails the export.
-      // The host keeps an unmigrated project on the tarball, which does.
-      if (lfsCfg && !(await lfsPushAll(lfsCfg))) {
-        return c.json({ error: 'lfs push failed; repo bundle not exported', code: 'lfs-push-failed' }, 503)
+      const waitMs = Math.min(Math.max(Number(body?.waitMs) || LFS_PUSH_WAIT_MS, 0), 120_000)
+      const push = await awaitLfsPush(destinationDir, since, waitMs)
+      if (push?.state === 'pending') {
+        return c.json(
+          {
+            pending: true,
+            pushedOids: push.job.state.pushed,
+            totalOids: push.job.state.total,
+            missing: push.job.state.missing,
+          },
+          202,
+        )
       }
+      if (push?.state === 'failed') {
+        // The host's save just failed. The agent is the one still writing
+        // files, so it gets one line about it in its next turn (SHO-442).
+        noteRepoExportFailed(push.job.state.error!.reason, push.job.state.error!.message)
+        return c.json(lfsPushFailureBody(push.job.state.error!), 503)
+      }
+      lfsMissing = push?.job.state.missing ?? []
     }
 
     // Snapshot refs before and after building. Refs that moved in between
@@ -3641,15 +3819,20 @@ app.post('/pool/export-repo-bundle', async (c) => {
       if (attempt >= 2) return c.json({ error: 'repo refs kept moving during export; retry' }, 409)
     }
 
+    noteRepoExportSucceeded()
     return c.json({
       bundle: built?.entry ?? null,
       head: snapshot.head,
       refs: snapshot.refs,
       config: snapshot.config,
       rootCommitAt: repoRootCommitAt(destinationDir),
+      // Pointers whose bytes are on neither side. The history still exports;
+      // the host records these so the loss is visible instead of silent.
+      ...(lfsMissing.length ? { lfsMissing } : {}),
     })
   } catch (err: any) {
     console.error('[pool/export-repo-bundle] failed:', err?.message ?? err)
+    noteRepoExportFailed('other', err?.message ?? 'export-repo-bundle failed')
     return c.json({ error: err?.message ?? 'export-repo-bundle failed' }, 500)
   }
 })
@@ -3713,6 +3896,45 @@ app.post('/pool/repo-bundles-hydrate', async (c) => {
     return c.json({ error: redactUrls(String(err?.message ?? 'repo bundle restore failed')) }, 500)
   } finally {
     for (const path of downloaded) rmSync(path, { force: true })
+  }
+})
+
+// Heal an UNTRUSTED repo (SHO-442). The host has already materialized the
+// durable history into `stagingDir` (bundles or tarball); this joins it to the
+// live history with a commit whose tree is the CURRENT working tree, so no file
+// is rewritten and a busy workspace is fine. After it answers, the host can
+// re-trust the VM and normal saves resume.
+//
+// A guest that predates this route answers 404 and the host keeps the VM
+// untrusted (today's behaviour) — it never guesses.
+app.post('/pool/repo-reconcile', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  let stagingDir: string
+  try {
+    stagingDir = resolvePoolWorkspaceDir(body?.stagingDir)
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'invalid staging dir' }, 400)
+  }
+  if (stagingDir === WORKSPACE_DIR) return c.json({ error: 'stagingDir is required' }, 400)
+  if (!existsSync(join(stagingDir, '.git'))) return c.json({ error: 'staging repo is missing' }, 400)
+
+  // The committer must not create a commit while we move the branch.
+  const sync = gitSyncInstance
+  await sync?.pause()
+  try {
+    const result = await reconcileRepoHistory(WORKSPACE_DIR, stagingDir)
+    cachedRepoHeadSha = result.head
+    console.log(
+      `[pool/repo-reconcile] joined durable ${result.durableHead.slice(0, 12)} with live ` +
+        `${result.localHead?.slice(0, 12) ?? '(unborn)'} -> ${result.head.slice(0, 12)}`,
+    )
+    return c.json({ ok: true, ...result })
+  } catch (err: any) {
+    console.error('[pool/repo-reconcile] failed:', err?.message ?? err)
+    return c.json({ error: err?.message ?? 'repo reconcile failed' }, 500)
+  } finally {
+    sync?.resume()
+    rmSync(stagingDir, { recursive: true, force: true })
   }
 })
 
@@ -5702,19 +5924,20 @@ app.route('/', runtimeLogsRoutes())
 // the rollout.
 // =============================================================================
 
-app.get('/agent/api-server/status', (c) => {
-  if (!agentGateway) return c.json({ phase: 'unknown' })
-  return c.json({ phase: agentGateway.getSkillServerPhase() })
+// About the status: it is read-only (never starts anything) and reports the
+// same shape `server_sync({ mode: 'status' })` and `/preview/status` do.
+app.get('/agent/api-server/status', async (c) => {
+  return c.json(await getRootPreviewManager().apiServerStatus())
 })
-app.get('/agent/skill-server/status', (c) => {
-  if (!agentGateway) return c.json({ phase: 'unknown' })
-  return c.json({ phase: agentGateway.getSkillServerPhase() })
+app.get('/agent/skill-server/status', async (c) => {
+  return c.json(await getRootPreviewManager().apiServerStatus())
 })
 
 app.post('/agent/api-server/sync', async (c) => {
   if (!agentGateway) return c.json({ ok: false, error: 'gateway not running' }, 503)
   try {
-    const result = await agentGateway.syncSkillServer()
+    const project = new URL(c.req.url).searchParams.get('project') ?? undefined
+    const result = await agentGateway.syncApiServer(project)
     return c.json(result)
   } catch (err: any) {
     return c.json({ ok: false, phase: 'crashed', error: err.message || String(err) }, 500)
@@ -5723,7 +5946,8 @@ app.post('/agent/api-server/sync', async (c) => {
 app.post('/agent/skill-server/sync', async (c) => {
   if (!agentGateway) return c.json({ ok: false, error: 'gateway not running' }, 503)
   try {
-    const result = await agentGateway.syncSkillServer()
+    const project = new URL(c.req.url).searchParams.get('project') ?? undefined
+    const result = await agentGateway.syncApiServer(project)
     return c.json(result)
   } catch (err: any) {
     return c.json({ ok: false, phase: 'crashed', error: err.message || String(err) }, 500)
@@ -5740,12 +5964,10 @@ app.post('/agent/skill-server/sync', async (c) => {
 app.post('/agent/runtime-checks', async (c) => {
   const { runRuntimeChecks } = await import('./evals/runtime-checks')
   const body = await c.req.json<{ canvasExpectedPort?: number; evalId: string; verbose?: boolean; tenantProbe?: { route: string } }>()
-  // Use the PreviewManager's configured port directly; `getSkillServerPort()`
-  // also falls through to the same value via the shim, but reading it from
-  // the manager keeps the source-of-truth obvious. Never falls back to the
-  // retired skill server's 4100 — that port is unallocated post-merge.
+  // Use the PreviewManager's configured port directly. Never falls back to
+  // the retired skill server's 4100 — that port is unallocated post-merge.
   const skillServerPort = getPreviewManager().apiServerPort
-    ?? agentGateway?.getSkillServerPort()
+    ?? agentGateway?.getApiServerPort()
     ?? 3001
   try {
     const results = await runRuntimeChecks({
@@ -5775,75 +5997,52 @@ app.post('/agent/runtime-checks', async (c) => {
 // existing workspaces.
 // =============================================================================
 
-// Total time the proxy will wait for the project API server to come up
-// before returning 503 to the SPA. Sized for "cold-start without a hot
-// API server": the in-process health-check loop runs for up to
-// HEALTH_CHECK_RETRIES * HEALTH_CHECK_INTERVAL_MS (~5s) on a fresh
-// spawn, but most workspaces bind in well under 1s. 3s gives a healthy
-// 2× margin for the common case without holding the browser hostage
-// when `server.tsx` is genuinely broken — the SPA can render its
-// "starting up" state from the 503 + phase payload instead.
-const API_PROXY_STARTUP_WAIT_MS = 3000
-const API_PROXY_POLL_INTERVAL_MS = 100
+// Budget for the on-demand start of a project's API server from `/api/*`.
+// Sized for "cold-start without a hot API server": a first request on a fresh
+// runtime has to run `shogo generate` + `prisma db push` and spawn the
+// sidecar. The old 3s grace window was shorter than that, so the SPA's first
+// fetch got a hard 503 and agents learned to touch files and poll build.log.
+const API_PROXY_ENSURE_TIMEOUT_MS = 45_000
 
-// Phases in which the proxy waits briefly for `apiServerPort` to
-// transition from null → bound. Outside this set (`idle`, `healthy`,
-// `crashed`, `stopped`) waiting wouldn't change the answer.
-const API_PROXY_STARTUP_PHASES: ReadonlySet<string> = new Set([
-  'starting', 'restarting', 'generating',
-])
+type ApiProxyTarget =
+  | { ok: true; port: number }
+  | { ok: false; status: 400 | 404 | 503; body: Record<string, unknown> }
+
+/**
+ * Bring `pm`'s API sidecar up (idle/stopped/crashed all self-heal — see
+ * `PreviewManager.ensureApiServer`) and return the port to proxy to.
+ *
+ * One helper for both the root `/api/*` and the workspace `/p/:id/api/*`
+ * proxies: they previously carried copies of the same crashed-only recovery
+ * block and drifted from each other.
+ */
+async function resolveApiProxyTarget(pm: PreviewManager): Promise<ApiProxyTarget> {
+  const result = await pm.ensureApiServer({ timeoutMs: API_PROXY_ENSURE_TIMEOUT_MS })
+  const port = result.port ?? pm.apiServerPort
+  if (port != null) return { ok: true, port }
+  const noServer = result.phase === 'none'
+  const body: Record<string, unknown> = {
+    error: noServer ? 'No API server for this project' : 'API server not ready',
+    phase: result.phase,
+  }
+  if (result.buildError) body.buildError = result.buildError
+  return { ok: false, status: noServer ? 404 : 503, body }
+}
 
 app.all('/api/*', async (c) => {
   // Must match `/preview/status` and the root static serve: in workspace mode
   // the anchor's manager owns the sidecar; the root-rooted one never starts.
   const pm = getRootPreviewManager()
 
-  // Short grace window for the spawn → bind gap. Without it, the SPA's
-  // first `/api/*` fetch on a fresh project lands during cold-start (or
-  // a custom-routes hot restart) and immediately gets a hard 5xx,
-  // leaving the user staring at a blank preview until they manually
-  // refresh. `apiServerPort` returning null + phase ∈ {starting,
-  // restarting, generating} is exactly the "API is coming, just not
-  // here yet" signal we need to soak briefly. Polling is cheap (every
-  // 100 ms, total budget 3 s) and short-circuits the moment the port
-  // becomes available.
-  let port = pm.apiServerPort
-  // Self-heal: if the sidecar crashed beyond its restart cap, an incoming API
-  // request is the trigger to revive it — reset the crash budget and re-attempt
-  // a single start — instead of returning 503 forever until a manual
-  // /preview/restart. This flips the phase to `restarting`, so the grace-window
-  // poll below can pick up the freshly bound port within this same request.
-  if (port == null && pm.apiServerPhase === 'crashed') {
-    pm.maybeRecoverApiServer()
-  }
-  if (port == null && API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) {
-    const deadline = Date.now() + API_PROXY_STARTUP_WAIT_MS
-    while (port == null && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, API_PROXY_POLL_INTERVAL_MS))
-      if (!API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) break
-      port = pm.apiServerPort
-    }
-  }
-
-  if (port == null) {
-    // Surface the phase to the SPA so it can distinguish "API is still
-    // booting, retry in a moment" (starting/restarting/generating) from
-    // "API has crashed beyond recovery" (crashed) from "no API server
-    // configured for this project" (idle/stopped). 503 is correct in
-    // every non-bound case — the previous `c.notFound()` falsely
-    // implied the route didn't exist when in fact we just couldn't
-    // proxy yet.
-    return c.json(
-      { error: 'API server not ready', phase: pm.apiServerPhase },
-      503,
-    )
-  }
+  const target = await resolveApiProxyTarget(pm)
+  if (!target.ok) return c.json(target.body, target.status)
 
   const url = new URL(c.req.url)
-  const target = `http://127.0.0.1:${port}${url.pathname}${url.search}`
+  const { port } = target
+  const upstream = `http://127.0.0.1:${port}${url.pathname}${url.search}`
 
   try {
-    const res = await fetch(target, {
+    const res = await fetch(upstream, {
       method: c.req.method,
       headers: c.req.raw.headers,
       body: c.req.method !== 'GET' && c.req.method !== 'HEAD' ? c.req.raw.body : undefined,
@@ -5935,6 +6134,7 @@ app.get('/agent/ports/listening', async (c) => {
 
   app.post('/p/:projectId/preview/start', async (c) => {
     const projectId = c.req.param('projectId')
+    stoppedByUserProjects.delete(projectId)
     const pm = getWorkspacePreviewManager(projectId)
     if (!pm) return projectNotAttached(c, projectId)
     return c.json(await pm.start())
@@ -5942,6 +6142,7 @@ app.get('/agent/ports/listening', async (c) => {
 
   app.post('/p/:projectId/preview/restart', async (c) => {
     const projectId = c.req.param('projectId')
+    stoppedByUserProjects.delete(projectId)
     const pm = getWorkspacePreviewManager(projectId)
     if (!pm) return projectNotAttached(c, projectId)
     return c.json(await pm.restart())
@@ -5951,6 +6152,9 @@ app.get('/agent/ports/listening', async (c) => {
     const projectId = c.req.param('projectId')
     const pm = getWorkspacePreviewManager(projectId)
     if (!pm) return projectNotAttached(c, projectId)
+    // Deliberate stop: on-demand starts (`/api/*`, agent turns) must not undo it.
+    pm.markStoppedByUser()
+    stoppedByUserProjects.add(projectId)
     pm.stop()
     // Drop the cached instance so a subsequent start() rebuilds from a clean
     // PreviewManager (no leftover timers/child-slot state from this run).
@@ -5959,36 +6163,23 @@ app.get('/agent/ports/listening', async (c) => {
   })
 
   // Proxy `/p/<id>/api/*` to that project's server.tsx sidecar. Mirrors the
-  // root `/api/*` proxy (startup grace window, 503/502 semantics) but strips
+  // root `/api/*` proxy (on-demand start, 503/404 semantics) but strips
   // the `/p/<id>` prefix so the sidecar sees its own `/api/*` path.
   app.all('/p/:projectId/api/*', async (c) => {
     const projectId = c.req.param('projectId')
     const pm = getWorkspacePreviewManager(projectId)
     if (!pm) return projectNotAttached(c, projectId)
 
-    let port = pm.apiServerPort
-    // Self-heal a crashed-beyond-recovery sidecar on demand (see root `/api/*`).
-    if (port == null && pm.apiServerPhase === 'crashed') {
-      pm.maybeRecoverApiServer()
-    }
-    if (port == null && API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) {
-      const deadline = Date.now() + API_PROXY_STARTUP_WAIT_MS
-      while (port == null && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, API_PROXY_POLL_INTERVAL_MS))
-        if (!API_PROXY_STARTUP_PHASES.has(pm.apiServerPhase)) break
-        port = pm.apiServerPort
-      }
-    }
-    if (port == null) {
-      return c.json({ error: 'API server not ready', phase: pm.apiServerPhase }, 503)
-    }
+    const target = await resolveApiProxyTarget(pm)
+    if (!target.ok) return c.json(target.body, target.status)
 
     const url = new URL(c.req.url)
+    const { port } = target
     const parsed = parseWorkspacePreviewPath(url.pathname)
     const sidecarPath = parsed ? parsed.rest : '/'
-    const target = `http://127.0.0.1:${port}${sidecarPath}${url.search}`
+    const upstream = `http://127.0.0.1:${port}${sidecarPath}${url.search}`
     try {
-      const res = await fetch(target, {
+      const res = await fetch(upstream, {
         method: c.req.method,
         headers: c.req.raw.headers,
         body: c.req.method !== 'GET' && c.req.method !== 'HEAD' ? c.req.raw.body : undefined,
@@ -6195,6 +6386,7 @@ import {
   CANVAS_BRIDGE_URL,
   loadCanvasBridgeSource,
 } from './canvas-bridge'
+import { injectPreviewBasePath, previewBasePath, stripPreviewBasePath } from './preview-base-path'
 
 const CANVAS_BRIDGE_SOURCE = loadCanvasBridgeSource()
 
@@ -6230,6 +6422,15 @@ function injectCanvasBridge(html: string): string {
     return html.slice(0, htmlClose) + CANVAS_BRIDGE_SCRIPT_TAG + html.slice(htmlClose)
   }
   return html + CANVAS_BRIDGE_SCRIPT_TAG
+}
+
+/**
+ * Every HTML document the runtime serves goes through here: the canvas bridge
+ * (appended before `</body>`) and, when `PREVIEW_BASE_PATH` is set, the
+ * base-path shim (injected into `<head>` so it runs before any app script).
+ */
+function injectRuntimeHtml(html: string): string {
+  return injectPreviewBasePath(injectCanvasBridge(html), previewBasePath())
 }
 
 // =============================================================================
@@ -6841,7 +7042,7 @@ function serveDistResponse(
     const ext = extname(resolvedFile).toLowerCase()
     const mime = STATIC_MIME[ext] || 'application/octet-stream'
     if (ext === '.html') {
-      const html = injectCanvasBridge(readFileSync(resolvedFile, 'utf-8'))
+      const html = injectRuntimeHtml(readFileSync(resolvedFile, 'utf-8'))
       return new Response(html, {
         headers: {
           'Content-Type': mime,
@@ -6879,7 +7080,7 @@ function serveDistResponse(
   // SPA fallback
   const indexPath = join(distDir, 'index.html')
   if (existsSync(indexPath)) {
-    const html = injectCanvasBridge(readFileSync(indexPath, 'utf-8'))
+    const html = injectRuntimeHtml(readFileSync(indexPath, 'utf-8'))
     return new Response(html, {
       headers: {
         'Content-Type': 'text/html',
@@ -7446,6 +7647,19 @@ async function initializeEssentials(): Promise<void> {
     }
   }
 
+  // The workspace root's `.env*` (SHO-384). Restored HERE, after the member
+  // hydrate and the git bootstrap above — both replace whole directory trees,
+  // so a `.env` restored earlier would be gone before the agent ever ran. The
+  // edit path then keeps the stored copy current: an interval, plus a flush on
+  // shutdown. Null on desktop (no store configured — the root is real files
+  // there) and on metal (the host-mediated home archive already carries them).
+  workspaceRootSecretSync = getWorkspaceRootSecretsSync()
+  if (workspaceRootSecretSync) {
+    await workspaceRootSecretSync.restore()
+    workspaceRootSecretSync.start()
+    logTiming('Workspace root secrets: API store attached')
+  }
+
   // Ensure workspace has node_modules. This no longer blocks boot: the install
   // runs in the background (`startWorkspaceDepsInstall`) so the gateway can
   // start and accept the first chat message while deps install. Deps-dependent
@@ -7680,7 +7894,7 @@ async function startGateway(expectedProjectId?: string): Promise<void> {
   // Wire the runtime's root-serving PreviewManager into the gateway so prompt
   // builders/tools query the active backend, and vite-watch build completion
   // emits canvas reload events for the preview the user is actually viewing.
-  agentGateway.attachApiServer(getRootPreviewManager())
+  agentGateway.attachApiServer(getRootPreviewManager(), buildApiServerHost())
   agentGateway.setLogCallback((line: string) => {
     appendRuntimeConsoleLogLine(line)
     for (const listener of logStreamListeners) {
@@ -7956,6 +8170,22 @@ async function gracefulShutdown(signal: string): Promise<void> {
     console.error(`[agent-runtime] Cloud sync flush error during shutdown:`, err.message)
   }
 
+  // The root's `.env*` first: it lives in the API's encrypted store, not in any
+  // member's archive, and it is the smallest write of the shutdown. Ordered
+  // ahead of the member flushes so a slow archive cannot eat its budget.
+  if (workspaceRootSecretSync) {
+    try {
+      const flushed = await workspaceRootSecretSync.flush()
+      if (flushed?.stored) {
+        console.log(`[agent-runtime] Workspace root secrets saved (${flushed.files} .env file(s))`)
+      }
+    } catch (err: any) {
+      console.error('[agent-runtime] Workspace root secrets flush failed:', err?.message ?? err)
+    } finally {
+      workspaceRootSecretSync.stop()
+    }
+  }
+
   // Flush every workspace member's S3 sync (cloud workspace runtime). Each
   // member owns its own prefix/subfolder, so the single-instance flush above
   // (which is null in workspace mode) doesn't cover them.
@@ -8084,22 +8314,6 @@ if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESE
       console.error('[agent-runtime] Pool pre-seed manifest failed:', err?.message ?? err)
     }
   })
-
-  // Pre-warm the skill-server's node_modules in parallel with the workspace
-  // deps copy. This moves the ~270 MB / ~9 s sync cpSync that the gateway
-  // would otherwise do on first /pool/assign into the warm-pod boot phase,
-  // shaving it off the user-perceived assignment latency. Runs in a
-  // microtask so it doesn't block the bind on :8080 any longer than it
-  // already takes — the cpSync is still synchronous, but it's now executed
-  // while the pod is unclaimed, not while a user is waiting.
-  queueMicrotask(() => {
-    try {
-      const copied = SkillServerManager.prewarmDeps(WORKSPACE_DIR)
-      if (copied) logTiming('Pool mode: skill-server deps pre-warmed')
-    } catch (err: any) {
-      console.error('[agent-runtime] Pool skill-server pre-warm failed:', err?.message ?? err)
-    }
-  })
 } else if (IS_PUBLISHED_MODE) {
   // Server-backed published app: run the project's server.tsx in production
   // without the agent gateway. No pool, no editing — serve-only.
@@ -8157,6 +8371,18 @@ export default {
   port: PORT,
   hostname: HOST,
   fetch: async (req: Request, server: any) => {
+    // `PREVIEW_BASE_PATH`: accept requests that still carry the prefix, so the
+    // runtime works whether or not the ingress strips it. Rewriting here (the
+    // one entry point) covers `/api/*`, assets and SPA routes at once.
+    const base = previewBasePath()
+    if (base) {
+      const incoming = new URL(req.url)
+      const stripped = stripPreviewBasePath(incoming.pathname, base)
+      if (stripped !== null) {
+        incoming.pathname = stripped
+        req = new Request(incoming.toString(), req)
+      }
+    }
     const url = new URL(req.url)
     // Hot-path bypass for /health: respond directly without going through
     // Hono's router. On Windows we observed a ~7s freeze during Bun's

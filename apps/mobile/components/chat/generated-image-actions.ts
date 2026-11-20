@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { InteractionManager, Platform, Share } from "react-native";
-import { agentFetch } from "../../lib/agent-fetch";
+import { InteractionManager, Platform } from "react-native";
+import { nativeAuthHeaders } from "../../lib/agent-fetch";
+import { downloadFileToCache, shareCachedFile } from "../../lib/download-to-file";
 import { downloadImage } from "./chatImageActions";
 
 export type GeneratedImageAction = "save" | "share";
@@ -15,42 +16,30 @@ function safeFilename(title: string): string {
   return value || "generated-image";
 }
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  }
-  return btoa(binary);
+function extensionFor(mediaType: string): string {
+  if (mediaType.startsWith("video/")) return "mp4";
+  return mediaType.includes("jpeg") || mediaType.includes("jpg") ? "jpg" : "png";
 }
 
+/**
+ * The generated image or clip on disk, so the share sheet and the photo library
+ * can take it.
+ *
+ * The bytes are streamed by the platform's own downloader (SHO-434): generating
+ * a large image used to read the response into an `ArrayBuffer`, copy it into a
+ * binary string and `btoa()` that into base64 — three copies of the picture on
+ * the JS heap, and on Android a single allocation big enough to throw
+ * `OutOfMemoryError`.
+ */
 async function prepareNativeImageFile(
   url: string,
   title: string,
   mediaType = "image/png",
 ): Promise<string> {
-  const response = await agentFetch(url);
-  if (!response.ok)
-    throw new Error(`Image request failed (${response.status})`);
-
-  const { cacheDirectory, writeAsStringAsync, EncodingType } =
-    await import("expo-file-system/legacy");
-  if (!cacheDirectory) throw new Error("Could not access app storage");
-
-  const extension = mediaType.startsWith("video/")
-    ? "mp4"
-    : mediaType.includes("jpeg") || mediaType.includes("jpg")
-      ? "jpg"
-      : "png";
-  const fileUri = `${cacheDirectory}${safeFilename(title)}-${Date.now()}.${extension}`;
-  await writeAsStringAsync(
-    fileUri,
-    arrayBufferToBase64(await response.arrayBuffer()),
-    {
-      encoding: EncodingType.Base64,
-    },
-  );
-  return fileUri;
+  return downloadFileToCache(url, {
+    name: `${safeFilename(title)}.${extensionFor(mediaType)}`,
+    headers: nativeAuthHeaders(),
+  });
 }
 
 export async function runGeneratedImageAction(
@@ -81,13 +70,7 @@ export async function runGeneratedImageAction(
   });
 
   if (action === "share") {
-    const Sharing = await import("expo-sharing");
-    try {
-      await Sharing.shareAsync(fileUri, { dialogTitle: `Share ${title}` });
-    } catch (error) {
-      if (Platform.OS !== "ios") throw error;
-      await Share.share({ url: fileUri, title });
-    }
+    await shareCachedFile(fileUri, title);
     return;
   }
 

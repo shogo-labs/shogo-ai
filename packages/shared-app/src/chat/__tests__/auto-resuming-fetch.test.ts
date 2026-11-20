@@ -537,3 +537,57 @@ describe('createAutoResumingFetch', () => {
     expect(calls).toBeLessThanOrEqual(4)
   })
 })
+
+describe('a failed chat request always carries a reason', () => {
+  // The AI SDK turns a non-2xx chat response into
+  // `new Error(await response.text())`. An empty body therefore becomes an
+  // Error with an empty message — Sentry "Error: No error message"
+  // (SHOGO-ANDROID-5: 447 events / 108 users), a blank banner in the panel, and
+  // no way to tell a 401 from a 502. The wrapper substitutes a readable body.
+  test('an empty 401 body becomes a readable error naming the status', async () => {
+    const baseFetch: any = async () =>
+      new Response(null, { status: 401, statusText: 'Unauthorized' })
+    const fetcher = createAutoResumingFetch(baseFetch, { logger: SILENT_LOGGER })
+
+    const response = await fetcher(POST_URL, { method: 'POST' })
+
+    expect(response.status).toBe(401)
+    const text = await response.text()
+    expect(text).toContain('HTTP 401')
+    const parsed = JSON.parse(text)
+    expect(parsed.error.code).toBe('chat_stream_http_401')
+    expect(parsed.error.message).toContain('HTTP 401')
+  })
+
+  test('a proxy 502 with no body is readable too', async () => {
+    const baseFetch: any = async () => new Response('', { status: 502 })
+    const fetcher = createAutoResumingFetch(baseFetch, { logger: SILENT_LOGGER })
+
+    const response = await fetcher(POST_URL, { method: 'POST' })
+
+    expect(JSON.parse(await response.text()).error.code).toBe('chat_stream_http_502')
+  })
+
+  test("the server's own error body is left alone", async () => {
+    const body = JSON.stringify({ error: { code: 'usage_limit_reached', message: 'Usage limit reached.' } })
+    const baseFetch: any = async () =>
+      new Response(body, { status: 402, headers: { 'content-type': 'application/json' } })
+    const fetcher = createAutoResumingFetch(baseFetch, { logger: SILENT_LOGGER })
+
+    const response = await fetcher(POST_URL, { method: 'POST' })
+
+    expect(response.status).toBe(402)
+    expect(await response.text()).toBe(body)
+  })
+
+  test('a successful response is untouched', async () => {
+    const baseFetch: any = async () => makePostResponse(streamFrom([]))
+    const fetcher = createAutoResumingFetch(baseFetch, {
+      logger: SILENT_LOGGER,
+      maxResumeAttempts: 0,
+    })
+    const response = await fetcher(POST_URL, { method: 'POST' })
+    expect(response.status).toBe(200)
+    await readAll(response.body!)
+  })
+})

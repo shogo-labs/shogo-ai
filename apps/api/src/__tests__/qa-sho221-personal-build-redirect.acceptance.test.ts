@@ -39,6 +39,8 @@ const store = {
 // the runtime pulls through this module.
 const actualCatalog = await import('@shogo/model-catalog')
 mock.module('@shogo/model-catalog', () => ({
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
   ...actualCatalog,
   getModelTier: (_modelId: string) => 'economy',
   resolveModelId: (mode: string) => mode || 'claude-haiku-4-5',

@@ -5,6 +5,7 @@
  * workspace agent file viewer both mount these, so the path-to-preview choice
  * lives here once. Callers own the URL (usually a blob URL) and revoke it.
  */
+import { Suspense, lazy } from "react";
 import { ImagePreview, isImagePath } from "./ImagePreview";
 import {
   AudioPreview,
@@ -17,6 +18,12 @@ import {
   isVideoPath,
 } from "./MediaPreview";
 import { SqlitePreview } from "./SqlitePreview";
+import { isSlidesPath } from "./slides-viewer-protocol";
+
+/** The renderer's host stays out of the main bundle: a deck is rare. */
+const SlidesPreview = lazy(() =>
+  import("./SlidesPreview").then((module) => ({ default: module.SlidesPreview })),
+);
 
 /** SQLite database files are binary, but we render them in a read-only
  *  SQLite preview (tables + sample rows) instead of refusing to open. */
@@ -30,10 +37,10 @@ function isSqlitePath(path: string): boolean {
  *  to tell the editor which preview component to mount. Any file whose
  *  language matches one of these is opened via svc.readFileUrl() (not
  *  readFile()) and its OpenFile.content holds a URL rather than text. */
-export type PreviewLanguage = "image" | "sqlite" | "pdf" | "audio" | "video" | "font";
+export type PreviewLanguage = "image" | "sqlite" | "pdf" | "audio" | "video" | "font" | "slides";
 
 export const PREVIEW_LANGUAGES: ReadonlySet<string> = new Set<PreviewLanguage>([
-  "image", "sqlite", "pdf", "audio", "video", "font",
+  "image", "sqlite", "pdf", "audio", "video", "font", "slides",
 ]);
 
 export function isPreviewLanguage(language: string | null | undefined): language is PreviewLanguage {
@@ -47,6 +54,7 @@ export function previewLanguageFor(path: string): PreviewLanguage | null {
   if (isAudioPath(path)) return "audio";
   if (isVideoPath(path)) return "video";
   if (isFontPath(path)) return "font";
+  if (isSlidesPath(path)) return "slides";
   return null;
 }
 
@@ -55,10 +63,12 @@ export interface FilePreviewProps {
   url: string;
   name: string;
   path: string;
+  /** A renderer that failed, so the host can fall back to text or a download. */
+  onError?: (message: string) => void;
 }
 
 /** Mounts the preview component for `kind`. */
-export function FilePreview({ kind, url, name, path }: FilePreviewProps) {
+export function FilePreview({ kind, url, name, path, onError }: FilePreviewProps) {
   switch (kind) {
     case "image":
       return <ImagePreview url={url} name={name} path={path} />;
@@ -72,5 +82,17 @@ export function FilePreview({ kind, url, name, path }: FilePreviewProps) {
       return <VideoPreview url={url} name={name} path={path} />;
     case "font":
       return <FontPreview url={url} name={name} path={path} />;
+    case "slides":
+      return (
+        <Suspense
+          fallback={
+            <div className="flex h-full items-center justify-center text-[12px] text-[color:var(--ide-muted)]">
+              Loading {name}…
+            </div>
+          }
+        >
+          <SlidesPreview url={url} name={name} path={path} onError={onError} />
+        </Suspense>
+      );
   }
 }

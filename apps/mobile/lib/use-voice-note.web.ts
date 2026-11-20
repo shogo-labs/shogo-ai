@@ -93,6 +93,10 @@ export function useVoiceNoteRecorder(): VoiceNoteRecorder {
   const chunksRef = useRef<Blob[]>([])
   const samplesRef = useRef<number[]>([])
   const startedAtRef = useRef(0)
+  // `MediaRecorder.stop()` completes asynchronously. Keep that completion
+  // single-flight so a timer tick, a tap, or unmount cannot detach the final
+  // `dataavailable` handler while the recorder is flushing its last chunk.
+  const finishingRef = useRef<Promise<RecordedVoiceNote | null> | null>(null)
 
   const release = useCallback(() => {
     if (timerRef.current) {
@@ -114,39 +118,48 @@ export function useVoiceNoteRecorder(): VoiceNoteRecorder {
   useEffect(() => () => release(), [release])
 
   const finish = useCallback(
-    async (discard: boolean) => {
-      const recorder = recorderRef.current
-      if (!recorder || recorder.state === "inactive") {
+    (discard: boolean): Promise<RecordedVoiceNote | null> => {
+      if (finishingRef.current) return finishingRef.current
+
+      const completion = (async (): Promise<RecordedVoiceNote | null> => {
+        const recorder = recorderRef.current
+        if (!recorder || recorder.state === "inactive") {
+          release()
+          setIsRecording(false)
+          return null
+        }
+        const durationMs = Date.now() - startedAtRef.current
+        const samples = samplesRef.current
+        const stopped = new Promise<void>((resolve) => {
+          recorder.onstop = () => resolve()
+        })
+        recorder.stop()
+        await stopped
+        const recordedType = recorder.mimeType || "audio/webm"
+        const recordedBlob = new Blob(chunksRef.current, { type: recordedType })
+        // Release the microphone before inspecting bytes or reading the data URL:
+        // either asynchronous step can fail and must not leave capture running.
         release()
         setIsRecording(false)
-        return null
-      }
-      const durationMs = Date.now() - startedAtRef.current
-      const samples = samplesRef.current
-      const stopped = new Promise<void>((resolve) => {
-        recorder.onstop = () => resolve()
-      })
-      recorder.stop()
-      await stopped
-      const recordedType = recorder.mimeType || "audio/webm"
-      const recordedBlob = new Blob(chunksRef.current, { type: recordedType })
-      // Release the microphone before inspecting bytes or reading the data URL:
-      // either asynchronous step can fail and must not leave capture running.
-      release()
-      setIsRecording(false)
-      setLevel(0)
-      setElapsedMs(0)
-      chunksRef.current = []
-      samplesRef.current = []
+        setLevel(0)
+        setElapsedMs(0)
+        chunksRef.current = []
+        samplesRef.current = []
 
-      if (discard || durationMs < MIN_VOICE_NOTE_MS || !recordedBlob.size) return null
-      const mimeType = await recordingMimeType(recordedBlob, recordedType)
-      const blob = recordedBlob.type === mimeType
-        ? recordedBlob
-        : new Blob([recordedBlob], { type: mimeType })
-      const dataUrl = await blobToDataUrl(blob)
-      const peaks = peaksToString(downsamplePeaks(samples)) ?? ""
-      return { dataUrl, mimeType, durationMs, peaks }
+        if (discard || durationMs < MIN_VOICE_NOTE_MS || !recordedBlob.size) return null
+        const mimeType = await recordingMimeType(recordedBlob, recordedType)
+        const blob = recordedBlob.type === mimeType
+          ? recordedBlob
+          : new Blob([recordedBlob], { type: mimeType })
+        const dataUrl = await blobToDataUrl(blob)
+        const peaks = peaksToString(downsamplePeaks(samples)) ?? ""
+        return { dataUrl, mimeType, durationMs, peaks }
+      })()
+      finishingRef.current = completion
+      void completion.finally(() => {
+        if (finishingRef.current === completion) finishingRef.current = null
+      })
+      return completion
     },
     [release],
   )

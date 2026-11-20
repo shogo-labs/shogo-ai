@@ -109,6 +109,8 @@ export interface ConversationDetail extends Omit<ConversationSummary, 'unreadCou
   canDelete?: boolean
   /** An agent system's manifest declares this channel, so it can't be deleted until it stops. */
   systemManaged?: boolean
+  /** An old agent DM: the chat it became, so the client redirects instead of showing it (SHO-412). */
+  movedToChatSessionId?: string | null
   members: ConversationMember[]
 }
 
@@ -924,9 +926,14 @@ export function teamChatApi() {
       return (await http.post<{ conversation: ConversationSummary }>(`${ws(workspaceId)}/dms`, { userIds })).data
         .conversation
     },
-    async openAgentDm(workspaceId: string, projectId: string | null) {
-      return (await http.post<{ conversation: ConversationSummary }>(`${ws(workspaceId)}/dms`, { agent: { projectId } }))
-        .data.conversation
+    /**
+     * The person's chat with an agent: a project chat for a project agent, a
+     * workspace chat for the workspace agent. Finds or creates it (SHO-412).
+     */
+    async openAgentChat(workspaceId: string, projectId: string | null) {
+      return (
+        await http.post<{ chatSessionId: string; projectId: string | null }>(`${ws(workspaceId)}/agent-chat`, { projectId })
+      ).data
     },
     /** The note-to-self conversation. Same endpoint: you are the only member. */
     async openSelfDm(workspaceId: string, userId: string) {
@@ -1209,6 +1216,11 @@ export function teamChatApi() {
         limit?: number
         /** Delta read: only rows whose `updatedAt` moved since this instant (SHO-260). */
         changedSince?: string
+        /**
+         * One member's messages — top-level posts and thread replies — newest
+         * first (SHO-419). `agent:ws` is the workspace agent.
+         */
+        from?: string
       } = {},
     ): Promise<MessagePage> {
       const q = new URLSearchParams()
@@ -1217,6 +1229,7 @@ export function teamChatApi() {
       if (opts.threadRootId) q.set('threadRootId', opts.threadRootId)
       if (opts.limit) q.set('limit', String(opts.limit))
       if (opts.changedSince) q.set('changedSince', opts.changedSince)
+      if (opts.from) q.set('from', opts.from)
       return (await http.get<MessagePage>(`${conv(id)}/messages?${q}`)).data
     },
     async post(

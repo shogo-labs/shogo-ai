@@ -157,7 +157,18 @@ describe('POST /projects/:projectId/files/import', () => {
     const huge = await importFiles(w.projects.open, { archive: 'A'.repeat(REMOTE_IMPORT_MAX_BASE64_CHARS + 1) }, auth)
     expect(huge.status).toBe(413)
     expect(huge.body.error.code).toBe('too_large')
+    expect(huge.body.error.message).toContain('100 MB')
     expect(forwarded).toEqual([])
+  })
+
+  test('a payload over the old 25 MB cap but under the new one is forwarded, not refused (SHO-410)', async () => {
+    const auth = { 'x-runtime-token': tokenA, 'X-Requester-Ticket': ticketFor(w.users.member) }
+    const oldCapChars = Math.ceil((25 * 1024 * 1024 * 4) / 3) + 4
+    const archive = 'A'.repeat(oldCapChars + 1024)
+    expect(archive.length).toBeLessThan(REMOTE_IMPORT_MAX_BASE64_CHARS)
+    const res = await importFiles(w.projects.open, { archive }, auth)
+    expect(res.status).toBe(200)
+    expect(forwarded).toHaveLength(1)
   })
 
   test('502 target_unavailable when the target runtime cannot be resolved', async () => {

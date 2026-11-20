@@ -763,6 +763,38 @@ describe('control-plane auth headers', () => {
   })
 })
 
+describe('node-agent gauges on the heartbeat', () => {
+  it('keeps the gauges a host reports, so the durability series can be emitted', () => {
+    // The durability gauges are the only signal that a VM cannot save its work
+    // (SHO-442). They travel on the heartbeat and are read back off the live
+    // host view by the fleet batch callback; dropping them here would leave the
+    // alert with no series at all.
+    const c = new MetalWarmPoolController(fakeEnv(), (async () => new Response('{}')) as any)
+    c.registerHost({
+      ...REG,
+      gauges: {
+        metal_repo_untrusted_vms: 2,
+        metal_repo_untrusted_oldest_seconds: 5400,
+        metal_repo_unsaved_seconds: 1800,
+      },
+    })
+
+    const host = c.liveHosts()[0]
+    expect(host.gauges).toEqual({
+      metal_repo_untrusted_vms: 2,
+      metal_repo_untrusted_oldest_seconds: 5400,
+      metal_repo_unsaved_seconds: 1800,
+    })
+  })
+
+  it('an old agent that reports no gauges is not an error', () => {
+    const c = new MetalWarmPoolController(fakeEnv(), (async () => new Response('{}')) as any)
+    c.registerHost(REG)
+
+    expect(c.liveHosts()[0].gauges).toBeUndefined()
+  })
+})
+
 describe('parseHostCounterName', () => {
   it('passes a bare counter through', () => {
     expect(parseHostCounterName('metal_resume_cold_miss_total')).toEqual({ counter: 'metal_resume_cold_miss_total' })

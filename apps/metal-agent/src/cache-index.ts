@@ -74,6 +74,12 @@ export interface CacheEntry {
   workspaceOrigin?: 'template' | 'backup' | 'snapshot'
   /** Taken on a staged rootfs and promoted at activation: the durable copy is still to be pushed. */
   durablePending?: boolean
+  /**
+   * Why the VM was suspended: the reaper's idle window (`idle`) or an on-demand
+   * eviction to make room for another assign on this host (`evicted`). Read back
+   * on resume so wake latency can be split by cause. Absent on older entries.
+   */
+  suspendReason?: 'idle' | 'evicted'
   v: 1
 }
 

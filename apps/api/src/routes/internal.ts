@@ -14,6 +14,8 @@ import { validatePodToken } from '../lib/k8s-auth'
 import { getMetalWarmPoolController } from '../lib/metal-warm-pool-controller'
 import { saveAgentAvatar } from '../services/workspace-agent-cloud-storage'
 import { authenticate, authorizeWorkspaceScope, validateAuth } from './internal-auth'
+import { decide, loadAccess, resolveAgentActor } from '../lib/authz'
+import type { Permission } from '@shogo/authz'
 import { numberOr, runtimeInternalRoutes } from './internal-runtime-routes'
 import { signSharedFileToken } from '../lib/shared-file-token'
 import { handleInboundEvents, resumeAfterLink } from '../services/chat-providers/inbound'
@@ -331,6 +333,34 @@ app.post('/agent-eval-results', async (c) => {
  * confirm one with the user) from a republish (reuse the live subdomain). Auth:
  * K8s SA token (cluster) OR HMAC-signed `x-runtime-token` (metal / local).
  */
+/**
+ * Refuse an internal project route when the person the call acts for lacks
+ * `permission` (SHO-417). The runtime token only proves the pod belongs to the
+ * workspace; the person comes from the signed requester ticket, and a service
+ * account with no person stays unscoped like every other internal check.
+ */
+async function enforceProjectAbility(
+  c: any,
+  projectId: string,
+  permission: Permission,
+): Promise<Response | null> {
+  const identity = await authenticate(c, projectId)
+  if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+  if (identity.kind === 'sa') return null
+  const { prisma } = await import('../lib/prisma')
+  const project = (await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workspaceId: true },
+  })) as { workspaceId: string } | null
+  if (!project) return null
+  const actor = await resolveAgentActor(c, identity, { workspaceId: project.workspaceId })
+  if (!actor?.principal.userId || actor.unscoped) return null
+  const access = await loadAccess(actor.principal, { projectId })
+  const decision = await decide(access, permission, actor.principal, `${c.req.method} ${c.req.path}`)
+  if (!decision.ok) return c.json({ error: { code: decision.code, message: decision.message } }, decision.status)
+  return null
+}
+
 app.get('/projects/:projectId/publish', async (c) => {
   const projectId = c.req.param('projectId')
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
@@ -378,6 +408,8 @@ app.post('/projects/:projectId/publish', async (c) => {
   const projectId = c.req.param('projectId')
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
   if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+  const denied = await enforceProjectAbility(c, projectId, 'project:publish')
+  if (denied) return denied
 
   let body: {
     subdomain?: string
@@ -443,6 +475,8 @@ app.post('/projects/:projectId/publish/ops', async (c) => {
   const projectId = c.req.param('projectId')
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
   if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+  const denied = await enforceProjectAbility(c, projectId, 'project:publish')
+  if (denied) return denied
 
   let body: {
     action?: string
@@ -768,6 +802,11 @@ app.post('/billing/provision', async (c) => {
         if (typeof body.invoiceId !== 'string') return c.json({ error: 'invoiceId required' }, 400)
         wallet = { released: await svc.releaseOverageInvoiceLocal(body.workspaceId, body.invoiceId) }
         break
+      case 'chargeOverage': {
+        const reason = body.reason === 'cap' || body.reason === 'final' ? body.reason : 'block'
+        wallet = { invoiced: await svc.chargeOverageBlocks(body.workspaceId, { reason }) }
+        break
+      }
       default:
         return c.json({ error: `Unknown provision op: ${body.op}` }, 400)
     }

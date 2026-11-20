@@ -191,6 +191,19 @@ model Workspace {
   // See `services/workspace-move/`. Null for a workspace that was never moved.
   movedToWorkspaceId String?
   movedAt            DateTime?
+  // Workspace-runtime workspace-drive size (GiB) for a bare `ws:<id>` runtime
+  // (SHO-401). Null = never set; the runtime then sizes to the largest member
+  // project's `workspaceDiskGiB`. Route-only: only PUT /api/workspaces/:id/disk
+  // writes it (the generic workspace PATCH drops it, like Project.workspaceDiskGiB).
+  runtimeDiskGiB Int?
+  // The UTC day through which the disk add-on has been billed (SHO-401). The
+  // daily `disk_addon` job advances it in the same transaction as the debit, so
+  // a rerun the same day charges nothing.
+  diskAddonBilledThrough DateTime?
+  // Who may invite people to this workspace (SHO-454). "members" (the default
+  // when null) lets any Editor invite as Editor or Viewer; "admins" restricts
+  // inviting to owners and admins. Viewers can never invite.
+  invitePolicy      String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -203,11 +216,13 @@ model Workspace {
   inviteLinks            InviteLink[]
   folders                Folder[]
   subscriptions          Subscription[]
+  courseEnrollments      CourseEnrollment[]
   instanceSubscription   InstanceSubscription?
   usageWallets           UsageWallet[]
   usageEvents            UsageEvent[]
   liveSessionMeters      LiveSessionMeter[]
   storageUsage           StorageUsage?
+  storageUsageDaily      StorageUsageDaily[]
   starredProjects        StarredProject[]
   integrationGrants      UserIntegrationWorkspaceGrant[]
   agentTasks             AgentTask[]
@@ -235,6 +250,8 @@ model Workspace {
   workItems              WorkItem[]
   plans                  Plan[]
   modelVisibility        WorkspaceModelVisibility[]
+  accessPolicies         AccessPolicy[]
+  accessAuditEvents      AccessAuditEvent[]
   slackInstallation      SlackWorkspaceInstallation?
   agentProfile           WorkspaceAgentProfile?
   goals                  Goal[]
@@ -250,6 +267,7 @@ model Workspace {
   socialComments         SocialComment[]
   socialAutomations      SocialAutomation[]
   socialAutomationRuns   SocialAutomationRun[]
+  rootSecrets            WorkspaceRootSecret[]
 
   @@index([parentWorkspaceId])
   @@index([machineInstanceId])
@@ -1293,6 +1311,9 @@ model Subscription {
   billingInterval      String
   currentPeriodStart   DateTime
   currentPeriodEnd     DateTime
+  // When this subscription's card first paid a real (amount_paid > 0) invoice.
+  // Null while trialing. See prisma/schema.prisma for full semantics.
+  firstPaidAt          DateTime?
   cancelAtPeriodEnd    Boolean  @default(false)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
@@ -1465,7 +1486,13 @@ model StorageUsage {
   id               String   @id @default(uuid())
   workspaceId      String   @unique
   totalBytes       BigInt   @default(0)
+  /// Total minus the platform-overhead categories (quarantine archives, metal
+  /// VM snapshots) — the bytes a customer is actually billed for (SHO-423).
+  billableBytes    BigInt   @default(0)
   projectCount     Int      @default(0)
+  /// Per-category and per-project byte breakdown from the last pass (SHO-423).
+  /// JSON-encoded in SQLite (`{ categories, projects, unmeasured }`).
+  breakdown        String?
   lastCalculatedAt DateTime
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -1473,6 +1500,37 @@ model StorageUsage {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@map("storage_usage")
+}
+
+/// One row per workspace per UTC day, written by the 6h storage pass with the
+/// MAXIMUM bytes seen that day (SHO-423). The daily storage bill job reads the
+/// completed days and charges the GB-months above the tier allowance, then
+/// stamps `billedAt` — so a rerun never double-charges. Region-local (excluded
+/// from logical replication, like `storage_usage`): each region only measures
+/// the workspaces it is home to.
+model StorageUsageDaily {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  /// UTC midnight of the day these numbers describe.
+  day            DateTime
+  totalBytes     BigInt    @default(0)
+  billableBytes  BigInt    @default(0)
+  /// The workspace instance tier's `storageLimitBytes` at measurement time.
+  allowanceBytes BigInt    @default(0)
+  breakdown      String?
+  /// USD this day accrued. Filled in `shadow` mode too, so the projected
+  /// revenue can be compared against Stripe before money moves.
+  chargedUsd     Float?
+  /// Set once the debit landed (enforce) or was recorded (shadow). Null = unbilled.
+  billedAt       DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, day])
+  @@index([day])
+  @@map("storage_usage_daily")
 }
 
 // =============================================================================
@@ -1492,6 +1550,9 @@ model ChatSession {
   // Owner of a personal workspace-agent chat. Null for project chats,
   // scheduled/DM/Slack sessions, and chats created before ownership existed.
   createdByUserId       String?
+  // A person's chat with one agent, keyed
+  // `a:<workspaceId>:<userId>:<projectId|ws>` (SHO-412).
+  directKey             String?
   phase                 String?
   claudeCodeSessionId   String?
   cachedMessageCount    Int       @default(0)
@@ -1536,6 +1597,8 @@ model ChatSession {
   @@index([workspaceId])
   @@index([workspaceId, createdByUserId, lastActiveAt])
   @@index([activeTurnHeartbeatAt])
+  // One chat per person per agent per workspace (SHO-412).
+  @@unique([directKey])
   @@map("chat_sessions")
 }
 
@@ -2205,6 +2268,59 @@ model WorkspaceModelVisibility {
   @@unique([workspaceId, modelId])
   @@index([workspaceId])
   @@map("workspace_model_visibility")
+}
+
+// ============================================================================
+// Workspace RBAC (SHO-417) — SQLite mirror of prisma/schema.prisma.
+// Json? → String? (JSON-encoded), enums → String.
+// ============================================================================
+
+model AccessPolicy {
+  id          String @id @default(uuid())
+  workspaceId String
+  /// `role` | `group` | `member`
+  subjectType String
+  /// Role name, `UserGroup.id`, or `User.id` — polymorphic, so no FK.
+  subjectId   String
+  /// JSON array of ability names. Null on a role row = the built-in default.
+  abilities   String?
+  /// JSON array of model tiers. Null with `modelIds` null = everything.
+  modelTiers  String?
+  /// JSON array of explicit model ids.
+  modelIds    String?
+  defaultModelId  String?
+  spendCapUsd     Float?
+  /// `day` | `week` | `month`
+  spendPeriod     String?
+  requestsPerHour Int?
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, subjectType, subjectId])
+  @@index([workspaceId])
+  @@map("access_policies")
+}
+
+model AccessAuditEvent {
+  id               String   @id @default(uuid())
+  workspaceId      String
+  actorUserId      String?
+  onBehalfOfUserId String?
+  kind             String
+  permission       String?
+  modelId          String?
+  subject          String?
+  detail           String?
+  createdAt        DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, kind, createdAt])
+  @@map("access_audit_events")
 }
 
 // ============================================================================
@@ -4347,6 +4463,13 @@ model SocialProfile {
 model SocialAccount {
   id              String    @id @default(uuid())
   workspaceId     String
+  /// The project that owns this account. `null` = shared with the whole
+  /// workspace, so every project's agent may use it. Deliberately not a
+  /// relation: the cloud keeps mirror rows for accounts a desktop connected
+  /// through the relay, and those carry local project ids the cloud has no
+  /// `Project` row for. Project delete sets this to `null` (the account
+  /// becomes shared) rather than deleting the row or the Zernio account.
+  projectId       String?
   profileId       String
   zernioAccountId String    @unique
   platform        String
@@ -4373,6 +4496,7 @@ model SocialAccount {
 
   @@unique([workspaceId, platform, username])
   @@index([workspaceId, platform])
+  @@index([workspaceId, projectId])
   @@map("social_accounts")
 }
 
@@ -4817,6 +4941,73 @@ model PublishedUsageMinute {
   @@map("published_usage_minutes")
 }
 
+// ── VM compute metering (SHO-424) ───────────────────────────────────────────
+// What a workspace actually ran, hour by hour: microVM running time × the
+// machine size the HOST booted, split by why the VM was alive (a person using
+// the app, an agent turn, or the idle-suspend tail) and by why it was started.
+// Ingested from each host's heartbeat (lib/vm-metering/ingest.ts), priced and
+// charged by jobs/vm-usage-bill.ts.
+//
+// `hostId` is part of every key on purpose: a host reports to exactly one
+// region, so including it keeps the two regions' write sets disjoint and
+// logical replication never sees an insert_exists conflict (SHO-344/345).
+// `projectId` is `""` (not NULL) for a workspace-level VM: a NULL would make
+// the @@unique below non-total in Postgres, and two replicas could each insert
+// the "same" row instead of incrementing one.
+model VmUsageHour {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  /// "" for a `ws:<workspaceId>` runtime that belongs to no single project.
+  projectId    String    @default("")
+  /// Truncated to the hour (UTC).
+  hour         DateTime
+  hostId       String
+  /// CPU count the host actually booted (not the tier, not the env accounting).
+  vcpus        Int
+  /// MiB the host actually booted.
+  memMiB       Int
+  /// user_open | agent_wake | schedule | published | rewarm | prewarm
+  cause        String    @default("user_open")
+  agentSeconds Int       @default(0)
+  appSeconds   Int       @default(0)
+  idleSeconds  Int       @default(0)
+  /// What this row was charged, in USD. Filled in shadow mode too, so the
+  /// estimate and the eventual real charge come from one number.
+  chargedUsd   Float?
+  /// Set once the hourly job has charged this row. It only reads rows where
+  /// this is null, so a rerun never double-charges.
+  billedAt     DateTime?
+
+  @@unique([workspaceId, projectId, hour, hostId, vcpus, memMiB, cause])
+  @@index([workspaceId, hour])
+  @@index([billedAt])
+  @@index([hour])
+  @@map("vm_usage_hours")
+}
+
+/// Per-VM ingestion cursor: the cumulative counters already turned into
+/// `VmUsageHour` rows, so a heartbeat is a delta and a replay adds nothing.
+/// Keyed by the VM's identity (host + vmId + assignment epoch): a resumed or
+/// re-assigned VM is a NEW series, never a continuation.
+model VmMeterCursor {
+  id         String   @id @default(cuid())
+  hostId     String
+  vmId       String
+  /// Epoch ms of the assignment, as the agent reported it.
+  assignedAt BigInt
+  agentMs    Int      @default(0)
+  appMs      Int      @default(0)
+  idleMs     Int      @default(0)
+  /// Last counter that was turned into usage; kept so a stale cursor is
+  /// prunable without guessing (see pruneClosedMeters' server-side twin).
+  lastSeenAt DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([hostId, vmId, assignedAt])
+  @@index([lastSeenAt])
+  @@map("vm_meter_cursors")
+}
+
 // ── Native release (SHO-323) [desktop / SQLite track] ────────────────────────────────────────────────
 // Shipping an Expo project to the App Store / Google Play. These rows are the
 // *Shogo* side of a release: the EAS project it maps to, the customer's store
@@ -5029,4 +5220,69 @@ model CrossWorkspaceAudit {
 
   @@index([targetWorkspaceId, createdAt])
   @@map("cross_workspace_audit")
+}
+
+/// One purchase of a paid course (SHO-428). See prisma/schema.prisma for full
+/// semantics; local mode has no Stripe, so rows come from the license-key and
+/// admin paths (and a cloud-synced workspace's own row).
+model CourseEnrollment {
+  id                      String    @id @default(uuid())
+  /// Stable course key, e.g. `solo-founder-v1`.
+  courseId                String
+  userId                  String
+  workspaceId             String
+  /// stripe | license_key | admin
+  source                  String
+  stripeCheckoutSessionId String?   @unique
+  stripeSubscriptionId    String?
+  /// active | rejected_prepaid | refunded
+  status                  String
+  purchasedAt             DateTime
+  /// pending | installed | failed
+  installStatus           String    @default("pending")
+  installError            String?
+  packBindings            Json?
+  courseBoardId           String?
+  progress                Json?
+  completedAt             DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, courseId])
+  @@index([workspaceId])
+  @@map("course_enrollments")
+}
+
+/// The workspace root's `.env*` files, sealed at rest (SHO-384).
+///
+/// A cloud `ws:` runtime rebuilds its root from `git archive HEAD`, which never
+/// carries `.env*`, and it has no host in front of it to keep the metal
+/// encrypted home archive. The API holds them here instead: one blob per
+/// runtime key (`ws:<workspaceId>` or `ws:proj:<anchor>`), AES-256-GCM with a
+/// key derived per runtime and the runtime key bound in as associated data, so
+/// a blob cannot be replayed onto another runtime. Nothing about the content is
+/// queryable — the row exists so the pod can fetch its secrets after a cold
+/// boot.
+model WorkspaceRootSecret {
+  id         String   @id @default(uuid())
+  /// `ws:<workspaceId>` for a merged workspace runtime, `ws:proj:<anchor>` for a project-anchored one.
+  runtimeKey String   @unique
+  /// The owning workspace, so deleting it drops the blob. The key can be a
+  /// project-anchored one, so it cannot be read back out of `runtimeKey`.
+  workspaceId String
+  /// Content fingerprint of the payload, so an unchanged runtime skips the upload.
+  tag        String
+  /// `v1:<iv>:<authTag>:<ciphertext>`, base64. AAD is the runtime key.
+  ciphertext String
+  /// Plaintext byte count, for the ceiling and for observability.
+  size       Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("workspace_root_secrets")
 }

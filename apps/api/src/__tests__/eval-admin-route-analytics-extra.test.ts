@@ -18,6 +18,8 @@ mock.module('../middleware/super-admin', () => ({
   requireSuperAdmin: async (_c: any, next: any) => next(),
 }))
 mock.module('@shogo/model-catalog', () => ({
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
   MODEL_CATALOG: { 'claude-sonnet-4-5': {}, 'gpt-4o': {} },
   MODEL_ALIASES: { sonnet: 'claude-sonnet-4-5' },
 }))

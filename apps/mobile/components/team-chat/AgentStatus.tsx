@@ -5,7 +5,7 @@
  * current in place, and runs of plain status posts folded into one row.
  */
 import { useState } from 'react'
-import { Linking, Pressable, Text, View } from 'react-native'
+import { Pressable, Text, View } from 'react-native'
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Circle, ExternalLink, Loader2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { ChatMarkdown } from '../chat/ChatMarkdown'
@@ -17,6 +17,7 @@ import { DrawnCheckmark } from '../ui/DrawnCheckmark'
 import { GlassCard } from '../ui/GlassCard'
 import { AgentAvatar } from './AgentAvatar'
 import { renderMentionLabels, renderMentionsMarkdown, type MentionNames } from '../../lib/team-chat-state'
+import { openExternalLink } from '../../lib/open-external-link';
 
 const STATUS_LABEL: Record<CardStatus, string> = { working: 'In progress', blocked: 'Blocked', done: 'Done', failed: 'Failed' }
 const STATUS_STYLE: Record<CardStatus, { bg: string; text: string }> = {
@@ -80,7 +81,7 @@ export function StatusCardView({ card, onOpenLink }: { card: StatusCard; onOpenL
           {card.links.map((l) => (
             <Pressable
               key={l.url}
-              onPress={() => { if (!onOpenLink?.(l.url)) void Linking.openURL(l.url) }}
+              onPress={() => { if (!onOpenLink?.(l.url)) void openExternalLink(l.url) }}
               accessibilityRole="link"
               accessibilityLabel={l.label}
               className="flex-row items-center gap-1 rounded-md border border-border px-2 py-1 active:bg-muted"

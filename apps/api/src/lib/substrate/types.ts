@@ -38,6 +38,20 @@ export interface RuntimeStatus {
   /** Resolved runtime URL when known. */
   url?: string
   message?: string
+  /**
+   * Whether this runtime's work has reached durable storage. Metal only, and
+   * only while a VM is assigned: a cold boot restores the durable copy, so a
+   * runtime that is not durable is one stop away from losing the user's
+   * changes (SHO-442). Knative has no equivalent and omits it.
+   */
+  durability?: {
+    state: 'ok' | 'saving-failing' | 'untrusted'
+    /** When the current state began: the last good save, or the VM's start. */
+    since: number
+    /** When this VM's HEAD last reached the durable repo, if it ever did. */
+    lastSavedAt?: number
+    reason?: string
+  }
 }
 
 export interface ResolveOpts {
@@ -66,6 +80,18 @@ export interface Resources {
   memory?: string
   disk?: string
   minScale?: number
+}
+
+/**
+ * The result of a live resize for one runtime key (SHO-401). `disk` is the
+ * host's workspace-drive grow result: `{fromMiB,toMiB}` when it grew,
+ * `'unchanged'` when it was already big enough, `'unsupported'` when the live
+ * VM never saw the new size. `error` is set when the host call itself failed.
+ */
+export interface ResizeOutcome {
+  key: string
+  disk?: { fromMiB: number; toMiB: number } | 'unchanged' | 'unsupported'
+  error?: string
 }
 
 /** One project's runtime, for admin listing + infra metrics. */
@@ -142,7 +168,15 @@ export interface ProjectSubstrate {
    * are pool-uniform-sized today, so MetalSubstrate omits it and the router
    * surfaces a SubstrateUnsupportedError.
    */
-  resize?(projectId: string, resources: Resources): Promise<void>
+  resize?(projectId: string, resources: Resources): Promise<ResizeOutcome[] | void>
+
+  /**
+   * Grow a bare `ws:<workspaceId>` workspace runtime's drive live (SHO-401).
+   * The workspace runtime is keyed by workspace, not by any project, so
+   * `resize` never reaches it. Only metal has such a runtime; other substrates
+   * omit this and the router treats it as a no-op.
+   */
+  resizeWorkspaceRuntime?(workspaceId: string, resources: { disk?: string }): Promise<ResizeOutcome[]>
 
   // --- publishing surface --------------------------------------------------
   // The LIVE published site ({subdomain}.shogo.one), promoted to the substrate

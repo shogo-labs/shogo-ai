@@ -263,10 +263,18 @@ describe('GET /subagent-overrides', () => {
   test('403 when not a member', async () => {
     const res = await call('GET', PATH('subagent-overrides'))
     expect(res.status).toBe(403)
+    expect(res.body.error.code).toBe('analytics_admin_only')
   })
 
-  test('200 returns service list to members', async () => {
+  test('403 for a workspace member: reads are admin-only', async () => {
     seedMember('member')
+    const res = await call('GET', PATH('subagent-overrides'))
+    expect(res.status).toBe(403)
+    expect(res.body.error.code).toBe('analytics_admin_only')
+  })
+
+  test('200 returns service list to admins', async () => {
+    seedMember('admin')
     const res = await call('GET', PATH('subagent-overrides'))
     expect(res.status).toBe(200)
     expect(res.body.ok).toBe(true)
@@ -275,7 +283,7 @@ describe('GET /subagent-overrides', () => {
   })
 
   test('500 when listSubagentOverrides throws', async () => {
-    seedMember('member')
+    seedMember('admin')
     listSubagentOverrides.mockImplementation(async () => { throw new Error('list-fail') })
     const res = await call('GET', PATH('subagent-overrides'))
     expect(res.status).toBe(500)

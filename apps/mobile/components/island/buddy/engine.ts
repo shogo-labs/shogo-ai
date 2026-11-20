@@ -138,7 +138,32 @@ const UNFOLD_TIME = 4
 /** Long enough for the state colour and glow to finish easing. */
 const WAKE_SETTLE_S = 1.5
 
+/** The longest step the simulation will take, in seconds. */
+const MAX_STEP_S = 0.05
+
 const bump = (d: number, width: number) => Math.exp(-(d * d) / (width * width))
+
+/**
+ * A frame delta the simulation can actually integrate. A delta can arrive
+ * negative — a `requestAnimationFrame` timestamp is the time the frame
+ * *began*, which can precede the `performance.now()` that scheduled it — or
+ * enormous, after a tab has been backgrounded for minutes. Both break the
+ * exponential smoothing in `update`: a negative step makes it diverge
+ * instead of converge (each frame multiplies the value by more than one, so
+ * `oy` ran away to -1.5e5 and the glow radius to 8.7e6, throwing
+ * `IndexSizeError` from `createRadialGradient`), and a huge one makes the
+ * jelly sub-stepping loop unbounded. Sanitised here, at the one place every
+ * caller goes through, rather than trusting each frame loop to clamp.
+ */
+const stepSeconds = (dt: number) => (Number.isFinite(dt) ? clamp(dt, 0, MAX_STEP_S) : 0)
+
+/**
+ * A radius a canvas gradient will accept. `createRadialGradient` throws
+ * `IndexSizeError` for a negative radius and `TypeError` for a non-finite
+ * one, and either takes the whole frame down, so every gradient goes
+ * through here.
+ */
+const gradientRadius = (r: number) => (Number.isFinite(r) && r > 0 ? r : 0)
 
 /** Ways the mark's rays can turn into the character (and back). */
 export type LogoStyle = "vortex" | "galaxy" | "tumble" | "flip" | "litFlip" | "mosaic"
@@ -1406,6 +1431,7 @@ export class BuddyEngine {
   }
 
   update(dt: number) {
+    dt = stepSeconds(dt)
     const n = nowS()
     const nowMs = performance.now()
     const t = n - this.t0
@@ -1570,9 +1596,13 @@ export class BuddyEngine {
     const R = W * 0.3
     const rx = R * d.rx
     const ry = R * d.ry
-    const cx = W / 2 + this.ox * R
+    // A non-finite offset would put the whole character at NaN and every
+    // gradient below would throw, so the frame falls back to centred.
+    const ox = Number.isFinite(this.ox) ? this.ox : 0
+    const oy = Number.isFinite(this.oy) ? this.oy : 0
+    const cx = W / 2 + ox * R
     const feet = H - W * 0.5 + ry
-    const cy = H - W * 0.5 + this.oy * R
+    const cy = H - W * 0.5 + oy * R
 
     this.drawGlow(x, Math.min(R * 2.1, W / 2, H - cy) / 2.1, cx, cy)
     // Behind the body, so the last rays look absorbed into it.
@@ -1714,7 +1744,7 @@ export class BuddyEngine {
     const core = (1 - this.logo) * clamp(1 - this.scale / 0.7, 0, 1)
     if (style.core && nowS() < this.logoCoreUntil && core > 0.01) {
       const r = size * 0.2 * Ease.out(core)
-      const glow = x.createRadialGradient(hx, hy, 0, hx, hy, r * 2.2)
+      const glow = x.createRadialGradient(hx, hy, 0, hx, hy, gradientRadius(r * 2.2))
       glow.addColorStop(0, rgba([1, 1, 1], core))
       glow.addColorStop(0.35, rgba(mix(this.body, [1, 1, 1], 0.5), core))
       glow.addColorStop(1, rgba(this.body, 0))
@@ -1776,7 +1806,7 @@ export class BuddyEngine {
   private drawGlow(x: CanvasRenderingContext2D, R: number, cx: number, cy: number) {
     const glow = this.glow * this.finishValue.glow
     if (glow <= 0.01) return
-    const r = R * 2.1 * this.scale
+    const r = gradientRadius(R * 2.1 * this.scale)
     const g = x.createRadialGradient(cx, cy, 0, cx, cy, r)
     g.addColorStop(0, rgba(this.col, glow * 0.9))
     g.addColorStop(0.45, rgba(this.col, glow * 0.35))
@@ -2266,7 +2296,7 @@ export class BuddyEngine {
     const cx = rx * 0.98
     const cy = ry * 0.55
     const r = R * 0.24 * wiggle
-    const fluff = x.createRadialGradient(cx - r * 0.3, cy - r * 0.3, 0, cx, cy, r * 1.3)
+    const fluff = x.createRadialGradient(cx - r * 0.3, cy - r * 0.3, 0, cx, cy, gradientRadius(r * 1.3))
     fluff.addColorStop(0, "#FFFFFF")
     fluff.addColorStop(1, "#E6DDD3")
     x.fillStyle = fluff
@@ -2343,7 +2373,7 @@ export class BuddyEngine {
       const u = 1 - k
       const px = u * u * u * p0[0] + 3 * u * u * k * c1[0] + 3 * u * k * k * c2[0] + k * k * k * p3[0]
       const py = u * u * u * p0[1] + 3 * u * u * k * c1[1] + 3 * u * k * k * c2[1] + k * k * k * p3[1]
-      const glow = x.createRadialGradient(px, py, 0, px, py, R * 0.12)
+      const glow = x.createRadialGradient(px, py, 0, px, py, gradientRadius(R * 0.12))
       glow.addColorStop(0, rgba(mix(this.col, [1, 1, 1], 0.5)))
       glow.addColorStop(1, rgba(this.col, 0))
       x.fillStyle = glow
@@ -2700,14 +2730,14 @@ export class BuddyEngine {
     const orbPulse = active ? 1 + Math.sin(t * 6) * 0.14 : 1
     const orbR = R * 0.12 * orbPulse
     const orbColor = this.state === "idle" ? mix(this.body, [1, 1, 1], 0.35) : this.col
-    const halo = x.createRadialGradient(tipX, tipY, 0, tipX, tipY, orbR * 3)
+    const halo = x.createRadialGradient(tipX, tipY, 0, tipX, tipY, gradientRadius(orbR * 3))
     halo.addColorStop(0, rgba(orbColor, (this.state === "sleeping" ? 0.15 : 0.55) * this.finishValue.glow))
     halo.addColorStop(1, rgba(orbColor, 0))
     x.fillStyle = halo
     x.beginPath()
     x.arc(tipX, tipY, orbR * 3, 0, Math.PI * 2)
     x.fill()
-    const orb = x.createRadialGradient(tipX - orbR * 0.35, tipY - orbR * 0.35, 0, tipX, tipY, orbR)
+    const orb = x.createRadialGradient(tipX - orbR * 0.35, tipY - orbR * 0.35, 0, tipX, tipY, gradientRadius(orbR))
     orb.addColorStop(0, rgba(mix(orbColor, [1, 1, 1], 0.7)))
     orb.addColorStop(1, rgba(orbColor))
     x.fillStyle = orb
@@ -2738,13 +2768,13 @@ export class BuddyEngine {
     }
 
     // Subsurface: a warm core so it reads as jelly rather than plastic.
-    const core = x.createRadialGradient(0, ry * 0.25, 0, 0, ry * 0.25, R * 0.9)
+    const core = x.createRadialGradient(0, ry * 0.25, 0, 0, ry * 0.25, gradientRadius(R * 0.9))
     core.addColorStop(0, rgba(mix(this.body, [1, 0.95, 0.85], 0.35), 0.45 * f.core))
     core.addColorStop(1, rgba(this.body, 0))
     x.fillStyle = core
     x.fill(body)
 
-    const rim = x.createRadialGradient(0, 0, R * 0.5, 0, 0, R * 1.3)
+    const rim = x.createRadialGradient(0, 0, gradientRadius(R * 0.5), 0, 0, gradientRadius(R * 1.3))
     rim.addColorStop(0, "rgba(0,0,0,0)")
     rim.addColorStop(1, `rgba(0,0,0,${0.28 * f.rim})`)
     x.fillStyle = rim

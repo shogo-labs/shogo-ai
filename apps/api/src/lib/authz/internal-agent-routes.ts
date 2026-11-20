@@ -22,6 +22,10 @@ export const INTERNAL_AGENT_ROUTES: Readonly<Record<string, string>> = {
   // chat's capability toggles are the workspace's, never the anchor project's.
   'GET /workspaces/:workspaceId/config': 'workspace:read',
   'PATCH /workspaces/:workspaceId/config': 'workspace.settings:manage',
+  // The acting person's own effective access. `workspace:read` is the floor:
+  // the answer is about the caller, and a member who cannot read the workspace
+  // has nothing to filter tools with.
+  'GET /workspaces/:workspaceId/access/effective': 'workspace:read',
   'GET /projects/:projectId/config': 'project:read',
   'PATCH /projects/:projectId/config': 'project:update|project.settings:manage',
   'POST /projects/:projectId/agent-call': 'project:update',
@@ -36,6 +40,7 @@ const AGENT_SURFACES: readonly RegExp[] = [
   /^\/chat-sessions\/:chatSessionId\/transcript$/,
   /^\/projects\/:projectId\/attachments(?:\/:attachedProjectId)?$/,
   /^\/workspaces\/:workspaceId\/config$/,
+  /^\/workspaces\/:workspaceId\/access\/effective$/,
   /^\/projects\/:projectId\/config$/,
   /^\/projects\/:projectId\/agent-call(?:\/:runId)?$/,
 ]

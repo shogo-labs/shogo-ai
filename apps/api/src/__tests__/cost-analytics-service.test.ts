@@ -255,6 +255,8 @@ const MODEL_ALIASES_STUB: Record<string, string> = {
   haiku: 'claude-haiku-4-5',
 }
 mock.module('@shogo/model-catalog', () => ({
+  getAgentModeOverrides: () => ({}),
+  getAutoTierOverrides: () => ({}),
   resolveModelId: (s: string) => MODEL_ALIASES_STUB[s] ?? s,
   getModelTier: () => ({ name: 'medium', includeBudget: 0, overageRate: 0 }),
   getModelBillingModel: (s: string) => s,

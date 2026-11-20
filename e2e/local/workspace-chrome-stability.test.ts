@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { expect, test, type Page, type Route } from '@playwright/test'
+import { seedActiveWorkspace } from './helpers'
 
 /**
  * Proves the workspace shell does not paint the team layout and then swap.
@@ -101,10 +102,7 @@ test.describe('workspace chrome does not pop between team and personal', () => {
     test.setTimeout(180_000)
     const personal = await signInAndPersonalWorkspace(page)
     await installFlashRecorder(page)
-    await page.addInitScript((id: string) => {
-      localStorage.setItem('shogo:active-workspace-id', id)
-      localStorage.removeItem('shogo:active-workspace-kind')
-    }, personal.id)
+    await seedActiveWorkspace(page, personal.id, null)
     const release = await holdWorkspaceList(page, personal)
 
     await page.goto('/(app)')
@@ -122,10 +120,7 @@ test.describe('workspace chrome does not pop between team and personal', () => {
     test.setTimeout(180_000)
     const personal = await signInAndPersonalWorkspace(page)
     await installFlashRecorder(page)
-    await page.addInitScript((id: string) => {
-      localStorage.setItem('shogo:active-workspace-id', id)
-      localStorage.setItem('shogo:active-workspace-kind', JSON.stringify({ id, kind: 'personal' }))
-    }, personal.id)
+    await seedActiveWorkspace(page, personal.id, 'personal')
     const release = await holdWorkspaceList(page, personal)
 
     await page.goto('/(app)')

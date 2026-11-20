@@ -9,7 +9,6 @@ import {
   ActivityIndicator,
   TextInput,
   Switch,
-  Linking,
 } from 'react-native'
 import {
   MessageSquare,
@@ -32,6 +31,7 @@ import { usePlatformConfig } from '../../../lib/platform-config'
 import { API_URL } from '../../../lib/api'
 import { PhonePanel } from './PhonePanel'
 import { useIsNativePhoneLayout } from '../../../lib/native-phone-layout'
+import { openExternalLink } from '../../../lib/open-external-link';
 
 interface ChannelInfo {
   type: string
@@ -137,8 +137,10 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
     setupUrl: 'https://developers.facebook.com/docs/whatsapp/cloud-api/get-started',
     setupLabel: 'Meta WhatsApp Setup',
     fields: [
-      { key: 'accessToken', label: 'Access Token', placeholder: 'From Meta Business', secret: true },
-      { key: 'phoneNumberId', label: 'Phone Number ID', placeholder: 'From WhatsApp API setup', secret: false },
+      { key: 'accessToken', label: 'Access Token (System User)', placeholder: 'Permanent system-user token from Meta Business', secret: true },
+      { key: 'phoneNumberId', label: 'Phone Number ID', placeholder: 'From WhatsApp API Setup', secret: false },
+      { key: 'appSecret', label: 'App Secret', placeholder: 'From Meta App Settings → Basic → App Secret', secret: true },
+      { key: 'verifyToken', label: 'Verify Token (optional)', placeholder: 'Auto-generated if left blank', secret: false },
     ],
   },
   email: {
@@ -207,6 +209,8 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
   const [formError, setFormError] = useState<string | null>(null)
   const [copiedSnippet, setCopiedSnippet] = useState(false)
   const [copiedWebhookUrl, setCopiedWebhookUrl] = useState(false)
+  const [copiedWhatsAppCallbackUrl, setCopiedWhatsAppCallbackUrl] = useState(false)
+  const [copiedWhatsAppVerifyToken, setCopiedWhatsAppVerifyToken] = useState(false)
   const [phoneExpanded, setPhoneExpanded] = useState(false)
   const [slackAgentConfig, setSlackAgentConfig] = useState<{
     installed: boolean
@@ -229,6 +233,11 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
    */
   const publicWebhookUrl = API_URL
     ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/webhook/incoming`
+    : null
+
+  /** WhatsApp webhook callback URL — same proxy path, different suffix. */
+  const whatsappCallbackUrl = API_URL
+    ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/whatsapp/webhook`
     : null
 
   /**
@@ -689,7 +698,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                     onPress={() => {
                       if (isSlackAgent && !isConnected) {
                         if (API_URL && workspaceId) {
-                          Linking.openURL(
+                          openExternalLink(
                             `${API_URL}/api/integrations/slack/install?workspaceId=${encodeURIComponent(workspaceId)}`,
                           )
                         }
@@ -776,7 +785,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                       )
                     ) : def.setupUrl ? (
                       <Pressable
-                        onPress={() => Linking.openURL(def.setupUrl)}
+                        onPress={() => openExternalLink(def.setupUrl)}
                         className="p-1 rounded-md active:bg-muted"
                       >
                         <ExternalLink size={14} className="text-muted-foreground" />
@@ -794,7 +803,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                         </Text>
                         {!slackAgentConfig?.installed ? (
                           <Pressable
-                            onPress={() => API_URL && Linking.openURL(
+                            onPress={() => API_URL && openExternalLink(
                               `${API_URL}/api/integrations/slack/install?workspaceId=${encodeURIComponent(workspaceId)}`,
                             )}
                             className="self-start px-3 py-1.5 bg-primary rounded-md active:bg-primary/80"
@@ -867,13 +876,90 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                             )}
                           </Pressable>
                           <Pressable
-                            onPress={() => Linking.openURL('https://docs.shogo.ai/docs/features/external-triggers/quickstart')}
+                            onPress={() => openExternalLink('https://docs.shogo.ai/docs/features/external-triggers/quickstart')}
                             className="flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
                           >
                             <ExternalLink size={12} className="text-muted-foreground" />
                             <Text className="text-[10px] text-muted-foreground">Quickstart</Text>
                           </Pressable>
                         </View>
+                      </View>
+                    </View>
+                  )}
+
+                  {/* WhatsApp: callback URL + verify token (shown when connected) */}
+                  {type === 'whatsapp' && isConnected && (
+                    <View className="px-3 pb-3 border-t border-border">
+                      <View className="mt-3 gap-3">
+                        <Text className="text-[11px] font-medium text-foreground">
+                          Meta webhook configuration
+                        </Text>
+                        <Text className="text-[10px] text-muted-foreground">
+                          Paste these into Meta Developer Portal → WhatsApp → Configuration, then subscribe to <Text className="font-mono">messages</Text> and <Text className="font-mono">smb_message_echoes</Text> fields.
+                        </Text>
+
+                        {whatsappCallbackUrl && (
+                          <View className="gap-1.5">
+                            <Text className="text-[10px] font-medium text-foreground">Callback URL</Text>
+                            <View className="bg-muted/50 rounded-md p-2.5 border border-border">
+                              <Text className="text-[10px] text-foreground font-mono" selectable>
+                                {whatsappCallbackUrl}
+                              </Text>
+                            </View>
+                            <Pressable
+                              onPress={async () => {
+                                await Clipboard.setStringAsync(whatsappCallbackUrl)
+                                setCopiedWhatsAppCallbackUrl(true)
+                                setTimeout(() => setCopiedWhatsAppCallbackUrl(false), 2000)
+                              }}
+                              className="self-start flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                            >
+                              {copiedWhatsAppCallbackUrl ? (
+                                <>
+                                  <Check size={12} className="text-emerald-500" />
+                                  <Text className="text-[10px] text-emerald-500">Copied!</Text>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy size={12} className="text-muted-foreground" />
+                                  <Text className="text-[10px] text-muted-foreground">Copy URL</Text>
+                                </>
+                              )}
+                            </Pressable>
+                          </View>
+                        )}
+
+                        {channels.find((ch) => ch.type === 'whatsapp')?.metadata?.verifyToken && (
+                          <View className="gap-1.5">
+                            <Text className="text-[10px] font-medium text-foreground">Verify Token</Text>
+                            <View className="bg-muted/50 rounded-md p-2.5 border border-border">
+                              <Text className="text-[10px] text-foreground font-mono" selectable>
+                                {String(channels.find((ch) => ch.type === 'whatsapp')?.metadata?.verifyToken ?? '')}
+                              </Text>
+                            </View>
+                            <Pressable
+                              onPress={async () => {
+                                const token = String(channels.find((ch) => ch.type === 'whatsapp')?.metadata?.verifyToken ?? '')
+                                await Clipboard.setStringAsync(token)
+                                setCopiedWhatsAppVerifyToken(true)
+                                setTimeout(() => setCopiedWhatsAppVerifyToken(false), 2000)
+                              }}
+                              className="self-start flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                            >
+                              {copiedWhatsAppVerifyToken ? (
+                                <>
+                                  <Check size={12} className="text-emerald-500" />
+                                  <Text className="text-[10px] text-emerald-500">Copied!</Text>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy size={12} className="text-muted-foreground" />
+                                  <Text className="text-[10px] text-muted-foreground">Copy Token</Text>
+                                </>
+                              )}
+                            </Pressable>
+                          </View>
+                        )}
                       </View>
                     </View>
                   )}
@@ -1104,7 +1190,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                           </Pressable>
                           {def.setupUrl ? (
                             <Pressable
-                              onPress={() => Linking.openURL(def.setupUrl)}
+                              onPress={() => openExternalLink(def.setupUrl)}
                               className="ml-auto flex-row items-center gap-1 active:opacity-70"
                             >
                               <ExternalLink size={12} className="text-muted-foreground" />

@@ -20,7 +20,7 @@ import {
   useHuddleCall,
 } from '../../lib/huddle-call'
 import { summarizeNames } from '../../lib/huddle-roster'
-import { isAgentDm, type ConversationDetail, type HuddleParticipant, type Participant } from '../../lib/team-chat-api'
+import { type ConversationDetail, type HuddleParticipant } from '../../lib/team-chat-api'
 import { GlassButton } from './FloatingChrome'
 
 const MAX_FACES = 5
@@ -32,10 +32,7 @@ function initials(name: string): string {
 
 function canHuddle(conversation: ConversationDetail, me: string | null): boolean {
   if (conversation.kind === 'activity' || conversation.archivedAt || !conversation.canPost) return false
-  const participants: Participant[] = conversation.members
-    .filter((m) => m.type === 'agent' || m.userId !== me)
-    .map((m) => (m.type === 'agent' ? { type: 'agent', projectId: m.projectId, name: m.name } : { type: 'user', id: m.userId, name: m.name, image: m.image }))
-  return !isAgentDm({ kind: conversation.kind, participants })
+  return true
 }
 
 export function Face({ person, speaking, size = 28 }: { person: HuddleParticipant; speaking: boolean; size?: number }) {
