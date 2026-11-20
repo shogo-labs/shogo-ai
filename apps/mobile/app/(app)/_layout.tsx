@@ -68,6 +68,7 @@ import { useNotificationClickRouter } from "../../lib/notifications/useNotificat
 import { useDesktopIslandRouter } from "../../lib/useDesktopIslandRouter";
 import { useMobilePushRegistration } from "../../lib/notifications/mobile-push-registration";
 import { useAppInstallHeartbeat } from "../../lib/app-install-heartbeat";
+import { useRegisterAppActivity } from "../../lib/register-app-activity";
 import { useNotifyOnTurnComplete } from "../../lib/notifications/preferences";
 import { mark as csMark } from "../../lib/cold-start-timing";
 import {
@@ -353,6 +354,7 @@ function AppLayoutInner() {
   const [notifyOnTurnComplete] = useNotifyOnTurnComplete();
   useMobilePushRegistration(user?.id ?? null, notifyOnTurnComplete);
   useAppInstallHeartbeat(user?.id ?? null);
+  useRegisterAppActivity();
 
   useEffect(() => {
     if (isAuthenticated && posthog) {
