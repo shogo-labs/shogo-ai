@@ -12,12 +12,22 @@ import { resolve } from 'node:path'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { createReactNativeMock } from '../../../test/react-native-mock'
+import { inviteDialogContextStub, invitePermissionsStub, inviteStub } from '../../../test/invite-dialog-stub'
 import type { ConversationDetail } from '../../../lib/team-chat-api'
 
 const Pressable = ({ onPress, accessibilityLabel, disabled, children }: Record<string, any>) =>
   createElement('button', { 'aria-label': accessibilityLabel, onClick: disabled ? undefined : onPress }, children as ReactNode)
 
-mock.module('react-native', () => createReactNativeMock({ Pressable }))
+// The Members modal's search box drives `filter` through `onChangeText`; the
+// passthrough host does not wire it, so the invite row could never appear.
+const TextInput: any = ({ value, onChangeText, placeholder }: Record<string, any>) =>
+  createElement('input', {
+    value,
+    placeholder,
+    onChange: (e: any) => onChangeText?.(e.target.value),
+  })
+
+mock.module('react-native', () => createReactNativeMock({ Pressable, TextInput }))
 mock.module('@shogo/shared-ui/primitives', () => ({ cn: (...args: unknown[]) => args.filter(Boolean).join(' ') }))
 mock.module('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
@@ -52,6 +62,11 @@ mock.module(resolve(import.meta.dir, '../../chat/MarkdownText'), () => ({
 mock.module(resolve(import.meta.dir, '../../chat/WebTooltip'), () => ({
   WebTooltip: ({ children }: { children?: ReactNode }) => createElement('div', null, children),
 }))
+// The header offers "Invite people" through the app shell's dialog (SHO-454);
+// these tests render it on its own, so stub the context and the permissions
+// hook it reads `canInvite` from.
+mock.module(resolve(import.meta.dir, '../../workspace/invite-dialog-context'), inviteDialogContextStub)
+mock.module(resolve(import.meta.dir, '../../../hooks/usePermissions'), invitePermissionsStub)
 
 const { ConversationHeader } = await import('../ConversationHeader')
 
@@ -96,7 +111,10 @@ const renderHeader = (memberFilter?: string | null) =>
     />,
   )
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  inviteStub.reset()
+})
 beforeEach(() => {
   onFilterByMember.mockClear()
   onClearMemberFilter.mockClear()
@@ -125,5 +143,29 @@ describe('ConversationHeader — filter by member', () => {
     fireEvent.click(screen.getByLabelText('Members'))
     fireEvent.click(screen.getByLabelText('Filter by Shogo'))
     expect(onFilterByMember).toHaveBeenCalledWith('agent:ws')
+  })
+
+  // SHO-454 acceptance 4: an address that is not a member is an invitation,
+  // not a dead end.
+  test('an email that is nobody here offers to invite them, with the address filled in', () => {
+    inviteStub.canInvite = true
+    renderHeader()
+    fireEvent.click(screen.getByLabelText('Members'))
+    fireEvent.change(screen.getByPlaceholderText('Search people and agents'), {
+      target: { value: 'new@example.com' },
+    })
+
+    fireEvent.click(screen.getByText('Invite new@example.com'))
+    expect(inviteStub.opened).toEqual([{ workspaceId: 'w-1', emails: ['new@example.com'] }])
+  })
+
+  test('no invite row when the caller cannot invite', () => {
+    inviteStub.canInvite = false
+    renderHeader()
+    fireEvent.click(screen.getByLabelText('Members'))
+    fireEvent.change(screen.getByPlaceholderText('Search people and agents'), {
+      target: { value: 'new@example.com' },
+    })
+    expect(screen.queryByText('Invite new@example.com')).toBeNull()
   })
 })

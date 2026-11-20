@@ -453,6 +453,11 @@ jobs:
   converge-fleet:
     name: Converge prod metal fleet on new image
     needs: [merge]
+    # Tag pushes (v* refs) never trigger this job: the tag path resolves
+    # inputs.environment to 'staging', so the condition is false. The prod
+    # metal fleet is converged through deploy.yml's metal-runtime-image +
+    # dispatch-metal-agent-release jobs instead (e.g. deploy run 44556397722
+    # for v2.6.0). This is by design — do not add a paths: filter here.
     # A boolean input arrives as a real boolean, but compare against the string
     # too: a mistyped `-f converge_fleet=false` must not be read as "true".
     if: ${{ (inputs.environment || 'staging') == 'production' && inputs.converge_fleet != false && inputs.converge_fleet != 'false' }}
