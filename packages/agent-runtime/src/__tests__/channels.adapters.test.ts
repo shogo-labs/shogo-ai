@@ -523,7 +523,7 @@ async function signJwt(
   kid: string,
 ): Promise<string> {
   const header = { alg: 'RS256', typ: 'JWT', kid }
-  const enc = (s: string) => b64url(new TextEncoder().encode(s))
+  const enc = (s: string) => b64url(new TextEncoder().encode(s).buffer as ArrayBuffer)
   const h = enc(JSON.stringify(header))
   const p = enc(JSON.stringify(payload))
   const sig = await crypto.subtle.sign(
