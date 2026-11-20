@@ -31,22 +31,22 @@ describe('loadLearnProfile', () => {
 
   test('XP rank, streak and recent badges, with the same numbers as learn.shogo.ai', async () => {
     const db = fakeDb({
-      completions: LEARN_LESSONS['start-here'].map((lessonId, i) => ({ userId: 'u1', courseId: 'start-here', lessonId, day: `2026-11-${16 + i}` })),
+      completions: LEARN_LESSONS['start-here'].map((lessonId, i) => ({ userId: 'u1', courseId: 'start-here', lessonId, day: `2026-11-${14 + i}` })),
       badges: [
-        { userId: 'u1', badgeId: 'first-lesson', earnedAt: new Date('2026-11-16T10:00:00Z') },
+        { userId: 'u1', badgeId: 'first-lesson', earnedAt: new Date('2026-11-14T10:00:00Z') },
         { userId: 'u1', badgeId: 'course-start-here', earnedAt: new Date('2026-11-20T10:00:00Z') },
         { userId: 'u1', badgeId: 'retired-badge', earnedAt: new Date('2026-11-20T11:00:00Z') },
         { userId: 'u2', badgeId: 'streak-30', earnedAt: new Date('2026-11-20T11:00:00Z') },
       ],
     })
     const p = (await loadLearnProfile('u1', { db, now: NOW, tz: 'UTC' }))!
-    expect(p.lessonsCompleted).toBe(5)
+    expect(p.lessonsCompleted).toBe(7)
     expect(p.coursesCompleted).toBe(1)
-    expect(p.xp).toBe(5 * 10 + 50 + 20 + 20)
+    expect(p.xp).toBe(7 * 10 + 50 + 20 + 20)
     expect(p.rank.name).toBe('Kindling')
     expect(p.certifiedLevel).toBe(0)
     expect(p.certifiedTitle).toBeNull()
-    expect(p.streak).toEqual({ current: 5, longest: 5 })
+    expect(p.streak).toEqual({ current: 7, longest: 7 })
     expect(p.badgeCount).toBe(2)
     expect(p.badgeTotal).toBe(LEARN_BADGES.length)
     expect(p.badges.map((b) => b.id)).toEqual(['course-start-here', 'first-lesson'])

@@ -22,10 +22,12 @@ import {
 import { bestPlanId, learnRoutes, withLearnCookie, type LearnRoutesDeps } from '../learn'
 import {
   CERTIFICATE_LESSON,
+  DEPARTMENTS,
   LEARN_BADGES,
   LEARN_LESSONS,
   SELF_PACED_COURSES,
   computeLearnStats,
+  learnBadgeById,
   learnerDay,
   rankFor,
   qualifyingBadges,
@@ -197,6 +199,26 @@ describe('course access rules', () => {
     for (const id of ['paid-app', 'first-client', 'solo-founder']) expect(rule(id)).toEqual({ kind: 'level', requires: 3 })
   })
 
+  test('department certificates: every one opens at Level 1, has the six shared lessons, a 6-question key and a badge', () => {
+    expect(DEPARTMENTS.map((d) => d.id)).toEqual([
+      'ai-for-marketing', 'ai-for-sales', 'ai-for-support', 'ai-for-people',
+      'ai-for-finance', 'ai-for-operations', 'ai-for-engineering', 'ai-for-devops',
+    ])
+    for (const d of DEPARTMENTS) {
+      expect(learnCourseById(d.id)!.access).toEqual({ kind: 'level', requires: 1 })
+      expect(LEARN_LESSONS[d.id]).toEqual(['jobs', 'set-up', 'workflow', 'guardrails', 'measure', 'final-check'])
+      expect(CERTIFICATE_LESSON[d.id]).toBe('final-check')
+      const rule = LEARN_CERTIFICATES[d.id]!
+      expect(rule.courseTitle).toBe(d.title)
+      expect(Object.keys(rule.answers)).toEqual(['q1', 'q2', 'q3', 'q4', 'q5', 'q6'])
+      expect(rule.passMark).toBe(5)
+      expect(learnBadgeById(`certified-${d.id}`)?.name).toBe(`Certified: ${d.title}`)
+      expect(learnBadgeById(`course-${d.id}`)).toBeDefined()
+    }
+    // Every course with a final check has an answer key, and the reverse.
+    expect(Object.keys(LEARN_CERTIFICATES).sort()).toEqual(Object.keys(CERTIFICATE_LESSON).sort())
+  })
+
   test('a level rule: signed out, below, at and above the level', () => {
     const rule = { kind: 'level', requires: 2 } as const
     expect(decideLearnAccess(rule, { signedIn: false, level: 5 })).toEqual({ hasAccess: false, reason: 'signed_out', requiredLevel: 2 })
@@ -214,6 +236,14 @@ describe('course access rules', () => {
     // A lesson finished out of order (old progress) stays open; the gap is next.
     expect(unlockedLessons('start-here', [l[0], l[2]])).toEqual([l[0], l[1], l[2]])
     expect(unlockedLessons('nope', [])).toEqual([])
+  })
+
+  test('Start here: the Shogo words come before the first app; planning comes after the review loop', () => {
+    expect(LEARN_LESSONS['start-here']).toEqual(['what-an-agent-is', 'shogo-words', 'first-app', 'review-loop', 'plan-first', 'save-data', 'share-it'])
+    expect(unlockedLessons('start-here', ['what-an-agent-is'])).toEqual(['what-an-agent-is', 'shogo-words'])
+    // A learner who finished the old five lessons keeps them all open and is sent to the first new lesson.
+    const old = ['what-an-agent-is', 'first-app', 'review-loop', 'save-data', 'share-it']
+    expect(unlockedLessons('start-here', old)).toEqual(['what-an-agent-is', 'shogo-words', 'first-app', 'review-loop', 'save-data', 'share-it'])
   })
 
   test('held level has no gaps', () => {
@@ -454,6 +484,23 @@ describe('certificates', () => {
     })
   }
 
+  test('a department check: locked below Level 1, then a pass awards its badge and certificate without changing the level', async () => {
+    const MARKETING = { ...LEARN_CERTIFICATES['ai-for-marketing']!.answers }
+    const state = finishLessons(baseState(), 'u1', 'ai-for-marketing')
+    const { app } = makeApp(state)
+    const locked = await post(app, { courseId: 'ai-for-marketing', answers: MARKETING })
+    expect(locked.status).toBe(403)
+    grantLevels(state, 'u1', 1)
+    const res = await post(app, { courseId: 'ai-for-marketing', answers: MARKETING, name: 'Ada' })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as any
+    expect(body.passed).toBe(true)
+    expect(body.levelUp ?? false).toBe(false)
+    expect(body.newBadges.map((b: any) => b.id)).toContain('certified-ai-for-marketing')
+    const verify = (await (await app.request(`/api/learn/certificate/${body.certificate.id}`)).json()) as any
+    expect(verify).toMatchObject({ valid: true, courseId: 'ai-for-marketing', courseTitle: 'AI for Marketing', level: null })
+  })
+
   test('the final check opens only after every lesson before it is done, and a refusal does not use up an attempt', async () => {
     const state = baseState()
     let attempts = 0
@@ -667,9 +714,9 @@ describe('gamification rules', () => {
     const course = 'start-here'
     const completions = LEARN_LESSONS[course].map((lessonId) => ({ courseId: course, lessonId, day: '2026-11-20' }))
     const stats = computeLearnStats({ completions, badgeIds: ['first-lesson', 'course-start-here'], today: '2026-11-20' })
-    expect(stats.lessonsCompleted).toBe(5)
+    expect(stats.lessonsCompleted).toBe(7)
     expect(stats.coursesCompleted).toEqual(['start-here'])
-    expect(stats.xp).toBe(5 * 10 + 50 + 20 + 20)
+    expect(stats.xp).toBe(7 * 10 + 50 + 20 + 20)
     expect(stats.rank.name).toBe('Kindling')
     expect(rankFor(0).next).toEqual({ name: 'Ember', min: 40 })
     expect(rankFor(99999).next).toBeNull()
@@ -856,5 +903,6 @@ describe('progress, XP and badges on the account', () => {
     expect(r.badges.length).toBe(LEARN_BADGES.length)
     expect(r.levels.map((l: any) => l.level)).toEqual([1, 2, 3, 4, 5, 6])
     expect(r.ranks[0].name).toBe('Spark')
+    expect(r.departments.map((d: any) => d.id)).toEqual(DEPARTMENTS.map((d) => d.id))
   })
 })
