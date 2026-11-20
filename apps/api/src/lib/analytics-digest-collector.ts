@@ -24,6 +24,7 @@ import {
 } from '../services/analytics.service'
 import { getMaxOutputTokens, resolveAgentModeDefault } from '@shogo/model-catalog'
 import { resolveLanguageModel } from './resolve-language-model'
+import { redactSecrets } from './redact-secrets'
 
 const MAX_TOKENS_PER_CHUNK = 100_000
 const MAX_CHUNKS = 3
@@ -306,10 +307,15 @@ export async function generateDigest(prisma: PrismaClient, options: { asOf?: Dat
       `Source breakdown: ${sourceData.sources.map(s => `${s.tag}=${s.count}`).join(', ')}`,
     ].join('\n')
 
+    // SHO-459: redact secrets from chunk text before the model sees it.
     const chunkResults = await Promise.all(
-      chunks.map(chunk => analyzeConversations(chunk, metricsContext))
+      chunks.map(chunk => analyzeConversations(redactSecrets(chunk), metricsContext))
     )
     aiInsights = mergeAnalyses(chunkResults)
+    // Redact any secrets that leaked into securityFlags strings.
+    if (aiInsights) {
+      aiInsights.securityFlags = aiInsights.securityFlags.map(redactSecrets)
+    }
   }
 
   const digest = await prisma.analyticsDigest.upsert({
@@ -356,6 +362,18 @@ export async function generateDigest(prisma: PrismaClient, options: { asOf?: Dat
   })
 
   console.log(`[AnalyticsDigest] Digest saved: ${digest.id} (${chunksProcessed} chunks, ${userMessageCount} messages)`)
+
+  // SHO-459: link today's AbuseFlag rows to this digest.
+  try {
+    const today = dateOnly.toISOString().split('T')[0]
+    await (prisma as any).abuseFlag.updateMany({
+      where: { runDate: today, digestId: null },
+      data: { digestId: digest.id },
+    })
+  } catch (err) {
+    console.warn('[AnalyticsDigest] Failed to link abuse flags to digest (non-fatal):', err)
+  }
+
   return digest
 }
 

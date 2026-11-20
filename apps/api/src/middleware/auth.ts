@@ -36,6 +36,7 @@ import { verifyWorkspaceRuntimeToken } from "../lib/workspace-runtime-token"
 import type { Permission } from "@shogo/authz"
 import { authorize, decide, denialResponse, getAccess } from "../lib/authz"
 import { projectRoutePermission } from "../lib/authz/project-routes"
+import { getSignupTrustHold, signupTrustHoldPayload } from "../lib/signup-trust"
 
 /**
  * Auth context set by middleware
@@ -269,6 +270,11 @@ export async function authMiddleware(c: Context, next: Next) {
       const result = await resolveApiKey(key, deviceAppVersion ? { deviceAppVersion } : undefined)
       c.set("apiKeyResolution", { key, result })
       if (result) {
+        // Refuse banned users on the API-key path with the hold payload.
+        const hold = await getSignupTrustHold(result.userId)
+        if (hold === 'account_banned') {
+          return c.json(signupTrustHoldPayload('account_banned'), 403)
+        }
         c.set("auth", {
           userId: result.userId,
           workspaceId: result.workspaceId,
@@ -380,6 +386,11 @@ export async function authMiddleware(c: Context, next: Next) {
     })
 
     if (session?.user) {
+      // Refuse banned users on the session path.
+      const hold = await getSignupTrustHold(session.user.id)
+      if (hold === 'account_banned') {
+        return c.json(signupTrustHoldPayload('account_banned'), 403)
+      }
       c.set("auth", {
         userId: session.user.id,
         email: session.user.email,

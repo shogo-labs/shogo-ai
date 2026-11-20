@@ -64,10 +64,17 @@ model User {
   // null for users who never got that far.
   firstCapHitAt               DateTime?
   firstPreviewSeenAt          DateTime?
+  // Abuse ban (SHO-459). Set by banUser(); checked by signup-trust and authMiddleware.
+  // null = not banned. Cloud-only: desktop never runs the abuse job or enforces this.
+  bannedAt                    DateTime?
+  banReason                   String?
+  bannedByUserId              String?   // null = auto (the daily job)
   createdAt                   DateTime @default(now())
   updatedAt                   DateTime @updatedAt
 
   // Relations
+  abuseFlagsAsSubject        AbuseFlag[] @relation("AbuseFlagUser")
+  abuseFlagsAsDecider        AbuseFlag[] @relation("AbuseFlagDecider")
   sessions                   Session[]
   accounts                   Account[]
   members                    Member[]
@@ -96,6 +103,7 @@ model User {
   @@index([createdAt])
   @@index([homeRegion])
   @@index([emailCanonical])
+  @@index([bannedAt])
   @@map("users")
 }
 
@@ -6573,4 +6581,47 @@ model WorkspaceRootSecret {
 
   @@index([workspaceId])
   @@map("workspace_root_secrets")
+}
+
+// =============================================================================
+// ABUSE DETECTION (SHO-459)
+// =============================================================================
+
+/// One judge verdict for one free account on one day.
+/// The daily abuse-check job writes these; the admin Abuse tab reads them.
+model AbuseFlag {
+  id              String    @id @default(uuid())
+  userId          String
+  /// Date string the daily run was for (YYYY-MM-DD).
+  runDate         String
+  /// offensive_third_party | account_farming | credit_relay | license_circumvention | fraud
+  category        String
+  /// 0–100.
+  severity        Int
+  /// low | medium | high
+  confidence      String
+  summary         String    @db.Text
+  /// [{turnId, source, createdAt, quote}] — quotes are redacted and ≤300 chars.
+  evidence        Json
+  /// Shared key for a cluster of accounts flagged together.
+  clusterKey      String?
+  /// flagged | banned | cleared
+  status          String    @default("flagged")
+  /// null = auto (the daily job)
+  decidedByUserId String?
+  decidedAt       DateTime?
+  /// analytics_digests.id that linked to this flag.
+  digestId        String?
+  /// model id used by the judge for this flag.
+  model           String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user            User      @relation("AbuseFlagUser", fields: [userId], references: [id], onDelete: Cascade)
+  decidedBy       User?     @relation("AbuseFlagDecider", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, runDate, category])
+  @@index([status, createdAt])
+  @@index([clusterKey])
+  @@map("abuse_flags")
 }

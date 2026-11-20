@@ -198,8 +198,21 @@ export async function collectSignupRiskFeatures(params: {
     where: { emailCanonical: canonical, id: { not: params.userId } },
   })
 
-  const [ipLinkedAccounts, deviceLinkedAccounts, burstSignups, canonicalCollisions] =
-    await Promise.all([linkedByIp, linkedByDevice, burst, collisions])
+  // SHO-459: count banned accounts sharing ip/device/email to hold linked signups.
+  const bannedLinked = (prisma as any).user.count({
+    where: {
+      bannedAt: { not: null },
+      id: { not: params.userId },
+      OR: [
+        ...(ipPrefix ? [{ signupRiskAssessment: { ipPrefix } }] : []),
+        ...(deviceId ? [{ signupRiskAssessment: { deviceId } }] : []),
+        { emailCanonical: canonical },
+      ],
+    },
+  })
+
+  const [ipLinkedAccounts, deviceLinkedAccounts, burstSignups, canonicalCollisions, bannedLinkedAccounts] =
+    await Promise.all([linkedByIp, linkedByDevice, burst, collisions, bannedLinked])
 
   return {
     email: params.email,
@@ -210,6 +223,7 @@ export async function collectSignupRiskFeatures(params: {
     deviceLinkedAccounts,
     ipLinkedAccounts,
     burstSignups,
+    bannedLinkedAccounts: bannedLinkedAccounts as number,
   }
 }
 

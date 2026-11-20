@@ -479,7 +479,7 @@ export const UserCollection = types
 // ============================================================================
 
 // Relation fields that expect IDs (safeReference)
-const relationFields = ["sessions","accounts","members","notifications","agentTasks","agentSchedules","starredProjects","signupAttribution","apiKeys","creatorProfile","creatorFollows","affiliate","affiliateAttribution","projectAuthSignIns","mobilePushSubscriptions","appInstalls","slackUserLinks","chatIdentityLinks","conversationMemberships","conversationMessages","integrationConnections","integrationGrants","integrationWorkspaceGrants","identityLinks"]
+const relationFields = ["abuseFlagsAsSubject","abuseFlagsAsDecider","sessions","accounts","members","notifications","agentTasks","agentSchedules","starredProjects","signupAttribution","apiKeys","creatorProfile","creatorFollows","affiliate","affiliateAttribution","projectAuthSignIns","mobilePushSubscriptions","appInstalls","slackUserLinks","chatIdentityLinks","conversationMemberships","conversationMessages","integrationConnections","integrationGrants","integrationWorkspaceGrants","identityLinks"]
 
 /**
  * Transform API response for MST compatibility:
@@ -490,7 +490,7 @@ const relationFields = ["sessions","accounts","members","notifications","agentTa
 function transformForMST(obj: any): any {
   if (!obj || typeof obj !== "object") return obj
 
-  const dateFields = ["firstCapHitAt","firstPreviewSeenAt","createdAt","updatedAt"]
+  const dateFields = ["firstCapHitAt","firstPreviewSeenAt","bannedAt","createdAt","updatedAt"]
   const result: Record<string, any> = {}
 
   for (const [key, value] of Object.entries(obj)) {

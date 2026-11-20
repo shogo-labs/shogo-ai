@@ -11505,6 +11505,13 @@ if (isKubernetes()) {
     }
 
     try {
+      const { startAbuseCheckJob } = await import('./lib/abuse-check-job')
+      startAbuseCheckJob(prisma)
+    } catch (err: any) {
+      console.error('[abuse-check] Failed to start (non-fatal):', err.message)
+    }
+
+    try {
       const { startProxyCaptureRetention } = await import('./lib/proxy-capture')
       startProxyCaptureRetention(prisma)
     } catch (err: any) {

@@ -26,6 +26,7 @@ import type { IProjectRuntime, IRuntimeManager } from './runtime/types'
 import { withWorkspaceSpawnLease } from './runtime/workspace-spawn-lease'
 import { isMetalEnabled as defaultIsMetalEnabled } from './metal-eligibility'
 import { metrics } from '@opentelemetry/api'
+import { getBillingWorkspaceTrustHold } from './signup-trust'
 
 const spawnLeaseWait = metrics.getMeter('shogo-metal-pool').createHistogram('metal.wake_phase_ms', {
   description: 'Per-phase wall time of a runtime wake; api.* phases run in the API, host.* phases on the metal host',
@@ -250,6 +251,13 @@ export async function resolveWorkspaceRuntimeUrl(
 
   if (!workspaceId) {
     throw new Error('[WorkspaceRuntime] resolveWorkspaceRuntimeUrl: workspaceId is required')
+  }
+  // Refuse to wake a runtime whose workspace owner is banned.
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+    const hold = await getBillingWorkspaceTrustHold(workspaceId)
+    if (hold === 'account_banned') {
+      throw new Error(`[WorkspaceRuntime] workspace ${workspaceId} is owned by a banned account`)
+    }
   }
   // Cloud runtimes are region-local: never boot or claim one outside the
   // workspace's home region (see runtime-home-region-guard.ts).

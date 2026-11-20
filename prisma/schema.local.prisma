@@ -44,9 +44,14 @@ model User {
   // null for users who never got that far.
   firstCapHitAt               DateTime?
   firstPreviewSeenAt          DateTime?
+  bannedAt                    DateTime?
+  banReason                   String?
+  bannedByUserId              String?
   createdAt                   DateTime @default(now())
   updatedAt                   DateTime @updatedAt
 
+  abuseFlagsAsSubject        AbuseFlag[] @relation("AbuseFlagUser")
+  abuseFlagsAsDecider        AbuseFlag[] @relation("AbuseFlagDecider")
   sessions                   Session[]
   accounts                   Account[]
   members                    Member[]
@@ -5281,4 +5286,31 @@ model WorkspaceRootSecret {
 
   @@index([workspaceId])
   @@map("workspace_root_secrets")
+}
+
+model AbuseFlag {
+  id              String    @id @default(uuid())
+  userId          String
+  runDate         String
+  category        String
+  severity        Int
+  confidence      String
+  summary         String
+  evidence        Json
+  clusterKey      String?
+  status          String    @default("flagged")
+  decidedByUserId String?
+  decidedAt       DateTime?
+  digestId        String?
+  model           String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user            User      @relation("AbuseFlagUser", fields: [userId], references: [id], onDelete: Cascade)
+  decidedBy       User?     @relation("AbuseFlagDecider", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, runDate, category])
+  @@index([status, createdAt])
+  @@index([clusterKey])
+  @@map("abuse_flags")
 }
