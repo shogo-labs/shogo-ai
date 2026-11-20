@@ -360,9 +360,52 @@ wheelCase("a link", LINK_PROBE, linkReply)
 
 // ─── a tall fenced code block ───────────────────────────────────────────────
 
-test("a wheel over a tall fenced code block scrolls it mid-travel and the transcript at the edge", async ({
-  page,
-}) => {
+/**
+ * Holds the code block's own scroller at one of its edges and returns the point
+ * the pointer should sit under.
+ *
+ * Mid-travel is not a usable starting state: the row re-renders whenever the
+ * transcript scrolls, which recreates the node with `scrollTop = 0`. CI
+ * measured exactly that — `CODE SCROLL { before: 316, after: 100 }`: the
+ * mid-travel offset was gone by the time the wheel landed, and the notch went
+ * to a fresh node — so an assertion on mid-travel tests the re-render, not the
+ * wheel. An edge survives the re-render and is also the position where the
+ * block has nothing left to scroll, i.e. where the gesture has to reach the
+ * transcript.
+ */
+async function aimCodeBlockEdge(
+  page: Page,
+  edge: "top" | "bottom",
+): Promise<{ x: number; y: number }> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const aimed = (await page.evaluate((where) => {
+      const body = document.querySelector('[data-streamdown="code-block-body"]') as HTMLElement | null
+      if (!body) return null
+      body.scrollIntoView({ block: "center" })
+      body.scrollTop = where === "top" ? 0 : body.scrollHeight
+      const rect = body.getBoundingClientRect()
+      const range = body.scrollHeight - body.clientHeight
+      const atEdge = where === "top" ? body.scrollTop <= 0 : body.scrollTop >= range - 2
+      return { x: rect.left + Math.min(rect.width / 2, 40), y: rect.top + rect.height / 2, atEdge }
+    }, edge)) as { x: number; y: number; atEdge: boolean } | null
+
+    if (aimed?.atEdge) {
+      // Let a pending re-render land, then confirm the edge held.
+      await page.waitForTimeout(150)
+      const held = (await page.evaluate((where) => {
+        const body = document.querySelector('[data-streamdown="code-block-body"]') as HTMLElement | null
+        if (!body) return false
+        const range = body.scrollHeight - body.clientHeight
+        return where === "top" ? body.scrollTop <= 0 : body.scrollTop >= range - 2
+      }, edge)) as boolean
+      if (held) return { x: aimed.x, y: aimed.y }
+    }
+    await page.waitForTimeout(150)
+  }
+  throw new Error(`code-block-body could not be held at its ${edge} edge`)
+}
+
+test("a wheel over a tall fenced code block reaches the transcript at either edge", async ({ page }) => {
   await install(page, codeBlockReply())
   await openTeamHome(page)
   await openProject(page)
@@ -379,47 +422,33 @@ test("a wheel over a tall fenced code block scrolls it mid-travel and the transc
   expect(codeBox?.overflowY, "code-block-body must be overflow-y: auto").toBe("auto")
   expect(Number(codeBox?.range ?? 0), "code block must overflow its cap").toBeGreaterThan(10)
 
-  // Mid-travel: the code block itself takes the gesture.
-  const codePoint = await page.evaluate(() => {
-    const body = document.querySelector('[data-streamdown="code-block-body"]') as HTMLElement | null
-    if (!body) return null
-    body.scrollIntoView({ block: "center" })
-    body.scrollTop = Math.floor((body.scrollHeight - body.clientHeight) / 2)
-    const rect = body.getBoundingClientRect()
-    return { x: rect.left + Math.min(rect.width / 2, 40), y: rect.top + rect.height / 2 }
-  })
-  if (!codePoint) throw new Error("code-block-body not found")
-  await page.waitForTimeout(200)
-  await page.mouse.move(codePoint.x, codePoint.y)
-
-  const codeScrollBefore = (await page.evaluate(
-    () => (document.querySelector('[data-streamdown="code-block-body"]') as HTMLElement)?.scrollTop ?? -1,
-  )) as number
-  await page.mouse.wheel(0, 100)
-  await page.waitForTimeout(300)
-  const codeScrollAfter = (await page.evaluate(
-    () => (document.querySelector('[data-streamdown="code-block-body"]') as HTMLElement)?.scrollTop ?? -1,
-  )) as number
-  console.log("CODE SCROLL", { codeScrollBefore, codeScrollAfter })
-  expect(
-    codeScrollAfter - codeScrollBefore,
-    "wheel mid-travel must scroll the code block",
-  ).toBeGreaterThan(10)
-
-  // At its bottom edge the same gesture must reach the transcript.
-  await page.evaluate(() => {
-    const body = document.querySelector('[data-streamdown="code-block-body"]') as HTMLElement | null
-    if (body) body.scrollTop = body.scrollHeight
-  })
-  const transcriptBefore = await transcriptTop(page, "code-block-edge")
-  await page.mouse.move(codePoint.x, codePoint.y)
-  await page.mouse.wheel(0, 100)
+  // Up, from the block's top edge: the block cannot take the gesture, so the
+  // transcript must. Done first, while the transcript sits at its bottom (the
+  // newest reply) and therefore has room above it.
+  const top = await aimCodeBlockEdge(page, "top")
+  await page.mouse.move(top.x, top.y)
+  const beforeUp = await transcriptTop(page, "code-top-edge")
+  expect(beforeUp, "code-top-edge: the transcript needs room above it for this case").toBeGreaterThan(0)
+  await page.mouse.wheel(0, -100)
   await page.waitForTimeout(500)
-  const transcriptAfter = await transcriptTop(page, "code-block-edge")
-  console.log("TRANSCRIPT AT EDGE", { transcriptBefore, transcriptAfter })
+  const afterUp = await transcriptTop(page, "code-top-edge")
+  console.log("CODE TOP EDGE", { beforeUp, afterUp })
   expect(
-    transcriptAfter - transcriptBefore,
-    "wheel at the code block's bottom edge must scroll the transcript",
+    beforeUp - afterUp,
+    "wheel up at the code block's top edge must scroll the transcript",
+  ).toBeGreaterThanOrEqual(MIN_TRAVEL_PX)
+
+  // Down, from its bottom edge.
+  const bottom = await aimCodeBlockEdge(page, "bottom")
+  await page.mouse.move(bottom.x, bottom.y)
+  const beforeDown = await transcriptTop(page, "code-bottom-edge")
+  await page.mouse.wheel(0, 200)
+  await page.waitForTimeout(500)
+  const afterDown = await transcriptTop(page, "code-bottom-edge")
+  console.log("CODE BOTTOM EDGE", { beforeDown, afterDown })
+  expect(
+    afterDown - beforeDown,
+    "wheel down at the code block's bottom edge must scroll the transcript",
   ).toBeGreaterThanOrEqual(MIN_TRAVEL_PX)
 })
 
