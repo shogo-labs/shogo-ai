@@ -99,6 +99,55 @@ export function secretParityProblems(blocks: SecretBlock[]): string[] {
   return problems
 }
 
+/**
+ * Overlays the deploy workflows actually roll out. A key written into
+ * `api-secrets` that none of these reads is dead weight: the pod boots
+ * (the refs are `optional: true`) and the feature silently resolves no
+ * value. That is the SHO-453 shape — `OPENROUTER_API_KEY` was written by
+ * all three jobs and read by no overlay, and `SLACK_*` was written by
+ * none and read by none, so Slack OAuth 503'd in every cloud region.
+ */
+const DEPLOYED_OVERLAYS = ['production-us', 'production-eu', 'staging']
+
+/**
+ * Collect the `key:` names of every `name: api-secrets` secretKeyRef in an
+ * overlay manifest. The `key:` line follows the `name:` line within the
+ * same `secretKeyRef` block, so a short forward scan is enough.
+ */
+export function parseOverlaySecretReaders(content: string): Set<string> {
+  const lines = content.split('\n')
+  const keys = new Set<string>()
+  lines.forEach((line, i) => {
+    if (!/^\s*name:\s*api-secrets\s*$/.test(line)) return
+    for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
+      const match = /^\s*key:\s*([A-Z][A-Z0-9_]*)\s*$/.exec(lines[j])
+      if (match) {
+        keys.add(match[1])
+        return
+      }
+      if (/^\s*- name:/.test(lines[j])) return
+    }
+  })
+  return keys
+}
+
+/**
+ * Every name written into `api-secrets` must have a reader in every
+ * deployed overlay. Returns one problem per (overlay, key) pair, naming
+ * both so the failure says where to add the ref.
+ */
+export function overlayReaderProblems(blocks: SecretBlock[], overlays: Record<string, string>): string[] {
+  const names = new Set(blocks.flatMap((b) => b.names))
+  const problems: string[] = []
+  for (const [overlay, content] of Object.entries(overlays)) {
+    const keys = parseOverlaySecretReaders(content)
+    for (const name of names) {
+      if (!keys.has(name)) problems.push(`${overlay} has no api-secrets reader for ${name}`)
+    }
+  }
+  return problems
+}
+
 describe('deploy api-secrets parity', () => {
   const blocks = WORKFLOWS.flatMap((file) => parseApiSecretBlocks(file, read(file)))
 
@@ -119,6 +168,32 @@ describe('deploy api-secrets parity', () => {
       expect(block.names.length).toBeGreaterThan(0)
       expect(block.names).toContain('ANTHROPIC_API_KEY')
       expect(block.names).toContain('HIGGSFIELD_API_KEY')
+    }
+  })
+
+  it('each block carries the Slack OAuth keys', () => {
+    for (const block of blocks) {
+      for (const name of ['SLACK_CLIENT_ID', 'SLACK_CLIENT_SECRET', 'SLACK_SIGNING_SECRET', 'SLACK_APP_ID']) {
+        expect(block.names).toContain(name)
+      }
+    }
+  })
+})
+
+describe('deployed overlays read every api-secrets key', () => {
+  const blocks = WORKFLOWS.flatMap((file) => parseApiSecretBlocks(file, read(file)))
+  const overlays = Object.fromEntries(
+    DEPLOYED_OVERLAYS.map((overlay) => [overlay, read(`k8s/overlays/${overlay}/api-service.yaml`)]),
+  )
+
+  it('every key written into api-secrets has a secretKeyRef reader in each deployed overlay', () => {
+    expect(overlayReaderProblems(blocks, overlays)).toEqual([])
+  })
+
+  it('the legacy production overlay reads the Slack keys too, so it cannot drift', () => {
+    const keys = parseOverlaySecretReaders(read('k8s/overlays/production/api-service.yaml'))
+    for (const name of ['SLACK_CLIENT_ID', 'SLACK_CLIENT_SECRET', 'SLACK_SIGNING_SECRET', 'SLACK_APP_ID']) {
+      expect(keys.has(name)).toBe(true)
     }
   })
 })
@@ -173,5 +248,50 @@ describe('deploy api-secrets parity (fixtures)', () => {
 
   it('refuses to treat an empty match as parity', () => {
     expect(secretParityProblems([])).toEqual(['no `kubectl create secret generic api-secrets` block found in any workflow'])
+  })
+})
+
+// Synthetic fixtures for the overlay-reader guard: prove it catches a key that
+// is written into api-secrets but read by no overlay (the SHO-453 shape), and
+// that a reader pointing at a different secret does not count.
+const overlay = (keys: string[], secretName = 'api-secrets') =>
+  [
+    'spec:',
+    '  template:',
+    '    spec:',
+    '      containers:',
+    '        - name: api',
+    '          env:',
+    ...keys.flatMap((key) => [
+      `            - name: ${key}`,
+      '              valueFrom:',
+      '                secretKeyRef:',
+      `                  name: ${secretName}`,
+      `                  key: ${key}`,
+      '                  optional: true',
+    ]),
+  ].join('\n')
+
+describe('deployed overlays read every api-secrets key (fixtures)', () => {
+  const blocks = parseApiSecretBlocks(
+    'fixture.yml',
+    workflow({ 'deploy-us': block(['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY']) }),
+  )
+
+  it('reports the overlay and the key when a written secret has no reader', () => {
+    expect(overlayReaderProblems(blocks, { staging: overlay(['ANTHROPIC_API_KEY']) })).toEqual([
+      'staging has no api-secrets reader for OPENROUTER_API_KEY',
+    ])
+  })
+
+  it('passes when every written key has a reader', () => {
+    expect(overlayReaderProblems(blocks, { staging: overlay(['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY']) })).toEqual([])
+  })
+
+  it('does not count a reader that points at a different secret', () => {
+    expect(overlayReaderProblems(blocks, { staging: overlay(['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY'], 'other-secrets') })).toEqual([
+      'staging has no api-secrets reader for ANTHROPIC_API_KEY',
+      'staging has no api-secrets reader for OPENROUTER_API_KEY',
+    ])
   })
 })

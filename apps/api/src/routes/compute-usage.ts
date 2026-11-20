@@ -65,8 +65,15 @@ function sizeLabel(vcpus: number, memMiB: number): string {
 export function computeUsageRoutes(): Hono {
   const router = new Hono()
 
-  router.use('*', authMiddleware)
-  router.use('*', requireAuth)
+  // IMPORTANT: scope to this router's own path — not '*'. Hono mounts this
+  // router at /api in server.ts via app.route('/api', computeUsageRoutes()),
+  // and a '*' middleware on a sub-router becomes part of the parent's chain
+  // for every /api/* path registered after it. That 401'd preview
+  // render/open, /api/f download links and published-site wake/API for
+  // unauthenticated callers (SHO-452). Same fix as license-keys.ts and
+  // userAttributionRoute in admin.ts.
+  router.use('/workspaces/:id/compute-usage', authMiddleware)
+  router.use('/workspaces/:id/compute-usage', requireAuth)
 
   /**
    * One workspace's compute for the current billing period, plus a daily chart

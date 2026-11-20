@@ -43,6 +43,21 @@ function isAlreadyStarredError(error: unknown): boolean {
 }
 
 /**
+ * The API answers a member create for someone who is already in the scope with
+ * `409 { error: { code: 'already_member' } }`. For an accept that is not a
+ * failure: the membership the invitation was asking for already exists, so the
+ * only thing left to do is consume the invitation (SHO-455).
+ */
+function isAlreadyMemberError(error: unknown): boolean {
+  const e = error as
+    | { details?: { error?: { code?: unknown } }; message?: unknown }
+    | null
+    | undefined
+  if (e?.details?.error?.code === 'already_member') return true
+  return e?.message === 'User is already a member'
+}
+
+/**
  * Create domain actions that can be attached to the store.
  * Call these from your components using the store instance.
  *
@@ -286,13 +301,23 @@ export function createDomainActions(store: IDomainStore) {
       // join (409 `trial_seat_limit`, SHO-422) must leave the invitation
       // pending: flipping it to accepted before the member exists burns the
       // invitee's only link and blocks the retry the error message asks for.
-      await store.memberCollection.create({
-        userId,
-        workspaceId: data.workspaceId,
-        role: data.role as any,
-        isBillingAdmin: false,
-        ...(data.projectId ? { projectId: data.projectId } : {}),
-      })
+      //
+      // `already_member` is not a failure here. The invitee may have joined
+      // through another path (a second invite, an admin add, a replayed accept),
+      // and the membership the invitation asks for is already in place — so
+      // consume the invitation and report success instead of dead-ending on a
+      // raw hook string (SHO-455).
+      try {
+        await store.memberCollection.create({
+          userId,
+          workspaceId: data.workspaceId,
+          role: data.role as any,
+          isBillingAdmin: false,
+          ...(data.projectId ? { projectId: data.projectId } : {}),
+        })
+      } catch (error) {
+        if (!isAlreadyMemberError(error)) throw error
+      }
 
       await store.invitationCollection.update(invitationId, {
         status: "accepted",

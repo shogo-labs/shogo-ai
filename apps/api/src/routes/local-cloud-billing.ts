@@ -147,5 +147,68 @@ export function localCloudBillingRoutes() {
     return c.json(result, response.status as any)
   })
 
+  /**
+   * Forward a cloud billing call for the linked workspace (SHO-451).
+   *
+   * Desktop and cloud must never diverge: the summary card, plan change and
+   * cancel/resume all run against the same cloud routes. A local install with
+   * no linked workspace gets a typed `cloud_not_connected` error the UI can
+   * show, never a blank card.
+   */
+  async function forwardBilling(
+    c: any,
+    path: string,
+    method: 'GET' | 'POST',
+    body?: Record<string, unknown>,
+  ) {
+    const workspace = await readCloudWorkspace()
+    if (!workspace) {
+      return c.json({
+        error: { code: 'cloud_not_connected', message: 'Sign in to Shogo Cloud first.' },
+      }, 401)
+    }
+    try {
+      const response = await fetchUpstream(
+        path,
+        method === 'GET'
+          ? { method, search: `?workspaceId=${encodeURIComponent(workspace.id)}` }
+          : {
+              method,
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ ...(body ?? {}), workspaceId: workspace.id }),
+            },
+      )
+      const result = await upstreamJson(response)
+      return c.json(result, response.status as any)
+    } catch (error: any) {
+      return c.json({
+        error: {
+          code: 'cloud_unreachable',
+          message: error?.message || 'Unable to reach Shogo Cloud',
+        },
+      }, 502)
+    }
+  }
+
+  router.get('/local/cloud-billing/billing-summary', async (c) =>
+    forwardBilling(c, '/api/billing/summary', 'GET'),
+  )
+
+  router.post('/local/cloud-billing/change-plan/preview', async (c) =>
+    forwardBilling(c, '/api/billing/change-plan/preview', 'POST', await c.req.json().catch(() => ({}))),
+  )
+
+  router.post('/local/cloud-billing/change-plan', async (c) =>
+    forwardBilling(c, '/api/billing/change-plan', 'POST', await c.req.json().catch(() => ({}))),
+  )
+
+  router.post('/local/cloud-billing/cancel', async (c) =>
+    forwardBilling(c, '/api/billing/cancel', 'POST', await c.req.json().catch(() => ({}))),
+  )
+
+  router.post('/local/cloud-billing/resume', async (c) =>
+    forwardBilling(c, '/api/billing/resume', 'POST', await c.req.json().catch(() => ({}))),
+  )
+
   return router
 }

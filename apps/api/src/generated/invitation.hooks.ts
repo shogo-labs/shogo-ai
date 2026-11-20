@@ -293,6 +293,27 @@ export const invitationHooks: InvitationHooks = {
 
     if (input.email) input.email = input.email.toLowerCase()
 
+    // Inviting someone who is already in the scope creates a dead invite: the
+    // accept path refuses with `already_member` and the link can never be used
+    // (SHO-455). Refuse it here, where the inviter can see why.
+    if (input.email) {
+      const invitee = await ctx.prisma.user.findUnique({
+        where: { email: input.email },
+        select: { id: true },
+      })
+      if (invitee) {
+        const alreadyMember = await ctx.prisma.member.findFirst({
+          where: projectId
+            ? { userId: invitee.id, projectId }
+            : { userId: invitee.id, workspaceId: input.workspaceId, projectId: null },
+          select: { id: true },
+        })
+        if (alreadyMember) {
+          return { ok: false, error: { code: "already_member", message: `${input.email} is already a member` } }
+        }
+      }
+    }
+
     // Duplicate check. Only an active (non-expired) pending invite blocks a
     // re-invite; a pending row whose expiresAt is in the past is treated as
     // expired (consistent with the UI and project-auth allowlist).
@@ -442,6 +463,18 @@ export const invitationHooks: InvitationHooks = {
       }
 
       return { ok: false, error: { code: "bad_request", message: "Unsupported invitation update" } }
+    }
+
+    // An accept is only ever the invitee's own action. A caller whose email is
+    // not the invited address — typically an admin signed in as themselves while
+    // opening someone else's link — must not be told "Admins can only cancel or
+    // reopen invitations": that is the wrong diagnosis, and it is the raw text
+    // the accept page used to show (SHO-455).
+    if (input.status === 'accepted') {
+      return {
+        ok: false,
+        error: { code: "wrong_account", message: "This invitation was sent to a different email address." },
+      }
     }
 
     // Admin operations: never let a role change escalate past the caller.
