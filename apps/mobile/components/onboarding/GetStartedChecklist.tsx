@@ -29,6 +29,7 @@ import { EVENTS, trackEvent } from '../../lib/analytics'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { openInWorkspace } from '../../lib/switch-workspace'
 import { pickTeamWorkspace } from '../../lib/team-workspace'
+import { useInviteDialog } from '../workspace/invite-dialog-context'
 
 const DISMISSED_KEY = 'shogo:getting-started-dismissed:'
 const SEEN_KINDS_KEY = 'shogo:getting-started-seen-kinds:'
@@ -58,6 +59,7 @@ function isActiveConnection(status: string | undefined): boolean {
 
 export function useGettingStarted(enabled = true): GettingStartedState {
   const router = useRouter()
+  const inviteDialog = useInviteDialog()
   const posthog = usePostHogSafe()
   const { user } = useAuth()
   const http = useDomainHttp()
@@ -189,7 +191,11 @@ export function useGettingStarted(enabled = true): GettingStartedState {
       title: 'Invite a teammate',
       description: 'Build together in your Team workspace.',
       done: !!progress?.invitedTeammate,
-      onPress: go('invite', teamId, `/(app)/settings?tab=people${teamId ? `&workspace=${teamId}` : ''}`),
+      // Opens the invite dialog itself, not Settings (SHO-454).
+      onPress: () => {
+        track('invite')
+        inviteDialog.openInviteDialog(teamId ?? current?.id ?? null)
+      },
     }
     const otherSpace: ChecklistItem =
       kind === 'personal'
@@ -210,7 +216,7 @@ export function useGettingStarted(enabled = true): GettingStartedState {
     return kind === 'personal'
       ? [firstMessage, otherSpace, connectTool, firstAgent, invite]
       : [firstAgent, invite, connectTool, otherSpace, firstMessage]
-  }, [current?.id, hasConnection, kind, personalId, progress, projects, router, seenKinds, teamId, track])
+  }, [current?.id, hasConnection, kind, personalId, progress, projects, router, seenKinds, teamId, track, inviteDialog])
 
   const completedCount = items.filter((i) => i.done).length
 

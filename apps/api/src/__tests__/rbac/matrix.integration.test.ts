@@ -234,10 +234,12 @@ const rows: Row[] = [
     expect: { owner: 200, admin: 200, billingAdmin: 200, member: 200, viewer: 200, outsider: 403, guestEditor: 403, guestViewer: 403, superAdmin: 200, anon: 401 },
   },
   {
-    name: 'list invite links (workspace.members:manage)',
+    // Reading a link is what "Copy link" needs, so anyone who may invite may
+    // read it (SHO-454). Creating, resetting and disabling stay manager-only.
+    name: 'list invite links (anyone who may invite)',
     method: 'GET',
     path: (w) => `/api/invite-links?workspaceId=${w.workspaceA}`,
-    expect: { owner: 200, admin: 200, billingAdmin: 403, member: 403, viewer: 403, outsider: 403, guestEditor: 403, guestViewer: 403, superAdmin: 200, anon: 401 },
+    expect: { owner: 200, admin: 200, billingAdmin: 200, member: 200, viewer: 403, outsider: 403, guestEditor: 403, guestViewer: 403, superAdmin: 200, anon: 401 },
   },
   {
     name: 'list API keys (workspace:read; filtered per caller)',

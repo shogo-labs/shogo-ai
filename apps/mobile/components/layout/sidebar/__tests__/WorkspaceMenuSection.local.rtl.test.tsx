@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test"
 import { fireEvent, render, screen } from "@testing-library/react"
 import { createElement } from "react"
 import { createReactNativeMock } from "../../../../test/react-native-mock"
+import { inviteDialogContextStub } from '../../../../test/invite-dialog-stub'
 
 mock.module("react-native", () =>
   createReactNativeMock({
@@ -25,7 +26,7 @@ mock.module("lucide-react-native", () => {
       return createElement("span", { "data-icon": name })
     }
   return Object.fromEntries(
-    ["Check", "ChevronRight", "Cloud", "CloudOff", "ExternalLink", "LogIn", "LogOut", "Plus", "Settings", "Sparkles", "Users", "Zap"].map(
+    ["Check", "ChevronRight", "Cloud", "CloudOff", "ExternalLink", "LogIn", "LogOut", "Plus", "Settings", "Sparkles", "UserPlus", "Users", "Zap"].map(
       (n) => [n, Icon(n)],
     ),
   )
@@ -38,6 +39,7 @@ mock.module(resolve(import.meta.dir, "../../../../contexts/auth"), () => ({
   getAuthUserSnapshot: () => ({ id: "user-1", email: "user@example.com" }),
 }))
 mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
+  useDomainHttp: () => null,
   useDomainHttpOptional: () => null,
   getDomainHttpClient: () => null,
   useDomainOptional: () => null,
@@ -66,6 +68,8 @@ mock.module(resolve(import.meta.dir, "../../../billing/UsageWindows"), () => ({ 
 let cloud = { signedIn: false, cloudUrl: null, reachable: true, user: null as any, workspaces: [] as any[] }
 const cloudIds = () => new Set(cloud.workspaces.map((w) => w.id))
 mock.module(resolve(import.meta.dir, "../../../../lib/workspace-route"), () => ({
+  canInviteHere: () => false,
+  inviteLinkUrl: (token: string) => `/invite/${token}`,
   routeUrl: (url: string) => url,
   routePath: (path: string) => path,
   isActiveWorkspaceCloud: () => false,
@@ -84,6 +88,10 @@ const signOut = mock(async () => true)
 mock.module(resolve(import.meta.dir, "../../../../hooks/useCloudSession"), () => ({
   useCloudSession: () => ({ cloud, pending: null, error: null, signIn, signOut }),
 }))
+
+// The switcher offers "Invite people" through the app shell's dialog (SHO-454);
+// these tests render it on its own, so stub the context.
+mock.module(resolve(import.meta.dir, '../../../workspace/invite-dialog-context'), inviteDialogContextStub)
 
 const { WorkspaceMenuSection, workspaceKindBadge } = await import("../WorkspaceMenuSection")
 const { buildWorkspaceEntries, cloudWorkspaceKey } = await import("../../../../lib/workspace-entries")

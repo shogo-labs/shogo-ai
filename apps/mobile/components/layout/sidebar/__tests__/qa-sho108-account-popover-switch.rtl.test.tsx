@@ -19,6 +19,7 @@ import { fireEvent, render, screen } from "@testing-library/react"
 import { createElement } from "react"
 import { createReactNativeMock } from "../../../../test/react-native-mock"
 import * as lucideStub from "../../../../test/stubs/lucide-react-native"
+import { inviteDialogContextStub } from '../../../../test/invite-dialog-stub'
 
 mock.module("react-native", () =>
   createReactNativeMock({
@@ -106,6 +107,7 @@ mock.module(resolve(import.meta.dir, "../../../../contexts/theme"), () => ({
   useTheme: () => ({ theme: "dark", setTheme: () => {} }),
 }))
 mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
+  useDomainHttp: () => null,
   useDomainHttpOptional: () => null,
   getDomainHttpClient: () => null,
   useDomainOptional: () => null,
@@ -131,6 +133,8 @@ mock.module(resolve(import.meta.dir, "../../../../hooks/useCloudSession"), () =>
   }),
 }))
 mock.module(resolve(import.meta.dir, "../../../../lib/workspace-route"), () => ({
+  canInviteHere: () => false,
+  inviteLinkUrl: (token: string) => `/invite/${token}`,
   routeUrl: (url: string) => url,
   routePath: (path: string) => path,
   isActiveWorkspaceCloud: () => false,
@@ -173,6 +177,10 @@ mock.module(resolve(import.meta.dir, "../../../../lib/api"), () => ({
 mock.module(resolve(import.meta.dir, "../../../billing/UsageWindows"), () => ({
   CompactUsageWindows: () => null,
 }))
+
+// The switcher offers "Invite people" through the app shell's dialog (SHO-454);
+// these tests render it on its own, so stub the context.
+mock.module(resolve(import.meta.dir, '../../../workspace/invite-dialog-context'), inviteDialogContextStub)
 
 const { AccountMenu } = await import("../AccountMenu")
 const { buildWorkspaceEntries, cloudWorkspaceKey } = await import("../../../../lib/workspace-entries")

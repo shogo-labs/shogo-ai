@@ -53,6 +53,7 @@ import {
 } from "../../lib/switch-workspace";
 import { useResolvedTheme } from "../../contexts/theme";
 import { AppSidebar } from "../../components/layout/AppSidebar";
+import { InviteDialogProvider } from "../../components/workspace/InviteDialog";
 import { TeamChatNotifier } from "../../components/team-chat/TeamChatNotifier";
 import { NotificationPermissionBanner } from "../../components/notifications/NotificationPermissionBanner";
 import { AgentLimitBanner } from "../../components/AgentLimitBanner";
@@ -733,7 +734,9 @@ export default function AppLayout() {
   return (
     <DomainProvider>
       <NativeRecorderProvider>
-        <AppLayoutInner />
+        <InviteDialogProvider>
+          <AppLayoutInner />
+        </InviteDialogProvider>
       </NativeRecorderProvider>
     </DomainProvider>
   );
