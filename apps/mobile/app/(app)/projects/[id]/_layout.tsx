@@ -274,6 +274,16 @@ const CANVAS_ERROR_LOG_TAIL = 30;
 
 export default observer(function ProjectLayout() {
   csMark("project:layout:render");
+  // SHO-174 instrumentation
+  if (typeof window !== "undefined") {
+    const w = window as any;
+    w.__sho174ProjectRenders = (w.__sho174ProjectRenders ?? 0) + 1;
+    console.log("[SHO174] project-layout-render", JSON.stringify({
+      n: w.__sho174ProjectRenders,
+      href: window.location.href,
+      t: Date.now(),
+    }));
+  }
   const params = useProjectRouteParams<{
     id: string;
     chatSessionId?: string;

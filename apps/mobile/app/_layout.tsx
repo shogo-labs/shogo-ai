@@ -99,6 +99,13 @@ import { getActiveEnvKey, telemetryEnvFor } from "../lib/env-override";
 import { getRuntimeAppEnv } from "../lib/runtime-env";
 
 import { isDeliberateTelemetry, isExpectedClientError, isNoiseEvent } from "../lib/sentry-noise-filter";
+// SHO-174 instrumentation: the very first app code to run on a cold load.
+if (typeof window !== "undefined") {
+  console.log("[SHO174] root-module-load", JSON.stringify({
+    href: window.location.href,
+    t: Date.now(),
+  }));
+}
 
 Sentry.init({
   dsn: sentryDsn,
