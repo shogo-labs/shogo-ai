@@ -19,6 +19,7 @@ mock.module('@shogo/model-catalog', () => ({
   getModelEntry: (id: string) => (id in stubCosts ? { id } : undefined),
   resolveAgentModeDefault: (mode: string) => (mode === 'advanced' ? 'sonnet' : 'haiku'),
   calculateDollarCost: () => 0,
+  getModelDollarCosts: (m: string, _at?: Date) => stubCosts[m] ?? stubCosts['sonnet'],
 }))
 
 const {

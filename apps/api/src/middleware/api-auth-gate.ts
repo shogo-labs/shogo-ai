@@ -264,6 +264,12 @@ export function isGatePublicPath(path: string): boolean {
   // returning from GitHub has no Shogo session; the HMAC-signed `state` and
   // the OAuth code are verified in services/github-authorize.ts.
   if (path === '/api/github/callback') return true
+  // WhatsApp platform routes (SHO-463). Auth is the signed state token or
+  // HMAC-SHA256 app secret — verified inside the handlers themselves.
+  if (path === '/api/channels/whatsapp/connect') return true
+  if (path === '/api/channels/whatsapp/connect/complete') return true
+  if (path === '/api/channels/whatsapp/webhook') return true
+  if (path === '/api/channels/whatsapp/connect-link/instance') return true
   return false
 }
 

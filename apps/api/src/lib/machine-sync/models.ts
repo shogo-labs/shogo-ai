@@ -152,6 +152,7 @@ const NEVER_CREDENTIALS = [
   'SlackProjectRoutingRule',
   'ChatInstallation',
   'ChatIdentityLink',
+  'WhatsAppNumberBinding', // Meta business token; cloud owns the platform webhook
   'Invitation',
   'InviteLink',
   'WorkspaceGrant',

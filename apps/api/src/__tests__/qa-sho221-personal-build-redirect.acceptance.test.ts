@@ -45,6 +45,7 @@ mock.module('@shogo/model-catalog', () => ({
   getModelTier: (_modelId: string) => 'economy',
   resolveModelId: (mode: string) => mode || 'claude-haiku-4-5',
   calculateDollarCost: () => 0,
+  getModelDollarCosts: (_m: string, _at?: Date) => ({ inputPerMillion: 0, outputPerMillion: 0, cachedInputPerMillion: 0, cacheWritePerMillion: 0 }),
   resolveAgentModeDefault: (mode: string) => mode,
   inferProviderFromModel: (_id: string, fallback: string) => fallback,
 }))

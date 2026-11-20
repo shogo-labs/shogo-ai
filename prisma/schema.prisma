@@ -332,6 +332,7 @@ model Workspace {
   socialAutomations      SocialAutomation[]
   socialAutomationRuns   SocialAutomationRun[]
   rootSecrets            WorkspaceRootSecret[]
+  whatsappNumberBindings WhatsAppNumberBinding[]
 
   @@index([createdAt])
   @@index([homeRegion])
@@ -3272,9 +3273,10 @@ model Instance {
   updatedAt     DateTime       @updatedAt
 
   workspace           Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  remoteActions       RemoteAction[]
-  pushSubscriptions   PushSubscription[]
-  preferredByProjects Project[]          @relation("ProjectPreferredInstance")
+  remoteActions          RemoteAction[]
+  pushSubscriptions      PushSubscription[]
+  preferredByProjects    Project[]          @relation("ProjectPreferredInstance")
+  whatsappNumberBindings WhatsAppNumberBinding[]
 
   @@unique([workspaceId, userId, hostname])
   @@index([workspaceId])
@@ -6629,4 +6631,58 @@ model AbuseFlag {
   @@index([status, createdAt])
   @@index([clusterKey])
   @@map("abuse_flags")
+}
+
+// =============================================================================
+// WHATSAPP PLATFORM BINDINGS (Meta Tech Provider — Embedded Signup)
+// =============================================================================
+
+/// One WhatsApp Business phone number connected through Shogo's Meta Tech
+/// Provider (Embedded Signup). A binding is created by the hosted signup flow
+/// and torn down by channel_disconnect or workspace/project deletion.
+model WhatsAppNumberBinding {
+  id                 String    @id @default(cuid())
+  workspaceId        String
+  /// Local or cloud project id. No FK because on a paired desktop the row is
+  /// written by the cloud API but the projectId is the desktop's local id.
+  projectId          String
+  /// Set when the project runs on a paired desktop / worker; relaying uses the
+  /// instance tunnel instead of the cloud pod resolver.
+  instanceId         String?
+
+  phoneNumberId        String    @unique
+  wabaId               String
+  businessId           String?
+  displayPhoneNumber   String?
+  verifiedName         String?
+
+  /// true = number was onboarded from the WhatsApp Business *app* (coexistence mode)
+  coexistence Boolean @default(false)
+
+  /// AES-256-GCM encrypted business token (encryptSecret / decryptSecret)
+  tokenEncrypted       String    @db.Text
+  /// Encrypted 6-digit registration PIN (non-coexistence numbers only)
+  pinEncrypted         String?
+
+  /// Meta request ids from smb_app_data calls (each can only be called once)
+  contactsSyncRequestId  String?
+  historySyncRequestId   String?
+  syncStartedAt          DateTime?
+
+  /// "active" | "disconnected" | "needs_reconnect"
+  status       String @default("active")
+  statusReason String?
+
+  connectedByUserId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  instance  Instance? @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@index([wabaId])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("whatsapp_number_bindings")
 }
