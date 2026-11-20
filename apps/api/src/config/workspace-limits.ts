@@ -23,25 +23,11 @@
  *     already depend on that module.
  */
 
-export type WorkspaceLimitPlanId = 'free' | 'basic' | 'pro' | 'business' | 'enterprise'
+// Type-only — erased at compile time; does NOT load usage-plans.ts at runtime.
+import type { PlanId } from './usage-plans'
+export type { PlanId }
 
-/**
- * Normalize an arbitrary planId string to a canonical WorkspaceLimitPlanId.
- * Handles decorated ids (`business-monthly`, `Business-Annual`, `pro_200`, etc.)
- * by prefix-matching. Returns `null` for unknown ids.
- */
-export function normalizePlanId(planId: string | null | undefined): WorkspaceLimitPlanId | null {
-  if (!planId) return null
-  const lc = planId.toLowerCase().trim()
-  if (lc.startsWith('enterprise')) return 'enterprise'
-  if (lc.startsWith('business')) return 'business'
-  if (lc.startsWith('pro')) return 'pro'
-  if (lc.startsWith('basic')) return 'basic'
-  if (lc.startsWith('free')) return 'free'
-  return null
-}
-
-export const WORKSPACE_LIMITS: Record<WorkspaceLimitPlanId, number | null> = {
+export const WORKSPACE_LIMITS: Record<PlanId, number | null> = {
   free: 1,
   basic: 3,
   pro: 10,
@@ -54,8 +40,8 @@ export const WORKSPACE_LIMITS: Record<WorkspaceLimitPlanId, number | null> = {
  * Returns `null` for plans that are already unlimited.
  */
 export function nextWorkspaceTier(
-  plan: WorkspaceLimitPlanId,
-): { planId: WorkspaceLimitPlanId; limit: number | null } | null {
+  plan: PlanId,
+): { planId: PlanId; limit: number | null } | null {
   if (plan === 'free') return { planId: 'basic', limit: WORKSPACE_LIMITS.basic }
   if (plan === 'basic' || plan === 'pro') return { planId: 'business', limit: WORKSPACE_LIMITS.business }
   return null // business / enterprise are already unlimited

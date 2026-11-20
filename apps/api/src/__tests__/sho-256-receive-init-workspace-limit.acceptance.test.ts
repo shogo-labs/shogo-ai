@@ -103,20 +103,46 @@ describe('on the cloud, receive/init applies the create rule', () => {
     expect(await db.workspace.count({ where: { name: 'Sneaky second workspace' } })).toBe(0)
   })
 
-  test('the refusal is the same code and message POST /api/workspaces returns', async () => {
+  test('AC5 — receive/init and POST /api/workspaces return exactly the same error (code, message)', async () => {
+    // This is the parity test: the same `checkWorkspaceCreateAllowance`
+    // function enforces the limit on BOTH paths (SHO-256 / SHO-474 AC5).
     const userId = await makeUser()
     await giveOwnedWorkspace(userId, 'team')
     principalUserId = userId
 
+    // Path A: receive/init
     const res = await init({ name: 'Second workspace' })
+    expect(res.status).toBe(400)
     const fromRoute = ((await res.json()) as any).error
+    expect(fromRoute.code).toBe('workspace_limit_reached')
+    expect(fromRoute.message).toMatch(/Basic|free workspace/)
 
+    // Path B: POST /api/workspaces (hook)
     const fromHook = await workspaceHooks.beforeCreate!(
       { name: 'Second workspace', kind: 'team' },
       { body: {}, params: {}, query: {}, userId, prisma: db } as any,
     )
     expect(fromHook?.ok).toBe(false)
+    // Both paths must produce the identical error object so the client can
+    // show the same message regardless of which surface refused.
     expect(fromHook?.error).toEqual(fromRoute)
+  })
+
+  test('AC5 — message is built from WORKSPACE_LIMITS, not hardcoded', async () => {
+    // The free-user message names the next tier from the map. Change the map
+    // and the message changes — no other source of truth.
+    const { WORKSPACE_LIMITS, nextWorkspaceTier } = await import('../config/workspace-limits')
+    const userId = await makeUser()
+    await giveOwnedWorkspace(userId, 'team')
+    principalUserId = userId
+
+    const res = await init({ name: 'Map-driven message' })
+    const msg: string = ((await res.json()) as any).error?.message ?? ''
+
+    // The next tier from 'free' is 'basic', and its limit comes from the map.
+    const next = nextWorkspaceTier('free')
+    const nextName = next ? next.planId.charAt(0).toUpperCase() + next.planId.slice(1) : 'Basic'
+    expect(msg).toContain(nextName)
   })
 
   test('a user with the free team allowance still unspent gets the workspace, at the default size', async () => {

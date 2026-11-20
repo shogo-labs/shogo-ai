@@ -11,12 +11,12 @@
  *
  * Included (child) workspaces are counted against the parent's plan limit by
  * `checkIncludedWorkspaceAllowance` (SHO-474). The limit is read from
- * `WORKSPACE_LIMITS` in config/usage-plans.ts; changing that map is the only
- * config needed to adjust the numbers.
+ * `WORKSPACE_LIMITS` in config/workspace-limits.ts; changing that map is the
+ * only config needed to adjust any tier.
  */
 
-import { WORKSPACE_LIMITS, nextWorkspaceTier, normalizePlanId } from '../config/workspace-limits'
-import type { WorkspaceLimitPlanId } from '../config/workspace-limits'
+import { WORKSPACE_LIMITS, nextWorkspaceTier } from '../config/workspace-limits'
+import type { PlanId } from '../config/workspace-limits'
 import { getUserOwnedWorkspaceCount } from './workspace.service'
 import { prisma } from '../lib/prisma'
 
@@ -24,12 +24,12 @@ export type OwnedWorkspaceKind = 'personal' | 'team'
 
 export interface WorkspaceCreateRefusal {
   ok: false
-  error: { code: string; message: string; planId?: WorkspaceLimitPlanId; limit?: number | null; used?: number; nextPlanId?: WorkspaceLimitPlanId | null }
+  error: { code: string; message: string; planId?: PlanId; limit?: number | null; used?: number; nextPlanId?: PlanId | null }
 }
 
 export interface IncludedWorkspaceAllowance {
   ok: true
-  planId: WorkspaceLimitPlanId
+  planId: PlanId
   limit: number | null
   used: number
 }
@@ -47,6 +47,9 @@ export function normaliseWorkspaceKind(kind: unknown): OwnedWorkspaceKind {
  * workspace does not spend the owner's free top-level slot (SHO-474). A second
  * workspace of the same kind requires a paid subscription, or is created as a
  * child under a qualifying parent.
+ *
+ * The refusal message names the next tier from `nextWorkspaceTier`, so it
+ * stays correct when the limits map changes (AC6).
  */
 export async function checkWorkspaceCreateAllowance(
   userId: string,
@@ -54,72 +57,82 @@ export async function checkWorkspaceCreateAllowance(
 ): Promise<{ ok: true } | WorkspaceCreateRefusal> {
   const limit = WORKSPACE_LIMITS.free ?? 1
   if ((await getUserOwnedWorkspaceCount(userId, kind)) < limit) return { ok: true }
-  return {
-    ok: false,
-    error: {
-      code: 'workspace_limit_reached',
-      message:
-        kind === 'personal'
-          ? 'You already have a personal workspace.'
-          : `You've used your free workspace. Basic includes 3 workspaces and Business includes unlimited.`,
-    },
+  if (kind === 'personal') {
+    return { ok: false, error: { code: 'workspace_limit_reached', message: 'You already have a personal workspace.' } }
   }
+  // Build the message from the map so it tracks any limit change (AC6).
+  const next = nextWorkspaceTier('free')
+  const nextName = next ? next.planId.charAt(0).toUpperCase() + next.planId.slice(1) : null
+  const nextLimit = next ? (next.limit === null ? 'unlimited' : String(next.limit)) : null
+  const tierAfter = nextWorkspaceTier(next?.planId ?? 'basic')
+  const tierAfterName = tierAfter ? tierAfter.planId.charAt(0).toUpperCase() + tierAfter.planId.slice(1) : null
+  const tierAfterLimit = tierAfter ? (tierAfter.limit === null ? 'unlimited' : String(tierAfter.limit)) : null
+  const nextPart = nextName && nextLimit ? `${nextName} includes ${nextLimit} workspaces` : null
+  const tierPart = tierAfterName && tierAfterLimit ? `${tierAfterName} includes ${tierAfterLimit}` : null
+  const messageParts = [nextPart, tierPart].filter(Boolean)
+  const message = `You've used your free workspace. ${messageParts.join(' and ')}.`
+  return { ok: false, error: { code: 'workspace_limit_reached', message } }
 }
 
 /**
  * Whether the parent workspace has room for one more included child.
  *
- * Returns the allowance shape `{ ok, planId, limit, used }` on success so
- * the caller can forward it to the client for the used/limit display.
+ * `effectivePlan` must be the already-normalized result of
+ * `getEffectivePlanId(parentWorkspaceId)` from billing.service — no further
+ * normalization is done here. Keeping billing.service out of this module
+ * preserves testability; the hook already imports and mocks it.
+ *
+ * Returns `{ ok, planId, limit, used }` on success so the caller can forward
+ * it to the client for the used/limit display.
  *
  * Rejects with:
  *   - `plan_required` when the parent is free (included workspaces start on Basic).
- *   - `workspace_limit_reached` when the parent is at its plan cap. The error
- *     carries `{ planId, limit, used, nextPlanId }` so the UI shows a specific
- *     upgrade CTA rather than parsing message text.
- *
- * The caller is responsible for resolving `effectivePlan` (via
- * `getEffectivePlanId(parentWorkspaceId)` from billing.service) before calling
- * this. Keeping billing.service out of this module preserves testability — the
- * hook already imports and mocks billing.service.
+ *   - `workspace_limit_reached` when at or over the cap. The error carries
+ *     `{ planId, limit, used, nextPlanId }` for upgrade CTAs. When `used > limit`
+ *     (downgrade: children were created on a higher tier), the message says
+ *     "is using N" rather than "all N", so it reads correctly when N > limit.
  */
 export async function checkIncludedWorkspaceAllowance(
   parentWorkspaceId: string,
-  effectivePlan: string,
+  effectivePlan: PlanId,
 ): Promise<IncludedWorkspaceAllowance | WorkspaceCreateRefusal> {
-  const planId = normalizePlanId(effectivePlan) ?? 'free'
-
-  if (planId === 'free') {
+  if (effectivePlan === 'free') {
+    const next = nextWorkspaceTier('free')
+    const nextName = next ? next.planId.charAt(0).toUpperCase() + next.planId.slice(1) : 'Basic'
+    const nextLimit = next?.limit ?? WORKSPACE_LIMITS.basic
     return {
       ok: false,
       error: {
         code: 'plan_required',
-        message: 'Included workspaces start on Basic (3 workspaces).',
+        message: `Included workspaces start on ${nextName} (${nextLimit} workspaces).`,
       },
     }
   }
 
-  const limit = WORKSPACE_LIMITS[planId]
-  if (limit === null) {
-    // Unlimited — always OK.
-    const childCount = await prisma.workspace.count({ where: { parentWorkspaceId } })
-    return { ok: true, planId, limit: null, used: 1 + childCount }
-  }
-
+  const limit = WORKSPACE_LIMITS[effectivePlan]
   const childCount = await prisma.workspace.count({ where: { parentWorkspaceId } })
   const used = 1 + childCount // 1 = the parent itself
 
+  if (limit === null) {
+    // Unlimited — always OK.
+    return { ok: true, planId: effectivePlan, limit: null, used }
+  }
+
   if (used >= limit) {
-    const next = nextWorkspaceTier(planId)
-    const planName = planId.charAt(0).toUpperCase() + planId.slice(1)
+    const next = nextWorkspaceTier(effectivePlan)
+    const planName = effectivePlan.charAt(0).toUpperCase() + effectivePlan.slice(1)
+    const nextName = next ? next.planId.charAt(0).toUpperCase() + next.planId.slice(1) : null
+    // When used === limit: "is using all N". When used > limit (downgrade): "is using N".
+    const usageClause = used === limit ? `is using all ${used}` : `is using ${used}`
+    const message = next
+      ? `Your ${planName} plan includes ${limit} workspaces and ${usageClause}. Upgrade to ${nextName} for ${next.limit === null ? 'unlimited' : next.limit} workspaces.`
+      : `Your ${planName} plan includes ${limit} workspaces and ${usageClause}.`
     return {
       ok: false,
       error: {
         code: 'workspace_limit_reached',
-        message: next
-          ? `Your ${planName} plan includes ${limit} workspaces and is using all ${used}. Upgrade to ${next.planId.charAt(0).toUpperCase() + next.planId.slice(1)} for ${next.limit === null ? 'unlimited' : next.limit} workspaces.`
-          : `Your ${planName} plan includes ${limit} workspaces and is using all ${used}.`,
-        planId,
+        message,
+        planId: effectivePlan,
         limit,
         used,
         nextPlanId: next?.planId ?? null,
@@ -127,5 +140,5 @@ export async function checkIncludedWorkspaceAllowance(
     }
   }
 
-  return { ok: true, planId, limit, used }
+  return { ok: true, planId: effectivePlan, limit, used }
 }

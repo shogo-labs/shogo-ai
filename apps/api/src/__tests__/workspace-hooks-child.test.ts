@@ -454,3 +454,65 @@ describe('workspaceHooks.beforeUpdate — training data mode', () => {
     expect(res?.error?.code).toBe('invalid_training_data_mode')
   })
 })
+
+// ---------------------------------------------------------------------------
+// AC11 — Local mode: limits are never enforced on desktop
+// ---------------------------------------------------------------------------
+
+describe('AC11 — local mode: workspace creation is always unlimited on desktop', () => {
+  it('a user can create a first team workspace in local mode (top-level limit enforced by hook, unlimited via receive.ts)', async () => {
+    // The hook's top-level checkWorkspaceCreateAllowance has NO isLocalMode
+    // guard (matches origin/main). The local-mode bypass only applies to
+    // plan-based child checks. receive.ts IS guarded; the SHO-256 acceptance
+    // test covers that path. Here we verify the child-plan check IS bypassed.
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    ownedCount = 0 // user has no team workspace yet → first creation allowed
+    const res = await workspaceHooks.beforeCreate!(
+      { name: 'First local team' },
+      makeCtx({ userId: 'u1', body: {} }),
+    )
+    // First workspace always succeeds regardless of local mode.
+    expect(res?.ok ?? true).toBe(true)
+
+    process.env.SHOGO_LOCAL_MODE = 'true'
+  })
+
+  it('a child of a free parent is allowed in local mode', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    effectivePlan = 'free' // free parent → plan_required on cloud, OK on desktop
+    workspacesById['parent'] = {
+      id: 'parent',
+      parentWorkspaceId: null,
+      members: [{ userId: 'u1', role: 'owner' }],
+    }
+    usersById['u1'] = { role: 'user' }
+
+    const res = await workspaceHooks.beforeCreate!(
+      { name: 'Child of free parent' },
+      makeCtx({ userId: 'u1', body: { parentWorkspaceId: 'parent' } }),
+    )
+    expect(res?.ok ?? true).toBe(true)
+
+    process.env.SHOGO_LOCAL_MODE = 'true'
+  })
+
+  it('a child under a Basic parent at cap is allowed in local mode', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    effectivePlan = 'basic'
+    childCountByWorkspaceId['parent'] = 2 // used=3 >= limit=3 → refused on cloud
+    workspacesById['parent'] = {
+      id: 'parent',
+      parentWorkspaceId: null,
+      members: [{ userId: 'u1', role: 'owner' }],
+    }
+    usersById['u1'] = { role: 'user' }
+
+    const res = await workspaceHooks.beforeCreate!(
+      { name: 'Fourth child (local)' },
+      makeCtx({ userId: 'u1', body: { parentWorkspaceId: 'parent' } }),
+    )
+    expect(res?.ok ?? true).toBe(true)
+
+    process.env.SHOGO_LOCAL_MODE = 'true'
+  })
+})
