@@ -29,15 +29,8 @@ import { join } from "node:path"
 import { LOCAL_API_BASE } from "./helpers"
 import { activateTeamWorkspace, api, signIn, teamWorkspaceId } from "./team-nav-seed"
 
-// This spec has its own CI job (`E2E (slides preview)` in ci.yml) because the
-// shards never reached it inside their cap. Running it inside a shard as well
-// only doubles the cost — and, when it flakes, doubles the red on a job that
-// already reports it (SHO-447). The shard step sets `E2E_SHARD`; the dedicated
-// entry does not.
-test.skip(
-  Boolean(process.env.E2E_SHARD),
-  "has its own CI job (E2E (slides preview)); it does not also run inside a shard",
-)
+// This spec has its own CI job (`E2E (slides preview)` in ci.yml); the shard
+// jobs exclude it via `OWN_ENTRY_SPECS` in playwright.config.ts (SHO-450).
 
 const SUFFIX = Date.now().toString(36)
 
