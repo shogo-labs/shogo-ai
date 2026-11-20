@@ -382,7 +382,7 @@ export async function getMailOverview(workspaceId: string, userId: string) {
   }
   const provider = getMailProvider()
   return {
-    enabled: true,
+    enabled: provider.name !== 'unconfigured',
     provider: provider.name,
     sharedDomain: sharedMailDomain(),
     limits,

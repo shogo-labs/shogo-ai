@@ -369,10 +369,29 @@ export function getMailProvider(): MailProvider {
   const apiKey = process.env.RESEND_API_KEY
   if ((choice === 'resend' || (!choice && apiKey)) && apiKey) {
     cached = new ResendProvider(apiKey, process.env.RESEND_WEBHOOK_SECRET ?? null)
+  } else if (choice !== 'fake' && process.env.NODE_ENV === 'production' && process.env.SHOGO_LOCAL_MODE !== 'true') {
+    // A cloud server without Resend must say so, not pretend: the fake provider
+    // would mark every email "sent" and drop it.
+    cached = new UnconfiguredMailProvider()
   } else {
     cached = new FakeMailProvider()
   }
   return cached
+}
+
+/** Cloud with no RESEND_API_KEY: every call fails with a clear, non-retryable error. */
+export class UnconfiguredMailProvider implements MailProvider {
+  readonly name = 'unconfigured'
+  private fail(): never {
+    throw new MailProviderError('Email is not set up on this server yet (RESEND_API_KEY is missing)', 503, false)
+  }
+  async createDomain(): Promise<ProviderDomain> { return this.fail() }
+  async getDomain(): Promise<ProviderDomain> { return this.fail() }
+  async verifyDomain(): Promise<ProviderDomain> { return this.fail() }
+  async deleteDomain(): Promise<void> { return this.fail() }
+  async send(): Promise<{ providerMessageId: string }> { return this.fail() }
+  async fetchReceived(): Promise<ReceivedEmail> { return this.fail() }
+  parseWebhook(): WebhookEvent { return this.fail() }
 }
 
 /** The free shared domain every workspace gets, no DNS needed. */
