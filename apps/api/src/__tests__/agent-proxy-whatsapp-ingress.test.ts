@@ -30,9 +30,7 @@ describe('isPublicChannelIngressPath', () => {
     `/api/projects/${PID}/agent-proxy/agent/channels/teams/messages/extra`,
     `/api/projects/${PID}/agent-proxy/agent/channels/teams/`,
     `/api/projects/${PID}/agent-proxy/agent/channels/teams`,
-    // GET on teams (only POST is handled by the runtime, but path check is method-agnostic)
-    // The route handler itself rejects non-POST; path alone is correct to allow here
-    `/api/projects/${PID}/agent-proxy/agent/channels/webhook/incoming`,
+    // webhook/incoming is public since SHO-462 (covered in agent-proxy-webhook-ingress.test.ts)
     `/api/projects/${PID}/agent-proxy/agent/chat`,
     `/api/projects/${PID}/agent-proxy`,
     // No agent-proxy segment
