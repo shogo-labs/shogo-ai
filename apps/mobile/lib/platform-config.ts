@@ -72,11 +72,9 @@ const LOCAL_CONFIG: PlatformConfig = {
   },
 }
 
-export function isLocalMode(): boolean {
-  if (process.env.EXPO_PUBLIC_LOCAL_MODE === 'true') return true
-  if (Platform.OS !== 'web' || typeof window === 'undefined') return false
-  return !!(window as any).shogoDesktop?.isDesktop
-}
+import { isLocalMode } from './local-mode'
+
+export { isLocalMode }
 
 /**
  * Whether the client should route new "home" chats through the

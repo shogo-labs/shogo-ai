@@ -308,9 +308,9 @@ describe('calculateImageUsageCost — defensive edges', () => {
 })
 
 describe('socialLookupUnits', () => {
-  test('a profile is one unit on either platform', () => {
+  test('TikTok profile is one unit; IG profile is 10 units (detailed-info)', () => {
     expect(socialLookupUnits('tiktok', 'profile', 20)).toBe(1)
-    expect(socialLookupUnits('instagram', 'profile', 20)).toBe(1)
+    expect(socialLookupUnits('instagram', 'profile', 20)).toBe(10)
   })
 
   test('TikTok posts bill one unit per 10 posts', () => {
@@ -322,8 +322,27 @@ describe('socialLookupUnits', () => {
   })
 
   test('Instagram posts bill the profile resolve plus posts and reels feeds', () => {
-    expect(socialLookupUnits('instagram', 'posts', 10)).toBe(3)
-    expect(socialLookupUnits('instagram', 'posts', 25)).toBe(7)
+    // 10 (detailed-info) + 2 × ceil(limit/10) feeds
+    expect(socialLookupUnits('instagram', 'posts', 10)).toBe(12)   // 10 + 2×1
+    expect(socialLookupUnits('instagram', 'posts', 25)).toBe(16)   // 10 + 2×3
+    expect(socialLookupUnits('instagram', 'posts', 50)).toBe(20)   // 10 + 2×5
+  })
+
+  test('search units match EnsembleData pricing (TikTok: pages, IG: per post)', () => {
+    expect(socialLookupUnits('tiktok', 'search', 20)).toBe(1)      // ceil(20/20)
+    expect(socialLookupUnits('tiktok', 'search', 21)).toBe(2)      // ceil(21/20)
+    expect(socialLookupUnits('tiktok', 'search', 50)).toBe(3)      // ceil(50/20)
+    expect(socialLookupUnits('instagram', 'search', 10)).toBe(10)  // per post
+    expect(socialLookupUnits('instagram', 'search', 50)).toBe(50)  // per post
+  })
+
+  test('baseline units (TikTok: 1 request, IG: reels feed depth)', () => {
+    expect(socialLookupUnits('tiktok', 'baseline', 1)).toBe(1)
+    expect(socialLookupUnits('instagram', 'baseline', 1)).toBe(12)
+  })
+
+  test('IG profile bills 10 units (detailed-info endpoint pricing)', () => {
+    expect(socialLookupUnits('instagram', 'profile', 20)).toBe(10)
   })
 })
 

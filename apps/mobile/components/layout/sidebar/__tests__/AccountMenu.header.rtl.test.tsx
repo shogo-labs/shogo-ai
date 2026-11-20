@@ -101,6 +101,7 @@ mock.module(resolve(import.meta.dir, "../../../../contexts/theme"), () => ({
   useTheme: () => ({ theme: "dark", setTheme: () => {} }),
 }))
 mock.module(resolve(import.meta.dir, "../../../../contexts/domain"), () => ({
+  useDomainHttp: () => null,
   useDomainHttpOptional: () => null,
   getDomainHttpClient: () => null,
   useDomainOptional: () => null,

@@ -14,6 +14,64 @@ import type { LiveTurnGate } from './live-turn-wait'
 
 export type UiStreamWriter = Parameters<Parameters<typeof createUIMessageStream>[0]['execute']>[0]['writer']
 
+/**
+ * How often the turn checks whether the buffer's seq moved.
+ *
+ * The tick is cheap; what used to be expensive was writing a frame on every
+ * tick whether or not anything had changed (SHO-319). A frame is now written
+ * only when `lastSeq` actually moved, or as a keepalive below.
+ */
+export const SEQ_HEARTBEAT_MS = 250
+
+/**
+ * Longest silence between `data-turn-seq` frames.
+ *
+ * A turn can sit in a tool call for minutes with no new content, and the seq
+ * does not move while it does. Something still has to reach the client so
+ * proxies do not cut an idle connection and the 180 s stall watchdog can tell
+ * a quiet turn from a dead one, so the current seq is resent this often.
+ */
+export const SEQ_KEEPALIVE_MS = 5_000
+
+export interface SeqHeartbeatOptions {
+  /** The buffer's current seq. `0` means the turn has not written anything yet. */
+  getSeq: () => number
+  /** Write one transient `data-turn-seq` frame. Throwing stops the heartbeat. */
+  write: (seq: number) => void
+}
+
+/**
+ * Keep the client's idea of the buffer's seq current.
+ *
+ * The client uses the seq to resume with `?fromSeq=N` after a premature
+ * disconnect without re-rendering text it has already seen. A frame is written
+ * when the seq moved, and otherwise only as a keepalive every
+ * `SEQ_KEEPALIVE_MS` — the old tick wrote one every 250 ms whether or not
+ * anything had changed, which is 2,400 identical frames (and, since SHO-274
+ * journals every frame before forwarding it, 2,400 rows) for a ten-minute tool
+ * call (SHO-319).
+ *
+ * Returns the stop function; the caller must run it when the turn ends.
+ */
+export function startSeqHeartbeat({ getSeq, write }: SeqHeartbeatOptions): () => void {
+  let lastSentSeq = -1
+  let lastSentAt = 0
+  const timer = setInterval(() => {
+    const seq = getSeq()
+    if (seq <= 0) return
+    const now = Date.now()
+    if (seq === lastSentSeq && now - lastSentAt < SEQ_KEEPALIVE_MS) return
+    try {
+      write(seq)
+      lastSentSeq = seq
+      lastSentAt = now
+    } catch {
+      clearInterval(timer)
+    }
+  }, SEQ_HEARTBEAT_MS)
+  return () => clearInterval(timer)
+}
+
 export interface BufferedTurn {
   turnId: string
   headers: Headers
@@ -151,19 +209,16 @@ export function createBufferedTurns(deps: BufferedTurnDeps) {
         // `?fromSeq=N` on a premature disconnect without re-rendering text
         // it has already seen. Transient: the AI SDK would otherwise append
         // a message part every 250ms for the whole turn.
-        const seqHeartbeat = setInterval(() => {
-          const seq = bufWriter.lastSeq
-          if (seq <= 0) return
-          try {
+        const stopSeqHeartbeat = startSeqHeartbeat({
+          getSeq: () => bufWriter.lastSeq,
+          write: (seq) => {
             writer.write({
               type: 'data-turn-seq',
               data: { turnId, seq },
               transient: true,
             } as any)
-          } catch {
-            clearInterval(seqHeartbeat)
-          }
-        }, 250)
+          },
+        })
         try {
           // Mark the start of this durable turn so a reconnecting client
           // can correlate replay frames against the right turn id.
@@ -218,7 +273,7 @@ export function createBufferedTurns(deps: BufferedTurnDeps) {
           terminalFrameWritten = true
           writer.write({ type: 'error', errorText: error?.message || 'Agent chat error' } as any)
         } finally {
-          clearInterval(seqHeartbeat)
+          stopSeqHeartbeat()
           deps.onStreamEnd?.(turnId)
         }
       },

@@ -28,6 +28,8 @@ import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
 import { PresenceDot, presenceLabel } from './PresenceDot'
 import { AgentAvatar } from './AgentAvatar'
 import { confirmsAddToChannel } from './AddToChannelConfirm'
+import { useInviteDialog } from '../workspace/invite-dialog-context'
+import { usePermissions } from '../../hooks/usePermissions'
 import { UserAvatar } from './UserAvatar'
 import { HuddleButton } from './Huddle'
 import { ChannelTabList, type ChannelTabItem } from './ChannelTabs'
@@ -79,8 +81,12 @@ export interface ConversationHeaderProps {
   onOpenFiles?: () => void
   /** Open the channel doc. Passed for channels that support one. */
   onOpenDoc?: () => void
-  /** Open "Messages from <member>" for one member (`user:<id>` / `agent:<id>`). */
-  onOpenMemberMessages?: (from: string) => void
+  /** Filter the channel timeline to one member's messages. When `memberFilter` is set,
+   * the action reads "Clear member filter" and calls `onClearMemberFilter` instead. */
+  onFilterByMember?: (from: string) => void
+  onClearMemberFilter?: () => void
+  /** The active member filter key, if any (`user:<id>` / `agent:<id>`). */
+  memberFilter?: string | null
   onLayout?: (event: LayoutChangeEvent) => void
 }
 
@@ -94,7 +100,7 @@ function confirm(title: string, message: string): Promise<boolean> {
   )
 }
 
-export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, onDeleted, floating, onBack, onOpenFiles, onOpenDoc, onOpenMemberMessages, onLayout, tabsMenu }: ConversationHeaderProps) {
+export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, onDeleted, floating, onBack, onOpenFiles, onOpenDoc, onFilterByMember, onClearMemberFilter, memberFilter, onLayout, tabsMenu }: ConversationHeaderProps) {
   const insets = useSafeAreaInsets()
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const router = useRouter()
@@ -233,12 +239,12 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     const first = mine ?? conversation.members[0]
     return first ? memberFromKey(first) : null
   })()
-  if (onOpenMemberMessages && defaultMemberFrom && conversation.kind !== 'activity') {
+  if (onFilterByMember && defaultMemberFrom && conversation.kind !== 'activity') {
     actions.push({
       key: 'member-messages',
-      label: 'Filter by member',
+      label: memberFilter ? 'Clear member filter' : 'Filter by member',
       icon: (s) => <Filter size={s} className="text-muted-foreground" />,
-      onPress: () => onOpenMemberMessages(defaultMemberFrom),
+      onPress: memberFilter ? onClearMemberFilter ?? (() => {}) : () => onFilterByMember(defaultMemberFrom),
     })
   }
   actions.push({
@@ -407,7 +413,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
           mentionables={mentionables}
           onClose={() => setMembersOpen(false)}
           onChanged={onChanged}
-          onOpenMemberMessages={onOpenMemberMessages}
+          onFilterByMember={onFilterByMember}
         />
       )}
     </>
@@ -1019,21 +1025,26 @@ function MembersModal({
   mentionables,
   onClose,
   onChanged,
-  onOpenMemberMessages,
+  onFilterByMember,
 }: {
   conversation: ConversationDetail
   mentionables: Mentionables | null
   onClose: () => void
   onChanged: () => void
-  onOpenMemberMessages?: (from: string) => void
+  onFilterByMember?: (from: string) => void
 }) {
   const [filter, setFilter] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const inviteDialog = useInviteDialog()
+  const { canInvite } = usePermissions({ workspaceId: conversation.workspaceId })
   const memberUserIds = new Set(conversation.members.flatMap((m) => (m.type === 'user' ? [m.userId] : [])))
   const memberAgents = new Set(conversation.members.flatMap((m) => (m.type === 'agent' ? [m.projectId ?? 'ws'] : [])))
   const q = filter.trim().toLowerCase()
   const people = (mentionables?.people ?? []).filter((p) => !memberUserIds.has(p.id) && (!q || p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q)))
   const agents = (mentionables?.agents ?? []).filter((a) => !memberAgents.has(a.projectId ?? 'ws') && (!q || a.name.toLowerCase().includes(q)))
+  // Someone who is not in the workspace yet: offer to invite them (SHO-454).
+  const looksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(q)
+  const offerInvite = canInvite && !!q && (looksLikeEmail || (!people.length && !agents.length))
 
   const act = async (fn: () => Promise<unknown>) => {
     try {
@@ -1069,18 +1080,18 @@ function MembersModal({
                   {m.name ?? 'Agent'}
                   {m.type === 'agent' ? <Text className="text-xs text-muted-foreground">{`  replies on ${m.agentTrigger}`}</Text> : null}
                 </Text>
-                {onOpenMemberMessages ? (
+                {onFilterByMember ? (
                   <Pressable
                     onPress={() => {
                       onClose()
-                      onOpenMemberMessages(memberFromKey(m))
+                      onFilterByMember(memberFromKey(m))
                     }}
                     accessibilityRole="button"
-                    accessibilityLabel={`Messages from ${m.name ?? 'Agent'}`}
+                    accessibilityLabel={`Filter by ${m.name ?? 'Agent'}`}
                     testID={`member-messages-open-${memberFromKey(m)}`}
                     className="rounded-md px-1.5 py-0.5 active:bg-muted"
                   >
-                    <Text className="text-xs text-primary">Messages</Text>
+                    <Text className="text-xs text-primary">Filter</Text>
                   </Pressable>
                 ) : null}
                 {conversation.canManage && (
@@ -1129,6 +1140,24 @@ function MembersModal({
                     <Text className="text-xs text-primary">Add</Text>
                   </Pressable>
                 ))}
+                {offerInvite && (
+                  <Pressable
+                    testID="members-modal-invite"
+                    onPress={() => {
+                      onClose()
+                      inviteDialog.openInviteDialog(conversation.workspaceId, {
+                        emails: looksLikeEmail ? [q] : undefined,
+                      })
+                    }}
+                    className="flex-row items-center gap-2 rounded-md px-1 py-1.5 active:bg-muted hover:bg-muted"
+                  >
+                    <UserPlus size={14} className="text-primary" />
+                    <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
+                      {looksLikeEmail ? `Invite ${q}` : 'Invite someone new'}
+                    </Text>
+                    <Text className="text-xs text-primary">Invite</Text>
+                  </Pressable>
+                )}
               </>
             )}
           </ScrollView>

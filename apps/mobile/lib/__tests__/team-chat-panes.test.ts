@@ -3,6 +3,9 @@
 /**
  * The one-column rule: the panes are URL params sharing a column, so exactly
  * one shows and the rest stay out of the way.
+ *
+ * Note: `?from=` (member filter) is NOT a pane — it filters the timeline in
+ * place and is invisible to `resolvePanes` (SHO-458).
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -39,8 +42,6 @@ describe('resolvePanes', () => {
   })
 
   test('a profile takes the pane from an open thread, which comes back when it closes', () => {
-    // The screen leaves `thread` in the URL when it opens a profile, so the
-    // thread is hidden rather than dropped: closing the profile shows it again.
     const withProfile = panes({ threadRootId: 'm-1', profilePaneId: 'u-ana' })
     expect(withProfile.showProfilePane).toBe(true)
     expect(withProfile.showThreadPane).toBe(false)
@@ -123,46 +124,13 @@ describe('resolvePanes', () => {
     expect(doc.showFilePane).toBe(false)
   })
 
-  test('one member’s messages take the pane, and the whole screen on a narrow layout', () => {
-    const wide = panes({ memberFrom: 'user:u-ada', threadRootId: 'm-1' })
-    expect(wide.showMemberPane).toBe(true)
-    expect(wide.showThreadPane).toBe(false)
-    expect(wide.showMain).toBe(true)
-
-    const narrow = panes({ sidePane: false, memberFrom: 'user:u-ada' })
-    expect(narrow.showMemberFull).toBe(true)
-    expect(narrow.showMemberPane).toBe(false)
-    expect(narrow.showMain).toBe(false)
+  test('resolvePanes does not have showMemberPane / showMemberFull — the member filter lives in TimelinePane', () => {
+    const result = panes({})
+    expect('showMemberPane' in result).toBe(false)
+    expect('showMemberFull' in result).toBe(false)
   })
 
-  test('a profile shown over the member list wins, and closing it brings the list back', () => {
-    const withProfile = panes({ memberFrom: 'user:u-ada', profilePaneId: 'u-ana' })
-    expect(withProfile.showProfilePane).toBe(true)
-    expect(withProfile.showMemberPane).toBe(false)
-
-    const closed = panes({ memberFrom: 'user:u-ada' })
-    expect(closed.showMemberPane).toBe(true)
-  })
-
-  test('a doc or the files list steps in front of the member list', () => {
-    expect(panes({ memberFrom: 'user:u-ada', docOpen: true }).showMemberPane).toBe(false)
-    expect(panes({ memberFrom: 'user:u-ada', filesOpen: true }).showMemberPane).toBe(false)
-  })
-
-  test('a file opened from chat steps in front of the member list, on both layouts', () => {
-    // A deep link can carry `?file=` and `?from=` together; they share one
-    // column, so the file wins and the member list stays out of the way.
-    const wide = panes({ memberFrom: 'user:u-ada', fileOpen: true })
-    expect(wide.showFilePane).toBe(true)
-    expect(wide.showMemberPane).toBe(false)
-
-    const narrow = panes({ sidePane: false, memberFrom: 'user:u-ada', fileOpen: true })
-    expect(narrow.showFileFull).toBe(true)
-    expect(narrow.showMemberFull).toBe(false)
-    expect(narrow.showMain).toBe(false)
-  })
-
-  test('the member list never shares the column with another pane', () => {
+  test('the timeline stays visible on wide with any pane open', () => {
     for (const sidePane of [false, true])
       for (const threadRootId of [null, 'm-1'])
         for (const projectPaneId of [null, 'proj-1'])
@@ -180,24 +148,15 @@ describe('resolvePanes', () => {
                       cardId,
                       profilePaneId,
                       fileOpen,
-                      memberFrom: 'user:u-ada',
                     })
-                    if (!p.showMemberPane && !p.showMemberFull) continue
-                    const others = [
-                      p.showDocPane,
-                      p.showDocFull,
-                      p.showFilesPane,
-                      p.showFilesFull,
-                      p.showCardPane,
-                      p.showProfilePane,
-                      p.showProjectPane,
-                      p.showThreadPane,
-                      p.showFilePane,
-                      p.showFileFull,
-                    ]
-                    expect({ sidePane, threadRootId, projectPaneId, filesOpen, docOpen, cardId, profilePaneId, fileOpen, others }).toMatchObject({
-                      others: [false, false, false, false, false, false, false, false, false, false],
-                    })
+                    // showMain is true whenever the full-screen takeovers are absent
+                    if (sidePane) {
+                      // Wide: timeline always visible unless full-screen doc/files/file
+                      if (!docOpen && !filesOpen && !fileOpen) {
+                        expect({ sidePane, threadRootId, projectPaneId, filesOpen, docOpen, cardId, profilePaneId, fileOpen, showMain: p.showMain })
+                          .toMatchObject({ showMain: true })
+                      }
+                    }
                   }
   })
 })

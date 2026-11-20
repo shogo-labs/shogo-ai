@@ -95,6 +95,9 @@ COPY --chown=appuser:appgroup apps/api ./apps/api
 COPY --chown=appuser:appgroup templates/runtime-template ./templates/runtime-template
 
 # Build the SDK and its split-out workspace deps in dependency order
+# NODE_OPTIONS (--max-old-space-size=8192) is set inside scripts/build-packages.ts
+# so the heap cap reaches the tsup DTS Node worker for every build surface
+# (Docker, deploy.yml arm64, CI, local). The v2.6.0 tag run OOMed without it.
 # (core → agent → db → email → voice → cli → sdk). The root build:packages
 # script encodes this graph.
 RUN bun run build:packages

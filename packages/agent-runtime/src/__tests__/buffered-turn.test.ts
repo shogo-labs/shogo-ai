@@ -5,10 +5,16 @@
  * caller's card opens it. That chat can only stream if the pipeline turn runs
  * into the chat's stream buffer, like a chat turn does.
  */
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test, jest } from 'bun:test'
 import { StreamBufferStore } from '@shogo/shared-runtime'
 import { LiveTurnGate } from '../live-turn-wait'
-import { createBufferedTurns, isOpenableChatSession } from '../buffered-turn'
+import {
+  createBufferedTurns,
+  isOpenableChatSession,
+  startSeqHeartbeat,
+  SEQ_HEARTBEAT_MS,
+  SEQ_KEEPALIVE_MS,
+} from '../buffered-turn'
 
 const decoder = new TextDecoder()
 
@@ -241,5 +247,115 @@ describe('isOpenableChatSession', () => {
     expect(isOpenableChatSession('run:abc')).toBe(false)
     expect(isOpenableChatSession('pipeline')).toBe(false)
     expect(isOpenableChatSession(undefined)).toBe(false)
+  })
+})
+
+/**
+ * The seq heartbeat is what the journal used to write a row for every 250 ms
+ * (SHO-319). It now writes only when the seq moved, plus a keepalive.
+ */
+describe('seq heartbeat (SHO-319)', () => {
+  const withFakeTimers = (fn: () => void) => {
+    jest.useFakeTimers()
+    try {
+      fn()
+    } finally {
+      jest.useRealTimers()
+    }
+  }
+
+  test('an idle turn writes at most two frames in 10 s', () => {
+    withFakeTimers(() => {
+      const sent: number[] = []
+      const stop = startSeqHeartbeat({ getSeq: () => 5, write: (seq) => sent.push(seq) })
+
+      jest.advanceTimersByTime(10_000)
+      stop()
+
+      // One for the first observation, then one keepalive at 5 s. The old tick
+      // wrote 40.
+      expect(sent).toEqual([5, 5])
+    })
+  })
+
+  test('a keepalive arrives every SEQ_KEEPALIVE_MS while the seq is still', () => {
+    withFakeTimers(() => {
+      const sent: number[] = []
+      const stop = startSeqHeartbeat({ getSeq: () => 3, write: (seq) => sent.push(seq) })
+
+      jest.advanceTimersByTime(SEQ_HEARTBEAT_MS)
+      expect(sent).toHaveLength(1)
+      // The keepalive is measured from the last frame, not from the turn start.
+      jest.advanceTimersByTime(SEQ_KEEPALIVE_MS - 1)
+      expect(sent).toHaveLength(1)
+      jest.advanceTimersByTime(1)
+      expect(sent).toHaveLength(2)
+      stop()
+    })
+  })
+
+  test('each seq change produces exactly one frame within one tick', () => {
+    withFakeTimers(() => {
+      let seq = 1
+      const sent: number[] = []
+      const stop = startSeqHeartbeat({ getSeq: () => seq, write: (s) => sent.push(s) })
+
+      jest.advanceTimersByTime(SEQ_HEARTBEAT_MS)
+      expect(sent).toEqual([1])
+
+      // Unchanged: no frame, and no keepalive yet.
+      jest.advanceTimersByTime(SEQ_HEARTBEAT_MS)
+      expect(sent).toEqual([1])
+
+      seq = 2
+      jest.advanceTimersByTime(SEQ_HEARTBEAT_MS)
+      expect(sent).toEqual([1, 2])
+
+      seq = 3
+      jest.advanceTimersByTime(SEQ_HEARTBEAT_MS)
+      expect(sent).toEqual([1, 2, 3])
+
+      stop()
+    })
+  })
+
+  test('nothing is written before the turn has a seq', () => {
+    withFakeTimers(() => {
+      const sent: number[] = []
+      const stop = startSeqHeartbeat({ getSeq: () => 0, write: (seq) => sent.push(seq) })
+
+      jest.advanceTimersByTime(10_000)
+      stop()
+      expect(sent).toEqual([])
+    })
+  })
+
+  test('a write that throws stops the heartbeat instead of retrying forever', () => {
+    withFakeTimers(() => {
+      let calls = 0
+      const stop = startSeqHeartbeat({
+        getSeq: () => 1,
+        write: () => {
+          calls++
+          throw new Error('client gone')
+        },
+      })
+
+      jest.advanceTimersByTime(10_000)
+      stop()
+      expect(calls).toBe(1)
+    })
+  })
+
+  test('the stop function ends the timer', () => {
+    withFakeTimers(() => {
+      const sent: number[] = []
+      const stop = startSeqHeartbeat({ getSeq: () => 1, write: (seq) => sent.push(seq) })
+
+      jest.advanceTimersByTime(SEQ_HEARTBEAT_MS)
+      stop()
+      jest.advanceTimersByTime(10_000)
+      expect(sent).toHaveLength(1)
+    })
   })
 })

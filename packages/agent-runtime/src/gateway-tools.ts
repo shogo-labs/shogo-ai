@@ -8113,24 +8113,38 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
 function createSendMessageTool(ctx: ToolContext): AgentTool {
   return {
     name: 'send_message',
-    description: 'Send a message through a connected messaging channel (telegram, discord, slack, whatsapp, email).',
+    description:
+      'Send a message through a connected messaging channel (telegram, discord, slack, whatsapp, email). ' +
+      'For WhatsApp: if the recipient is outside the 24-hour window, include `template` to send a template message instead. ' +
+      'Template messages are only supported by the whatsapp channel; calling with `template` on any other channel returns an error.',
     label: 'Send Message',
     parameters: Type.Object({
       channel: Type.String({
-        description: 'Channel type (e.g. "telegram", "discord")',
+        description: 'Channel type (e.g. "telegram", "discord", "whatsapp")',
       }),
       channelId: Type.String({ description: 'Target chat/channel ID' }),
       message: Type.String({ description: 'Message text to send' }),
+      template: Type.Optional(
+        Type.Object({
+          name: Type.String({ description: 'Template name registered in Meta' }),
+          language: Type.String({ description: 'BCP-47 language code, e.g. "en_US"' }),
+          components: Type.Optional(
+            Type.Array(Type.Any(), { description: 'Template component objects (header, body, buttons)' })
+          ),
+        }, { description: 'WhatsApp template message. Only supported by the whatsapp channel.' })
+      ),
     }),
     execute: async (_toolCallId, params) => {
       const {
         channel: channelType,
         channelId,
         message,
+        template,
       } = params as {
         channel: string
         channelId: string
         message: string
+        template?: { name: string; language: string; components?: unknown[] }
       }
 
       const adapter = ctx.channels.get(channelType)
@@ -8141,6 +8155,18 @@ function createSendMessageTool(ctx: ToolContext): AgentTool {
       const status = adapter.getStatus()
       if (!status.connected) {
         return textResult({ error: `Channel ${channelType} is not connected` })
+      }
+
+      if (template) {
+        if (!adapter.sendTemplate) {
+          return textResult({ error: `Channel ${channelType} does not support template messages. Only whatsapp does.` })
+        }
+        try {
+          await adapter.sendTemplate(channelId, template)
+          return textResult({ ok: true, channel: channelType, channelId, type: 'template' })
+        } catch (err: any) {
+          return textResult({ error: `Failed to send template: ${err.message}` })
+        }
       }
 
       try {
@@ -11084,10 +11110,12 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
     name: 'social_media',
     description:
       `Look up a public social profile or its recent posts (views, likes, comments, shares), ` +
+      `search for reels beating their creator's normal view counts (outlier score), ` +
       `or work a workspace's connected accounts: connect one, publish and schedule posts, ` +
       `read the calendar and analytics, and run the inbox. ` +
       `Enabled lookup platforms: ${platformList}. ` +
       `Actions: "profile" and "recent_posts" take a handle; ` +
+      `"search" takes platform + query (keyword or #hashtag; Instagram is hashtag-only), optional period (1d|7d|30d|90d|180d|all, default 30d) and limit, and score:true to rank results by outlier score (views ÷ creator median views — costs one lookup per new creator, max 10 scored); ` +
       `"connect" takes a platform and returns a sign-in LINK to give the person — never ask for or accept a username, password or 2FA code; ` +
       `the account it creates belongs to this project, so another project's agent cannot see or post to it (a workspace-shared account is usable by every project); ` +
       `to add a second account on a platform that is already connected, pass expected_username — Instagram always shows its own login page for a new connect, so the person can pick the account to add; ` +
@@ -11109,6 +11137,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         [
           Type.Literal('profile'),
           Type.Literal('recent_posts'),
+          Type.Literal('search'),
           Type.Literal('inbox'),
           Type.Literal('reply'),
           Type.Literal('comment_reply'),
@@ -11124,7 +11153,7 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         ],
         {
           description:
-            'profile | recent_posts | inbox | reply | comment_reply | automate | connect | accounts | audio | post | posts | delete | calendar | analytics',
+            'profile | recent_posts | search | inbox | reply | comment_reply | automate | connect | accounts | audio | post | posts | delete | calendar | analytics',
         },
       ),
       platform: Type.Optional(
@@ -11137,6 +11166,8 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
       limit: Type.Optional(Type.Number({
         description: 'How many posts or inbox rows to return (1-50, default 20).',
       })),
+      period: Type.Optional(Type.String({ description: 'For action "search": time window — 1d|7d|30d|90d|180d|all (default 30d).' })),
+      score: Type.Optional(Type.Boolean({ description: 'For action "search": rank results by outlier score (views ÷ creator median). Costs one baseline lookup per creator, max 10.' })),
       kind: Type.Optional(Type.Union([Type.Literal('dms'), Type.Literal('comments')], {
         description: 'For action "inbox": which half of the inbox to list.',
       })),
@@ -11309,6 +11340,8 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
         status?: unknown
         from?: unknown
         to?: unknown
+        period?: unknown
+        score?: unknown
       }
       const action = String(params.action ?? '')
       const allowed = enabledSocialPlatforms(ctx.config)
@@ -11846,10 +11879,50 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
           error: `Platform "${platform || 'unknown'}" is not enabled. Enabled platforms: ${allowed.join(', ') || 'none'}.`,
         })
       }
+      if (action === 'search') {
+        const proxyUrl = process.env.TOOLS_PROXY_URL
+        const proxyToken = process.env.AI_PROXY_TOKEN
+        if (!proxyUrl || !proxyToken) {
+          return textResult({
+            error: 'Social media search is unavailable.',
+            suggestion: 'Configure TOOLS_PROXY_URL and AI_PROXY_TOKEN.',
+          })
+        }
+        const query = String(params.query ?? '').trim()
+        if (!query) return textResult({ error: 'query is required for action "search".' })
+        const period = typeof params.period === 'string' ? params.period : '30d'
+        const scoreFlag = params.score === true
+        const cacheKey = webCacheKey('social-search', JSON.stringify({ platform, query: query.toLowerCase(), period, limit, score: scoreFlag }))
+        const cachedSearch = await webCacheGet<AgentToolResult<any>>(cacheKey)
+        if (cachedSearch) return cachedSearch
+
+        try {
+          const response = await fetch(`${proxyUrl.replace(/\/$/, '')}/social/${platform}/search`, {
+            method: 'POST',
+            headers: { 'x-api-key': proxyToken, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query, period, limit, score: scoreFlag }),
+            signal: AbortSignal.timeout(30_000),
+          })
+          const data = await response.json().catch(() => ({}))
+          if (!response.ok) {
+            return textResult({
+              error: (data as any)?.error || `Social search failed: HTTP ${response.status}`,
+              code: (data as any)?.code,
+              platform,
+            })
+          }
+          const result = textResult(data)
+          await webCachePut(cacheKey, result, SOCIAL_CACHE_TTL_SECONDS)
+          return result
+        } catch (err: any) {
+          return textResult({ error: `Social search failed: ${err?.message ?? err}`, platform })
+        }
+      }
+
       if (action !== 'profile' && action !== 'recent_posts') {
         return textResult({
           error:
-            'action must be profile, recent_posts, connect, accounts, post, posts, calendar, analytics, inbox, reply, comment_reply or automate.',
+            'action must be profile, recent_posts, search, connect, accounts, post, posts, calendar, analytics, inbox, reply, comment_reply or automate.',
         })
       }
       const handle = String(params.handle ?? '').trim().replace(/^@+/, '')
@@ -13599,15 +13672,23 @@ const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: stri
     ].join('\n'),
   },
   whatsapp: {
-    requiredKeys: ['accessToken', 'phoneNumberId', 'verifyToken'],
+    requiredKeys: ['accessToken', 'phoneNumberId', 'appSecret'],
     guide: [
       '## WhatsApp Setup',
-      '1. Go to https://developers.facebook.com and create or select an app',
-      '2. Add the WhatsApp product to your app',
-      '3. Under WhatsApp → API Setup → copy the Temporary Access Token and Phone Number ID',
-      "4. Choose a verify token (any string you make up) — you'll use it to verify the webhook",
-      '5. Connect: channel_connect({ type: "whatsapp", config: { accessToken: "YOUR_TOKEN", phoneNumberId: "YOUR_PHONE_ID", verifyToken: "YOUR_VERIFY_TOKEN" } })',
-      '6. After connecting, configure the webhook URL in Meta Developer Portal → WhatsApp → Configuration → Callback URL',
+      '1. Go to https://developers.facebook.com and create or select an app with WhatsApp added.',
+      '2. Under App Settings → Basic → App Secret — copy the App Secret.',
+      '3. Under WhatsApp → API Setup:',
+      '   - Copy the Phone Number ID.',
+      '   - For production, create a permanent System User token (the temporary token expires in 24 h).',
+      '     Go to Business Settings → System Users → Add → give it Admin role → Generate token → select your WhatsApp app, grant whatsapp_business_messaging + whatsapp_business_management.',
+      '4. Connect: channel_connect({ type: "whatsapp", config: { accessToken: "YOUR_SYSTEM_USER_TOKEN", phoneNumberId: "YOUR_PHONE_NUMBER_ID", appSecret: "YOUR_APP_SECRET" } })',
+      '   The connect result returns callbackUrl and verifyToken — use those in step 5.',
+      '   Optionally set verifyToken yourself; a random one is generated if omitted.',
+      '5. In Meta Developer Portal → WhatsApp → Configuration:',
+      '   - Set Callback URL to the callbackUrl from step 4.',
+      '   - Set Verify Token to the verifyToken from step 4.',
+      '   - Subscribe to webhook fields: messages, smb_message_echoes.',
+      '   - Click Verify and Save.',
     ].join('\n'),
   },
   webhook: {
@@ -13628,12 +13709,18 @@ const CHANNEL_SETUP_GUIDES: Record<string, { requiredKeys: string[]; guide: stri
   teams: {
     requiredKeys: ['appId', 'appPassword'],
     guide: [
-      '## Microsoft Teams Setup',
-      '1. Go to Azure Portal → Azure Bot Service → create a new Bot resource',
-      '2. Note the Microsoft App ID and create a client secret (App Password)',
-      '3. Set the messaging endpoint to: <agent-url>/agent/channels/teams/messages',
-      '4. Connect: channel_connect({ type: "teams", config: { appId: "YOUR_APP_ID", appPassword: "YOUR_SECRET", botName: "My Agent" } })',
-      '5. Install the bot in Teams via the Teams Admin Center or a Teams App manifest',
+      '## Microsoft Teams Setup (Single-Tenant Bot)',
+      '1. Go to Azure Portal → Azure Active Directory → App registrations → New registration',
+      '   Set Supported account types to "Accounts in this organizational directory only (Single tenant)"',
+      '2. Note the Application (client) ID and the Directory (tenant) ID',
+      '3. Under Certificates & secrets, create a new client secret — save it immediately',
+      '4. Go to Azure Bot Service → create a new Azure Bot; set the App Type to "Single Tenant" and paste the App ID',
+      '5. Connect: channel_connect({ type: "teams", config: { appId: "YOUR_APP_ID", appPassword: "YOUR_CLIENT_SECRET", tenantId: "YOUR_TENANT_ID", botName: "My Agent" } })',
+      '   The tool returns the messagingEndpoint — paste it into the Azure Bot → Configuration → Messaging endpoint',
+      '6. In Azure Bot → Channels → Microsoft Teams → enable and save',
+      '7. Install the bot via Teams Developer Portal or an app manifest',
+      '',
+      'Multi-tenant bots (created before 2025-07-31): omit tenantId from the config.',
     ].join('\n'),
   },
   webchat: {
@@ -13801,6 +13888,61 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
                 'The user can also find the embed snippet in the Channels panel.',
               ].join('\n'),
               embedSnippet: `<script src="${widgetUrl}"></script>`,
+            })
+          }
+
+          if (type === 'whatsapp') {
+            // Expose the callback URL and verifyToken so the agent can relay
+            // them to the user for the Meta webhook configuration step.
+            const whatsappAdapter = ctx.channels?.get('whatsapp')
+            const whatsappStatus = whatsappAdapter?.getStatus()
+            const verifyToken = (whatsappStatus?.metadata?.verifyToken as string | undefined) || channelConfig.verifyToken || ''
+            let callbackUrl: string | null = null
+            const projectId = ctx.projectId ? (projectScopedId(ctx.projectId) ? ctx.projectId : null) : null
+            if (process.env.KUBERNETES_SERVICE_HOST && projectId) {
+              const apiUrl = derivePublicApiUrl()
+              callbackUrl = `${apiUrl}/api/projects/${projectId}/agent-proxy/agent/channels/whatsapp/webhook`
+            }
+            return textResult({
+              ok: true,
+              message: [
+                'WhatsApp channel connected!',
+                '',
+                callbackUrl
+                  ? `Callback URL: ${callbackUrl}`
+                  : 'Callback URL: use the cloud project URL — desktop tunnels relay to the same path.',
+                `Verify Token: ${verifyToken}`,
+                '',
+                'Configure these in Meta Developer Portal → WhatsApp → Configuration.',
+                'Subscribe to webhook fields: messages, smb_message_echoes.',
+              ].join('\n'),
+              callbackUrl,
+              verifyToken,
+            })
+          }
+
+          if (type === 'teams') {
+            // Return the messaging endpoint URL so the user can paste it into
+            // the Azure Bot configuration. Works for cloud and paired desktop.
+            const projectId = ctx.projectId ? (projectScopedId(ctx.projectId) ? ctx.projectId : null) : null
+            let messagingEndpoint: string | null = null
+            if (process.env.KUBERNETES_SERVICE_HOST && projectId) {
+              const apiUrl = derivePublicApiUrl()
+              messagingEndpoint = `${apiUrl}/api/projects/${projectId}/agent-proxy/agent/channels/teams/messages`
+            }
+            return textResult({
+              ok: true,
+              message: [
+                'Microsoft Teams channel connected!',
+                '',
+                messagingEndpoint
+                  ? `Messaging endpoint: ${messagingEndpoint}`
+                  : 'Messaging endpoint: use the cloud project URL — desktop tunnels relay to the same path.',
+                '',
+                'Paste the messaging endpoint into Azure Bot → Configuration → Messaging endpoint.',
+                'Then enable the Teams channel in Azure Bot → Channels → Microsoft Teams.',
+              ].join('\n'),
+              messagingEndpoint,
             })
           }
 

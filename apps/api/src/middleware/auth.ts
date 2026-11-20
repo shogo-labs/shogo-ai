@@ -37,6 +37,7 @@ import type { Permission } from "@shogo/authz"
 import { authorize, decide, denialResponse, getAccess } from "../lib/authz"
 import { projectRoutePermission } from "../lib/authz/project-routes"
 import { getSignupTrustHold, signupTrustHoldPayload } from "../lib/signup-trust"
+import { isPublicChannelIngressPath } from "./api-auth-gate"
 
 /**
  * Auth context set by middleware
@@ -307,11 +308,17 @@ export async function authMiddleware(c: Context, next: Next) {
   //    requested project matches `authCtx.projectId`. The token embedding
   //    the scope does NOT replace that check — it only supplies the scope
   //    to this middleware without relying on path introspection.
-  const runtimeToken =
-    c.req.header("x-runtime-token") ??
-    (authHeader?.startsWith("Bearer ") && !authHeader.startsWith("Bearer shogo_sk_")
-      ? authHeader.slice(7)
-      : undefined)
+  // Public channel ingress paths (Teams, WhatsApp) carry their own auth headers
+  // (Bot Framework JWT, HMAC-SHA256). Do not attempt to parse them as runtime
+  // tokens — that would only produce spurious "runtime-token verify failed"
+  // warnings for every inbound activity.
+  const skipRuntimeToken = isPublicChannelIngressPath(c.req.path)
+  const runtimeToken = skipRuntimeToken
+    ? undefined
+    : c.req.header("x-runtime-token") ??
+      (authHeader?.startsWith("Bearer ") && !authHeader.startsWith("Bearer shogo_sk_")
+        ? authHeader.slice(7)
+        : undefined)
   if (runtimeToken) {
     // Legacy-fallback projectId: only used when the token itself is
     // pre-v1 bare-hex and thus doesn't carry its own scope. v1 tokens

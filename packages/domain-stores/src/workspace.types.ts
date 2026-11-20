@@ -33,6 +33,7 @@ export interface WorkspaceType {
   movedAt?: Date
   runtimeDiskGiB?: number
   diskAddonBilledThrough?: Date
+  invitePolicy?: string
   createdAt: Date
   updatedAt: Date
 }
@@ -59,6 +60,7 @@ export interface WorkspaceCreateInput {
   movedAt?: Date
   runtimeDiskGiB?: number
   diskAddonBilledThrough?: Date
+  invitePolicy?: string
 }
 
 export interface WorkspaceUpdateInput {
@@ -83,4 +85,5 @@ export interface WorkspaceUpdateInput {
   movedAt?: Date
   runtimeDiskGiB?: number
   diskAddonBilledThrough?: Date
+  invitePolicy?: string
 }
