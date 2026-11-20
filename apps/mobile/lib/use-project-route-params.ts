@@ -58,5 +58,18 @@ export function useProjectRouteParams<
       ? window.location.href
       : ''
   )
-  return mergeProjectRouteParams({ local, global, pathname, projectId, arrivalHref })
+  const merged = mergeProjectRouteParams({ local, global, pathname, projectId, arrivalHref })
+  if (process.env.NODE_ENV !== 'production' && Object.keys(global as object).length === 0 && arrivalHref) {
+    // SHO-174 instrumentation: log first-render fallback so e2e can observe it.
+    console.log(
+      '[SHO174] useProjectRouteParams first-render fallback',
+      JSON.stringify({
+        arrivalHref,
+        globalKeys: Object.keys(global as object).length,
+        mergedChatSessionId: (merged as Record<string, unknown>).chatSessionId,
+        mergedTab: (merged as Record<string, unknown>).tab,
+      })
+    )
+  }
+  return merged
 }

@@ -68,6 +68,45 @@ async function prepare(page: Page) {
   await useTeamWorkspace(page)
 }
 
+/** Installs a history-API sniffer and console collector before any page script runs. */
+async function installInstrumentation(page: Page): Promise<() => Promise<string>> {
+  const consoleLogs: string[] = []
+
+  await page.addInitScript(() => {
+    const record = (method: string, url: string | URL) => {
+      const entry = `${Date.now()} ${method} ${url}`
+      ;(window as any).__sho174History = (window as any).__sho174History ?? []
+      ;(window as any).__sho174History.push(entry)
+    }
+    const orig = { push: history.pushState.bind(history), replace: history.replaceState.bind(history) }
+    history.pushState = function (data, title, url) {
+      record("push", url ?? location.href)
+      orig.push(data, title, url)
+    }
+    history.replaceState = function (data, title, url) {
+      record("replace", url ?? location.href)
+      orig.replace(data, title, url)
+    }
+  })
+
+  page.on("console", (msg) => {
+    if (msg.text().includes("SHO174")) consoleLogs.push(msg.text())
+  })
+
+  return async () => {
+    const browserHistory: string[] = await page
+      .evaluate(() => (window as any).__sho174History ?? [])
+      .catch(() => [])
+    return [
+      "=== SHO-174 instrumentation ===",
+      "--- history writes ---",
+      ...browserHistory,
+      "--- console (SHO174) ---",
+      ...consoleLogs,
+    ].join("\n")
+  }
+}
+
 /** Tab param from the current URL. */
 function tabParam(page: Page): string | null {
   return new URL(page.url()).searchParams.get("tab")
@@ -112,10 +151,15 @@ test.describe("Project tab deep link (local, SHO-174)", () => {
   })
 
   test("cold load ?tab=settings lands on Settings (AC1 of SHO-174)", async ({ page }) => {
+    const getLog = await installInstrumentation(page)
     await prepare(page)
     await page.goto(`/projects/${projectId}?tab=settings`)
     // settings-nav-machine is the unique test-id inside SettingsPanel
-    await page.getByTestId("settings-nav-machine").waitFor({ state: "visible", timeout: 60_000 })
+    try {
+      await page.getByTestId("settings-nav-machine").waitFor({ state: "visible", timeout: 60_000 })
+    } finally {
+      console.log(await getLog())
+    }
     // The URL should still carry the tab (mirror writes chatSessionId but
     // must not drop tab; check it is preserved)
     await expect.poll(() => tabParam(page), { timeout: 10_000 }).toBe("settings")
