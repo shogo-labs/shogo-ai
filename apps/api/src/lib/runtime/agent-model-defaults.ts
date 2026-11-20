@@ -58,10 +58,15 @@ export interface AgentModelEnv {
 
 const AUTO_TIERS: AgentModelTier[] = ['economy', 'standard', 'premium']
 const SAFE_BASIC_MODEL = 'claude-haiku-4-5-20251001'
-const AUTO_MODEL_DEFAULTS: Record<AgentModelTier, string> = {
+/**
+ * Fallbacks for an instance with no configured Auto tiers. Premium must not
+ * default to a Sonnet-class price: with no admin setting there is nothing
+ * that says the complex tier should cost 10x the standard one (SHO-481).
+ */
+export const AUTO_MODEL_DEFAULTS: Record<AgentModelTier, string> = {
   economy: 'gpt-5.4-nano',
   standard: 'claude-haiku-4-5-20251001',
-  premium: 'claude-sonnet-4-6',
+  premium: 'claude-haiku-4-5-20251001',
 }
 
 function resolveModelEntry(raw: string): AgentModelEntry {
@@ -175,6 +180,44 @@ export async function resolveEffectiveAgentModelDefaults(
   }
 }
 
+export type InstanceAgentModelDefaults = Omit<AgentModelDefaults, 'summarizer'> & {
+  /** Absent when the connected cloud predates the summarizer setting. */
+  summarizer?: AgentModelEntry
+  /** Where these values came from: the connected cloud, or this instance. */
+  source: 'cloud' | 'local'
+}
+
+/**
+ * This instance's effective model defaults — the single cloud-first rule.
+ *
+ * A cloud-connected local instance (desktop) must resolve every model from the
+ * connected cloud: its own admin overrides are empty, so local defaults are
+ * only ever the offline fallback. Cloud-hosted servers see `null` from
+ * `fetchCloudAgentModelDefaults()` and keep their own admin settings.
+ *
+ * Anything that needs "the defaults this instance should use" goes through
+ * here; only the cloud route the desktop fetches from
+ * (`agent-model-defaults-route.ts`) resolves local defaults directly.
+ */
+export async function resolveInstanceAgentModelDefaults(
+  workspaceId: string,
+): Promise<InstanceAgentModelDefaults> {
+  const cloud = await fetchCloudAgentModelDefaults()
+  if (cloud) {
+    return {
+      basic: cloud.basic,
+      advanced: cloud.advanced,
+      defaultMode: cloud.defaultMode,
+      autoTiers: cloud.autoTiers,
+      hasAdvancedModelAccess: cloud.hasAdvancedModelAccess,
+      deepseekModelIds: cloud.deepseekModelIds ?? [],
+      ...(cloud.summarizer ? { summarizer: cloud.summarizer } : {}),
+      source: 'cloud',
+    }
+  }
+  return { ...(await resolveEffectiveAgentModelDefaults(workspaceId)), source: 'local' }
+}
+
 /**
  * Resolve one Auto tier to a concrete model for server-initiated surfaces.
  *
@@ -187,9 +230,7 @@ export async function resolveAutoTierModel(
   workspaceId: string,
   tier: AgentModelTier = 'standard',
 ): Promise<AgentModelEntry> {
-  const cloudDefaults = await fetchCloudAgentModelDefaults()
-  if (cloudDefaults) return cloudDefaults.autoTiers[tier]
-  return (await resolveEffectiveAgentModelDefaults(workspaceId)).autoTiers[tier]
+  return (await resolveInstanceAgentModelDefaults(workspaceId)).autoTiers[tier]
 }
 
 /**
@@ -296,33 +337,16 @@ export async function resolveAgentModelEnv(workspaceId = 'local-dev'): Promise<A
   const modelRegistry = serializeModelRegistryEnv()
   const registryEnv = modelRegistry ? { AGENT_MODEL_REGISTRY: modelRegistry } : {}
 
-  const cloudDefaults = await fetchCloudAgentModelDefaults()
-  if (cloudDefaults) {
-    const autoTierMap = serializeAutoTierMapEnv(cloudDefaults.autoTiers)
-    if (autoTierMap) {
-      const summarizer = serializeModelEntryEnv(cloudDefaults.summarizer)
-      return {
-        ...registryEnv,
-        AGENT_BASIC_MODEL: cloudDefaults.basic,
-        AGENT_ADVANCED_MODEL: cloudDefaults.advanced,
-        AGENT_AUTO_TIER_MAP: autoTierMap,
-        ...(cloudDefaults.deepseekModelIds?.length
-          ? { AGENT_DEEPSEEK_MODEL_IDS: cloudDefaults.deepseekModelIds.join(',') }
-          : {}),
-        ...(summarizer ? { AGENT_SUMMARIZER_MODEL: summarizer } : {}),
-      }
-    }
-  }
-
-  const localDefaults = await resolveEffectiveAgentModelDefaults(workspaceId)
-  const summarizer = serializeModelEntryEnv(localDefaults.summarizer)
+  const defaults = await resolveInstanceAgentModelDefaults(workspaceId)
+  const autoTierMap = serializeAutoTierMapEnv(defaults.autoTiers)
+  const summarizer = defaults.summarizer ? serializeModelEntryEnv(defaults.summarizer) : undefined
   return {
     ...registryEnv,
-    AGENT_BASIC_MODEL: localDefaults.basic,
-    AGENT_ADVANCED_MODEL: localDefaults.advanced,
-    AGENT_AUTO_TIER_MAP: serializeAutoTierMapEnv(localDefaults.autoTiers) as string,
-    ...(localDefaults.deepseekModelIds.length
-      ? { AGENT_DEEPSEEK_MODEL_IDS: localDefaults.deepseekModelIds.join(',') }
+    AGENT_BASIC_MODEL: defaults.basic,
+    AGENT_ADVANCED_MODEL: defaults.advanced,
+    AGENT_AUTO_TIER_MAP: autoTierMap as string,
+    ...(defaults.deepseekModelIds.length
+      ? { AGENT_DEEPSEEK_MODEL_IDS: defaults.deepseekModelIds.join(',') }
       : {}),
     ...(summarizer ? { AGENT_SUMMARIZER_MODEL: summarizer } : {}),
   }
