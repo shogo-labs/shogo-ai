@@ -403,6 +403,10 @@ export function useConversationTimeline(
   const me = user?.id ?? null
   const [state, setState] = useState<TimelineState>(emptyTimeline)
   const [loading, setLoading] = useState(true)
+  const [hasMoreNewer, setHasMoreNewer] = useState(false)
+  const newerCursorRef = useRef(0)
+  const anchoredRef = useRef(false)
+  const loadingNewerRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const stateRef = useRef(state)
   stateRef.current = state
@@ -410,6 +414,11 @@ export function useConversationTimeline(
     () => (conversationId ? { conversationId, threadRootId } : null),
     [conversationId, threadRootId],
   )
+  // Async page loads capture their request's scope. Keep the current scope in
+  // a ref so a late deep-link response cannot overwrite a conversation the
+  // reader has already left.
+  const activeScopeRef = useRef(scope)
+  activeScopeRef.current = scope
 
   // The device copy of this channel/thread (SHO-260). `origin` keeps a machine
   // workspace's chat apart from the same user's cloud chats.
@@ -432,6 +441,8 @@ export function useConversationTimeline(
     setLoading(true)
     try {
       const page = await api.messages(conversationId, { threadRootId: threadRootId ?? undefined, limit: PAGE_SIZE })
+      anchoredRef.current = false
+      setHasMoreNewer(false)
       setState((s) => mergePage(s, page, 'initial'))
       // A plain page carries its own cursor (SHO-260); the row scan is the
       // floor if an older server answers without one, so a cold open still
@@ -452,6 +463,8 @@ export function useConversationTimeline(
    */
   useEffect(() => {
     setState(emptyTimeline)
+    anchoredRef.current = false
+    setHasMoreNewer(false)
     cursorRef.current = null
     let fresh = false
     const key = historyKey
@@ -515,7 +528,7 @@ export function useConversationTimeline(
 
   // Write through on every settled change so the next open paints instantly.
   useEffect(() => {
-    if (!historyKey || loading || !state.messages.length) return
+    if (!historyKey || loading || anchoredRef.current || !state.messages.length) return
     void writeChatHistory('team', historyKey, {
       messages: state.messages.filter((m) => !m.pending),
       cursor: cursorRef.current,
@@ -571,7 +584,7 @@ export function useConversationTimeline(
 
   /** Keep long sessions light: once scrolled back to the latest, forget old pages. */
   const trimOld = useCallback(() => {
-    if (threadRootId) return
+    if (threadRootId || anchoredRef.current) return
     setState((s) => (s.messages.length > TIMELINE_SOFT_LIMIT ? trimToNewest(s, TIMELINE_TRIM_TO) : s))
   }, [threadRootId])
 
@@ -587,6 +600,56 @@ export function useConversationTimeline(
       return next
     })
   }, [conversationId, threadRootId])
+
+  /** Start a contiguous slice at the target. Keep the newest slice in the device cache until this one catches up. */
+  const loadBeforeSeq = useCallback(async (beforeSeq: number, limit = PAGE_SIZE) => {
+    if (!conversationId || threadRootId) return false
+    const page = await api.messages(conversationId, { beforeSeq, limit })
+    const activeScope = activeScopeRef.current
+    if (
+      !activeScope ||
+      activeScope.conversationId !== conversationId ||
+      activeScope.threadRootId !== threadRootId
+    ) {
+      return false
+    }
+    const newest = page.messages[page.messages.length - 1]
+    if (!newest || newest.seq !== beforeSeq - 1) return false
+    const latestSeq = lastConfirmedSeq(stateRef.current)
+    const hasNewer = latestSeq === 0 || latestSeq > newest.seq
+    newerCursorRef.current = newest.seq
+    anchoredRef.current = hasNewer
+    setHasMoreNewer(hasNewer)
+    setState((cur) => {
+      const next = mergePage(cur, page, 'initial')
+      stateRef.current = next
+      return next
+    })
+    return true
+  }, [conversationId, threadRootId])
+
+  /** Page forward from an anchored deep link without skipping the intervening messages. */
+  const loadNewer = useCallback(async () => {
+    if (!scope || !anchoredRef.current || loadingNewerRef.current) return
+    loadingNewerRef.current = true
+    try {
+      const page = await api.messages(scope.conversationId, { afterSeq: newerCursorRef.current, limit: PAGE_SIZE })
+      const newest = page.messages[page.messages.length - 1]
+      if (newest) newerCursorRef.current = newest.seq
+      const messages = page.messages.filter((message) => belongsToScope(message, scope))
+      setState((cur) => {
+        const next = mergePage(cur, { ...page, messages }, 'newer')
+        stateRef.current = next
+        return next
+      })
+      if (!page.hasMore) {
+        anchoredRef.current = false
+        setHasMoreNewer(false)
+      }
+    } finally {
+      loadingNewerRef.current = false
+    }
+  }, [scope])
 
   const sendWithClientId = useCallback(async (clientMsgId: string, input: SendInput): Promise<boolean> => {
     if (!conversationId) return false
@@ -683,7 +746,7 @@ export function useConversationTimeline(
 
   const getState = useCallback(() => stateRef.current, [])
 
-  return { state, getState, loading, error, reload: loadInitial, loadOlder, trimOld, send, retry, discard, edit, remove, react, stopAgent }
+  return { state, getState, loading, error, reload: loadInitial, loadOlder, loadBeforeSeq, loadNewer, hasMoreNewer, trimOld, send, retry, discard, edit, remove, react, stopAgent }
 }
 
 // ─── Read state ──────────────────────────────────────────────────────────────

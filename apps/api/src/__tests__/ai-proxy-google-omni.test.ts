@@ -307,6 +307,20 @@ describe('POST /ai/v1/videos/generations — Omni validation', () => {
     expect(fetchLog).toHaveLength(0)
   })
 
+  test('a first-and-last-frame pair over 10 s is refused without a Google key', async () => {
+    delete process.env.GOOGLE_API_KEY
+    const { res, data } = await submit({
+      model: 'google-omni-1.2-flash',
+      prompt: 'x',
+      duration: 12,
+      start_image: 'data:image/png;base64,AAAA',
+      end_image: 'data:image/png;base64,BBBB',
+    })
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('invalid_duration')
+    expect(fetchLog).toHaveLength(0)
+  })
+
   test('a start image plus a reference image is not a last frame and may run past 10 s', async () => {
     // Regression: the 10 s cap used to key on `start_image + any reference`,
     // which refused ordinary reference requests.

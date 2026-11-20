@@ -86,7 +86,7 @@ function ImageCard({ target, onOpen }: { target: InlineMediaTarget; onOpen: Open
           src={uri}
           alt={target.name}
           title={target.name}
-          className="block h-auto max-h-[320px] w-auto max-w-full object-contain"
+          className="block h-auto max-h-[320px] min-w-[160px] w-auto max-w-full object-contain"
           onError={() => setFailed(true)}
         />
       ) : (

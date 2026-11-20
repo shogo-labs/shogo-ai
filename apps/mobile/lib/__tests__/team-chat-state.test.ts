@@ -91,6 +91,18 @@ describe('timeline', () => {
     expect(state.hasMoreOlder).toBe(true)
   })
 
+  test('an anchored older page replaces the latest slice so the timeline has no hidden gap', () => {
+    const latest = msg({ id: 'latest', seq: 500 })
+    const state = mergePage(
+      { ...emptyTimeline, messages: [latest], hasMoreOlder: true },
+      { messages: [msg({ id: 'before-target', seq: 9 }), msg({ id: 'target', seq: 10 })], hasMore: true },
+      'initial',
+    )
+
+    expect(state.messages.map((message) => message.id)).toEqual(['before-target', 'target'])
+    expect(state.hasMoreOlder).toBe(true)
+  })
+
   test('new thread replies bump the root reply count live', () => {
     let state = mergePage(emptyTimeline, { messages: [msg({ id: 'm1', seq: 1 })], hasMore: false }, 'initial')
     const reply = msg({ id: 'r1', seq: 2, threadRootId: 'm1', createdAt: '2026-09-30T10:00:00.000Z' })
