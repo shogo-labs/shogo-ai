@@ -213,7 +213,10 @@ function RunPeekHoverWeb({ workspaceId, chat, task, children }: { workspaceId: s
         clear('open')
         scheduleClose()
       },
-      style: { display: 'contents' },
+      // display:contents has no layout box → Chromium never fires mouseenter on it
+      // and getBoundingClientRect() returns all-zeros (breaking card positioning).
+      // Use display:block so the wrapper participates in pointer-event hit-testing.
+      style: { display: 'block', width: '100%' },
     },
     children,
     card,
