@@ -173,3 +173,100 @@ describe('RuntimeManager periodic reap', () => {
     expect(manager.runtimeWorkingDir('project-id')).toBe(join(workspacesDir, 'project-id'))
   })
 })
+
+describe('reapChildLedgersUnder timer opts (SHO-468)', () => {
+  /**
+   * Write a ledger entry with ownerPid so the timer-mode opts can tell a live
+   * runtime's child from a true orphan.
+   */
+  function writeLedgerWithOwner(dir: string, ownerPid: number, ownerFingerprint: string): void {
+    writeLedger(dir, [{
+      pgid: process.ppid,
+      pid: process.ppid,
+      label: 'exec',
+      commandFingerprint: 'vite build --watch',
+      startedAt: 1,
+      ownerPid,
+      ownerFingerprint,
+    }])
+  }
+
+  test('timer mode: live-owner ledger is left untouched', () => {
+    const runtimeDir = join(workspacesDir, WORKSPACE_ROOTS_DIR, 'proj-live')
+    // ownerPid = process.pid (us) — definitely alive.
+    writeLedgerWithOwner(runtimeDir, process.pid, 'bun test')
+
+    const killed: number[] = []
+    const swept = reapChildLedgersUnder(workspacesDir, {
+      readProcessCommand: (pid) => {
+        // Both child (process.ppid) and owner (process.pid) return a command.
+        if (pid === process.pid) return 'bun test runner'
+        return '/bin/sh -c vite build --watch'
+      },
+      killGroup: (e) => { killed.push(e.pgid) },
+      spareLiveOwners: true,
+      reapOwnerless: false,
+    })
+
+    expect(killed).toHaveLength(0)
+    // The dir still had a ledger entry (spared), so it shows up in swept.
+    const liveResult = swept.find((s) => s.dir === runtimeDir)
+    if (liveResult) {
+      expect(liveResult.result.reaped).toHaveLength(0)
+      expect(liveResult.result.spared).toHaveLength(1)
+    }
+  })
+
+  test('timer mode: dead-owner ledger is reaped', () => {
+    const runtimeDir = join(workspacesDir, WORKSPACE_ROOTS_DIR, 'proj-dead')
+    // ownerPid = 99999999 — definitely not alive.
+    writeLedgerWithOwner(runtimeDir, 99999999, 'old-runtime')
+
+    const killed: number[] = []
+    reapChildLedgersUnder(workspacesDir, {
+      readProcessCommand: () => '/bin/sh -c vite build --watch',
+      killGroup: (e) => { killed.push(e.pgid) },
+      spareLiveOwners: true,
+      reapOwnerless: false,
+    })
+
+    expect(killed).toEqual([process.ppid])
+  })
+
+  test('boot mode: ownerless legacy entry is reaped', () => {
+    const runtimeDir = join(workspacesDir, WORKSPACE_ROOTS_DIR, 'proj-legacy')
+    // No ownerPid — simulates a pre-SHO-468 ledger.
+    writeLedger(runtimeDir, [{
+      pgid: process.ppid, pid: process.ppid, label: 'vite-watch',
+      commandFingerprint: 'vite build --watch', startedAt: 1,
+    }])
+
+    const killed: number[] = []
+    reapChildLedgersUnder(workspacesDir, {
+      readProcessCommand: () => '/bin/sh -c vite build --watch',
+      killGroup: (e) => { killed.push(e.pgid) },
+      spareLiveOwners: true,
+      reapOwnerless: true,
+    })
+
+    expect(killed).toEqual([process.ppid])
+  })
+
+  test('boot mode: live-owner entry is still spared', () => {
+    const runtimeDir = join(workspacesDir, WORKSPACE_ROOTS_DIR, 'proj-other-api')
+    writeLedgerWithOwner(runtimeDir, process.pid, 'bun test')
+
+    const killed: number[] = []
+    reapChildLedgersUnder(workspacesDir, {
+      readProcessCommand: (pid) => {
+        if (pid === process.pid) return 'bun test runner'
+        return '/bin/sh -c vite build --watch'
+      },
+      killGroup: (e) => { killed.push(e.pgid) },
+      spareLiveOwners: true,
+      reapOwnerless: true,
+    })
+
+    expect(killed).toHaveLength(0)
+  })
+})
