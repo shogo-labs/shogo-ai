@@ -203,6 +203,10 @@ const NEVER_BILLING = [
   // is written where the row lives, so the Course board and its gate work on a
   // desktop but lesson progress is read from the cloud panel.
   'CourseEnrollment',
+  // learn.shogo.ai progress and badges: per person (no workspace), written only
+  // by the cloud /api/learn routes, so a desktop reads them from the cloud.
+  'LearnLessonCompletion',
+  'LearnBadge',
   // SHO-308: the metered minutes behind `published_hosting` — the input to
   // consumeUsage, so the cloud's own accounting, never a synced row.
   'PublishedUsageMinute',
