@@ -20,6 +20,17 @@ import {
   verifyLearnToken,
 } from '../../lib/learn-token'
 import { bestPlanId, learnRoutes, withLearnCookie, type LearnRoutesDeps } from '../learn'
+import {
+  LEARN_BADGES,
+  LEARN_LESSONS,
+  SELF_PACED_COURSES,
+  computeLearnStats,
+  learnerDay,
+  levelFor,
+  qualifyingBadges,
+  streakOf,
+} from '../../config/learn-gamification'
+import { mintLearnBadgeShare, verifyLearnBadgeShare } from '../../lib/learn-token'
 
 const ENV_KEYS = ['LEARN_TOKEN_SECRET', 'BETTER_AUTH_SECRET', 'LEARN_COOKIE_DOMAIN', 'LEARN_ORIGINS', 'NODE_ENV'] as const
 let savedEnv: Record<string, string | undefined> = {}
@@ -50,6 +61,9 @@ interface FakeState {
   coachCalls: Array<{ system: string; messages: unknown[] }>
   checkoutCalls?: any[]
   checkoutResult?: { url: string } | { error: 'price_not_provisioned' }
+  completions?: Array<{ userId: string; courseId: string; lessonId: string; day: string; completedAt: Date }>
+  badges?: Array<{ userId: string; badgeId: string; earnedAt: Date }>
+  clock?: number
 }
 
 function makeApp(state: FakeState) {
@@ -71,7 +85,25 @@ function makeApp(state: FakeState) {
       ;(state.checkoutCalls ??= []).push(input)
       return state.checkoutResult ?? { url: 'https://checkout.stripe.com/c/pay/cs_test_1' }
     },
-    now: () => NOW,
+    listCompletions: async (userId) => (state.completions ?? []).filter((r) => r.userId === userId),
+    recordCompletions: async (userId, rows) => {
+      state.completions ??= []
+      let added = 0
+      for (const r of rows) {
+        if (state.completions.some((x) => x.userId === userId && x.courseId === r.courseId && x.lessonId === r.lessonId)) continue
+        state.completions.push({ userId, ...r, completedAt: new Date(state.clock ?? NOW) })
+        added++
+      }
+      return added
+    },
+    listBadges: async (userId) => (state.badges ?? []).filter((b) => b.userId === userId),
+    awardBadges: async (userId, ids) => {
+      state.badges ??= []
+      for (const badgeId of ids) {
+        if (!state.badges.some((b) => b.userId === userId && b.badgeId === badgeId)) state.badges.push({ userId, badgeId, earnedAt: new Date(state.clock ?? NOW) })
+      }
+    },
+    now: () => state.clock ?? NOW,
   }
   const app = new Hono()
   app.route('/api/learn', learnRoutes(deps))
@@ -596,5 +628,193 @@ describe('standalone course purchases', () => {
     expect(p.metadata).toEqual({ offer: 'learn_course', learnCourseId: 'paid-app', userId: 'u1', workspaceId: 'ws1' })
     expect(p.payment_intent_data?.metadata).toEqual(p.metadata)
     expect(learnStandaloneOffer('start-here')).toBeNull()
+  })
+})
+
+
+describe('gamification rules', () => {
+  test('streaks: current run ending today or yesterday, and the longest run', () => {
+    expect(streakOf(['2026-11-18', '2026-11-19', '2026-11-20'], '2026-11-20')).toEqual({ current: 3, longest: 3, activeToday: true })
+    expect(streakOf(['2026-11-18', '2026-11-19'], '2026-11-20')).toEqual({ current: 2, longest: 2, activeToday: false })
+    expect(streakOf(['2026-11-10', '2026-11-11', '2026-11-12', '2026-11-19'], '2026-11-21')).toEqual({ current: 0, longest: 3, activeToday: false })
+    expect(streakOf(['2026-12-31', '2027-01-01'], '2027-01-01').current).toBe(2)
+  })
+
+  test('learnerDay uses the learner time zone and falls back to UTC', () => {
+    const at = new Date(Date.UTC(2026, 10, 20, 3, 0, 0))
+    expect(learnerDay(at, 'America/Los_Angeles')).toBe('2026-11-19')
+    expect(learnerDay(at, 'Asia/Seoul')).toBe('2026-11-20')
+    expect(learnerDay(at, 'Not/AZone')).toBe('2026-11-20')
+  })
+
+  test('XP: 10 a lesson, 50 a finished course, badge XP on top; levels follow', () => {
+    const course = 'start-here'
+    const completions = LEARN_LESSONS[course].map((lessonId) => ({ courseId: course, lessonId, day: '2026-11-20' }))
+    const stats = computeLearnStats({ completions, badgeIds: ['first-lesson', 'course-start-here'], today: '2026-11-20' })
+    expect(stats.lessonsCompleted).toBe(5)
+    expect(stats.coursesCompleted).toEqual(['start-here'])
+    expect(stats.xp).toBe(5 * 10 + 50 + 20 + 20)
+    expect(stats.level.name).toBe('Builder')
+    expect(levelFor(0).next).toEqual({ name: 'Explorer', min: 40 })
+    expect(levelFor(99999).next).toBeNull()
+  })
+
+  test('finishing everything reaches the top level', () => {
+    const completions = Object.entries(LEARN_LESSONS).flatMap(([courseId, ls]) => ls.map((lessonId) => ({ courseId, lessonId, day: '2026-11-20' })))
+    const all = computeLearnStats({ completions, badgeIds: LEARN_BADGES.map((b) => b.id), today: '2026-11-20' })
+    expect(all.level.next).toBeNull()
+  })
+
+  test('badges come from progress: first lesson, course graduate, foundations, founding learner', () => {
+    const free = ['agents-for-everyone', 'start-here', 'ai-teammates']
+    const completions = free.flatMap((courseId) => LEARN_LESSONS[courseId].map((lessonId) => ({ courseId, lessonId, day: '2026-11-20' })))
+    const stats = computeLearnStats({ completions, badgeIds: [], today: '2026-11-20' })
+    const got = qualifyingBadges(stats, { certified: ['agents-for-everyone'], firstActivityDay: '2026-11-20' })
+    for (const b of ['first-lesson', 'lessons-10', 'course-start-here', 'course-ai-teammates', 'course-agents-for-everyone', 'certified-agents-for-everyone', 'foundations', 'founding-learner']) {
+      expect(got).toContain(b)
+    }
+    expect(qualifyingBadges(stats, { firstActivityDay: '2027-02-01' })).not.toContain('founding-learner')
+    for (const id of got) expect(LEARN_BADGES.some((b) => b.id === id)).toBe(true)
+  })
+
+  test('every self-paced course has lessons; solo founder is board-tracked', () => {
+    for (const c of SELF_PACED_COURSES) expect(LEARN_LESSONS[c].length).toBeGreaterThan(0)
+    expect(SELF_PACED_COURSES).not.toContain('solo-founder')
+  })
+})
+
+describe('progress, XP and badges on the account', () => {
+  const H = (userId = 'u1', sessionId = 's1') => ({ 'content-type': 'application/json', [LEARN_TOKEN_HEADER]: tokenFor(userId, sessionId) })
+  const post = (app: Hono, path: string, body: unknown, headers: Record<string, string> = H()) =>
+    app.request(`/api/learn${path}`, { method: 'POST', headers, body: JSON.stringify(body) })
+
+  function freeLearner(): FakeState {
+    const st = baseState()
+    st.workspaces = { u1: ['ws-free'], u2: ['ws-free'] }
+    st.sessions.s2 = { userId: 'u2', live: true }
+    return st
+  }
+
+  test('marking a lesson complete saves it to the account and awards first badges', async () => {
+    const st = freeLearner()
+    const { app } = makeApp(st)
+    const res = await post(app, '/progress', { courseId: 'start-here', lessonId: 'first-app', tz: 'America/Los_Angeles' })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as any
+    expect(body.added).toBe(true)
+    expect(body.completedLessons).toEqual(['first-app'])
+    expect(body.newBadges.map((b: any) => b.id).sort()).toEqual(['first-lesson', 'founding-learner'])
+    expect(body.stats.xp).toBe(10 + 20 + 20)
+    expect(body.levelUp).toBe(true)
+    expect(st.completions).toEqual([{ userId: 'u1', courseId: 'start-here', lessonId: 'first-app', day: '2026-11-20', completedAt: new Date(NOW) }])
+
+    const again = (await (await post(app, '/progress', { courseId: 'start-here', lessonId: 'first-app' })).json()) as any
+    expect(again.added).toBe(false)
+    expect(again.newBadges).toEqual([])
+    expect(again.levelUp).toBe(false)
+    expect(st.badges).toHaveLength(2)
+  })
+
+  test('progress is per learner: a teammate in the same workspace starts at zero', async () => {
+    const st = freeLearner()
+    const { app } = makeApp(st)
+    await post(app, '/progress', { courseId: 'start-here', lessonId: 'first-app' })
+    const me2 = (await (await app.request('/api/learn/me', { headers: H('u2', 's2') })).json()) as any
+    expect(me2.stats.lessonsCompleted).toBe(0)
+    expect(me2.badges).toEqual([])
+  })
+
+  test('refuses what it should', async () => {
+    const st = freeLearner()
+    const { app } = makeApp(st)
+    expect((await post(app, '/progress', { courseId: 'start-here', lessonId: 'first-app' }, { 'content-type': 'application/json' })).status).toBe(401)
+    expect((await post(app, '/progress', { courseId: 'start-here', lessonId: 'nope' })).status).toBe(404)
+    expect((await post(app, '/progress', { courseId: 'solo-founder', lessonId: 'm1' })).status).toBe(404)
+    expect((await post(app, '/progress', { courseId: 'agents-for-everyone', lessonId: 'final-check' })).status).toBe(400)
+    expect((await post(app, '/progress', { courseId: 'paid-app', lessonId: 'day-1-pick' })).status).toBe(403)
+    st.rateAllowed = false
+    expect((await post(app, '/progress', { courseId: 'start-here', lessonId: 'first-app' })).status).toBe(429)
+    expect(st.completions ?? []).toHaveLength(0)
+  })
+
+  test('finishing a course awards its graduate badge; /me returns progress, stats, badges and the catalog', async () => {
+    const st = freeLearner()
+    const { app } = makeApp(st)
+    let last: any
+    for (const lessonId of LEARN_LESSONS['start-here']) last = await (await post(app, '/progress', { courseId: 'start-here', lessonId })).json()
+    expect(last.newBadges.map((b: any) => b.id)).toContain('course-start-here')
+    const me = (await (await app.request('/api/learn/me', { headers: H() })).json()) as any
+    expect(me.courses['start-here'].progress.completedLessons).toEqual(LEARN_LESSONS['start-here'])
+    expect(me.courses['start-here'].progress.completedAt).toBe(new Date(NOW).toISOString())
+    expect(me.stats.coursesCompleted).toEqual(['start-here'])
+    expect(me.badges.map((b: any) => b.id)).toEqual(expect.arrayContaining(['first-lesson', 'course-start-here', 'founding-learner']))
+    expect(me.catalog.badges.length).toBe(LEARN_BADGES.length)
+    expect(me.newBadges).toEqual([])
+  })
+
+  test('a streak builds across days in the learner time zone and earns its badge', async () => {
+    const st = freeLearner()
+    const { app } = makeApp(st)
+    const lessons = LEARN_LESSONS['ai-teammates']
+    for (let d = 0; d < 3; d++) {
+      st.clock = NOW + d * 86_400_000
+      const r = (await (await post(app, '/progress', { courseId: 'ai-teammates', lessonId: lessons[d], tz: 'UTC' })).json()) as any
+      if (d === 2) {
+        expect(r.stats.streak).toEqual({ current: 3, longest: 3, activeToday: true })
+        expect(r.newBadges.map((b: any) => b.id)).toContain('streak-3')
+      }
+    }
+  })
+
+  test('import merges signed-out progress: valid, accessible, deduped, capped and dated sanely', async () => {
+    const st = freeLearner()
+    const { app } = makeApp(st)
+    const items = [
+      { courseId: 'agents-for-everyone', lessonId: 'what-is-an-agent', day: '2026-11-18' },
+      { courseId: 'agents-for-everyone', lessonId: 'what-is-an-agent', day: '2026-11-18' },
+      { courseId: 'agents-for-everyone', lessonId: 'good-at-bad-at', day: '2031-01-01' },
+      { courseId: 'agents-for-everyone', lessonId: 'final-check' },
+      { courseId: 'paid-app', lessonId: 'day-1-pick' },
+      { courseId: 'nope', lessonId: 'x' },
+    ]
+    const r = (await (await post(app, '/progress/import', { items, tz: 'UTC' })).json()) as any
+    expect(r.imported).toBe(2)
+    expect(st.completions!.map((c) => [c.lessonId, c.day])).toEqual([['what-is-an-agent', '2026-11-18'], ['good-at-bad-at', '2026-11-20']])
+    expect((await post(app, '/progress/import', { items: 'x' })).status).toBe(400)
+  })
+
+  test('passing the final check completes its lesson and awards the certificate badge (+100 XP)', async () => {
+    const st = freeLearner()
+    const { app } = makeApp(st)
+    const rule = LEARN_CERTIFICATES['agents-for-everyone']
+    const answers = { ...rule.answers }
+    const r = (await (await post(app, '/certificate', { courseId: 'agents-for-everyone', answers, tz: 'UTC' })).json()) as any
+    expect(r.passed).toBe(true)
+    expect(r.newBadges.map((b: any) => b.id)).toEqual(expect.arrayContaining(['certified-agents-for-everyone', 'first-lesson']))
+    expect(r.stats.completedLessons['agents-for-everyone']).toEqual(['final-check'])
+    expect(r.stats.xp).toBe(10 + 100 + 20 + 20)
+  })
+
+  test('badge share links: only for held badges, publicly verifiable, tamper-proof', async () => {
+    const st = freeLearner()
+    const { app } = makeApp(st)
+    expect((await post(app, '/badge-share', { badgeId: 'first-lesson' })).status).toBe(404)
+    await post(app, '/progress', { courseId: 'start-here', lessonId: 'first-app' })
+    const share = (await (await post(app, '/badge-share', { badgeId: 'first-lesson', name: 'Ada Lovelace' })).json()) as any
+    expect(share.name).toBe('Ada Lovelace')
+    const v = (await (await app.request(`/api/learn/badge/${share.id}`)).json()) as any
+    expect(v).toMatchObject({ valid: true, name: 'Ada Lovelace', badge: { id: 'first-lesson', name: 'First step' } })
+    expect(JSON.stringify(v)).not.toContain('u1')
+    const [ver, , sig] = share.id.split('.')
+    const forged = Buffer.from(JSON.stringify({ h: 'x', b: 'lessons-all', n: 'Mallory', t: 1 })).toString('base64url')
+    expect((await app.request(`/api/learn/badge/${ver}.${forged}.${sig}`)).status).toBe(404)
+    expect(verifyLearnBadgeShare(mintLearnBadgeShare({ userId: 'u1', badgeId: 'streak-7', name: 'A', earnedAt: 5 }))?.badgeId).toBe('streak-7')
+  })
+
+  test('GET /lessons publishes the lesson ids and badge catalog for the site', async () => {
+    const { app } = makeApp(baseState())
+    const r = (await (await app.request('/api/learn/lessons')).json()) as any
+    expect(r.lessons['start-here']).toEqual(LEARN_LESSONS['start-here'])
+    expect(r.badges.length).toBe(LEARN_BADGES.length)
   })
 })

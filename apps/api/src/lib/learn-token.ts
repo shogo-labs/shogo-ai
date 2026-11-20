@@ -249,3 +249,43 @@ export function verifyLearnCertificate(id: string | null | undefined): LearnCert
   }
   return { subject: raw.h, courseId: raw.c, name: raw.n, issuedAt: raw.t, score: raw.s, total: raw.o }
 }
+
+const BADGE_VERSION = 'b1'
+const BADGE_PURPOSE = 'shogo-learn-badge-v1'
+
+export interface LearnBadgeShare {
+  /** Same keyed handle as certificates, never the user id. */
+  subject: string
+  badgeId: string
+  name: string
+  earnedAt: number
+}
+
+function signBadge(body: string): string {
+  return createHmac('sha256', learnSecret(BADGE_PURPOSE)).update(body).digest('base64url')
+}
+
+/** A public, self-verifying link to one earned badge (for LinkedIn and the like). */
+export function mintLearnBadgeShare(share: Omit<LearnBadgeShare, 'subject'> & { userId: string }): string {
+  const payload = b64url(JSON.stringify({ h: certificateSubject(share.userId), b: share.badgeId, n: share.name, t: share.earnedAt }))
+  const body = `${BADGE_VERSION}.${payload}`
+  return `${body}.${signBadge(body)}`
+}
+
+export function verifyLearnBadgeShare(id: string | null | undefined): LearnBadgeShare | null {
+  if (!id || typeof id !== 'string' || id.length > 1024) return null
+  const parts = id.split('.')
+  if (parts.length !== 3 || parts[0] !== BADGE_VERSION) return null
+  const body = `${parts[0]}.${parts[1]}`
+  const expected = Buffer.from(signBadge(body))
+  const given = Buffer.from(parts[2])
+  if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null
+  let raw: any
+  try {
+    raw = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
+  } catch {
+    return null
+  }
+  if (typeof raw?.h !== 'string' || typeof raw?.b !== 'string' || typeof raw?.n !== 'string' || typeof raw?.t !== 'number') return null
+  return { subject: raw.h, badgeId: raw.b, name: raw.n, earnedAt: raw.t }
+}

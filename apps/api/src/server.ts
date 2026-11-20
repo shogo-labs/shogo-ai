@@ -971,6 +971,41 @@ const learnDeps: LearnRoutesDeps = {
     }),
   takeRateLimit,
   generateCoachReply: generateLearnCoachReply,
+  listCompletions: (userId) =>
+    prisma.learnLessonCompletion.findMany({
+      where: { userId },
+      select: { courseId: true, lessonId: true, day: true, completedAt: true },
+    }),
+  recordCompletions: async (userId, rows) => {
+    if (!rows.length) return 0
+    const existing = await prisma.learnLessonCompletion.findMany({
+      where: { userId, OR: rows.map((r) => ({ courseId: r.courseId, lessonId: r.lessonId })) },
+      select: { courseId: true, lessonId: true },
+    })
+    const have = new Set(existing.map((e) => `${e.courseId}/${e.lessonId}`))
+    let added = 0
+    for (const r of rows) {
+      if (have.has(`${r.courseId}/${r.lessonId}`)) continue
+      try {
+        await prisma.learnLessonCompletion.create({ data: { userId, courseId: r.courseId, lessonId: r.lessonId, day: r.day } })
+        added++
+      } catch (err: any) {
+        // A concurrent request recorded it first; the unique key keeps one row.
+        if (err?.code !== 'P2002') throw err
+      }
+    }
+    return added
+  },
+  listBadges: (userId) => prisma.learnBadge.findMany({ where: { userId }, select: { badgeId: true, earnedAt: true } }),
+  awardBadges: async (userId, badgeIds) => {
+    for (const badgeId of badgeIds) {
+      try {
+        await prisma.learnBadge.create({ data: { userId, badgeId } })
+      } catch (err: any) {
+        if (err?.code !== 'P2002') throw err
+      }
+    }
+  },
   createCourseCheckout: async ({ offer, userId, email, workspaceId, successUrl, cancelUrl }) => {
     if (!stripe) return { error: 'price_not_provisioned' as const }
     const priceId = await lookupPriceIdByLookupKey(stripe, offer.lookupKey)

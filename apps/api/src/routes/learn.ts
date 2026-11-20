@@ -35,6 +35,19 @@ import {
   type LearnStandaloneOffer,
 } from '../config/learn-catalog'
 import { learnStandaloneOffer } from '../lib/learn-purchase'
+import {
+  CERTIFICATE_LESSON,
+  LEARN_BADGES,
+  LEARN_LESSONS,
+  LEVELS,
+  SELF_PACED_COURSES,
+  XP,
+  computeLearnStats,
+  learnBadgeById,
+  learnerDay,
+  qualifyingBadges,
+  type CompletionRow,
+} from '../config/learn-gamification'
 import { PLAN_RANK, normalizePlanId, type PlanId } from '../config/usage-plans'
 import {
   LEARN_COOKIE_NAME,
@@ -45,10 +58,12 @@ import {
   learnCookieHeader,
   learnTokenFromHeaders,
   learnTokenNeedsRenewal,
+  mintLearnBadgeShare,
   mintLearnCertificate,
   mintLearnToken,
   readCookie,
   safeLearnReturn,
+  verifyLearnBadgeShare,
   verifyLearnCertificate,
   verifyLearnToken,
 } from '../lib/learn-token'
@@ -60,6 +75,9 @@ const MAX_MESSAGE_CHARS = 4000
 const MAX_CONTEXT_CHARS = 16000
 const CERT_ATTEMPTS_PER_DAY = 20
 const CHECKOUTS_PER_HOUR = 20
+const PROGRESS_WRITES_PER_DAY = 300
+const IMPORT_MAX_ITEMS = 60
+const IMPORT_MAX_AGE_DAYS = 400
 const HOUR_MS = 60 * 60 * 1000
 
 export interface LearnUser {
@@ -96,6 +114,13 @@ export interface LearnRoutesDeps {
     cancelUrl: string
   }) => Promise<{ url: string } | { error: 'price_not_provisioned' }>
   frontendUrl: () => string
+  /** Lessons the learner marked complete on learn.shogo.ai (`learn_lesson_completions`). */
+  listCompletions: (userId: string) => Promise<Array<{ courseId: string; lessonId: string; day: string; completedAt: Date }>>
+  /** Insert completions; existing (user, course, lesson) rows are left as they are. Returns rows added. */
+  recordCompletions: (userId: string, rows: Array<{ courseId: string; lessonId: string; day: string }>) => Promise<number>
+  listBadges: (userId: string) => Promise<Array<{ badgeId: string; earnedAt: Date }>>
+  /** Insert badges; ones the learner already holds are left as they are. */
+  awardBadges: (userId: string, badgeIds: string[]) => Promise<void>
   now?: () => number
 }
 
@@ -215,6 +240,165 @@ export function learnRoutes(deps: LearnRoutesDeps) {
     return { planId: bestPlanId(planIds), enrollments, workspaceIds }
   }
 
+  /**
+   * Progress, XP, level, streak and badges for a learner, awarding any badge
+   * they now qualify for. Solo Founder lessons come from its enrollment
+   * (course board) and count for XP, but not for streaks (no day).
+   */
+  async function gamification(
+    userId: string,
+    enrollments: Array<{ courseId: string; progress: unknown }>,
+    tz: string | null,
+    opts: { certified?: string[]; added?: Array<{ courseId: string; lessonId: string }> } = {},
+  ) {
+    const certified = opts.certified ?? []
+    const [rows, held] = await Promise.all([deps.listCompletions(userId), deps.listBadges(userId)])
+    const completions: CompletionRow[] = rows.map((r) => ({ courseId: r.courseId, lessonId: r.lessonId, day: r.day }))
+    const solo = LEARN_COURSES.find((c) => c.id === 'solo-founder')
+    if (solo?.access.kind === 'purchase') {
+      const enrollmentCourseId = solo.access.enrollmentCourseId
+      for (const e of enrollments.filter((x) => x.courseId === enrollmentCourseId)) {
+        const list = (e.progress as { completedLessons?: unknown } | null)?.completedLessons
+        if (Array.isArray(list)) for (const id of list) if (typeof id === 'string') completions.push({ courseId: 'solo-founder', lessonId: id })
+      }
+    }
+    const today = learnerDay(new Date(now()), tz)
+    const heldIds = new Set(held.map((b) => b.badgeId))
+    const before = computeLearnStats({ completions, badgeIds: heldIds, today })
+    const addedKeys = new Set((opts.added ?? []).map((a) => `${a.courseId}/${a.lessonId}`))
+    const prior = addedKeys.size
+      ? computeLearnStats({ completions: completions.filter((r) => !addedKeys.has(`${r.courseId}/${r.lessonId}`)), badgeIds: heldIds, today })
+      : before
+    const firstActivityDay = rows.length ? rows.map((r) => r.day).sort()[0] : null
+    const fresh = qualifyingBadges(before, {
+      certified: [...certified, ...[...heldIds].filter((b) => b.startsWith('certified-')).map((b) => b.slice('certified-'.length))],
+      firstActivityDay,
+    }).filter((b) => !heldIds.has(b))
+    if (fresh.length) await deps.awardBadges(userId, fresh)
+    const earnedAt = new Date(now())
+    const badges = [...held.map((b) => ({ id: b.badgeId, earnedAt: b.earnedAt })), ...fresh.map((id) => ({ id, earnedAt }))]
+      .filter((b) => learnBadgeById(b.id))
+      .sort((a, b) => a.earnedAt.getTime() - b.earnedAt.getTime())
+    const stats = fresh.length ? computeLearnStats({ completions, badgeIds: badges.map((b) => b.id), today }) : before
+    return {
+      stats,
+      badges: badges.map((b) => ({ id: b.id, earnedAt: b.earnedAt.toISOString() })),
+      newBadges: fresh.map((id) => ({ ...learnBadgeById(id)!, earnedAt: earnedAt.toISOString() })),
+      levelUp: stats.level.index > prior.level.index,
+      lastCompletedAt: Object.fromEntries(
+        Object.keys(stats.completedLessons).map((course) => {
+          const times = rows.filter((r) => r.courseId === course).map((r) => r.completedAt.getTime())
+          return [course, times.length ? new Date(Math.max(...times)).toISOString() : null]
+        }),
+      ) as Record<string, string | null>,
+    }
+  }
+
+  function cleanTz(raw: unknown): string | null {
+    if (typeof raw !== 'string' || raw.length > 64 || !/^[A-Za-z_+\-/0-9]+$/.test(raw)) return null
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: raw })
+      return raw
+    } catch {
+      return null
+    }
+  }
+
+  /** Why a learner can't record this lesson, or null when they can. */
+  function lessonProblem(courseId: string, lessonId: string, access: LearnAccessDecision | null): { status: 400 | 403 | 404; error: string } | null {
+    if (!SELF_PACED_COURSES.includes(courseId) || !LEARN_LESSONS[courseId]?.includes(lessonId)) {
+      return { status: 404, error: 'Unknown lesson.' }
+    }
+    if (CERTIFICATE_LESSON[courseId] === lessonId) return { status: 400, error: 'Pass the final check to complete this lesson.' }
+    if (!access?.hasAccess) return { status: 403, error: 'Your plan does not include this course.' }
+    return null
+  }
+
+  function accessFor(courseId: string, planId: PlanId, enrollments: Array<{ courseId: string }>): LearnAccessDecision | null {
+    const course = learnCourseById(courseId)
+    if (!course) return null
+    return decideLearnAccess(course.access, { signedIn: true, planId, enrolledCourseIds: new Set(enrollments.map((e) => e.courseId)) })
+  }
+
+  app.get('/lessons', (c) => {
+    c.header('Cache-Control', 'public, max-age=300')
+    return c.json({ lessons: LEARN_LESSONS, badges: LEARN_BADGES, levels: LEVELS, xp: XP })
+  })
+
+  app.post('/progress', async (c) => {
+    c.header('Cache-Control', 'no-store')
+    const learner = await resolveLearner(c)
+    if (!learner) return c.json({ error: 'Sign in with your Shogo account to save your progress.' }, 401)
+    const body = (await c.req.json().catch(() => null)) as { courseId?: unknown; lessonId?: unknown; tz?: unknown } | null
+    const courseId = typeof body?.courseId === 'string' ? body.courseId : ''
+    const lessonId = typeof body?.lessonId === 'string' ? body.lessonId : ''
+    const { planId, enrollments } = await learnerState(learner.user.id)
+    const problem = lessonProblem(courseId, lessonId, accessFor(courseId, planId, enrollments))
+    if (problem) return c.json({ error: problem.error }, problem.status)
+    const rl = await deps.takeRateLimit(`learn-progress:${learner.user.id}`, PROGRESS_WRITES_PER_DAY, DAY_MS)
+    if (!rl.allowed) {
+      c.header('Retry-After', String(rl.retryAfterSeconds))
+      return c.json({ error: 'Too many updates today. Try again tomorrow.' }, 429)
+    }
+    const tz = cleanTz(body?.tz)
+    const added = await deps.recordCompletions(learner.user.id, [{ courseId, lessonId, day: learnerDay(new Date(now()), tz) }])
+    const g = await gamification(learner.user.id, enrollments, tz, { added: added > 0 ? [{ courseId, lessonId }] : [] })
+    return c.json({ added: added > 0, courseId, completedLessons: g.stats.completedLessons[courseId] ?? [], ...g })
+  })
+
+  app.post('/progress/import', async (c) => {
+    c.header('Cache-Control', 'no-store')
+    const learner = await resolveLearner(c)
+    if (!learner) return c.json({ error: 'Sign in with your Shogo account to save your progress.' }, 401)
+    const body = (await c.req.json().catch(() => null)) as { items?: unknown; tz?: unknown } | null
+    if (!Array.isArray(body?.items)) return c.json({ error: 'items is required.' }, 400)
+    const tz = cleanTz(body?.tz)
+    const today = learnerDay(new Date(now()), tz)
+    const oldest = learnerDay(new Date(now() - IMPORT_MAX_AGE_DAYS * DAY_MS), tz)
+    const { planId, enrollments } = await learnerState(learner.user.id)
+    const rows: Array<{ courseId: string; lessonId: string; day: string }> = []
+    const seen = new Set<string>()
+    for (const item of body.items.slice(0, IMPORT_MAX_ITEMS) as Array<Record<string, unknown>>) {
+      const courseId = typeof item?.courseId === 'string' ? item.courseId : ''
+      const lessonId = typeof item?.lessonId === 'string' ? item.lessonId : ''
+      if (lessonProblem(courseId, lessonId, accessFor(courseId, planId, enrollments))) continue
+      const key = `${courseId}/${lessonId}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      const day = typeof item?.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(item.day) && item.day >= oldest && item.day <= today ? item.day : today
+      rows.push({ courseId, lessonId, day })
+    }
+    const added = rows.length ? await deps.recordCompletions(learner.user.id, rows) : 0
+    const g = await gamification(learner.user.id, enrollments, tz, { added: added > 0 ? rows : [] })
+    return c.json({ imported: added, ...g })
+  })
+
+  app.post('/badge-share', async (c) => {
+    c.header('Cache-Control', 'no-store')
+    const learner = await resolveLearner(c)
+    if (!learner) return c.json({ error: 'Sign in to share your badges.' }, 401)
+    const body = (await c.req.json().catch(() => null)) as { badgeId?: unknown; name?: unknown } | null
+    const badgeId = typeof body?.badgeId === 'string' ? body.badgeId : ''
+    const held = (await deps.listBadges(learner.user.id)).find((b) => b.badgeId === badgeId)
+    if (!held || !learnBadgeById(badgeId)) return c.json({ error: "You haven't earned this badge yet." }, 404)
+    const name = cleanCertificateName(body?.name) || cleanCertificateName(learner.user.name) || 'Shogo learner'
+    const id = mintLearnBadgeShare({ userId: learner.user.id, badgeId, name, earnedAt: Math.floor(held.earnedAt.getTime() / 1000) })
+    return c.json({ id, name })
+  })
+
+  app.get('/badge/:id', (c) => {
+    const share = verifyLearnBadgeShare(c.req.param('id'))
+    const badge = share ? learnBadgeById(share.badgeId) : undefined
+    if (!share || !badge) return c.json({ valid: false }, 404)
+    c.header('Cache-Control', 'public, max-age=3600')
+    return c.json({
+      valid: true,
+      name: share.name,
+      badge: { id: badge.id, name: badge.name, description: badge.description, icon: badge.icon, hue: badge.hue },
+      earnedAt: new Date(share.earnedAt * 1000).toISOString(),
+    })
+  })
+
   app.get('/sso', async (c) => {
     const returnUrl = safeLearnReturn(c.req.query('return'))
     if (!returnUrl) return c.json({ error: 'return must be a learn.shogo.ai URL' }, 400)
@@ -253,6 +437,7 @@ export function learnRoutes(deps: LearnRoutesDeps) {
     }
     const { planId, enrollments } = await learnerState(learner.user.id)
     const enrolled = new Set(enrollments.map((e) => e.courseId))
+    const g = await gamification(learner.user.id, enrollments, cleanTz(c.req.query('tz')))
     const courses: Record<string, LearnAccessDecision & { progress?: { completedLessons: string[]; completedAt: string | null } }> = {}
     for (const course of LEARN_COURSES) {
       const decision = decideLearnAccess(course.access, { signedIn: true, planId, enrolledCourseIds: enrolled })
@@ -266,6 +451,12 @@ export function learnRoutes(deps: LearnRoutesDeps) {
           if (e.completedAt) completedAt = e.completedAt.toISOString()
         }
         courses[course.id] = { ...decision, progress: { completedLessons: [...completed], completedAt } }
+      } else if (SELF_PACED_COURSES.includes(course.id) && g.stats.completedLessons[course.id]) {
+        const done = g.stats.completedLessons[course.id]
+        courses[course.id] = {
+          ...decision,
+          progress: { completedLessons: done, completedAt: g.stats.coursesCompleted.includes(course.id) ? g.lastCompletedAt[course.id] : null },
+        }
       } else {
         courses[course.id] = decision
       }
@@ -276,6 +467,10 @@ export function learnRoutes(deps: LearnRoutesDeps) {
       plan: { id: planId },
       courses,
       coach: { dailyLimit: LEARN_COACH_DAILY_LIMIT[planId] },
+      stats: g.stats,
+      badges: g.badges,
+      newBadges: g.newBadges,
+      catalog: { badges: LEARN_BADGES, levels: LEVELS },
     })
   })
 
@@ -344,6 +539,10 @@ export function learnRoutes(deps: LearnRoutesDeps) {
     const result = gradeLearnCheck(rule, body.answers as Record<string, unknown>)
     if (!result.passed) return c.json({ ...result, passMark: rule.passMark })
 
+    const tz = cleanTz((body as { tz?: unknown }).tz)
+    const lesson = CERTIFICATE_LESSON[courseId]
+    const certAdded = lesson ? await deps.recordCompletions(learner.user.id, [{ courseId, lessonId: lesson, day: learnerDay(new Date(now()), tz) }]) : 0
+    const g = await gamification(learner.user.id, enrollments, tz, { certified: [courseId], added: certAdded > 0 ? [{ courseId, lessonId: lesson! }] : [] })
     const name = cleanCertificateName(body.name) || cleanCertificateName(learner.user.name) || 'Shogo learner'
     const id = mintLearnCertificate({
       userId: learner.user.id,
@@ -353,7 +552,7 @@ export function learnRoutes(deps: LearnRoutesDeps) {
       score: result.score,
       total: result.total,
     })
-    return c.json({ ...result, passMark: rule.passMark, certificate: { id, name } })
+    return c.json({ ...result, passMark: rule.passMark, certificate: { id, name }, stats: g.stats, newBadges: g.newBadges, levelUp: g.levelUp })
   })
 
   app.post('/checkout', async (c) => {
