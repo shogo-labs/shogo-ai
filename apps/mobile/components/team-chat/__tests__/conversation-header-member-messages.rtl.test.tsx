@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * The two ways into "Messages from <member>" that live in the channel header
- * (SHO-419): the "Filter by member" action, and the "Messages" action on each
- * row of the Members list. Both hand the host a `from` key the pane opens with.
+ * The two ways into "Filter by member" that live in the channel header
+ * (SHO-419, SHO-458): the "Filter by member" action (which becomes "Clear
+ * member filter" when active), and the "Filter" button on each row of the
+ * Members list.
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
@@ -78,9 +79,10 @@ const conversation = {
   ],
 } as unknown as ConversationDetail
 
-const onOpenMemberMessages = mock((_from: string) => {})
+const onFilterByMember = mock((_from: string) => {})
+const onClearMemberFilter = mock(() => {})
 
-const renderHeader = () =>
+const renderHeader = (memberFilter?: string | null) =>
   render(
     <ConversationHeader
       conversation={conversation}
@@ -88,28 +90,40 @@ const renderHeader = () =>
       me="u-ada"
       onChanged={() => {}}
       onLeft={() => {}}
-      onOpenMemberMessages={onOpenMemberMessages}
+      onFilterByMember={onFilterByMember}
+      onClearMemberFilter={onClearMemberFilter}
+      memberFilter={memberFilter}
     />,
   )
 
 afterEach(cleanup)
-beforeEach(() => onOpenMemberMessages.mockClear())
+beforeEach(() => {
+  onFilterByMember.mockClear()
+  onClearMemberFilter.mockClear()
+})
 
 describe('ConversationHeader — filter by member', () => {
-  test('the header action opens the pane on you, so the switcher is already showing a list', () => {
+  test('the header action starts the filter on you, so the switcher already shows a list', () => {
     renderHeader()
     fireEvent.click(screen.getByLabelText('Filter by member'))
-    expect(onOpenMemberMessages).toHaveBeenCalledWith('user:u-ada')
+    expect(onFilterByMember).toHaveBeenCalledWith('user:u-ada')
   })
 
-  test('the Members list offers "Messages" on every member, people and agents alike', () => {
+  test('when a filter is active the action reads "Clear member filter" and clears it', () => {
+    renderHeader('user:u-ada')
+    fireEvent.click(screen.getByLabelText('Clear member filter'))
+    expect(onClearMemberFilter).toHaveBeenCalled()
+    expect(onFilterByMember).not.toHaveBeenCalled()
+  })
+
+  test('the Members list offers "Filter" on every member, people and agents alike', () => {
     renderHeader()
     fireEvent.click(screen.getByLabelText('Members'))
-    fireEvent.click(screen.getByLabelText('Messages from Alpha'))
-    expect(onOpenMemberMessages).toHaveBeenCalledWith('agent:p-alpha')
+    fireEvent.click(screen.getByLabelText('Filter by Alpha'))
+    expect(onFilterByMember).toHaveBeenCalledWith('agent:p-alpha')
 
     fireEvent.click(screen.getByLabelText('Members'))
-    fireEvent.click(screen.getByLabelText('Messages from Shogo'))
-    expect(onOpenMemberMessages).toHaveBeenCalledWith('agent:ws')
+    fireEvent.click(screen.getByLabelText('Filter by Shogo'))
+    expect(onFilterByMember).toHaveBeenCalledWith('agent:ws')
   })
 })

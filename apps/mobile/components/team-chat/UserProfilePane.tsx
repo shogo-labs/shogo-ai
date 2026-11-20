@@ -19,14 +19,14 @@ export function UserProfilePane({
   workspaceId,
   userId,
   conversation,
-  onOpenMemberMessages,
+  onFilterByMember,
   onClose,
 }: {
   workspaceId: string
   userId: string
   /** The channel the profile was opened from, when there is one. */
   conversation?: ConversationDetail | null
-  onOpenMemberMessages?: (from: string) => void
+  onFilterByMember?: (from: string) => void
   onClose: () => void
 }) {
   // Activity channels are left out on purpose: they post-filter `canSeeMessage`
@@ -43,9 +43,9 @@ export function UserProfilePane({
           <X size={16} className="text-muted-foreground" />
         </Pressable>
       </View>
-      {channel && onOpenMemberMessages ? (
+      {channel && onFilterByMember ? (
         <Pressable
-          onPress={() => onOpenMemberMessages(userFromKey(userId))}
+          onPress={() => onFilterByMember(userFromKey(userId))}
           accessibilityRole="button"
           accessibilityLabel={`Messages in #${channel.name ?? 'channel'}`}
           testID="user-profile-member-messages"
