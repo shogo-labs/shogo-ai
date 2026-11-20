@@ -8393,6 +8393,13 @@ app.post('/api/billing/checkout', async (c) => {
   }
 })
 
+function planDecoration<T>(label: string, value: Promise<T> | T, fallback: T): Promise<T> {
+  return Promise.resolve(value).catch((err) => {
+    console.error(`[Billing] workspace-plan: ${label} failed, serving the plan without it:`, err)
+    return fallback
+  })
+}
+
 app.get('/api/billing/workspace-plan', async (c) => {
   try {
     const auth = c.get('auth') as any
@@ -8455,21 +8462,25 @@ app.get('/api/billing/workspace-plan', async (c) => {
     ])
     // Signup promo credit + trial eligibility for the billing UI. Cloud only
     // (local mode has no signup risk rows and no Stripe).
+    // These only decorate the billing UI. The plan above is what unlocks
+    // models, so a failure here is logged and must not fail the response: a
+    // throwing trial check once 500'd this route and every grant workspace
+    // looked Free (SHO-459).
     const cloudUserId = userId && !LOCAL_MODE ? userId : null
     const [promoUser, promoRisk, trialCheck] = await Promise.all([
-      cloudUserId
+      planDecoration('promo user', cloudUserId
         ? prisma.user.findUnique({ where: { id: cloudUserId }, select: { emailVerified: true } })
-        : null,
-      cloudUserId
+        : null, null),
+      planDecoration('promo risk', cloudUserId
         ? prisma.signupRiskAssessment.findUnique({ where: { userId: cloudUserId }, select: { decision: true } })
-        : null,
-      !sub && cloudUserId
+        : null, null),
+      planDecoration('trial eligibility', !sub && cloudUserId
         ? trialService.trialEligibility({
             userId: cloudUserId,
             workspaceId,
             request: readSignupRequestInfo(c.req.raw.headers),
           })
-        : { eligible: false },
+        : { eligible: false }, { eligible: false }),
     ])
     const promoEmailVerified = Boolean(promoUser?.emailVerified)
     const promoPendingUsd = promoEmailVerified
