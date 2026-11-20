@@ -8,7 +8,8 @@
  * banned, and not an internal email (shogo.ai / getodin.ai / super_admin).
  */
 
-import { ABUSE_CANDIDATE_CAP } from '../../config/abuse-config'
+import { Prisma } from '../../generated/prisma-pg/client'
+import { ABUSE_CANDIDATE_CAP, ABUSE_JUDGE_MAX_TURNS, ABUSE_JUDGE_WINDOW_DAYS } from '../../config/abuse-config'
 import { redactSecrets } from '../../lib/redact-secrets'
 
 /** Keyword weights used in the pre-filter score. */
@@ -54,12 +55,21 @@ function keywordScore(text: string): number {
 
 /**
  * Gather free-account candidates from the last 24h of proxy_turns.
+ *
+ * `hasBannedAt` controls whether the query filters out already-banned users.
+ * Pass `false` only in dry-run mode against a pre-migration database; the
+ * caller (`runAbuseCheckCore`) refuses `--apply` when it is `false`.
+ *
  * Returns up to ABUSE_CANDIDATE_CAP accounts, highest keyword score first.
+ * Each candidate's `turns` are drawn from the last ABUSE_JUDGE_WINDOW_DAYS days
+ * (up to ABUSE_JUDGE_MAX_TURNS) so the judge has enough context even for
+ * accounts that were only lightly active on the trigger day.
  */
 export async function gatherCandidates(
   db: any,
   since: Date,
   clusterKeys: Map<string, string>,
+  hasBannedAt: boolean,
 ): Promise<AbuseCandidate[]> {
   type TurnRow = {
     userId: string
@@ -70,84 +80,41 @@ export async function gatherCandidates(
     createdAt: Date
   }
 
+  // Conditionally include the bannedAt filter (omit on pre-migration DB in dry-run).
+  const bannedFilter = hasBannedAt ? Prisma.sql`AND u."bannedAt" IS NULL` : Prisma.empty
+
   // 1. Users who had turns in the last 24h, excluding banned, internal and paid.
-  // Falls back gracefully when the migration hasn't been applied yet (pre-migration
-  // prod: `u."bannedAt"` doesn't exist — PG error 42703). The dry-run replay needs
-  // to work against an unmigrated database; without --apply the results are read-only.
-  let activeTurns: TurnRow[]
-  try {
-    activeTurns = await db.$queryRaw`
-      SELECT
-        pt."userId",
-        pt."id",
-        pt."source",
-        pt."firstAt" as "createdAt",
-        LEFT(pt."userText", 2000) as "userText",
-        RIGHT(pt."assistantText", 1500) as "assistantText"
-      FROM proxy_turns pt
-      JOIN users u ON u.id = pt."userId"
-      WHERE
-        pt."firstAt" >= ${since}
-        AND pt."userId" IS NOT NULL
-        AND u."bannedAt" IS NULL
-        AND u.role = 'user'
-        AND u.email NOT ILIKE '%@shogo.ai'
-        AND u.email NOT ILIKE '%@getodin.ai'
-        AND NOT EXISTS (
-          SELECT 1 FROM members m
-          JOIN subscriptions s ON s."workspaceId" = m."workspaceId"
-          WHERE m."userId" = pt."userId"
-            AND s.status IN ('active','trialing','past_due')
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM workspace_grants wg
-          JOIN members mwg ON mwg."workspaceId" = wg."workspaceId"
-          WHERE mwg."userId" = pt."userId"
-            AND (wg."expiresAt" IS NULL OR wg."expiresAt" > NOW())
-        )
-      ORDER BY pt."firstAt" DESC
-    `
-  } catch (err: any) {
-    // Pre-migration fallback: if the bannedAt column doesn't exist yet (42703),
-    // retry without the filter. Already-banned users may appear as candidates in
-    // dry-run mode, which is acceptable — they won't be re-banned.
-    const pgMsg = String(err?.meta?.driverAdapterError?.cause?.originalMessage ?? err?.message ?? '')
-    if (err?.code === 'P2010' && (err?.meta?.driverAdapterError?.cause?.kind === 'ColumnNotFound' || pgMsg.includes('bannedAt'))) {
-      console.warn('[abuse-check] bannedAt column not found — running pre-migration fallback (dry-run only)')
-      activeTurns = await db.$queryRaw`
-        SELECT
-          pt."userId",
-          pt."id",
-          pt."source",
-          pt."firstAt" as "createdAt",
-          LEFT(pt."userText", 2000) as "userText",
-          RIGHT(pt."assistantText", 1500) as "assistantText"
-        FROM proxy_turns pt
-        JOIN users u ON u.id = pt."userId"
-        WHERE
-          pt."firstAt" >= ${since}
-          AND pt."userId" IS NOT NULL
-          AND u.role = 'user'
-          AND u.email NOT ILIKE '%@shogo.ai'
-          AND u.email NOT ILIKE '%@getodin.ai'
-          AND NOT EXISTS (
-            SELECT 1 FROM members m
-            JOIN subscriptions s ON s."workspaceId" = m."workspaceId"
-            WHERE m."userId" = pt."userId"
-              AND s.status IN ('active','trialing','past_due')
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM workspace_grants wg
-            JOIN members mwg ON mwg."workspaceId" = wg."workspaceId"
-            WHERE mwg."userId" = pt."userId"
-              AND (wg."expiresAt" IS NULL OR wg."expiresAt" > NOW())
-          )
-        ORDER BY pt."firstAt" DESC
-      `
-    } else {
-      throw err
-    }
-  }
+  const activeTurns = await db.$queryRaw<TurnRow[]>`
+    SELECT
+      pt."userId",
+      pt."id",
+      pt."source",
+      pt."firstAt" as "createdAt",
+      LEFT(pt."userText", 2000) as "userText",
+      RIGHT(pt."assistantText", 1500) as "assistantText"
+    FROM proxy_turns pt
+    JOIN users u ON u.id = pt."userId"
+    WHERE
+      pt."firstAt" >= ${since}
+      AND pt."userId" IS NOT NULL
+      ${bannedFilter}
+      AND u.role = 'user'
+      AND u.email NOT ILIKE '%@shogo.ai'
+      AND u.email NOT ILIKE '%@getodin.ai'
+      AND NOT EXISTS (
+        SELECT 1 FROM members m
+        JOIN subscriptions s ON s."workspaceId" = m."workspaceId"
+        WHERE m."userId" = pt."userId"
+          AND s.status IN ('active','trialing','past_due')
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM workspace_grants wg
+        JOIN members mwg ON mwg."workspaceId" = wg."workspaceId"
+        WHERE mwg."userId" = pt."userId"
+          AND (wg."expiresAt" IS NULL OR wg."expiresAt" > NOW())
+      )
+    ORDER BY pt."firstAt" DESC
+  `
 
   // 2. Group turns by userId.
   const byUser = new Map<
@@ -221,7 +188,11 @@ export async function gatherCandidates(
     )
   })
 
-  const candidates: AbuseCandidate[] = []
+  const preFilterCandidates: Array<{
+    userId: string; email: string; createdAt: Date
+    ipPrefix: string | null; deviceId: string | null
+    keywordScore: number; clusterKey?: string
+  }> = []
 
   for (const user of users) {
     const data = byUser.get(user.id)
@@ -232,23 +203,75 @@ export async function gatherCandidates(
     // Pre-filter: include only if keyword score ≥ 6 OR in a cluster.
     if (score < 6 && !inCluster) continue
 
-    candidates.push({
+    preFilterCandidates.push({
       userId: user.id,
       email: user.email,
       createdAt: user.createdAt,
       ipPrefix: user.ipPrefix,
       deviceId: user.deviceId,
       keywordScore: score,
-      turns: data.turns,
       clusterKey: clusterKeys.get(user.id),
     })
   }
 
   // Sort by keyword score desc, cap.
-  candidates.sort((a, b) => b.keywordScore - a.keywordScore)
-  const dropped = Math.max(0, candidates.length - ABUSE_CANDIDATE_CAP)
+  preFilterCandidates.sort((a, b) => b.keywordScore - a.keywordScore)
+  const dropped = Math.max(0, preFilterCandidates.length - ABUSE_CANDIDATE_CAP)
   if (dropped > 0) {
-    console.log(`[abuse-check] Pre-filter: ${candidates.length} candidates, dropping ${dropped} at cap`)
+    console.log(`[abuse-check] Pre-filter: ${preFilterCandidates.length} candidates, dropping ${dropped} at cap`)
   }
-  return candidates.slice(0, ABUSE_CANDIDATE_CAP)
+  const capped = preFilterCandidates.slice(0, ABUSE_CANDIDATE_CAP)
+
+  if (capped.length === 0) return []
+
+  // 4. Fetch judge turns: last ABUSE_JUDGE_WINDOW_DAYS days (not just the
+  //    trigger 24h), up to ABUSE_JUDGE_MAX_TURNS per candidate. This avoids
+  //    the false-negative where an account has few turns yesterday but many
+  //    indicative turns across the past week.
+  const judgeWindowStart = new Date(since.getTime() - (ABUSE_JUDGE_WINDOW_DAYS - 1) * 24 * 60 * 60 * 1000)
+  const cappedIds = capped.map((c) => c.userId)
+
+  const judgeTurns = await db.$queryRaw<TurnRow[]>`
+    SELECT
+      pt."userId",
+      pt."id",
+      pt."source",
+      pt."firstAt" as "createdAt",
+      LEFT(pt."userText", 2000) as "userText",
+      RIGHT(pt."assistantText", 1500) as "assistantText"
+    FROM (
+      SELECT *,
+        ROW_NUMBER() OVER (PARTITION BY "userId" ORDER BY "firstAt" DESC) as rn
+      FROM proxy_turns
+      WHERE "userId" = ANY(${cappedIds})
+        AND "firstAt" >= ${judgeWindowStart}
+        AND "userText" IS NOT NULL
+    ) pt
+    WHERE pt.rn <= ${ABUSE_JUDGE_MAX_TURNS}
+    ORDER BY pt."userId", pt."firstAt" DESC
+  `
+
+  // Group judge turns by userId.
+  const judgeTurnsByUser = new Map<string, CandidateTurn[]>()
+  for (const row of judgeTurns) {
+    if (!row.userId) continue
+    const list = judgeTurnsByUser.get(row.userId) ?? []
+    list.push({
+      id: row.id,
+      userId: row.userId,
+      source: row.source,
+      createdAt: row.createdAt,
+      userText: redactSecrets(row.userText ?? ''),
+      assistantText: redactSecrets(row.assistantText ?? ''),
+    })
+    judgeTurnsByUser.set(row.userId, list)
+  }
+
+  // Build final candidates with 7-day turns.
+  const candidates: AbuseCandidate[] = capped.map((c) => ({
+    ...c,
+    turns: judgeTurnsByUser.get(c.userId) ?? byUser.get(c.userId)?.turns ?? [],
+  }))
+
+  return candidates
 }

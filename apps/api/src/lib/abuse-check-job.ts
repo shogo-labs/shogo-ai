@@ -80,23 +80,50 @@ export type AbuseCheckResult = {
  * Called by `runAbuseCheck` (inside the lock) and by the replay script.
  * `runDate` defaults to today (UTC); pass a specific date for replay.
  */
+/**
+ * Check whether the `users.bannedAt` column exists (i.e. whether the
+ * SHO-459 migration has been applied). Called once per run; result is passed
+ * to `detectClusters` and `gatherCandidates` so neither duplicates the query.
+ */
+async function checkHasBannedAt(db: any): Promise<boolean> {
+  const rows = await db.$queryRaw<[{ exists: boolean }]>`
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'users' AND column_name = 'bannedAt'
+    ) AS exists
+  `
+  return rows[0]?.exists ?? false
+}
+
 export async function runAbuseCheckCore(
   prismaClient: PrismaClient,
   options: { runDate?: string; dryRun?: boolean } = {},
 ): Promise<AbuseCheckResult> {
   const db = prismaClient as any
+  const dryRun = options.dryRun ?? false
   const now = new Date()
   const runDate = options.runDate ?? now.toISOString().split('T')[0]
   const since = new Date(now.getTime() - 24 * 60 * 60 * 1000)
 
-  console.log(`[abuse-check] Starting run for ${runDate} (dryRun=${options.dryRun ?? false})`)
+  console.log(`[abuse-check] Starting run for ${runDate} (dryRun=${dryRun})`)
+
+  // 0. Schema check: does users.bannedAt exist yet?
+  const hasBannedAt = await checkHasBannedAt(db)
+  if (!hasBannedAt) {
+    if (!dryRun) {
+      throw new Error(
+        'abuse-check: users.bannedAt column not found — run prisma migrate deploy before running with --apply',
+      )
+    }
+    console.warn('[abuse-check] users.bannedAt not found — running pre-migration dry-run (no bans will be written)')
+  }
 
   // 1. Detect clusters.
-  const clusterKeys = await detectClusters(db, since)
+  const clusterKeys = await detectClusters(db, since, hasBannedAt)
   console.log(`[abuse-check] ${clusterKeys.size} cluster members detected`)
 
   // 2. Gather candidates.
-  const candidates = await gatherCandidates(db, since, clusterKeys)
+  const candidates = await gatherCandidates(db, since, clusterKeys, hasBannedAt)
   console.log(`[abuse-check] ${candidates.length} candidates after pre-filter`)
 
   let autoBanned = 0
@@ -126,12 +153,12 @@ export async function runAbuseCheckCore(
       const decision = applyPolicy({ verdict, isFreeAccount })
       if (decision === 'none') continue
 
-      const isBan = decision === 'ban' && !options.dryRun
+      const isBan = decision === 'ban' && !dryRun
       const evidence = buildEvidence(verdict.turnIds, candidate.turns)
 
       // 5. Upsert AbuseFlag.
       let flagId: string | null = null
-      if (!options.dryRun) {
+      if (!dryRun) {
         const flag = await db.abuseFlag.upsert({
           where: {
             userId_runDate_category: {
@@ -197,7 +224,7 @@ export async function runAbuseCheckCore(
     flagged,
     paidFlagged,
   }
-  if (!options.dryRun) await sendOpsAlert(summary)
+  if (!dryRun) await sendOpsAlert(summary)
 
   return { candidates: candidates.length, banned: autoBanned, flagged, paidFlagged }
 }

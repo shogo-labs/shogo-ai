@@ -27,6 +27,9 @@ export const ABUSE_CLUSTER_WINDOW_HOURS = 48
 /** Maximum turns included in a single judge call per candidate. */
 export const ABUSE_JUDGE_MAX_TURNS = 60
 
+/** How many days back the judge looks for turns on each candidate (rolling window). */
+export const ABUSE_JUDGE_WINDOW_DAYS = 7
+
 /** Tail chars of assistantText included in each turn for the judge. */
 export const ABUSE_JUDGE_ASSISTANT_TAIL = 1_500
 

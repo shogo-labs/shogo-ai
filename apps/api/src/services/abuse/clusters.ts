@@ -10,6 +10,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import { Prisma } from '../../generated/prisma-pg/client'
 import { ABUSE_CLUSTER_MIN_SIZE, ABUSE_CLUSTER_WINDOW_HOURS } from '../../config/abuse-config'
 
 /** sha256 of the normalised text. */
@@ -28,6 +29,7 @@ function messageHash(text: string): string {
 export async function detectClusters(
   db: any,
   since: Date,
+  hasBannedAt: boolean,
   windowHours: number = ABUSE_CLUSTER_WINDOW_HOURS,
 ): Promise<Map<string, string>> {
   const windowStart = new Date(since.getTime() - windowHours * 60 * 60 * 1000)
@@ -39,59 +41,31 @@ export async function detectClusters(
     deviceId: string | null
   }
 
-  // Free accounts created in the cluster window.
-  // Falls back gracefully when the migration hasn't been applied yet (pre-migration
-  // prod: `u."bannedAt"` doesn't exist — PG error 42703).
-  let freeUsers: FreeUser[]
-  try {
-    freeUsers = await db.$queryRaw`
-      SELECT
-        sra."userId",
-        u."createdAt",
-        sra."ipPrefix",
-        sra."deviceId"
-      FROM signup_risk_assessments sra
-      JOIN users u ON u.id = sra."userId"
-      WHERE
-        u."createdAt" >= ${windowStart}
-        AND u."bannedAt" IS NULL
-        AND u.role = 'user'
-        AND u.email NOT ILIKE '%@shogo.ai'
-        AND u.email NOT ILIKE '%@getodin.ai'
-        AND NOT EXISTS (
-          SELECT 1 FROM members m
-          JOIN subscriptions s ON s."workspaceId" = m."workspaceId"
-          WHERE m."userId" = sra."userId"
-            AND s.status IN ('active','trialing','past_due')
-        )
-    `
-  } catch (err: any) {
-    const pgMsg = String(err?.meta?.driverAdapterError?.cause?.originalMessage ?? err?.message ?? '')
-    if (err?.code === 'P2010' && (err?.meta?.driverAdapterError?.cause?.kind === 'ColumnNotFound' || pgMsg.includes('bannedAt'))) {
-      freeUsers = await db.$queryRaw`
-        SELECT
-          sra."userId",
-          u."createdAt",
-          sra."ipPrefix",
-          sra."deviceId"
-        FROM signup_risk_assessments sra
-        JOIN users u ON u.id = sra."userId"
-        WHERE
-          u."createdAt" >= ${windowStart}
-          AND u.role = 'user'
-          AND u.email NOT ILIKE '%@shogo.ai'
-          AND u.email NOT ILIKE '%@getodin.ai'
-          AND NOT EXISTS (
-            SELECT 1 FROM members m
-            JOIN subscriptions s ON s."workspaceId" = m."workspaceId"
-            WHERE m."userId" = sra."userId"
-              AND s.status IN ('active','trialing','past_due')
-          )
-      `
-    } else {
-      throw err
-    }
-  }
+  // Conditionally include the bannedAt filter: safe to omit on a pre-migration
+  // DB (dry-run only; runAbuseCheckCore refuses --apply when hasBannedAt=false).
+  const bannedFilter = hasBannedAt ? Prisma.sql`AND u."bannedAt" IS NULL` : Prisma.empty
+
+  const freeUsers = await db.$queryRaw<FreeUser[]>`
+    SELECT
+      sra."userId",
+      u."createdAt",
+      sra."ipPrefix",
+      sra."deviceId"
+    FROM signup_risk_assessments sra
+    JOIN users u ON u.id = sra."userId"
+    WHERE
+      u."createdAt" >= ${windowStart}
+      ${bannedFilter}
+      AND u.role = 'user'
+      AND u.email NOT ILIKE '%@shogo.ai'
+      AND u.email NOT ILIKE '%@getodin.ai'
+      AND NOT EXISTS (
+        SELECT 1 FROM members m
+        JOIN subscriptions s ON s."workspaceId" = m."workspaceId"
+        WHERE m."userId" = sra."userId"
+          AND s.status IN ('active','trialing','past_due')
+      )
+  `
 
   // Group by ipPrefix then by deviceId.
   const ipGroups = new Map<string, string[]>()
