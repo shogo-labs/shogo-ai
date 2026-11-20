@@ -89,10 +89,17 @@ describe('AC1 · Basic plan (limit = 3)', () => {
     }
   })
 
-  test('capitalised/decorated plan id ("Basic-Annual") normalises to basic', async () => {
-    const r = await included('Basic-Annual', 2)
+  test('at-cap error carries planId, limit, used, nextPlanId fields for the billing endpoint', async () => {
+    // The service no longer normalises decorated strings — that is getEffectivePlanId's job.
+    // Verify the structured error shape the billing API and UI rely on.
+    const r = await included('basic', 2)
     expect(r.ok).toBe(false)
-    if (!r.ok) expect((r.error as any).planId).toBe('basic')
+    if (!r.ok) {
+      expect((r.error as any).planId).toBe('basic')
+      expect((r.error as any).limit).toBe(3)
+      expect((r.error as any).used).toBe(3)
+      expect((r.error as any).nextPlanId).toBe('business')
+    }
   })
 })
 
@@ -141,10 +148,18 @@ describe('AC3 · Free parent → plan_required', () => {
     }
   })
 
-  test('unknown plan normalises to free → plan_required', async () => {
-    const r = await included('unknown-plan', 0)
+  test('plan_required message is built from nextWorkspaceTier so it tracks map changes', async () => {
+    // The message must name the next tier (Basic) and its limit from the map.
+    // normalizePlanId for decorated strings lives in usage-plans.ts / getEffectivePlanId;
+    // the service only receives a canonical PlanId.
+    const r = await included('free', 0)
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.error.code).toBe('plan_required')
+    if (!r.ok) {
+      expect(r.error.code).toBe('plan_required')
+      // Message references Basic and its limit from WORKSPACE_LIMITS.basic
+      expect(r.error.message).toMatch(/Basic/)
+      expect(r.error.message).toMatch(/3/)
+    }
   })
 })
 
@@ -228,20 +243,29 @@ describe('AC7 · Downgrade: existing children not locked, only creates refused',
   })
 })
 
-describe('AC8 · Trial / grant plans via getEffectivePlanId (integration)', () => {
-  // getEffectivePlanId is called by the hook before passing the plan string
-  // to checkIncludedWorkspaceAllowance. The normalizePlanId function handles
-  // decorated ids produced by grant plans ('business-grant', etc.).
-  test('business-grant plan id normalises to business → unlimited', async () => {
-    const r = await included('business-grant', 20)
+describe('AC8 · Trial / grant plans resolve to canonical PlanId before reaching this service', () => {
+  // getEffectivePlanId (in billing.service) normalises decorated ids like
+  // 'business-grant', 'pro_200', 'Business-Annual' → canonical PlanId before
+  // the hook passes them here. These tests verify the canonical paths.
+  test('business plan (grant/trial resolved by billing service): 20 children always ok', async () => {
+    const r = await included('business', 20)
     expect(r.ok).toBe(true)
     if (r.ok) expect(r.limit).toBeNull()
   })
 
-  test('pro_200 (legacy decorated pro) normalises to pro', async () => {
-    const r = await included('pro_200', 9)
-    expect(r.ok).toBe(false) // at cap (used=10 >= limit=10)
-    if (!r.ok) expect((r.error as any).planId).toBe('pro')
+  test('pro plan (legacy pro resolved by billing service): 9 children → at cap', async () => {
+    const r = await included('pro', 9)
+    expect(r.ok).toBe(false) // used=10 >= limit=10
+    if (!r.ok) {
+      expect((r.error as any).planId).toBe('pro')
+      expect((r.error as any).limit).toBe(10)
+    }
+  })
+
+  test('enterprise plan (grant resolved by billing service): 50 children always ok', async () => {
+    const r = await included('enterprise', 50)
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.limit).toBeNull()
   })
 })
 
