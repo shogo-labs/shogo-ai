@@ -9,8 +9,8 @@
  *
  * Everything here is mocked: the `**\/chat` POST is fulfilled with a
  * hand-built UI message stream (same frame protocol as
- * `chat-offline-resilience.test.ts`), and the `/turn` probe stays open until
- * the test has confirmed the echo is visible. No model is called.
+ * `chat-offline-resilience.test.ts`) and the `/turn` probe is held open for
+ * `PROBE_DELAY_MS`, so no model is called and the delay is deterministic.
  *
  * Start the local stack first:
  *   SHOGO_LOCAL_MODE=true bun run api:dev &
@@ -26,11 +26,17 @@ import { openTeamHome } from "./helpers"
 const CHAT_URL_GLOB = "**/api/{projects,workspaces}/*/chat"
 const TURN_URL_GLOB = "**/api/{projects,workspaces}/*/chat/*/turn"
 
+/** How long the live-turn probe is held open — the freeze the echo must not sit behind. */
+const PROBE_DELAY_MS = 1_500
 /**
- * Generous paint ceiling for a loaded CI runner. The stronger assertion is
- * that the echo remains visible before the test releases the pending probe.
+ * How long the bubble may take to paint, measured from the Enter keypress.
+ * ~15–40 ms on an idle local machine, 106–126 ms on a loaded PR runner (3 shards
+ * in parallel, measured on #1525), and 255 ms on the 2026-11-18 shard 2 run that
+ * sat at 31.5 of its 35 min cap — so 600 ms. The property under test is only
+ * "well under `PROBE_DELAY_MS`"; 600 ms is still 2.5× under it, and the echo
+ * being gated on the probe would take the full 1500 ms.
  */
-const ECHO_BUDGET_MS = Number(process.env.E2E_ECHO_BUDGET_MS || 1_000)
+const ECHO_BUDGET_MS = Number(process.env.E2E_ECHO_BUDGET_MS || 600)
 const REPLY_TEXT = "Echo timing reply."
 
 // ─── SSE frames (AI SDK `UIMessageChunk`s, one JSON object per `data:` line) ─
@@ -69,17 +75,10 @@ async function installChatMock(page: Page) {
   })
 }
 
-/** Holds each live-turn probe until the test has asserted the echo is visible. */
-async function holdTurnProbe(page: Page) {
-  const pending = new Set<() => void>()
+/** Holds every live-turn probe open for `delayMs`, then answers "no live turn". */
+async function delayTurnProbe(page: Page, delayMs: number) {
   await page.route(TURN_URL_GLOB, async (route: Route) => {
-    let release!: () => void
-    const blocked = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    pending.add(release)
-    await blocked
-    pending.delete(release)
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
     await route
       .fulfill({
         status: 200,
@@ -88,25 +87,6 @@ async function holdTurnProbe(page: Page) {
       })
       .catch(() => undefined)
   })
-  return {
-    count: () => pending.size,
-    releaseAll: () => {
-      for (const release of pending) release()
-    },
-  }
-}
-
-async function expectEchoWhileProbePending(
-  page: Page,
-  text: string,
-  probe: Awaited<ReturnType<typeof holdTurnProbe>>,
-) {
-  await expect
-    .poll(() => probe.count(), { timeout: 10_000, message: "the live-turn probe is pending" })
-    .toBeGreaterThan(0)
-  // The repeated-text case already has an older visible match; the new echo
-  // is appended last while its probe is held open.
-  await expect(page.getByText(text, { exact: true }).last()).toBeVisible({ timeout: 2_000 })
 }
 
 // ─── Window helpers ─────────────────────────────────────────────────────────
@@ -136,27 +116,28 @@ async function createProject(page: Page, prompt: string) {
 }
 
 /**
- * Watches the DOM from inside the page for the first paint of `marker` outside
- * the composer, so the measurement uses the browser's own clock instead of a
- * round trip from the test runner. The composer draws a transparent mirror of
- * its text, so a bare body-text match is not proof of a bubble: a user bubble
- * (`role=button`, "Edit this message …") or text with the composer emptied is.
+ * Watches the DOM from inside the page for the first paint of `marker` in the
+ * TRANSCRIPT, so the measurement uses the browser's own clock instead of a
+ * round trip from the test runner.
+ *
+ * Scoped to `[data-testid="turn-list"]` on purpose. The composer draws a
+ * transparent mirror of its text, and it clears its `value` a frame before the
+ * mirror's text leaves the DOM — so a bare `document.body.innerText` match can
+ * fire on the mirror, before the echo bubble exists, and the bubble is then
+ * gone by the time the order is read (`echoAt === -1`, the 2026-11-19 shard 2
+ * failure). The echo is an optimistic message, so `canEditMessage` gives it no
+ * `role=button` / "Edit this message" label to match on; the transcript
+ * container is the marker that actually distinguishes a bubble from the
+ * composer.
  */
 async function armEchoWatch(page: Page, marker: string) {
   await page.evaluate((m) => {
     const w = window as any
-    const composerText = () => {
-      const el = document.querySelector('[data-testid="project-composer-input"]') as HTMLTextAreaElement | null
-      if (!el) return ""
-      return typeof el.value === "string" ? el.value : (el.innerText ?? "")
+    const transcriptText = () => {
+      const list = document.querySelector('[data-testid="turn-list"]')
+      return list ? (list.textContent || "") : ""
     }
-    const bubbleTexts = () =>
-      Array.from(document.querySelectorAll('[role="button"]')).filter((el) =>
-        (el.getAttribute("aria-label") || "").includes("Edit this message"),
-      )
-    const painted = () =>
-      bubbleTexts().some((el) => (el.textContent || "").includes(m)) ||
-      (document.body.innerText.includes(m) && !composerText().includes(m))
+    const painted = () => transcriptText().includes(m)
     w.__echoTiming = { sentAt: null, appearedAt: null }
     const observer = new MutationObserver(() => {
       // Only mutations caused by the send count — the composer mirror holds the
@@ -193,7 +174,10 @@ async function sendAndTimeEcho(page: Page, text: string): Promise<number> {
 async function transcriptOrder(page: Page, text: string, reply: string) {
   return page.evaluate(
     ({ t, r }) => {
-      const body = document.body.innerText
+      // The transcript, not `document.body`: the composer mirror holds the same
+      // text and would otherwise be counted as a bubble (see `armEchoWatch`).
+      const list = document.querySelector('[data-testid="turn-list"]')
+      const body = list ? (list.textContent || "") : ""
       return {
         echoAt: body.lastIndexOf(t),
         replyAt: body.lastIndexOf(r),
@@ -220,67 +204,51 @@ test.describe("sent message paints before the live-turn probe — E2E (mocked)",
   })
 
   test("the bubble paints within the budget while the probe hangs, as the last turn", async () => {
-    const probe = await holdTurnProbe(page)
-    try {
-      const first = "First message before the slow one"
-      const firstElapsed = await sendAndTimeEcho(page, first)
-      await expectEchoWhileProbePending(page, first, probe)
-      expect(firstElapsed).toBeLessThan(ECHO_BUDGET_MS)
-      probe.releaseAll()
-      await expect(page.getByText(REPLY_TEXT).last()).toBeVisible({ timeout: 15_000 })
-      await waitForAgentIdle(page)
-      const repliesBefore = await page.getByText(REPLY_TEXT).count()
+    await delayTurnProbe(page, PROBE_DELAY_MS)
 
-      const second = "Sent while the turn probe hangs"
-      const elapsed = await sendAndTimeEcho(page, second)
-      await expectEchoWhileProbePending(page, second, probe)
+    const first = "First message before the slow one"
+    await sendAndTimeEcho(page, first)
+    await expect(page.getByText(REPLY_TEXT).last()).toBeVisible({ timeout: 15_000 })
+    await waitForAgentIdle(page)
+    const repliesBefore = await page.getByText(REPLY_TEXT).count()
 
-      // The probe is still in flight at this point: the bubble cannot be gated on it.
-      expect(elapsed, `echo painted ${elapsed.toFixed(1)}ms after Enter`).toBeLessThan(ECHO_BUDGET_MS)
+    const second = "Sent while the turn probe hangs"
+    const elapsed = await sendAndTimeEcho(page, second)
 
-      const order = await transcriptOrder(page, second, REPLY_TEXT)
-      // Composer cleared synchronously, bubble already at the bottom of the transcript.
-      expect(order.composer).toBe("")
-      expect(order.echoAt).toBeGreaterThan(order.replyAt)
-      // Nothing from the answer has landed yet, so the echo is the newest item.
-      expect(await page.getByText(REPLY_TEXT).count()).toBe(repliesBefore)
+    // The probe is still in flight at this point: the bubble cannot be gated on it.
+    expect(elapsed, `echo painted ${elapsed.toFixed(1)}ms after Enter`).toBeLessThan(ECHO_BUDGET_MS)
 
-      await expect(page.getByText(second, { exact: true })).toHaveCount(1)
-      probe.releaseAll()
-      await expect(page.getByText(REPLY_TEXT).last()).toBeVisible({ timeout: 20_000 })
-      // No duplicate once the real message replaces the echo.
-      await expect(page.getByText(second, { exact: true })).toHaveCount(1)
-      await waitForAgentIdle(page)
-    } finally {
-      probe.releaseAll()
-      await page.unroute(TURN_URL_GLOB)
-    }
+    const order = await transcriptOrder(page, second, REPLY_TEXT)
+    // Composer cleared synchronously, bubble already at the bottom of the transcript.
+    expect(order.composer).toBe("")
+    expect(order.echoAt).toBeGreaterThan(order.replyAt)
+    // Nothing from the answer has landed yet, so the echo is the newest item.
+    expect(await page.getByText(REPLY_TEXT).count()).toBe(repliesBefore)
+
+    await expect(page.getByText(second, { exact: true })).toHaveCount(1)
+    await expect(page.getByText(REPLY_TEXT).last()).toBeVisible({ timeout: 20_000 })
+    // No duplicate once the real message replaces the echo.
+    await expect(page.getByText(second, { exact: true })).toHaveCount(1)
+    await waitForAgentIdle(page)
+    await page.unroute(TURN_URL_GLOB)
   })
 
   test("re-sending the same text still paints a new bubble immediately", async () => {
-    const probe = await holdTurnProbe(page)
-    try {
-      const repeated = "keep going please"
-      const firstElapsed = await sendAndTimeEcho(page, repeated)
-      await expectEchoWhileProbePending(page, repeated, probe)
-      expect(firstElapsed).toBeLessThan(ECHO_BUDGET_MS)
-      probe.releaseAll()
-      await expect(page.getByText(REPLY_TEXT).last()).toBeVisible({ timeout: 15_000 })
-      await waitForAgentIdle(page)
-      await expect(page.getByText(repeated, { exact: true })).toHaveCount(1)
+    await delayTurnProbe(page, PROBE_DELAY_MS)
 
-      const elapsed = await sendAndTimeEcho(page, repeated)
-      await expectEchoWhileProbePending(page, repeated, probe)
-      expect(elapsed).toBeLessThan(ECHO_BUDGET_MS)
-      await expect(page.getByText(repeated, { exact: true })).toHaveCount(2)
-      probe.releaseAll()
+    const repeated = "keep going please"
+    await sendAndTimeEcho(page, repeated)
+    await expect(page.getByText(REPLY_TEXT).last()).toBeVisible({ timeout: 15_000 })
+    await waitForAgentIdle(page)
+    await expect(page.getByText(repeated, { exact: true })).toHaveCount(1)
 
-      await expect(page.getByText(REPLY_TEXT).last()).toBeVisible({ timeout: 20_000 })
-      await expect(page.getByText(repeated, { exact: true })).toHaveCount(2)
-      await waitForAgentIdle(page)
-    } finally {
-      probe.releaseAll()
-      await page.unroute(TURN_URL_GLOB)
-    }
+    const elapsed = await sendAndTimeEcho(page, repeated)
+    expect(elapsed).toBeLessThan(ECHO_BUDGET_MS)
+    await expect(page.getByText(repeated, { exact: true })).toHaveCount(2)
+
+    await expect(page.getByText(REPLY_TEXT).last()).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByText(repeated, { exact: true })).toHaveCount(2)
+    await waitForAgentIdle(page)
+    await page.unroute(TURN_URL_GLOB)
   })
 })

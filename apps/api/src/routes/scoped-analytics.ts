@@ -70,9 +70,14 @@ function parseEngagementPeriod(url: URL): EngagementPeriod {
 export function scopedAnalyticsRoutes(): Hono {
   const router = new Hono()
 
-  // All scoped analytics routes require auth
-  router.use('*', authMiddleware)
-  router.use('*', requireAuth)
+  // All scoped analytics routes require auth. Scoped per path family, not
+  // '*': this router is mounted at /api in server.ts, where a '*' middleware
+  // becomes part of the parent's chain for every /api/* route registered
+  // after it (SHO-452).
+  for (const prefix of ['/workspaces/:workspaceId/analytics/*', '/projects/:projectId/analytics/*', '/me/analytics/*']) {
+    router.use(prefix, authMiddleware)
+    router.use(prefix, requireAuth)
+  }
 
   // --------------------------------------------------------------------------
   // Workspace Analytics — Basic (workspace owners and admins)

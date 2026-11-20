@@ -226,6 +226,21 @@ const hostHealthGateDiscardGauge = meter.createObservableGauge('metal.host.healt
 const fleetUtilGauge = meter.createObservableGauge('metal.fleet_utilization_pct', {
   description: 'Region utilization: assigned microVMs ÷ (live hosts × MAX_VMS_PER_HOST); picks the idle-suspend tier',
 })
+// The same ratio over ACTIVE VMs only (SHO-444). This is the one that decides
+// the idle tier and the burst scaler: an idle-resident VM is evictable, so it is
+// free capacity, and counting it is what bought hosts to hold VMs nobody used.
+// Kept beside the assigned-based gauge so the gap between them IS the bucket.
+const regionActiveUtilGauge = meter.createObservableGauge('metal.region.active_util_pct', {
+  description: 'Region utilization over ACTIVE microVMs only: active ÷ (live hosts × MAX_VMS_PER_HOST)',
+})
+// The assigned set split by residency (SHO-444): `active` holds a slot someone
+// needs, `evictable` is warm but free. Disjoint, sum to metal.host.assigned.
+const hostActiveGauge = meter.createObservableGauge('metal.host.active', {
+  description: 'Assigned microVMs holding a slot someone needs (not idle, not busy-idle, not always-on)',
+})
+const hostEvictableGauge = meter.createObservableGauge('metal.host.evictable', {
+  description: 'Assigned microVMs that are warm but evictable — suspended early only when an assign here needs the room',
+})
 const hostIdleTierGauge = meter.createObservableGauge('metal.idle_tier', {
   description: 'Idle-suspend tier a metal host is applying: 0 relaxed, 1 aggressive (label `reason`: directive|stale|host_guard|static)',
 })
@@ -271,15 +286,17 @@ function ensureFleetGauges(): void {
   meter.addBatchObservableCallback(
     (obs) => {
       const c = getMetalWarmPoolController()
-      const byRegion = new Map<string, { hosts: number; assigned: number }>()
+      const byRegion = new Map<string, { hosts: number; assigned: number; active: number }>()
       for (const h of c.liveHosts()) {
-        const r = byRegion.get(h.region) ?? { hosts: 0, assigned: 0 }
+        const r = byRegion.get(h.region) ?? { hosts: 0, assigned: 0, active: 0 }
         r.hosts++
         r.assigned += h.load?.assigned ?? 0
+        r.active += activeLoad(h)
         byRegion.set(h.region, r)
       }
       for (const [region, r] of byRegion) {
         obs.observe(fleetUtilGauge, Math.round((r.assigned / (r.hosts * MAX_VMS_PER_HOST)) * 100), { region })
+        obs.observe(regionActiveUtilGauge, Math.round((r.active / (r.hosts * MAX_VMS_PER_HOST)) * 100), { region })
       }
       for (const h of c.liveHosts()) {
         const attrs = { host_id: h.hostId, region: h.region, arch: h.arch }
@@ -294,6 +311,10 @@ function ensureFleetGauges(): void {
         if (typeof h.load?.fcProcs === 'number') obs.observe(hostFcProcsGauge, h.load.fcProcs, attrs)
         obs.observe(hostPoolSizeGauge, h.capacity?.poolSize ?? 0, attrs)
         obs.observe(hostUtilGauge, utilizationPct(h), attrs)
+        // Only when the host reports the residency split: a zero would read as
+        // "nothing evictable" on an old agent that simply cannot say.
+        if (typeof h.load?.active === 'number') obs.observe(hostActiveGauge, h.load.active, attrs)
+        if (typeof h.load?.evictable === 'number') obs.observe(hostEvictableGauge, h.load.evictable, attrs)
         if (h.disk) {
           obs.observe(hostDiskUsedGauge, h.disk.usedPct, attrs)
           obs.observe(hostDiskFreeGauge, h.disk.freeBytes, attrs)
@@ -361,6 +382,9 @@ function ensureFleetGauges(): void {
       hostCounter,
       hostGauge,
       fleetUtilGauge,
+      regionActiveUtilGauge,
+      hostActiveGauge,
+      hostEvictableGauge,
       hostIdleTierGauge,
       hostIdleWindowGauge,
     ],
@@ -399,6 +423,15 @@ export interface MetalHostRegistration {
     available: number
     assigned: number
     suspended: number
+    /**
+     * The assigned set split by residency (SHO-444): `active` VMs hold a slot
+     * someone needs, `evictable` ones are warm but free capacity (suspended
+     * early only when an assign on that host needs the room). Disjoint, and they
+     * sum to `assigned`. Absent on older agents — then every resident VM counts
+     * as load, which is today's behaviour and the safe direction.
+     */
+    active?: number
+    evictable?: number
     /** Live firecracker processes on the host. Absent on older agents. A gap
      * above available+assigned is the churn process-leak fingerprint. */
     fcProcs?: number
@@ -640,6 +673,12 @@ interface AssignResult {
   totalMs?: number
   /** Cold boot only: why the host did not resume a snapshot. */
   staleReason?: string
+  /**
+   * Resume only: why the snapshot being restored was taken — the idle window
+   * (`idle`) or an on-demand eviction (`evicted`). Labels the wake metric so the
+   * cost of the "ready to suspend" bucket is measurable (absent on older agents).
+   */
+  suspendReason?: string
   /** Fresh assign only: how the git history restore went (absent on older agents). */
   repo?: RepoRestoreReport
   /**
@@ -650,6 +689,7 @@ interface AssignResult {
     mode: 'assigned' | 'resumed'
     source?: string
     staleReason?: string
+    suspendReason?: string
     phases?: Record<string, number>
     totalMs?: number
     repo?: RepoRestoreReport
@@ -853,8 +893,11 @@ export class MetalWarmPoolController {
    */
   async idleDirectiveFor(region: string, prevTier: IdleTier | undefined): Promise<IdleDirective> {
     const live = (await this.liveHostsShared()).filter((h) => h.region === region)
-    const assigned = live.reduce((n, h) => n + (h.load?.assigned ?? 0), 0)
-    const utilPct = live.length ? Math.round((assigned / (live.length * MAX_VMS_PER_HOST)) * 100) : 0
+    // ACTIVE VMs only (SHO-444): an idle-resident VM is evictable, so it is free
+    // capacity and must not push the region into the aggressive window. Counting
+    // it is what made the burst scaler buy hosts to hold VMs nobody was using.
+    const active = live.reduce((n, h) => n + activeLoad(h), 0)
+    const utilPct = live.length ? Math.round((active / (live.length * MAX_VMS_PER_HOST)) * 100) : 0
     return idleDirective(utilPct, prevTier, idlePolicyConfig(), this.now())
   }
 
@@ -1418,6 +1461,7 @@ export class MetalWarmPoolController {
           mode,
           source: late.source ?? 'none',
           stale_reason: late.staleReason ?? 'none',
+          suspend_reason: late.suspendReason ?? 'unknown',
           host_id: host.hostId,
         })
       }
@@ -2233,6 +2277,12 @@ export class MetalWarmPoolController {
           overWatermark: overWatermark(h),
           cordoned: cordoned.has(h.hostId),
           utilPct: utilizationPct(h),
+          // Residency split (SHO-444): `active` holds a slot someone needs,
+          // `evictable` is warm but free. `activeUtilPct` is the number the idle
+          // tier and the burst scaler use; `utilPct` above is the same thing.
+          active: activeLoad(h),
+          evictable: h.load?.evictable ?? 0,
+          activeUtilPct: utilizationPct(h),
         }))
         .sort((a, b) => a.region.localeCompare(b.region) || a.hostId.localeCompare(b.hostId)),
       stats: {
@@ -2279,6 +2329,10 @@ class WakeTiming {
     const total = Math.round(performance.now() - this.startedAt)
     const source = host?.source ?? 'none'
     const staleReason = host?.staleReason ?? 'none'
+    // Why the snapshot being restored was taken (SHO-444). `unknown` covers a
+    // cold boot, a reused VM, and a snapshot from before the field existed, so
+    // the label is always present and the evicted-vs-idle split is a filter.
+    const suspendReason = host?.suspendReason ?? 'unknown'
     reportWake({
       mode,
       source,
@@ -2289,8 +2343,9 @@ class WakeTiming {
     })
     span.setAttribute('wake.mode', mode)
     span.setAttribute('wake.total_ms', total)
+    if (host?.suspendReason) span.setAttribute('wake.suspend_reason', host.suspendReason)
     const hostId = hostEntry?.hostId ?? 'none'
-    wakeTotal.record(total, { mode, source, stale_reason: staleReason, host_id: hostId })
+    wakeTotal.record(total, { mode, source, stale_reason: staleReason, suspend_reason: suspendReason, host_id: hostId })
     for (const [phase, ms] of Object.entries(this.ms)) {
       span.setAttribute(`wake.api.${phase}_ms`, Math.round(ms))
       wakePhase.record(ms, { phase: `api.${phase}`, mode, host_id: hostId })
@@ -2304,11 +2359,30 @@ class WakeTiming {
   }
 }
 
-/** assigned/capacity load ratio (0 = idle). Used only to order hosts
+/**
+ * assigned/capacity load ratio (0 = idle). Used only to order hosts
  * lightest-first for NEW placements; with a flat per-host capacity this ranks by
- * absolute assigned count, so an empty host is preferred. */
+ * absolute assigned count, so an empty host is preferred.
+ *
+ * Counts ACTIVE VMs, not resident ones (SHO-444): a host holding 200 warm VMs
+ * of which 3 are in use is nearly empty, and placing new work there is exactly
+ * what the "ready to suspend" bucket makes safe.
+ */
 function loadRatio(h: HostEntry): number {
-  return (h.load?.assigned ?? 0) / MAX_VMS_PER_HOST
+  return activeLoad(h) / MAX_VMS_PER_HOST
+}
+
+/**
+ * The VMs on a host that are holding a slot someone needs.
+ *
+ * `load.active` is the host's own residency split (see `vmResidency` in
+ * apps/metal-agent). An agent that predates it reports only `assigned`, so it
+ * falls back to today's behaviour — every resident VM counts as load. That is
+ * the safe direction: an old host is treated as busier than it may be, never
+ * as emptier.
+ */
+export function activeLoad(h: { load?: { assigned?: number; active?: number } }): number {
+  return h.load?.active ?? h.load?.assigned ?? 0
 }
 
 /** True if the host is at/over the disk high-watermark (GC is shedding). */
@@ -2316,9 +2390,9 @@ function overWatermark(h: HostEntry): boolean {
   return typeof h.disk?.usedPct === 'number' && h.disk.usedPct >= DISK_HIGH_PCT
 }
 
-/** assigned/MAX_VMS_PER_HOST as a whole-number percent. */
+/** active/MAX_VMS_PER_HOST as a whole-number percent. */
 function utilizationPct(h: HostEntry): number {
-  return Math.round(((h.load?.assigned ?? 0) / MAX_VMS_PER_HOST) * 100)
+  return Math.round((activeLoad(h) / MAX_VMS_PER_HOST) * 100)
 }
 
 // --- singleton ---------------------------------------------------------------

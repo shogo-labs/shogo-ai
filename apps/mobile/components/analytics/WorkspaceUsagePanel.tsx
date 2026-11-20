@@ -9,7 +9,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { View, Pressable, Platform, Linking } from "react-native";
+import { View, Pressable, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import {
   Coins as CoinsIcon,
@@ -51,6 +51,7 @@ import { DateRangePills } from "./DateRangePills";
 import { LoadErrorNotice, type LoadErrors } from "./LoadErrorNotice";
 import { UsageLeaderboard } from "./UsageLeaderboard";
 import { WorkspaceActivitySection } from "./WorkspaceActivitySection";
+import { openExternalLink } from "../../lib/open-external-link";
 
 const USAGE_ICON_MAP = {
   Coins: CoinsIcon,
@@ -315,7 +316,7 @@ export function WorkspaceUsagePanel() {
     if (typeof window !== "undefined") {
       window.open(csvUrl, "_blank", "noopener");
     } else {
-      Linking.openURL(csvUrl);
+      openExternalLink(csvUrl);
     }
   };
 

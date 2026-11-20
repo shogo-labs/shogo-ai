@@ -1134,6 +1134,164 @@ describe('video routes', () => {
   })
 })
 
+// =========================================================================
+// Reference-to-video: lip-sync a subject to a recorded voice
+// =========================================================================
+
+describe('reference-to-video', () => {
+  beforeEach(() => {
+    videoStore.records.clear()
+    videoStore.charged.clear()
+  })
+
+  const SEEDANCE_REF = 'bytedance/seedance-2.5/reference-to-video'
+  const SEEDANCE_T2V = 'bytedance/seedance-2.5/text-to-video'
+  const reference = `data:image/png;base64,${Buffer.from('maya').toString('base64')}`
+  const VOICE = ['https://cdn.test/line1.wav', 'https://cdn.test/line2.wav']
+
+  /** The route uploads a data-URI reference before submitting, like any other image. */
+  function mockUploads() {
+    let n = 0
+    on('https://hf.test/files/generate-upload-url', () => {
+      n += 1
+      return json({ public_url: `https://cdn.test/up-${n}.png`, upload_url: `https://s3.test/put-${n}`, upload_headers: {} })
+    })
+    on('https://s3.test/put', () => new Response('', { status: 200 }))
+  }
+
+  async function submit(extra: Record<string, unknown> = {}) {
+    const res = await call('/ai/v1/videos/generations', {
+      method: 'POST',
+      body: JSON.stringify({ prompt: 'maya says her line', ...extra }),
+    })
+    return { res, data: await res.json() as any }
+  }
+
+  test('a reference image plus two voice tracks submits to the reference endpoint, priced on the same input', async () => {
+    mockUploads()
+    mockEstimate(SEEDANCE_REF, '0.9000')
+    mockGeneration({ endpoint: SEEDANCE_REF, videoUrl: 'https://cdn.test/out.mp4' })
+
+    const { res, data } = await submit({
+      model: 'hf-seedance-2.5',
+      duration: 8,
+      reference_images: [reference],
+      reference_audio_urls: VOICE,
+    })
+    expect(res.status).toBe(200)
+    expect(data).toMatchObject({ model: 'hf-seedance-2.5', provider: 'higgsfield', price_source: 'estimate' })
+
+    const submitCall = fetchLog.find((f) => f.url === `https://hf.test/${SEEDANCE_REF}` && f.init?.method === 'POST')
+    expect(submitCall).toBeDefined()
+    const body = JSON.parse(String(submitCall!.init?.body))
+    expect(body).toEqual({
+      prompt: 'maya says her line',
+      duration: 8,
+      image_urls: ['https://cdn.test/up-1.png'],
+      audio_urls: VOICE,
+    })
+
+    // The quote is asked of the same endpoint with the same input, so a longer
+    // clip is priced at the reference endpoint's rate.
+    const estimateCall = fetchLog.find((f) => f.url === `https://hf.test/estimate/${SEEDANCE_REF}`)
+    expect(JSON.parse(String(estimateCall!.init?.body))).toEqual(body)
+    expect(fetchLog.some((f) => f.url === `https://hf.test/${SEEDANCE_T2V}`)).toBe(false)
+  })
+
+  test('the same call without references still goes to text-to-video', async () => {
+    mockEstimate(SEEDANCE_T2V, '0.9000')
+    mockGeneration({ endpoint: SEEDANCE_T2V, videoUrl: 'https://cdn.test/out.mp4' })
+
+    const { res } = await submit({ model: 'hf-seedance-2.5', duration: 8 })
+    expect(res.status).toBe(200)
+    expect(fetchLog.some((f) => f.url === `https://hf.test/${SEEDANCE_T2V}` && f.init?.method === 'POST')).toBe(true)
+    expect(fetchLog.some((f) => f.url === `https://hf.test/${SEEDANCE_REF}`)).toBe(false)
+  })
+
+  test('Happy Horse takes reference images but no audio', async () => {
+    mockUploads()
+    mockEstimate('alibaba/happy-horse/reference-to-video', '0.2000')
+    mockGeneration({ endpoint: 'alibaba/happy-horse/reference-to-video', videoUrl: 'https://cdn.test/out.mp4' })
+
+    const imagesOnly = await submit({ model: 'hf-happy-horse', reference_images: [reference] })
+    expect(imagesOnly.res.status).toBe(200)
+    const submitCall = fetchLog.find((f) => f.url === 'https://hf.test/alibaba/happy-horse/reference-to-video')
+    expect(JSON.parse(String(submitCall!.init?.body))).toMatchObject({ image_urls: ['https://cdn.test/up-1.png'] })
+
+    const withAudio = await submit({ model: 'hf-happy-horse', reference_images: [reference], reference_audio_urls: VOICE })
+    expect(withAudio.res.status).toBe(400)
+    expect(withAudio.data.error.code).toBe('reference_audio_unsupported')
+  })
+
+  test('more voice tracks than the model accepts is refused before anything is submitted', async () => {
+    const { res, data } = await submit({
+      model: 'hf-wan-3.0',
+      reference_audio_urls: Array.from({ length: 6 }, (_, i) => `https://cdn.test/line${i}.wav`),
+    })
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('too_many_reference_audio')
+    expect(data.error.message).toContain('at most 5')
+    expect(fetchLog.some((f) => f.url.startsWith('https://hf.test/estimate/'))).toBe(false)
+    expect(fetchLog.some((f) => f.url === 'https://hf.test/alibaba/wan-3.0/reference-to-video')).toBe(false)
+  })
+
+  test('a model with no reference endpoint refuses both, and nothing is uploaded or charged', async () => {
+    const images = await submit({ model: 'hf-hailuo-2.3', reference_images: [reference] })
+    expect(images.res.status).toBe(400)
+    expect(images.data.error.code).toBe('reference_images_unsupported')
+
+    const audio = await submit({ model: 'hf-hailuo-2.3', reference_audio_urls: VOICE })
+    expect(audio.res.status).toBe(400)
+    expect(audio.data.error.code).toBe('reference_audio_unsupported')
+
+    expect(fetchLog.some((f) => f.url === 'https://hf.test/files/generate-upload-url')).toBe(false)
+    expect(fetchLog.some((f) => f.url.startsWith('https://hf.test/estimate/'))).toBe(false)
+    // Billing is fire-and-forget: let the microtasks drain before asserting.
+    await new Promise((r) => setImmediate(r))
+    expect(consumeCalls).toHaveLength(0)
+  })
+
+  test('reference audio must be a public https URL', async () => {
+    const { res, data } = await submit({ model: 'hf-seedance-2.5', reference_audio_urls: ['data:audio/wav;base64,AAAA'] })
+    expect(res.status).toBe(400)
+    expect(data.error.code).toBe('invalid_reference_audio')
+  })
+
+  test('a start frame and references are two modes: pick one', async () => {
+    mockUploads()
+    const { res, data } = await submit({
+      model: 'hf-seedance-2.5',
+      start_image: reference,
+      reference_audio_urls: VOICE,
+    })
+    expect(res.status).toBe(400)
+    expect(data.error.message).toContain('pick one')
+    expect(fetchLog.some((f) => f.url.startsWith('https://hf.test/estimate/'))).toBe(false)
+  })
+
+  test('options only the reference endpoint declares work there and are rejected on text-to-video', async () => {
+    mockUploads()
+    mockEstimate(SEEDANCE_REF, '0.9000')
+    mockGeneration({ endpoint: SEEDANCE_REF, videoUrl: 'https://cdn.test/out.mp4' })
+
+    const routed = await submit({
+      model: 'hf-seedance-2.5',
+      reference_images: [reference],
+      options: { video_urls: ['https://cdn.test/style.mp4'], bitrate_mode: 'standard' },
+    })
+    expect(routed.res.status).toBe(200)
+    const submitCall = fetchLog.find((f) => f.url === `https://hf.test/${SEEDANCE_REF}` && f.init?.method === 'POST')
+    expect(JSON.parse(String(submitCall!.init?.body))).toMatchObject({
+      video_urls: ['https://cdn.test/style.mp4'],
+      bitrate_mode: 'standard',
+    })
+
+    const t2v = await submit({ model: 'hf-seedance-2.5', options: { video_urls: ['https://cdn.test/style.mp4'] } })
+    expect(t2v.res.status).toBe(400)
+    expect(t2v.data.error.code).toBe('option_unsupported')
+  })
+})
+
 describe('estimate route', () => {
   beforeEach(() => _resetHiggsfieldEstimateCache())
 
@@ -1295,6 +1453,32 @@ describe('list_media_models', () => {
     const motion = data.videos.find((m: any) => m.id === 'hf-genjutsu-motion-transfer')
     expect(motion.price.unit).toBe('second')
     expect(motion.price.usd).toBeCloseTo(0.681 * 1.2, 3)
+  })
+
+  test('a lip-sync model lists its reference audio cap and the reference endpoint fields', async () => {
+    mockEstimate('bytedance/seedance-2.5/text-to-video', '0.9000')
+    mockEstimate('bytedance/seedance-2.5/reference-to-video', '0.9000')
+    const data = await listMediaModels(undefined, { model: 'hf-seedance-2.5' }) as any
+    const model = data.videos[0]
+    expect(model.max_reference_images).toBe(30)
+    expect(model.max_reference_audio).toBe(10)
+    expect(model.endpoints).toContain('bytedance/seedance-2.5/reference-to-video')
+    const names = model.options.map((o: any) => o.name)
+    // Fields only the reference endpoint documents are visible, and say where
+    // they are valid, so the agent knows to pass references to use them.
+    for (const name of ['image_urls', 'audio_urls', 'video_urls', 'bitrate_mode']) {
+      expect(names).toContain(name)
+    }
+    const audioUrls = model.options.find((o: any) => o.name === 'audio_urls')
+    expect(audioUrls.endpoints).toEqual(['bytedance/seedance-2.5/reference-to-video'])
+    expect(audioUrls.max_items).toBe(10)
+    expect(model.price.reference_clip_usd).toBeCloseTo(0.9 * 1.2, 4)
+
+    // Happy Horse has a reference endpoint but no audio field on it.
+    mockEstimate('alibaba/happy-horse/text-to-video', '0.2000')
+    const horse = (await listMediaModels(undefined, { model: 'hf-happy-horse' }) as any).videos[0]
+    expect(horse.max_reference_audio).toBe(0)
+    expect(horse.max_reference_images).toBe(4)
   })
 
   test('the listing is cached so a page of models does not hammer /estimate', async () => {

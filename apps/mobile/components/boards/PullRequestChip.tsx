@@ -7,10 +7,11 @@
  * rather than an agent's claim in a comment.
  */
 import { useState } from 'react'
-import { Linking, Pressable, Text, TextInput, View } from 'react-native'
+import { Pressable, Text, TextInput, View } from 'react-native'
 import { CircleAlert, CircleCheck, GitMerge, GitPullRequest, Link2, TriangleAlert } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import type { CardPullRequest } from '../../lib/work-boards-api'
+import { openExternalLink } from '../../lib/open-external-link';
 
 /** `red` is a failing *required* check; any red check is still shown failing. */
 function hasFailingChecks(pr: CardPullRequest): boolean {
@@ -68,7 +69,7 @@ export function PullRequestChip({ pr }: { pr: CardPullRequest }) {
       accessibilityLabel={`Pull request ${label}. Opens on GitHub.`}
       testID={`board-card-pr-${pr.number}`}
       disabled={!pr.url}
-      onPress={() => pr.url && void Linking.openURL(pr.url)}
+      onPress={() => pr.url && void openExternalLink(pr.url)}
       className={cn('flex-row items-center gap-1 rounded px-1.5 py-0.5', tone.box)}
     >
       <PrIcon pr={pr} className={tone.text} />
@@ -163,7 +164,7 @@ export function PullRequestSection({ pr, onLink }: { pr: CardPullRequest | undef
           accessibilityRole="link"
           className="min-w-0 flex-1"
           disabled={!pr.url}
-          onPress={() => pr.url && void Linking.openURL(pr.url)}
+          onPress={() => pr.url && void openExternalLink(pr.url)}
         >
           <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
             #{pr.number} · {pr.repo}
@@ -184,7 +185,7 @@ export function PullRequestSection({ pr, onLink }: { pr: CardPullRequest | undef
           key={check.name}
           accessibilityRole={check.url ? 'link' : 'text'}
           disabled={!check.url}
-          onPress={() => check.url && void Linking.openURL(check.url)}
+          onPress={() => check.url && void openExternalLink(check.url)}
           className="flex-row items-center gap-1.5 rounded bg-destructive/5 px-1.5 py-0.5"
         >
           <CircleAlert size={10} className="text-destructive" />

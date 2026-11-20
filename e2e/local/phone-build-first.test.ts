@@ -25,7 +25,7 @@
  *   npx playwright test --config e2e/local/playwright.config.ts phone-build-first
  */
 import { expect, test, type Page, type Route } from "@playwright/test"
-import { LOCAL_API_BASE } from "./helpers"
+import { LOCAL_API_BASE, seedActiveWorkspace } from "./helpers"
 
 const CHAT_URL_GLOB = "**/api/{projects,workspaces}/*/chat"
 const TURN_URL_GLOB = "**/api/{projects,workspaces}/*/chat/*/turn"
@@ -174,14 +174,9 @@ async function openPhoneBuilder(page: Page): Promise<void> {
 
   // Exactly the record `apps/mobile/lib/workspace-store.ts` persists: the id on
   // its own and the kind as `{id, kind}` JSON. A bare "team" string is read back
-  // as a corrupt cache and ignored.
-  await page.addInitScript(
-    (record: { id: string; kind: string }) => {
-      localStorage.setItem("shogo:active-workspace-id", record.id)
-      localStorage.setItem("shogo:active-workspace-kind", JSON.stringify(record))
-    },
-    { id: workspace!.id, kind: workspace!.kind ?? "team" },
-  )
+  // as a corrupt cache and ignored. Both stores, because this context may have
+  // loaded a document already (SHO-390).
+  await seedActiveWorkspace(page, workspace!.id, workspace!.kind === "personal" ? "personal" : "team")
 
   await page.goto("/new-project")
   await page

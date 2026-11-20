@@ -234,6 +234,34 @@ describe('POST /ai/v1/videos/generations — Omni validation', () => {
     expect(fetchLog).toHaveLength(0)
   })
 
+  test('a malformed body is a 400 even with no Google key (SHO-383)', async () => {
+    // The key check used to run first, so a stack with no Google key answered
+    // `503 provider_not_configured` to a request the route would have refused
+    // anyway — an agent then goes and configures a key for a body that can
+    // never work. Shape first, provider second.
+    delete process.env.GOOGLE_API_KEY
+
+    const alone = await submit({
+      model: 'google-omni-1.2-flash', prompt: 'x', duration: 5, end_image: 'data:image/png;base64,BBBB',
+    })
+    expect(alone.res.status).toBe(400)
+    expect(alone.data.error.code).toBe('invalid_end_image')
+
+    // 12 s is inside Omni's own duration menu but outside Google's 10 s cap for
+    // first-and-last-frame interpolation.
+    const tooLong = await submit({
+      model: 'google-omni-1.2-flash',
+      prompt: 'x',
+      duration: 12,
+      start_image: 'data:image/png;base64,AAAA',
+      end_image: 'data:image/png;base64,BBBB',
+    })
+    expect(tooLong.res.status).toBe(400)
+    expect(tooLong.data.error.code).toBe('invalid_duration')
+    expect(tooLong.data.error.message).toContain('10 s')
+    expect(fetchLog).toHaveLength(0)
+  })
+
   test('more than 6 images is refused before submit', async () => {
     const { res, data } = await submit({
       model: 'google-omni-1.2-flash',

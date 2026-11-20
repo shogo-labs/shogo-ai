@@ -235,6 +235,18 @@ export const M = {
   // reporting busy past the ceiling with no user activity. Counted on top of
   // `idleSuspendedByTier`.
   busyIdleCeilingSuspended: 'metal_busy_idle_ceiling_suspended_total',
+  // On-demand evictions of the "ready to suspend" bucket (SHO-444), labelled
+  // `{reason="mem"|"slots"|"headroom"|"retired"}`: a warm VM suspended early
+  // because an assign/resume on this host needed the room. `retired` means the
+  // VM was on a superseded rootfs and was re-warmed instead of snapshotted.
+  evictions: 'metal_evictions_total',
+  // An assign found the host full and nothing evictable: the host is full of
+  // WORK, not of warm VMs. The signal that the bucket cannot help here.
+  evictNoneAvailable: 'metal_evict_none_available_total',
+  // The assigned set split by residency: `active` holds a slot someone needs,
+  // `evictable` is warm but free capacity. Disjoint, sum to assigned.
+  assignedActive: 'metal_assigned_active',
+  assignedEvictable: 'metal_assigned_evictable',
   // Source backups taken mid-residency (pool.exportAllSource), separate from
   // the one every suspend takes.
   sourceBackupPeriodic: 'metal_source_backup_periodic_total',

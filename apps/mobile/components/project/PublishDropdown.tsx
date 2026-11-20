@@ -18,7 +18,6 @@ import {
   TextInput,
   Pressable,
   ActivityIndicator,
-  Linking,
   Alert,
 } from 'react-native'
 import {
@@ -53,6 +52,7 @@ import {
 import { useDomainHttp } from '../../contexts/domain'
 import { AlwaysOnSection } from './AlwaysOnSection'
 import { isPublishPlanError, publishErrorMessage } from './publish-errors'
+import { openExternalLink } from '../../lib/open-external-link';
 
 export type AccessLevel = 'anyone' | 'authenticated' | 'private' | 'password'
 
@@ -388,7 +388,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
 
   const handleViewPublished = () => {
     if (publishedSubdomain) {
-      Linking.openURL(`https://${publishedSubdomain}.${publishDomain}`)
+      openExternalLink(`https://${publishedSubdomain}.${publishDomain}`)
     }
   }
 

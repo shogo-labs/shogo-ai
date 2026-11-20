@@ -17,7 +17,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { View, Text, TextInput, Pressable, ActivityIndicator, Alert, Linking } from 'react-native'
+import { View, Text, TextInput, Pressable, ActivityIndicator, Alert } from 'react-native'
 import {
   CheckCircle,
   KeyRound,
@@ -42,6 +42,7 @@ import {
   type NativeReleaseMode,
   type NativeReleaseRow,
 } from '../../lib/api'
+import { openExternalLink } from '../../lib/open-external-link';
 
 /** Store-setup walkthrough (docs.shogo.ai). */
 const SETUP_GUIDE_URL = 'https://docs.shogo.ai/features/native-release'
@@ -287,7 +288,7 @@ export function AppStoresSection({ projectId, workspaceId, http, embedded = fals
           Ask Shogo to ship your app — “publish to the App Store” — and it builds a test version, runs your
           Maestro flows, and only submits to the store if they pass. Set up the two things below first.
         </Text>
-        <Pressable onPress={() => Linking.openURL(SETUP_GUIDE_URL)} className="mt-2 flex-row items-center gap-1">
+        <Pressable onPress={() => openExternalLink(SETUP_GUIDE_URL)} className="mt-2 flex-row items-center gap-1">
           <Text className="text-xs text-primary">How shipping works</Text>
           <ChevronRight size={12} className="text-primary" />
         </Pressable>

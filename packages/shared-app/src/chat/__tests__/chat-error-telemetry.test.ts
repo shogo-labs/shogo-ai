@@ -16,6 +16,7 @@ import {
   shouldReportChatError,
   buildChatStreamErrorReport,
   isReactUpdateDepthError,
+  shouldInterruptStuckToolsOnStreamError,
   chatErrorMessage,
   SHOGO_TELEMETRY_TAG,
 } from '../chat-error-telemetry'
@@ -90,6 +91,30 @@ describe('classifyChatError', () => {
     expect(isReactUpdateDepthError(new Error('Maximum update depth exceeded.'))).toBe(true)
     expect(classifyChatError(new Error('Minified React error #185; visit https://react.dev/errors/185'))).toBe('render')
     expect(classifyChatError(new Error('render failed'))).toBe('other')
+  })
+})
+
+describe('shouldInterruptStuckToolsOnStreamError', () => {
+  /**
+   * Sentry JAVASCRIPT-REACT-5S: 450 events from one session. `onError` wrote
+   * to the AI SDK's message store, which notified React, which forced a
+   * synchronous re-render of the tree that had just thrown, which threw again
+   * and landed back in `onError`. The store write is what has to be skipped
+   * for a render-depth error; every other error still closes stuck spinners.
+   */
+  test('skips the message-store write for a render-depth error', () => {
+    expect(shouldInterruptStuckToolsOnStreamError(new Error('Maximum update depth exceeded.'))).toBe(false)
+    expect(
+      shouldInterruptStuckToolsOnStreamError(
+        new Error('Minified React error #185; visit https://react.dev/errors/185'),
+      ),
+    ).toBe(false)
+  })
+
+  test('still closes stuck spinners for every other stream error', () => {
+    expect(shouldInterruptStuckToolsOnStreamError(new TypeError('Failed to fetch'))).toBe(true)
+    expect(shouldInterruptStuckToolsOnStreamError(new Error('boom'))).toBe(true)
+    expect(shouldInterruptStuckToolsOnStreamError({ name: 'AbortError', message: 'aborted' })).toBe(true)
   })
 })
 

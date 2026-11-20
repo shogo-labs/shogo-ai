@@ -80,6 +80,7 @@ const prismaApi: any = {
       redemptions.push(fresh)
       return fresh
     },
+    findMany: async () => [],
   },
   member: {
     findFirst: async ({ where }: any) =>
@@ -88,6 +89,12 @@ const prismaApi: any = {
           && m.role === where.role
           && (where.projectId === null ? m.projectId === null : true),
       ) ?? null,
+    findMany: async ({ where }: any) =>
+      members.filter(
+        (m) => m.workspaceId === where.workspaceId
+          && (where.projectId === null ? m.projectId === null : true)
+          && (where.userId?.not === undefined || m.userId !== where.userId.not),
+      ),
   },
   subscription: {
     findFirst: async ({ where }: any) =>
@@ -95,6 +102,7 @@ const prismaApi: any = {
   },
   signupRiskAssessment: {
     findUnique: async () => null,
+    findFirst: async () => null,
   },
 }
 

@@ -281,7 +281,8 @@ async function inviteByEmail(
   )
   if (!result || !result.ok) {
     const code = result?.error?.code
-    const status = code === 'forbidden' ? 403 : code === 'invitation_exists' ? 409 : 400
+    const status =
+      code === 'forbidden' ? 403 : code === 'invitation_exists' || code === 'already_member' ? 409 : 400
     return c.json({ error: result?.error }, status)
   }
   const invitation = await prisma.invitation.create({ data: result.data })

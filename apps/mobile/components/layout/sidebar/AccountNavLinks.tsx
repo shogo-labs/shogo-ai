@@ -6,10 +6,11 @@
  */
 
 import type { ElementType } from "react";
-import { Linking, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { ExternalLink, Key, Sparkles } from "lucide-react-native";
 import { COMPACT_DENSITY } from "../../../lib/phone-density";
 import { CHANGELOG_URL, DOCS_URL } from "../../../lib/theme-choices";
+import { openExternalLink } from "../../../lib/open-external-link";
 
 /** Web popover icon size (not COMPACT_DENSITY.icon.lg). */
 const ACCOUNT_NAV_ICON_SIZE = 18;
@@ -51,7 +52,7 @@ export function AccountNavLinks({
       ))}
       <Pressable
         onPress={() => {
-          Linking.openURL(DOCS_URL);
+          openExternalLink(DOCS_URL);
           onClose();
         }}
         role="menuitem"
@@ -66,7 +67,7 @@ export function AccountNavLinks({
       </Pressable>
       <Pressable
         onPress={() => {
-          Linking.openURL(CHANGELOG_URL);
+          openExternalLink(CHANGELOG_URL);
           onClose();
         }}
         role="menuitem"

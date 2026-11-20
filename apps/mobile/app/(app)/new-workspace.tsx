@@ -15,7 +15,6 @@ import {
   ScrollView,
   Pressable,
   TextInput,
-  Linking,
   Platform,
   KeyboardAvoidingView,
 } from 'react-native'
@@ -51,6 +50,7 @@ import {
   Badge,
   cn,
 } from '@shogo/shared-ui/primitives'
+import { openExternalLink } from '../../lib/open-external-link';
 
 export default function NewWorkspacePage() {
   const router = useRouter()
@@ -449,7 +449,7 @@ export default function NewWorkspacePage() {
                   </View>
 
                   <Pressable
-                    onPress={() => Linking.openURL('mailto:sales@shogo.ai')}
+                    onPress={() => openExternalLink('mailto:sales@shogo.ai')}
                     className="min-h-12 w-full items-center justify-center rounded-xl border border-border active:bg-muted"
                     accessibilityRole="link"
                     accessibilityLabel="Book an Enterprise demo"

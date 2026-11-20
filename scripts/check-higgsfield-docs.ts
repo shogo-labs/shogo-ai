@@ -117,6 +117,25 @@ for (const entry of Object.values(VIDEO_MODEL_CATALOG) as VideoModelEntry[]) {
   const kind = entry.genjutsu ? 'edit' : 'video'
   checkEndpoint(entry.id, entry.textToVideoApiModel, kind)
   checkEndpoint(entry.id, entry.imageToVideoApiModel, kind)
+  // A reference endpoint is documented as `other` (neither plain text- nor
+  // image-to-video), so it is checked by the fields the model advertises on it
+  // rather than by kind: images always, audio only when the model takes any.
+  if (entry.referenceToVideoApiModel) {
+    const reference = known[entry.referenceToVideoApiModel]
+    if (!reference) {
+      fail(`${entry.id}: reference endpoint '${entry.referenceToVideoApiModel}' is not in the docs snapshot.`)
+    } else {
+      if (!reference.fields.image_urls) {
+        fail(`${entry.id}: '${entry.referenceToVideoApiModel}' documents no 'image_urls', but the model takes reference images.`)
+      }
+      if (entry.maxReferenceAudio > 0 && !reference.fields.audio_urls) {
+        fail(
+          `${entry.id}: advertises ${entry.maxReferenceAudio} reference audio clip(s), but ` +
+            `'${entry.referenceToVideoApiModel}' documents no 'audio_urls'.`,
+        )
+      }
+    }
+  }
   // The advertised menu has to be valid on *every* generation endpoint: the
   // agent picks the endpoint by whether it passes a start image, not the other
   // way round.

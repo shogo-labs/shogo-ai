@@ -704,6 +704,16 @@ describe('hasWarmHeadroom', () => {
   test('never warms onto a host whose NVMe cache is shedding', () => {
     expect(hasWarmHeadroom({ utilPct: 1, reportsMemory: true, vmUtilPct: 1, overWatermark: true }, cfg)).toBe(false)
   })
+
+  test('a host full of EVICTABLE VMs is still skipped for warms at the RAM ceiling (SHO-444)', () => {
+    // The "ready to suspend" bucket makes an idle VM free capacity for an
+    // assign, but NOT for a pre-warm: a warm would have to evict a user's VM to
+    // make room for someone else's, which is the one thing the bucket must not
+    // do. So this gate stays on real RAM and ignores residency entirely — a
+    // host at its RAM ceiling is skipped however evictable its VMs are.
+    expect(hasWarmHeadroom({ utilPct: 90, reportsMemory: true, vmUtilPct: 10, overWatermark: false }, cfg)).toBe(false)
+    expect(hasWarmHeadroom({ utilPct: 89, reportsMemory: true, vmUtilPct: 10, overWatermark: false }, cfg)).toBe(true)
+  })
 })
 
 describe('rewarmConfig defaults (SHO-271)', () => {

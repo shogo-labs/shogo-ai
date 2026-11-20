@@ -16,13 +16,14 @@
  * says what it costs and opens the web page instead.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { View, Text, TextInput, Platform, Linking } from 'react-native'
+import { View, Text, TextInput, Platform } from 'react-native'
 import { useRouter } from 'expo-router'
 import { Sparkles, ArrowRight, GraduationCap } from 'lucide-react-native'
 import { ERROR_CODE_MESSAGES } from '@shogo/shared-app/chat'
 import { Card, CardContent, Button, Badge } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../contexts/domain'
 import { api, type SoloFounderState } from '../../lib/api'
+import { openExternalLink } from '../../lib/open-external-link'
 import { checkoutRedirectBase, completeNativeCheckout, redirectToCheckout } from '../../lib/stripe-checkout'
 
 /** The offer is sold through Stripe Checkout, which store billing rules keep off iOS and Android. */
@@ -190,7 +191,7 @@ export function SoloFounderCard({
           <Text className="text-xs text-muted-foreground">
             The course plus a year of Business for one seat, then ${pricing.renewalUsd}/yr. Buy it on the web.
           </Text>
-          <Button size="sm" className="self-start" onPress={() => Linking.openURL(WEB_BILLING_URL)}>
+          <Button size="sm" className="self-start" onPress={() => void openExternalLink(WEB_BILLING_URL)}>
             Open on the web
           </Button>
         </CardContent>

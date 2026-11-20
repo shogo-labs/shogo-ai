@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, type ElementType } from "react";
-import { Linking, Platform, Pressable, Text, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { cn } from "@shogo/shared-ui/primitives";
 import { densityFor } from "../../../lib/phone-density";
@@ -10,6 +10,7 @@ import {
   useNativePhoneIconChrome,
   usePhoneLayout,
 } from "../../../lib/native-phone-layout";
+import { openExternalLink } from "../../../lib/open-external-link";
 
 // ─── NavItem ───────────────────────────────────────────────
 
@@ -57,7 +58,7 @@ export function NavItem({
       return;
     }
     if (externalHref) {
-      Linking.openURL(externalHref);
+      openExternalLink(externalHref);
       return;
     }
     if (href) {

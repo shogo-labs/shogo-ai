@@ -196,6 +196,7 @@ import { createGeneratedRoutes } from './generated/routes'
 import { routeHooks } from './generated/hooks'
 import { prisma } from './lib/prisma'
 import { isMidCutoverStatus } from './services/published-cutover.service'
+import { readSignupRequestInfo } from './services/signup-risk.service'
 import { deployedAppVersionOrUnknown } from './lib/app-version'
 import { toNativeAuthHandback } from './lib/auth-handback'
 // Auth middleware for generated routes
@@ -250,6 +251,7 @@ const Stripe: any = cloud.Stripe ?? class LocalStripeUnavailable {
   }
 }
 const billingService: any = cloud.billingService ?? {}
+const billingSummaryService: any = cloud.billingSummaryService ?? {}
 const appleIap: any = cloud.appleIap ?? {}
 const instanceService: any = cloud.instanceService ?? {}
 const storageService: any = cloud.storageService ?? {}
@@ -6840,7 +6842,7 @@ app.all('/api/admin/regions/:regionId/*', async (c) => {
 // GET /api/admin/metal/fleet — desired baseline vs live registry + drift.
 app.get('/api/admin/metal/fleet', async (c) => {
   try {
-    const { getMetalFleetStatus, MAX_VMS_PER_HOST } = await import('./lib/metal-warm-pool-controller')
+    const { getMetalFleetStatus, MAX_VMS_PER_HOST, activeLoad } = await import('./lib/metal-warm-pool-controller')
     const { getHomeFleetEnv, fleetEnvKey, METAL_FLEET } = await import('./config/metal-fleet')
     const { getMetalHostRecordMap } = await import('./lib/metal-fleet-hosts')
 
@@ -6884,24 +6886,49 @@ app.get('/api/admin/metal/fleet', async (c) => {
       .filter((h) => !desiredIds.has(h.hostId))
       .map((h) => ({ hostId: h.hostId, region: h.region, kind: 'burst' as const, present: true, provisioned: true, live: h }))
 
-    // Region rollups (utilization for burst decisions). utilPct is assigned live
+    // Region rollups (utilization for burst decisions). utilPct is ACTIVE live
     // microVMs over REAL capacity (live hosts × MAX_VMS_PER_HOST), NOT the
     // warm-pool poolSize (which is just the idle pre-boot target and made util
     // read >100% on lightly-loaded regions). poolSize is still surfaced for ops.
+    // `assigned` is the resident total and `evictable` the warm-but-free part of
+    // it (SHO-444), so the gap between utilPct and assignedUtilPct IS the bucket.
     const byRegion: Record<
       string,
-      { hosts: number; live: number; assigned: number; poolSize: number; capacity: number; utilPct: number }
+      {
+        hosts: number
+        live: number
+        assigned: number
+        active: number
+        evictable: number
+        poolSize: number
+        capacity: number
+        utilPct: number
+        assignedUtilPct: number
+      }
     > = {}
     for (const h of status.hosts) {
-      const r = (byRegion[h.region] ||= { hosts: 0, live: 0, assigned: 0, poolSize: 0, capacity: 0, utilPct: 0 })
+      const r = (byRegion[h.region] ||= {
+        hosts: 0,
+        live: 0,
+        assigned: 0,
+        active: 0,
+        evictable: 0,
+        poolSize: 0,
+        capacity: 0,
+        utilPct: 0,
+        assignedUtilPct: 0,
+      })
       r.hosts++
       r.live++
       r.assigned += h.load?.assigned ?? 0
+      r.active += activeLoad(h)
+      r.evictable += h.load?.evictable ?? 0
       r.poolSize += h.capacity?.poolSize ?? 0
     }
     for (const r of Object.values(byRegion)) {
       r.capacity = r.live * MAX_VMS_PER_HOST
-      r.utilPct = r.capacity > 0 ? Math.round((r.assigned / r.capacity) * 100) : 0
+      r.utilPct = r.capacity > 0 ? Math.round((r.active / r.capacity) * 100) : 0
+      r.assignedUtilPct = r.capacity > 0 ? Math.round((r.assigned / r.capacity) * 100) : 0
     }
 
     return c.json({
@@ -8048,6 +8075,29 @@ app.post('/api/billing/checkout', async (c) => {
       return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
     }
 
+    // A workspace that already has a live Stripe subscription must change that
+    // subscription, not start a second Checkout (SHO-451). A second Checkout
+    // created a second subscription; `syncFromStripe` upserts by workspaceId,
+    // so the new row overwrote the old one and the original kept billing.
+    // Grant-only workspaces have no Stripe subscription and keep Checkout.
+    const billingWorkspaceId = await billingService.resolveBillingWorkspaceId(workspaceId)
+    const existingSubscription = await prisma.subscription.findFirst({
+      where: {
+        workspaceId: billingWorkspaceId,
+        status: { in: ['active', 'trialing', 'past_due'] },
+      },
+      select: { planId: true },
+    })
+    if (existingSubscription) {
+      return c.json({
+        error: {
+          code: 'already_subscribed',
+          message: 'This workspace already has a subscription. Use Change plan to switch plans.',
+          planId: existingSubscription.planId,
+        },
+      }, 409)
+    }
+
     const isSoloFounder = requestedOffer === soloFounderService.SOLO_FOUNDER_OFFER
 
     if (!isSoloFounder && planId !== 'basic' && planId !== 'pro' && planId !== 'business') {
@@ -8145,35 +8195,19 @@ app.post('/api/billing/checkout', async (c) => {
       }
 
       const subscriptionMetadata = { ...metadata, ...(affiliateOverrides.metadata ?? {}) }
-      const session = await stripe.checkout.sessions.create({
-        mode: 'subscription',
-        line_items: [
-          // Business annual, one seat, plus the one-time course. In a
-          // subscription-mode session a one-time price is invoiced once, on
-          // the first invoice, with no adjustable quantity on either line.
-          { price: priceId, quantity: 1 },
-          { price: coursePriceId, quantity: 1 },
-        ],
-        discounts: [discount],
-        success_url: successUrl,
-        cancel_url: cancelUrl,
-        ...(userEmail && { customer_email: userEmail }),
-        ...(referralId && { client_reference_id: referralId }),
-        ...(affiliateOverrides.customer_creation && { customer_creation: affiliateOverrides.customer_creation }),
-        // Fraud rules (SHO-409): a cheap year of Business attracts stolen and
-        // prepaid cards. Cards only, and ask the issuer for 3DS on every
-        // payment. Checkout cannot filter by funding type — prepaid is refused
-        // in the webhook, before anything is provisioned.
-        payment_method_types: ['card'],
-        payment_method_options: { card: { request_three_d_secure: 'any' } },
-        metadata: subscriptionMetadata,
-        subscription_data: { metadata: subscriptionMetadata },
-        custom_text: {
-          submit: {
-            message: soloFounderService.renewalDisclosure(new Date()),
-          },
-        },
-      })
+      const session = await stripe.checkout.sessions.create(
+        soloFounderService.buildSoloFounderCheckoutParams({
+          priceId,
+          coursePriceId,
+          discount,
+          successUrl,
+          cancelUrl,
+          metadata: subscriptionMetadata,
+          userEmail,
+          referralId,
+          customerCreation: affiliateOverrides.customer_creation ?? null,
+        }),
+      )
       return c.json({ sessionId: session.id, url: session.url, offer: soloFounderService.SOLO_FOUNDER_OFFER }, 200)
     }
 
@@ -8183,6 +8217,7 @@ app.post('/api/billing/checkout', async (c) => {
       workspaceId,
       planId: checkoutPlanId,
       metadata,
+      request: readSignupRequestInfo(c.req.raw.headers),
       affiliate: affiliateOverrides,
     })
 
@@ -8283,7 +8318,11 @@ app.get('/api/billing/workspace-plan', async (c) => {
         ? prisma.signupRiskAssessment.findUnique({ where: { userId: cloudUserId }, select: { decision: true } })
         : null,
       !sub && cloudUserId
-        ? trialService.trialEligibility({ userId: cloudUserId, workspaceId })
+        ? trialService.trialEligibility({
+            userId: cloudUserId,
+            workspaceId,
+            request: readSignupRequestInfo(c.req.raw.headers),
+          })
         : { eligible: false },
     ])
     const promoEmailVerified = Boolean(promoUser?.emailVerified)
@@ -8465,6 +8504,7 @@ app.post('/api/billing/workspace-checkout', async (c) => {
       workspaceId: newWorkspaceId,
       planId: checkoutPlanId,
       metadata,
+      request: readSignupRequestInfo(c.req.raw.headers),
       affiliate: affiliateOverrides,
     })
 
@@ -8945,6 +8985,11 @@ app.get('/api/billing/invoices', async (c) => {
       hostedInvoiceUrl: inv.hosted_invoice_url ?? null,
       invoicePdf: inv.invoice_pdf ?? null,
       description: inv.description ?? null,
+      // Tax is reported per invoice; a VAT-registered customer needs to see it
+      // on the row, not only on the PDF (SHO-451).
+      tax: typeof inv.tax === 'number' ? inv.tax / 100 : null,
+      totalExcludingTax:
+        typeof inv.total_excluding_tax === 'number' ? inv.total_excluding_tax / 100 : null,
       lines: (inv.lines?.data ?? []).map((line: any) => ({
         description: line.description ?? null,
         amount: (line.amount ?? 0) / 100,
@@ -8955,6 +9000,184 @@ app.get('/api/billing/invoices', async (c) => {
   } catch (error: any) {
     console.error('[Billing] invoices error:', error)
     return c.json({ error: { code: 'stripe_error', message: error.message } }, 500)
+  }
+})
+
+// ============================================================
+// Billing summary + in-app plan change (SHO-451)
+// ============================================================
+
+/**
+ * Turn a `BillingError` from `billing-summary.service` into its HTTP shape.
+ * Anything else is a 500 with the real message — never a 200 with `{}`.
+ */
+function billingServiceError(c: any, error: any, fallbackCode: string) {
+  const BillingError = billingSummaryService.BillingError
+  if (BillingError && error instanceof BillingError) {
+    return c.json({ error: { code: error.code, message: error.message } }, error.status)
+  }
+  console.error(`[Billing] ${fallbackCode}:`, error)
+  return c.json(
+    { error: { code: fallbackCode, message: error?.message ?? 'Billing request failed' } },
+    500,
+  )
+}
+
+/**
+ * Owner / admin / billing-admin gate for the routes that spend money on the
+ * workspace's card. Mirrors `/api/billing/end-trial`.
+ */
+async function requireBillingManager(c: any, workspaceId: string) {
+  const userId = (c.get('auth') as any)?.userId as string | undefined
+  if (!userId) {
+    return {
+      response: c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401),
+    }
+  }
+  const member = await prisma.member.findFirst({
+    where: { workspaceId, userId, projectId: null },
+    select: { role: true, isBillingAdmin: true },
+  })
+  if (!billingService.canManageBilling(member)) {
+    return {
+      response: c.json(
+        { error: { code: 'forbidden', message: 'Only owners and billing admins can change billing' } },
+        403,
+      ),
+    }
+  }
+  return { userId }
+}
+
+/**
+ * What the billing page's summary card and payment banner need: plan, seats,
+ * period, next invoice, card on file, and any payment problem. Grant-only and
+ * free workspaces get nulls rather than a 404.
+ */
+app.get('/api/billing/summary', async (c) => {
+  try {
+    const workspaceId = new URL(c.req.url).searchParams.get('workspaceId')
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    if (!await verifyWorkspaceMembership(c, workspaceId)) {
+      return c.json({ error: { code: 'forbidden', message: 'Access denied to this workspace' } }, 403)
+    }
+    const summary = await billingSummaryService.getBillingSummary({ workspaceId, stripe })
+    return c.json({ ok: true, ...summary })
+  } catch (error: any) {
+    return billingServiceError(c, error, 'summary_failed')
+  }
+})
+
+/**
+ * Price a plan change before the customer confirms it: old price, new price,
+ * what is charged today, and when it takes effect.
+ */
+app.post('/api/billing/change-plan/preview', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+    const body = await c.req.json().catch(() => ({} as any))
+    const workspaceId = body?.workspaceId
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    const gate = await requireBillingManager(c, workspaceId)
+    if (gate.response) return gate.response
+
+    const preview = await billingSummaryService.previewPlanChange({
+      workspaceId,
+      stripe,
+      planId: body.planId,
+      billingInterval: body.billingInterval,
+      seats: body.seats,
+    })
+    return c.json({ ok: true, ...preview })
+  } catch (error: any) {
+    return billingServiceError(c, error, 'change_plan_preview_failed')
+  }
+})
+
+/**
+ * Apply a plan change to the existing Stripe subscription. Never creates a
+ * second subscription — that was the bug this route exists to remove.
+ */
+app.post('/api/billing/change-plan', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+    const body = await c.req.json().catch(() => ({} as any))
+    const workspaceId = body?.workspaceId
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    const gate = await requireBillingManager(c, workspaceId)
+    if (gate.response) return gate.response
+
+    const result = await billingSummaryService.applyPlanChange({
+      workspaceId,
+      stripe,
+      planId: body.planId,
+      billingInterval: body.billingInterval,
+      seats: body.seats,
+      prorationDate: body.prorationDate,
+    })
+    return c.json(result)
+  } catch (error: any) {
+    return billingServiceError(c, error, 'change_plan_failed')
+  }
+})
+
+/** Self-serve cancel: access runs to the end of the paid period. */
+app.post('/api/billing/cancel', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+    const body = await c.req.json().catch(() => ({} as any))
+    const workspaceId = body?.workspaceId
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    const gate = await requireBillingManager(c, workspaceId)
+    if (gate.response) return gate.response
+
+    const result = await billingSummaryService.setCancelAtPeriodEnd({
+      workspaceId,
+      stripe,
+      cancel: true,
+    })
+    return c.json(result)
+  } catch (error: any) {
+    return billingServiceError(c, error, 'cancel_failed')
+  }
+})
+
+/** Undo a scheduled cancellation. */
+app.post('/api/billing/resume', async (c) => {
+  try {
+    if (!stripe) {
+      return c.json({ error: { code: 'stripe_not_configured', message: 'Stripe is not configured' } }, 503)
+    }
+    const body = await c.req.json().catch(() => ({} as any))
+    const workspaceId = body?.workspaceId
+    if (!workspaceId) {
+      return c.json({ error: { code: 'invalid_request', message: 'Missing workspaceId' } }, 400)
+    }
+    const gate = await requireBillingManager(c, workspaceId)
+    if (gate.response) return gate.response
+
+    const result = await billingSummaryService.setCancelAtPeriodEnd({
+      workspaceId,
+      stripe,
+      cancel: false,
+    })
+    return c.json(result)
+  } catch (error: any) {
+    return billingServiceError(c, error, 'resume_failed')
   }
 })
 
@@ -9951,6 +10174,22 @@ app.post('/api/webhooks/stripe', async (c) => {
             )
           } catch (err: any) {
             console.error('[Webhook] affiliate clawback failed:', err?.message ?? err)
+          }
+        }
+        // The 30-day guarantee: a full refund of the offer's first invoice
+        // closes the course. Partial refunds, renewals and other charges are
+        // left alone, and a redelivery is a no-op (SHO-446).
+        if (event.type === 'charge.refunded') {
+          try {
+            const refund = await soloFounderService.handleOfferChargeRefunded({ stripe, charge: obj })
+            if (refund.refunded) {
+              console.log('[Webhook] Solo Founder enrollment refunded:', {
+                subscriptionId: refund.subscriptionId,
+                chargeId,
+              })
+            }
+          } catch (err: any) {
+            console.error('[Webhook] Solo Founder refund handling failed:', err?.message ?? err)
           }
         }
         break
