@@ -160,6 +160,7 @@ describe('GET /api/learn/me', () => {
     expect(body.signedIn).toBe(false)
     expect(body.courses.library.hasAccess).toBe(true)
     expect(body.courses['start-here']).toEqual({ hasAccess: false, reason: 'signed_out' })
+    expect(body.courses['ai-teammates']).toEqual({ hasAccess: false, reason: 'signed_out' })
     expect(body.courses['solo-founder'].offer).toBe('solo_founder')
   })
 
@@ -179,6 +180,7 @@ describe('GET /api/learn/me', () => {
     expect(body.plan.id).toBe('business')
     expect(body.coach.dailyLimit).toBe(LEARN_COACH_DAILY_LIMIT.business)
     expect(body.courses['agent-team-playbook'].hasAccess).toBe(true)
+    expect(body.courses['ai-teammates']).toEqual({ hasAccess: true, reason: 'account' })
     expect(body.courses['solo-founder']).toMatchObject({
       hasAccess: true,
       reason: 'purchased',

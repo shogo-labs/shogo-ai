@@ -34,6 +34,7 @@ export interface LearnCourse {
 export const LEARN_COURSES: readonly LearnCourse[] = [
   { id: 'library', access: { kind: 'public' } },
   { id: 'start-here', access: { kind: 'account' } },
+  { id: 'ai-teammates', access: { kind: 'account' } },
   { id: 'agent-team-playbook', access: { kind: 'plan', minPlan: 'basic' } },
   {
     id: 'solo-founder',
