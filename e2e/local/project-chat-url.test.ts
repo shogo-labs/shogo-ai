@@ -228,11 +228,7 @@ test.describe("Project chat URL (local)", () => {
     expect(await page.evaluate(() => history.length)).toBe(entriesBefore)
   })
 
-  // SHO-174: a cold load of ?chatSessionId=<chat> opens the project's pinned
-  // chat, not the one in the URL — on origin/main too, i.e. this PR neither
-  // causes nor fixes the read side. Kept as fixme so it starts enforcing the
-  // moment SHO-174 lands instead of either going red or being deleted.
-  test.fixme("a copied URL opens that exact chat, and a reload keeps it", async ({ page }) => {
+  test("a copied URL opens that exact chat, and a reload keeps it", async ({ page }) => {
     const loads = trackChatLoads(page)
     await prepare(page)
     await openProject(page, `?chatSessionId=${bravoId}`)

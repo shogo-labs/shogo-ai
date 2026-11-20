@@ -670,7 +670,7 @@ export class RuntimeManager implements IRuntimeManager {
     if (process.env.SHOGO_SKIP_STALE_RUNTIME_CLEANUP === '1') return
 
     await this.cleanupOrphanedRuntimeListeners()
-    if (process.platform !== 'win32') await this.cleanupOrphanedViteWatchers()
+    if (process.platform !== 'win32') await this.cleanupOrphanedViteWatchers('boot')
   }
 
   private async cleanupOrphanedRuntimeListeners(): Promise<void> {
@@ -730,7 +730,7 @@ export class RuntimeManager implements IRuntimeManager {
    * (observed: 120 orphans, ~18GB). Scoped to this API's workspaces dir so
    * another Shogo instance's watchers are untouched.
    */
-  private async cleanupOrphanedViteWatchers(): Promise<void> {
+  private async cleanupOrphanedViteWatchers(mode: 'timer' | 'boot'): Promise<void> {
     const workspacesDir = this.resolvedWorkspacesDir()
     const dirs = [workspacesDir]
     try {
@@ -758,7 +758,7 @@ export class RuntimeManager implements IRuntimeManager {
         }
       }
     }
-    this.reapOrphanedChildLedgers(workspacesDir)
+    this.reapOrphanedChildLedgers(workspacesDir, mode)
   }
 
   /**
@@ -773,11 +773,18 @@ export class RuntimeManager implements IRuntimeManager {
    * signalled while its command line still matches what was recorded, so a
    * reused pid is dropped, never killed.
    */
-  private reapOrphanedChildLedgers(workspacesDir: string): void {
+  private reapOrphanedChildLedgers(workspacesDir: string, mode: 'timer' | 'boot'): void {
     if (process.platform === 'win32') return
+    // timer: spare live owners' children; legacy ownerless entries are also
+    // spared (they might belong to a live API we cannot attribute).
+    // boot: spare live owners' children (another API may be running); reap
+    // ownerless entries — the previous API is gone so they are true orphans.
+    const opts = mode === 'timer'
+      ? { spareLiveOwners: true, reapOwnerless: false }
+      : { spareLiveOwners: true, reapOwnerless: true }
     let swept: ReturnType<typeof reapChildLedgersUnder>
     try {
-      swept = reapChildLedgersUnder(workspacesDir)
+      swept = reapChildLedgersUnder(workspacesDir, opts)
     } catch (err: any) {
       console.warn(`[RuntimeManager] Child ledger reap failed: ${err?.message ?? err}`)
       return
@@ -833,7 +840,7 @@ export class RuntimeManager implements IRuntimeManager {
       return
     }
     try {
-      await this.cleanupOrphanedViteWatchers()
+      await this.cleanupOrphanedViteWatchers('timer')
     } catch (err: any) {
       console.warn(`[RuntimeManager] Periodic orphan sweep failed: ${err?.message ?? err}`)
     }

@@ -960,16 +960,24 @@ export const auth = betterAuth({
           // verification emails to bot inboxes, and Loops started returning 429s.
           let heldSignup = false
           if (!isLocalMode) {
+            const signupRiskParams = {
+              userId: user.id,
+              email: user.email,
+              provider: signupProviderFromPath(ctx?.path),
+              emailVerified: Boolean(user.emailVerified),
+              headers: ctx?.request?.headers ?? ctx?.headers ?? null,
+            }
             try {
               const { assessNewSignup } = await import('./services/signup-risk.service')
               const { applyInitialSignupCredit } = await import('./services/signup-credit.service')
-              const risk = await assessNewSignup({
-                userId: user.id,
-                email: user.email,
-                provider: signupProviderFromPath(ctx?.path),
-                emailVerified: Boolean(user.emailVerified),
-                headers: ctx?.request?.headers ?? ctx?.headers ?? null,
-              })
+              // One retry on transient failure (a single DB blip should not cost the gate).
+              let risk
+              try {
+                risk = await assessNewSignup(signupRiskParams)
+              } catch {
+                await new Promise((r) => setTimeout(r, 500))
+                risk = await assessNewSignup(signupRiskParams)
+              }
               await applyInitialSignupCredit({ userId: user.id, result: risk })
               heldSignup = risk.band === 'high' && !user.emailVerified
               if (!heldSignup) {
@@ -979,10 +987,19 @@ export const auth = betterAuth({
                   score: risk.score,
                 }).catch(() => {})
               }
-            } catch (err) {
+            } catch (err: any) {
               // An assessment failure leaves the account unheld, so the emails
               // below go out exactly as they did before this gate existed.
               console.error(`[signup-risk] assessment failed for ${user.email}`, err)
+              // Stable marker line (grepable by dashboards) + analytics event so
+              // failures become countable without manual pod-log inspection.
+              console.error(
+                `[signup-risk] assessment_failed userId=${user.id} provider=${signupRiskParams.provider}`,
+              )
+              trackEvent(user.id, 'signup_risk_failed', {
+                provider: signupRiskParams.provider,
+                message: err?.message ?? String(err),
+              }).catch(() => {})
             }
           }
 

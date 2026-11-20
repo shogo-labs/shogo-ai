@@ -6,10 +6,11 @@
  * Provides billing data from the SDK domain store. All values are in USD.
  */
 
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useSDKDomain, useSDKHttp } from "../domain"
 import type { IDomainStore } from "@shogo/domain-stores"
 import { resolveUsageWindows } from "./usage-windows"
+import { subscribeAppActivity } from "../lib/app-activity"
 
 export interface EffectiveBalance {
   dailyIncludedUsd: number
@@ -196,6 +197,11 @@ export function useBillingData(
   // workspace-plan failed or answered without a plan: the plan is unknown,
   // which is not the same as Free.
   const [planLookupFailed, setPlanLookupFailed] = useState(false)
+  // Epoch-ms timestamp when the last workspace-plan fetch settled (success or
+  // failure). Used to throttle foreground-triggered refetches to one per 60s
+  // so a rapid series of focus events (e.g. command-tab back and forth) does
+  // not hammer the endpoint.
+  const lastPlanFetchAt = useRef(0)
 
   useEffect(() => {
     if (!workspaceId || !store?.subscriptionCollection) { setIsLoadingSubscription(false); return }
@@ -263,9 +269,24 @@ export function useBillingData(
         }),
     ])
       .catch((err: any) => { if (!cancelled) setError(err instanceof Error ? err : new Error("Failed to load subscription")) })
-      .finally(() => { if (!cancelled) setIsLoadingSubscription(false) })
+      .finally(() => { if (!cancelled) { lastPlanFetchAt.current = Date.now(); setIsLoadingSubscription(false) } })
     return () => { cancelled = true }
   }, [workspaceId, store, subscriptionRefetchCounter, http])
+
+  // Re-fetch the workspace plan whenever the app comes to the foreground
+  // (native: AppState -> 'active'; web: visibilitychange/focus). Throttled to
+  // at most once per 60s so rapid focus events don't hammer the endpoint.
+  // `subscriptionRefetchCounter` is the existing mechanism that re-runs the
+  // plan effect above — bumping it here re-uses that path without duplicating
+  // the fetch logic.
+  useEffect(() => {
+    const THROTTLE_MS = 60_000
+    return subscribeAppActivity(() => {
+      if (Date.now() - lastPlanFetchAt.current >= THROTTLE_MS) {
+        setSubscriptionRefetchCounter((c) => c + 1)
+      }
+    })
+  }, [])
 
   useEffect(() => {
     const wallet = (store as any)?.usageWalletCollection
