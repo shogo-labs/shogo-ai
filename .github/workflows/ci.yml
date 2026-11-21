@@ -1139,8 +1139,10 @@ jobs:
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
     permissions:
       contents: read
-    # ~10 min since SHO-257 added the machine parity suite and its web build.
-    timeout-minutes: 25
+    # ~10 min for the RBAC suites and the parity/web build since SHO-257, plus the
+    # SHO-488 live remote-workspace files (eleven of them, ~90 s each, one process
+    # each) — and one retry's worth of headroom on a cold runner.
+    timeout-minutes: 40
     env:
       CHANNELS_TEST_PG_URL: postgresql://shogo:shogo@127.0.0.1:5432/shogo
       # SHO-185's two-pod relay and machine-copy suites need a real Redis next to
@@ -1297,6 +1299,27 @@ jobs:
       - name: Hosted workspace on a paired desktop (two processes, Postgres + Redis)
         working-directory: apps/api
         run: bun --no-env-file test src/__tests__/sho285-hosted-workspace.e2e.test.ts --timeout 300000
+
+      # SHO-488: the same hosted workspace, but checked **live** instead of by
+      # polling a GET until the data appears — the polling suites above (and the
+      # parity one, SHO-257) pass with a broken push path, which is how
+      # "the reply only shows after a refresh" reached production. Every file
+      # opens the real socket and asserts the event arrives with no GET between.
+      #
+      # One file per process on purpose: a single `bun test` over several of
+      # these boots four runtimes per file and is OOM-killed on a 2-core runner
+      # (exit 137). Each file is its own bug surface (chat, boards, files, …),
+      # so a failure names the broken feature in the step's log group.
+      - name: Remote workspace, checked live (one file per process)
+        working-directory: apps/api
+        timeout-minutes: 25
+        run: |
+          set -e
+          for f in team-chat workspace-chat activity projects boards files offline-reconnect access schedules approvals preview; do
+            echo "::group::remote workspace · $f"
+            bun --no-env-file test "src/__tests__/remote-workspace/$f.e2e.test.ts" --timeout 600000
+            echo "::endgroup::"
+          done
 
       # …and the same, in the cloud studio UI: the web build served in front of
       # the cloud process, driven by Playwright (e2e/machine-vm).
