@@ -11,12 +11,17 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 
 let storedRow: { key: string; value: string } | null = null
+let readError: Error | null = null
+let readGate: Promise<void> | null = null
 
 mock.module('../prisma', () => ({
   prisma: {
     platformSetting: {
-      findUnique: async ({ where: { key } }: { where: { key: string } }) =>
-        storedRow && storedRow.key === key ? storedRow : null,
+      findUnique: async ({ where: { key } }: { where: { key: string } }) => {
+        if (readGate) await readGate
+        if (readError) throw readError
+        return storedRow && storedRow.key === key ? storedRow : null
+      },
     },
   },
 }))
@@ -26,6 +31,8 @@ const {
   getDockerClassOverride,
   setDockerClassOverride,
   loadDockerClassOverride,
+  startDockerClassOverrideRefresh,
+  stopDockerClassOverrideRefresh,
   isDockerClassEnabled,
 } = await import('../runtime-class-setting')
 
@@ -34,6 +41,9 @@ let prevEnv: string | undefined
 
 beforeEach(() => {
   storedRow = null
+  readError = null
+  readGate = null
+  stopDockerClassOverrideRefresh()
   setDockerClassOverride(null)
   prevEnv = process.env[ENV_KEY]
   delete process.env[ENV_KEY]
@@ -74,6 +84,75 @@ describe('runtime-class-setting', () => {
     storedRow = null
     await loadDockerClassOverride()
     expect(getDockerClassOverride()).toBeNull()
+  })
+
+  test('loadDockerClassOverride clears a stale in-memory value when the row was deleted', async () => {
+    // Another instance cleared the setting (PUT enabled: null) — this one must follow.
+    setDockerClassOverride(true)
+    storedRow = null
+    await loadDockerClassOverride()
+    expect(getDockerClassOverride()).toBeNull()
+  })
+
+  test('loadDockerClassOverride keeps the last known value when the DB read fails', async () => {
+    setDockerClassOverride(true)
+    readError = new Error('db unavailable')
+    await loadDockerClassOverride()
+    expect(getDockerClassOverride()).toBe(true)
+  })
+
+  test('a direct write during an in-flight refresh is not overwritten by the stale read', async () => {
+    // Refresh reads the old DB value, the admin PUT lands, then the read resolves.
+    storedRow = { key: DOCKER_CLASS_SETTING_KEY, value: 'false' }
+    let releaseRead!: () => void
+    readGate = new Promise((r) => (releaseRead = r))
+
+    const refresh = loadDockerClassOverride()
+    setDockerClassOverride(true)
+    releaseRead()
+    await refresh
+
+    expect(getDockerClassOverride()).toBe(true)
+  })
+
+  test('startDockerClassOverrideRefresh picks up DB changes made after boot', async () => {
+    const realSetInterval = globalThis.setInterval
+    let tick: (() => Promise<void>) | undefined
+    let scheduledMs: number | undefined
+    globalThis.setInterval = ((fn: () => Promise<void>, ms: number) => {
+      tick = fn
+      scheduledMs = ms
+      return realSetInterval(() => {}, 1_000_000)
+    }) as unknown as typeof setInterval
+
+    try {
+      startDockerClassOverrideRefresh(30_000)
+      expect(scheduledMs).toBe(30_000)
+
+      storedRow = { key: DOCKER_CLASS_SETTING_KEY, value: 'true' }
+      await tick!()
+      expect(getDockerClassOverride()).toBe(true)
+
+      storedRow = { key: DOCKER_CLASS_SETTING_KEY, value: 'false' }
+      await tick!()
+      expect(getDockerClassOverride()).toBe(false)
+
+      storedRow = null
+      await tick!()
+      expect(getDockerClassOverride()).toBeNull()
+    } finally {
+      stopDockerClassOverrideRefresh()
+      globalThis.setInterval = realSetInterval
+    }
+  })
+
+  test('startDockerClassOverrideRefresh is idempotent', () => {
+    startDockerClassOverrideRefresh(1_000)
+    startDockerClassOverrideRefresh(1_000)
+    stopDockerClassOverrideRefresh()
+    // A single stop fully clears the timer; a second start should work again.
+    startDockerClassOverrideRefresh(1_000)
+    stopDockerClassOverrideRefresh()
   })
 
   describe('isDockerClassEnabled', () => {
