@@ -132,15 +132,6 @@ async function attach(page: Page, fixture: Fixture): Promise<void> {
   expect(res.status, `attach failed: ${JSON.stringify(res.json)}`).toBeLessThan(300)
 }
 
-async function detach(page: Page, fixture: Fixture): Promise<void> {
-  const res = await api(
-    page,
-    "DELETE",
-    `/api/workspaces/${fixture.workspaceId}/sessions/${fixture.sessionId}/projects/${fixture.projectId}`,
-  )
-  expect(res.status, `detach failed: ${JSON.stringify(res.json)}`).toBeLessThan(300)
-}
-
 /** Workspace delete is a true wipe (rows, runtimes, project directories). */
 async function dropFixture(page: Page, fixture: Fixture): Promise<void> {
   await api(page, "DELETE", `/api/projects/${fixture.projectId}`).catch(() => {})
@@ -230,8 +221,19 @@ test.describe("workspace agent chat, phone", () => {
     // transcript.
     expect(headerBox!.y).toBeGreaterThan(attachedY)
 
-    // 2. Detach it: the panel goes away and the message does not move.
-    await detach(page, fixture)
+    // 2. Detach it and reload: the panel goes away and the message does not
+    //    move. (The scope sheet's own Detach would be a nicer path, but its
+    //    modal locks the page scroll while it is open and shifts the transcript
+    //    ~10 px, which would be measured as the thing under test.)
+    const detached = await api(
+      page,
+      "DELETE",
+      `/api/workspaces/${fixture.workspaceId}/sessions/${fixture.sessionId}/projects/${fixture.projectId}`,
+    )
+    expect(
+      detached.status,
+      `detach failed: ${JSON.stringify(detached.json)}`,
+    ).toBeLessThan(300)
     await page.reload()
     await composer(page).waitFor({ state: "visible", timeout: 120_000 })
     await messageNode(page, fixture).waitFor({ state: "visible", timeout: 60_000 })
@@ -240,10 +242,10 @@ test.describe("workspace agent chat, phone", () => {
     const detachedY = await messageY(page, fixture)
 
     // The regression: on `origin/main` the attached case paid `insets.top + 112`
-    // plus the row itself, so this delta was ~160 px. A few pixels of slack
-    // cover the sub-pixel text layout of the two loads (measured up to ~3 px);
-    // the bug being pinned is two orders of magnitude bigger than that.
-    expect(Math.abs(attachedY - detachedY)).toBeLessThanOrEqual(4)
+    // plus the row itself, so this delta was ~160 px. Two separate loads still
+    // land within a few px of each other (measured 0–5 px across runs and
+    // runners); the bug this pins is an order of magnitude bigger than that.
+    expect(Math.abs(attachedY - detachedY)).toBeLessThanOrEqual(12)
   })
 
   test("expanding the panel lists the project and Manage opens the scope sheet", async () => {
