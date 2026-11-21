@@ -35,6 +35,17 @@ export interface ProjectRouteParamsInput<T extends Record<string, unknown>> {
    * so the arrival URL may still speak for it. Defaults to the current params.
    */
   baseline?: T
+  /**
+   * Arrival values the screen has since proven wrong, keyed by param.
+   *
+   * The arrival URL is a claim, not a fact: `?chatSessionId=` can name a
+   * deleted, foreign or otherwise unopenable chat (SHO-169 AC8). Once the
+   * server says so, that value must stop speaking — at the router state too,
+   * because the same query also reached the router and would otherwise be
+   * re-applied on the next render and pin the screen to a dead id forever.
+   * Only the exact rejected value is dropped; a later real id still applies.
+   */
+  rejected?: Readonly<Record<string, string>>
 }
 
 /** Params the router itself supplied, i.e. what the URL would serialise to. */
@@ -89,10 +100,19 @@ export function mergeProjectRouteParams<T extends Record<string, unknown>>(
 
   const merged = routerParams(local, leaf, pathname, projectId) as Record<string, unknown>
   const baseline = (input.baseline ?? merged) as Record<string, unknown>
+
+  // A value the screen has disproved is dropped from the router's own params as
+  // well as from the arrival ones: the router parsed the same query, so leaving
+  // it would re-apply the dead id on every render.
+  for (const [key, value] of Object.entries(input.rejected ?? {})) {
+    if (merged[key] === value) delete merged[key]
+  }
+
   if (!arrivalParams) return merged as T
 
   for (const [key, value] of Object.entries(arrivalParams)) {
     if (NOT_RESTORED_PARAMS.has(key)) continue
+    if (input.rejected?.[key] === value) continue
     if (!arrivalSpeaks(key, merged, baseline)) continue
     merged[key] = value
   }

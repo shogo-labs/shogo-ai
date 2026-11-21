@@ -274,7 +274,7 @@ const CANVAS_ERROR_LOG_TAIL = 30;
 
 export default observer(function ProjectLayout() {
   csMark("project:layout:render");
-  const { params, preserved: preservedParams } = useProjectRouteParams<{
+  const { params, preserved: preservedParams, rejectParam } = useProjectRouteParams<{
     id: string;
     chatSessionId?: string;
     fromConversation?: string;
@@ -2787,6 +2787,10 @@ export default observer(function ProjectLayout() {
     validatedDeepLinkIdsRef.current.add(key);
 
     const fallBackToProjectChat = () => {
+      // Stop the dead id speaking: it reached the router as well as the
+      // arrival URL, so without retracting both it is re-applied on the next
+      // render and the screen stays pinned to a chat that cannot open.
+      rejectParam("chatSessionId", incoming);
       // Let the pinned/default promotion own selection again.
       pinnedSessionAppliedRef.current = false;
       setOpenChatTabIds((prev) =>
@@ -2817,6 +2821,7 @@ export default observer(function ProjectLayout() {
     store,
     setOpenChatTabIds,
     capturedChatScope,
+    rejectParam,
   ]);
 
   const handleCreateNewSession = useCallback(async () => {

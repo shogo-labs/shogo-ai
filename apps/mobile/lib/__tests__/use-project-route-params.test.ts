@@ -234,4 +234,69 @@ describe('mergeProjectRouteParams', () => {
     expect(result.chatSessionId).toBeUndefined()
     expect(result.id).toBe(ID)
   })
+
+  // ─── A rejected arrival value (SHO-169 AC8 / SHO-174 :345) ────────────────
+
+  it('drops an arrival value the screen proved unopenable', () => {
+    // `?chatSessionId=` named a deleted/foreign chat. The screen asked the
+    // server, it said no, and the id must stop speaking — or the screen stays
+    // pinned to a chat that never mounts.
+    const local = params({})
+    const global = params({})
+    const result = mergeProjectRouteParams({
+      local,
+      global,
+      pathname: PROJECT_PATH,
+      projectId: ID,
+      arrivalParams: { chatSessionId: 'chat-dead' },
+      rejected: { chatSessionId: 'chat-dead' },
+    })
+    expect(result.chatSessionId).toBeUndefined()
+    // The rest of the arrival query is untouched.
+    expect(result.id).toBe(ID)
+  })
+
+  it('drops a rejected value the router carried too', () => {
+    // The router parses the same query, so the dead id is in its state as well;
+    // retracting only the arrival copy would re-apply it on the next render.
+    const local = params({ chatSessionId: 'chat-dead' })
+    const global = params({})
+    const result = mergeProjectRouteParams({
+      local,
+      global,
+      pathname: PROJECT_PATH,
+      projectId: ID,
+      arrivalParams: { chatSessionId: 'chat-dead' },
+      rejected: { chatSessionId: 'chat-dead' },
+    })
+    expect(result.chatSessionId).toBeUndefined()
+  })
+
+  it('a rejected id does not block the real chat the screen falls back to', () => {
+    const local = params({ chatSessionId: 'chat-real' })
+    const global = params({})
+    const result = mergeProjectRouteParams({
+      local,
+      global,
+      pathname: PROJECT_PATH,
+      projectId: ID,
+      arrivalParams: { chatSessionId: 'chat-dead' },
+      rejected: { chatSessionId: 'chat-dead' },
+    })
+    expect(result.chatSessionId).toBe('chat-real')
+  })
+
+  it('a rejection is limited to the rejected value, not the key', () => {
+    const local = params({})
+    const global = params({})
+    const result = mergeProjectRouteParams({
+      local,
+      global,
+      pathname: PROJECT_PATH,
+      projectId: ID,
+      arrivalParams: { chatSessionId: 'chat-bravo' },
+      rejected: { chatSessionId: 'chat-dead' },
+    })
+    expect(result.chatSessionId).toBe('chat-bravo')
+  })
 })

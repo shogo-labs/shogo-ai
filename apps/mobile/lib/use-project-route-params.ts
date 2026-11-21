@@ -32,10 +32,15 @@
  * the mount's baseline are latched for the life of the mount, so claiming it
  * cannot make a restored tab or chat vanish underneath the screen.
  *
+ * An arrival value the screen proves wrong (a dead or foreign `chatSessionId`)
+ * is dropped through `rejectParam`, which also overrides the router's copy of
+ * the same value — otherwise the dead id is re-applied on every render and the
+ * screen can never fall back (SHO-169 AC8).
+ *
  * The pure merge/guard functions live in `project-route-params-core.ts` so unit
  * tests can import them without resolving expo-router native modules.
  */
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocalSearchParams, useGlobalSearchParams, usePathname } from 'expo-router'
 import { claimArrivalQueryParams, peekArrivalQueryParamsForProject } from './arrival-url'
 import {
@@ -56,6 +61,13 @@ export interface ProjectRouteParams<T> {
   preserved: Record<string, string>
   /** The params the router supplied, i.e. what it would serialise the URL to. */
   routerParams: T
+  /**
+   * Drop a restored value the screen has proven unopenable (a dead or foreign
+   * `chatSessionId`). The value stops speaking for the rest of the mount — both
+   * in the merge and in `preserved` — so the screen's own fallback can win and
+   * correct the URL (SHO-169 AC8).
+   */
+  rejectParam: (key: string, value: string) => void
 }
 
 /**
@@ -91,6 +103,13 @@ export function useProjectRouteParams<
   const latchedArrival =
     latched.current?.projectId === projectId ? latched.current : null
 
+  // Values the screen has disproved, matched by exact value: a chat id belongs
+  // to one project, so navigating elsewhere cannot inherit its rejection.
+  const [rejected, setRejected] = useState<Record<string, string>>({})
+  const rejectParam = useCallback((key: string, value: string) => {
+    setRejected((prev) => (prev[key] === value ? prev : { ...prev, [key]: value }))
+  }, [])
+
   const params = mergeProjectRouteParams<T>({
     local,
     global,
@@ -98,6 +117,7 @@ export function useProjectRouteParams<
     projectId,
     arrivalParams: latchedArrival?.arrivalParams ?? arrivalParams,
     baseline: latchedArrival?.baseline ?? routerParams,
+    rejected,
   })
 
   // Every arrival key still in force, not only the ones the router had already
@@ -122,5 +142,5 @@ export function useProjectRouteParams<
     claimArrivalQueryParams()
   }, [projectId])
 
-  return { params, preserved, routerParams }
+  return { params, preserved, routerParams, rejectParam }
 }

@@ -243,7 +243,11 @@ test.describe("Project chat URL (local)", () => {
 
     await page.reload()
     await composer(page).waitFor({ state: "visible", timeout: 120_000 })
-    expect(chatParam(page)).toBe(bravoId)
+    // The mirror repairs the address bar on a timer after the navigator settles
+    // (~0.6s in, one more pass at 0.9s), so right after a reload the param can
+    // be briefly absent while the chat itself is already open. Poll for the
+    // settled URL rather than reading it the instant the composer appears.
+    await expect.poll(() => chatParam(page), { timeout: 20_000 }).toBe(bravoId)
     await expect(page.getByText(/BRAVO-SEED-/).first()).toBeVisible({ timeout: 20_000 })
   })
 
