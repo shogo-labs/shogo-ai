@@ -240,9 +240,10 @@ test.describe("workspace agent chat, phone", () => {
     const detachedY = await messageY(page, fixture)
 
     // The regression: on `origin/main` the attached case paid `insets.top + 112`
-    // plus the row itself, so this delta was ~160 px. Two pixels of slack covers
-    // sub-pixel reflow from the dock's own height without hiding that.
-    expect(Math.abs(attachedY - detachedY)).toBeLessThanOrEqual(2)
+    // plus the row itself, so this delta was ~160 px. A few pixels of slack
+    // cover the sub-pixel text layout of the two loads (measured up to ~3 px);
+    // the bug being pinned is two orders of magnitude bigger than that.
+    expect(Math.abs(attachedY - detachedY)).toBeLessThanOrEqual(4)
   })
 
   test("expanding the panel lists the project and Manage opens the scope sheet", async () => {
