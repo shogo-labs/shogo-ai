@@ -23,6 +23,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
 import { join } from 'path'
+import { timingSafeEqual } from 'crypto'
 import { initInstrumentation, traceOperation } from './instrumentation'
 import { createLogger } from './logger'
 import { configureAIProxy } from './ai-proxy'
@@ -207,6 +208,30 @@ export function classifyActivity(path: string): ActivityClass {
  * stayed resident and hosts filled with guests nobody had asked for. A prefix
  * cannot be forgotten by the next endpoint.
  */
+export const POOL_BOOTSTRAP_HEADER = 'x-pool-bootstrap-secret'
+
+/**
+ * Which /pool/* calls an unassigned warm runtime serves (SEC-30). Returns the
+ * refusal, or null to let the request through.
+ */
+export function checkUnassignedPoolAccess(
+  path: string,
+  presented: string | undefined,
+  bootstrapSecret: string,
+): { status: 401 | 403; error: string } | null {
+  if (path === '/pool/activity') return null
+  if (path !== '/pool/assign') {
+    return { status: 403, error: 'Runtime is not assigned' }
+  }
+  if (!bootstrapSecret) return null
+  const given = Buffer.from(presented ?? '')
+  const want = Buffer.from(bootstrapSecret)
+  if (given.length !== want.length || !timingSafeEqual(given, want)) {
+    return { status: 401, error: 'Missing or invalid pool bootstrap secret' }
+  }
+  return null
+}
+
 export function isInternalRuntimePath(path: string, extra?: ReadonlySet<string>): boolean {
   if (extra?.has(path)) return true
   if (path === '/health' || path === '/ready') return true
@@ -720,11 +745,19 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     return false
   }
 
+  // SEC-30: an unassigned warm runtime has no token to check, so it used to
+  // pass every /pool/* call through. Any neighbour that could reach it could
+  // then hydrate files into, or claim, the VM the next customer is handed.
+  // Before assignment only the assign call and the activity poll are served,
+  // and assign must carry the pool bootstrap secret when the platform set one.
+  const poolBootstrapSecret = process.env.POOL_BOOTSTRAP_SECRET || ''
   const authPrefixes = config.authPrefixes ?? [`/${config.runtimeType === 'project' ? 'preview' : 'agent'}`, '/pool']
   for (const prefix of authPrefixes) {
     if (prefix === '/pool') {
       app.use(`${prefix}/*`, async (c, next) => {
         if (IS_POOL_MODE && !state.poolAssigned) {
+          const denied = checkUnassignedPoolAccess(c.req.path, c.req.header(POOL_BOOTSTRAP_HEADER), poolBootstrapSecret)
+          if (denied) return c.json({ error: denied.error }, denied.status)
           await next()
           return
         }

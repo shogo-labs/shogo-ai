@@ -121,6 +121,24 @@ export function deriveRuntimeToken(projectId: string): string {
   return `${RUNTIME_TOKEN_V1_PREFIX}${projectId}_${hmacFor(projectId, secret)}`
 }
 
+/** Header the warm-pool controller sends on `/pool/assign` (SEC-30). */
+export const POOL_BOOTSTRAP_HEADER = 'x-pool-bootstrap-secret'
+
+/**
+ * Per-warm-pod secret that an unassigned runtime requires on `/pool/assign`
+ * (SEC-30). Derived from the ksvc name, so the controller can recompute it at
+ * assign time without storing anything, and a neighbour that can reach the pod
+ * cannot claim it.
+ */
+export function derivePoolBootstrapSecret(serviceName: string): string {
+  if (!serviceName) {
+    throw new Error('[RuntimeToken] derivePoolBootstrapSecret: serviceName is required')
+  }
+  const secret = getSigningSecret()
+  assertMintableSigningSecret(secret)
+  return createHmac('sha256', secret).update(`pool-bootstrap:${serviceName}`).digest('hex')
+}
+
 /**
  * Derive a per-project webhook token.
  *
