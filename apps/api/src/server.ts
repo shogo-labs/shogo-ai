@@ -65,6 +65,8 @@ import { rbacRoutes } from './routes/rbac'
 import { appActionsRoutes } from './routes/app-actions'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
 import { startChatSweepWorker, stopChatSweepWorker } from './jobs/run-chat-sweep'
+import { startTurnFrameSweepWorker, stopTurnFrameSweepWorker } from './jobs/run-turn-frame-sweep'
+import { installProcessErrorHandlers } from './lib/process-error-handlers'
 import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
 import { startConversationRelay, stopConversationRelay } from './lib/conversation-relay'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
@@ -755,26 +757,8 @@ app.onError((err, c) => {
 
 // Process-level handlers: catch unhandled promise rejections and uncaught
 // exceptions that escape Hono's error boundary. Log them instead of crashing.
-process.on('unhandledRejection', (reason: any) => {
-  // AbortSignal.timeout() DOMExceptions are noisy and expected during cold
-  // starts / retries — log a single line instead of the full object.
-  if (reason?.name === 'TimeoutError' || reason?.name === 'AbortError') {
-    console.warn('[API] Suppressed timeout rejection:', reason.message)
-    return
-  }
-  console.error('[API] Unhandled promise rejection:', reason?.message || reason)
-  if (reason?.stack) {
-    console.error('[API] Stack:', reason.stack)
-  }
-})
-
-process.on('uncaughtException', (err: Error) => {
-  console.error('[API] Uncaught exception:', err.message)
-  if (err.stack) {
-    console.error('[API] Stack:', err.stack)
-  }
-  // For truly fatal errors (OOM, etc.), still crash — but DB/network errors should not kill the process
-})
+// Shared with the desktop composer, which had none of these until SHO-482.
+installProcessErrorHandlers('API')
 
 // CORS origins from environment - supports comma-separated list
 // Defaults to localhost for development
@@ -1870,6 +1854,9 @@ startEventDeliveryWorker(getRuntimeManager())
 void import('./services/composio-triggers.service').then((m) => m.startComposioTriggerReconciler()).catch(() => {})
 startChatQueueWorker()
 startChatSweepWorker()
+// Journal retention for cloud too (SHO-482): the desktop sweep was the only one
+// that existed, so old frames accumulated here forever.
+startTurnFrameSweepWorker()
 startChannelWorkers()
 // Forward chat realtime events and presence to sibling regions (no-op in single-region mode).
 startConversationRelay()
@@ -11057,6 +11044,7 @@ async function gracefulShutdown(signal: string) {
   stopEventDeliveryWorker()
   stopChatQueueWorker()
   stopChatSweepWorker()
+  stopTurnFrameSweepWorker()
   stopChannelWorkers()
   stopConversationRelay()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)

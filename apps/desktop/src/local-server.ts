@@ -21,6 +21,12 @@ import {
 } from './api-crash-log'
 import { addLocalApiBreadcrumb } from './sentry'
 import { formatIntentionalStopLog, stopApiProcess, type StopReason } from './api-stop'
+import {
+  describeMigrateFailure,
+  runMigrateDeploy,
+  type MigrateDeployAttempt,
+} from './migrate-deploy'
+import { appendMainLogLineSync, resolveMainLogDir } from './main-log'
 
 // Shogo-reserved port range — chosen to avoid conflicts with common dev tools
 const PREFERRED_PORT = 39100
@@ -1416,6 +1422,40 @@ function prismaInvocation(bunPath: string): string {
   return `"${bunPath}" x --bun prisma`
 }
 
+/**
+ * Where the shell keeps `main.log`, or null when electron is not available.
+ *
+ * Lazy on purpose: this module is loaded from tests that never construct an
+ * Electron app, and only the migrate path needs the path.
+ */
+function mainLogFile(): string | null {
+  try {
+    const { app } = require('electron') as typeof import('electron')
+    return path.join(
+      resolveMainLogDir({ userDataDir: app.getPath('userData'), homeDir: app.getPath('home') }),
+      'main.log',
+    )
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Record a failed deploy where the user's log actually keeps it (SHO-482).
+ *
+ * `console.error` goes through main.ts's buffered tee, so the FATAL
+ * "Failed to start local server" line reached `main.log` while the migration
+ * output that explained it was lost with the buffer. This appends the same
+ * lines synchronously, before the throw that ends the boot.
+ */
+function logMigrateFailure(attempt: MigrateDeployAttempt): void {
+  const file = mainLogFile()
+  for (const line of describeMigrateFailure(attempt)) {
+    console.error('[Desktop]', line)
+    if (file) appendMainLogLineSync(file, 'ERROR', line)
+  }
+}
+
 function runMigrations(bunPath: string, env: Record<string, string>): void {
   const projectRoot = getProjectRoot()
   const IS_DEV = !require('electron').app.isPackaged
@@ -1430,30 +1470,38 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
     DATABASE_URL: env.SHOGO_APP_DATABASE_URL ?? `file:${getDbPath()}`,
   }
 
-  if (IS_DEV) {
-    console.log('[Desktop] Dev mode: running SQLite migrations...')
-    try {
-      const result = execSync(
-        `${prisma} migrate deploy --config=prisma.config.local.ts`,
-        {
+  /**
+   * One `migrate deploy` (with the timeout retry) against a given Prisma config.
+   *
+   * The 30 s timeout this used to run with was shorter than a cold `bun x prisma`
+   * start, so the deploy was killed and the app reported a failed migration on a
+   * machine where nothing was wrong (SHO-482).
+   */
+  const runDeploy = (configFile: string): MigrateDeployAttempt =>
+    runMigrateDeploy(`${prisma} migrate deploy --config=${configFile}`, {
+      run: (command, timeoutMs) =>
+        execSync(command, {
           cwd: projectRoot,
           env: migrateEnv,
           stdio: 'pipe',
-          timeout: 30000,
+          timeout: timeoutMs,
           encoding: 'utf-8',
-        }
-      )
-      console.log('[Desktop] Migrations complete:', result.trim())
-    } catch (err: any) {
-      const stderr = err.stderr?.toString() || ''
-      const stdout = err.stdout?.toString() || ''
-      if (stdout.includes('No pending migrations') || stderr.includes('No pending migrations')) {
-        console.log('[Desktop] Database schema is up to date')
-      } else {
-        console.error('[Desktop] Migration failed:', stderr || err.message)
-        console.error('[Desktop] Migration stdout:', stdout)
-        throw new Error('Failed to run database migrations')
-      }
+        }),
+    })
+
+  if (IS_DEV) {
+    console.log('[Desktop] Dev mode: running SQLite migrations...')
+    const attempt = runDeploy('prisma.config.local.ts')
+    if (attempt.ok) {
+      console.log('[Desktop] Migrations complete:', attempt.stdout.trim())
+    } else if (
+      attempt.stdout.includes('No pending migrations') ||
+      attempt.stderr.includes('No pending migrations')
+    ) {
+      console.log('[Desktop] Database schema is up to date')
+    } else {
+      logMigrateFailure(attempt)
+      throw new Error('Failed to run database migrations')
     }
     try {
       baselineMigrations(bunPath, getDbPath(), 'rescue')
@@ -1479,29 +1527,6 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
   // fall back to its WASM engine sidesteps the whole arch-mismatch class of bugs
   // and removes the writable-copy dance that only existed for the old native
   // engine's code-signing constraint.
-  const runDeploy = (): { stdout: string; stderr: string; ok: boolean; error?: any } => {
-    try {
-      const result = execSync(
-        `${prisma} migrate deploy --config=prisma.config.js`,
-        {
-          cwd: projectRoot,
-          env: migrateEnv,
-          stdio: 'pipe',
-          timeout: 30000,
-          encoding: 'utf-8',
-        }
-      )
-      return { stdout: result, stderr: '', ok: true }
-    } catch (err: any) {
-      return {
-        stdout: err.stdout?.toString() || '',
-        stderr: err.stderr?.toString() || '',
-        ok: false,
-        error: err,
-      }
-    }
-  }
-
   // Pre-flight: if `_prisma_migrations` already contains a row with
   // `finished_at = NULL`, `prisma migrate deploy` will fail with P3009
   // and refuse to run any other migrations on top of it. We detect
@@ -1532,7 +1557,7 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
   }
 
   console.log('[Desktop] Running database migrations...')
-  let attempt = runDeploy()
+  let attempt = runDeploy('prisma.config.js')
 
   // Self-heal for users whose install pre-dates the baseline fix: the seed DB
   // was copied but `_prisma_migrations` never populated (the old sqlite3 CLI
@@ -1554,7 +1579,7 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
       console.error('[Desktop] P3005 self-heal failed during introspect:', err)
       throw new Error('Failed to run database migrations (P3005 self-heal could not baseline)')
     }
-    attempt = runDeploy()
+    attempt = runDeploy('prisma.config.js')
   }
 
   // Rescue pass: even when `prisma migrate deploy` says everything is fine,
@@ -1594,8 +1619,9 @@ function runMigrations(bunPath: string, env: Record<string, string>): void {
     return
   }
 
-  console.error('[Desktop] [ERROR] Migration failed:', attempt.stderr || attempt.error?.message)
-  console.error('[Desktop] [ERROR] Migration stdout:', attempt.stdout)
+  // Written synchronously, so it survives the quit that follows the throw
+  // below — the console tee is buffered and used to lose exactly these lines.
+  logMigrateFailure(attempt)
 
   // If the failure was P3009 (a migration recorded as failed mid-run on
   // *this* launch — typically a buggy migration in a brand-new release
