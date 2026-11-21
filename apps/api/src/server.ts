@@ -845,6 +845,14 @@ const csrfMiddleware = csrf({
     // Hono never passes `undefined` here — the wrapper below handles that
     // case before we get called. Kept defensively in case of upstream changes.
     if (!origin) return true
+    // The app's own origin, always (SHO-494). This handler replaces Hono's
+    // default rule (`origin === new URL(c.req.url).origin`), so a form POST from
+    // the API's own origin was refused whenever that origin was not in
+    // ALLOWED_ORIGINS — a self-host, a preview pod, a plain IP — and a channel
+    // attachment upload answered 403 "Forbidden" before its bytes were read. The
+    // URL's origin comes from the Host header, which a browser cannot forge, so
+    // a cross-site page still fails: its Origin is its own domain.
+    if (origin === new URL(c.req.url).origin) return true
     const isDevOrLocal = process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOCAL_MODE === 'true'
     if (isDevOrLocal && (origin === 'null' || origin.startsWith('http://localhost:') || origin.startsWith('shogo://'))) {
       return true

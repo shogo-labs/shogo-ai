@@ -139,13 +139,11 @@ describeIfInfra('remote workspace · boards', () => {
     })
   }
 
-  // Still open after SHO-486 (#2139, `c3aaad2e6`). That change publishes the
-  // bus event for synced *messages*; a work-item change is ingested by the same
-  // sync but publishes nothing, so the cloud socket hears `message.created`
-  // from the desktop and never `board.changed` (measured: events seen
-  // `ready, presence, message.created`). `test.failing` keeps the requirement
-  // asserted; it flips to `test` when the queue/move insert point publishes.
-  test.failing('hosted · a card the desktop moves arrives live in the cloud [SHO-486]', async () => {
+  // SHO-494 closes the gap SHO-486 left: the same sync insert point now
+  // announces cards (`recordLiveWrite` → `announceSyncedItems`), with the
+  // `board.changed` shape a local card write sends, so a cloud board reloads
+  // when the desktop moves a card instead of on the next page load.
+  test('hosted · a card the desktop moves arrives live in the cloud [SHO-486]', async () => {
     const t = target('hosted')
     const peer = t.peer!
     const board = await read(peer, `/api/boards/${encodeURIComponent(t.seed.boardId)}`)

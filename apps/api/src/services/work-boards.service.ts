@@ -204,6 +204,50 @@ async function publishBoard(board: { id: string; workspaceId: string; conversati
   publishConversationEvent(board.workspaceId, { type: 'board.changed', boardId: board.id, conversationId: board.conversationId ?? undefined, ...event }, audience)
 }
 
+/**
+ * Announce card rows a machine sync just applied (SHO-494).
+ *
+ * A card is written on the computer and mirrored to the cloud by the sync, which
+ * used to publish nothing: a cloud board stayed on its old columns until the
+ * next reload. Every card write here already announces itself through
+ * `publishBoard`, so a synced one has to send the same `board.changed` shape —
+ * the audience, the board and the item are read from the committed rows, not
+ * from the wire.
+ *
+ * Ids are deduplicated (one sync page can carry the same row once, but the row
+ * may also arrive as both a create and a move) and a card that no longer exists
+ * is skipped by the join.
+ */
+export async function announceSyncedItems(entries: Array<{ id: string; action: 'item.created' | 'item.updated' | 'item.moved' }>): Promise<number> {
+  const actions = new Map<string, 'item.created' | 'item.updated' | 'item.moved'>()
+  for (const entry of entries) actions.set(entry.id, entry.action)
+  if (!actions.size) return 0
+
+  const items = (await db.workItem.findMany({
+    where: { id: { in: [...actions.keys()] } },
+    select: { id: true, boardId: true },
+  })) as Array<{ id: string; boardId: string }>
+  if (!items.length) return 0
+
+  const boards = new Map(
+    (
+      (await db.board.findMany({
+        where: { id: { in: [...new Set(items.map((item) => item.boardId))] } },
+        select: { id: true, workspaceId: true, conversationId: true },
+      })) as Array<{ id: string; workspaceId: string; conversationId: string | null }>
+    ).map((board) => [board.id, board]),
+  )
+
+  let published = 0
+  for (const item of items) {
+    const board = boards.get(item.boardId)
+    if (!board) continue
+    await publishBoard(board, { action: actions.get(item.id) ?? 'item.updated', itemId: item.id })
+    published++
+  }
+  return published
+}
+
 /** Whether a reader can see a board: its channel's read rule, or workspace membership for channel-less boards. */
 async function canViewBoard(board: any, viewer: BoardViewer): Promise<boolean> {
   if (viewer.kind === 'user') {

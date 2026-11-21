@@ -84,6 +84,7 @@ import { MobileBottomNav } from "../../components/layout/MobileBottomNav";
 import { TeamChatSidebarProvider } from "../../components/team-chat/TeamChatSidebarProvider";
 import { MobileWorkspaceShell } from "../../components/layout/MobileWorkspaceShell";
 import { useWorkspaceRemountKey } from "../../hooks/useWorkspaceRemountKey";
+import { useWorkspaceParamAdoption } from "../../hooks/useWorkspaceParamAdoption";
 import { sidebarOpenEvents } from "../../lib/sidebar-open-events";
 import { getCloudWorkspacesState, refreshCloudWorkspaces, subscribeCloudWorkspaces } from "../../lib/workspace-route";
 import { isConversationPath } from "../../lib/sidebar-tab";
@@ -217,6 +218,11 @@ function AppLayoutInner() {
   const activeWorkspace = useActiveWorkspace();
   const workspaceMountKey = useWorkspaceRemountKey(activeWorkspace?.id);
   const workspaces = useWorkspaceCollection();
+  // `?workspace=<id>` on any screen: the shell opens it, on a phone too. A link
+  // into a workspace on a paired computer used to land in the companion's own
+  // space on a phone and stay there, because only the web sidebar adopted it
+  // (SHO-494).
+  useWorkspaceParamAdoption();
   const router = useRouter();
   const pathname = usePathname();
   const isIdeEmbed = useMemo(() => {

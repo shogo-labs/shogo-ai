@@ -1745,6 +1745,10 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       const response = await fetchFromWorkspaceRuntime(workspaceId, attachedProjectIds, '/agent/stop', {
         method: 'POST',
         body: body || '{}',
+        // The runtime resolves a stop from the header or the body; the client
+        // sends `chatSessionId` in the body, while a caller that only sends the
+        // header would otherwise reach it with nothing to stop (SHO-494).
+        ...(sessionId ? { headers: { 'x-chat-session-id': sessionId } } : {}),
       }, runtimeExtra)
       const result = await response.json()
       if (sessionId) {
@@ -1766,7 +1770,9 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           console.warn(`[WorkspaceChat] Failed to clear stopped chat ${sessionId}:`, error),
         )
       }
-      return c.json(result)
+      // A refused stop is the caller's to see: answering 200 around the
+      // runtime's 400 made a stop that stopped nothing look like it worked.
+      return c.json(result, response.ok ? 200 : (response.status as any))
     } catch (error: any) {
       console.error('[WorkspaceChat] Stop error:', error)
       return c.json({ success: false, error: error.message }, 500)
