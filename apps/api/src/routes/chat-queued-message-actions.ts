@@ -261,7 +261,11 @@ export function chatQueuedMessageActionsRoutes(): Hono {
       where: { id },
       data: { status: 'pending', error: null, body: JSON.stringify(body), parts: JSON.stringify(parts) },
     })
-    void dispatchNext(row.sessionId)
+    // Fire and forget, but never unhandled: dispatchNext rejecting used to reach
+    // `unhandledRejection`, and Bun exits on one of those (SHO-482).
+    void dispatchNext(row.sessionId).catch((error) => {
+      console.warn(`[ChatQueue] Could not dispatch ${row.sessionId} after a resume:`, error?.message ?? error)
+    })
     const updated = await (prisma as any).chatQueuedMessage.findUnique({ where: { id } })
     return c.json({ ok: true, data: updated })
   })

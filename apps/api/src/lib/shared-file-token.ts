@@ -47,6 +47,30 @@ function signatureFor(encodedPayload: string): string {
     .digest('base64url')
 }
 
+/**
+ * Why `path` cannot be shared, or `null` when it can. One message, one wording:
+ * the mint routes on both tracks refuse the same values.
+ */
+export function sharedFilePathProblem(path: string): string | null {
+  if (!path) return 'path must be a relative workspace path'
+  if (path.length > MAX_PATH_LENGTH) return 'path is too long'
+  if (path.startsWith('/') || path.includes('\\')) return 'path must be a relative workspace path'
+  if (path.split('/').some((segment) => !segment || segment === '.' || segment === '..')) {
+    return 'path must be a relative workspace path'
+  }
+  return null
+}
+
+/**
+ * The origin a minted link must carry: the one the person's app is served from,
+ * not whichever host happened to answer the call. A desktop that minted its own
+ * link put its loopback address in it, which no other device can open (SHO-486).
+ */
+export function sharedFilePublicOrigin(requestUrl: string): string {
+  const configured = process.env.SHOGO_PUBLIC_API_URL || process.env.BETTER_AUTH_URL
+  return (configured || new URL(requestUrl).origin).replace(/\/+$/, '')
+}
+
 function validId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 256
 }

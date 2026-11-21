@@ -49,6 +49,7 @@ import {
 } from '../lib/tunnel-redis'
 import { sendPushToInstance } from '../lib/push-notifications'
 import { PROXY_TIMEOUT_MS, RELAY_TIMEOUT_MS } from '../lib/tunnel-timeouts'
+import { isAgentStreamPath } from '../lib/agent-stream-paths'
 import { RelayTimeoutError } from '../lib/tunnel-errors'
 import { openSession, closeSession, hasSession } from '../lib/proxy-billing-session'
 import { trackChatStreamForBilling } from '../lib/chat-usage-tracker'
@@ -92,16 +93,6 @@ const STREAM_MAX_TIMEOUT_MS = 600_000
 const HEARTBEAT_INTERVAL_MS = 25_000
 const TUNNEL_WAIT_TIMEOUT_MS = 10_000
 const TUNNEL_WAIT_POLL_MS = 500
-const STREAMING_POST_PATTERNS = ['/agent/chat', '/agent/logs/stream']
-const STREAMING_GET_PATTERNS = ['/agent/canvas/stream', '/agent/logs/stream']
-const CHAT_RESUME_STREAM_RE = /^\/agent\/chat\/[^/]+\/stream$/
-/**
- * A workspace's team-chat event stream (SSE). Long-lived by design: it carries
- * new messages, typing and presence until the client disconnects, so it must go
- * through the streaming pipeline — buffered, it would sit there until the 30 s
- * proxy timeout and deliver nothing.
- */
-const WORKSPACE_EVENT_STREAM_RE = /^\/api\/workspaces\/[^/]+\/conversations\/events$/
 
 // ─── Viewer tracking (Redis-primary, in-memory fallback) ────────────────────
 
@@ -282,22 +273,7 @@ export function normalizeTransparentProxyPath(path: string): string {
  * again here to avoid double-normalization bugs.
  */
 export function isStreamingRequest(method: string, cleanPath: string): boolean {
-  // Strip query string defensively in case a caller still passes one.
-  const pathOnly = cleanPath.split('?')[0] || cleanPath
-
-  if (method === 'POST') {
-    return STREAMING_POST_PATTERNS.some((pattern) =>
-      pathOnly === pattern || pathOnly.startsWith(`${pattern}/`),
-    )
-  }
-
-  if (method === 'GET') {
-    return STREAMING_GET_PATTERNS.some((pattern) =>
-      pathOnly === pattern || pathOnly.startsWith(`${pattern}/`),
-    ) || CHAT_RESUME_STREAM_RE.test(pathOnly) || WORKSPACE_EVENT_STREAM_RE.test(pathOnly)
-  }
-
-  return false
+  return isAgentStreamPath(method, cleanPath)
 }
 
 // ─── WebSocket handler (called from Bun.serve websocket config) ─────────────

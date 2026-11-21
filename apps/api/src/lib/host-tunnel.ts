@@ -28,6 +28,7 @@ import type { Context } from 'hono'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { prisma } from './prisma'
 import { hostedWorkspacesResolveHere } from './cloud-topology'
+import { isAgentStreamPath } from './agent-stream-paths'
 
 export const HOST_TUNNEL_PREFIX = '/api/internal/host-tunnel'
 
@@ -104,13 +105,18 @@ export class HostOfflineError extends Error {
   }
 }
 
-const STREAMING_SUFFIXES = ['/agent/chat', '/agent/quick-actions', '/agent/logs/stream']
-
-function isStreaming(method: string, path: string, accept: string | undefined): boolean {
+/**
+ * Does this tunnel request answer as an event stream?
+ *
+ * `rest` is the runtime-relative path (`/agent/chat/<id>/stream`). It uses the
+ * one shared predicate (`lib/agent-stream-paths`) rather than its own suffix
+ * list: a chat resume GET used to take the buffered path here, so rejoining a
+ * desktop-run turn from the cloud sat silent for the 30 s proxy timeout and then
+ * answered `502 host_tunnel_error` (SHO-486).
+ */
+function tunnelStreams(method: string, rest: string, accept: string | undefined): boolean {
   if (accept?.includes('text/event-stream')) return true
-  const clean = path.split('?')[0]
-  if (clean.endsWith('/agent/logs/stream')) return method === 'GET'
-  return method === 'POST' && STREAMING_SUFFIXES.some((suffix) => clean.endsWith(suffix))
+  return isAgentStreamPath(method, rest)
 }
 
 // `x-billing-user-id` is deliberately not forwarded: the only user a hosted
@@ -276,7 +282,7 @@ export async function handleHostTunnel(c: Context, opts: HostTunnelOptions = {})
   }
   const body = method === 'GET' || method === 'HEAD' ? undefined : await c.req.text()
 
-  if (isStreaming(method, path, c.req.header('accept'))) {
+  if (tunnelStreams(method, target.rest, c.req.header('accept'))) {
     const requestId = generateRequestId()
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {

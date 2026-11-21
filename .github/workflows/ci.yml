@@ -1300,6 +1300,21 @@ jobs:
         working-directory: apps/api
         run: bun --no-env-file test src/__tests__/sho285-hosted-workspace.e2e.test.ts --timeout 300000
 
+      # SHO-486: everything a hosted workspace's sync writes must reach the
+      # screens watching the cloud — a channel reply appears live instead of on
+      # the next refresh, a phone-posted message reaches the desktop, the cloud
+      # sees a desktop-run turn and can rejoin its stream, a mid-turn send is
+      # queued, and a share_file link resolves. The insert point is pinned by the
+      # unit suite above it, which needs the cloud schema, so it runs here too.
+      # One file per process: a combined run was OOM-killed (exit 137).
+      - name: Hosted workspace live events (ingest, Postgres)
+        working-directory: apps/api
+        run: bun --no-env-file test src/__tests__/machine-sync-live-events.test.ts
+
+      - name: Hosted workspace seen from the cloud (two processes, Postgres + Redis)
+        working-directory: apps/api
+        run: bun --no-env-file test src/__tests__/hosted-workspace-live.e2e.test.ts --timeout 300000
+
       # SHO-488: the same hosted workspace, but checked **live** instead of by
       # polling a GET until the data appears — the polling suites above (and the
       # parity one, SHO-257) pass with a broken push path, which is how

@@ -601,7 +601,7 @@ async function persistDurableRepo(): Promise<{ ok: boolean; changed: boolean; re
   if (isHostMediatedDurability()) {
     if (isLfsActive()) {
       const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
-      if (lfsCfg) await lfsPushAll(lfsCfg)
+      if (lfsCfg) s3SyncInstance?.setLfsObjectsDurable(await lfsPushAll(lfsCfg))
     }
     // LFS bytes are offloaded via the API; the host packs `.git` on export.
     return { ok: true, changed: false, reason: 'host-mediated' }
@@ -611,7 +611,12 @@ async function persistDurableRepo(): Promise<{ ok: boolean; changed: boolean; re
   let excludeLfsObjects = false
   if (isLfsActive()) {
     const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
-    if (lfsCfg) excludeLfsObjects = await lfsPushAll(lfsCfg)
+    if (lfsCfg) {
+      excludeLfsObjects = await lfsPushAll(lfsCfg)
+      // The same "bytes are durable now" fact decides whether the project
+      // archive may store LFS files as pointer text (SHO-478).
+      s3SyncInstance?.setLfsObjectsDurable(excludeLfsObjects)
+    }
   }
   return persistRepoToStore(WORKSPACE_DIR, repoCfg, { excludeLfsObjects })
 }
@@ -3578,6 +3583,17 @@ app.post('/pool/export', async (c) => {
       })
     if (!sync) return c.json({ error: 's3 sync unavailable' }, 500)
     await flushGitBeforeExport(destinationDir)
+    // A pointer-only source archive is only safe once the object bytes are
+    // durable in `lfs/objects`. Zero-wait check: if `/pool/export-repo` already
+    // pushed this HEAD the job settles instantly, and otherwise it starts the
+    // push now so the next save can drop the bytes (SHO-478).
+    if (isLfsActive() && existsSync(join(destinationDir, '.git'))) {
+      const lfsCfg = lfsRemoteConfigFromEnv(destinationDir)
+      if (lfsCfg) {
+        const push = await lfsPushRunner.run(lfsCfg, null)
+        sync.setLfsObjectsDurable((await lfsPushRunner.settle(push, 0)) === 'done')
+      }
+    }
     const packed = await sync.packProjectArchive(tmp)
     if (!packed) return c.body(null, 204) // empty/new workspace — nothing to back up
     const size = statSync(tmp).size
@@ -8036,12 +8052,14 @@ async function initializePublished(): Promise<void> {
     //    archive. We deliberately do NOT start any source uploader/watcher —
     //    published source is immutable for the life of the pod.
     let hydrated = false
+    let hydratedFromGit = false
     const repoCfg = repoStoreConfigFromEnv()
     if (repoCfg) {
       try {
         const res = await restoreRepoFromStore(WORKSPACE_DIR, repoCfg)
         hydrated = res.restored
         if (hydrated) {
+          hydratedFromGit = true
           await checkoutPublishedTag(PUBLISHED_SUBDOMAIN)
           logTiming('Published mode: source restored from git repo store')
         }
@@ -8064,6 +8082,18 @@ async function initializePublished(): Promise<void> {
       } catch (err: any) {
         console.error('[agent-runtime] Published mode: S3 restore failed:', err?.message ?? err)
       }
+    }
+    if (hydratedFromGit) {
+      // Smudge is skipped in the pod image, so the git path leaves every
+      // LFS-tracked file as its pointer text. Put the real bytes back from
+      // `lfs/objects` before anything serves this tree (SHO-478). The S3 path
+      // does the same thing inside `downloadAll`.
+      const lfsSync = createS3SyncForProject(WORKSPACE_DIR, process.env.PROJECT_ID || '', {
+        watchEnabled: false,
+        syncInterval: 0,
+        suppressProjectArchive: true,
+      })
+      await lfsSync?.materializeLfsObjects()
     }
     if (!hydrated) {
       console.error('[agent-runtime] Published mode: NO source hydrated — the published app will not serve correctly')
