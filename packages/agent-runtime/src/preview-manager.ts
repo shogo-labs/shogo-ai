@@ -86,6 +86,20 @@ export function publishedBootPlan(env: NodeJS.ProcessEnv = process.env): {
   hydrateSource: boolean
   installDeps: boolean
   watchFiles: boolean
+  /**
+   * Whether boot has to put real LFS bytes back on disk.
+   *
+   * False for an image-booted pod: its `dist/` (and the source tree) carry LFS
+   * pointer text, and the runtime streams each object from
+   * `<projectId>/lfs/objects` on request (`serveDistResponse` → `openLfsObjectStream`).
+   * Materializing would copy every media byte onto the pod's 2 Gi volume on
+   * every cold start and every replica — the cost that made a 1.76 GB project
+   * unservable (SHO-485 §1c).
+   *
+   * True on the legacy source-hydrate path, which runs a Vite build that needs
+   * the real bytes.
+   */
+  materializeLfs: boolean
 } {
   const fromImage = isPrebuiltPublishedImage(env)
   return {
@@ -93,6 +107,7 @@ export function publishedBootPlan(env: NodeJS.ProcessEnv = process.env): {
     hydrateSource: !fromImage,
     installDeps: !fromImage,
     watchFiles: !fromImage,
+    materializeLfs: !fromImage,
   }
 }
 

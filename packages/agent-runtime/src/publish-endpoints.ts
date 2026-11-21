@@ -34,9 +34,15 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Context } from 'hono'
-import { isMacOSJunkName } from '@shogo/shared-runtime'
+import { isMacOSJunkName, putFileToObjectStore } from '@shogo/shared-runtime'
+import { publishArtifactMaxBytes } from '@shogo/shared-runtime/publish-timeouts'
 import { cleanupStagingOutput } from './build-output-commit'
-import { createPublishedArtifactFilter } from './publish-artifact-filter'
+import {
+  ArtifactMediaOffloadError,
+  createPublishedArtifactFilter,
+  offloadArtifactMedia,
+  type ArtifactMediaOffloadResult,
+} from './publish-artifact-filter'
 import { PUBLISH_STAGING_DIR } from './preview-manager'
 
 /** What the handlers need from the runtime that owns them. */
@@ -45,6 +51,11 @@ export interface PublishEndpointDeps {
   projectDir(projectId?: string): string | null
   /** Where the publish build wrote `dist.publish.staging` (the bundler cwd). */
   outputRoot(projectId: string, projectDir: string): string
+  /**
+   * The object store this runtime can write to: LFS objects and, when the API
+   * names a target, the artifact itself. Null when the runtime has none.
+   */
+  objectStore?(): { client: { send(command: any): Promise<any> }; bucket: string } | null
 }
 
 const PUBLISH_DIST_MAX_FILE_SIZE = 50 * 1024 * 1024
@@ -108,18 +119,29 @@ export function handleDistFiles(c: Context, deps: PublishEndpointDeps): Response
 }
 
 /**
- * `GET /agent/publish-artifact?projectId=…`
+ * `GET /agent/publish-artifact?projectId=…[&bucket=…&key=…]`
  *
- * The build context a published image is built from (SHO-308 §2), as a gzipped
- * tar, base64-encoded. Publishing used to build on boot: the pod hydrated source
- * and then ran `bun install`, `prisma generate` and a Vite build before it could
- * answer. Now the image is built once per commit, in a BuildKit Job, from this
- * artifact — so a published pod only has to start. What goes in it:
+ * The build context a published image is built from (SHO-308 §2). Publishing
+ * used to build on boot: the pod hydrated source and then ran `bun install`,
+ * `prisma generate` and a Vite build before it could answer. Now the image is
+ * built once per commit, in a BuildKit Job, from this artifact — so a published
+ * pod only has to start. What goes in it:
  *
  *   - the project's source at its current commit, minus `node_modules`, `.git`
  *     and the caches a build regenerates anyway;
  *   - the root-based `dist/` that `buildForPublish()` just produced, since a
  *     published bundle must be served from `/` rather than `/p/<id>/`.
+ *
+ * **Large media is left out** (SHO-485): every LFS-tracked source file and
+ * every `dist/` file over {@link PUBLISH_DIST_OFFLOAD_MIN_BYTES} becomes pointer
+ * text, and its bytes are made durable in `<projectId>/lfs/objects` first. The
+ * published pod streams them from there on request, so neither the artifact nor
+ * the image nor the pod's 2 Gi volume grows with the project's media.
+ *
+ * **The archive never crosses the API** (SHO-485). Given `bucket` + `key`, the
+ * runtime uploads the tar straight to object storage and answers
+ * `{ bucket, key, bytes }`. Without them it falls back to the old base64 body,
+ * which is what an API that has not been rolled out yet still asks for.
  *
  * Always cleans up after itself: it is the last reader of the staging dir.
  */
@@ -147,7 +169,11 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
     stagingDirName: PUBLISH_STAGING_DIR,
   })
 
-  const { cp, mkdtemp, readFile, rm } = await import('fs/promises')
+  const targetBucket = (c.req.query('bucket') || '').trim()
+  const targetKey = (c.req.query('key') || '').trim()
+  const store = deps.objectStore?.() ?? null
+
+  const { cp, mkdtemp, readFile, rm, stat } = await import('fs/promises')
   const os = await import('os')
   const tar = await import('tar')
   const tmpDir = await mkdtemp(join(os.tmpdir(), 'shogo-publish-artifact-'))
@@ -172,10 +198,55 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
     }
     await cp(projectDir, contextDir, { recursive: true, filter })
     await cp(stagingDir, join(contextDir, 'dist'), { recursive: true })
+    // Media out before the tar, so neither the tar nor the upload carries it.
+    let offloaded: ArtifactMediaOffloadResult | null = null
+    if (store) {
+      try {
+        offloaded = await offloadArtifactMedia({
+          contextDir,
+          sourceDir: projectDir,
+          projectId: projectId ?? '',
+          store: { bucket: store.bucket, client: store.client },
+        })
+      } catch (err: any) {
+        if (err instanceof ArtifactMediaOffloadError) {
+          return c.json({ error: 'lfs_object_missing', message: err.message }, 500)
+        }
+        throw err
+      }
+    }
     await tar.create({ gzip: true, file: archivePath, cwd: contextDir, portable: true }, ['.'])
-    const buf = await readFile(archivePath)
+    const { size: bytes } = await stat(archivePath)
     cleanupStagingOutput(outputRoot, PUBLISH_STAGING_DIR)
-    return c.json({ archive: buf.toString('base64'), bytes: buf.length })
+
+    // The Job's src volume is a 2 Gi `emptyDir`: an artifact over the limit is
+    // an eviction with no explanation, so refuse it here with a name, before
+    // spending the upload (SHO-485 §2c).
+    const maxBytes = publishArtifactMaxBytes()
+    if (bytes > maxBytes) {
+      return c.json(
+        {
+          error: 'artifact_too_large',
+          message:
+            `The publish build context is ${(bytes / (1024 * 1024)).toFixed(0)} MB, over the ` +
+            `${(maxBytes / (1024 * 1024)).toFixed(0)} MB limit for an image build.`,
+        },
+        413,
+      )
+    }
+
+    if (targetBucket && targetKey && store) {
+      await putFileToObjectStore(
+        { bucket: targetBucket, client: store.client },
+        targetKey,
+        archivePath,
+        { bytes, contentType: 'application/gzip' },
+      )
+      return c.json({ bucket: targetBucket, key: targetKey, bytes, offloaded })
+    }
+
+    const buf = await readFile(archivePath)
+    return c.json({ archive: buf.toString('base64'), bytes: buf.length, offloaded })
   } catch (err: any) {
     return c.json({ error: 'artifact_failed', message: err?.message ?? String(err) }, 500)
   } finally {

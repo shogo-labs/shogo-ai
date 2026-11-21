@@ -209,7 +209,27 @@ export {
   lfsOverBudget,
   pruneLfsBudget,
   type LfsRemoteConfig,
+  lfsTrackedPaths,
+  lfsPointerText,
+  findLfsPointerFiles,
+  materializeLfsPointersFromStore,
+  lfsObjectStoreFromEnv,
+  openLfsObjectStream,
+  etagMatches,
+  type LfsObjectStore,
+  type LfsPointerFile,
+  type LfsMaterializeResult,
+  type LfsObjectReadResult,
 } from './lfs'
+
+export {
+  S3_MULTIPART_THRESHOLD_BYTES,
+  S3_MULTIPART_PART_BYTES,
+  objectExists,
+  putFileToObjectStore,
+  isObjectNotFound,
+  type S3ObjectStore,
+} from './s3-object'
 
 export {
   isShogoRuntimeState,

@@ -20,9 +20,9 @@ export function staticAssetCacheControl(fileName: string): string {
 /**
  * Extensions that always identify a static-asset request, never an SPA
  * client-side route. Keep in sync with agent-runtime's `STATIC_MIME` map
- * (server.ts) — this list intentionally excludes `.html` and extension-less
- * paths, which are the two shapes that should still receive the SPA
- * `index.html` fallback.
+ * (`dist-response.ts`) — this list intentionally excludes `.html` and
+ * extension-less paths, which are the two shapes that should still receive the
+ * SPA `index.html` fallback.
  */
 const STATIC_ASSET_EXTENSIONS = new Set([
   '.css', '.js', '.mjs', '.json', '.png', '.jpg', '.jpeg', '.gif', '.svg',

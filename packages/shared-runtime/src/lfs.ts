@@ -35,7 +35,9 @@ import { createWriteStream, existsSync, readdirSync, readFileSync, renameSync, r
 import type { Dirent } from 'fs'
 import { join } from 'path'
 import { pipeline } from 'stream/promises'
-import { GetObjectCommand } from '@aws-sdk/client-s3'
+import { GetObjectCommand, HeadObjectCommand, S3Client } from '@aws-sdk/client-s3'
+import { isObjectNotFound } from './s3-object'
+import { parseByteRange } from './byte-range'
 
 import {
   classifyLargeFiles,
@@ -1100,4 +1102,118 @@ export async function materializeLfsPointersFromStore(
       (result.missing || result.mismatched ? ` (missing=${result.missing}, mismatched=${result.mismatched})` : ''),
   )
   return result
+}
+
+/**
+ * The object store LFS objects live in, from env — the read-side twin of the
+ * store `S3Sync` passes to {@link materializeLfsPointersFromStore}.
+ *
+ * Null when the runtime has no object store configured, so a caller can fall
+ * back to serving what it has instead of throwing.
+ */
+export function lfsObjectStoreFromEnv(env: NodeJS.ProcessEnv = process.env): LfsObjectStore | null {
+  const bucket = (env.S3_LFS_BUCKET || env.S3_WORKSPACES_BUCKET || '').trim()
+  if (!bucket) return null
+  const client = new S3Client({
+    region: env.S3_REGION,
+    ...(env.S3_ENDPOINT ? { endpoint: env.S3_ENDPOINT, forcePathStyle: true } : {}),
+    credentials: env.AWS_ACCESS_KEY_ID
+      ? { accessKeyId: env.AWS_ACCESS_KEY_ID, secretAccessKey: env.AWS_SECRET_ACCESS_KEY || '' }
+      : undefined,
+  })
+  return { bucket, client }
+}
+
+/** Whether an `If-None-Match` header names this ETag (weak comparison, list form, `*`). */
+export function etagMatches(ifNoneMatch: string | null | undefined, etag: string): boolean {
+  const raw = (ifNoneMatch || '').trim()
+  if (!raw) return false
+  const bare = etag.replace(/^W\//, '')
+  return raw
+    .split(',')
+    .map((part) => part.trim().replace(/^W\//, ''))
+    .some((part) => part === '*' || part === bare)
+}
+
+export type LfsObjectReadResult =
+  | {
+      status: 'ok'
+      /** The object's stream — `null` for a `HEAD`, which only needs the headers. */
+      body: unknown | null
+      totalSize: number
+      contentLength: number
+      contentRange?: string
+      etag: string
+    }
+  | { status: 'not-modified'; etag: string; totalSize: number }
+  | { status: 'missing'; etag: string }
+  | { status: 'unsatisfiable'; etag: string; totalSize: number }
+
+/**
+ * Open an LFS object as a stream, optionally ranged, straight from the store.
+ *
+ * This is what lets a published pod serve media it never wrote to disk
+ * (SHO-485): the pointer file under `dist/` names the object, and the bytes
+ * come from `<projectId>/lfs/objects/…` one request at a time. Memory stays
+ * flat because the body is piped, never buffered — the whole point of the read
+ * side matching the streamed write side (#2132/SHO-478).
+ *
+ * Never throws for a missing object: `status: 'missing'` is the caller's 404,
+ * and a pointer must never be answered with pointer text.
+ */
+export async function openLfsObjectStream(opts: {
+  projectId: string
+  oid: string
+  /** The pointer's declared size — range math and a HEAD answer use it. */
+  size: number
+  store: LfsObjectStore
+  /** Raw `Range` request header. */
+  range?: string | null
+  /** Raw `If-None-Match` request header. */
+  ifNoneMatch?: string | null
+  /** `HEAD`: confirm the object is there, return no body. */
+  head?: boolean
+}): Promise<LfsObjectReadResult> {
+  const etag = `"${opts.oid}"`
+  const totalSize = opts.size
+  if (etagMatches(opts.ifNoneMatch, etag)) return { status: 'not-modified', etag, totalSize }
+
+  // The same `Range` parser every file-serving route uses (byte-range.ts), so a
+  // `<video>` seeks the same way against a stored object as against a disk file.
+  const parsedRange = parseByteRange(opts.range, totalSize)
+  if (parsedRange.kind === 'unsatisfiable') return { status: 'unsatisfiable', etag, totalSize }
+  const range = parsedRange.kind === 'range' ? parsedRange : null
+  const contentRange = range ? `bytes ${range.start}-${range.end}/${totalSize}` : undefined
+  const contentLength = range ? range.end - range.start + 1 : totalSize
+  const key = lfsObjectKey(opts.projectId, opts.oid)
+
+  try {
+    if (opts.head) {
+      await opts.store.client.send(new HeadObjectCommand({ Bucket: opts.store.bucket, Key: key }))
+      return { status: 'ok', body: null, totalSize, contentLength, contentRange, etag }
+    }
+    const res = await opts.store.client.send(
+      new GetObjectCommand({
+        Bucket: opts.store.bucket,
+        Key: key,
+        ...(range ? { Range: `bytes=${range.start}-${range.end}` } : {}),
+      }),
+    )
+    if (!res?.Body) return { status: 'missing', etag }
+    const stored = Number(res.ContentLength ?? contentLength)
+    return {
+      status: 'ok',
+      body: res.Body,
+      // The store's length wins over the pointer's for the body we are handing
+      // back; a mismatch means a corrupt object, and it must not become a
+      // truncated response.
+      totalSize: range ? totalSize : stored,
+      contentLength: stored,
+      contentRange,
+      etag,
+    }
+  } catch (err: any) {
+    if (isObjectNotFound(err)) return { status: 'missing', etag }
+    throw err
+  }
 }

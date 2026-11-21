@@ -127,6 +127,25 @@ describe('ensurePublishedImage', () => {
     expect(res.message).toContain('no dist')
   })
 
+  // SHO-485 §2c: the Job's src volume is a 2 Gi emptyDir, so an oversized
+  // context must be refused with a name the agent can act on — not left to
+  // surface as an opaque eviction.
+  it('refuses an oversized build context as artifact_too_large', async () => {
+    const res = await ensurePublishedImage(
+      input,
+      deps({
+        uploadArtifact: async () => ({
+          code: 'artifact_too_large' as const,
+          error: 'The publish build context is 1800 MB, over the 1536 MB limit for an image build.',
+        }),
+      }),
+    )
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.code).toBe('artifact_too_large')
+    expect(res.message).toContain('1536 MB')
+  })
+
   it('tells the artifact upload the app build already ran', async () => {
     // The publish flow builds the app before it asks for an image; a second
     // build there is a full Vite/Expo run the publish has just done.
@@ -176,7 +195,7 @@ describe('ensurePublishedImage', () => {
           requestArtifact: async () => {
             requests++
             calls.push(`artifact:${requests}`)
-            return requests === 1 ? distNotFound : { ok: true as const, archive: 'Zm9v' }
+            return requests === 1 ? distNotFound : { ok: true as const, ref: { key: 'acme/artifacts/abc.tar.gz', bytes: 3 } }
           },
           rebuild: async () => {
             calls.push('rebuild')
@@ -185,7 +204,8 @@ describe('ensurePublishedImage', () => {
           log: () => {},
         },
       )
-      expect(res).toEqual({ archive: 'Zm9v' })
+      // The whole artifact is a key + a length: the bytes stayed in the runtime.
+      expect(res).toEqual({ ref: { key: 'acme/artifacts/abc.tar.gz', bytes: 3 } })
       expect(calls).toEqual(['artifact:1', 'rebuild', 'artifact:2'])
     })
 
