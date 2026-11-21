@@ -77,6 +77,7 @@ import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
 import { gitHttpRoutes } from './routes/git-http'
 import { gitLfsRoutes } from './routes/git-lfs'
+import { projectBucketPublicRoutes, projectBucketRoutes } from './routes/project-bucket'
 import { thumbnailRoutes, rewriteInlineThumbnails } from './routes/thumbnail'
 import { chatAttachmentRoutes } from './routes/chat-attachments'
 import { sharedFileRoutes } from './routes/shared-files'
@@ -845,6 +846,14 @@ const csrfMiddleware = csrf({
     // Hono never passes `undefined` here — the wrapper below handles that
     // case before we get called. Kept defensively in case of upstream changes.
     if (!origin) return true
+    // The app's own origin, always (SHO-494). This handler replaces Hono's
+    // default rule (`origin === new URL(c.req.url).origin`), so a form POST from
+    // the API's own origin was refused whenever that origin was not in
+    // ALLOWED_ORIGINS — a self-host, a preview pod, a plain IP — and a channel
+    // attachment upload answered 403 "Forbidden" before its bytes were read. The
+    // URL's origin comes from the Host header, which a browser cannot forge, so
+    // a cross-site page still fails: its Origin is its own domain.
+    if (origin === new URL(c.req.url).origin) return true
     const isDevOrLocal = process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOCAL_MODE === 'true'
     if (isDevOrLocal && (origin === 'null' || origin.startsWith('http://localhost:') || origin.startsWith('shogo://'))) {
       return true
@@ -6445,6 +6454,18 @@ app.route('/api', gitHttpRouter)
 // mints the batch response, so no git-lfs binary is needed here.
 const gitLfsRouter = gitLfsRoutes({ workspacesDir: workspacesDirResolved })
 app.route('/api', gitLfsRouter)
+
+// Mount the project bucket API (SHO-491). Object bytes never pass through the
+// API on cloud — `POST /uploads` mints a presigned PUT (or a multipart upload
+// for big files) and the client streams straight to object storage. Desktop has
+// no object storage, so the same ticket points at this API's upload route,
+// which streams to `<dataDir>/project-buckets/`. Auth is the project's own
+// session or runtime token, applied by `requireProjectAccess`.
+const projectBucketRouter = projectBucketRoutes()
+app.route('/api', projectBucketRouter)
+// The desktop stand-in for `cdn.<publish domain>`: public objects only, bytes
+// streamed from disk with `Range`. Cloud answers 404 here.
+app.route('/', projectBucketPublicRoutes())
 
 // Mount GitHub routes
 const githubRouter = githubRoutes()

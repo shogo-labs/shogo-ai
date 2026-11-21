@@ -427,6 +427,15 @@ output "llm_captures_bucket" {
   description = "OCI bucket holding raw LLM proxy captures."
   value       = module.us.llm_captures_bucket
 }
+
+output "project_buckets_bucket" {
+  description = "Per-project object storage bucket (SHO-491). Wire into the api ksvc as S3_PROJECT_BUCKET."
+  value       = module.us.project_buckets_bucket
+}
+output "project_bucket_origin" {
+  description = "Read-only PAR base URL the subdomain-router Worker uses as the project-bucket CDN origin (SHO-491). Baked into the Worker by module.us -> publish_hosting."
+  value       = module.us.project_bucket_origin
+}
 output "kourier_origin" {
   description = "Origin the subdomain-router Worker proxies server-backed /api/* to (DNS-only host at the prod-us Kourier LB)."
   value       = "http://${cloudflare_record.kourier_us.hostname}"

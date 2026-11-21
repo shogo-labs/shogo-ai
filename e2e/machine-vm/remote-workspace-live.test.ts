@@ -63,7 +63,35 @@ test.describe.configure({ mode: "default" })
 
 test.beforeAll(async ({ request }) => {
   state = await (await request.get("/__stack/state")).json()
+  await wakeMachine(request)
 })
+
+/**
+ * Ask the paired computer for its tunnel, and wait until it has one.
+ *
+ * A desktop holds no tunnel while nobody is using it: it polls at `nextPollIn`
+ * (60 s idle) and opens the WS only when a request marks it. That is what the
+ * Studio's instance picker does when a person picks the machine, and what the
+ * API suite does before it touches a hosted workspace (`warmHostTunnel`). A
+ * browser case that skipped it raced that idle poll: the first turn was answered
+ * `host_offline` — the message is queued for when the machine is back — long
+ * before the computer had any reason to wake, which says nothing about the UI
+ * these cases exist to check.
+ */
+async function wakeMachine(request: APIRequestContext): Promise<void> {
+  const headers = { cookie: state.cookies, origin: state.cloud }
+  const asked = await request.post(`${state.cloud}/api/instances/${state.machineId}/request-connect`, { headers })
+  expect(asked.status(), await asked.text()).toBeLessThan(300)
+
+  const deadline = Date.now() + 180_000
+  while (Date.now() < deadline) {
+    const res = await request.get(`${state.cloud}/api/instances/${state.machineId}`, { headers })
+    const body = await res.json().catch(() => ({}))
+    if (body?.status === "online") return
+    await new Promise((r) => setTimeout(r, 2_000))
+  }
+  throw new Error("the paired computer never opened its tunnel")
+}
 
 test.beforeEach(async ({ context }) => {
   const url = new URL(state.web)
@@ -108,23 +136,35 @@ async function openMachineChannel(page: Page, phone: boolean): Promise<void> {
 }
 
 /**
- * Why the turn-and-watch cases below are desktop-only.
+ * The phone could not address a paired computer's workspace.
  *
- * Measured on this stack: a phone cannot address a paired computer's workspace. A
- * cold `/agent?workspace=<machineWorkspaceId>` load resolves to the companion's
- * own space ("This is your Personal space"), and the shell's own way out, "Open
- * your Team workspace", opens the *cloud* team workspace — a turn typed there
- * runs on the cloud, so the machine's activity feed stays empty and the machine
- * never streams. The cases themselves are fine once the phone is in the right
- * workspace: run individually against a stack where the phone did resolve it,
- * the activity case passed in 41.7 s and the queue case in 13.3 s. So this is
- * addressing, not rendering — and it is the same gap Russell reported from the
- * other side ("a desktop-run turn is invisible to the phone").
+ * Measured on this stack before SHO-494: a cold `/agent?workspace=<id>` load
+ * resolved to the companion's own space ("This is your Personal space"), so a
+ * turn typed there ran on the cloud and the machine never streamed. The cause
+ * was that only the **web sidebar** adopted `?workspace=` — a phone has no
+ * sidebar, so nothing did. The shell adopts it now
+ * (`apps/mobile/hooks/useWorkspaceParamAdoption`), and the cases below run on
+ * both viewports: a phone opens the link, wide web opens the workspace the way
+ * the sidebar does.
  */
-const PHONE_CANNOT_OPEN_THE_MACHINE = "a phone cannot open a paired computer's workspace by URL (it resolves to the companion's space)"
 
-/** Where a turn is typed: the workspace chat, opened the way the sidebar does. */
-async function openMachineChat(page: Page): Promise<void> {
+/**
+ * Where a turn is typed: the workspace chat.
+ *
+ * Wide web reaches it the way the sidebar does — select the machine's
+ * workspace, then the chat it lands on. A phone has no workspace switcher, so
+ * it opens the link a person would be sent, which names the workspace and the
+ * session: `/agent?workspace=<id>&chatSessionId=<id>` (SHO-494).
+ */
+async function openMachineChat(page: Page, phone = false): Promise<void> {
+  if (phone) {
+    await page.goto(
+      `/agent?chatSessionId=${encodeURIComponent(state.seeds.machine.workspaceChatId)}` +
+        `&workspace=${encodeURIComponent(state.machineWorkspaceId)}`,
+      { waitUntil: "domcontentloaded" },
+    )
+    return
+  }
   await openMachineWorkspace(page)
 }
 
@@ -179,16 +219,11 @@ test("a message sent on the machine appears in the open cloud channel, with no r
 })
 
 test("a turn started in the cloud streams into the open chat view, with no reload", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name === "phone", PHONE_CANNOT_OPEN_THE_MACHINE)
-  await openMachineChat(page, false)
+  await openMachineChat(page, testInfo.project.name === "phone")
   await markWindow(page)
 
   const tag = `ui${Date.now() % 100_000}`
-  const composer = page.getByRole("textbox").last()
-  await expect(composer).toBeVisible({ timeout: 60_000 })
-  await composer.click()
-  await composer.fill(`Stream it ${marker("long", tag, 60, { ms: 25 })}`)
-  await page.keyboard.press("Enter")
+  await startTurn(page, `Stream it ${marker("long", tag, 60, { ms: 25 })}`, testInfo.project.name === "phone")
 
   // The last token of the turn, rendered while the page stayed put.
   await expect(page.getByText(token(tag, 60), { exact: false }).first(), "the turn streamed to the end").toBeVisible({
@@ -198,11 +233,18 @@ test("a turn started in the cloud streams into the open chat view, with no reloa
 })
 
 /** Types into the open chat and sends, leaving the turn streaming on the machine. */
-async function startTurn(page: Page, text: string): Promise<void> {
+async function startTurn(page: Page, text: string, phone = false): Promise<void> {
   const composer = page.getByRole("textbox").last()
   await expect(composer, "the chat offers a composer").toBeVisible({ timeout: 60_000 })
   await composer.click()
   await composer.fill(text)
+  // A phone sends with the button: its keyboard's return key types a newline,
+  // and the shell's composer is the one place that stays true on the web build
+  // too (the input's Enter-to-send is the wide composer's).
+  if (phone) {
+    await page.getByRole("button", { name: "Send message" }).click()
+    return
+  }
   await page.keyboard.press("Enter")
 }
 
@@ -228,11 +270,10 @@ async function awaitTurnOrSkip(page: Page, what: string): Promise<void> {
 // The activity feed polls every 5 s (`useAgentActivity`), so a row can be a few
 // seconds behind the turn; the budget covers one poll plus a cold snapshot.
 test("the activity row appears while a machine turn runs, and clears when it ends", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name === "phone", PHONE_CANNOT_OPEN_THE_MACHINE)
-  await openMachineChat(page)
+  await openMachineChat(page, testInfo.project.name === "phone")
   // ~24 s of tokens: long enough that the feed has to report it still running.
   const tag = `ac${Date.now() % 100_000}`
-  await startTurn(page, `Activity ${marker("long", tag, 400, { ms: 60 })}`)
+  await startTurn(page, `Activity ${marker("long", tag, 400, { ms: 60 })}`, testInfo.project.name === "phone")
   // The turn really is running here: the composer shows its stop button while
   // the machine streams.
   await awaitTurnOrSkip(page, "the machine turn")
@@ -249,11 +290,10 @@ test("the activity row appears while a machine turn runs, and clears when it end
 })
 
 test("a message queued mid-turn shows in the composer's queue and runs after the turn", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name === "phone", PHONE_CANNOT_OPEN_THE_MACHINE)
-  await openMachineChat(page)
+  await openMachineChat(page, testInfo.project.name === "phone")
   const tag = `qu${Date.now() % 100_000}`
   // ~30 s of tokens, so there is room to queue a second message behind it.
-  await startTurn(page, `First ${marker("long", tag, 500, { ms: 60 })}`)
+  await startTurn(page, `First ${marker("long", tag, 500, { ms: 60 })}`, testInfo.project.name === "phone")
   await awaitTurnOrSkip(page, "the first turn")
 
   const queued = marker("long", `${tag}q`, 3, { ms: 5 })
@@ -288,8 +328,7 @@ test("closing the app mid-stream and reopening that chat paints the partial repl
   page,
   context,
 }, testInfo) => {
-  test.skip(testInfo.project.name === "phone", PHONE_CANNOT_OPEN_THE_MACHINE)
-  await openMachineChat(page)
+  await openMachineChat(page, testInfo.project.name === "phone")
   // The chat this case closes and reopens, addressed the way the sidebar does
   // (`?chatSessionId=`), so the reopened window is the same conversation and not
   // whatever the shell picks as its default.
@@ -300,7 +339,7 @@ test("closing the app mid-stream and reopening that chat paints the partial repl
   const tag = `re${Date.now() % 100_000}`
   const n = 300
   // ~15 s of tokens: the window below has to reopen while this is still running.
-  await startTurn(page, `Long ${marker("long", tag, n, { ms: 50 })}`)
+  await startTurn(page, `Long ${marker("long", tag, n, { ms: 50 })}`, testInfo.project.name === "phone")
   await awaitTurnOrSkip(page, "the long turn")
   // Part of the reply is already painted in the window that is about to close.
   await expect(page.getByText(token(tag, 3), { exact: false }).first(), "the turn started painting").toBeVisible({
@@ -372,11 +411,9 @@ test("a share_file link from the machine opens as a chip in the cloud channel, n
   )
   expect(posted.status(), await posted.text()).toBeLessThan(300)
 
-  // The chip renders on a phone too, but its panel resolves the workspace runtime
-  // and, with no workspace selected in a phone shell opened by URL, answers
-  // `runtime_unavailable` (measured) — the same addressing gap named above.
-  test.skip(testInfo.project.name === "phone", PHONE_CANNOT_OPEN_THE_MACHINE)
-  await openMachineChannel(page, false)
+  // The channel URL carries its own workspace, so a phone opens it directly —
+  // the same link a person taps.
+  await openMachineChannel(page, testInfo.project.name === "phone")
   const chip = page.getByText(name, { exact: false }).first()
   await expect(chip, "the link renders as a file chip").toBeVisible({ timeout: 60_000 })
   await expect(page.getByText(/\/api\/f\//), "the raw link is not on screen").toHaveCount(0)

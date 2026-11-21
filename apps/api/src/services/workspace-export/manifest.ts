@@ -201,6 +201,7 @@ export const WORKSPACE_EXPORT_MANIFEST: Record<string, ModelManifestEntry> = {
   PlatformSetting: { decision: 'exclude', reason: 'Instance catalog or global configuration, identical on every restore.' },
   ProjectAuthSignIn: { decision: 'exclude', reason: 'Reusable credentials, OAuth tokens, device keys or end-user sign-in PII of a published app. None can be re-issued by us, so a downloaded file must not carry them.' },
   ProjectCheckpoint: { decision: 'exclude', reason: 'In-flight runtime state, append-only telemetry or embeddings. Task outputs still travel as files under .shogo/tasks/.' },
+  ProjectBucketObject: { decision: 'exclude', reason: 'An index row for bytes that live in the project bucket, not in the archive. A restored row would name a key the target workspace does not have; re-uploading the media recreates both the object and its row.' },
   ProxyTurn: { decision: 'exclude', reason: 'Money and metering, not content. Also carries payment-processor ids; StorageUsage is recomputable.' },
   PublishedEnvironment: { decision: 'exclude', reason: 'SHO-308: a live published environment is a Knative service, an image and a provisioned Postgres database, not archive content. Restoring the row would claim a subdomain and a database that only the cloud can create, so an import re-publishes instead.' },
   PublishedDeployment: { decision: 'exclude', reason: 'SHO-308: an image revision that ran in the cloud registry. Meaningless on another cluster, and unrecoverable from an archive.' },

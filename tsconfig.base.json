@@ -39,6 +39,7 @@
     // monorepo-internal.
     "paths": {
       "@shogo-ai/sdk": ["packages/sdk/src/index.ts"],
+      "@shogo-ai/sdk/bucket": ["packages/sdk/src/bucket/index.ts"],
       "@shogo-ai/sdk/db": ["packages/sdk/src/db/index.ts"],
       "@shogo-ai/sdk/email": ["packages/sdk/src/email/index.ts"],
       "@shogo-ai/sdk/email/server": ["packages/sdk/src/email/server.ts"],

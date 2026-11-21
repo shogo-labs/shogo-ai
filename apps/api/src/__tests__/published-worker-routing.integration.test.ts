@@ -33,6 +33,7 @@ import { join, resolve } from 'node:path'
 const OCI_ORIGIN = 'https://objectstorage.test/p/par123/o'
 const KOURIER_ORIGIN = 'https://ingress.shogo.test'
 const PUBLISH_DOMAIN = 'shogo.one'
+const PROJECT_BUCKET_ORIGIN = 'https://objectstorage.test/p/par456/o'
 
 // ─── Extract the real worker script from terraform ──────────────────────────
 
@@ -52,11 +53,13 @@ function extractWorkerScript(): string {
   let body = tf.slice(bodyStart, bodyStart + endMatch.index!)
 
   // Substitute the Terraform interpolations the worker relies on. These are
-  // the only REAL interpolations in the script (ORIGIN_BASE + PUBLISH_DOMAIN);
-  // any other `${...}` the script wants to emit literally is escaped as `$${`.
+  // the only REAL interpolations in the script (ORIGIN_BASE, PUBLISH_DOMAIN and
+  // the project-bucket CDN origin); any other `${...}` the script wants to emit
+  // literally is escaped as `$${`.
   body = body
     .replaceAll("'${local.par_base_url}'", JSON.stringify(OCI_ORIGIN))
     .replaceAll("'${var.publish_domain}'", JSON.stringify(PUBLISH_DOMAIN))
+    .replaceAll("'${var.project_bucket_origin}'", JSON.stringify(PROJECT_BUCKET_ORIGIN))
 
   // A remaining UNESCAPED `${` is an interpolation this extractor doesn't know
   // about — fail loudly rather than load a half-substituted module.

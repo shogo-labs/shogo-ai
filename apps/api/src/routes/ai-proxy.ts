@@ -363,9 +363,16 @@ export function resolveModelSupportsAudioInput(model: string): boolean {
 }
 
 /**
- * Whether a model accepts `video_url` content blocks natively, honoring
- * DB-defined models (e.g. GLM 5.3 Flash on OpenRouter) over the static
- * catalog. Mirrors `resolveModelSupportsAudioInput`.
+ * Whether a model accepts video input natively, honoring DB-defined models
+ * (e.g. GLM 5.3 Flash on OpenRouter) as well as the static catalog (the
+ * Google-direct Gemini models, which take video as `image_url` +
+ * `data:video/*`). Mirrors `resolveModelSupportsAudioInput`.
+ *
+ * The catalog is consulted first. A seeded `ModelDefinition` row carries no
+ * `capabilities` of its own, and the merged entry replaces the catalog entry
+ * wholesale, so reading the DB row first erased video support the catalog
+ * declares (SHO-495). A DB row can still grant the flag to a model the
+ * catalog does not know.
  *
  * BYOK `openrouter:` ids we have no metadata for are treated as allowed and
  * let upstream decide: OpenRouter drops every endpoint that can't take video
@@ -373,9 +380,9 @@ export function resolveModelSupportsAudioInput(model: string): boolean {
  * than video bytes being silently dropped locally.
  */
 export function resolveModelSupportsVideoInput(model: string): boolean {
-  const dbEntry = getMergedModelEntrySync(model)
-  if (dbEntry) return dbEntry.capabilities?.supportsVideoInput === true
   if (modelSupportsVideoInput(model)) return true
+  const dbEntry = getMergedModelEntrySync(model)
+  if (dbEntry?.capabilities?.supportsVideoInput === true) return true
   return isOpenRouterModel(model)
 }
 

@@ -37,6 +37,9 @@ const prisma = {
     findUnique: async () => (projectRow ? { id: PROJECT_ID, ...projectRow } : null),
   },
   chatSession: { findMany: async () => [] },
+  // `afterDelete` purges the project's bucket (SHO-491); without it the hook
+  // logs a failure that has nothing to do with what this test is about.
+  projectBucketObject: { deleteMany: async () => ({ count: 0 }) },
 }
 
 mock.module('../lib/prisma', () => withPrismaExports({ prisma }))

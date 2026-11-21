@@ -178,6 +178,42 @@ describe('workspaceFileInventory / removeWorkspaceFiles', () => {
     expect(existsSync(join(userRepo, 'package.json'))).toBe(true)
   })
 
+  test('the deletion preview counts project-bucket bytes (SHO-491)', async () => {
+    const workspaceId = 'ws-bucket-preview'
+    const managedDir = join(workspacesDir, 'proj-bytes')
+    mkdirSync(managedDir, { recursive: true })
+    writeFileSync(join(managedDir, 'app.ts'), 'x'.repeat(10))
+
+    const bucketBytes = 5 * 1024 ** 3
+    const db = {
+      workspace: {
+        findUnique: async () => ({ id: workspaceId, name: 'Bucket WS' }),
+        delete: async () => ({}),
+      },
+      project: {
+        findMany: async () => [
+          { id: 'proj-bytes', name: 'Bytes', workingMode: 'managed', projectFolders: [] },
+        ],
+      },
+      conversation: { count: async () => 0 },
+      board: { count: async () => 0 },
+      chatSession: { count: async () => 0 },
+      // One indexed aggregate rather than a bucket listing: the preview must
+      // not walk a 5 GB bucket to say it is 5 GB.
+      projectBucketObject: {
+        aggregate: async () => ({ _sum: { size: BigInt(bucketBytes) } }),
+      },
+    }
+
+    const inventory = await workspaceFileInventory(workspaceId, { workspacesDir, prisma: db })
+
+    expect(inventory).not.toBeNull()
+    expect(inventory!.bucketBytes).toBe(bucketBytes)
+    // Bucket bytes are media that disappears with the workspace, so they belong
+    // in the total the preview shows.
+    expect(inventory!.totalBytes).toBe(10 + bucketBytes)
+  })
+
   test('returns null for an unknown workspace', async () => {
     const db = { workspace: { findUnique: async () => null }, project: {}, conversation: {}, board: {}, chatSession: {} }
     const inventory = await workspaceFileInventory('missing', { workspacesDir, prisma: db })

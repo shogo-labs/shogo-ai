@@ -274,6 +274,16 @@ spec:
             # Writable-state bucket for SERVER-BACKED published apps.
             - name: PUBLISH_DATA_BUCKET
               value: "shogo-published-data-production"
+            # Project object storage (SHO-491): the SDK bucket API
+            # (`shogo bucket`, /api/bucket/*) stores agent-produced media here
+            # instead of base64 in chat. MUST match
+            # `shogo-project-buckets-${var.environment}` in
+            # terraform/modules/object-storage. Public reads are served by the
+            # subdomain-router Worker at `cdn.<publish_domain>/<projectId>/<key>`
+            # (read-only PAR, `p/<projectId>/public/<key>` only) — the API's
+            # presigned GET is the path for private objects.
+            - name: S3_PROJECT_BUCKET
+              value: "shogo-project-buckets-production"
             - name: PUBLISH_DOMAIN
               value: "shogo.one"
             # --- Custom domains (Cloudflare for SaaS) ----------------------
