@@ -21,9 +21,9 @@ import {
  * no selection of its own (which is also what makes "Duplicate tab" work).
  *
  * A window that is not a tab, like the desktop island overlay, must keep
- * following the shared default instead: it calls
- * `setActiveWorkspaceFollowsShared()` at module load, reads `localStorage`
- * directly, and keeps the `storage` listener.
+ * following the shared default instead: its route enables
+ * `setActiveWorkspaceFollowsShared()` only when the island preload bridge is
+ * present, then reads `localStorage` directly and keeps the `storage` listener.
  */
 const STORAGE_KEY = 'shogo:active-workspace-id'
 const KIND_STORAGE_KEY = 'shogo:active-workspace-kind'

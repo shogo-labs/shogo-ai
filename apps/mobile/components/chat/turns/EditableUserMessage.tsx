@@ -11,7 +11,8 @@
  *     mention, code block or attachment inside the message, never opens
  *     the editor.
  *   - A hover action row (web/desktop) offers Copy, Edit and Retry with
- *     labels and tooltips. Native touch devices keep the long-press sheet.
+ *     labels and tooltips. Native phone actions use a separate button so
+ *     the message text keeps its native selection gesture.
  *   - Edit mode is `<InlineMessageEditor>`: the composer's text/paste/
  *     attachment/mention/model behaviour, without the send or voice chrome,
  *     with an inline footer (revert-files choice, Cancel, labelled Send).
@@ -34,7 +35,7 @@ import {
   ActionSheetIOS,
   Alert,
 } from "react-native"
-import { Check, Copy, Pencil, RotateCcw } from "lucide-react-native"
+import { Check, Copy, MoreHorizontal, Pencil, RotateCcw } from "lucide-react-native"
 import * as Clipboard from "expo-clipboard"
 import * as Haptics from "expo-haptics"
 import type { UIMessage } from "@ai-sdk/react"
@@ -103,15 +104,18 @@ function showNativeUserMessageActions(opts: {
     return
   }
 
-  Alert.alert("Message", undefined, [
-    ...rows.map((r) => ({
+  // Android alerts support only three buttons. Back or outside tap cancels.
+  Alert.alert(
+    "Message",
+    undefined,
+    rows.map((r) => ({
       text: r.label,
       onPress: r.run,
       style: (r.destructive ? "destructive" : "default") as
         "destructive" | "default",
     })),
-    { text: "Cancel", style: "cancel" as const },
-  ])
+    { cancelable: true },
+  )
 }
 
 /** Native retry keeps a system Alert (two destructive flavours + Cancel). */
@@ -434,7 +438,7 @@ export const EditableUserMessage = memo(function EditableUserMessage({
     [canEdit, busy, handleStartEdit],
   )
 
-  const handleNativeLongPress = useCallback(() => {
+  const handleNativeActionsPress = useCallback(() => {
     if (busy) return
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {})
     showNativeUserMessageActions({
@@ -521,28 +525,61 @@ export const EditableUserMessage = memo(function EditableUserMessage({
 
   // ─── DISPLAY MODE ─────────────────────────────────────────────
   // Web/desktop: full-width row. Compact bubble on the companion mobile
-  // shell and native phone (long-press sheet there).
+  // shell and native phone.
   if (usesCompactBubble) {
+    if (nativePhone) {
+      return (
+        <View className={cn("w-full items-end px-1", className)}>
+          <View
+            className={cn(
+              answeredQuestion ? "max-w-full" : "max-w-[85%]",
+              busy && "opacity-60",
+            )}
+          >
+            {answeredQuestion ? (
+              <AskUserAnswerCard
+                answeredQuestion={answeredQuestion}
+                variant="bubble"
+              />
+            ) : (
+              <MessageContent message={message} variant="userBubble" />
+            )}
+          </View>
+          <Pressable
+            onPress={handleNativeActionsPress}
+            disabled={busy}
+            accessibilityRole="button"
+            accessibilityLabel="Message actions"
+            accessibilityHint="Opens copy, edit, and retry actions."
+            className="mt-1 min-h-11 min-w-11 items-center justify-center rounded-full"
+          >
+            <MoreHorizontal size={20} className="text-muted-foreground" />
+          </Pressable>
+          {error ? (
+            <Text className="mt-1 px-2 text-xs text-destructive">{error}</Text>
+          ) : null}
+          {busy ? (
+            <View className="mt-1 pr-2">
+              <ActivityIndicator size="small" />
+            </View>
+          ) : null}
+          {revertedNote ? (
+            <Text className="mt-1 px-2 text-[11px] text-muted-foreground">
+              {revertedNote}
+            </Text>
+          ) : null}
+        </View>
+      )
+    }
+
     return (
       <View className={cn("w-full items-end px-1", className)}>
         <Pressable
-          onPress={
-            nativePhone || answeredQuestion ? undefined : () => handleRowPress()
-          }
-          onLongPress={nativePhone ? handleNativeLongPress : undefined}
-          delayLongPress={nativePhone ? 400 : undefined}
-          disabled={nativePhone ? busy : answeredQuestion ? !canRetry : !canEdit}
+          onPress={answeredQuestion ? undefined : handleRowPress}
+          disabled={answeredQuestion ? !canRetry : !canEdit}
           accessibilityRole="button"
-          accessibilityLabel={
-            nativePhone
-              ? "Your message. Long press for copy, edit, and retry."
-              : "Edit this message and re-run from here."
-          }
-          accessibilityHint={
-            nativePhone
-              ? undefined
-              : "Activates an inline editor pre-filled with this message."
-          }
+          accessibilityLabel="Edit this message and re-run from here."
+          accessibilityHint="Activates an inline editor pre-filled with this message."
           className={cn(
             answeredQuestion ? "max-w-full" : "max-w-[85%]",
             Platform.OS === "web" && canEdit && "cursor-text",

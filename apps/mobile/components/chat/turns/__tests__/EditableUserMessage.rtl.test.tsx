@@ -18,6 +18,7 @@ import { createReactNativeMock } from "../../../../test/react-native-mock"
 import * as lucideStub from "../../../../test/stubs/lucide-react-native"
 
 let editorProps: any = null
+let nativePhone = false
 
 const mockAt = (relative: string, factory: () => unknown) =>
   mock.module(resolve(import.meta.dir, relative), factory as any)
@@ -86,10 +87,10 @@ mockAt("../../WebTooltip.tsx", () => ({
   WebTooltip: ({ children }: any) => children,
 }))
 mockAt("../MessageContent.tsx", () => ({
-  MessageContent: ({ message }: any) =>
+  MessageContent: ({ message, variant }: any) =>
     createElement(
       "span",
-      null,
+      { "data-variant": variant },
       message.parts?.[0]?.text,
       createElement("a", { href: "#x" }, "a link"),
       createElement("code", null, "code()"),
@@ -106,7 +107,7 @@ mockAt("../InlineMessageEditor.tsx", () => ({
   },
 }))
 mockAt("../../../../lib/native-phone-layout.ts", () => ({
-  useIsNativePhoneLayout: () => false,
+  useIsNativePhoneLayout: () => nativePhone,
   usePhoneLayout: () => false,
   usePhoneLayoutOverride: () => null,
 }))
@@ -137,6 +138,7 @@ function setSelection(text: string) {
 describe("EditableUserMessage — display mode", () => {
   beforeEach(() => {
     clipboardWrites.length = 0
+    nativePhone = false
     setSelection("")
   })
 
@@ -189,6 +191,14 @@ describe("EditableUserMessage — display mode", () => {
     fireEvent.mouseEnter(view.getByText("hello world").closest("div")!)
     fireEvent.click(view.getByLabelText("Edit message"))
     expect(editorProps).not.toBeNull()
+  })
+
+  test("native phones keep the message outside an action press target", () => {
+    nativePhone = true
+    const view = renderRow()
+
+    expect(view.getByText("hello world").getAttribute("data-variant")).toBe("userBubble")
+    expect(view.getByLabelText("Message actions")).toBeTruthy()
   })
 })
 
