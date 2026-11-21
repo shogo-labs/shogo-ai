@@ -467,6 +467,21 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   return (
     <View style={phoneLayout ? { paddingBottom: nativePhoneComposerRestPad(chrome.overlay) } : undefined}>
+      {/* Status lines sit above the input, never between it and the pager
+          indicator — same place the typing row and running dock occupy. */}
+      <View className="px-4">
+        {threadRootId && alsoToChannel ? <Text className="mb-1 text-xs text-muted-foreground">Also sending to the channel</Text> : null}
+        {isRemindCommand(text) && !error ? (
+          <View className="mb-2 flex-row items-center gap-1.5">
+            <AlarmClock size={12} className="text-muted-foreground" />
+            <Text className="text-xs text-muted-foreground">Try “/remind me to review the PR in 2 hours” or “… tomorrow at 9am”. Only you will see this.</Text>
+          </View>
+        ) : null}
+        {uploading ? <Text className="mb-2 text-xs text-muted-foreground">Uploading…</Text> : null}
+        {recordingError ? <Text className="mb-2 text-xs text-destructive">{recordingError}</Text> : null}
+        {notice && !error ? <Text className="mb-2 text-xs text-muted-foreground">{notice}</Text> : null}
+        {error ? <Text className="mb-2 text-xs text-destructive">{error}</Text> : null}
+      </View>
       {recorder.isRecording ? (
         <RecordingBar
           level={recorder.level}
@@ -508,17 +523,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             ))}
           </View>
         )}
-        {threadRootId && alsoToChannel ? <Text className="mb-1 text-xs text-muted-foreground">Also sending to the channel</Text> : null}
-        {isRemindCommand(text) && !error ? (
-          <View className="mb-2 flex-row items-center gap-1.5">
-            <AlarmClock size={12} className="text-muted-foreground" />
-            <Text className="text-xs text-muted-foreground">Try “/remind me to review the PR in 2 hours” or “… tomorrow at 9am”. Only you will see this.</Text>
-          </View>
-        ) : null}
-        {uploading ? <Text className="mb-2 text-xs text-muted-foreground">Uploading…</Text> : null}
-        {recordingError ? <Text className="mb-2 text-xs text-destructive">{recordingError}</Text> : null}
-        {notice && !error ? <Text className="mb-2 text-xs text-muted-foreground">{notice}</Text> : null}
-        {error ? <Text className="mb-2 text-xs text-destructive">{error}</Text> : null}
       </View>
     </View>
   )
