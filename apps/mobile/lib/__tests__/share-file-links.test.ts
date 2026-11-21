@@ -7,6 +7,7 @@
 
 import { describe, expect, test } from "bun:test"
 import {
+  inAppFileFetchHref,
   localFileHref,
   parseInAppFileHref,
   parseLocalFileHref,
@@ -175,5 +176,65 @@ describe("local file links (desktop share_file)", () => {
     expect(parseInAppFileHref("file:///Users/me/report.pdf", HOSTS)?.kind).toBe("local")
     expect(parseInAppFileHref(`/api/f/${token()}`, HOSTS)?.kind).toBe("share")
     expect(parseInAppFileHref("/api/chat-attachments/k/f.txt", HOSTS)?.kind).toBe("stored")
+  })
+})
+
+/**
+ * The desktop renderer runs at `shogo://app`, so it can only fetch its own API
+ * origin: the API answers an unknown origin with `ALLOWED_ORIGINS[0]`, and the
+ * browser refuses that. A link minted on the public cloud origin is therefore
+ * relayed, not fetched cross-origin (that was "Failed to fetch" on desktop).
+ */
+describe("the URL the viewer fetches", () => {
+  const API = "http://localhost:39100"
+  const CLOUD = "https://studio.shogo.ai"
+
+  test("a cloud share link goes through this app's own API relay", () => {
+    const signed = token("artifacts/BUILD-AND-DOWNLOAD-GUIDE.md")
+    const file = parseShareFileHref(`${CLOUD}/api/f/${signed}`, HOSTS)!
+    expect(inAppFileFetchHref(file, API)).toBe(`${API}/api/cloud/ws-1/f/${signed}`)
+  })
+
+  test("the legacy /f/ shape relays the same way", () => {
+    const signed = token("docs/plan.pdf")
+    const file = parseShareFileHref(`${CLOUD}/f/${signed}`, HOSTS)!
+    expect(inAppFileFetchHref(file, API)).toBe(`${API}/api/cloud/ws-1/f/${signed}`)
+  })
+
+  test("the token's own workspace decides, not whichever is active", () => {
+    const signed = token("a.md", { workspaceId: "ws-elsewhere" })
+    const file = parseShareFileHref(`${CLOUD}/api/f/${signed}`, HOSTS)!
+    expect(inAppFileFetchHref(file, API)).toBe(`${API}/api/cloud/ws-elsewhere/f/${signed}`)
+  })
+
+  test("same-origin and relative links are left exactly as written", () => {
+    const signed = token()
+    const sameOrigin = parseShareFileHref(`${API}/api/f/${signed}`, HOSTS)!
+    expect(inAppFileFetchHref(sameOrigin, API)).toBe(sameOrigin.href)
+    expect(inAppFileFetchHref({ kind: "share", href: `/api/f/${signed}` }, API)).toBe(
+      `/api/f/${signed}`,
+    )
+  })
+
+  test("a stored cloud file keeps its path and query", () => {
+    const href = `${CLOUD}/api/conversation-files/att-1?t=abc.def`
+    expect(inAppFileFetchHref({ kind: "stored", href }, API)).toBe(
+      `${API}/api/conversation-files/att-1?t=abc.def`,
+    )
+  })
+
+  test("an app-local file and a real web link are never rewritten", () => {
+    expect(
+      inAppFileFetchHref({ kind: "local", href: "/api/local-files?path=%2Fx%2Fy" }, API),
+    ).toBe("/api/local-files?path=%2Fx%2Fy")
+    expect(
+      inAppFileFetchHref({ kind: "share", href: "https://example.com/report.pdf" }, API),
+    ).toBe("https://example.com/report.pdf")
+  })
+
+  test("with no API origin configured nothing is rebased", () => {
+    const file = parseShareFileHref(`${CLOUD}/api/f/${token()}`, HOSTS)!
+    expect(inAppFileFetchHref(file, null)).toBe(file.href)
+    expect(inAppFileFetchHref(file, "")).toBe(file.href)
   })
 })
