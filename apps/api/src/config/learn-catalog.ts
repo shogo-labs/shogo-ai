@@ -73,8 +73,9 @@ export const LEARN_CERTIFICATES: Record<string, LearnCertificateRule> = {
   },
   'ai-for-marketing': {
     courseTitle: 'AI for Marketing',
-    passMark: 5,
-    answers: { q1: 'c', q2: 'a', q3: 'd', q4: 'b', q5: 'c', q6: 'b' },
+    // q7 covers the paid ads lesson; 6 of 7 keeps the bar of 5 of 6.
+    passMark: 6,
+    answers: { q1: 'c', q2: 'a', q3: 'd', q4: 'b', q5: 'c', q6: 'b', q7: 'd' },
   },
   'ai-for-sales': {
     courseTitle: 'AI for Sales',
