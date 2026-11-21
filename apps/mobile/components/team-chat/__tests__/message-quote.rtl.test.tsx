@@ -80,7 +80,7 @@ mock.module(resolve(import.meta.dir, '../../../lib/team-chat-api'), () => ({
         }
       return { ...quoted, id }
     },
-    messages: async (ids: string[]) => {
+    messagesById: async (ids: string[]) => {
       batches.push(ids)
       return {
         messages: ids.filter((id) => id !== 'm-gone').map((id) => ({ ...quoted, id })),

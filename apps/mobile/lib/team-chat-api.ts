@@ -1266,7 +1266,7 @@ export function teamChatApi() {
      * Several messages in one request (quote cards). A message the viewer may
      * not read is only listed in `missing`, the same neutral answer as a 404.
      */
-    async messages(messageIds: string[]): Promise<{ messages: ChatMessage[]; missing: string[] }> {
+    async messagesById(messageIds: string[]): Promise<{ messages: ChatMessage[]; missing: string[] }> {
       const q = new URLSearchParams({ ids: messageIds.join(',') })
       return (await http.get<{ messages: ChatMessage[]; missing: string[] }>(`/api/conversation-messages?${q}`)).data
     },

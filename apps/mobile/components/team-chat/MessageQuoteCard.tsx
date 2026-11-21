@@ -78,7 +78,7 @@ async function loadBatch(batch: Map<string, (state: QuoteState) => void>): Promi
     return
   }
   try {
-    const { messages, missing } = await api.messages(ids)
+    const { messages, missing } = await api.messagesById(ids)
     const byId = new Map(messages.map((m) => [m.id, m]))
     const gone = new Set(missing)
     for (const id of ids) {
