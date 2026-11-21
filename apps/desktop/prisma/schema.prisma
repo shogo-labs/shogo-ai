@@ -1341,9 +1341,9 @@ model VmMeterCursor {
   hostId     String
   vmId       String
   assignedAt BigInt
-  agentMs    Int      @default(0)
-  appMs      Int      @default(0)
-  idleMs     Int      @default(0)
+  agentMs    BigInt   @default(0)
+  appMs      BigInt   @default(0)
+  idleMs     BigInt   @default(0)
   lastSeenAt DateTime @default(now())
   updatedAt  DateTime @updatedAt
 

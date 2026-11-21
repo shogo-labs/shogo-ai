@@ -198,10 +198,11 @@ export async function ingestMetalMeters(params: {
     appSeconds: 0,
     idleSeconds: 0,
     invalid: 0,
+    failed: 0,
   }
   if (!isMeterPayload(params.payload)) return result
   const payload = params.payload
-  result.ack = Math.max(0, Math.floor(payload.seq))
+  const seqAck = Math.max(0, Math.floor(payload.seq))
 
   const raw = [...payload.vms, ...(payload.closed ?? [])].slice(0, MAX_VMS_PER_HEARTBEAT)
   const rows: VmMeterReport[] = []
@@ -211,33 +212,55 @@ export async function ingestMetalMeters(params: {
     else result.invalid++
   }
   result.rows = rows.length
-  if (rows.length === 0) return result
+  if (rows.length === 0) {
+    result.ack = seqAck
+    return result
+  }
 
   const resolved = await resolveRuntimeKeys([...new Set(rows.map((r) => r.runtimeKey))])
   const hour = truncateToHour(now)
 
   for (const row of rows) {
-    const target = resolved.get(row.runtimeKey)
-    if (!target) {
-      result.unresolved++
-      // Still advance the cursor: otherwise a deleted project's VM re-sends its
-      // whole counter history on every heartbeat until it is destroyed.
-      await advanceCursor(params.hostId, row, row.agentMs, row.appMs, row.idleMs, now).catch(() => {})
-      continue
+    try {
+      const target = resolved.get(row.runtimeKey)
+      if (!target) {
+        result.unresolved++
+        // Still advance the cursor: otherwise a deleted project's VM re-sends its
+        // whole counter history on every heartbeat until it is destroyed.
+        await advanceCursor(params.hostId, row, row.agentMs, row.appMs, row.idleMs, now).catch(() => {})
+        continue
+      }
+      const delta = await ingestOneVm(params.hostId, target, row, hour, now)
+      if (!delta) continue
+      if (delta.agentMs + delta.appMs + delta.idleMs <= 0) continue
+      result.metered++
+      result.agentSeconds += Math.round(delta.agentMs / 1000)
+      result.appSeconds += Math.round(delta.appMs / 1000)
+      result.idleSeconds += Math.round(delta.idleMs / 1000)
+    } catch (err: any) {
+      result.failed++
+      console.error(`[metal/meter] ${params.hostId} ${row.vmId}: ${err?.message ?? String(err)}`)
     }
-    const delta = await ingestOneVm(params.hostId, target, row, hour, now)
-    if (!delta) continue
-    if (delta.agentMs + delta.appMs + delta.idleMs <= 0) continue
-    result.metered++
-    result.agentSeconds += Math.round(delta.agentMs / 1000)
-    result.appSeconds += Math.round(delta.appMs / 1000)
-    result.idleSeconds += Math.round(delta.idleMs / 1000)
   }
+
+  // Only acknowledge the seq when every row was processed successfully; a
+  // failed row means the host must re-send it rather than dropping it.
+  if (result.failed === 0) result.ack = seqAck
 
   // Bounded cleanup: a host that is decommissioned stops heartbeating and its
   // cursors would otherwise sit in the table forever.
+  // Guard: never prune a VM that is in the current payload — after per-row
+  // isolation, a row that failed transiently would otherwise be pruned after
+  // 24 h and then billed for its entire lifetime on the next success.
+  const liveVmPairs = rows.map((r) => ({ vmId: r.vmId, assignedAt: BigInt(r.assignedAt) }))
   await prisma.vmMeterCursor
-    .deleteMany({ where: { hostId: params.hostId, lastSeenAt: { lt: new Date(now.getTime() - CURSOR_TTL_MS) } } })
+    .deleteMany({
+      where: {
+        hostId: params.hostId,
+        lastSeenAt: { lt: new Date(now.getTime() - CURSOR_TTL_MS) },
+        NOT: { OR: liveVmPairs },
+      },
+    })
     .catch(() => {})
 
   return result
@@ -272,17 +295,19 @@ async function ingestOneVm(
     // cursor: the sub-second remainder stays in it and is metered by the next
     // heartbeat. Without that, a 30 s heartbeat at 29.6 s of counted time would
     // drop 0.4 s every tick — a slow, silent under-bill.
-    const agent = advanceCounter(cursor?.agentMs, row.agentMs)
-    const app = advanceCounter(cursor?.appMs, row.appMs)
-    const idle = advanceCounter(cursor?.idleMs, row.idleMs)
+    // Cursor counters are BigInt in the DB (safe up to 2^53 ms ≈ 285 k years);
+    // convert to Number for arithmetic — Number is exact up to 2^53.
+    const agent = advanceCounter(cursor ? Number(cursor.agentMs) : undefined, row.agentMs)
+    const app = advanceCounter(cursor ? Number(cursor.appMs) : undefined, row.appMs)
+    const idle = advanceCounter(cursor ? Number(cursor.idleMs) : undefined, row.idleMs)
     const agentSec = agent.seconds
     const appSec = app.seconds
     const idleSec = idle.seconds
     const total = agentSec + appSec + idleSec
     const nextCounters = {
-      agentMs: agent.cursorMs,
-      appMs: app.cursorMs,
-      idleMs: idle.cursorMs,
+      agentMs: BigInt(agent.cursorMs),
+      appMs: BigInt(app.cursorMs),
+      idleMs: BigInt(idle.cursorMs),
     }
 
     const wrote = await prisma.$transaction(async (tx) => {
@@ -411,7 +436,7 @@ async function advanceCursor(
 ): Promise<void> {
   await prisma.vmMeterCursor.upsert({
     where: { hostId_vmId_assignedAt: { hostId, vmId: row.vmId, assignedAt: BigInt(row.assignedAt) } },
-    create: { hostId, vmId: row.vmId, assignedAt: BigInt(row.assignedAt), agentMs, appMs, idleMs, lastSeenAt: now },
-    update: { agentMs, appMs, idleMs, lastSeenAt: now },
+    create: { hostId, vmId: row.vmId, assignedAt: BigInt(row.assignedAt), agentMs: BigInt(agentMs), appMs: BigInt(appMs), idleMs: BigInt(idleMs), lastSeenAt: now },
+    update: { agentMs: BigInt(agentMs), appMs: BigInt(appMs), idleMs: BigInt(idleMs), lastSeenAt: now },
   })
 }

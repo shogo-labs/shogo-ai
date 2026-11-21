@@ -67,4 +67,6 @@ export interface IngestMetersResult {
   idleSeconds: number
   /** Rows the agent sent with an unusable shape (an error, not a retry). */
   invalid: number
+  /** Rows that threw an unexpected error during metering (triggers no-ack). */
+  failed: number
 }
