@@ -24,6 +24,10 @@
  *
  * Needs the local stack; `E2E_LOCAL_START_STACK=1` boots it:
  *   npx playwright test --config e2e/local/playwright.config.ts chat-composer-memory
+ *
+ * SHO-497 extended it: the model pick must hold through sends and reloads when
+ * the replies are stamped with the model the run used (`auto`), because only a
+ * person's own send may move the picker.
  */
 import { expect, test, type Locator, type Page, type Route } from "@playwright/test"
 import { writeActiveWorkspaceSelection } from "./helpers"
@@ -620,7 +624,7 @@ test.describe("Per-chat composer memory (local)", () => {
     }
   })
 
-  test("AC 5-8: a model pick belongs to its chat, and a newer stamped message wins", async ({
+  test("AC 5-8: a model pick belongs to its chat, and only a person's own send moves it", async ({
     page,
   }) => {
     test.setTimeout(240_000)
@@ -655,25 +659,109 @@ test.describe("Per-chat composer memory (local)", () => {
     await expect.poll(() => sent.length, { timeout: 30_000 }).toBeGreaterThan(0)
     expect(sent[0]?.agentMode).toBe(modelX)
 
-    // AC8: a model-stamped message newer than the pick (e.g. sent from another
-    // device) wins over it. `parts` is the shape a real turn writes: an
-    // assistant row with a null `parts` trips an unguarded `.parts.map` in
+    // AC8, as SHO-497 redefined it: a stamped message moves the pick only when
+    // the person's own send wrote it. `parts` is the shape a real turn writes:
+    // an assistant row with a null `parts` trips an unguarded `.parts.map` in
     // ChatPanel's island preview (pre-existing on main, tracked separately).
-    const stamped = `stamped from another device ${stamp}`
-    const seeded = await apiJson(page, "POST", "/api/chat-messages", {
+    //
+    // First the assistant row — what a reply is stamped with (the model the run
+    // actually used). Adopting it is the bug: after a picked Opus, every reply
+    // carried `auto`, and the picker followed the reply back to Auto.
+    const reply = `a reply stamped with another model ${stamp}`
+    const seededReply = await apiJson(page, "POST", "/api/chat-messages", {
       sessionId: alphaChat.id,
       role: "assistant",
-      content: stamped,
-      parts: JSON.stringify([{ type: "text", text: stamped }]),
+      content: reply,
+      parts: JSON.stringify([{ type: "text", text: reply }]),
       model: modelY,
     })
-    expect(seeded.status, JSON.stringify(seeded.json)).toBeLessThan(300)
+    expect(seededReply.status, JSON.stringify(seededReply.json)).toBeLessThan(300)
     // The pick is already in the cache (model writes are immediate); wait for it
     // rather than for a wall-clock guess before reloading.
     await expectStoredDraft(page, modelX)
     await page.reload()
     await anyComposer(page).waitFor({ state: "visible", timeout: 120_000 })
     await openChat(page, alphaChat.name, alphaChat.id)
+    await expect.poll(() => shownModel(page, alphaChat.name), { timeout: 30_000 }).toBe(labelX)
+
+    // Then a *user* row newer than the pick — a send from another device, which
+    // is the case AC8 exists for. That send records the model the person picked
+    // there, so it still wins here.
+    const question = `sent from another device ${stamp}`
+    const seededSend = await apiJson(page, "POST", "/api/chat-messages", {
+      sessionId: alphaChat.id,
+      role: "user",
+      content: question,
+      parts: JSON.stringify([{ type: "text", text: question }]),
+      model: modelY,
+    })
+    expect(seededSend.status, JSON.stringify(seededSend.json)).toBeLessThan(300)
+    await page.reload()
+    await anyComposer(page).waitFor({ state: "visible", timeout: 120_000 })
+    await openChat(page, alphaChat.name, alphaChat.id)
     await expect.poll(() => shownModel(page, alphaChat.name), { timeout: 30_000 }).toBe(labelY)
+  })
+
+  /**
+   * SHO-497 AC1/AC2 in a real browser: the pick holds across sends and reloads,
+   * with the row shape a real turn writes. The bug was not only the label — the
+   * server replaced the body's `agentMode` with the agent's model, so the turn
+   * ran on the wrong model too. Both halves are asserted: every send through
+   * this chat carries the pick, and no reply stamp can take it away.
+   */
+  test("SHO-497 AC1-2: a picked model survives every send and a reload", async ({ page }) => {
+    test.setTimeout(240_000)
+    const sent = await mockChatTurns(page)
+    await prepare(page)
+    const chat = await makeChat(page, "Chat Pick")
+    const otherChat = await makeChat(page, "Chat Other")
+    await openProject(page)
+    const stamp = Date.now().toString(36)
+
+    await openChat(page, chat.name, chat.id, "")
+    const initialLabel = await shownModel(page, chat.name)
+    const { model: picked, label: pickedLabel } = await pickModel(page, chat.name, [initialLabel])
+    expect(pickedLabel).not.toBe(initialLabel)
+
+    // AC1: three sends, each on the pick, and the picker never moves.
+    for (let turn = 1; turn <= 3; turn++) {
+      await typeDraft(page, chat.name, `turn ${turn} on the picked model ${stamp}`)
+      await (await composer(page, chat.name)).press("Enter")
+      await expectDraft(page, chat.name, "")
+      await expect.poll(() => sent.length, { timeout: 30_000 }).toBe(turn)
+      expect(sent[turn - 1]?.agentMode).toBe(picked)
+      await expect.poll(() => shownModel(page, chat.name), { timeout: 30_000 }).toBe(pickedLabel)
+    }
+
+    // The rows the API writes for those sends: the question carries the pick,
+    // the reply carries the model the run used (the agent's own model here).
+    const asked = `asked with the picked model ${stamp}`
+    const answered = `answered by the run's model ${stamp}`
+    for (const row of [
+      { role: "user", content: asked, model: picked },
+      { role: "assistant", content: answered, model: "auto" },
+    ]) {
+      const seeded = await apiJson(page, "POST", "/api/chat-messages", {
+        sessionId: chat.id,
+        role: row.role,
+        content: row.content,
+        parts: JSON.stringify([{ type: "text", text: row.content }]),
+        model: row.model,
+      })
+      expect(seeded.status, JSON.stringify(seeded.json)).toBeLessThan(300)
+    }
+
+    // AC2: a reload re-reads the transcript — the `auto` reply is the newest
+    // stamp in it, and it must not become the picker's answer.
+    await expectStoredDraft(page, picked)
+    await page.reload()
+    await anyComposer(page).waitFor({ state: "visible", timeout: 120_000 })
+    await openChat(page, chat.name, chat.id)
+    await expect.poll(() => shownModel(page, chat.name), { timeout: 30_000 }).toBe(pickedLabel)
+
+    // … and switching chats away and back does not either.
+    await openChat(page, otherChat.name, otherChat.id, "")
+    await openChat(page, chat.name, chat.id)
+    await expect.poll(() => shownModel(page, chat.name), { timeout: 30_000 }).toBe(pickedLabel)
   })
 })
