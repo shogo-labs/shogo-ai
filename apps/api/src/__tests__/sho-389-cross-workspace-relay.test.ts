@@ -55,8 +55,24 @@ const authenticate = async (c: any) => {
   return verified.ok ? { kind: 'workspace' as const, workspaceId: verified.workspaceId } : null
 }
 
+/**
+ * The instance tunnel a hosted workspace's call is forwarded over (SHO-493).
+ * Faked here: this file's job is the transport decision, not the transport.
+ */
+let hostOnline = true
+const tunnelCalls: Array<{ instanceId: string; path: string; headers: Record<string, string> }> = []
+const hostTunnel = {
+  ensureTunnelConnected: async () => hostOnline,
+  sendTunnelRequest: async (instanceId: string, payload: any) => {
+    tunnelCalls.push({ instanceId, path: payload.path, headers: payload.headers ?? {} })
+    return { status: 200, body: JSON.stringify({ boards: [{ id: 'desk-only', name: 'Desk Board' }] }) }
+  },
+  sendTunnelStreamRequest: () => ({ cancel: () => undefined }),
+  generateRequestId: () => `req-${tunnelCalls.length}`,
+}
+
 const app = new Hono()
-app.route('/api/internal', runtimeInternalRoutes({ authenticate }))
+app.route('/api/internal', runtimeInternalRoutes({ authenticate, _hostTunnel: hostTunnel }))
 
 interface UpstreamCall {
   url: string
@@ -214,20 +230,37 @@ describe('desktop → cloud workspace', () => {
 })
 
 /**
- * The other direction (criterion 8): a workspace whose compute is a paired
- * desktop. The cloud cannot serve it and must not pretend it is empty.
+ * The other direction: a workspace whose compute is a paired desktop. The
+ * cloud cannot answer it from Postgres and must not pretend it is empty — it
+ * forwards over the host's tunnel (SHO-493), and says `device_offline` with the
+ * machine's last-seen time only when that host really cannot be woken.
  */
 describe('cloud → a workspace hosted on a paired desktop', () => {
   let hostedId: string
+  let instanceId: string
 
   beforeAll(async () => {
     delete process.env.SHOGO_LOCAL_MODE
+    instanceId = `instance-${crypto.randomUUID().slice(0, 8)}`
+    await db.instance.create({
+      data: {
+        id: instanceId,
+        workspaceId: personalWorkspaceId,
+        userId: ownerId,
+        name: 'samasra',
+        hostname: 'samasra',
+        os: 'darwin',
+        status: 'online',
+        lastSeenAt: new Date(),
+        metadata: {},
+      },
+    })
     const hosted = await db.workspace.create({
       data: {
         name: 'Serendipity',
         slug: `serendipity-${crypto.randomUUID().slice(0, 8)}`,
         kind: 'team',
-        hostInstanceId: `instance-${crypto.randomUUID().slice(0, 8)}`,
+        hostInstanceId: instanceId,
       },
     })
     hostedId = hosted.id
@@ -238,16 +271,52 @@ describe('cloud → a workspace hosted on a paired desktop', () => {
     process.env.SHOGO_LOCAL_MODE = 'true'
   })
 
-  test('it answers desktop_offline with the workspace name, and never an empty 200', async () => {
+  beforeEach(() => {
+    hostOnline = true
+    tunnelCalls.length = 0
+  })
+
+  test('it is forwarded over the host tunnel, and the desktop’s answer comes back', async () => {
+    const res = await app.request(`http://local/api/internal/workspaces/${hostedId}/agent-boards`, {
+      method: 'GET',
+      headers: baseHeaders(),
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ boards: [{ id: 'desk-only', name: 'Desk Board' }] })
+
+    expect(tunnelCalls).toHaveLength(1)
+    expect(tunnelCalls[0].instanceId).toBe(instanceId)
+    // The desktop's local API at the same path — not its agent proxy.
+    expect(tunnelCalls[0].path).toBe(`/api/internal/workspaces/${hostedId}/agent-boards`)
+    expect(tunnelCalls[0].headers['x-tunnel-auth-user-id']).toBe(ownerId)
+    expect(tunnelCalls[0].headers['X-Cross-Workspace-Hosted-From']).toBe(personalWorkspaceId)
+    expect(tunnelCalls[0].headers['X-Cross-Workspace-Requester']).toBe(ownerId)
+  })
+
+  test('a host that will not wake answers device_offline with its last-seen time, never an empty 200', async () => {
+    hostOnline = false
     const res = await app.request(`http://local/api/internal/workspaces/${hostedId}/agent-boards`, {
       method: 'GET',
       headers: baseHeaders(),
     })
     expect(res.status).toBe(503)
     const body = (await res.json<any>()).error
-    expect(body.code).toBe('desktop_offline')
-    expect(body.message).toContain('Serendipity')
-    expect(upstream).toHaveLength(0)
+    expect(body.code).toBe('device_offline')
+    expect(body.message).toContain('samasra')
+    expect(body.instanceId).toBe(instanceId)
+    expect(typeof body.lastSeenAt).toBe('string')
+    expect(tunnelCalls).toHaveLength(0)
+  })
+
+  test('a write without an approval is still refused before anything reaches the tunnel', async () => {
+    const res = await app.request(`http://local/api/internal/workspaces/${hostedId}/agent-boards`, {
+      method: 'POST',
+      headers: { ...baseHeaders(), 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'nope' }),
+    })
+    expect(res.status).toBe(403)
+    expect((await res.json<any>()).error.code).toBe('approval_required')
+    expect(tunnelCalls).toHaveLength(0)
   })
 })
 
