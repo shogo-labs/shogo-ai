@@ -31,6 +31,7 @@ delete process.env.SHOGO_API_KEY
 process.env.STRIPE_SECRET_KEY = 'sk_test_mock'
 process.env.ANTHROPIC_API_KEY = 'sk-ant-test'
 process.env.OPENAI_API_KEY = 'sk-openai-test'
+process.env.GOOGLE_API_KEY = 'google-test'
 
 // ─── Wallet + subscription mocks ─────────────────────────────────────────
 type Wallet = {
@@ -293,6 +294,7 @@ beforeEach(() => {
 // ─── Imports AFTER mocks ─────────────────────────────────────────────────
 const { Hono } = await import('hono')
 const { aiProxyRoutes } = await import('../routes/ai-proxy')
+const { calculateUsageCost } = await import('../lib/usage-cost')
 
 // We need a real shogo_sk_ key whose hash matches what `resolveApiKey`
 // computes. The api-keys mock above always returns ws-cloud, so any key
@@ -338,6 +340,51 @@ describe('AI proxy → billing (cloud-side, shogo_sk_ auth)', () => {
     expect(charged.memberId).toBe('user-cloud')
     expect(charged.actionType).toBe('ai_proxy_completion')
     expect(charged.billedUsd).toBeGreaterThan(0)
+  })
+
+  test('Gemini thinking tokens are billed as output on /v1/chat/completions', async () => {
+    // Google's OpenAI-compatible endpoint leaves the thinking tokens out of
+    // `completion_tokens` (here 62 of the 103 total, billed at the output
+    // rate). The proxy must fold that gap into the output count it charges.
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          id: 'chatcmpl-gemini-1',
+          object: 'chat.completion',
+          model: 'gemini-3.5-flash-lite',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 36, completion_tokens: 5, total_tokens: 103 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ) as any) as any
+
+    const app = new Hono()
+    app.route('/api', aiProxyRoutes())
+
+    const res = await app.fetch(
+      new Request('http://localhost/api/ai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${TEST_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: 'gemini-3.5-flash-lite',
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      }),
+    )
+    expect(res.status).toBe(200)
+    await new Promise((r) => setTimeout(r, 60))
+
+    const charged = consumeCalls.find((c) => c.actionType === 'ai_proxy_completion')
+    expect(charged).toBeDefined()
+    expect(charged.actionMetadata.inputTokens).toBe(36)
+    expect(charged.actionMetadata.outputTokens).toBe(67)
+    expect(charged.actionMetadata.reasoningTokens).toBe(62)
+    expect(charged.billedUsd).toBeCloseTo(calculateUsageCost(36, 67, 'gemini-3.5-flash-lite').billedUsd, 12)
+    // Strictly more than the visible answer alone would have cost.
+    expect(charged.billedUsd).toBeGreaterThan(calculateUsageCost(36, 5, 'gemini-3.5-flash-lite').billedUsd)
   })
 
   test('overage caused by a forwarded request triggers a $25 starter block on the cloud workspace', async () => {

@@ -2644,6 +2644,42 @@ export function splitOpenAIPromptUsage(usage: any): {
 }
 
 /**
+ * Split an OpenAI-format `usage` object into billable output tokens and
+ * reasoning tokens. The completion-side half of `splitOpenAIPromptUsage`.
+ *
+ * Some providers report only the visible answer in `completion_tokens` and
+ * leave their thinking tokens in `total_tokens` alone — Google's
+ * OpenAI-compatible endpoint does this for every Gemini model, and xAI does
+ * the same. The provider still bills those tokens at the output rate, so the
+ * unreported gap (`total_tokens - prompt_tokens - completion_tokens`) is
+ * folded into the output count and priced through the normal
+ * `calculateUsageCost` path.
+ *
+ * It is provider-agnostic on purpose: bill every token the provider says it
+ * counted. OpenAI already includes reasoning inside `completion_tokens` (and
+ * reports it again in `completion_tokens_details.reasoning_tokens`), so the
+ * gap is 0 there and nothing is counted twice. Same for DeepSeek cache
+ * misses and `anthropicUsageToOpenAI`, whose `total_tokens` is exactly
+ * `prompt_tokens + completion_tokens`.
+ */
+export function splitOpenAICompletionUsage(usage: any): {
+  outputTokens: number
+  reasoningTokens: number
+} {
+  const promptTokens = usage?.prompt_tokens || 0
+  const completionTokens = usage?.completion_tokens || 0
+  const totalTokens = usage?.total_tokens || 0
+  const unreportedTokens = Math.max(0, totalTokens - promptTokens - completionTokens)
+  return {
+    outputTokens: completionTokens + unreportedTokens,
+    reasoningTokens:
+      usage?.completion_tokens_details?.reasoning_tokens ??
+      usage?.reasoning_tokens ??
+      unreportedTokens,
+  }
+}
+
+/**
  * Proxy a streaming request to an OpenAI-compatible endpoint (OpenAI, Ollama, LM Studio).
  */
 export async function proxyOpenAIStream(
@@ -2701,8 +2737,7 @@ export async function proxyOpenAIStream(
     if (!parsed?.usage) return
     const usage = parsed.usage
     ;({ inputTokens, cachedInputTokens, cacheWriteTokens } = splitOpenAIPromptUsage(usage))
-    outputTokens = usage.completion_tokens || 0
-    reasoningTokens = usage.completion_tokens_details?.reasoning_tokens || 0
+    ;({ outputTokens, reasoningTokens } = splitOpenAICompletionUsage(usage))
     if (rewriteReasoning && typeof usage.cost === 'number' && !loggedOpenRouterCost) {
       loggedOpenRouterCost = true
       console.log(`[AI Proxy] OpenRouter usage cost $${usage.cost} model=${served.apiModel}`)
@@ -5229,19 +5264,20 @@ export function aiProxyRoutes() {
           result = await proxyOpenAINonStream(request, apiKey, modelConfig, c.req.raw.signal)
         }
 
+        const usage = result.usage || {}
+        const promptUsage = splitOpenAIPromptUsage(usage)
+        const completionUsage = splitOpenAICompletionUsage(usage)
         if (!isByokOpenRouter) {
-          const usage = result.usage || {}
-          const prompt = splitOpenAIPromptUsage(usage)
           recordUsage(
             tokenPayload,
             request.model,
-            prompt.inputTokens,
-            usage.completion_tokens || 0,
-            prompt.cachedInputTokens,
-            prompt.cacheWriteTokens,
+            promptUsage.inputTokens,
+            completionUsage.outputTokens,
+            promptUsage.cachedInputTokens,
+            promptUsage.cacheWriteTokens,
             chatSessionId,
             internalUsage,
-            usage.completion_tokens_details?.reasoning_tokens || 0,
+            completionUsage.reasoningTokens,
           )
         }
 
@@ -5250,10 +5286,10 @@ export function aiProxyRoutes() {
           body: result,
           format: 'json',
           usage: {
-            inputTokens: result.usage?.prompt_tokens ?? result.usage?.input_tokens,
-            outputTokens: result.usage?.completion_tokens ?? result.usage?.output_tokens,
-            cachedInputTokens: result.usage?.prompt_tokens_details?.cached_tokens ?? result.usage?.cache_read_input_tokens,
-            reasoningTokens: result.usage?.completion_tokens_details?.reasoning_tokens ?? result.usage?.reasoning_tokens,
+            inputTokens: usage.prompt_tokens ?? usage.input_tokens,
+            outputTokens: result.usage ? completionUsage.outputTokens : undefined,
+            cachedInputTokens: usage.prompt_tokens_details?.cached_tokens ?? usage.cache_read_input_tokens,
+            reasoningTokens: result.usage ? completionUsage.reasoningTokens : undefined,
           },
         })
         return c.json(result)
@@ -5961,7 +5997,8 @@ export function aiProxyRoutes() {
         } else {
           const openaiResult = await response.json() as any
           const oaiPrompt = splitOpenAIPromptUsage(openaiResult.usage)
-          recordUsage(tokenPayload, resolvedModel, oaiPrompt.inputTokens, openaiResult.usage?.completion_tokens || 0, oaiPrompt.cachedInputTokens, oaiPrompt.cacheWriteTokens, chatSessionId, internalUsage)
+          const oaiCompletion = splitOpenAICompletionUsage(openaiResult.usage)
+          recordUsage(tokenPayload, resolvedModel, oaiPrompt.inputTokens, oaiCompletion.outputTokens, oaiPrompt.cachedInputTokens, oaiPrompt.cacheWriteTokens, chatSessionId, internalUsage, oaiCompletion.reasoningTokens)
           const anthropicResult = convertOpenAIResponseToAnthropic(openaiResult, resolvedModel)
           capture?.recordResponse({
             status: 200,
@@ -5969,9 +6006,9 @@ export function aiProxyRoutes() {
             format: 'json',
             usage: {
               inputTokens: oaiPrompt.inputTokens,
-              outputTokens: openaiResult.usage?.completion_tokens,
+              outputTokens: openaiResult.usage ? oaiCompletion.outputTokens : undefined,
               cachedInputTokens: oaiPrompt.cachedInputTokens,
-              reasoningTokens: openaiResult.usage?.completion_tokens_details?.reasoning_tokens,
+              reasoningTokens: openaiResult.usage ? oaiCompletion.reasoningTokens : undefined,
             },
           })
           return c.json(anthropicResult)
