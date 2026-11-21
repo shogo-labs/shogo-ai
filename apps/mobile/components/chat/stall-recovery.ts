@@ -45,7 +45,22 @@ export interface StallRecoveryGateInput {
   recoveredTurnId: string | null
   renderDepthErrorTurnId: string | null
   userInitiatedStop: boolean
+  /** Recoveries already started for `recoveredTurnId`. */
+  recoveriesThisTurn?: number
+  /** `lastSeq` when the previous recovery for this turn started. */
+  seqAtLastRecovery?: number | null
+  /** `lastSeq` now. */
+  lastSeq?: number | null
+  maxRecoveriesPerTurn?: number
 }
+
+/**
+ * How many times one turn may be recovered automatically. A long reply on a
+ * phone network can drop more than once; the old once-per-turn latch left the
+ * second drop on the Retry banner (Sentry JAVASCRIPT-REACT-46 / ANDROID-5 /
+ * IOS-4, `recovered: false`, lastSeq in the thousands).
+ */
+export const MAX_RECOVERIES_PER_TURN = 3
 
 /** A status the runtime reported for a turn that is no longer running. */
 export function turnEndedOnServer(turnStatus: ChatTurnStatus): boolean {
@@ -159,10 +174,24 @@ export function shouldAutoRecoverStalledTurn({
   recoveredTurnId,
   renderDepthErrorTurnId,
   userInitiatedStop,
+  recoveriesThisTurn,
+  seqAtLastRecovery,
+  lastSeq,
+  maxRecoveriesPerTurn,
 }: StallRecoveryGateInput): boolean {
   if (!stalledTurnId || userInitiatedStop) return false
   if (renderDepthErrorTurnId === stalledTurnId) return false
-  return recoveredTurnId !== stalledTurnId
+  if (recoveredTurnId !== stalledTurnId) return true
+  // The same turn dropped again. Recover once more only if the last recovery
+  // delivered frames (the seq moved), so a turn that cannot be reattached
+  // never loops.
+  const budget = maxRecoveriesPerTurn ?? MAX_RECOVERIES_PER_TURN
+  if ((recoveriesThisTurn ?? 1) >= budget) return false
+  return (
+    typeof lastSeq === "number" &&
+    typeof seqAtLastRecovery === "number" &&
+    lastSeq > seqAtLastRecovery
+  )
 }
 
 /**

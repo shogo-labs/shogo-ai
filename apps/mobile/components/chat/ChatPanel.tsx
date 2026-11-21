@@ -966,6 +966,11 @@ const LOAD_OLDER_WEB_DEBOUNCE_MS = 450
  * spinner forever.
  */
 const REJOIN_ATTACH_TIMEOUT_MS = 8_000
+/**
+ * How long a stream error waits for automatic recovery before it is reported
+ * as unrecovered. Longer than the recovery poll (12 probes, ≈50 s).
+ */
+const STREAM_ERROR_REPORT_DELAY_MS = 90_000
 
 /**
  * A `/turn` answer this fresh is reused instead of probing again: the probe
@@ -2495,6 +2500,35 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // `handleRetryRef`). `currentSessionIdRef` lets the async recovery loop
   // detect a session switch and bail before reattaching to a stale stream.
   const recoveredTurnIdRef = useRef<string | null>(null)
+  const recoveryBudgetRef = useRef<{ count: number; seq: number | null }>({ count: 0, seq: null })
+  // A stream error is reported once automatic recovery has had its say, so
+  // `recovered` in Sentry is the truth rather than always `false` (it was set
+  // before recovery ran, JAVASCRIPT-REACT-46 / ANDROID-5 / IOS-4 / DESKTOP-G).
+  const pendingStreamErrorRef = useRef<{
+    err: unknown
+    ctx: NonNullable<Parameters<typeof buildChatStreamErrorReport>[1]>
+    timer: ReturnType<typeof setTimeout>
+  } | null>(null)
+  const flushStreamErrorReportRef = useRef<(recovered: boolean) => void>(() => {})
+  flushStreamErrorReportRef.current = (recovered: boolean) => {
+    const pending = pendingStreamErrorRef.current
+    if (!pending) return
+    pendingStreamErrorRef.current = null
+    clearTimeout(pending.timer)
+    try {
+      const report = buildChatStreamErrorReport(pending.err, { ...pending.ctx, recovered })
+      if (report) {
+        Sentry.captureException(pending.err, {
+          level: report.level,
+          tags: report.tags,
+          extra: report.extra,
+          fingerprint: report.fingerprint,
+        })
+      }
+    } catch (reportErr) {
+      console.warn("[ChatPanel] failed to report stream error to Sentry:", reportErr)
+    }
+  }
   const renderDepthErrorTurnIdRef = useRef<string | null>(null)
   const stallRecoveryRef = useRef<(() => void) | null>(null)
   // One `/turn` probe at a time from the stall watchdog: the 15 s tick would
@@ -2763,28 +2797,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
         })
         return
       }
-      try {
-        const report = buildChatStreamErrorReport(err, {
+      // Held until automatic recovery settles (see `flushStreamErrorReportRef`);
+      // the timer is the backstop for a recovery that never reports back.
+      flushStreamErrorReportRef.current(false)
+      pendingStreamErrorRef.current = {
+        err,
+        ctx: {
           turnId: currentTurnIdRef.current,
           sessionId: currentSessionIdRef.current,
           projectId: projectId ?? null,
           lastSeq: turnLastSeqRef.current,
           userInitiatedStop: userInitiatedStopRef.current,
           phase: "stream",
-        })
-        if (report) {
-          Sentry.captureException(err, {
-            level: report.level,
-            tags: report.tags,
-            extra: report.extra,
-            fingerprint: report.fingerprint,
-          })
-        }
-      } catch (reportErr) {
-        console.warn(
-          "[ChatPanel] failed to report stream error to Sentry:",
-          reportErr,
-        )
+        },
+        timer: setTimeout(() => flushStreamErrorReportRef.current(false), STREAM_ERROR_REPORT_DELAY_MS),
       }
 
       // A render-depth error is React refusing to keep re-rendering, not a
@@ -5506,16 +5532,27 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // (that's an intentional terminal state, not a dropped connection),
         // and fire at most once per turn so we never loop.
         const stalledTurnId = currentTurnIdRef.current
+        const sameTurn = recoveredTurnIdRef.current === stalledTurnId
         if (
           shouldAutoRecoverStalledTurn({
             stalledTurnId,
             recoveredTurnId: recoveredTurnIdRef.current,
             renderDepthErrorTurnId: renderDepthErrorTurnIdRef.current,
             userInitiatedStop: userInitiatedStopRef.current,
+            recoveriesThisTurn: recoveryBudgetRef.current.count,
+            seqAtLastRecovery: recoveryBudgetRef.current.seq,
+            lastSeq: turnLastSeqRef.current,
           })
         ) {
           recoveredTurnIdRef.current = stalledTurnId
+          recoveryBudgetRef.current = {
+            count: sameTurn ? recoveryBudgetRef.current.count + 1 : 1,
+            seq: turnLastSeqRef.current,
+          }
           stallRecoveryRef.current?.()
+        } else {
+          // Nothing will try to reattach: the stream error is final.
+          flushStreamErrorReportRef.current(false)
         }
       }
     }
@@ -9288,6 +9325,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             console.log(
               `[ChatPanel] auto-recovery: turn ${recoveryTurnId} still active — reattaching live stream (fromSeq=${fromSeqAtStall})`,
             )
+            flushStreamErrorReportRef.current(true)
             guardedAutoResumeStream("stall-recovery")
             return
           }
@@ -9312,6 +9350,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               console.log(
                 `[ChatPanel] auto-recovery: turn ${recoveryTurnId} ended server-side (${turnStatus}) — reloading saved history`,
               )
+              flushStreamErrorReportRef.current(true)
               void catchUpAfterTurnEndedRef.current?.()
             } else if (outcome === "reload-then-check-reply") {
               // The runtime answered every probe with "no turn here": nothing
@@ -9321,6 +9360,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 `[ChatPanel] auto-recovery: runtime holds no turn for ${recoverySessionId} — painting saved history`,
               )
               const { replyMissing } = await settleFromSavedHistoryRef.current()
+              flushStreamErrorReportRef.current(!replyMissing)
               if (replyMissing && currentSessionIdRef.current === recoverySessionId) {
                 try {
                   Sentry.captureMessage("chat_stall_recovery_gave_up", {
@@ -9347,6 +9387,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                 setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE)
               }
             } else {
+              flushStreamErrorReportRef.current(false)
               // The stall watchdog reports its own trips; this give-up path
               // (stream ended without turn-complete and could not be
               // reattached) shows the same banner, so report it separately.

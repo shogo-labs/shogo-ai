@@ -19,6 +19,7 @@ import {
   computeRecoveryBackoff,
   decideStallRecovery,
   decideStallGiveUp,
+  MAX_RECOVERIES_PER_TURN,
   decideStallTrip,
   DEFAULT_STALL_KEEP_ALIVES,
   getStallRecoveryEffects,
@@ -231,5 +232,41 @@ describe("decideStallGiveUp (SHO-483)", () => {
     expect(decideStallGiveUp({ turnStatus: "unknown", answered: true })).toBe(
       "reload-then-check-reply",
     )
+  })
+})
+
+describe("shouldAutoRecoverStalledTurn — a second drop in the same turn (SHO-483)", () => {
+  const base = {
+    stalledTurnId: "turn-1",
+    recoveredTurnId: "turn-1",
+    renderDepthErrorTurnId: null,
+    userInitiatedStop: false,
+  }
+
+  test("recovers again when the last recovery delivered frames", () => {
+    expect(
+      shouldAutoRecoverStalledTurn({ ...base, recoveriesThisTurn: 1, seqAtLastRecovery: 1200, lastSeq: 3343 }),
+    ).toBe(true)
+  })
+
+  test("does not loop on a turn the last recovery could not move", () => {
+    expect(
+      shouldAutoRecoverStalledTurn({ ...base, recoveriesThisTurn: 1, seqAtLastRecovery: 3343, lastSeq: 3343 }),
+    ).toBe(false)
+  })
+
+  test("stops at the per-turn budget", () => {
+    expect(
+      shouldAutoRecoverStalledTurn({
+        ...base,
+        recoveriesThisTurn: MAX_RECOVERIES_PER_TURN,
+        seqAtLastRecovery: 1,
+        lastSeq: 9999,
+      }),
+    ).toBe(false)
+  })
+
+  test("without progress data it keeps the old once-per-turn rule", () => {
+    expect(shouldAutoRecoverStalledTurn(base)).toBe(false)
   })
 })
