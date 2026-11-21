@@ -97,6 +97,7 @@ describe('SHO-104 · the E2E matrix cannot come back on merge_queue or push', ()
       'typecheck-mobile',
       'test',
       'rbac-postgres',
+      'rbac-live',
       'test-windows',
       'workflow-lint',
       'metal-agent-bundle',
@@ -123,6 +124,43 @@ describe('SHO-104 · the E2E matrix cannot come back on merge_queue or push', ()
     const ciCase = classifier.indexOf('.github/workflows/ci.yml) app=true')
     expect(ciCase).toBeGreaterThan(-1)
     expect(ciCase).toBeLessThan(classifier.indexOf('.github/*) continue'))
+  })
+})
+
+describe('SHO-502 · the live RBAC suites run in parallel, every file exactly once, and stay required', () => {
+  const ci = read('ci.yml')
+  const live = job(code('ci.yml'), 'rbac-live')
+  const LIVE_DIR = join(import.meta.dir, '../../apps/api/src/__tests__/remote-workspace')
+
+  const legs = [...live.matchAll(/- name: (.+)\n\s+suite: (live|ui)\n\s+files: (.*)/g)].map((m) => ({
+    name: m[1].trim(),
+    suite: m[2],
+    files: m[3].trim().replace(/^'|'$/g, '').split(/\s+/).filter(Boolean),
+  }))
+
+  it('runs each remote-workspace live file in exactly one shard', () => {
+    const onDisk = readdirSync(LIVE_DIR)
+      .filter((f) => f.endsWith('.e2e.test.ts'))
+      .map((f) => f.replace(/\.e2e\.test\.ts$/, ''))
+      .sort()
+    const sharded = legs.filter((l) => l.suite === 'live').flatMap((l) => l.files)
+    expect(onDisk.length).toBeGreaterThan(0)
+    expect([...sharded].sort()).toEqual(onDisk)
+    expect(new Set(sharded).size).toBe(sharded.length)
+  })
+
+  it('gives the machine workspace UI suite its own leg, and runs it nowhere else', () => {
+    expect(legs.filter((l) => l.suite === 'ui').map((l) => l.name)).toEqual(['machine workspace UI'])
+    expect(live).toContain("if: matrix.suite == 'ui'\n        run: npx playwright test --config e2e/machine-vm/playwright.config.ts")
+    expect(job(code('ci.yml'), 'rbac-postgres')).not.toContain('e2e/machine-vm/playwright.config.ts')
+    expect(job(code('ci.yml'), 'rbac-postgres')).not.toContain('remote-workspace/')
+  })
+
+  it('reports every leg, and the required gate fails when the live job does not pass', () => {
+    expect(live).toContain('fail-fast: false')
+    const gate = job(ci, 'ci')
+    expect(gate).toContain('RBAC_LIVE: ${{ needs.rbac-live.result }}')
+    expect(gate).toContain('! skippable "$RBAC_LIVE"')
   })
 })
 

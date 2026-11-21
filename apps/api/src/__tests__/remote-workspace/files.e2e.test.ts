@@ -47,12 +47,21 @@ afterAll(async () => {
 
 const headers = (side: Side) => ({ cookie: side.cookie, origin: side.base })
 
-/** Write a text file into a workspace's runtime (the agent's own file tool). */
+/**
+ * Write a text file into a workspace's runtime (the agent's own file tool). A
+ * refused write prints the runtime's answer and both processes' logs: a 500
+ * here is a runtime error, and without them CI only ever said "Received: 500"
+ * (SHO-502).
+ */
 async function writeFile(side: Side, path: string, content: string): Promise<number> {
   const res = await fetch(
     `${side.base}/api/workspaces/${encodeURIComponent(side.workspaceId)}/agent-proxy/agent/workspace/files/${path}`,
     { method: 'PUT', headers: { ...headers(side), 'content-type': 'application/json' }, body: JSON.stringify({ content }) },
   )
+  if (res.status !== 200) {
+    const body = await res.text().catch(() => '')
+    console.error(`write ${path} via ${side.base} → ${res.status}: ${body.slice(0, 2000)}\n${ws.logs()}`)
+  }
   return res.status
 }
 

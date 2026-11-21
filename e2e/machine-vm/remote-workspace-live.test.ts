@@ -22,7 +22,7 @@
  *   CHANNELS_TEST_PG_URL=… TEST_REDIS_URL=… \
  *     npx playwright test --config e2e/machine-vm/playwright.config.ts
  *
- * CI runs this in the `rbac-postgres` job, "Machine workspace in the cloud UI".
+ * CI runs this in the `rbac-live` job's "machine workspace UI" leg.
  * It needs the web build and Playwright's Chromium, so it is not part of the
  * per-file API loop.
  */
