@@ -560,5 +560,22 @@ export const projectHooks: ProjectHooks = {
     } catch (err: any) {
       console.warn(`[project.afterDelete] task-log state cleanup for ${id} failed:`, err?.message ?? err)
     }
+    // The project's bucket (SHO-491): bytes in `S3_PROJECT_BUCKET/p/<id>/`
+    // (or `<dataDir>/project-buckets/<id>/` on desktop) and the index rows.
+    // Nothing can republish or re-download them once the project row is gone,
+    // and the workspace's storage bill must not keep paying for them. Awaited,
+    // because "the prefix lists empty afterwards" is the acceptance criterion —
+    // a best-effort background purge would be unprovable.
+    try {
+      const { purgeProjectBucket } = await import('../services/project-bucket.service')
+      const purged = await purgeProjectBucket(id)
+      if (!purged.empty) {
+        console.warn(
+          `[project.afterDelete] bucket purge for ${id} left objects behind (deleted ${purged.deleted})`,
+        )
+      }
+    } catch (err: any) {
+      console.warn(`[project.afterDelete] bucket purge for ${id} failed:`, err?.message ?? err)
+    }
   },
 }

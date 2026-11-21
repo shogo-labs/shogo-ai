@@ -536,7 +536,7 @@ export function buildUnsupportedVideoPlaceholder(opts: {
   const lines: string[] = [
     `[Video omitted — ${label}]`,
     `Reason: this model cannot watch video${mimeType ? ` (${mimeType})` : ''}. ` +
-      "Use a video-native model (e.g. 'GLM 5.3 Flash') to send video input.",
+      "Use a video-native model (e.g. 'Carbon', 'Argon' or 'GLM 5.3 Flash') to send video input.",
   ]
   if (pathHint) lines.push(`The file is still on disk at "${pathHint}".`)
   return { type: 'text', text: lines.join(' ') }

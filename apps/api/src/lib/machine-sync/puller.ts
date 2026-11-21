@@ -152,7 +152,7 @@ export async function applyHostFeedPage(
         await delegate.upsert({ where: { id }, create: data, update: data })
         applied++
         touched.push({ model: entry.model, recordId: id })
-        recordLiveWrite(liveWrites, entry.model, current ? 'updated' : 'created', id, data)
+        recordLiveWrite(liveWrites, entry.model, current ? 'updated' : 'created', id, data, current)
         if (entry.model === 'ChatQueuedMessage' && data.status === 'pending' && typeof data.sessionId === 'string') {
           queuedSessions.add(data.sessionId)
         }

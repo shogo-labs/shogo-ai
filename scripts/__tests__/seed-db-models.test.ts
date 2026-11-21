@@ -175,6 +175,23 @@ describe('seed-db-models --only=gemini', () => {
     expect(disabled[0]!.apiModel).toBe('gemini-3.1-pro-preview')
   })
 
+  it('copies the catalog’s video capability onto exactly the probed rows', () => {
+    // The row is what the proxy guard and AGENT_MODEL_REGISTRY read, and its id
+    // is a UUID the catalog cannot classify — so the flag has to be written
+    // here, not left to the slug (SHO-495).
+    const flagged = geminiRows
+      .filter((r) => r.provider === 'google' && (r.capabilities as { supportsVideoInput?: boolean } | undefined)?.supportsVideoInput === true)
+      .map((r) => r.apiModel)
+      .sort()
+    expect(flagged).toEqual(['gemini-3.8-flash', 'gemini-4-argon', 'gemini-4-carbon', 'gemini-4-hydrogen', 'gemini-4-neon'])
+
+    // The two the probe never cleared must not pick the flag up by accident.
+    for (const apiModel of ['gemini-3.5-flash-lite', 'gemini-3.1-pro-preview']) {
+      const row = geminiRows.find((r) => r.apiModel === apiModel)!
+      expect((row.capabilities as { supportsVideoInput?: boolean } | undefined)?.supportsVideoInput).toBeUndefined()
+    }
+  })
+
   it('all rates match MODEL_DOLLAR_COSTS (at seed time, before price step)', () => {
     for (const row of geminiRows.filter((r) => r.provider === 'google')) {
       const entry = catalog.find((m) => m.provider === row.provider && m.apiModel === row.apiModel)

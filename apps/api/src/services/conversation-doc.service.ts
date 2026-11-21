@@ -358,6 +358,29 @@ async function publishDocUpdated(conversation: any, doc: SerializedDoc) {
   }, audience)
 }
 
+/**
+ * Publish `doc.updated` for docs a machine sync just wrote (SHO-494).
+ *
+ * A channel doc saved on the computer arrives in the cloud as a synced row. The
+ * save also posts a system notice, so a reader sees *something* — but the doc
+ * body itself only refreshed on a reload, because `doc.updated` is published by
+ * `writeDoc` here and the synced row never goes through it. The row's own
+ * `version`/`updatedBy` columns are what the wire event carries, as for a local
+ * save.
+ */
+export async function announceSyncedDocs(conversationIds: string[]): Promise<number> {
+  let published = 0
+  for (const conversationId of new Set(conversationIds)) {
+    const conversation = await db.conversation.findUnique({ where: { id: conversationId } })
+    if (!conversation) continue
+    const row = await db.conversationDoc.findUnique({ where: { conversationId } })
+    if (!row) continue
+    await publishDocUpdated(conversation, await serializeDoc(row))
+    published++
+  }
+  return published
+}
+
 async function writeDoc(conversation: any, actor: DocActor, input: SaveDocInput): Promise<SerializedDoc> {
   const { content, title, baseVersion } = normalizeInput(input)
   const author = actorFields(actor)

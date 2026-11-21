@@ -18,6 +18,7 @@ export const MODEL_TABLE: Readonly<Record<string, string>> = {
   ProjectFolder: 'project_folders',
   ProjectAttachment: 'project_attachments',
   ProjectCheckpoint: 'project_checkpoints',
+  ProjectBucketObject: 'project_bucket_objects',
   AgentConfig: 'agent_configs',
   ProjectAgent: 'project_agents',
   WorkspaceAgentProfile: 'workspace_agent_profiles',

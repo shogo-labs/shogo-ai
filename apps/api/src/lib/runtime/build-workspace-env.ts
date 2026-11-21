@@ -541,6 +541,15 @@ export async function buildWorkspaceEnv(
   env.ANTHROPIC_PROXY_URL = `${apiBase}/api/ai/anthropic`
   env.OPENAI_PROXY_URL = `${apiBase}/api/ai/v1`
   env.SHOGO_API_URL = apiBase
+  // Security policy for a runtime on this computer (SHO-494). A workspace
+  // runtime serves several projects at once, so it carries the owner's own mode
+  // and local-access rules rather than one project's overrides; without this a
+  // hosted workspace's runtime — the one a cloud client talks to — booted at the
+  // built-in default and `balanced` mode never asked for anything.
+  if (process.env.SHOGO_LOCAL_MODE === 'true') {
+    const { localSecurityPolicy } = await import('../security-policy')
+    env.SECURITY_POLICY = await localSecurityPolicy()
+  }
   // Web search / Composio / embeddings proxy. Must end in `/api/tools` (see
   // buildToolsProxyUrl). Mirrors buildProjectEnv so workspace runtimes assigned
   // purely from this env (e.g. metal) can reach the tools proxy instead of

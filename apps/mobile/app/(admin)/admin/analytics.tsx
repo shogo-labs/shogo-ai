@@ -170,6 +170,7 @@ const STORAGE_CATEGORY_ROWS: Array<{ key: string; label: string }> = [
   { key: 'chat_files', label: 'Chats' },
   { key: 'workspace_root', label: 'Workspace drive' },
   { key: 'published', label: 'Published' },
+  { key: 'bucket', label: 'Project buckets' },
   { key: 'quarantine', label: 'Quarantine (overhead)' },
   { key: 'vm_snapshots', label: 'VM snapshots (overhead)' },
 ]

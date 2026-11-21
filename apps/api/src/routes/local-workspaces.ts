@@ -340,6 +340,20 @@ export function localWorkspaceRoutes(options: LocalWorkspaceRouteOptions = {}): 
       }
     }
 
+    // Project buckets (SHO-491) go while the project rows still resolve: every
+    // object in `S3_PROJECT_BUCKET/p/<projectId>/` (or
+    // `<dataDir>/project-buckets/<projectId>/` on desktop). A failure here is a
+    // warning, not a 500 — the row delete below is what must not be skipped.
+    try {
+      const { purgeWorkspaceBuckets } = await import('../services/project-bucket.service')
+      const purged = await purgeWorkspaceBuckets(workspaceId)
+      if (purged.deleted === 0 && (inventory?.bucketBytes ?? 0) > 0) {
+        warnings.push(`project buckets: ${inventory?.bucketBytes} byte(s) still indexed but no object was deleted`)
+      }
+    } catch (err: any) {
+      warnings.push(`project buckets: ${err?.message ?? err}`)
+    }
+
     // Rows first (cascades), then files. Chat sessions carry `workspaceId`
     // without a foreign key, so they would survive the cascade as orphans.
     await prisma.chatSession

@@ -305,6 +305,13 @@ interface UniqueKeyRule {
 }
 
 const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
+  // --- project object storage (SHO-491) -----------------------------------
+  {
+    key: 'ProjectBucketObject.(key,projectId,visibility)',
+    category: 'single_tenant_upsert',
+    reason:
+      'One object per key per visibility per project, written by `prisma.projectBucketObject.upsert` on this key from the upload-complete route; a project lives in one workspace and only requests pinned to that project write it, so the two regions never write the same row.',
+  },
   // --- native release (SHO-323) -------------------------------------------
   {
     key: 'NativeApp.projectId',
