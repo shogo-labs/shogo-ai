@@ -18,6 +18,7 @@
 
 import { prisma } from '../../lib/prisma'
 import { scopedAccountIds } from './accounts.service'
+import { reconcileDuePosts } from './publishing.service'
 import { socialUsageSummary, type SocialUsageSummary } from './usage.service'
 
 const db = prisma as any
@@ -95,6 +96,11 @@ export async function socialAnalytics(
   }
 
   const inRange = { gte: from, lte: to }
+
+  // Statuses are counted straight off our rows, so a post Zernio has already
+  // put out must not still read `scheduled` when the numbers are taken. Bounded
+  // and best-effort: a provider blip must not fail a report.
+  await reconcileDuePosts(workspaceId).catch(() => 0)
 
   // A project's agent sees the numbers for the accounts it may use; the
   // workspace agent and the Social page see the whole workspace. Everything
