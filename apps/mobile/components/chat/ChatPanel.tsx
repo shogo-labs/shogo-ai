@@ -314,6 +314,7 @@ import {
 } from "../../lib/agent-mode-preference"
 import {
   composerMemoryKey,
+  lastUserModelStamp,
   resolveChatModel,
   useChatComposerMemory,
 } from "../../lib/chat-composer-memory"
@@ -6680,22 +6681,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
     historyHydrationTick,
   ])
 
-  // This chat's last-used model: the most recent loaded message carrying a
-  // `model` value (assistant rows are stamped server-side). MST `.all` is
-  // observed here, so this recomputes when the session's messages settle.
-  const lastSessionModelStamp = (() => {
-    const all = sessionMessages?.all as any[] | undefined
-    if (!all || all.length === 0) return null
-    let latest: { createdAt: number; model: string } | null = null
-    for (const m of all) {
-      const mdl = typeof m.model === "string" ? m.model.trim() : ""
-      if (!mdl) continue
-      const createdAt = (m.createdAt as number) || 0
-      if (!latest || createdAt >= latest.createdAt)
-        latest = { createdAt, model: mdl }
-    }
-    return latest
-  })()
+  // This chat's last-used model: the most recent model *the person's own send*
+  // recorded. Only user rows count — an assistant row is stamped with what the
+  // run actually used (an Auto tier, or a role downgrade), and letting that
+  // rewrite the picker is exactly what turned a picked Opus back into Auto
+  // (SHO-497). `advanced` is a legacy agent-mode sentinel, never a pick.
+  const lastSessionModelStamp = lastUserModelStamp(sessionMessages?.all as any[] | undefined)
   const lastSessionModel = lastSessionModelStamp?.model ?? null
 
   // The model this chat should show: an explicit pick made here wins unless a

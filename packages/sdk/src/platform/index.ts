@@ -323,6 +323,10 @@ export interface VisibleCatalogModel {
   contextWindow?: number
   /** Reasoning effort applied when the model runs (drives thinkingLevel). */
   reasoningEffort?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+  /** Slugs this model used to answer to. A saved selection that matches one of
+   *  these is re-pointed at `id` rather than reset. Optional for back-compat
+   *  with API servers that predate this field. */
+  aliases?: string[]
   /** Whether the model accepts video input natively. A desktop mirroring this
    *  catalog has no way to classify a cloud UUID, so the flag has to ride
    *  along or its runtime drops the clip (SHO-495). */
