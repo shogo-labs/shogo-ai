@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, test } from 'bun:test'
 import { resolve } from 'path'
-import { parseTscOutput, regressions } from '../ci/api-typecheck-ratchet'
+import { canonicalBaseline, parseTscOutput, regressions } from '../ci/api-typecheck-ratchet'
 
 const ROOT = resolve(import.meta.dir, '..', '..')
 
@@ -64,5 +64,34 @@ describe('api-typecheck-ratchet', () => {
     expect(regressions(baseline, { 'a TS1 x': 2, 'b TS2 y': 0 })).toEqual([])
     expect(regressions(baseline, { 'a TS1 x': 3 })).toEqual(['+1  a TS1 x'])
     expect(regressions(baseline, { 'c TS3 new': 1 })).toEqual(['+1  c TS3 new'])
+  })
+
+  test('the same union printed in another order is not a regression', () => {
+    // SHO-486: three new modules under apps/api/src/lib shifted the order tsc
+    // created these string-literal types in, so a baselined error printed its
+    // union differently and the ratchet called it new. Same error, two sites.
+    const baseline = canonicalBaseline({
+      "apps/api/src/services/app-install-grants.service.ts TS2345 Argument of type '404 | 503 | 412 | 502 | 409 | 400 | 403' is not assignable to parameter of type '404 | 503 | 502 | 409 | 400 | 403'.": 2,
+    })
+    const out = [
+      `${ROOT}/apps/api/src/services/app-install-grants.service.ts(253,33): error TS2345: Argument of type '404 | 400 | 403 | 409 | 502 | 412 | 503' is not assignable to parameter of type '404 | 400 | 403 | 409 | 502 | 503'.`,
+      `  Type '412' is not assignable to type '404 | 400 | 403 | 409 | 502 | 503'.`,
+      `${ROOT}/apps/api/src/services/app-install-grants.service.ts(339,76): error TS2345: Argument of type '404 | 400 | 403 | 409 | 502 | 412 | 503' is not assignable to parameter of type '404 | 400 | 403 | 409 | 502 | 503'.`,
+      `  Type '412' is not assignable to type '404 | 400 | 403 | 409 | 502 | 503'.`,
+    ].join('\n')
+    expect(regressions(baseline, parseTscOutput(out))).toEqual([])
+  })
+
+  test('rootDir (TS6059) and allowImportingTsExtensions (TS5097) are never counted', () => {
+    // tsc names one importing file per out-of-rootDir target, whichever it
+    // reaches first, so an unrelated file joining the program moves the error
+    // to the other importer of the same target (SHO-486).
+    const out = [
+      `${ROOT}/apps/api/src/services/conversation-directory.ts(16,48): error TS6059: File '${ROOT}/packages/shared-app/src/buddy-look.ts' is not under 'rootDir' '${ROOT}/apps/api'.`,
+      `${ROOT}/apps/api/src/services/conversation.service.ts(21,48): error TS6059: File '${ROOT}/packages/shared-app/src/buddy-look.ts' is not under 'rootDir' '${ROOT}/apps/api'.`,
+      `${ROOT}/apps/api/src/routes/local-auth.ts(9,1): error TS5097: Option 'allowImportingTsExtensions' is set.`,
+    ].join('\n')
+    expect(parseTscOutput(out)).toEqual({})
+    expect(canonicalBaseline({ 'apps/api/src/routes/local-auth.ts TS6059 File x.': 3 })).toEqual({})
   })
 })

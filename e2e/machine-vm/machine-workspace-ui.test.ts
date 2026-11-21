@@ -33,8 +33,12 @@ interface StackState {
   machineWorkspaceId: string
   machineWorkspaceName: string
   cloudWorkspaceId: string
+  /** Skips the API's per-IP limiter, which one browser trips here but a pod's do not. */
+  loadTestKey: string
   seeds: { cloud: Seeded; machine: Seeded }
 }
+
+const loadTestHeaders = () => ({ 'x-load-test-key': state.loadTestKey })
 
 let state: StackState
 
@@ -80,7 +84,7 @@ async function openMachineWorkspace(page: Page): Promise<void> {
 async function desktopChannelTexts(page: Page): Promise<string[]> {
   const res = await page.request.get(
     `${state.localApiBase}/api/conversations/${encodeURIComponent(state.seeds.machine.channelId)}/messages?limit=100`,
-    { headers: { cookie: state.localCookies } },
+    { headers: { cookie: state.localCookies, ...loadTestHeaders() } },
   )
   return ((await res.json()).messages ?? []).map((m: { text: string }) => m.text)
 }
@@ -128,12 +132,10 @@ test("the machine's channel, its thread, and a message sent from the cloud that 
  * reaches Postgres through machine sync). It has to appear on the page as it
  * arrives — no reload, no tab switch.
  */
-// fixme: measured split, 2026-11-21. The row reaches the cloud (the `onCloud`
-// poll below passes), so machine sync + the bus are doing their part; the open
-// page still does not paint it. That is the client half of the card and is not
-// fixed here — left as a fixme so the reproduction stays in the suite instead
-// of poisoning it.
-test.fixme("a reply written on the machine appears in the open channel without a refresh", async ({ page }) => {
+// The stack relays the page's `/rt` WebSocket through to the cloud
+// (`machine-vm-stack.ts`), so what appears on the page here comes over the same
+// socket the studio uses — not a poll.
+test("a reply written on the machine appears in the open channel without a refresh", async ({ page }) => {
   const seeded = state.seeds.machine
   await openMachineWorkspace(page)
   await page.goto(`/c/${seeded.channelId}`, { waitUntil: "domcontentloaded" })
@@ -147,7 +149,7 @@ test.fixme("a reply written on the machine appears in the open channel without a
   const text = `written on the machine ${Date.now()}`
   const posted = await page.request.post(
     `${state.localApiBase}/api/conversations/${encodeURIComponent(seeded.channelId)}/messages`,
-    { headers: { cookie: state.localCookies, origin: state.localApiBase }, data: { text } },
+    { headers: { cookie: state.localCookies, origin: state.localApiBase, ...loadTestHeaders() }, data: { text } },
   )
   expect(posted.status(), await posted.text()).toBeLessThan(300)
 
@@ -157,7 +159,7 @@ test.fixme("a reply written on the machine appears in the open channel without a
   const onCloud = async () => {
     const res = await page.request.get(
       `${state.cloud}/api/conversations/${encodeURIComponent(seeded.channelId)}/messages?limit=50`,
-      { headers: { cookie: state.cookies, origin: state.cloud } },
+      { headers: { cookie: state.cookies, origin: state.cloud, ...loadTestHeaders() } },
     )
     if (!res.ok()) return `HTTP ${res.status()}`
     const body = await res.json().catch(() => null)
@@ -182,7 +184,7 @@ test("a chat turn from the cloud runs on the machine and reads the machine's dis
         (
           await page.request.put(
             `${relay}/api/workspaces/${state.machineWorkspaceId}/agent-proxy/agent/workspace/files/${path}`,
-            { headers: { cookie: state.cookies, origin: state.cloud }, data: { content: canary } },
+            { headers: { cookie: state.cookies, origin: state.cloud, ...loadTestHeaders() }, data: { content: canary } },
           )
         ).status(),
       { timeout: 120_000, intervals: [2_000] },
