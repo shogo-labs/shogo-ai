@@ -87,6 +87,10 @@ describe('disposable and blocked domains', () => {
     }
   })
 
+  test('the 2026-11-20 hermes-key farm domain is rejected', () => {
+    expect(isBlockedEmailDomain('vd5ihij2@10mail.info')).toBe(true)
+  })
+
   test('a subdomain of a blocked provider is blocked too', () => {
     // Parent-walk matching: no entry exists for mail.mailinator.com.
     expect(isBlockedEmailDomain('ops@mail.mailinator.com')).toBe(true)
