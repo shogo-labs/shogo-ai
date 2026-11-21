@@ -65,8 +65,9 @@ describe('filterDms', () => {
     expect(filterDms(list, 'agents')).toEqual([])
   })
 
-  test('Unreads leaves out muted conversations', () => {
-    expect(ids(filterDms(list, 'unreads'))).toEqual(['reviewer', 'eby'])
+  test('Unreads leaves out muted and agent-only conversations', () => {
+    // 'muted' is muted and 'reviewer' is an agent-only row — neither is a person DM.
+    expect(ids(filterDms(list, 'unreads'))).toEqual(['eby'])
   })
 
   test('All shows people DMs (agents rendered separately in panel)', () => {
@@ -80,19 +81,21 @@ describe('splitStarredDms', () => {
     convo({ id: 'eby', starred: true, lastMessageAt: '2026-10-01T10:00:00Z' }),
     convo({ id: 'reviewer', lastMessageAt: '2026-10-01T11:00:00Z', participants: [agent('p1')] }),
     convo({ id: 'ana', starred: true, lastMessageAt: '2026-10-01T12:00:00Z', participants: [person('ana')] }),
+    convo({ id: 'sam', lastMessageAt: '2026-10-01T13:00:00Z', participants: [person('sam')] }),
     convo({ id: 'general', kind: 'public', name: 'general', participants: [] }),
   ]
 
   test('starred rows move out of the main list instead of repeating there', () => {
     const { starred, others } = splitStarredDms(withStar, 'all')
     expect(ids(starred)).toEqual(['ana', 'eby'])
-    expect(ids(others)).toEqual(['reviewer'])
+    // 'reviewer' is agent-only, so it reaches neither group; 'sam' is an ordinary person DM.
+    expect(ids(others)).toEqual(['sam'])
   })
 
   test('the active chip narrows both groups', () => {
     // 'reviewer' has only an agent participant → excluded from people filter
     expect(ids(splitStarredDms(withStar, 'people').starred)).toEqual(['ana', 'eby'])
-    expect(ids(splitStarredDms(withStar, 'people').others)).toEqual([])
+    expect(ids(splitStarredDms(withStar, 'people').others)).toEqual(['sam'])
   })
 
   test('channels and archived conversations stay out of both groups', () => {
@@ -101,13 +104,14 @@ describe('splitStarredDms', () => {
       'all',
     )
     expect(ids(starred)).toEqual(['ana', 'eby'])
-    expect(ids(others)).toEqual(['reviewer'])
+    expect(ids(others)).toEqual(['sam'])
   })
 
   test('nothing starred leaves the main list whole', () => {
     const { starred, others } = splitStarredDms(list, 'all')
     expect(starred).toEqual([])
-    expect(ids(others)).toEqual(ids(directConversations(list)))
+    // Same rows the All chip shows — the agent-only row is already filtered out.
+    expect(ids(others)).toEqual(ids(filterDms(list, 'all')))
   })
 })
 

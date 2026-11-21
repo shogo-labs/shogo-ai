@@ -34,7 +34,7 @@ mock.module(resolve(import.meta.dir, '../../ConversationRows'), () => ({
   rowTitle: (c: any) => c.name ?? c.id,
 }))
 mock.module(resolve(import.meta.dir, '../../TeamChatSidebarProvider'), () => ({ useTeamChatNav: () => chat }))
-mock.module(resolve(import.meta.dir, '../../../hooks/useRecentAgentChats'), () => ({
+mock.module(resolve(import.meta.dir, '../../../../hooks/useRecentAgentChats'), () => ({
   useRecentAgentChats: () => ({ chats: recentChats, loading: false }),
 }))
 mock.module(resolve(import.meta.dir, '../../../lib/activity-feed'), () => ({
@@ -99,7 +99,7 @@ describe('DmsPanel — Agents chip (SHO-473)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Agents' }))
 
-    expect(screen.getByText('Agents')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Agents' })).toBeTruthy()
     expect(screen.getByText('Workspace agent')).toBeTruthy()
     expect(screen.getByText('My Bot')).toBeTruthy()
   })
@@ -137,7 +137,7 @@ describe('DmsPanel — Agents chip (SHO-473)', () => {
     chat.mentionables = { agents: [agent('ws', 'Workspace agent', null)] }
     render(createElement(DmsPanel, { initialFilter: 'agents' }))
 
-    expect(screen.getByText('Agents')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Agents' })).toBeTruthy()
     expect(screen.getByText('Workspace agent')).toBeTruthy()
   })
 
@@ -147,7 +147,7 @@ describe('DmsPanel — Agents chip (SHO-473)', () => {
 
     render(createElement(DmsPanel, {}))
     // Default filter is 'all'
-    expect(screen.getByText('Agents')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Agents' })).toBeTruthy()
     expect(screen.getByText('Workspace agent')).toBeTruthy()
   })
 })
