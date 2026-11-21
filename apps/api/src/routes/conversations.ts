@@ -10,6 +10,8 @@
 import { Hono } from 'hono'
 import type { Permission } from '@shogo/authz'
 import { AudioTranscodeError, getTranscodedAudio } from '../lib/audio-transcode'
+import { forwardToShogoCloud } from '../lib/cloud-request-forward'
+import { isShogoCloudAuthed } from '../lib/cloud-forwarding'
 import { prisma } from '../lib/prisma'
 import { enforceAbility, loadAccess as loadAuthzAccess } from '../lib/authz'
 import { canReceive, subscribeWorkspaceEvents } from '../lib/conversation-bus'
@@ -184,6 +186,26 @@ function isoDateParam(value: string | undefined): Date | undefined {
   if (!value) return undefined
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? undefined : date
+}
+
+/**
+ * Read a channel attachment this computer does not hold (SHO-494).
+ *
+ * A workspace hosted on a paired computer is written by both sides: an
+ * attachment a cloud client uploads is stored in the cloud's object store and
+ * only its row syncs here, so the local disk answers ENOENT and the agent that
+ * runs on this computer — whose API is this one — would get a 404 for a file
+ * the message names. Fetch it from the cloud instead, forwarding the caller's
+ * own request (its capability token is the credential, and the cloud re-checks
+ * it). This is the reverse of what a `share_file` link does, and only for a
+ * desktop signed in to the cloud.
+ */
+function forwardMissingConversationFile(c: any): Promise<Response> | null {
+  if (!isShogoCloudAuthed()) return null
+  return forwardToShogoCloud(c, {
+    pathname: `/conversation-files/${encodeURIComponent(c.req.param('attachmentId'))}`,
+    search: new URL(c.req.url).search,
+  })
 }
 
 export function conversationRoutes(config: ConversationRoutesConfig): Hono {
@@ -1247,7 +1269,17 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         'Cache-Control': 'private, max-age=300',
         'Accept-Ranges': 'bytes',
       }
-      const file = await readConversationFile(row.storageKey, download ? { downloadName: row.name } : undefined)
+      const file = await readConversationFile(row.storageKey, download ? { downloadName: row.name } : undefined).catch(
+        async (err) => {
+          // Not on this disk: an attachment uploaded from the cloud for a
+          // workspace this computer hosts (SHO-494). Read it from the cloud with
+          // the caller's own request, token and all.
+          const forwarded = forwardMissingConversationFile(c)
+          if (!forwarded) throw err
+          return { kind: 'forwarded' as const, response: await forwarded }
+        },
+      )
+      if (file.kind === 'forwarded') return file.response
       if (file.kind === 'redirect') {
         // An <img>, <video>, iframe or link click follows the redirect to object
         // storage happily, and a native client does too. A script fetch does

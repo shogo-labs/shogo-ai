@@ -47,6 +47,7 @@ import {
   type PairedMachine,
 } from '../helpers/machine-vm-harness'
 import { seedWorkspace, type Seeded } from '../helpers/machine-vm-surfaces'
+import { fakeS3Env, startFakeS3 } from '../helpers/fake-s3'
 
 export { marker, token } from '../../../../desktop/e2e/streaming/fake-llm-server'
 export { waitFor, type CloudProcess, type PairedMachine }
@@ -192,6 +193,12 @@ export async function startRemoteWorkspace(): Promise<RemoteWorkspace> {
   // minted on one side and served on the other (SHO-488, group 6).
   process.env.BETTER_AUTH_SECRET = CLOUD_AUTH_SECRET
   const redisUrl = process.env.TEST_REDIS_URL || process.env.REDIS_URL!
+  // The cloud stores channel attachments in the artifact bucket, and CI has no
+  // bucket: without one every upload from the cloud answers 500 before its row
+  // exists (SHO-494). A real S3 server in-process means the API runs the
+  // production path — signing, presigned reads, ranges — with nothing mocked.
+  const s3 = startFakeS3()
+  Object.assign(process.env, fakeS3Env(s3))
   const llm = new FakeLlmServer()
   await llm.start(0)
   const cloud = await startCloud({
@@ -223,6 +230,7 @@ export async function startRemoteWorkspace(): Promise<RemoteWorkspace> {
     await machine.stop().catch(() => {})
     await cloud.stop().catch(() => {})
     await llm.stop().catch(() => {})
+    s3.stop()
     await clearChatSlots(redisUrl, [machine.cloudWorkspaceId, machine.machineWorkspaceId])
   }
 

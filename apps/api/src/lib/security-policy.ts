@@ -90,3 +90,46 @@ export function composeCloudPolicy(projectSecurity: any): string | null {
     },
   })
 }
+
+/**
+ * The policy every runtime on **this computer** is spawned with (SHO-494).
+ *
+ * Settings → Security is the mode a person chose for their own machine: it
+ * lives in `LocalConfig` (`SECURITY_PREFS`), a project may lower it, and the
+ * desktop's local-access prefs (blocked folders, computer use) apply on top.
+ * Composing it used to live in a `RuntimeManager` helper that nothing called,
+ * so no local runtime was ever told about it and every one booted at the
+ * built-in default (`full_autonomy`) — balanced mode never asked for anything,
+ * on a desktop or on the workspace it hosts.
+ *
+ * Read at spawn, so a changed setting applies to the next runtime. Callers are
+ * the two env builders, which is the one place both a project runtime and a
+ * workspace runtime pass through.
+ */
+export async function localSecurityPolicy(project?: { settings?: unknown } | null): Promise<string> {
+  const { prisma } = await import('./prisma')
+  const localDb = prisma as any
+  const DEFAULT_PREF = { mode: 'full_autonomy', approvalTimeoutSeconds: 60 }
+
+  let userPref: any = DEFAULT_PREF
+  try {
+    const row = await localDb.localConfig.findUnique({ where: { key: 'SECURITY_PREFS' } })
+    if (row?.value) userPref = { ...DEFAULT_PREF, ...JSON.parse(row.value) }
+  } catch { /* unconfigured: the built-in default */ }
+
+  const { parseProjectSettings } = await import('./project-settings')
+  let effective = composeLocalPolicy(userPref, parseProjectSettings(project?.settings)?.security)
+
+  try {
+    const accessRow = await localDb.localConfig.findUnique({ where: { key: 'LOCAL_ACCESS_PREFS' } })
+    if (accessRow?.value) {
+      const { normalizeLocalAccessPrefs, toLocalAccessPolicy } = await import('@shogo/agent-runtime/src/local-access')
+      effective = {
+        ...effective,
+        localAccess: toLocalAccessPolicy(normalizeLocalAccessPrefs(JSON.parse(accessRow.value))),
+      }
+    }
+  } catch { /* unconfigured: no local-access restrictions */ }
+
+  return encodePolicy(effective)
+}
