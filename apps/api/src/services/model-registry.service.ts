@@ -524,6 +524,21 @@ export function getMergedModelEntrySync(id: string): ModelEntry | undefined {
 }
 
 /**
+ * Every DB alias slug that resolves to `id` (the reverse of
+ * {@link getMergedModelEntrySync}'s lookup). A picker ships these so a client
+ * can recognise a selection saved as an old slug and re-point it at the model's
+ * id instead of resetting it (SHO-497).
+ */
+export function getModelAliasesSync(id: string): string[] {
+  refreshIfStaleInBackground()
+  const out: string[] = []
+  for (const [alias, canonical] of snapshot.aliasToId) {
+    if (canonical === id) out.push(alias)
+  }
+  return out
+}
+
+/**
  * Diagnostic snapshot summary for debugging model-resolution misses. Returns a
  * compact, log-friendly view of what the in-memory registry currently holds for
  * a given id (without forcing a synchronous reload).

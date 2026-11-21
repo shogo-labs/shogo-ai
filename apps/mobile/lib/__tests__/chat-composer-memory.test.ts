@@ -25,6 +25,7 @@ import {
   homeComposerMemoryKey,
   sanitizeRecord,
   resolveChatModel,
+  lastUserModelStamp,
   type ComposerMemoryStorage,
 } from "../chat-composer-memory"
 
@@ -285,6 +286,66 @@ describe("which model a chat shows", () => {
         lastStampedModel: null,
         lastStampedAt: 0,
       }),
+    ).toBeNull()
+  })
+})
+
+describe("which model stamp a chat remembers (SHO-497)", () => {
+  test("an assistant stamp never becomes the chat's model", () => {
+    // The reply is stamped with what the run used (Auto's tier, or a downgrade);
+    // adopting it is what turned a picked Opus back into Auto after every send.
+    expect(
+      lastUserModelStamp([
+        { role: "user", model: "opus-uuid", createdAt: 10 },
+        { role: "assistant", model: "auto", createdAt: 11 },
+      ]),
+    ).toEqual({ model: "opus-uuid", createdAt: 10 })
+  })
+
+  test("a chat whose rows carry only assistant stamps remembers nothing", () => {
+    expect(
+      lastUserModelStamp([
+        { role: "assistant", model: "auto", createdAt: 20 },
+        { role: "assistant", model: "claude-sonnet-4-6", createdAt: 21 },
+      ]),
+    ).toBeNull()
+  })
+
+  test("the legacy `advanced` sentinel is never a pick", () => {
+    expect(
+      lastUserModelStamp([
+        { role: "user", model: "advanced", createdAt: 5 },
+        { role: "assistant", model: "advanced", createdAt: 6 },
+      ]),
+    ).toBeNull()
+    // … and it does not outrank a real pick either.
+    expect(
+      lastUserModelStamp([
+        { role: "user", model: "opus-uuid", createdAt: 5 },
+        { role: "assistant", model: "advanced", createdAt: 99 },
+      ]),
+    ).toEqual({ model: "opus-uuid", createdAt: 5 })
+  })
+
+  test("the newest user stamp wins, so another device's send still lands", () => {
+    expect(
+      lastUserModelStamp([
+        { role: "user", model: "opus-uuid", createdAt: 10 },
+        { role: "user", model: "sonnet-uuid", createdAt: 30 },
+        { role: "assistant", model: "auto", createdAt: 31 },
+      ]),
+    ).toEqual({ model: "sonnet-uuid", createdAt: 30 })
+  })
+
+  test("a blank, missing or malformed stamp is ignored", () => {
+    expect(lastUserModelStamp(null)).toBeNull()
+    expect(lastUserModelStamp([])).toBeNull()
+    expect(
+      lastUserModelStamp([
+        { role: "user", model: "   ", createdAt: 1 },
+        { role: "user", model: 42, createdAt: 2 },
+        { role: "user", createdAt: 3 },
+      ]),
     ).toBeNull()
   })
 })

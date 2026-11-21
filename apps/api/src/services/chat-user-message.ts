@@ -61,6 +61,17 @@ export interface PersistUserMessageResult {
   created: boolean
 }
 
+export interface PersistUserMessageOptions {
+  /**
+   * The model the person had picked when they sent, recorded on their own row.
+   *
+   * Their row is the pick, not the run: a run may be downgraded (or routed by
+   * Auto), and stamping that on the question would rewrite the picker on every
+   * reply (SHO-497). The assistant row keeps the model that actually ran.
+   */
+  model?: string | null
+}
+
 /**
  * Upsert the user message for this turn and wait for the commit.
  *
@@ -75,6 +86,7 @@ export interface PersistUserMessageResult {
 export async function persistUserMessageForTurn(
   sessionId: string | null | undefined,
   body: Record<string, unknown>,
+  options: PersistUserMessageOptions = {},
 ): Promise<PersistUserMessageResult> {
   if (!sessionId) return { id: null, created: false }
   const message = findUserMessage(body)
@@ -85,13 +97,14 @@ export async function persistUserMessageForTurn(
 
   const content = messageText(message).trim()
   const parts = Array.isArray(message.parts) ? JSON.stringify(message.parts) : null
+  const model = typeof options.model === 'string' && options.model.trim() ? options.model.trim() : null
 
   try {
     const existing = await prisma.chatMessage.findUnique({ where: { id }, select: { sessionId: true } })
     // Already written by an earlier attempt (or a retry of this same send).
     if (existing && existing.sessionId === sessionId) return { id, created: false }
     // Same id, another session: a collision, so this message needs its own row.
-    if (existing) return createWithFreshId(sessionId, content, parts)
+    if (existing) return createWithFreshId(sessionId, content, parts, model)
     await prisma.chatMessage.create({
       data: {
         id,
@@ -99,6 +112,7 @@ export async function persistUserMessageForTurn(
         role: 'user',
         content,
         ...(parts ? { parts } : {}),
+        ...(model ? { model } : {}),
       },
     })
     // Same side effect the generated create route's `afterCreate` runs, so the
@@ -130,10 +144,11 @@ async function createWithFreshId(
   sessionId: string,
   content: string,
   parts: string | null,
+  model: string | null = null,
 ): Promise<PersistUserMessageResult> {
   try {
     const row = await prisma.chatMessage.create({
-      data: { sessionId, role: 'user', content, ...(parts ? { parts } : {}) },
+      data: { sessionId, role: 'user', content, ...(parts ? { parts } : {}), ...(model ? { model } : {}) },
       select: { id: true },
     })
     await bumpChatSessionActivity({ sessionId }, { prisma } as any).catch(() => {})

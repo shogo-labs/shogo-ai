@@ -621,6 +621,36 @@ export function useChatComposerMemory(
 }
 
 /**
+ * Legacy agent-mode sentinels a run could be stamped with before the per-turn
+ * pick existed. They name a tier, not a model, so they are never a pick.
+ */
+const LEGACY_AGENT_MODES = new Set(['advanced', 'basic'])
+
+/**
+ * The newest model a *person's own send* recorded for this chat, or `null`.
+ *
+ * Only `role: 'user'` rows count. An assistant row carries the model that
+ * actually ran — Auto's routed tier, or the model a role downgrade fell back to
+ * — and adopting it would rewrite the person's pick after every reply (SHO-497).
+ * Their own send still writes a user row, so a pick made on another device wins
+ * here exactly as it should.
+ */
+export function lastUserModelStamp(
+  messages: Array<{ role?: unknown; model?: unknown; createdAt?: unknown }> | null | undefined,
+): { model: string; createdAt: number } | null {
+  if (!messages || messages.length === 0) return null
+  let latest: { model: string; createdAt: number } | null = null
+  for (const message of messages) {
+    if (message?.role !== 'user') continue
+    const model = typeof message.model === 'string' ? message.model.trim() : ''
+    if (!model || LEGACY_AGENT_MODES.has(model)) continue
+    const createdAt = typeof message.createdAt === 'number' ? message.createdAt : 0
+    if (!latest || createdAt >= latest.createdAt) latest = { model, createdAt }
+  }
+  return latest
+}
+
+/**
  * Which model a chat should show. A model recorded by an explicit pick wins,
  * unless a model-stamped message is newer (it may have been sent from another
  * device) — then the stamp wins. Null means "nothing chat-specific": the caller

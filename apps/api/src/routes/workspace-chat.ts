@@ -737,6 +737,13 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       /* not JSON, that's fine */
     }
 
+    // The model the person picked for this turn, read before any guard or
+    // run-model downgrade rewrites `agentMode` (SHO-497). It is what their own
+    // message row records, so the composer keeps showing the pick after the
+    // reply even when the run used something else.
+    const requestedAgentMode =
+      typeof parsedBody?.agentMode === 'string' ? parsedBody.agentMode.trim() || null : null
+
     // chat-session id is REQUIRED. Header takes precedence, then
     // `sessionId` / `chatSessionId` in the body. The runtime keys its
     // in-memory SessionManager + durable turn buffer on this id, and the
@@ -848,13 +855,17 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       stampModelProvider(parsedBody)
     }
 
-    // AC5 (SHO-417): the workspace agent's configured model may be above the
-    // person chatting with it. This run then uses their default model and the
-    // runtime states it in the reply's first line; the agent's saved config is
+    // AC5 (SHO-417): the model a run starts with may be above the person
+    // chatting with it. This run then uses their default model and the runtime
+    // states it in the reply's first line; the agent's saved config is
     // untouched. A personal companion is exempt — its model is a platform-wide
     // super-admin choice, not a per-person pick.
+    //
+    // The starting model is the person's pick for this turn (SHO-497); the
+    // agent's configured model is only the fallback for a body with no
+    // `agentMode`.
     if (auth.kind !== 'personal' && auth.userId) {
-      const runModel = await resolveAgentRunModelFor(null, workspaceId, auth.userId)
+      const runModel = await resolveAgentRunModelFor(null, workspaceId, auth.userId, parsedBody.agentMode)
       if (runModel) {
         parsedBody.agentMode = runModel.model
         if (runModel.downgrade) parsedBody.modelDowngrade = runModel.downgrade
@@ -945,7 +956,11 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // The person's message must be durable before the turn starts (SHO-274), on
     // the same contract as project-chat: awaited after every gate (a rejected
     // send writes nothing) and before the first proxy attempt.
-    const persistedUserMessage = await persistUserMessageForTurn(sessionId, parsedBody as Record<string, unknown>)
+    const persistedUserMessage = await persistUserMessageForTurn(
+      sessionId,
+      parsedBody as Record<string, unknown>,
+      { model: requestedAgentMode },
+    )
 
     // A hosted workspace whose desktop is offline queues the turn instead of
     // failing it; the desktop runs it when it is back (SHO-285).
