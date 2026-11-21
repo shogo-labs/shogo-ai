@@ -105,23 +105,58 @@ async function prepare(page: Page) {
   await page.evaluate(writeActiveWorkspaceSelection, [workspaceId, "team"] as const)
 }
 
-const modelTrigger = (page: Page) =>
-  page.getByRole("button", { name: "Choose model" }).first()
-
 const modelRows = (page: Page) => page.locator('[data-testid^="model-option-"]')
 
 const infoCard = (page: Page) => page.getByTestId("model-info-card")
 
 const listViewport = (page: Page) => page.getByTestId("model-picker-scroll")
 
+/**
+ * Click the trigger in whichever way this panel accepts. The shell mounts a
+ * chat panel per open chat at the same coordinates, so a real click can land on
+ * a sibling panel painted on top; `dispatchEvent` reaches the trigger itself.
+ */
+async function clickTrigger(trigger: Locator) {
+  const modes: Array<() => Promise<void>> = [
+    () => trigger.click({ timeout: 5_000 }),
+    () => trigger.click({ force: true, timeout: 5_000 }),
+    () => trigger.dispatchEvent("click"),
+    async () => {
+      await trigger.dispatchEvent("pointerdown")
+      await trigger.dispatchEvent("pointerup")
+      await trigger.dispatchEvent("click")
+    },
+  ]
+  for (const mode of modes) {
+    if (await modelRows(trigger.page()).first().isVisible().catch(() => false)) return
+    await mode().catch(() => {})
+    if (await modelRows(trigger.page()).first().isVisible({ timeout: 3_000 }).catch(() => false)) return
+  }
+}
+
 async function openPicker(page: Page) {
   await page.goto(`/projects/${projectId}`)
-  const trigger = modelTrigger(page)
-  await trigger.waitFor({ state: "visible", timeout: 120_000 })
-  await trigger.click({ force: true })
-  await modelRows(page).first().waitFor({ state: "visible", timeout: 30_000 })
-  // The catalog stub must have replaced the real one, or the list cannot scroll.
-  await expect(modelRows(page)).toHaveCount(CATALOG_SIZE)
+  await page
+    .getByRole("textbox", { name: "Chat message input" })
+    .first()
+    .waitFor({ state: "visible", timeout: 120_000 })
+
+  const triggers = page.getByRole("button", { name: "Choose model" })
+  await triggers.first().waitFor({ state: "visible", timeout: 60_000 })
+  const count = await triggers.count()
+  for (let index = 0; index < count; index++) {
+    const trigger = triggers.nth(index)
+    const box = await trigger.boundingBox()
+    if (!box || box.width === 0 || box.height === 0) continue
+    await clickTrigger(trigger)
+    if (await modelRows(page).first().isVisible({ timeout: 3_000 }).catch(() => false)) {
+      // The catalog stub must have replaced the real one, or the list cannot
+      // scroll far enough to reproduce the drift.
+      await expect(modelRows(page)).toHaveCount(CATALOG_SIZE)
+      return
+    }
+  }
+  throw new Error(`the model picker never opened (${count} trigger(s) tried)`)
 }
 
 /**
@@ -218,83 +253,75 @@ test.describe("Model picker hover card (local)", () => {
     await page.close()
   })
 
-  test("an unscrolled list puts the card's top on the hovered row", async ({ page }) => {
+  /**
+   * One page load, one open picker: the hover card is checked unscrolled, at
+   * the bottom of the list, and while the wheel moves the list under the mouse.
+   * Reloading between checks makes the picker's own mount the flaky part of the
+   * spec, which is not what this card is about.
+   */
+  test("the card stays beside its row unscrolled, scrolled and while wheeling", async ({ page }) => {
     test.setTimeout(240_000)
     await prepare(page)
     await openPicker(page)
 
-    const row = modelRows(page).nth(2)
-    await row.hover()
-    await expectCardBesideRow(page, row)
-  })
+    // 1. Unscrolled: the card's top is the hovered row's top. The old guess
+    //    (index × 32) was already a few px out per row here.
+    const early = modelRows(page).nth(2)
+    await early.hover()
+    await expectCardBesideRow(page, early)
 
-  test("after scrolling, the card is still beside the hovered row", async ({ page }) => {
-    test.setTimeout(240_000)
-    await prepare(page)
-    await openPicker(page)
+    // 2. Scrolled: a row in the middle of the visible list. This is the case
+    //    that used to put the card a whole scroll offset below the row.
     await scrollListToBottom(page)
+    const midway = await rowNearViewportOffset(page, 120)
+    await midway.hover()
+    await expectCardBesideRow(page, midway)
 
-    // A row in the middle of the visible list: this is the case that used to
-    // put the card a full scroll offset below the row.
-    const row = await rowNearViewportOffset(page, 120)
-    await row.hover()
-    await expectCardBesideRow(page, row)
-  })
-
-  test("the last model's card stays inside the menu, not below it", async ({ page }) => {
-    test.setTimeout(240_000)
-    await prepare(page)
-    await openPicker(page)
-    await scrollListToBottom(page)
-
+    // 3. The last model: the card stays inside the menu's span, not below it,
+    //    and still overlaps the row it describes.
     const last = modelRows(page).last()
     await last.hover()
     const card = infoCard(page)
     await expect(card).toBeVisible({ timeout: 10_000 })
-
-    const cardBox = await card.boundingBox()
+    const lastCardBox = await card.boundingBox()
     const listBox = await listViewport(page).boundingBox()
     const lastBox = await last.boundingBox()
-    if (!cardBox || !listBox || !lastBox) throw new Error("missing box")
+    if (!lastCardBox || !listBox || !lastBox) throw new Error("missing box")
+    expect(lastCardBox.y).toBeGreaterThanOrEqual(listBox.y - 2)
+    expect(lastCardBox.y + lastCardBox.height).toBeLessThanOrEqual(listBox.y + listBox.height + 2)
+    expect(lastCardBox.y).toBeLessThan(lastBox.y + lastBox.height)
+    expect(lastCardBox.y + lastCardBox.height).toBeGreaterThan(lastBox.y)
 
-    expect(cardBox.y).toBeGreaterThanOrEqual(listBox.y - 2)
-    expect(cardBox.y + cardBox.height).toBeLessThanOrEqual(listBox.y + listBox.height + 2)
-    // ...and it still overlaps the row it describes.
-    expect(cardBox.y).toBeLessThan(lastBox.y + lastBox.height)
-    expect(cardBox.y + cardBox.height).toBeGreaterThan(lastBox.y)
-  })
+    // 4. Wheeling under a stationary pointer: the card moves with the list
+    //    instead of staying where the row used to be.
+    const list = listViewport(page)
+    const listCenter = await list.boundingBox()
+    if (!listCenter) throw new Error("the model list has no box")
+    await page.mouse.move(listCenter.x + listCenter.width / 2, listCenter.y + listCenter.height / 2)
+    await page.mouse.wheel(0, -2_000)
+    await expect.poll(() => list.evaluate((el) => el.scrollTop), { timeout: 10_000 }).toBe(0)
 
-  test("wheeling over a hovered row carries the card with the list", async ({ page }) => {
-    test.setTimeout(240_000)
-    await prepare(page)
-    await openPicker(page)
-
-    const row = modelRows(page).nth(1)
-    await row.hover()
-    await expectCardBesideRow(page, row)
+    const above = modelRows(page).nth(1)
+    await above.hover()
+    await expectCardBesideRow(page, above)
     const before = await infoCard(page).boundingBox()
     if (!before) throw new Error("missing card")
 
-    // Two rows of wheel under a pointer that does not move: the card must move
-    // with the list, not stay where the row used to be.
     await page.mouse.wheel(0, 72)
     await expect
       .poll(async () => (await infoCard(page).boundingBox())?.y, { timeout: 10_000 })
       .not.toBe(before.y)
 
-    // The card is either beside the row now under the pointer, or gone because
-    // that row left the viewport — never floating beside empty space. Either
-    // way its top edge is a row's top edge, inside the list.
-    const card = infoCard(page)
     if (await card.isVisible()) {
       const cardBox = await card.boundingBox()
-      const listBox = await listViewport(page).boundingBox()
-      if (!cardBox || !listBox) throw new Error("missing box")
-      expect(cardBox.y).toBeGreaterThanOrEqual(listBox.y - 2)
-      expect(cardBox.y + cardBox.height).toBeLessThanOrEqual(listBox.y + listBox.height + 2)
-
-      const rows = modelRows(page)
+      const scrolledListBox = await listViewport(page).boundingBox()
+      if (!cardBox || !scrolledListBox) throw new Error("missing box")
+      expect(cardBox.y).toBeGreaterThanOrEqual(scrolledListBox.y - 2)
+      expect(cardBox.y + cardBox.height).toBeLessThanOrEqual(
+        scrolledListBox.y + scrolledListBox.height + 2,
+      )
       const rowTops: number[] = []
+      const rows = modelRows(page)
       for (let index = 0; index < (await rows.count()); index++) {
         const box = await rows.nth(index).boundingBox()
         if (box) rowTops.push(box.y)
