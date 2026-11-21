@@ -14,6 +14,8 @@ export type WorkspacePlanRecord = {
   status: string | null;
   /** Owner/admin/billing admin: may create child workspaces under this one. */
   canManageChildren?: boolean;
+  /** Plan workspace cap (null = unlimited) and how many are in use (SHO-474). */
+  includedWorkspaces?: { limit: number | null; used: number };
 };
 
 export function useWorkspacePlans(
