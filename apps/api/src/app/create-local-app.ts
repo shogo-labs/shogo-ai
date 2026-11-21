@@ -79,6 +79,7 @@ import { _resetAgentModelDefaultsCache, _resetUpstreamCredentialCache } from '..
 import { createLocalGeneratedRoutes } from '../generated/local-routes'
 import { runtimeInternalRoutes } from '../routes/internal-runtime-routes'
 import { authenticateRuntimeToken } from '../routes/internal-runtime-auth'
+import { authenticateHostedForward } from '../lib/cross-workspace'
 
 const VITE_PORT = Number(process.env.VITE_PORT || 8081)
 
@@ -142,7 +143,12 @@ export function createLocalApp(): LocalAppBundle {
   app.route(
     '/api/internal',
     runtimeInternalRoutes({
-      authenticate: authenticateRuntimeToken,
+      // A call the cloud forwards here because the workspace is hosted on this
+      // desktop arrives with no runtime token — only the tunnel's own headers
+      // (SHO-493). `authenticateHostedForward` accepts exactly that, on exactly
+      // one path shape, and nothing else.
+      authenticate: async (c, projectId) =>
+        (await authenticateHostedForward(c, projectId)) ?? (await authenticateRuntimeToken(c, projectId)),
       loadProjectLifecycle: () => import('../services/project-lifecycle.service'),
       loadAgentCall: () => import('../services/agent-call.service'),
       resolveSharedFileTarget: (scope) => resolveLocalSharedFileTarget({ ...scope, workspacesDir }),

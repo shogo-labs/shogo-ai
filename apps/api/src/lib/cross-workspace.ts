@@ -322,3 +322,226 @@ export async function resolveTargetHome(targetWorkspaceId: string): Promise<Targ
     message: 'You are not a member of that workspace, so it is not reachable from here.',
   }
 }
+
+/**
+ * The cloud half of a workspace hosted on a paired desktop (SHO-493).
+ *
+ * A hosted workspace's boards, cards and chat live in **that desktop's
+ * SQLite**, so answering the call from Postgres would give wrong or empty
+ * answers. The call is forwarded over the host's instance tunnel instead, to
+ * the same `/api/internal/workspaces/<id>/…` path on the desktop's local API.
+ *
+ * `X-Cross-Workspace-Hosted-From` is what marks such a request on the desktop
+ * side. It names the Personal workspace the person was acting in. It grants
+ * nothing on its own: the tunnel-stamped user, the desktop holding the
+ * workspace and a membership check against that SQLite are all still required
+ * (see `hostedForward`).
+ */
+export const CROSS_WORKSPACE_HOSTED_FROM_HEADER = 'X-Cross-Workspace-Hosted-From'
+
+/** The only path shape a forwarded call is accepted on. */
+const HOSTED_FORWARD_PATH = /^\/api\/internal\/workspaces\/([^/]+)(?:\/|$)/
+
+/** Context slot `hostedForward` leaves its answer in, so one request reads it once. */
+export const HOSTED_FORWARD_KEY = 'crossWorkspaceHostedForward'
+
+export interface HostedForward {
+  /** The workspace this desktop holds and the call acts in. */
+  workspaceId: string
+  /** The person the call is made for; the row it writes is attributed to them. */
+  requesterUserId: string
+}
+
+/**
+ * Is this request the cloud's forwarded call for a workspace this desktop holds?
+ *
+ * Deliberately narrow, and only true on a desktop: local mode, both headers, a
+ * `/api/internal/workspaces/<id>/…` path, a workspace in this SQLite, and a
+ * requester who is a member here with the permission the method implies. That
+ * trusts exactly what `middleware/auth.ts` step 3 already trusts — a
+ * tunnel-stamped user — and is never true in cloud mode or on any other path.
+ *
+ * The approval is *not* re-checked: it was spent in the cloud, where its row
+ * lives, before the call was forwarded.
+ */
+export async function hostedForward(c: {
+  req: { header: (name: string) => string | undefined; path: string; method: string }
+  get?: (key: string) => unknown
+  set?: (key: string, value: unknown) => void
+}): Promise<HostedForward | null> {
+  const cached = c.get?.(HOSTED_FORWARD_KEY)
+  if (cached !== undefined) return cached as HostedForward | null
+  const resolved = await resolveHostedForward(c)
+  try {
+    c.set?.(HOSTED_FORWARD_KEY, resolved)
+  } catch {
+    /* a plain test stub without set() */
+  }
+  return resolved
+}
+
+async function resolveHostedForward(c: {
+  req: { header: (name: string) => string | undefined; path: string; method: string }
+}): Promise<HostedForward | null> {
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') return null
+  const from = c.req.header(CROSS_WORKSPACE_HOSTED_FROM_HEADER)
+  const tunnelUserId = c.req.header('x-tunnel-auth-user-id')
+  if (!from || !tunnelUserId) return null
+  const match = HOSTED_FORWARD_PATH.exec(c.req.path)
+  if (!match) return null
+  let workspaceId: string
+  try {
+    workspaceId = decodeURIComponent(match[1])
+  } catch {
+    return null
+  }
+
+  const held = await db.workspace
+    .findUnique({ where: { id: workspaceId }, select: { id: true } })
+    .catch(() => null)
+  if (!held) return null
+
+  // The cloud names the person from the ticket it verified. Believe that only
+  // for a user this desktop knows; otherwise the tunnel's own user is the most
+  // this side can honestly claim.
+  const claimed = c.req.header(CROSS_WORKSPACE_REQUESTER_HEADER)
+  const known = claimed
+    ? await db.user.findUnique({ where: { id: claimed }, select: { id: true } }).catch(() => null)
+    : null
+  const requesterUserId = known?.id ?? tunnelUserId
+
+  const write = c.req.method !== 'GET' && c.req.method !== 'HEAD'
+  const access = await targetWorkspaceAccess(requesterUserId, workspaceId).catch(() => null)
+  if (!access || !targetAccessAllows(access, write)) return null
+  return { workspaceId, requesterUserId }
+}
+
+/**
+ * `authenticate` for the desktop's internal router (SHO-493): a request the
+ * cloud forwarded for a workspace this desktop hosts authenticates as that
+ * workspace's runtime. Everything else — every other path, every cloud-mode
+ * API, any request missing a header — falls through to the runtime token.
+ */
+export async function authenticateHostedForward(
+  c: any,
+  projectId?: string,
+): Promise<import('../routes/internal-runtime-auth').InternalIdentity | null> {
+  // Never on a project-scoped route: `project_call` into a hosted workspace is
+  // not part of this, and the forward only ever names a workspace path.
+  if (projectId) return null
+  const forward = await hostedForward(c)
+  return forward ? { kind: 'workspace', workspaceId: forward.workspaceId } : null
+}
+
+export interface ForwardToHostInput {
+  /** The paired desktop whose compute the workspace lives on. */
+  hostInstanceId: string
+  /** The person the call is made for (the verified ticket's user). */
+  requesterUserId: string
+  /** The Personal workspace the person was acting in. */
+  callerWorkspaceId: string
+  /** The tool the runtime gated, carried for the desktop's audit line. */
+  tool?: string | null
+}
+
+export interface ForwardToHostOptions {
+  /** Test seam: the instance-tunnel transport. */
+  _tunnel?: import('./host-tunnel').TunnelTransport
+  /** Test seam: how long to wait for a sleeping desktop. */
+  _wakeDeadlineMs?: number
+}
+
+/**
+ * Forward one cross-workspace call to the desktop that hosts the workspace
+ * (SHO-493), and pass its answer back unchanged.
+ *
+ * The tunnel is woken first: an offline host is `503 device_offline` with its
+ * name and last-seen time — the same shape `/devices/:instanceId/remote-tool`
+ * answers — never a 200 with an empty body. A tunnel that dies mid-request is
+ * `503 device_offline` when it says the machine is offline and `502
+ * device_tunnel_error` otherwise.
+ */
+export async function forwardToHost(
+  c: any,
+  input: ForwardToHostInput,
+  opts: ForwardToHostOptions = {},
+): Promise<Response> {
+  const instance = await db.instance
+    .findUnique({
+      where: { id: input.hostInstanceId },
+      select: { id: true, name: true, userId: true, lastSeenAt: true },
+    })
+    .catch(() => null)
+  const offline = () =>
+    deviceOffline(c, input.hostInstanceId, instance?.name ?? null, instance?.lastSeenAt ?? null)
+
+  if (!instance?.userId) return offline()
+
+  let tunnel: import('./host-tunnel').TunnelTransport
+  try {
+    tunnel = opts._tunnel ?? ((await import('../routes/instances')) as unknown as import('./host-tunnel').TunnelTransport)
+  } catch {
+    return offline()
+  }
+  const { hostWakeDeadlineMs } = await import('./host-tunnel')
+  const deadline = opts._wakeDeadlineMs ?? hostWakeDeadlineMs()
+  if (!(await tunnel.ensureTunnelConnected(input.hostInstanceId, deadline).catch(() => false))) return offline()
+
+  const method = c.req.method
+  const body = method === 'GET' || method === 'HEAD' ? undefined : await c.req.text()
+  const headers: Record<string, string> = {
+    // One user: the desktop belongs to the person whose tunnel this is.
+    'x-tunnel-auth-user-id': instance.userId,
+    [CROSS_WORKSPACE_HOSTED_FROM_HEADER]: input.callerWorkspaceId,
+    [CROSS_WORKSPACE_REQUESTER_HEADER]: input.requesterUserId,
+  }
+  if (input.tool) headers[CROSS_WORKSPACE_TOOL_HEADER] = input.tool
+  if (body !== undefined) headers['content-type'] = c.req.header('content-type') ?? 'application/json'
+
+  try {
+    const resp = await tunnel.sendTunnelRequest(input.hostInstanceId, {
+      type: 'request',
+      requestId: tunnel.generateRequestId(),
+      method,
+      path: c.req.path + new URL(c.req.url).search,
+      headers,
+      body,
+    })
+    const { DROP_RESPONSE_HEADERS } = await import('./host-tunnel')
+    const out = new Headers()
+    for (const [key, value] of Object.entries(resp.headers ?? {})) {
+      if (value && !DROP_RESPONSE_HEADERS.has(key.toLowerCase())) out.set(key, value)
+    }
+    if (!out.has('content-type')) out.set('content-type', 'application/json')
+    return new Response(resp.body || '', { status: resp.status, headers: out })
+  } catch (err: any) {
+    if (/offline/i.test(err?.message ?? '')) return offline()
+    return c.json(
+      {
+        error: {
+          code: 'device_tunnel_error',
+          message: err?.message ?? 'The desktop hosting that workspace could not be reached',
+          instanceId: input.hostInstanceId,
+          retryable: true,
+        },
+      },
+      502,
+    )
+  }
+}
+
+/** The `device_offline` refusal, the same shape the device-tools route uses. */
+function deviceOffline(c: any, instanceId: string, name: string | null, lastSeenAt: Date | null): Response {
+  const seen = lastSeenAt ? new Date(lastSeenAt).toISOString() : null
+  return c.json(
+    {
+      error: {
+        code: 'device_offline',
+        message: `${name || 'The desktop hosting that workspace'} is offline${seen ? ` (last seen ${seen})` : ''}`,
+        instanceId,
+        lastSeenAt: seen,
+      },
+    },
+    503,
+  )
+}
