@@ -102,8 +102,12 @@ export function ShareFileView({ target, onClose, embedded = false, className }: 
         // seeks included.
         const namedKind = fileViewKind(target.name, null)
         const streamsInPlace = namedKind === "video" || namedKind === "audio"
+        // Native never needs the bytes of anything but text: the blob below was
+        // only read for its size, and a 100 MB download buffered into the JS
+        // heap is the Android OOM / iOS watchdog kill (Sentry
+        // SHOGO-ANDROID-1K…1R, SHOGO-IOS-2).
         const nativeDocument =
-          Platform.OS !== "web" && (namedKind === "image" || namedKind === "pdf")
+          Platform.OS !== "web" && namedKind !== "text" && namedKind !== "markdown"
         // Office files are never buffered here: the viewer buffers them itself,
         // under its own size cap, so a 300 MB file is refused before it lands
         // in memory (SHO-426 slides, SHO-467 documents).

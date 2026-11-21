@@ -23,6 +23,7 @@ export type {
   HuddleReactionEvent,
   HuddleVideoTile,
 } from './huddle-room'
+import { errorMessage } from './error-message'
 
 type LiveKitNative = typeof import('@livekit/react-native')
 
@@ -33,7 +34,7 @@ function loadLiveKit(): LiveKitNative | null {
     liveKit.registerGlobals()
     return liveKit
   } catch (err) {
-    console.warn('[Huddles] LiveKit native module unavailable:', (err as Error).message)
+    console.warn('[Huddles] LiveKit native module unavailable:', errorMessage(err))
     return null
   }
 }

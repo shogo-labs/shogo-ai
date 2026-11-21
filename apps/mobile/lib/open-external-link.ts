@@ -100,3 +100,19 @@ export async function openExternalLink(
   }
   await openWithSystem(url, options)
 }
+
+/**
+ * Hand a download URL (a CSV export, a report) to whatever can fetch it: a new
+ * tab on web, the in-app browser on native. React Native defines `window` but
+ * not `window.open`, so a `typeof window` check sent native taps into
+ * "undefined is not a function" (Sentry SHOGO-ANDROID-23 / -T, Members →
+ * Export usage CSV).
+ */
+export function openDownloadUrl(url: string): void {
+  const open = typeof window !== 'undefined' ? (window as { open?: unknown }).open : undefined
+  if (Platform.OS === 'web' && typeof open === 'function') {
+    ;(open as (url: string, target: string, features: string) => unknown).call(window, url, '_blank', 'noopener')
+    return
+  }
+  void openExternalLink(url)
+}

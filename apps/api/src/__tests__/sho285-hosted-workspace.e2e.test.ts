@@ -31,7 +31,7 @@ import { join } from 'node:path'
 import { FakeLlmServer, marker, token } from '../../../desktop/e2e/streaming/fake-llm-server'
 import { writeMachineCanary } from '../../../../e2e/staging/machine-pairing'
 import {
-  CLOUD_BETTER_AUTH_SECRET,
+  CLOUD_AUTH_SECRET,
   httpClient,
   pairMachine,
   read,
@@ -110,7 +110,7 @@ async function crossWorkspaceRequest(
   headers: Record<string, string> = {},
   body?: unknown,
 ): Promise<{ status: number; data: any }> {
-  process.env.BETTER_AUTH_SECRET = CLOUD_BETTER_AUTH_SECRET
+  process.env.BETTER_AUTH_SECRET = CLOUD_AUTH_SECRET
   const [{ deriveWorkspaceRuntimeToken }, { signRequesterTicket, workspaceTicketKey }] = await Promise.all([
     import('../lib/workspace-runtime-token'),
     import('../lib/requester-ticket'),

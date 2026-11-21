@@ -150,6 +150,44 @@ function liveReplyTail<T extends PaintableMessage>(current: readonly T[]): reado
 export function resolveHistoryPaint<T extends PaintableMessage>(
   input: HistoryPaintInput<T>,
 ): HistoryPaintResult<T> {
+  // History is the newest page (`MESSAGE_PAGE_SIZE` rows), while the screen
+  // can also hold older pages the person scrolled up to. Counted over the whole
+  // screen, a 50-row page always looks "behind" once a chat passes 50 rows and
+  // every paint is refused (Sentry chat_history_paint_dropped_reply,
+  // historyRows=50 vs screenRows=52–56). Decide over the part of the screen
+  // that page covers, and keep the older rows above it.
+  const windowStart = historyWindowStart(input.history, input.current)
+  if (windowStart > 0) {
+    const decision = resolveWindowedHistoryPaint({
+      ...input,
+      current: input.current.slice(windowStart),
+    })
+    if (decision.keptLiveTail) return { ...decision, messages: input.current }
+    return {
+      ...decision,
+      messages: [...input.current.slice(0, windowStart), ...decision.messages],
+    }
+  }
+  return resolveWindowedHistoryPaint(input)
+}
+
+/**
+ * Index on screen of history's first row when the screen holds rows older
+ * than it, or 0 when history starts at (or before) the top of the screen.
+ */
+function historyWindowStart(
+  history: readonly PaintableMessage[],
+  current: readonly PaintableMessage[],
+): number {
+  const firstId = String(history[0]?.id ?? "")
+  if (!firstId) return 0
+  const index = current.findIndex((message) => String(message?.id ?? "") === firstId)
+  return index > 0 ? index : 0
+}
+
+function resolveWindowedHistoryPaint<T extends PaintableMessage>(
+  input: HistoryPaintInput<T>,
+): HistoryPaintResult<T> {
   const { history, current, keepsLiveTail } = input
   const paint = (reason: HistoryPaintReason): HistoryPaintResult<T> => ({
     messages: history,

@@ -69,8 +69,22 @@ const EXT = String.raw`(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{1,12}`
 const FILE_WITH_EXT = new RegExp(
   `^(?:${SEGMENT}/)*${SEGMENT}\\.${EXT}$`,
 )
+/**
+ * A POSIX absolute path. A Windows drive path is deliberately not one: it is
+ * absolute on the machine running the app, not inside the workspace, so it
+ * goes to `localFileHref` (a local-file link) instead of `fileHref` (a project
+ * path that could only 404).
+ */
 const ABS_FILE_WITH_EXT = new RegExp(
-  `^(?:/|[A-Za-z]:[/\\\\])(?:${SEGMENT}/)*${SEGMENT}\\.${EXT}$`,
+  `^/(?:${SEGMENT}/)*${SEGMENT}\\.${EXT}$`,
+)
+/** A Windows drive path, either slash: `C:\Users\me\x.mp4`, `C:/Users/me/x.mp4`. */
+const DRIVE_PATH_SOURCE = String.raw`[A-Za-z]:[\\/](?:${SEGMENT}[\\/])*${SEGMENT}\.${EXT}`
+const DRIVE_PATH_ONLY = new RegExp(`^${DRIVE_PATH_SOURCE}$`)
+/** The same path pasted bare in prose: no leading word, no trailing path char. */
+const BARE_DRIVE_PATH_RE = new RegExp(
+  String.raw`(?<![A-Za-z0-9_./\\:@+-])${DRIVE_PATH_SOURCE}(?![A-Za-z0-9_/@+-]|\.[A-Za-z0-9])`,
+  "g",
 )
 
 const FENCE_RE = /```[\s\S]*?```|~~~[\s\S]*?~~~/g
@@ -177,45 +191,93 @@ export function linkifyFilePaths(markdown: string): string {
 }
 
 const BARE_FILE_URL_RE = /file:\/\/[^\s<>"'`]+/gi
+/** `<file:///…>` — a CommonMark autolink, brackets and all. */
+const AUTOLINK_FILE_RE = /<file:\/\/[^\s<>"'`]+>/gi
+
+/** The absolute path a token names on this machine, or null. */
+function localPathCandidate(raw: string): string | null {
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+  const fromFile = absolutePathFromFileHref(trimmed)
+  if (fromFile) return fromFile
+  // Forward slashes: that is the spelling the local-file route and the
+  // desktop's opener both take, and it needs no escaping in the href.
+  return DRIVE_PATH_ONLY.test(trimmed) ? trimmed.replace(/\\/g, "/") : null
+}
+
+/** A markdown link to a local file, named after the file. */
+function localFileLink(path: string): string {
+  const name = path.split(/[\\/]/).pop() || "File"
+  return `[${name}](${localFileHref(path)})`
+}
 
 /**
- * Rewrite a `file://` link into the app's own relative href.
+ * Rewrite a `file://` link (or a Windows drive path) into the app's own
+ * relative href.
  *
  * On local desktop `share_file` returns a `file://` URL, but Streamdown's
  * sanitizer drops the `file:` scheme and the native parser has no opener for
  * it, so the link would render as blocked text. Parking the absolute path in
  * `/shogo-local-file?path=` (the same trick as `FILE_HREF_PREFIX`) keeps it a
- * link the renderer can turn into a file chip. Both an explicit markdown link
- * and a bare URL the agent pasted are handled.
+ * link the renderer can turn into a file chip. A drive path gets the same
+ * treatment: `C:\…` names a file on the machine, never one in the workspace,
+ * so it must not become a `/shogo-file` project path. Handled shapes: an
+ * explicit markdown link, a bare URL the agent pasted, an autolinked
+ * `<file://…>`, a drive path in prose, and a code span that is only a path.
  */
 export function rewriteLocalFileLinks(markdown: string): string {
-  if (!/file:\/\//i.test(markdown)) return markdown
+  if (!/file:\/\//i.test(markdown) && !/(?<![A-Za-z0-9])[A-Za-z]:[\\/]/.test(markdown))
+    return markdown
   const fences: string[] = []
   const inlineCode: string[] = []
   const links: string[] = []
   let text = mask(markdown, FENCE_RE, fences, "FENCE")
+
+  // A code span whose whole content is a local path is the agent naming a
+  // file, not writing code: link it and keep the backticks as the label, the
+  // way a workspace path in backticks is linked. Anything else (`curl
+  // file:///x.pdf`) stays code.
+  text = text.replace(INLINE_CODE_RE, (full, inner: string) => {
+    const path = localPathCandidate(inner)
+    return path ? `[\`${inner}\`](${localFileHref(path)})` : full
+  })
   text = mask(text, INLINE_CODE_RE, inlineCode, "CODE")
 
+  // A markdown link whose target is a local path. A drive target reads as a
+  // URL scheme (`C:`) to the link hardener, so it is rewritten before parsing.
   text = text.replace(
     MARKDOWN_LINK_RE,
     (full, image: string, label: string, target: string, title: string) => {
       if (image) return full
       const href = target.startsWith("<") ? target.slice(1, -1).trim() : target
-      const path = absolutePathFromFileHref(href)
+      const path = localPathCandidate(href)
       if (!path) return full
       return `[${label}](${localFileHref(path)}${title})`
     },
   )
 
-  // Protect the links just written (and any other link) so the bare-URL pass
-  // cannot rewrite a `file://` that sits inside a link target.
+  // Protect the links just written (and any other link) so the bare passes
+  // cannot rewrite a `file://` or a drive path that sits inside a link target.
   text = mask(text, EXISTING_LINK_RE, links, "LINK")
+
+  // `<file:///…/x.mp4>`: the angle brackets are autolink syntax, so they go
+  // with the URL instead of staying as visible text.
+  text = text.replace(AUTOLINK_FILE_RE, (match) => {
+    const path = absolutePathFromFileHref(match.slice(1, -1))
+    return path ? localFileLink(path) : match
+  })
+
   text = text.replace(BARE_FILE_URL_RE, (match) => {
     const { candidate, trailing } = splitTrailingUrlPunctuation(match)
     const path = absolutePathFromFileHref(candidate)
     if (!path) return match
-    const name = path.split(/[\\/]/).pop() || "File"
-    return `[${name}](${localFileHref(path)})${trailing}`
+    return `${localFileLink(path)}${trailing}`
+  })
+
+  text = text.replace(BARE_DRIVE_PATH_RE, (match) => {
+    const { candidate, trailing } = splitTrailingUrlPunctuation(match)
+    if (!DRIVE_PATH_ONLY.test(candidate)) return match
+    return `${localFileLink(candidate.replace(/\\/g, "/"))}${trailing}`
   })
 
   text = unmask(text, links, "LINK")
@@ -292,6 +354,13 @@ export function resolveRelativeLinks(
       // target; the hardener would print `0 [blocked]`. Escape the bracket so
       // the source reads exactly as it was typed.
       if (!href) return `\\${full}`
+      // A drive letter reads as a URL scheme, so this never reaches the
+      // workspace-relative branch. It names a file on the machine, not in the
+      // workspace: link it as a local file rather than let the hardener block
+      // it or hand a broken `/shogo-file` path to the opener (SHO-492).
+      if (DRIVE_PATH_ONLY.test(href)) {
+        return `[${label}](${localFileHref(href.replace(/\\/g, "/"))}${title})`
+      }
       if (!isWorkspaceRelativeHref(href)) return full
 
       const bare = href.replace(/^\.\//, "")

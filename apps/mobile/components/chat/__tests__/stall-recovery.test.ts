@@ -18,6 +18,8 @@ import { describe, expect, test } from "bun:test"
 import {
   computeRecoveryBackoff,
   decideStallRecovery,
+  decideStallGiveUp,
+  MAX_RECOVERIES_PER_TURN,
   decideStallTrip,
   DEFAULT_STALL_KEEP_ALIVES,
   getStallRecoveryEffects,
@@ -172,11 +174,14 @@ describe("decideStallTrip", () => {
     // A failed probe collapses to `unknown`; even if something claims a
     // terminal status without an answer, the panel must not pretend the reply
     // is on its way to the screen.
-    expect(decideStallTrip({ turnStatus: "unknown", answered: true })).toBe("stop")
     expect(decideStallTrip({ turnStatus: "unknown", answered: false })).toBe("stop")
     expect(decideStallTrip({ turnStatus: "completed", answered: false })).toBe(
       "stop",
     )
+  })
+
+  test("a runtime that answers 'no turn here' paints saved history instead of the banner (SHO-483)", () => {
+    expect(decideStallTrip({ turnStatus: "unknown", answered: true })).toBe("stop-and-verify")
   })
 
   test("turnEndedOnServer only covers the statuses the runtime reports for a finished turn", () => {
@@ -207,5 +212,61 @@ describe("computeRecoveryBackoff", () => {
     // Defensive: attempt <= 0 is clamped to attempt 1.
     expect(computeRecoveryBackoff(0)).toBe(600)
     expect(computeRecoveryBackoff(-3)).toBe(600)
+  })
+})
+
+describe("decideStallGiveUp (SHO-483)", () => {
+  test("an unanswered poll still offers Retry: the runtime may be running the turn", () => {
+    expect(decideStallGiveUp({ turnStatus: "unknown", answered: false })).toBe("show-retry")
+  })
+
+  test("a terminal answer reloads history", () => {
+    for (const turnStatus of ["completed", "failed", "aborted"] as const) {
+      expect(decideStallGiveUp({ turnStatus, answered: true })).toBe("reload-history")
+    }
+  })
+
+  test("an answered 'no turn here' reloads and only then decides on Retry", () => {
+    // Sentry chat_stall_recovery_gave_up with probeAnswered=true: the runtime
+    // answered all 12 probes with 404/204 and the banner went up anyway.
+    expect(decideStallGiveUp({ turnStatus: "unknown", answered: true })).toBe(
+      "reload-then-check-reply",
+    )
+  })
+})
+
+describe("shouldAutoRecoverStalledTurn — a second drop in the same turn (SHO-483)", () => {
+  const base = {
+    stalledTurnId: "turn-1",
+    recoveredTurnId: "turn-1",
+    renderDepthErrorTurnId: null,
+    userInitiatedStop: false,
+  }
+
+  test("recovers again when the last recovery delivered frames", () => {
+    expect(
+      shouldAutoRecoverStalledTurn({ ...base, recoveriesThisTurn: 1, seqAtLastRecovery: 1200, lastSeq: 3343 }),
+    ).toBe(true)
+  })
+
+  test("does not loop on a turn the last recovery could not move", () => {
+    expect(
+      shouldAutoRecoverStalledTurn({ ...base, recoveriesThisTurn: 1, seqAtLastRecovery: 3343, lastSeq: 3343 }),
+    ).toBe(false)
+  })
+
+  test("stops at the per-turn budget", () => {
+    expect(
+      shouldAutoRecoverStalledTurn({
+        ...base,
+        recoveriesThisTurn: MAX_RECOVERIES_PER_TURN,
+        seqAtLastRecovery: 1,
+        lastSeq: 9999,
+      }),
+    ).toBe(false)
+  })
+
+  test("without progress data it keeps the old once-per-turn rule", () => {
+    expect(shouldAutoRecoverStalledTurn(base)).toBe(false)
   })
 })

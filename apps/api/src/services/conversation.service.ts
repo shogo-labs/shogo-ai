@@ -1905,6 +1905,51 @@ export async function getMessage(messageId: string, userId: string) {
   }
 }
 
+/** Most messages one quote batch may ask for. */
+export const MESSAGE_BATCH_LIMIT = 50
+
+/**
+ * Several messages at once, for quote cards: a channel that links eight
+ * messages opens with one request instead of eight. Each message is checked
+ * exactly as {@link getMessage} checks it, and one the reader may not see —
+ * deleted, elsewhere, or never existed — is listed in `missing` without saying
+ * which, the same neutral answer the single read gives.
+ */
+export async function getMessages(messageIds: string[], userId: string) {
+  const ids = [...new Set(messageIds.filter((id) => typeof id === 'string' && id.length > 0))]
+  if (ids.length > MESSAGE_BATCH_LIMIT) {
+    throw new ConversationError(400, 'too_many_ids', `At most ${MESSAGE_BATCH_LIMIT} messages per request`)
+  }
+  if (ids.length === 0) return { messages: [], missing: [] as string[] }
+  const rows = await db.conversationMessage.findMany({ where: { id: { in: ids } }, include: MESSAGE_INCLUDE })
+  const accessByConversation = new Map<string, Promise<ConversationAccess | null>>()
+  const accessFor = (conversationId: string) => {
+    let pending = accessByConversation.get(conversationId)
+    if (!pending) {
+      pending = loadAccess(conversationId, userId).catch((err) => {
+        if (err instanceof ConversationError) return null
+        throw err
+      })
+      accessByConversation.set(conversationId, pending)
+    }
+    return pending
+  }
+  const byId = new Map<string, any>()
+  for (const row of rows) {
+    const access = await accessFor(row.conversationId)
+    if (!access || !canSeeMessage(row, userId)) continue
+    const { conversation } = access
+    byId.set(row.id, {
+      ...serializeMessage(row),
+      conversation: { id: conversation.id, name: conversation.name ?? null, kind: conversation.kind },
+    })
+  }
+  return {
+    messages: ids.filter((id) => byId.has(id)).map((id) => byId.get(id)),
+    missing: ids.filter((id) => !byId.has(id)),
+  }
+}
+
 export interface ReactionAddedEvent {
   message: any
   conversation: any

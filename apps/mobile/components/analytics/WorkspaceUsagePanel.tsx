@@ -51,7 +51,7 @@ import { DateRangePills } from "./DateRangePills";
 import { LoadErrorNotice, type LoadErrors } from "./LoadErrorNotice";
 import { UsageLeaderboard } from "./UsageLeaderboard";
 import { WorkspaceActivitySection } from "./WorkspaceActivitySection";
-import { openExternalLink } from "../../lib/open-external-link";
+import { openDownloadUrl } from "../../lib/open-external-link";
 
 const USAGE_ICON_MAP = {
   Coins: CoinsIcon,
@@ -313,11 +313,7 @@ export function WorkspaceUsagePanel() {
   // workspace is open, both come from that machine (SHO-108/SHO-91).
   const csvUrl = useUsageLogCsvUrl(workspaceId, { period });
   const handleExportCsv = () => {
-    if (typeof window !== "undefined") {
-      window.open(csvUrl, "_blank", "noopener");
-    } else {
-      openExternalLink(csvUrl);
-    }
+    openDownloadUrl(csvUrl);
   };
 
   return (
