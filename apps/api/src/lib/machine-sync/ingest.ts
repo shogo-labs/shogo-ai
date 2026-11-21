@@ -632,7 +632,7 @@ export async function applyBatch(
             skipped++
             continue
           }
-          recordLiveWrite(liveWrites, entry.model, existing ? 'updated' : 'created', recordId, rewritten)
+          recordLiveWrite(liveWrites, entry.model, existing ? 'updated' : 'created', recordId, rewritten, existing)
           applied++
         }
       }

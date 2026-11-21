@@ -39,6 +39,9 @@ const HOSTED = `ws-hosted-${suffix}`
 const ELSEWHERE = `ws-elsewhere-${suffix}`
 const PUBLIC = `conv-public-${suffix}`
 const PRIVATE = `conv-private-${suffix}`
+const BOARD = `board-${suffix}`
+const COLUMN_TODO = `col-todo-${suffix}`
+const COLUMN_DONE = `col-done-${suffix}`
 
 const seen: Array<{ workspaceId: string; event: any; audience: string[] | null }> = []
 let unsubscribe: (() => void) | null = null
@@ -118,6 +121,17 @@ beforeAll(async () => {
   await db.conversationMember.create({
     data: { conversationId: PRIVATE, memberType: 'user', userId: OWNER, role: 'member' },
   })
+  // A board in the hosted workspace, for the card half of SHO-494: a card moved
+  // on the computer has to publish the same `board.changed` a cloud move does.
+  await db.board.create({
+    data: { id: BOARD, workspaceId: HOSTED, name: 'Work', slug: `work-${suffix}`, keyPrefix: 'WK' },
+  })
+  for (const [id, name, position] of [
+    [COLUMN_TODO, 'Backlog', 0],
+    [COLUMN_DONE, 'Done', 1],
+  ] as const) {
+    await db.boardColumn.create({ data: { id, boardId: BOARD, name, position } })
+  }
 
   unsubscribe = bus.subscribeWorkspaceEvents(HOSTED, (envelope) => {
     seen.push({ workspaceId: envelope.workspaceId, event: envelope.event, audience: envelope.audience })
@@ -249,5 +263,76 @@ describeIfPg('a synced message reaches the cloud conversation bus (SHO-486)', ()
     )
     expect(result.code).toBe('workspace_ownership')
     expect(seen).toEqual([])
+  })
+})
+
+describeIfPg('a synced card and channel doc reach the cloud conversation bus (SHO-494)', () => {
+  const itemRow = (id: string, columnId: string) => ({
+    id,
+    workspaceId: HOSTED,
+    boardId: BOARD,
+    columnId,
+    key: `WK-${id}`,
+    number: 1,
+    title: 'a card the desktop wrote',
+    priority: 'none',
+    source: 'manual',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  })
+
+  function modelBatch(model: string, rows: Row[]) {
+    return { mode: 'snapshot' as const, epoch: `epoch-${suffix}`, models: [{ model, rows }], snapshot: { complete: true } }
+  }
+
+  test('a card the desktop creates is announced as item.created', async () => {
+    seen.length = 0
+    const id = `item-new-${suffix}`
+    const result: any = await apply(modelBatch('WorkItem', [itemRow(id, COLUMN_TODO)]))
+    expect(result.ok, JSON.stringify(result)).toBe(true)
+
+    const changes = seen.filter((entry) => entry.event.type === 'board.changed')
+    expect(changes.length, `bus saw ${JSON.stringify(seen.map((s) => s.event.type))}`).toBe(1)
+    expect(changes[0].event).toMatchObject({ boardId: BOARD, itemId: id, action: 'item.created' })
+    expect(changes[0].workspaceId).toBe(HOSTED)
+  })
+
+  test('a card the desktop moves is announced as item.moved', async () => {
+    const id = `item-moved-${suffix}`
+    await apply(modelBatch('WorkItem', [itemRow(id, COLUMN_TODO)]))
+    seen.length = 0
+
+    const result: any = await apply(modelBatch('WorkItem', [itemRow(id, COLUMN_DONE)]))
+    expect(result.ok, JSON.stringify(result)).toBe(true)
+
+    const changes = seen.filter((entry) => entry.event.type === 'board.changed')
+    expect(changes.length).toBe(1)
+    expect(changes[0].event).toMatchObject({ boardId: BOARD, itemId: id, action: 'item.moved' })
+  })
+
+  test('a channel doc written on the desktop is announced as doc.updated', async () => {
+    seen.length = 0
+    const result: any = await apply(
+      modelBatch('ConversationDoc', [
+        {
+          id: `doc-${suffix}`,
+          conversationId: PUBLIC,
+          workspaceId: HOSTED,
+          title: 'Launch plan',
+          content: 'saved on the computer',
+          version: 2,
+          locked: false,
+          updatedByType: 'user',
+          updatedByUserId: OWNER,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ]),
+    )
+    expect(result.ok, JSON.stringify(result)).toBe(true)
+
+    const updates = seen.filter((entry) => entry.event.type === 'doc.updated')
+    expect(updates.length, `bus saw ${JSON.stringify(seen.map((s) => s.event.type))}`).toBe(1)
+    expect(updates[0].event).toMatchObject({ conversationId: PUBLIC, version: 2, title: 'Launch plan' })
   })
 })

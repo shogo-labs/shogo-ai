@@ -12,7 +12,26 @@ import { loadNamesForTexts, renderMentionsAsText } from './conversation-mentions
  * Must stay comfortably above ACTIVE_TURN_HEARTBEAT_INTERVAL_MS.
  */
 export const DEFAULT_STALE_AFTER_MS = 5 * 60 * 1000
-export const ACTIVE_TURN_HEARTBEAT_INTERVAL_MS = 2 * 60 * 1000
+/**
+ * How long a turn is reported as *running* to a screen (`active-chats`).
+ *
+ * Deliberately much shorter than `DEFAULT_STALE_AFTER_MS`: that one answers
+ * "is the process gone?" and gates recovery, this one answers "is a turn
+ * happening right now?" and gates a spinner. A turn that stopped beating is
+ * not running whatever its `activeTurnId` still says — and a turn id does leak:
+ * a queue-dispatched turn on a paired computer can settle its stream yet leave
+ * the row marked on both sides, which used to keep "Running now" on screen for
+ * five minutes after a reply had landed (SHO-494). Well above the heartbeat
+ * interval, so a live turn never drops out.
+ */
+export const RUNNING_NOW_WINDOW_MS = 90 * 1000
+/**
+ * How often a streaming turn refreshes `activeTurnHeartbeatAt`.
+ *
+ * Short on purpose: `RUNNING_NOW_WINDOW_MS` is only meaningful if the beat is
+ * far more frequent than it. One indexed UPDATE per running turn per interval.
+ */
+export const ACTIVE_TURN_HEARTBEAT_INTERVAL_MS = 20 * 1000
 /**
  * The turn reattach job takes over a turn whose heartbeat is older than this.
  * Above the heartbeat interval, below DEFAULT_STALE_AFTER_MS.
@@ -379,12 +398,16 @@ export async function sweepDeadTurnsOnLocalBoot(): Promise<number> {
  * Return fresh active turns for a workspace. Project-scoped sessions derive
  * their workspace through the project relation; workspace-scoped sessions
  * use ChatSession.workspaceId directly.
+ *
+ * "Active" here means *running now*, so the default window is
+ * `RUNNING_NOW_WINDOW_MS` — a caller asking what a screen should show wants
+ * liveness, not the longer "this process is gone" threshold recovery uses.
  */
 export async function listActiveChatTurns(
   workspaceId: string,
   opts: { staleAfterMs?: number; viewerUserId?: string } = {},
 ): Promise<ActiveChatTurn[]> {
-  const staleAfterMs = opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS
+  const staleAfterMs = opts.staleAfterMs ?? RUNNING_NOW_WINDOW_MS
   const heartbeatAfter = new Date(Date.now() - staleAfterMs)
   const sessions = await prisma.chatSession.findMany({
     where: {

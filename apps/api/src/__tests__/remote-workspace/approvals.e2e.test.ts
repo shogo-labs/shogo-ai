@@ -33,7 +33,6 @@ import {
   TARGET_NAMES,
   TURN_TARGETS,
   agentMention,
-  channelMessages,
   marker,
   openLive,
   read,
@@ -127,25 +126,21 @@ describeIfInfra('remote workspace · approvals', () => {
 
   for (const name of TURN_TARGETS) {
     describe(`${name} · prompt`, () => {
-      // Measured on this harness (17:54, with the desktop's Security mode set to
-      // `balanced` and its runtimes restarted first): the model's `exec` call
-      // runs and the turn continues — `model requests: round 0: 3 tokens,
-      // tool=exec | round 1: 3 tokens` — and no prompt is ever emitted, so no
-      // card exists to approve.
+      // The cause, measured on this harness (SHO-494 item 5): the desktop's
+      // Security setting was written to `LocalConfig.SECURITY_PREFS` and read
+      // only by `RuntimeManager.buildSecurityPolicy` — a private helper nothing
+      // called. No local spawn ever carried `SECURITY_POLICY`, so every runtime
+      // on a computer booted at the runtime's default (`full_autonomy`): the
+      // scripted `exec` ran and the turn continued, and no card existed.
       //
-      // Why: a runtime serving a *cloud* workspace is spawned with the cloud's
-      // policy, and `composeCloudPolicy` (`apps/api/src/lib/security-policy.ts`)
-      // only carries per-tool action rules and deny lists — its `mode` is hard
-      // coded to `full_autonomy`, and with no rules configured it returns `null`
-      // at all. The person's own Security setting (`SECURITY_PREFS`) is never
-      // consulted on that path, so a hosted workspace cannot ask, whatever the
-      // setting says.
-      //
-      // The assertion below is the behaviour the card requires, kept as
-      // `test.failing` so it runs: the day a prompt is possible here, this goes
-      // red and the marker flips to `test`.
-      test.failing(
-        'a gated tool call asks in the channel live, and approving it resumes the turn [a hosted runtime is never asked]',
+      // It failed on the *desktop* target too because the desktop is where both
+      // of these turns run: a hosted workspace's channel turn is spawned by the
+      // computer as well, so both were silently `full_autonomy`. The fix is one
+      // composer (`localSecurityPolicy`) called by both env builders, so a
+      // project runtime and the workspace runtime that serves a hosted
+      // workspace are spawned with the owner's own mode.
+      test(
+        'a gated tool call asks in the channel live, and approving it resumes the turn',
         async () => {
         const t = target(name)
         const seed = t.seed
@@ -204,11 +199,36 @@ describeIfInfra('remote workspace · approvals', () => {
           )
 
           // 4. The card reads answered, and the agent's reply carries the turn.
-          const messages = await channelMessages(t, seed.channelId)
-          const cardRow = messages.find((m) => m.id === messageId)
-          expect(cardRow?.blocks?.approval?.status, JSON.stringify(cardRow?.blocks).slice(0, 400)).toBe('approved')
-          const said = messages.map((m) => String(m.text ?? '')).join('\n')
-          expect(said, `the agent's reply carries ${token(tag, 6)}`).toContain(token(tag, 6))
+          //    Read the card by id: a decision is an `update` to the message it
+          //    belongs to, and the list's page is a budget, not a guarantee.
+          const decision = await read(t, `/api/conversation-messages/${encodeURIComponent(messageId)}`)
+          const cardRow = decision.data?.message ?? null
+          expect(cardRow, `the card reads back (${decision.status})`).not.toBeNull()
+          expect(
+            cardRow?.blocks?.approval?.status,
+            `the card's approval block: ${JSON.stringify(cardRow?.blocks ?? null).slice(0, 400)}`,
+          ).toBe('approved')
+          // The reply is posted when the turn ends, and it lands in the thread
+          // under the message that mentioned the agent — so the channel page is
+          // the wrong place to look for it.
+          const mentionId = String(posted.data?.message?.id ?? '')
+          const thread = async () => {
+            const res = await read(
+              t,
+              `/api/conversations/${encodeURIComponent(seed.channelId)}/messages?threadRootId=${encodeURIComponent(mentionId)}&limit=50`,
+            )
+            return [res.data?.root, ...(res.data?.messages ?? [])]
+              .filter(Boolean)
+              .map((m: any) => String(m.text ?? ''))
+              .join('\n')
+          }
+          await waitFor(
+            'the agent’s reply in the thread',
+            async () => (await thread()).includes(token(tag, 6)),
+            120_000,
+            500,
+          ).catch(() => {})
+          expect(await thread(), `the agent's reply carries ${token(tag, 6)}`).toContain(token(tag, 6))
         } finally {
           live.close()
         }
