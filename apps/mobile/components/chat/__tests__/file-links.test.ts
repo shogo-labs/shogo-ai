@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, test } from "bun:test"
 import {
+  FILE_HREF_PREFIX,
   fileHref,
   fileIndexHas,
   isMentionHref,
@@ -362,11 +363,74 @@ describe("rewriteLocalFileLinks", () => {
     expect(out).toBe("[the report](/shogo-local-file?path=%2FUsers%2Fme%2Fout%2Freport.pdf)")
   })
 
-  test("leaves a file:// inside code alone", () => {
+  test("links a file:// URL in backticks and keeps the backticks as the label", () => {
+    const win =
+      "`file:///C:/Users/russe/AppData/Roaming/Shogo/data/workspaces/.workspace-roots/abc/assets/demo/x.mp4`"
+    expect(rewriteLocalFileLinks(win)).toBe(
+      `[\`file:///C:/Users/russe/AppData/Roaming/Shogo/data/workspaces/.workspace-roots/abc/assets/demo/x.mp4\`]` +
+        `(/shogo-local-file?path=${encodeURIComponent(
+          "C:/Users/russe/AppData/Roaming/Shogo/data/workspaces/.workspace-roots/abc/assets/demo/x.mp4",
+        )})`,
+    )
+
+    expect(rewriteLocalFileLinks("`file:///Users/me/report.pdf`")).toBe(
+      "[`file:///Users/me/report.pdf`](/shogo-local-file?path=%2FUsers%2Fme%2Freport.pdf)",
+    )
+  })
+
+  test("leaves code alone unless the whole span is a local path", () => {
     const fenced = "```\nfile:///Users/me/report.pdf\n```"
     expect(rewriteLocalFileLinks(fenced)).toBe(fenced)
-    const inline = "`file:///Users/me/report.pdf`"
+    const inline = "`curl file:///x.pdf`"
     expect(rewriteLocalFileLinks(inline)).toBe(inline)
+  })
+
+  test("consumes the angle brackets of an autolinked file:// URL", () => {
+    expect(rewriteLocalFileLinks("<file:///C:/Users/russe/x.mp4>")).toBe(
+      "[x.mp4](/shogo-local-file?path=C%3A%2FUsers%2Frusse%2Fx.mp4)",
+    )
+    expect(rewriteLocalFileLinks("See <file:///C:/Users/russe/a/b.pdf>.")).toBe(
+      "See [b.pdf](/shogo-local-file?path=C%3A%2FUsers%2Frusse%2Fa%2Fb.pdf).",
+    )
+  })
+
+  test("sends a drive path in backticks to the local-file link", () => {
+    expect(rewriteLocalFileLinks("`C:\\Users\\russe\\x.mp4`")).toBe(
+      "[`C:\\Users\\russe\\x.mp4`](/shogo-local-file?path=C%3A%2FUsers%2Frusse%2Fx.mp4)",
+    )
+    expect(rewriteLocalFileLinks("`C:/Users/russe/x.mp4`")).toBe(
+      "[`C:/Users/russe/x.mp4`](/shogo-local-file?path=C%3A%2FUsers%2Frusse%2Fx.mp4)",
+    )
+  })
+
+  test("links a drive path pasted bare in prose", () => {
+    const out = rewriteLocalFileLinks("Saved to C:\\Users\\russe\\x.mp4 just now.")
+    expect(out).toBe("Saved to [x.mp4](/shogo-local-file?path=C%3A%2FUsers%2Frusse%2Fx.mp4) just now.")
+  })
+
+  test("rewrites a drive path in a markdown link target and keeps its label", () => {
+    expect(rewriteLocalFileLinks("[demo](C:\\Users\\russe\\x.mp4)")).toBe(
+      "[demo](/shogo-local-file?path=C%3A%2FUsers%2Frusse%2Fx.mp4)",
+    )
+    expect(rewriteLocalFileLinks("[demo](C:/Users/russe/x.mp4)")).toBe(
+      "[demo](/shogo-local-file?path=C%3A%2FUsers%2Frusse%2Fx.mp4)",
+    )
+  })
+
+  test("a drive path never becomes a workspace project path", () => {
+    const outputs = [
+      rewriteLocalFileLinks("`C:\\Users\\russe\\x.mp4`"),
+      rewriteLocalFileLinks("`C:/Users/russe/x.mp4`"),
+      rewriteLocalFileLinks("Saved to C:\\Users\\russe\\x.mp4 just now."),
+      rewriteLocalFileLinks("[demo](C:\\Users\\russe\\x.mp4)"),
+      linkifyFilePaths("`C:/Users/russe/x.mp4`"),
+      linkifyFilePaths("Saved to C:\\Users\\russe\\x.mp4 just now."),
+      resolveRelativeLinks("[demo](C:/Users/russe/x.mp4)", { fileLinks: true }),
+    ]
+    for (const out of outputs) expect(out).not.toContain(FILE_HREF_PREFIX)
+    expect(outputs[outputs.length - 1]).toBe(
+      "[demo](/shogo-local-file?path=C%3A%2FUsers%2Frusse%2Fx.mp4)",
+    )
   })
 
   test("drops sentence punctuation after a bare URL", () => {

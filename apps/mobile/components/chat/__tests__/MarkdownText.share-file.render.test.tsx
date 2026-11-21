@@ -126,4 +126,22 @@ describe("a share_file link in a message", () => {
       href: "/api/local-files?path=%2FUsers%2Fme%2FApplication%20Support%2Freport.pdf",
     })
   })
+
+  test("a Windows file:// URL in backticks is a chip, not code", () => {
+    const opened: Array<Record<string, unknown>> = []
+    const path =
+      "C:/Users/russe/AppData/Roaming/Shogo/data/workspaces/.workspace-roots/abc/assets/demo/x.mp4"
+    const container = renderInApp(`\`file:///${path}\``, (target) =>
+      opened.push(target as Record<string, unknown>),
+    ).container
+
+    const chip = container.querySelector('[data-testid="chat-file-chip"]')
+    expect(chip?.textContent).toBe("x.mp4")
+    expect(chip?.getAttribute("data-file-kind")).toBe("local")
+    expect(container.querySelector("code")).toBeNull()
+    expect(container.textContent).not.toContain("file://")
+
+    fireEvent.click(chip as HTMLElement)
+    expect(opened[0]).toMatchObject({ kind: "local", path })
+  })
 })
