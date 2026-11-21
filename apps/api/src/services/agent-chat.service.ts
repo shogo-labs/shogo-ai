@@ -22,6 +22,8 @@ import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
 import { sendPushToUser } from '../lib/push-notifications'
 import { agentDisplayName } from './conversation.service'
+import { accessibleProjectsWhere } from '../lib/authz'
+import { PROJECT_CALL_MESSAGE_AGENT } from '@shogo/shared-runtime/project-call-chat'
 
 const db = prisma as any
 
@@ -315,6 +317,133 @@ async function archiveConversation(conversationId: string): Promise<void> {
     where: { id: conversationId, archivedAt: null },
     data: { archivedAt: new Date() },
   })
+}
+
+
+/**
+ * Prisma `ChatMessage` where-clause fragment that selects messages in this
+ * workspace written by this person in an agent chat (not a project-call stub).
+ * Used by `listRecentAgentChats` and lifted here so `member-messages.service`
+ * can import it rather than duplicating the logic.
+ */
+export function agentChatMessageWhere(workspaceId: string, userId: string) {
+  return {
+    role: 'user' as const,
+    agent: { not: PROJECT_CALL_MESSAGE_AGENT },
+    AND: [
+      {
+        session: {
+          OR: [{ workspaceId }, { project: { workspaceId } }],
+        },
+      },
+      { OR: [{ authorUserId: userId }, { authorUserId: null, session: { createdByUserId: userId } }] },
+    ],
+  }
+}
+
+// ─── Recent agent chats ─────────────────────────────────────────────────────
+
+export interface RecentAgentChat {
+  chatSessionId: string
+  title: string
+  projectId: string | null
+  /** 'ws' for the workspace agent, the projectId for a project agent. */
+  agentKey: string
+  agentName: string | null
+  lastActiveAt: string
+  /** Last user-visible message text, trimmed to 120 chars. */
+  preview: string | null
+}
+
+/**
+ * Returns the user's most recently active agent chats (workspace + project).
+ *
+ * When `perAgent` is true, keeps only the newest session per agent.
+ * `limit` defaults to 5; max 100.
+ *
+ * The "this person talked in a chat" predicate is shared with
+ * `member-messages.service.ts`: a ChatMessage with `role: 'user'`,
+ * `agent ≠ PROJECT_CALL_MESSAGE_AGENT`, and `authorUserId = userId` (or
+ * `authorUserId = null, session.createdByUserId = userId`).
+ */
+export async function listRecentAgentChats(
+  workspaceId: string,
+  userId: string,
+  opts: { limit?: number; perAgent?: boolean } = {},
+): Promise<RecentAgentChat[]> {
+  const limit = Math.min(opts.limit ?? 5, 100)
+
+  // Projects this user can see (same visibility as listMentionables).
+  const readable = await accessibleProjectsWhere({ userId, via: 'session' }, workspaceId)
+
+  // "The user sent at least one real message in this session."
+  // Uses the shared helper so the predicate stays in one place.
+  const userSentMessage = { some: agentChatMessageWhere(workspaceId, userId) }
+
+  // ChatSession has no `projectId` column: workspace chats use
+  // `contextType:'workspace'` + `workspaceId`, project chats use
+  // `contextType:'project'` + `contextId` (the projectId FK).
+  const sessions = await db.chatSession.findMany({
+    where: {
+      isArchived: false,
+      messages: userSentMessage,
+      OR: [
+        // Workspace-agent chats owned by this user in this workspace.
+        { contextType: 'workspace', workspaceId, createdByUserId: userId },
+        // Project-agent chats in projects the user can see.
+        // No createdByUserId filter here — project sessions leave it null; authorship is
+        // established by messages.some(agentChatMessageWhere(...)) instead.
+        { contextType: 'project', project: { workspaceId, AND: readable } },
+      ],
+    },
+    orderBy: { lastActiveAt: 'desc' },
+    take: limit * 10, // over-fetch so perAgent dedup doesn't under-shoot
+    select: {
+      id: true,
+      name: true,
+      inferredName: true,
+      contextType: true,
+      contextId: true,
+      lastActiveAt: true,
+      project: {
+        select: { id: true, name: true },
+      },
+      messages: {
+        // No `deletedAt` column on ChatMessage — filter by role only.
+        where: { role: { in: ['user', 'assistant'] } },
+        orderBy: { createdAt: 'desc' },
+        take: 1,
+        select: { content: true },
+      },
+    },
+  })
+
+  // Resolve the workspace agent's display name once — avoids N async calls.
+  const wsAgentName = await agentDisplayName(workspaceId, null)
+
+  // Deduplicate per agent when requested.
+  const seen = new Set<string>()
+  const result: RecentAgentChat[] = []
+  for (const s of sessions) {
+    const projectId: string | null = s.contextType === 'project' ? (s.contextId ?? null) : null
+    const agentKey: string = projectId ?? 'ws'
+    if (opts.perAgent) {
+      if (seen.has(agentKey)) continue
+      seen.add(agentKey)
+    }
+    const rawPreview: string | null = s.messages?.[0]?.content ?? null
+    result.push({
+      chatSessionId: s.id,
+      title: s.name || s.inferredName || 'Untitled chat',
+      projectId,
+      agentKey,
+      agentName: projectId ? (s.project?.name ?? null) : wsAgentName,
+      lastActiveAt: (s.lastActiveAt as Date).toISOString(),
+      preview: rawPreview ? rawPreview.slice(0, 120) : null,
+    })
+    if (result.length >= limit) break
+  }
+  return result
 }
 
 /**

@@ -919,6 +919,16 @@ export interface ProjectMachineState {
   canRestart: boolean
 }
 
+export interface RecentAgentChat {
+  chatSessionId: string
+  title: string
+  projectId: string | null
+  agentKey: string
+  agentName: string | null
+  lastActiveAt: string
+  preview: string | null
+}
+
 export const api = {
   /** POST /api/users/me/attribution (after signup; session cookie / token via HttpClient). */
   async postSignupAttribution(http: HttpClient, body: Record<string, unknown>) {
@@ -2734,6 +2744,23 @@ export const api = {
     return res.data as ActiveChatPeek
   },
 
+
+  async listRecentAgentChats(
+    http: HttpClient,
+    workspaceId: string,
+    opts: { limit?: number; perAgent?: boolean } = {},
+  ): Promise<RecentAgentChat[]> {
+    const params = new URLSearchParams()
+    if (opts.limit !== undefined) params.set('limit', String(opts.limit))
+    if (opts.perAgent) params.set('perAgent', '1')
+    const query = params.toString() ? `?${params}` : ''
+    const res = await http.get<{ chats?: RecentAgentChat[] }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agent-chats/recent${query}`,
+    )
+    return res.data?.chats ?? []
+  },
+
+  
   /** Attach a project to an existing workspace session. */
   async attachProject(
     http: HttpClient,

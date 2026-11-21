@@ -210,9 +210,11 @@ test.describe("Team workspace: desktop rail and panels", () => {
   test("DM filters narrow the list to unreads and to people", async () => {
     await tab(page, "DMs").click()
     const peerRow = page.getByRole("link", { name: new RegExp(`^${seed.dmPeer}`) })
-    // A chat with an agent is a project chat, so the DMs tab has no Agents chip
-    // and no agent rows (SHO-412).
-    await expect(page.getByRole("button", { name: "Agents", exact: true })).toHaveCount(0)
+    // Agents are listed in the DMs tab as links to their chats, behind an Agents
+    // chip next to People (SHO-473). SHO-412 still holds: an agent is never a
+    // DM conversation, and an agent row never opens a /c/<id> thread.
+    const agentsChip = page.getByRole("button", { name: "Agents", exact: true })
+    await expect(agentsChip).toHaveCount(1)
     await page.getByRole("button", { name: "People", exact: true }).click()
     await expect(peerRow).toBeVisible()
     await page.getByRole("button", { name: "Unreads", exact: true }).click()

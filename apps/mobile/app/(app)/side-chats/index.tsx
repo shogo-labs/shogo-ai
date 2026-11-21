@@ -3,7 +3,7 @@
 
 import { Redirect } from 'expo-router'
 
-/** Side chats now live in the workspace agent history. */
+/** Old side-chats index now redirects to the full Chats list. */
 export default function SideChatsRedirect() {
-  return <Redirect href="/(app)/agent" />
+  return <Redirect href="/(app)/chats" />
 }

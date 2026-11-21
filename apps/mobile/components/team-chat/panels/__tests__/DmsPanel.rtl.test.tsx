@@ -17,7 +17,7 @@ mock.module("react-native", () =>
   }),
 )
 mock.module("@shogo/shared-ui/primitives", () => ({ cn: (...args: unknown[]) => args.filter(Boolean).join(" "), Avatar: () => createElement("span") }))
-mock.module("lucide-react-native", () => ({ Plus: () => createElement("span") }))
+mock.module("lucide-react-native", () => ({ Plus: () => createElement("span"), ChevronRight: () => createElement("span") }))
 mock.module(resolve(import.meta.dir, "../../PresenceDot"), () => ({ PresenceDot: () => createElement("span") }))
 mock.module(resolve(import.meta.dir, "../../ConversationRows"), () => ({
   ConversationRow: ({ conversation }: any) => createElement("div", { "data-testid": `row-${conversation.id}` }),
@@ -28,6 +28,15 @@ mock.module(resolve(import.meta.dir, "../../ConversationRows"), () => ({
   rowTitle: (c: any) => c.name ?? c.id,
 }))
 mock.module(resolve(import.meta.dir, "../../TeamChatSidebarProvider"), () => ({ useTeamChatNav: () => chat }))
+// SHO-473: the panel reads agent chat rows from here; stub the hook so the test
+// never loads expo-router's useFocusEffect (this file only asserts person DMs).
+mock.module(resolve(import.meta.dir, "../../../../hooks/useRecentAgentChats"), () => ({
+  useRecentAgentChats: () => ({ chats: [], loading: false }),
+}))
+mock.module("expo-router", () => ({
+  useRouter: () => ({ push: () => {} }),
+  useFocusEffect: () => {},
+}))
 
 const { DmsPanel } = await import("../DmsPanel")
 

@@ -545,7 +545,7 @@ test.describe("workspace chat row state (local)", () => {
     });
 
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole("button", { name: "Open chat sessions" }).click();
+    await page.getByRole("button", { name: /^(Open chat sessions|Chats)$/ }).click();
     await expect(page.getByText("Chats", { exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(
       page.getByLabel(`Chat: ${pinned.name}`, { exact: true }).getByLabel("Pinned").first(),
