@@ -77,7 +77,8 @@ import {
   type InternalIdentity,
 } from './internal-runtime-auth'
 import { projectTrustRoutes } from './internal-project-trust'
-import { signSharedFileToken } from '../lib/shared-file-token'
+import { signSharedFileToken, sharedFilePathProblem } from '../lib/shared-file-token'
+import { mintSharedFileLink as mintSharedFileOnCloud } from '../lib/shared-file-mint'
 import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
 import {
   REMOTE_DEVICE_CALL_HEADER,
@@ -1592,15 +1593,9 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       expiresInDays?: unknown
     } | null
     const path = typeof body?.path === 'string' ? body.path : ''
-    const segments = path.split('/')
-    if (
-      !path ||
-      path.length > 4096 ||
-      path.startsWith('/') ||
-      path.includes('\\') ||
-      segments.some((segment) => !segment || segment === '.' || segment === '..')
-    ) {
-      return c.json({ error: { code: 'invalid_path', message: 'path must be a relative workspace path' } }, 400)
+    const pathProblem = sharedFilePathProblem(path)
+    if (pathProblem) {
+      return c.json({ error: { code: 'invalid_path', message: pathProblem } }, 400)
     }
 
     const requestedDays =
@@ -1640,6 +1635,17 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         }
         signedPath = resolved.normalizedPath
       }
+
+      // A paired desktop's workspace is opened from the cloud, so the link has to
+      // be the cloud's: its origin and its signature (SHO-486). `null` means
+      // "mint it here" — a desktop that is not paired, or an unreachable cloud.
+      const relayed = await mintSharedFileOnCloud({
+        ...(scope.projectId ? { projectId: scope.projectId } : {}),
+        workspaceId: scope.workspaceId,
+        path: signedPath,
+        expiresInDays,
+      })
+      if (relayed) return c.json(relayed)
 
       const token = signSharedFileToken({
         ...(scope.projectId ? { projectId: scope.projectId } : {}),

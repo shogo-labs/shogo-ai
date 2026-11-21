@@ -12,10 +12,16 @@ process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET || 'test-better-
  * Run: bun test apps/api/src/__tests__/ai-proxy-routes.test.ts
  */
 
-import { describe, test, expect, beforeAll, mock } from 'bun:test'
+import { describe, test, expect, beforeAll, afterEach, mock } from 'bun:test'
 import { Hono } from 'hono'
 import { generateProxyToken } from '../lib/ai-proxy-token'
-import { aiProxyRoutes, splitOpenAIPromptUsage } from '../routes/ai-proxy'
+import {
+  aiProxyRoutes,
+  anthropicUsageToOpenAI,
+  proxyOpenAIStream,
+  splitOpenAICompletionUsage,
+  splitOpenAIPromptUsage,
+} from '../routes/ai-proxy'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 // Mock prisma to avoid database dependency
@@ -328,5 +334,77 @@ describe('splitOpenAIPromptUsage', () => {
 
   test('missing usage is all zeros', () => {
     expect(splitOpenAIPromptUsage(undefined)).toEqual({ inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0 })
+  })
+})
+
+describe('splitOpenAICompletionUsage', () => {
+  test('Gemini: thinking tokens left only in total_tokens are billed as output', () => {
+    expect(splitOpenAICompletionUsage({ prompt_tokens: 36, completion_tokens: 5, total_tokens: 103 }))
+      .toEqual({ outputTokens: 67, reasoningTokens: 62 })
+  })
+
+  test('OpenAI: reasoning already inside completion_tokens is not counted twice', () => {
+    expect(splitOpenAICompletionUsage({
+      prompt_tokens: 100,
+      completion_tokens: 50,
+      total_tokens: 150,
+      completion_tokens_details: { reasoning_tokens: 30 },
+    })).toEqual({ outputTokens: 50, reasoningTokens: 30 })
+  })
+
+  test('missing or short total_tokens never produces a negative output', () => {
+    expect(splitOpenAICompletionUsage({ prompt_tokens: 100, completion_tokens: 50 }))
+      .toEqual({ outputTokens: 50, reasoningTokens: 0 })
+    expect(splitOpenAICompletionUsage({ prompt_tokens: 100, completion_tokens: 50, total_tokens: 120 }))
+      .toEqual({ outputTokens: 50, reasoningTokens: 0 })
+    expect(splitOpenAICompletionUsage(undefined)).toEqual({ outputTokens: 0, reasoningTokens: 0 })
+  })
+
+  test('cache shapes leave no gap, so output stays completion_tokens', () => {
+    // anthropicUsageToOpenAI sets total_tokens = prompt_tokens + completion_tokens.
+    expect(splitOpenAICompletionUsage(anthropicUsageToOpenAI(1000, 900, 100, 50)))
+      .toEqual({ outputTokens: 50, reasoningTokens: 0 })
+    // DeepSeek prompt_cache_hit/miss counters.
+    expect(splitOpenAICompletionUsage({
+      prompt_tokens: 100,
+      completion_tokens: 40,
+      total_tokens: 140,
+      prompt_cache_hit_tokens: 60,
+      prompt_cache_miss_tokens: 40,
+    })).toEqual({ outputTokens: 40, reasoningTokens: 0 })
+  })
+})
+
+describe('proxyOpenAIStream — Gemini thinking tokens', () => {
+  const originalFetch = globalThis.fetch
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  test('the SSE final chunk bills unreported thinking tokens as output', async () => {
+    globalThis.fetch = (async () => new Response(
+      [
+        'data: {"id":"c1","choices":[{"index":0,"delta":{"content":"hi"}}]}',
+        '',
+        'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":36,"completion_tokens":5,"total_tokens":103}}',
+        '',
+        'data: [DONE]',
+        '',
+      ].join('\n'),
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    )) as any
+
+    const completions: number[][] = []
+    const res = await proxyOpenAIStream(
+      { model: 'gemini-3.5-flash-lite', messages: [{ role: 'user', content: 'hi' }] } as any,
+      'google-key',
+      { provider: 'google', apiModel: 'gemini-3.5-flash-lite', displayName: 'Gemini 3.5 Flash-Lite' },
+      (...args: number[]) => completions.push(args),
+    )
+    // onComplete fires from the transform's flush, so the body must be read.
+    await res.text()
+
+    // (inputTokens, outputTokens, cachedInputTokens, reasoningTokens, cacheWriteTokens)
+    expect(completions).toEqual([[36, 67, 0, 62, 0]])
   })
 })

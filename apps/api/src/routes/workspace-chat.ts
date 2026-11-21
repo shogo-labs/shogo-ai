@@ -1164,7 +1164,13 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             // typing in a window, so no other window attaches to it (SHO-53:
             // a window nobody is looking at must not start the task watch).
             // The dispatcher marks its internal calls with `X-Queue-User-Id`.
-            activityTurnId = await markTurnStarted(sessionId, undefined, {
+            //
+            // The id is the upstream's when it sent one (SHO-486). A hosted
+            // workspace's turn runs on the desktop, and a second id invented
+            // here recorded a turn nothing was running: the activity panel
+            // showed it, and it matched no reply because the reply carries the
+            // desktop's id.
+            activityTurnId = await markTurnStarted(sessionId, upstream.headers.get('x-turn-id')?.trim() || undefined, {
               announce: !c.req.header("X-Queue-User-Id"),
             })
           } catch (error) {

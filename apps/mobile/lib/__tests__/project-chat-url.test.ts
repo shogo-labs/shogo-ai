@@ -13,6 +13,7 @@ import {
   deepLinkedChatSessionId,
   isChatSessionOfProject,
   planChatUrlWrite,
+  resolveDeepLinkedChatSessionId,
   type ChatUrlMirrorInput,
 } from '../project-chat-url'
 
@@ -148,5 +149,73 @@ describe('isChatSessionOfProject', () => {
         { projectId: 'proj-1', allowCrossProject: true }
       )
     ).toBe(true)
+  })
+})
+
+describe('cold-load restored keys (SHO-174)', () => {
+  // The URL is serialised from the router state, so a restore the mirror does
+  // not carry is dropped again by its next write. `preserved` is how the
+  // project layout hands the restored keys to this one writer.
+
+  test('keeps a restored tab on the write it makes anyway', () => {
+    const write = planChatUrlWrite(
+      input({ chatSessionId: 'chat-a', currentParam: undefined, preserved: { tab: 'settings' } })
+    )
+    expect(write?.params).toEqual({ tab: 'settings', chatSessionId: 'chat-a', chatScope: undefined })
+  })
+
+  test('writes restored keys even when the chat param is already right', () => {
+    const write = planChatUrlWrite(
+      input({
+        chatSessionId: 'chat-a',
+        currentParam: 'chat-a',
+        preserved: { tab: 'settings' },
+        // The reader sees the restored tab; the address bar does not have it.
+        urlQuery: { id: 'proj-1', chatSessionId: 'chat-a' },
+      })
+    )
+    expect(write?.params).toEqual({ tab: 'settings', chatSessionId: 'chat-a', chatScope: undefined })
+  })
+
+  test('does nothing when the URL already carries the restored keys', () => {
+    const write = planChatUrlWrite(
+      input({
+        chatSessionId: 'chat-a',
+        currentParam: 'chat-a',
+        preserved: { tab: 'settings' },
+        urlQuery: { id: 'proj-1', chatSessionId: 'chat-a', tab: 'settings' },
+      })
+    )
+    expect(write).toBeNull()
+  })
+
+  test('never takes the chat keys from preserved', () => {
+    const write = planChatUrlWrite(
+      input({
+        chatSessionId: 'chat-b',
+        currentParam: 'chat-b',
+        preserved: { chatSessionId: 'chat-arrival', chatScope: 'workspace', tab: 'settings' },
+        urlQuery: { chatSessionId: 'chat-b' },
+      })
+    )
+    expect(write?.params.chatSessionId).toBe('chat-b')
+    expect(write?.params.chatScope).toBeUndefined()
+    expect(write?.params.tab).toBe('settings')
+  })
+
+  test('a restored chat id stays the deep link even though this hook wrote it', () => {
+    expect(
+      resolveDeepLinkedChatSessionId({
+        currentParam: 'chat-bravo',
+        selfWrittenId: 'chat-bravo',
+        preservedChatSessionId: 'chat-bravo',
+      })
+    ).toBe('chat-bravo')
+  })
+
+  test('an id this hook wrote itself is not a deep link', () => {
+    expect(
+      resolveDeepLinkedChatSessionId({ currentParam: 'chat-a', selfWrittenId: 'chat-a' })
+    ).toBeUndefined()
   })
 })

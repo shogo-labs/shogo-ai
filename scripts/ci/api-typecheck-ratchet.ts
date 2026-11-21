@@ -11,7 +11,8 @@
  * /api/billing/workspace-plan that locked models on every grant workspace).
  *
  * Errors are keyed by file + code + message (no line/column, so unrelated
- * edits don't churn the baseline) and counted. The check fails when a key's
+ * edits don't churn the baseline), with union members sorted inside the message
+ * (`canonicalMessage`), and counted. The check fails when a key's
  * count goes above apps/api/typecheck-baseline.json.
  *
  *   bun scripts/ci/api-typecheck-ratchet.ts            # check
@@ -58,6 +59,41 @@ function normalizePath(path: string): string {
 //   ARE counted.
 const API_SRC_PREFIX = 'apps/api/src/'
 
+const ROOT_DIR_CODES = new Set(['TS6059', 'TS5097'])
+
+/**
+ * tsc prints union members in the order their types were created, so an
+ * unrelated file joining the program can turn `'400 | 404'` into `'404 | 400'`
+ * and make the same error read as new (SHO-486). Sort them.
+ */
+export function canonicalMessage(message: string): string {
+  return message.replace(/'([^']*\|[^']*)'/g, (_whole, union: string) =>
+    `'${union
+      .split('|')
+      .map((part) => part.trim())
+      .sort()
+      .join(' | ')}'`,
+  )
+}
+
+/** A baseline key carries its message too, so it is normalized the same way. */
+export function canonicalKey(key: string): string {
+  const m = /^(\S+) (TS\d+) (.*)$/.exec(key)
+  if (!m) return key
+  return `${m[1]} ${m[2]} ${canonicalMessage(m[3])}`
+}
+
+export function canonicalBaseline(baseline: Baseline): Baseline {
+  const out: Baseline = {}
+  for (const [key, n] of Object.entries(baseline)) {
+    const code = /^(\S+) (TS\d+) /.exec(key)?.[2] ?? ''
+    if (ROOT_DIR_CODES.has(code)) continue
+    const canonical = canonicalKey(key)
+    out[canonical] = (out[canonical] ?? 0) + n
+  }
+  return out
+}
+
 // Returns true when a TS2322 message is a src-vs-dist nominal identity mismatch
 // (same package, one arm from /src/, the other from /dist/). These are build-
 // environment noise, not real type errors.
@@ -78,8 +114,9 @@ export function parseTscOutput(output: string): Baseline {
     const normalized = normalizePath(file)
     // Only count errors in apps/api/src — see note above.
     if (!normalized.startsWith(API_SRC_PREFIX)) continue
+    if (ROOT_DIR_CODES.has(code)) continue
     // tsc continues long messages on indented lines; keep only the first.
-    const message = first.split(REPO_ROOT).join('<repo>').replace(/\s+/g, ' ').trim()
+    const message = canonicalMessage(first.split(REPO_ROOT).join('<repo>').replace(/\s+/g, ' ').trim())
     // Exclude src-vs-dist TS2322 nominal identity noise — see note above.
     if (isSrcDistMismatch(code, message)) continue
     const key = `${normalized} ${code} ${message}`
@@ -130,7 +167,7 @@ function main() {
     process.exit(1)
   }
 
-  const baseline: Baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf-8'))
+  const baseline: Baseline = canonicalBaseline(JSON.parse(readFileSync(BASELINE_PATH, 'utf-8')))
   const added = regressions(baseline, current)
   const known = Object.values(baseline).reduce((a, b) => a + b, 0)
   if (added.length) {

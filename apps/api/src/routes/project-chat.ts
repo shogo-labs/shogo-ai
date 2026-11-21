@@ -2195,9 +2195,15 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             // typing in a window, so no other window attaches to it (SHO-53:
             // a window nobody is looking at must not start the task watch).
             // The dispatcher marks its internal calls with `X-Queue-User-Id`.
-            activityTurnId = await markTurnStarted(incomingChatSessionId, undefined, {
-              announce: !c.req.header("X-Queue-User-Id"),
-            })
+            // The id is the upstream's when it sent one (SHO-486), for the same
+            // reason as `workspace-chat`: a project chat in a hosted workspace
+            // runs on the desktop, and a second id invented here is a turn
+            // nothing is running.
+            activityTurnId = await markTurnStarted(
+              incomingChatSessionId,
+              response.headers.get('x-turn-id')?.trim() || undefined,
+              { announce: !c.req.header("X-Queue-User-Id") },
+            )
           } catch (error) {
             // Activity is observational; a schema/database issue must not block chat.
             console.warn(`[ProjectChat] Failed to mark active chat ${incomingChatSessionId}:`, error)

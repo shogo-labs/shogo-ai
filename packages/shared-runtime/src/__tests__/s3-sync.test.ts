@@ -28,6 +28,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { createHash } from 'crypto'
 import { spawnSync } from 'child_process'
+import { Readable } from 'stream'
 
 // ---------------------------------------------------------------------------
 // In-memory S3 store, shared by every CommandFactory below.
@@ -35,10 +36,15 @@ import { spawnSync } from 'child_process'
 
 const s3Store = new Map<string, Buffer>()
 const s3Calls: { command: string; bucket: string; key: string }[] = []
+/** In-flight multipart uploads: UploadId → the parts received so far. */
+const multipartParts = new Map<string, Array<{ PartNumber: number; body: Buffer }>>()
+let multipartId = 0
 
 function resetS3() {
   s3Store.clear()
   s3Calls.length = 0
+  multipartParts.clear()
+  multipartId = 0
 }
 
 class StubS3Error extends Error {
@@ -74,10 +80,12 @@ class MockS3Client {
         return {
           ContentLength: v.length,
           ETag: etagOf(v),
-          Body: {
-            transformToByteArray: async () => v,
+          // The runtime streams the body to disk (SHO-478), so the mock must
+          // hand back a real Readable — plus `transformToString` for the tiny
+          // deps pointer read, which still buffers.
+          Body: Object.assign(Readable.from([v]), {
             transformToString: async () => v.toString('utf-8'),
-          },
+          }),
         }
       }
       case 'PutObject': {
@@ -93,6 +101,36 @@ class MockS3Client {
         s3Store.set(`${Bucket}/${Key}`, buf)
         return { ETag: etagOf(buf) }
       }
+      case 'CreateMultipartUpload': {
+        multipartId += 1
+        const uploadId = `mpu-${multipartId}`
+        multipartParts.set(uploadId, [])
+        return { UploadId: uploadId }
+      }
+      case 'UploadPart': {
+        const parts = multipartParts.get(cmd.UploadId)
+        if (!parts) throw new StubS3Error('NoSuchUpload', 404)
+        s3Calls.push({ command: 'UploadPart', bucket: Bucket, key: Key })
+        parts.push({ PartNumber: cmd.PartNumber, body: Buffer.from(cmd.Body) })
+        return { ETag: etagOf(Buffer.from(cmd.Body)) }
+      }
+      case 'CompleteMultipartUpload': {
+        const parts = multipartParts.get(cmd.UploadId)
+        if (!parts) throw new StubS3Error('NoSuchUpload', 404)
+        const body = Buffer.concat(
+          [...parts].sort((a, b) => a.PartNumber - b.PartNumber).map((p) => p.body),
+        )
+        const current = s3Store.get(`${Bucket}/${Key}`)
+        if (IfNoneMatch === '*' && current) throw new StubS3Error('PreconditionFailed', 412)
+        if (IfMatch && (!current || etagOf(current) !== IfMatch)) throw new StubS3Error('PreconditionFailed', 412)
+        s3Store.set(`${Bucket}/${Key}`, body)
+        multipartParts.delete(cmd.UploadId)
+        return { ETag: etagOf(body) }
+      }
+      case 'AbortMultipartUpload': {
+        multipartParts.delete(cmd.UploadId)
+        return {}
+      }
       default:
         throw new Error(`MockS3Client: unhandled command ${__type}`)
     }
@@ -104,6 +142,10 @@ mock.module('@aws-sdk/client-s3', () => ({
   HeadObjectCommand: class { constructor(opts: any) { Object.assign(this, opts, { __type: 'HeadObject' }) } },
   GetObjectCommand: class { constructor(opts: any) { Object.assign(this, opts, { __type: 'GetObject' }) } },
   PutObjectCommand: class { constructor(opts: any) { Object.assign(this, opts, { __type: 'PutObject' }) } },
+  CreateMultipartUploadCommand: class { constructor(opts: any) { Object.assign(this, opts, { __type: 'CreateMultipartUpload' }) } },
+  UploadPartCommand: class { constructor(opts: any) { Object.assign(this, opts, { __type: 'UploadPart' }) } },
+  CompleteMultipartUploadCommand: class { constructor(opts: any) { Object.assign(this, opts, { __type: 'CompleteMultipartUpload' }) } },
+  AbortMultipartUploadCommand: class { constructor(opts: any) { Object.assign(this, opts, { __type: 'AbortMultipartUpload' }) } },
 }))
 
 import {
