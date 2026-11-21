@@ -55,6 +55,8 @@ import {
 import { docLink } from '../../lib/team-chat-links'
 import { mentionNames, renderMentionsMarkdown } from '../../lib/team-chat-state'
 import { relativeTime } from '../../lib/activity-feed'
+import { GlassButton } from './FloatingChrome'
+import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../layout/PhoneScreenHeader'
 
 const api = teamChatApi()
 
@@ -65,6 +67,8 @@ export interface DocPaneProps {
   onClose: () => void
   /** Opens a person's profile. Absent hosts leave mentions as plain highlights. */
   onOpenProfile?: (userId: string) => void
+  /** Phone: the doc is full-screen under the DM's floating glass header. */
+  floating?: boolean
 }
 
 const TOOLBAR: Array<{ format: DocFormat; label: string; Icon: typeof Bold }> = [
@@ -84,8 +88,9 @@ const TOOLBAR: Array<{ format: DocFormat; label: string; Icon: typeof Bold }> = 
   { format: 'link', label: 'Link', Icon: Link2 },
 ]
 
-export function DocPane({ conversation, workspaceId, mentionables, onClose, onOpenProfile }: DocPaneProps) {
+export function DocPane({ conversation, workspaceId, mentionables, onClose, onOpenProfile, floating }: DocPaneProps) {
   const router = useRouter()
+  const header = usePhoneScreenHeaderInset()
   const { state, doc, dirty, edit, flush, resolve, setLocked, restore, archiveSection, restoreArchive } =
     useConversationDoc(workspaceId, conversation.id)
   const [editing, setEditing] = useState(false)
@@ -167,6 +172,61 @@ export function DocPane({ conversation, workspaceId, mentionables, onClose, onOp
 
   return (
     <View className="flex-1 bg-background" testID="channel-doc-pane">
+      {floating ? (
+        <PhoneScreenHeader
+          title={doc.title || `#${conversation.name ?? 'channel'} doc`}
+          subtitle={status}
+          titleLabel="Doc title"
+          closeLabel="Close doc"
+          closeTestID="doc-close"
+          onClose={onClose}
+          onLayout={header.onLayout}
+          actions={
+            <>
+              {canEdit && (exists || editing) ? (
+                editing ? (
+                  <GlassButton label="Done editing" onPress={done}>
+                    <Check size={20} className="text-primary" />
+                  </GlassButton>
+                ) : (
+                  <GlassButton label="Edit doc" onPress={() => setEditing(true)}>
+                    <Pencil size={20} className="text-foreground" />
+                  </GlassButton>
+                )
+              ) : null}
+              {exists ? (
+                <GlassButton label={copied ? 'Link copied' : 'Copy link'} onPress={copyLink}>
+                  {copied ? <Check size={20} className="text-primary" /> : <Copy size={20} className="text-foreground" />}
+                </GlassButton>
+              ) : null}
+            </>
+          }
+        >
+          {state.server?.locked || (exists && state.canManage) || exists ? (
+            <View className="mt-2 flex-row items-center justify-end gap-2">
+              {state.server?.locked ? (
+                <View className="flex-row items-center gap-1 rounded-full bg-muted px-2 py-0.5">
+                  <Lock size={10} className="text-muted-foreground" />
+                  <Text className="text-[10px] font-medium uppercase text-muted-foreground">Locked</Text>
+                </View>
+              ) : null}
+              {exists ? (
+                <GlassButton label="Version history" onPress={() => setHistoryOpen(true)}>
+                  <History size={20} className="text-foreground" />
+                </GlassButton>
+              ) : null}
+              {exists && state.canManage ? (
+                <GlassButton
+                  label={state.server?.locked ? 'Unlock doc' : 'Lock doc'}
+                  onPress={() => void runAction(() => setLocked(!state.server?.locked))}
+                >
+                  {state.server?.locked ? <LockOpen size={20} className="text-foreground" /> : <Lock size={20} className="text-foreground" />}
+                </GlassButton>
+              ) : null}
+            </View>
+          ) : null}
+        </PhoneScreenHeader>
+      ) : (
       <View className="flex-row items-center gap-2 border-b border-border px-4 py-2.5">
         <FileText size={16} className="text-muted-foreground" />
         <View className="min-w-0 flex-1">
@@ -230,6 +290,8 @@ export function DocPane({ conversation, workspaceId, mentionables, onClose, onOp
           <X size={16} className="text-muted-foreground" />
         </PaneButton>
       </View>
+      )}
+      <View className="min-h-0 flex-1" style={floating ? { paddingTop: header.height } : undefined}>
 
       {state.conflict ? (
         <View className="gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2.5" testID="doc-conflict">
@@ -344,6 +406,7 @@ export function DocPane({ conversation, workspaceId, mentionables, onClose, onOp
         </View>
       ) : null}
 
+      </View>
       {historyOpen ? (
         <HistoryModal
           conversationId={conversation.id}

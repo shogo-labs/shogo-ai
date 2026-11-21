@@ -10,12 +10,26 @@ import { WebTooltip } from '../chat/WebTooltip'
 /** Height of the round buttons and title pill. */
 export const CHROME_SIZE = 44
 
-export function GlassButton({ label, onPress, children }: { label: string; onPress?: () => void; children: ReactNode }) {
+export function GlassButton({
+  label,
+  onPress,
+  children,
+  testID,
+  hitSlop,
+}: {
+  label: string
+  onPress?: () => void
+  children: ReactNode
+  testID?: string
+  hitSlop?: number
+}) {
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={label}
+      testID={testID}
+      hitSlop={hitSlop}
       className="items-center justify-center overflow-hidden rounded-full bg-transparent shadow-sm active:opacity-70"
       style={{ width: CHROME_SIZE, height: CHROME_SIZE }}
     >

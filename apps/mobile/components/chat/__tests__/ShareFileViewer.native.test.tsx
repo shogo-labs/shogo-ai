@@ -13,9 +13,6 @@ import { createReactNativeMock } from "../../../test/react-native-mock"
 import * as lucideStub from "../../../test/stubs/lucide-react-native"
 
 mock.module("lucide-react-native", () => lucideStub)
-mock.module("@shogo/shared-ui/primitives", () => ({
-  cn: (...args: unknown[]) => args.filter(Boolean).join(" "),
-}))
 mock.module("../../../lib/agent-image-source", () => ({
   useAgentImageSource: (uri: string | null) => (uri ? { uri } : null),
 }))
@@ -29,6 +26,13 @@ mock.module("react-native", () =>
     ),
   } as never),
 )
+
+// The viewer's close control is the shared glass button. Its backdrop samples
+// the screen through expo-blur / expo-glass-effect, which this suite is not
+// about: a null backdrop keeps the glass chrome without the native view.
+mock.module(resolve(import.meta.dir, "../../ui/LiquidGlassBackdrop"), () => ({
+  LiquidGlassBackdrop: () => null,
+}))
 
 mock.module("../../chat/MarkdownText", () => ({
   MarkdownText: ({ children }: { children: string }) => <div data-testid="markdown-body">{children}</div>,

@@ -71,7 +71,10 @@ const localEnv = {
 }
 
 // Specs written for a phone viewport; the other projects skip them.
-const PHONE_SPECS = /(mobile-personal-walkthrough|team-nav-tabs-phone|team-chat-thread-phone|team-home-phone-perf|phone-build-first|phone-continue-chip|phone-composer-attach)\.test\.ts$/
+// `phone-glass-header` is the SHO-490 phone navigation standard: it asserts the
+// one glass header on every pushed screen and pane, the profile pages included,
+// so it belongs in the phone job rather than being run by hand.
+const PHONE_SPECS = /(mobile-personal-walkthrough|team-nav-tabs-phone|team-chat-thread-phone|team-home-phone-perf|phone-build-first|phone-continue-chip|phone-composer-attach|phone-glass-header)\.test\.ts$/
 
 // Specs that have their own entry in the ci.yml matrix: they must not also
 // run inside a `--shard` job. Centralising the list here (testIgnore) rather

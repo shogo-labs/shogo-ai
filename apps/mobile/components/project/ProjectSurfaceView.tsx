@@ -4,7 +4,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { observer } from "mobx-react-lite";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { RefreshCw } from "lucide-react-native";
 import { useAgentUrl } from "@shogo/shared-app/hooks";
 import { CanvasWebView } from "../canvas/CanvasWebView";
@@ -207,16 +206,15 @@ function ProjectCanvasSurface({
 export const ProjectSurfaceView = observer(function ProjectSurfaceView({
   projectId,
   surface = "canvas",
-  padTopInset = false,
   header,
+  headerHeight = 0,
 }: {
   projectId: string | undefined;
   surface?: ProjectSurface;
-  /** Keep the surface below the status bar. Only for the full-screen route:
-   * the side pane already sits under its own header. */
-  padTopInset?: boolean;
   /** Rendered above the surface, below the status bar inset. */
   header?: ReactNode;
+  /** Height of a floating header, so the surface starts below the glass. */
+  headerHeight?: number;
 }) {
   const {
     agentUrl,
@@ -227,7 +225,6 @@ export const ProjectSurfaceView = observer(function ProjectSurfaceView({
     retry: retryRuntime,
   } = useAgentUrl(API_URL ?? "", projectId ?? "");
   useWorkspaceBudgetToast(budgetNotice, dismissBudgetNotice);
-  const insets = useSafeAreaInsets();
 
   const panel = useMemo(() => {
     if (!projectId) return null;
@@ -274,14 +271,14 @@ export const ProjectSurfaceView = observer(function ProjectSurfaceView({
   }
 
   return (
-    <View
-      className="flex-1 bg-background"
-      style={padTopInset ? { paddingTop: insets.top } : undefined}
-    >
+    <View className="flex-1 bg-background">
       {header}
       {/* The files panel is absolutely filled, so it needs a parent of its own
-          for the padding above to apply. */}
-      <View className="flex-1">{panel}</View>
+          for the padding above to apply. A floating header sits over the
+          content, so the content clears it here. */}
+      <View className="flex-1" style={headerHeight ? { paddingTop: headerHeight } : undefined}>
+        {panel}
+      </View>
     </View>
   );
 });

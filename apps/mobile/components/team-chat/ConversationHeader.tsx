@@ -8,6 +8,7 @@ import { Archive, Bell, BellOff, Check, ChevronLeft, ChevronRight, FileText, Fil
 import { cn } from '@shogo/shared-ui/primitives'
 import { LiquidGlassBackdrop } from '../ui/LiquidGlassBackdrop'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
+import { PhoneTitlePill } from '../layout/PhoneScreenHeader'
 import { MarkdownText } from '../chat/MarkdownText'
 import { WebTooltip } from '../chat/WebTooltip'
 import {
@@ -294,7 +295,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     })
   }
 
-  const leading = peerId ? (
+  const titleAvatar = peerId ? (
     <View className="w-4 items-center">
       <PresenceDot userId={peerId} workspaceId={conversation.workspaceId} size={9} />
     </View>
@@ -461,30 +462,15 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
               <ChevronLeft size={22} className="text-foreground" />
             </GlassButton>
           </Animated.View>
-          <Pressable
+          <PhoneTitlePill
+            title={title}
+            subtitle={subtitle}
+            titleIcon={titleAvatar}
+            titleLabel={`${title} details`}
+            titleOpacity={panelMounted ? 0 : 1}
             onPress={() => setDetailsOpen(true)}
-            accessibilityRole="button"
-            accessibilityLabel={`${title} details`}
-            className="min-w-0 flex-shrink justify-center overflow-hidden rounded-full bg-transparent px-4 shadow-sm"
-            style={{ height: CHROME_SIZE }}
             onLayout={(e) => setPillBox({ x: e.nativeEvent.layout.x, width: e.nativeEvent.layout.width })}
-          >
-            <LiquidGlassBackdrop style={{ borderRadius: CHROME_SIZE / 2 }} />
-            {/* The open panel draws its own copy of the title, so this one steps aside. */}
-            <View style={{ opacity: panelMounted ? 0 : 1 }}>
-              <View className="flex-row items-center gap-1.5">
-                {leading}
-                <Text className="flex-shrink text-[15px] font-semibold text-foreground" numberOfLines={1}>
-                  {title}
-                </Text>
-              </View>
-              {subtitle ? (
-                <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
-                  {subtitle}
-                </Text>
-              ) : null}
-            </View>
-          </Pressable>
+          />
           <View className="flex-1" pointerEvents="none" />
           <Animated.View
             className="flex-row items-center gap-2"
@@ -542,7 +528,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
                     style={{ paddingLeft: panel.interpolate({ inputRange: [0, 1], outputRange: [16, 56] }) }}
                   >
                     <View className="flex-row items-center gap-1.5">
-                      {leading}
+                      {titleAvatar}
                       <Text className="flex-shrink text-[15px] font-semibold text-foreground" numberOfLines={1}>{title}</Text>
                       {conversation.archivedAt ? (
                         <View className="rounded bg-muted px-1.5 py-0.5">
@@ -629,7 +615,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
   return (
     <View className="border-b border-border px-4 py-2.5" onLayout={(e) => setHeaderHeight(Math.round(e.nativeEvent.layout.height))}>
       <View className="flex-row items-center gap-2 overflow-hidden" onLayout={(e) => setActionRowWidth(Math.round(e.nativeEvent.layout.width))}>
-        {leading}
+        {titleAvatar}
         <Text className="min-w-0 flex-shrink text-base font-semibold text-foreground" numberOfLines={1}>
           {title}
         </Text>
