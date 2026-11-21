@@ -22,6 +22,9 @@ import {
   Platform,
   useWindowDimensions,
   Keyboard,
+  type LayoutChangeEvent,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   type StyleProp,
   type ViewStyle,
 } from "react-native"
@@ -69,9 +72,8 @@ function formatContextWindow(tokens?: number): string | null {
 /** Width of the detached web info card that floats beside the list on hover. */
 const INFO_PANEL_WIDTH = 232
 const WEB_MENU_WIDTH = 280
-const WEB_MODEL_ROW_HEIGHT = 32
-const WEB_AUTO_ROW_HEIGHT = 32
-const WEB_DIVIDER_HEIGHT = 1
+/** Height cap of the web model list; the info card clamps to the same span. */
+const WEB_LIST_MAX_HEIGHT = 340
 
 export function getNativeModelMenuWidth(windowWidth: number): number {
   return Math.max(240, Math.min(WEB_MENU_WIDTH, Math.floor(windowWidth - NATIVE_PHONE_SECTION_INSET)))
@@ -130,14 +132,48 @@ export function ModelPickerMenu({
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
+  // Web hover card geometry, all measured rather than assumed: each row's
+  // offset inside the scroll content, the list's scroll offset and viewport
+  // height, and the card's own height. A guessed row height drifted a few px
+  // per row and, worse, ignored the scroll offset entirely, so after scrolling
+  // the card sat below the row it described (SHO-480).
+  const [webRowBoxes, setWebRowBoxes] = useState<Record<string, { y: number; height: number }>>({})
+  const [webScrollTop, setWebScrollTop] = useState(0)
+  const [webViewportHeight, setWebViewportHeight] = useState(0)
+  const [webCardHeight, setWebCardHeight] = useState(0)
+
+  const handleRowLayout = useCallback((modelId: string, event: LayoutChangeEvent) => {
+    const { y, height } = event.nativeEvent.layout
+    setWebRowBoxes((prev) => {
+      const current = prev[modelId]
+      if (current && current.y === y && current.height === height) return prev
+      return { ...prev, [modelId]: { y, height } }
+    })
+  }, [])
+
+  const handleListScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    setWebScrollTop(event.nativeEvent.contentOffset?.y ?? 0)
+  }, [])
+
   // Only surface the side info card when a row is actively hovered — it should
   // not default to the current model when the menu first opens.
   const activeInfoModel = hoveredId ? (models.find((m) => m.id === hoveredId) ?? null) : null
-  const activeInfoRowIndex = activeInfoModel ? models.findIndex((model) => model.id === activeInfoModel.id) : -1
-  const activeInfoTop =
-    activeInfoRowIndex >= 0
-      ? WEB_AUTO_ROW_HEIGHT + WEB_DIVIDER_HEIGHT + activeInfoRowIndex * WEB_MODEL_ROW_HEIGHT
-      : 0
+  const activeInfoBox = activeInfoModel ? webRowBoxes[activeInfoModel.id] : undefined
+  const infoViewportHeight = webViewportHeight || WEB_LIST_MAX_HEIGHT
+  // The card is positioned on the outer wrapper, whose top is the list's top,
+  // so the row's content offset minus the scroll offset is where it belongs —
+  // clamped to the visible list so it never floats above or below it.
+  const activeInfoTop = activeInfoBox
+    ? Math.min(
+        Math.max(activeInfoBox.y - webScrollTop, 0),
+        Math.max(0, infoViewportHeight - webCardHeight),
+      )
+    : 0
+  // A row scrolled clear of the viewport leaves no row to sit beside.
+  const activeInfoRowVisible =
+    !!activeInfoBox &&
+    activeInfoBox.y + activeInfoBox.height > webScrollTop &&
+    activeInfoBox.y < webScrollTop + infoViewportHeight
 
   const renderRow = (model: PickerModel) => {
     const isSelected = currentModelId === model.id
@@ -147,7 +183,10 @@ export function ModelPickerMenu({
     const contextLabel = !isWeb && isExpanded ? formatContextWindow(model.contextWindow) : null
 
     return (
-      <View key={model.id}>
+      <View
+        key={model.id}
+        onLayout={isWeb ? (event) => handleRowLayout(model.id, event) : undefined}
+      >
         <Pressable
           onPress={() => onSelect(model.id)}
           testID={`model-option-${model.id}`}
@@ -249,7 +288,13 @@ export function ModelPickerMenu({
         rows
       ) : (
         <ScrollView
-          style={{ maxHeight: 340 }}
+          testID="model-picker-scroll"
+          style={{ maxHeight: WEB_LIST_MAX_HEIGHT }}
+          onScroll={isWeb ? handleListScroll : undefined}
+          scrollEventThrottle={isWeb ? 16 : undefined}
+          onLayout={
+            isWeb ? (event) => setWebViewportHeight(event.nativeEvent.layout.height) : undefined
+          }
           showsVerticalScrollIndicator={!isWeb}
           nestedScrollEnabled={!isWeb}
           keyboardShouldPersistTaps="handled"
@@ -292,8 +337,10 @@ export function ModelPickerMenu({
     // click-drag text highlighting; `outline-none` kills the focus ring.
     <View className="relative web:outline-none no-focus-ring" style={{ userSelect: "none" } as any}>
       {list}
-      {activeInfoModel && !namesOnly ? (
+      {activeInfoModel && !namesOnly && activeInfoRowVisible ? (
         <View
+          testID="model-info-card"
+          onLayout={(event) => setWebCardHeight(event.nativeEvent.layout.height)}
           className="bg-card border border-border rounded-xl shadow-lg"
           style={{
             position: "absolute",
