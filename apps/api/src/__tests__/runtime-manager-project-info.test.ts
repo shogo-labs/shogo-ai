@@ -202,7 +202,7 @@ describe('RuntimeManager.getProjectInfo', () => {
   })
 })
 
-describe('localSecurityPolicy — the policy this computer's runtimes spawn with', () => {
+describe("localSecurityPolicy — the policy a computer's runtimes spawn with", () => {
   async function policyFor(project: unknown = null) {
     const { localSecurityPolicy } = await import('../lib/security-policy')
     const encoded = await localSecurityPolicy(project as any)
