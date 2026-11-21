@@ -30,7 +30,7 @@
   "lib/resolve-workspace-id.ts": 1,
   "lib/runtime/agent-model-defaults.ts": 1,
   "lib/runtime/cloud-content-sync.ts": 3,
-  "lib/runtime/manager.ts": 1,
+  "lib/security-policy.ts": 1,
   "lib/signup-trust.ts": 1,
   "lib/summarizer-model.ts": 1,
   "local-server.ts": 1,
