@@ -116,6 +116,7 @@ const EXEMPT: Record<string, string> = {
   projectAttachment: 'Mutated via /api/projects/:projectId/attachments — resolved by path projectId.',
   projectAuthConfig: 'Mutated via /api/projects/:projectId/auth — resolved by path projectId.',
   projectAuthSignIn: 'Mutated via /api/projects/:projectId/auth — resolved by path projectId.',
+  projectBucketObject: 'SHO-491: the row is an index of the project bucket bytes, created and deleted only by /api/projects/:projectId/bucket/objects/... (and the desktop upload target) — resolved by path projectId; there is no standalone /api/<resource>/:id mutation.',
   projectCheckpoint: 'Mutated via /api/projects/:projectId/checkpoints — resolved by path projectId.',
   proxyTurn: 'Written as a side effect of the AI proxy request; the turn key is workspace-scoped and deduplicates retries without a standalone REST mutation route.',
   slackProjectRoutingRule: 'Mutated via /api/integrations/slack/workspaces/:workspaceId/routing-rules — resolved by path workspaceId (admin-gated).',

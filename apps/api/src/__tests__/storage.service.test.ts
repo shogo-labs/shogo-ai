@@ -486,20 +486,31 @@ describe('calculateWorkspaceStorageUsage', () => {
   })
 
   test('namespaces with no configured bucket are reported as unmeasured', async () => {
+    // Pin the deployment: on cloud the project bucket is always expected, so an
+    // unset S3_PROJECT_BUCKET is unmeasured rather than silently zero. (Desktop
+    // is the other half, covered by the project-bucket test below.)
+    const savedLocalMode = process.env.SHOGO_LOCAL_MODE
+    process.env.SHOGO_LOCAL_MODE = 'false'
     findManyWs.mockImplementation(async () => [
       { id: 'ws_env', instanceSize: 'micro', personalOwnerId: null },
     ])
     findManyProject.mockImplementation(async () => [])
 
-    const result = await calculateWorkspaceStorageUsage('ws_env')
+    try {
+      const result = await calculateWorkspaceStorageUsage('ws_env')
 
-    expect(result.totalBytes).toBe(0)
-    expect(result.unmeasured).toEqual([
-      'METAL_SNAP_BUCKET',
-      'PUBLISH_BUCKET',
-      'PUBLISH_DATA_BUCKET',
-      'artifacts',
-    ])
+      expect(result.totalBytes).toBe(0)
+      expect(result.unmeasured).toEqual([
+        'METAL_SNAP_BUCKET',
+        'PUBLISH_BUCKET',
+        'PUBLISH_DATA_BUCKET',
+        'S3_PROJECT_BUCKET',
+        'artifacts',
+      ])
+    } finally {
+      if (savedLocalMode === undefined) delete process.env.SHOGO_LOCAL_MODE
+      else process.env.SHOGO_LOCAL_MODE = savedLocalMode
+    }
   })
 
   test('the daily row keeps the day peak when a later pass is smaller', async () => {
