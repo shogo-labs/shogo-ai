@@ -2000,6 +2000,7 @@ export function MetricTrendChart({
   height = 240,
   allowCumulative = false,
   baselines,
+  fillHeight = false,
 }: {
   title: string
   subtitle?: string
@@ -2015,6 +2016,11 @@ export function MetricTrendChart({
    * `baseline + sum(window)`, so it lines up with a "Total X" stat card.
    */
   baselines?: Record<string, number>
+  /**
+   * Stretch the card and its plot to the height of the row it sits in, so two
+   * charts side by side end on the same edge even when one header wraps.
+   */
+  fillHeight?: boolean
 }) {
   const { width } = useWindowDimensions()
   const isNativeNarrow = isNativePlatform()
@@ -2028,6 +2034,9 @@ export function MetricTrendChart({
     ? [{ id: metric.id, label: metric.label, color: metric.color ?? STACKED_PALETTE[0] }]
     : []
   const fmt = metric?.format ?? ((n: number) => formatNumber(n))
+  // Filling: the plot takes the leftover height (never below `height`); fixed
+  // otherwise, so every existing caller keeps its exact box.
+  const plotStyle = fillHeight ? { flex: 1, minHeight: height } : { height }
 
   const isCumulative = allowCumulative && mode === 'cumulative'
   const chartDays = useMemo<StackedDay[]>(() => {
@@ -2040,7 +2049,7 @@ export function MetricTrendChart({
   }, [days, isCumulative, metric, baselines])
 
   return (
-    <View className="rounded-xl border border-border bg-card p-4 gap-3">
+    <View className={cn('rounded-xl border border-border bg-card p-4 gap-3', fillHeight && 'flex-1')}>
       <View className={cn(isNativeNarrow ? 'gap-3' : 'flex-row items-center justify-between flex-wrap gap-2')}>
         <View className={isNativeNarrow ? undefined : 'flex-1 min-w-[140px]'}>
           <Text className="text-sm font-semibold text-foreground">{title}</Text>
@@ -2071,9 +2080,9 @@ export function MetricTrendChart({
       </View>
 
       {loading ? (
-        <View style={{ height }} className="items-center justify-center"><ActivityIndicator /></View>
+        <View style={plotStyle} className="items-center justify-center"><ActivityIndicator /></View>
       ) : days.length === 0 ? (
-        <View style={{ height }} className="items-center justify-center">
+        <View style={plotStyle} className="items-center justify-center">
           <Text className="text-sm text-muted-foreground">No data for this period</Text>
         </View>
       ) : (
@@ -2081,6 +2090,7 @@ export function MetricTrendChart({
           days={chartDays}
           series={series}
           height={height}
+          fillHeight={fillHeight}
           variant={metric?.kind === 'rate' || isCumulative ? 'area' : 'bar'}
           formatY={fmt}
           formatTooltip={fmt}
@@ -2111,10 +2121,12 @@ export function ActivityTrendsChart({
   data,
   loading,
   title = 'Activity Trends',
+  fillHeight,
 }: {
   data: ActivityTimeseriesPoint[] | null
   loading?: boolean
   title?: string
+  fillHeight?: boolean
 }) {
   const days: StackedDay[] = (data ?? []).map((d) => ({
     date: d.date,
@@ -2144,6 +2156,7 @@ export function ActivityTrendsChart({
       loading={loading}
       days={days}
       metrics={metrics}
+      fillHeight={fillHeight}
     />
   )
 }
@@ -2238,9 +2251,11 @@ export interface ActiveUsersTimeseriesPoint {
 export function ActiveUsersTrendChart({
   data,
   loading,
+  fillHeight,
 }: {
   data: ActiveUsersTimeseriesPoint[] | null
   loading?: boolean
+  fillHeight?: boolean
 }) {
   const days: StackedDay[] = (data ?? []).map((d) => ({
     date: d.date,
@@ -2258,6 +2273,7 @@ export function ActiveUsersTrendChart({
       loading={loading}
       days={days}
       metrics={metrics}
+      fillHeight={fillHeight}
     />
   )
 }
