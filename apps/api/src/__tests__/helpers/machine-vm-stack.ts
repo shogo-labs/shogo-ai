@@ -21,7 +21,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, normalize } from 'node:path'
 import { FakeLlmServer } from '../../../../desktop/e2e/streaming/fake-llm-server'
-import { httpClient, pairMachine, REPO_ROOT, sessionUserId, startCloud } from './machine-vm-harness'
+import { CLOUD_AUTH_SECRET, httpClient, pairMachine, REPO_ROOT, sessionUserId, startCloud } from './machine-vm-harness'
 import { seedWorkspace } from './machine-vm-surfaces'
 
 const PG_URL = process.env.CHANNELS_TEST_PG_URL
@@ -67,6 +67,9 @@ const state = {
   cloud: cloud.base,
   cloudUserId: await sessionUserId(cloud.base, machine.cookies),
   localUserId: await sessionUserId(machine.localApiBase, machine.localCookies),
+  // A `share_file` link is signed with this on the writing side and verified on
+  // the serving side, so a browser spec has to sign with the same value.
+  shareSecret: CLOUD_AUTH_SECRET,
   ...machine,
   log: undefined,
   seeds,

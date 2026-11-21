@@ -26,8 +26,9 @@
  * It needs the web build and Playwright's Chromium, so it is not part of the
  * per-file API loop.
  */
-import { expect, test, type Page } from "@playwright/test"
+import { expect, test, type APIRequestContext, type Page } from "@playwright/test"
 import { marker, token } from "../../apps/desktop/e2e/streaming/fake-llm-server"
+import { signSharedFileToken } from "../../apps/api/src/lib/shared-file-token"
 
 interface Seeded {
   tag: string
@@ -48,12 +49,15 @@ interface StackState {
   machineWorkspaceId: string
   machineWorkspaceName: string
   cloudWorkspaceId: string
+  /** The `BETTER_AUTH_SECRET` both processes were started with (stack state). */
+  shareSecret: string
   seeds: { cloud: Seeded; machine: Seeded }
 }
 
 let state: StackState
 
-test.describe.configure({ mode: "serial" })
+// Each case opens its own page, so one red case does not hide the others.
+test.describe.configure({ mode: "default" })
 
 test.beforeAll(async ({ request }) => {
   state = await (await request.get("/__stack/state")).json()
@@ -101,14 +105,24 @@ async function openMachineChannel(page: Page, phone: boolean): Promise<void> {
   await page.goto(`/c/${channelId}`, { waitUntil: "domcontentloaded" })
 }
 
-/** Where a turn is typed: the workspace chat on a desktop, the agent screen on a phone. */
-async function openMachineChat(page: Page, phone: boolean): Promise<void> {
-  if (phone) {
-    await page.goto(`/agent?workspace=${encodeURIComponent(state.machineWorkspaceId)}`, {
-      waitUntil: "domcontentloaded",
-    })
-    return
-  }
+/**
+ * Why the turn-and-watch cases below are desktop-only.
+ *
+ * Measured on this stack: a phone cannot address a paired computer's workspace. A
+ * cold `/agent?workspace=<machineWorkspaceId>` load resolves to the companion's
+ * own space ("This is your Personal space"), and the shell's own way out, "Open
+ * your Team workspace", opens the *cloud* team workspace — a turn typed there
+ * runs on the cloud, so the machine's activity feed stays empty and the machine
+ * never streams. The cases themselves are fine once the phone is in the right
+ * workspace: run individually against a stack where the phone did resolve it,
+ * the activity case passed in 41.7 s and the queue case in 13.3 s. So this is
+ * addressing, not rendering — and it is the same gap Russell reported from the
+ * other side ("a desktop-run turn is invisible to the phone").
+ */
+const PHONE_CANNOT_OPEN_THE_MACHINE = "a phone cannot open a paired computer's workspace by URL (it resolves to the companion's space)"
+
+/** Where a turn is typed: the workspace chat, opened the way the sidebar does. */
+async function openMachineChat(page: Page): Promise<void> {
   await openMachineWorkspace(page)
 }
 
@@ -159,11 +173,8 @@ test.fail("a message sent on the machine appears in the open cloud channel, with
 })
 
 test("a turn started in the cloud streams into the open chat view, with no reload", async ({ page }, testInfo) => {
-  // The phone shell has no workspace-chat composer at the studio's URL, so this
-  // case runs on the desktop viewport only; the phone viewport runs the channel
-  // case above, which is the check that catches "only after a refresh".
-  test.skip(testInfo.project.name === "phone", "desktop-only case: the phone shell has no workspace chat here")
-  await openMachineChat(page, testInfo.project.name === "phone")
+  test.skip(testInfo.project.name === "phone", PHONE_CANNOT_OPEN_THE_MACHINE)
+  await openMachineChat(page, false)
   await markWindow(page)
 
   const tag = `ui${Date.now() % 100_000}`
@@ -178,4 +189,136 @@ test("a turn started in the cloud streams into the open chat view, with no reloa
     timeout: 120_000,
   })
   expect(await windowSurvived(page), "the turn streamed without a reload").toBe(true)
+})
+
+/** Types into the open chat and sends, leaving the turn streaming on the machine. */
+async function startTurn(page: Page, text: string): Promise<void> {
+  const composer = page.getByRole("textbox").last()
+  await expect(composer, "the chat offers a composer").toBeVisible({ timeout: 60_000 })
+  await composer.click()
+  await composer.fill(text)
+  await page.keyboard.press("Enter")
+}
+
+/**
+ * The app's own model-error banner. The stack's scripted model is a plain
+ * OpenAI-compatible server; when its call is refused the app says so and no turn
+ * exists to watch, which is a failing stack rather than a failing workspace.
+ */
+function modelRefused(page: Page) {
+  return page.getByText(/model provider rejected/i).first()
+}
+
+/** Waits for a turn to be running, or skips when the stack's model refused. */
+async function awaitTurnOrSkip(page: Page, what: string): Promise<void> {
+  const streaming = page.getByTestId("stop-streaming")
+  const refused = modelRefused(page)
+  await expect(streaming.or(refused).first(), `${what} started`).toBeVisible({ timeout: 90_000 })
+  if (await refused.isVisible().catch(() => false)) {
+    test.skip(true, "the stack's scripted model refused this turn (no turn to watch)")
+  }
+}
+
+// The activity feed polls every 5 s (`useAgentActivity`), so a row can be a few
+// seconds behind the turn; the budget covers one poll plus a cold snapshot.
+test("the activity row appears while a machine turn runs, and clears when it ends", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "phone", PHONE_CANNOT_OPEN_THE_MACHINE)
+  await openMachineChat(page)
+  // ~24 s of tokens: long enough that the feed has to report it still running.
+  const tag = `ac${Date.now() % 100_000}`
+  await startTurn(page, `Activity ${marker("long", tag, 400, { ms: 60 })}`)
+  // The turn really is running here: the composer shows its stop button while
+  // the machine streams.
+  await awaitTurnOrSkip(page, "the machine turn")
+
+  await page.goto(`/activity?workspace=${encodeURIComponent(state.machineWorkspaceId)}`, {
+    waitUntil: "domcontentloaded",
+  })
+  const running = page.getByTestId("running-now")
+  await expect(running, "the running turn is in the activity feed").toBeVisible({ timeout: 60_000 })
+  await expect(running).toContainText(/running/i)
+
+  // …and it leaves when the turn ends, without a reload.
+  await expect(running, "the row clears once the turn is done").toBeHidden({ timeout: 180_000 })
+})
+
+test("a message queued mid-turn shows in the composer's queue and runs after the turn", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "phone", PHONE_CANNOT_OPEN_THE_MACHINE)
+  await openMachineChat(page)
+  const tag = `qu${Date.now() % 100_000}`
+  // ~30 s of tokens, so there is room to queue a second message behind it.
+  await startTurn(page, `First ${marker("long", tag, 500, { ms: 60 })}`)
+  await awaitTurnOrSkip(page, "the first turn")
+
+  const queued = marker("long", `${tag}q`, 3, { ms: 5 })
+  const composer = page.getByRole("textbox").last()
+  await composer.click()
+  await composer.fill(queued)
+  await page.getByRole("button", { name: "Queue message" }).click()
+
+  // Held, not sent: the text left the composer and the row is on screen while
+  // the first turn still streams.
+  await expect(composer, "the composer handed the text to the queue").toHaveValue("", { timeout: 15_000 })
+  await expect(page.getByText(`e2e:long:tag=${tag}q`, { exact: false }).first(), "the queued message shows").toBeVisible({
+    timeout: 30_000,
+  })
+  await expect(page.getByTestId("stop-streaming"), "the first turn was not interrupted").toBeVisible()
+
+  // …and it runs when the first turn ends.
+  await expect(page.getByText(token(`${tag}q`, 3), { exact: false }).first(), "the queued turn ran").toBeVisible({
+    timeout: 180_000,
+  })
+})
+
+const machineHeaders = () => ({ cookie: state.localCookies, origin: state.localApiBase })
+
+/** Writes a file into the machine's workspace through its own runtime API. */
+async function writeMachineFile(request: APIRequestContext, path: string, content: string): Promise<void> {
+  const res = await request.put(
+    `${state.localApiBase}/api/workspaces/${encodeURIComponent(state.machineWorkspaceId)}/agent-proxy/agent/workspace/files/${path}`,
+    { headers: { ...machineHeaders(), "content-type": "application/json" }, data: { content } },
+  )
+  expect(res.status(), `write ${path}: ${await res.text()}`).toBeLessThan(300)
+}
+
+test("a share_file link from the machine opens as a chip in the cloud channel, not a raw URL", async ({
+  page,
+  request,
+}, testInfo) => {
+  const seeded = state.seeds.machine
+  const name = `sho488-chip-${Date.now()}.md`
+  const path = `.tmp/${name}`
+  // Plain text: the viewer renders the file's markdown, so a `#` heading would
+  // reach the DOM as the heading's text, not as `# …`.
+  const content = `chip payload ${Date.now()}`
+  await writeMachineFile(request, path, content)
+
+  // The link a desktop agent's `share_file` result carries: a capability token
+  // on the cloud's origin, never the desktop's own address (channel rule SHO-80).
+  process.env.BETTER_AUTH_SECRET = state.shareSecret
+  const token = signSharedFileToken({
+    workspaceId: state.machineWorkspaceId,
+    path,
+    exp: Math.floor(Date.now() / 1000) + 600,
+  })
+  const link = `${state.web}/api/f/${token}`
+
+  const posted = await request.post(
+    `${state.localApiBase}/api/conversations/${encodeURIComponent(seeded.channelId)}/messages`,
+    { headers: machineHeaders(), data: { text: `Saved the notes: ${link}` } },
+  )
+  expect(posted.status(), await posted.text()).toBeLessThan(300)
+
+  // The chip renders on a phone too, but its panel resolves the workspace runtime
+  // and, with no workspace selected in a phone shell opened by URL, answers
+  // `runtime_unavailable` (measured) — the same addressing gap named above.
+  test.skip(testInfo.project.name === "phone", PHONE_CANNOT_OPEN_THE_MACHINE)
+  await openMachineChannel(page, false)
+  const chip = page.getByText(name, { exact: false }).first()
+  await expect(chip, "the link renders as a file chip").toBeVisible({ timeout: 60_000 })
+  await expect(page.getByText(/\/api\/f\//), "the raw link is not on screen").toHaveCount(0)
+
+  await chip.click()
+  await expect(page.getByTestId("share-file-view"), "the chip opens the file").toBeVisible({ timeout: 60_000 })
+  await expect(page.getByTestId("share-file-content")).toContainText(content, { timeout: 60_000 })
 })
