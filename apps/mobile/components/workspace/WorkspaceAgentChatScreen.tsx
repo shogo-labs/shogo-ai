@@ -69,7 +69,7 @@ import { PlansPanel } from "../project/panels/PlansPanel"
 import { ShareFileProvider, type ShareFileTarget } from "../chat/share-file-context"
 import { ShareFileView } from "../chat/ShareFileViewer"
 import { WorkspaceFileViewer } from "./WorkspaceFileViewer"
-import { buildWorkingSetDockPanel } from "./WorkingSetDockPanel"
+import { buildWorkingSetDockPanel, useWorkingSetRevision } from "./WorkingSetDockPanel"
 import { useFileLinkArrival } from "./use-file-link-arrival"
 import { filePaneTarget } from "../chat/remote-project-paths"
 import { projectAgentProxyBase } from "../../lib/agent-proxy-base"
@@ -544,6 +544,16 @@ export const WorkspaceAgentChatScreen = observer(
     }, [sessionId])
 
     const hasSidePane = width >= PROJECT_SIDE_PANE_MIN_WIDTH && !usesMobileWorkspaceChrome
+    // The dock re-renders a panel's body only when its `revision` changes (it
+    // ignores `render`, see `panelsObservablyEqual`), so the Working set's
+    // revision has to follow what its chips show — above all which project the
+    // side pane holds, which no other observable field carries.
+    const workingSetRevision = useWorkingSetRevision({
+      attachments,
+      focusedProjectId,
+      hasSidePane,
+      paneProjectId: projectPane?.projectId ?? null,
+    })
     // Plan, project, and file panes share one slot: opening any of them closes the others.
     const openProjectPane = useCallback((request: OpenProjectPaneRequest) => {
       setPlanPane(null)
@@ -1048,6 +1058,7 @@ export const WorkspaceAgentChatScreen = observer(
                 ? pressWorkingSetChip
                 : openProjectFromSheet,
               onManage: () => setScopeSheetOpen(true),
+              revision: workingSetRevision,
             }),
           ]
         : undefined

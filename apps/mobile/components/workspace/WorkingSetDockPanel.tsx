@@ -16,6 +16,7 @@
  * it hands the descriptor down through `ChatPanel`'s `dockPanels` prop.
  */
 
+import { useRef } from "react"
 import { Pressable, Text, View } from "react-native"
 import { FolderKanban, SlidersHorizontal } from "lucide-react-native"
 import type { DockPanelDescriptor } from "../../lib/chat-dock-store"
@@ -40,6 +41,57 @@ export interface WorkingSetDockPanelOptions {
   paneProjectId: string | null
   onPressChip: (projectId: string) => void
   onManage: () => void
+  /**
+   * Changes whenever the expanded body's markup would (see
+   * `useWorkingSetRevision`). Without it the dock keeps the previous body:
+   * `panelsObservablyEqual` deliberately ignores `render`, and none of the
+   * header fields move when the pane opens or closes — the chip would stay
+   * `aria-selected` with no pane, and its handler would be the stale closure.
+   */
+  revision: number
+}
+
+/** The parts of the panel's state its expanded body is rendered from. */
+type WorkingSetBodyState = Pick<
+  WorkingSetDockPanelOptions,
+  "attachments" | "focusedProjectId" | "hasSidePane" | "paneProjectId"
+>
+
+/**
+ * A stable string for "what the chips show": the attachments (by row id, so a
+ * detach + reattach counts) and which chip is highlighted — the pane's project
+ * on a wide screen, the focused project on a phone.
+ */
+export function workingSetBodyKey({
+  attachments,
+  focusedProjectId,
+  hasSidePane,
+  paneProjectId,
+}: WorkingSetBodyState): string {
+  return [
+    attachments
+      .map((attachment) => `${attachment.id}:${attachment.projectId}`)
+      .join(","),
+    hasSidePane ? (paneProjectId ?? "") : (focusedProjectId ?? ""),
+  ].join("|")
+}
+
+/**
+ * The `revision` the dock needs to re-render this panel's body.
+ *
+ * A counter bumped from the body state — never a per-render value, which would
+ * make every render of the host look like a content change and defeat the
+ * store's equality check.
+ */
+export function useWorkingSetRevision(state: WorkingSetBodyState): number {
+  const key = workingSetBodyKey(state)
+  const revision = useRef(0)
+  const lastKey = useRef(key)
+  if (lastKey.current !== key) {
+    lastKey.current = key
+    revision.current += 1
+  }
+  return revision.current
 }
 
 export function buildWorkingSetDockPanel({
@@ -50,6 +102,7 @@ export function buildWorkingSetDockPanel({
   paneProjectId,
   onPressChip,
   onManage,
+  revision,
 }: WorkingSetDockPanelOptions): DockPanelDescriptor {
   const focusedId = focusedProjectId ?? attachments[0]?.projectId ?? null
   const focusedName = focusedId ? projectName(focusedId) : undefined
@@ -64,6 +117,7 @@ export function buildWorkingSetDockPanel({
     title: "Working set",
     icon: FolderKanban,
     summary,
+    revision,
     defaultExpanded: false,
     // Keep the scope sheet one tap away while the panel is collapsed.
     headerActions: (
