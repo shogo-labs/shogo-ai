@@ -87,8 +87,13 @@ should show the bytes under `bucket` in the workspace breakdown, and
   Worker's copy out of the Terraform source and fails if the two drift — keep it
   passing rather than editing one side alone.
 - **`cdn.` is a Worker route on the publish zone** (`*.${publish_domain}/*`), so a
-  `production-eu` overlay with `enable_publish_hosting = false` gets no CDN. The
-  bucket still works there; public URLs fall back to the API's redirect route.
+  `production-eu` overlay with `enable_publish_hosting = false` gets no CDN. Its
+  bucket works only because that overlay sets `S3_PROJECT_BUCKET` explicitly to
+  the production bucket — EU has no bucket or PAR of its own, so its project
+  bytes land in Ashburn, and the CDN is the only thing it lacks. Drop the var and
+  the bucket API answers `503 bucket_not_configured` and the `bucket` storage
+  category reads as unmeasured for EU-homed workspaces. Public URLs fall back to
+  the API's redirect route.
 - **Eventual consistency on PARs.** OCI's PAR API can 404 for a moment against a
   brand-new bucket; that is why `publish_hosting` `depends_on` the
   object-storage module. Do not remove it.

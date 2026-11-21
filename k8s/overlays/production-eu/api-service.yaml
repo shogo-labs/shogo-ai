@@ -276,6 +276,21 @@ spec:
             # Writable-state bucket for SERVER-BACKED published apps.
             - name: PUBLISH_DATA_BUCKET
               value: "shogo-published-data-production"
+            # Project bucket (SHO-491) — where the agent and the apps it builds
+            # keep big media instead of committing it. MUST match
+            # `shogo-project-buckets-${var.environment}` in
+            # terraform/modules/object-storage. EU reuses the production bucket
+            # exactly like PUBLISH_BUCKET/PUBLISH_DATA_BUCKET above: there is no
+            # EU bucket or PAR yet, so these bytes land in Ashburn — revisit that
+            # if project media ever has to stay in the EU (the LLM-capture
+            # buckets above exist for that reason). Without this var the bucket
+            # API answers 503 bucket_not_configured and the storage pass reports
+            # `bucket` as unmeasured for EU-homed workspaces. Public URLs fall
+            # back to the API's redirect route here: the `cdn.` host is a route
+            # on the US publish Worker, which an `enable_publish_hosting = false`
+            # overlay does not get.
+            - name: S3_PROJECT_BUCKET
+              value: "shogo-project-buckets-production"
             - name: PUBLISH_DOMAIN
               value: "shogo.one"
             # --- Custom domains (Cloudflare for SaaS) ----------------------
