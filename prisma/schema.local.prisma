@@ -644,6 +644,7 @@ model Project {
   agentConfig            AgentConfig?
   agentTasks             AgentTask[]
   nativeApp              NativeApp?
+  bucketObjects          ProjectBucketObject[]
   meetings               Meeting[]
   marketplaceListing     MarketplaceListing?
   voiceConfig            VoiceProjectConfig?
@@ -5696,4 +5697,32 @@ model WhatsAppNumberBinding {
   @@index([workspaceId])
   @@index([projectId])
   @@map("whatsapp_number_bindings")
+}
+
+// =============================================================================
+// PROJECT BUCKET (SHO-491) — per-project Shogo-hosted object storage + CDN
+// =============================================================================
+
+/// One row per object in a project's bucket: the index `/bucket/objects`
+/// lists, the storage meter counts under `bucket`, and the upload gate reads.
+/// Bytes live under `<dataDir>/project-buckets/<projectId>/<visibility>/<key>`
+/// on desktop and `p/<projectId>/<visibility>/<key>` in `S3_PROJECT_BUCKET`.
+model ProjectBucketObject {
+  id          String   @id @default(cuid())
+  projectId   String
+  key         String
+  visibility  String   @default("public")
+  size        BigInt   @default(0)
+  contentType String?
+  etag        String?
+  sha256      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, visibility, key])
+  @@index([projectId])
+  @@index([createdAt])
+  @@map("project_bucket_objects")
 }

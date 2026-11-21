@@ -40,6 +40,14 @@ export interface ShogoClientConfig<DB = unknown> {
   shogoCloudUrl?: string
 
   /**
+   * Override the public URL base for `client.bucket.url()` (the CDN host on
+   * cloud, e.g. `https://cdn.shogo.one`). Defaults to `SHOGO_BUCKET_CDN_BASE`
+   * in the env; when neither is set the SDK resolves it from the API on the
+   * first bucket call.
+   */
+  bucketCdnBaseUrl?: string
+
+  /**
    * Shogo project id. Required for Mode B voice telephony, pod-native
    * runtime-token voice telephony, and also forwarded to the direct
    * (Mode A) telephony client as a bookkeeping handle.

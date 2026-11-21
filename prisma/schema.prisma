@@ -791,6 +791,7 @@ model Project {
   customDomains          CustomDomain[]
   agentTasks             AgentTask[]
   nativeApp              NativeApp?
+  bucketObjects          ProjectBucketObject[]
 
   @@index([workspaceId])
   @@index([workspaceId, hidden])
@@ -7021,4 +7022,40 @@ model WhatsAppNumberBinding {
   @@index([workspaceId])
   @@index([projectId])
   @@map("whatsapp_number_bindings")
+}
+
+// =============================================================================
+// PROJECT BUCKET (SHO-491) — per-project Shogo-hosted object storage + CDN
+// =============================================================================
+//
+// One row per object the agent (or the app, through the SDK) put in the
+// project's bucket. The bytes live in `S3_PROJECT_BUCKET` under
+// `p/<projectId>/<visibility>/<key>` (cloud) or under
+// `<dataDir>/project-buckets/<projectId>/<visibility>/<key>` (desktop); this
+// table is the index the API lists, the storage meter counts against the
+// `bucket` category, and the upload gate reads to price an upload between two
+// measurement passes. Deleting the project cascades the rows and purges the
+// prefix.
+model ProjectBucketObject {
+  id          String   @id @default(cuid())
+  projectId   String
+  /// Project-relative key as the caller wrote it (no leading slash, no `..`).
+  key         String
+  /// `public` (served by the CDN) or `private` (presigned reads only).
+  visibility  String   @default("public")
+  size        BigInt   @default(0)
+  contentType String?
+  /// S3 ETag with quotes stripped. Multipart uploads end in `-<parts>`.
+  etag        String?
+  /// Hex sha256, when the caller supplied it on the upload ticket.
+  sha256      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, visibility, key])
+  @@index([projectId])
+  @@index([createdAt])
+  @@map("project_bucket_objects")
 }

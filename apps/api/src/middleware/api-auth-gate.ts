@@ -52,6 +52,12 @@ export const GATE_PUBLIC_PREFIXES = [
   // learn.shogo.ai: every route authenticates itself with the learn token or a
   // Studio session, and `/me` answers signed-out visitors too (routes/learn.ts).
   '/api/learn/',
+  // The project bucket's CDN stand-in (`GET /api/bucket/<projectId>/<visibility>/<key>`,
+  // SHO-491). There is no CDN on desktop, so the local API serves the bytes:
+  // public objects to anyone (they are public — that is what the CDN does on
+  // cloud), a private object only with the HMAC token from `signedUrl`. The
+  // route itself 404s on cloud and validates the token per request.
+  '/api/bucket/',
 ]
 
 function isWebchatProxyPath(path: string): boolean {
