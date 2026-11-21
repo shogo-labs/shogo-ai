@@ -103,8 +103,9 @@ export async function getSubscriptions(workspaceId: string) {
  *    workspace always resolves to Free even when the host desktop has a paid
  *    entitlement, locking every non-economy model for mobile users.
  *    Safety guard: we only follow the hop when the instance's `userId` is a
- *    member of the hosted workspace, so an unpaired or reassigned machine
- *    cannot lend its entitlement to a workspace its owner isn't part of.
+ *    member of the hosted workspace AND a current owner or billing admin of
+ *    the paying workspace (SEC-29), so an unpaired or reassigned machine, a
+ *    plain member, or an ex-member cannot lend that plan and wallet out.
  *
  * Hierarchy is intentionally a single level (never recurse): only
  * Business/Enterprise workspaces may have children, and a hosted workspace
@@ -139,7 +140,17 @@ export async function resolveBillingWorkspaceId(workspaceId: string): Promise<st
         where: { workspaceId, userId: instance.userId, projectId: null },
         select: { id: true },
       });
-      if (membership) return instance.workspaceId;
+      // SEC-29: being a member of the hosted workspace is not enough. The plan
+      // and wallet being lent belong to the paying workspace, so its holder
+      // must still be an owner or billing admin there; a plain member, or
+      // someone since removed, cannot hand them to outside workspaces.
+      if (membership) {
+        const payer = await prisma.member.findFirst({
+          where: { workspaceId: instance.workspaceId, userId: instance.userId, projectId: null },
+          select: { role: true, isBillingAdmin: true },
+        });
+        if (payer && (payer.role === 'owner' || payer.isBillingAdmin)) return instance.workspaceId;
+      }
     }
   }
 

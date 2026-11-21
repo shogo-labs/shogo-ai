@@ -794,6 +794,61 @@ describe('activity tracking', () => {
 })
 
 // ---------------------------------------------------------------------------
+// SEC-30: an unassigned warm runtime is not an open control channel
+// ---------------------------------------------------------------------------
+describe('SEC-30 unassigned pool runtime', () => {
+  const poolEnv = { PROJECT_ID: '__POOL__', WARM_POOL_MODE: 'true', WORKSPACE_ID: undefined }
+
+  test('refuses hydrate and every other /pool/* call before assignment, with no credentials', async () => {
+    const { app } = await buildApp({ env: poolEnv })
+    let ran = 0
+    app.post('/pool/hydrate', (c) => { ran++; return c.json({ ok: true }) })
+    app.post('/pool/hydrate-url', (c) => { ran++; return c.json({ ok: true }) })
+    app.post('/pool/export', (c) => { ran++; return c.json({ ok: true }) })
+    for (const path of ['/pool/hydrate', '/pool/hydrate-url', '/pool/export', '/pool/refresh-env']) {
+      const res = await app.request(path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'ftp://x' }),
+      })
+      expect(res.status).toBe(403)
+    }
+    expect(ran).toBe(0)
+  })
+
+  test('still answers the activity poll before assignment', async () => {
+    const { app } = await buildApp({ env: poolEnv })
+    expect((await app.request('/pool/activity')).status).toBe(200)
+  })
+
+  test('requires the pool bootstrap secret on /pool/assign when one is set', async () => {
+    const { app, state } = await buildApp({ env: { ...poolEnv, POOL_BOOTSTRAP_SECRET: 'boot-secret-1' } })
+    const body = JSON.stringify({ projectId: 'p1', env: { RUNTIME_AUTH_SECRET: 'attacker' } })
+    const missing = await app.request('/pool/assign', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body,
+    })
+    expect(missing.status).toBe(401)
+    const wrong = await app.request('/pool/assign', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-pool-bootstrap-secret': 'boot-secret-2' }, body,
+    })
+    expect(wrong.status).toBe(401)
+    expect(state.poolAssigned).toBe(false)
+    expect(process.env.RUNTIME_AUTH_SECRET).not.toBe('attacker')
+  })
+
+  test('accepts /pool/assign with the right bootstrap secret', async () => {
+    const { app, state } = await buildApp({ env: { ...poolEnv, POOL_BOOTSTRAP_SECRET: 'boot-secret-1' } })
+    const res = await app.request('/pool/assign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-pool-bootstrap-secret': 'boot-secret-1' },
+      body: JSON.stringify({ projectId: 'p1', env: {} }),
+    })
+    expect(res.status).toBe(200)
+    expect(state.poolAssigned).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // /pool/assign
 // ---------------------------------------------------------------------------
 describe('/pool/assign', () => {
@@ -1087,15 +1142,14 @@ describe('/pool/refresh-env', () => {
     const { app } = await buildApp({
       env: { PROJECT_ID: '__POOL__', WARM_POOL_MODE: 'true' },
     })
-    // Pre-assignment /pool/* has no auth bypass beyond assign/activity, but the
-    // handler still guards on poolAssigned. Send auth so we hit the handler.
+    // Pre-assignment only assign/activity are served (SEC-30), even with auth.
     const res = await app.request('/pool/refresh-env', {
       method: 'POST',
       headers: AUTH,
       body: JSON.stringify({ projectId: 'p1', env: {} }),
     })
-    expect(res.status).toBe(400)
-    expect((await res.json()).error).toMatch(/Not assigned/)
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toMatch(/not assigned/)
   })
 
   test('requires auth once assigned', async () => {

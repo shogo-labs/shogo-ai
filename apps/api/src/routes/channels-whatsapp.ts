@@ -20,6 +20,7 @@ import { Hono } from 'hono'
 import { randomBytes } from 'node:crypto'
 import { timingSafeEqual } from 'node:crypto'
 import { prisma } from '../lib/prisma'
+import { loadAccess } from '../lib/authz'
 import { encryptSecret, decryptSecret } from '../lib/secret-crypto'
 import { whatsappEmbeddedSignupAvailable } from '../lib/whatsapp-platform'
 import { WHATSAPP_API_BASE, WHATSAPP_GRAPH_VERSION, verifyMetaSignature } from '@shogo/shared-runtime/whatsapp-graph'
@@ -298,6 +299,31 @@ h1{color:#dc2626}p{color:#64748b}</style></head>
 <body><div class="card"><h1>Connection Error</h1><p>${msg.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</p></div></body></html>`
 }
 
+/**
+ * SEC-28: may a WhatsApp number be bound to this project for this workspace?
+ *
+ * A project that exists in this database must belong to the workspace the
+ * link is issued for (and, when a user is named, that user must be able to
+ * edit it). A project id this database does not know is a paired desktop's
+ * local project, which is only ever bound through that desktop's instance.
+ */
+export async function whatsappBindingAllowed(opts: {
+  workspaceId: string
+  projectId: string
+  instanceId: string | null
+  userId?: string | null
+}): Promise<boolean> {
+  const project = await prisma.project.findUnique({
+    where: { id: opts.projectId },
+    select: { workspaceId: true },
+  })
+  if (!project) return Boolean(opts.instanceId)
+  if (project.workspaceId !== opts.workspaceId) return false
+  if (!opts.userId || opts.userId === 'runtime') return true
+  const access = await loadAccess({ userId: opts.userId, via: 'session' }, { projectId: opts.projectId })
+  return access.permissions.has('project:update')
+}
+
 // ─── Route factory ────────────────────────────────────────────────────────────
 
 export type WhatsAppChannelRoutesConfig = {
@@ -320,6 +346,8 @@ export function whatsappChannelRoutes(config: WhatsAppChannelRoutesConfig) {
       select: { workspaceId: true },
     })
     if (!project) return c.json({ error: 'Project not found' }, 404)
+    const access = await loadAccess({ userId, via: 'session' }, { projectId })
+    if (!access.permissions.has('project:update')) return c.json({ error: 'Project not found' }, 404)
 
     const localMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
@@ -377,6 +405,14 @@ export function whatsappChannelRoutes(config: WhatsAppChannelRoutesConfig) {
 
     const workspaceId = instance?.workspaceId ?? keyResult.workspaceId
     if (!workspaceId) return c.json({ error: 'Cannot determine workspace for this device' }, 400)
+
+    const allowed = await whatsappBindingAllowed({
+      workspaceId,
+      projectId,
+      instanceId: instance?.id ?? null,
+      userId: keyResult.userId,
+    })
+    if (!allowed) return c.json({ error: 'Project not found in this workspace' }, 403)
 
     return issueConnectLink(c, {
       workspaceId,
@@ -479,6 +515,15 @@ export function whatsappChannelRoutes(config: WhatsAppChannelRoutesConfig) {
     }
 
     if (!phoneNumberId) return c.json({ error: 'Could not determine phone number ID' }, 400)
+
+    // SEC-28: the signed state names the project; it must still belong to the
+    // workspace the link was issued for before anything is written.
+    const bindingAllowed = await whatsappBindingAllowed({
+      workspaceId: state.workspaceId,
+      projectId: state.projectId,
+      instanceId: state.instanceId ?? null,
+    })
+    if (!bindingAllowed) return c.json({ error: 'Project not found in this workspace' }, 403)
 
     // 3. Conflict check: same number, different project
     const existingBinding = await prisma.whatsAppNumberBinding.findUnique({ where: { phoneNumberId } })

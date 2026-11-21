@@ -42,6 +42,7 @@ mock.module('@shogo/shared-runtime', () => ({
   },
 }))
 import { WarmPoolController, type WarmPodInfo, type RuntimeType } from '../warm-pool-controller'
+import { derivePoolBootstrapSecret } from '../runtime-token'
 import * as k8s from '@kubernetes/client-node'
 
 // Mock Kubernetes API responses
@@ -490,7 +491,10 @@ describe('WarmPoolController', () => {
         'http://warm-pool-project-test.test-namespace.svc.cluster.local/pool/assign',
         expect.objectContaining({
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-pool-bootstrap-secret': derivePoolBootstrapSecret('warm-pool-project-test'),
+          },
           body: JSON.stringify({
             projectId: 'test-project-123',
             env: {
