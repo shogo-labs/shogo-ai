@@ -657,6 +657,21 @@ async function claimRow(chatSessionId: string, rowId: string): Promise<QueueRow 
 }
 
 /**
+ * Run one step of a failure path, logging whatever it throws.
+ *
+ * Everything that follows a failed dispatch is cleanup, and cleanup that throws
+ * used to reject `startClaimedRow` itself — the handler became the unhandled
+ * rejection it existed to prevent (SHO-482).
+ */
+async function bestEffort(rowId: string, step: string, run: () => Promise<unknown>): Promise<void> {
+  try {
+    await run()
+  } catch (err: any) {
+    console.warn(`[ChatQueue] Post-failure ${step} for ${rowId} failed:`, err?.message ?? err)
+  }
+}
+
+/**
  * Persist and start a row this process has claimed, and settle the row with the
  * outcome: deleted when its turn started, `failed` with the reason when it did
  * not. Returns that outcome, so the caller that has a person waiting on the
@@ -685,19 +700,26 @@ async function startClaimedRow(row: QueueRow): Promise<QueueRowOutcome> {
       where: { id: row.id, status: 'dispatching' },
       data: { status: 'failed', error: message.slice(0, 4_000) },
     }).catch(() => {})
+    // The row is `failed` with its reason from here on, so every step below is
+    // best effort: a throw in the cleanup used to reject this handler, which is
+    // how a dispatch failure became an unhandled rejection that took the desktop
+    // API down (SHO-482).
+    //
     // A wake that never ran hands its tasks back: the drain sweep queues the
     // message again once the runtime answers, so the results are not lost — up
     // to `MAX_WAKE_ATTEMPTS`, where it stops and says so once.
     if (row.kind === 'task_notification') {
       const taskIds = taskWakeIds(row)
-      const { capped } = await releaseTaskWake(row, { dropPersisted: true })
-      await collapseFailedWakeRows(row.sessionId, row.id, taskIds)
-      if (capped.length) {
-        await (prisma as any).chatQueuedMessage.updateMany({
-          where: { id: row.id, status: 'failed' },
-          data: { error: `Could not deliver this update after ${MAX_WAKE_ATTEMPTS} attempts: ${message}`.slice(0, 4_000) },
-        }).catch(() => {})
-      }
+      await bestEffort(row.id, 'task-wake release', async () => {
+        const { capped } = await releaseTaskWake(row, { dropPersisted: true })
+        await collapseFailedWakeRows(row.sessionId, row.id, taskIds)
+        if (capped.length) {
+          await (prisma as any).chatQueuedMessage.updateMany({
+            where: { id: row.id, status: 'failed' },
+            data: { error: `Could not deliver this update after ${MAX_WAKE_ATTEMPTS} attempts: ${message}`.slice(0, 4_000) },
+          })
+        }
+      })
     }
     // A resume nobody dropped is a promise the transcript already made: the note
     // above the row says the turn is picking itself back up. Dropping it where a
@@ -707,23 +729,27 @@ async function startClaimedRow(row: QueueRow): Promise<QueueRowOutcome> {
     if (row.kind === 'resume') {
       const attempts = resumeAttempts(row.body) + 1
       if (attempts < MAX_WAKE_ATTEMPTS) {
-        await (prisma as any).chatQueuedMessage.updateMany({
-          where: { id: row.id, status: 'failed' },
-          data: {
-            status: 'pending',
-            error: message.slice(0, 4_000),
-            body: withResumeAttempts(row.body, attempts),
-          },
-        }).catch(() => {})
-      } else {
-        await (prisma as any).chatQueuedMessage.updateMany({
-          where: { id: row.id, status: 'failed' },
-          data: { error: `Could not resume this turn after ${MAX_WAKE_ATTEMPTS} attempts: ${message}`.slice(0, 4_000) },
-        }).catch(() => {})
-        const { postInterruptedResume } = await import('./chat-resume.service')
-        await postInterruptedResume(row.sessionId, { resume: false, toolName: resumeToolName(row.parts) }).catch((err: any) =>
-          console.warn(`[ChatQueue] Stopped-resume note for ${row.sessionId} failed:`, err?.message ?? err),
+        await bestEffort(row.id, 'resume retry', () =>
+          (prisma as any).chatQueuedMessage.updateMany({
+            where: { id: row.id, status: 'failed' },
+            data: {
+              status: 'pending',
+              error: message.slice(0, 4_000),
+              body: withResumeAttempts(row.body, attempts),
+            },
+          }),
         )
+      } else {
+        await bestEffort(row.id, 'resume cap', () =>
+          (prisma as any).chatQueuedMessage.updateMany({
+            where: { id: row.id, status: 'failed' },
+            data: { error: `Could not resume this turn after ${MAX_WAKE_ATTEMPTS} attempts: ${message}`.slice(0, 4_000) },
+          }),
+        )
+        await bestEffort(row.id, 'stopped-resume note', async () => {
+          const { postInterruptedResume } = await import('./chat-resume.service')
+          await postInterruptedResume(row.sessionId, { resume: false, toolName: resumeToolName(row.parts) })
+        })
       }
     }
     console.error(`[ChatQueue] Failed to dispatch ${row.id}:`, error)

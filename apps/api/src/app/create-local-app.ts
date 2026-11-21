@@ -200,10 +200,10 @@ export function createLocalApp(): LocalAppBundle {
     )
     .catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
   // Frames whose turn nobody can recover any more (a session deleted mid-turn,
-  // an app closed before recovery ran) must not accumulate forever (SHO-274).
-  void import('../services/chat-turn-journal')
-    .then(({ sweepTurnFrames }) => sweepTurnFrames())
-    .catch((err) => console.warn('[ChatTurnJournal] boot sweep failed:', err?.message ?? err))
+  // an app closed before recovery ran) are swept by `runTurnFrameSweep`, which
+  // starts a minute after boot — never here. On a large backlog the delete used
+  // to block the event loop past the desktop's health window, so the API was
+  // killed mid-sweep on every relaunch (SHO-482).
   app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
   app.route('/api', workBoardRoutes({ resolveUserId: getAuthUserId }))
   app.route('/api', mailRoutes({ resolveUserId: getAuthUserId }))

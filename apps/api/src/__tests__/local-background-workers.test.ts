@@ -46,6 +46,11 @@ mock.module('../jobs/run-chat-queue-drain', () => ({
   stopChatQueueWorker: stopped('chat-queue'),
 }))
 
+mock.module('../jobs/run-turn-frame-sweep', () => ({
+  startTurnFrameSweepWorker: recorded('turn-frame-sweep'),
+  stopTurnFrameSweepWorker: stopped('turn-frame-sweep'),
+}))
+
 mock.module('../jobs/run-channel-workers', () => ({
   startChannelWorkers: recorded('channel'),
   stopChannelWorkers: stopped('channel'),
@@ -71,6 +76,9 @@ const ALL_STARTS = [
   'start:agent-schedule',
   'start:event-delivery',
   'start:chat-queue',
+  // SHO-482: the journal sweep used to run at boot off the desktop composer;
+  // it is a worker now, and the desktop must start it like the cloud does.
+  'start:turn-frame-sweep',
   'start:channel',
   'start:heartbeat',
 ]
@@ -79,6 +87,7 @@ const ALL_STOPS = [
   'stop:agent-schedule',
   'stop:event-delivery',
   'stop:chat-queue',
+  'stop:turn-frame-sweep',
   'stop:channel',
   'stop:heartbeat',
 ]
@@ -100,7 +109,7 @@ afterEach(() => {
 })
 
 describe('startLocalBackgroundWorkers()', () => {
-  test('starts all five workers, heartbeat included', async () => {
+  test('starts every shared worker, heartbeat included', async () => {
     await startLocalBackgroundWorkers({ runtimeManager: { id: 'rm' } as any })
     expect(events).toEqual(ALL_STARTS)
   })
@@ -133,7 +142,7 @@ describe('startLocalBackgroundWorkers()', () => {
 })
 
 describe('stopLocalBackgroundWorkers()', () => {
-  test('stops all five workers, including the heartbeat scheduler singleton', () => {
+  test('stops every shared worker, including the heartbeat scheduler singleton', () => {
     stopLocalBackgroundWorkers()
     expect(events.filter((e) => e.startsWith('stop:'))).toEqual(ALL_STOPS)
   })

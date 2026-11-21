@@ -18,6 +18,7 @@ const {
   deleteTurnFrames,
   readTurnFrames,
   sweepTurnFrames,
+  trimTurnFramesToCap,
   turnFrameCount,
 } = await import('../services/chat-turn-journal')
 
@@ -127,5 +128,149 @@ describe('turn journal (SHO-274)', () => {
     const turn = `turn-${crypto.randomUUID()}`
     expect(await appendTurnFrames(session, turn, 0, [])).toBe(true)
     expect(await turnFrameCount(turn)).toBe(0)
+  })
+})
+
+/**
+ * SHO-482: a single delete over millions of rows blocked the desktop's event
+ * loop for ~71 s, past its 30 s health window, so the API was killed mid-sweep
+ * on every launch. The sweep now deletes a bounded batch at a time.
+ */
+describe('sweeping a large backlog (SHO-482)', () => {
+  const OLD_TURN = () => `turn-${crypto.randomUUID()}`
+
+  async function seedOldFrames(session: string, turn: string, count: number): Promise<void> {
+    const old = new Date(Date.now() - 72 * 60 * 60_000)
+    for (let i = 0; i < count; i++) {
+      await db.chatTurnFrame.create({
+        data: { sessionId: session, turnId: turn, seq: i, data: `frame-${i}`, createdAt: old },
+      })
+    }
+  }
+
+  test('deletes one batch per call and leaves the rest for the next tick', async () => {
+    await db.chatTurnFrame.deleteMany({})
+    const session = await newSession()
+    const turn = OLD_TURN()
+    await seedOldFrames(session, turn, 12)
+
+    expect(await sweepTurnFrames(undefined, { batchSize: 5, maxBatches: 1 })).toBe(5)
+    expect(await turnFrameCount(turn)).toBe(7)
+
+    expect(await sweepTurnFrames(undefined, { batchSize: 5, maxBatches: 1 })).toBe(5)
+    // The short batch ends the sweep: nothing under the cutoff is left.
+    expect(await sweepTurnFrames(undefined, { batchSize: 5, maxBatches: 1 })).toBe(2)
+    expect(await turnFrameCount(turn)).toBe(0)
+  })
+
+  test('the wall-clock budget stops the sweep instead of blocking the process', async () => {
+    await db.chatTurnFrame.deleteMany({})
+    const session = await newSession()
+    const turn = OLD_TURN()
+    await seedOldFrames(session, turn, 6)
+
+    // A zero budget means "do not start a second batch": one batch of 2 goes,
+    // the other 4 stay for the next tick.
+    expect(await sweepTurnFrames(undefined, { batchSize: 2, budgetMs: 0 })).toBe(2)
+    expect(await turnFrameCount(turn)).toBe(4)
+  })
+
+  test('never deletes the frames of a turn the session is still running', async () => {
+    await db.chatTurnFrame.deleteMany({})
+    const liveSession = await newSession()
+    const deadSession = await newSession()
+    const liveTurn = OLD_TURN()
+    const deadTurn = OLD_TURN()
+    await seedOldFrames(liveSession, liveTurn, 2)
+    await seedOldFrames(deadSession, deadTurn, 2)
+    await db.chatSession.update({ where: { id: liveSession }, data: { activeTurnId: liveTurn } })
+
+    expect(await sweepTurnFrames()).toBe(2)
+    expect(await turnFrameCount(liveTurn)).toBe(2)
+    expect(await turnFrameCount(deadTurn)).toBe(0)
+  })
+
+  test('the cap trims down to MAX_TURN_FRAMES, newest rows kept', async () => {
+    await db.chatTurnFrame.deleteMany({})
+    const session = await newSession()
+    const turn = OLD_TURN()
+    const now = Date.now()
+    // Newer than the retention window on purpose: the cap is the only thing
+    // that can bound this journal.
+    for (let i = 0; i < 30; i++) {
+      await db.chatTurnFrame.create({
+        data: {
+          sessionId: session,
+          turnId: turn,
+          seq: i,
+          data: `frame-${i}`,
+          createdAt: new Date(now - (30 - i) * 1_000),
+        },
+      })
+    }
+
+    expect(await trimTurnFramesToCap(10)).toBe(20)
+    expect(await turnFrameCount(turn)).toBe(10)
+    // Newest kept: the surviving seqs are the last ten written.
+    const kept = await db.chatTurnFrame.findMany({ where: { turnId: turn }, orderBy: { seq: 'asc' }, select: { seq: true } })
+    expect(kept.map((row: { seq: number }) => row.seq)).toEqual([20, 21, 22, 23, 24, 25, 26, 27, 28, 29])
+  })
+
+  test('the cap leaves a live turn alone too', async () => {
+    await db.chatTurnFrame.deleteMany({})
+    const liveSession = await newSession()
+    const session = await newSession()
+    const liveTurn = OLD_TURN()
+    const turn = OLD_TURN()
+    const now = Date.now()
+    // The live turn's frames are the oldest, so a plain cap would take them.
+    await db.chatTurnFrame.create({ data: { sessionId: liveSession, turnId: liveTurn, seq: 0, data: 'live', createdAt: new Date(now - 60_000) } })
+    for (let i = 0; i < 10; i++) {
+      await db.chatTurnFrame.create({
+        data: { sessionId: session, turnId: turn, seq: i, data: `frame-${i}`, createdAt: new Date(now - (10 - i) * 1_000) },
+      })
+    }
+    await db.chatSession.update({ where: { id: liveSession }, data: { activeTurnId: liveTurn } })
+
+    expect(await trimTurnFramesToCap(5)).toBe(5)
+    expect(await turnFrameCount(liveTurn)).toBe(1)
+    expect(await turnFrameCount(turn)).toBe(5)
+  })
+})
+
+/**
+ * AC1 of SHO-482, as a regression test: while the sweep deletes, the process
+ * must keep turning the event loop, because that is what answers `/api/health`.
+ *
+ * The old sweep was one `deleteMany` over the whole backlog. On the desktop's
+ * synchronous SQLite adapter that held the loop for ~71 s, past the 30 s health
+ * window, so the supervisor killed the API mid-delete and every relaunch
+ * repeated it. A microtask "yield" would look like a fix and behave the same
+ * as the bug: a 0 ms interval is a macrotask, so it only ever fires while the
+ * sweep is genuinely off the loop.
+ */
+describe('the sweep leaves the event loop free (SHO-482 AC1)', () => {
+  test('a 0 ms timer keeps firing while a backlog is deleted in batches', async () => {
+    await db.chatTurnFrame.deleteMany({})
+    const session = await newSession()
+    const turn = `turn-${crypto.randomUUID()}`
+    const old = new Date(Date.now() - 72 * 60 * 60_000)
+    await db.chatTurnFrame.createMany({
+      data: Array.from({ length: 200 }, (_, i) => ({ sessionId: session, turnId: turn, seq: i, data: `frame-${i}`, createdAt: old })),
+    })
+
+    let turns = 0
+    const timer = setInterval(() => { turns++ }, 0)
+    let deleted = 0
+    try {
+      deleted = await sweepTurnFrames(undefined, { batchSize: 5, maxBatches: 40, budgetMs: 60_000 })
+    } finally {
+      clearInterval(timer)
+    }
+
+    expect(deleted).toBe(200)
+    // 40 batches, so 39 yields: a batch-at-a-time sweep that never left the
+    // loop would fire the timer zero times (or once, by luck at the start).
+    expect(turns).toBeGreaterThan(1)
   })
 })
