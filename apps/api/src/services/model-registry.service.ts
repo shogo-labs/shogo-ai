@@ -177,10 +177,16 @@ function deriveBillingModel(family: string, tier: string): BillingModel {
 }
 
 function rowToModelEntry(row: ModelRow): ModelEntry {
+  // A row is keyed by a UUID with the provider slug in `apiModel`, so the
+  // catalog's declaration for that slug is the only modality truth available
+  // when the row is silent — the Gemini rows were, until SHO-495, and a
+  // reseed is a manual ops step, so without this an existing instance keeps
+  // refusing video on a model the catalog knows takes it. A row that does
+  // declare capabilities always wins (admin override).
   const capabilities =
     row.capabilities && typeof row.capabilities === 'object'
       ? (row.capabilities as ModelEntry['capabilities'])
-      : undefined
+      : modelCatalog.getModelEntry(row.apiModel)?.capabilities
   return {
     id: row.id,
     provider: row.provider as ModelEntry['provider'],
@@ -295,6 +301,10 @@ function cloudCatalogModelToEntry(raw: unknown): ModelEntry | null {
     ...(typeof m.description === 'string' ? { description: m.description } : {}),
     ...(typeof m.contextWindow === 'number' ? { contextWindow: m.contextWindow } : {}),
     ...(typeof m.reasoningEffort === 'string' ? { reasoningEffort: m.reasoningEffort as ModelEntry['reasoningEffort'] } : {}),
+    // The cloud picker payload carries only the modality flags the runtime
+    // needs to classify an opaque cloud id; without this a cloud-connected
+    // desktop 400s a video on Carbon before it ever forwards (SHO-495).
+    ...(m.supportsVideoInput === true ? { capabilities: { supportsVideoInput: true } } : {}),
   }
 }
 

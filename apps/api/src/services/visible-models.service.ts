@@ -76,6 +76,13 @@ export interface VisibleCatalogModel {
   contextWindow?: number
   reasoningEffort?: string
   /**
+   * Whether the model accepts video input natively. Carried so a desktop
+   * mirroring this catalog (cloud-proxy mode) can tell its own runtime which
+   * ids are video-native — cloud rows are the ids the runtime receives, and it
+   * cannot classify a UUID on its own (SHO-495).
+   */
+  supportsVideoInput?: boolean
+  /**
    * Per-token USD rates for DB-defined models, per 1M tokens. Clients that
    * don't have the model in their own DB (a desktop mirroring this catalog)
    * need them to bill usage correctly. Absent for static-catalog models.
@@ -254,6 +261,7 @@ export async function resolveVisibleCatalogModels(
       ...(entry.description ? { description: entry.description } : {}),
       ...(typeof entry.contextWindow === 'number' ? { contextWindow: entry.contextWindow } : {}),
       ...(entry.reasoningEffort ? { reasoningEffort: entry.reasoningEffort } : {}),
+      ...(entry.capabilities?.supportsVideoInput === true ? { supportsVideoInput: true } : {}),
       ...(pricing ? { pricing } : {}),
       ...(aliases.length > 0 ? { aliases } : {}),
     }

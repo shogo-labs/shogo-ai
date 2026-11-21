@@ -84,6 +84,26 @@ describe('Shogo SDK prompt section', () => {
     expect(codingGuide!.zone).toBe('stable')
   })
 
+  test('the guide tells an agent where big media goes, and what a 402 means', () => {
+    const guide = getShogoSdkGuide()
+
+    // The bucket has to be discoverable from the prompt alone: an agent that
+    // does not know about it commits the 1.7 GB media folder to git instead.
+    expect(guide).toContain('shogo bucket put')
+    expect(guide).toContain('shogo bucket offload')
+    expect(guide).toContain('shogo.bucket')
+    // Never retry a payment refusal, and always show the numbers.
+    expect(guide).toContain('402 bucket_payment_required')
+    expect(guide).toContain('Do not retry it')
+    // Private objects are not on the CDN.
+    expect(guide).toContain('signedUrl')
+
+    // The escaped code fences must survive into the rendered prompt: an
+    // unescaped backtick ends the template literal and breaks the build.
+    expect(guide).toContain('```bash')
+    expect(guide).toContain('(`exec`)')
+  })
+
   test('section is included when sdkGuideEnabled is explicitly true', async () => {
     setupWorkspace({ sdkGuideEnabled: true })
     gateway = await buildGatewayAndTurn()

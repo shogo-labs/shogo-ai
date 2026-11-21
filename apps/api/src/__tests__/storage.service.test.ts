@@ -119,6 +119,7 @@ const BUCKET_ENV_VARS = [
   'S3_LFS_BUCKET',
   'PUBLISH_BUCKET',
   'PUBLISH_DATA_BUCKET',
+  'S3_PROJECT_BUCKET',
   'S3_PUBLISHED_DATA_BUCKET',
   'METAL_SNAP_BUCKET',
   'METAL_FLEET_S3_PREFIX',
@@ -485,20 +486,31 @@ describe('calculateWorkspaceStorageUsage', () => {
   })
 
   test('namespaces with no configured bucket are reported as unmeasured', async () => {
+    // Pin the deployment: on cloud the project bucket is always expected, so an
+    // unset S3_PROJECT_BUCKET is unmeasured rather than silently zero. (Desktop
+    // is the other half, covered by the project-bucket test below.)
+    const savedLocalMode = process.env.SHOGO_LOCAL_MODE
+    process.env.SHOGO_LOCAL_MODE = 'false'
     findManyWs.mockImplementation(async () => [
       { id: 'ws_env', instanceSize: 'micro', personalOwnerId: null },
     ])
     findManyProject.mockImplementation(async () => [])
 
-    const result = await calculateWorkspaceStorageUsage('ws_env')
+    try {
+      const result = await calculateWorkspaceStorageUsage('ws_env')
 
-    expect(result.totalBytes).toBe(0)
-    expect(result.unmeasured).toEqual([
-      'METAL_SNAP_BUCKET',
-      'PUBLISH_BUCKET',
-      'PUBLISH_DATA_BUCKET',
-      'artifacts',
-    ])
+      expect(result.totalBytes).toBe(0)
+      expect(result.unmeasured).toEqual([
+        'METAL_SNAP_BUCKET',
+        'PUBLISH_BUCKET',
+        'PUBLISH_DATA_BUCKET',
+        'S3_PROJECT_BUCKET',
+        'artifacts',
+      ])
+    } finally {
+      if (savedLocalMode === undefined) delete process.env.SHOGO_LOCAL_MODE
+      else process.env.SHOGO_LOCAL_MODE = savedLocalMode
+    }
   })
 
   test('the daily row keeps the day peak when a later pass is smaller', async () => {
@@ -575,6 +587,57 @@ describe('calculateWorkspaceStorageUsage', () => {
 
     expect(result.totalBytes).toBe(0)
     expect(result.categories.published).toBe(0)
+  })
+
+  test('project bucket objects land in their own category and on their project', async () => {
+    process.env.S3_PROJECT_BUCKET = 'shogo-project-buckets'
+    findManyWs.mockImplementation(async () => [
+      { id: 'ws_bucket', instanceSize: 'small', personalOwnerId: null },
+    ])
+    findManyProject.mockImplementation(async () => [{ id: 'p_media', workspaceId: 'ws_bucket' }])
+    objects.set('p/', [
+      { key: 'p/p_media/public/hero.png', relativePath: 'p_media/public/hero.png', size: 700 },
+      { key: 'p/p_media/private/report.pdf', relativePath: 'p_media/private/report.pdf', size: 300 },
+      // Another project's object that this pass does not know about, and a
+      // stray object outside the project namespace: neither is attributed.
+      { key: 'p/p_other/public/x.png', relativePath: 'p_other/public/x.png', size: 500 },
+      { key: 'unrelated/file.bin', relativePath: 'unrelated/file.bin', size: 900 },
+    ])
+
+    const result = await calculateWorkspaceStorageUsage('ws_bucket')
+
+    expect(result.categories.bucket).toBe(1000)
+    expect(result.totalBytes).toBe(1000)
+    expect(result.projects).toEqual([
+      {
+        projectId: 'p_media',
+        bytes: 1000,
+        categories: expect.objectContaining({ bucket: 1000 }),
+      },
+    ])
+  })
+
+  test('an unconfigured project bucket is unmeasured on cloud, silent on desktop', async () => {
+    findManyWs.mockImplementation(async () => [
+      { id: 'ws_nobucket', instanceSize: 'small', personalOwnerId: null },
+    ])
+    const savedLocalMode = process.env.SHOGO_LOCAL_MODE
+    try {
+      // Cloud: no bucket configured is a deployment gap, and a workspace must
+      // not look smaller because of it — the UI says "not measured", not 0.
+      process.env.SHOGO_LOCAL_MODE = 'false'
+      const cloud = await calculateWorkspaceStorageUsage('ws_nobucket')
+      expect(cloud.unmeasured).toContain('S3_PROJECT_BUCKET')
+
+      // Desktop: there is no object storage at all (bytes live on disk), so a
+      // missing bucket is the design, not a gap to report.
+      process.env.SHOGO_LOCAL_MODE = 'true'
+      const desktop = await calculateWorkspaceStorageUsage('ws_nobucket')
+      expect(desktop.unmeasured).not.toContain('S3_PROJECT_BUCKET')
+    } finally {
+      if (savedLocalMode === undefined) delete process.env.SHOGO_LOCAL_MODE
+      else process.env.SHOGO_LOCAL_MODE = savedLocalMode
+    }
   })
 
   test('a workspace deleted mid-pass reports zeros and writes nothing', async () => {

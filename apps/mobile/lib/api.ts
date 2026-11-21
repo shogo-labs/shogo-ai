@@ -67,6 +67,8 @@ export interface WorkspaceDeletionPreview {
   channelCount: number
   boardCount: number
   chatCount: number
+  /** `totalBytes` includes this: media in the workspace's project buckets. */
+  bucketBytes: number
   totalBytes: number | null
 }
 

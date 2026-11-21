@@ -19,6 +19,12 @@
       "import": "./dist/db/index.js",
       "require": "./dist/db/index.cjs"
     },
+    "./bucket": {
+      "types": "./dist/bucket/index.d.ts",
+      "development": "./src/bucket/index.ts",
+      "import": "./dist/bucket/index.js",
+      "require": "./dist/bucket/index.cjs"
+    },
     "./email": {
       "types": "./dist/email/index.d.ts",
       "development": "./src/email/index.ts",

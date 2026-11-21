@@ -888,6 +888,12 @@ async function seedGemini(): Promise<void> {
       reasoningEffort:     entry.reasoningEffort ?? null,
       description:         entry.description ?? null,
       aliases:             [id],
+      // The catalog is the source of truth for what a model accepts, but the
+      // proxy guard and AGENT_MODEL_REGISTRY read the *row*, keyed by its UUID
+      // rather than the catalog slug. Copy the whole capabilities object so a
+      // modality the catalog declares (video input on Carbon/Argon/Neon/
+      // Hydrogen/3.8 Flash) survives into the seeded row (SHO-495).
+      ...(entry.capabilities ? { capabilities: entry.capabilities } : {}),
       inputPerMillion:     costs.inputPerMillion,
       cachedInputPerMillion: costs.cachedInputPerMillion,
       cacheWritePerMillion: costs.cacheWritePerMillion,

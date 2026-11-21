@@ -309,6 +309,7 @@ const STORAGE_CATEGORY_LABELS: Array<{ key: string; label: string; overhead?: bo
   { key: 'chat_files', label: 'Chats & attachments' },
   { key: 'workspace_root', label: 'Workspace drive' },
   { key: 'published', label: 'Published sites' },
+  { key: 'bucket', label: 'Project buckets' },
   { key: 'quarantine', label: 'Sync quarantine (not billed)', overhead: true },
   { key: 'vm_snapshots', label: 'VM snapshots (not billed)', overhead: true },
 ]

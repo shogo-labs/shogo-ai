@@ -327,6 +327,10 @@ export interface VisibleCatalogModel {
    *  these is re-pointed at `id` rather than reset. Optional for back-compat
    *  with API servers that predate this field. */
   aliases?: string[]
+  /** Whether the model accepts video input natively. A desktop mirroring this
+   *  catalog has no way to classify a cloud UUID, so the flag has to ride
+   *  along or its runtime drops the clip (SHO-495). */
+  supportsVideoInput?: boolean
 }
 
 /** Admin-curated allowlist of models that surface in the user picker.

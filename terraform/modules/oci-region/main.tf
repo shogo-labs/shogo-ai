@@ -277,6 +277,11 @@ module "publish_hosting" {
   # Null sends no header (the API enforces nothing until its copy is set).
   edge_proxy_secret = var.edge_proxy_secret
 
+  # Read-only PAR base URL of this region's project-buckets Object Storage
+  # bucket. The Worker serves `/<projectId>/<key>` from the CDN edge and falls
+  # back to this origin. Empty in tier-2 regions (no Object Storage module).
+  project_bucket_origin = coalesce(one(module.object_storage[*].project_buckets_par_base_url), "")
+
   # OCI Object Storage's PAR API has eventual consistency against bucket
   # creation. Without this depends_on, terraform parallelizes the
   # published_apps bucket creation and the PAR creation, and the PAR
