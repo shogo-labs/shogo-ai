@@ -19,8 +19,6 @@ import type { ForwardToHostInput, ForwardToHostOptions } from './cross-workspace
 import type { TunnelTransport } from './host-tunnel'
 import { prisma } from './prisma'
 
-const db = prisma as any
-
 /**
  * Forward one cross-workspace call to the desktop that hosts the workspace, and
  * pass its answer back unchanged.
@@ -36,7 +34,7 @@ export async function forwardToHostOnHost(
   input: ForwardToHostInput,
   opts: ForwardToHostOptions = {},
 ): Promise<Response> {
-  const instance = await db.instance
+  const instance = await prisma.instance
     .findUnique({
       where: { id: input.hostInstanceId },
       select: { id: true, name: true, userId: true, lastSeenAt: true },
