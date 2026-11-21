@@ -20,6 +20,38 @@ function normalizeCookieHeader(cookie: string | null | undefined): string | null
   return normalized || null
 }
 
+/**
+ * SecureStore's synchronous calls throw when the keychain cannot be read —
+ * after a reboot before first unlock, or while the app wakes in the background
+ * (`FunctionCallException: Calling the 'getValueWithKeySync' function has
+ * failed`, Sentry SHOGO-IOS-Y). Every request reads the session cookie through
+ * this store, so a throw here took down whatever happened to be fetching (an
+ * avatar, the notification bell). An unreadable keychain reads as "no cookie"
+ * for that one call instead.
+ */
+export function tolerantSecureStore(store: {
+  getItem: (key: string) => string | null
+  setItem: (key: string, value: string) => void
+}) {
+  return {
+    getItem(key: string): string | null {
+      try {
+        return store.getItem(key)
+      } catch (err) {
+        console.warn('[auth] SecureStore read failed:', err)
+        return null
+      }
+    },
+    setItem(key: string, value: string): void {
+      try {
+        store.setItem(key, value)
+      } catch (err) {
+        console.warn('[auth] SecureStore write failed:', err)
+      }
+    },
+  }
+}
+
 function createMobileAuthClient() {
   if (Platform.OS === 'web') {
     return createAuthClient({
@@ -29,6 +61,7 @@ function createMobileAuthClient() {
   }
 
   const storagePrefix = authStoragePrefixFor(getActiveEnvKey())
+  const storage = tolerantSecureStore(SecureStore)
   const client = createBetterAuthClient({
     baseURL: API_URL!,
     basePath: '/api/auth',
@@ -37,7 +70,7 @@ function createMobileAuthClient() {
         scheme: 'shogo',
         storagePrefix,
         cookiePrefix: 'shogo',
-        storage: SecureStore,
+        storage,
       }),
     ],
   })
@@ -51,7 +84,7 @@ function createMobileAuthClient() {
     return withOAuthRedirectCapture(client, () =>
       watchOAuthRedirectCookie({
         linking: Linking,
-        storage: SecureStore,
+        storage,
         storagePrefix,
         scheme: 'shogo',
         getSetCookie,
