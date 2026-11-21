@@ -13,6 +13,7 @@ import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 const ownerCalls: Array<{ id: string; opts: unknown }> = []
 const connectedCalls: Array<{ id: string; opts: unknown }> = []
+const pushCalls: string[] = []
 const onlineIds = new Set<string>()
 let inFlight = 0
 let maxInFlight = 0
@@ -55,7 +56,10 @@ mock.module('../lib/prisma', () =>
 )
 mock.module('../routes/api-keys', () => ({ resolveApiKey: async () => null }))
 mock.module('../lib/push-notifications', () => ({
-  sendPushToInstance: async () => ({ sent: false }),
+  sendPushToInstance: async (id: string) => {
+    pushCalls.push(id)
+    return { sent: false }
+  },
   sendPushToUser: async () => ({ sent: false }),
 }))
 
@@ -67,6 +71,7 @@ const STALE = new Date(0)
 beforeEach(() => {
   ownerCalls.length = 0
   connectedCalls.length = 0
+  pushCalls.length = 0
   onlineIds.clear()
   inFlight = 0
   maxInFlight = 0
@@ -120,5 +125,27 @@ describe('ensureTunnelConnected', () => {
     expect(ownerCalls[0]).toEqual({ id: 'w-1', opts: undefined })
     expect(ownerCalls.length).toBeGreaterThan(1)
     for (const call of ownerCalls.slice(1)) expect(call.opts).toEqual({ retry: false })
+  })
+
+  test('a burst of callers shares one wake and one push (PERF-21)', async () => {
+    const results = await Promise.all([
+      ensureTunnelConnected('w-burst', 40),
+      ensureTunnelConnected('w-burst', 40),
+      ensureTunnelConnected('w-burst', 40),
+    ])
+    expect(results).toEqual([false, false, false])
+    expect(pushCalls).toEqual(['w-burst'])
+    // One wake's worth of owner reads, not three.
+    expect(ownerCalls.filter((c) => c.id === 'w-burst').length).toBeLessThan(6)
+  })
+
+  test('a failed wake is remembered, so the next caller fails fast (PERF-21)', async () => {
+    expect(await ensureTunnelConnected('w-offline', 1)).toBe(false)
+    const readsAfterFirst = ownerCalls.length
+    const started = Date.now()
+    expect(await ensureTunnelConnected('w-offline', 5_000)).toBe(false)
+    expect(Date.now() - started).toBeLessThan(100)
+    expect(ownerCalls.length).toBe(readsAfterFirst)
+    expect(pushCalls).toEqual(['w-offline'])
   })
 })
