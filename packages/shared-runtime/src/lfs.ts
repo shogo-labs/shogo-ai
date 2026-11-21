@@ -209,7 +209,17 @@ function runGitBuffer(
       clearTimeout(timer)
       resolve({ exitCode: code ?? -1, stdout: Buffer.concat(out), stderr: err.join('') })
     })
-    if (opts.input && child.stdin) child.stdin.end(opts.input)
+    if (opts.input && child.stdin) {
+      // git can exit before it reads stdin — `fatal: not a git repository`, a
+      // failed `cat-file`, a killed child. The pending write then fails with
+      // EPIPE, and an unhandled 'error' on a stream is an *uncaught exception*:
+      // on Linux it arrives as a next-tick throw that takes down whatever is
+      // running (in CI: the publish-artifact test, right after its request). The
+      // exit code already says what happened, so the failed write is expected
+      // and carries no information the caller needs.
+      child.stdin.on('error', () => {})
+      child.stdin.end(opts.input)
+    }
   })
 }
 
