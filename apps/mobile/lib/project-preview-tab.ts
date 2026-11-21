@@ -74,3 +74,25 @@ export function canvasDisabledRedirect(opts: {
   if (opts.userRequestedCanvas) return null
   return opts.isExternalProject ? 'external-preview' : 'chat-fullscreen'
 }
+
+/**
+ * Landing tabs a `?tab=` deep link asked for, kept for the rest of the page
+ * session. The project screen can remount after arrival (e.g. once the chat
+ * URL mirror rewrites the query and drops `tab`), and a remount re-runs the
+ * saved-last-tab restore, which never stores `settings` / `files` / `plans` —
+ * so without this a deep link to Settings silently landed on Canvas. An
+ * explicit tab choice by the user replaces the remembered intent.
+ */
+const sessionLandingTabs = new Map<string, string>()
+
+export function rememberLandingTab(projectId: string, tab: string): void {
+  sessionLandingTabs.set(projectId, tab)
+}
+
+export function forgetLandingTab(projectId: string): void {
+  sessionLandingTabs.delete(projectId)
+}
+
+export function rememberedLandingTab(projectId: string): string | undefined {
+  return sessionLandingTabs.get(projectId)
+}
