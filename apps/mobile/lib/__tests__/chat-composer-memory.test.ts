@@ -25,6 +25,7 @@ import {
   homeComposerMemoryKey,
   sanitizeRecord,
   resolveChatModel,
+  resolvePickerModel,
   lastUserModelStamp,
   type ComposerMemoryStorage,
 } from "../chat-composer-memory"
@@ -287,6 +288,47 @@ describe("which model a chat shows", () => {
         lastStampedAt: 0,
       }),
     ).toBeNull()
+  })
+})
+
+describe("what the shared picker shows after a reload (SHO-497)", () => {
+  const DEFAULT = "sonnet-5"
+
+  test("a chat's own model outranks a preference read that lands after it", () => {
+    // The order that failed in the browser: the project reloads, the open chat
+    // reports the pick it has in the device cache, and only then does the
+    // last-used preference finish loading (the read re-runs when the catalog
+    // arrives). Re-applying the preference there is what showed Sonnet — the
+    // model last picked in *another* chat — instead of this chat's Opus.
+    expect(
+      resolvePickerModel({
+        chatModel: "opus-uuid",
+        preference: "sonnet-uuid",
+        defaultModel: DEFAULT,
+      }),
+    ).toEqual({ model: "opus-uuid", fromChat: true })
+  })
+
+  test("with no chat claim the preference seeds the picker", () => {
+    expect(
+      resolvePickerModel({
+        chatModel: null,
+        preference: "sonnet-uuid",
+        defaultModel: DEFAULT,
+      }),
+    ).toEqual({ model: "sonnet-uuid", fromChat: false })
+  })
+
+  test("with neither, the default seeds it", () => {
+    expect(
+      resolvePickerModel({ chatModel: null, preference: null, defaultModel: DEFAULT }),
+    ).toEqual({ model: DEFAULT, fromChat: false })
+  })
+
+  test("an empty id is not a claim", () => {
+    expect(
+      resolvePickerModel({ chatModel: "", preference: "sonnet-uuid", defaultModel: DEFAULT }),
+    ).toEqual({ model: "sonnet-uuid", fromChat: false })
   })
 })
 

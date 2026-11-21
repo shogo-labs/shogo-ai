@@ -131,6 +131,7 @@ import {
 } from "../../../../components/voice-mode/ChatBridgeContext";
 import { EzModeChatPanel } from "../../../../components/voice-mode/EzModeChatPanel";
 import { DEFAULT_MODEL } from "../../../../components/chat/ChatInput";
+import { resolvePickerModel } from "../../../../lib/chat-composer-memory";
 import {
   loadModelPreference,
   saveModelPreference,
@@ -1265,16 +1266,39 @@ export default observer(function ProjectLayout() {
   // model-stamped message yet. Updated only on explicit user picks / cold load,
   // NOT when we apply a per-chat model on switch (so the fallback is preserved).
   const globalModelPrefRef = useRef<string | null>(null);
+  // The active chat's own model, as last reported by its ChatPanel (`null` when
+  // the chat has no pick of its own). It outranks the persisted preference: the
+  // read below re-runs when the catalog or the runtime URL arrives, and a late
+  // read must not replace the model the open chat already claimed (SHO-497).
+  const activeChatModelRef = useRef<string | null>(null);
   // Dedups the runtime PATCH when applying a chat's model on switch.
   const sessionModelSyncedRef = useRef<string | null>(null);
+  // A claim only lives as long as a chat is open: with no chat on screen the
+  // picker follows the preference again (a switch keeps its claim, so the
+  // picker does not flash between chats).
+  useEffect(() => {
+    if (!chatSessionId) activeChatModelRef.current = null;
+  }, [chatSessionId]);
   useEffect(() => {
     let cancelled = false;
     loadModelPreference(projectId).then((stored) => {
       if (cancelled) return;
       const next = stored ?? DEFAULT_MODEL;
       globalModelPrefRef.current = next;
-      setSelectedModel(next);
       setModelPrefLoaded(true);
+      // The chat's own model wins. Re-applying the preference here is what put
+      // a reloaded chat back on the last model picked anywhere, even though the
+      // chat's own pick was in the device cache and the panel had already
+      // reported it (SHO-497).
+      const resolved = resolvePickerModel({
+        chatModel: activeChatModelRef.current,
+        preference: next,
+        defaultModel: DEFAULT_MODEL,
+      });
+      setSelectedModel(resolved.model);
+      // A chat's model is synced by its own report; do not point the runtime at
+      // the preference behind its back.
+      if (resolved.fromChat) return;
       if (!agentUrl) return;
       const syncKey = `${projectId}:${next}`;
       if (modelPrefSyncedRef.current === syncKey) return;
@@ -1349,7 +1373,15 @@ export default observer(function ProjectLayout() {
   // back to the last-used global choice.
   const handleResolveSessionModel = useCallback(
     (modelId: string | null) => {
-      const next = modelId ?? globalModelPrefRef.current ?? DEFAULT_MODEL;
+      // The claim, recorded before any early return: this is the chat's own
+      // answer (including "this chat has none"), and a preference read that
+      // lands later must not overwrite it.
+      activeChatModelRef.current = modelId;
+      const { model: next } = resolvePickerModel({
+        chatModel: modelId,
+        preference: globalModelPrefRef.current,
+        defaultModel: DEFAULT_MODEL,
+      });
       if (selectedModelRef.current === next) return;
       setSelectedModel(next);
       if (!agentUrl) return;

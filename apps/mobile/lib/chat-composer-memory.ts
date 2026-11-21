@@ -667,3 +667,24 @@ export function resolveChatModel(args: {
   if (lastStampedModel && lastStampedAt > pickedAt) return lastStampedModel
   return picked ?? lastStampedModel ?? null
 }
+
+/**
+ * What the shared picker shows: a chat's own model, else the persisted
+ * last-used preference, else the default.
+ *
+ * `fromChat` is the half callers need beyond the value. The preference is read
+ * asynchronously and re-read whenever the model catalog or the runtime URL
+ * arrives, so it can land *after* the open chat has already reported its own
+ * model. That is when a reloaded chat went back to the last model picked in
+ * some other chat, even though its own pick was in the device cache (SHO-497):
+ * the chat's model outranks the preference, so a late read has nothing left to
+ * apply and nothing left to sync.
+ */
+export function resolvePickerModel(args: {
+  chatModel: string | null
+  preference: string | null
+  defaultModel: string
+}): { model: string; fromChat: boolean } {
+  if (args.chatModel) return { model: args.chatModel, fromChat: true }
+  return { model: args.preference ?? args.defaultModel, fromChat: false }
+}
