@@ -126,4 +126,22 @@ describe('RunningNow', () => {
 
     expect(screen.queryByTestId('stop-chat:sess-a:turn-a')).toBeNull()
   })
+
+  test('stop is a sibling of the row, never a button inside a button', () => {
+    render(
+      createElement(RunningNow, {
+        entries: [chatRow()],
+        onOpen: () => {},
+        onStop: () => {},
+        workspaceId: 'ws-1',
+      }),
+    )
+
+    const stop = screen.getByTestId('stop-chat:sess-a:turn-a')
+    const rowButton = stop.parentElement!.querySelector('button')!
+    // A pressable inside a pressable is invalid markup that React warns about
+    // on every row, and the browser then chooses which one a click means.
+    expect(rowButton).toBeTruthy()
+    expect(rowButton.contains(stop)).toBe(false)
+  })
 })

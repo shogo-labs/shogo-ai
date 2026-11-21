@@ -2739,11 +2739,21 @@ export const api = {
     workspaceId: string,
     chatSessionId: string,
   ): Promise<ActiveChatPeek | null> {
-    const res = await http.get<ActiveChatPeek | { error: string }>(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/active-chats/${encodeURIComponent(chatSessionId)}/peek`,
-    )
-    if (!res.ok || (res.data && 'error' in res.data)) return null
-    return res.data as ActiveChatPeek
+    try {
+      const res = await http.get<ActiveChatPeek | { error: string }>(
+        `/api/workspaces/${encodeURIComponent(workspaceId)}/active-chats/${encodeURIComponent(chatSessionId)}/peek`,
+      )
+      // `HttpClient` answers `{ data, status, headers }` and has no `ok` flag —
+      // testing one here made every peek resolve to null, so `useRunPeek` read
+      // every live run as ended and the hover card closed as it opened (SHO-501).
+      if (res.data && 'error' in res.data) return null
+      return (res.data ?? null) as ActiveChatPeek | null
+    } catch (err) {
+      // A turn that ended between the poll and the hover is a 404 from this
+      // route, which means "nothing to peek at", not a failed request.
+      if ((err as { status?: number } | null)?.status === 404) return null
+      throw err
+    }
   },
 
 
