@@ -53,7 +53,7 @@ test.describe('Workspace Agent Chat Muse visual baselines', () => {
   test('MUSE-MOBILE-REF-SESSION-DRAWER — 390×844', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await openWorkspaceAgentChat(page, TEST_USER)
-    await page.getByLabel('Open chat sessions').click()
+    await page.getByLabel(/^(Open chat sessions|Chats)$/).click()
     await expect(page).toHaveScreenshot('MUSE-MOBILE-REF-SESSION-DRAWER-390x844.png', {
       fullPage: true,
     })
