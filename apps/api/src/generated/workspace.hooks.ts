@@ -403,6 +403,23 @@ export const workspaceHooks: WorkspaceHooks = {
       }
     }
 
+    // Project buckets (SHO-491): every object of every project in this
+    // workspace, plus the index rows. Runs here because the project rows the
+    // purge walks are still present — a cascade would take them first. A
+    // failure is logged, not fatal: the workspace delete must still happen, and
+    // an orphaned prefix is recoverable (the operator runbook sweeps it).
+    try {
+      const { purgeWorkspaceBuckets } = await import('../services/project-bucket.service')
+      const purged = await purgeWorkspaceBuckets(id)
+      if (purged.deleted > 0) {
+        console.log(
+          `[workspace.beforeDelete] purged ${purged.deleted} bucket object(s) across ${purged.projects} project(s)`,
+        )
+      }
+    } catch (err: any) {
+      console.warn(`[workspace.beforeDelete] bucket purge for ${id} failed:`, err?.message ?? err)
+    }
+
     return { ok: true }
   },
 }

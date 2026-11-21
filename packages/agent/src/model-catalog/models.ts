@@ -75,10 +75,14 @@ export interface ModelCapabilities {
    */
   supportsAudioInput?: boolean
   /**
-   * Whether this model accepts `video_url` content blocks natively over the
-   * OpenAI-compatible chat/completions wire format (OpenRouter's video-input
-   * shape). Absent/`undefined` means "no native video input" — callers must
-   * not send video bytes to it.
+   * Whether this model accepts video input natively. Absent/`undefined` means
+   * "no native video input" — callers must not send video bytes to it.
+   *
+   * Two wire shapes satisfy this flag: OpenRouter's `video_url` block, and
+   * Google's OpenAI-compatible endpoint, which decodes video from the same
+   * `image_url` + `data:video/*` block pi-ai already emits (probed 2026-11-21,
+   * SHO-495). The proxy picks the shape from the model's provider; callers
+   * only decide whether video may leave the process.
    */
   supportsVideoInput?: boolean
 }
@@ -689,6 +693,7 @@ export const MODEL_CATALOG = {
     maxOutputTokens: 65_536,
     reasoningEffort: 'medium',
     description: "Google's strongest reasoner: deep maths, complex software engineering and long-horizon agentic tasks.",
+    capabilities: { supportsVideoInput: true },
   },
   'gemini-4-argon': {
     id: 'gemini-4-argon',
@@ -704,6 +709,7 @@ export const MODEL_CATALOG = {
     maxOutputTokens: 65_536,
     reasoningEffort: 'high',
     description: "Google's flagship reasoner: complex software engineering, deep maths and multimodal analysis.",
+    capabilities: { supportsVideoInput: true },
   },
   'gemini-4-neon': {
     id: 'gemini-4-neon',
@@ -719,6 +725,7 @@ export const MODEL_CATALOG = {
     maxOutputTokens: 65_536,
     reasoningEffort: 'medium',
     description: 'Fast frontier model: low-latency reasoning for time-sensitive agent turns.',
+    capabilities: { supportsVideoInput: true },
   },
   'gemini-4-hydrogen': {
     id: 'gemini-4-hydrogen',
@@ -734,6 +741,7 @@ export const MODEL_CATALOG = {
     maxOutputTokens: 65_536,
     reasoningEffort: 'low',
     description: 'Everyday workhorse: fast, affordable, and capable enough for most agent sub-tasks.',
+    capabilities: { supportsVideoInput: true },
   },
   'gemini-3.1-pro-preview': {
     id: 'gemini-3.1-pro-preview',
@@ -766,6 +774,7 @@ export const MODEL_CATALOG = {
     maxOutputTokens: 65_536,
     reasoningEffort: 'medium',
     description: 'The current Gemini Flash: fast and cheap enough for everyday agent turns, with a 1M-token window.',
+    capabilities: { supportsVideoInput: true },
   },
   'gemini-3.5-flash-lite': {
     id: 'gemini-3.5-flash-lite',
