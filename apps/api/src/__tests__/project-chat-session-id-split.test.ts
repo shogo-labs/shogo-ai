@@ -114,7 +114,7 @@ mock.module('../lib/prisma', () => ({
       findUnique: async (args: any) => {
         prismaCalls.chatSessionFindUnique.push(args)
         if (!chatSessionFixture) return null
-        return { id: args?.where?.id ?? chatSessionFixture.id }
+        return { id: args?.where?.id ?? chatSessionFixture.id, contextType: 'project', contextId: 'p-split' }
       },
     },
     toolCallLog: {

@@ -21,6 +21,7 @@ import { takeCompleteLines } from "../lib/sse-lines"
 import { captureWake } from "../lib/wake-capture"
 
 import { prisma } from "../lib/prisma"
+import { CHAT_SESSION_NOT_FOUND, isChatSessionBound } from "../lib/chat-session-binding"
 import { loadAccess } from "../lib/authz"
 import type { IRuntimeManager } from "../lib/runtime"
 import * as billingService from "../services/billing-runtime"
@@ -67,6 +68,12 @@ import { resolveAgentRunModelFor } from "../services/agent-run-model.service"
 import { countLineChanges } from "../lib/tool-line-stats"
 import { fetchFromProjectRuntime } from "../lib/chat-runtime-fetch"
 import { importCloudModule } from "../lib/cloud-import"
+
+/** Who is calling, for chat-session binding (SEC-27). */
+function callerOf(c: any): { userId?: string | null; via?: string | null } {
+  const auth = c.get?.("auth") as { userId?: string; via?: string } | undefined
+  return { userId: auth?.userId ?? null, via: auth?.via ?? null }
+}
 
 const chatTracer = trace.getTracer("shogo-api-chat")
 
@@ -1808,6 +1815,14 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         )
       }
 
+      // SEC-27: the id comes from the client, so it must name a chat of this
+      // project (or a new one) before its history is read or written.
+      if (!(await isChatSessionBound(incomingChatSessionId, { kind: 'project', projectId }, callerOf(c)))) {
+        chatSpan.setStatus({ code: SpanStatusCode.ERROR, message: "chat_session_not_found" })
+        chatSpan.end()
+        return c.json(CHAT_SESSION_NOT_FOUND, 404)
+      }
+
       // A typed turn carries no history of its own beyond the client's page of
       // messages, so a cold or evicted runtime used to answer with no context
       // at all (SHO-137 round 3, R4). Attach the durable seed; the runtime only
@@ -2598,6 +2613,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           404
         )
       }
+      if (!(await isChatSessionBound(chatSessionId, { kind: 'project', projectId }, callerOf(c)))) {
+        return c.json(CHAT_SESSION_NOT_FOUND, 404)
+      }
 
       const runtimeQuery = new URLSearchParams()
       if (fromSeq !== undefined && fromSeq !== "") runtimeQuery.set("fromSeq", fromSeq)
@@ -2663,6 +2681,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           { error: { code: "project_not_found", message: "Project not found" } },
           404
         )
+      }
+      if (!(await isChatSessionBound(chatSessionId, { kind: 'project', projectId }, callerOf(c)))) {
+        return c.json(CHAT_SESSION_NOT_FOUND, 404)
       }
 
       const response = await fetchFromRuntime(
@@ -2771,6 +2792,16 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       }
 
       const body = await c.req.text()
+      let stopTarget: any = {}
+      try { stopTarget = JSON.parse(body || "{}") } catch { /* noop */ }
+      const stopSessionId =
+        c.req.header("X-Chat-Session-Id") || stopTarget?.chatSessionId || stopTarget?.sessionId
+      if (
+        typeof stopSessionId === "string" && stopSessionId &&
+        !(await isChatSessionBound(stopSessionId, { kind: 'project', projectId }, callerOf(c)))
+      ) {
+        return c.json(CHAT_SESSION_NOT_FOUND, 404)
+      }
       const response = await fetchFromRuntime(projectId, "/agent/stop", {
         method: "POST",
         body: body || "{}",
