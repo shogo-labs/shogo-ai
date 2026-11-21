@@ -3417,7 +3417,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
           return textResult({
             error:
               `This model cannot watch video, so "${filePath}" was not sent. ` +
-              "Switch to a video-native model (e.g. 'GLM 5.3 Flash') to read video files.",
+              "Switch to a video-native model (e.g. Carbon, Argon or GLM 5.3 Flash) to read video files.",
           })
         }
         try {

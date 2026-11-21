@@ -48,6 +48,37 @@ mock.module('../lib/prisma', () => ({
       findFirst: async () => ({ id: 'video-e2e-project', name: 'Video E2E' }),
       findUnique: async () => ({ id: 'video-e2e-project', workspaceId: 'video-e2e-workspace' }),
     },
+    // The seeded Carbon row as staging has it: UUID id, provider slug in
+    // apiModel, no capabilities of its own. The picker hands this UUID to the
+    // client, so this is the id the live case must work with (SHO-495).
+    modelDefinition: {
+      findMany: async () => [
+        {
+          id: '6f1c5a2e-8f43-4b1c-9d3a-0c1b2a3d4e5f',
+          provider: 'google',
+          providerId: null,
+          apiModel: 'gemini-4-carbon',
+          displayName: 'Gemini 4 Carbon',
+          shortDisplayName: 'Carbon',
+          tier: 'premium',
+          family: 'gemini',
+          generation: 'current',
+          kind: 'chat',
+          maxOutputTokens: 65536,
+          enabled: true,
+          sortOrder: 10,
+          aliases: ['gemini-4-carbon'],
+          capabilities: null,
+          inputPerMillion: 1,
+          cachedInputPerMillion: 0.1,
+          cacheWritePerMillion: 1.25,
+          outputPerMillion: 10,
+          contextWindow: 1048576,
+          reasoningEffort: 'medium',
+        },
+      ],
+    },
+    modelProvider: { findMany: async () => [] },
     usageEvent: { create: async (args: any) => args.data },
   },
 }))
@@ -75,7 +106,8 @@ import { aiProxyRoutes } from '../routes/ai-proxy'
 const hasOpenRouterKey = !!process.env.OPENROUTER_API_KEY
 const hasGoogleKey = !!process.env.GOOGLE_API_KEY
 const MODEL = 'openrouter:z-ai/glm-5.3-flash'
-const GOOGLE_MODEL = 'gemini-4-carbon'
+/** How staging addresses Carbon: the seeded row's UUID, not the slug. */
+const GOOGLE_MODEL = '6f1c5a2e-8f43-4b1c-9d3a-0c1b2a3d4e5f'
 
 const FIXTURE_DIR = join(import.meta.dir, 'fixtures', 'video')
 function fixture(name: string): string | null {

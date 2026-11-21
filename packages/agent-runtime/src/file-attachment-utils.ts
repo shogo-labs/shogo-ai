@@ -256,7 +256,7 @@ export function parseFileAttachments(
       // notice instead of bytes it would reject.
       if (!options.supportsVideo) {
         sections.push(
-          `[Attached Video (${label})]: This model cannot watch video. Switch to a video-native model (e.g. GLM 5.3 Flash) to send it.${savedSuffix}`,
+          `[Attached Video (${label})]: This model cannot watch video. Switch to a video-native model (e.g. Carbon, Argon or GLM 5.3 Flash) to send it.${savedSuffix}`,
         )
         continue
       }

@@ -323,6 +323,10 @@ export interface VisibleCatalogModel {
   contextWindow?: number
   /** Reasoning effort applied when the model runs (drives thinkingLevel). */
   reasoningEffort?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+  /** Whether the model accepts video input natively. A desktop mirroring this
+   *  catalog has no way to classify a cloud UUID, so the flag has to ride
+   *  along or its runtime drops the clip (SHO-495). */
+  supportsVideoInput?: boolean
 }
 
 /** Admin-curated allowlist of models that surface in the user picker.

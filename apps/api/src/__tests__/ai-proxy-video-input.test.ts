@@ -32,40 +32,49 @@ process.env.ANTHROPIC_API_KEY = 'sk-ant-test'
 process.env.OPENROUTER_API_KEY = 'sk-or-test'
 
 /**
- * The seeded Gemini rows `scripts/seed-db-models.ts seedGemini` writes: no
- * `capabilities` at all. The merged registry entry replaces the catalog entry
- * wholesale, so this is exactly the shape that used to hide the catalog's
- * `supportsVideoInput` flag (SHO-495).
+ * The rows `scripts/seed-db-models.ts seedGemini` writes, as the picker and the
+ * runtime actually see them: a UUID primary key with the provider slug in
+ * `apiModel` and the slug in `aliases`. The client saves that UUID, so it is
+ * the id the proxy guard and `AGENT_MODEL_REGISTRY` get — the slug path alone
+ * (which the static catalog covers) hides this whole class of bug.
+ *
+ * Four rows carry no `capabilities`, which is what the seeder wrote before
+ * SHO-495, and one carries the flag the seeder now copies from the catalog, so
+ * both halves of the fix are exercised.
  */
-const SEEDED_GEMINI_ROWS = [
-  'gemini-4-carbon',
-  'gemini-4-argon',
-  'gemini-4-neon',
-  'gemini-4-hydrogen',
-  'gemini-3.8-flash',
-].map((id, i) => ({
+const CARBON_UUID = '6f1c5a2e-8f43-4b1c-9d3a-0c1b2a3d4e5f'
+
+const geminiRow = (id: string, apiModel: string, capabilities: Record<string, unknown> | null) => ({
   id,
   provider: 'google',
   providerId: null,
-  apiModel: id,
-  displayName: id,
-  shortDisplayName: id,
+  apiModel,
+  displayName: apiModel,
+  shortDisplayName: apiModel,
   tier: 'premium',
   family: 'gemini',
   generation: 'current',
   kind: 'chat',
   maxOutputTokens: 65536,
   enabled: true,
-  sortOrder: 10 + i,
-  aliases: [id],
-  capabilities: null,
+  sortOrder: 10,
+  aliases: [apiModel],
+  capabilities,
   inputPerMillion: 1,
   cachedInputPerMillion: 0.1,
   cacheWritePerMillion: 1.25,
   outputPerMillion: 10,
   contextWindow: 1048576,
   reasoningEffort: 'medium',
-}))
+})
+
+const SEEDED_GEMINI_ROWS = [
+  geminiRow(CARBON_UUID, 'gemini-4-carbon', null),
+  geminiRow('a1b2c3d4-1111-4e2f-8a9b-0c1d2e3f4a5b', 'gemini-4-argon', null),
+  geminiRow('b2c3d4e5-2222-4f3a-9b0c-1d2e3f4a5b6c', 'gemini-4-neon', null),
+  geminiRow('c3d4e5f6-3333-4a4b-8c1d-2e3f4a5b6c7d', 'gemini-4-hydrogen', null),
+  geminiRow('d4e5f6a7-4444-4b5c-9d2e-3f4a5b6c7d8e', 'gemini-3.8-flash', { supportsVideoInput: true }),
+]
 
 mock.module('../lib/prisma', () => withPrismaExports({
   prisma: {
@@ -174,6 +183,13 @@ describe('resolveModelSupportsVideoInput', () => {
 
   test('a seeded DB row with no capabilities does not hide the catalog flag', async () => {
     await invalidateModelRegistry()
+    // The picker saves the row's UUID, not the slug: this is the id the proxy
+    // guard and the runtime registry actually see on a seeded instance.
+    for (const row of SEEDED_GEMINI_ROWS) {
+      expect(resolveModelSupportsVideoInput(row.id)).toBe(true)
+    }
+    // …and the slug still resolves through the static catalog, which is what a
+    // fresh, unseeded instance and every e2e ordering use.
     for (const model of VIDEO_GOOGLE_MODELS) {
       expect(resolveModelSupportsVideoInput(model)).toBe(true)
     }
@@ -346,6 +362,33 @@ describe('video pass-through for a Google-direct model', () => {
       expect(blocks.some((b: any) => b.type === 'video_url')).toBe(false)
     })
   }
+
+  // The id the picker serves and the client saves on a seeded instance is the
+  // row's UUID. This is the case that 400'd on staging before SHO-495 round 1.
+  test('a seeded UUID id reaches Google for its apiModel, not as the UUID', async () => {
+    await invalidateModelRegistry()
+    const res = await postChatCompletions({
+      model: CARBON_UUID,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Describe this clip.' },
+            { type: 'image_url', image_url: { url: `data:video/mp4;base64,${VIDEO_B64}` } },
+          ],
+        },
+      ],
+    })
+
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe(GOOGLE_COMPAT_URL)
+    // The cloud/local proxy addresses the provider by the row's apiModel.
+    expect(lastFetchBody.model).toBe('gemini-4-carbon')
+    expect(lastFetchBody.messages[0].content[1]).toEqual({
+      type: 'image_url',
+      image_url: { url: `data:video/mp4;base64,${VIDEO_B64}` },
+    })
+  })
 
   test('a text-only turn is unchanged: same endpoint, same messages, catalog cap', async () => {
     const messages = [{ role: 'user' as const, content: 'hello' }]
