@@ -236,6 +236,12 @@ export default function MeetingDetailScreen() {
     else router.replace('/(app)/meetings' as any)
   }
 
+  // Hooks stay above the early returns: the loading page renders first, and a
+  // hook that only runs once the meeting has loaded crashes the screen.
+  const { width, height } = useWindowDimensions()
+  const phone = isPhoneLayout(width, height)
+  const header = usePhoneScreenHeaderInset()
+
   if (loading || !workspaceId) {
     return (
       <SafeAreaView className="flex-1 items-center justify-center bg-background">
@@ -261,9 +267,6 @@ export default function MeetingDetailScreen() {
   const templateName = templates.find((t) => t.id === (meeting.templateId ?? 'builtin:general'))?.name ?? 'General'
   const notesBody = meeting.enhancedNotes ? stripActionItemsSection(meeting.enhancedNotes) : ''
   const busy = meeting.status === 'recording' || meeting.status === 'transcribing'
-  const { width, height } = useWindowDimensions()
-  const phone = isPhoneLayout(width, height)
-  const header = usePhoneScreenHeaderInset()
   const indent = phone ? '' : 'ml-8'
 
   return (
