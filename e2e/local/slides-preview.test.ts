@@ -142,14 +142,15 @@ async function send(page: Page, text: string) {
 }
 
 /**
- * The frame's own report is the assertion: `data-slide-count` is only set from
- * the viewer's `rendered` message, so `3` means the page loaded, the bytes
- * crossed the boundary, and the renderer counted three slides.
+ * The frame's own report is the assertion: `data-item-count` is only set from
+ * the viewer's `rendered` message (slides and pages share one preview
+ * component, SHO-467), so `3` means the page loaded, the bytes crossed the
+ * boundary, and the renderer counted three slides.
  */
 async function expectSlideCount(host: ReturnType<Page["getByTestId"]>, timeout = 60_000) {
   const frame = host.getByTestId("slides-preview-frame")
   await expect(frame).toBeVisible({ timeout })
-  await expect(frame).toHaveAttribute("data-slide-count", "3", { timeout })
+  await expect(frame).toHaveAttribute("data-item-count", "3", { timeout })
   return frame
 }
 
