@@ -75,7 +75,7 @@ test.beforeEach(async ({ context }) => {
 async function openMachineWorkspace(page: Page): Promise<void> {
   await page.goto("/", { waitUntil: "domcontentloaded" })
   const account = page.getByRole("button", { name: /— open account/ }).first()
-  await expect(account).toBeVisible({ timeout: 120_000 })
+  await expect(account, "the studio's sidebar offers the account menu").toBeVisible({ timeout: 60_000 })
   await account.click()
   const row = page.getByTestId(`workspace-row:cloud:${state.machineWorkspaceId}`)
   await expect(row, "the machine's workspace is offered in the switcher").toBeVisible({ timeout: 60_000 })
@@ -83,6 +83,33 @@ async function openMachineWorkspace(page: Page): Promise<void> {
   await expect(page.getByRole("button", { name: `${state.machineWorkspaceName}, workspace menu` })).toBeVisible({
     timeout: 60_000,
   })
+}
+
+/**
+ * Opens the machine's channel. A phone has no sidebar and no workspace switcher
+ * (measured: the phone shell renders the companion home with only "Shogo profile
+ * and settings", "Chats" and "Notifications"), but a channel URL carries its own
+ * workspace, so the phone goes straight there — the same link a person taps.
+ */
+async function openMachineChannel(page: Page, phone: boolean): Promise<void> {
+  const channelId = state.seeds.machine.channelId
+  if (phone) {
+    await page.goto(`/c/${channelId}`, { waitUntil: "domcontentloaded" })
+    return
+  }
+  await openMachineWorkspace(page)
+  await page.goto(`/c/${channelId}`, { waitUntil: "domcontentloaded" })
+}
+
+/** Where a turn is typed: the workspace chat on a desktop, the agent screen on a phone. */
+async function openMachineChat(page: Page, phone: boolean): Promise<void> {
+  if (phone) {
+    await page.goto(`/agent?workspace=${encodeURIComponent(state.machineWorkspaceId)}`, {
+      waitUntil: "domcontentloaded",
+    })
+    return
+  }
+  await openMachineWorkspace(page)
 }
 
 /** Sets a flag that a reload or a navigation would wipe. */
@@ -106,10 +133,9 @@ async function windowSurvived(page: Page): Promise<boolean> {
 // "it only shows up after a refresh" bug this layer exists to catch, so the case
 // runs as `test.fail`: it goes red the moment someone fixes the channel view,
 // and until then the failure names the behaviour that is missing.
-test.fail("a message sent on the machine appears in the open cloud channel, with no reload", async ({ page }) => {
+test.fail("a message sent on the machine appears in the open cloud channel, with no reload", async ({ page }, testInfo) => {
   const seeded = state.seeds.machine
-  await openMachineWorkspace(page)
-  await page.goto(`/c/${seeded.channelId}`, { waitUntil: "domcontentloaded" })
+  await openMachineChannel(page, testInfo.project.name === "phone")
   await expect(page.getByText(seeded.messageTexts[0]).first()).toBeVisible({ timeout: 60_000 })
 
   await markWindow(page)
@@ -132,8 +158,12 @@ test.fail("a message sent on the machine appears in the open cloud channel, with
   expect(await windowSurvived(page), "the message arrived without a reload").toBe(true)
 })
 
-test("a turn started in the cloud streams into the open chat view, with no reload", async ({ page }) => {
-  await openMachineWorkspace(page)
+test("a turn started in the cloud streams into the open chat view, with no reload", async ({ page }, testInfo) => {
+  // The phone shell has no workspace-chat composer at the studio's URL, so this
+  // case runs on the desktop viewport only; the phone viewport runs the channel
+  // case above, which is the check that catches "only after a refresh".
+  test.skip(testInfo.project.name === "phone", "desktop-only case: the phone shell has no workspace chat here")
+  await openMachineChat(page, testInfo.project.name === "phone")
   await markWindow(page)
 
   const tag = `ui${Date.now() % 100_000}`
