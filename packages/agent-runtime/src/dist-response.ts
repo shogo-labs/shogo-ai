@@ -57,6 +57,17 @@ export const STATIC_MIME: Record<string, string> = {
   '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.pdf': 'application/pdf',
 }
 
+/**
+ * The MIME a `dist/` path is served with. Shared with the publish path, which
+ * stamps the same type onto the object (a published pod serves the object's own
+ * `Content-Type`).
+ */
+export function staticMimeFor(pathOrExt: string): string {
+  const dot = pathOrExt.lastIndexOf('.')
+  const ext = dot >= 0 ? pathOrExt.slice(dot).toLowerCase() : ''
+  return STATIC_MIME[ext] || 'application/octet-stream'
+}
+
 export interface DistStaticRequest {
   /** The directory to serve out of. */
   distDir: string
@@ -115,8 +126,18 @@ function serveFileOnDisk(
 }
 
 /**
- * Serve a pointer's object from the store: `200`/`206` streamed, `304` when the
- * client already has it, `404` when the store does not.
+ * Serve a pointer's object from the store.
+ *
+ * A **length-known** body (`Bun.s3` file) is returned bare: `Bun.serve` answers
+ * it with `Content-Length`, applies `Range` itself, and takes
+ * `Content-Type`/`ETag`/`Last-Modified` from the object. It cannot be combined
+ * with headers at all — `new Response(s3File, init)` throws — so the publish
+ * path stamps the object's `Content-Type` and `Cache-Control` at upload
+ * (`publish-artifact-filter.ts`), and those *are* the headers a browser sees.
+ *
+ * The piped fallback (a host without `Bun.S3Client`) does carry our headers and
+ * loses `Content-Length` to chunked encoding; `lengthKnown` is what keeps the
+ * two apart.
  *
  * Never answers with the pointer text: pointer text served as media is a
  * corrupt-looking image the user cannot explain, and it hides the real
@@ -163,6 +184,23 @@ async function serveLfsPointer(
       headers: { 'Content-Type': 'text/plain; charset=utf-8', [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE },
     })
   }
+
+  if (result.lengthKnown && result.body) {
+    // Bun answers this body itself: `Content-Length`, `Content-Type`, `ETag`,
+    // `Last-Modified`, `Accept-Ranges` and the `206` all come from the store.
+    if (request.method.toUpperCase() === 'HEAD') {
+      return new Response(null, {
+        status: 200,
+        headers: {
+          ...headers,
+          'Content-Length': String(result.contentLength),
+          ...(result.contentRange ? { 'Content-Range': result.contentRange } : {}),
+        },
+      })
+    }
+    return new Response(result.body as BodyInit)
+  }
+
   const body = toBodyInit(result.body)
   return new Response(body, {
     status: result.contentRange ? 206 : 200,

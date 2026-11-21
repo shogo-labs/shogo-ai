@@ -227,6 +227,8 @@ export {
   S3_MULTIPART_PART_BYTES,
   objectExists,
   putFileToObjectStore,
+  headObject,
+  stampObjectMetadata,
   isObjectNotFound,
   type S3ObjectStore,
 } from './s3-object'

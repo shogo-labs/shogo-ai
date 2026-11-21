@@ -127,9 +127,16 @@ describe('artifactPointerTargets', () => {
  */
 describe('offloadArtifactMedia', () => {
   let dir: string
+  type StoredObject = { body: Buffer; contentType?: string; cacheControl?: string }
   const fakeStore = () => {
-    const objects = new Map<string, Buffer>()
+    const objects = new Map<string, StoredObject>()
     const commands: string[] = []
+    const notFound = () => {
+      const err: any = new Error('NotFound')
+      err.name = 'NotFound'
+      err.$metadata = { httpStatusCode: 404 }
+      return err
+    }
     return {
       objects,
       commands,
@@ -139,18 +146,33 @@ describe('offloadArtifactMedia', () => {
           async send(command: any) {
             const name = command.constructor.name
             commands.push(name)
+            const key = command.input.Key
             if (name === 'HeadObjectCommand') {
-              if (!objects.has(command.input.Key)) {
-                const err: any = new Error('NotFound')
-                err.name = 'NotFound'
-                err.$metadata = { httpStatusCode: 404 }
-                throw err
+              const stored = objects.get(key)
+              if (!stored) throw notFound()
+              return {
+                ContentLength: stored.body.length,
+                ContentType: stored.contentType,
+                CacheControl: stored.cacheControl,
               }
-              return {}
             }
             if (name === 'PutObjectCommand') {
-              objects.set(command.input.Key, Buffer.from(command.input.Body))
+              objects.set(key, {
+                body: Buffer.from(command.input.Body),
+                contentType: command.input.ContentType,
+                cacheControl: command.input.CacheControl,
+              })
               return { ETag: '"x"' }
+            }
+            if (name === 'CopyObjectCommand') {
+              const stored = objects.get(key)
+              if (!stored) throw notFound()
+              objects.set(key, {
+                body: stored.body,
+                contentType: command.input.ContentType,
+                cacheControl: command.input.CacheControl,
+              })
+              return {}
             }
             return {}
           },
@@ -212,7 +234,11 @@ describe('offloadArtifactMedia', () => {
     seed()
     const { store, objects, commands } = fakeStore()
     const oid = createHash('sha256').update(Buffer.alloc(3000, 7)).digest('hex')
-    objects.set(`proj-1/lfs/objects/${oid.slice(0, 2)}/${oid.slice(2, 4)}/${oid}`, Buffer.alloc(0))
+    objects.set(`proj-1/lfs/objects/${oid.slice(0, 2)}/${oid.slice(2, 4)}/${oid}`, {
+      body: Buffer.alloc(0),
+      contentType: 'video/mp4',
+      cacheControl: 'no-cache',
+    })
     try {
       const result = await offloadArtifactMedia({
         contextDir: dir,
@@ -222,7 +248,38 @@ describe('offloadArtifactMedia', () => {
         logger: { log: () => {}, warn: () => {} },
       })
       expect(result.reused).toBe(1)
+      expect(result.restamped).toBe(0)
       // Only the dist object needed a write.
+      expect(commands.filter((c) => c === 'PutObjectCommand').length).toBe(1)
+      expect(commands).not.toContain('CopyObjectCommand')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('re-stamps an object that reached the store before its type was known', async () => {
+    seed()
+    const { store, objects, commands } = fakeStore()
+    const oid = createHash('sha256').update(Buffer.alloc(3000, 7)).digest('hex')
+    const key = `proj-1/lfs/objects/${oid.slice(0, 2)}/${oid.slice(2, 4)}/${oid}`
+    // What a presigned `git lfs push` leaves behind: the bytes, no media type.
+    objects.set(key, { body: Buffer.alloc(3000, 7), contentType: 'application/octet-stream' })
+    try {
+      const result = await offloadArtifactMedia({
+        contextDir: dir,
+        sourceDir: dir,
+        projectId: 'proj-1',
+        store,
+        logger: { log: () => {}, warn: () => {} },
+      })
+      // The pod serves the object's own metadata, so the type and the caching
+      // policy has to be right on the object, not only in the response.
+      expect(result.restamped).toBe(1)
+      expect(result.reused).toBe(0)
+      expect(objects.get(key)?.contentType).toBe('video/mp4')
+      expect(objects.get(key)?.cacheControl).toBe('no-cache')
+      expect(commands).toContain('CopyObjectCommand')
+      // A re-stamp copies server-side; it never re-uploads the bytes.
       expect(commands.filter((c) => c === 'PutObjectCommand').length).toBe(1)
     } finally {
       rmSync(dir, { recursive: true, force: true })

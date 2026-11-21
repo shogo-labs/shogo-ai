@@ -16,6 +16,7 @@
 import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
+  CopyObjectCommand,
   CreateMultipartUploadCommand,
   HeadObjectCommand,
   PutObjectCommand,
@@ -79,6 +80,10 @@ export async function objectExists(store: S3ObjectStore, key: string): Promise<b
  * Buffer body; above it, a multipart upload reads one
  * {@link S3_MULTIPART_PART_BYTES} part at a time from a file handle.
  *
+ * `contentType` is not cosmetic for a content-addressed object: `Bun.serve`
+ * answers a store object with the object's own `Content-Type` and ignores
+ * overrides, so this metadata *is* the header a published pod serves.
+ *
  * `precondition` is the archive-lineage guard. S3 enforces it on the complete
  * call; because an S3-compatible store is free to ignore it there, the ETag is
  * also checked against the object immediately before the write is finalised.
@@ -90,6 +95,7 @@ export async function putFileToObjectStore(
   opts: {
     bytes: number
     contentType?: string
+    cacheControl?: string
     precondition?: { IfMatch?: string; IfNoneMatch?: string }
   },
 ): Promise<{ etag?: string }> {
@@ -102,12 +108,64 @@ export async function putFileToObjectStore(
         Key: key,
         Body: await readFile(filePath),
         ContentType: contentType,
+        ...(opts.cacheControl ? { CacheControl: opts.cacheControl } : {}),
         ...precondition,
       }),
     )
     return { etag: res.ETag }
   }
   return multipartUploadFromFile(store, key, filePath, opts.bytes, contentType, precondition)
+}
+
+/** What a `HeadObject` tells us about an object we did not write (or wrote earlier). */
+export interface StoredObjectMetadata {
+  size: number
+  etag?: string
+  contentType?: string
+  cacheControl?: string
+}
+
+/** `HeadObject` as data, or `null` when the key is not there. */
+export async function headObject(store: S3ObjectStore, key: string): Promise<StoredObjectMetadata | null> {
+  try {
+    const head = await store.client.send(new HeadObjectCommand({ Bucket: store.bucket, Key: key }))
+    return {
+      size: Number(head?.ContentLength ?? 0),
+      etag: head?.ETag,
+      contentType: head?.ContentType,
+      cacheControl: head?.CacheControl,
+    }
+  } catch (err) {
+    if (isObjectNotFound(err)) return null
+    throw err
+  }
+}
+
+/**
+ * Re-stamp an object's `Content-Type`/`Cache-Control` without rewriting its
+ * bytes (a server-side self-`CopyObject`).
+ *
+ * An object can reach the store before we know how it will be served — `git
+ * lfs push` uploads through a presigned PUT and picks
+ * `application/octet-stream`, and the same content-addressed key is reused by
+ * every later publish. Because a published pod serves the object's own
+ * `Content-Type`, the first publish that knows the real type has to fix it.
+ */
+export async function stampObjectMetadata(
+  store: S3ObjectStore,
+  key: string,
+  metadata: { contentType: string; cacheControl?: string },
+): Promise<void> {
+  await store.client.send(
+    new CopyObjectCommand({
+      Bucket: store.bucket,
+      Key: key,
+      CopySource: `${store.bucket}/${key}`,
+      MetadataDirective: 'REPLACE',
+      ContentType: metadata.contentType,
+      ...(metadata.cacheControl ? { CacheControl: metadata.cacheControl } : {}),
+    }),
+  )
 }
 
 /** The large-object path of {@link putFileToObjectStore}. */

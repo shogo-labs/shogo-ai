@@ -944,6 +944,20 @@ export async function lfsPull(cfg: LfsRemoteConfig): Promise<boolean> {
 export interface LfsObjectStore {
   bucket: string
   client: { send(command: any): Promise<any> }
+  /**
+   * The object as a **length-known** body the host can serve itself — Bun's
+   * native S3 file, whose bytes stay in the store and whose size Bun knows.
+   *
+   * This is not an optimisation. `Bun.serve` replies to *any* `ReadableStream`
+   * body with `Transfer-Encoding: chunked` and drops an explicitly-set
+   * `Content-Length`, so piping a `GetObject` body loses the length the HTTP
+   * contract (and `<video>` progress/seek) needs. A Blob it can measure is the
+   * only body shape that keeps `Content-Length` on the wire; Bun also applies
+   * `Range` to it itself and forwards the object's own `Content-Type` and
+   * `ETag`. Absent on hosts without `Bun.S3Client` (the node test runner),
+   * where the caller falls back to a piped body.
+   */
+  bodyFile?(key: string): Blob
 }
 
 /** One pointer blob found in the working tree. */
@@ -1121,7 +1135,31 @@ export function lfsObjectStoreFromEnv(env: NodeJS.ProcessEnv = process.env): Lfs
       ? { accessKeyId: env.AWS_ACCESS_KEY_ID, secretAccessKey: env.AWS_SECRET_ACCESS_KEY || '' }
       : undefined,
   })
-  return { bucket, client }
+  const bodyFile = bunS3BodyFile(bucket, env)
+  return { bucket, client, ...(bodyFile ? { bodyFile } : {}) }
+}
+
+/**
+ * Bun's native S3 file for a key, or `null` on a host without `Bun.S3Client`.
+ *
+ * A piped `GetObject` body becomes `Transfer-Encoding: chunked` and loses its
+ * `Content-Length` under `Bun.serve`, so this is the read shape that keeps the
+ * header on the wire (SHO-485, QA round 1). Bun also answers `Range` against it
+ * itself and forwards the object's `Content-Type`/`ETag`/`Last-Modified`, which
+ * is why the publish path stamps the object's metadata.
+ */
+function bunS3BodyFile(bucket: string, env: NodeJS.ProcessEnv): ((key: string) => Blob) | null {
+  const S3ClientCtor = (globalThis as any).Bun?.S3Client
+  if (typeof S3ClientCtor !== 'function') return null
+  const client = new S3ClientCtor({
+    bucket,
+    ...(env.S3_REGION ? { region: env.S3_REGION } : {}),
+    ...(env.S3_ENDPOINT ? { endpoint: env.S3_ENDPOINT } : {}),
+    ...(env.AWS_ACCESS_KEY_ID
+      ? { accessKeyId: env.AWS_ACCESS_KEY_ID, secretAccessKey: env.AWS_SECRET_ACCESS_KEY || '' }
+      : {}),
+  })
+  return (key: string) => client.file(key) as Blob
 }
 
 /** Whether an `If-None-Match` header names this ETag (weak comparison, list form, `*`). */
@@ -1138,8 +1176,15 @@ export function etagMatches(ifNoneMatch: string | null | undefined, etag: string
 export type LfsObjectReadResult =
   | {
       status: 'ok'
-      /** The object's stream — `null` for a `HEAD`, which only needs the headers. */
+      /** The object's body — `null` for a `HEAD`, which only needs the headers. */
       body: unknown | null
+      /**
+       * `true` when `body` is a Blob the host serves with its own
+       * `Content-Length` (Bun's S3 file), so the caller must **not** set
+       * `Content-Length`/`Content-Type`/`Range` headers over it — Bun answers
+       * those from the object and ignores overrides on this body type.
+       */
+      lengthKnown: boolean
       totalSize: number
       contentLength: number
       contentRange?: string
@@ -1150,21 +1195,27 @@ export type LfsObjectReadResult =
   | { status: 'unsatisfiable'; etag: string; totalSize: number }
 
 /**
- * Open an LFS object as a stream, optionally ranged, straight from the store.
+ * Open an LFS object, optionally ranged, straight from the store.
  *
  * This is what lets a published pod serve media it never wrote to disk
  * (SHO-485): the pointer file under `dist/` names the object, and the bytes
- * come from `<projectId>/lfs/objects/…` one request at a time. Memory stays
- * flat because the body is piped, never buffered — the whole point of the read
- * side matching the streamed write side (#2132/SHO-478).
+ * come from `<projectId>/lfs/objects/…` one request at a time.
  *
- * Never throws for a missing object: `status: 'missing'` is the caller's 404,
- * and a pointer must never be answered with pointer text.
+ * The body is a **length-known Blob** (`Bun.s3` file) wherever the host has
+ * one, because that is the only body `Bun.serve` answers with a real
+ * `Content-Length` — a piped stream becomes chunked and loses the header
+ * (QA round 1). The piped `GetObject` remains as the fallback for a host
+ * without `Bun.S3Client`, and `lengthKnown` tells the caller which it got.
+ *
+ * One `HEAD` (or `GetObject` on the fallback) precedes a ranged read: it
+ * answers existence (404), the store's own `ETag` — which is what a
+ * length-known body serves, so a `304` compares like with like — and the real
+ * size the range math and `416` need.
  */
 export async function openLfsObjectStream(opts: {
   projectId: string
   oid: string
-  /** The pointer's declared size — range math and a HEAD answer use it. */
+  /** The pointer's declared size — used before the store answers, and for a `HEAD`-less fallback. */
   size: number
   store: LfsObjectStore
   /** Raw `Range` request header. */
@@ -1174,8 +1225,26 @@ export async function openLfsObjectStream(opts: {
   /** `HEAD`: confirm the object is there, return no body. */
   head?: boolean
 }): Promise<LfsObjectReadResult> {
-  const etag = `"${opts.oid}"`
-  const totalSize = opts.size
+  const declaredEtag = `"${opts.oid}"`
+  const key = lfsObjectKey(opts.projectId, opts.oid)
+
+  let etag = declaredEtag
+  let totalSize = opts.size
+  let exists = true
+  try {
+    const head = await opts.store.client.send(new HeadObjectCommand({ Bucket: opts.store.bucket, Key: key }))
+    etag = typeof head?.ETag === 'string' && head.ETag ? head.ETag : declaredEtag
+    const stored = Number(head?.ContentLength)
+    if (Number.isFinite(stored)) totalSize = stored
+  } catch (err) {
+    if (isObjectNotFound(err)) {
+      exists = false
+    } else {
+      throw err
+    }
+  }
+  if (!exists) return { status: 'missing', etag }
+
   if (etagMatches(opts.ifNoneMatch, etag)) return { status: 'not-modified', etag, totalSize }
 
   // The same `Range` parser every file-serving route uses (byte-range.ts), so a
@@ -1185,13 +1254,23 @@ export async function openLfsObjectStream(opts: {
   const range = parsedRange.kind === 'range' ? parsedRange : null
   const contentRange = range ? `bytes ${range.start}-${range.end}/${totalSize}` : undefined
   const contentLength = range ? range.end - range.start + 1 : totalSize
-  const key = lfsObjectKey(opts.projectId, opts.oid)
+
+  // A `HEAD` needs no body from either path; the caller answers it with the
+  // headers alone. (Bun also handles HEAD on a length-known body itself, but
+  // then it would have to talk to the store to learn the length.)
+  if (opts.head) {
+    return { status: 'ok', body: null, lengthKnown: true, totalSize, contentLength, contentRange, etag }
+  }
+
+  // Length-known body: the whole object, and Bun applies the request's Range
+  // itself (slice-free) so the 206 and its Content-Range come out of the store
+  // the same way they do for a file on disk.
+  const bodyFile = opts.store.bodyFile?.(key)
+  if (bodyFile) {
+    return { status: 'ok', body: bodyFile, lengthKnown: true, totalSize, contentLength, contentRange, etag }
+  }
 
   try {
-    if (opts.head) {
-      await opts.store.client.send(new HeadObjectCommand({ Bucket: opts.store.bucket, Key: key }))
-      return { status: 'ok', body: null, totalSize, contentLength, contentRange, etag }
-    }
     const res = await opts.store.client.send(
       new GetObjectCommand({
         Bucket: opts.store.bucket,
@@ -1204,6 +1283,7 @@ export async function openLfsObjectStream(opts: {
     return {
       status: 'ok',
       body: res.Body,
+      lengthKnown: false,
       // The store's length wins over the pointer's for the body we are handing
       // back; a mismatch means a corrupt object, and it must not become a
       // truncated response.

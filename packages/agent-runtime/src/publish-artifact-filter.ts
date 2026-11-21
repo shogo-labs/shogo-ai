@@ -16,7 +16,8 @@ import { join, relative } from 'path'
 import type { Dirent } from 'fs'
 import { createHash } from 'crypto'
 import { isShogoRuntimeSubtree } from '@shogo/shared-runtime/shogo-state-paths'
-import { lfsObjectKey, lfsPointerText, lfsTrackedPaths, objectExists, putFileToObjectStore, type S3ObjectStore } from '@shogo/shared-runtime'
+import { headObject, lfsObjectKey, lfsPointerText, lfsTrackedPaths, putFileToObjectStore, stampObjectMetadata, staticAssetCacheControl, type S3ObjectStore } from '@shogo/shared-runtime'
+import { staticMimeFor } from './dist-response'
 
 /** Root-relative paths that never belong in the image. */
 const SKIP_AT_ROOT = new Set(['node_modules', '.git', '.shogo', 'dist', '.tmp'])
@@ -133,6 +134,8 @@ export interface ArtifactMediaOffloadResult {
   uploaded: number
   /** Objects the store already had (the common case for committed LFS media). */
   reused: number
+  /** Existing objects whose stored `Content-Type` was wrong and corrected in place. */
+  restamped: number
   /** Real media bytes left out of the artifact. */
   bytesLeftOut: number
 }
@@ -219,7 +222,7 @@ export async function offloadArtifactMedia(opts: {
   logger?: Pick<Console, 'log' | 'warn'>
 }): Promise<ArtifactMediaOffloadResult> {
   const logger = opts.logger ?? console
-  const result: ArtifactMediaOffloadResult = { pointers: 0, uploaded: 0, reused: 0, bytesLeftOut: 0 }
+  const result: ArtifactMediaOffloadResult = { pointers: 0, uploaded: 0, reused: 0, restamped: 0, bytesLeftOut: 0 }
   const { paths, sizes } = collectContextFiles(opts.contextDir)
   if (paths.length === 0) return result
 
@@ -231,12 +234,25 @@ export async function offloadArtifactMedia(opts: {
     const contextPath = join(opts.contextDir, rel)
     const { oid, size } = await hashFileOid(contextPath)
     const key = lfsObjectKey(opts.projectId, oid)
+    // The pod serves the object's *own* metadata — `Bun.serve` answers a
+    // length-known store body from the object and refuses per-response headers
+    // on it — so the type and the cache policy have to be stamped here, where
+    // the serving path is known.
+    const contentType = staticMimeFor(rel)
+    const cacheControl = staticAssetCacheControl(rel)
     try {
-      if (await objectExists(opts.store, key)) {
-        result.reused++
-      } else {
-        await putFileToObjectStore(opts.store, key, contextPath, { bytes: size, contentType: 'application/octet-stream' })
+      const existing = await headObject(opts.store, key)
+      if (!existing) {
+        await putFileToObjectStore(opts.store, key, contextPath, { bytes: size, contentType, cacheControl })
         result.uploaded++
+      } else if (existing.contentType !== contentType || existing.cacheControl !== cacheControl) {
+        // Same bytes, wrong (or absent) stamp: `git lfs push` uploads through a
+        // presigned PUT and picks `application/octet-stream`, and this key is
+        // reused by every later publish.
+        await stampObjectMetadata(opts.store, key, { contentType, cacheControl })
+        result.restamped++
+      } else {
+        result.reused++
       }
     } catch (err) {
       throw new ArtifactMediaOffloadError(rel, oid, err)
@@ -249,6 +265,7 @@ export async function offloadArtifactMedia(opts: {
   logger.log(
     `[publish-artifact] offloaded ${result.pointers} media file(s) ` +
       `(${result.uploaded} uploaded, ${result.reused} already stored, ` +
+      `${result.restamped} re-stamped, ` +
       `${(result.bytesLeftOut / (1024 * 1024)).toFixed(1)} MB left out of the image)`,
   )
   return result
