@@ -1313,6 +1313,13 @@ export interface AgentChannelAuthContext {
    * post in a channel are attributed alike.
    */
   userId?: string | null
+  /**
+   * The same person, when the authorizer is the one that verified them
+   * (SHO-493). Kept apart from `userId`, which session callers also set, so
+   * `agent_runs_list` / `agent_run_stop` can accept a Personal ticket for a
+   * call in another workspace without accepting "any signed-in caller".
+   */
+  crossWorkspaceRequesterId?: string | null
 }
 
 export interface AgentChannelRoutesConfig {
@@ -2001,6 +2008,11 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     if (projectCaller) {
       return c.json({ error: { code: 'workspace_agent_only', message: 'Only the workspace agent can see and stop other agents' } }, 403)
     }
+    // A cross-workspace call's ticket is signed for the caller's Personal
+    // workspace, so it cannot verify against this one (SHO-493). The
+    // authorizer already verified it there and put the person in the
+    // allowance; the per-conversation `loadAccess` limits below still apply.
+    if (auth.crossWorkspaceRequesterId) return auth.crossWorkspaceRequesterId
     const ticket = await verifyRequesterTicketInWorkspace(c.req.header(REQUESTER_TICKET_HEADER), auth.workspaceId).catch(() => null)
     if (!ticket) {
       return c.json({ error: { code: 'requester_required', message: 'A signed requester is required to see or stop agents' } }, 403)

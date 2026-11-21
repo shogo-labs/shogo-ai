@@ -269,10 +269,14 @@ export function createInternalAuthorizers(authenticate: InternalAuthenticate) {
     if (tokenWorkspaceId === workspaceId) {
       // A call relayed here by the person's desktop (device key) names the person
       // it was made for, so a cross-workspace write stays attributed to them on
-      // the side that runs it.
-      const { relayedCrossWorkspaceRequester } = await import('../lib/cross-workspace')
+      // the side that runs it. A call the cloud **forwarded** to this desktop
+      // because the workspace is hosted here names them too (SHO-493); the
+      // tunnel user, the workspace and their membership were all checked.
+      const { relayedCrossWorkspaceRequester, hostedForward } = await import('../lib/cross-workspace')
       const relayedFor = await relayedCrossWorkspaceRequester(c as any)
-      const sameWorkspace: ScopeAllowance = { ok: true, identity, userId: relayedFor }
+      const forwarded = relayedFor ? null : await hostedForward(c as any)
+      const forwardedFor = forwarded && forwarded.workspaceId === workspaceId ? forwarded.requesterUserId : null
+      const sameWorkspace: ScopeAllowance = { ok: true, identity, userId: relayedFor ?? forwardedFor }
       try {
         ;(c as any).set?.(SCOPE_ALLOWANCE_KEY, sameWorkspace)
       } catch {

@@ -37,6 +37,11 @@ const SECRET = process.env.SHOGO_HOST_TUNNEL_SECRET || randomBytes(24).toString(
 /** How long a request waits for a sleeping desktop's tunnel before `host_offline`. */
 const WAKE_DEADLINE_MS = Math.max(0, Number(process.env.SHOGO_HOST_WAKE_DEADLINE_MS ?? 5_000) || 0)
 
+/** The same deadline, for callers that forward over the tunnel themselves (SHO-493). */
+export function hostWakeDeadlineMs(): number {
+  return WAKE_DEADLINE_MS
+}
+
 /** The workspace's host, cached briefly: every runtime resolve asks. */
 const HOST_TTL_MS = 10_000
 const hostCache = new Map<string, { hostInstanceId: string | null; at: number }>()
@@ -123,7 +128,7 @@ function tunnelStreams(method: string, rest: string, accept: string | undefined)
 // workspace may bill is the desktop's owner, which this handler knows, so the
 // caller does not get to name it.
 const FORWARD_HEADERS = ['content-type', 'accept', 'x-chat-session-id', 'last-event-id']
-const DROP_RESPONSE_HEADERS = new Set(['transfer-encoding', 'connection', 'set-cookie', 'content-length', 'content-encoding'])
+export const DROP_RESPONSE_HEADERS = new Set(['transfer-encoding', 'connection', 'set-cookie', 'content-length', 'content-encoding'])
 
 /** The only paths a tunnel request may carry: a runtime's own agent proxy. */
 const TUNNEL_TARGET_PATH = /^\/api\/(projects|workspaces)\/([^/]+)\/agent-proxy(\/.*)?$/
@@ -186,7 +191,7 @@ function secretMatches(given: string): boolean {
 }
 
 /** The instance-tunnel transport (the real one lives in `routes/instances`). */
-type TunnelTransport = {
+export type TunnelTransport = {
   ensureTunnelConnected: (instanceId: string, deadlineMs: number) => Promise<boolean>
   sendTunnelRequest: (instanceId: string, payload: any) => Promise<{ status: number; headers?: Record<string, string>; body?: string }>
   sendTunnelStreamRequest: (instanceId: string, payload: any, onChunk: (chunk: any) => void) => { cancel: () => void }

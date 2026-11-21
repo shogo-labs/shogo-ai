@@ -107,6 +107,16 @@ export interface CrossWorkspaceTargetSummary {
   source: 'local' | 'cloud' | 'desktop'
   reachable: boolean
   unreachableReason?: 'cloud_signed_out' | 'cloud_unreachable' | 'desktop_hosted'
+  /**
+   * The paired desktop the workspace's compute lives on (SHO-493), so a refusal
+   * can name the machine and its last-seen time.
+   */
+  host?: {
+    instanceId: string
+    name: string | null
+    online: boolean
+    lastSeenAt: string | null
+  }
 }
 
 /** Every workspace the person behind this turn can reach (SHO-389). */
