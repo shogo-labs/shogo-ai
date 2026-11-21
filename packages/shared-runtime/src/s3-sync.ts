@@ -30,19 +30,10 @@
  * - Backward compatible: reads legacy project.tar.gz if layered archives missing
  */
 
-import {
-  S3Client,
-  GetObjectCommand,
-  PutObjectCommand,
-  HeadObjectCommand,
-  CreateMultipartUploadCommand,
-  UploadPartCommand,
-  CompleteMultipartUploadCommand,
-  AbortMultipartUploadCommand,
-} from '@aws-sdk/client-s3'
+import { S3Client, GetObjectCommand, PutObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3'
 import type { GetObjectCommandOutput } from '@aws-sdk/client-s3'
 import { watch, createReadStream, createWriteStream } from 'fs'
-import { readdir, readFile, writeFile, mkdir, stat, utimes, unlink, rm, open, mkdtemp, link, copyFile } from 'fs/promises'
+import { readdir, readFile, writeFile, mkdir, stat, utimes, unlink, rm, mkdtemp, link, copyFile } from 'fs/promises'
 import { join, relative, dirname } from 'path'
 import { existsSync, statSync, mkdirSync } from 'fs'
 import { createHash } from 'crypto'
@@ -52,6 +43,7 @@ import { spawn } from './child-process'
 import * as tar from 'tar'
 import { isMacOSJunkName } from './macos-junk'
 import { lfsTrackedPaths, lfsPointerText, materializeLfsPointersFromStore } from './lfs'
+import { isPreconditionFailure, putFileToObjectStore } from './s3-object'
 
 /**
  * Extract a `.tar.gz` archive without blocking the Node/Bun event loop.
@@ -416,30 +408,6 @@ const DEPS_CACHE_PREFIX = '_deps-cache'
  * hung pod in the logs.
  */
 const DOWNLOAD_PROGRESS_BYTES = 100 * 1024 * 1024
-
-/**
- * Archives at or above this size are uploaded with a multipart upload. Below
- * it, a single `PutObject` with a Buffer body stays the path — it is proven
- * against our S3-compatible store, and a streamed `PutObject` to OCI hangs
- * forever under bun (see `repo-store.ts`).
- */
-const MULTIPART_THRESHOLD_BYTES = 64 * 1024 * 1024
-
-/** Part size for a multipart upload (S3 requires ≥ 5 MiB per part except the last). */
-const MULTIPART_PART_BYTES = 16 * 1024 * 1024
-
-/** A 412 from a conditional write, as both AWS and OCI shape it. */
-function isPreconditionFailure(err: any): boolean {
-  return err?.name === 'PreconditionFailed' || err?.$metadata?.httpStatusCode === 412
-}
-
-/** Our own 412, for a precondition the store was never asked to enforce. */
-function preconditionFailed(key: string): Error {
-  const err: any = new Error(`PreconditionFailed: s3://${key} changed since this instance read it`)
-  err.name = 'PreconditionFailed'
-  err.$metadata = { httpStatusCode: 412 }
-  return err
-}
 
 export class S3Sync {
   private client: S3Client
@@ -1429,16 +1397,9 @@ export class S3Sync {
   /**
    * PUT `filePath` under `key` without ever holding it in memory.
    *
-   * Below {@link MULTIPART_THRESHOLD_BYTES} this is one `PutObject` with a
-   * Buffer body — the path proven against our store (a streamed body to OCI
-   * hangs forever under bun, see `repo-store.ts`). Above it, a multipart
-   * upload reads one {@link MULTIPART_PART_BYTES} part at a time from a file
-   * handle, so peak memory is one part regardless of archive size.
-   *
-   * `precondition` is the archive-lineage guard. S3 enforces it on the
-   * complete call; because an S3-compatible store is free to ignore it there,
-   * the ETag is also checked against the object immediately before the write
-   * is finalised.
+   * Delegates to the one object-store upload every writer shares (SHO-485):
+   * a single `PutObject` below the multipart threshold, else a part-buffered
+   * multipart upload that reads one part at a time from a file handle.
    */
   private async putObjectFromFile(
     key: string,
@@ -1447,91 +1408,12 @@ export class S3Sync {
     contentType: string,
     precondition: { IfMatch?: string; IfNoneMatch?: string } = {},
   ): Promise<{ etag?: string }> {
-    if (bytes < MULTIPART_THRESHOLD_BYTES) {
-      const res = await this.client.send(new PutObjectCommand({
-        Bucket: this.config.bucket,
-        Key: key,
-        Body: await readFile(filePath),
-        ContentType: contentType,
-        ...precondition,
-      }))
-      return { etag: res.ETag }
-    }
-    return this.multipartUploadFromFile(key, filePath, bytes, contentType, precondition)
-  }
-
-  /** The large-object path of {@link putObjectFromFile}. */
-  private async multipartUploadFromFile(
-    key: string,
-    filePath: string,
-    bytes: number,
-    contentType: string,
-    precondition: { IfMatch?: string; IfNoneMatch?: string },
-  ): Promise<{ etag?: string }> {
-    const created = await this.client.send(new CreateMultipartUploadCommand({
-      Bucket: this.config.bucket,
-      Key: key,
-      ContentType: contentType,
-    }))
-    const uploadId = created.UploadId
-    if (!uploadId) throw new Error(`multipart upload for ${key} returned no UploadId`)
-
-    const parts: Array<{ ETag: string; PartNumber: number }> = []
-    try {
-      const fh = await open(filePath, 'r')
-      try {
-        let offset = 0
-        let partNumber = 0
-        while (offset < bytes) {
-          const length = Math.min(MULTIPART_PART_BYTES, bytes - offset)
-          const buffer = Buffer.allocUnsafe(length)
-          const { bytesRead } = await fh.read(buffer, 0, length, offset)
-          if (bytesRead !== length) {
-            throw new Error(`multipart upload for ${key}: short read at ${offset} (${bytesRead}/${length})`)
-          }
-          partNumber += 1
-          const part = await this.client.send(new UploadPartCommand({
-            Bucket: this.config.bucket,
-            Key: key,
-            UploadId: uploadId,
-            PartNumber: partNumber,
-            Body: buffer,
-          }))
-          if (!part.ETag) throw new Error(`multipart upload for ${key}: part ${partNumber} returned no ETag`)
-          parts.push({ ETag: part.ETag, PartNumber: partNumber })
-          offset += length
-        }
-      } finally {
-        await fh.close()
-      }
-
-      if (precondition.IfMatch || precondition.IfNoneMatch) {
-        const current = await this.client
-          .send(new HeadObjectCommand({ Bucket: this.config.bucket, Key: key }))
-          .catch((err: any) => {
-            if (err?.name === 'NotFound' || err?.$metadata?.httpStatusCode === 404) return null
-            throw err
-          })
-        const stale = precondition.IfMatch
-          ? current?.ETag !== precondition.IfMatch
-          : current !== null
-        if (stale) throw preconditionFailed(key)
-      }
-
-      const done = await this.client.send(new CompleteMultipartUploadCommand({
-        Bucket: this.config.bucket,
-        Key: key,
-        UploadId: uploadId,
-        MultipartUpload: { Parts: parts },
-        ...precondition,
-      }))
-      return { etag: done.ETag }
-    } catch (err) {
-      await this.client
-        .send(new AbortMultipartUploadCommand({ Bucket: this.config.bucket, Key: key, UploadId: uploadId }))
-        .catch(() => {})
-      throw err
-    }
+    return putFileToObjectStore(
+      { bucket: this.config.bucket, client: this.client },
+      key,
+      filePath,
+      { bytes, contentType, precondition },
+    )
   }
 
   private async uploadProjectArchive(forceWriteWhenSuppressed: boolean = false): Promise<void> {

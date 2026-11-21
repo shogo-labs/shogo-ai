@@ -3,6 +3,12 @@ kind: Kustomization
 
 resources:
   - namespace.yaml
+  # The BuildKit namespace, ServiceAccount, LimitRange and ResourceQuota for
+  # per-commit published images (SHO-485 §3). Applied here so a region cannot
+  # turn the feature on with PUBLISH_BUILD_* and then have every Job rejected
+  # for a missing namespace. The OCIR push Secret is NOT declared — see
+  # docs/runbooks/published-images.md.
+  - ../../published-builds
   - api-service.yaml
   - api-tunnel-ingress.yaml
   - api-public-ingress.yaml

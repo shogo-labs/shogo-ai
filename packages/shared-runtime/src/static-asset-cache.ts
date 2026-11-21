@@ -18,11 +18,28 @@ export function staticAssetCacheControl(fileName: string): string {
 }
 
 /**
+ * The one policy an object may carry when several URLs are served from the same
+ * bytes (SHO-485).
+ *
+ * An object store serves a stored object's own `Cache-Control` — the runtime
+ * cannot vary it per response on the length-known body it hands `Bun.serve` —
+ * so a `public/` file and a Vite-hashed copy of the same content share a single
+ * policy. `immutable` is only safe when EVERY referencing path carries a content
+ * hash: otherwise a stable URL like `/About-Us.png` would be cached for a year
+ * and keep serving the old logo after a republish.
+ */
+export function sharedStaticAssetCacheControl(fileNames: readonly string[]): string {
+  return fileNames.every((name) => isContentHashedFilename(name))
+    ? 'public, max-age=31536000, immutable'
+    : 'no-cache'
+}
+
+/**
  * Extensions that always identify a static-asset request, never an SPA
  * client-side route. Keep in sync with agent-runtime's `STATIC_MIME` map
- * (server.ts) — this list intentionally excludes `.html` and extension-less
- * paths, which are the two shapes that should still receive the SPA
- * `index.html` fallback.
+ * (`dist-response.ts`) — this list intentionally excludes `.html` and
+ * extension-less paths, which are the two shapes that should still receive the
+ * SPA `index.html` fallback.
  */
 const STATIC_ASSET_EXTENSIONS = new Set([
   '.css', '.js', '.mjs', '.json', '.png', '.jpg', '.jpeg', '.gif', '.svg',
