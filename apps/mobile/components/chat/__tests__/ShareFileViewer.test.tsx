@@ -50,11 +50,6 @@ mock.module("lucide-react-native", () => lucideStub)
 mock.module(resolve(import.meta.dir, "../../ui/LiquidGlassBackdrop"), () => ({
   LiquidGlassBackdrop: () => null,
 }))
-// `@shogo/shared-ui` resolves react-native from the workspace root, outside the
-// stub this file registers, so the real package would drag RN's Flow build in.
-mock.module("@shogo/shared-ui/primitives", () => ({
-  cn: (...args: unknown[]) => args.filter(Boolean).join(" "),
-}))
 const Icon = () => null
 mock.module("../FileTypeIcon", () => ({ FileTypeIcon: Icon }))
 mock.module("../../../contexts/theme", () => ({ useResolvedTheme: () => "dark" }))

@@ -13,9 +13,6 @@ import { createReactNativeMock } from "../../../test/react-native-mock"
 import * as lucideStub from "../../../test/stubs/lucide-react-native"
 
 mock.module("lucide-react-native", () => lucideStub)
-mock.module("@shogo/shared-ui/primitives", () => ({
-  cn: (...args: unknown[]) => args.filter(Boolean).join(" "),
-}))
 mock.module("../../../lib/agent-image-source", () => ({
   useAgentImageSource: (uri: string | null) => (uri ? { uri } : null),
 }))
