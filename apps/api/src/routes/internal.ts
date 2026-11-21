@@ -17,7 +17,8 @@ import { authenticate, authorizeWorkspaceScope, validateAuth } from './internal-
 import { decide, loadAccess, resolveAgentActor } from '../lib/authz'
 import type { Permission } from '@shogo/authz'
 import { numberOr, runtimeInternalRoutes } from './internal-runtime-routes'
-import { signSharedFileToken } from '../lib/shared-file-token'
+import { signSharedFileToken, sharedFilePathProblem, sharedFilePublicOrigin } from '../lib/shared-file-token'
+import { mintSharedFileLink } from '../lib/shared-file-mint'
 import { handleInboundEvents, resumeAfterLink } from '../services/chat-providers/inbound'
 import { getChatProvider } from '../services/chat-providers/registry'
 import type { InboundEvent } from '../services/chat-providers/types'
@@ -652,15 +653,9 @@ app.post('/projects/:projectId/shared-files', async (c) => {
   }
 
   const path = typeof body.path === 'string' ? body.path : ''
-  const segments = path.split('/')
-  if (
-    !path ||
-    path.length > 4096 ||
-    path.startsWith('/') ||
-    path.includes('\\') ||
-    segments.some((segment) => !segment || segment === '.' || segment === '..')
-  ) {
-    return c.json({ error: { code: 'invalid_path', message: 'path must be a relative workspace path' } }, 400)
+  const pathProblem = sharedFilePathProblem(path)
+  if (pathProblem) {
+    return c.json({ error: { code: 'invalid_path', message: pathProblem } }, 400)
   }
 
   const requestedDays = typeof body.expiresInDays === 'number' && Number.isFinite(body.expiresInDays)
@@ -677,6 +672,16 @@ app.post('/projects/:projectId/shared-files', async (c) => {
     })
     if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
 
+    // A paired desktop's workspace is opened from the cloud, so the link has to
+    // be the cloud's (SHO-486); `null` means "mint it here".
+    const relayed = await mintSharedFileLink({
+      projectId,
+      workspaceId: project.workspaceId,
+      path,
+      expiresInDays,
+    })
+    if (relayed) return c.json(relayed)
+
     const token = signSharedFileToken({
       projectId,
       workspaceId: project.workspaceId,
@@ -684,12 +689,10 @@ app.post('/projects/:projectId/shared-files', async (c) => {
       exp: now + expiresInDays * 24 * 60 * 60,
       now,
     })
-    const configuredOrigin = process.env.SHOGO_PUBLIC_API_URL || process.env.BETTER_AUTH_URL
-    const origin = (configuredOrigin || new URL(c.req.url).origin).replace(/\/+$/, '')
 
     return c.json({
       ok: true,
-      url: `${origin}/api/f/${encodeURIComponent(token)}`,
+      url: `${sharedFilePublicOrigin(c.req.url)}/api/f/${encodeURIComponent(token)}`,
       expiresAt: new Date((now + expiresInDays * 24 * 60 * 60) * 1000).toISOString(),
       path,
     })

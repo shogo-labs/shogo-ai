@@ -61,3 +61,40 @@ export function useDockPanel(descriptor: DockPanelDescriptor | null, storeOverri
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store])
 }
+
+/**
+ * Registers dock panels the *host* screen owns — `ChatPanel`'s `dockPanels`
+ * prop (SHO-484) — and drops the ones the host stopped passing.
+ *
+ * Call it **after** the effect that calls `store.reset()` on a session change:
+ * effects run in declaration order, so on a session switch the reset clears the
+ * dock and this puts the host's panels straight back in the same commit. With
+ * no dependency array on purpose — every descriptor carries `render` /
+ * `headerActions` closures over the host's latest state, and `registerPanel`
+ * only notifies when something a consumer can see actually changed, so
+ * re-upserting on each render keeps the body fresh without churning the dock.
+ */
+export function useHostDockPanels(
+  descriptors: DockPanelDescriptor[],
+  store: ChatDockStore,
+): void {
+  const registeredIdsRef = useRef<string[]>([])
+  useEffect(() => {
+    const ids: string[] = []
+    for (const descriptor of descriptors) {
+      ids.push(descriptor.id)
+      store.registerPanel(descriptor)
+    }
+    for (const id of registeredIdsRef.current) {
+      if (!ids.includes(id)) store.unregisterPanel(id)
+    }
+    registeredIdsRef.current = ids
+  })
+  useEffect(
+    () => () => {
+      for (const id of registeredIdsRef.current) store.unregisterPanel(id)
+      registeredIdsRef.current = []
+    },
+    [store],
+  )
+}

@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url'
 import type { PrismaClient } from '../../generated/prisma-pg/client'
 import { applyRewrites, delegateName, isMirroredModel, MIRROR_MODELS } from './models'
 import { incomingWins } from './ingest-lww'
+import { announceLiveWrites, newLiveWrites, recordLiveWrite } from './live-events'
 
 export { incomingWins }
 import {
@@ -511,6 +512,10 @@ export async function applyBatch(
   let deleted = 0
   let skipped = 0
   let newWorkspaces = 0
+  // Rows the cloud's screens have to hear about (SHO-486): written after the
+  // transaction commits, so a client never sees an event for a batch that rolled
+  // back. Synced rows are final — no mentions or wakes are derived from them.
+  const liveWrites = newLiveWrites()
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -627,6 +632,7 @@ export async function applyBatch(
             skipped++
             continue
           }
+          recordLiveWrite(liveWrites, entry.model, existing ? 'updated' : 'created', recordId, rewritten)
           applied++
         }
       }
@@ -674,6 +680,11 @@ export async function applyBatch(
     if (failure) return failure
     throw err
   }
+
+  // After the commit, not inside it: a rolled-back batch must never have told
+  // anyone about a row. A hosted workspace's channel reply reaches the cloud's
+  // screens here (SHO-486).
+  await announceLiveWrites(liveWrites)
 
   return {
     ok: true,
