@@ -118,6 +118,57 @@ test("the machine's channel, its thread, and a message sent from the cloud that 
   await expect.poll(() => desktopChannelTexts(page), { timeout: 30_000 }).toContain(text)
 })
 
+/**
+ * SHO-486 — Russell: "when I send a message in a channel of a remote workspace
+ * I do not see the reply unless I refresh. It works fine for a normal workspace
+ * or local workspace."
+ *
+ * The channel is open in the cloud studio and a reply is written on the desktop
+ * (which is how a desktop-run agent answers: the row lands on the machine and
+ * reaches Postgres through machine sync). It has to appear on the page as it
+ * arrives — no reload, no tab switch.
+ */
+// fixme: measured split, 2026-11-21. The row reaches the cloud (the `onCloud`
+// poll below passes), so machine sync + the bus are doing their part; the open
+// page still does not paint it. That is the client half of the card and is not
+// fixed here — left as a fixme so the reproduction stays in the suite instead
+// of poisoning it.
+test.fixme("a reply written on the machine appears in the open channel without a refresh", async ({ page }) => {
+  const seeded = state.seeds.machine
+  await openMachineWorkspace(page)
+  await page.goto(`/c/${seeded.channelId}`, { waitUntil: "domcontentloaded" })
+  const composer = page.getByLabel("Message", { exact: true }).first()
+  await expect(composer).toBeVisible({ timeout: 60_000 })
+  // The page is live before the reply exists, so nothing below can be a refetch.
+  for (const text of seeded.messageTexts) {
+    await expect(page.getByText(text).first()).toBeVisible({ timeout: 60_000 })
+  }
+
+  const text = `written on the machine ${Date.now()}`
+  const posted = await page.request.post(
+    `${state.localApiBase}/api/conversations/${encodeURIComponent(seeded.channelId)}/messages`,
+    { headers: { cookie: state.localCookies, origin: state.localApiBase }, data: { text } },
+  )
+  expect(posted.status(), await posted.text()).toBeLessThan(300)
+
+  // Split the two halves of "it shows up": the row has to reach the cloud
+  // first (machine sync), and only then can a socket deliver it. Asserting
+  // them apart says which one broke instead of just "the text is not there".
+  const onCloud = async () => {
+    const res = await page.request.get(
+      `${state.cloud}/api/conversations/${encodeURIComponent(seeded.channelId)}/messages?limit=50`,
+      { headers: { cookie: state.cookies, origin: state.cloud } },
+    )
+    if (!res.ok()) return `HTTP ${res.status()}`
+    const body = await res.json().catch(() => null)
+    const rows: any[] = Array.isArray(body?.messages) ? body.messages : Array.isArray(body) ? body : []
+    return rows.some((row) => String(row?.text ?? '').includes(text))
+  }
+  await expect.poll(onCloud, { timeout: 30_000, intervals: [500] }).toBe(true)
+
+  await expect(page.getByText(text).first()).toBeVisible({ timeout: 30_000 })
+})
+
 test("a chat turn from the cloud runs on the machine and reads the machine's disk", async ({ page }) => {
   const canary = `SHO257-UI-CANARY-${Date.now()}`
   const path = ".tmp/sho257-ui-canary.txt"

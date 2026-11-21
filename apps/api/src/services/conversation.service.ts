@@ -252,6 +252,50 @@ export function serializeMessage(row: any) {
 export type SerializedMessage = ReturnType<typeof serializeMessage>
 
 /**
+ * Announce message rows a machine sync just wrote (SHO-486).
+ *
+ * A hosted workspace is written by both sides. The cloud's own `postMessage`
+ * publishes to the conversation bus, but everything the desktop writes arrives
+ * as synced rows — and the sync used to land them silently, so a reply posted or
+ * run on the desktop only appeared to a cloud client after a refresh. This
+ * republishes exactly what `postMessage` would have, from rows that are already
+ * final: no seq allocation, no mentions, no wakes, no hooks.
+ *
+ * `created` are messages this side had never seen; `updated` are messages whose
+ * row (or reactions, or a thread root's counters) changed under them.
+ */
+export async function announceSyncedMessages(
+  writes: { created?: Iterable<string>; updated?: Iterable<string> },
+): Promise<number> {
+  const createdIds = [...new Set(writes.created ?? [])]
+  const created = new Set(createdIds)
+  const updatedIds = [...new Set(writes.updated ?? [])].filter((id) => !created.has(id))
+  const ids = [...createdIds, ...updatedIds]
+  if (!ids.length) return 0
+
+  const rows = await db.conversationMessage.findMany({ where: { id: { in: ids } }, include: MESSAGE_INCLUDE })
+  if (!rows.length) return 0
+  const conversationIds = [...new Set(rows.map((row: any) => String(row.conversationId)))]
+  const conversations = new Map<string, { id: string; kind: string; workspaceId: string }>(
+    (
+      (await db.conversation.findMany({
+        where: { id: { in: conversationIds } },
+        select: { id: true, kind: true, workspaceId: true },
+      })) as Array<{ id: string; kind: string; workspaceId: string }>
+    ).map((conversation) => [conversation.id, conversation]),
+  )
+
+  let published = 0
+  for (const row of rows) {
+    const conversation = conversations.get(String(row.conversationId))
+    if (!conversation) continue
+    await publish(conversation, { type: created.has(row.id) ? 'message.created' : 'message.updated', message: serializeMessage(row) }, row)
+    published++
+  }
+  return published
+}
+
+/**
  * Re-send a message after something it carries was filled in later. Used when a
  * shared file's text extraction finishes after the message went out: the first
  * `message.created` had no preview, so the client receives it here and patches
