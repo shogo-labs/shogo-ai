@@ -87,6 +87,12 @@ describe('disposable and blocked domains', () => {
     }
   })
 
+  test('the 2026-11-20 hermes-key farm domains are rejected', () => {
+    for (const d of ['10mail.info', 'mailpwr.com', 'pickmail.org', 'mailtowin.com', 'maximail.vip', 'mimimail.me', 'pickmemail.com', 'gacormail.com', 'gmailmu.my.id']) {
+      expect(isBlockedEmailDomain(`vd5ihij2@${d}`)).toBe(true)
+    }
+  })
+
   test('a subdomain of a blocked provider is blocked too', () => {
     // Parent-walk matching: no entry exists for mail.mailinator.com.
     expect(isBlockedEmailDomain('ops@mail.mailinator.com')).toBe(true)
