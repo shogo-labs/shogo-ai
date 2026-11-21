@@ -2,25 +2,31 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback } from "react";
-import { Text, View } from "react-native";
+import { useWindowDimensions } from "react-native";
 import { useRouter } from "expo-router";
 import { observer } from "mobx-react-lite";
-import { ArrowLeft } from "lucide-react-native";
 import { useProjectCollection } from "../../contexts/domain";
-import { NATIVE_PHONE_CONTROL_SIZE } from "../../lib/native-phone-layout";
-import { NativeCircleButton } from "./topbar/native/NativeCircleButton";
+import { isPhoneLayout } from "../../lib/native-phone-layout";
+import { PhoneScreenHeader } from "../layout/PhoneScreenHeader";
 
 /**
  * Back and the project's name above a standalone project surface (canvas,
  * files, plans). Reached from the project's tab bar, these have no project
  * header of their own, so without this the only way out was the drawer.
+ *
+ * It is the phone's floating glass header, so a surface opened from a project
+ * looks like every other screen you go into.
  */
 export const ProjectSurfaceHeader = observer(function ProjectSurfaceHeader({
   projectId,
+  onHeight,
 }: {
   projectId: string | undefined;
+  /** Reports the measured height, so the surface can start below the glass. */
+  onHeight?: (height: number) => void;
 }) {
   const router = useRouter();
+  const { width, height } = useWindowDimensions();
   const projects = useProjectCollection();
   const name = projects.all.find((project: any) => project.id === projectId)?.name;
   const leaveProject = useCallback(() => {
@@ -28,24 +34,15 @@ export const ProjectSurfaceHeader = observer(function ProjectSurfaceHeader({
     else router.replace("/(app)/home" as any);
   }, [router]);
 
+  if (!isPhoneLayout(width, height)) return null;
+
   return (
-    <View
+    <PhoneScreenHeader
       testID="project-surface-header"
-      className="flex-row items-center gap-3 bg-background px-3 pb-2 pt-1"
-      style={{ minHeight: NATIVE_PHONE_CONTROL_SIZE + 12 }}
-    >
-      <NativeCircleButton
-        icon={ArrowLeft}
-        onPress={leaveProject}
-        accessibilityLabel="Back"
-        testID="project-surface-back"
-      />
-      <Text
-        className="flex-1 text-[17px] font-semibold text-foreground"
-        numberOfLines={1}
-      >
-        {name ?? "Project"}
-      </Text>
-    </View>
+      backTestID="project-surface-back"
+      title={name ?? "Project"}
+      onBack={leaveProject}
+      onLayout={onHeight ? (event) => onHeight(Math.round(event.nativeEvent.layout.height)) : undefined}
+    />
   );
 });

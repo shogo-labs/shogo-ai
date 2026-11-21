@@ -5,16 +5,21 @@
  * things you can do with them. Phone widths open this instead of the side
  * pane; both render the same body.
  */
-import { Pressable, View } from 'react-native'
+import { Pressable, View, useWindowDimensions } from 'react-native'
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { ChevronLeft } from 'lucide-react-native'
 import { usePresenceFeed } from '../../hooks/usePresence'
 import { useStatusFeed } from '../../hooks/useChatPrefs'
+import { isPhoneLayout } from '../../lib/native-phone-layout'
+import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../layout/PhoneScreenHeader'
 import { UserProfileBody } from './UserProfileBody'
 
 export function UserProfileScreen({ workspaceId, userId }: { workspaceId: string; userId: string }) {
   const router = useRouter()
+  const { width, height } = useWindowDimensions()
+  const phone = isPhoneLayout(width, height)
+  const header = usePhoneScreenHeaderInset()
   // The feeds this page reads are mounted by the conversation screen; opening
   // the page directly (a deep link, a notification) has to mount them itself.
   usePresenceFeed(workspaceId)
@@ -26,13 +31,19 @@ export function UserProfileScreen({ workspaceId, userId }: { workspaceId: string
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-background" testID="user-profile-screen">
-      <View className="flex-row items-center px-2 py-2">
-        <Pressable onPress={goBack} accessibilityRole="button" accessibilityLabel="Back" className="rounded-lg p-2 active:bg-muted">
-          <ChevronLeft size={22} className="text-foreground" />
-        </Pressable>
+    <SafeAreaView className="flex-1 bg-background" testID="user-profile-screen" edges={phone ? ['bottom'] : undefined}>
+      {phone ? (
+        <PhoneScreenHeader title="Profile" onBack={goBack} onLayout={header.onLayout} />
+      ) : (
+        <View className="flex-row items-center px-2 py-2">
+          <Pressable onPress={goBack} accessibilityRole="button" accessibilityLabel="Back" className="rounded-lg p-2 active:bg-muted">
+            <ChevronLeft size={22} className="text-foreground" />
+          </Pressable>
+        </View>
+      )}
+      <View className="min-h-0 flex-1" style={phone ? { paddingTop: header.height } : undefined}>
+        <UserProfileBody workspaceId={workspaceId} userId={userId} avatarSize={128} />
       </View>
-      <UserProfileBody workspaceId={workspaceId} userId={userId} avatarSize={128} />
     </SafeAreaView>
   )
 }

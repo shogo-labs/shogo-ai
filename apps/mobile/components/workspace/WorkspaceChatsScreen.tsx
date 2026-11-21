@@ -10,7 +10,7 @@
  * immediately visible in both.
  */
 import { useCallback } from 'react'
-import { ActivityIndicator, FlatList, Pressable, Text, View } from 'react-native'
+import { ActivityIndicator, FlatList, Pressable, Text, View, useWindowDimensions } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
@@ -26,11 +26,17 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useWorkspaceChats } from '../../hooks/useWorkspaceChats'
 import { sideChatLabel, type SideChatItem } from '../../lib/side-chats'
 import { Spin } from '@/components/ui/Spin'
+import { GlassButton } from '../team-chat/FloatingChrome'
+import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../layout/PhoneScreenHeader'
+import { isPhoneLayout } from '../../lib/native-phone-layout'
 
 export const WorkspaceChatsScreen = observer(function WorkspaceChatsScreen() {
   const router = useRouter()
   const workspace = useActiveWorkspace()
   const chats = useWorkspaceChats(workspace?.id)
+  const { width, height } = useWindowDimensions()
+  const phone = isPhoneLayout(width, height)
+  const header = usePhoneScreenHeaderInset()
 
   useFocusEffect(
     useCallback(() => {
@@ -58,26 +64,41 @@ export const WorkspaceChatsScreen = observer(function WorkspaceChatsScreen() {
 
   return (
     <View className="flex-1 bg-background">
-      <View className="flex-row items-center gap-2 border-b border-border px-4 py-4">
-        <Pressable onPress={goBack} accessibilityLabel="Back" className="-ml-2 rounded-md p-2 active:bg-muted">
-          <ArrowLeft size={22} className="text-foreground" />
-        </Pressable>
-        <View className="min-w-0 flex-1 flex-row items-center gap-2">
-          <MessagesSquare size={18} className="shrink-0 text-muted-foreground" />
-          <Text className="flex-1 text-lg font-semibold text-foreground" numberOfLines={1}>
-            Chats
-          </Text>
+      {phone ? (
+        <PhoneScreenHeader
+          title="Chats"
+          titleIcon={<MessagesSquare size={14} className="text-muted-foreground" />}
+          onBack={goBack}
+          onLayout={header.onLayout}
+          actions={
+            <GlassButton label="New chat" onPress={() => void startNewChat()}>
+              {chats.creating ? <ActivityIndicator size="small" /> : <Plus size={20} className="text-foreground" />}
+            </GlassButton>
+          }
+        />
+      ) : (
+        <View className="flex-row items-center gap-2 border-b border-border px-4 py-4">
+          <Pressable onPress={goBack} accessibilityLabel="Back" className="-ml-2 rounded-md p-2 active:bg-muted">
+            <ArrowLeft size={22} className="text-foreground" />
+          </Pressable>
+          <View className="min-w-0 flex-1 flex-row items-center gap-2">
+            <MessagesSquare size={18} className="shrink-0 text-muted-foreground" />
+            <Text className="flex-1 text-lg font-semibold text-foreground" numberOfLines={1}>
+              Chats
+            </Text>
+          </View>
+          <Pressable
+            onPress={() => void startNewChat()}
+            disabled={chats.creating}
+            accessibilityLabel="New chat"
+            className="rounded-md p-2 active:bg-muted disabled:opacity-50"
+          >
+            {chats.creating ? <ActivityIndicator size="small" /> : <Plus size={22} className="text-foreground" />}
+          </Pressable>
         </View>
-        <Pressable
-          onPress={() => void startNewChat()}
-          disabled={chats.creating}
-          accessibilityLabel="New chat"
-          className="rounded-md p-2 active:bg-muted disabled:opacity-50"
-        >
-          {chats.creating ? <ActivityIndicator size="small" /> : <Plus size={22} className="text-foreground" />}
-        </Pressable>
-      </View>
+      )}
 
+      <View className="min-h-0 flex-1" style={phone ? { paddingTop: header.height } : undefined}>
       {chats.loading ? (
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator />
@@ -140,6 +161,7 @@ export const WorkspaceChatsScreen = observer(function WorkspaceChatsScreen() {
           )}
         />
       )}
+      </View>
     </View>
   )
 })

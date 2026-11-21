@@ -18,6 +18,7 @@ import { parseInAppFileHref, shareFileErrorText } from '../../lib/share-file-lin
 import { useShareFileOpener } from '../chat/share-file-context'
 import { fileTypeMeta } from '../../lib/file-type'
 import { openExternalLink } from '../../lib/open-external-link';
+import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../layout/PhoneScreenHeader';
 
 type KindFilter = 'all' | ConversationFileKind
 
@@ -34,9 +35,12 @@ export interface FilesPaneProps {
   title: string
   onClose: () => void
   onShowInChat: (file: ConversationFile) => void
+  /** Phone: the pane is full-screen under the DM's floating glass header. */
+  floating?: boolean
 }
 
-export function FilesPane({ workspaceId, conversationId, title, onClose, onShowInChat }: FilesPaneProps) {
+export function FilesPane({ workspaceId, conversationId, title, onClose, onShowInChat, floating }: FilesPaneProps) {
+  const header = usePhoneScreenHeaderInset()
   const [query, setQuery] = useState('')
   const [kind, setKind] = useState<KindFilter>('all')
   const q = useDebouncedValue(query)
@@ -48,16 +52,26 @@ export function FilesPane({ workspaceId, conversationId, title, onClose, onShowI
 
   return (
     <View className="flex-1 bg-background" testID="files-pane">
-      <View className="flex-row items-center gap-2 border-b border-border px-3 py-2">
-        <Paperclip size={16} className="text-muted-foreground" />
-        <Text className="min-w-0 flex-1 text-sm font-semibold text-foreground" numberOfLines={1}>
-          Files in {title}
-        </Text>
-        <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close files" className="rounded-md p-1 active:bg-muted">
-          <X size={16} className="text-muted-foreground" />
-        </Pressable>
-      </View>
-      <View className="gap-2 border-b border-border px-3 py-2">
+      {floating ? (
+        <PhoneScreenHeader
+          title={`Files in ${title}`}
+          closeLabel="Close files"
+          closeTestID="files-close"
+          onClose={onClose}
+          onLayout={header.onLayout}
+        />
+      ) : (
+        <View className="flex-row items-center gap-2 border-b border-border px-3 py-2">
+          <Paperclip size={16} className="text-muted-foreground" />
+          <Text className="min-w-0 flex-1 text-sm font-semibold text-foreground" numberOfLines={1}>
+            Files in {title}
+          </Text>
+          <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close files" className="rounded-md p-1 active:bg-muted">
+            <X size={16} className="text-muted-foreground" />
+          </Pressable>
+        </View>
+      )}
+      <View className="gap-2 border-b border-border px-3 py-2" style={floating ? { paddingTop: header.height + 8 } : undefined}>
         <View className="flex-row items-center gap-2 rounded-md border border-border bg-card px-2">
           <Search size={14} className="text-muted-foreground" />
           <TextInput

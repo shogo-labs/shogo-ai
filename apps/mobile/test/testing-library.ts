@@ -24,10 +24,51 @@
 import { afterEach, expect, mock } from 'bun:test'
 import * as matchers from '@testing-library/jest-dom/matchers'
 import { cleanup } from '@testing-library/react'
+import { readdirSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { reactNativeMockBase } from './react-native-mock'
+
+/**
+ * Every physical copy of `react-native` a module in this repo can reach.
+ *
+ * Bun's isolated store holds more than one (one per peer-resolution variant),
+ * and a workspace package resolves its own: `@shogo/shared-ui` imports the copy
+ * that hangs off the repo root, not the one `apps/mobile` gets. Mocking the
+ * specifier and `require.resolve('react-native')` therefore only covers this
+ * app's copy, and a component that imports `cn` from
+ * `@shogo/shared-ui/primitives` parsed the real Flow source — `Unexpected
+ * typeof` at `react-native/index.js:27`, at module load, in every suite that
+ * mocks react-native and nothing else (15 of them when `ShareFileViewer`
+ * joined the markdown graph; SHO-490).
+ *
+ * So resolve from every workspace package too and mock each copy.
+ */
+function reactNativeCopies(): string[] {
+  const repoRoot = resolve(import.meta.dir, '../../..')
+  const from = [repoRoot, resolve(import.meta.dir, '../..')]
+  try {
+    for (const entry of readdirSync(resolve(repoRoot, 'packages'), { withFileTypes: true })) {
+      if (entry.isDirectory()) from.push(resolve(repoRoot, 'packages', entry.name))
+    }
+  } catch {
+    // No packages dir (a single-app checkout): the two roots above are enough.
+  }
+  const copies = new Set<string>()
+  for (const dir of from) {
+    try {
+      copies.add(require.resolve('react-native', { paths: [dir] }))
+    } catch {
+      // That package has no react-native of its own — nothing to mock.
+    }
+  }
+  return [...copies]
+}
 
 mock.module('react-native', () => reactNativeMockBase)
 mock.module(require.resolve('react-native'), () => reactNativeMockBase)
+for (const copy of reactNativeCopies()) {
+  mock.module(copy, () => reactNativeMockBase)
+}
 mock.module('react-native/Libraries/Utilities/codegenNativeComponent', () => ({
   default: () => reactNativeMockBase.View,
 }))

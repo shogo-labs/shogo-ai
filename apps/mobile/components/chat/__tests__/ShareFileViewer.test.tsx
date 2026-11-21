@@ -10,6 +10,7 @@
  */
 
 import { afterEach, describe, expect, mock, test } from "bun:test"
+import { resolve } from "node:path"
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react"
 import React from "react"
 import { createReactNativeMock } from "../../../test/react-native-mock"
@@ -43,6 +44,12 @@ mock.module("react-native", () =>
   } as never),
 )
 mock.module("lucide-react-native", () => lucideStub)
+// The viewer's close control is the shared glass button. Its backdrop samples
+// the screen (expo-blur / expo-glass-effect), which this DOM suite is not
+// about: a null backdrop keeps the glass chrome in the tree without it.
+mock.module(resolve(import.meta.dir, "../../ui/LiquidGlassBackdrop"), () => ({
+  LiquidGlassBackdrop: () => null,
+}))
 const Icon = () => null
 mock.module("../FileTypeIcon", () => ({ FileTypeIcon: Icon }))
 mock.module("../../../contexts/theme", () => ({ useResolvedTheme: () => "dark" }))
