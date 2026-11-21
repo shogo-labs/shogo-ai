@@ -74,12 +74,19 @@ function homeComposer(page: Page) {
     .first();
 }
 
+// The drawer opener is labelled "Chats" on the agent screen and "Open chat
+// sessions" on project chat routes (SHO-473). The personal walkthrough lands on
+// the agent screen, but match either so the helper is route-agnostic.
+function chatDrawerButton(page: Page) {
+  return page.getByRole("button", {
+    name: /^(Open chat sessions|Chats)$/,
+  });
+}
+
 async function openPersonalHome(page: Page, workspace: WorkspaceRow) {
   await seedActiveWorkspace(page, workspace.id, "personal");
   await page.goto("/(app)");
-  await expect(
-    page.getByRole("button", { name: "Open chat sessions" }),
-  ).toBeVisible();
+  await expect(chatDrawerButton(page)).toBeVisible();
 }
 
 test.describe("personal agent mobile UX walkthrough", () => {
@@ -90,7 +97,7 @@ test.describe("personal agent mobile UX walkthrough", () => {
     const workspace = await establishLocalPersonalSession(page);
     await openPersonalHome(page, workspace);
 
-    await page.getByRole("button", { name: "Open chat sessions" }).click();
+    await chatDrawerButton(page).click();
     await expect(
       page.getByRole("button", { name: "Close chat drawer" }),
     ).toBeVisible();

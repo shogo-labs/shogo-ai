@@ -765,7 +765,11 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                 feedback={haptics.selection}
                 accessibilityRole="button"
                 accessibilityLabel={
-                  sessionsOpen ? "Close chat sessions" : "Open chat sessions"
+                  sessionsOpen
+                    ? "Close chats"
+                    : isAgentRoute
+                    ? "Chats"
+                    : "Open chat sessions"
                 }
                 aria-expanded={sessionsOpen}
                 onPress={() =>
