@@ -298,7 +298,7 @@ import {
   useChatDockStore,
   type DockPanelDescriptor,
 } from "../../lib/chat-dock-store"
-import { useDockPanel } from "./dock/useDockPanel"
+import { useDockPanel, useHostDockPanels } from "./dock/useDockPanel"
 import { ChatDock } from "./dock/ChatDock"
 import { PlanDockPanel } from "./dock/panels/PlanDockPanel"
 import { PendingPlanComposerBar } from "./PendingPlanComposerBar"
@@ -679,6 +679,20 @@ export interface ChatPanelProps {
    */
   phoneTranscriptTopPadding?: "chrome" | "floating-agent"
   /**
+   * Dock panels the *host* screen wants above this chat's composer, e.g. the
+   * workspace chat's "Working set" (SHO-484). A screen that renders the chat
+   * cannot register with its dock store itself — the store is created inside
+   * `ChatPanel` — so it hands descriptors down here instead.
+   *
+   * Registered after the session-change reset (so switching chats re-registers
+   * them instead of dropping them) and re-registered on every render, which is
+   * how a fresh `render`/`headerActions` closure reaches the dock. Pass a new
+   * array only when the panels themselves change; each descriptor is upserted
+   * by id and the store only re-renders the dock when something it shows
+   * actually changed.
+   */
+  dockPanels?: DockPanelDescriptor[]
+  /**
    * The lifecycle notification this chat was opened from, when it was opened
    * from one (SHO-266). Set only for the arrival that came from the push's
    * deep link, so the "Continue <project>" chip greets that person and nobody
@@ -697,6 +711,13 @@ export interface ChatPanelProps {
 // ============================================================
 
 const STORAGE_KEY_COLLAPSED = "chat-panel-collapsed"
+
+/**
+ * Stable empty list for `dockPanels` so a host that has no panels (or that
+ * omits the prop) does not hand the registration effect a new array on every
+ * render.
+ */
+const EMPTY_DOCK_PANELS: DockPanelDescriptor[] = []
 
 // ============================================================
 // AsyncStorage Helpers
@@ -1193,6 +1214,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   enrichMessage,
   readOnlyReason,
   phoneTranscriptTopPadding = "chrome",
+  dockPanels: hostDockPanels = EMPTY_DOCK_PANELS,
   arrivedFromLifecycle,
   continueProjectName,
 }: ChatPanelProps) {
@@ -2128,6 +2150,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
     fileChangeStore.clear()
     chatDockStore.reset()
   }, [currentSessionId, todoStateStore, fileChangeStore, chatDockStore])
+
+  // Dock panels handed down by the host screen (SHO-484). Declared *after* the
+  // reset above so a session switch clears the dock and re-registers them in
+  // the same commit — see `useHostDockPanels`.
+  useHostDockPanels(hostDockPanels, chatDockStore)
 
   // Load session metadata from API if not already cached. Gated on
   // `isActive` so the N-1 hidden sibling ChatPanels mounted for every

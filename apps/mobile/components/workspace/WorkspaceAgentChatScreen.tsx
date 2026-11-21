@@ -7,11 +7,11 @@
  * recent personal chat, creating one when they have none.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
-import { ActivityIndicator, AppState, Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from "react-native"
+import { ActivityIndicator, AppState, Platform, Pressable, Text, View, useWindowDimensions } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useRouter } from "expo-router"
 import { observer } from "mobx-react-lite"
-import { SlidersHorizontal, Sparkles, X } from "lucide-react-native"
+import { Sparkles, X } from "lucide-react-native"
 import { useAuth } from "../../contexts/auth"
 import { useActiveInstance } from "../../contexts/active-instance"
 import {
@@ -69,6 +69,7 @@ import { PlansPanel } from "../project/panels/PlansPanel"
 import { ShareFileProvider, type ShareFileTarget } from "../chat/share-file-context"
 import { ShareFileView } from "../chat/ShareFileViewer"
 import { WorkspaceFileViewer } from "./WorkspaceFileViewer"
+import { buildWorkingSetDockPanel } from "./WorkingSetDockPanel"
 import { useFileLinkArrival } from "./use-file-link-arrival"
 import { filePaneTarget } from "../chat/remote-project-paths"
 import { projectAgentProxyBase } from "../../lib/agent-proxy-base"
@@ -1030,6 +1031,27 @@ export const WorkspaceAgentChatScreen = observer(
       )
     ) : null
 
+    // The Working set is a chat-dock panel now, on desktop and phone alike
+    // (SHO-484) — one "Working set" card above the composer instead of a row
+    // between the header and the transcript. Its chips keep SHO-427's split:
+    // a side-pane press selects the pane, a phone press opens the project.
+    const workingSetDockPanels =
+      attachments.length > 0
+        ? [
+            buildWorkingSetDockPanel({
+              attachments,
+              focusedProjectId,
+              projectName,
+              hasSidePane,
+              paneProjectId: activePane?.projectId ?? null,
+              onPressChip: hasSidePane
+                ? pressWorkingSetChip
+                : openProjectFromSheet,
+              onManage: () => setScopeSheetOpen(true),
+            }),
+          ]
+        : undefined
+
     return (
       <PlanStreamProvider>
       <ShareFileProvider open={openShareFile}>
@@ -1067,13 +1089,18 @@ export const WorkspaceAgentChatScreen = observer(
         )}
         {usesMobileWorkspaceChrome &&
         !header &&
-        ((isPersonalWorkspace && showWelcome) || attachments.length > 0) ? (
+        isPersonalWorkspace &&
+        showWelcome ? (
           // `PersonalAgentMobileHeader` floats above this content instead of
-          // reserving layout space, so the welcome card / working-set chip —
-          // the first normal-flow content on this screen — need their own
-          // clearance to avoid starting underneath the avatar/name
-          // cluster (and the shell's floating menu/bell buttons).
-          <View style={{ height: insets.top + 112 }} />
+          // reserving layout space, so the welcome card — the first normal-flow
+          // content on this screen — needs its own clearance to avoid starting
+          // underneath the avatar/name cluster (and the shell's floating
+          // menu/bell buttons). The transcript below clears the same header
+          // itself (`phoneTranscriptTopPadding`), so only the card needs this.
+          <View
+            testID="workspace-welcome-clearance"
+            style={{ height: insets.top + 112 }}
+          />
         ) : null}
         {linkError ? (
           <View
@@ -1136,92 +1163,6 @@ export const WorkspaceAgentChatScreen = observer(
             </View>
           </View>
         ) : null}
-        {attachments.length > 0 ? (
-          <View className="mx-auto w-full max-w-[760px] px-4 pb-2 pt-3">
-            <View className="flex-row items-center gap-2">
-              <Text className="text-xs font-medium text-muted-foreground">
-                Working set
-              </Text>
-              {hasSidePane ? null : (
-                <>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Manage project scope"
-                    onPress={() => setScopeSheetOpen(true)}
-                    className="max-w-[190px] rounded-full border border-border bg-card px-2.5 py-1 active:bg-muted"
-                  >
-                    <Text
-                      className="text-xs font-medium text-foreground"
-                      numberOfLines={1}
-                    >
-                      {projectName(focusedProjectId ?? attachments[0].projectId)}
-                    </Text>
-                  </Pressable>
-                  {attachments.length > 1 ? (
-                    <Text className="text-xs text-muted-foreground">
-                      +{attachments.length - 1}
-                    </Text>
-                  ) : null}
-                </>
-              )}
-            </View>
-            {hasSidePane ? (
-              // Every attached project gets its own chip and opens beside the
-              // chat like a thread's agent (SHO-427); a long working set scrolls
-              // sideways rather than pushing the Manage button off the row.
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ alignItems: "center", gap: 8 }}
-                className="mt-1.5 flex-row"
-                testID="working-set-projects"
-              >
-                {attachments.map((attachment) => {
-                  const name = projectName(attachment.projectId)
-                  const shown = activePane?.projectId === attachment.projectId
-                  return (
-                    <Pressable
-                      key={attachment.id}
-                      accessibilityRole="button"
-                      accessibilityLabel={`${name} project`}
-                      accessibilityHint={
-                        shown
-                          ? "Closes the project beside this chat"
-                          : "Shows the project beside this chat"
-                      }
-                      aria-selected={shown}
-                      testID={`working-set-project-${attachment.projectId}`}
-                      onPress={() => pressWorkingSetChip(attachment.projectId)}
-                      className={`max-w-[190px] rounded-full border px-2.5 py-1 active:bg-muted ${
-                        shown
-                          ? "border-primary bg-primary/10"
-                          : "border-border bg-card"
-                      }`}
-                    >
-                      <Text
-                        className={`text-xs font-medium ${
-                          shown ? "text-primary" : "text-foreground"
-                        }`}
-                        numberOfLines={1}
-                      >
-                        {name}
-                      </Text>
-                    </Pressable>
-                  )
-                })}
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Manage project scope"
-                  testID="working-set-manage"
-                  onPress={() => setScopeSheetOpen(true)}
-                  className="h-7 w-7 items-center justify-center rounded-full active:bg-muted"
-                >
-                  <SlidersHorizontal size={14} className="text-muted-foreground" />
-                </Pressable>
-              </ScrollView>
-            ) : null}
-          </View>
-        ) : null}
         <View className="min-h-0 flex-1">
           <ChatPanel
             featureId={null}
@@ -1249,6 +1190,7 @@ export const WorkspaceAgentChatScreen = observer(
             className="flex-1"
             isActive
             ownsPlanStream
+            dockPanels={workingSetDockPanels}
             phoneTranscriptTopPadding={
               usesMobileWorkspaceChrome ? "floating-agent" : "chrome"
             }
