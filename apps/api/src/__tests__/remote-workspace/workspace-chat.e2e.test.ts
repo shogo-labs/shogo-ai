@@ -307,13 +307,14 @@ describeIfInfra('remote workspace · the workspace chat', () => {
         300_000,
       )
 
-      // Known gap (no product change on this card — AC6): `POST /chat/stop`
-      // forwards the caller's `sessionId`, while the runtime resolves a stop from
-      // `chatSessionId`/`X-Chat-Session-Id`. The runtime answers 400 and the route
-      // wraps it in a 200, so Stop looks like it worked and the turn streams to
-      // the end. `test.failing` keeps the requirement asserted: it goes red when
-      // the route propagates the refusal, and the marker flips to `test`.
-      test.failing('stopping a turn from here ends it [stop answers 200 around the runtime 400]', async () => {
+      // SHO-494: the real client (`apps/mobile/lib/chat-stop.ts`) sends
+      // `chatSessionId`, and the runtime resolves a stop from `X-Chat-Session-Id`
+      // or that body field. SHO-488's test sent `sessionId`, which the route used
+      // only to resolve the runtime and never forwarded, so the runtime answered
+      // 400 and the turn streamed to the end. The test now speaks like the client,
+      // and the route returns the runtime's status instead of wrapping a refusal
+      // in a 200 (asserted below).
+      test('stopping a turn from here ends it', async () => {
         const t = target(name)
         const tag = `x${name.slice(0, 2)}${Date.now() % 100_000}`
         const turn = await startTurn(t, t.seed.workspaceChatId, `Stop me ${marker('long', tag, 400, { ms: 50 })}`)
@@ -323,8 +324,8 @@ describeIfInfra('remote workspace · the workspace chat', () => {
 
         const stopped = await fetch(`${t.base}/api/workspaces/${encodeURIComponent(t.workspaceId)}/chat/stop`, {
           method: 'POST',
-          headers: { ...headers(t), 'X-Chat-Session-Id': t.seed.workspaceChatId },
-          body: JSON.stringify({ sessionId: t.seed.workspaceChatId }),
+          headers: headers(t),
+          body: JSON.stringify({ chatSessionId: t.seed.workspaceChatId }),
         })
         expect(stopped.status, await stopped.clone().text()).toBeLessThan(300)
 
@@ -349,6 +350,16 @@ describeIfInfra('remote workspace · the workspace chat', () => {
           90_000,
           500,
         )
+
+        // A stop the runtime refuses is the caller's to see (SHO-494): with no
+        // session to stop the runtime answers 400, and the route must not turn
+        // that into a 200 that reads as "stopped".
+        const refused = await fetch(`${t.base}/api/workspaces/${encodeURIComponent(t.workspaceId)}/chat/stop`, {
+          method: 'POST',
+          headers: headers(t),
+          body: '{}',
+        })
+        expect(refused.status, await refused.clone().text()).toBe(400)
         },
         240_000,
       )

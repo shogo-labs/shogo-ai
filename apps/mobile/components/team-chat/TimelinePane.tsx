@@ -619,7 +619,7 @@ export function TimelinePane(props: TimelinePaneProps) {
               onPress={() => props.onChangeMemberFilter?.(key)}
               accessibilityRole="button"
               accessibilityLabel={`Filter by ${mname}`}
-              accessibilityState={{ selected: active }}
+              aria-selected={active}
               testID={`member-filter-switch-${key}`}
               className={cn(
                 'flex-row items-center gap-1.5 rounded-full border px-2 py-1 active:bg-muted',

@@ -18,9 +18,9 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { signSharedFileToken } from '../../lib/shared-file-token'
 import {
   TARGET_NAMES,
-  read,
   startRemoteWorkspace,
   uniq,
+  waitForSync,
   type RemoteWorkspace,
   type Side,
   type Target,
@@ -112,17 +112,17 @@ describeIfInfra('remote workspace · files', () => {
     expect(await download.text()).toBe(content)
   }, 180_000)
 
-  // Known gap, measured while writing this file: the hosted conversation's
-  // membership row is the mirrored copy, so the upload is refused before the
-  // bytes ever reach the machine (`canPost`/`threadReply` answers 403 on the
-  // desktop side). The requirement stays asserted: a channel attachment
-  // uploaded from the cloud has to land where the agent that reads the channel
-  // can see it. `test.failing` so it goes red when the membership follows the
-  // conversation across the machine.
-  test.failing(
-    'hosted · a channel attachment uploaded from the cloud is stored for the agent [upload refused with 403]',
+  // SHO-494. Two bugs stood between the upload and a stored file, both measured
+  // on this stack: the API's own origin was not in the CSRF allow-list, so a
+  // multipart POST from the app itself answered 403 "Forbidden" before any bytes
+  // were read; and with no artifact bucket the cloud then answered 500, so the
+  // harness now runs a real (in-process) S3. The requirement: the bytes are
+  // stored, and the agent — whose API is the computer's — can read them.
+  test(
+    'hosted · a channel attachment uploaded from the cloud is stored for the agent',
     async () => {
       const t = target('hosted')
+      const peer = t.peer!
       const content = `attachment ${uniq('canary')}`
       const form = new FormData()
       form.set('file', new File([content], 'sho488-canary.txt', { type: 'text/plain' }))
@@ -133,10 +133,33 @@ describeIfInfra('remote workspace · files', () => {
       const text = await res.text().catch(() => '')
       expect(res.status, `upload answered ${res.status}: ${text.slice(0, 300)}`).toBeLessThan(300)
       const stored = text ? JSON.parse(text) : {}
-      expect(
-        stored?.attachment?.id ?? stored?.id ?? stored?.file?.id,
-        `no stored attachment in ${text.slice(0, 300)}`,
-      ).toBeTruthy()
+      const attachmentId = stored?.attachment?.id ?? stored?.id ?? stored?.file?.id
+      expect(attachmentId, `no stored attachment in ${text.slice(0, 300)}`).toBeTruthy()
+      const url = String(stored?.attachment?.url ?? '')
+
+      // The file is really there: the cloud serves its bytes at the URL the
+      // message will carry.
+      expect(url, `the attachment has a URL: ${text.slice(0, 300)}`).toContain('/api/conversation-files/')
+      const fromCloud = await fetch(`${t.base}${url}`)
+      expect(fromCloud.status, `cloud read answered ${fromCloud.status}`).toBe(200)
+      expect(await fromCloud.text()).toBe(content)
+
+      // …and the computer the agent runs on can read it. Its row arrives with
+      // the sync; the bytes stay in the cloud's store, so the desktop's own API
+      // fetches them rather than answering 404 from its disk. Probed on the
+      // attachment's own URL, not `/meta`: an upload that no message carries yet
+      // has no `messageId`, and `/meta` hides exactly those rows (a file from a
+      // deleted message) — on the cloud too, so it would prove nothing about
+      // the sync.
+      await waitForSync(ws.machine, 'the attachment row on the desktop', async () => {
+        const probe = await fetch(`${peer.base}${url}`)
+        return probe.status === 200
+      }, 60_000, 1_000)
+      const fromDesktop = await fetch(`${peer.base}${url}`, {
+        headers: { cookie: peer.cookie, origin: peer.base },
+      })
+      expect(fromDesktop.status, `desktop read answered ${fromDesktop.status}`).toBe(200)
+      expect(await fromDesktop.text()).toBe(content)
     },
     180_000,
   )

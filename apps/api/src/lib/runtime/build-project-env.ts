@@ -147,6 +147,13 @@ export async function buildProjectEnv(
         const { composeCloudPolicy } = await import('../security-policy')
         const policy = composeCloudPolicy(settings?.security)
         if (policy) env.SECURITY_POLICY = policy
+      } else {
+        // A runtime on this computer enforces the mode its owner chose in
+        // Settings → Security (SHO-494). Nothing used to set this in local
+        // mode, so every desktop runtime booted at the default and `balanced`
+        // mode never asked for a command that was not allowlisted.
+        const { localSecurityPolicy } = await import('../security-policy')
+        env.SECURITY_POLICY = await localSecurityPolicy(project)
       }
 
       // Per-project workspace mount override (default: true = mounted)

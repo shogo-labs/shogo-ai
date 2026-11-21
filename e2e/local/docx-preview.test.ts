@@ -149,17 +149,45 @@ test.describe("a Word document opened from team chat", () => {
 
   let page: Page
   let workspaceId: string
+  let channelId: string
+  let doc: { attachmentId: string; name: string }
+  let broken: { attachmentId: string; name: string }
+
+  /** A real upload to a real channel, posted as a message: the viewer reads these bytes. */
+  async function share(file: { name: string; buffer: Buffer }) {
+    const upload = await page.request.post(
+      `${LOCAL_API_BASE}/api/conversations/${channelId}/attachments`,
+      { multipart: { file: { ...file, mimeType: DOC_MIME } } },
+    )
+    expect(upload.status(), await upload.text()).toBe(201)
+    const attachment = (await upload.json()).attachment
+    const sent = await api(page, "POST", `/api/conversations/${channelId}/messages`, {
+      text: `Doc: ${file.name}`,
+      attachmentIds: [attachment.id],
+      clientMsgId: crypto.randomUUID(),
+    })
+    expect(sent.status, JSON.stringify(sent.json)).toBe(201)
+    return { attachmentId: attachment.id as string, name: file.name }
+  }
 
   test.beforeAll(async ({ browser }) => {
+    test.setTimeout(180_000)
     page = await browser.newPage()
     await signIn(page)
     workspaceId = await teamWorkspaceId(page)
-    await activateTeamWorkspace(page, workspaceId)
-    await installChatMock(page)
-    await installFileMock(page)
+    const channel = await api(page, "POST", `/api/workspaces/${workspaceId}/conversations`, {
+      name: `docx-${SUFFIX}`,
+      kind: "public",
+    })
+    channelId = channel.json?.conversation?.id
+    expect(channelId, JSON.stringify(channel.json)).toBeTruthy()
+    doc = await share({ name: `qa-doc-${SUFFIX}.docx`, buffer: DOC })
+    broken = await share({ name: `qa-broken-${SUFFIX}.docx`, buffer: BROKEN_DOC })
   })
 
-  test.afterAll(() => page.close())
+  test.afterAll(async () => {
+    await page?.close()
+  })
 
   test("the viewer page is served with the right CSP", async () => {
     const response = await page.request.get(`${LOCAL_API_BASE}/api/viewers/document`)
@@ -171,36 +199,30 @@ test.describe("a Word document opened from team chat", () => {
   })
 
   test("a .docx chip opens as rendered document pages in team chat", async () => {
-    const path = `qa-doc-${SUFFIX}.docx`
-    registerDocFixture(path)
-    const fileId = await api(workspaceId).uploadFile(path, DOC, DOC_MIME)
-    await send(page, `Share this doc: /api/conversation-files/${fileId}`)
+    await activateTeamWorkspace(page, workspaceId)
+    await page.goto(`/f/${doc.attachmentId}?name=${encodeURIComponent(doc.name)}`)
 
-    const chip = fileChip(page, `qa-doc-${SUFFIX}.docx`)
-    await chip.click()
-
-    const panel = page.getByTestId("file-viewer")
-    await expectDocumentRendered(panel)
-    // Should NOT show "Text extracted from this file".
-    await expect(panel.getByText("Text extracted from this file")).not.toBeVisible()
+    const viewer = page.getByTestId("file-viewer")
+    await expect(viewer).toBeVisible({ timeout: 30_000 })
+    const frame = await expectDocumentRendered(viewer)
+    expect(await frame.getAttribute("sandbox")).toBe("allow-scripts")
+    await expect(viewer.getByText("Text extracted from this file")).toHaveCount(0)
   })
 
   test("a corrupt .docx shows the extracted-text fallback, not an empty frame", async () => {
-    const path = `qa-broken-${SUFFIX}.docx`
-    registerDocFixture(path, BROKEN_DOC)
-    const fileId = await api(workspaceId).uploadFile(path, BROKEN_DOC, DOC_MIME)
-    await send(page, `Share this bad doc: /api/conversation-files/${fileId}`)
+    await activateTeamWorkspace(page, workspaceId)
+    await page.goto(`/f/${broken.attachmentId}?name=${encodeURIComponent(broken.name)}`)
 
-    const chip = fileChip(page, `qa-broken-${SUFFIX}.docx`)
-    await chip.click()
-
-    const panel = page.getByTestId("file-viewer")
-    // Fallback: extracted text label or error — never an endless spinner.
-    await expect(
-      panel.getByText(/Text extracted from this file/).or(panel.getByText(/Could not render/)),
-    ).toBeVisible({ timeout: 15_000 })
-    // No infinite spinner.
-    await expect(panel.getByTestId("file-viewer-loading")).not.toBeVisible()
+    const viewer = page.getByTestId("file-viewer")
+    await expect(viewer).toBeVisible({ timeout: 30_000 })
+    // Either honest end: the viewer's own error, or the host's text fallback.
+    const settled = viewer
+      .getByTestId("document-preview-error")
+      .or(viewer.getByText("There's no text to show for this file."))
+      .or(viewer.getByText("Text extracted from this file"))
+    await expect(settled.first()).toBeVisible({ timeout: 20_000 })
+    // Never an endless spinner.
+    await expect(viewer.getByTestId("document-preview-loading")).toHaveCount(0)
   })
 })
 
@@ -210,20 +232,47 @@ test.describe("a Word document from the share_file panel", () => {
   let page: Page
 
   test.beforeAll(async ({ browser }) => {
+    test.setTimeout(180_000)
     page = await browser.newPage()
-    await signIn(page)
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await installChatMock(page)
     await installFileMock(page)
+    await page.goto("/")
+    await composer(page).waitFor({ state: "visible", timeout: 60_000 })
+
+    const workspaces = await page.request.get(`${LOCAL_API_BASE}/api/workspaces`)
+    const body = await workspaces.json()
+    const list = body?.items ?? body?.data ?? body?.workspaces ?? body
+    const rows = Array.isArray(list) ? list : []
+    const workspace = rows.find((row: { kind?: string }) => row.kind === "personal") ?? rows[0]
+    expect(workspace?.id, `workspace list ${workspaces.status()}`).toBeTruthy()
+    const primary = await page.request.post(
+      `${LOCAL_API_BASE}/api/workspaces/${workspace.id}/sessions/primary`,
+      { data: {} },
+    )
+    expect(primary.status(), await primary.text()).toBeLessThan(400)
   })
 
-  test.afterAll(() => page.close())
+  test.afterAll(async () => {
+    await page?.close()
+  })
 
   test("renders as document pages in the share pane", async () => {
-    const path = `qa-share-doc-${SUFFIX}.docx`
-    const href = registerDocFixture(path)
+    const name = `qa-share-doc-${SUFFIX}.docx`
+    const href = registerDocFixture(`docs/${name}`)
+    nextReply = `Here is the document.\n\n[QA doc](${href})`
+    await send(page, "Share the document")
 
-    await page.goto(href)
-    const pane = page.getByTestId("share-file-viewer")
+    const chip = fileChip(page, name)
+    await expect(chip).toBeVisible({ timeout: 30_000 })
+    await chip.click()
+
+    const pane = page.getByTestId("workspace-share-file-pane")
+    await expect(pane).toBeVisible({ timeout: 30_000 })
+    await expect(pane.getByText("No preview for this file type.")).toHaveCount(0)
     await expectDocumentRendered(pane)
-    await expect(pane.getByText("Text extracted from this file")).not.toBeVisible()
+    await expect(pane.getByText("Text extracted from this file")).toHaveCount(0)
+    // It stays in the app: the pane, not a tab.
+    expect(new URL(page.url()).pathname).toBe("/")
   })
 })
