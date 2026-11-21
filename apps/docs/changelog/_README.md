@@ -15,6 +15,11 @@ reading the markdown files in this directory.
 - **One entry per minor or major version** (e.g. `v1.12.0`, `v2.0.0`).
 - **Patch releases are NOT published.** Everything shipped in patches
   (`v1.11.1` … `v1.11.24`) is rolled up into the next minor entry.
+- **The minor entry covers every patch.** It ends with an "Every X.Y update,
+  release by release" section: one heading per patch of the previous minor
+  (`X.Y.0` … the last patch, with its date) and one for the new `.0`, each
+  with that release's user-facing changes. A patch with no user-facing change
+  still gets a heading saying so.
 - Entries are **curated highlights**, written for users in benefit-oriented
   language — not a raw commit dump. Drop infra/CI/deploy/internal changes.
 - An entry may opt into an in-app announcement with `announce: true` and a
