@@ -3148,8 +3148,8 @@ const WorkspaceFamilySection = observer(function WorkspaceFamilySection({
         ),
       });
     } catch (err: any) {
-      const msg = err?.message?.includes("plan_required")
-        ? "Additional workspaces are included on Business and Enterprise plans only."
+      const msg = err?.message && !String(err.message).startsWith("createChildWorkspace")
+        ? String(err.message)
         : "Could not create the workspace. Please try again.";
       toast.show({
         placement: "top",
