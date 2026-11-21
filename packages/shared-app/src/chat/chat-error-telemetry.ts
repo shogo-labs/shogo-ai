@@ -28,6 +28,8 @@
  * and it is unit-testable without the Sentry SDK.
  */
 
+import { summarizeHtmlErrorPage } from './message-helpers'
+
 /** Tag key that marks an event as a deliberate Shogo capture (never noise). */
 export const SHOGO_TELEMETRY_TAG = 'shogo_telemetry'
 
@@ -220,6 +222,8 @@ export function classifyChatError(err: unknown, userInitiatedStop = false): Chat
   // Expected business conditions (usage/rate limit) before everything else —
   // these are handled + user-facing, never a defect.
   if (EXPECTED_PATTERNS.some((p) => p.test(message))) return 'expected'
+  // The CDN's HTML 5xx page: the origin was unreachable, not a client defect.
+  if (summarizeHtmlErrorPage(message)) return 'connection'
   // Parse failures next — their message embeds the raw payload, so testing
   // the connection patterns against it produces false `connection` labels.
   if (isParseError(name, message)) return 'parse'
@@ -274,7 +278,13 @@ export function buildChatStreamErrorReport(
   const cls = classifyChatError(err, ctx.userInitiatedStop ?? false)
   if (NON_REPORTED_CLASSES.has(cls)) return null
 
-  const rawMessage = chatErrorMessage(err)
+  const fullMessage = chatErrorMessage(err)
+  const htmlPage = summarizeHtmlErrorPage(fullMessage)
+  // Keep the event small and searchable: the page title and status, not 6 KB
+  // of CDN markup.
+  const rawMessage = htmlPage
+    ? `HTML error page${htmlPage.status ? ` ${htmlPage.status}` : ''}${htmlPage.title ? `: ${htmlPage.title}` : ''}`
+    : fullMessage
   const causeMessage = messageOf((err as { cause?: unknown } | null)?.cause)
   const tags: Record<string, string> = {
     [SHOGO_TELEMETRY_TAG]: 'chat_stream_error',
@@ -283,6 +293,7 @@ export function buildChatStreamErrorReport(
     chatSessionId: ctx.sessionId ?? '(none)',
     turnId: ctx.turnId ?? '(none)',
     recovered: ctx.recovered ? 'true' : 'false',
+    ...(htmlPage?.status ? { upstreamStatus: String(htmlPage.status) } : {}),
   }
 
   return {

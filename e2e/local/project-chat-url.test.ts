@@ -251,6 +251,43 @@ test.describe("Project chat URL (local)", () => {
     await expect(page.getByText(/BRAVO-SEED-/).first()).toBeVisible({ timeout: 20_000 })
   })
 
+  // The staging release gate (chat-long-turn) cold-loads `?chatSessionId=` and
+  // types into the first visible composer. A cold load restores the saved tabs
+  // first and appends the linked chat, so hidden tabs render before it; at
+  // `opacity: 0` alone their composers counted as visible, came first, and the
+  // click was swallowed by the real one stacked above.
+  test("a chat link opened with other chat tabs saved leaves one reachable composer", async ({ page }) => {
+    await prepare(page)
+    await openProject(page)
+    await page.getByLabel("Chat: Chat Alpha").click()
+    await expect.poll(() => chatParam(page), { timeout: 20_000 }).toBe(alphaId)
+    // Alpha is now a saved tab, so the cold load below restores it ahead of Bravo.
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            (key) => window.localStorage.getItem(key) ?? "",
+            `shogo:chatTabs:${projectId}`,
+          ),
+        { timeout: 20_000 },
+      )
+      .toContain(alphaId)
+
+    await openProject(page, `?chatSessionId=${bravoId}`)
+    await expect(page.getByText(/BRAVO-SEED-/).first()).toBeVisible({ timeout: 20_000 })
+
+    const mounted = page.getByTestId("project-composer-input")
+    expect(await mounted.count(), "the saved tabs should still be mounted").toBeGreaterThan(1)
+    const reachable = mounted.filter({ visible: true })
+    await expect(reachable).toHaveCount(1)
+
+    const draft = `typed-into-bravo-${Date.now()}`
+    await reachable.click({ timeout: 10_000 })
+    await reachable.fill(draft)
+    await expect(reachable).toHaveValue(draft)
+    await expect(page.getByRole("textbox", { name: "Chat message input" })).toHaveCount(1)
+  })
+
   test("+ new chat names the new chat and drops the one-shot params", async ({ page }) => {
     await prepare(page)
     await openProject(page)

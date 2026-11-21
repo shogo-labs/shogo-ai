@@ -10,12 +10,37 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import type { ViewStyle } from 'react-native'
 
 export type TabsHydration =
   | 'loading'
   | 'restored-with-tabs'
   | 'restored-empty'
   | 'fresh'
+
+/**
+ * Style for a chat tab that is mounted but not the active one. The panel
+ * stays mounted so its stream and scroll position survive a switch, but the
+ * person must not be able to reach it. `opacity: 0` alone is not enough on
+ * web: the hidden composer stays focusable, readable by screen readers and
+ * visible to hit-testing, and inactive tabs can render before the active one
+ * (a cold load restores the saved tabs, then appends the `?chatSessionId=`
+ * one), so Tab or "the first composer on the page" lands in a chat nobody can
+ * see. `visibility: hidden` removes it from focus order, the a11y tree and
+ * hit-testing while keeping its layout, so nothing re-measures on a switch.
+ */
+export function inactiveChatTabStyle(platformOS: string): ViewStyle {
+  return {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    opacity: 0,
+    // Web-only CSS property react-native-web passes through; not in ViewStyle.
+    ...(platformOS === 'web' ? ({ visibility: 'hidden' } as ViewStyle) : {}),
+  }
+}
 
 export function chatTabsStorageKey(projectId: string): string {
   return `shogo:chatTabs:${projectId}`

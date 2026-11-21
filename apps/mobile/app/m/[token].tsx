@@ -15,6 +15,7 @@ import { stripActionItemsSection } from '../../lib/meeting-notes'
 import type { MeetingActionItem } from '../../lib/meetings-api'
 import { MarkdownText } from '../../components/chat/MarkdownText'
 import { openExternalLink } from '../../lib/open-external-link';
+import { errorMessage } from '../../lib/error-message'
 
 interface SharedMeeting {
   title: string | null
@@ -37,7 +38,7 @@ export default function SharedMeetingScreen() {
         if (!res.ok) throw new Error(body?.error?.message || 'This link is invalid or was revoked')
         setMeeting(body.meeting)
       })
-      .catch((err) => setError(err.message))
+      .catch((err) => setError(errorMessage(err)))
   }, [token])
 
   if (error) {

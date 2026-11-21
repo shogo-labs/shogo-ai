@@ -3,10 +3,17 @@
 /** A person's profile, full screen — what phone widths open instead of the pane. */
 import { ActivityIndicator, View } from 'react-native'
 import { useLocalSearchParams } from 'expo-router'
+import { observer } from 'mobx-react-lite'
 import { UserProfileScreen } from '../../../components/team-chat/UserProfileScreen'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 
-export default function UserProfileRoute() {
+/**
+ * `observer`: `useActiveWorkspace` reads the workspaces collection, which is
+ * empty until its request lands. Opened by URL there is nothing else to
+ * re-render this route, so without the subscription the gate below stays on
+ * its spinner for good (SHO-490).
+ */
+export default observer(function UserProfileRoute() {
   const params = useLocalSearchParams<{ userId?: string | string[] }>()
   const userId = Array.isArray(params.userId) ? params.userId[0] : params.userId
   const workspace = useActiveWorkspace()
@@ -18,4 +25,4 @@ export default function UserProfileRoute() {
     )
   }
   return <UserProfileScreen key={`${workspace.id}:${userId}`} workspaceId={workspace.id} userId={userId} />
-}
+})

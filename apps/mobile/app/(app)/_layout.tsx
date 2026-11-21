@@ -167,6 +167,11 @@ const PHONE_OWN_CHROME_ROUTES = new Set([
   "huddles",
   "new-workspace",
   "f",
+  // A person's profile and an agent's profile draw the phone's glass header
+  // (SHO-490); without these the shared hamburger bar stacked above them and
+  // their own header started 54px down the screen.
+  "people",
+  "agents",
 ]);
 
 /**

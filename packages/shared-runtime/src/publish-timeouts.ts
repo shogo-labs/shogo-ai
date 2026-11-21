@@ -21,6 +21,27 @@ export const DEFAULT_PUBLISH_GIT_FLUSH_TIMEOUT_MS = 60_000
 /** Slack so the caller's abort fires after the API has returned its own timeout. */
 export const PUBLISH_REQUEST_SLACK_MS = 30_000
 
+/**
+ * Largest publish build context the API will hand to a build, in bytes.
+ *
+ * The BuildKit Job's `src` volume is a 2 Gi `emptyDir`, so an artifact above
+ * that is an eviction with no explanation. Well under it, because the context
+ * must unpack *and* the build needs room for its own work. Media no longer
+ * counts toward this (SHO-485 keeps LFS objects and `dist/` files ≥ 5 MiB out
+ * of the artifact), so a project that trips it has something else wrong.
+ */
+export const DEFAULT_PUBLISH_ARTIFACT_MAX_BYTES = 1536 * 1024 * 1024
+
+/**
+ * How long the API waits for the runtime to hash the context, replace large
+ * media with pointers and upload the tar to object storage.
+ *
+ * Not the 180 s app-build budget: on a media-heavy project the runtime reads
+ * every offloadable byte once (to content-address it), and a fixed 3-minute
+ * abort used to fire mid-upload, which reads as `artifact_missing` forever.
+ */
+export const DEFAULT_PUBLISH_ARTIFACT_UPLOAD_TIMEOUT_MS = 20 * 60_000
+
 function positiveMs(raw: string | undefined, fallback: number): number {
   const n = Number(raw)
   return Number.isFinite(n) && n > 0 ? n : fallback
@@ -46,6 +67,16 @@ export function publishStepTimeouts(env: NodeJS.ProcessEnv = process.env): Publi
     imageBuildMs: positiveMs(env.PUBLISH_IMAGE_BUILD_TIMEOUT_MS, DEFAULT_PUBLISH_IMAGE_BUILD_TIMEOUT_MS),
     gitFlushMs: positiveMs(env.PUBLISH_GIT_FLUSH_TIMEOUT_MS, DEFAULT_PUBLISH_GIT_FLUSH_TIMEOUT_MS),
   }
+}
+
+/** {@link DEFAULT_PUBLISH_ARTIFACT_MAX_BYTES}, overridable per region. */
+export function publishArtifactMaxBytes(env: NodeJS.ProcessEnv = process.env): number {
+  return positiveMs(env.PUBLISH_ARTIFACT_MAX_BYTES, DEFAULT_PUBLISH_ARTIFACT_MAX_BYTES)
+}
+
+/** {@link DEFAULT_PUBLISH_ARTIFACT_UPLOAD_TIMEOUT_MS}, overridable per region. */
+export function publishArtifactUploadTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  return positiveMs(env.PUBLISH_ARTIFACT_UPLOAD_TIMEOUT_MS, DEFAULT_PUBLISH_ARTIFACT_UPLOAD_TIMEOUT_MS)
 }
 
 /**

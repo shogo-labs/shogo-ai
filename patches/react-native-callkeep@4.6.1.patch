@@ -1,0 +1,34 @@
+diff --git a/android/src/main/java/io/wazo/callkeep/RNCallKeepModule.java b/android/src/main/java/io/wazo/callkeep/RNCallKeepModule.java
+index e28cda924eb0f1bc2949110ca48fdae2ca6fa566..d1db2460ac7e82895c0c64284157c7180b0bdf82 100644
+--- a/android/src/main/java/io/wazo/callkeep/RNCallKeepModule.java
++++ b/android/src/main/java/io/wazo/callkeep/RNCallKeepModule.java
+@@ -1140,8 +1140,14 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule implements Life
+                 return;
+             }
+ 
+-            context.startActivity(intent);
+-            return;
++            try {
++                context.startActivity(intent);
++                return;
++            } catch (android.content.ActivityNotFoundException e) {
++                // Newer Samsung/OnePlus/Oppo builds dropped this activity; fall back to the
++                // standard phone-account settings instead of crashing the app.
++                Log.w(TAG, "[RNCallKeepModule][openPhoneAccounts] EnableAccountPreferenceActivity missing, falling back", e);
++            }
+         }
+ 
+         openPhoneAccountSettings();
+@@ -1162,7 +1168,11 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule implements Life
+             Log.w(TAG, "[RNCallKeepModule][openPhoneAccountSettings] no react context found.");
+             return;
+         }
+-        context.startActivity(intent);
++        try {
++            context.startActivity(intent);
++        } catch (android.content.ActivityNotFoundException e) {
++            Log.w(TAG, "[RNCallKeepModule][openPhoneAccountSettings] no phone-account settings screen on this device", e);
++        }
+     }
+ 
+     public static Boolean isConnectionServiceAvailable() {

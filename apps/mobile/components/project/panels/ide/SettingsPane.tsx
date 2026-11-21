@@ -19,6 +19,7 @@ import {
   registerCustomTheme,
 } from "./monaco/themes";
 import { getMonacoRef } from "./monaco/workspaceModels";
+import { errorMessage } from "../../../../lib/error-message";
 
 interface SettingsCtxValue {
   query: string;
@@ -382,7 +383,7 @@ function ThemeSection({
       // as an inline message instead of an unhandled promise rejection.
       text = await file.text();
     } catch (e) {
-      setError(`failed to read file: ${(e as Error).message || String(e)}`);
+      setError(`failed to read file: ${errorMessage(e)}`);
       return;
     }
     const parsed = parseThemeJson(text);
@@ -399,7 +400,7 @@ function ThemeSection({
       const id = registerCustomTheme(monaco, parsed.theme);
       onChange(id);
     } catch (e) {
-      setError(`failed to register theme: ${(e as Error).message || String(e)}`);
+      setError(`failed to register theme: ${errorMessage(e)}`);
     }
   };
 

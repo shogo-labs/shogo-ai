@@ -129,6 +129,10 @@ import {
   isNativePhoneIntegrationsLayout,
   WEB_WIDE_MIN_WIDTH,
 } from "../../lib/native-phone-layout";
+import {
+  PhoneScreenHeader,
+  usePhoneScreenHeaderInset,
+} from "../../components/layout/PhoneScreenHeader";
 import { CHANGELOG_URL, DOCS_URL } from "../../lib/theme-choices";
 import whatsNewCatalog from "../../lib/whats-new/releases.generated.json";
 import {
@@ -171,7 +175,7 @@ import { useNotificationPermission } from "../../lib/notifications/useNotificati
 import type { NotificationPermissionState } from "../../lib/notifications/chat-notifier";
 import { useRequireBiometricApproval } from "../../lib/approval-lock";
 import { useDualPlan } from "../../lib/dual-plan-preference";
-import { openExternalLink } from "../../lib/open-external-link";
+import { openDownloadUrl, openExternalLink } from "../../lib/open-external-link";
 import { isCloudWorkspace } from "../../lib/workspace-route";
 
 const latestAnnouncedRelease = whatsNewCatalog.find((release) => release.announce);
@@ -2467,12 +2471,7 @@ const PeopleTab = observer(function PeopleTab() {
 
   const handleExportMembersCsv = () => {
     if (!currentWorkspace?.id) return;
-    const url = exportCsvUrl;
-    if (typeof window !== "undefined") {
-      window.open(url, "_blank", "noopener");
-    } else {
-      openExternalLink(url);
-    }
+    openDownloadUrl(exportCsvUrl);
   };
 
   return (
@@ -3982,6 +3981,7 @@ export default observer(function SettingsPage({
   // sidebar beside this page, so the page drops its own exit and switcher.
   const inAppShell = !onClose && Platform.OS === "web" && isWide;
   const isNativePhone = isNativePhoneIntegrationsLayout(width, height);
+  const header = usePhoneScreenHeaderInset();
   const { user } = useAuth();
   const workspaces = useWorkspaceCollection();
   const { features, localMode } = usePlatformConfig();
@@ -4119,32 +4119,45 @@ export default observer(function SettingsPage({
     );
   }
 
+  // A phone redirects to the account page above, so this page is the tablet
+  // (or a narrow web panel). On the app the top follows the same glass
+  // standard as every other screen you go into.
+  const glassHeader = Platform.OS !== "web"
   return (
     <View
       testID="settings-legacy-page"
       className="flex-1 bg-background"
-      style={{ paddingTop: insets.top }}
+      style={glassHeader ? undefined : { paddingTop: insets.top }}
     >
-      <View className="flex-row items-center gap-3 border-b border-border/70 bg-card px-4 py-3">
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Back"
-          onPress={exitSettings}
-          className="h-10 w-10 items-center justify-center rounded-full active:bg-muted"
-        >
-          <ArrowLeft size={20} className="text-foreground" />
-        </Pressable>
-        <View className="flex-1">
-          <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Settings
-          </Text>
-          <Text className="text-xl font-semibold text-foreground">
-            {activeTabLabel}
-          </Text>
+      {glassHeader ? (
+        <PhoneScreenHeader
+          title={activeTabLabel}
+          subtitle="Settings"
+          onBack={exitSettings}
+          onLayout={header.onLayout}
+        />
+      ) : (
+        <View className="flex-row items-center gap-3 border-b border-border/70 bg-card px-4 py-3">
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+            onPress={exitSettings}
+            className="h-10 w-10 items-center justify-center rounded-full active:bg-muted"
+          >
+            <ArrowLeft size={20} className="text-foreground" />
+          </Pressable>
+          <View className="flex-1">
+            <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Settings
+            </Text>
+            <Text className="text-xl font-semibold text-foreground">
+              {activeTabLabel}
+            </Text>
+          </View>
         </View>
-      </View>
+      )}
 
-      <View className="z-10 bg-card">
+      <View className="z-10 bg-card" style={glassHeader ? { paddingTop: header.height } : undefined}>
         <TabBar
           activeTab={activeTab}
           onTabChange={setActiveTab}

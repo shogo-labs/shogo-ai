@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Platform, Pressable, ScrollView, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
-import { ChevronLeft, Filter, Upload, X } from 'lucide-react-native'
+import { Filter, Upload, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
 import type { MentionTarget } from '../chat/file-links'
@@ -32,7 +32,8 @@ import { MentionNudgeCard } from './MentionNudgeCard'
 import { EphemeralNotice } from './EphemeralNotice'
 import { AddToChannelConfirmHost, confirmsAddToChannel } from './AddToChannelConfirm'
 import { LinkPreviewConsentHost } from './LinkPreviewConsent'
-import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
+import { GlassChip } from './FloatingChrome'
+import { PhoneScreenHeader } from '../layout/PhoneScreenHeader'
 import { usePhoneChromeOverlay } from '../layout/PhoneChromeOverlay'
 import { GlassBlurTarget } from '../ui/LiquidGlassBackdrop'
 import { MakeCardSheet } from '../boards/MakeCardSheet'
@@ -811,31 +812,19 @@ export function TimelinePane(props: TimelinePaneProps) {
           )}
         </GlassBlurTarget>
         {threadRootId ? (
-          <View
-            pointerEvents="box-none"
-            onLayout={(e) => setThreadHeaderHeight(Math.round(e.nativeEvent.layout.height))}
-            className="absolute left-0 right-0 z-30"
-            style={{ top: topInset, paddingTop: topInset ? 0 : insets.top + 6 }}
-          >
-          <View
-            pointerEvents="box-none"
-            className="flex-row items-center gap-2 px-3 pb-2"
+          <PhoneScreenHeader
             testID="floating-thread-header"
+            top={topInset}
+            paddingTop={topInset ? 0 : undefined}
+            rowClassName="pb-2"
+            onLayout={(e) => setThreadHeaderHeight(Math.round(e.nativeEvent.layout.height))}
+            onBack={props.onClose}
+            backLabel="Back to conversation"
+            title={crumbs[crumbs.length - 1]?.label ?? 'Thread'}
+            subtitle={crumbs[0]?.label}
           >
-            <GlassButton label="Back to conversation" onPress={props.onClose}>
-              <ChevronLeft size={22} className="text-foreground" />
-            </GlassButton>
-            <GlassChip className="min-w-0 flex-shrink justify-center px-4" style={{ height: CHROME_SIZE }}>
-              <Text className="text-[15px] font-semibold text-foreground" numberOfLines={1}>
-                {crumbs[crumbs.length - 1]?.label ?? 'Thread'}
-              </Text>
-              <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
-                {crumbs[0]?.label}
-              </Text>
-            </GlassChip>
-          </View>
-          {mailThreadActions}
-          </View>
+            {mailThreadActions}
+          </PhoneScreenHeader>
         ) : null}
         <OverlayFooter
           height={footerHeight}

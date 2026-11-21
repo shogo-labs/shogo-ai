@@ -42,6 +42,7 @@ import {
   editMessage,
   getConversationForUser,
   getMessage,
+  getMessages,
   getWorkspaceRole,
   joinConversation,
   leaveConversation,
@@ -972,6 +973,18 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   })
 
   // ─── Message-level ───────────────────────────────────────────────────────
+
+  // Quote cards ask for every message a page links to in one request.
+  router.get('/conversation-messages', async (c) => {
+    const userId = await requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      const ids = (c.req.query('ids') ?? '').split(',').map((id) => id.trim()).filter(Boolean)
+      return c.json(await getMessages(ids, userId))
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
 
   router.get('/conversation-messages/:messageId', async (c) => {
     const userId = await requireUser(c)

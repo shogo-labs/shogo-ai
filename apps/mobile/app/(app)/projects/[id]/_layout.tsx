@@ -79,7 +79,10 @@ import {
   usePlatformConfig,
 } from "../../../../lib/platform-config";
 import { resolveChatScope } from "../../../../lib/chat-scope";
-import { useProjectChatTabs } from "../../../../lib/project-chat-tabs";
+import {
+  inactiveChatTabStyle,
+  useProjectChatTabs,
+} from "../../../../lib/project-chat-tabs";
 import {
   hasChatUrlOneShotParams,
   isChatSessionOfProject,
@@ -3659,14 +3662,7 @@ export default observer(function ProjectLayout() {
             className="flex-1"
             style={
               !isActive
-                ? {
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    opacity: 0,
-                  }
+                ? inactiveChatTabStyle(Platform.OS)
                 : nativePhone
                 ? {
                     flex: 1,
@@ -3678,6 +3674,7 @@ export default observer(function ProjectLayout() {
                 : undefined
             }
             pointerEvents={isActive ? "auto" : "none"}
+            aria-hidden={!isActive}
           >
             <PanelErrorBoundary panelName="Chat">
               <ChatPanel
@@ -3936,11 +3933,7 @@ export default observer(function ProjectLayout() {
         <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
         {/* A phone enters the project on this page, so keep the way back and
             the name on screen while it loads instead of a bare spinner. */}
-        {Platform.OS !== "web" ? (
-          <View className="bg-background" style={{ paddingTop: insets.top }}>
-            <ProjectSurfaceHeader projectId={projectId} />
-          </View>
-        ) : null}
+        <ProjectSurfaceHeader projectId={projectId} />
         <View className="flex-1 bg-background items-center justify-center px-6">
           {!showStalledRecovery && (
             <>

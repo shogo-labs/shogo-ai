@@ -1,0 +1,14 @@
+# Per-commit published images (SHO-308 §2): the cluster-side pieces a region
+# needs before the API may create a BuildKit Job.
+#
+# This is a kustomize *directory* on purpose: an overlay may reference it as
+# `../../published-builds`, which kustomize allows, while a bare file outside
+# the overlay root it refuses. Both production overlays include it, so a region
+# can never turn the feature on (PUBLISH_BUILD_*) with no namespace to run in.
+# The OCIR push Secret is deliberately not declared here — see
+# docs/runbooks/published-images.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - builds.yaml

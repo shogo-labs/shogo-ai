@@ -249,6 +249,21 @@ spec:
                   key: secret-key
             - name: PUBLISH_NAMESPACE
               value: "shogo-production-system"
+            # ---- Per-commit published images (SHO-308 §2, on in prod SHO-485) --
+            # BuildKit Jobs in `shogo-builds` (k8s/published-builds/builds.yaml,
+            # applied by this region's kustomization) push to
+            # <registry>/<namespace>/shogo/published/<projectId>:<sha> with the
+            # `ocir-push` Secret in that namespace. The builder image must be
+            # fully qualified: CRI-O on OKE enforces short names. See
+            # docs/runbooks/published-images.md — the Secret and the egress rule
+            # are manual per region, and PUBLISH_BUILD_IMAGES=off rolls back
+            # without unsetting these.
+            - name: PUBLISH_BUILD_REGISTRY
+              value: "us-ashburn-1.ocir.io"
+            - name: PUBLISH_BUILD_NAMESPACE
+              value: "idin4oltblww"
+            - name: PUBLISH_BUILD_IMAGE
+              value: "docker.io/moby/buildkit:v0.18.2-rootless"
             # OCI Object Storage bucket the *.shogo.one Cloudflare Worker
             # reads from (terraform/modules/publish-hosting-oci). MUST
             # match `shogo-published-apps-${var.environment}` for the env

@@ -178,11 +178,11 @@ import {
 } from "./retry-triage"
 import {
   computeRecoveryBackoff,
+  decideStallGiveUp,
   decideStallTrip,
   getStallRecoveryEffects,
   markStuckToolsInterrupted,
   shouldAutoRecoverStalledTurn,
-  turnEndedOnServer,
 } from "./stall-recovery"
 import { recordAutoResumeAttempt } from "./auto-resume-circuit-breaker"
 import { followNextTurn } from "./next-turn-follow"
@@ -298,7 +298,7 @@ import {
   useChatDockStore,
   type DockPanelDescriptor,
 } from "../../lib/chat-dock-store"
-import { useDockPanel } from "./dock/useDockPanel"
+import { useDockPanel, useHostDockPanels } from "./dock/useDockPanel"
 import { ChatDock } from "./dock/ChatDock"
 import { PlanDockPanel } from "./dock/panels/PlanDockPanel"
 import { PendingPlanComposerBar } from "./PendingPlanComposerBar"
@@ -679,6 +679,20 @@ export interface ChatPanelProps {
    */
   phoneTranscriptTopPadding?: "chrome" | "floating-agent"
   /**
+   * Dock panels the *host* screen wants above this chat's composer, e.g. the
+   * workspace chat's "Working set" (SHO-484). A screen that renders the chat
+   * cannot register with its dock store itself — the store is created inside
+   * `ChatPanel` — so it hands descriptors down here instead.
+   *
+   * Registered after the session-change reset (so switching chats re-registers
+   * them instead of dropping them) and re-registered on every render, which is
+   * how a fresh `render`/`headerActions` closure reaches the dock. Pass a new
+   * array only when the panels themselves change; each descriptor is upserted
+   * by id and the store only re-renders the dock when something it shows
+   * actually changed.
+   */
+  dockPanels?: DockPanelDescriptor[]
+  /**
    * The lifecycle notification this chat was opened from, when it was opened
    * from one (SHO-266). Set only for the arrival that came from the push's
    * deep link, so the "Continue <project>" chip greets that person and nobody
@@ -697,6 +711,13 @@ export interface ChatPanelProps {
 // ============================================================
 
 const STORAGE_KEY_COLLAPSED = "chat-panel-collapsed"
+
+/**
+ * Stable empty list for `dockPanels` so a host that has no panels (or that
+ * omits the prop) does not hand the registration effect a new array on every
+ * render.
+ */
+const EMPTY_DOCK_PANELS: DockPanelDescriptor[] = []
 
 // ============================================================
 // AsyncStorage Helpers
@@ -966,6 +987,11 @@ const LOAD_OLDER_WEB_DEBOUNCE_MS = 450
  * spinner forever.
  */
 const REJOIN_ATTACH_TIMEOUT_MS = 8_000
+/**
+ * How long a stream error waits for automatic recovery before it is reported
+ * as unrecovered. Longer than the recovery poll (12 probes, ≈50 s).
+ */
+const STREAM_ERROR_REPORT_DELAY_MS = 90_000
 
 /**
  * A `/turn` answer this fresh is reused instead of probing again: the probe
@@ -1193,6 +1219,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   enrichMessage,
   readOnlyReason,
   phoneTranscriptTopPadding = "chrome",
+  dockPanels: hostDockPanels = EMPTY_DOCK_PANELS,
   arrivedFromLifecycle,
   continueProjectName,
 }: ChatPanelProps) {
@@ -2129,6 +2156,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
     chatDockStore.reset()
   }, [currentSessionId, todoStateStore, fileChangeStore, chatDockStore])
 
+  // Dock panels handed down by the host screen (SHO-484). Declared *after* the
+  // reset above so a session switch clears the dock and re-registers them in
+  // the same commit — see `useHostDockPanels`.
+  useHostDockPanels(hostDockPanels, chatDockStore)
+
   // Load session metadata from API if not already cached. Gated on
   // `isActive` so the N-1 hidden sibling ChatPanels mounted for every
   // restored chat tab don't each fire their own request on mount. Uses
@@ -2495,6 +2527,35 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // `handleRetryRef`). `currentSessionIdRef` lets the async recovery loop
   // detect a session switch and bail before reattaching to a stale stream.
   const recoveredTurnIdRef = useRef<string | null>(null)
+  const recoveryBudgetRef = useRef<{ count: number; seq: number | null }>({ count: 0, seq: null })
+  // A stream error is reported once automatic recovery has had its say, so
+  // `recovered` in Sentry is the truth rather than always `false` (it was set
+  // before recovery ran, JAVASCRIPT-REACT-46 / ANDROID-5 / IOS-4 / DESKTOP-G).
+  const pendingStreamErrorRef = useRef<{
+    err: unknown
+    ctx: NonNullable<Parameters<typeof buildChatStreamErrorReport>[1]>
+    timer: ReturnType<typeof setTimeout>
+  } | null>(null)
+  const flushStreamErrorReportRef = useRef<(recovered: boolean) => void>(() => {})
+  flushStreamErrorReportRef.current = (recovered: boolean) => {
+    const pending = pendingStreamErrorRef.current
+    if (!pending) return
+    pendingStreamErrorRef.current = null
+    clearTimeout(pending.timer)
+    try {
+      const report = buildChatStreamErrorReport(pending.err, { ...pending.ctx, recovered })
+      if (report) {
+        Sentry.captureException(pending.err, {
+          level: report.level,
+          tags: report.tags,
+          extra: report.extra,
+          fingerprint: report.fingerprint,
+        })
+      }
+    } catch (reportErr) {
+      console.warn("[ChatPanel] failed to report stream error to Sentry:", reportErr)
+    }
+  }
   const renderDepthErrorTurnIdRef = useRef<string | null>(null)
   const stallRecoveryRef = useRef<(() => void) | null>(null)
   // One `/turn` probe at a time from the stall watchdog: the 15 s tick would
@@ -2763,28 +2824,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
         })
         return
       }
-      try {
-        const report = buildChatStreamErrorReport(err, {
+      // Held until automatic recovery settles (see `flushStreamErrorReportRef`);
+      // the timer is the backstop for a recovery that never reports back.
+      flushStreamErrorReportRef.current(false)
+      pendingStreamErrorRef.current = {
+        err,
+        ctx: {
           turnId: currentTurnIdRef.current,
           sessionId: currentSessionIdRef.current,
           projectId: projectId ?? null,
           lastSeq: turnLastSeqRef.current,
           userInitiatedStop: userInitiatedStopRef.current,
           phase: "stream",
-        })
-        if (report) {
-          Sentry.captureException(err, {
-            level: report.level,
-            tags: report.tags,
-            extra: report.extra,
-            fingerprint: report.fingerprint,
-          })
-        }
-      } catch (reportErr) {
-        console.warn(
-          "[ChatPanel] failed to report stream error to Sentry:",
-          reportErr,
-        )
+        },
+        timer: setTimeout(() => flushStreamErrorReportRef.current(false), STREAM_ERROR_REPORT_DELAY_MS),
       }
 
       // A render-depth error is React refusing to keep re-rendering, not a
@@ -5182,6 +5235,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
   catchUpAfterTurnEndedRef.current = catchUpAfterTurnEnded
 
   /**
+   * The runtime answered that it holds no turn for this session, so there is
+   * nothing to reattach to. Paint saved history and report whether it still
+   * ends on the prompt (no reply was written) — only then is Retry honest.
+   */
+  const settleFromSavedHistory = useCallback(async (): Promise<{ replyMissing: boolean }> => {
+    const sessionId = currentSessionIdRef.current
+    if (!sessionId) return { replyMissing: false }
+    await catchUpAfterTurnEnded()
+    if (currentSessionIdRef.current !== sessionId) return { replyMissing: false }
+    const tail = await probePersistedTail(sessionId)
+    return { replyMissing: tail ? persistedTailAwaitsReply(tail) : true }
+  }, [catchUpAfterTurnEnded, probePersistedTail])
+  const settleFromSavedHistoryRef = useRef(settleFromSavedHistory)
+  settleFromSavedHistoryRef.current = settleFromSavedHistory
+
+  /**
    * A turn started or ended in another window, on another device, or on the
    * server (a `[Task update]` wake, a channel dispatch, a project call). Nothing
    * else tells a window that stayed visible, so this is what keeps two windows
@@ -5490,16 +5559,27 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // (that's an intentional terminal state, not a dropped connection),
         // and fire at most once per turn so we never loop.
         const stalledTurnId = currentTurnIdRef.current
+        const sameTurn = recoveredTurnIdRef.current === stalledTurnId
         if (
           shouldAutoRecoverStalledTurn({
             stalledTurnId,
             recoveredTurnId: recoveredTurnIdRef.current,
             renderDepthErrorTurnId: renderDepthErrorTurnIdRef.current,
             userInitiatedStop: userInitiatedStopRef.current,
+            recoveriesThisTurn: recoveryBudgetRef.current.count,
+            seqAtLastRecovery: recoveryBudgetRef.current.seq,
+            lastSeq: turnLastSeqRef.current,
           })
         ) {
           recoveredTurnIdRef.current = stalledTurnId
+          recoveryBudgetRef.current = {
+            count: sameTurn ? recoveryBudgetRef.current.count + 1 : 1,
+            seq: turnLastSeqRef.current,
+          }
           stallRecoveryRef.current?.()
+        } else {
+          // Nothing will try to reattach: the stream error is final.
+          flushStreamErrorReportRef.current(false)
         }
       }
     }
@@ -8096,6 +8176,30 @@ const ChatPanelContent = observer(function ChatPanelContent({
           return
         }
 
+        if (decision === "stop-and-verify") {
+          // The runtime answered and has no turn for this session: the body
+          // is reading nothing that will ever arrive. Paint what was saved and
+          // only offer Retry when no reply was written.
+          console.warn(
+            `[ChatPanel] stall watchdog: runtime holds no turn for ${stalledSessionId} — painting saved history`,
+          )
+          stallWatchdogTrippedRef.current = false
+          try {
+            void stop()
+          } catch (err) {
+            console.warn("[ChatPanel] stall watchdog stop() threw:", err)
+          }
+          setTimeout(() => {
+            if (currentSessionIdRef.current !== stalledSessionId) return
+            void settleFromSavedHistoryRef.current().then(({ replyMissing }) => {
+              if (!replyMissing || currentSessionIdRef.current !== stalledSessionId) return
+              setErrorDismissed(false)
+              setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE)
+            })
+          }, 500)
+          return
+        }
+
         console.warn(
           `[ChatPanel] stall watchdog tripped — status=${status} pinned for ${elapsedMs}ms with no progress and the turn probe did not confirm a live turn; calling stop() to recover`,
         )
@@ -9248,6 +9352,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             console.log(
               `[ChatPanel] auto-recovery: turn ${recoveryTurnId} still active — reattaching live stream (fromSeq=${fromSeqAtStall})`,
             )
+            flushStreamErrorReportRef.current(true)
             guardedAutoResumeStream("stall-recovery")
             return
           }
@@ -9263,13 +9368,53 @@ const ChatPanelContent = observer(function ChatPanelContent({
             // the reason it failed) is saved, so paint it instead of claiming
             // the runtime is unreachable and asking for a Retry that would
             // start the work again.
-            const ended = snapshot.answered && turnEndedOnServer(turnStatus)
-            if (ended) {
+            const outcome = decideStallGiveUp({
+              turnStatus,
+              answered: snapshot.answered,
+            })
+            const ended = outcome !== "show-retry"
+            if (outcome === "reload-history") {
               console.log(
                 `[ChatPanel] auto-recovery: turn ${recoveryTurnId} ended server-side (${turnStatus}) — reloading saved history`,
               )
+              flushStreamErrorReportRef.current(true)
               void catchUpAfterTurnEndedRef.current?.()
+            } else if (outcome === "reload-then-check-reply") {
+              // The runtime answered every probe with "no turn here": nothing
+              // is running to reattach to. The reply is normally saved already,
+              // so paint it; Retry only when history still ends on the prompt.
+              console.log(
+                `[ChatPanel] auto-recovery: runtime holds no turn for ${recoverySessionId} — painting saved history`,
+              )
+              const { replyMissing } = await settleFromSavedHistoryRef.current()
+              flushStreamErrorReportRef.current(!replyMissing)
+              if (replyMissing && currentSessionIdRef.current === recoverySessionId) {
+                try {
+                  Sentry.captureMessage("chat_stall_recovery_gave_up", {
+                    level: "warning",
+                    tags: {
+                      projectId: projectId ?? "(none)",
+                      chatSessionId: recoverySessionId,
+                      turnStatus,
+                    },
+                    extra: {
+                      attempt,
+                      maxAttempts: MAX_ATTEMPTS,
+                      turnId: recoveryTurnId,
+                      fromSeq: fromSeqAtStall,
+                      isLocalAgent: !!localAgentUrl,
+                      probeAnswered: true,
+                      replyMissing: true,
+                    },
+                  })
+                } catch (err) {
+                  console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+                }
+                setErrorDismissed(false)
+                setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE)
+              }
             } else {
+              flushStreamErrorReportRef.current(false)
               // The stall watchdog reports its own trips; this give-up path
               // (stream ended without turn-complete and could not be
               // reattached) shows the same banner, so report it separately.

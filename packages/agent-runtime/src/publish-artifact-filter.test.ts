@@ -65,3 +65,347 @@ describe('createPublishedArtifactFilter', () => {
     expect(filter(ROOT)).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Large media stays out of the artifact (SHO-485 §2a)
+// ---------------------------------------------------------------------------
+
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createHash } from 'node:crypto'
+import {
+  PUBLISH_DIST_OFFLOAD_MIN_BYTES,
+  artifactPointerTargets,
+  offloadArtifactMedia,
+} from './publish-artifact-filter'
+
+describe('artifactPointerTargets', () => {
+  const sizes = new Map<string, number>([
+    ['src/hero.mp4', 400 * 1024 * 1024],
+    ['src/small.png', 2048],
+    ['dist/assets/hero-abc123.mp4', 400 * 1024 * 1024],
+    ['dist/logo.png', 1024],
+    ['dist/app.js', 900 * 1024],
+    ['dist/big.html', PUBLISH_DIST_OFFLOAD_MIN_BYTES * 2],
+  ])
+  const paths = [...sizes.keys()]
+
+  it('keeps every LFS-tracked source path, whatever its size', () => {
+    const targets = artifactPointerTargets({ paths, lfsTracked: new Set(['src/hero.mp4', 'src/small.png']), sizes })
+    expect(targets).toContain('src/hero.mp4')
+    // A tracked file below the dist threshold still leaves: the bytes are in the
+    // store, so the image does not need them twice.
+    expect(targets).toContain('src/small.png')
+  })
+
+  it('keeps dist files at or above 5 MiB out, whether public/ copied or hashed', () => {
+    const targets = artifactPointerTargets({ paths, lfsTracked: new Set(), sizes })
+    expect(targets).toEqual(['dist/assets/hero-abc123.mp4'])
+  })
+
+  it('leaves small dist files and HTML in the artifact', () => {
+    const targets = artifactPointerTargets({ paths, lfsTracked: new Set(), sizes })
+    expect(targets).not.toContain('dist/logo.png')
+    expect(targets).not.toContain('dist/app.js')
+    // HTML is the one file the runtime must read to inject its bridge.
+    expect(targets).not.toContain('dist/big.html')
+  })
+
+  it('is a no-op for a project with no LFS and nothing over the threshold', () => {
+    const small = new Map([['dist/a.png', 1000], ['src/App.tsx', 400]])
+    expect(artifactPointerTargets({ paths: [...small.keys()], lfsTracked: new Set(), sizes: small })).toEqual([])
+  })
+})
+
+/**
+ * The real offload, against a real git repo (that is what decides what is
+ * LFS-tracked) and a fake object store. The invariant it pins: after it runs,
+ * every pointer in the context is backed by an object, or the publish failed
+ * with a name.
+ */
+describe('offloadArtifactMedia', () => {
+  let dir: string
+  type StoredObject = { body: Buffer; contentType?: string; cacheControl?: string }
+  const fakeStore = () => {
+    const objects = new Map<string, StoredObject>()
+    const commands: string[] = []
+    const notFound = () => {
+      const err: any = new Error('NotFound')
+      err.name = 'NotFound'
+      err.$metadata = { httpStatusCode: 404 }
+      return err
+    }
+    return {
+      objects,
+      commands,
+      store: {
+        bucket: 'workspaces',
+        client: {
+          async send(command: any) {
+            const name = command.constructor.name
+            commands.push(name)
+            const key = command.input.Key
+            if (name === 'HeadObjectCommand') {
+              const stored = objects.get(key)
+              if (!stored) throw notFound()
+              return {
+                ContentLength: stored.body.length,
+                ContentType: stored.contentType,
+                CacheControl: stored.cacheControl,
+              }
+            }
+            if (name === 'PutObjectCommand') {
+              objects.set(key, {
+                body: Buffer.from(command.input.Body),
+                contentType: command.input.ContentType,
+                cacheControl: command.input.CacheControl,
+              })
+              return { ETag: '"x"' }
+            }
+            if (name === 'CopyObjectCommand') {
+              const stored = objects.get(key)
+              if (!stored) throw notFound()
+              objects.set(key, {
+                body: stored.body,
+                contentType: command.input.ContentType,
+                cacheControl: command.input.CacheControl,
+              })
+              return {}
+            }
+            return {}
+          },
+        },
+      },
+    }
+  }
+
+  const git = (args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' })
+
+  const seed = () => {
+    dir = mkdtempSync(join(tmpdir(), 'shogo-offload-'))
+    git(['init', '--quiet'])
+    writeFileSync(join(dir, '.gitattributes'), '*.mp4 filter=lfs diff=lfs merge=lfs -text\n')
+    writeFileSync(join(dir, 'README.md'), '# demo\n')
+    writeFileSync(join(dir, 'clip.mp4'), Buffer.alloc(3000, 7))
+    mkdirSync(join(dir, 'dist', 'assets'), { recursive: true })
+    writeFileSync(join(dir, 'dist', 'assets', 'big.mp4'), Buffer.alloc(PUBLISH_DIST_OFFLOAD_MIN_BYTES + 16, 9))
+    writeFileSync(join(dir, 'dist', 'app.js'), 'console.log(1)\n')
+  }
+
+  it('replaces LFS source files and big dist files with pointer text, after storing the bytes', async () => {
+    seed()
+    const { store, objects } = fakeStore()
+    try {
+      const result = await offloadArtifactMedia({
+        contextDir: dir,
+        sourceDir: dir,
+        projectId: 'proj-1',
+        store,
+        logger: { log: () => {}, warn: () => {} },
+      })
+
+      const clip = readFileSync(join(dir, 'clip.mp4'), 'utf-8')
+      expect(clip).toContain('version https://git-lfs.github.com/spec/v1')
+      const oid = createHash('sha256').update(Buffer.alloc(3000, 7)).digest('hex')
+      expect(clip).toContain(`oid sha256:${oid}`)
+      expect(clip).toContain('size 3000')
+
+      const bigDist = readFileSync(join(dir, 'dist', 'assets', 'big.mp4'), 'utf-8')
+      expect(bigDist).toContain('version https://git-lfs.github.com/spec/v1')
+
+      // Both objects are durable, under the project's LFS namespace.
+      expect(objects.has(`proj-1/lfs/objects/${oid.slice(0, 2)}/${oid.slice(2, 4)}/${oid}`)).toBe(true)
+      expect([...objects.keys()].filter((k) => k.startsWith('proj-1/lfs/objects/')).length).toBe(2)
+      expect(result.pointers).toBe(2)
+      expect(result.uploaded).toBe(2)
+      expect(result.bytesLeftOut).toBe(3000 + PUBLISH_DIST_OFFLOAD_MIN_BYTES + 16)
+
+      // Untouched files stay real.
+      expect(readFileSync(join(dir, 'README.md'), 'utf-8')).toBe('# demo\n')
+      expect(readFileSync(join(dir, 'dist', 'app.js'), 'utf-8')).toBe('console.log(1)\n')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reuses an object the store already has instead of re-uploading it', async () => {
+    seed()
+    const { store, objects, commands } = fakeStore()
+    const oid = createHash('sha256').update(Buffer.alloc(3000, 7)).digest('hex')
+    objects.set(`proj-1/lfs/objects/${oid.slice(0, 2)}/${oid.slice(2, 4)}/${oid}`, {
+      body: Buffer.alloc(0),
+      contentType: 'video/mp4',
+      cacheControl: 'no-cache',
+    })
+    try {
+      const result = await offloadArtifactMedia({
+        contextDir: dir,
+        sourceDir: dir,
+        projectId: 'proj-1',
+        store,
+        logger: { log: () => {}, warn: () => {} },
+      })
+      expect(result.reused).toBe(1)
+      expect(result.restamped).toBe(0)
+      // Only the dist object needed a write.
+      expect(commands.filter((c) => c === 'PutObjectCommand').length).toBe(1)
+      expect(commands).not.toContain('CopyObjectCommand')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('re-stamps an object that reached the store before its type was known', async () => {
+    seed()
+    const { store, objects, commands } = fakeStore()
+    const oid = createHash('sha256').update(Buffer.alloc(3000, 7)).digest('hex')
+    const key = `proj-1/lfs/objects/${oid.slice(0, 2)}/${oid.slice(2, 4)}/${oid}`
+    // What a presigned `git lfs push` leaves behind: the bytes, no media type.
+    objects.set(key, { body: Buffer.alloc(3000, 7), contentType: 'application/octet-stream' })
+    try {
+      const result = await offloadArtifactMedia({
+        contextDir: dir,
+        sourceDir: dir,
+        projectId: 'proj-1',
+        store,
+        logger: { log: () => {}, warn: () => {} },
+      })
+      // The pod serves the object's own metadata, so the type and the caching
+      // policy has to be right on the object, not only in the response.
+      expect(result.restamped).toBe(1)
+      expect(result.reused).toBe(0)
+      expect(objects.get(key)?.contentType).toBe('video/mp4')
+      expect(objects.get(key)?.cacheControl).toBe('no-cache')
+      expect(commands).toContain('CopyObjectCommand')
+      // A re-stamp copies server-side; it never re-uploads the bytes.
+      expect(commands.filter((c) => c === 'PutObjectCommand').length).toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * An oid is ONE object, and the pod serves that object's own `Cache-Control`
+   * (a length-known store body takes no per-response headers), so every path
+   * referencing it has to agree on one policy. Per-path stamping let the last
+   * writer win, which put a year-long `immutable` on a stable URL.
+   */
+  const seedDistOnly = () => {
+    dir = mkdtempSync(join(tmpdir(), 'shogo-offload-'))
+    git(['init', '--quiet'])
+    writeFileSync(join(dir, 'README.md'), '# demo\n')
+    mkdirSync(join(dir, 'dist', 'assets'), { recursive: true })
+  }
+
+  const mediaBytes = () => Buffer.alloc(PUBLISH_DIST_OFFLOAD_MIN_BYTES + 32, 3)
+
+  it('stamps the weakest policy when a hashed and a stable path share one object', async () => {
+    seedDistOnly()
+    const bytes = mediaBytes()
+    writeFileSync(join(dir, 'dist', 'About-Us.png'), bytes)
+    writeFileSync(join(dir, 'dist', 'assets', 'About-Us-abcdef12.png'), bytes)
+    const { store, objects } = fakeStore()
+    const oid = createHash('sha256').update(bytes).digest('hex')
+    const key = `proj-1/lfs/objects/${oid.slice(0, 2)}/${oid.slice(2, 4)}/${oid}`
+    try {
+      const result = await offloadArtifactMedia({
+        contextDir: dir,
+        sourceDir: dir,
+        projectId: 'proj-1',
+        store,
+        logger: { log: () => {}, warn: () => {} },
+      })
+      // Two pointers, one object — uploaded once, not twice.
+      expect(result.pointers).toBe(2)
+      expect(result.uploaded).toBe(1)
+      expect([...objects.keys()]).toEqual([key])
+      // `/About-Us.png` can change on the next publish, so the shared object
+      // must not be immutable even though its hashed twin is.
+      expect(objects.get(key)?.cacheControl).toBe('no-cache')
+      expect(objects.get(key)?.contentType).toBe('image/png')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps an object immutable when every path referencing it is hashed', async () => {
+    seedDistOnly()
+    const bytes = mediaBytes()
+    writeFileSync(join(dir, 'dist', 'assets', 'hero-abcdef12.png'), bytes)
+    writeFileSync(join(dir, 'dist', 'assets', 'hero-12345678.png'), bytes)
+    const { store, objects } = fakeStore()
+    try {
+      const result = await offloadArtifactMedia({
+        contextDir: dir,
+        sourceDir: dir,
+        projectId: 'proj-1',
+        store,
+        logger: { log: () => {}, warn: () => {} },
+      })
+      expect(result.uploaded).toBe(1)
+      expect([...objects.values()][0]?.cacheControl).toBe('public, max-age=31536000, immutable')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('downgrades an immutable object once a stable path serves the same bytes', async () => {
+    seedDistOnly()
+    const bytes = mediaBytes()
+    writeFileSync(join(dir, 'dist', 'About-Us.png'), bytes)
+    const { store, objects, commands } = fakeStore()
+    const oid = createHash('sha256').update(bytes).digest('hex')
+    const key = `proj-1/lfs/objects/${oid.slice(0, 2)}/${oid.slice(2, 4)}/${oid}`
+    // Stamped by an earlier publish that only referenced the hashed copy.
+    objects.set(key, { body: bytes, contentType: 'image/png', cacheControl: 'public, max-age=31536000, immutable' })
+    try {
+      const result = await offloadArtifactMedia({
+        contextDir: dir,
+        sourceDir: dir,
+        projectId: 'proj-1',
+        store,
+        logger: { log: () => {}, warn: () => {} },
+      })
+      expect(result.restamped).toBe(1)
+      expect(objects.get(key)?.cacheControl).toBe('no-cache')
+      expect(commands).toContain('CopyObjectCommand')
+      // A metadata re-stamp never re-uploads the bytes.
+      expect(commands).not.toContain('PutObjectCommand')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('fails with a named error rather than ship a pointer with no bytes behind it', async () => {
+    seed()
+    const broken = {
+      bucket: 'workspaces',
+      client: {
+        async send(command: any) {
+          if (command.constructor.name === 'HeadObjectCommand') {
+            const err: any = new Error('NotFound')
+            err.name = 'NotFound'
+            err.$metadata = { httpStatusCode: 404 }
+            throw err
+          }
+          throw new Error('AccessDenied')
+        },
+      },
+    }
+    try {
+      await expect(
+        offloadArtifactMedia({
+          contextDir: dir,
+          sourceDir: dir,
+          projectId: 'proj-1',
+          store: broken,
+          logger: { log: () => {}, warn: () => {} },
+        }),
+      ).rejects.toThrow(/lfs_object_missing/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
