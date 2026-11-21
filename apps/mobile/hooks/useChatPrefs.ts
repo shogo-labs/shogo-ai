@@ -80,8 +80,19 @@ export function useUserStatus(workspaceId: string | null | undefined, userId: st
 const settingsStore = new Map<string, ChatSettings>()
 const settingsListeners = new Set<(workspaceId: string) => void>()
 
+/**
+ * Every reader assumes `keywords` is an array. A save made before the first
+ * load (the optimistic merge starts from `{}`), a partial `settings.changed`
+ * event or an older server can hand over settings without it, and
+ * `settings.keywords.join` then crashed the Chat preferences tab (Sentry
+ * SHOGO-ANDROID-13/20).
+ */
+export function normalizeChatSettings(next: ChatSettings): ChatSettings {
+  return Array.isArray(next?.keywords) ? next : { ...next, keywords: [] }
+}
+
 function publishSettings(workspaceId: string, next: ChatSettings) {
-  settingsStore.set(workspaceId, next)
+  settingsStore.set(workspaceId, normalizeChatSettings(next))
   settingsListeners.forEach((l) => l(workspaceId))
 }
 

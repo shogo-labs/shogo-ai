@@ -91,3 +91,45 @@ describe('GET /conversation-messages/:id', () => {
     expect(JSON.stringify(res.json)).not.toContain('qa70-secret')
   })
 })
+
+describe('GET /conversation-messages?ids= (SHO-483: one request for every quote on a page)', () => {
+  async function postIn(name: string, text: string) {
+    const created = await call(seed.member, 'POST', `/workspaces/${seed.workspaceId}/conversations`, { name })
+    expect(created.status).toBe(201)
+    const conversationId = created.json.conversation.id
+    const posted = await call(seed.member, 'POST', `/conversations/${conversationId}/messages`, {
+      text,
+      clientMsgId: crypto.randomUUID(),
+    })
+    expect(posted.status).toBe(201)
+    return { conversationId, messageId: posted.json.message.id as string }
+  }
+
+  test('answers several messages, in the order asked, each labelled with its channel', async () => {
+    const a = await postIn('qa483-batch-a', 'first')
+    const b = await postIn('qa483-batch-b', 'second')
+
+    const res = await call(seed.member, 'GET', `/conversation-messages?ids=${b.messageId},${a.messageId},${b.messageId}`)
+    expect(res.status).toBe(200)
+    expect(res.json.messages.map((m: any) => m.id)).toEqual([b.messageId, a.messageId])
+    expect(res.json.messages[0].conversation).toMatchObject({ id: b.conversationId, name: 'qa483-batch-b' })
+    expect(res.json.missing).toEqual([])
+  })
+
+  test('a message the reader cannot see, or that does not exist, is only listed as missing', async () => {
+    const hidden = await postIn('qa483-batch-secret', 'internal only')
+    const ghost = crypto.randomUUID()
+
+    const res = await call(seed.outsider, 'GET', `/conversation-messages?ids=${hidden.messageId},${ghost}`)
+    expect(res.status).toBe(200)
+    expect(res.json.messages).toEqual([])
+    expect(res.json.missing).toEqual([hidden.messageId, ghost])
+    expect(JSON.stringify(res.json)).not.toContain('qa483-batch-secret')
+  })
+
+  test('refuses an unbounded list and an anonymous caller', async () => {
+    const ids = Array.from({ length: 51 }, () => crypto.randomUUID()).join(',')
+    expect((await call(seed.member, 'GET', `/conversation-messages?ids=${ids}`)).status).toBe(400)
+    expect((await call(null, 'GET', `/conversation-messages?ids=${crypto.randomUUID()}`)).status).toBe(401)
+  })
+})

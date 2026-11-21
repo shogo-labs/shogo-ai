@@ -108,6 +108,8 @@ mock.module('expo-secure-store', () => ({
 }))
 mock.module('@better-auth/expo/client', () => ({
   expoClient: () => ({}),
+  getSetCookie: (_header: string, prev?: string) => prev ?? '{}',
+  normalizeCookieName: (name: string) => name.replace(/:/g, '_'),
 }))
 mock.module('expo-modules-core', () => ({
   EventEmitter: class {

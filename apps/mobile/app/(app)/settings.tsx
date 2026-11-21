@@ -171,7 +171,7 @@ import { useNotificationPermission } from "../../lib/notifications/useNotificati
 import type { NotificationPermissionState } from "../../lib/notifications/chat-notifier";
 import { useRequireBiometricApproval } from "../../lib/approval-lock";
 import { useDualPlan } from "../../lib/dual-plan-preference";
-import { openExternalLink } from "../../lib/open-external-link";
+import { openDownloadUrl, openExternalLink } from "../../lib/open-external-link";
 import { isCloudWorkspace } from "../../lib/workspace-route";
 
 const latestAnnouncedRelease = whatsNewCatalog.find((release) => release.announce);
@@ -2467,12 +2467,7 @@ const PeopleTab = observer(function PeopleTab() {
 
   const handleExportMembersCsv = () => {
     if (!currentWorkspace?.id) return;
-    const url = exportCsvUrl;
-    if (typeof window !== "undefined") {
-      window.open(url, "_blank", "noopener");
-    } else {
-      openExternalLink(url);
-    }
+    openDownloadUrl(exportCsvUrl);
   };
 
   return (

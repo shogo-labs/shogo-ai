@@ -1262,6 +1262,14 @@ export function teamChatApi() {
     async message(messageId: string): Promise<ChatMessage> {
       return (await http.get<{ message: ChatMessage }>(msg(messageId))).data.message
     },
+    /**
+     * Several messages in one request (quote cards). A message the viewer may
+     * not read is only listed in `missing`, the same neutral answer as a 404.
+     */
+    async messagesById(messageIds: string[]): Promise<{ messages: ChatMessage[]; missing: string[] }> {
+      const q = new URLSearchParams({ ids: messageIds.join(',') })
+      return (await http.get<{ messages: ChatMessage[]; missing: string[] }>(`/api/conversation-messages?${q}`)).data
+    },
     /** What a file is, for the viewer. Never redirects to storage. */
     async fileMeta(
       attachmentId: string,
