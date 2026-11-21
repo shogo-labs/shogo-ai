@@ -1090,6 +1090,12 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                     {deletePreview.chatCount} chats
                   </Text>
                 )}
+                {deletePreview.bucketBytes > 0 && (
+                  <Text className="text-xs text-muted-foreground">
+                    {formatBytes(deletePreview.bucketBytes)} of that is project bucket media
+                    (uploaded files, not repo content).
+                  </Text>
+                )}
                 {deletePreview.projects.some((project) => project.folderLinked) && (
                   <Text className="text-xs text-muted-foreground">
                     Folder-linked projects keep their own files on disk.
