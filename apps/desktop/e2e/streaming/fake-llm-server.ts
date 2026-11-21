@@ -35,7 +35,7 @@
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 
-export type Script = 'long' | 'hold' | 'tool' | 'bg' | 'plain'
+export type Script = 'long' | 'hold' | 'tool' | 'bg' | 'permission' | 'plain'
 
 /** One request the app made to the model. */
 export interface FakeTurn {
@@ -88,7 +88,7 @@ export interface RequestMessageDigest {
 }
 
 interface Marker {
-  script: 'long' | 'hold' | 'tool' | 'bg'
+  script: 'long' | 'hold' | 'tool' | 'bg' | 'permission'
   tag: string
   n: number
   ms: number
@@ -109,7 +109,7 @@ interface Marker {
 
 // Values may contain `|` so a `bg` marker can script a real pipeline
 // (`cmd=false_|_cat`), which is the shape SHO-141 has to judge.
-const MARKER = /\[\[e2e:(long|hold|tool|bg)((?::[a-zA-Z]+=[\w./|-]+)*)\]\]/
+const MARKER = /\[\[e2e:(long|hold|tool|bg|permission)((?::[a-zA-Z]+=[\w./|-]+)*)\]\]/
 
 /** Tool the fake model calls. `read_file` works on a missing path too: an error result still continues the turn. */
 const TOOL_PREFERENCE = ['read_file', 'list_files', 'ls']
@@ -128,7 +128,7 @@ const toolArgs = (_tag: string, round: number, path = 'AGENTS.md', mode?: 'same'
 }
 
 export function marker(
-  script: 'long' | 'hold' | 'tool' | 'bg',
+  script: 'long' | 'hold' | 'tool' | 'bg' | 'permission',
   tag: string,
   n: number,
   options: {
@@ -181,10 +181,20 @@ function parseMarker(text: string): Marker | null {
     tag: params.tag ?? 'x',
     n: Number(params.n ?? 100),
     ms: Number(params.ms ?? 10),
-    rounds: script === 'tool' ? Math.max(1, Number(params.rounds ?? 1)) : script === 'bg' ? 1 : 0,
+    rounds:
+      script === 'tool' || script === 'permission'
+        ? Math.max(1, Number(params.rounds ?? 1))
+        : script === 'bg'
+          ? 1
+          : 0,
     holdAt: script === 'hold' ? 0 : params.holdAt !== undefined ? Number(params.holdAt) : null,
     gap: Number(params.gap ?? 0),
     ...(script === 'bg' ? { cmd: (params.cmd ?? 'sleep_2').replace(/_/g, ' ') } : {}),
+    ...(script === 'permission'
+      ? {
+          cmd: (params.cmd ?? 'chmod_0644_e2e-approval-probe.txt').replace(/_/g, ' '),
+        }
+      : {}),
     ...(params.path ? { path: params.path } : {}),
     ...(script === 'tool' && params.same === '1' ? { same: true } : {}),
     ...(script === 'tool' && params.empty === '1' ? { empty: true } : {}),
@@ -483,7 +493,12 @@ export class FakeLlmServer {
 
     if (round < parsed.rounds) {
       const background = parsed.script === 'bg'
-      const name = background
+      // A `permission` turn calls `exec` with a command that is deliberately NOT
+      // on the runtime's shell allowlist, so balanced mode has to ask a person
+      // before it runs — the only way to get `data-permission-request` out of a
+      // scripted model.
+      const gated = parsed.script === 'permission'
+      const name = background || gated
         ? (toolNames.includes('exec') ? 'exec' : undefined)
         : TOOL_PREFERENCE.find((n) => toolNames.includes(n))
       if (name) {
@@ -502,7 +517,9 @@ export class FakeLlmServer {
                   args: JSON.stringify(
                     background
                       ? { command: parsed.cmd, background: true }
-                      : toolArgs(parsed.tag, round, parsed.path, mode),
+                      : gated
+                        ? { command: parsed.cmd, background: false }
+                        : toolArgs(parsed.tag, round, parsed.path, mode),
                   ),
                 },
               ]

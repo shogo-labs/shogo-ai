@@ -50,5 +50,11 @@ export default defineConfig({
     actionTimeout: 20_000,
     navigationTimeout: 60_000,
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } } }],
+  // The card asks for both surfaces: the studio at a desktop size, and the same
+  // workspace opened on a phone (a phone is where "it only shows after a
+  // refresh" is least visible, because a person scrolls instead of reloading).
+  projects: [
+    { name: "chromium", use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } } },
+    { name: "phone", use: { ...devices["Pixel 7"] } },
+  ],
 })

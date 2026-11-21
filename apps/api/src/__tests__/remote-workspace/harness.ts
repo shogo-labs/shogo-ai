@@ -191,11 +191,12 @@ export async function startRemoteWorkspace(): Promise<RemoteWorkspace> {
   // Both processes sign and verify with the same secret: a `share_file` link is
   // minted on one side and served on the other (SHO-488, group 6).
   process.env.BETTER_AUTH_SECRET = CLOUD_AUTH_SECRET
+  const redisUrl = process.env.TEST_REDIS_URL || process.env.REDIS_URL!
   const llm = new FakeLlmServer()
   await llm.start(0)
   const cloud = await startCloud({
     pgServerUrl: process.env.CHANNELS_TEST_PG_URL!,
-    redisUrl: process.env.TEST_REDIS_URL || process.env.REDIS_URL!,
+    redisUrl,
   })
   const machine = await pairMachine(cloud.base, {
     instanceName: `vm-${Math.random().toString(36).slice(2, 6)}`,
@@ -222,6 +223,7 @@ export async function startRemoteWorkspace(): Promise<RemoteWorkspace> {
     await machine.stop().catch(() => {})
     await cloud.stop().catch(() => {})
     await llm.stop().catch(() => {})
+    await clearChatSlots(redisUrl, [machine.cloudWorkspaceId, machine.machineWorkspaceId])
   }
 
   const cloudUserId = await sessionUserId(cloud.base, machine.cookies)
@@ -296,6 +298,26 @@ export async function startRemoteWorkspace(): Promise<RemoteWorkspace> {
     },
     logs,
     stop,
+  }
+}
+
+/**
+ * The reply-slot holders (`chat:slots:<workspaceId>`, `agent-reply-slots.ts`)
+ * outlive the processes that wrote them, so every run left keys behind in a
+ * shared Redis. `redis-cli` rather than a client: the harness imports no Redis
+ * library, and a missing binary simply means there was nothing to clean.
+ */
+async function clearChatSlots(redisUrl: string, workspaceIds: string[]): Promise<void> {
+  for (const id of workspaceIds) {
+    if (!id) continue
+    try {
+      Bun.spawnSync(['redis-cli', '-u', redisUrl, 'DEL', `chat:slots:${id}`], {
+        stdout: 'ignore',
+        stderr: 'ignore',
+      })
+    } catch {
+      /* no redis-cli on this machine: nothing to clean up from here */
+    }
   }
 }
 

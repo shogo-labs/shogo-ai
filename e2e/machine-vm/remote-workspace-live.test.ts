@@ -104,8 +104,9 @@ async function windowSurvived(page: Page): Promise<boolean> {
 // channel never paints the message. Not a reload in the way: the window flag is
 // still set and the seeded messages were on screen the whole time. That is the
 // "it only shows up after a refresh" bug this layer exists to catch, so the case
-// is recorded here as `fixme` rather than deleted, and filed on the card.
-test.fixme("a message sent on the machine appears in the open cloud channel, with no reload", async ({ page }) => {
+// runs as `test.fail`: it goes red the moment someone fixes the channel view,
+// and until then the failure names the behaviour that is missing.
+test.fail("a message sent on the machine appears in the open cloud channel, with no reload", async ({ page }) => {
   const seeded = state.seeds.machine
   await openMachineWorkspace(page)
   await page.goto(`/c/${seeded.channelId}`, { waitUntil: "domcontentloaded" })

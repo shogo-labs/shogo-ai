@@ -111,4 +111,33 @@ describeIfInfra('remote workspace · files', () => {
     expect(download.status).toBe(200)
     expect(await download.text()).toBe(content)
   }, 180_000)
+
+  // Known gap, measured while writing this file: the hosted conversation's
+  // membership row is the mirrored copy, so the upload is refused before the
+  // bytes ever reach the machine (`canPost`/`threadReply` answers 403 on the
+  // desktop side). The requirement stays asserted: a channel attachment
+  // uploaded from the cloud has to land where the agent that reads the channel
+  // can see it. `test.failing` so it goes red when the membership follows the
+  // conversation across the machine.
+  test.failing(
+    'hosted · a channel attachment uploaded from the cloud is stored for the agent [upload refused with 403]',
+    async () => {
+      const t = target('hosted')
+      const content = `attachment ${uniq('canary')}`
+      const form = new FormData()
+      form.set('file', new File([content], 'sho488-canary.txt', { type: 'text/plain' }))
+      const res = await fetch(
+        `${t.base}/api/conversations/${encodeURIComponent(t.seed.channelId)}/attachments`,
+        { method: 'POST', headers: { cookie: t.cookie, origin: t.base }, body: form },
+      )
+      const text = await res.text().catch(() => '')
+      expect(res.status, `upload answered ${res.status}: ${text.slice(0, 300)}`).toBeLessThan(300)
+      const stored = text ? JSON.parse(text) : {}
+      expect(
+        stored?.attachment?.id ?? stored?.id ?? stored?.file?.id,
+        `no stored attachment in ${text.slice(0, 300)}`,
+      ).toBeTruthy()
+    },
+    180_000,
+  )
 })

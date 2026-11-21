@@ -164,8 +164,13 @@ describeIfInfra('remote workspace · the workspace chat', () => {
         }
       }, 240_000)
 
-      test('rejoining a running turn over /stream streams it live, not after it ends', async () => {
-        const t = target(name)
+      /**
+       * Rejoin a running turn and require the first bytes to land while the
+       * model is still producing. If the proxy hop buffered the whole body, the
+       * headers only arrive once every token has been produced — the window
+       * shows nothing until the turn is already over.
+       */
+      const rejoinMustStream = async (t: Target, name: string): Promise<void> => {
         const n = 120
         const tag = `r${name.slice(0, 2)}${Date.now() % 100_000}`
         const turn = startTurn(t, t.seed.workspaceChatId, `Long ${marker('long', tag, n, { ms: 60 })}`)
@@ -182,34 +187,45 @@ describeIfInfra('remote workspace · the workspace chat', () => {
           ])
           expect('timeout' in (first as any), 'the rejoin sent nothing within 20 s').toBe(false)
           const elapsed = Date.now() - started
-          // The rejoin replays the turn as it is produced: its first bytes land
-          // while the model is still going. If the proxy hop buffered the whole
-          // body, the headers only arrive once every token has been produced —
-          // the window shows nothing until the turn is already over.
           const produced = llm.sentAt(tag).length
-          if (name === 'hosted') {
-            // Known gap, asserted as it behaves today: the host tunnel buffers a
-            // proxied resume, so the first bytes only arrive once every token has
-            // been produced (measured ~7.0 s, 120/120). This flips red — and is
-            // the fix's own regression test — when the tunnel streams.
-            expect(
-              produced,
-              `hosted resume still buffered: first bytes after ${elapsed} ms, ${produced}/${n} produced`,
-            ).toBe(n)
-          } else {
-            expect(
-              produced,
-              `first bytes after ${elapsed} ms, with ${produced}/${n} markers already produced`,
-            ).toBeLessThan(n)
-          }
+          expect(
+            produced,
+            `first bytes after ${elapsed} ms, with ${produced}/${n} markers already produced` +
+              (produced >= n ? ' — the rejoin was buffered until the turn ended' : ''),
+          ).toBeLessThan(n)
           await reader.cancel().catch(() => {})
         } finally {
           llm.release(tag)
           await bodyOf(await turn.catch((e) => new Response(String(e))))
         }
-      }, 240_000)
+      }
 
-      test('stopping a turn from here ends it', async () => {
+      if (name === 'hosted') {
+        // Known gap: the host tunnel buffers a proxied resume, so the first
+        // bytes only arrive once every token has been produced (measured ~7.0 s
+        // with 120/120 markers). `test.failing` because the assertion is the
+        // behaviour the card requires: the day the tunnel streams, this goes
+        // red and the marker flips to `test`.
+        test.failing(
+          'rejoining a running turn over /stream streams it live, not after it ends [host tunnel buffers]',
+          () => rejoinMustStream(target(name), name),
+          240_000,
+        )
+      } else {
+        test(
+          'rejoining a running turn over /stream streams it live, not after it ends',
+          () => rejoinMustStream(target(name), name),
+          240_000,
+        )
+      }
+
+      // Known gap (no product change on this card — AC6): `POST /chat/stop`
+      // forwards the caller's `sessionId`, while the runtime resolves a stop from
+      // `chatSessionId`/`X-Chat-Session-Id`. The runtime answers 400 and the route
+      // wraps it in a 200, so Stop looks like it worked and the turn streams to
+      // the end. `test.failing` keeps the requirement asserted: it goes red when
+      // the route propagates the refusal, and the marker flips to `test`.
+      test.failing('stopping a turn from here ends it [stop answers 200 around the runtime 400]', async () => {
         const t = target(name)
         const tag = `x${name.slice(0, 2)}${Date.now() % 100_000}`
         const turn = await startTurn(t, t.seed.workspaceChatId, `Stop me ${marker('long', tag, 400, { ms: 50 })}`)
@@ -245,7 +261,9 @@ describeIfInfra('remote workspace · the workspace chat', () => {
           90_000,
           500,
         )
-      }, 240_000)
+        },
+        240_000,
+      )
 
       test('a message queued mid-turn runs after it and survives a refetch', async () => {
         const t = target(name)
