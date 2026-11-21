@@ -14,13 +14,12 @@
  * Viewport is the card's 390×844. Screenshots of every surface land in
  * `test-results/qa-sho490/` for review.
  *
- * Not covered here, and why: `/(app)/people/[userId]` and `/(app)/agents/[key]`
- * both gate on `useActiveWorkspace()`, which stays empty on a hard deep link, so
- * the page spins forever however it is opened (pre-existing, both route files
- * are untouched by SHO-490, and no in-app tap on phone web reaches them). The
- * profile *pane* is side-pane-only (`resolvePanes`: `sidePane && !!profileId`),
- * so it is the wide-web side pane that still renders at ≥1024 and is asserted
- * below.
+ * Not covered here, and why: the profile *pane* opened from a conversation
+ * (`?profile=`) is side-pane-only (`resolvePanes`: `sidePane && !!profileId`),
+ * so on a phone there is no pane to check and it is the wide-web side pane that
+ * is asserted below. The full-screen `/people/[userId]` and `/agents/[key]`
+ * pages *are* covered, each opened by URL in a fresh context — the case where
+ * nothing had loaded their workspace list when they mounted.
  */
 import { mkdirSync } from "fs"
 import { resolve } from "path"
@@ -208,6 +207,26 @@ test.describe("Phone navigation standard: one floating glass header", () => {
     // The glass circle paints the shared backdrop; the plain arrow did not.
     await expect(back.locator(":scope > div").first()).toHaveCount(1)
     await shot(page, "08-starred")
+  })
+
+  test("a person's profile wears the glass header on a cold deep link (AC2)", async ({ page }) => {
+    await page.goto(`/people/${seed.dmPeerId}`)
+    await expect(page.getByTestId("user-profile-screen")).toBeVisible({ timeout: 60_000 })
+    await expect(header(page)).toBeVisible()
+    await expect(pill(page)).toContainText("Profile")
+    await expectFloats(page, "person profile")
+    await expectGlassCircle(page.getByRole("button", { name: "Back" }).first(), "the person profile's Back")
+    await shot(page, "12-person-profile")
+  })
+
+  test("an agent's profile wears the glass header on a cold deep link (AC2)", async ({ page }) => {
+    await page.goto("/agents/ws")
+    await expect(page.getByTestId("agent-profile-screen")).toBeVisible({ timeout: 60_000 })
+    await expect(header(page)).toBeVisible()
+    await expect(pill(page)).not.toBeEmpty()
+    await expectFloats(page, "agent profile")
+    await expectGlassCircle(page.getByRole("button", { name: "Back" }).first(), "the agent profile's Back")
+    await shot(page, "13-agent-profile")
   })
 
   test("wide web keeps the side-pane rows and gets no phone header (AC4)", async ({ page }) => {
