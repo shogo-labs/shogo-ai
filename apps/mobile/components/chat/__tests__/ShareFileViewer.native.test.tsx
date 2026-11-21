@@ -13,9 +13,6 @@ import { createReactNativeMock } from "../../../test/react-native-mock"
 import * as lucideStub from "../../../test/stubs/lucide-react-native"
 
 mock.module("lucide-react-native", () => lucideStub)
-mock.module("@shogo/shared-ui/primitives", () => ({
-  cn: (...args: unknown[]) => args.filter(Boolean).join(" "),
-}))
 mock.module("../../../lib/agent-image-source", () => ({
   useAgentImageSource: (uri: string | null) => (uri ? { uri } : null),
 }))
@@ -29,6 +26,13 @@ mock.module("react-native", () =>
     ),
   } as never),
 )
+
+// The viewer's close control is the shared glass button. Its backdrop samples
+// the screen through expo-blur / expo-glass-effect, which this suite is not
+// about: a null backdrop keeps the glass chrome without the native view.
+mock.module(resolve(import.meta.dir, "../../ui/LiquidGlassBackdrop"), () => ({
+  LiquidGlassBackdrop: () => null,
+}))
 
 mock.module("../../chat/MarkdownText", () => ({
   MarkdownText: ({ children }: { children: string }) => <div data-testid="markdown-body">{children}</div>,
@@ -149,5 +153,33 @@ describe("a PDF in the viewer on a phone", () => {
 
     await waitFor(() => expect(container.querySelector("[data-uri]")).toBeTruthy())
     expect(calls[0]!.headers.get("range")).toBe("bytes=0-0")
+  })
+})
+
+describe("a large binary file on a phone (SHO-483)", () => {
+  // Sentry SHOGO-ANDROID-1K: "Failed to allocate a 100724396 byte allocation"
+  // opening a 96 MB file from chat; SHOGO-IOS-2: the RAM watchdog kill.
+  test("a zip is probed for its size, never downloaded into memory", async () => {
+    const calls: Array<{ headers: Headers }> = []
+    const blob = mock(() => Promise.reject(new Error("the body must not be downloaded")))
+    globalThis.fetch = mock(async (_input: any, init?: RequestInit) => {
+      calls.push({ headers: new Headers(init?.headers) })
+      const response = new Response("P", {
+        status: 206,
+        headers: { "content-type": "application/zip", "content-range": "bytes 0-0/100724396" },
+      })
+      response.blob = blob as unknown as typeof response.blob
+      return response
+    }) as unknown as typeof fetch
+
+    const { findByText } = render(
+      <ShareFileView target={{ kind: "share", href: "/api/f/zip", name: "renders.zip" }} />,
+    )
+
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0))
+    expect(calls[0]!.headers.get("range")).toBe("bytes=0-0")
+    expect(blob).not.toHaveBeenCalled()
+    // The size still comes through from the probe.
+    expect(await findByText(/96(\.\d)? MB/)).toBeTruthy()
   })
 })

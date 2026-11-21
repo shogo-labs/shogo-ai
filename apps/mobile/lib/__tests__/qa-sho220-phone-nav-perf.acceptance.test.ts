@@ -135,8 +135,13 @@ describe('project screens stay below the status bar', () => {
 
   test('the full-screen surface route pads itself, the side pane does not', () => {
     const view = read('components/project/ProjectSurfaceView.tsx')
-    expect(view).toMatch(/padTopInset \? \{ paddingTop: insets\.top \}/)
-    expect(read('app/(app)/project-surface/[id].tsx')).toMatch(/\bpadTopInset\b/)
+    // The route measures the glass header and hands the surface its height, so
+    // the content starts below the glass instead of under it.
+    expect(view).toMatch(/headerHeight \? \{ paddingTop: headerHeight \}/)
+    expect(read('app/(app)/project-surface/[id].tsx')).toMatch(/headerHeight=\{headerHeight\}/)
+    // Exactly one thing pads for the status bar: the floating header itself.
+    // A second inset would push the content down twice.
+    expect(view).not.toMatch(/padTopInset/)
     expect(read('components/team-chat/ProjectSidePane.tsx')).not.toMatch(/padTopInset/)
   })
 })
@@ -192,7 +197,10 @@ describe('the project header lines up on a phone', () => {
   })
 
   test('its round buttons and the chat/more pill are liquid glass, like the rest of the chrome', () => {
-    expect(read('components/project/topbar/native/NativeCircleButton.tsx')).toMatch(/<LiquidGlassBackdrop/)
+    // One glass circle for the whole app: the project header draws the same
+    // GlassButton the DM chrome and every pushed screen use.
+    expect(read('components/project/topbar/native/NativeCircleButton.tsx')).toMatch(/<GlassButton/)
+    expect(read('components/team-chat/FloatingChrome.tsx')).toMatch(/<LiquidGlassBackdrop/)
     expect(header).toMatch(/project-native-chat-more-cluster[\s\S]*?<LiquidGlassBackdrop/)
     // Buttons inside a sheet stay flat rather than stacking glass on glass.
     expect(header).toMatch(/<NativeCircleButton\s+flat/)
@@ -402,9 +410,13 @@ describe('a project that is still loading keeps its header on a phone', () => {
   const layout = read('app/(app)/projects/[id]/_layout.tsx')
 
   test('the loading page shows Back and the project name above the spinner', () => {
-    expect(layout).toMatch(
-      /Platform\.OS !== "web" \? \(\s*<View className="bg-background" style=\{\{ paddingTop: insets\.top \}\}>\s*<ProjectSurfaceHeader projectId=\{projectId\} \/>/,
-    )
+    // The route mounts the same glass header every pushed screen uses; it
+    // renders nothing off a phone, so no platform gate is needed here.
+    expect(layout).toMatch(/<ProjectSurfaceHeader projectId=\{projectId\} \/>/)
+    const header = read('components/project/ProjectSurfaceHeader.tsx')
+    expect(header).toMatch(/<PhoneScreenHeader/)
+    expect(header).toMatch(/backTestID="project-surface-back"/)
+    expect(header).toMatch(/if \(!isPhoneLayout\(width, height\)\) return null/)
   })
 })
 
@@ -454,8 +466,10 @@ describe('a project reached from its own tab bar can always be left', () => {
   })
 
   test('canvas, files and plans get a header with Back and the project name', () => {
-    expect(surfaceRoute).toMatch(/header=\{<ProjectSurfaceHeader/)
-    expect(surfaceHeader).toMatch(/testID="project-surface-back"/)
+    expect(surfaceRoute).toMatch(/header=\{\s*<ProjectSurfaceHeader/)
+    // The control keeps its testID, now through the shared glass header's slot.
+    expect(surfaceHeader).toMatch(/backTestID="project-surface-back"/)
+    expect(read('components/layout/PhoneScreenHeader.tsx')).toMatch(/testID=\{backTestID\}/)
     // Back pops to where the project was opened from, and falls back to Home.
     expect(surfaceHeader).toMatch(/router\.canGoBack\(\)\) router\.back\(\)/)
     expect(surfaceHeader).toMatch(/router\.replace\("\/\(app\)\/home"/)

@@ -280,7 +280,19 @@ export class HttpClient {
   private async parseResponse<T>(response: Response): Promise<T> {
     const contentType = response.headers.get('content-type')
     if (contentType?.includes('application/json')) {
-      return response.json() as Promise<T>
+      // A 204, a proxy that drops the body, or an error answered with an empty
+      // `application/json` body used to reach `response.json()` and surface as
+      // "JSON Parse error: Unexpected end of input" instead of the real status
+      // (Sentry SHOGO-ANDROID-1B).
+      const text = await response.text()
+      if (!text.trim()) return null as T
+      try {
+        return JSON.parse(text) as T
+      } catch (error) {
+        // An error page is still an error: let the status decide below.
+        if (!response.ok) return text as unknown as T
+        throw error
+      }
     }
     return response.text() as unknown as T
   }

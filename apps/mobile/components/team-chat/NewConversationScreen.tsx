@@ -5,10 +5,9 @@
  * a modal. Wide screens keep `NewConversationModal`; both render the same
  * `NewMessagePicker` / `NewChannelForm`.
  */
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native'
+import { ActivityIndicator, KeyboardAvoidingView, Platform, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { ChevronLeft } from 'lucide-react-native'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { invalidateConversationList, useMentionables, useMyUserId } from '../../hooks/useTeamChat'
@@ -17,6 +16,7 @@ import { conversationHref } from './ConversationRows'
 import { NewChannelForm } from './NewChannelForm'
 import { NEW_CONVERSATION_TITLES, type NewConversationMode } from './NewConversationModal'
 import { NewMessagePicker } from './NewMessagePicker'
+import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../layout/PhoneScreenHeader'
 
 export function parseNewConversationMode(value: string | string[] | undefined): NewConversationMode {
   const mode = Array.isArray(value) ? value[0] : value
@@ -26,6 +26,8 @@ export function parseNewConversationMode(value: string | string[] | undefined): 
 export function NewConversationScreen({ mode }: { mode: NewConversationMode }) {
   const router = useRouter()
   const insets = useSafeAreaInsets()
+  const header = usePhoneScreenHeaderInset()
+  const headerInset = { paddingTop: header.height }
   const workspace = useActiveWorkspace()
   const experience = useWorkspaceExperience()
   const workspaceId: string | null = experience.kind === 'team' ? workspace?.id ?? null : null
@@ -47,19 +49,16 @@ export function NewConversationScreen({ mode }: { mode: NewConversationMode }) {
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       className="flex-1 bg-background"
-      style={{ paddingTop: insets.top, paddingBottom: Math.max(insets.bottom, 8) }}
+      style={{ paddingBottom: Math.max(insets.bottom, 8) }}
       testID="new-conversation-screen"
     >
-      <View className="flex-row items-center px-2 py-2">
-        <Pressable onPress={goBack} accessibilityRole="button" accessibilityLabel="Back" hitSlop={8} className="h-11 w-11 items-center justify-center rounded-full active:bg-muted">
-          <ChevronLeft size={24} className="text-foreground" />
-        </Pressable>
-        <Text className="ml-1 flex-1 text-lg font-semibold text-foreground" accessibilityRole="header">
-          {NEW_CONVERSATION_TITLES[mode]}
-        </Text>
-      </View>
+      <PhoneScreenHeader
+        title={NEW_CONVERSATION_TITLES[mode]}
+        onBack={goBack}
+        onLayout={header.onLayout}
+      />
 
-      <View className="min-h-0 flex-1 px-4 pt-1">
+      <View className="min-h-0 flex-1 px-4 pt-1" style={headerInset}>
         {!workspaceId ? (
           experience.resolved ? (
             <Text className="mt-8 text-center text-sm text-muted-foreground">Team chat is available in team workspaces.</Text>

@@ -11,7 +11,7 @@
  * Pure module — no React / RN imports. Safe to unit-test directly.
  */
 
-import { getToolKeyArg, humanizeToolName, type ToolExecutionState } from "./types"
+import { getToolKeyArg, humanizeToolName, stringArg, type ToolExecutionState } from "./types"
 
 export type RestSep = "&&" | "||" | ";"
 
@@ -820,23 +820,23 @@ export function getToolSummary(
   switch (toolName) {
     case "Read":
     case "read_file": {
-      const path = (a.file_path ?? a.path) as string | undefined
+      const path = stringArg(a.file_path ?? a.path)
       return { verb: "Read", target: path ? basename(path) : undefined }
     }
     case "Delete": {
-      const path = (a.file_path ?? a.path) as string | undefined
+      const path = stringArg(a.file_path ?? a.path)
       return { verb: "Delete", target: path ? basename(path) : undefined }
     }
     case "Grep":
     case "grep":
     case "search": {
-      const pattern = a.pattern as string | undefined
+      const pattern = stringArg(a.pattern)
       const pretty = pattern ? prettifySearchPattern(pattern) : undefined
       return { verb: "Search for", target: pretty ? truncate(pretty, 30) : undefined }
     }
     case "Glob":
     case "glob": {
-      const pattern = (a.glob_pattern ?? a.pattern) as string | undefined
+      const pattern = stringArg(a.glob_pattern ?? a.pattern)
       return { verb: "Find files matching", target: pattern ? truncate(pattern, 30) : undefined }
     }
     case "ReadLints":
@@ -846,17 +846,17 @@ export function getToolSummary(
       return { verb: "Read lints", target: first ? basename(first) : undefined }
     }
     case "WebSearch": {
-      const term = a.search_term as string | undefined
+      const term = stringArg(a.search_term)
       return { verb: "Search the web for", target: term ? truncate(term, 40) : undefined }
     }
     case "WebFetch": {
-      const url = a.url as string | undefined
+      const url = stringArg(a.url)
       return { verb: "Fetch", target: url ? (urlHost(url) ?? truncate(url)) : undefined }
     }
     case "web": {
-      const url = a.url as string | undefined
+      const url = stringArg(a.url)
       if (url) return { verb: "Fetch", target: urlHost(url) ?? truncate(url) }
-      const query = a.query as string | undefined
+      const query = stringArg(a.query)
       return {
         verb: "Search the web for",
         target: query ? truncate(query, 40) : undefined,
@@ -867,7 +867,7 @@ export function getToolSummary(
     case "search_integrations":
     case "team_chat_search":
     case "meeting_search": {
-      const query = a.query as string | undefined
+      const query = stringArg(a.query)
       return { verb: "Search for", target: query ? truncate(query, 30) : undefined }
     }
     case "project_list":
@@ -910,7 +910,7 @@ export function getToolSummary(
     case "task_cancel":
       return { verb: "Cancel", target: a.task_id ? `task ${String(a.task_id)}` : "task" }
     case "team_chat_read": {
-      const channel = a.channel as string | undefined
+      const channel = stringArg(a.channel)
       const target = channel ? `#${channel.replace(/^#/, "")}` : undefined
       return {
         verb: "Read",
@@ -918,7 +918,7 @@ export function getToolSummary(
       }
     }
     case "member_activity": {
-      const user = a.user as string | undefined
+      const user = stringArg(a.user)
       return { verb: "Read", target: user ? `${user} activity` : undefined }
     }
     case "agent_profile_get":
@@ -971,7 +971,7 @@ export function getToolSummary(
     }
     case "Bash":
     case "exec": {
-      const command = a.command as string | undefined
+      const command = stringArg(a.command)
       if (!command) return { verb: "Run" }
       // `sleep …` in the command flips "Waiting for …" -> "Waited for …"
       // once the exec resolves; `parseShellCommand` handles that via the

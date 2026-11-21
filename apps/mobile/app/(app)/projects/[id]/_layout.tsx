@@ -3933,11 +3933,7 @@ export default observer(function ProjectLayout() {
         <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
         {/* A phone enters the project on this page, so keep the way back and
             the name on screen while it loads instead of a bare spinner. */}
-        {Platform.OS !== "web" ? (
-          <View className="bg-background" style={{ paddingTop: insets.top }}>
-            <ProjectSurfaceHeader projectId={projectId} />
-          </View>
-        ) : null}
+        <ProjectSurfaceHeader projectId={projectId} />
         <View className="flex-1 bg-background items-center justify-center px-6">
           {!showStalledRecovery && (
             <>

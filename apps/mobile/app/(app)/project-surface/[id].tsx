@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
+import { useState } from "react";
 import { useLocalSearchParams } from "expo-router";
 import {
   ProjectSurfaceView,
@@ -17,10 +18,16 @@ export default function ProjectSurfaceScreen() {
     id?: string | string[];
     surface?: string | string[];
   }>();
+  const [headerHeight, setHeaderHeight] = useState(0);
   return (
     <ProjectSurfaceView
-      padTopInset
-      header={<ProjectSurfaceHeader projectId={firstParam(params.id)} />}
+      headerHeight={headerHeight}
+      header={
+        <ProjectSurfaceHeader
+          projectId={firstParam(params.id)}
+          onHeight={setHeaderHeight}
+        />
+      }
       projectId={firstParam(params.id)}
       surface={(firstParam(params.surface) ?? "canvas") as ProjectSurface}
     />
