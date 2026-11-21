@@ -274,7 +274,7 @@ const CANVAS_ERROR_LOG_TAIL = 30;
 
 export default observer(function ProjectLayout() {
   csMark("project:layout:render");
-  const { params, preserved: preservedParams, rejectParam } = useProjectRouteParams<{
+  const params = useProjectRouteParams<{
     id: string;
     chatSessionId?: string;
     fromConversation?: string;
@@ -474,10 +474,6 @@ export default observer(function ProjectLayout() {
     chatScope: capturedChatScope,
     initialPropsSessionId,
     oneShotPresent: hasChatUrlOneShotParams(params),
-    // Keys a cold load restored (SHO-174). This hook is the only writer of the
-    // query, so it carries them: a second writer would be undone by this one on
-    // its next write, and `router.setParams` drops keys it does not pass.
-    preserved: preservedParams,
     enabled: Platform.OS === "web" && !isIdeChatEmbed,
     setParams: (next) => router.setParams(next as any),
   });
@@ -1848,13 +1844,6 @@ export default observer(function ProjectLayout() {
   // (root cause of the "chat is always fullscreen" bug).
   const [attentionTab, setAttentionTab] = useState<string | null>(null);
   const effectiveTab = attentionTab ?? previewTab;
-  // `router.setParams` drops every key it is not handed, so a write that only
-  // carries its own param erases what the arrival URL restored (SHO-174): the
-  // `navTab` write below is what used to leave a reloaded `?tab=settings` URL
-  // holding `?navTab=settings` and nothing else. Read through a ref so the
-  // effect keeps its two dependencies.
-  const preservedParamsRef = useRef(preservedParams);
-  preservedParamsRef.current = preservedParams;
   // Mirror the visible pane into a dedicated (non-consumed) route param so
   // MobileBottomNav can highlight the right tab even when the pane changed
   // via in-page controls rather than a bottom-nav tap. Deliberately a
@@ -1863,10 +1852,7 @@ export default observer(function ProjectLayout() {
   // logic — nothing else reads `navTab`.
   useEffect(() => {
     if (!projectId) return;
-    router.setParams({
-      ...preservedParamsRef.current,
-      navTab: effectiveTab,
-    } as any);
+    router.setParams({ navTab: effectiveTab } as any);
   }, [projectId, effectiveTab]);
   // Set when the user (or Agent Type switch) explicitly asks for canvas this
   // session. Stops the canvas-disabled effect and a stale `?tab=chat-fullscreen`
@@ -2787,10 +2773,6 @@ export default observer(function ProjectLayout() {
     validatedDeepLinkIdsRef.current.add(key);
 
     const fallBackToProjectChat = () => {
-      // Stop the dead id speaking: it reached the router as well as the
-      // arrival URL, so without retracting both it is re-applied on the next
-      // render and the screen stays pinned to a chat that cannot open.
-      rejectParam("chatSessionId", incoming);
       // Let the pinned/default promotion own selection again.
       pinnedSessionAppliedRef.current = false;
       setOpenChatTabIds((prev) =>
@@ -2821,7 +2803,6 @@ export default observer(function ProjectLayout() {
     store,
     setOpenChatTabIds,
     capturedChatScope,
-    rejectParam,
   ]);
 
   const handleCreateNewSession = useCallback(async () => {
