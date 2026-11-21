@@ -31,8 +31,11 @@
 
 import { spawn } from './child-process'
 import { createHash } from 'crypto'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { createWriteStream, existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
+import type { Dirent } from 'fs'
 import { join } from 'path'
+import { pipeline } from 'stream/promises'
+import { GetObjectCommand } from '@aws-sdk/client-s3'
 
 import {
   classifyLargeFiles,
@@ -562,8 +565,13 @@ export function hasLocalLfsObject(workspaceDir: string, oid: string): boolean {
   return !!p && existsSync(p)
 }
 
-/** Keep only the paths `.gitattributes` marks `filter=lfs`. */
-async function lfsTrackedPaths(workspaceDir: string, paths: string[]): Promise<Set<string>> {
+/**
+ * Keep only the paths `.gitattributes` marks `filter=lfs`.
+ *
+ * Exported for `S3Sync`, which writes those files into `project-src.tar.gz` as
+ * pointer text instead of shipping the bytes a second time (SHO-478).
+ */
+export async function lfsTrackedPaths(workspaceDir: string, paths: string[]): Promise<Set<string>> {
   const tracked = new Set<string>()
   if (!paths.length) return tracked
   const input = Buffer.from(paths.join('\0') + '\0')
@@ -911,4 +919,185 @@ export async function lfsPull(cfg: LfsRemoteConfig): Promise<boolean> {
     logger.warn(`[lfs] pull threw: ${err?.message ?? err}`)
     return false
   }
+}
+
+// ---------------------------------------------------------------------------
+// Materializing pointer files from the object store (SHO-478)
+// ---------------------------------------------------------------------------
+//
+// `project-src.tar.gz` no longer carries LFS-tracked bytes — they are already
+// stored once under `<projectId>/lfs/objects/…`, and shipping them again made
+// a 1.76 GB archive of ~15 MB of real source. The archive therefore restores
+// those paths as their pointer text, and the bytes are put back on hydrate.
+//
+// This runs in a published pod, which has no `.git` and never runs the agent,
+// so it cannot use `git lfs pull`: it walks the tree, reads only files small
+// enough to be a pointer, and streams each object straight from the store.
+
+/**
+ * The object-storage surface LFS materialization needs. Structural rather than
+ * an `S3Client` so `S3Sync` can pass the client it already has, and a test can
+ * pass a plain fake.
+ */
+export interface LfsObjectStore {
+  bucket: string
+  client: { send(command: any): Promise<any> }
+}
+
+/** One pointer blob found in the working tree. */
+export interface LfsPointerFile {
+  /** Absolute path of the file holding the pointer text. */
+  path: string
+  oid: string
+  size: number
+}
+
+export interface LfsMaterializeResult {
+  /** Pointer blobs found in the tree. */
+  pointers: number
+  /** Objects streamed into place (the file now holds its real bytes). */
+  materialized: number
+  /** Objects the store does not have, or could not be read (boot continues). */
+  missing: number
+  /** Objects whose real length disagrees with the pointer's `size`. */
+  mismatched: number
+}
+
+/** Directories the pointer walk never descends into. */
+const LFS_WALK_SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  '.shogo',
+  '.expo',
+  '.metro-cache',
+  '.expo-shared',
+  '.tmp',
+  'chat-files',
+])
+
+/** The pointer text git-lfs itself writes for an object. */
+export function lfsPointerText(oid: string, size: number): string {
+  return `${LFS_POINTER_HEADER}\noid sha256:${oid}\nsize ${size}\n`
+}
+
+/**
+ * Whether this repo has any `filter=lfs` attribute. The pointer walk is not
+ * free on a large tree, and a project that never used LFS can skip it.
+ */
+export function repoUsesLfs(workspaceDir: string): boolean {
+  try {
+    return readFileSync(join(workspaceDir, '.gitattributes'), 'utf-8').includes('filter=lfs')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Every file under `workspaceDir` whose content is an LFS pointer. Only files
+ * at or below {@link LFS_POINTER_MAX_BYTES} are read, so a media-heavy tree
+ * costs a `stat` per file and nothing more.
+ */
+export function findLfsPointerFiles(workspaceDir: string): LfsPointerFile[] {
+  const found: LfsPointerFile[] = []
+  const walk = (dir: string): void => {
+    let entries: Dirent[]
+    try {
+      entries = readdirSync(dir, { withFileTypes: true }) as Dirent[]
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (!LFS_WALK_SKIP_DIRS.has(entry.name)) walk(full)
+        continue
+      }
+      if (!entry.isFile()) continue
+      try {
+        if (statSync(full).size > LFS_POINTER_MAX_BYTES) continue
+      } catch {
+        continue
+      }
+      let text: string
+      try {
+        text = readFileSync(full, 'utf-8')
+      } catch {
+        continue
+      }
+      const ptr = parseLfsPointer(text)
+      if (ptr) found.push({ path: full, oid: ptr.oid, size: ptr.size })
+    }
+  }
+  walk(workspaceDir)
+  return found
+}
+
+/**
+ * Put the real bytes back for every LFS pointer in `workspaceDir`, streaming
+ * each object from `<projectId>/lfs/objects/…` to its path.
+ *
+ * Best-effort by design: a missing or unreadable object is logged and the boot
+ * continues, exactly like a failed `git lfs pull` would. Uses an atomic
+ * `.lfs-tmp` rename so a failed transfer never leaves a truncated media file
+ * where a pointer used to be.
+ */
+export async function materializeLfsPointersFromStore(
+  workspaceDir: string,
+  projectId: string,
+  opts: { store?: LfsObjectStore | null; logger?: Logger; concurrency?: number } = {},
+): Promise<LfsMaterializeResult> {
+  const logger = opts.logger ?? console
+  const result: LfsMaterializeResult = { pointers: 0, materialized: 0, missing: 0, mismatched: 0 }
+  const store = opts.store ?? null
+  if (!store) {
+    logger.warn('[lfs] materialize: no object store configured — LFS files stay pointers')
+    return result
+  }
+  if (!repoUsesLfs(workspaceDir)) return result
+
+  const queue = findLfsPointerFiles(workspaceDir)
+  result.pointers = queue.length
+  if (!queue.length) return result
+
+  const started = Date.now()
+  const restore = async (ptr: LfsPointerFile): Promise<void> => {
+    const tmp = `${ptr.path}.lfs-tmp`
+    try {
+      const res = await store.client.send(
+        new GetObjectCommand({ Bucket: store.bucket, Key: lfsObjectKey(projectId, ptr.oid) }),
+      )
+      if (!res?.Body) {
+        result.missing++
+        logger.warn(`[lfs] materialize: empty body for ${ptr.oid} (${ptr.path})`)
+        return
+      }
+      await pipeline(res.Body as any, createWriteStream(tmp))
+      const got = statSync(tmp).size
+      if (got !== ptr.size) {
+        result.mismatched++
+        logger.warn(`[lfs] materialize: ${ptr.path} expected ${ptr.size} bytes, store returned ${got}`)
+        rmSync(tmp, { force: true })
+        return
+      }
+      renameSync(tmp, ptr.path)
+      result.materialized++
+    } catch (err: any) {
+      result.missing++
+      rmSync(tmp, { force: true })
+      logger.warn(`[lfs] materialize: ${ptr.path} not restored (${err?.name ?? 'error'}): ${String(err?.message ?? err).slice(0, 200)}`)
+    }
+  }
+
+  const workers = Math.max(1, Math.min(opts.concurrency ?? 4, queue.length))
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      for (let next = queue.shift(); next; next = queue.shift()) await restore(next)
+    }),
+  )
+
+  logger.log(
+    `[lfs] materialize: ${result.materialized}/${result.pointers} object(s) restored in ${Date.now() - started}ms` +
+      (result.missing || result.mismatched ? ` (missing=${result.missing}, mismatched=${result.mismatched})` : ''),
+  )
+  return result
 }
