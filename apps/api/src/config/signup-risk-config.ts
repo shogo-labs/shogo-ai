@@ -115,10 +115,19 @@ export const BLOCKED_EMAIL_DOMAINS: ReadonlySet<string> = new Set([
   'rexhot.com',
   'kasturi.cloud',
   'satukataku.com',
-  // Hermes-key farm, 2026-11-20/21: ~500 accounts from residential proxies,
+  // Hermes-key farm, 2026-11-20/21: ~1,000 accounts from residential proxies,
   // each minting a key named `hermes`. Not in the vendored list (it has the
   // .com/.org/.tk/.xyz forms only).
   '10mail.info',
+  // Same farm, rotated within minutes of 10mail.info being blocked (2026-11-21).
+  'mailpwr.com',
+  'pickmail.org',
+  'mailtowin.com',
+  'maximail.vip',
+  'mimimail.me',
+  'pickmemail.com',
+  'gacormail.com',
+  'gmailmu.my.id',
 ])
 
 /**
