@@ -1736,9 +1736,21 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     const runtimeRes = await resolveOr501(c, workspaceId, attachedProjectIds, 'WorkspaceStop', runtimeExtra, auth.kind)
     if ('res' in runtimeRes) return runtimeRes.res
     try {
+      // The runtime resolves the turn from `chatSessionId` (or its
+      // X-Chat-Session-Id header) — the same rule `/agent/chat` uses. A caller
+      // that sent `sessionId` (what the web composer sends) used to be forwarded
+      // as-is, so the runtime refused with 400 and this route answered 200 with
+      // that refusal in the body: Stop looked like it worked and the turn kept
+      // streaming. Put the resolved id in the body the runtime actually reads.
+      const forwarded =
+        sessionId && parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+          ? { ...parsed, chatSessionId: sessionId }
+          : sessionId
+            ? { chatSessionId: sessionId }
+            : parsed
       const response = await fetchFromWorkspaceRuntime(workspaceId, attachedProjectIds, '/agent/stop', {
         method: 'POST',
-        body: body || '{}',
+        body: JSON.stringify(forwarded ?? {}),
       }, runtimeExtra)
       const result = await response.json()
       if (sessionId) {
@@ -1760,7 +1772,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           console.warn(`[WorkspaceChat] Failed to clear stopped chat ${sessionId}:`, error),
         )
       }
-      return c.json(result)
+      return c.json(result, response.ok ? 200 : (response.status as any))
     } catch (error: any) {
       console.error('[WorkspaceChat] Stop error:', error)
       return c.json({ success: false, error: error.message }, 500)
