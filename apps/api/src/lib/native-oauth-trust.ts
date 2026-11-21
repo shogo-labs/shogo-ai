@@ -4,13 +4,10 @@
  * Which native callback schemes Better Auth trusts, and where the Expo
  * authorization proxy may redirect (SEC-33).
  *
- * `@better-auth/expo` appends the session cookie (`?cookie=<Set-Cookie>`) to
- * any trusted non-http callback. `exp://` is a prefix, so trusting it means
- * trusting `exp://<any host>`: an attacker sends a victim a sign-in link with
- * `callbackURL=exp://attacker.example/x`, and after Google consent the API
- * redirects to the attacker's host with the session token in the query. Expo
- * Go then fetches that URL. Upstream trusts `exp://` only in development, and
- * so do we now. The app's own `shogo://` scheme stays trusted everywhere.
+ * `@better-auth/expo` appends the session cookie to any trusted non-http
+ * callback, and `exp://` is a prefix that matches any host. Upstream trusts
+ * `exp://` only in development, and so do we. The app's own `shogo://` scheme
+ * stays trusted everywhere.
  */
 
 import type { BetterAuthPlugin } from 'better-auth'
