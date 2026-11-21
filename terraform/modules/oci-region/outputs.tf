@@ -117,6 +117,16 @@ output "published_data_bucket" {
   value       = local.is_full ? module.object_storage[0].published_data_bucket : null
 }
 
+output "project_buckets_bucket" {
+  description = "Per-project object-storage bucket used by the SDK bucket API (null for Tier 2). Wire into the api ksvc as PROJECT_BUCKET."
+  value       = local.is_full ? module.object_storage[0].project_buckets_bucket : null
+}
+
+output "project_bucket_origin" {
+  description = "Read-only PAR base URL the subdomain-router Worker uses as the project-bucket CDN origin (null when publish hosting is off)."
+  value       = local.is_full ? module.object_storage[0].project_buckets_par_base_url : null
+}
+
 output "llm_captures_bucket" {
   description = "Raw LLM proxy capture archive bucket (null for Tier 2)"
   value       = local.is_full ? module.object_storage[0].llm_captures_bucket : null

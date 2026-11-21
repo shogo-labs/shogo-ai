@@ -42,6 +42,7 @@ export const MIRROR_MODELS: readonly string[] = [
   'ProjectFolder',
   'ProjectAttachment',
   'ProjectCheckpoint',
+  'ProjectBucketObject',
   'AgentConfig',
   'ProjectAgent',
   'WorkspaceAgentProfile',
