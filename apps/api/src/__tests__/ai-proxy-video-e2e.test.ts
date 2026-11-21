@@ -25,8 +25,13 @@ process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET || 'test-better-
  * `ModelDefinition` row; the DB-defined row the picker shows routes through
  * exactly the same `provider: 'openrouter'` path.
  *
- * Skipped entirely when OPENROUTER_API_KEY is not set (same convention as
- * `ai-proxy-audio-e2e.test.ts`). Each call costs about $0.0006.
+ * The last live case is the Google-direct leg (SHO-495): Carbon reaches
+ * Gemini's OpenAI-compatible endpoint with pi-ai's `image_url` +
+ * `data:video/mp4` block and describes the motion itself. It needs
+ * `GOOGLE_API_KEY` and skips without it.
+ *
+ * Skipped entirely when the provider key is not set (same convention as
+ * `ai-proxy-audio-e2e.test.ts`). Each OpenRouter call costs about $0.0006.
  *
  * Run: OPENROUTER_API_KEY=sk-or-... bun test apps/api/src/__tests__/ai-proxy-video-e2e.test.ts
  */
@@ -68,7 +73,9 @@ mock.module('../lib/project-user-context', () => ({
 import { aiProxyRoutes } from '../routes/ai-proxy'
 
 const hasOpenRouterKey = !!process.env.OPENROUTER_API_KEY
+const hasGoogleKey = !!process.env.GOOGLE_API_KEY
 const MODEL = 'openrouter:z-ai/glm-5.3-flash'
+const GOOGLE_MODEL = 'gemini-4-carbon'
 
 const FIXTURE_DIR = join(import.meta.dir, 'fixtures', 'video')
 function fixture(name: string): string | null {
@@ -224,6 +231,45 @@ describe('Video input — end-to-end (real OpenRouter)', () => {
       const lower = content.toLowerCase()
       expect(lower).toMatch(/blank|empty|no (visible )?(shape|movement|motion)|nothing|white/)
       expect(lower).not.toMatch(/\bred\b|\bblue\b|\bgreen\b/)
+    },
+    120_000,
+  )
+
+  test(
+    'Carbon (Google direct) watches the clip through pi-ai’s image_url shape',
+    async () => {
+      if (!hasGoogleKey || !RED_RIGHT) {
+        console.log('[Video E2E] Skipping — GOOGLE_API_KEY not set or fixture missing')
+        return
+      }
+
+      const res = await post({
+        model: GOOGLE_MODEL,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text:
+                  'Describe the motion in this video in one sentence: name the moving shape, ' +
+                  'its colour, and the direction it travels.',
+              },
+              { type: 'image_url', image_url: { url: `data:video/mp4;base64,${RED_RIGHT}` } },
+            ],
+          },
+        ],
+      })
+
+      console.log(`[Video E2E] google direct status: ${res.status}`)
+      expect(res.status).toBe(200)
+      const data = (await res.json()) as any
+      const content: string = data.choices?.[0]?.message?.content ?? ''
+      console.log(`[Video E2E] google direct answer: ${content}`)
+
+      const lower = content.toLowerCase()
+      expect(lower).toContain('red')
+      expect(lower).toMatch(/mov|left to right|right|across/)
     },
     120_000,
   )
