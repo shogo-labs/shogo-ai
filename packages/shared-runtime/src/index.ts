@@ -423,6 +423,7 @@ export {
 
 export {
   isContentHashedFilename,
+  sharedStaticAssetCacheControl,
   staticAssetCacheControl,
   shouldServeSpaFallback,
 } from './static-asset-cache'

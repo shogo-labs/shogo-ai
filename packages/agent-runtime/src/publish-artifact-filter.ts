@@ -16,7 +16,7 @@ import { join, relative } from 'path'
 import type { Dirent } from 'fs'
 import { createHash } from 'crypto'
 import { isShogoRuntimeSubtree } from '@shogo/shared-runtime/shogo-state-paths'
-import { headObject, lfsObjectKey, lfsPointerText, lfsTrackedPaths, putFileToObjectStore, stampObjectMetadata, staticAssetCacheControl, type S3ObjectStore } from '@shogo/shared-runtime'
+import { headObject, lfsObjectKey, lfsPointerText, lfsTrackedPaths, putFileToObjectStore, sharedStaticAssetCacheControl, stampObjectMetadata, type S3ObjectStore } from '@shogo/shared-runtime'
 import { staticMimeFor } from './dist-response'
 
 /** Root-relative paths that never belong in the image. */
@@ -230,20 +230,32 @@ export async function offloadArtifactMedia(opts: {
   const targets = artifactPointerTargets({ paths, lfsTracked, sizes })
   if (targets.length === 0) return result
 
+  // Group by oid before touching the store: an oid is one object, and the pod
+  // serves that object's own metadata, so every path referencing it shares one
+  // `Content-Type` and one `Cache-Control`. Stamping per path let the last
+  // writer win — a hashed copy could put `immutable` on a stable URL.
+  const byOid = new Map<string, { size: number; entries: { rel: string; contextPath: string }[] }>()
   for (const rel of targets) {
     const contextPath = join(opts.contextDir, rel)
     const { oid, size } = await hashFileOid(contextPath)
+    const group = byOid.get(oid)
+    if (group) group.entries.push({ rel, contextPath })
+    else byOid.set(oid, { size, entries: [{ rel, contextPath }] })
+  }
+
+  for (const [oid, group] of byOid) {
     const key = lfsObjectKey(opts.projectId, oid)
-    // The pod serves the object's *own* metadata — `Bun.serve` answers a
-    // length-known store body from the object and refuses per-response headers
-    // on it — so the type and the cache policy have to be stamped here, where
-    // the serving path is known.
-    const contentType = staticMimeFor(rel)
-    const cacheControl = staticAssetCacheControl(rel)
+    const referencing = group.entries.map((entry) => entry.rel).sort()
+    const contentType = staticMimeFor(referencing[0]!)
+    const cacheControl = sharedStaticAssetCacheControl(referencing)
     try {
       const existing = await headObject(opts.store, key)
       if (!existing) {
-        await putFileToObjectStore(opts.store, key, contextPath, { bytes: size, contentType, cacheControl })
+        await putFileToObjectStore(opts.store, key, group.entries[0]!.contextPath, {
+          bytes: group.size,
+          contentType,
+          cacheControl,
+        })
         result.uploaded++
       } else if (existing.contentType !== contentType || existing.cacheControl !== cacheControl) {
         // Same bytes, wrong (or absent) stamp: `git lfs push` uploads through a
@@ -255,11 +267,13 @@ export async function offloadArtifactMedia(opts: {
         result.reused++
       }
     } catch (err) {
-      throw new ArtifactMediaOffloadError(rel, oid, err)
+      throw new ArtifactMediaOffloadError(referencing[0]!, oid, err)
     }
-    writeFileSync(contextPath, lfsPointerText(oid, size))
-    result.pointers++
-    result.bytesLeftOut += size
+    for (const entry of group.entries) {
+      writeFileSync(entry.contextPath, lfsPointerText(oid, group.size))
+      result.pointers++
+      result.bytesLeftOut += group.size
+    }
   }
 
   logger.log(

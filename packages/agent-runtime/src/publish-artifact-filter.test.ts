@@ -286,6 +286,98 @@ describe('offloadArtifactMedia', () => {
     }
   })
 
+  /**
+   * An oid is ONE object, and the pod serves that object's own `Cache-Control`
+   * (a length-known store body takes no per-response headers), so every path
+   * referencing it has to agree on one policy. Per-path stamping let the last
+   * writer win, which put a year-long `immutable` on a stable URL.
+   */
+  const seedDistOnly = () => {
+    dir = mkdtempSync(join(tmpdir(), 'shogo-offload-'))
+    git(['init', '--quiet'])
+    writeFileSync(join(dir, 'README.md'), '# demo\n')
+    mkdirSync(join(dir, 'dist', 'assets'), { recursive: true })
+  }
+
+  const mediaBytes = () => Buffer.alloc(PUBLISH_DIST_OFFLOAD_MIN_BYTES + 32, 3)
+
+  it('stamps the weakest policy when a hashed and a stable path share one object', async () => {
+    seedDistOnly()
+    const bytes = mediaBytes()
+    writeFileSync(join(dir, 'dist', 'About-Us.png'), bytes)
+    writeFileSync(join(dir, 'dist', 'assets', 'About-Us-abcdef12.png'), bytes)
+    const { store, objects } = fakeStore()
+    const oid = createHash('sha256').update(bytes).digest('hex')
+    const key = `proj-1/lfs/objects/${oid.slice(0, 2)}/${oid.slice(2, 4)}/${oid}`
+    try {
+      const result = await offloadArtifactMedia({
+        contextDir: dir,
+        sourceDir: dir,
+        projectId: 'proj-1',
+        store,
+        logger: { log: () => {}, warn: () => {} },
+      })
+      // Two pointers, one object — uploaded once, not twice.
+      expect(result.pointers).toBe(2)
+      expect(result.uploaded).toBe(1)
+      expect([...objects.keys()]).toEqual([key])
+      // `/About-Us.png` can change on the next publish, so the shared object
+      // must not be immutable even though its hashed twin is.
+      expect(objects.get(key)?.cacheControl).toBe('no-cache')
+      expect(objects.get(key)?.contentType).toBe('image/png')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps an object immutable when every path referencing it is hashed', async () => {
+    seedDistOnly()
+    const bytes = mediaBytes()
+    writeFileSync(join(dir, 'dist', 'assets', 'hero-abcdef12.png'), bytes)
+    writeFileSync(join(dir, 'dist', 'assets', 'hero-12345678.png'), bytes)
+    const { store, objects } = fakeStore()
+    try {
+      const result = await offloadArtifactMedia({
+        contextDir: dir,
+        sourceDir: dir,
+        projectId: 'proj-1',
+        store,
+        logger: { log: () => {}, warn: () => {} },
+      })
+      expect(result.uploaded).toBe(1)
+      expect([...objects.values()][0]?.cacheControl).toBe('public, max-age=31536000, immutable')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('downgrades an immutable object once a stable path serves the same bytes', async () => {
+    seedDistOnly()
+    const bytes = mediaBytes()
+    writeFileSync(join(dir, 'dist', 'About-Us.png'), bytes)
+    const { store, objects, commands } = fakeStore()
+    const oid = createHash('sha256').update(bytes).digest('hex')
+    const key = `proj-1/lfs/objects/${oid.slice(0, 2)}/${oid.slice(2, 4)}/${oid}`
+    // Stamped by an earlier publish that only referenced the hashed copy.
+    objects.set(key, { body: bytes, contentType: 'image/png', cacheControl: 'public, max-age=31536000, immutable' })
+    try {
+      const result = await offloadArtifactMedia({
+        contextDir: dir,
+        sourceDir: dir,
+        projectId: 'proj-1',
+        store,
+        logger: { log: () => {}, warn: () => {} },
+      })
+      expect(result.restamped).toBe(1)
+      expect(objects.get(key)?.cacheControl).toBe('no-cache')
+      expect(commands).toContain('CopyObjectCommand')
+      // A metadata re-stamp never re-uploads the bytes.
+      expect(commands).not.toContain('PutObjectCommand')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('fails with a named error rather than ship a pointer with no bytes behind it', async () => {
     seed()
     const broken = {
