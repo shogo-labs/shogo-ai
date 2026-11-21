@@ -446,6 +446,10 @@ module "publish_hosting" {
   # Shared secret the Worker sends to the API on the published `/api/*` proxy.
   edge_proxy_secret = var.edge_proxy_secret
 
+  # Project buckets (SHO-491): the read-only PAR the CDN serves public
+  # objects from. The bucket itself is created by module.object_storage.
+  project_bucket_origin = module.object_storage.project_buckets_par_base_url
+
   # The PAR (pre-authenticated request) created inside this module is
   # scoped to `shogo-published-apps-${env}`, which the object_storage
   # module creates. Without this depends_on, terraform parallelizes the
@@ -584,6 +588,15 @@ output "published_data_bucket" {
 output "llm_captures_bucket" {
   description = "Raw LLM proxy capture archive bucket."
   value       = module.object_storage.llm_captures_bucket
+}
+
+output "project_buckets_bucket" {
+  description = "Per-project object storage bucket (SHO-491). Wire into the api ksvc as S3_PROJECT_BUCKET."
+  value       = module.object_storage.project_buckets_bucket
+}
+output "project_bucket_origin" {
+  description = "Read-only PAR base URL the subdomain-router Worker serves project-bucket objects from (SHO-491)."
+  value       = module.object_storage.project_buckets_par_base_url
 }
 
 output "server_backed_kv_namespace_id" {

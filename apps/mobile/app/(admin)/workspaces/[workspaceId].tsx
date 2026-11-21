@@ -203,6 +203,7 @@ const STORAGE_CATEGORY_LABELS: Array<{ key: string; label: string }> = [
   { key: 'chat_files', label: 'Chat files' },
   { key: 'workspace_root', label: 'Workspace drive' },
   { key: 'published', label: 'Published sites' },
+  { key: 'bucket', label: 'Project buckets' },
   { key: 'quarantine', label: 'Quarantine (overhead)' },
   { key: 'vm_snapshots', label: 'VM snapshots (overhead)' },
 ]

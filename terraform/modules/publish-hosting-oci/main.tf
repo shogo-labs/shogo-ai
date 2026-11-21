@@ -91,6 +91,12 @@ variable "kourier_origin" {
   default     = null
 }
 
+variable "project_bucket_origin" {
+  description = "Read-only origin for project buckets (SHO-491): the `access_uri` base of the pre-authenticated request the object-storage module creates for `shogo-project-buckets-<env>`. The subdomain-router Worker serves `cdn.<publish_domain>/<projectId>/<key>` from it, reading ONLY `p/<projectId>/public/<key>` — a private object is unreachable through the CDN. Empty disables the CDN route (it answers 404), which is the correct state for an env that has not provisioned the bucket yet."
+  type        = string
+  default     = ""
+}
+
 variable "api_published_origin" {
   description = "Public base URL of the Shogo API used by the subdomain-router Worker to serve METAL-backed server-backed published apps. When a subdomain's SERVER_BACKED KV value is `metal`, the Worker proxies `/api/*` (and the wake probe) to `$${api_published_origin}/api/published/{subdomain}/...` instead of to the Knative ingress (`kourier_origin`). The API then resolves the project's `published:{id}` microVM placement and forwards to the box over the mesh — Workers can't fetch a raw IP:port (error 1003), so the API (a real hostname) is the hop. Must be a proxied hostname CF can fetch (e.g. https://api.shogo.ai). Leave null to disable metal-backed publishing at the edge (falls back to static serving)."
   type        = string
@@ -381,6 +387,17 @@ resource "cloudflare_worker_script" "subdomain_router" {
     content {
       name = "API_PUBLISHED_ORIGIN"
       text = var.api_published_origin
+    }
+  }
+
+  # Project-bucket CDN origin (SHO-491). Only bound when the object-storage
+  # module created the bucket + PAR for this env; the Worker guards on its
+  # presence so the script content is identical everywhere.
+  dynamic "plain_text_binding" {
+    for_each = var.project_bucket_origin != "" ? [1] : []
+    content {
+      name = "PROJECT_BUCKET_ORIGIN"
+      text = var.project_bucket_origin
     }
   }
 
@@ -793,6 +810,88 @@ resource "cloudflare_worker_script" "subdomain_router" {
       });
     }
 
+    // ------------------------------------------------------------------
+    // Project buckets (SHO-491): `cdn.<publish domain>/<projectId>/<key>`
+    //
+    // A project's PUBLIC objects are served from its bucket through this
+    // origin. The key is always rebuilt as `p/<projectId>/public/<key>`: a
+    // private object is unreachable here even though the read-only PAR covers
+    // the whole bucket, because this function refuses to build its path.
+    //
+    // Mirrors `cdnObjectKey` in apps/api/src/lib/project-bucket-cdn.ts (this
+    // Worker is deployed by Terraform and cannot import application code —
+    // keep the two in step; the API-side unit test is the executable spec).
+    // ------------------------------------------------------------------
+    const PROJECT_BUCKET_ORIGIN = '${var.project_bucket_origin}'.replace(/\/+$/, '');
+
+    function cdnObjectKey(pathname) {
+      var trimmed = pathname.replace(/^\/+/, '');
+      if (!trimmed) return null;
+      var slash = trimmed.indexOf('/');
+      if (slash <= 0) return null;
+      var projectId = trimmed.slice(0, slash);
+      var rest = trimmed.slice(slash + 1);
+      if (!rest) return null;
+      // Ids are opaque and never contain a dot or a slash; refuse anything that
+      // could walk up a path or name another segment of the namespace.
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(projectId)) return null;
+      var segments = rest.split('/');
+      for (var i = 0; i < segments.length; i++) {
+        var segment = segments[i];
+        if (!segment || segment === '.' || segment === '..') return null;
+      }
+      return 'p/' + projectId + '/public/' + rest;
+    }
+
+    // Content-addressed keys are immutable, so they can be cached hard; a
+    // caller that keeps writing the same key gets a short max-age instead.
+    function cdnCacheControl(key) {
+      var name = key.slice(key.lastIndexOf('/') + 1);
+      var immutable = /^[0-9a-f]{16}(-|\.|$)/.test(name) || /^[0-9a-f]{64}(\.|$)/.test(name);
+      return immutable ? 'public, max-age=31536000, immutable' : 'public, max-age=300';
+    }
+
+    async function serveProjectBucket(request, env, url) {
+      if (!PROJECT_BUCKET_ORIGIN) {
+        return new Response('Not found', { status: 404 });
+      }
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        return new Response('Method not allowed', {
+          status: 405,
+          headers: { Allow: 'GET, HEAD', 'Access-Control-Allow-Origin': '*' },
+        });
+      }
+      var key = cdnObjectKey(url.pathname);
+      if (!key) {
+        return new Response('Not found', { status: 404, headers: { 'Access-Control-Allow-Origin': '*' } });
+      }
+
+      var headers = new Headers();
+      var range = request.headers.get('Range');
+      if (range) headers.set('Range', range);
+
+      var upstream = await fetch(PROJECT_BUCKET_ORIGIN + '/' + key, {
+        method: request.method,
+        headers: headers,
+        cf: { cacheEverything: true, cacheKey: PROJECT_BUCKET_ORIGIN + '/' + key },
+      });
+      if (upstream.status === 404) {
+        return new Response('Not found', { status: 404, headers: { 'Access-Control-Allow-Origin': '*' } });
+      }
+
+      var out = new Headers(upstream.headers);
+      out.set('Cache-Control', upstream.status === 206 ? 'no-transform' : cdnCacheControl(key));
+      out.set('Access-Control-Allow-Origin', '*');
+      out.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      out.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, ETag');
+      out.set('X-Content-Type-Options', 'nosniff');
+      out.delete('Set-Cookie');
+      return new Response(request.method === 'HEAD' ? null : upstream.body, {
+        status: upstream.status,
+        headers: out,
+      });
+    }
+
     export default {
       async fetch(request, env) {
         const url = new URL(request.url);
@@ -807,6 +906,26 @@ resource "cloudflare_worker_script" "subdomain_router" {
         // this Worker ever runs.
         const rawHost = url.hostname;
         const hostname = rawHost.replace(/^www\./, '');
+
+        // Project buckets (SHO-491). `cdn.<publish domain>` is the CDN origin
+        // in front of every project's bucket, so it is dispatched BEFORE the
+        // published-app routing (a bare `cdn` label would otherwise be looked
+        // up as a published subdomain).
+        if (hostname === 'cdn.' + PUBLISH_DOMAIN) {
+          return serveProjectBucket(request, env, url);
+        }
+        if (request.method === 'OPTIONS') {
+          // CORS preflight for a bucket object fetched from another origin.
+          return new Response(null, {
+            status: 204,
+            headers: {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+              'Access-Control-Allow-Headers': 'Range, Content-Type',
+              'Access-Control-Max-Age': '86400',
+            },
+          });
+        }
 
         // Platform subdomain first; otherwise treat the host as a custom
         // domain and look up its published prefix in the KV map the API
@@ -1093,6 +1212,11 @@ output "custom_domain_fallback_origin" {
 output "server_backed_kv_namespace_id" {
   description = "Workers KV namespace id for the server-backed publish map. Wire into the api ksvc as CF_SERVER_BACKED_KV_NAMESPACE_ID so publish.ts can flag/unflag server-backed subdomains."
   value       = cloudflare_workers_kv_namespace.server_backed.id
+}
+
+output "project_bucket_cdn_host" {
+  description = "Hostname project public objects are served from (SHO-491). Wire into the API as SHOGO_BUCKET_CDN_BASE when publish_domain differs from the default `cdn.<publish_domain>` derivation."
+  value       = "cdn.${var.publish_domain}"
 }
 
 output "site_auth_kv_namespace_id" {
