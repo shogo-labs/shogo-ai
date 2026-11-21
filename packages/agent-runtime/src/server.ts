@@ -65,6 +65,7 @@ import {
 import { LiveTurnGate } from './live-turn-wait'
 import { handleWorkspaceDriveOp, readWorkspaceDriveUsage, type DriveOp } from './workspace-drive'
 import type { TurnOrigin } from './gateway'
+import type { Context } from 'hono'
 import {
   createRuntimeApp, traceOperation,
   initializeS3Sync,
@@ -165,7 +166,6 @@ import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
 import { ensureDurableTaskLogs } from './task-log-durability'
-import { resolveDistFile, staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, handlePtyUpgrade } from './pty-ws-handler'
 import {
@@ -2946,6 +2946,13 @@ app.post('/agent/subagents/:instanceId/stop', async (c) => {
 
 import { PreviewManager, publishedBootPlan } from './preview-manager'
 import { handleDistFiles, handlePublishArtifact, type PublishEndpointDeps } from './publish-endpoints'
+import {
+  serveDistResponse,
+  RUNTIME_MARKER_HEADER,
+  RUNTIME_MARKER_VALUE,
+  type DistServeContext,
+} from './dist-response'
+import { lfsObjectStore } from './lfs-store'
 import { installRuntimeJobGuard } from './process-tree'
 import { cleanupStagingOutput } from './build-output-commit'
 import { quiesceSidecars, rehydrateSidecars, sidecarHealth } from './pool-lifecycle-hooks'
@@ -6253,21 +6260,21 @@ app.get('/agent/ports/listening', async (c) => {
   // Single-project mode: fall through to the ordinary root-dist route exactly
   // as if this block didn't exist, so a user app's own `/p/<id>` route (if it
   // has one) still resolves client-side via the SPA fallback.
-  app.get('/p/:projectId', (c) => {
+  app.get('/p/:projectId', async (c) => {
     const projectId = c.req.param('projectId')
     if (!IS_WORKSPACE_RUNTIME) {
       const urlPath = new URL(c.req.url).pathname
-      return serveDistResponse(getDistDir(), urlPath, isBuildLikelyInFlight()) ?? markedNotFound()
+      return (await serveDist(c, getDistDir(), urlPath, isBuildLikelyInFlight())) ?? markedNotFound()
     }
     if (!getWorkspacePreviewManager(projectId)) return projectNotAttached(c, projectId)
     return c.redirect(`/p/${projectId}/`)
   })
 
   // Static dist/ serve for a project, scoped to its subfolder + base prefix.
-  app.get('/p/:projectId/*', (c) => {
+  app.get('/p/:projectId/*', async (c) => {
     const urlPath = new URL(c.req.url).pathname
     if (!IS_WORKSPACE_RUNTIME) {
-      return serveDistResponse(getDistDir(), urlPath, isBuildLikelyInFlight()) ?? markedNotFound()
+      return (await serveDist(c, getDistDir(), urlPath, isBuildLikelyInFlight())) ?? markedNotFound()
     }
     const parsed = parseWorkspacePreviewPath(urlPath)
     if (!parsed) return c.notFound()
@@ -6275,22 +6282,8 @@ app.get('/agent/ports/listening', async (c) => {
     if (!pm) return projectNotAttached(c, parsed.projectId)
     const distDir = join(WORKSPACE_DIR, parsed.projectId, 'dist')
     const inFlight = BUILDING_PHASES.has(pm.phase)
-    return serveDistResponse(distDir, parsed.rest, inFlight) ?? markedNotFound()
+    return (await serveDist(c, distDir, parsed.rest, inFlight, parsed.projectId)) ?? markedNotFound()
   })
-}
-
-// =============================================================================
-// Shared MIME map for static file serving
-// =============================================================================
-
-const STATIC_MIME: Record<string, string> = {
-  '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
-  '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
-  '.webp': 'image/webp', '.ico': 'image/x-icon', '.woff': 'font/woff',
-  '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.eot': 'application/vnd.ms-fontobject',
-  '.map': 'application/json', '.txt': 'text/plain', '.xml': 'application/xml',
-  '.webmanifest': 'application/manifest+json', '.mjs': 'application/javascript',
 }
 
 // =============================================================================
@@ -6554,6 +6547,13 @@ function getProjectPreviewManager(projectId?: string): PreviewManager | null {
 const publishEndpointDeps: PublishEndpointDeps = {
   projectDir: (projectId) => getProjectWorkspaceDir(projectId),
   outputRoot: (projectId, projectDir) => getProjectPreviewManager(projectId)?.bundlerCwd ?? projectDir,
+  // One client for the publish bucket and for `<projectId>/lfs/objects` (both
+  // live on the same S3-compatible endpoint); the bucket the API names for the
+  // artifact is passed per request.
+  objectStore: () => {
+    const store = lfsObjectStore()
+    return store ? { client: store.client, bucket: store.bucket } : null
+  },
 }
 
 app.get('/agent/dist-files', (c) => handleDistFiles(c, publishEndpointDeps))
@@ -7010,15 +7010,44 @@ function isBuildLikelyInFlight(): boolean {
   return BUILDING_PHASES.has(phase)
 }
 
-// Marker header stamped on every response the agent-runtime itself
-// produces for a preview document. The Cloudflare preview-router Worker
-// uses its presence to distinguish an *infra* error (Kourier "no healthy
-// upstream" 404, activator/pod 503 — no marker) from the *app's own*
-// response (404 page, building placeholder — marked). Infra errors get
-// swapped for the "waking up" interstitial; marked responses pass through
-// untouched so a genuine app 404 never gets masked or reload-looped.
-const RUNTIME_MARKER_HEADER = 'x-shogo-runtime'
-const RUNTIME_MARKER_VALUE = '1'
+/**
+ * What the shared dist/serve function needs from this process.
+ *
+ * The LFS half is wired whenever this runtime has an object store: a published
+ * image is built from pointer text instead of media bytes (SHO-485 §2), so its
+ * `dist/` media only exists in `<projectId>/lfs/objects`. A project without LFS
+ * never produces a pointer file, so its serving path is unchanged.
+ */
+function distServeContext(projectId?: string): DistServeContext {
+  const store = lfsObjectStore()
+  const id = projectId || process.env.PROJECT_ID || ''
+  return {
+    lfs: store && id ? { store, projectId: id } : null,
+    injectHtml: injectRuntimeHtml,
+    renderBuildingPlaceholder,
+  }
+}
+
+/** `serveDistResponse` with the request's own method/range/conditional headers. */
+function serveDist(
+  c: Context,
+  distDir: string,
+  requestPath: string,
+  buildInFlight: boolean,
+  projectId?: string,
+): Promise<Response | null> {
+  return serveDistResponse(
+    {
+      distDir,
+      requestPath,
+      buildInFlight,
+      method: c.req.method,
+      range: c.req.header('range'),
+      ifNoneMatch: c.req.header('if-none-match'),
+    },
+    distServeContext(projectId),
+  )
+}
 
 function renderBuildingPlaceholder(): Response {
   const html = `<!doctype html>
@@ -7064,96 +7093,6 @@ function renderBuildingPlaceholder(): Response {
   })
 }
 
-/**
- * Serve a request out of a `dist/` directory with SPA fallback.
- *
- * Shared by the root static handler (single-project: serves
- * `<WORKSPACE_DIR>/dist`) and the workspace per-project handler
- * (serves `<WORKSPACE_DIR>/<projectId>/dist`). Returns `null` when there
- * is genuinely nothing to serve (no matching file, no `index.html`, no
- * build in flight) so the caller can fall through to `c.notFound()`.
- *
- * `requestPath` is the path *relative to the dist root* — for the root
- * handler that's the full URL path; for the per-project handler it's the
- * remainder after `/p/<projectId>`.
- */
-function serveDistResponse(
-  distDir: string,
-  requestPath: string,
-  buildInFlight: boolean,
-): Response | null {
-  const safePath = requestPath.replace(/\.\./g, '').replace(/\/+/g, '/')
-  const filePath = join(distDir, safePath === '/' ? 'index.html' : safePath)
-
-  if (!filePath.startsWith(resolve(distDir))) {
-    return null
-  }
-
-  const resolvedFile = resolveDistFile(filePath)
-  if (resolvedFile) {
-    const ext = extname(resolvedFile).toLowerCase()
-    const mime = STATIC_MIME[ext] || 'application/octet-stream'
-    if (ext === '.html') {
-      const html = injectRuntimeHtml(readFileSync(resolvedFile, 'utf-8'))
-      return new Response(html, {
-        headers: {
-          'Content-Type': mime,
-          // no-store (not no-cache): no-cache still allows a client to keep a
-          // cached copy and revalidate, and browsers commonly serve a
-          // stale-while-revalidate copy on flaky preview connections. HTML is
-          // the one response that points at content-hashed asset URLs, so it
-          // must never be served from cache once those hashes change.
-          'Cache-Control': 'no-store',
-          [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
-        },
-      })
-    }
-    return new Response(readFileSync(resolvedFile), {
-      headers: {
-        'Content-Type': mime,
-        'Cache-Control': staticAssetCacheControl(safePath),
-        [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
-      },
-    })
-  }
-
-  // The file doesn't exist. Static-asset paths (hashed JS/CSS, images,
-  // fonts, etc.) must 404 here rather than silently fall back to
-  // `index.html` — see `shouldServeSpaFallback` for why: a stale HTML
-  // document requesting an asset hash that an atomic rebuild already
-  // removed would otherwise get a 200 HTML body back for what the browser
-  // expects to be a JS module, producing a blank white page with no
-  // visible error. Only real SPA routes (extension-less paths, `.html`)
-  // fall back below.
-  if (!shouldServeSpaFallback(safePath)) {
-    return null
-  }
-
-  // SPA fallback
-  const indexPath = join(distDir, 'index.html')
-  if (existsSync(indexPath)) {
-    const html = injectRuntimeHtml(readFileSync(indexPath, 'utf-8'))
-    return new Response(html, {
-      headers: {
-        'Content-Type': 'text/html',
-        'Cache-Control': 'no-store',
-        [RUNTIME_MARKER_HEADER]: RUNTIME_MARKER_VALUE,
-      },
-    })
-  }
-
-  // No dist yet. If a build is in flight, render a self-refreshing
-  // "Building..." placeholder so the user doesn't stare at a raw 404
-  // during the first build of a fresh workspace. After the first
-  // successful build the atomic-swap pipeline keeps `dist/` populated,
-  // so this only matters pre-first-build (or after a fresh wipe).
-  if (buildInFlight) {
-    return renderBuildingPlaceholder()
-  }
-
-  return null
-}
-
 // A 404 the agent-runtime itself produced. Carries the runtime marker so
 // the preview-router Worker treats it as an app response (pass through),
 // not an infra "no upstream" 404 (which it would swap for the interstitial).
@@ -7167,7 +7106,7 @@ function markedNotFound(): Response {
   })
 }
 
-app.get('*', (c) => {
+app.get('*', async (c) => {
   const urlPath = new URL(c.req.url).pathname
 
   if (urlPath.startsWith('/agent') || urlPath.startsWith('/pool') ||
@@ -7178,7 +7117,7 @@ app.get('*', (c) => {
     return markedNotFound()
   }
 
-  return serveDistResponse(getDistDir(), urlPath, isBuildLikelyInFlight()) ?? markedNotFound()
+  return (await serveDist(c, getDistDir(), urlPath, isBuildLikelyInFlight())) ?? markedNotFound()
 })
 
 // =============================================================================
@@ -8083,11 +8022,12 @@ async function initializePublished(): Promise<void> {
         console.error('[agent-runtime] Published mode: S3 restore failed:', err?.message ?? err)
       }
     }
-    if (hydratedFromGit) {
+    if (hydratedFromGit && boot.materializeLfs) {
       // Smudge is skipped in the pod image, so the git path leaves every
       // LFS-tracked file as its pointer text. Put the real bytes back from
       // `lfs/objects` before anything serves this tree (SHO-478). The S3 path
-      // does the same thing inside `downloadAll`.
+      // does the same thing inside `downloadAll`. An image-booted pod skips it:
+      // its media is served from the store on request (SHO-485 §1c).
       const lfsSync = createS3SyncForProject(WORKSPACE_DIR, process.env.PROJECT_ID || '', {
         watchEnabled: false,
         syncInterval: 0,

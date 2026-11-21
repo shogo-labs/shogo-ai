@@ -8,6 +8,10 @@ import {
   DEFAULT_PUBLISH_IMAGE_BUILD_TIMEOUT_MS,
   DEFAULT_PUBLISH_UPLOAD_TIMEOUT_MS,
   PUBLISH_REQUEST_SLACK_MS,
+  DEFAULT_PUBLISH_ARTIFACT_MAX_BYTES,
+  DEFAULT_PUBLISH_ARTIFACT_UPLOAD_TIMEOUT_MS,
+  publishArtifactMaxBytes,
+  publishArtifactUploadTimeoutMs,
   publishRequestTimeoutMs,
   publishStepTimeouts,
 } from '../publish-timeouts'
@@ -50,5 +54,24 @@ describe('publish timeouts', () => {
     expect(publishStepTimeouts({ PUBLISH_IMAGE_BUILD_TIMEOUT_MS: '5000' }).buildMs).toBe(
       DEFAULT_PUBLISH_BUILD_TIMEOUT_MS,
     )
+  })
+})
+
+describe('publish artifact limits', () => {
+  test('the build-context ceiling sits well under the 2 Gi Job volume', () => {
+    expect(DEFAULT_PUBLISH_ARTIFACT_MAX_BYTES).toBeLessThan(2 * 1024 * 1024 * 1024)
+    expect(publishArtifactMaxBytes({})).toBe(DEFAULT_PUBLISH_ARTIFACT_MAX_BYTES)
+  })
+
+  test('a region can raise or lower the ceiling', () => {
+    expect(publishArtifactMaxBytes({ PUBLISH_ARTIFACT_MAX_BYTES: '1048576' })).toBe(1024 * 1024)
+    // Nonsense is ignored, not treated as zero (which would refuse every publish).
+    expect(publishArtifactMaxBytes({ PUBLISH_ARTIFACT_MAX_BYTES: 'lots' })).toBe(DEFAULT_PUBLISH_ARTIFACT_MAX_BYTES)
+  })
+
+  test('the artifact upload budget is minutes, not the 3-minute app build budget', () => {
+    expect(publishArtifactUploadTimeoutMs({})).toBe(DEFAULT_PUBLISH_ARTIFACT_UPLOAD_TIMEOUT_MS)
+    expect(publishArtifactUploadTimeoutMs({})).toBeGreaterThan(DEFAULT_PUBLISH_BUILD_TIMEOUT_MS)
+    expect(publishArtifactUploadTimeoutMs({ PUBLISH_ARTIFACT_UPLOAD_TIMEOUT_MS: '60000' })).toBe(60_000)
   })
 })

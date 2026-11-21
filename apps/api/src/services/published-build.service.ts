@@ -45,10 +45,12 @@ import {
   type BuildKitJobObject,
 } from '../lib/published-build-job'
 import { PUBLISHED_DOCKERFILE_NAME, publishedDockerfile } from '../lib/published-dockerfile'
+import { publishArtifactMaxBytes, publishArtifactUploadTimeoutMs } from '@shogo/shared-runtime/publish-timeouts'
 
 export type PublishedBuildFailureCode =
   | 'build_not_configured'
   | 'artifact_missing'
+  | 'artifact_too_large'
   | 'build_failed'
   | 'build_timeout'
   | 'build_digest_missing'
@@ -100,7 +102,12 @@ export interface EnsurePublishedImageInput {
 export interface PublishedBuildDeps {
   config: () => { ok: boolean; config: PublishedBuildConfig | null; missing: string[] }
   findReusableImage: (input: { projectId: string; commitSha: string }) => Promise<{ imageRef: string; imageDigest: string } | null>
-  uploadArtifact: (input: { projectId: string; subdomain: string; commitSha: string; alreadyBuilt?: boolean }) => Promise<{ url: string } | { error: string }>
+  uploadArtifact: (input: {
+    projectId: string
+    subdomain: string
+    commitSha: string
+    alreadyBuilt?: boolean
+  }) => Promise<{ url: string; bytes?: number } | { error: string; code?: PublishedBuildFailureCode }>
   createJob: (job: BuildKitJobObject) => Promise<void>
   readJob: (name: string, namespace: string) => Promise<{
     status: 'running' | 'succeeded' | 'failed'
@@ -162,8 +169,11 @@ export async function ensurePublishedImage(
   if ('error' in artifact) {
     return {
       ok: false,
-      code: 'artifact_missing',
-      message: `Could not read the publish artifact from the editing runtime: ${artifact.error}`,
+      code: artifact.code ?? 'artifact_missing',
+      message:
+        artifact.code === 'artifact_too_large'
+          ? artifact.error
+          : `Could not read the publish artifact from the editing runtime: ${artifact.error}`,
     }
   }
 
@@ -328,6 +338,17 @@ async function findReusableImage(input: {
 }
 
 /**
+ * Where the commit's build context lives in object storage.
+ *
+ * The runtime uploads it (SHO-485 §2b), so `key` is all the API needs: the
+ * bytes never cross this process, and the Job gets a presigned GET.
+ */
+export interface PublishedArtifactRef {
+  key: string
+  bytes: number
+}
+
+/**
  * Read the build context from the runtime, with the one fallback that is safe.
  *
  * `alreadyBuilt` means the publish flow already ran the app build, so the
@@ -341,7 +362,7 @@ async function findReusableImage(input: {
 export interface ArtifactFetchDeps {
   requestArtifact: (
     projectId: string,
-  ) => Promise<{ ok: true; archive: string } | { ok: false; status: number; body: string }>
+  ) => Promise<{ ok: true; ref: PublishedArtifactRef } | { ok: false; status: number; body: string }>
   rebuild: (projectId: string) => Promise<{ success: boolean; error?: string }>
   log: (message: string) => void
 }
@@ -357,9 +378,9 @@ function describeArtifactFailure(result: { status: number; body: string }): stri
 export async function fetchPublishedArtifact(
   input: { projectId: string; alreadyBuilt?: boolean },
   deps: ArtifactFetchDeps,
-): Promise<{ archive: string } | { error: string }> {
+): Promise<{ ref: PublishedArtifactRef } | { error: string }> {
   const first = await deps.requestArtifact(input.projectId)
-  if (first.ok) return { archive: first.archive }
+  if (first.ok) return { ref: first.ref }
 
   if (input.alreadyBuilt === true && isDistNotFound(first)) {
     deps.log(
@@ -371,7 +392,7 @@ export async function fetchPublishedArtifact(
       return { error: `the publish build failed on retry: ${rebuilt.error ?? 'unknown error'}` }
     }
     const second = await deps.requestArtifact(input.projectId)
-    if (second.ok) return { archive: second.archive }
+    if (second.ok) return { ref: second.ref }
     return { error: describeArtifactFailure(second) }
   }
 
@@ -379,13 +400,19 @@ export async function fetchPublishedArtifact(
 }
 
 /**
- * Pull the commit's build context from the editing runtime and put it in the
- * publish bucket, then hand the Job a presigned GET.
+ * Have the editing runtime put the commit's build context in the publish
+ * bucket, then hand the Job a presigned GET.
  *
  * The runtime produces the archive (`/agent/publish-artifact`) because it owns
  * both halves: the source, and the root-based `dist/` its own publish build
  * just emitted. Building the context here instead would mean re-implementing
  * the Vite/Expo publish build in the API.
+ *
+ * It also uploads it (SHO-485 §2b): the API names the bucket and key, the
+ * runtime writes them with its own client and answers `{ key, bytes }`. The old
+ * contract — a base64 tarball in a JSON body — is still understood, because an
+ * API rolls out before the runtimes it talks to, and the reverse must not break
+ * a publish either.
  *
  * The artifact is a build input, not a served asset, so it lives under
  * `artifacts/` and is only ever read by the Job.
@@ -395,7 +422,7 @@ async function uploadPublishedArtifact(input: {
   subdomain: string
   commitSha: string
   alreadyBuilt?: boolean
-}): Promise<{ url: string } | { error: string }> {
+}): Promise<{ url: string; bytes?: number } | { error: string; code?: PublishedBuildFailureCode }> {
   try {
     // The publish flow builds the app before it gets here, so the runtime's
     // publish staging dir is already current. Only the redeploy/cutover paths,
@@ -406,21 +433,50 @@ async function uploadPublishedArtifact(input: {
       if (!built.success) return { error: built.error ?? 'the publish build failed' }
     }
 
+    const bucket = (process.env.PUBLISH_BUCKET || '').trim()
+    if (!bucket) return { error: 'PUBLISH_BUCKET is not configured' }
     const { getProjectPodUrl } = await import('../lib/knative-project-manager')
     const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
+    const { getS3Client } = await import('../lib/s3')
     const podUrl = await getProjectPodUrl(input.projectId)
+    const key = `${input.subdomain}/artifacts/${input.commitSha}.tar.gz`
+
     const requestArtifact = async (projectId: string) => {
-      const res = await fetch(`${podUrl}/agent/publish-artifact?projectId=${encodeURIComponent(projectId)}`, {
+      const query = new URLSearchParams({ projectId, bucket, key })
+      const res = await fetch(`${podUrl}/agent/publish-artifact?${query.toString()}`, {
         headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
-        signal: AbortSignal.timeout(180_000),
+        signal: AbortSignal.timeout(publishArtifactUploadTimeoutMs()),
       })
       if (!res.ok) {
         const body = await res.text().catch(() => '')
         return { ok: false as const, status: res.status, body }
       }
-      const body = (await res.json()) as { archive?: string; message?: string }
-      if (!body.archive) return { ok: false as const, status: res.status, body: body.message ?? 'no archive' }
-      return { ok: true as const, archive: body.archive }
+      const body = (await res.json()) as { key?: string; bytes?: number; archive?: string; message?: string }
+      if (body.key && typeof body.bytes === 'number') {
+        return { ok: true as const, ref: { key: body.key, bytes: body.bytes } }
+      }
+      // An older runtime: it uploaded nothing and handed us the whole tarball.
+      // Take it in once, here, so the streaming contract stays the one the rest
+      // of this file sees.
+      if (body.archive) {
+        const bytes = Buffer.from(body.archive, 'base64')
+        if (bytes.length === 0) {
+          return { ok: false as const, status: res.status, body: 'artifact tarball was empty' }
+        }
+        if (bytes.length > publishArtifactMaxBytes()) {
+          return {
+            ok: false as const,
+            status: res.status,
+            body: `artifact_too_large: ${bytes.length} bytes exceeds ${publishArtifactMaxBytes()}`,
+          }
+        }
+        const { PutObjectCommand } = await import('@aws-sdk/client-s3')
+        await getS3Client().send(
+          new PutObjectCommand({ Bucket: bucket, Key: key, Body: bytes, ContentType: 'application/gzip' }),
+        )
+        return { ok: true as const, ref: { key, bytes: bytes.length } }
+      }
+      return { ok: false as const, status: res.status, body: body.message ?? 'no artifact' }
     }
 
     const artifact = await fetchPublishedArtifact(
@@ -434,28 +490,32 @@ async function uploadPublishedArtifact(input: {
         log: (message) => console.log(message),
       },
     )
-    if ('error' in artifact) return { error: artifact.error }
-
-    const bytes = Buffer.from(artifact.archive, 'base64')
-    if (bytes.length === 0) return { error: 'artifact tarball was empty' }
-
-    const bucket = (process.env.PUBLISH_BUCKET || '').trim()
-    if (!bucket) return { error: 'PUBLISH_BUCKET is not configured' }
-    const key = `${input.subdomain}/artifacts/${input.commitSha}.tar.gz`
-    const { getS3Client } = await import('../lib/s3')
-    const { PutObjectCommand } = await import('@aws-sdk/client-s3')
-    await getS3Client().send(
-      new PutObjectCommand({ Bucket: bucket, Key: key, Body: bytes, ContentType: 'application/gzip' }),
-    )
+    if ('error' in artifact) {
+      const tooLarge = artifact.error.includes('artifact_too_large')
+      return {
+        error: artifact.error,
+        ...(tooLarge ? { code: 'artifact_too_large' as const } : {}),
+      }
+    }
+    if (artifact.ref.bytes === 0) return { error: 'artifact tarball was empty' }
+    if (artifact.ref.bytes > publishArtifactMaxBytes()) {
+      return {
+        code: 'artifact_too_large',
+        error:
+          `The publish build context is ${(artifact.ref.bytes / (1024 * 1024)).toFixed(0)} MB, over the ` +
+          `${(publishArtifactMaxBytes() / (1024 * 1024)).toFixed(0)} MB limit for an image build. ` +
+          'Nothing was built.',
+      }
+    }
 
     // Presign with the *internal* client: the Job runs inside the cluster and
     // must reach the internal endpoint, not the public one.
     const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner')
     const { GetObjectCommand } = await import('@aws-sdk/client-s3')
-    const url = await getSignedUrl(getS3Client(), new GetObjectCommand({ Bucket: bucket, Key: key }), {
+    const url = await getSignedUrl(getS3Client(), new GetObjectCommand({ Bucket: bucket, Key: artifact.ref.key }), {
       expiresIn: 3600,
     })
-    return { url }
+    return { url, bytes: artifact.ref.bytes }
   } catch (err: any) {
     return { error: err?.message ?? String(err) }
   }
