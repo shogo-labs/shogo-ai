@@ -276,8 +276,9 @@ describeIfInfra('machine workspace opened from the cloud (SHO-257)', () => {
         expect(JSON.stringify(localView), surface.name).not.toBe(JSON.stringify(surface.view(base.data, seeds.cloud)))
       }
     }
-    // Every surface with seeded content (all but activity and the profile).
-    expect(distinguished).toBe(SURFACES.length - 2)
+    // Every surface with seeded content (all but the profile, which carries a
+    // name and nothing workspace-specific).
+    expect(distinguished).toBe(SURFACES.length - 1)
   }, 60_000)
 
   // Last: it switches the machine off.
