@@ -4,18 +4,27 @@
  * SHO-488 · group 9 — a project's preview, served from the computer that hosts
  * the workspace, opened through the cloud.
  *
- * The preview is a port tunnel: the client asks `/api/preview/:projectId/render`
- * and the API resolves the project's runtime and streams whatever that runtime
- * serves. On a hosted workspace the runtime is the paired desktop, so a cloud
- * answer of "no runtime driver configured" (501) is the failure that leaves the
- * Preview tab empty with nothing in the console — and a 500 or a `not_running`
- * body is the same emptiness with a different code.
+ * The preview is a port tunnel: the cloud resolves the project's runtime and
+ * fetches whatever that runtime serves. On a hosted workspace the runtime is the
+ * paired desktop, so a cloud answer of "no runtime driver configured" (501) is
+ * the failure that leaves the Preview tab empty with nothing in the console.
  *
- * The second case is the one a person actually does: the app is built (the
- * runtime self-serves `dist/index.html`, see `preview-url-context.ts`), and the
- * page that comes back through the tunnel is the app's, not the cloud's. The
- * file is written on the side that owns the compute — the desktop, for a hosted
- * workspace — so a pass means the content crossed the proxy in both directions.
+ * The second case is the one a person actually does: the app is built (a
+ * workspace runtime self-serves `<workspace>/<projectId>/dist/index.html` under
+ * `/p/<projectId>/`, see `server.ts` `app.get('/p/:projectId/*')`), and the page
+ * that comes back through the tunnel is the app's, not the cloud's. The file is
+ * written on the side that owns the compute — the desktop, for a hosted
+ * workspace — and read back through the **cloud**, so a pass means the content
+ * crossed the proxy in both directions.
+ *
+ * What this file cannot exercise is `/api/preview/:projectId/render`, the
+ * subdomain Worker's render proxy: it is gated on `isKubernetes()`
+ * (`apps/api/src/server.ts:2589`) and answers `not_supported_locally` in every
+ * non-k8s process before it ever resolves a runtime, so in this harness (real
+ * API processes on a laptop) it measures the gate, not the product. Its
+ * host-tunnel branch is the same `resolveProjectPodUrl` + `lib/host-tunnel` path
+ * the tunnel route below crosses, which is why the tunnel is asserted here and
+ * the render proxy is left to a k8s-substrate harness.
  *
  * Needs `CHANNELS_TEST_PG_URL` and `TEST_REDIS_URL`/`REDIS_URL`. Skips without them.
  */
@@ -24,7 +33,6 @@ import type { FakeLlmServer } from '../../../../desktop/e2e/streaming/fake-llm-s
 import {
   TARGET_NAMES,
   startRemoteWorkspace,
-  uniq,
   waitFor,
   type RemoteWorkspace,
   type Side,
@@ -49,8 +57,8 @@ afterAll(async () => {
   await ws?.stop()
 })
 
-/** The preview a person opens: the render proxy, not the URL-detection endpoint. */
-const renderPath = (projectId: string) => `/api/preview/${encodeURIComponent(projectId)}/render/`
+/** Where a workspace runtime serves one project's built app (agent-runtime server.ts). */
+const projectServePath = (projectId: string) => `/p/${encodeURIComponent(projectId)}/`
 
 const previewPath = (t: Target, projectId: string) =>
   `/api/projects/${encodeURIComponent(projectId)}/preview`
@@ -58,24 +66,6 @@ const previewPath = (t: Target, projectId: string) =>
 /** Where the project's files live: the desktop owns the compute for a hosted workspace. */
 function computeOf(name: (typeof TARGET_NAMES)[number], t: Target): Side {
   return name === 'hosted' && t.peer ? t.peer : t
-}
-
-/**
- * Writes a file into the workspace the runtime serves (its own file API, the
- * one the agent uses). The project-files route is not usable here: it refuses
- * `dist` by design (`EXCLUDED_DIRS` in `routes/files.ts`), which is exactly the
- * directory a built app lives in.
- */
-async function writeWorkspaceFile(side: Side, path: string, content: string): Promise<number> {
-  const res = await fetch(
-    `${side.base}/api/workspaces/${encodeURIComponent(side.workspaceId)}/agent-proxy/agent/workspace/files/${path}`,
-    {
-      method: 'PUT',
-      headers: { cookie: side.cookie, origin: side.base, 'content-type': 'application/json' },
-      body: JSON.stringify({ content }),
-    },
-  )
-  return res.status
 }
 
 async function readWorkspaceFile(side: Side, path: string): Promise<string> {
@@ -110,60 +100,56 @@ describeIfInfra('remote workspace · project preview', () => {
         expect(res.status, `preview answered ${res.status}: ${body.slice(0, 400)}`).toBeLessThan(600)
       }, 120_000)
 
-      // Measured on this harness (18:03): the file is written where the runtime
-      // serves it and reads back correctly, and the preview never serves it —
-      // `404 {"error":{"code":"not_supported_locally"}}` from the cloud for the
-      // cloud and hosted targets (the proxy refuses before reaching a runtime),
-      // and a plain `404 Not Found` on the desktop, where the proxy does reach a
-      // runtime. So a built app does not load through the preview on any of the
-      // three today. `test.failing` keeps the requirement asserted and flips
-      // when the proxy serves a built app.
-      test.failing(
-        'a built app loads through the cloud preview URL, served by the compute side [proxy answers not_supported_locally / 404]',
-        async () => {
+      // The requirement, end to end: the app is built on the computer that hosts
+      // the workspace, and the page the cloud serves is that build. A workspace
+      // runtime serves `<workspace>/<projectId>/dist` under `/p/<projectId>/`
+      // (`packages/agent-runtime/src/server.ts`), and the cloud reaches a
+      // project's runtime through the agent proxy — the host tunnel, for a
+      // hosted workspace. So: read the build the compute side holds, then fetch
+      // the page through the cloud and require the same hashed bundle. Matching
+      // hashes is what makes it the machine's build and not a stray one: two
+      // builds of the same app never agree on an asset hash.
+      //
+      // The retry loop is for the machine's build being *in flight* (a 503
+      // "Building preview…" interstitial), not for state to propagate — a pass
+      // is a page that came back over the proxy with the compute side's bundle.
+      test('the page the cloud serves through the project tunnel is the compute side’s build', async () => {
         const t = target(name)
         const compute = computeOf(name, t)
         const projectId = t.seed.projectIds[0]
-        const badge = uniq('preview')
+        const pagePath = `/api/projects/${encodeURIComponent(projectId)}/agent-proxy${projectServePath(projectId)}`
 
-        // The runtime self-serves a built `dist/index.html` under the workspace
-        // root (`gateway.ts` ~6907). Write one where the compute side's runtime
-        // will find it, so the cloud has to read it through the proxy.
-        const written = await writeWorkspaceFile(
-          compute,
-          'dist/index.html',
-          `<!doctype html><html><head><title>${badge}</title></head><body><h1 id="marker">${badge}</h1></body></html>`,
-        )
-        expect(written, 'writing dist/index.html into the workspace runtime').toBeLessThan(300)
-
-        // The runtime notices the file and starts serving it; then the page has
-        // to come back through this side's preview proxy.
-        let last = ''
-        let lastStatus = 0
+        let served = ''
+        let status = 0
         await waitFor(
-          'the built app through the preview proxy',
+          'the project’s built page through the cloud',
           async () => {
-            const res = await fetch(`${t.base}${renderPath(projectId)}`, {
+            const res = await fetch(`${t.base}${pagePath}`, {
               headers: { cookie: t.cookie, origin: t.base },
               redirect: 'manual',
             })
-            lastStatus = res.status
-            last = await res.text().catch(() => '')
-            return last.includes(badge)
+            status = res.status
+            served = await res.text().catch(() => '')
+            return status === 200 && served.includes('<html')
           },
-          60_000,
+          180_000,
           2_000,
         ).catch((err: Error) => {
           throw new Error(
-            `${err.message}\n  last preview answer: ${lastStatus} ${last.slice(0, 300)}` +
-              `\n  the app was built on the ${name === 'hosted' ? 'desktop' : name} side`,
+            `${err.message}\n  last answer from the cloud: ${status} ${served.slice(0, 300)}` +
+              `\n  the app is built on the ${name === 'hosted' ? 'desktop' : name} side`,
           )
         })
 
-        expect(last, 'the page served through the proxy is the app that was built').toContain(badge)
-        },
-        240_000,
-      )
+        // The build the compute side holds…
+        const onDisk = await readWorkspaceFile(compute, `${projectId}/dist/index.html`)
+        expect(onDisk, `the compute side's dist/index.html: ${onDisk.slice(0, 200)}`).toContain('/assets/')
+
+        // …is the page the cloud just served: one hashed bundle, not two builds.
+        const bundle = (html: string) => (html.match(/\/p\/[^\s"']*\/assets\/[^\s"']+\.js/) ?? [''])[0]
+        expect(bundle(onDisk), `the compute side's build: ${onDisk.slice(0, 300)}`).not.toBe('')
+        expect(bundle(served), `the page the cloud served: ${served.slice(0, 300)}`).toBe(bundle(onDisk))
+      }, 240_000)
     })
   }
 
@@ -172,8 +158,8 @@ describeIfInfra('remote workspace · project preview', () => {
   test('the built index.html is readable on the side that owns the compute', async () => {
     const t = target('hosted')
     const compute = computeOf('hosted', t)
-    const body = await readWorkspaceFile(compute, 'dist/index.html')
-    expect(body, `read back: ${body.slice(0, 200)}`).toContain('<html>')
+    const body = await readWorkspaceFile(compute, `${t.seed.projectIds[0]}/dist/index.html`)
+    expect(body, `read back: ${body.slice(0, 200)}`).toContain('<html')
     void llm
   }, 120_000)
 })

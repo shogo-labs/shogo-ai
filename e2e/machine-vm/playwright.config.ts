@@ -55,6 +55,16 @@ export default defineConfig({
   // refresh" is least visible, because a person scrolls instead of reloading).
   projects: [
     { name: "chromium", use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } } },
-    { name: "phone", use: { ...devices["Pixel 7"] } },
+    // The phone runs SHO-488's layer only. `machine-workspace-ui.test.ts` is the
+    // older SHO-257 suite and drives the *desktop* shell — it opens the workspace
+    // through the account menu and the sidebar switcher, neither of which a phone
+    // shell renders (measured: the phone home offers only "Shogo profile and
+    // settings", "Chats" and "Notifications"), so as a phone project it fails on
+    // its first test and, being `serial`, skips the file.
+    {
+      name: "phone",
+      testMatch: /remote-workspace-live\.test\.ts$/,
+      use: { ...devices["Pixel 7"] },
+    },
   ],
 })

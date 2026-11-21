@@ -139,9 +139,12 @@ describeIfInfra('remote workspace · boards', () => {
     })
   }
 
-  // SHO-486 §1: a board change made on the computer reaches Postgres through
-  // machine sync, and the sync insert point publishes nothing, so the cloud
-  // socket never hears it. Fails on main; flips to `test` with SHO-486.
+  // Still open after SHO-486 (#2139, `c3aaad2e6`). That change publishes the
+  // bus event for synced *messages*; a work-item change is ingested by the same
+  // sync but publishes nothing, so the cloud socket hears `message.created`
+  // from the desktop and never `board.changed` (measured: events seen
+  // `ready, presence, message.created`). `test.failing` keeps the requirement
+  // asserted; it flips to `test` when the queue/move insert point publishes.
   test.failing('hosted · a card the desktop moves arrives live in the cloud [SHO-486]', async () => {
     const t = target('hosted')
     const peer = t.peer!

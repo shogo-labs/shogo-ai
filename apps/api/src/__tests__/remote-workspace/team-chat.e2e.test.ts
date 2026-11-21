@@ -291,10 +291,12 @@ describeIfInfra('remote workspace · team chat', () => {
   }
 
   // Both directions: a write made on the computer, seen live in the cloud.
-  // SHO-486 §1: nothing on the machine-sync insert point publishes a bus event,
-  // so a reply (or a message) written on the desktop only shows up after a
-  // refetch. Fails on main; flips to `test` with SHO-486.
-  test.failing("hosted · a message and an agent reply written on the desktop arrive live in the cloud [SHO-486]", async () => {
+  // SHO-486 §1 fixed this on main (#2139): the machine-sync insert point now
+  // publishes the bus event, so a message written on the desktop reaches a
+  // cloud socket with no refetch. Asserted as a requirement — it was measured
+  // at 528 ms when the marker flipped, and it goes red if the insert point
+  // ever stops publishing again.
+  test('hosted · a message and an agent reply written on the desktop arrive live in the cloud', async () => {
     const t = target('hosted')
     const peer = t.peer!
     const opened = await openLive(t)

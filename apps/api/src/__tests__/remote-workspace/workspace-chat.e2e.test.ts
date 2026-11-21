@@ -20,6 +20,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import type { FakeLlmServer } from '../../../../desktop/e2e/streaming/fake-llm-server'
 import { marker, token } from '../../../../desktop/e2e/streaming/fake-llm-server'
 import {
+  LIVE_BUDGET_MS,
   TURN_TARGETS,
   read,
   startRemoteWorkspace,
@@ -200,24 +201,111 @@ describeIfInfra('remote workspace · the workspace chat', () => {
         }
       }
 
-      if (name === 'hosted') {
-        // Known gap: the host tunnel buffers a proxied resume, so the first
-        // bytes only arrive once every token has been produced (measured ~7.0 s
-        // with 120/120 markers). `test.failing` because the assertion is the
-        // behaviour the card requires: the day the tunnel streams, this goes
-        // red and the marker flips to `test`.
-        test.failing(
-          'rejoining a running turn over /stream streams it live, not after it ends [host tunnel buffers]',
-          () => rejoinMustStream(target(name), name),
-          240_000,
-        )
-      } else {
-        test(
-          'rejoining a running turn over /stream streams it live, not after it ends',
-          () => rejoinMustStream(target(name), name),
-          240_000,
-        )
+      // Was `test.failing [host tunnel buffers]` until SHO-486 merged: the tunnel
+      // routes agent stream paths as streams (`lib/host-tunnel` `tunnelStreams`),
+      // so a rejoin over the tunnel now delivers bytes while the model is still
+      // producing. Asserted on every target now, hosted included.
+      test(
+        'rejoining a running turn over /stream streams it live, not after it ends',
+        () => rejoinMustStream(target(name), name),
+        240_000,
+      )
+
+      /**
+       * Planner's case (Russell, reported 2026-11-21): closing the app and
+       * reopening a chat while it streams shows it "stuck until done". A window
+       * that opens on a chat mid-turn is a fresh `/stream` on that session — the
+       * old page is gone, so there is no seq to resume from and it asks from 0 —
+       * and what it paints is whatever the reply has produced so far. So: the
+       * partial reply has to be on screen inside the 5 s budget, new tokens have
+       * to keep arriving after it, and the finished reply has to land exactly
+       * once (one terminal frame, one assistant message in the history).
+       */
+      const reopenMidStream = async (t: Target, name: string): Promise<void> => {
+        const n = 200
+        const tag = `o${name.slice(0, 2)}${Date.now() % 100_000}`
+        const turn = startTurn(t, t.seed.workspaceChatId, `Long ${marker('long', tag, n, { ms: 50 })}`)
+        try {
+          // The turn is under way and has produced text worth painting.
+          await llm.waitForTokens(tag, 5, 120_000)
+          const producedBeforeReopen = llm.sentAt(tag).length
+
+          // A new window opens on the same chat, mid-stream.
+          const started = Date.now()
+          const reopened = await fetch(`${t.base}${streamPath(t, t.seed.workspaceChatId, 0)}`, { headers: headers(t) })
+          expect(reopened.status, `the reopened window was refused with ${reopened.status}`).toBe(200)
+          const reader = reopened.body!.getReader()
+          const decoder = new TextDecoder()
+          let text = ''
+
+          /** Read the same stream until `needle` is in it, or say what came instead. */
+          const readUntil = async (needle: string, budgetMs: number, what: string): Promise<void> => {
+            const deadline = Date.now() + budgetMs
+            while (!text.includes(needle)) {
+              const left = deadline - Date.now()
+              const chunk = await Promise.race([
+                reader.read(),
+                new Promise<{ timeout: true }>((r) => setTimeout(() => r({ timeout: true }), Math.max(left, 1))),
+              ])
+              if ('timeout' in (chunk as any)) {
+                throw new Error(
+                  `${what}: nothing more arrived within ${budgetMs} ms ` +
+                    `(${llm.sentAt(tag).length}/${n} markers produced, ${text.length} bytes received)`,
+                )
+              }
+              const { done, value } = chunk as ReadableStreamReadResult<Uint8Array>
+              if (done) break
+              text += decoder.decode(value, { stream: true })
+            }
+          }
+
+          // 1. The partial reply is on screen inside the budget.
+          const first = await Promise.race([
+            reader.read(),
+            new Promise<{ timeout: true }>((r) => setTimeout(() => r({ timeout: true }), LIVE_BUDGET_MS)),
+          ])
+          expect(
+            'timeout' in (first as any),
+            `the reopened window showed nothing within ${LIVE_BUDGET_MS} ms ` +
+              `(${llm.sentAt(tag).length}/${n} markers produced)`,
+          ).toBe(false)
+          text += decoder.decode((first as ReadableStreamReadResult<Uint8Array>).value, { stream: true })
+          expect(
+            text,
+            `the first bytes of the reopened window (${Date.now() - started} ms) did not carry the reply written so far`,
+          ).toContain(token(tag, 1))
+
+          // 2. Tokens keep arriving: this is a live tail, not the finished body
+          //    handed over in one piece.
+          const progressed = Math.min(n, producedBeforeReopen + 3)
+          await readUntil(token(tag, progressed), 30_000, `the reply did not move past token ${progressed}`)
+          // 3. …and the whole reply lands.
+          await readUntil(token(tag, n), 120_000, `the last token (${n}/${n}) never arrived`)
+          await readUntil('data-turn-complete', 30_000, 'the turn never finished on the reopened stream')
+
+          // 4. Once. One terminal frame, and one assistant message in the
+          //    history a reload would read.
+          const completions = text.split('data-turn-complete').length - 1
+          expect(completions, `the reopened window saw the turn end ${completions} times`).toBe(1)
+          const finalToken = text.split(token(tag, n)).length - 1
+          expect(finalToken, `the last token was painted ${finalToken} times`).toBe(1)
+
+          const rows = await history(t, t.seed.workspaceChatId)
+          const replies = rows.filter(
+            (m) => m.role === 'assistant' && String(m.content ?? '').includes(token(tag, n)),
+          )
+          expect(replies.length, `the history holds ${replies.length} copies of the reply`).toBe(1)
+        } finally {
+          llm.release(tag)
+          await bodyOf(await turn.catch((e) => new Response(String(e))))
+        }
       }
+
+      test(
+        'a window that reopens mid-turn shows the partial reply, keeps streaming and ends once',
+        () => reopenMidStream(target(name), name),
+        300_000,
+      )
 
       // Known gap (no product change on this card — AC6): `POST /chat/stop`
       // forwards the caller's `sessionId`, while the runtime resolves a stop from

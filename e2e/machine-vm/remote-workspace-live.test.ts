@@ -38,6 +38,8 @@ interface Seeded {
   messageTexts: string[]
   threadRootId: string
   replyText: string
+  /** The workspace-scoped chat a person types into (`/agent?chatSessionId=`). */
+  workspaceChatId: string
 }
 interface StackState {
   web: string
@@ -144,10 +146,14 @@ async function windowSurvived(page: Page): Promise<boolean> {
 // `remote workspace · team chat` asserts exactly that and passes — and the open
 // channel never paints the message. Not a reload in the way: the window flag is
 // still set and the seeded messages were on screen the whole time. That is the
-// "it only shows up after a refresh" bug this layer exists to catch, so the case
-// runs as `test.fail`: it goes red the moment someone fixes the channel view,
-// and until then the failure names the behaviour that is missing.
-test.fail("a message sent on the machine appears in the open cloud channel, with no reload", async ({ page }, testInfo) => {
+// "it only shows up after a refresh" bug this layer exists to catch.
+//
+// Recorded as `test.fail` while SHO-486 was open. That card (#2139) publishes the
+// bus event from the machine-sync insert point, and the case now paints on both
+// viewports — measured: chromium 2/2 in isolation and the Pixel 7 project, after
+// a run on the pre-merge head where it did not. Asserted as the requirement
+// again, so a regression here is red rather than expected.
+test("a message sent on the machine appears in the open cloud channel, with no reload", async ({ page }, testInfo) => {
   const seeded = state.seeds.machine
   await openMachineChannel(page, testInfo.project.name === "phone")
   await expect(page.getByText(seeded.messageTexts[0]).first()).toBeVisible({ timeout: 60_000 })
@@ -268,6 +274,63 @@ test("a message queued mid-turn shows in the composer's queue and runs after the
   await expect(page.getByText(token(`${tag}q`, 3), { exact: false }).first(), "the queued turn ran").toBeVisible({
     timeout: 180_000,
   })
+})
+
+/**
+ * Russell, reported 2026-11-21: "closing the app and reopening a chat while it
+ * streams shows it stuck until done." The old page is gone, so this case is
+ * about what a *new* window paints on its own: the partial reply as it stands,
+ * then the rest of the tokens as they are produced, then the finished reply
+ * once. Nothing here reloads the new page — if it needed one, the reply would
+ * not move past what it painted first.
+ */
+test("closing the app mid-stream and reopening that chat paints the partial reply, keeps streaming and ends once", async ({
+  page,
+  context,
+}, testInfo) => {
+  test.skip(testInfo.project.name === "phone", PHONE_CANNOT_OPEN_THE_MACHINE)
+  await openMachineChat(page)
+  // The chat this case closes and reopens, addressed the way the sidebar does
+  // (`?chatSessionId=`), so the reopened window is the same conversation and not
+  // whatever the shell picks as its default.
+  const chatUrl =
+    `/agent?chatSessionId=${encodeURIComponent(state.seeds.machine.workspaceChatId)}` +
+    `&workspace=${encodeURIComponent(state.machineWorkspaceId)}`
+  await page.goto(chatUrl, { waitUntil: "domcontentloaded" })
+  const tag = `re${Date.now() % 100_000}`
+  const n = 300
+  // ~15 s of tokens: the window below has to reopen while this is still running.
+  await startTurn(page, `Long ${marker("long", tag, n, { ms: 50 })}`)
+  await awaitTurnOrSkip(page, "the long turn")
+  // Part of the reply is already painted in the window that is about to close.
+  await expect(page.getByText(token(tag, 3), { exact: false }).first(), "the turn started painting").toBeVisible({
+    timeout: 60_000,
+  })
+
+  // The app is closed: no page survives.
+  await page.close()
+
+  // A new window opens on that same chat, mid-stream.
+  const reopened = await context.newPage()
+  await reopened.goto(chatUrl, { waitUntil: "domcontentloaded" })
+
+  // 1. The partial reply is on screen shortly after the window opens — it is the
+  //    reply so far, not an empty chat waiting for the turn to end.
+  await expect(
+    reopened.getByText(token(tag, 3), { exact: false }).first(),
+    "the reopened window painted the reply written so far",
+  ).toBeVisible({ timeout: 5_000 + 25_000 })
+
+  // 2. Tokens keep arriving in that window, with no reload of its own.
+  await expect(
+    reopened.getByText(token(tag, n), { exact: false }).first(),
+    "the rest of the reply streamed into the reopened window",
+  ).toBeVisible({ timeout: 120_000 })
+
+  // 3. The finished reply is on screen exactly once.
+  const painted = await reopened.evaluate(() => document.body.innerText)
+  const occurrences = painted.split(token(tag, n)).length - 1
+  expect(occurrences, `the finished reply was painted ${occurrences} times`).toBe(1)
 })
 
 const machineHeaders = () => ({ cookie: state.localCookies, origin: state.localApiBase })
