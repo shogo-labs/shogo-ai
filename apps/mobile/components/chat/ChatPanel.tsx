@@ -178,11 +178,11 @@ import {
 } from "./retry-triage"
 import {
   computeRecoveryBackoff,
+  decideStallGiveUp,
   decideStallTrip,
   getStallRecoveryEffects,
   markStuckToolsInterrupted,
   shouldAutoRecoverStalledTurn,
-  turnEndedOnServer,
 } from "./stall-recovery"
 import { recordAutoResumeAttempt } from "./auto-resume-circuit-breaker"
 import { followNextTurn } from "./next-turn-follow"
@@ -5182,6 +5182,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
   catchUpAfterTurnEndedRef.current = catchUpAfterTurnEnded
 
   /**
+   * The runtime answered that it holds no turn for this session, so there is
+   * nothing to reattach to. Paint saved history and report whether it still
+   * ends on the prompt (no reply was written) — only then is Retry honest.
+   */
+  const settleFromSavedHistory = useCallback(async (): Promise<{ replyMissing: boolean }> => {
+    const sessionId = currentSessionIdRef.current
+    if (!sessionId) return { replyMissing: false }
+    await catchUpAfterTurnEnded()
+    if (currentSessionIdRef.current !== sessionId) return { replyMissing: false }
+    const tail = await probePersistedTail(sessionId)
+    return { replyMissing: tail ? persistedTailAwaitsReply(tail) : true }
+  }, [catchUpAfterTurnEnded, probePersistedTail])
+  const settleFromSavedHistoryRef = useRef(settleFromSavedHistory)
+  settleFromSavedHistoryRef.current = settleFromSavedHistory
+
+  /**
    * A turn started or ended in another window, on another device, or on the
    * server (a `[Task update]` wake, a channel dispatch, a project call). Nothing
    * else tells a window that stayed visible, so this is what keeps two windows
@@ -8096,6 +8112,30 @@ const ChatPanelContent = observer(function ChatPanelContent({
           return
         }
 
+        if (decision === "stop-and-verify") {
+          // The runtime answered and has no turn for this session: the body
+          // is reading nothing that will ever arrive. Paint what was saved and
+          // only offer Retry when no reply was written.
+          console.warn(
+            `[ChatPanel] stall watchdog: runtime holds no turn for ${stalledSessionId} — painting saved history`,
+          )
+          stallWatchdogTrippedRef.current = false
+          try {
+            void stop()
+          } catch (err) {
+            console.warn("[ChatPanel] stall watchdog stop() threw:", err)
+          }
+          setTimeout(() => {
+            if (currentSessionIdRef.current !== stalledSessionId) return
+            void settleFromSavedHistoryRef.current().then(({ replyMissing }) => {
+              if (!replyMissing || currentSessionIdRef.current !== stalledSessionId) return
+              setErrorDismissed(false)
+              setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE)
+            })
+          }, 500)
+          return
+        }
+
         console.warn(
           `[ChatPanel] stall watchdog tripped — status=${status} pinned for ${elapsedMs}ms with no progress and the turn probe did not confirm a live turn; calling stop() to recover`,
         )
@@ -9263,12 +9303,49 @@ const ChatPanelContent = observer(function ChatPanelContent({
             // the reason it failed) is saved, so paint it instead of claiming
             // the runtime is unreachable and asking for a Retry that would
             // start the work again.
-            const ended = snapshot.answered && turnEndedOnServer(turnStatus)
-            if (ended) {
+            const outcome = decideStallGiveUp({
+              turnStatus,
+              answered: snapshot.answered,
+            })
+            const ended = outcome !== "show-retry"
+            if (outcome === "reload-history") {
               console.log(
                 `[ChatPanel] auto-recovery: turn ${recoveryTurnId} ended server-side (${turnStatus}) — reloading saved history`,
               )
               void catchUpAfterTurnEndedRef.current?.()
+            } else if (outcome === "reload-then-check-reply") {
+              // The runtime answered every probe with "no turn here": nothing
+              // is running to reattach to. The reply is normally saved already,
+              // so paint it; Retry only when history still ends on the prompt.
+              console.log(
+                `[ChatPanel] auto-recovery: runtime holds no turn for ${recoverySessionId} — painting saved history`,
+              )
+              const { replyMissing } = await settleFromSavedHistoryRef.current()
+              if (replyMissing && currentSessionIdRef.current === recoverySessionId) {
+                try {
+                  Sentry.captureMessage("chat_stall_recovery_gave_up", {
+                    level: "warning",
+                    tags: {
+                      projectId: projectId ?? "(none)",
+                      chatSessionId: recoverySessionId,
+                      turnStatus,
+                    },
+                    extra: {
+                      attempt,
+                      maxAttempts: MAX_ATTEMPTS,
+                      turnId: recoveryTurnId,
+                      fromSeq: fromSeqAtStall,
+                      isLocalAgent: !!localAgentUrl,
+                      probeAnswered: true,
+                      replyMissing: true,
+                    },
+                  })
+                } catch (err) {
+                  console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+                }
+                setErrorDismissed(false)
+                setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE)
+              }
             } else {
               // The stall watchdog reports its own trips; this give-up path
               // (stream ended without turn-complete and could not be

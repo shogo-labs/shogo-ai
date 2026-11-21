@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { Platform } from 'react-native'
+import { Linking, Platform } from 'react-native'
 import { createAuthClient } from '@shogo/shared-app/auth'
 import { createAuthClient as createBetterAuthClient } from 'better-auth/react'
 import type { BetterFetch } from 'better-auth/react'
-import { expoClient } from '@better-auth/expo/client'
+import { expoClient, getSetCookie, normalizeCookieName } from '@better-auth/expo/client'
 import * as SecureStore from 'expo-secure-store'
+import { watchOAuthRedirectCookie, withOAuthRedirectCapture } from './android-oauth-redirect'
 import { API_URL } from './api-url'
 import { authStoragePrefixFor, getActiveEnvKey } from './env-override'
 
@@ -27,13 +28,14 @@ function createMobileAuthClient() {
     })
   }
 
+  const storagePrefix = authStoragePrefixFor(getActiveEnvKey())
   const client = createBetterAuthClient({
     baseURL: API_URL!,
     basePath: '/api/auth',
     plugins: [
       expoClient({
         scheme: 'shogo',
-        storagePrefix: authStoragePrefixFor(getActiveEnvKey()),
+        storagePrefix,
         cookiePrefix: 'shogo',
         storage: SecureStore,
       }),
@@ -45,6 +47,18 @@ function createMobileAuthClient() {
     ;(client as any).getCookie = () => normalizeCookieHeader(getCookie())
   }
 
+  if (Platform.OS === 'android') {
+    return withOAuthRedirectCapture(client, () =>
+      watchOAuthRedirectCookie({
+        linking: Linking,
+        storage: SecureStore,
+        storagePrefix,
+        scheme: 'shogo',
+        getSetCookie,
+        normalizeCookieName,
+      }),
+    )
+  }
   return client
 }
 

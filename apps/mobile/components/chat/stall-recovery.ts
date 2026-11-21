@@ -59,6 +59,12 @@ export type StallTripDecision =
   | "stop-and-reattach"
   /** The turn already ended server-side — drop the dead body and paint history. */
   | "stop-and-reload"
+  /**
+   * The runtime answered and holds no turn for this session (404/204): the
+   * turn is not running there. Drop the body, paint saved history, and only
+   * offer Retry if history has no reply for the prompt.
+   */
+  | "stop-and-verify"
   /** Nothing confirmed the turn is alive — break the wedge and offer Retry. */
   | "stop"
 
@@ -107,7 +113,39 @@ export function decideStallTrip({
     return keptAlive >= maxKeptAlive ? "stop-and-reattach" : "stay-attached"
   }
   if (answered && turnEndedOnServer(turnStatus)) return "stop-and-reload"
+  if (answered && turnStatus === "unknown") return "stop-and-verify"
   return "stop"
+}
+
+export type StallGiveUpOutcome =
+  /** The runtime says the turn ended: its reply (or failure) is saved. */
+  | "reload-history"
+  /**
+   * The runtime answered that it has no turn for this session. The turn is
+   * not running anywhere this client can reattach to; its reply is usually
+   * already saved (the buffer is evicted after the grace window), so paint
+   * history and show Retry only when history still ends on the prompt.
+   */
+  | "reload-then-check-reply"
+  /** Nothing answered: the runtime may still be running it, so offer Retry. */
+  | "show-retry"
+
+/**
+ * What the bounded recovery poll does once it gives up. Every answered probe
+ * that reads "no turn here" used to end on the Retry banner after ~50 s, even
+ * when the reply was already saved (Sentry chat_stall_recovery_gave_up with
+ * probeAnswered=true on REACT-5Z / ANDROID-V / IOS-S / DESKTOP-15).
+ */
+export function decideStallGiveUp({
+  turnStatus,
+  answered,
+}: {
+  turnStatus: ChatTurnStatus
+  answered: boolean
+}): StallGiveUpOutcome {
+  if (!answered) return "show-retry"
+  if (turnEndedOnServer(turnStatus)) return "reload-history"
+  return "reload-then-check-reply"
 }
 
 /**

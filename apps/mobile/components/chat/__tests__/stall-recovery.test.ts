@@ -18,6 +18,7 @@ import { describe, expect, test } from "bun:test"
 import {
   computeRecoveryBackoff,
   decideStallRecovery,
+  decideStallGiveUp,
   decideStallTrip,
   DEFAULT_STALL_KEEP_ALIVES,
   getStallRecoveryEffects,
@@ -172,11 +173,14 @@ describe("decideStallTrip", () => {
     // A failed probe collapses to `unknown`; even if something claims a
     // terminal status without an answer, the panel must not pretend the reply
     // is on its way to the screen.
-    expect(decideStallTrip({ turnStatus: "unknown", answered: true })).toBe("stop")
     expect(decideStallTrip({ turnStatus: "unknown", answered: false })).toBe("stop")
     expect(decideStallTrip({ turnStatus: "completed", answered: false })).toBe(
       "stop",
     )
+  })
+
+  test("a runtime that answers 'no turn here' paints saved history instead of the banner (SHO-483)", () => {
+    expect(decideStallTrip({ turnStatus: "unknown", answered: true })).toBe("stop-and-verify")
   })
 
   test("turnEndedOnServer only covers the statuses the runtime reports for a finished turn", () => {
@@ -207,5 +211,25 @@ describe("computeRecoveryBackoff", () => {
     // Defensive: attempt <= 0 is clamped to attempt 1.
     expect(computeRecoveryBackoff(0)).toBe(600)
     expect(computeRecoveryBackoff(-3)).toBe(600)
+  })
+})
+
+describe("decideStallGiveUp (SHO-483)", () => {
+  test("an unanswered poll still offers Retry: the runtime may be running the turn", () => {
+    expect(decideStallGiveUp({ turnStatus: "unknown", answered: false })).toBe("show-retry")
+  })
+
+  test("a terminal answer reloads history", () => {
+    for (const turnStatus of ["completed", "failed", "aborted"] as const) {
+      expect(decideStallGiveUp({ turnStatus, answered: true })).toBe("reload-history")
+    }
+  })
+
+  test("an answered 'no turn here' reloads and only then decides on Retry", () => {
+    // Sentry chat_stall_recovery_gave_up with probeAnswered=true: the runtime
+    // answered all 12 probes with 404/204 and the banner went up anyway.
+    expect(decideStallGiveUp({ turnStatus: "unknown", answered: true })).toBe(
+      "reload-then-check-reply",
+    )
   })
 })
