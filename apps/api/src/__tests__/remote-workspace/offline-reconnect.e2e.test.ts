@@ -23,6 +23,7 @@ import {
   startRemoteWorkspace,
   uniq,
   waitFor,
+  waitForSync,
   type RemoteWorkspace,
   type Target,
 } from './harness'
@@ -113,6 +114,12 @@ describeIfInfra('remote workspace · offline and reconnect', () => {
         since: marked,
         timeoutMs: 15_000,
       })
+
+      // The cloud write reaches the desktop through the puller (a 2s poll of a
+      // feed that holds rows back for 1.5s), so it lands a few seconds later;
+      // wait for it rather than assume a fixed delay covers that.
+      await waitForSync(ws.machine, 'the post-reconnect write on the desktop', async () =>
+        (await channelMessages(peer, t.seed.channelId)).some((m) => m.text === afterText), 60_000, 500)
 
       // Nothing twice: each text is one message on both sides.
       await new Promise((r) => setTimeout(r, 3_000))
