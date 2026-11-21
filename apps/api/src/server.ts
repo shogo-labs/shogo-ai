@@ -207,6 +207,7 @@ import { isMidCutoverStatus } from './services/published-cutover.service'
 import { readSignupRequestInfo } from './services/signup-risk.service'
 import { deployedAppVersionOrUnknown } from './lib/app-version'
 import { toNativeAuthHandback } from './lib/auth-handback'
+import { isDevOriginAllowed } from './lib/dev-origins'
 // Auth middleware for generated routes
 import {
   authMiddleware,
@@ -801,15 +802,9 @@ const apiCors = cors({
     }
     // Allow requests with no origin (mobile apps, curl, React Native on Android/iOS)
     if (!origin) return `http://localhost:${VITE_PORT}`
-    const isDevOrLocal = process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOCAL_MODE === 'true'
-    // In dev/local mode, allow any localhost origin, custom protocols, and null origins (Electron custom scheme)
-    if (isDevOrLocal && (origin === 'null' || origin?.startsWith('http://localhost:') || origin?.startsWith('shogo://'))) {
-      return origin
-    }
-    // Allow local network origins in dev/local (React Native on physical devices)
-    if (isDevOrLocal && /^http:\/\/192\.168\.\d+\.\d+/.test(origin)) {
-      return origin
-    }
+    // Dev/local: localhost, custom schemes and LAN devices; `null` only on a
+    // local API (SEC-3).
+    if (isDevOriginAllowed(origin)) return origin
     // Check if origin is in allowed list
     return allowedOrigins.includes(origin) ? origin : allowedOrigins[0]
   },
@@ -845,13 +840,7 @@ const csrfMiddleware = csrf({
     // Hono never passes `undefined` here — the wrapper below handles that
     // case before we get called. Kept defensively in case of upstream changes.
     if (!origin) return true
-    const isDevOrLocal = process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOCAL_MODE === 'true'
-    if (isDevOrLocal && (origin === 'null' || origin.startsWith('http://localhost:') || origin.startsWith('shogo://'))) {
-      return true
-    }
-    if (isDevOrLocal && /^http:\/\/192\.168\.\d+\.\d+/.test(origin)) {
-      return true
-    }
+    if (isDevOriginAllowed(origin)) return true
     return allowedOrigins.includes(origin)
   },
 })
