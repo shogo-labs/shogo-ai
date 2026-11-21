@@ -55,6 +55,14 @@ export { waitFor, type CloudProcess, type PairedMachine }
 /** Every scenario's default budget for an event to arrive with no refetch. */
 export const LIVE_BUDGET_MS = 5_000
 
+/**
+ * What a timed-out live wait appends to its error: the desktop's sync status
+ * (SHO-502). A desktop-written event reaches the cloud through the pusher, and
+ * one failed push backs it off past the budget — without this the failure
+ * reads as "slow" when the cause is a refused push.
+ */
+let liveDiagnostics: (() => Promise<string>) | null = null
+
 /** The three places a workspace is used from. */
 export const TARGET_NAMES = ['cloud', 'desktop', 'hosted'] as const
 export type TargetName = (typeof TARGET_NAMES)[number]
@@ -227,6 +235,7 @@ export async function startRemoteWorkspace(): Promise<RemoteWorkspace> {
   const logs = () =>
     `--- cloud ---\n${cloud.log.join('').slice(-3000)}\n--- desktop ---\n${machine.log.join('').slice(-3000)}`
   const stop = async () => {
+    liveDiagnostics = null
     await machine.stop().catch(() => {})
     await cloud.stop().catch(() => {})
     await llm.stop().catch(() => {})
@@ -255,6 +264,7 @@ export async function startRemoteWorkspace(): Promise<RemoteWorkspace> {
     machine: await seedWorkspace(desktopApi, machine.machineWorkspaceId, 'Machy'),
   }
   await warmHostTunnel(cloud, machine)
+  liveDiagnostics = () => syncStatus(machine)
 
   const targets: Target[] = [
     {
@@ -557,11 +567,13 @@ export class Live {
       .filter((e) => e.at > since)
       .slice(-6)
       .map((e) => JSON.stringify(e.event).slice(0, 240))
+    const sync = liveDiagnostics ? await liveDiagnostics().catch((err) => `unavailable: ${err?.message ?? err}`) : null
     throw new Error(
       `${this.opts.label}: no ${opts.label} on the ${this.transport} socket within ${timeoutMs}ms` +
         (this.upgradeError ? ` (ws upgrade failed: ${this.upgradeError})` : '') +
         `\n  events seen: ${seen.length ? [...new Set(seen)].join(', ') : '(none)'}` +
-        (recent.length ? `\n  last payloads: ${recent.join('\n    ')}` : ''),
+        (recent.length ? `\n  last payloads: ${recent.join('\n    ')}` : '') +
+        (sync ? `\n  desktop sync: ${sync}` : ''),
     )
   }
 
