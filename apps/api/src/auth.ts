@@ -17,6 +17,7 @@
 import { betterAuth, type BetterAuthPlugin } from "better-auth"
 import { APIError, createAuthMiddleware } from "better-auth/api"
 import { expo } from "@better-auth/expo"
+import { expoAuthorizationProxyGuard, nativeTrustedOrigins } from "./lib/native-oauth-trust"
 import { createDefaultTeamWorkspace, createPersonalWorkspace } from "./services/workspace.service"
 import { sendWelcomeEmail, sendPasswordResetEmail, sendEmailVerificationEmail, identifyUser, trackEvent, resolveAttributionForUser } from "./services/auth-integrations"
 import { evaluateAllowlist, recordSignIn } from "./services/project-auth-config.service"
@@ -648,7 +649,7 @@ export const auth = betterAuth({
     const origins = [
       ...getAllowedOrigins(), baseURL,
       'https://eu.studio.shogo.ai',
-      'shogo://', 'exp://',
+      ...nativeTrustedOrigins(),
     ]
     if (process.env.NODE_ENV !== 'production') {
       origins.push('http://localhost:8081')
@@ -664,7 +665,7 @@ export const auth = betterAuth({
     return origins
   },
 
-  plugins: [expo(), projectAuthPlugin, signupRateLimitPlugin, deviceIdCookiePlugin],
+  plugins: [expo(), expoAuthorizationProxyGuard, projectAuthPlugin, signupRateLimitPlugin, deviceIdCookiePlugin],
 
   rateLimit: {
     window: 60,
