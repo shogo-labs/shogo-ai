@@ -10,6 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -278,6 +279,98 @@ describe('put', () => {
   test('a missing local file fails loudly instead of uploading nothing', async () => {
     await expect(runBucketCommand(['put', join(dir, 'nope.png')])).rejects.toBeTruthy()
     expect(calls).toHaveLength(0)
+  })
+})
+
+describe('offload', () => {
+  let dir = ''
+  const bigBytes = Buffer.alloc(6 * 1024 * 1024, 7)
+  const bigKey = `offload/${createHash('sha256').update(bigBytes).digest('hex').slice(0, 16)}/big.bin`
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'shogo-offload-'))
+    writeFileSync(join(dir, 'big.bin'), bigBytes)
+    writeFileSync(join(dir, 'small.txt'), 'tiny')
+  })
+
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('--dry-run names only the files at or above the threshold and uploads nothing', async () => {
+    expect(await runBucketCommand(['offload', dir, '--dry-run'])).toBe(0)
+
+    const report = JSON.parse(logged.join('\n'))
+    expect(Object.keys(report.manifest)).toEqual(['big.bin'])
+    expect(report.manifest['big.bin']).toContain(bigKey)
+    expect(report.uploaded).toBe(0)
+    // Nothing was minted: a dry run must not touch the bucket at all.
+    expect(calls.filter((call) => call.url.includes('/bucket/uploads'))).toHaveLength(0)
+  })
+
+  test('a real run uploads under content-addressed keys and a re-run uploads nothing', async () => {
+    const existing: string[] = []
+
+    respond = (call) => {
+      if (call.url.includes('/bucket/objects?') || call.url.includes('/bucket/objects?')) {
+        return json({ objects: existing.map((key) => ({ key, size: 1 })), cursor: null })
+      }
+      if (call.url.endsWith('/bucket/uploads')) {
+        return json(
+          {
+            uploadId: 'u1',
+            key: bigKey,
+            visibility: 'public',
+            mode: 'single',
+            url: 'https://storage.test/put/big.bin',
+            method: 'PUT',
+            headers: {},
+            completeUrl: 'x',
+            publicUrl: `https://cdn.shogo.test/p_media/${bigKey}`,
+          },
+          201,
+        )
+      }
+      if (call.url.startsWith('https://storage.test/')) return new Response(null, { status: 200 })
+      if (call.url.includes('/bucket/objects/')) {
+        return json({ url: `https://cdn.shogo.test/p_media/${bigKey}` })
+      }
+      return json({
+        key: bigKey,
+        size: 6 * 1024 * 1024,
+        etag: 'e',
+        visibility: 'public',
+        publicUrl: `https://cdn.shogo.test/p_media/${bigKey}`,
+      })
+    }
+
+    expect(await runBucketCommand(['offload', dir, '--json'])).toBe(0)
+    let report = JSON.parse(logged[logged.length - 1])
+    expect(report.uploaded).toBe(1)
+    expect(report.skipped).toBe(0)
+    expect(report.manifest['big.bin']).toBe(`https://cdn.shogo.test/p_media/${bigKey}`)
+    existing.push(bigKey)
+
+    logged = []
+    calls = []
+    expect(await runBucketCommand(['offload', dir, '--json'])).toBe(0)
+    report = JSON.parse(logged[logged.length - 1])
+    expect(report.uploaded).toBe(0)
+    expect(report.skipped).toBe(1)
+    // Idempotent: the second run mints no ticket.
+    expect(calls.filter((call) => call.url.includes('/bucket/uploads'))).toHaveLength(0)
+  })
+
+  test('an empty directory reports an empty manifest, not an error', async () => {
+    rmSync(join(dir, 'big.bin'))
+    rmSync(join(dir, 'small.txt'))
+    await runBucketCommand(['offload', dir, '--json'])
+    const report = JSON.parse(logged.join('\n'))
+    expect(report).toEqual({ manifest: {}, uploaded: 0, skipped: 0 })
+  })
+
+  test('a missing directory fails loudly', async () => {
+    await expect(runBucketCommand(['offload', join(dir, 'nope')])).rejects.toBeTruthy()
   })
 })
 
