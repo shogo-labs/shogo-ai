@@ -664,7 +664,20 @@ test.describe("Per-chat composer memory (local)", () => {
     // an assistant row with a null `parts` trips an unguarded `.parts.map` in
     // ChatPanel's island preview (pre-existing on main, tracked separately).
     //
-    // First the assistant row — what a reply is stamped with (the model the run
+    // The turn above is mocked at the network layer, so the API never wrote the
+    // row a real send writes — its *user* row, stamped with the pick. Seed it
+    // here (older than the reply below) so the transcript is the one a reload
+    // really sees, instead of a reply with no question in front of it.
+    const pickRow = await apiJson(page, "POST", "/api/chat-messages", {
+      sessionId: alphaChat.id,
+      role: "user",
+      content: `model pick message ${stamp}`,
+      parts: JSON.stringify([{ type: "text", text: `model pick message ${stamp}` }]),
+      model: modelX,
+    })
+    expect(pickRow.status, JSON.stringify(pickRow.json)).toBeLessThan(300)
+
+    // Then the assistant row — what a reply is stamped with (the model the run
     // actually used). Adopting it is the bug: after a picked Opus, every reply
     // carried `auto`, and the picker followed the reply back to Auto.
     const reply = `a reply stamped with another model ${stamp}`
