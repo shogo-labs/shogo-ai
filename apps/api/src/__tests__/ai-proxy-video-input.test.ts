@@ -11,10 +11,14 @@ process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET || 'test-better-
  *     `video_url` shape for a video-native model.
  *   - A `video_url` block that is already native passes through untouched.
  *   - Real images are never rewritten.
+ *   - A Google-direct Gemini model keeps pi-ai's `image_url` shape — Google's
+ *     OpenAI-compatible endpoint decodes video from it (SHO-495 probe) — and
+ *     text-only Google turns are unchanged.
  *   - A model without video support rejects both shapes with a clear 400 and
  *     never reaches upstream.
  *   - `resolveModelSupportsVideoInput` honors DB capabilities, the static
- *     catalog, and BYOK `openrouter:` ids.
+ *     catalog (including a seeded DB row that carries no capabilities), and
+ *     BYOK `openrouter:` ids.
  *
  * Run: bun test apps/api/src/__tests__/ai-proxy-video-input.test.ts
  */
@@ -27,8 +31,55 @@ delete process.env.SHOGO_API_KEY
 process.env.ANTHROPIC_API_KEY = 'sk-ant-test'
 process.env.OPENROUTER_API_KEY = 'sk-or-test'
 
+/**
+ * The rows `scripts/seed-db-models.ts seedGemini` writes, as the picker and the
+ * runtime actually see them: a UUID primary key with the provider slug in
+ * `apiModel` and the slug in `aliases`. The client saves that UUID, so it is
+ * the id the proxy guard and `AGENT_MODEL_REGISTRY` get — the slug path alone
+ * (which the static catalog covers) hides this whole class of bug.
+ *
+ * Four rows carry no `capabilities`, which is what the seeder wrote before
+ * SHO-495, and one carries the flag the seeder now copies from the catalog, so
+ * both halves of the fix are exercised.
+ */
+const CARBON_UUID = '6f1c5a2e-8f43-4b1c-9d3a-0c1b2a3d4e5f'
+
+const geminiRow = (id: string, apiModel: string, capabilities: Record<string, unknown> | null) => ({
+  id,
+  provider: 'google',
+  providerId: null,
+  apiModel,
+  displayName: apiModel,
+  shortDisplayName: apiModel,
+  tier: 'premium',
+  family: 'gemini',
+  generation: 'current',
+  kind: 'chat',
+  maxOutputTokens: 65536,
+  enabled: true,
+  sortOrder: 10,
+  aliases: [apiModel],
+  capabilities,
+  inputPerMillion: 1,
+  cachedInputPerMillion: 0.1,
+  cacheWritePerMillion: 1.25,
+  outputPerMillion: 10,
+  contextWindow: 1048576,
+  reasoningEffort: 'medium',
+})
+
+const SEEDED_GEMINI_ROWS = [
+  geminiRow(CARBON_UUID, 'gemini-4-carbon', null),
+  geminiRow('a1b2c3d4-1111-4e2f-8a9b-0c1d2e3f4a5b', 'gemini-4-argon', null),
+  geminiRow('b2c3d4e5-2222-4f3a-9b0c-1d2e3f4a5b6c', 'gemini-4-neon', null),
+  geminiRow('c3d4e5f6-3333-4a4b-8c1d-2e3f4a5b6c7d', 'gemini-4-hydrogen', null),
+  geminiRow('d4e5f6a7-4444-4b5c-9d2e-3f4a5b6c7d8e', 'gemini-3.8-flash', { supportsVideoInput: true }),
+]
+
 mock.module('../lib/prisma', () => withPrismaExports({
   prisma: {
+    modelDefinition: { findMany: async () => SEEDED_GEMINI_ROWS },
+    modelProvider: { findMany: async () => [] },
     project: {
       findFirst: async () => ({ id: 'proj-video', workspaceId: 'ws-video', name: 'Video Input Test' }),
       findUnique: async () => ({ id: 'proj-video', workspaceId: 'ws-video' }),
@@ -64,6 +115,7 @@ let lastFetchBody: any = null
 let nextResponse: Response | null = null
 
 beforeAll(() => {
+  process.env.GOOGLE_API_KEY = 'AIza-test-google-video-key'
   globalThis.fetch = (async (input: any, init?: RequestInit) => {
     lastFetchUrl = typeof input === 'string' ? input : input.url
     lastFetchBody = init?.body ? JSON.parse(init.body as string) : null
@@ -82,11 +134,20 @@ beforeAll(() => {
 // through real fetch) gets its calls swallowed.
 afterAll(() => {
   globalThis.fetch = originalFetch
+  delete process.env.GOOGLE_API_KEY
 })
 
 const { Hono } = await import('hono')
 const { aiProxyRoutes, resolveModelSupportsVideoInput, bridgeVideoContentBlocks } = await import('../routes/ai-proxy')
 const { generateProxyToken } = await import('../lib/ai-proxy-token')
+const { invalidateModelRegistry } = await import('../services/model-registry.service')
+
+const GOOGLE_COMPAT_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'
+
+/** The Google models the probe showed are video-native (SHO-495 step 0). */
+const VIDEO_GOOGLE_MODELS = ['gemini-4-carbon', 'gemini-4-argon', 'gemini-4-neon', 'gemini-4-hydrogen', 'gemini-3.8-flash']
+/** A Google model the probe never ran, so it keeps the pre-SHO-495 behaviour. */
+const NON_VIDEO_GOOGLE_MODEL = 'gemini-3.5-flash-lite'
 
 const VIDEO_B64 = 'AAAAIGZ0eXBtcDQy'
 const IMAGE_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
@@ -118,6 +179,25 @@ function postChatCompletions(body: any) {
 describe('resolveModelSupportsVideoInput', () => {
   test('BYOK openrouter ids are allowed and let upstream decide', () => {
     expect(resolveModelSupportsVideoInput('openrouter:z-ai/glm-5.3-flash')).toBe(true)
+  })
+
+  test('a seeded DB row with no capabilities does not hide the catalog flag', async () => {
+    await invalidateModelRegistry()
+    // The picker saves the row's UUID, not the slug: this is the id the proxy
+    // guard and the runtime registry actually see on a seeded instance.
+    for (const row of SEEDED_GEMINI_ROWS) {
+      expect(resolveModelSupportsVideoInput(row.id)).toBe(true)
+    }
+    // …and the slug still resolves through the static catalog, which is what a
+    // fresh, unseeded instance and every e2e ordering use.
+    for (const model of VIDEO_GOOGLE_MODELS) {
+      expect(resolveModelSupportsVideoInput(model)).toBe(true)
+    }
+  })
+
+  test('a Google model the catalog does not flag stays unsupported', async () => {
+    await invalidateModelRegistry()
+    expect(resolveModelSupportsVideoInput(NON_VIDEO_GOOGLE_MODEL)).toBe(false)
   })
 
   test('a text-only catalog model is not video-native', () => {
@@ -247,5 +327,100 @@ describe('video rejection on a non-video model', () => {
 
     expect(res.status).toBe(200)
     expect(lastFetchUrl).not.toBeNull()
+  })
+})
+
+describe('video pass-through for a Google-direct model', () => {
+  // Step 0 of SHO-495 (2026-11-21): Gemini's OpenAI-compatible endpoint decodes
+  // video from pi-ai's `image_url` + `data:video/*` block on every probed
+  // model, and rejects both `video_url` and OpenRouter's `file` part. So the
+  // Google branch sends the block untouched — no bridge, no rewrite.
+  for (const model of VIDEO_GOOGLE_MODELS) {
+    test(`${model} reaches Google with the image_url video block unchanged`, async () => {
+      const res = await postChatCompletions({
+        model,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Describe this clip.' },
+              { type: 'image_url', image_url: { url: `data:video/mp4;base64,${VIDEO_B64}` } },
+            ],
+          },
+        ],
+      })
+
+      expect(res.status).toBe(200)
+      expect(lastFetchUrl).toBe(GOOGLE_COMPAT_URL)
+      expect(lastFetchBody.model).toBe(model)
+      const blocks = lastFetchBody.messages[0].content
+      expect(blocks[0]).toEqual({ type: 'text', text: 'Describe this clip.' })
+      expect(blocks[1]).toEqual({
+        type: 'image_url',
+        image_url: { url: `data:video/mp4;base64,${VIDEO_B64}` },
+      })
+      expect(blocks.some((b: any) => b.type === 'video_url')).toBe(false)
+    })
+  }
+
+  // The id the picker serves and the client saves on a seeded instance is the
+  // row's UUID. This is the case that 400'd on staging before SHO-495 round 1.
+  test('a seeded UUID id reaches Google for its apiModel, not as the UUID', async () => {
+    await invalidateModelRegistry()
+    const res = await postChatCompletions({
+      model: CARBON_UUID,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Describe this clip.' },
+            { type: 'image_url', image_url: { url: `data:video/mp4;base64,${VIDEO_B64}` } },
+          ],
+        },
+      ],
+    })
+
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe(GOOGLE_COMPAT_URL)
+    // The cloud/local proxy addresses the provider by the row's apiModel.
+    expect(lastFetchBody.model).toBe('gemini-4-carbon')
+    expect(lastFetchBody.messages[0].content[1]).toEqual({
+      type: 'image_url',
+      image_url: { url: `data:video/mp4;base64,${VIDEO_B64}` },
+    })
+  })
+
+  test('a text-only turn is unchanged: same endpoint, same messages, catalog cap', async () => {
+    const messages = [{ role: 'user' as const, content: 'hello' }]
+    const res = await postChatCompletions({ model: 'gemini-4-carbon', messages, max_tokens: 128 })
+
+    expect(res.status).toBe(200)
+    expect(lastFetchUrl).toBe(GOOGLE_COMPAT_URL)
+    expect(lastFetchBody.messages).toEqual(messages)
+    expect(lastFetchBody.max_tokens).toBe(128)
+    expect(lastFetchBody.store).toBeUndefined()
+    expect(lastFetchBody.reasoning_content).toBeUndefined()
+  })
+})
+
+describe('video rejection on a Google model without the flag', () => {
+  test('rejects the pi-ai video shape with a clear 400 and no upstream call', async () => {
+    const res = await postChatCompletions({
+      model: NON_VIDEO_GOOGLE_MODEL,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'What happens in this video?' },
+            { type: 'image_url', image_url: { url: `data:video/mp4;base64,${VIDEO_B64}` } },
+          ],
+        },
+      ],
+    })
+
+    expect(res.status).toBe(400)
+    const data = (await res.json()) as any
+    expect(data.error.code).toBe('video_input_not_supported')
+    expect(lastFetchUrl).toBeNull()
   })
 })

@@ -225,6 +225,79 @@ describe('a DB-defined (UUID) video model', () => {
   })
 })
 
+describe('a catalog-declared Google model (SHO-495)', () => {
+  // Carbon, Argon, Neon, Hydrogen and 3.8 Flash are static-catalog entries with
+  // `capabilities.supportsVideoInput`, so the runtime decides from the catalog
+  // alone — no AGENT_MODEL_REGISTRY hop, no DB row.
+  const CATALOG_VIDEO_MODELS = [
+    'gemini-4-carbon',
+    'gemini-4-argon',
+    'gemini-4-neon',
+    'gemini-4-hydrogen',
+    'gemini-3.8-flash',
+  ]
+  const TEXT_ONLY_GOOGLE = 'gemini-3.5-flash-lite'
+
+  beforeEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+    mkdirSync(TEST_DIR, { recursive: true })
+    trustWorkspaceForTests(TEST_DIR)
+  })
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  })
+
+  for (const model of CATALOG_VIDEO_MODELS) {
+    test(`${model} gets the clip from read_file`, async () => {
+      const bytes = Buffer.from(`catalog-video-${model}`)
+      writeFileSync(join(TEST_DIR, 'clip.mp4'), bytes)
+      const ctx = makeCtx({ fileStateCache: new FileStateCache(TEST_DIR), effectiveModel: model })
+
+      const r = await run(ctx, 'read_file', { path: 'clip.mp4' })
+      const blocks = r.content as any[]
+      expect(blocks[0].type).toBe('image')
+      expect(blocks[0].mimeType).toBe('video/mp4')
+      expect(blocks[0].data).toBe(bytes.toString('base64'))
+    })
+  }
+
+  test('the bare `carbon` alias resolves to the same video-native entry', async () => {
+    const bytes = Buffer.from('carbon-alias-mp4')
+    writeFileSync(join(TEST_DIR, 'clip.mp4'), bytes)
+    const ctx = makeCtx({ fileStateCache: new FileStateCache(TEST_DIR), effectiveModel: 'carbon' })
+
+    const r = await run(ctx, 'read_file', { path: 'clip.mp4' })
+    expect((r.content as any[])[0].mimeType).toBe('video/mp4')
+  })
+
+  test('a chat attachment reaches Carbon inline instead of being announced as text', () => {
+    const part = {
+      type: 'file',
+      mediaType: 'video/mp4',
+      url: 'data:video/mp4;base64,ZmFrZS1tcDQ=',
+      name: 'clip.mp4',
+    }
+    const carbon = parseFileAttachments([part], {
+      workspaceDir: TEST_DIR,
+      supportsVideo: modelSupportsVideoInput('gemini-4-carbon'),
+    })
+    expect(carbon.images).toHaveLength(1)
+    expect(carbon.images[0].mimeType).toBe('video/mp4')
+    expect(carbon.textContext ?? '').not.toContain('cannot watch video')
+  })
+
+  test('a Google model without the flag keeps the placeholder', async () => {
+    writeFileSync(join(TEST_DIR, 'clip.mp4'), Buffer.from('mp4'))
+    const ctx = makeCtx({ fileStateCache: new FileStateCache(TEST_DIR), effectiveModel: TEXT_ONLY_GOOGLE })
+
+    const r = await run(ctx, 'read_file', { path: 'clip.mp4' })
+    const content = r.content as any[]
+    expect(content).toHaveLength(1)
+    expect(content[0].text).toContain('cannot watch video')
+  })
+})
+
 describe('read_file tool description', () => {
   // The description is what the model reads before deciding to call the tool, so
   // a cap quoted there that disagrees with the enforced one makes a rejected
@@ -234,5 +307,13 @@ describe('read_file tool description', () => {
     const expectedMb = Math.floor(MAX_VIDEO_INLINE_BYTES / (1024 * 1024))
     expect(readFile.description).toContain(`videos larger than ${expectedMb} MB are rejected`)
     expect(readFile.description).not.toContain('videos larger than 20 MB')
+  })
+
+  // SHO-495: the example used to name only GLM 5.3 Flash, which read as "the one
+  // model that can watch video" and hid the Google-direct models.
+  test('names a Google video-native model next to GLM 5.3 Flash', () => {
+    const readFile = createTools(makeCtx()).find((t) => t.name === 'read_file')!
+    expect(readFile.description).toContain('Carbon')
+    expect(readFile.description).toContain('GLM 5.3 Flash')
   })
 })
