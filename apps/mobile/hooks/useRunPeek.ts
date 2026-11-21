@@ -44,6 +44,11 @@ export function useRunPeek(opts: {
   const [state, setState] = useState<PeekState>({ status: 'idle' })
   const abortRef = useRef<AbortController | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Callers pass an inline arrow; reading it through a ref keeps `fetchPeek`
+  // (and the effect below) stable, or every render would restart the fetch,
+  // set `loading` and render again — React's "Maximum update depth exceeded".
+  const onDoneRef = useRef(onDone)
+  onDoneRef.current = onDone
 
   const fetchPeek = useCallback(
     async (signal: AbortSignal, initial: boolean) => {
@@ -54,7 +59,7 @@ export function useRunPeek(opts: {
       if (cached && cached.expiresAt > now) {
         if (cached.peek === null) {
           setState({ status: 'done' })
-          onDone?.()
+          onDoneRef.current?.()
         } else if (cached.peek.hidden) {
           setState({ status: 'hidden' })
         } else {
@@ -69,7 +74,7 @@ export function useRunPeek(opts: {
         cache.set(key, { peek, expiresAt: Date.now() + CACHE_TTL_MS })
         if (peek === null) {
           setState({ status: 'done' })
-          onDone?.()
+          onDoneRef.current?.()
         } else if (peek.hidden) {
           setState({ status: 'hidden' })
         } else {
@@ -80,7 +85,7 @@ export function useRunPeek(opts: {
         setState({ status: 'error', message: err instanceof Error ? err.message : 'Failed to load' })
       }
     },
-    [workspaceId, chatSessionId, turnId, http, onDone],
+    [workspaceId, chatSessionId, turnId, http],
   )
 
   useEffect(() => {
