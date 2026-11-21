@@ -38,31 +38,92 @@ type QuoteState =
 const resolved = new Map<string, QuoteState>()
 const inflight = new Map<string, Promise<QuoteState>>()
 
+/**
+ * Quotes that mount together are asked for together: a page that links eight
+ * messages opens with one `GET /conversation-messages?ids=` instead of eight
+ * (Sentry JAVASCRIPT-REACT-7J, "N+1 API Call"). Ids queue until the end of the
+ * current task, then go out in batches the server accepts.
+ */
+const BATCH_LIMIT = 50
+let queued = new Map<string, (state: QuoteState) => void>()
+let flushScheduled = false
+
+function settleReady(messageId: string, message: ChatMessage): QuoteState {
+  const state: QuoteState = { status: 'ready', message }
+  resolved.set(messageId, state)
+  return state
+}
+
+function settleFailure(messageId: string, err: { status?: number } | undefined): QuoteState {
+  // 404 is the server's only answer for a message this viewer may not read,
+  // deleted or elsewhere, so that one is worth remembering; anything else is
+  // worth retrying on the next mount.
+  const state: QuoteState = { status: 'unavailable' }
+  if (err?.status === 404) resolved.set(messageId, state)
+  else console.warn('[message-quote] could not load quoted message:', err)
+  return state
+}
+
+function loadOne(messageId: string): Promise<QuoteState> {
+  return api.message(messageId).then(
+    (message) => settleReady(messageId, message),
+    (err: { status?: number }) => settleFailure(messageId, err),
+  )
+}
+
+async function loadBatch(batch: Map<string, (state: QuoteState) => void>): Promise<void> {
+  const ids = [...batch.keys()]
+  if (ids.length === 1) {
+    await Promise.all(ids.map(async (id) => batch.get(id)!(await loadOne(id))))
+    return
+  }
+  try {
+    const { messages, missing } = await api.messages(ids)
+    const byId = new Map(messages.map((m) => [m.id, m]))
+    const gone = new Set(missing)
+    for (const id of ids) {
+      const message = byId.get(id)
+      if (message) batch.get(id)!(settleReady(id, message))
+      else if (gone.has(id)) batch.get(id)!(settleFailure(id, { status: 404 }))
+      else batch.get(id)!(settleFailure(id, undefined))
+    }
+  } catch (err) {
+    // A server without the batch read answers 404 for the route itself (the
+    // batch never 404s for a message). Ask one at a time, as before.
+    if ((err as { status?: number })?.status === 404) {
+      await Promise.all(ids.map(async (id) => batch.get(id)!(await loadOne(id))))
+      return
+    }
+    for (const id of ids) batch.get(id)!(settleFailure(id, err as { status?: number }))
+  }
+}
+
+function flushQueue(): void {
+  flushScheduled = false
+  const pending = queued
+  queued = new Map()
+  const ids = [...pending.keys()]
+  for (let i = 0; i < ids.length; i += BATCH_LIMIT) {
+    const batch = new Map(ids.slice(i, i + BATCH_LIMIT).map((id) => [id, pending.get(id)!]))
+    void loadBatch(batch)
+  }
+}
+
 function loadQuote(messageId: string): Promise<QuoteState> {
   const settled = resolved.get(messageId)
   if (settled) return Promise.resolve(settled)
   const pending = inflight.get(messageId)
   if (pending) return pending
 
-  const request = api
-    .message(messageId)
-    .then((message): QuoteState => {
-      const state: QuoteState = { status: 'ready', message }
-      resolved.set(messageId, state)
-      return state
-    })
-    .catch((err: { status?: number }): QuoteState => {
-      const state: QuoteState = { status: 'unavailable' }
-      // 404 is the server's only answer for a message this viewer may not
-      // read, deleted or elsewhere, so that one is worth remembering; anything
-      // else is worth retrying on the next mount.
-      if (err?.status === 404) resolved.set(messageId, state)
-      else console.warn('[message-quote] could not load quoted message:', err)
-      return state
-    })
-    .finally(() => {
-      inflight.delete(messageId)
-    })
+  const request = new Promise<QuoteState>((resolveState) => {
+    queued.set(messageId, resolveState)
+    if (!flushScheduled) {
+      flushScheduled = true
+      setTimeout(flushQueue, 0)
+    }
+  }).finally(() => {
+    inflight.delete(messageId)
+  })
 
   inflight.set(messageId, request)
   return request
@@ -72,6 +133,8 @@ function loadQuote(messageId: string): Promise<QuoteState> {
 export function resetMessageQuoteCache(): void {
   resolved.clear()
   inflight.clear()
+  queued = new Map()
+  flushScheduled = false
 }
 
 function useQuotedMessage(messageId: string): QuoteState {

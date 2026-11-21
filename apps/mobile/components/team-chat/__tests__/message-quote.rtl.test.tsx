@@ -59,6 +59,8 @@ function failWith(status: number) {
 
 /** Every message id the card asked the server for, in order. */
 const asked: string[] = []
+/** Every batch read, one entry per request. */
+const batches: string[][] = []
 
 mock.module(resolve(import.meta.dir, '../../../lib/team-chat-api'), () => ({
   teamChatApi: () => ({
@@ -77,6 +79,13 @@ mock.module(resolve(import.meta.dir, '../../../lib/team-chat-api'), () => ({
           text: '<@u:u-1> can you check the **staging** deploy? <@u:u-unknown> too.\n\nhttps://docs.example.com/d/1BI3/view',
         }
       return { ...quoted, id }
+    },
+    messages: async (ids: string[]) => {
+      batches.push(ids)
+      return {
+        messages: ids.filter((id) => id !== 'm-gone').map((id) => ({ ...quoted, id })),
+        missing: ids.filter((id) => id === 'm-gone'),
+      }
     },
     // This replacement is process-wide, so keep the rest of the surface a sibling
     // suite in the same run expects; nothing here calls it.
@@ -134,6 +143,7 @@ afterEach(cleanup)
 beforeEach(() => {
   pushes.length = 0
   asked.length = 0
+  batches.length = 0
   resetMessageQuoteCache()
 })
 
@@ -173,7 +183,25 @@ describe('a quoted message', () => {
     expect(asked).toEqual(['m-1'])
   })
 
-  test('opens the message in place when tapped', async () => {
+  test('quotes that mount together are one request, not one each (SHO-483, REACT-7J)', async () => {
+    const { container } = render(
+      <>
+        <MessageQuoteCard names={names} quote={{ href, target: target('m-a') }} />
+        <MessageQuoteCard names={names} quote={{ href, target: target('m-b') }} />
+        <MessageQuoteCard names={names} quote={{ href, target: target('m-a') }} />
+        <MessageQuoteCard names={names} quote={{ href, target: target('m-gone') }} />
+      </>,
+    )
+    await screen.findByText('Message unavailable')
+    await screen.findAllByText('Ana Lopez')
+
+    expect(batches).toEqual([['m-a', 'm-b', 'm-gone']])
+    expect(asked).toEqual([])
+    expect(screen.getAllByText('Ana Lopez')).toHaveLength(3)
+    expect(container.textContent).toContain('Message unavailable')
+  })
+
+    test('opens the message in place when tapped', async () => {
     render(<MessageQuoteCard names={names} quote={{ href, target: target('m-1') }} />)
     await screen.findByText('Ana Lopez')
 
