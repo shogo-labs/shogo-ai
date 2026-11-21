@@ -237,3 +237,40 @@ describe('sweeping a large backlog (SHO-482)', () => {
     expect(await turnFrameCount(turn)).toBe(5)
   })
 })
+
+/**
+ * AC1 of SHO-482, as a regression test: while the sweep deletes, the process
+ * must keep turning the event loop, because that is what answers `/api/health`.
+ *
+ * The old sweep was one `deleteMany` over the whole backlog. On the desktop's
+ * synchronous SQLite adapter that held the loop for ~71 s, past the 30 s health
+ * window, so the supervisor killed the API mid-delete and every relaunch
+ * repeated it. A microtask "yield" would look like a fix and behave the same
+ * as the bug: a 0 ms interval is a macrotask, so it only ever fires while the
+ * sweep is genuinely off the loop.
+ */
+describe('the sweep leaves the event loop free (SHO-482 AC1)', () => {
+  test('a 0 ms timer keeps firing while a backlog is deleted in batches', async () => {
+    await db.chatTurnFrame.deleteMany({})
+    const session = await newSession()
+    const turn = `turn-${crypto.randomUUID()}`
+    const old = new Date(Date.now() - 72 * 60 * 60_000)
+    await db.chatTurnFrame.createMany({
+      data: Array.from({ length: 200 }, (_, i) => ({ sessionId: session, turnId: turn, seq: i, data: `frame-${i}`, createdAt: old })),
+    })
+
+    let turns = 0
+    const timer = setInterval(() => { turns++ }, 0)
+    let deleted = 0
+    try {
+      deleted = await sweepTurnFrames(undefined, { batchSize: 5, maxBatches: 40, budgetMs: 60_000 })
+    } finally {
+      clearInterval(timer)
+    }
+
+    expect(deleted).toBe(200)
+    // 40 batches, so 39 yields: a batch-at-a-time sweep that never left the
+    // loop would fire the timer zero times (or once, by luck at the start).
+    expect(turns).toBeGreaterThan(1)
+  })
+})
