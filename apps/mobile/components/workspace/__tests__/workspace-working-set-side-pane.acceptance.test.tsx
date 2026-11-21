@@ -15,7 +15,7 @@
  *    and the sheet's Open must keep routing to the project page.
  */
 import { afterEach, beforeEach, expect, mock, test } from "bun:test"
-import { createElement, forwardRef } from "react"
+import { createElement, forwardRef, useState } from "react"
 import { createReactNativeMock } from "../../../test/react-native-mock"
 
 const viewport = { width: 1440 }
@@ -201,6 +201,48 @@ const pane = mock((props: any) =>
   }),
 )
 mock.module("../../team-chat/ProjectSidePane", () => ({ ProjectSidePane: pane }))
+/**
+ * The Working set is a chat-dock panel now (SHO-484). This stands in for
+ * `ChatDock` — one card per descriptor the screen hands `ChatPanel`, its real
+ * header fields, and a toggle that mounts the body — while keeping the
+ * file/plan buttons the real panel uses to fill the side slot.
+ */
+const DockPanelStandIn = ({ descriptor }: { descriptor: any }) => {
+  const [expanded, setExpanded] = useState(descriptor.defaultExpanded === true)
+  return createElement(
+    "div",
+    { "data-testid": `dock-panel-${descriptor.id}` },
+    createElement(
+      "div",
+      { "data-testid": `dock-header-${descriptor.id}` },
+      createElement("span", null, descriptor.title),
+      descriptor.summary
+        ? createElement(
+            "span",
+            { "data-testid": `dock-summary-${descriptor.id}` },
+            descriptor.summary,
+          )
+        : null,
+      descriptor.headerActions ?? null,
+      createElement(
+        "button",
+        {
+          type: "button",
+          "aria-label": `Toggle ${descriptor.title}`,
+          onClick: () => setExpanded((open: boolean) => !open),
+        },
+        "toggle",
+      ),
+    ),
+    expanded
+      ? createElement(
+          "div",
+          { "data-testid": `dock-body-${descriptor.id}` },
+          descriptor.render({ expanded: true }),
+        )
+      : null,
+  )
+}
 mock.module("../../chat/ChatPanel", () => ({
   // The real panel opens these panes from file-link and plan buttons; the test
   // needs the very same handlers the screen passes down.
@@ -225,6 +267,9 @@ mock.module("../../chat/ChatPanel", () => ({
           onClick: () => props.onOpenPlan?.(),
         },
         "plan",
+      ),
+      ...(props.dockPanels ?? []).map((descriptor: any) =>
+        createElement(DockPanelStandIn, { key: descriptor.id, descriptor }),
       ),
     ),
 }))
@@ -296,7 +341,7 @@ beforeEach(() => {
   chrome.mobile = false
 })
 
-/** Mounts the screen and waits for the working set it loads from the API. */
+/** Mounts the screen and waits for the dock panel the API's attachments add. */
 const openScreen = async () => {
   render(createElement(WorkspaceAgentChatScreen, {}))
   await waitFor(() => {
@@ -304,6 +349,8 @@ const openScreen = async () => {
   })
 }
 
+const expandPanel = () =>
+  fireEvent.click(screen.getByLabelText("Toggle Working set"))
 const chip = (name: string) => screen.getByLabelText(`${name} project`)
 const paneShown = () => screen.queryByTestId("project-side-pane")
 const paneProject = () => paneShown()?.getAttribute("data-project-id")
@@ -312,6 +359,7 @@ const planPaneShown = () => screen.queryByTestId("workspace-plan-pane")
 
 test("a chip takes the side slot from an open file pane instead of stacking beside it", async () => {
   await openScreen()
+  expandPanel()
 
   fireEvent.click(screen.getByLabelText("open file"))
   await waitFor(() => expect(filePaneShown()).not.toBeNull())
@@ -328,6 +376,7 @@ test("a chip takes the side slot from an open file pane instead of stacking besi
 
 test("a chip takes the side slot from an open plan pane too", async () => {
   await openScreen()
+  expandPanel()
 
   fireEvent.click(screen.getByLabelText("open plan"))
   await waitFor(() => expect(planPaneShown()).not.toBeNull())
@@ -339,21 +388,14 @@ test("a chip takes the side slot from an open plan pane too", async () => {
   expect(push).not.toHaveBeenCalled()
 })
 
-test("wide but on phone chrome there is no side slot: the sheet and its Open route stay", async () => {
+test("wide but on phone chrome there is no side slot: the chip routes to the project page", async () => {
   // 1440 px wide, yet phone chrome is mounted — `hasSidePane` is false, so the
   // working set must behave exactly like a phone.
   chrome.mobile = true
   await openScreen()
+  expandPanel()
 
-  expect(screen.queryByLabelText("Alpha project")).toBeNull()
-  expect(screen.queryByText("+1")).not.toBeNull()
-
-  fireEvent.click(screen.getByLabelText("Manage project scope"))
-  await waitFor(() => expect(screen.getByText("Project scope")).toBeInTheDocument())
-
-  // By text, not by the new label: this path is unchanged and must keep
-  // working even if the row is labelled differently.
-  fireEvent.click(screen.getAllByText("Open")[0].closest("button")!)
+  fireEvent.click(chip("Alpha"))
 
   expect(paneShown()).toBeNull()
   expect(push).toHaveBeenCalledWith({
@@ -364,6 +406,17 @@ test("wide but on phone chrome there is no side slot: the sheet and its Open rou
       chatScope: "workspace",
     },
   })
+})
+
+test("phone chrome with attachments adds no clearance above the transcript", async () => {
+  // The old working-set row paid `insets.top + 112` itself *and* the
+  // transcript paid `phoneTranscriptTopPadding` again (SHO-484). With the row
+  // gone, only a welcome card reserves that clearance.
+  chrome.mobile = true
+  await openScreen()
+
+  expect(screen.getByTestId("dock-panel-working-set")).toBeInTheDocument()
+  expect(screen.queryByTestId("workspace-welcome-clearance")).toBeNull()
 })
 
 afterEach(() => cleanup())
