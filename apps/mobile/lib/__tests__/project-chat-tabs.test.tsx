@@ -111,3 +111,38 @@ describe('useProjectChatTabs', () => {
     expect(result.current.openChatTabIds).toEqual(['activity-session'])
   })
 })
+
+/**
+ * A cold load of `?chatSessionId=` restores the saved tabs first, so a hidden
+ * tab renders before the active one. At `opacity: 0` alone its composer was
+ * still focusable and hit-testable on web, and clicks aimed at "the first
+ * composer" landed in a chat nobody could see.
+ */
+describe('inactiveChatTabStyle', () => {
+  let inactiveChatTabStyle: typeof import('../project-chat-tabs').inactiveChatTabStyle
+
+  beforeAll(async () => {
+    ;({ inactiveChatTabStyle } = await import('../project-chat-tabs'))
+  })
+
+  test('web: the hidden tab is visibility-hidden, not only transparent', () => {
+    expect(inactiveChatTabStyle('web')).toMatchObject({
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      opacity: 0,
+      visibility: 'hidden',
+    })
+  })
+
+  test('native: no web-only visibility key', () => {
+    for (const os of ['ios', 'android']) {
+      const style = inactiveChatTabStyle(os) as Record<string, unknown>
+      expect(style.opacity).toBe(0)
+      expect(style.position).toBe('absolute')
+      expect('visibility' in style).toBe(false)
+    }
+  })
+})
