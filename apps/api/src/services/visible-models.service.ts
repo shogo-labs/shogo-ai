@@ -93,6 +93,13 @@ export interface VisibleCatalogModel {
     cacheWritePerMillion: number
     outputPerMillion: number
   }
+  /**
+   * Slugs this model used to be known by (a DB `ModelDefinition.aliases`
+   * entry). A picker that finds one of these saved as its selection re-points
+   * it at `id` instead of resetting it, which is how a selection saved before
+   * the slug→UUID migration survives (SHO-497).
+   */
+  aliases?: string[]
 }
 
 /** The full platform-visible model payload: the catalog allowlist resolved
@@ -235,10 +242,11 @@ export async function resolveVisibleCatalogModels(
   catalogIds: string[] | null,
   options: { includeLive?: boolean } = {},
 ): Promise<VisibleCatalogModel[]> {
-  const { getMergedCatalogSync, getMergedModelEntrySync, getDbModelEntriesSync, getCloudModelEntriesSync, getDbModelPricingSync } =
+  const { getMergedCatalogSync, getMergedModelEntrySync, getDbModelEntriesSync, getCloudModelEntriesSync, getDbModelPricingSync, getModelAliasesSync } =
     await import('./model-registry.service')
   const toVisible = (entry: any): VisibleCatalogModel => {
     const pricing = getDbModelPricingSync(entry.id)
+    const aliases = getModelAliasesSync(entry.id)
     return {
       id: entry.id,
       provider: entry.provider,
@@ -255,6 +263,7 @@ export async function resolveVisibleCatalogModels(
       ...(entry.reasoningEffort ? { reasoningEffort: entry.reasoningEffort } : {}),
       ...(entry.capabilities?.supportsVideoInput === true ? { supportsVideoInput: true } : {}),
       ...(pricing ? { pricing } : {}),
+      ...(aliases.length > 0 ? { aliases } : {}),
     }
   }
   if (catalogIds === null) {

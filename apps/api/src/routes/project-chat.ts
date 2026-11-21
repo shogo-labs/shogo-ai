@@ -267,7 +267,14 @@ export async function trackUsageFromStream(
   }
   const usageRef: { value: UsageSnapshot | null } = { value: null }
   const chatSessionId = options.chatSessionId ?? requestBody?.chatSessionId ?? null
-  const agentMode = requestBody?.agentMode || 'advanced'
+  // The model this run actually started with (after any downgrade), stamped on
+  // the assistant row. `null` when the body carried none — never the legacy
+  // `advanced` sentinel, which the composer would then adopt as a pick and
+  // reset to Auto (SHO-497).
+  const agentMode: string | null =
+    typeof requestBody?.agentMode === 'string' && requestBody.agentMode.trim()
+      ? requestBody.agentMode.trim()
+      : null
 
   // Accumulate tool call data incrementally as stream events arrive.
   // Keyed by toolCallId so args, result, and duration are captured correctly.
@@ -1583,6 +1590,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       let bodyIsJson = false
       try { parsedBody = JSON.parse(body); bodyIsJson = true } catch { /* not JSON, that's fine */ }
 
+      // The model the person picked for this turn, read before any guard or
+      // run-model downgrade rewrites `agentMode` (SHO-497). It is what their
+      // own message row records, so the composer keeps showing the pick after
+      // the reply even when the run used something else.
+      const requestedAgentMode =
+        typeof parsedBody?.agentMode === 'string' ? parsedBody.agentMode.trim() || null : null
+
       // Persisted chat messages use capability URLs for attachments. The
       // runtime still expects bytes/data URLs for the current model turn, so
       // hydrate only the explicit files and latest user message before proxying.
@@ -1738,12 +1752,21 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       }
 
       // AC5 (SHO-417): a run may not use a model the acting person cannot use.
-      // When the agent's configured model is above them, this run uses their
-      // default model and the runtime states it in the reply's first line. The
-      // agent's saved config is untouched. `auto` is a sentinel, not a model, so
-      // it is never downgraded — the narrowed tier map caps it instead.
+      // When that model is above them, this run uses their default model and the
+      // runtime states it in the reply's first line. The agent's saved config is
+      // untouched. `auto` is a sentinel, not a model, so it is never downgraded —
+      // the narrowed tier map caps it instead.
+      //
+      // The starting model is the person's pick for this turn (SHO-497); the
+      // agent's configured model is only the fallback for a body with no
+      // `agentMode`.
       if (verifiedUserId) {
-        const runModel = await resolveAgentRunModelFor(projectId, project.workspaceId, verifiedUserId)
+        const runModel = await resolveAgentRunModelFor(
+          projectId,
+          project.workspaceId,
+          verifiedUserId,
+          parsedBody.agentMode,
+        )
         if (runModel) {
           parsedBody.agentMode = runModel.model
           if (runModel.downgrade) parsedBody.modelDowngrade = runModel.downgrade
@@ -2026,7 +2049,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // turn and the transcript with no question. Awaited here, i.e. after the
       // usage-limit and attachment gates (a rejected send writes nothing) and
       // before the first proxy attempt.
-      const persistedUserMessage = await persistUserMessageForTurn(incomingChatSessionId, parsedBody as Record<string, unknown>)
+      const persistedUserMessage = await persistUserMessageForTurn(
+        incomingChatSessionId,
+        parsedBody as Record<string, unknown>,
+        { model: requestedAgentMode },
+      )
 
       // A hosted workspace whose desktop is offline queues the turn instead of
       // failing it; the desktop runs it when it is back (SHO-285).
