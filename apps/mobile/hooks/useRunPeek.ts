@@ -44,6 +44,13 @@ export function useRunPeek(opts: {
   const [state, setState] = useState<PeekState>({ status: 'idle' })
   const abortRef = useRef<AbortController | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Callers pass an inline arrow (`onDone: () => setOpen(false)`), which is a new
+  // function on every render. Kept in the deps of `fetchPeek` it made the fetch
+  // callback, and therefore the effect below, change identity on every render —
+  // so the effect re-ran, reset its own state, re-rendered, and React bailed out
+  // with "Maximum update depth exceeded" before the card could ever mount.
+  const onDoneRef = useRef(onDone)
+  onDoneRef.current = onDone
 
   const fetchPeek = useCallback(
     async (signal: AbortSignal, initial: boolean) => {
@@ -54,7 +61,7 @@ export function useRunPeek(opts: {
       if (cached && cached.expiresAt > now) {
         if (cached.peek === null) {
           setState({ status: 'done' })
-          onDone?.()
+          onDoneRef.current?.()
         } else if (cached.peek.hidden) {
           setState({ status: 'hidden' })
         } else {
@@ -69,7 +76,7 @@ export function useRunPeek(opts: {
         cache.set(key, { peek, expiresAt: Date.now() + CACHE_TTL_MS })
         if (peek === null) {
           setState({ status: 'done' })
-          onDone?.()
+          onDoneRef.current?.()
         } else if (peek.hidden) {
           setState({ status: 'hidden' })
         } else {
@@ -80,7 +87,7 @@ export function useRunPeek(opts: {
         setState({ status: 'error', message: err instanceof Error ? err.message : 'Failed to load' })
       }
     },
-    [workspaceId, chatSessionId, turnId, http, onDone],
+    [workspaceId, chatSessionId, turnId, http],
   )
 
   useEffect(() => {
