@@ -383,7 +383,7 @@ export async function listRecentAgentChats(
   // ChatSession has no `projectId` column: workspace chats use
   // `contextType:'workspace'` + `workspaceId`, project chats use
   // `contextType:'project'` + `contextId` (the projectId FK).
-  const sessions = (await (prisma as any).chatSession.findMany({
+  const sessions = await db.chatSession.findMany({
     where: {
       isArchived: false,
       messages: userSentMessage,
@@ -416,7 +416,7 @@ export async function listRecentAgentChats(
         select: { content: true },
       },
     },
-  })) as any[]
+  })
 
   // Resolve the workspace agent's display name once — avoids N async calls.
   const wsAgentName = await agentDisplayName(workspaceId, null)
