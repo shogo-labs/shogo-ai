@@ -73,7 +73,16 @@ const ALLOWED: Record<string, string> = {
   'components/project/RemoteHostPickerModal.tsx': 'a modal keeps its own close',
   'components/onboarding/OnboardingStepper.tsx': 'a stepper, not a screen header',
   'components/analytics/WorkspaceActivitySection.tsx': 'an in-page back link',
+  'components/analytics/SharedAnalytics.tsx': 'analytic cards and their paging arrows',
   'app/(app)/projects/index.tsx': 'a breadcrumb inside the project browser',
+  'components/chat/ImagePreviewModal.tsx': 'a modal keeps its own close and pager',
+  'components/chat/turns/AskUserQuestionWidget.tsx': 'a wizard step inside a chat turn',
+  'components/layout/sidebar/AppSidebar.tsx': 'the sidebar drill-down, not a screen',
+  'components/project/panels/AgentsPanel.tsx': 'an IDE panel inside the project top bar',
+  'components/project/panels/FilesBrowserPanel.tsx': 'an IDE panel inside the project top bar',
+  'components/project/panels/ide/EditorTabs.tsx': 'an IDE tab strip',
+  'components/project/topbar/dropdown/ProjectMenuView.tsx': 'a dropdown menu, not a screen',
+  'components/project/topbar/dropdown/ProjectSwitcherView.tsx': 'a dropdown menu, not a screen',
 }
 
 /**
@@ -105,8 +114,19 @@ const MUST_USE_THE_HEADER = [
   'components/project/ProjectSurfaceHeader.tsx',
 ]
 
-/** A back control of the retired shapes: a bare arrow, or a "Back" pressable. */
-const RETIRED_IDIOMS: RegExp[] = [/<ArrowLeft\b/, /accessibilityLabel=\{?["'`]Back["'` ]/]
+/**
+ * A back control of the retired shapes: a bare arrow — including the
+ * `<ChevronLeft>` every hand-rolled phone back row used — or a "Back"
+ * pressable. A close `X` is not listed: the same glyph is a chip's clear
+ * button and a list row's dismiss all over the app, so a static scan cannot
+ * tell those from a pane's close; the pane closes are held by
+ * `e2e/local/phone-glass-header.test.ts` instead.
+ */
+const RETIRED_IDIOMS: RegExp[] = [
+  /<ArrowLeft\b/,
+  /<ChevronLeft\b/,
+  /accessibilityLabel=\{?["'`]Back["'` ]/,
+]
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
