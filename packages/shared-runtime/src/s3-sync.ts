@@ -42,7 +42,7 @@ import {
 } from '@aws-sdk/client-s3'
 import type { GetObjectCommandOutput } from '@aws-sdk/client-s3'
 import { watch, createReadStream, createWriteStream } from 'fs'
-import { readdir, readFile, writeFile, mkdir, stat, unlink, rm, open, mkdtemp, link, copyFile } from 'fs/promises'
+import { readdir, readFile, writeFile, mkdir, stat, utimes, unlink, rm, open, mkdtemp, link, copyFile } from 'fs/promises'
 import { join, relative, dirname } from 'path'
 import { existsSync, statSync, mkdirSync } from 'fs'
 import { createHash } from 'crypto'
@@ -1279,7 +1279,13 @@ export class S3Sync {
         await mkdir(dirname(dst), { recursive: true })
         const pointer = pointers.get(rel)
         if (pointer !== undefined) {
+          const src = join(this.config.localDir, rel)
+          const srcStat = await stat(src)
           await writeFile(dst, pointer)
+          // Carry the original mtime: tar records it, so a fresh timestamp
+          // would change the archive bytes on every tick and defeat the
+          // "skip upload when the archive is unchanged" check.
+          await utimes(dst, srcStat.atime, srcStat.mtime)
           continue
         }
         try {

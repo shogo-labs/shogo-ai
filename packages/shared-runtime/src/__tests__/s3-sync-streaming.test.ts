@@ -486,6 +486,18 @@ describe('LFS-tracked files travel as pointer text and are materialized on hydra
     expect(html).toBe('<html>published</html>')
   }, { timeout: 60_000 })
 
+  test('an unchanged LFS project packs to identical bytes (upload dedupe still works)', async () => {
+    makeLfsProject()
+    const sync = mkSync()
+    sync.setLfsObjectsDurable(true)
+
+    const first = scratchFile('packed-1.tar.gz')
+    const second = scratchFile('packed-2.tar.gz')
+    await sync.packProjectArchive(first)
+    await sync.packProjectArchive(second)
+    expect(readFileSync(second).equals(readFileSync(first))).toBe(true)
+  }, { timeout: 60_000 })
+
   test('without a durable push the archive keeps the bytes (never lose the only copy)', async () => {
     makeLfsProject()
     const sync = mkSync()
