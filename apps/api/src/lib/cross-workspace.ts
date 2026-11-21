@@ -26,11 +26,21 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { prisma } from './prisma'
 import { loadAccess, type AccessContext } from './authz/access'
+import {
+  CROSS_WORKSPACE_HOSTED_FROM_HEADER,
+  CROSS_WORKSPACE_REQUESTER_HEADER,
+  CROSS_WORKSPACE_TOOL_HEADER,
+} from './cross-workspace-headers'
+
+export {
+  CROSS_WORKSPACE_HOSTED_FROM_HEADER,
+  CROSS_WORKSPACE_REQUESTER_HEADER,
+  CROSS_WORKSPACE_TOOL_HEADER,
+} from './cross-workspace-headers'
 
 const db = prisma as any
 
 export const CROSS_WORKSPACE_APPROVAL_HEADER = 'X-Cross-Workspace-Approval'
-export const CROSS_WORKSPACE_TOOL_HEADER = 'X-Cross-Workspace-Tool'
 export const CROSS_WORKSPACE_ARGS_HEADER = 'X-Cross-Workspace-Args-Hash'
 /**
  * Which workspace the call is for, when the URL names a *project* instead
@@ -225,20 +235,7 @@ export function targetAccessAllows(access: AccessContext, write: boolean): boole
   return access.permissions.has(write ? 'workspace:update' : 'workspace:read')
 }
 
-/**
- * The person a forwarded cross-workspace call was made for (SHO-389).
- *
- * A desktop that relays a call to a cloud workspace has already proved who it
- * is for — it holds the person's ticket and their owned Personal workspace, and
- * it spends the approval. The cloud cannot re-verify that ticket (different
- * signing secret), so the desktop names the person in two headers instead. They
- * are only believed when the caller authenticated with a **workspace device
- * key** (the `Authorization: Bearer shogo_sk_…` a signed-in desktop uses) *and*
- * names a Personal workspace that person actually owns — so a runtime token,
- * which an agent can read, cannot use them to impersonate anybody.
- */
 export const CROSS_WORKSPACE_FROM_HEADER = 'X-Cross-Workspace-From'
-export const CROSS_WORKSPACE_REQUESTER_HEADER = 'X-Cross-Workspace-Requester'
 
 export async function relayedCrossWorkspaceRequester(c: {
   req: { header: (n: string) => string | undefined }
@@ -322,22 +319,6 @@ export async function resolveTargetHome(targetWorkspaceId: string): Promise<Targ
     message: 'You are not a member of that workspace, so it is not reachable from here.',
   }
 }
-
-/**
- * The cloud half of a workspace hosted on a paired desktop (SHO-493).
- *
- * A hosted workspace's boards, cards and chat live in **that desktop's
- * SQLite**, so answering the call from Postgres would give wrong or empty
- * answers. The call is forwarded over the host's instance tunnel instead, to
- * the same `/api/internal/workspaces/<id>/…` path on the desktop's local API.
- *
- * `X-Cross-Workspace-Hosted-From` is what marks such a request on the desktop
- * side. It names the Personal workspace the person was acting in. It grants
- * nothing on its own: the tunnel-stamped user, the desktop holding the
- * workspace and a membership check against that SQLite are all still required
- * (see `hostedForward`).
- */
-export const CROSS_WORKSPACE_HOSTED_FROM_HEADER = 'X-Cross-Workspace-Hosted-From'
 
 /** The only path shape a forwarded call is accepted on. */
 const HOSTED_FORWARD_PATH = /^\/api\/internal\/workspaces\/([^/]+)(?:\/|$)/
@@ -453,95 +434,32 @@ export interface ForwardToHostOptions {
 
 /**
  * Forward one cross-workspace call to the desktop that hosts the workspace
- * (SHO-493), and pass its answer back unchanged.
+ * (SHO-493).
  *
- * The tunnel is woken first: an offline host is `503 device_offline` with its
- * name and last-seen time — the same shape `/devices/:instanceId/remote-tool`
- * answers — never a 200 with an empty body. A tunnel that dies mid-request is
- * `503 device_offline` when it says the machine is offline and `502
- * device_tunnel_error` otherwise.
+ * The forwarding itself lives in `cross-workspace-host.ts`, which is loaded only
+ * in cloud mode: it needs the instance-tunnel transport, and that pulls
+ * `proxy-billing-session` into whatever bundle contains it. The desktop's
+ * `resources/bundle/api.js` must not ship either, so the import sits behind the
+ * build-time guard, exactly like the other cloud-only islands. A desktop never
+ * gets here — its own API answers `503 desktop_hosted` before forwarding.
  */
 export async function forwardToHost(
   c: any,
   input: ForwardToHostInput,
   opts: ForwardToHostOptions = {},
 ): Promise<Response> {
-  const instance = await db.instance
-    .findUnique({
-      where: { id: input.hostInstanceId },
-      select: { id: true, name: true, userId: true, lastSeenAt: true },
-    })
-    .catch(() => null)
-  const offline = () =>
-    deviceOffline(c, input.hostInstanceId, instance?.name ?? null, instance?.lastSeenAt ?? null)
-
-  if (!instance?.userId) return offline()
-
-  let tunnel: import('./host-tunnel').TunnelTransport
-  try {
-    tunnel = opts._tunnel ?? ((await import('../routes/instances')) as unknown as import('./host-tunnel').TunnelTransport)
-  } catch {
-    return offline()
-  }
-  const { hostWakeDeadlineMs } = await import('./host-tunnel')
-  const deadline = opts._wakeDeadlineMs ?? hostWakeDeadlineMs()
-  if (!(await tunnel.ensureTunnelConnected(input.hostInstanceId, deadline).catch(() => false))) return offline()
-
-  const method = c.req.method
-  const body = method === 'GET' || method === 'HEAD' ? undefined : await c.req.text()
-  const headers: Record<string, string> = {
-    // One user: the desktop belongs to the person whose tunnel this is.
-    'x-tunnel-auth-user-id': instance.userId,
-    [CROSS_WORKSPACE_HOSTED_FROM_HEADER]: input.callerWorkspaceId,
-    [CROSS_WORKSPACE_REQUESTER_HEADER]: input.requesterUserId,
-  }
-  if (input.tool) headers[CROSS_WORKSPACE_TOOL_HEADER] = input.tool
-  if (body !== undefined) headers['content-type'] = c.req.header('content-type') ?? 'application/json'
-
-  try {
-    const resp = await tunnel.sendTunnelRequest(input.hostInstanceId, {
-      type: 'request',
-      requestId: tunnel.generateRequestId(),
-      method,
-      path: c.req.path + new URL(c.req.url).search,
-      headers,
-      body,
-    })
-    const { DROP_RESPONSE_HEADERS } = await import('./host-tunnel')
-    const out = new Headers()
-    for (const [key, value] of Object.entries(resp.headers ?? {})) {
-      if (value && !DROP_RESPONSE_HEADERS.has(key.toLowerCase())) out.set(key, value)
-    }
-    if (!out.has('content-type')) out.set('content-type', 'application/json')
-    return new Response(resp.body || '', { status: resp.status, headers: out })
-  } catch (err: any) {
-    if (/offline/i.test(err?.message ?? '')) return offline()
+  const cloud = process.env.SHOGO_LOCAL_MODE !== 'true' ? await import('./cross-workspace-host') : null
+  if (!cloud) {
     return c.json(
       {
         error: {
-          code: 'device_tunnel_error',
-          message: err?.message ?? 'The desktop hosting that workspace could not be reached',
-          instanceId: input.hostInstanceId,
-          retryable: true,
+          code: 'desktop_hosted',
+          message:
+            'That workspace runs on a paired desktop, and a call from this machine can only reach it through Shogo Cloud.',
         },
       },
-      502,
+      503,
     )
   }
-}
-
-/** The `device_offline` refusal, the same shape the device-tools route uses. */
-function deviceOffline(c: any, instanceId: string, name: string | null, lastSeenAt: Date | null): Response {
-  const seen = lastSeenAt ? new Date(lastSeenAt).toISOString() : null
-  return c.json(
-    {
-      error: {
-        code: 'device_offline',
-        message: `${name || 'The desktop hosting that workspace'} is offline${seen ? ` (last seen ${seen})` : ''}`,
-        instanceId,
-        lastSeenAt: seen,
-      },
-    },
-    503,
-  )
+  return cloud.forwardToHostOnHost(c, input, opts)
 }

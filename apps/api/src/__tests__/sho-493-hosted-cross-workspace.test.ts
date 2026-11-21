@@ -179,12 +179,14 @@ beforeEach(() => {
 
 describe('A · the target list', () => {
   const withMode = async (mode: 'cloud' | 'local', fn: () => Promise<void> | void) => {
+    const previous = process.env.SHOGO_LOCAL_MODE
     if (mode === 'cloud') delete process.env.SHOGO_LOCAL_MODE
     else process.env.SHOGO_LOCAL_MODE = 'true'
     try {
       await fn()
     } finally {
-      process.env.SHOGO_LOCAL_MODE = 'true'
+      if (previous === undefined) delete process.env.SHOGO_LOCAL_MODE
+      else process.env.SHOGO_LOCAL_MODE = previous
     }
   }
 
@@ -230,6 +232,11 @@ describe('A · the target list', () => {
 })
 
 describe('B · forwarding over the host tunnel', () => {
+  // Forwarding is the cloud's job; the desktop refuses it (last test here).
+  beforeEach(() => {
+    delete process.env.SHOGO_LOCAL_MODE
+  })
+
   const call = (path = `/api/internal/workspaces/${hostedWorkspaceId}/agent-boards`) =>
     new Hono()
       .all('/api/internal/workspaces/:workspaceId/*', (c) =>
@@ -311,9 +318,30 @@ describe('B · forwarding over the host tunnel', () => {
     expect(body.code).toBe('device_tunnel_error')
     expect(body.instanceId).toBe(hostInstanceId)
   })
+
+  test('a desktop does not forward: it answers desktop_hosted, without touching a tunnel', async () => {
+    // Not a reachable path in practice — the desktop's own API refuses first —
+    // but the guard is what keeps the transport out of its bundle.
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    try {
+      const res = await call()
+      expect(res.status).toBe(503)
+      const body = (await res.json<any>()).error
+      expect(body.code).toBe('desktop_hosted')
+      expect(body.message).toContain('Shogo Cloud')
+      expect(wakeCalls).toHaveLength(0)
+      expect(tunnelCalls).toHaveLength(0)
+    } finally {
+      delete process.env.SHOGO_LOCAL_MODE
+    }
+  })
 })
 
 describe('C · the desktop accepts the forward', () => {
+  beforeEach(() => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+  })
+
   test('a read answers from the desktop’s own SQLite, attributed to its person', async () => {
     const res = await desktopApp.request(`http://local/api/internal/workspaces/${hostedWorkspaceId}/agent-boards`, {
       headers: forwardedHeaders(),
@@ -394,6 +422,10 @@ describe('C · the desktop accepts the forward', () => {
 })
 
 describe('D · agent_runs_list / agent_run_stop take the Personal ticket', () => {
+  beforeEach(() => {
+    delete process.env.SHOGO_LOCAL_MODE
+  })
+
   test('a Personal agent lists runs in another cloud workspace', async () => {
     const res = await cloudApp.request(`http://local/api/internal/workspaces/${cloudWorkspaceId}/agent-channels/running-agents`, {
       headers: { 'x-runtime-token': personalToken, 'X-Requester-Ticket': ticketFor(personalWorkspaceId, ownerId) },
@@ -461,6 +493,7 @@ describe('D · agent_runs_list / agent_run_stop take the Personal ticket', () =>
   test('a desktop’s own API will not answer for a hosted workspace', async () => {
     // Its SQLite does not hold that workspace's boards: only the cloud can
     // forward, so it says so instead of answering from the wrong database.
+    process.env.SHOGO_LOCAL_MODE = 'true'
     const res = await desktopApp.request(`http://local/api/internal/workspaces/${hostedWorkspaceId}/agent-boards`, {
       headers: { 'x-runtime-token': personalToken, 'X-Requester-Ticket': ticketFor(personalWorkspaceId, ownerId) },
     })
@@ -471,6 +504,7 @@ describe('D · agent_runs_list / agent_run_stop take the Personal ticket', () =>
   })
 
   test('the desktop answers a forwarded runs call without a Personal ticket', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
     const res = await desktopApp.request(`http://local/api/internal/workspaces/${hostedWorkspaceId}/agent-channels/running-agents`, {
       headers: forwardedHeaders(),
     })
