@@ -78,7 +78,12 @@ if (command === '3d') {
 }
 
 if (command === 'bucket') {
-  await bucketMain(positionals.slice(1))
+  // Hand the bucket CLI the RAW argv after `bucket`. The outer parseArgs above
+  // declares no bucket options, so with `strict: false` it swallows every
+  // bucket flag into `values`/`positionals` and the subcommand would never see
+  // `--private`, `--key`, `--prefix`, `--min-size`, `--json`, `--overwrite`,
+  // `--dry-run`, `--signed` or `--expires`. `bucketMain` parses argv itself.
+  await bucketMain(process.argv.slice(2).slice(1))
 }
 
 if (command === 'deploy') {

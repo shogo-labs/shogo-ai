@@ -57,6 +57,9 @@ const calls = {
   remove: [] as any[],
 }
 
+/** Desktop vs cloud for the route that exists only on desktop. */
+let localMode = false
+
 const behaviour: {
   createUpload?: () => Promise<any>
   head?: () => Promise<any>
@@ -120,7 +123,11 @@ mock.module('../services/project-bucket.service', () => ({
     if (behaviour.head) return behaviour.head()
     return { key, visibility, size: 5, contentType: 'image/png', etag: 'e', sha256: null, updatedAt: '' }
   },
-  isLocalBucketMode: () => false,
+  isLocalBucketMode: () => localMode,
+  projectBucketPublicPrefix: (projectId: string) =>
+    localMode
+      ? `http://localhost:3000/api/bucket/${projectId}/public/`
+      : `https://cdn.shogo.one/${projectId}/`,
   listBucketObjects: async (projectId: string, options: any) => {
     calls.list.push({ projectId, options })
     return { objects: [{ key: 'a.png', visibility: 'public', size: 1 }], cursor: null }
@@ -165,6 +172,7 @@ beforeEach(() => {
   delete behaviour.remove
   delete behaviour.putStream
   bucketUpdate.mockClear()
+  localMode = false
   router = projectBucketRoutes({ apiOrigin: 'http://localhost:3000' })
 })
 
@@ -284,7 +292,18 @@ describe('POST /projects/:id/bucket/uploads', () => {
 // ─── desktop upload target ──────────────────────────────────────────────────
 
 describe('PUT /projects/:id/bucket/uploads/:uploadId', () => {
+  test('does not exist on cloud — cloud tickets point at object storage', async () => {
+    const response = await router.request('/projects/p_1/bucket/uploads/tok', {
+      method: 'PUT',
+      body: 'hello',
+      headers: { 'content-type': 'text/plain', 'content-length': '5' },
+    })
+    expect(response.status).toBe(404)
+    expect(calls.putStream).toHaveLength(0)
+  })
+
   test('streams the body and passes the declared length to the gate', async () => {
+    localMode = true
     const response = await router.request('/projects/p_1/bucket/uploads/tok', {
       method: 'PUT',
       body: 'hello',
@@ -300,6 +319,7 @@ describe('PUT /projects/:id/bucket/uploads/:uploadId', () => {
   })
 
   test('an unknown ticket is a 400', async () => {
+    localMode = true
     const response = await router.request('/projects/p_1/bucket/uploads/nope', {
       method: 'PUT',
       body: 'hello',
@@ -325,7 +345,7 @@ describe('GET /projects/:id/bucket/objects', () => {
     })
     const payload = (await response.json()) as any
     expect(payload.objects[0].key).toBe('a.png')
-    expect(payload.publicBaseUrl).toBe('http://localhost:3000')
+    expect(payload.publicUrlPrefix).toBe('https://cdn.shogo.one/p_1/')
   })
 
   test('an unreadable index is a 500 with a usable code', async () => {

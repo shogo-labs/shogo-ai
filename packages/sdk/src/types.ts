@@ -48,6 +48,14 @@ export interface ShogoClientConfig<DB = unknown> {
   bucketCdnBaseUrl?: string
 
   /**
+   * The full prefix a public bucket object URL starts with, key excluded. Use
+   * it when the deployment serves objects at a different depth than the cloud
+   * CDN (desktop: `<apiUrl>/api/bucket/<projectId>/public/`). Otherwise the SDK
+   * learns the prefix from the first bucket call that returns one.
+   */
+  bucketPublicUrlPrefix?: string
+
+  /**
    * Shogo project id. Required for Mode B voice telephony, pod-native
    * runtime-token voice telephony, and also forwarded to the direct
    * (Mode A) telephony client as a bookkeeping handle.

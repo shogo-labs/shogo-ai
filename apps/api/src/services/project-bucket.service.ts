@@ -256,11 +256,16 @@ export interface ProjectBucketDriver {
   ): Promise<BucketReadStream | null>
   /** Read URL that needs no credentials: presigned (cloud) or token (desktop). */
   readUrl(projectId: string, visibility: BucketVisibility, key: string, expiresIn: number): Promise<string>
-  /** Stream `stream` into the object at `path`. */
+  /**
+   * Stream `stream` into the object at `path`. `contentLength` is the caller's
+   * declared size; object storage needs it to accept a stream without the API
+   * holding the object in memory.
+   */
   writeObject(
     path: string,
     stream: ReadableStream<Uint8Array> | null,
     contentType?: string | null,
+    contentLength?: number | null,
   ): Promise<{ size: number; etag: string | null }>
 }
 
@@ -508,27 +513,36 @@ class S3ProjectBucketDriver implements ProjectBucketDriver {
     )
   }
 
-  /** Server-side put: the API streams bytes it already has into the bucket. */
+  /**
+   * Server-side put: the API streams bytes it already has into the bucket.
+   *
+   * Streamed, never buffered. A whole-object `arrayBuffer()` here would put the
+   * file's size into the API's RSS — the same defect SHO-478/485 fixed on the
+   * publish path — so the body goes to S3 as a stream and `Content-Length` is
+   * required to make that possible.
+   */
   async writeObject(
     path: string,
     stream: ReadableStream<Uint8Array> | null,
     contentType?: string | null,
+    contentLength?: number | null,
   ): Promise<{ size: number; etag: string | null }> {
     const bucket = requireProjectBucketName()
     if (!stream) throw new Error('no body to store')
-    // Bounded by the caller: the cloud path never routes big files through the
-    // API (they go straight to the presigned URL), so this only ever handles
-    // small JSON-ish payloads.
-    const body = Buffer.from(await new Response(stream).arrayBuffer())
+    if (!Number.isFinite(contentLength) || Number(contentLength) < 0) {
+      throw new Error('writeObject needs the content length to stream a body')
+    }
+    const size = Number(contentLength)
     const response = await getS3Client().send(
       new PutObjectCommand({
         Bucket: bucket,
         Key: path,
-        Body: body,
+        Body: Readable.fromWeb(stream as any),
+        ContentLength: size,
         ...(contentType ? { ContentType: contentType } : {}),
       }),
     )
-    return { size: body.byteLength, etag: response.ETag?.replace(/"/g, '') ?? null }
+    return { size, etag: response.ETag?.replace(/"/g, '') ?? null }
   }
 }
 
@@ -821,13 +835,26 @@ export function projectBucketCdnBaseUrl(): string | null {
 }
 
 /**
+ * What a public object's URL starts with — everything before the key.
+ *
+ * The two deployments serve public objects at different depths, so a client
+ * cannot rebuild a URL from an origin alone: cloud is
+ * `https://cdn.<domain>/<projectId>/<key>`, desktop is
+ * `<apiOrigin>/api/bucket/<projectId>/public/<key>`. The API answers this
+ * prefix (`publicUrlPrefix`) and the SDK simply appends an encoded key.
+ */
+export function projectBucketPublicPrefix(projectId: string): string {
+  const cdn = projectBucketCdnBaseUrl()
+  if (cdn) return `${cdn}/${encodePathSegments(projectId)}/`
+  return `${bucketApiOrigin()}/api/bucket/${encodePathSegments(projectId)}/public/`
+}
+
+/**
  * The URL a public object is served at: the CDN on cloud, the API's own
  * `/api/bucket/...` route on desktop.
  */
 export function bucketObjectPublicUrl(projectId: string, key: string): string {
-  const cdn = projectBucketCdnBaseUrl()
-  if (cdn) return `${cdn}/${encodePathSegments(projectId)}/${encodePathSegments(key)}`
-  return `${bucketApiOrigin()}/api/bucket/${projectId}/public/${encodePathSegments(key)}`
+  return `${projectBucketPublicPrefix(projectId)}${encodePathSegments(key)}`
 }
 
 // ---------------------------------------------------------------------------
@@ -1117,6 +1144,7 @@ export async function putBucketStream(
     bucketObjectPath(project.id, input.visibility, input.key),
     stream,
     input.contentType ?? null,
+    Number.isFinite(declared) ? declared : null,
   )
   const row = await prisma.projectBucketObject.upsert({
     where: { projectId_visibility_key: { projectId: project.id, visibility: input.visibility, key: input.key } },
@@ -1272,8 +1300,15 @@ export interface BucketUsage {
   allowanceBytes: number
   billingMode: 'shadow' | 'enforce'
   usdPerGbMonth: number
-  /** Where public objects are served: the CDN on cloud, this API on desktop. */
+  /** Origin public objects are served from (the CDN on cloud, this API on desktop). */
   publicBaseUrl: string
+  /**
+   * Everything a public object URL starts with, key excluded — the same on both
+   * deployments only in the sense that `prefix + encodePathSegments(key)` is the
+   * object's URL. Cloud has no `/api/bucket/.../public/` segment, so a client
+   * that rebuilds from `publicBaseUrl` produces a 404 on desktop.
+   */
+  publicUrlPrefix: string
 }
 
 /** `/bucket/usage`: what this project holds and what the workspace has left. */
@@ -1308,6 +1343,7 @@ export async function bucketUsage(project: BucketProject): Promise<BucketUsage> 
     billingMode: storageBillingMode(),
     usdPerGbMonth: STORAGE_USD_PER_GB_MONTH,
     publicBaseUrl: projectBucketCdnBaseUrl() ?? bucketApiOrigin(),
+    publicUrlPrefix: projectBucketPublicPrefix(project.id),
   }
 }
 

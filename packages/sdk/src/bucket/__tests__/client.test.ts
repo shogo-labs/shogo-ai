@@ -145,6 +145,44 @@ describe('url()', () => {
     await bucket.put('a.png', new Blob(['abc'], { type: 'image/png' }))
     expect(bucket.url('b.png')).toBe(`https://cdn.shogo.test/${PROJECT}/b.png`)
   })
+
+  test('desktop keeps the whole prefix the API reported, /public/ included', async () => {
+    // The API serves desktop objects at `<origin>/api/bucket/<id>/public/<key>`.
+    // A client that cached a base stripped at `/<id>/` rebuilt a URL with no
+    // `/public` segment (404), and after `usage()` one with no `/api/bucket`
+    // either — so `url()` has to reuse the prefix verbatim.
+    const prefix = `${API}/api/bucket/${PROJECT}/public/`
+    handler = (call) => {
+      if (call.url.includes('/bucket/usage')) {
+        return json({
+          projectBytes: 3,
+          projectObjects: 1,
+          workspaceUsedBytes: 3,
+          allowanceBytes: 1024,
+          billingMode: 'shadow',
+          usdPerGbMonth: 0.02,
+          publicBaseUrl: API,
+          publicUrlPrefix: prefix,
+        })
+      }
+      return json({ objects: [], cursor: null, publicUrlPrefix: prefix })
+    }
+
+    const bucket = client()
+    await bucket.usage()
+    expect(bucket.url('media/a b.png')).toBe(`${prefix}media/a%20b.png`)
+
+    await bucket.list({ prefix: 'media/' })
+    expect(bucket.url('x.png')).toBe(`${prefix}x.png`)
+  })
+
+  test('an explicit publicUrlPrefix wins over the CDN host shape', () => {
+    const bucket = client({
+      cdnBaseUrl: 'https://cdn.shogo.test',
+      publicUrlPrefix: 'http://127.0.0.1:4100/api/bucket/p_1/public/',
+    })
+    expect(bucket.url('a.png')).toBe('http://127.0.0.1:4100/api/bucket/p_1/public/a.png')
+  })
 })
 
 // ─── uploads ────────────────────────────────────────────────────────────────
@@ -429,7 +467,7 @@ describe('signedUrl / list / delete / usage', () => {
     expect(calls[0].url).toContain('visibility=private')
   })
 
-  test('usage returns the numbers and teaches url() the public base', async () => {
+  test('usage returns the numbers and teaches url() the CDN prefix', async () => {
     handler = () =>
       json({
         projectBytes: 10,
@@ -440,11 +478,87 @@ describe('signedUrl / list / delete / usage', () => {
         billingMode: 'shadow',
         usdPerGbMonth: 0.02,
         publicBaseUrl: 'https://cdn.shogo.test',
+        publicUrlPrefix: `https://cdn.shogo.test/${PROJECT}/`,
       })
     const bucket = client()
     const usage = await bucket.usage()
     expect(usage.billingMode).toBe('shadow')
     expect(usage.allowanceBytes).toBe(100)
     expect(bucket.url('a.png')).toBe(`https://cdn.shogo.test/${PROJECT}/a.png`)
+  })
+
+  test('desktop: url() keeps the /api/bucket/<id>/public/ shape it was taught', async () => {
+    // The regression QA found: an origin alone cannot rebuild a desktop URL —
+    // dropping `/api/bucket/<id>/public` makes every url() 404.
+    const apiBase = 'http://localhost:3000'
+    handler = () =>
+      json({
+        projectBytes: 10,
+        projectObjects: 1,
+        workspaceId: 'ws_1',
+        workspaceUsedBytes: 10,
+        allowanceBytes: 100,
+        billingMode: 'shadow',
+        usdPerGbMonth: 0.02,
+        publicBaseUrl: apiBase,
+        publicUrlPrefix: `${apiBase}/api/bucket/${PROJECT}/public/`,
+      })
+
+    const bucket = client({ apiUrl: apiBase })
+    await bucket.usage()
+    expect(bucket.url('media/a b.png')).toBe(
+      `${apiBase}/api/bucket/${PROJECT}/public/media/a%20b.png`,
+    )
+  })
+
+  test('desktop: a completed upload teaches the same prefix from its own URL', async () => {
+    const apiBase = 'http://localhost:3000'
+    const publicUrl = `${apiBase}/api/bucket/${PROJECT}/public/a.png`
+    handler = (call) => {
+      if (call.url.endsWith('/bucket/uploads')) {
+        return json(
+          {
+            uploadId: 'u1',
+            key: 'a.png',
+            visibility: 'public',
+            mode: 'single',
+            url: `${apiBase}/api/projects/${PROJECT}/bucket/uploads/u1`,
+            method: 'PUT',
+            headers: {},
+            completeUrl: 'x',
+            publicUrl,
+          },
+          201,
+        )
+      }
+      if (call.url.includes('/complete')) {
+        return json({ key: 'a.png', size: 3, etag: 'e', visibility: 'public', publicUrl })
+      }
+      return json({})
+    }
+
+    const bucket = client({ apiUrl: apiBase })
+    await bucket.put('a.png', new Blob(['abc']))
+    expect(bucket.url('b.png')).toBe(`${apiBase}/api/bucket/${PROJECT}/public/b.png`)
+  })
+
+  test('list teaches the prefix the API reports, not its origin', async () => {
+    handler = () =>
+      json({
+        objects: [],
+        cursor: null,
+        publicUrlPrefix: `https://cdn.shogo.test/${PROJECT}/`,
+      })
+    const bucket = client()
+    await bucket.list()
+    expect(bucket.url('a.png')).toBe(`https://cdn.shogo.test/${PROJECT}/a.png`)
+  })
+
+  test('an explicit publicUrlPrefix wins over a cdnBaseUrl', () => {
+    const bucket = client({
+      cdnBaseUrl: 'https://cdn.shogo.test',
+      publicUrlPrefix: 'http://localhost:3000/api/bucket/p_media/public/',
+    })
+    expect(bucket.url('a.png')).toBe('http://localhost:3000/api/bucket/p_media/public/a.png')
   })
 })

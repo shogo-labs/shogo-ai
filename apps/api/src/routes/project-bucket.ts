@@ -51,6 +51,7 @@ import {
   listBucketObjects,
   normalizeBucketVisibility,
   projectBucketFilePath,
+  projectBucketPublicPrefix,
   putBucketStream,
   validateBucketKey,
   verifyBucketObjectToken,
@@ -167,17 +168,23 @@ export function projectBucketRoutes(config: ProjectBucketRoutesConfig = {}): Hon
   })
 
   /**
-   * Desktop upload target: the whole body, streamed to disk. Cloud tickets
-   * never point here (they point at object storage) but the route is harmless
-   * there — it is the same authenticated project write.
+   * Desktop upload target: the whole body, streamed to disk. Cloud does not
+   * have it — a cloud ticket points straight at object storage, so a request
+   * here means something is wrong and gets a 404.
    */
   router.put('/projects/:projectId/bucket/uploads/:uploadId', async (c) => {
+    if (!isLocalBucketMode()) {
+      return c.json({ error: { code: 'not_found', message: 'Not found' } }, 404)
+    }
     const project = await loadBucketProject(c.req.param('projectId'))
     if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
     const token = decodeUploadToken(c.req.param('uploadId'))
     if (!token) return c.json({ error: { code: 'invalid_upload', message: 'Unknown upload ticket' } }, 400)
 
     const declaredLength = Number(c.req.header('content-length'))
+    // The length is optional: the filesystem driver streams and measures the
+    // body itself. It is passed through so the gate sees a real growth number
+    // (and so a streaming object-store write can bound the body).
     try {
       const stored = await putBucketStream(
         project,
@@ -249,7 +256,9 @@ export function projectBucketRoutes(config: ProjectBucketRoutesConfig = {}): Hon
         cursor: c.req.query('cursor') ?? null,
         limit: Number(c.req.query('limit') ?? 100),
       })
-      return c.json({ ...page, publicBaseUrl: apiOrigin() })
+      // The prefix an object URL is built from, so a client on either
+      // deployment appends an encoded key instead of guessing the shape.
+      return c.json({ ...page, publicUrlPrefix: projectBucketPublicPrefix(projectId) })
     } catch (error) {
       return bucketErrorResponse(c, error)
     }

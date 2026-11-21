@@ -33,8 +33,15 @@ export interface BucketClientOptions {
   runtimeToken?: string | null
   /** `shogo_sk_*` credential for code running outside a pod. */
   shogoApiKey?: string | null
-  /** Override the public URL base (the CDN base on cloud). */
+  /** CDN host on cloud, e.g. `https://cdn.shogo.one` (the project is appended). */
   cdnBaseUrl?: string
+  /**
+   * The full prefix a public object URL starts with, key excluded. Set this when
+   * the deployment's URL shape is not the cloud one (desktop is
+   * `<apiOrigin>/api/bucket/<projectId>/public/`); otherwise the client learns
+   * it from the first API call that returns `publicUrlPrefix`.
+   */
+  publicUrlPrefix?: string
   /** Injectable fetch, for tests. */
   fetch?: typeof fetch
 }
@@ -112,7 +119,10 @@ export interface BucketUsage {
   allowanceBytes: number
   billingMode: 'shadow' | 'enforce'
   usdPerGbMonth: number
+  /** Origin public objects are served from (CDN on cloud, this API on desktop). */
   publicBaseUrl: string
+  /** Everything a public object URL starts with, key excluded. */
+  publicUrlPrefix: string
 }
 
 export interface BucketDeleteResult {
@@ -178,8 +188,14 @@ export class BucketClient {
   private readonly runtimeToken: string | null
   private readonly shogoApiKey: string | null
   private readonly fetchImpl: typeof fetch
-  /** Resolved from `/usage` on the first call; `url()` uses it once known. */
-  private cdnBaseUrl: string | null
+  /**
+   * Everything a public object's URL starts with, key excluded. Learned from
+   * the API (`publicUrlPrefix`) or from a URL it handed back, never guessed:
+   * cloud is `https://cdn.<domain>/<projectId>/` and desktop is
+   * `<apiOrigin>/api/bucket/<projectId>/public/`, so an origin alone cannot
+   * rebuild a working URL.
+   */
+  private publicPrefix: string | null
 
   constructor(options: BucketClientOptions) {
     if (!options?.projectId) {
@@ -194,9 +210,13 @@ export class BucketClient {
       options.runtimeToken === undefined ? readRuntimeAuthSecret() ?? null : options.runtimeToken
     this.shogoApiKey = options.shogoApiKey ?? null
     this.fetchImpl = options.fetch ?? fetch
-    const configuredBase =
-      options.cdnBaseUrl ?? (typeof process !== 'undefined' ? process.env?.SHOGO_BUCKET_CDN_BASE : undefined)
-    this.cdnBaseUrl = configuredBase ? configuredBase.replace(/\/+$/, '') : null
+    this.publicPrefix = bucketUrlPrefix({
+      projectId: this.projectId,
+      cdnBaseUrl:
+        options.cdnBaseUrl ??
+        (typeof process !== 'undefined' ? process.env?.SHOGO_BUCKET_CDN_BASE : undefined),
+      prefix: options.publicUrlPrefix,
+    })
     if (!this.runtimeToken && !this.shogoApiKey) {
       throw new Error(
         'shogo.bucket needs a credential: RUNTIME_AUTH_SECRET (pod) or shogoApiKey (outside a pod)',
@@ -218,7 +238,9 @@ export class BucketClient {
    */
   url(key: string): string {
     const encoded = key.split('/').map(encodeURIComponent).join('/')
-    if (this.cdnBaseUrl) return `${this.cdnBaseUrl}/${encodeURIComponent(this.projectId)}/${encoded}`
+    if (this.publicPrefix) return `${this.publicPrefix}${encoded}`
+    // Before the API has told us the prefix, answer a URL that redirects to the
+    // right one instead of returning a 404.
     return `${this.apiUrl}/api/projects/${this.projectId}/bucket/objects/${encoded}`
   }
 
@@ -250,7 +272,7 @@ export class BucketClient {
       headers: { 'content-type': 'application/json' },
     })
     const ticket = (await response.json()) as BucketUploadTicket
-    this.noteBase(ticket.publicUrl)
+    this.noteBase(ticket.publicUrl, request.key)
     return ticket
   }
 
@@ -271,7 +293,7 @@ export class BucketClient {
       visibility: 'public' | 'private'
       publicUrl: string | null
     }
-    this.noteBase(stored.publicUrl)
+    this.noteBase(stored.publicUrl, stored.key)
     return {
       key: stored.key,
       size: stored.size,
@@ -353,8 +375,8 @@ export class BucketClient {
     if (options.cursor) query.set('cursor', options.cursor)
     if (options.limit) query.set('limit', String(options.limit))
     const response = await this.request(`/bucket/objects${query.size ? `?${query}` : ''}`)
-    const body = (await response.json()) as BucketListPage & { publicBaseUrl?: string }
-    this.noteBaseFromApi(body.publicBaseUrl)
+    const body = (await response.json()) as BucketListPage & { publicUrlPrefix?: string }
+    this.notePrefixFromApi(body.publicUrlPrefix)
     return { objects: body.objects, cursor: body.cursor }
   }
 
@@ -371,7 +393,7 @@ export class BucketClient {
   async usage(): Promise<BucketUsage> {
     const response = await this.request('/bucket/usage')
     const body = (await response.json()) as BucketUsage
-    this.noteBaseFromApi(body.publicBaseUrl)
+    this.notePrefixFromApi(body.publicUrlPrefix)
     return body
   }
 
@@ -409,19 +431,21 @@ export class BucketClient {
     return new BucketError(code, message, response.status, error)
   }
 
-  /** Remember the CDN base from a public object's URL. */
-  private noteBase(publicUrl: string | null): void {
+  /**
+   * Learn the prefix from a URL the API handed back: it is the object's own URL
+   * minus the encoded key, so it is correct on cloud and desktop alike.
+   */
+  private noteBase(publicUrl: string | null, key: string): void {
     if (!publicUrl) return
-    const at = publicUrl.indexOf(`/${this.projectId}/`)
-    if (at <= 0) return
-    this.cdnBaseUrl = publicUrl.slice(0, at)
+    const encoded = key.split('/').map(encodeURIComponent).join('/')
+    if (!publicUrl.endsWith(encoded)) return
+    this.publicPrefix = publicUrl.slice(0, publicUrl.length - encoded.length)
   }
 
-  private noteBaseFromApi(base: string | undefined): void {
-    if (!base) return
-    // The API answers its own origin on desktop, where there is no CDN; using
-    // it as the base still gives a working `/api/bucket/...` URL.
-    this.cdnBaseUrl = base.replace(/\/+$/, '')
+  /** The API answers `publicUrlPrefix` directly; trust it verbatim. */
+  private notePrefixFromApi(prefix: string | undefined): void {
+    if (!prefix) return
+    this.publicPrefix = prefix.endsWith('/') ? prefix : `${prefix}/`
   }
 }
 
@@ -438,4 +462,21 @@ function knownSize(input: PutInput): number | null {
 
 function encodeKey(key: string): string {
   return key.split('/').map(encodeURIComponent).join('/')
+}
+
+/**
+ * Where a public object's URL starts. An explicit prefix wins; a CDN *host* is
+ * expanded to the cloud shape `<host>/<projectId>/`. Without either, the client
+ * stays on the API route (a 302 to the right URL) until it is told.
+ */
+function bucketUrlPrefix(input: {
+  projectId: string
+  cdnBaseUrl?: string
+  prefix?: string
+}): string | null {
+  const explicit = (input.prefix ?? '').trim()
+  if (explicit) return explicit.endsWith('/') ? explicit : `${explicit}/`
+  const host = (input.cdnBaseUrl ?? '').trim().replace(/\/+$/, '')
+  if (!host) return null
+  return `${host}/${encodeURIComponent(input.projectId)}/`
 }

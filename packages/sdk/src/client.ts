@@ -295,6 +295,7 @@ class ShogoClientImpl<DB> implements ShogoClient<DB> {
       runtimeToken,
       shogoApiKey: apiKey ?? undefined,
       cdnBaseUrl: config.bucketCdnBaseUrl,
+      publicUrlPrefix: config.bucketPublicUrlPrefix,
     })
   }
 
