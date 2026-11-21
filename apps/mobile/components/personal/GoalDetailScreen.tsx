@@ -8,7 +8,7 @@
  * `goal_event` activity row links to.
  */
 import { useCallback, useState } from 'react'
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from 'react-native'
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
@@ -29,6 +29,8 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { setChatPrefill } from '../../hooks/useChatPrefill'
 import { api, type PersonalGoal, type PersonalGoalEvent, type PersonalAgentTaskSummary } from '../../lib/api'
 import { ArtifactCardList } from './ArtifactCard'
+import { isPhoneLayout } from '../../lib/native-phone-layout'
+import { PhoneScreenHeader, usePhoneScreenHeaderPadding } from '../layout/PhoneScreenHeader'
 
 type GoalWithDetail = PersonalGoal & { events: PersonalGoalEvent[]; agentTasks: PersonalAgentTaskSummary[] }
 
@@ -42,6 +44,7 @@ export const GoalDetailScreen = observer(function GoalDetailScreen() {
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [decidingEventId, setDecidingEventId] = useState<string | null>(null)
+  const headerPad = usePhoneScreenHeaderPadding()
 
   const load = useCallback(async (refresh = false) => {
     if (!workspace?.id || !id) return
@@ -110,7 +113,7 @@ export const GoalDetailScreen = observer(function GoalDetailScreen() {
     return (
       <View className="flex-1 bg-background">
         <DetailHeader title="Goal" onBack={goBack} />
-        <View className="flex-1 items-center justify-center px-6">
+        <View className="flex-1 items-center justify-center px-6" style={{ paddingTop: headerPad }}>
           <Text className="text-center text-sm text-destructive">{error || 'Goal not found'}</Text>
         </View>
       </View>
@@ -127,6 +130,7 @@ export const GoalDetailScreen = observer(function GoalDetailScreen() {
       <DetailHeader title={goal.title} onBack={goBack} />
       <ScrollView
         contentContainerClassName="mx-auto w-full max-w-2xl px-4 pb-10 pt-5"
+        contentContainerStyle={{ paddingTop: headerPad + 20 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void load(true)} />}
       >
         <View className="flex-row items-center gap-2">
@@ -295,6 +299,10 @@ export const GoalDetailScreen = observer(function GoalDetailScreen() {
 })
 
 function DetailHeader({ title, onBack }: { title: string; onBack: () => void }) {
+  const { width, height } = useWindowDimensions()
+  if (isPhoneLayout(width, height)) {
+    return <PhoneScreenHeader title={title} onBack={onBack} />
+  }
   return (
     <View className="flex-row items-center gap-2 border-b border-border px-4 py-4">
       <Pressable onPress={onBack} accessibilityLabel="Back" className="-ml-2 rounded-md p-2 active:bg-muted">

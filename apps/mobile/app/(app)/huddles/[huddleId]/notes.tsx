@@ -7,11 +7,13 @@
  * conversation; deleting them is for the starter or a workspace admin.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native'
+import { ActivityIndicator, ScrollView, Text, View } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { AlertTriangle, ArrowLeft, CheckSquare, NotebookPen, Square, Trash2 } from 'lucide-react-native'
+import { AlertTriangle, CheckSquare, NotebookPen, Square, Trash2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { GlassButton } from '../../../../components/team-chat/FloatingChrome'
+import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../../../../components/layout/PhoneScreenHeader'
 import { MarkdownText } from '../../../../components/chat/MarkdownText'
 import { MeetingTranscript } from '../../../../components/meetings/MeetingTranscript'
 import { formatDuration } from '../../../../lib/format-duration'
@@ -29,6 +31,7 @@ export default function HuddleNotesScreen() {
   const [loading, setLoading] = useState(true)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const header = usePhoneScreenHeaderInset()
 
   const load = useCallback(async () => {
     if (!huddleId) return
@@ -64,34 +67,33 @@ export default function HuddleNotesScreen() {
   const failed = !!notes && notes.meeting.enhanceStatus !== 'ready'
 
   return (
-    <SafeAreaView className="flex-1 bg-background" edges={['top']}>
-      <View className="flex-row items-center gap-2 border-b border-border px-3 py-2">
-        <Pressable onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back" className="h-9 w-9 items-center justify-center rounded-md active:bg-muted">
-          <ArrowLeft size={18} className="text-foreground" />
-        </Pressable>
-        <View className="min-w-0 flex-1">
-          <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
-            {notes?.meeting.title || 'Huddle notes'}
-          </Text>
-          <Text className="text-xs text-muted-foreground">
-            {notes?.meeting.duration ? `${formatDuration(notes.meeting.duration)} · ` : ''}
-            {notes?.transcript.segments.length ?? 0} lines
-          </Text>
-        </View>
-        {notes ? (
-          <Pressable
-            onPress={() => (confirmDelete ? void remove() : setConfirmDelete(true))}
-            disabled={deleting}
-            accessibilityRole="button"
-            accessibilityLabel={confirmDelete ? 'Delete these notes for good' : 'Delete these notes'}
-            className={cn('h-9 flex-row items-center gap-1 rounded-md px-2 active:bg-muted', confirmDelete && 'bg-destructive/10')}
-          >
-            {deleting ? <ActivityIndicator size="small" /> : <Trash2 size={16} className={confirmDelete ? 'text-destructive' : 'text-muted-foreground'} />}
-            {confirmDelete ? <Text className="text-xs font-medium text-destructive">Delete?</Text> : null}
-          </Pressable>
-        ) : null}
-      </View>
+    <SafeAreaView className="flex-1 bg-background" edges={['bottom']}>
+      <PhoneScreenHeader
+        title={notes?.meeting.title || 'Huddle notes'}
+        subtitle={
+          notes
+            ? `${notes.meeting.duration ? `${formatDuration(notes.meeting.duration)} · ` : ''}${notes.transcript.segments.length} lines`
+            : null
+        }
+        onBack={() => router.back()}
+        onLayout={header.onLayout}
+        actions={
+          notes ? (
+            <GlassButton
+              label={confirmDelete ? 'Delete these notes for good' : 'Delete these notes'}
+              onPress={() => (confirmDelete ? void remove() : setConfirmDelete(true))}
+            >
+              {deleting ? (
+                <ActivityIndicator size="small" />
+              ) : (
+                <Trash2 size={20} className={confirmDelete ? 'text-destructive' : 'text-foreground'} />
+              )}
+            </GlassButton>
+          ) : null
+        }
+      />
 
+      <View className="min-h-0 flex-1" style={{ paddingTop: header.height }}>
       {loading ? (
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator />
@@ -138,6 +140,7 @@ export default function HuddleNotesScreen() {
           </View>
         </ScrollView>
       ) : null}
+      </View>
     </SafeAreaView>
   )
 }

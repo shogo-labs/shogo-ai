@@ -30,6 +30,13 @@ mock.module("react-native", () =>
   } as never),
 )
 
+// The viewer's close control is the shared glass button. Its backdrop samples
+// the screen through expo-blur / expo-glass-effect, which this suite is not
+// about: a null backdrop keeps the glass chrome without the native view.
+mock.module(resolve(import.meta.dir, "../../ui/LiquidGlassBackdrop"), () => ({
+  LiquidGlassBackdrop: () => null,
+}))
+
 mock.module("../../chat/MarkdownText", () => ({
   MarkdownText: ({ children }: { children: string }) => <div data-testid="markdown-body">{children}</div>,
 }))

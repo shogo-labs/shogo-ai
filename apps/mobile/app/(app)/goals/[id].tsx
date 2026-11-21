@@ -23,6 +23,8 @@ import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { setChatPrefill } from '../../../hooks/useChatPrefill'
 import { api, type PersonalGoal, type PersonalGoalEvent, type PersonalAgentTaskSummary } from '../../../lib/api'
+import { isPhoneLayout } from '../../../lib/native-phone-layout'
+import { PhoneScreenHeader, usePhoneScreenHeaderPadding } from '../../../components/layout/PhoneScreenHeader'
 
 type GoalWithDetail = PersonalGoal & { events: PersonalGoalEvent[]; agentTasks: PersonalAgentTaskSummary[] }
 
@@ -34,6 +36,7 @@ const GoalDetailPage = observer(function GoalDetailPage() {
   const experience = useWorkspaceExperience()
   const { width } = useWindowDimensions()
   const isWide = width >= 768
+  const headerPad = usePhoneScreenHeaderPadding()
   const [goal, setGoal] = useState<GoalWithDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -107,7 +110,7 @@ const GoalDetailPage = observer(function GoalDetailPage() {
     return (
       <View className="flex-1 bg-background">
         <DetailHeader title="Goal" onBack={goBack} contentWidth={contentWidth} isWide={isWide} />
-        <View className="flex-1 items-center justify-center"><ActivityIndicator /></View>
+        <View className="flex-1 items-center justify-center" style={{ paddingTop: headerPad }}><ActivityIndicator /></View>
       </View>
     )
   }
@@ -116,7 +119,7 @@ const GoalDetailPage = observer(function GoalDetailPage() {
     return (
       <View className="flex-1 bg-background">
         <DetailHeader title="Goal" onBack={goBack} contentWidth={contentWidth} isWide={isWide} />
-        <View className="flex-1 items-center justify-center px-6">
+        <View className="flex-1 items-center justify-center px-6" style={{ paddingTop: headerPad }}>
           <View className="w-full max-w-md rounded-2xl border border-destructive/30 bg-destructive/5 px-4 py-4">
             <Text className="text-center text-sm leading-5 text-destructive">{error || 'Goal not found'}</Text>
           </View>
@@ -135,7 +138,7 @@ const GoalDetailPage = observer(function GoalDetailPage() {
       <DetailHeader title={goal.title} onBack={goBack} contentWidth={contentWidth} isWide={isWide} />
       <ScrollView
         className="flex-1"
-        contentContainerStyle={{ paddingBottom: isWide ? 52 : 128 }}
+        contentContainerStyle={{ paddingBottom: isWide ? 52 : 128, paddingTop: headerPad }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void load(true)} />}
       >
         <View
@@ -293,6 +296,10 @@ function DetailHeader({
   contentWidth?: number
   isWide: boolean
 }) {
+  const { width, height } = useWindowDimensions()
+  if (isPhoneLayout(width, height)) {
+    return <PhoneScreenHeader title={title} onBack={onBack} />
+  }
   return (
     <View className="border-b border-border/70 bg-card/80">
       <View

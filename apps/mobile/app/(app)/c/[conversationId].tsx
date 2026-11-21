@@ -58,7 +58,6 @@ import { useChannelBoards } from '../../../hooks/useWorkBoards'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import type { WorkItem } from '../../../lib/work-boards-api'
 import { usePhoneChromeOverlay } from '../../../components/layout/PhoneChromeOverlay'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 const api = teamChatApi()
 const THREAD_SIDE_PANE_MIN_WIDTH = 1024
@@ -119,7 +118,6 @@ export default function ConversationScreen() {
   const [headerHeight, setHeaderHeight] = useState(0)
   const [addingBoard, setAddingBoard] = useState(false)
   const chrome = usePhoneChromeOverlay()
-  const insets = useSafeAreaInsets()
 
   const workspaceId = conversation?.workspaceId ?? workspace?.id ?? null
   const mentionables = useMentionables(workspaceId)
@@ -565,7 +563,7 @@ export default function ConversationScreen() {
           {showCardPane && cardId && (
             <View
               className={sidePane ? 'relative shrink-0 border-l border-border bg-background' : 'flex-1 bg-background'}
-              style={sidePane ? { width: cardPane.width } : floating ? { paddingTop: insets.top, paddingBottom: chrome.bottom } : undefined}
+              style={sidePane ? { width: cardPane.width } : floating ? { paddingBottom: chrome.bottom } : undefined}
             >
               {sidePane && (
                 <SidePaneResizeHandle
@@ -586,13 +584,14 @@ export default function ConversationScreen() {
                 conversation={conversation}
                 visible={visible}
                 onClose={closeCard}
+                floating={floating}
               />
             </View>
           )}
           {(showFilePane || showFileFull) && openFile && (
             <View
               className={showFilePane ? 'relative shrink-0 border-l border-border bg-background' : 'flex-1 bg-background'}
-              style={showFilePane ? { width: filePane.width } : floating ? { paddingTop: insets.top } : undefined}
+              style={showFilePane ? { width: filePane.width } : undefined}
               testID="chat-file-pane"
             >
               {showFilePane && (
@@ -605,7 +604,7 @@ export default function ConversationScreen() {
                   onReset={filePane.reset}
                 />
               )}
-              <ShareFileView key={openFile.href} target={openFile} onClose={closeShareFile} embedded />
+              <ShareFileView key={openFile.href} target={openFile} onClose={closeShareFile} embedded floating={floating} />
             </View>
           )}
           {showProjectPane && projectPaneId && (
@@ -624,7 +623,7 @@ export default function ConversationScreen() {
           {(showFilesPane || showFilesFull) && (
             <View
               className={showFilesPane ? 'relative shrink-0 border-l border-border bg-background' : 'flex-1 bg-background'}
-              style={showFilesPane ? { width: threadPane.width } : { paddingTop: floating ? insets.top : 0 }}
+              style={showFilesPane ? { width: threadPane.width } : undefined}
             >
               {showFilesPane && (
                 <SidePaneResizeHandle
@@ -643,6 +642,7 @@ export default function ConversationScreen() {
                 title={huddleLabel}
                 onClose={closeFiles}
                 onShowInChat={showFileInChat}
+                floating={floating}
               />
             </View>
           )}
@@ -662,13 +662,13 @@ export default function ConversationScreen() {
           )}
           {showDocFull && (
             <View className="flex-1">
-              {floating ? <View style={{ height: insets.top }} /> : (
+              {floating ? null : (
                 <>
                   {header}
                   {tabs}
                 </>
               )}
-              <DocPane key={conversation.id} conversation={conversation} workspaceId={workspaceId} mentionables={mentionables} onClose={closeDoc} onOpenProfile={openProfile} />
+              <DocPane key={conversation.id} conversation={conversation} workspaceId={workspaceId} mentionables={mentionables} onClose={closeDoc} onOpenProfile={openProfile} floating={floating} />
             </View>
           )}
           {showProfilePane && profilePaneId && (

@@ -9,10 +9,10 @@
  * browser tab and a storage URL.
  */
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { Pressable, Text, View } from 'react-native'
+import { View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { ChevronLeft } from 'lucide-react-native'
 import { FileViewer } from '../../../components/team-chat/FileViewer'
+import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../../../components/layout/PhoneScreenHeader'
 
 function first(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value
@@ -23,6 +23,7 @@ export default function FileViewerScreen() {
   const router = useRouter()
   const attachmentId = first(params.attachmentId) ?? ''
   const name = first(params.name) ?? 'File'
+  const header = usePhoneScreenHeaderInset()
 
   const back = () => {
     if (router.canGoBack()) router.back()
@@ -30,23 +31,13 @@ export default function FileViewerScreen() {
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-background" edges={['top', 'bottom']}>
-      <View className="flex-row items-center gap-2 border-b border-border px-3 py-2">
-        <Pressable
-          onPress={back}
-          accessibilityRole="button"
-          accessibilityLabel="Back"
-          className="flex-row items-center rounded-md p-1 active:bg-muted"
-          testID="file-viewer-back"
-        >
-          <ChevronLeft size={18} className="text-primary" />
-          <Text className="text-sm font-medium text-primary">Back</Text>
-        </Pressable>
-        <Text className="min-w-0 flex-1 text-sm font-semibold text-foreground" numberOfLines={1}>
-          {name}
-        </Text>
+    <SafeAreaView className="flex-1 bg-background" edges={['bottom']}>
+      <View className="flex-1">
+        <PhoneScreenHeader title={name} onBack={back} backTestID="file-viewer-back" onLayout={header.onLayout} />
+        <View className="min-h-0 flex-1" style={{ paddingTop: header.height }}>
+          <FileViewer attachmentId={attachmentId} fallbackName={name} />
+        </View>
       </View>
-      <FileViewer attachmentId={attachmentId} fallbackName={name} />
     </SafeAreaView>
   )
 }
