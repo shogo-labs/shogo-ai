@@ -199,19 +199,24 @@ describe('course access rules', () => {
     for (const id of ['paid-app', 'first-client', 'solo-founder']) expect(rule(id)).toEqual({ kind: 'level', requires: 3 })
   })
 
-  test('department certificates: every one opens at Level 1, has the six shared lessons, a 6-question key and a badge', () => {
+  test('department certificates: every one opens at Level 1, has the six shared lessons (Marketing adds paid ads), a graded key and a badge', () => {
     expect(DEPARTMENTS.map((d) => d.id)).toEqual([
       'ai-for-marketing', 'ai-for-sales', 'ai-for-support', 'ai-for-people',
       'ai-for-finance', 'ai-for-operations', 'ai-for-engineering', 'ai-for-devops',
     ])
     for (const d of DEPARTMENTS) {
       expect(learnCourseById(d.id)!.access).toEqual({ kind: 'level', requires: 1 })
-      expect(LEARN_LESSONS[d.id]).toEqual(['jobs', 'set-up', 'workflow', 'guardrails', 'measure', 'final-check'])
+      const marketing = d.id === 'ai-for-marketing'
+      expect(LEARN_LESSONS[d.id]).toEqual(marketing
+        ? ['jobs', 'set-up', 'workflow', 'guardrails', 'paid-ads', 'measure', 'final-check']
+        : ['jobs', 'set-up', 'workflow', 'guardrails', 'measure', 'final-check'])
       expect(CERTIFICATE_LESSON[d.id]).toBe('final-check')
       const rule = LEARN_CERTIFICATES[d.id]!
       expect(rule.courseTitle).toBe(d.title)
-      expect(Object.keys(rule.answers)).toEqual(['q1', 'q2', 'q3', 'q4', 'q5', 'q6'])
-      expect(rule.passMark).toBe(5)
+      expect(Object.keys(rule.answers)).toEqual(marketing
+        ? ['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7']
+        : ['q1', 'q2', 'q3', 'q4', 'q5', 'q6'])
+      expect(rule.passMark).toBe(marketing ? 6 : 5)
       expect(learnBadgeById(`certified-${d.id}`)?.name).toBe(`Certified: ${d.title}`)
       expect(learnBadgeById(`course-${d.id}`)).toBeDefined()
     }
@@ -499,6 +504,22 @@ describe('certificates', () => {
     expect(body.newBadges.map((b: any) => b.id)).toContain('certified-ai-for-marketing')
     const verify = (await (await app.request(`/api/learn/certificate/${body.certificate.id}`)).json()) as any
     expect(verify).toMatchObject({ valid: true, courseId: 'ai-for-marketing', courseTitle: 'AI for Marketing', level: null })
+  })
+
+  test('Marketing: paid ads opens after the rules lesson, and the final check needs it done', async () => {
+    const state = finishLessons(baseState(), 'u1', 'ai-for-marketing')
+    grantLevels(state, 'u1', 1)
+    state.completions = (state.completions ?? []).filter((c: any) => !(c.courseId === 'ai-for-marketing' && ['paid-ads', 'measure'].includes(c.lessonId)))
+    const { app } = makeApp(state)
+    const answers = { ...LEARN_CERTIFICATES['ai-for-marketing']!.answers }
+    const refused = await post(app, { courseId: 'ai-for-marketing', answers })
+    expect(refused.status).toBe(403)
+    expect(unlockedLessons('ai-for-marketing', ['jobs', 'set-up', 'workflow', 'guardrails'])).toContain('paid-ads')
+    expect(unlockedLessons('ai-for-marketing', ['jobs', 'set-up', 'workflow', 'guardrails'])).not.toContain('measure')
+    const done = finishLessons(state, 'u1', 'ai-for-marketing')
+    const pass = await post(makeApp(done).app, { courseId: 'ai-for-marketing', answers: { ...answers, q1: 'a' } })
+    expect(pass.status).toBe(200)
+    expect((await pass.json()) as any).toMatchObject({ passed: true, score: 6, total: 7, passMark: 6 })
   })
 
   test('the final check opens only after every lesson before it is done, and a refusal does not use up an attempt', async () => {

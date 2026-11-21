@@ -15,8 +15,10 @@
 
 /**
  * Department certificates: one course per team (marketing, sales…), outside
- * the level ladder. Each opens at Shogo Certified Level 1 and has the same six
- * lessons, so the certificate means the same thing in every department.
+ * the level ladder. Each opens at Shogo Certified Level 1 and is built on the
+ * same six lessons, so the certificate means the same thing in every
+ * department. A department can add lessons for work only it does
+ * (`DEPARTMENT_EXTRA_LESSONS`).
  */
 export const DEPARTMENTS: ReadonlyArray<{ id: string; title: string; hue: number }> = [
   { id: 'ai-for-marketing', title: 'AI for Marketing', hue: 330 },
@@ -29,6 +31,16 @@ export const DEPARTMENTS: ReadonlyArray<{ id: string; title: string; hue: number
   { id: 'ai-for-devops', title: 'AI for DevOps', hue: 10 },
 ]
 const DEPARTMENT_LESSONS = ['jobs', 'set-up', 'workflow', 'guardrails', 'measure', 'final-check'] as const
+/** Extra lessons per department, each placed before `measure`. */
+const DEPARTMENT_EXTRA_LESSONS: Readonly<Record<string, readonly string[]>> = {
+  // Google and Meta ads: the agent watches and proposes, a person decides on spend.
+  'ai-for-marketing': ['paid-ads'],
+}
+function departmentLessons(id: string): readonly string[] {
+  const extra = DEPARTMENT_EXTRA_LESSONS[id] ?? []
+  const at = DEPARTMENT_LESSONS.indexOf('measure')
+  return [...DEPARTMENT_LESSONS.slice(0, at), ...extra, ...DEPARTMENT_LESSONS.slice(at)]
+}
 
 /** Lesson ids per course, in order. Must match the learn site's content. */
 export const LEARN_LESSONS: Readonly<Record<string, readonly string[]>> = {
@@ -40,7 +52,7 @@ export const LEARN_LESSONS: Readonly<Record<string, readonly string[]>> = {
   'paid-app': ['day-1-pick', 'days-2-3-core-loop', 'days-4-5-data', 'days-6-7-payments', 'days-8-9-test', 'days-10-11-publish', 'days-12-13-stores', 'day-14-launch'],
   // Past Solo Founder buyers also have progress on their Studio course board (CourseEnrollment.progress).
   'solo-founder': ['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10', 'capstone'],
-  ...Object.fromEntries(DEPARTMENTS.map((d) => [d.id, DEPARTMENT_LESSONS])),
+  ...Object.fromEntries(DEPARTMENTS.map((d) => [d.id, departmentLessons(d.id)])),
 }
 
 /** Courses whose lessons the learner marks complete on learn.shogo.ai. */
