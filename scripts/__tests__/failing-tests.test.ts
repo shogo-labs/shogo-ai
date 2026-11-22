@@ -102,6 +102,17 @@ describe('failing-tests.sh', () => {
     expect(run(RETRY_LOG)).not.toContain('package(s) had test failures')
   })
 
+  test('strips the colour codes a runner log always carries', () => {
+    // `gh api .../logs` hands back SGR codes inline ("\u001b[36;1m..."). Left in,
+    // they land in the issue body and a name is no longer a name.
+    const ansi = PLAIN_LOG.split('\n')
+      .map((line) => `\u001b[36;1m${line}\u001b[0m`)
+      .join('\n')
+    const out = run(ansi)
+    expect(out).toBe(run(PLAIN_LOG))
+    expect(out).not.toContain('\u001b')
+  })
+
   test('honours the line cap', () => {
     const out = run(PLAIN_LOG, 1)
     expect(out.trim().split('\n')).toHaveLength(1)

@@ -44,6 +44,11 @@ awk -v max="${max}" '
   {
     line = $0
 
+    # Runner logs come off the API with SGR colour codes in them ("\033[36;1m").
+    # Left in, they land in the issue body and split a test name away from its
+    # "(fail)" marker. Drop them before anything is matched.
+    gsub(/\033\[[0-9;]*[A-Za-z]/, "", line)
+
     # "<job>\t<step>\t<timestamp> " (gh run view --log-failed)
     if (line ~ /^[^\t]*\t[^\t]*\t[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9:.]+Z /) {
       sub(/^[^\t]*\t[^\t]*\t[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9:.]+Z /, "", line)

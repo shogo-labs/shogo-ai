@@ -106,6 +106,23 @@ describe('clock-guard workflows', () => {
     expect(health.jobs.test.permissions?.actions).toBeUndefined()
   })
 
+  test('the report fetches job logs without the gh escape-sequence guard', () => {
+    // A recent `gh` refuses to write a log containing terminal escape sequences to
+    // a pipe ("pass --allow-escape-sequences to output it anyway"). Every runner log
+    // has them, so `gh api .../jobs/<id>/logs` exited non-zero with an empty body and
+    // the issue said only "could not read the log of job N" (SHO-507 QA round 3).
+    // The report asks the API for the redirect and fetches the blob with curl.
+    const health = workflow('main-health.yml')
+    const script = health.jobs.report.steps.map((step: any) => step.run ?? '').join('\n')
+
+    // Exactly one `gh api`: the job list. The log bodies never go through `gh`.
+    expect(script.match(/\$\(gh api /g)?.length).toBe(1)
+    expect(script).toContain('redirect_url')
+    expect(script).toContain('curl -fsS')
+    // The token goes to the API call only; the pre-signed blob needs no auth.
+    expect(script).toContain('Authorization: Bearer ${GH_TOKEN}')
+  })
+
   test('the clock probe loads the preload on the preload path', () => {
     // Without this, a +30d leg printed today's date and the log line contradicted
     // the guard above it (SHO-507 QA round 1, nit 3).

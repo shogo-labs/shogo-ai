@@ -229,18 +229,32 @@ jobs:
           # so in the issue: the first version failed silently (a 403 on the job list
           # ran the loop zero times) and the issue claimed there were no test-level
           # lines, which reads exactly like a real empty result.
+          #
+          # The per-job log is fetched with curl, not `gh api`. A recent `gh` refuses
+          # to write a response that contains terminal escape sequences to a pipe
+          # ("pass --allow-escape-sequences to output it anyway"), and every runner
+          # log has them — so `gh api .../logs` exited non-zero with an empty body and
+          # the issue said only "could not read the log of job N". Ask the API for
+          # the redirect and fetch the blob ourselves, which also keeps the token off
+          # the storage host.
           : > "${RUNNER_TEMP}/failed.log"
           : > "${RUNNER_TEMP}/log-errors.txt"
           log_errors=''
-          if ! jobs_json=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" 2>>"${RUNNER_TEMP}/log-errors.txt"); then
+          api="${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}"
+          if ! jobs_json=$(gh api "${api}/actions/runs/${GITHUB_RUN_ID}/jobs" 2>>"${RUNNER_TEMP}/log-errors.txt"); then
             log_errors="could not read the run's job list (does this job still declare actions: read?); "
             jobs_json=''
           fi
           for job_id in $(printf '%s' "${jobs_json}" \
             | jq -r '.jobs // [] | .[] | select(.conclusion == "failure") | .id' 2>/dev/null); do
-            gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${job_id}/logs" \
-              >> "${RUNNER_TEMP}/failed.log" 2>>"${RUNNER_TEMP}/log-errors.txt" \
-              || log_errors="${log_errors}could not read the log of job ${job_id}; "
+            blob=$(curl -sS -o /dev/null -w '%{redirect_url}' \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              "${api}/actions/jobs/${job_id}/logs" 2>>"${RUNNER_TEMP}/log-errors.txt")
+            if [ -z "${blob}" ] \
+              || ! curl -fsS "${blob}" >> "${RUNNER_TEMP}/failed.log" 2>>"${RUNNER_TEMP}/log-errors.txt"; then
+              log_errors="${log_errors}could not read the log of job ${job_id}; "
+            fi
           done
           # Put the API's own reason in the issue: "could not read" alone sends the
           # next reader hunting for a cause that the response already named.
