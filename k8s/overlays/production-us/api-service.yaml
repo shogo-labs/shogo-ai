@@ -125,6 +125,15 @@ spec:
       annotations:
         autoscaling.knative.dev/min-scale: "2"
         autoscaling.knative.dev/max-scale: "20"
+        # Keep the activator off the request path once a replica is Ready (SHO-506,
+        # same fix staging has carried since the 5-minute chat-stream cut): the
+        # activator imposes a hardcoded ~5-minute `defaultRequestTimeout` on
+        # in-flight requests that ignores the revision's `timeoutSeconds`, so every
+        # long-lived stream through this DomainMapping — a desktop tunnel, a chat
+        # turn, an SSE read — died at exactly 5:00 with `1006`/`UC`.
+        autoscaling.knative.dev/target-burst-capacity: "0"
+        autoscaling.knative.dev/scale-down-delay: "5m"
+        autoscaling.knative.dev/window: "60s"
     spec:
       serviceAccountName: api-service-account
       containers:

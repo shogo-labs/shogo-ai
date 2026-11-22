@@ -235,6 +235,13 @@ jobs:
           path: packages/shogo-worker/dist/release/*
           retention-days: 30
 
+      - name: Packed tarball gate (gates publish)
+        # Packs the worker (and its lockstep siblings) the way this workflow
+        # does, installs the tarballs into a scratch consumer, and runs the
+        # `shogo` bin. The builds above already produced dist/, so skip the
+        # rebuild. A failure aborts before anything reaches npm.
+        run: bun run scripts/verify-packed-packages.ts --skip-build
+
       - name: Rewrite workspace:* deps in package.json for npm publish
         working-directory: packages/shogo-worker
         run: |

@@ -2333,15 +2333,21 @@ export function buildOpenAICompatibleBody(
     // pi-ai can only emit `image_url`; OpenRouter wants `video_url` for video.
     body.messages = bridgeVideoContentBlocks(request.messages)
   }
-  if (max_tokens !== undefined) {
-    if (modelConfig.provider === 'openai') body.max_completion_tokens = max_tokens
-    else body.max_tokens = max_tokens
-  } else if (modelConfig.provider === 'google') {
+  if (modelConfig.provider === 'google') {
+    // Google rejects a body carrying both fields ("max_tokens and
+    // max_completion_tokens cannot both be set"), and pi-ai's chat-completions
+    // client sends max_completion_tokens on every turn, so fold it into the one
+    // field Gemini gets.
+    const requested = max_tokens ?? (rest as { max_completion_tokens?: number }).max_completion_tokens
+    delete body.max_completion_tokens
     // Gemini's synchronous completions endpoint silently truncates output at
     // 65 536 tokens; exceeding it requires background execution (not supported
-    // here). Inject the catalog cap so callers that omit max_tokens still get a
-    // predictable limit instead of relying on Google's server default.
-    body.max_tokens = getMaxOutputTokens(request.model)
+    // here). Inject the catalog cap so callers that omit a limit still get a
+    // predictable one instead of relying on Google's server default.
+    body.max_tokens = requested ?? getMaxOutputTokens(request.model)
+  } else if (max_tokens !== undefined) {
+    if (modelConfig.provider === 'openai') body.max_completion_tokens = max_tokens
+    else body.max_tokens = max_tokens
   }
 
   // Chat Completions is the compatibility fallback for native OpenAI models.

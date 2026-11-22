@@ -13,9 +13,25 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { execSync, execFileSync } from 'child_process'
 import { parseArgs } from 'util'
-import { pathToFileURL } from 'url'
-import { runThreeDCommand } from './three-d-cli.mjs'
-import { bucketMain } from './bucket-cli.mjs'
+import { pathToFileURL, fileURLToPath } from 'url'
+
+/**
+ * Subcommand CLIs (`3d`, `bucket`) are loaded on demand. A missing
+ * `bin/*-cli.mjs` must never break `shogo generate` or `--help`: importing
+ * them at the top of this file took down every command when one of them was
+ * left out of `package.json` "files" (2.6.1 — SHO-511).
+ */
+async function loadSubcommand(name, file) {
+  const url = new URL(file, import.meta.url)
+  if (!existsSync(fileURLToPath(url))) {
+    console.error(
+      `[shogo] \`shogo ${name}\` is unavailable in this install: ${file.replace('./', 'bin/')} is missing from @shogo-ai/sdk. ` +
+        'Reinstall the SDK (`npm i -D @shogo-ai/sdk@latest`) to restore it.'
+    )
+    process.exit(1)
+  }
+  return import(url.href)
+}
 
 // ============================================================================
 // CLI Parsing
@@ -74,6 +90,7 @@ Usage:
 }
 
 if (command === '3d') {
+  const { runThreeDCommand } = await loadSubcommand('3d', './three-d-cli.mjs')
   process.exit(await runThreeDCommand(positionals.slice(1), values))
 }
 
@@ -83,6 +100,7 @@ if (command === 'bucket') {
   // bucket flag into `values`/`positionals` and the subcommand would never see
   // `--private`, `--key`, `--prefix`, `--min-size`, `--json`, `--overwrite`,
   // `--dry-run`, `--signed` or `--expires`. `bucketMain` parses argv itself.
+  const { bucketMain } = await loadSubcommand('bucket', './bucket-cli.mjs')
   await bucketMain(process.argv.slice(2).slice(1))
 }
 

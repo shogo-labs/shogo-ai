@@ -323,6 +323,7 @@
     "dist/**/*.d.ts",
     "dist/**/*.d.cts",
     "bin/cli.mjs",
+    "bin/bucket-cli.mjs",
     "bin/three-d-cli.mjs",
     "bin/three-d-cli.d.mts"
   ],
@@ -366,6 +367,7 @@
     "mobx": "^6.13.5",
     "mobx-state-tree": "^6.0.1",
     "nodemailer": "^8.0.3",
+    "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "^0.81.0",
     "three": "^0.180.0",
@@ -412,12 +414,6 @@
       "optional": true
     },
     "ai": {
-      "optional": true
-    },
-    "mobx": {
-      "optional": true
-    },
-    "react": {
       "optional": true
     },
     "react-native": {

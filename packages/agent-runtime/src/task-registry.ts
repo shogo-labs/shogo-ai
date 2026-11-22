@@ -21,6 +21,7 @@ import { existsSync } from 'fs'
 import { join, relative } from 'path'
 import type { CommandHandle } from './sandbox-exec'
 import type { ProcessMember } from './process-tree'
+import { describeSpawnExhaustion, isSpawnExhaustion } from './process-budget'
 import {
   TaskOutputWriter,
   readTaskOutput,
@@ -67,6 +68,18 @@ export function backgroundCapSummary(ms: number): string {
   const human = hours >= 1 ? `${Math.round(hours * 10) / 10} h` : `${Math.round(ms / 60_000)} min`
   return `stopped after ${human}: background commands are capped; use \`service: true\` for a long-running service`
 }
+
+/**
+ * How long a command that was handed back on soft timeout may keep its slot
+ * once its session has gone quiet (SHO-509).
+ *
+ * A soft timeout means the agent asked for a quick answer and the command did
+ * not deliver one. Handing it back as a background task is right — it may still
+ * be doing useful work — but if the session then sits idle for half an hour,
+ * nothing is watching it and its process group is just a slot the next command
+ * cannot have. A declared service is exempt: it is meant to outlive the turn.
+ */
+export const SOFT_TIMEOUT_IDLE_REAP_MS = 30 * 60 * 1000
 
 /** Rolling in-memory output window per non-shell task, used by `until` matching. */
 const RECENT_OUTPUT_CHARS = 256 * 1024
@@ -119,8 +132,22 @@ export function settleOutcome(input: {
   /** False when a shell without pipefail reported its last stage instead of the command. */
   exitCodeReliable?: boolean
   shellLabel?: string
+  /**
+   * The OS refused the spawn, so nothing ran. A `posix_spawn EAGAIN` is the
+   * process table being full, and the raw errno tells the agent nothing it can
+   * act on — it gets the explained line instead (SHO-509).
+   */
+  spawnError?: string
 }): { status: Exclude<TaskStatus, 'running'>; exitCode?: number; summary: string } {
   if (input.cancelRequested) return { status: 'cancelled', summary: 'cancelled' }
+  if (input.spawnError) {
+    return {
+      status: 'failed',
+      summary: isSpawnExhaustion(input.spawnError)
+        ? describeSpawnExhaustion(input.spawnError)
+        : `could not start: ${input.spawnError}`,
+    }
+  }
   // A restart is not an outcome the command produced. It carries no exit code:
   // 137 from SIGKILL and 0 from a masked pipeline both describe the killer.
   if (input.runtimeShutdown) return { status: 'interrupted', summary: INTERRUPTED_SUMMARY }
@@ -204,6 +231,11 @@ export interface TaskEntry {
   consumed: boolean
   /** The agent was told this task runs in the background. Only these produce notes. */
   backgrounded?: boolean
+  /**
+   * When a foreground command overran its soft timeout and was handed back as a
+   * background task. If its session stays idle, the sweep kills it (SHO-509).
+   */
+  handedBackAt?: number
   /** Restored after a runtime restart; the local process is gone. */
   stale?: boolean
   /**
@@ -421,6 +453,12 @@ export interface TaskRegistryOptions {
   /** How often the cap sweep runs while a background task is alive. */
   backgroundSweepMs?: number
   /**
+   * How long the registry's owner session has been idle. A foreground command
+   * handed back on soft timeout keeps its slot until its session goes quiet
+   * (SHO-509); with no callback the registry cannot tell, and leaves it alone.
+   */
+  sessionIdleMs?: () => number
+  /**
    * Find a task's log after its entry was evicted, so `resolveFinished` can
    * rebuild the result instead of reporting the task as unknown.
    */
@@ -479,6 +517,8 @@ export class TaskRegistry {
   /** One sweep timer for the whole registry, not one per task. */
   private capSweepTimer?: ReturnType<typeof setInterval>
   private readonly findOutputRow?: (id: string) => TaskOutputRow | null
+  /** How long this registry's owner session has been idle (SHO-509). */
+  private readonly sessionIdleMs?: () => number
   remote?: RemoteTaskClient
 
   constructor(options: TaskRegistryOptions = {}) {
@@ -492,6 +532,7 @@ export class TaskRegistry {
     this.backgroundMaxMs = options.backgroundMaxMs ?? execBackgroundMaxMs()
     this.backgroundSweepMs = options.backgroundSweepMs ?? Math.min(60_000, Math.max(250, Math.floor(this.backgroundMaxMs / 10)))
     this.findOutputRow = options.resolveOutputRow
+    this.sessionIdleMs = options.sessionIdleMs
   }
 
   // ---------------------------------------------------------------------------
@@ -548,6 +589,7 @@ export class TaskRegistry {
         exitCode: result.exitCode,
         exitCodeReliable: result.exitCodeReliable,
         shellLabel: result.shellLabel,
+        spawnError: result.spawnError,
       })
       this.settle(entry, decision.status, {
         exitCode: decision.exitCode,
@@ -861,6 +903,22 @@ export class TaskRegistry {
     // this the first frame a client ever sees for a background task is the one
     // written when it settles (or after the 30 s timer).
     if (!wasVisible) this.emitChange()
+  }
+
+  /**
+   * A foreground command that ran past its soft timeout and was handed back to
+   * the agent as a background task.
+   *
+   * It is not a service and not a declared background job: the agent asked for
+   * a quick answer, got "still running", and may never look at it again. Its
+   * slot is held until the session goes quiet, which is what the sweep's idle
+   * pass enforces (SHO-509).
+   */
+  markHandedBack(id: string): void {
+    const entry = this.get(id)
+    if (!entry) return
+    this.markBackgrounded(id)
+    entry.handedBackAt = entry.handedBackAt ?? Date.now()
   }
 
   /**
@@ -1276,6 +1334,7 @@ export class TaskRegistry {
     if (this.capSweepTimer || !(this.backgroundMaxMs > 0)) return
     const timer = setInterval(() => {
       this.enforceBackgroundCap()
+      this.enforceIdleSoftTimeoutReap()
       if (!this.hasCappableTask()) this.stopCapSweep()
     }, this.backgroundSweepMs)
     ;(timer as any)?.unref?.()
@@ -1295,6 +1354,41 @@ export class TaskRegistry {
       if (e.source === 'shell' && e.status === 'running') return true
     }
     return false
+  }
+
+  /**
+   * Stop a command that was handed back on soft timeout and whose session has
+   * since gone quiet (SHO-509).
+   *
+   * The 6 h cap already bounds a background task, but "handed back" is a
+   * different promise: the agent asked for a fast answer, so nothing is waiting
+   * on it and nobody will read it. Holding its process group for six hours is
+   * how a leaked tree survives a dozen finished cards. When the session has had
+   * no turn for {@link SOFT_TIMEOUT_IDLE_REAP_MS}, the slot goes back.
+   *
+   * A service is never touched here — it is meant to outlive the session. A
+   * registry with no `sessionIdleMs` callback cannot tell whether its session is
+   * idle, so it leaves everything alone.
+   */
+  enforceIdleSoftTimeoutReap(now = Date.now()): string[] {
+    if (!this.sessionIdleMs) return []
+    const idle = this.sessionIdleMs()
+    if (idle < SOFT_TIMEOUT_IDLE_REAP_MS) return []
+    const stopped: string[] = []
+    for (const entry of [...this.entries.values()]) {
+      if (entry.remote || entry.stale || entry.service) continue
+      if (entry.source !== 'shell' || entry.status !== 'running') continue
+      if (!entry.handedBackAt) continue
+      if (now - entry.handedBackAt < SOFT_TIMEOUT_IDLE_REAP_MS) continue
+      // Mark first: the verdict is ours, not the signal's.
+      entry.runtimeShutdown = true
+      this.settle(entry, 'interrupted', {
+        summary: 'stopped after 30 min idle: a command that ran past its soft timeout holds its slot until its session goes quiet',
+      })
+      try { entry.handle?.kill('SIGKILL') } catch { /* already gone */ }
+      stopped.push(entry.id)
+    }
+    return stopped
   }
 
   /**
