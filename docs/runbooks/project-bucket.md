@@ -52,6 +52,14 @@ The bucket has `NoPublicAccess` and versioning **off** (a per-version copy of a
    base is derived as `https://cdn.<PUBLISH_DOMAIN>`.
 5. Roll the API deployment, then verify (below).
 
+**A bucket that was merged but never applied now fails the deploy.** The API
+HEADs each configured bucket and reports the ones that 404 on
+`/api/health` → `storage: { ok, missing: [<ENV NAME>] }`, and
+`.github/scripts/verify-storage-health.sh` fails the rollout (staging first,
+then US/EU) with `::error::<ENV> object storage is missing`. Before this, a
+missing bucket looked like a green deploy and a `NoSuchBucket` at a user hours
+later. A 403 or timeout is not reported missing — it only logs.
+
 ## Verify
 
 ```bash

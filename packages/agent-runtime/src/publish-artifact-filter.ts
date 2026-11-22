@@ -11,10 +11,11 @@
  * `bun install`, and it let `.env` files (real secrets) ride into the image.
  */
 
-import { existsSync, readdirSync, statSync, writeFileSync, createReadStream } from 'fs'
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync, createReadStream } from 'fs'
 import { join, relative } from 'path'
 import type { Dirent } from 'fs'
 import { createHash } from 'crypto'
+import ignore from 'ignore'
 import { isShogoRuntimeSubtree } from '@shogo/shared-runtime/shogo-state-paths'
 import { headObject, lfsObjectKey, lfsPointerText, lfsTrackedPaths, putFileToObjectStore, sharedStaticAssetCacheControl, stampObjectMetadata, type S3ObjectStore } from '@shogo/shared-runtime'
 import { staticMimeFor } from './dist-response'
@@ -32,6 +33,35 @@ const SKIP_SUFFIX = /-(wal|shm)$/
 const SKIP_ENV_FILE = /^\.env(\..+)?$/
 const KEEP_ENV_FILE = /^\.env\.example$/
 
+/**
+ * The standard Docker build-context ignore file, read from the project root.
+ * This IS a Docker context (`COPY . /app`), so honouring the file the project
+ * already maintains beats inventing a Shogo-specific one (SHO-514).
+ */
+const DOCKERIGNORE_FILE = '.dockerignore'
+
+/**
+ * Paths the published image cannot boot without, whatever the project's
+ * `.dockerignore` says: the packageless image has no dependency install step,
+ * and the published database is pushed from `prisma/schema.prisma`.
+ *
+ * `.dockerignore` may only ADD to the exclusions — it can never remove these.
+ * (The root `dist/` is deliberately absent: that copy is the canvas preview
+ * build, which a published image must never contain. The published bundle is
+ * copied in from the publish staging output, which this filter never sees, so
+ * no `.dockerignore` can exclude it either.)
+ */
+const PLATFORM_REQUIRED = new Set([
+  'package.json',
+  'bun.lock',
+  'bun.lockb',
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'prisma/schema.prisma',
+  'prisma/dev.db',
+])
+
 export interface ArtifactFilterOptions {
   /** Absolute project directory the copy starts from. */
   projectDir: string
@@ -40,16 +70,62 @@ export interface ArtifactFilterOptions {
 }
 
 /**
+ * The hard exclusions: things that never reach a published image, and which no
+ * `.dockerignore` negation can bring back.
+ *
+ * `rel` is the root-relative path, `/`-separated.
+ */
+function hardExcluded(rel: string, stagingDirName: string): boolean {
+  if (!rel) return false
+  if (SKIP_SUFFIX.test(rel)) return true
+  // Shogo's own runtime state, at any depth, from the shared predicate
+  // (SHO-371) — a nested `.shogo/` or `.shogo-cwd-*` must not reach the image.
+  if (isShogoRuntimeSubtree(rel)) return true
+
+  const segments = rel.split(/[\\/]/).filter(Boolean)
+  if (segments.length === 0) return false
+
+  const first = segments[0]
+  if (SKIP_AT_ROOT.has(first) || first === stagingDirName) return true
+  if (segments.some((segment) => SKIP_ANYWHERE.has(segment))) return true
+
+  const base = segments[segments.length - 1]
+  if (SKIP_ENV_FILE.test(base) && !KEEP_ENV_FILE.test(base)) return true
+  return false
+}
+
+/** The project's `.dockerignore`, compiled, or null when it has none. */
+export function readDockerignore(projectDir: string): ReturnType<typeof ignore> | null {
+  const path = join(projectDir, DOCKERIGNORE_FILE)
+  if (!existsSync(path)) return null
+  try {
+    const matcher = ignore()
+    matcher.add(readFileSync(path, 'utf-8'))
+    return matcher
+  } catch {
+    // An unreadable ignore file must not silently widen the context: no matcher
+    // means exactly today's exclusions, never "ship everything".
+    return null
+  }
+}
+
+/**
  * Build the `cp` filter for a published build context.
  *
  * `src` is an absolute path under `projectDir`; anything outside it is refused,
  * which keeps a symlinked sibling repo out of the image.
+ *
+ * The project's `.dockerignore` is honoured, but one-directionally: it can only
+ * remove paths. Hard exclusions (`.env*`, `.git`, `node_modules`, `.shogo`,
+ * `-wal/-shm`) and the files the platform needs to boot are decided first, so a
+ * `!.env` or `!node_modules` rule cannot bring either back.
  */
 export function createPublishedArtifactFilter(
   opts: ArtifactFilterOptions,
 ): (src: string) => boolean {
   const root = opts.projectDir.replace(/\/+$/, '')
   const prefix = `${root}/`
+  const dockerignore = readDockerignore(opts.projectDir)
   return (src: string): boolean => {
     if (src === root) return true
     // Prefix, not `startsWith(root)`: a sibling checkout whose name merely
@@ -58,22 +134,77 @@ export function createPublishedArtifactFilter(
     if (!src.startsWith(prefix)) return false
     const rel = src.slice(prefix.length)
     if (!rel) return true
-    if (SKIP_SUFFIX.test(rel)) return false
-    // Shogo's own runtime state, at any depth, from the shared predicate
-    // (SHO-371) — a nested `.shogo/` or `.shogo-cwd-*` must not reach the image.
-    if (isShogoRuntimeSubtree(rel)) return false
 
-    const segments = rel.split(/[\\/]/).filter(Boolean)
-    if (segments.length === 0) return true
-
-    const first = segments[0]
-    if (SKIP_AT_ROOT.has(first) || first === opts.stagingDirName) return false
-    if (segments.some((segment) => SKIP_ANYWHERE.has(segment))) return false
-
-    const base = segments[segments.length - 1]
-    if (SKIP_ENV_FILE.test(base) && !KEEP_ENV_FILE.test(base)) return false
+    const normalized = rel.split(/[\\/]/).join('/')
+    if (hardExcluded(normalized, opts.stagingDirName)) return false
+    // The context is built BY Docker, so shipping `.dockerignore` would make
+    // BuildKit apply it a second time to the platform-added files.
+    if (normalized === DOCKERIGNORE_FILE) return false
+    if (PLATFORM_REQUIRED.has(normalized)) return true
+    if (dockerignore?.ignores(normalized)) return false
     return true
   }
+}
+
+/**
+ * What the project's `.dockerignore` removes from an otherwise-identical
+ * context: file count and bytes. Used by the publish endpoint to say, in the
+ * publish output, how much a project is already leaving out — the difference
+ * between a 20 MB image and a 2 GB one usually hides in a rule nobody wrote.
+ */
+export function measureDockerignoreExclusion(
+  opts: ArtifactFilterOptions,
+): { paths: number; bytes: number } {
+  const dockerignore = readDockerignore(opts.projectDir)
+  if (!dockerignore) return { paths: 0, bytes: 0 }
+  let paths = 0
+  let bytes = 0
+  const walk = (dir: string): void => {
+    let entries: Dirent[]
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      const rel = relative(opts.projectDir, full).replace(/\\/g, '/')
+      if (hardExcluded(rel, opts.stagingDirName)) continue
+      if (rel === DOCKERIGNORE_FILE || PLATFORM_REQUIRED.has(rel)) continue
+      if (dockerignore.ignores(rel)) {
+        // A matched directory excludes its whole subtree; count what is below.
+        if (entry.isDirectory()) walkExcluded(full)
+        else {
+          paths++
+          try {
+            bytes += statSync(full).size
+          } catch {}
+        }
+        continue
+      }
+      if (entry.isDirectory()) walk(full)
+    }
+  }
+  const walkExcluded = (dir: string): void => {
+    let entries: Dirent[]
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) walkExcluded(full)
+      else {
+        paths++
+        try {
+          bytes += statSync(full).size
+        } catch {}
+      }
+    }
+  }
+  walk(opts.projectDir)
+  return { paths, bytes }
 }
 
 // ---------------------------------------------------------------------------

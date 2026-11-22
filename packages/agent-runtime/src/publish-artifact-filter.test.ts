@@ -79,6 +79,7 @@ import {
   PUBLISH_DIST_OFFLOAD_MIN_BYTES,
   artifactPointerTargets,
   offloadArtifactMedia,
+  measureDockerignoreExclusion,
 } from './publish-artifact-filter'
 
 describe('artifactPointerTargets', () => {
@@ -116,6 +117,103 @@ describe('artifactPointerTargets', () => {
   it('is a no-op for a project with no LFS and nothing over the threshold', () => {
     const small = new Map([['dist/a.png', 1000], ['src/App.tsx', 400]])
     expect(artifactPointerTargets({ paths: [...small.keys()], lfsTracked: new Set(), sizes: small })).toEqual([])
+  })
+})
+
+/**
+ * The project's own `.dockerignore` (SHO-514).
+ *
+ * This IS a Docker build context (`COPY . /app`), so a project's existing rules
+ * have to be honoured — otherwise the file it maintains is silently ignored and
+ * the image carries what the author meant to leave out. The direction matters:
+ * `.dockerignore` may only remove paths, never re-add the secrets and platform
+ * files this filter already decided.
+ */
+describe('createPublishedArtifactFilter + .dockerignore', () => {
+  const withIgnoreFile = (body: string, run: (dir: string) => void) => {
+    const dir = mkdtempSync(join(tmpdir(), 'shogo-dockerignore-'))
+    try {
+      writeFileSync(join(dir, '.dockerignore'), body)
+      run(dir)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+  const keepIn = (dir: string, rel: string) =>
+    createPublishedArtifactFilter({ projectDir: dir, stagingDirName: '.publish-dist' })(join(dir, rel))
+
+  it('drops what the project excludes and keeps the rest', () => {
+    withIgnoreFile('docs/\n*.md\ncoverage\n', (dir) => {
+      expect(keepIn(dir, 'docs/guide.md')).toBe(false)
+      expect(keepIn(dir, 'README.md')).toBe(false)
+      expect(keepIn(dir, 'coverage/lcov.info')).toBe(false)
+      expect(keepIn(dir, 'src/App.tsx')).toBe(true)
+      expect(keepIn(dir, 'server.tsx')).toBe(true)
+    })
+  })
+
+  it('cannot bring back a hard exclusion (secrets, node_modules, sidecar files)', () => {
+    withIgnoreFile('!.env\n!node_modules\n!prisma/dev.db-wal\n', (dir) => {
+      expect(keepIn(dir, '.env')).toBe(false)
+      expect(keepIn(dir, 'node_modules/react/index.js')).toBe(false)
+      expect(keepIn(dir, 'apps/web/node_modules/lodash/index.js')).toBe(false)
+      expect(keepIn(dir, 'prisma/dev.db-wal')).toBe(false)
+    })
+  })
+
+  it('cannot exclude the files the published image boots from', () => {
+    withIgnoreFile('prisma/\npackage.json\nbun.lock\n', (dir) => {
+      expect(keepIn(dir, 'prisma/schema.prisma')).toBe(true)
+      expect(keepIn(dir, 'prisma/dev.db')).toBe(true)
+      expect(keepIn(dir, 'package.json')).toBe(true)
+      expect(keepIn(dir, 'bun.lock')).toBe(true)
+      // The rest of `prisma/` still follows the rule.
+      expect(keepIn(dir, 'prisma/seed.ts')).toBe(false)
+    })
+  })
+
+  it('survives a blanket "*" rule with the files the image needs', () => {
+    // `*` is what a project writes when it means "ship nothing but what Docker
+    // copies explicitly" — the exact file that would otherwise blank an image.
+    withIgnoreFile('*\n', (dir) => {
+      expect(keepIn(dir, 'src/App.tsx')).toBe(false)
+      expect(keepIn(dir, 'server.tsx')).toBe(false)
+      expect(keepIn(dir, 'package.json')).toBe(true)
+      expect(keepIn(dir, 'prisma/schema.prisma')).toBe(true)
+      expect(keepIn(dir, 'prisma/dev.db')).toBe(true)
+    })
+  })
+
+  it('never ships .dockerignore itself, since BuildKit would apply it twice', () => {
+    withIgnoreFile('docs/\n', (dir) => {
+      expect(keepIn(dir, '.dockerignore')).toBe(false)
+    })
+  })
+
+  it('is exactly today\'s filter when the project has no .dockerignore', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shogo-dockerignore-none-'))
+    try {
+      expect(keepIn(dir, 'src/App.tsx')).toBe(true)
+      expect(keepIn(dir, 'node_modules/x/index.js')).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reports how much the project is leaving out', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shogo-dockerignore-measure-'))
+    try {
+      writeFileSync(join(dir, '.dockerignore'), 'docs/\n')
+      mkdirSync(join(dir, 'docs', 'nested'), { recursive: true })
+      writeFileSync(join(dir, 'docs/a.md'), 'aaaa')
+      writeFileSync(join(dir, 'docs/nested/b.md'), 'bbbbbb')
+      writeFileSync(join(dir, 'src.txt'), 'kept')
+      const measured = measureDockerignoreExclusion({ projectDir: dir, stagingDirName: '.publish-dist' })
+      expect(measured.paths).toBe(2)
+      expect(measured.bytes).toBe(10)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

@@ -661,6 +661,18 @@ jobs:
             echo "::warning::Staging api reports $REPORTED_VERSION but the release resolved to ${{ inputs.app_version }}"
           fi
 
+      # An object-storage bucket that was merged but never applied makes every
+      # upload fail `NoSuchBucket` at users while /api/health answers 200 — the
+      # API does not need a bucket to serve a page (SHO-491, SHO-514). The API
+      # reports bucket existence on /api/health.storage; the gate below turns an
+      # absence into a red staging rollout, before it can reach prod.
+      - name: Verify publish buckets exist
+        run: |
+          BODY_FILE=$(mktemp)
+          curl -s --connect-timeout 5 --max-time 20 \
+            "https://${{ env.DOMAIN }}/api/health?storage=refresh" -o "$BODY_FILE" || true
+          bash .github/scripts/verify-storage-health.sh Staging "$BODY_FILE"
+
   # Publishes the e2e/staging-critical commit status read by deploy.yml's
   # staging-e2e-gate. To retry a flaky failure, re-run this job before
   # anything newer lands on main.

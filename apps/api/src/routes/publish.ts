@@ -1031,8 +1031,12 @@ async function configurePublishedService(
       throw new PublishConfigureError(prepared.code, prepared.message, prepared.status, prepared.details)
     }
     if (prepared.value.seeded) {
+      const source =
+        prepared.value.seededFrom === 'live-archive'
+          ? `the live archive (${subdomain}/data.tar.gz)`
+          : 'prisma/dev.db'
       console.log(
-        `[Publish] Seeded ${environmentName} database for ${projectId} from prisma/dev.db ` +
+        `[Publish] Seeded ${environmentName} database for ${projectId} from ${source} ` +
           `(${prepared.value.seededRows} rows)`,
       )
     }
