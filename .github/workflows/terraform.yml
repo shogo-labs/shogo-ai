@@ -121,6 +121,13 @@ jobs:
         # for why it is not tested in place.
         run: bun test terraform/modules/install-shogo-ai/scripts/releases-worker.test.ts
 
+      # The protected-replacement guard's SUCCESS path runs on every terraform
+      # PR; its FAILING path only runs when a plan really does contain a
+      # protected replacement, which is (by design) never. These fixtures pin
+      # both directions so the guard cannot silently rot (SHO-515 QA round 1).
+      - name: Unit test the protected-replacement guard
+        run: bun test ./.github/scripts/check-terraform-plan-protected.test.ts
+
       - name: Install OCI CLI
         run: pip install oci-cli --quiet
 
