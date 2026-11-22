@@ -247,6 +247,13 @@ export async function trackUsageFromStream(
      * names a different turn is not ours and is never persisted as this turn.
      */
     expectedTurnId?: string
+    /**
+     * The API-side `activityTurnId` (`ChatSession.activeTurnId`) under which
+     * `TurnJournalWriter` recorded this turn's `chat_turn_frames` rows.
+     * Distinct from `trackedTurnId` whenever upstream omits `X-Turn-Id` (or
+     * ends before `data-turn-start`), so completion cleanup deletes both keys.
+     */
+    journalTurnId?: string | null
     /** Workspace of a `project: null` turn, so its usage can still be recorded. */
     workspaceId?: string
   } = {},
@@ -1283,9 +1290,16 @@ export async function trackUsageFromStream(
   unregisterSnapshotFlusher()
   // The turn reached its terminal frame, so the journal has nothing left to
   // recover: what the client has is now in the row (SHO-274). A turn that never
-  // gets here (the process died) keeps its frames for recovery.
-  if (observedTurnComplete && trackedTurnId) {
-    void deleteTurnFrames(trackedTurnId).catch(() => 0)
+  // gets here (the process died) keeps its frames for recovery. `TurnJournalWriter`
+  // keys rows on `journalTurnId` (`activityTurnId`), which can differ from the
+  // runtime's `data-turn-start` `trackedTurnId`; delete both when present.
+  if (observedTurnComplete) {
+    const turnIdsToDelete = new Set<string>()
+    if (options.journalTurnId) turnIdsToDelete.add(options.journalTurnId)
+    if (trackedTurnId) turnIdsToDelete.add(trackedTurnId)
+    for (const id of turnIdsToDelete) {
+      void deleteTurnFrames(id).catch(() => 0)
+    }
   }
   const partialTag = observedTurnComplete ? '' : ', partial'
   if (assistantMessageId) {
@@ -2331,6 +2345,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             // pass it through so closeSession + persistence key on the
             // same id and never diverge from billing.
             chatSessionId: incomingChatSessionId,
+            journalTurnId: turnId,
             userId: billingUserId && billingUserId !== 'system' ? billingUserId : undefined,
             projectName: project.name,
             // Delegated task completion is announced by agent-tasks with a

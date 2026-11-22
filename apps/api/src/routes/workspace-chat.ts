@@ -1308,6 +1308,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             billingProjectId ? { id: billingProjectId, workspaceId } : null,
             {
               chatSessionId: sessionId,
+              journalTurnId: turnId,
               userId: billingUserId && billingUserId !== 'system' ? billingUserId : undefined,
               workspaceId,
               projectName: 'Workspace project',
