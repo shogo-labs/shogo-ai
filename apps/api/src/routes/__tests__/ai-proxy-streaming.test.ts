@@ -27,6 +27,9 @@ import {
   parseRetryAfter,
   isRetryableNetworkError,
   proxyAnthropicStream,
+  proxyOpenAIStream,
+  proxySseWithEarlyHeaders,
+  __setEarlySseTimingForTests,
   type StreamErrorPayload,
   type ChatCompletionRequest,
   type ModelConfig,
@@ -542,5 +545,216 @@ describe('proxyAnthropicStream → OpenAI conversion (usage relay + thinking)', 
 
     // The opaque thinking signature must never leak into the OpenAI stream.
     expect(sse).not.toContain('SIG-should-be-dropped')
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Early SSE headers — SHO-517
+//
+// Cloudflare drops any request that has produced no response headers within
+// 125s (HTTP 524). A provider that is slow to its first byte (Gemini on a
+// 150k–340k context writing a whole file in one tool call) used to leave the
+// proxy silent for longer than that, so the client got HTML and the turn ended
+// with "the tool budget for this turn closed".
+//
+// The windows are scaled down here (10–40ms instead of 10s/120s) so the same
+// race is observable: the invariant is "headers before the provider answers",
+// not the absolute number.
+// ──────────────────────────────────────────────────────────────────────────────
+
+const EARLY_GRACE_MS = 20
+const EARLY_KEEPALIVE_MS = 10
+
+/** Resolves with `response` only after `delayMs`, i.e. slower than the grace. */
+function slowFetch(response: () => Response, delayMs: number) {
+  return () => new Promise<Response>((resolve, reject) => {
+    setTimeout(() => {
+      try {
+        resolve(response())
+      } catch (err) {
+        reject(err)
+      }
+    }, delayMs)
+  })
+}
+
+const ANTHROPIC_FULL_SSE =
+  'event: message_start\n' +
+  'data: {"type":"message_start","message":{"usage":{"input_tokens":40}}}\n\n' +
+  'event: content_block_start\n' +
+  'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n' +
+  'event: content_block_delta\n' +
+  'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"SPLIT_FILE_OK"}}\n\n' +
+  'event: message_delta\n' +
+  'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}\n\n' +
+  'event: message_stop\n' +
+  'data: {"type":"message_stop"}\n\n'
+
+describe('early SSE headers keep a slow provider inside the edge timeout (SHO-517)', () => {
+  const origFetch = globalThis.fetch
+  afterEach(() => {
+    globalThis.fetch = origFetch
+    __setEarlySseTimingForTests()
+  })
+
+  const anthropicRequest: ChatCompletionRequest = {
+    model: 'claude-opus-4-8',
+    messages: [{ role: 'user', content: 'write the whole generator in one file' }],
+    stream: true,
+  }
+  const anthropicConfig: ModelConfig = {
+    provider: 'anthropic',
+    apiModel: 'claude-opus-4-8',
+    displayName: 'Claude Opus 4.8',
+  }
+
+  test('Anthropic: 200 text/event-stream arrives inside the grace window, keepalives flow, then the real stream', async () => {
+    __setEarlySseTimingForTests({ graceMs: EARLY_GRACE_MS, keepaliveMs: EARLY_KEEPALIVE_MS })
+    scriptFetch([slowFetch(
+      () => new Response(ANTHROPIC_FULL_SSE, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+      120,
+    )])
+
+    const completions: Array<{ input: number; output: number }> = []
+    const startedAt = Date.now()
+    const res = await proxyAnthropicStream(anthropicRequest, 'k', anthropicConfig, (input, output) => {
+      completions.push({ input, output })
+    })
+    const headersAt = Date.now() - startedAt
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toContain('text/event-stream')
+    // The whole point: headers long before the provider's 120ms first byte.
+    expect(headersAt).toBeLessThan(120)
+
+    const sse = await collect(res.body!)
+    expect(sse).toContain(': keepalive')
+    expect(sse).toContain('SPLIT_FILE_OK')
+    expect(sse).toContain('data: [DONE]')
+    // Billing still runs exactly once, when the deferred stream completes.
+    expect(completions).toEqual([{ input: 40, output: 9 }])
+  })
+
+  test('OpenAI-compatible (Google): same early headers on the Gemini path', async () => {
+    __setEarlySseTimingForTests({ graceMs: EARLY_GRACE_MS, keepaliveMs: EARLY_KEEPALIVE_MS })
+    const googleSse =
+      'data: {"choices":[{"delta":{"content":"GEMINI_OK"},"finish_reason":null}]}\n\n' +
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":4,"total_tokens":15}}\n\n' +
+      'data: [DONE]\n\n'
+    scriptFetch([slowFetch(
+      () => new Response(googleSse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+      120,
+    )])
+
+    const usageCalls: number[][] = []
+    const startedAt = Date.now()
+    const res = await proxyOpenAIStream(
+      {
+        model: 'gemini-4-carbon',
+        messages: [{ role: 'user', content: 'write the whole generator in one file' }],
+        stream: true,
+      },
+      'k',
+      { provider: 'google', apiModel: 'gemini-4-carbon', displayName: 'Gemini 4 Carbon' },
+      (input, output) => usageCalls.push([input, output]),
+    )
+    const headersAt = Date.now() - startedAt
+
+    expect(res.status).toBe(200)
+    expect(headersAt).toBeLessThan(120)
+
+    const sse = await collect(res.body!)
+    expect(sse).toContain(': keepalive')
+    expect(sse).toContain('GEMINI_OK')
+    // A completed OpenAI stream must not be mistaken for a truncation.
+    expect(sse).not.toContain('upstream_truncated')
+    expect(usageCalls).toEqual([[11, 4]])
+  })
+
+  test('a provider that 500s after the early headers produces exactly one retryable frame (OpenAI dialect)', async () => {
+    __setEarlySseTimingForTests({ graceMs: EARLY_GRACE_MS, keepaliveMs: EARLY_KEEPALIVE_MS })
+    const res = await proxySseWithEarlyHeaders(
+      slowFetch(
+        () => new Response('{"error":{"message":"overloaded"}}', { status: 500, headers: { 'Content-Type': 'application/json' } }),
+        80,
+      ),
+      { providerLabel: 'google', dialect: 'openai' },
+    )
+
+    expect(res.status).toBe(200)
+    const sse = await collect(res.body!)
+    const frames = sse.split('\n\n').filter((block) => block.includes('"stream_error"'))
+    expect(frames).toHaveLength(1)
+    expect(sse).toContain('[shogo:retryable=true;code=upstream_5xx]')
+    // An OpenAI SDK throws on a `data: {"error": …}` chunk — that is the shape.
+    expect(frames[0]).toStartWith('data: {"type":"error"')
+    expect(frames[0]).not.toContain('event: error')
+  })
+
+  test('a 403 after the early headers is one non-retryable frame (Anthropic dialect)', async () => {
+    __setEarlySseTimingForTests({ graceMs: EARLY_GRACE_MS, keepaliveMs: EARLY_KEEPALIVE_MS })
+    const res = await proxySseWithEarlyHeaders(
+      slowFetch(
+        () => new Response('{"error":{"message":"Your credit balance is too low"}}', { status: 403, headers: { 'Content-Type': 'application/json' } }),
+        80,
+      ),
+      { providerLabel: 'anthropic', dialect: 'anthropic' },
+    )
+
+    const sse = await collect(res.body!)
+    expect(sse.split('\n\n').filter((block) => block.includes('"stream_error"'))).toHaveLength(1)
+    expect(sse).toContain('[shogo:retryable=false;code=upstream_rejected]')
+    expect(sse).toContain('event: error')
+    expect(sse).toContain('credit balance is too low')
+  })
+
+  test('a connection that closes after the early headers produces one retryable network frame', async () => {
+    __setEarlySseTimingForTests({ graceMs: EARLY_GRACE_MS, keepaliveMs: EARLY_KEEPALIVE_MS })
+    const res = await proxySseWithEarlyHeaders(
+      () => new Promise<Response>((_resolve, reject) => {
+        setTimeout(() => reject(new TypeError('fetch failed')), 80)
+      }),
+      { providerLabel: 'google', dialect: 'openai' },
+    )
+
+    const sse = await collect(res.body!)
+    expect(sse.split('\n\n').filter((block) => block.includes('"stream_error"'))).toHaveLength(1)
+    expect(sse).toContain('[shogo:retryable=true;code=network_drop]')
+  })
+
+  test('a 429 answered inside the grace window keeps its real status (no early headers)', async () => {
+    __setEarlySseTimingForTests({ graceMs: EARLY_GRACE_MS, keepaliveMs: EARLY_KEEPALIVE_MS })
+    // A rate limit is surfaced as a thrown provider error, which the route
+    // relays with the real 429 (see the chat-completions catch block). The
+    // Anthropic leg is not used here: `fetchAnthropicWithRetry` backs off and
+    // re-issues a 429, so the retry — not the first answer — is what the client
+    // would see arrive.
+    scriptFetch([new Response('{"error":{"message":"rate limited"}}', {
+      status: 429,
+      headers: { 'Content-Type': 'application/json' },
+    })])
+
+    await expect(
+      proxyOpenAIStream(
+        { model: 'gemini-4-carbon', messages: [{ role: 'user', content: 'hi' }], stream: true },
+        'k',
+        { provider: 'google', apiModel: 'gemini-4-carbon', displayName: 'Gemini 4 Carbon' },
+      ),
+    ).rejects.toThrow(/google API error \(429\)/)
+  })
+
+  test('a 400 answered inside the grace window keeps its real status (no early headers)', async () => {
+    __setEarlySseTimingForTests({ graceMs: EARLY_GRACE_MS, keepaliveMs: EARLY_KEEPALIVE_MS })
+    const res = await proxySseWithEarlyHeaders(
+      async () => new Response('{"error":{"message":"bad request"}}', {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+      { providerLabel: 'anthropic', dialect: 'anthropic' },
+    )
+
+    // Passed straight through: no 200, no SSE, no synthetic frame.
+    expect(res.status).toBe(400)
+    expect(await res.text()).toContain('bad request')
   })
 })
