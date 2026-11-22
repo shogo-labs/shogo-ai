@@ -93,6 +93,19 @@ const STREAM_MAX_TIMEOUT_MS = 600_000
 const HEARTBEAT_INTERVAL_MS = 25_000
 const TUNNEL_WAIT_TIMEOUT_MS = 10_000
 const TUNNEL_WAIT_POLL_MS = 500
+/**
+ * Wake window for a desktop whose heartbeat is fresh (SHO-506). A desktop learns
+ * the cloud wants its tunnel from its next heartbeat poll, so a wait shorter than
+ * the time to that poll is a coin flip on whether the wake was seen at all.
+ * `WAKE_MAX_WAIT_MS` is the worst case: an idle poll (`POLL_INTERVAL_IDLE_S`) plus
+ * a margin for the last-seen write being throttled. `WAKE_MIN_WAIT_MS` keeps a
+ * host that has just polled from being written off in milliseconds.
+ */
+const WAKE_MIN_WAIT_MS = 5_000
+const WAKE_MAX_WAIT_MS = 75_000
+const WAKE_HEARTBEAT_MARGIN_MS = 15_000
+/** Suggested client retry, in seconds, for a host that is connecting (not offline). */
+const WAKE_RETRY_AFTER_S = 15
 
 // ─── Viewer tracking (Redis-primary, in-memory fallback) ────────────────────
 
@@ -1777,9 +1790,17 @@ export function heartbeatNeedsWrite(
   return false
 }
 
-export function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null): boolean {
+/**
+ * Is this host's heartbeat recent enough to expect an answer from it?
+ *
+ * Two idle polls is the same rule `/instances` uses for `heartbeat` vs `offline`:
+ * a host that polled inside that window still has a poller running, so a wake it
+ * has not answered yet is "not yet", not "away". `now` is injectable so the wake
+ * decision can be tested without a clock.
+ */
+export function isRecentlySeenViaHeartbeat(lastSeenAt: Date | null, now: number = Date.now()): boolean {
   if (!lastSeenAt) return false
-  return Date.now() - lastSeenAt.getTime() < POLL_INTERVAL_IDLE_S * 2 * 1000
+  return now - lastSeenAt.getTime() < POLL_INTERVAL_IDLE_S * 2 * 1000
 }
 
 /**
@@ -1825,6 +1846,99 @@ export function hasLocalTunnel(instanceId: string): boolean {
 }
 
 /**
+ * What a wake should do, decided from the host's own heartbeat (SHO-506).
+ *
+ * A desktop has no push channel: it only sees `wsRequestedAt` on its next
+ * heartbeat poll, and an idle one polls every `POLL_INTERVAL_IDLE_S`. So for a
+ * host that polled recently the wait is the time to that poll plus a margin,
+ * capped at `maxWaitMs`; for a host whose heartbeat is stale nothing can arrive
+ * and the old short probe is all there is to try.
+ *
+ * `lastSeenAt` writes are throttled (`HEARTBEAT_WRITE_MIN_INTERVAL_MS`), which is
+ * why this is the worst case rather than a prediction of the next poll.
+ */
+export function planHostWake(input: {
+  tunnelUp: boolean
+  lastSeenAt: Date | null
+  now?: number
+  staleProbeMs?: number
+  maxWaitMs?: number
+}): { state: 'connected' | 'wait' | 'offline'; waitMs: number } {
+  const now = input.now ?? Date.now()
+  const maxWaitMs = Math.max(0, input.maxWaitMs ?? WAKE_MAX_WAIT_MS)
+  const staleProbeMs = Math.min(Math.max(0, input.staleProbeMs ?? TUNNEL_WAIT_TIMEOUT_MS), maxWaitMs)
+  if (input.tunnelUp) return { state: 'connected', waitMs: 0 }
+  if (!isRecentlySeenViaHeartbeat(input.lastSeenAt, now)) return { state: 'wait', waitMs: staleProbeMs }
+  const untilNextPoll = (input.lastSeenAt as Date).getTime() + POLL_INTERVAL_IDLE_S * 1000 + WAKE_HEARTBEAT_MARGIN_MS - now
+  return { state: 'wait', waitMs: Math.min(Math.max(untilNextPoll, WAKE_MIN_WAIT_MS), maxWaitMs) }
+}
+
+export type HostWakeState = 'connected' | 'connecting' | 'offline'
+
+export interface HostWakeResult {
+  state: HostWakeState
+  instanceId: string
+  name: string | null
+  lastSeenAt: Date | null
+  /** Seconds to wait before trying again; only meaningful for `connecting`. */
+  retryAfterSeconds: number
+}
+
+/**
+ * Wake an instance's tunnel for a caller that has to forward a request into it,
+ * and say *why* when it does not come up (SHO-506).
+ *
+ * `connecting` means the desktop is alive (its heartbeat is fresh) and its
+ * tunnel is still opening — a caller may retry, and the agent-facing surfaces
+ * tell a model to. `offline` means its heartbeat is stale, so the machine is
+ * genuinely away. The old code could only say `offline`, which read as "this Mac
+ * is off" for a Mac that had polled forty seconds earlier.
+ *
+ * `maxWaitMs` bounds the wait for callers that must answer promptly (a message
+ * that is queued on an offline host, a UI list); without it the wait is the
+ * freshness-bounded window from `planHostWake`.
+ */
+export async function wakeHostTunnel(
+  instanceId: string,
+  opts: {
+    staleProbeMs?: number
+    maxWaitMs?: number
+    now?: () => number
+    _tunnelUp?: (id: string) => Promise<boolean>
+    _lastSeenAt?: Date | null
+  } = {},
+): Promise<HostWakeResult> {
+  const now = opts.now ?? Date.now
+  const row = await prisma.instance
+    .findUnique({ where: { id: instanceId }, select: { name: true, lastSeenAt: true } })
+    .catch(() => null)
+  const lastSeenAt = opts._lastSeenAt !== undefined ? opts._lastSeenAt : row?.lastSeenAt ?? null
+  const name = row?.name ?? null
+
+  const tunnelUp = await (opts._tunnelUp ?? ((id: string) => isTunnelConnectedAnywhere(id, { retry: false })))(instanceId)
+  const plan = planHostWake({
+    tunnelUp,
+    lastSeenAt,
+    now: now(),
+    staleProbeMs: opts.staleProbeMs,
+    maxWaitMs: opts.maxWaitMs,
+  })
+  const result = (state: HostWakeState): HostWakeResult => ({
+    state,
+    instanceId,
+    name,
+    lastSeenAt,
+    retryAfterSeconds: state === 'connecting' ? WAKE_RETRY_AFTER_S : 0,
+  })
+  if (plan.state === 'connected') return result('connected')
+
+  if (await requestAndWaitForTunnel(instanceId, plan.waitMs)) return result('connected')
+  // A fresh heartbeat is what separates "still opening" from "away": the machine
+  // is up either way, only its tunnel missed the window.
+  return result(isRecentlySeenViaHeartbeat(lastSeenAt, now()) ? 'connecting' : 'offline')
+}
+
+/**
  * Wake an instance's tunnel if it is asleep and wait up to `timeoutMs` for it.
  * Used by the machine-workspace relay, which has to be honest about "offline"
  * instead of forwarding into a void.
@@ -1833,6 +1947,16 @@ export async function ensureTunnelConnected(
   instanceId: string,
   timeoutMs: number = TUNNEL_WAIT_TIMEOUT_MS,
 ): Promise<boolean> {
+  return requestAndWaitForTunnel(instanceId, timeoutMs)
+}
+
+/**
+ * Ask the desktop to open its tunnel and wait up to `timeoutMs` for the WS.
+ *
+ * The ownership check is first: a tunnel held by another pod is already up, and
+ * asking a connected desktop to reconnect would drop a session that works.
+ */
+async function requestAndWaitForTunnel(instanceId: string, timeoutMs: number): Promise<boolean> {
   if (tunnels.has(instanceId)) return true
 
   let remotePod = await getTunnelOwner(instanceId)
@@ -1905,9 +2029,14 @@ export const _testing = {
   getActiveControllers,
   sendLocalTunnelRequest,
   sendLocalTunnelStreamRequest,
+  planHostWake,
   POLL_INTERVAL_IDLE_S,
   POLL_INTERVAL_VIEWER_S,
   POLL_INTERVAL_WS_REQUESTED_S,
+  WAKE_MIN_WAIT_MS,
+  WAKE_MAX_WAIT_MS,
+  WAKE_HEARTBEAT_MARGIN_MS,
+  WAKE_RETRY_AFTER_S,
   WS_REQUEST_TTL_MS,
   VIEWER_ACTIVE_TTL_MS,
   STREAM_FIRST_CHUNK_TIMEOUT_MS,

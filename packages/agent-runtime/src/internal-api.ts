@@ -25,6 +25,18 @@ export const NO_API_URL_ERROR =
   'Not available in this environment: no Shogo API is configured (SHOGO_API_URL is unset).'
 
 /**
+ * Timeout for a workspace-API call that may have to wake a paired desktop first
+ * (SHO-506).
+ *
+ * A workspace hosted on someone's Mac is reached through its tunnel, and the API
+ * waits for a sleeping desktop to notice the wake on its next heartbeat poll — up
+ * to 75s. A shorter client timeout cuts that wait off on this side and reports a
+ * failure the API never gave, so every call that can be forwarded to a host uses
+ * this instead.
+ */
+export const HOST_WAKE_TOLERANT_TIMEOUT_MS = 100_000
+
+/**
  * Public-facing API URL for URLs that end up in browser-facing contexts
  * (e.g. webchat widget embed snippets). Falls back to deriveApiUrl() for
  * local dev where everything runs on localhost.
@@ -125,6 +137,8 @@ export async function fetchCrossWorkspaceTargets(
 ): Promise<CheckpointCallResult<{ workspaces: CrossWorkspaceTargetSummary[] }>> {
   return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/cross-workspace/targets`, {
     method: 'GET',
+    // The API asks each desktop host whether it is up, and a sleeping one is woken.
+    timeoutMs: HOST_WAKE_TOLERANT_TIMEOUT_MS,
   })
 }
 
@@ -1265,15 +1279,15 @@ export interface AgentScheduleUpdateRequest {
 
 async function personalFetch<T>(
   path: string,
-  init: RequestInit & { parse?: (json: any) => T } = {},
+  init: RequestInit & { parse?: (json: any) => T; timeoutMs?: number } = {},
 ): Promise<CheckpointCallResult<T>> {
   const apiUrl = deriveApiUrl()
   if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
-  const { parse, ...rest } = init
+  const { parse, timeoutMs, ...rest } = init
   try {
     const res = await fetch(`${apiUrl}${path}`, {
       headers: getInternalHeaders(),
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(timeoutMs ?? 20_000),
       ...rest,
     })
     const json = await res.json().catch(() => null) as any

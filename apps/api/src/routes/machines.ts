@@ -19,7 +19,6 @@
 import { Hono } from 'hono'
 import { prisma, InstanceKind } from '../lib/prisma'
 import {
-  ensureTunnelConnected,
   generateRequestId,
   getMachineGroupStatus,
   getMachineLiveStatus,
@@ -30,6 +29,7 @@ import {
   normalizeTransparentProxyPath,
   sendTunnelRequest,
   sendTunnelStreamRequest,
+  wakeHostTunnel,
 } from './instances'
 import { isMachineTimeoutError } from '../lib/tunnel-errors'
 import { isTunnelConnectedAnywhere } from '../lib/tunnel-redis'
@@ -52,6 +52,17 @@ import { resolveApiKey } from './api-keys'
  */
 const DEFAULT_WAKE_DEADLINE_MS = 5_000
 let wakeDeadlineMs = DEFAULT_WAKE_DEADLINE_MS
+
+/**
+ * The wake these routes use: the *decision* comes from the host's heartbeat, but
+ * the wait is capped at `wakeDeadlineMs` (SHO-506 + SHO-185). A panel must not
+ * hang for a desktop's idle poll, so a fresh host that has not connected yet
+ * answers `waking` and the client retries — with `wsRequestedAt` left set, the
+ * desktop polls every 3 s from its next wake and the retry lands.
+ */
+function machineWakeOpts() {
+  return { maxWaitMs: wakeDeadlineMs, staleProbeMs: wakeDeadlineMs }
+}
 
 /** Headers we must not copy back through the proxy. */
 const HOP_BY_HOP = new Set([
@@ -282,7 +293,7 @@ function cachedSnapshot(instance: MachineRow): Record<string, any> | null {
  * answer "offline" anyway (SHO-241).
  */
 async function findRelayTarget(instance: MachineRow): Promise<MachineRow | null> {
-  if (await ensureTunnelConnected(instance.id, wakeDeadlineMs)) return instance
+  if ((await wakeHostTunnel(instance.id, machineWakeOpts())).state === 'connected') return instance
   const siblings = (await prisma.instance.findMany({
     where: {
       hostname: instance.hostname,
@@ -441,7 +452,7 @@ export function machineRoutes() {
     if (auth.email) forwardHeaders['x-tunnel-auth-email'] = auth.email
     if (auth.name) forwardHeaders['x-tunnel-auth-name'] = auth.name
 
-    const online = await ensureTunnelConnected(instance.id, wakeDeadlineMs)
+    const online = (await wakeHostTunnel(instance.id, machineWakeOpts())).state === 'connected'
     if (online) {
       try {
         const resp = await sendTunnelRequest(instance.id, {

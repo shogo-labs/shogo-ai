@@ -18,16 +18,18 @@ import {
 import type { ForwardToHostInput, ForwardToHostOptions } from './cross-workspace'
 import type { TunnelTransport } from './host-tunnel'
 import { prisma } from './prisma'
+import { wakeRefusal } from './host-wake'
 
 /**
  * Forward one cross-workspace call to the desktop that hosts the workspace, and
  * pass its answer back unchanged.
  *
- * The tunnel is woken first: an offline host is `503 device_offline` with its
- * name and last-seen time — the same shape `/devices/:instanceId/remote-tool`
- * answers — never a 200 with an empty body. A tunnel that dies mid-request is
- * `503 device_offline` when it says the machine is offline and `502
- * device_tunnel_error` otherwise.
+ * The tunnel is woken first, and the refusal says which of the two things went
+ * wrong (SHO-506): `503 device_offline` for a machine whose heartbeat is stale,
+ * `503 device_connecting` (retryable, with the seconds to wait) for one that is
+ * online but whose tunnel missed the wake window. Never a 200 with an empty body.
+ * A tunnel that dies mid-request is `503 device_offline` when it says the machine
+ * is offline and `502 device_tunnel_error` otherwise.
  */
 export async function forwardToHostOnHost(
   c: any,
@@ -52,8 +54,23 @@ export async function forwardToHostOnHost(
     return offline()
   }
   const { hostWakeDeadlineMs } = await import('./host-tunnel')
-  const deadline = opts._wakeDeadlineMs ?? hostWakeDeadlineMs()
-  if (!(await tunnel.ensureTunnelConnected(input.hostInstanceId, deadline).catch(() => false))) return offline()
+  const staleProbeMs = opts._wakeDeadlineMs ?? hostWakeDeadlineMs()
+  const wake = tunnel.wakeHostTunnel
+    ? await tunnel
+        .wakeHostTunnel(input.hostInstanceId, { staleProbeMs })
+        .catch(() => ({ state: 'offline' as const, instanceId: input.hostInstanceId, name: instance.name, lastSeenAt: instance.lastSeenAt, retryAfterSeconds: 0 }))
+    : {
+        state: (await tunnel.ensureTunnelConnected(input.hostInstanceId, staleProbeMs).catch(() => false))
+          ? ('connected' as const)
+          : ('offline' as const),
+        instanceId: input.hostInstanceId,
+        name: instance.name,
+        lastSeenAt: instance.lastSeenAt,
+        retryAfterSeconds: 0,
+      }
+  if (wake.state !== 'connected') {
+    return c.json({ error: wakeRefusal(wake, 'device', { subject: instance.name }) }, 503)
+  }
 
   const method = c.req.method
   const body = method === 'GET' || method === 'HEAD' ? undefined : await c.req.text()
@@ -98,7 +115,11 @@ export async function forwardToHostOnHost(
   }
 }
 
-/** The `device_offline` refusal, the same shape the device-tools route uses. */
+/**
+ * `device_offline` for the cases where there is no wake to ask: the host row is
+ * gone, or the tunnel transport could not be loaded. A wake that ran answers
+ * through `wakeRefusal` instead, which can say `device_connecting`.
+ */
 function deviceOffline(c: any, instanceId: string, name: string | null, lastSeenAt: Date | null): Response {
   const seen = lastSeenAt ? new Date(lastSeenAt).toISOString() : null
   return c.json(

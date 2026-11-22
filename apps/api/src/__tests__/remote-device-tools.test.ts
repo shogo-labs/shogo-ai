@@ -26,8 +26,19 @@ delete process.env.SHOGO_LOCAL_MODE
 let tunnelUp = true
 const tunneled: Array<{ url: string; headers: Headers; body: any }> = []
 
+// The only tunnel dependency the route has: `wakeHostTunnel` answers with the
+// wake state, so `tunnelUp` decides whether the desktop is reachable.
 mock.module('../routes/instances', () => ({
-  ensureTunnelConnected: async () => tunnelUp,
+  wakeHostTunnel: async (instanceId: string) =>
+    tunnelUp
+      ? { state: 'connected', instanceId, name: 'Samsara', lastSeenAt: new Date(), retryAfterSeconds: 0 }
+      : {
+          state: 'offline',
+          instanceId,
+          name: 'Samsara',
+          lastSeenAt: new Date('2026-11-03T20:00:00.000Z'),
+          retryAfterSeconds: 0,
+        },
 }))
 
 const { seedRbacWorld, db, _setRbacModeForTests } = await import('./helpers/rbac-world')
