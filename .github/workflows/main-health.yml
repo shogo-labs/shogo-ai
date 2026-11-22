@@ -35,6 +35,11 @@ on:
         description: 'Fail this run on purpose, to prove the main-red alert path'
         type: boolean
         default: false
+  # TEMPORARY (SHO-507): `workflow_dispatch` only accepts a workflow that already
+  # exists on the default branch, so the alert path cannot be proven from a PR
+  # branch without a push trigger. Removed in the commit right after the runs.
+  push:
+    branches: [sho-507-test-time-bombs]
 
 permissions: {}
 
@@ -47,7 +52,7 @@ jobs:
   test:
     # A schedule always lands on the default branch; a dispatch may be run from a
     # branch (that is how the alert path is proven before merge).
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/main' || github.event_name != 'schedule'
     name: Unit (${{ matrix.name }})
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
@@ -143,13 +148,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Test
-        if: inputs.force_fail != true
+        if: inputs.force_fail != true && github.event_name != 'push'
         run: bun run test -- --packages "${{ matrix.packages }}"
 
       # Proving the alert path must not depend on a real bomb existing, so a
       # dispatched run with `force_fail` fails here instead of running the suite.
       - name: Forced failure (workflow_dispatch force_fail)
-        if: inputs.force_fail == true
+        if: inputs.force_fail == true || github.event_name == 'push'
         run: |
           echo "::error::Forced failure: workflow_dispatch asked for force_fail=true, to prove the main-red issue path."
           exit 1
@@ -160,7 +165,7 @@ jobs:
   report:
     name: main-red issue
     needs: [test]
-    if: always() && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+    if: always() && (github.ref == 'refs/heads/main' || github.event_name != 'schedule')
     runs-on: ubuntu-latest
     permissions:
       contents: read
