@@ -2,23 +2,35 @@
 # Shogo AI — Terraform (OCI)
 # =============================================================================
 # Plan and apply Terraform for the OCI environments:
-#   staging | production-us | production-eu
+#   staging | production-us | production-eu (+ edge-global, Cloudflare only)
 #
-# Triggers:
-#   - pull_request (paths under terraform/) → terraform fmt + validate +
-#     plan for the staging environment, with the plan posted as a PR comment.
-#   - workflow_dispatch                     → plan or apply against any env,
-#     gated by GitHub Environment protection rules (production envs require
-#     manual approval).
+# The default path for merged infra is "applied", not "forgotten" (SHO-515:
+# #2145 sat merged-but-unapplied for a day, and the next plan that finally
+# picked it up wanted to replace every published site's DNS, Worker route and
+# PAR):
+#
+#   - pull_request  → fmt + unit test + validate EVERY env; full plan of
+#                     staging posted on the PR, with a hard failure when any
+#                     protected resource would be replaced.
+#   - push to main  → apply staging automatically (no protection rules), then
+#     touching      plan production-us and production-eu. Production APPLY is
+#     terraform/**  still manual: those environments are branch-protected but
+#                   carry no required reviewer, so an auto-apply would deploy
+#                   to prod with nobody looking. See docs/runbooks/terraform.md.
+#   - schedule      → daily plan of all three; fails when an environment has
+#                     pending changes (drift alarm: merged infra not applied, or
+#                     an out-of-band edit).
+#   - workflow_dispatch → plan or apply any single env, gated by that env's
+#                     GitHub Environment protection rules.
+#
+# NOTE: production plans cannot run on PR branches — production-us/eu's
+# environment branch policy allows only `main`, `hotfix/*` and `v*`. That is
+# why a PR validates prod and only plans staging.
 #
 # State backend: OCI Object Storage (S3-compat) bucket `shogo-tfstate` in
 # us-ashburn-1, one key per env. Repo-level secrets `OCI_S3_ACCESS_KEY` /
-# `OCI_S3_SECRET_KEY` provide credentials and `vars.OCI_S3_ENDPOINT`
-# supplies the namespace endpoint (passed via -backend-config).
-#
-# Most other inputs (compartment, OKE cluster OCID, NFS CIDR, OCI region)
-# come from per-environment GH variables already populated for the deploy
-# workflow.
+# `OCI_S3_SECRET_KEY` provide credentials and `vars.OCI_S3_ENDPOINT` supplies
+# the namespace endpoint (passed via -backend-config).
 # =============================================================================
 
 name: Terraform
@@ -28,6 +40,20 @@ on:
     paths:
       - 'terraform/**'
       - '.github/workflows/terraform.yml'
+      - '.github/workflows/terraform-plan.yml'
+      - '.github/scripts/check-terraform-plan-protected.sh'
+  push:
+    branches:
+      - main
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform.yml'
+      - '.github/workflows/terraform-plan.yml'
+      - '.github/scripts/check-terraform-plan-protected.sh'
+  schedule:
+    # Daily drift alarm. Runs on the default branch, which the production
+    # environments' branch policy allows.
+    - cron: '23 6 * * *'
   workflow_dispatch:
     inputs:
       environment:
@@ -58,75 +84,50 @@ permissions:
   contents: read
   pull-requests: write
 
-concurrency:
-  # Serialize per-environment so two applies can't race on the same state.
-  group: terraform-${{ inputs.environment || 'staging' }}
-  cancel-in-progress: false
-
 env:
   TF_VERSION: '1.5.7'
   TF_IN_AUTOMATION: 'true'
   TF_INPUT: 'false'
-  AWS_ACCESS_KEY_ID: ${{ secrets.OCI_S3_ACCESS_KEY }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
 
 jobs:
   # ---------------------------------------------------------------------------
-  # PR plan — always runs against staging so reviewers see the impact of
-  # module changes without ever touching prod state.
+  # PR checks — cheap, credential-light gates that run before the plan:
+  # formatting, the releases-worker unit test, and cross-region node boot
+  # volume parity.
   # ---------------------------------------------------------------------------
-  pr-plan:
+  pr-checks:
     if: github.event_name == 'pull_request'
-    name: Plan (staging)
+    name: PR checks (fmt, unit test, disk parity)
     runs-on: ubuntu-latest
     environment: staging
-    defaults:
-      run:
-        working-directory: terraform/environments/staging
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.OCI_S3_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-
-      - name: Unit test releases-worker.js.tftpl (releases.shogo.ai)
-        # Runs from the repo root (this job's working-directory default is
-        # terraform/environments/staging) — see releases-worker.test.ts for
-        # why the Worker is rendered to a temp .mjs and imported rather than
-        # tested in-place.
-        working-directory: ${{ github.workspace }}
-        run: bun test terraform/modules/install-shogo-ai/scripts/releases-worker.test.ts
 
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
-      - name: Write OCI API key
-        run: |
-          mkdir -p "$HOME/.oci"
-          printf '%s' "${{ secrets.OCI_PRIVATE_KEY }}" > "$HOME/.oci/oci_api_key.pem"
-          chmod 600 "$HOME/.oci/oci_api_key.pem"
-
       - name: terraform fmt
-        run: terraform -chdir=../.. fmt -check -recursive
+        run: terraform -chdir=terraform fmt -check -recursive
 
-      - name: terraform init
-        run: |
-          terraform init \
-            -backend-config="endpoint=${{ vars.OCI_S3_ENDPOINT }}" \
-            -lockfile=readonly
+      - name: Unit test releases-worker.js.tftpl (releases.shogo.ai)
+        # Renders the Worker to a temp .mjs and imports it — see the test file
+        # for why it is not tested in place.
+        run: bun test terraform/modules/install-shogo-ai/scripts/releases-worker.test.ts
 
-      - name: terraform validate
-        run: terraform validate -no-color
-
-      # Cross-region node-pool boot-volume parity guard (2026-06-02 EU
-      # incident): EU bootstrapped at 100 GB while US ran 200 GB, and
-      # the oke module ignores in-place boot-volume changes, so the drift was
-      # invisible to `terraform plan`. This asserts parity against the LIVE
-      # OCI pools so the gap can never silently re-open.
       - name: Install OCI CLI
         run: pip install oci-cli --quiet
 
+      # Cross-region node-pool boot-volume parity guard (2026-06-02 EU
+      # incident): EU bootstrapped at 100 GB while US ran 200 GB, and the oke
+      # module ignores in-place boot-volume changes, so the drift was invisible
+      # to `terraform plan`. This asserts parity against the LIVE OCI pools.
       - name: Node disk parity check (cross-region boot volumes)
         env:
           OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
@@ -139,103 +140,23 @@ jobs:
           REGIONS: "us-ashburn-1 eu-frankfurt-1"
         run: "$GITHUB_WORKSPACE/.github/scripts/check-node-disk-parity.sh"
 
-      # The staging plan includes Kubernetes resources. Provision the same
-      # OKE kubeconfig used by the manual plan so the kubernetes/helm
-      # providers never fall back to the runner's empty default config.
-      - name: Configure kubectl for OKE
-        env:
-          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
-          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
-          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
-          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
-          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
-        run: |
-          mkdir -p "$HOME/.kube"
-          oci ce cluster create-kubeconfig \
-            --cluster-id "${{ vars.OKE_CLUSTER_OCID }}" \
-            --file "$HOME/.kube/config" \
-            --region "${{ vars.OCI_REGION }}" \
-            --token-version 2.0.0 \
-            --kube-endpoint PUBLIC_ENDPOINT
-          chmod 600 "$HOME/.kube/config"
-
-      - name: terraform plan
-        id: plan
-        env:
-          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
-          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
-          TF_VAR_oci_private_key_path: /home/runner/.oci/oci_api_key.pem
-          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
-          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
-          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
-          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
-          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
-          TF_VAR_compartment_id: ${{ vars.COMPARTMENT_ID }}
-          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
-          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
-          TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
-          KUBE_CONFIG_PATH: /home/runner/.kube/config
-          # SigNoz Cloud ingestion key for the k8s-infra collector. Without it
-          # the signoz module skips its otelInsecure=false + signozApiKey set
-          # blocks, so the agent ships cleartext gRPC to the TLS-only :443 ingest
-          # ("http2: frame too large") and drops ALL infra metrics/logs. Env-
-          # scoped secret; resolves per the job's GH Environment.
-          TF_VAR_signoz_ingestion_key: ${{ secrets.SIGNOZ_INGESTION_KEY }}
-          TF_VAR_edge_proxy_secret: ${{ secrets.EDGE_PROXY_SECRET }}
-        run: |
-          set +e
-          terraform plan -no-color -detailed-exitcode -out=tfplan 2>&1 | tee plan.txt
-          ec=${PIPESTATUS[0]}
-          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
-          # 0 = no changes, 2 = changes, 1 = error
-          if [ "$ec" = "1" ]; then exit 1; fi
-
-      - name: Comment plan on PR
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const plan = fs.readFileSync(
-              'terraform/environments/staging/plan.txt',
-              'utf8',
-            );
-            const truncated = plan.length > 60000
-              ? plan.slice(0, 60000) +
-                '\n\n…(truncated, see workflow logs for full plan)'
-              : plan;
-            const body = [
-              '### Terraform Plan — staging',
-              '',
-              '<details><summary>Show plan</summary>',
-              '',
-              '```hcl',
-              truncated,
-              '```',
-              '',
-              '</details>',
-            ].join('\n');
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body,
-            });
-
   # ---------------------------------------------------------------------------
-  # Manual plan/apply — uses the environment chosen via workflow_dispatch
-  # input, with the GH Environment of the same name applying its protection
-  # rules (required reviewers, wait timers, branch restrictions).
+  # PR validate — `terraform validate` for EVERY environment, including the
+  # production ones a PR cannot plan (branch policy). Catches the whole class of
+  # "module input changed but a caller wasn't updated", which is what a
+  # module-wide signature change is.
   # ---------------------------------------------------------------------------
-  manual:
-    if: github.event_name == 'workflow_dispatch'
-    name: ${{ inputs.action }} (${{ inputs.environment }})
+  pr-validate:
+    if: github.event_name == 'pull_request'
+    name: Validate (${{ matrix.environment }})
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [staging, production-us, production-eu]
     defaults:
       run:
-        working-directory: terraform/environments/${{ inputs.environment }}
+        working-directory: terraform/environments/${{ matrix.environment }}
     steps:
       - uses: actions/checkout@v4
 
@@ -244,113 +165,90 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
-      # edge-global is a Cloudflare-only env (no OCI/OKE resources), so
-      # skip the OCI key + OKE kubeconfig setup steps for it. Every other
-      # env needs them because its main.tf instantiates OKE/OCI modules
-      # that hit the oracle/oci + kubernetes providers.
-      - name: Write OCI API key
-        if: inputs.environment != 'edge-global'
-        run: |
-          mkdir -p "$HOME/.oci"
-          printf '%s' "${{ secrets.OCI_PRIVATE_KEY }}" > "$HOME/.oci/oci_api_key.pem"
-          chmod 600 "$HOME/.oci/oci_api_key.pem"
+      - name: terraform init (no backend)
+        run: terraform init -backend=false -input=false
 
-      - name: Install OCI CLI
-        if: inputs.environment != 'edge-global'
-        run: pip install oci-cli --quiet
+      - name: terraform validate
+        run: terraform validate -no-color
 
-      # Provision a kubeconfig for the env's OKE cluster so provisioners
-      # like null_resource.kourier_toleration_strip (which shells out to
-      # kubectl) can talk to the cluster.
-      - name: Configure kubectl for OKE
-        if: inputs.environment != 'edge-global'
-        env:
-          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
-          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
-          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
-          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
-          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
-        run: |
-          mkdir -p "$HOME/.kube"
-          oci ce cluster create-kubeconfig \
-            --cluster-id "${{ vars.OKE_CLUSTER_OCID }}" \
-            --file "$HOME/.kube/config" \
-            --region "${{ vars.OCI_REGION }}" \
-            --token-version 2.0.0 \
-            --kube-endpoint PUBLIC_ENDPOINT
-          chmod 600 "$HOME/.kube/config"
+  # ---------------------------------------------------------------------------
+  # PR plan — full staging plan, posted on the PR, with the protected-resource
+  # guard. Staging is the only env a PR may bind (see the header note).
+  # ---------------------------------------------------------------------------
+  pr-plan:
+    if: github.event_name == 'pull_request'
+    name: Plan (staging)
+    uses: ./.github/workflows/terraform-plan.yml
+    with:
+      environment: staging
+      action: plan
+      pr_number: ${{ github.event.number }}
+    secrets: inherit
 
-      - name: terraform init
-        run: |
-          terraform init \
-            -backend-config="endpoint=${{ vars.OCI_S3_ENDPOINT }}"
+  # ---------------------------------------------------------------------------
+  # Push to main — staging is applied automatically. Its environment has no
+  # protection rules, and staging is rebuildable: leaving merged infra unapplied
+  # is the failure mode this card exists to kill.
+  # ---------------------------------------------------------------------------
+  main-apply-staging:
+    if: github.event_name == 'push'
+    name: Apply (staging)
+    uses: ./.github/workflows/terraform-plan.yml
+    with:
+      environment: staging
+      action: apply
+    secrets: inherit
 
-      - name: terraform plan
-        if: inputs.action == 'plan'
-        env:
-          # OCI auth (used both by oracle/oci provider via TF_VAR_* and by
-          # the OCI CLI sub-process the kubernetes provider `exec`s to
-          # generate a cluster auth token). Harmless for edge-global
-          # which doesn't read any of these.
-          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
-          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
-          TF_VAR_oci_private_key_path: /home/runner/.oci/oci_api_key.pem
-          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
-          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
-          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
-          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
-          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
-          # OCI scope (env-scoped GH vars)
-          TF_VAR_compartment_id: ${{ vars.COMPARTMENT_ID }}
-          # Cloudflare (repo-scoped)
-          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
-          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          # Custom domains (Cloudflare for SaaS). Declared only on production-us
-          # (+ staging); other envs ignore them with a harmless "undeclared
-          # variable" warning, same as TF_VAR_github_token below. Set the
-          # `ENABLE_CUSTOM_DOMAINS` + `CUSTOM_DOMAINS_ZONE` GH vars on the
-          # target environment to enable. `|| 'false'` keeps the bool parse
-          # valid when the var is unset. `custom_domains_zone` MUST be a
-          # dedicated zone (the module precondition rejects empty / the publish
-          # zone). See docs/custom-domains.md.
-          TF_VAR_enable_custom_domains: ${{ vars.ENABLE_CUSTOM_DOMAINS || 'false' }}
-          TF_VAR_custom_domains_zone: ${{ vars.CUSTOM_DOMAINS_ZONE }}
-          # edge-global only — releases.shogo.ai resolver GitHub token
-          # (optional; falls through to anonymous 60/hr quota if unset).
-          TF_VAR_github_token: ${{ secrets.RELEASES_RESOLVER_GH_TOKEN }}
-          # Networking
-          TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
-          TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
-          # SigNoz Cloud ingestion key — see note in pr-plan. Env-scoped secret.
-          TF_VAR_signoz_ingestion_key: ${{ secrets.SIGNOZ_INGESTION_KEY }}
-          TF_VAR_edge_proxy_secret: ${{ secrets.EDGE_PROXY_SECRET }}
-          KUBE_CONFIG_PATH: /home/runner/.kube/config
-        run: terraform plan -no-color ${{ inputs.extra_args }}
+  # ---------------------------------------------------------------------------
+  # Push to main — plan production-us and production-eu. Production APPLY stays
+  # manual on purpose: the prod environments have a branch policy but NO
+  # required reviewer, so queueing an apply here would deploy to production
+  # without Russell ever seeing it. Run the manual dispatch below to apply.
+  # ---------------------------------------------------------------------------
+  main-plan-prod:
+    needs: main-apply-staging
+    if: github.event_name == 'push'
+    name: Plan (${{ matrix.environment }})
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [production-us, production-eu]
+    uses: ./.github/workflows/terraform-plan.yml
+    with:
+      environment: ${{ matrix.environment }}
+      action: plan
+    secrets: inherit
 
-      - name: terraform apply
-        if: inputs.action == 'apply'
-        env:
-          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
-          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
-          TF_VAR_oci_private_key_path: /home/runner/.oci/oci_api_key.pem
-          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
-          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
-          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
-          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
-          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
-          TF_VAR_compartment_id: ${{ vars.COMPARTMENT_ID }}
-          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
-          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          # Custom domains (Cloudflare for SaaS) — see the plan step above.
-          TF_VAR_enable_custom_domains: ${{ vars.ENABLE_CUSTOM_DOMAINS || 'false' }}
-          TF_VAR_custom_domains_zone: ${{ vars.CUSTOM_DOMAINS_ZONE }}
-          TF_VAR_github_token: ${{ secrets.RELEASES_RESOLVER_GH_TOKEN }}
-          TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
-          TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
-          # SigNoz Cloud ingestion key — see note in pr-plan. Env-scoped secret.
-          TF_VAR_signoz_ingestion_key: ${{ secrets.SIGNOZ_INGESTION_KEY }}
-          TF_VAR_edge_proxy_secret: ${{ secrets.EDGE_PROXY_SECRET }}
-          KUBE_CONFIG_PATH: /home/runner/.kube/config
-        run: terraform apply -no-color -auto-approve ${{ inputs.extra_args }}
+  # ---------------------------------------------------------------------------
+  # Daily drift alarm — plan all three envs and fail when any has pending
+  # changes. A red scheduled run means merged infra is sitting unapplied (or
+  # somebody edited production out-of-band), so it surfaces through the existing
+  # failing-workflow alerting.
+  # ---------------------------------------------------------------------------
+  drift:
+    if: github.event_name == 'schedule'
+    name: Drift (${{ matrix.environment }})
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [staging, production-us, production-eu]
+    uses: ./.github/workflows/terraform-plan.yml
+    with:
+      environment: ${{ matrix.environment }}
+      action: plan
+      fail_on_changes: true
+    secrets: inherit
+
+  # ---------------------------------------------------------------------------
+  # Manual plan/apply of any single env — the only path to a production apply.
+  # The env's GitHub Environment protection rules apply to this job.
+  # ---------------------------------------------------------------------------
+  manual:
+    if: github.event_name == 'workflow_dispatch'
+    name: ${{ inputs.action }} (${{ inputs.environment }})
+    uses: ./.github/workflows/terraform-plan.yml
+    with:
+      environment: ${{ inputs.environment }}
+      action: ${{ inputs.action }}
+      extra_args: ${{ inputs.extra_args }}
+    secrets: inherit

@@ -39,7 +39,19 @@ variable "publish_domain" {
 }
 
 variable "cloudflare_zone_id" {
-  description = "DEPRECATED: this module now looks up the publish zone by name via `data.cloudflare_zone.publish`, so this variable is unused. Kept for backwards-compat with the production envs' module call signature; remove next time those envs get touched."
+  description = "DEPRECATED: this module looks up the publish zone by name via `data.cloudflare_zone.publish`, so this variable is unused. It is NOT the publish zone: every caller passes the repo-level `CLOUDFLARE_ZONE_ID`, which is the `shogo.ai` zone (the preview-router route lives there), while the publish zone is `shogo.one`. Using it here would move the `*.shogo.one` wildcard record and the published-apps Worker route into the wrong zone. Kept for backwards-compat with the production envs' module call signature; remove next time those envs get touched."
+  type        = string
+  default     = null
+}
+
+variable "object_storage_namespace" {
+  description = "OCI Object Storage namespace (tenancy-wide, e.g. `idin4oltblww`). Pass `module.object_storage.namespace`. Required so the PAR's `namespace` comes from a value the caller already holds instead of a lookup inside this module: a deferred lookup turns `namespace` into \"(known after apply)\", which force-replaces the live PAR that the Worker's static origin embeds. Empty is rejected by the PAR's precondition."
+  type        = string
+  default     = ""
+}
+
+variable "published_apps_bucket" {
+  description = "Name of the `shogo-published-apps-<env>` bucket the PAR grants read access to. Pass `module.object_storage.published_apps_bucket`. This input is the ONLY ordering dependency on `module.object_storage` — it replaces the module-level `depends_on` that used to defer every data source in this module (and therefore force-replaced the wildcard record, Worker routes and PAR whenever object storage had any pending change)."
   type        = string
   default     = null
 }
@@ -131,14 +143,26 @@ variable "tags" {
 # -----------------------------------------------------------------------------
 # Data Sources
 # -----------------------------------------------------------------------------
-data "oci_objectstorage_namespace" "current" {
-  compartment_id = var.compartment_id
-}
+# NOTE: there is deliberately NO `data.oci_objectstorage_namespace` here. The
+# namespace is a tenancy-wide constant the caller already has as
+# `module.object_storage.namespace`; looking it up here made the PAR's
+# `namespace` argument flip to "(known after apply)" whenever this module sat
+# behind a module-level depends_on with a pending change, force-replacing a live
+# PAR that the Worker's static origin embeds (every published site 404s until
+# the new PAR + Worker propagate). See var.object_storage_namespace.
 
 # Look up the publish zone by name. The token used for tf needs `Zone:Read`
 # on this zone in addition to `Workers Routes:Edit` and `Zone DNS:Edit`.
 # Sourcing by name keeps callers from having to thread a second zone-id
 # variable through every env.
+#
+# NOTE: this lookup is intentional and must NOT be replaced with
+# `var.cloudflare_zone_id` — that variable carries the `shogo.ai` zone (where
+# the preview-router Worker route lives), while the publish zone is
+# `shogo.one`. It also stays readable at plan time now that the module-level
+# `depends_on = [module.object_storage]` is gone: only a module-level
+# depends_on defers data sources, and this lookup's config depends on nothing
+# but `var.publish_zone`.
 #
 # When `publish_domain` is itself a CF zone (e.g. `shogo.one`), the default
 # null `publish_zone` falls through to `publish_domain`. When `publish_domain`
@@ -163,22 +187,36 @@ data "cloudflare_zone" "publish" {
 # `AnyObjectReadWithoutList` (which was not a real OCI API value and
 # fails provider validation — see commit history).
 resource "oci_objectstorage_preauthrequest" "published_apps" {
-  namespace             = data.oci_objectstorage_namespace.current.namespace
-  bucket                = "shogo-published-apps-${var.environment}"
+  namespace             = var.object_storage_namespace
+  bucket                = coalesce(var.published_apps_bucket, "shogo-published-apps-${var.environment}")
   name                  = "cloudflare-cdn-access"
   access_type           = "AnyObjectRead"
   bucket_listing_action = "Deny"
   time_expires          = timeadd(timestamp(), "8760h") # 1 year
 
   lifecycle {
+    # Fail loudly instead of creating a PAR with an empty namespace when a
+    # caller forgets the input. A precondition runs only for existing
+    # instances, so a gated-off module (count = 0) is unaffected.
+    precondition {
+      condition     = var.object_storage_namespace != ""
+      error_message = "object_storage_namespace must be set (pass module.object_storage.namespace); the PAR cannot be created without it."
+    }
+
+    precondition {
+      condition     = var.published_apps_bucket != null
+      error_message = "published_apps_bucket must be set (pass module.object_storage.published_apps_bucket). Without it the PAR has no dependency edge on the bucket, so terraform can create the PAR before OCI has propagated the bucket and the PAR API 404s."
+    }
+
     # Create the replacement PAR before destroying the old one. A PAR can be
     # force-replaced for reasons outside a real config change (e.g. the
-    # `namespace` data source resolving to "known after apply" on a stale
-    # plan). The Worker's static origin (`local.par_base_url`) embeds this
-    # PAR's `access_uri`, so a destroy-before-create replacement would leave
-    # the live Worker pointing at a deleted PAR — 404ing static assets for
-    # EVERY published app until the new PAR + Worker update propagate.
-    # create_before_destroy keeps a valid PAR referenced at all times.
+    # PAR's `namespace` resolving to "known after apply" because this module
+    # sat behind a module-level depends_on with a pending change). The Worker's
+    # static origin (`local.par_base_url`) embeds this PAR's `access_uri`, so a
+    # destroy-before-create replacement would leave the live Worker pointing at
+    # a deleted PAR — 404ing static assets for EVERY published app until the new
+    # PAR + Worker update propagate. create_before_destroy keeps a valid PAR
+    # referenced at all times.
     create_before_destroy = true
 
     # `bucket_listing_action` is set correctly on create (verified via the
@@ -1080,6 +1118,13 @@ resource "cloudflare_worker_route" "published_apps" {
   zone_id     = data.cloudflare_zone.publish.id
   pattern     = "*.${var.publish_domain}/*"
   script_name = cloudflare_worker_script.subdomain_router.name
+
+  lifecycle {
+    # A replaced route means every published site is unrouted until the new
+    # route propagates. Fail the plan instead of being one apply away from an
+    # outage. (In-place script updates are unaffected.)
+    prevent_destroy = true
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -1098,6 +1143,13 @@ resource "cloudflare_record" "custom_domain_fallback" {
   type            = "A"
   proxied         = true
   allow_overwrite = true
+
+  lifecycle {
+    # This record is the CNAME target every bring-your-own domain points at.
+    # Replacing it breaks custom-hostname routing and re-triggers cert
+    # validation for every customer domain.
+    prevent_destroy = true
+  }
 }
 
 # Designate the record above as the Cloudflare for SaaS fallback origin: all
@@ -1110,6 +1162,12 @@ resource "cloudflare_custom_hostname_fallback_origin" "publish" {
   origin  = local.custom_domain_fallback_hostname
 
   depends_on = [cloudflare_record.custom_domain_fallback]
+
+  lifecycle {
+    # Destroying the fallback origin removes SaaS routing for every customer
+    # hostname in the zone. Fail the plan rather than allow a replace.
+    prevent_destroy = true
+  }
 }
 
 # Run the subdomain-router Worker for ALL traffic in the DEDICATED custom-domains
@@ -1132,6 +1190,12 @@ resource "cloudflare_worker_route" "custom_domains" {
   zone_id     = data.cloudflare_zone.custom_domains[0].id
   pattern     = "*/*"
   script_name = cloudflare_worker_script.subdomain_router.name
+
+  lifecycle {
+    # Same reasoning as cloudflare_worker_route.published_apps: a replacement
+    # unroutes every bring-your-own custom hostname in this zone.
+    prevent_destroy = true
+  }
 }
 
 # Wildcard DNS record pointing to Cloudflare (proxied for CDN + SSL).
@@ -1174,6 +1238,14 @@ resource "cloudflare_record" "wildcard" {
   # record. Flipping this on lets tf adopt the live record on first
   # apply, after which subsequent plans reconcile normally.
   allow_overwrite = true
+
+  lifecycle {
+    # Every published site resolves through this record. A replacement (even a
+    # create_before_destroy one) briefly drops `*.${var.publish_domain}` out of
+    # DNS. Fail the plan instead; in-place edits (e.g. changing `proxy`) are
+    # still allowed.
+    prevent_destroy = true
+  }
 }
 
 # -----------------------------------------------------------------------------
