@@ -6,6 +6,7 @@ export default defineConfig({
   entry: [
     'src/index.ts',
     'src/db/index.ts',
+    'src/bucket/index.ts',
     'src/react/index.ts',
     'src/agent/index.ts',
     'src/generators/index.ts',

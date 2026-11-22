@@ -3694,21 +3694,15 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         503,
       )
     } else {
-      const { ensureTunnelConnected } = await import('../routes/instances')
+      const { wakeHostTunnel } = await import('../routes/instances')
       const { hostTunnelRuntimeUrl } = await import('../lib/host-tunnel')
+      const { wakeRefusal } = await import('../lib/host-wake')
       const WAKE_DEADLINE_MS = Math.max(0, Number(process.env.SHOGO_HOST_WAKE_DEADLINE_MS ?? 5_000) || 0)
-      if (!(await ensureTunnelConnected(instanceId, WAKE_DEADLINE_MS))) {
-        return c.json(
-          {
-            error: {
-              code: 'device_offline',
-              message: `${instance.name} is offline${instance.lastSeenAt ? ` (last seen ${new Date(instance.lastSeenAt).toISOString()})` : ''}`,
-              instanceId,
-              lastSeenAt: instance.lastSeenAt ? new Date(instance.lastSeenAt).toISOString() : null,
-            },
-          },
-          503,
-        )
+      const wake = await wakeHostTunnel(instanceId, { staleProbeMs: WAKE_DEADLINE_MS })
+      if (wake.state !== 'connected') {
+        // `device_connecting` (retryable) when the machine's heartbeat is fresh but
+        // its tunnel missed the wake window; `device_offline` only when it is away.
+        return c.json({ error: wakeRefusal(wake, 'device', { subject: instance.name }) }, 503)
       }
 
       // The desktop's workspace agent proxy, reached through the same host tunnel
