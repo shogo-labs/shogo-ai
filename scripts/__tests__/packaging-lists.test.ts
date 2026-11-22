@@ -78,11 +78,94 @@ describe('checkPackageLists — regressions', () => {
     }
   })
 
-  it('reports a bin file that "files" does not publish (SHO-511: bin/bucket-cli.mjs)', () => {
+  it('reports a bin entry whose own file matches no "files" glob', () => {
     const dir = fixture({ files: ['dist/**/*.js'], bin: { shogo: './bin/cli.mjs' } }, { files: ['bin/cli.mjs'] })
     try {
       const problems = checkPackageLists(dir)
       expect(problems.some((problem) => problem.includes('bin["shogo"]') && problem.includes('"files" glob'))).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reports a bin sibling that a lazy loader names but "files" omits (SHO-511: ./bucket-cli.mjs)', () => {
+    // 2.6.1's real shape: the entry was published, the file it hands to
+    // `await import()` was not, so `shogo bucket` died with MODULE_NOT_FOUND.
+    const dir = fixture({ files: ['bin/cli.mjs'], bin: { shogo: './bin/cli.mjs' } }, { files: ['bin/cli.mjs'] })
+    try {
+      writeFileSync(join(dir, 'bin/cli.mjs'), "const { bucketMain } = await loadSubcommand('bucket', './bucket-cli.mjs')\n")
+      writeFileSync(join(dir, 'bin/bucket-cli.mjs'), 'export const bucketMain = () => {}\n')
+      const problems = checkPackageLists(dir)
+      expect(problems.some((problem) => problem.includes("'./bucket-cli.mjs'") && problem.includes('"files" glob'))).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('follows a bin chain to the file that is missing', () => {
+    const dir = fixture(
+      { files: ['bin/cli.mjs', 'bin/sub.mjs'], bin: { shogo: './bin/cli.mjs' } },
+      { files: ['bin/cli.mjs', 'bin/sub.mjs'] },
+    )
+    try {
+      writeFileSync(join(dir, 'bin/cli.mjs'), "await import('./sub.mjs')\n")
+      writeFileSync(join(dir, 'bin/sub.mjs'), "export const deep = await import('./deep.mjs')\n")
+      writeFileSync(join(dir, 'bin/deep.mjs'), 'export const leaf = 1\n')
+      const problems = checkPackageLists(dir)
+      expect(problems.some((problem) => problem.includes("'./deep.mjs'") && problem.includes('bin/deep.mjs'))).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('accepts a bin sibling that "files" publishes', () => {
+    const dir = fixture(
+      { files: ['bin/*.mjs'], bin: { shogo: './bin/cli.mjs' } },
+      { files: ['bin/cli.mjs', 'bin/bucket-cli.mjs'] },
+    )
+    try {
+      writeFileSync(join(dir, 'bin/cli.mjs'), "await import('./bucket-cli.mjs')\n")
+      expect(checkPackageLists(dir)).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('accepts a bin reference into dist/ that has not been built yet', () => {
+    // The static step runs before the build, so a clean checkout has no dist/.
+    // SDK's cli.mjs names ../dist/cli/deploy.js, and this check used to fail
+    // CI on it while passing locally, where dist/ existed.
+    const dir = fixture(
+      { files: ['bin/cli.mjs', 'dist/**/*.js'], bin: { shogo: './bin/cli.mjs' } },
+      { files: ['bin/cli.mjs'] },
+    )
+    try {
+      writeFileSync(join(dir, 'bin/cli.mjs'), "const deploy = resolve(root, '../dist/cli/deploy.js')\n")
+      expect(checkPackageLists(dir)).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reports a bin sibling that a "files" glob matches but that is not on disk', () => {
+    const dir = fixture({ files: ['bin/*.mjs'], bin: { shogo: './bin/cli.mjs' } }, { files: ['bin/cli.mjs'] })
+    try {
+      writeFileSync(join(dir, 'bin/cli.mjs'), "await import('./never-written.mjs')\n")
+      const problems = checkPackageLists(dir)
+      expect(problems.some((problem) => problem.includes("'./never-written.mjs'") && problem.includes('does not exist'))).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores a path that only appears in a comment (shogo-worker header)', () => {
+    const dir = fixture({ files: ['bin'], bin: { shogo: './bin/cli.mjs' } }, { files: ['bin/cli.mjs'] })
+    try {
+      writeFileSync(
+        join(dir, 'bin/cli.mjs'),
+        "//   2. Bundled JS at ../src/cli.ts            (monorepo only)\nconsole.log('ok')\n",
+      )
+      expect(checkPackageLists(dir)).toEqual([])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
