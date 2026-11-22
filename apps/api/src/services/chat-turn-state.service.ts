@@ -380,6 +380,10 @@ export async function sweepDeadTurnsOnLocalBoot(): Promise<number> {
     })
     if (cleared.count === 0) continue
     swept++
+    if (recovered) {
+      const { deleteTurnFrames } = await import('./chat-turn-journal')
+      void deleteTurnFrames(turnId).catch(() => 0)
+    }
     // A recovered row already says the turn ended; only a turn with no frames
     // at all needs the stamp that stops it reading as unfinished.
     if (!recovered) {
