@@ -57,6 +57,18 @@ export { usageLimitErrorPayload, type BalanceCheck, type UsageBlockReason };
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
 /**
+ * Local mode read at call time, for decisions that must follow the env as it
+ * is *now* rather than as it was at import. `isLocalMode` above caches the
+ * import-time value, which is right for the process-lifetime gates but wrong
+ * for anything a test flips mid-run: `mail.integration.test.ts` boots with
+ * `SHOGO_LOCAL_MODE=true` and then deletes it to exercise the cloud gating,
+ * and a cached `true` made `getPlanStamp` answer "desktop" there (SHO-508).
+ */
+function localModeNow(): boolean {
+  return process.env.SHOGO_LOCAL_MODE === 'true'
+}
+
+/**
  * USD source a usage event was charged against. Mirrors the DB enum.
  * `window` = charged against a rolling usage window (the time-gated
  * "unlimited" path); `overage` = beyond the window, metered to Stripe.
@@ -344,7 +356,7 @@ export async function getPlanStamp(
   workspaceId: string,
   now: Date = new Date(),
 ): Promise<PlanStamp> {
-  if (isLocalMode) {
+  if (localModeNow()) {
     const { getLinkedCloudPlanId } = await import('../lib/linked-cloud-plan')
     return { planId: await getLinkedCloudPlanId(), desktopUnlimited: true }
   }
