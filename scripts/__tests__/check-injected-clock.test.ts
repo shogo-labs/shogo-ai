@@ -127,6 +127,53 @@ describe('findInjectedClockReads', () => {
   test('the SHO-505 fix is clean', () => {
     expect(findInjectedClockReads(FIXED, 'compute-usage.ts')).toEqual([])
   })
+
+  test('an `asOf` parameter is a clock too: the analytics periodStartAsOf leak', () => {
+    // The +30d nightly caught this one: `periodStartAsOf(period, asOf)` computed
+    // the window from `periodToDate(period)` and then subtracted `Date.now() - asOf`,
+    // so two clock reads a millisecond apart shifted the window start. The param is
+    // named `asOf`, not `now`, which is why the first baseline missed it.
+    const findings = findInjectedClockReads(
+      [
+        'function periodStartAsOf(period: Period, asOf?: Date): Date {',
+        '  const from = periodToDate(period)',
+        '  return asOf ? new Date(from.getTime() - (Date.now() - asOf.getTime())) : from',
+        '}',
+      ].join('\n'),
+      'analytics.service.ts',
+    )
+    expect(findings).toHaveLength(1)
+    expect(findings[0]).toMatchObject({ kind: 'Date.now()', owner: 'periodStartAsOf' })
+  })
+
+  test('the one-clock fix for it is clean, and its `??` seam does not need a comment', () => {
+    expect(
+      findInjectedClockReads(
+        [
+          'function periodStartAsOf(period: Period, asOf?: Date): Date {',
+          '  return periodToDate(period, asOf ?? new Date())',
+          '}',
+        ].join('\n'),
+        'analytics.service.ts',
+      ),
+    ).toEqual([])
+  })
+
+  test('a `clock` parameter is a clock too', () => {
+    const findings = findInjectedClockReads(
+      `export function window(period: Period, clock: Date) { return { since: Date.now() - 10, clock } }`,
+    )
+    expect(findings).toHaveLength(1)
+    expect(findings[0]!.kind).toBe('Date.now()')
+  })
+
+  test('`at` is not treated as a clock name', () => {
+    // `at` is an index or a position in far more code than it is a clock; flagging
+    // it would put every such read in the baseline and hollow the ratchet out.
+    expect(
+      findInjectedClockReads(`export function shift(rows: Row[], at: number) { return { at, now: Date.now() } }`),
+    ).toEqual([])
+  })
 })
 
 describe('evaluateInjectedClock', () => {

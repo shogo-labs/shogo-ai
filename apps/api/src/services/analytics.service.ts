@@ -317,8 +317,9 @@ export function periodToWindow(
   period?: AnalyticsPeriod,
   fromIso?: string,
   toIso?: string,
+  clock?: Date,
 ): { from: Date; to: Date } {
-  const now = new Date()
+  const now = clock ?? new Date()
   if (fromIso && toIso) {
     const from = new Date(fromIso)
     const to = new Date(toIso)
@@ -355,14 +356,20 @@ interface TimeSeriesPoint {
 // Helpers
 // ============================================================================
 
-function periodToDate(period: AnalyticsPeriod): Date {
-  return periodToWindow(period).from
+function periodToDate(period: AnalyticsPeriod, clock?: Date): Date {
+  return periodToWindow(period, undefined, undefined, clock).from
 }
 
-/** Start of a rolling `period` window that ends at `asOf` instead of now. */
+/**
+ * Start of a rolling `period` window that ends at `asOf` instead of now.
+ *
+ * The clock is read once: resolving the window from `asOf` and then subtracting
+ * the gap to "now" would read the wall clock twice, and the two reads drift by
+ * however long the caller takes — a window that shifts under a pinned clock is
+ * how SHO-505 turned a passing suite into a main-red time bomb.
+ */
 function periodStartAsOf(period: AnalyticsPeriod, asOf?: Date): Date {
-  const from = periodToDate(period)
-  return asOf ? new Date(from.getTime() - (Date.now() - asOf.getTime())) : from
+  return periodToDate(period, asOf ?? new Date())
 }
 
 /**

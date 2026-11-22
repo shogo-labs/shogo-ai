@@ -46,6 +46,18 @@ const SCOPE_ROOTS = ['apps/api/src', 'apps/mobile', 'packages'] as const
 
 const ESCAPE_RE = /\/\/\s*injected-clock:\s*live\s+\S/
 
+/**
+ * Parameter names that mean "the caller hands you the clock".
+ *
+ * `now` is the common one; `asOf` is the same idea spelled for a rolling window
+ * (`periodStartAsOf(period, asOf)` in analytics.service.ts read `Date.now()`
+ * behind an `asOf` param and drifted 1 ms, which is what the +30d nightly caught).
+ * `clock` is the explicit form. `at` is deliberately absent: it is an index or a
+ * position in far more code than it is a clock, and a false positive there would
+ * have to be baselined away — the opposite of a ratchet.
+ */
+const CLOCK_PARAM_NAMES = new Set(['now', 'asOf', 'clock'])
+
 export type ClockReadKind = 'Date.now()' | 'new Date()'
 
 export interface InjectedClockFinding {
@@ -70,14 +82,14 @@ export interface InjectedClockReport {
 }
 
 function isNowParam(param: ts.ParameterDeclaration): boolean {
-  if (ts.isIdentifier(param.name) && param.name.text === 'now') return true
+  if (ts.isIdentifier(param.name) && CLOCK_PARAM_NAMES.has(param.name.text)) return true
   if (ts.isObjectBindingPattern(param.name)) {
-    return param.name.elements.some((element) => ts.isIdentifier(element.name) && element.name.text === 'now')
+    return param.name.elements.some((element) => ts.isIdentifier(element.name) && CLOCK_PARAM_NAMES.has(element.name.text))
   }
   const type = param.type
   if (type && ts.isTypeLiteralNode(type)) {
     return type.members.some(
-      (member) => ts.isPropertySignature(member) && !!member.name && ts.isIdentifier(member.name) && member.name.text === 'now',
+      (member) => ts.isPropertySignature(member) && !!member.name && ts.isIdentifier(member.name) && CLOCK_PARAM_NAMES.has(member.name.text),
     )
   }
   return false
@@ -137,7 +149,8 @@ function callableName(node: ts.Node): string | null {
 
 /**
  * `now = params.now ?? new Date()` — the fallback is the injection seam itself,
- * not a leak past the caller's clock.
+ * not a leak past the caller's clock. Any clock parameter name qualifies, so
+ * `clock = asOf ?? new Date()` is the same seam.
  */
 function isNowFallback(node: ts.Node): boolean {
   const parent = node.parent
@@ -145,7 +158,7 @@ function isNowFallback(node: ts.Node): boolean {
   const op = parent.operatorToken.kind
   if (op !== ts.SyntaxKind.QuestionQuestionToken && op !== ts.SyntaxKind.BarBarToken) return false
   const sibling = parent.left === node ? parent.right : parent.left
-  return /\bnow\b/.test(sibling.getText())
+  return [...CLOCK_PARAM_NAMES].some((name) => new RegExp(`\\b${name}\\b`).test(sibling.getText()))
 }
 
 /** Names of the file's own functions called anywhere inside `body`. */

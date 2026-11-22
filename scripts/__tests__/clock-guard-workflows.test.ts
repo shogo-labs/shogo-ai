@@ -73,4 +73,29 @@ describe('clock-guard workflows', () => {
     // One issue, not one per leg: the report job owns every write.
     expect(job.permissions?.issues).toBeUndefined()
   })
+
+  test('the main-red report reads per-job logs, not a whole-run log', () => {
+    // `gh run view --log-failed` refuses while the run is in progress, and the report
+    // step is part of that run — so it always returned "run is still in progress" and
+    // the issue said "no test-level names found" (SHO-507 QA round 1, #2168).
+    const health = workflow('main-health.yml')
+    const report = health.jobs.report
+    const script = report.steps.map((step: any) => step.run ?? '').join('\n')
+
+    expect(script).not.toContain('--log-failed')
+    expect(script).toContain('/actions/runs/${GITHUB_RUN_ID}/jobs')
+    expect(script).toContain('/actions/jobs/')
+    // Still parsed by the shared helper, so the issue keeps the same shape.
+    expect(script).toContain('scripts/ci/failing-tests.sh')
+  })
+
+  test('the clock probe loads the preload on the preload path', () => {
+    // Without this, a +30d leg printed today's date and the log line contradicted
+    // the guard above it (SHO-507 QA round 1, nit 3).
+    const clock = workflow('future-clock.yml')
+    const confirm = clock.jobs.clock.steps.find((step: any) => step.name === 'Confirm the clock the suite will see')
+    expect(confirm).toBeDefined()
+    expect(confirm.run).toContain('--preload ./scripts/test-clock-offset-preload.ts')
+    expect(confirm.run).toContain('clock_mode')
+  })
 })

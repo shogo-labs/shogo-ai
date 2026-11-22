@@ -214,10 +214,17 @@ jobs:
             exit 0
           fi
 
-          # Red. Pull the failing files out of this run's own failed steps, so the
-          # issue says which tests are red without anyone opening the log.
-          gh run view "${GITHUB_RUN_ID}" --repo "${GITHUB_REPOSITORY}" --log-failed \
-            > "${RUNNER_TEMP}/failed.log" 2>&1 || true
+          # Red. Pull the failing tests out of the per-job logs.
+          # A whole-run log read cannot be used here: this step runs while the run is
+          # still in progress, and `gh` refuses ("run is still in progress") — the
+          # whole log came back as that one error line and the issue said "no
+          # test-level names found". Per-job logs are served mid-run, so read those.
+          : > "${RUNNER_TEMP}/failed.log"
+          for job_id in $(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
+            --jq '.jobs[] | select(.conclusion == "failure") | .id'); do
+            gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${job_id}/logs" \
+              >> "${RUNNER_TEMP}/failed.log" 2>&1 || true
+          done
           bash scripts/ci/failing-tests.sh "${RUNNER_TEMP}/failed.log" 60 \
             > "${RUNNER_TEMP}/failures.txt" || true
 

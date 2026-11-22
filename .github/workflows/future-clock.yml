@@ -201,8 +201,27 @@ jobs:
       - name: Confirm the clock the suite will see
         run: |
           set -euo pipefail
-          now=$(bun -e 'console.log(new Date().toISOString())')
+          # The preload shifts only a process that loads it, so this probe has to load
+          # it too — without that, a +30d leg printed today's date and the log line
+          # contradicted the guard above. libfaketime arrives through LD_PRELOAD in
+          # $GITHUB_ENV and needs nothing extra here.
+          preload_args=()
+          if [ "${clock_mode}" = "preload" ]; then
+            preload_args=(--no-env-file --preload ./scripts/test-clock-offset-preload.ts)
+          fi
+          now=$(bun "${preload_args[@]}" -e 'console.log(new Date().toISOString())')
           echo "clock_mode=${clock_mode}: suite clock reads ${now} (offset +${OFFSET_DAYS}d)"
+          if [ "${clock_mode}" = "preload" ]; then
+            # `date` is not preloaded, so this delta is the real one. A short delta
+            # means the preload did not take and the suite would test today's date.
+            read_epoch=$(bun "${preload_args[@]}" -e 'console.log(Math.floor(Date.now() / 1000))')
+            delta=$(( read_epoch - $(date -u +%s) ))
+            echo "suite clock delta: ${delta}s (expected ~$(( OFFSET_DAYS * 86400 ))s)"
+            if [ "${delta}" -lt $(( OFFSET_DAYS * 86400 - 3600 )) ]; then
+              echo "::error::clock_mode=preload but the suite clock reads only ${delta}s ahead. Refusing to run against today's date."
+              exit 1
+            fi
+          fi
           echo "### Clock +${OFFSET_DAYS}d — ${clock_mode}" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Test
@@ -210,6 +229,26 @@ jobs:
         run: |
           set -o pipefail
           bun run test -- --packages "${{ matrix.leg.packages }}" 2>&1 | tee "${RUNNER_TEMP}/clock.log"
+
+      # A file the serial retry rescued is a pass, but a suspicious one: at a shifted
+      # clock a test that fails in the parallel pool and passes alone is usually a
+      # bomb whose two clock reads drifted apart (SHO-505's shape). Say so instead of
+      # letting the leg report a silent 0-fail.
+      - name: Flag retry-rescued files
+        if: always()
+        run: |
+          set -uo pipefail
+          rescued=$(grep -c '^RETRY-RESCUED ' "${RUNNER_TEMP}/clock.log" 2>/dev/null || true)
+          if [ "${rescued:-0}" -gt 0 ]; then
+            echo "::warning::${rescued} file(s) failed in the parallel pool and passed on serial retry — read those as possible clock bombs, not flake."
+            {
+              echo "### Clock +${OFFSET_DAYS}d — ${rescued} file(s) rescued by serial retry"
+              echo
+              echo '```'
+              grep '^RETRY-RESCUED ' "${RUNNER_TEMP}/clock.log" || true
+              echo '```'
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
 
       # A failure at +N is a bomb: the suite is green on main today. List every
       # failing file in the job summary and on the issue, so the fix does not

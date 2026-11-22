@@ -25,6 +25,27 @@ const GH_PREFIXED_LOG = PLAIN_LOG.split('\n')
   .map((line) => `Test (api + mobile)\tTest unsharded packages\t2026-11-22T02:58:07.5524825Z ${line}`)
   .join('\n')
 
+/** The same log through `gh api .../actions/jobs/<id>/logs` — bare timestamp only. */
+const GH_JOB_LOG = PLAIN_LOG.split('\n')
+  .map((line) => `2026-11-22T02:58:07.5524825Z ${line}`)
+  .join('\n')
+
+/** A log where one file failed in the parallel pass and again in the retry. */
+const RETRY_LOG = [
+  '  src/__tests__/qa-sho444-active-capacity.acceptance.test.ts ... OK (8 pass, 0 fail, 0 skip, 258ms)',
+  '  src/__tests__/qa-sho424-vm-compute-billing.acceptance.test.ts ... bun test v1.4.4 (38afee6c8)',
+  'FAIL (12 pass, 1 fail, 0 skip, 3108ms)',
+  '(fail) GET /api/admin/compute > is super-admin only, and answers the fleet numbers [71.79ms]',
+  'retrying 1 failed file(s) serially...',
+  'Total: 17597 pass, 1 fail, 214 skip across 1201 files',
+  '✗ 1 package(s) had test failures',
+  'Failed files (1):',
+  '  src/__tests__/qa-sho424-vm-compute-billing.acceptance.test.ts  (exit 1)',
+  '##[group]src/__tests__/qa-sho424-vm-compute-billing.acceptance.test.ts:',
+  '(fail) GET /api/admin/compute > is super-admin only, and answers the fleet numbers [58.16ms]',
+  '##[endgroup]',
+].join('\n')
+
 function run(log: string, max?: number): string {
   const dir = mkdtempSync(join(tmpdir(), 'failing-tests-'))
   try {
@@ -58,8 +79,27 @@ describe('failing-tests.sh', () => {
     expect(run(GH_PREFIXED_LOG)).toBe(run(PLAIN_LOG))
   })
 
+  test('reads a per-job log the same way', () => {
+    // main-health.yml's report step is part of the run it reports on, so a
+    // whole-run `gh run view --log-failed` is refused mid-run; it reads the
+    // per-job logs instead, whose lines carry only a bare timestamp.
+    expect(run(GH_JOB_LOG)).toBe(run(PLAIN_LOG))
+  })
+
   test('does not mistake the package summary for a file', () => {
     expect(run(PLAIN_LOG)).not.toContain('FAIL apps/api')
+  })
+
+  test('prints a failing test once when the retry repeats it', () => {
+    // A file that fails in the parallel pass and again in the serial retry is
+    // printed twice in the log, at different durations. One line is enough.
+    const out = run(RETRY_LOG)
+    expect(out.split('(fail) GET /api/admin/compute').length - 1).toBe(1)
+    expect(out).toContain('FAIL src/__tests__/qa-sho424-vm-compute-billing.acceptance.test.ts')
+  })
+
+  test('does not report the run summary as a failing test', () => {
+    expect(run(RETRY_LOG)).not.toContain('package(s) had test failures')
   })
 
   test('honours the line cap', () => {

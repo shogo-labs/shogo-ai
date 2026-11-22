@@ -12,10 +12,15 @@
  * `RIGHT(...)`) instead of the SQLite side.
  */
 
-import { describe, test, expect, mock, beforeEach } from 'bun:test'
+import { describe, test, expect, mock, beforeEach, spyOn } from 'bun:test'
 
 // CRITICAL: must run BEFORE the dynamic import below.
 process.env.SHOGO_LOCAL_MODE = 'false'
+
+// The `asOf` instant the rolling-window tests share. Kept here so the tests that
+// assert on the window start read one value instead of three copies of a literal.
+const AS_OF = new Date('2026-10-01T08:00:00.000Z')
+const AS_OF_30D_BEFORE = new Date(AS_OF.getTime() - 30 * 24 * 60 * 60 * 1000)
 
 const store = {
   users: [] as any[],
@@ -285,11 +290,10 @@ describe('getUserFunnel (Postgres branch)', () => {
 
   test('asOf ends the signup cohort at that time', async () => {
     enqueueRaw([], [])
-    const asOf = new Date('2026-10-01T08:00:00.000Z')
-    await analytics.getUserFunnel('30d', true, asOf)
+    await analytics.getUserFunnel('30d', true, AS_OF)
     await analytics.getUserFunnel('30d', true)
     expect(rawCalls[0].sql).toContain('u."createdAt" < $2')
-    expect(rawCalls[0].args).toEqual([new Date('2026-09-01T08:00:00.000Z'), asOf])
+    expect(rawCalls[0].args).toEqual([AS_OF_30D_BEFORE, AS_OF])
     expect(rawCalls[1].sql).not.toContain('$2')
     expect(rawCalls[1].args).toHaveLength(1)
   })
@@ -480,6 +484,26 @@ describe('getSourceBreakdown (Postgres branch)', () => {
     const asOf = new Date('2026-10-01T08:00:00.000Z')
     await analytics.getSourceBreakdown('30d', true, asOf)
     expect(rawCalls[0].sql).toContain('u."createdAt" < $2')
+    expect(rawCalls[0].args).toEqual([new Date('2026-09-01T08:00:00.000Z'), asOf])
+  })
+
+  test('asOf is resolved from one clock read, not two', async () => {
+    // The +30d nightly caught this one: `periodStartAsOf` computed the window from
+    // `periodToDate(period)` and then subtracted `Date.now() - asOf`, so the two
+    // reads drifted by however long the caller took and the window start came out
+    // early. A pinned clock cannot reproduce it (both reads agree) — a clock that
+    // moves between them can. The previous assertion only caught the drift when the
+    // two reads straddled a millisecond boundary, which is why it failed once and
+    // then passed on the serial retry.
+    enqueueRaw([])
+    const asOf = new Date('2026-10-01T08:00:00.000Z')
+    const realNow = Date.now
+    const spy = spyOn(Date, 'now').mockImplementation(() => realNow() + 1000)
+    try {
+      await analytics.getSourceBreakdown('30d', true, asOf)
+    } finally {
+      spy.mockRestore()
+    }
     expect(rawCalls[0].args).toEqual([new Date('2026-09-01T08:00:00.000Z'), asOf])
   })
 })

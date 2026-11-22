@@ -117,7 +117,7 @@
     "apps/api/src/services/__tests__/affiliate.service.test.ts": 41,
     "apps/api/src/services/__tests__/agent-call-reconcile.service.test.ts": 2,
     "apps/api/src/services/__tests__/agent-schedule.service.test.ts": 6,
-    "apps/api/src/services/__tests__/analytics.service.test.ts": 6,
+    "apps/api/src/services/__tests__/analytics.service.test.ts": 7,
     "apps/api/src/services/__tests__/channel-workers-home-region.test.ts": 7,
     "apps/api/src/services/__tests__/chat-context-budget.test.ts": 1,
     "apps/api/src/services/__tests__/chat-history-seed.test.ts": 1,

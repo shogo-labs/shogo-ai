@@ -577,6 +577,12 @@ async function main() {
         )
         const idx = results.indexOf(old)
         if (idx >= 0) results[idx] = retried
+        // A rescued file is a pass, but it is not a clean pass: in the clock-offset
+        // job a file that fails in parallel and passes serially is usually a bomb
+        // whose failure depends on how far the clock moved between two reads. Print
+        // a greppable marker so the workflow can say so instead of reporting a
+        // silent 0-fail leg.
+        if (retried.exitCode === 0) console.log(`RETRY-RESCUED ${rel}`)
       }
     }
   }
