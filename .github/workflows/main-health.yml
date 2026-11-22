@@ -230,17 +230,23 @@ jobs:
           # ran the loop zero times) and the issue claimed there were no test-level
           # lines, which reads exactly like a real empty result.
           : > "${RUNNER_TEMP}/failed.log"
+          : > "${RUNNER_TEMP}/log-errors.txt"
           log_errors=''
-          if ! jobs_json=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs"); then
+          if ! jobs_json=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" 2>>"${RUNNER_TEMP}/log-errors.txt"); then
             log_errors="could not read the run's job list (does this job still declare actions: read?); "
             jobs_json=''
           fi
           for job_id in $(printf '%s' "${jobs_json}" \
             | jq -r '.jobs // [] | .[] | select(.conclusion == "failure") | .id' 2>/dev/null); do
             gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${job_id}/logs" \
-              >> "${RUNNER_TEMP}/failed.log" 2>&1 \
+              >> "${RUNNER_TEMP}/failed.log" 2>>"${RUNNER_TEMP}/log-errors.txt" \
               || log_errors="${log_errors}could not read the log of job ${job_id}; "
           done
+          # Put the API's own reason in the issue: "could not read" alone sends the
+          # next reader hunting for a cause that the response already named.
+          if [ -n "${log_errors}" ] && [ -s "${RUNNER_TEMP}/log-errors.txt" ]; then
+            log_errors="${log_errors}reason: $(head -3 "${RUNNER_TEMP}/log-errors.txt" | tr '\n' ' ' | cut -c1-300)"
+          fi
           bash scripts/ci/failing-tests.sh "${RUNNER_TEMP}/failed.log" 60 \
             > "${RUNNER_TEMP}/failures.txt" || true
 
