@@ -226,6 +226,20 @@ export function isChatSessionOfProject(
   return input.allowCrossProject === true
 }
 
+/**
+ * Is there an address bar to mirror into? React Native (Hermes, native) exposes
+ * a global `window` with no `location`, so `typeof window === 'undefined'` is
+ * false on the phone while `window.location.search` throws — every read and
+ * write in this module goes through this check instead.
+ */
+export function canUseAddressBar(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.location?.search === 'string' &&
+    typeof window.history?.replaceState === 'function'
+  )
+}
+
 export interface UseProjectChatUrlMirrorOptions extends Omit<ChatUrlMirrorInput, 'currentParam'> {
   currentParam: ChatSessionParamValue
   /** Off for the IDE embed (it owns the URL) and for native (no address bar). */
@@ -253,7 +267,7 @@ export function useProjectChatUrlMirror(
   const preservedKey = JSON.stringify(options.preserved ?? {})
   // The address bar, read when a write is attempted rather than during render.
   const readUrlQuery = (): Record<string, string> | undefined => {
-    if (!options.enabled || typeof window === 'undefined') return undefined
+    if (!options.enabled || !canUseAddressBar()) return undefined
     const query: Record<string, string> = {}
     new URLSearchParams(window.location.search).forEach((value, key) => {
       query[key] = value
@@ -268,7 +282,7 @@ export function useProjectChatUrlMirror(
   const liveChatRef = useRef(options.chatSessionId)
   liveChatRef.current = options.chatSessionId
   const repairUrl = () => {
-    if (!options.enabled || typeof window === 'undefined') return
+    if (!options.enabled || !canUseAddressBar()) return
     const preserved = { ...queryRef.current }
     if (!preserved || Object.keys(preserved).length === 0) return
     // Never re-assert a chat the screen has already left — a dead or foreign id
@@ -294,7 +308,9 @@ export function useProjectChatUrlMirror(
   } = options
 
   useEffect(() => {
-    if (!enabled || !setParamsRef.current) return
+    // The guard the crash came from: a caller that forgot the platform check
+    // still must not run this effect where there is no address bar.
+    if (!enabled || !setParamsRef.current || !canUseAddressBar()) return
     const intent = JSON.stringify([chatSessionId, oneShotPresent, preservedKey])
     if (attemptedRef.current === intent) return
     const write = planChatUrlWrite({
