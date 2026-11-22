@@ -16,7 +16,7 @@
  * we don't re-test signature handling here.
  */
 
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 // ---------------------------------------------------------------------------
@@ -141,6 +141,10 @@ function makeInvoice(opts: { id: string; customer?: string; subscription?: strin
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
+  // The fixtures are dated 2026-01-01 and 2026-05-01; pin the clock to the same
+  // timeline so the L1 year-one window and the "now" the service reads stay in
+  // step with the seeds (and the future-clock run's shifted clock cannot leak in).
+  setSystemTime(new Date('2026-05-01'))
   affiliates = new Map()
   attributions = new Map()
   commissions = []
@@ -156,6 +160,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.SHOGO_AFFILIATES_NATIVE
+  setSystemTime()
 })
 
 function seedAffiliateAndAttribution(opts: { affiliateId: string; userId: string; referredUserId: string; customerId: string }) {
