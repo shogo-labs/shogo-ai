@@ -276,6 +276,54 @@ describe('handleHostTunnel — what the desktop is told', () => {
   })
 })
 
+describe('handleHostTunnel — a host that is up but whose tunnel is still opening', () => {
+  function wakeApp(wake: Record<string, unknown>) {
+    const a = new Hono()
+    a.all('/api/internal/host-tunnel/*', (c) =>
+      handleHostTunnel(c, {
+        _peerAddress: '127.0.0.1',
+        _hostOf: hosts('ws-1'),
+        _tunnel: { ...tunnel, wakeHostTunnel: async () => wake as any },
+      }),
+    )
+    return a
+  }
+
+  test('answers a retryable host_connecting, not host_offline, when the heartbeat is fresh', async () => {
+    const res = await wakeApp({
+      state: 'connecting',
+      instanceId: 'inst-1',
+      name: 'Studio Mac',
+      lastSeenAt: new Date(Date.now() - 40_000),
+      retryAfterSeconds: 15,
+    }).request(tunnelPath('inst-1', PROJECT_CHAT), { method: 'POST' })
+
+    expect(res.status).toBe(503)
+    const body = await res.json()
+    expect(body.error.code).toBe('host_connecting')
+    expect(body.error.retryable).toBe(true)
+    expect(body.error.retryAfterSeconds).toBe(15)
+    expect(body.error.message).toContain('seen 40s ago')
+    expect(state.forwarded).toHaveLength(0)
+  })
+
+  test('keeps host_offline for a host that is really away', async () => {
+    const res = await wakeApp({
+      state: 'offline',
+      instanceId: 'inst-1',
+      name: 'Studio Mac',
+      lastSeenAt: new Date('2026-11-03T20:00:00.000Z'),
+      retryAfterSeconds: 0,
+    }).request(tunnelPath('inst-1', PROJECT_CHAT), { method: 'POST' })
+
+    expect(res.status).toBe(503)
+    const body = await res.json()
+    expect(body.error.code).toBe('host_offline')
+    expect(body.error.lastSeenAt).toBe('2026-11-03T20:00:00.000Z')
+    expect(state.forwarded).toHaveLength(0)
+  })
+})
+
 describe('the URL never leaves this process', () => {
   test('a host-tunnel runtime URL has no client-facing form', () => {
     const url = hostTunnelRuntimeUrl('inst-1', { workspaceId: 'ws-1' })

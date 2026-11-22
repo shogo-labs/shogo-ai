@@ -12,8 +12,10 @@
  *     forwards them to a local agent-runtime (resolved via the
  *     `RuntimeResolver`) and streams responses back as `stream-chunk` /
  *     `stream-end` / `response` frames.
- *   - WS auto-closes after `WS_IDLE_TIMEOUT_MS`; tunnel falls back to
- *     polling and reopens on the next `wsRequested`.
+ *   - WS auto-closes after `WS_IDLE_TIMEOUT_MS`; the tunnel falls back to
+ *     polling (a graceful close), and an abnormal close reconnects the WS
+ *     itself with backoff (SHO-506) instead of waiting for a wake that the
+ *     cloud already cleared when this tunnel connected.
  *
  * MIT port of apps/api/src/lib/instance-tunnel.ts, restructured as a
  * class so multiple consumers (worker, future tests) can hold their
@@ -154,6 +156,16 @@ const WS_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const HEARTBEAT_INTERVAL_MS = 25_000;
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 60_000;
+/**
+ * How many times an abnormal close reconnects straight away before the tunnel
+ * gives up and goes back to heartbeat polling (SHO-506).
+ *
+ * Reconnecting needs nothing from the cloud: the WS route authenticates on the
+ * device key it is handed, so a drop (an ingress timeout, a dropped network) is
+ * a blip rather than a dead tunnel. The cap keeps a genuinely broken path — a
+ * revoked key, a wrong URL — from retrying forever instead of polling.
+ */
+const WS_RECONNECT_MAX_ATTEMPTS = 5;
 
 /**
  * Protocol version advertised in heartbeat metadata. Stays lockstep with
@@ -199,6 +211,8 @@ export class WorkerTunnel {
   private stopped = false;
   private currentPollInterval = DEFAULT_POLL_INTERVAL_S;
   private wsReconnectAttempt = 0;
+  /** Last time this WS carried anything (open, ping, request) — the idle window's start. */
+  private wsLastActiveAt: number | null = null;
   private lastHeartbeatError: string | null = null;
   private consecutiveAuthFailures = 0;
   private consecutiveAuthSuccesses = 0;
@@ -417,6 +431,38 @@ export class WorkerTunnel {
     this.pollTimer = setTimeout(() => void this.heartbeatLoop(), delay);
   }
 
+  /**
+   * Retry the WebSocket itself, without waiting for the cloud to ask for it.
+   *
+   * A heartbeat-then-poll would work only if the cloud still had a pending
+   * `wsRequestedAt`, and it clears that on connect — so this opens the WS directly.
+   * Once the attempts are spent (or the idle window has passed) it goes back to
+   * the heartbeat loop, which is the pre-SHO-506 behaviour.
+   */
+  private scheduleWsReconnect(delayMs: number): void {
+    if (this.stopped) return;
+    if (this.pollTimer) clearTimeout(this.pollTimer);
+    this.pollTimer = setTimeout(() => {
+      this.pollTimer = null;
+      if (this.stopped || this.ws) return;
+      if (!this.shouldReconnectWs()) {
+        void this.heartbeatLoop();
+        return;
+      }
+      this.connectWs();
+    }, delayMs);
+  }
+
+  /**
+   * Whether another direct WS attempt is worth it: inside the idle window this
+   * tunnel was opened in, and under the attempt cap.
+   */
+  private shouldReconnectWs(): boolean {
+    if (this.wsReconnectAttempt > WS_RECONNECT_MAX_ATTEMPTS) return false;
+    if (this.wsLastActiveAt === null) return false;
+    return Date.now() - this.wsLastActiveAt < WS_IDLE_TIMEOUT_MS;
+  }
+
   private async heartbeatLoop(): Promise<void> {
     if (this.stopped) return;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -621,6 +667,7 @@ export class WorkerTunnel {
   }
 
   private resetWsIdleTimer(): void {
+    this.wsLastActiveAt = Date.now();
     if (this.wsIdleTimer) clearTimeout(this.wsIdleTimer);
     this.wsIdleTimer = setTimeout(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -717,14 +764,24 @@ export class WorkerTunnel {
       if (this.stopped) return;
       if (event.code === 1000 || event.code === 4000) {
         this.scheduleNextPoll(this.currentPollInterval);
-      } else {
-        this.wsReconnectAttempt++;
-        const delay = this.getReconnectDelayMs();
-        this.log.log(
-          `[WorkerTunnel] Reconnecting in ${Math.round(delay / 1000)}s (attempt ${this.wsReconnectAttempt})`,
-        );
-        this.scheduleNextPoll(Math.ceil(delay / 1000));
+        return;
       }
+      // An abnormal close (1006 is an ingress or network kill: no close frame).
+      // The cloud cleared `wsRequestedAt` when this tunnel connected, so waiting
+      // for a new wake means waiting forever — the old code polled, saw
+      // `wsRequested: false`, and left the tunnel down until something else woke
+      // it (SHO-506). Reconnect the WS itself, with the same backoff.
+      this.wsReconnectAttempt++;
+      if (!this.shouldReconnectWs()) {
+        this.log.log('[WorkerTunnel] Not reconnecting the WebSocket — falling back to polling');
+        this.scheduleNextPoll();
+        return;
+      }
+      const delay = this.getReconnectDelayMs();
+      this.log.log(
+        `[WorkerTunnel] Reconnecting in ${Math.round(delay / 1000)}s (attempt ${this.wsReconnectAttempt})`,
+      );
+      this.scheduleWsReconnect(delay);
     };
 
     socket.onerror = (event: { message?: string }) => {
@@ -758,6 +815,8 @@ export class WorkerTunnel {
       sendHeartbeat: () => self.sendHeartbeat(),
       heartbeatLoop: () => self.heartbeatLoop(),
       connectWs: () => self.connectWs(),
+      scheduleWsReconnect: (delayMs: number) => self.scheduleWsReconnect(delayMs),
+      shouldReconnectWs: () => self.shouldReconnectWs(),
       cleanupWs: () => self.cleanupWs(),
       handleRequest: (msg: TunnelRequest) => self.handleRequest(msg),
       installFakeWs: (fake: WebSocket) => {
@@ -777,11 +836,14 @@ export class WorkerTunnel {
       DEFAULT_POLL_INTERVAL_S,
       BACKOFF_BASE_MS,
       BACKOFF_MAX_MS,
+      WS_RECONNECT_MAX_ATTEMPTS,
       TUNNEL_PROTOCOL_VERSION,
       get currentPollInterval() { return self.currentPollInterval; },
       set currentPollInterval(v: number) { self.currentPollInterval = v; },
       get wsReconnectAttempt() { return self.wsReconnectAttempt; },
       set wsReconnectAttempt(v: number) { self.wsReconnectAttempt = v; },
+      get wsLastActiveAt() { return self.wsLastActiveAt; },
+      set wsLastActiveAt(v: number | null) { self.wsLastActiveAt = v; },
       get ws() { return self.ws; },
       get stopped() { return self.stopped; },
       get serverPublishedWsUrl() { return self.serverPublishedWsUrl; },

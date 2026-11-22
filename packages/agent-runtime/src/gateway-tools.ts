@@ -221,6 +221,7 @@ import {
   postPlanMirror,
   configureProject as apiConfigureProject,
   getProjectConfig as apiGetProjectConfig,
+  HOST_WAKE_TOLERANT_TIMEOUT_MS,
   type CheckpointCallResult,
 } from './internal-api'
 import { clearGitHubCliEnvCache, githubCliEnvForProject } from './github-cli-credentials'
@@ -643,11 +644,16 @@ const WORKSPACE_MEMBER_TIMEOUT_MS = 180_000
  */
 const PREVIEW_START_REQUEST_TIMEOUT_MS = 100_000
 
+/**
+ * Every workspace-API call can be forwarded to a desktop that hosts the
+ * workspace, and that may have to be woken first (SHO-506) — so the default
+ * outlasts `HOST_WAKE_TOLERANT_TIMEOUT_MS`'s wake window.
+ */
 async function workspaceMetaFetch(
   ctx: ToolContext,
   path: string,
   init: RequestInit = {},
-  timeoutMs = 30_000,
+  timeoutMs = HOST_WAKE_TOLERANT_TIMEOUT_MS,
 ): Promise<any> {
   const apiUrl = deriveApiUrl()
   const workspaceId = resolveWorkspaceId(ctx)
@@ -882,7 +888,8 @@ const REMOTE_DEVICE_PARAM_DESCRIPTION =
   '"Your devices"). Paths are resolved by that desktop\'s own runtime — relative to its workspace root; ' +
   'use an absolute path to reach anywhere else on that machine — and that desktop\'s permission system ' +
   'decides what is allowed. Omit to run here. An offline device answers `device_offline` with its ' +
-  'last-seen time.'
+  'last-seen time (do not retry); a desktop that is online but still opening its connection answers ' +
+  '`device_connecting` with `retryAfterSeconds` — wait that long and call once more.'
 
 type RemoteTarget = { local: true } | { local: false; id: string; name: string } | { error: string; code: string }
 

@@ -968,6 +968,50 @@ export function capIntegrationMockResult(toolName: string, data: unknown): Agent
   return textResult(raw + annotation)
 }
 
+/** A paired desktop as the API's device list describes it. */
+export interface PairedDeviceSummary {
+  id: string
+  name: string
+  os: string | null
+  online: boolean
+  lastSeenAt: string | null
+}
+
+/**
+ * The model-facing "Your devices" block (SHO-285 Update 2, SHO-506). Pure so the
+ * guidance the model reads is asserted in tests: `device_offline` means stop,
+ * `device_connecting` means wait `retryAfterSeconds` and call once more.
+ */
+export function renderDevicesContext(devices: PairedDeviceSummary[]): string {
+  const lines = devices.map((device) => {
+    const state = device.online
+      ? 'online'
+      : `offline${device.lastSeenAt ? `, last seen ${device.lastSeenAt}` : ''}`
+    const where = device.os ? ` — ${device.os}` : ''
+    return `- **${device.name}** (${state})${where}`
+  })
+  return [
+    '## Your devices',
+    '',
+    "These are the user's paired desktops. Pass `device: \"<name>\"` to `exec`, `exec_wait`,",
+    '`exec_list`, `read_file`, `write_file`, `edit_file`, `delete_file` or `search` to run that',
+    "tool on one of them; each desktop resolves paths in its own runtime (use an absolute path to",
+    'reach beyond its workspace) and its own settings decide what is allowed: its owner can turn',
+    'remote tools off, and a command or file change waits for their approval on that computer.',
+    'An offline device answers `device_offline` with its last-seen time: do not retry it, say the',
+    'machine is asleep or away. A desktop that is online but whose connection is still opening',
+    'answers `device_connecting` with `retryAfterSeconds` — wait that long and make the call once',
+    'more. One that has not allowed remote tools answers `remote_device_tools_disabled`: say so',
+    'rather than retrying.',
+    'A request nobody approves on that computer answers `remote_approval_timeout` (or',
+    '`remote_approval_unavailable` when no Shogo window opened in time): ask the user to approve it',
+    'there, then try again.',
+    '',
+    ...lines,
+    '',
+  ].join('\n')
+}
+
 export class AgentGateway {
   private workspaceDir: string
   /**
@@ -6926,13 +6970,7 @@ export class AgentGateway {
   private async buildDevicesContext(): Promise<string | null> {
     const apiUrl = deriveApiUrl()
     if (!apiUrl) return null
-    let devices: Array<{
-      id: string
-      name: string
-      os: string | null
-      online: boolean
-      lastSeenAt: string | null
-    }> = []
+    let devices: PairedDeviceSummary[] = []
     try {
       const res = await fetch(`${apiUrl}/api/internal/devices`, {
         headers: getInternalHeaders(),
@@ -6944,30 +6982,7 @@ export class AgentGateway {
       return null
     }
     if (!devices.length) return null
-    const lines = devices.map((device) => {
-      const state = device.online
-        ? 'online'
-        : `offline${device.lastSeenAt ? `, last seen ${device.lastSeenAt}` : ''}`
-      const where = device.os ? ` — ${device.os}` : ''
-      return `- **${device.name}** (${state})${where}`
-    })
-    return [
-      '## Your devices',
-      '',
-      "These are the user's paired desktops. Pass `device: \"<name>\"` to `exec`, `exec_wait`,",
-      '`exec_list`, `read_file`, `write_file`, `edit_file`, `delete_file` or `search` to run that',
-      "tool on one of them; each desktop resolves paths in its own runtime (use an absolute path to",
-      'reach beyond its workspace) and its own settings decide what is allowed: its owner can turn',
-      'remote tools off, and a command or file change waits for their approval on that computer.',
-      'An offline device answers `device_offline` with its last-seen time, and one that has not',
-      'allowed remote tools answers `remote_device_tools_disabled` — say which, rather than retrying.',
-      'A request nobody approves on that computer answers `remote_approval_timeout` (or',
-      '`remote_approval_unavailable` when no Shogo window opened in time): ask the user to approve it',
-      'there, then try again.',
-      '',
-      ...lines,
-      '',
-    ].join('\n')
+    return renderDevicesContext(devices)
   }
 
   /**

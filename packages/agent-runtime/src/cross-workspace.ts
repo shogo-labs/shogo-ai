@@ -143,7 +143,7 @@ export function withCrossWorkspaceParam<T extends AgentTool>(tool: T, ctx: ToolC
         workspace: {
           type: 'string',
           description:
-            'Another workspace you own or belong to: its name ("Samsara Game"), slug or id. Reads need no approval; every write asks the person first. An ambiguous name comes back with the candidates — pass one of their names or ids.',
+            'Another workspace you own or belong to: its name ("Samsara Game"), slug or id. Reads need no approval; every write asks the person first. An ambiguous name comes back with the candidates — pass one of their names or ids. A workspace that runs on a paired desktop may answer `device_connecting` with `retryAfterSeconds` while that desktop opens its connection: wait that long and call once more. `device_offline` means the machine is away — do not retry.',
         },
       },
     },
