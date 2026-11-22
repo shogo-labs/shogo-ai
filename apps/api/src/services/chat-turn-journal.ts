@@ -107,21 +107,38 @@ export async function appendTurnFrames(sessionId: string, turnId: string, seq: n
  * the same row.
  */
 export async function readTurnFrames(turnId: string): Promise<string[]> {
-  const rows = await prisma.chatTurnFrame
-    .findMany({ where: { turnId }, orderBy: { seq: 'asc' }, select: { data: true } })
-    .catch(() => [])
-  return rows.map((row) => row.data)
+  try {
+    if (!prisma.chatTurnFrame) return []
+    const rows = await prisma.chatTurnFrame.findMany({
+      where: { turnId },
+      orderBy: { seq: 'asc' },
+      select: { data: true },
+    })
+    return rows.map((row) => row.data)
+  } catch {
+    return []
+  }
 }
 
 /** How much is waiting to be recovered for a turn, without reading it. */
 export async function turnFrameCount(turnId: string): Promise<number> {
-  return prisma.chatTurnFrame.count({ where: { turnId } }).catch(() => 0)
+  try {
+    if (!prisma.chatTurnFrame) return 0
+    return await prisma.chatTurnFrame.count({ where: { turnId } })
+  } catch {
+    return 0
+  }
 }
 
 /** Drop a turn's frames: its row is complete, or a recovery consumed them. */
 export async function deleteTurnFrames(turnId: string): Promise<number> {
-  const { count } = await prisma.chatTurnFrame.deleteMany({ where: { turnId } }).catch(() => ({ count: 0 }))
-  return count
+  try {
+    if (!prisma.chatTurnFrame) return 0
+    const { count } = await prisma.chatTurnFrame.deleteMany({ where: { turnId } })
+    return count
+  } catch {
+    return 0
+  }
 }
 
 export interface TurnFrameSweepOptions {

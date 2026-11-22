@@ -7,8 +7,9 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdirSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'fs'
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
+import { stampMtime } from './helpers/stamp-mtime'
 import {
   EXEC_CWD_DIR,
   EXEC_CWD_MAX_AGE_MS,
@@ -30,10 +31,9 @@ afterEach(() => {
   rmSync(DIR, { recursive: true, force: true })
 })
 
-/** Backdate a file's mtime by `ms`. */
+/** Backdate a file's mtime by `ms`, on the clock the sweep reads. */
 function age(file: string, ms: number): void {
-  const secs = (Date.now() - ms) / 1000
-  utimesSync(file, secs, secs)
+  stampMtime(file, Date.now() - ms)
 }
 
 describe('exec cwd markers', () => {
@@ -76,6 +76,10 @@ describe('exec cwd markers', () => {
     writeFileSync(join(dir, 'keep.json'), '{}\n')
     age(staleRoot, EXEC_CWD_MAX_AGE_MS * 2)
     age(staleNested, EXEC_CWD_MAX_AGE_MS * 2)
+    // "Fresh" is stamped, not inherited from the write: an unstamped file
+    // carries the OS clock, which reads as older than a shifted clock.
+    stampMtime(freshRoot)
+    stampMtime(freshNested)
 
     expect(sweepExecCwdMarkers(DIR)).toBe(2)
 

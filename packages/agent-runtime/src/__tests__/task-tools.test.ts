@@ -16,6 +16,7 @@ import { TaskRegistry } from '../task-registry'
 import { sandboxExecAsync } from '../sandbox-exec'
 import { taskOutputDir, listTaskOutputRows } from '../task-output'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
+import { stampMtime } from './helpers/stamp-mtime'
 
 const TEST_DIR = '/tmp/test-task-tools'
 
@@ -215,6 +216,7 @@ describe('wait: a result the runtime already dropped', () => {
     const ctx = makeCtx(reg)
     const started = await run(ctx, 'exec', { command: 'sleep 0.1; echo "18 pass"', background: true })
     await run(ctx, 'wait', { task_ids: [started.task_id], timeout_ms: 10_000 })
+    stampMtime(join(TEST_DIR, started.output_file!))
     await new Promise((r) => setTimeout(r, 80))
     expect(reg.get(started.task_id)).toBeUndefined()
 

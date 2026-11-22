@@ -6734,6 +6734,14 @@ app.post('/agent/published-schema', async (c) => {
     mode?: 'describe' | 'export'
     seed?: boolean
     expectedHash?: string
+    /**
+     * Gzipped tar of the live environment's `prisma/` files, base64 — the
+     * SQLite→Postgres switchover (SHO-514). When present, the seed comes from
+     * that database instead of the builder's `prisma/dev.db`, so the rows the
+     * live site accumulated are the ones that cross over. The API reads it from
+     * `{subdomain}/data.tar.gz`.
+     */
+    seedArchive?: string
   }
   try {
     body = await c.req.json()
@@ -6777,7 +6785,12 @@ app.post('/agent/published-schema', async (c) => {
     )
   }
 
-  const result = await exportPublishedSchema(projectDir, { seed: body.seed === true })
+  const result = await exportPublishedSchema(projectDir, {
+    seed: body.seed === true,
+    ...(typeof body.seedArchive === 'string' && body.seedArchive.length > 0
+      ? { seedArchive: body.seedArchive }
+      : {}),
+  })
   if (!result.ok) {
     return c.json({ ok: false, code: result.code, message: result.message }, result.status as 400 | 413)
   }

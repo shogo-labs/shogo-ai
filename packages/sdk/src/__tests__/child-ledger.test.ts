@@ -18,6 +18,7 @@ import {
   addChildLedgerEntry,
   childLedgerPath,
   commandFingerprint,
+  defaultReadProcessCommand,
   matchesFingerprint,
   readChildLedger,
   reapChildLedger,
@@ -254,6 +255,40 @@ describe('reapChildLedger', () => {
       killGroup: (e) => killed.push(e.pgid),
     })
     expect(killed).toEqual([])
+  })
+
+  test('defaultReadProcessCommand rethrows EAGAIN so reapChildLedger keeps entries instead of dropping them', () => {
+    const eagain = Object.assign(new Error('spawnSync ps EAGAIN'), { code: 'EAGAIN' })
+    expect(() => defaultReadProcessCommand(12345, () => { throw eagain })).toThrow('EAGAIN')
+
+    // A normal `ps` exit status 1 (process exited, no spawn error code) still returns null.
+    const missingPid = Object.assign(new Error('Command failed: ps'), { status: 1 })
+    expect(defaultReadProcessCommand(12345, () => { throw missingPid })).toBeNull()
+
+    // End-to-end with reapChildLedger: an EAGAIN pass must NOT drop live entries
+    // from children.json, so once a slot frees up the next pass still reaps them.
+    const workspace = tempWorkspace()
+    const orphan = spawnSleeper()
+    addChildLedgerEntry(workspace, entryFor(orphan))
+    const killed: number[] = []
+
+    const saturated = reapChildLedger(workspace, {
+      readProcessCommand: (pid) => defaultReadProcessCommand(pid, () => { throw eagain }),
+      killGroup: (e) => killed.push(e.pgid),
+    })
+    expect(killed).toEqual([])
+    expect(saturated.dropped).toEqual([])
+    expect(saturated.reaped).toEqual([])
+    expect(readChildLedger(workspace).map((e) => e.pid)).toEqual([orphan.pid as number])
+
+    const recovered = reapChildLedger(workspace, {
+      readProcessCommand: (pid) =>
+        defaultReadProcessCommand(pid, () => `/bin/bash -c sleep 600 -- ${pid}\n`),
+      killGroup: (e) => killed.push(e.pgid),
+    })
+    expect(killed).toEqual([orphan.pid as number])
+    expect(recovered.reaped.map((e) => e.pid)).toEqual([orphan.pid as number])
+    expect(readChildLedger(workspace)).toEqual([])
   })
 })
 

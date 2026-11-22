@@ -1,0 +1,48 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.5.7",
+  "resource_changes": [
+    {
+      "address": "module.publish_hosting.cloudflare_record.wildcard",
+      "module_address": "module.publish_hosting",
+      "mode": "managed",
+      "type": "cloudflare_record",
+      "name": "wildcard",
+      "provider_name": "registry.terraform.io/cloudflare/cloudflare",
+      "change": {
+        "actions": ["delete", "create"],
+        "before": {
+          "zone_id": "c2d56140e7de85a4ac5ab5bea8e7434f",
+          "name": "staging",
+          "content": "192.0.2.1"
+        },
+        "after": {
+          "zone_id": "c2d56140e7de85a4ac5ab5bea8e7434f",
+          "name": "staging",
+          "content": "192.0.2.1"
+        },
+        "after_unknown": { "id": true },
+        "before_sensitive": false,
+        "after_sensitive": false,
+        "replace_paths": [["zone_id"]]
+      }
+    },
+    {
+      "address": "module.object_storage.oci_objectstorage_bucket.published_apps",
+      "module_address": "module.object_storage",
+      "mode": "managed",
+      "type": "oci_objectstorage_bucket",
+      "name": "published_apps",
+      "provider_name": "registry.terraform.io/oracle/oci",
+      "change": {
+        "actions": ["delete", "create"],
+        "before": { "name": "shogo-published-apps-staging" },
+        "after": { "name": "shogo-published-apps-staging" },
+        "after_unknown": { "id": true },
+        "before_sensitive": false,
+        "after_sensitive": false,
+        "replace_paths": [["namespace"]]
+      }
+    }
+  ]
+}

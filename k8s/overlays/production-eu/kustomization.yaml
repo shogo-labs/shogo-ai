@@ -3,6 +3,10 @@ kind: Kustomization
 
 resources:
   - namespace.yaml
+  # shogo-db-critical, referenced by projects-pg and its pooler. deploy-eu
+  # applies this before the cluster; listing it here keeps a plain
+  # `kubectl apply -k` of the overlay self-sufficient.
+  - priority-classes.yaml
   # The BuildKit namespace, ServiceAccount, LimitRange and ResourceQuota for
   # per-commit published images (SHO-485 §3). Applied here so a region cannot
   # turn the feature on with PUBLISH_BUILD_* and then have every Job rejected

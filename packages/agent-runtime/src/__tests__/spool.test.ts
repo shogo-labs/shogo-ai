@@ -15,9 +15,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { stampMtime } from './helpers/stamp-mtime'
 import {
   isRamBacked,
   logLeakedSpoolDescriptors,
@@ -187,8 +188,8 @@ describe('sweepSpool', () => {
     const fresh = join(dirname(spool), 'fresh.tar.gz')
     writeFileSync(stale, 'old')
     writeFileSync(fresh, 'new')
-    const longAgo = new Date(Date.now() - 3 * 60 * 60 * 1000)
-    utimesSync(stale, longAgo, longAgo)
+    stampMtime(stale, Date.now() - 3 * 60 * 60 * 1000)
+    stampMtime(fresh)
 
     expect(sweepSpool(60 * 60 * 1000, ws)).toBe(1)
     expect(existsSync(stale)).toBe(false)

@@ -20,7 +20,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 
 /** Directory names under `packages/` for every package we publish. */
 export const PUBLISHED_PACKAGE_DIRS = [
@@ -127,6 +127,85 @@ function targetToSource(target: string): string {
 }
 
 /**
+ * A quoted relative path with a runtime extension. `bin/cli.mjs` hands
+ * `'./bucket-cli.mjs'` to a lazy loader instead of writing
+ * `import('./bucket-cli.mjs')`, so a check that only looks at `from`, `import()`
+ * and `require()` calls cannot see it — which is exactly how 2.6.1 shipped a
+ * CLI that died on its first subcommand.
+ */
+const RELATIVE_ASSET = /['"](\.[^'"\s]*\.(?:mjs|cjs|js|json))['"]/g
+
+/**
+ * Relative paths a published `bin/**` file refers to, looking at code only.
+ * `packages/shogo-worker/bin/shogo.mjs` describes its resolution order in a
+ * header comment (`../src/cli.ts` is a monorepo-only path), and a comment must
+ * never fail the gate.
+ */
+function relativeAssets(source: string): string[] {
+  const code = source
+    .split('\n')
+    .filter((line) => {
+      const trimmed = line.trimStart()
+      return !trimmed.startsWith('//') && !trimmed.startsWith('*') && !trimmed.startsWith('/*')
+    })
+    .join('\n')
+  return [...code.matchAll(RELATIVE_ASSET)].map((match) => match[1])
+}
+
+function normalizePath(value: string): string {
+  return value.split(sep).join('/')
+}
+
+/**
+ * `dist/` is tsup output, and the static step runs *before* the build: a clean
+ * checkout has no `dist/` at all. Its files still have to be in `files` (that
+ * is the publication question this module answers), but "not on disk yet" is
+ * not a defect — the packed-tarball gate is what proves the build produced
+ * them.
+ */
+function isBuildOutput(path: string): boolean {
+  return path.startsWith('dist/')
+}
+
+/**
+ * Every relative file a published `bin` entry reaches, directly or through
+ * another bin file, has to be in `files` — otherwise `npm install` produces a
+ * CLI whose subcommand is missing. Walks the chain because
+ * `cli.mjs` -> `bucket-cli.mjs` -> `bucket/run.mjs` is one missing file away
+ * from the same crash.
+ */
+export function unpublishedBinAssets(
+  packageDir: string,
+  label: string,
+  binEntries: ReadonlyArray<readonly [string, string]>,
+  isPublished: (path: string) => boolean,
+): string[] {
+  const problems: string[] = []
+  const queue = binEntries.map(([name, target]) => ({ name, path: stripDotSlash(target) }))
+  const seen = new Set<string>()
+  while (queue.length > 0) {
+    const current = queue.shift() as { name: string; path: string }
+    if (seen.has(current.path)) continue
+    seen.add(current.path)
+    const absolute = join(packageDir, current.path)
+    if (!existsSync(absolute)) continue
+    for (const specifier of relativeAssets(readFileSync(absolute, 'utf8'))) {
+      const resolved = normalizePath(join(dirname(current.path), specifier))
+      if (!isPublished(resolved)) {
+        problems.push(
+          `${label}: bin["${current.name}"] (${current.path}) refers to '${specifier}' -> ${resolved}, which matches no "files" glob, so the installed CLI is missing it`,
+        )
+      } else if (!isBuildOutput(resolved) && !existsSync(join(packageDir, resolved))) {
+        problems.push(`${label}: bin["${current.name}"] (${current.path}) refers to '${specifier}', which does not exist`)
+      } else {
+        queue.push({ name: current.name, path: resolved })
+      }
+    }
+  }
+  return problems
+}
+
+/**
  * Every way the four lists in one package disagree with each other.
  * An empty array means the package is internally consistent.
  */
@@ -155,6 +234,7 @@ export function checkPackageLists(packageDir: string): string[] {
       problems.push(`${label}: bin["${name}"] -> ${path} matches no "files" glob, so the installed CLI is missing`)
     }
   }
+  problems.push(...unpublishedBinAssets(packageDir, label, binEntries, isPublished))
 
   const exportsMap = typeof pkg.exports === 'string' ? { '.': pkg.exports } : (pkg.exports ?? {})
   for (const [key, conditions] of Object.entries(exportsMap)) {

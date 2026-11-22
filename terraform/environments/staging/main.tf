@@ -452,10 +452,16 @@ module "publish_hosting" {
 
   # The PAR (pre-authenticated request) created inside this module is
   # scoped to `shogo-published-apps-${env}`, which the object_storage
-  # module creates. Without this depends_on, terraform parallelizes the
-  # bucket creation and the PAR creation, and OCI's PAR API returns 404
-  # before object storage replication has propagated the new bucket.
-  depends_on = [module.object_storage]
+  # module creates. Pass the bucket's name and the tenancy namespace as
+  # values so the PAR waits for the bucket through those two attributes
+  # only. This replaces the old module-level `depends_on = [module.object_storage]`:
+  # a module-level depends_on defers EVERY data source in the module when
+  # object storage has any pending change, which turned the PAR's namespace
+  # into "(known after apply)" and force-replaced the live PAR, the
+  # `*.staging.shogo.one` wildcard record and the published-apps Worker route
+  # (SHO-515).
+  object_storage_namespace = module.object_storage.namespace
+  published_apps_bucket    = module.object_storage.published_apps_bucket
 }
 
 # =============================================================================
@@ -479,8 +485,15 @@ module "studio_web_assets" {
 
   # The lifecycle policy on the assets bucket relies on the tenancy-scoped
   # object-storage service-principal IAM policy created by module.object_storage
-  # (lifecycle_service_policy_*). Order after it so that policy exists first.
-  depends_on = [module.object_storage]
+  # (lifecycle_service_policy_*). Pass its id so the ordering is a value
+  # dependency on the lifecycle-policy resource only — NOT a module-level
+  # depends_on, which would defer this module's data sources and force-replace
+  # the shared assets bucket (SHO-515).
+  lifecycle_service_policy_id = coalesce(module.object_storage.lifecycle_service_policy_id, "")
+
+  # Namespace passed in for the same reason: a lookup inside the module is a
+  # plan-time "known after apply" whenever object storage has pending changes.
+  object_storage_namespace = module.object_storage.namespace
 }
 
 # =============================================================================

@@ -147,6 +147,12 @@ resource "oci_objectstorage_bucket" "workspaces" {
   freeform_tags = merge(var.tags, {
     Purpose = "workspace-file-sync"
   })
+
+  lifecycle {
+    # Project files live here (incl. Git LFS objects and repo.git.tar.gz).
+    # A replace would orphan every workspace archive. Fail the plan instead.
+    prevent_destroy = true
+  }
 }
 
 resource "oci_objectstorage_object_lifecycle_policy" "workspaces_lifecycle" {
@@ -237,6 +243,12 @@ resource "oci_objectstorage_bucket" "pg_backups" {
   freeform_tags = merge(var.tags, {
     Purpose = "postgresql-backups"
   })
+
+  lifecycle {
+    # Last line of defence for the database: a replaced bucket silently drops
+    # every backup. Fail the plan instead.
+    prevent_destroy = true
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -305,6 +317,12 @@ resource "oci_objectstorage_bucket" "published_apps" {
   freeform_tags = merge(var.tags, {
     Purpose = "published-static-sites"
   })
+
+  lifecycle {
+    # Every published static site's objects live here. A replace takes all of
+    # them offline. Fail the plan instead.
+    prevent_destroy = true
+  }
 }
 
 resource "oci_objectstorage_object_lifecycle_policy" "published_apps_lifecycle" {
@@ -343,6 +361,11 @@ resource "oci_objectstorage_bucket" "published_data" {
   freeform_tags = merge(var.tags, {
     Purpose = "published-app-writable-state"
   })
+
+  lifecycle {
+    # Server-backed published apps keep their SQLite DB + uploads here.
+    prevent_destroy = true
+  }
 }
 
 resource "oci_objectstorage_object_lifecycle_policy" "published_data_lifecycle" {
@@ -420,6 +443,12 @@ resource "oci_objectstorage_bucket" "project_buckets" {
   freeform_tags = merge(var.tags, {
     Purpose = "project-object-storage"
   })
+
+  lifecycle {
+    # User-uploaded project media (SHO-491). A replace loses user data with no
+    # second copy anywhere. Fail the plan instead.
+    prevent_destroy = true
+  }
 }
 
 resource "oci_objectstorage_object_lifecycle_policy" "project_buckets_lifecycle" {
@@ -510,4 +539,9 @@ output "project_buckets_bucket" {
 output "project_buckets_par_base_url" {
   description = "Read-only PAR base URL the subdomain-router Worker uses as the CDN origin for public project objects. Wire into module.publish_hosting.project_bucket_origin."
   value       = "https://objectstorage.${var.region}.oraclecloud.com${oci_objectstorage_preauthrequest.project_buckets.access_uri}"
+}
+
+output "lifecycle_service_policy_id" {
+  description = "OCID of the tenancy-scoped `objectstorage-<region>` service-principal IAM policy, or null when this region does not own it. Pass to any module whose lifecycle policies must be created after it (e.g. module.studio_web_assets.lifecycle_service_policy_id) so the ordering is a value dependency instead of a module-level depends_on."
+  value       = one(oci_identity_policy.lifecycle_service_principal[*].id)
 }

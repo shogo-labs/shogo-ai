@@ -40,6 +40,7 @@ import { cleanupStagingOutput } from './build-output-commit'
 import {
   ArtifactMediaOffloadError,
   createPublishedArtifactFilter,
+  measureDockerignoreExclusion,
   offloadArtifactMedia,
   type ArtifactMediaOffloadResult,
 } from './publish-artifact-filter'
@@ -168,6 +169,19 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
     projectDir,
     stagingDirName: PUBLISH_STAGING_DIR,
   })
+  // The project's own `.dockerignore` can only remove paths (SHO-514). Say how
+  // much it removed in the publish output: a 2 GiB image is usually one rule
+  // nobody remembered writing, and a silent filter is a silent 2 GiB upload.
+  const ignoredByDockerignore = measureDockerignoreExclusion({
+    projectDir,
+    stagingDirName: PUBLISH_STAGING_DIR,
+  })
+  if (ignoredByDockerignore.paths > 0) {
+    console.log(
+      `[agent-runtime] publish-artifact: .dockerignore left out ${ignoredByDockerignore.paths} paths / ` +
+        `${(ignoredByDockerignore.bytes / (1024 * 1024)).toFixed(1)} MB`,
+    )
+  }
 
   const targetBucket = (c.req.query('bucket') || '').trim()
   const targetKey = (c.req.query('key') || '').trim()

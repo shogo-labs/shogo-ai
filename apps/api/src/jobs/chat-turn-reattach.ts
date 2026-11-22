@@ -287,6 +287,7 @@ async function reattachTurn(session: StaleTurn, deps: ReattachDeps): Promise<voi
       target.project,
       {
         chatSessionId,
+        journalTurnId: turnId,
         suppressCompletionPush: true,
         existingAssistantMessageId: assistant?.id ?? null,
         expectedTurnStartedAt: startedAt.getTime(),

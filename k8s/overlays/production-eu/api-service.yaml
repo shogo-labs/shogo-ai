@@ -159,23 +159,31 @@ spec:
             - name: SYSTEM_NAMESPACE
               value: "shogo-production-system"
             # ---- Published apps' Postgres (SHO-308 §1) ----------------------
-            # Read from the projects-pg cluster's CNPG superuser secret, which
-            # only exists once `k8s/cnpg/production-us-oci/projects-cluster.yaml`
-            # is deployed. `optional: true` keeps the API booting before that:
-            # a publish then refuses with `database_unavailable`.
+            # Published server apps get their own database on projects-pg (the
+            # PUBLISHED-app cluster, not platform-pg) and connect through its
+            # PgBouncer. PROJECTS_DB_HOST/PORT are required for the schema push
+            # (DDL goes to the primary, never the pooler) and
+            # PROJECTS_DB_POOLER_HOST is required for a publish to move an app
+            # onto Postgres at all: with it unset, publish refuses with
+            # `database_unavailable` instead of handing the pod a hostname
+            # nothing resolves.
             #
-            # PROJECTS_DB_POOLER_HOST is deliberately NOT set here yet. The
-            # Pooler CR (projects-pooler.yaml) fronts a cluster this region does
-            # not have, and setting the host first would turn a clean refusal
-            # into pods pointing at a Service with no endpoints. Set it in the
-            # same change that deploys the cluster — see
-            # docs/runbooks/published-postgres.md.
+            # deploy-eu applies the cluster and its pooler before this manifest
+            # (see .github/workflows/deploy.yml). `optional: true` on the
+            # superuser Secret keeps the API booting on the very first deploy,
+            # before CNPG has written it.
             - name: PROJECTS_DB_ADMIN_URL
               valueFrom:
                 secretKeyRef:
                   name: projects-pg-superuser
                   key: uri
                   optional: true
+            - name: PROJECTS_DB_HOST
+              value: "projects-pg-rw.shogo-production-system.svc.cluster.local"
+            - name: PROJECTS_DB_PORT
+              value: "5432"
+            - name: PROJECTS_DB_POOLER_HOST
+              value: "projects-pg-pooler-rw.shogo-production-system.svc.cluster.local"
             - name: NODE_TLS_REJECT_UNAUTHORIZED
               value: "0"
             - name: PROJECT_NAMESPACE
