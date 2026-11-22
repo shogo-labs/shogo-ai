@@ -1278,9 +1278,9 @@ export interface AgentScheduleUpdateRequest {
 }
 
 /**
- * Every call on this surface is `/api/internal/workspaces/:id/…`, and the API
- * forwards any of them to the desktop hosting that workspace, where it waits for
- * the host's tunnel first (SHO-506). So the default here is the wake-tolerant
+ * Every call on this surface goes through the workspace passthrough to the API,
+ * which forwards any of them to the desktop hosting that workspace, where it
+ * waits for the host's tunnel first (SHO-506). So the default here is the wake-tolerant
  * timeout: a 20s default cut the wait off on this side and reported a client
  * abort for a `board_list` the API was about to answer. A caller that must fail
  * fast (a prompt-filling probe) passes its own `timeoutMs`.
