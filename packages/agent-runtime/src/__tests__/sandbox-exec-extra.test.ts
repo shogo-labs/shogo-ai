@@ -274,6 +274,23 @@ describe('sandboxExecAsync (non-sandbox)', () => {
     expect(result.exitCode).toBe(127)
   })
 
+  test('a refused spawn (no pid) settles done instead of hanging', async () => {
+    const handle = sandbox.sandboxExecAsync({
+      command: 'bogus-bin',
+      workspaceDir: '/tmp/ws',
+      sandboxConfig: { enabled: false },
+    })
+    const call = spawnCalls.at(-1)!
+    // libuv leaves `pid` undefined when the fork itself is refused and no
+    // 'exit' ever follows, so the promise has to settle on the error alone.
+    call.child.pid = undefined as any
+    call.child.emitError(new Error('spawn EAGAIN'))
+    const result = await handle.done
+    expect(result.spawnError).toBe('spawn EAGAIN')
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('spawn error: spawn EAGAIN')
+  })
+
   test('exit by signal computes 128 + signalNumber', async () => {
     const handle = sandbox.sandboxExecAsync({
       command: 'sleep 9',
