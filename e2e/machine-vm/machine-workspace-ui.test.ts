@@ -178,16 +178,23 @@ test("a chat turn from the cloud runs on the machine and reads the machine's dis
   // The plain cloud API: a hosted workspace's runtime calls go to its desktop
   // through the host tunnel (SHO-285). There is no relay URL to prefix.
   const relay = state.cloud
+  // The first call wakes the desktop and waits for its next heartbeat poll
+  // (SHO-506: up to 75s), so the request itself has to outlast the wake — the
+  // 20s default action timeout would cut off exactly the case this asserts.
   await expect
     .poll(
       async () =>
         (
           await page.request.put(
             `${relay}/api/workspaces/${state.machineWorkspaceId}/agent-proxy/agent/workspace/files/${path}`,
-            { headers: { cookie: state.cookies, origin: state.cloud, ...loadTestHeaders() }, data: { content: canary } },
+            {
+              headers: { cookie: state.cookies, origin: state.cloud, ...loadTestHeaders() },
+              data: { content: canary },
+              timeout: 90_000,
+            },
           )
         ).status(),
-      { timeout: 120_000, intervals: [2_000] },
+      { timeout: 200_000, intervals: [2_000] },
     )
     .toBe(200)
 
