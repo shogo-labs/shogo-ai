@@ -18,7 +18,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import { applyServiceDeclaration, declareService, deriveServiceName, planServiceDeclaration, readDeclaredServices, serviceTmpWarning, undeclareService, type ServiceDeclarationPlan } from './services-registry'
 import { claimedWorkItemKey } from './work-item-claim'
-import { describeSpawnExhaustion, isSpawnExhaustion, liveGroupCount, liveGroupHolders, processBudgetRefusal, releaseLiveGroup, trackLiveGroup } from './process-budget'
+import { describeSpawnExhaustion, isSpawnExhaustion, liveGroupCount, liveGroupHolders, liveGroupIdsForService, processBudgetRefusal, releaseLiveGroup, trackLiveGroup } from './process-budget'
 import type { SessionTodo, SessionTodosSnapshot } from './plan-continuation'
 import { createProjectTools, resolveProjectRef } from './project-tools'
 import {
@@ -356,11 +356,13 @@ export interface ToolContext {
   /** Background tasks of this session (shell, subagents, remote tasks) — backs `wait` / `task_list` / `task_cancel`. */
   commandRegistry?: import('./task-registry').TaskRegistry
   /**
-   * Stop and undeclare a declared service by its name (SHO-509). A service's
-   * name is the only handle a re-declaration has on the tree it replaces, and
-   * its card needs the same handle when it reaches a terminal column.
+   * Stop a declared service by its name (SHO-509). A service's name is the only
+   * handle a re-declaration has on the tree it replaces, and its card needs the
+   * same handle when it reaches a terminal column. `undeclare: false` stops the
+   * tree but leaves the declaration in place — a replacement must not lose the
+   * service if its own spawn fails.
    */
-  cancelServiceByName?: (name: string) => Promise<boolean>
+  cancelServiceByName?: (name: string, options?: { undeclare?: boolean }) => Promise<boolean>
   /**
    * Called when a card reaches Done/Dismissed: undeclare the services declared
    * for it, so a finished card stops restarting a dev server on every boot
@@ -2044,27 +2046,21 @@ function createExecTool(ctx: ToolContext): AgentTool {
             services: readDeclaredServices(ctx.workspaceDir).map((s) => s.name),
           })
         }
-        // `replace`: the declaration on record is this same service. Its tree
-        // stops BEFORE the new one spawns — cancelling afterwards would find
-        // the entry we just registered and kill the replacement instead.
-        if (servicePlan.action === 'replace' && servicePlan.replaced) {
-          const previous = servicePlan.replaced
-          const stopped = ctx.cancelServiceByName
-            ? await ctx.cancelServiceByName(previous.name)
-            : false
-          if (!stopped) {
-            const stale = ctx.commandRegistry?.listAll().find((task) => task.service && task.name === previous.name)
-            if (stale) await ctx.commandRegistry!.cancel(stale.id)
-          }
-        }
       }
 
       // One runtime can only hold so many live process groups before the OS
       // stops handing out slots altogether (SHO-509). A foreground command is
       // never refused — the user is waiting on the answer and it holds its slot
       // for one call — but a background one that would push past the budget is.
+      // This runs BEFORE the replace kill: refusing after the old tree is dead
+      // leaves the service stopped with nothing in its place. A replacement
+      // counts the slot it is about to free, so restarting a dev server at the
+      // cap is not a new process.
       if (background) {
-        const budgetRefusal = processBudgetRefusal()
+        const freedGroupIds = servicePlan?.action === 'replace' && servicePlan.replaced
+          ? liveGroupIdsForService(servicePlan.replaced.name)
+          : []
+        const budgetRefusal = processBudgetRefusal(process.env, freedGroupIds)
         if (budgetRefusal) {
           console.warn(`[process-pressure] background exec refused: ${liveGroupCount()} live groups`)
           return textResult({
@@ -2073,6 +2069,22 @@ function createExecTool(ctx: ToolContext): AgentTool {
             live_groups: liveGroupCount(),
             holders: liveGroupHolders().map((group) => ({ task_id: group.id, label: group.label, service: group.service ?? false })),
           })
+        }
+      }
+
+      // `replace`: the declaration on record is this same service. Its tree
+      // stops BEFORE the new one spawns — cancelling afterwards would find the
+      // entry we just registered and kill the replacement instead. The
+      // declaration stays until the spawn succeeds: an EAGAIN here must not
+      // lose the service for good.
+      if (servicePlan?.action === 'replace' && servicePlan.replaced) {
+        const previous = servicePlan.replaced
+        const stopped = ctx.cancelServiceByName
+          ? await ctx.cancelServiceByName(previous.name, { undeclare: false })
+          : false
+        if (!stopped) {
+          const stale = ctx.commandRegistry?.listAll().find((task) => task.service && task.name === previous.name)
+          if (stale) await ctx.commandRegistry!.cancel(stale.id)
         }
       }
 
@@ -2171,7 +2183,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
         label: attributedCommand,
         ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
         startedAt: handle.startedAt,
-        ...(serviceMeta ? { service: true } : {}),
+        ...(serviceMeta ? { service: true, serviceName: serviceMeta.name } : {}),
       })
       void handle.done.then(
         () => releaseLiveGroup(entry.id),

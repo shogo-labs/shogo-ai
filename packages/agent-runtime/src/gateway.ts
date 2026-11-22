@@ -3910,7 +3910,7 @@ export class AgentGateway {
         initialCwd: this.initialShellCwd(sessionWorkspaceDir),
       } : undefined,
       commandRegistry,
-      cancelServiceByName: (name: string) => this.cancelServiceByName(name),
+      cancelServiceByName: (name: string, options?: { undeclare?: boolean }) => this.cancelServiceByName(name, options),
       onCardFinished: (cardKey: string) => this.releaseCardServices(cardKey),
       guideRegistry: this.currentGuideRegistry,
       listWorktreeStatuses: this.isWorktreesEnabled() ? () => this.listWorktreeStatuses() : undefined,
@@ -8542,14 +8542,16 @@ export class AgentGateway {
   }
 
   /**
-   * Stop and undeclare a declared service by name (SHO-509).
+   * Stop a declared service by name (SHO-509).
    *
    * The name is the only handle the registry file gives — a re-declaration
    * replaces a tree it can only identify by name, and a card that reaches Done
-   * owns its services by name. Searches every session's registry, then removes
-   * the declaration so the next boot cannot bring it back.
+   * owns its services by name. Searches every session's registry. By default it
+   * also removes the declaration so the next boot cannot bring it back; a
+   * replacement passes `{ undeclare: false }` so a failed spawn leaves the
+   * declaration in place and the service still comes back on the next boot.
    */
-  async cancelServiceByName(name: string): Promise<boolean> {
+  async cancelServiceByName(name: string, options: { undeclare?: boolean } = {}): Promise<boolean> {
     let found = false
     for (const registry of this.commandRegistries.values()) {
       const entry = registry.listAll().find((t) => t.service && t.name === name)
@@ -8561,6 +8563,7 @@ export class AgentGateway {
         console.error(`[AgentGateway] could not cancel service ${name}: ${err?.message ?? err}`)
       }
     }
+    if (options.undeclare === false) return found
     const undeclared = undeclareService(this.workspaceDir, name)
     if (undeclared) console.log(`[AgentGateway] undeclared service ${name}`)
     return found || undeclared

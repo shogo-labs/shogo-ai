@@ -31,6 +31,7 @@ import {
 import {
   describeSpawnExhaustion,
   isSpawnExhaustion,
+  liveGroupIdsForService,
   liveGroupCount,
   processBudgetRefusal,
   releaseLiveGroup,
@@ -114,6 +115,24 @@ describe('2 — a card’s service is released when the card finishes', () => {
     const remaining = readDeclaredServices(dir).map((s) => s.name)
     expect(remaining).toEqual(['other-svc'])
   }, 20_000)
+
+  test('a replacement stops the tree without dropping the declaration', async () => {
+    const { AgentGateway } = await import('../gateway')
+    declareService(dir, candidate('sleeper', 'sleep 30'))
+
+    const gateway = new AgentGateway(dir, 'test')
+    const stopped = await gateway.cancelServiceByName('sleeper', { undeclare: false })
+
+    // No live process in this gateway's registries, so nothing to stop — but the
+    // declaration must survive: a replacement whose own spawn fails with EAGAIN
+    // has to still come back on the next boot.
+    expect(stopped).toBe(false)
+    expect(readDeclaredServices(dir).map((s) => s.name)).toEqual(['sleeper'])
+
+    // The default still undeclares, which is what a finished card relies on.
+    await gateway.cancelServiceByName('sleeper')
+    expect(readDeclaredServices(dir)).toEqual([])
+  }, 20_000)
 })
 
 describe('3 — the per-runtime group budget', () => {
@@ -134,6 +153,21 @@ describe('3 — the per-runtime group budget', () => {
     // Cancelling one frees the slot: the next spawn is allowed.
     releaseLiveGroup('t_aaa')
     expect(processBudgetRefusal(env)).toBeUndefined()
+  })
+
+  test('a replacement counts the slot it is about to free', () => {
+    const env = { SHOGO_MAX_PROCESS_GROUPS: '2' } as NodeJS.ProcessEnv
+    trackLiveGroup({ id: 't_svc', label: 'bun run dev', startedAt: Date.now(), service: true, serviceName: 'web' })
+    trackLiveGroup({ id: 't_job', label: 'sleep 300', startedAt: Date.now() })
+    expect(processBudgetRefusal(env)).toBeDefined()
+
+    // Restarting `web` stops its own tree first, so it is the same slot, not a
+    // new one — the refusal must not fire for a replacement.
+    expect(liveGroupIdsForService('web')).toEqual(['t_svc'])
+    expect(processBudgetRefusal(env, liveGroupIdsForService('web'))).toBeUndefined()
+
+    // A name that is not tracked frees nothing.
+    expect(processBudgetRefusal(env, liveGroupIdsForService('gone'))).toBeDefined()
   })
 })
 

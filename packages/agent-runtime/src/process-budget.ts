@@ -39,6 +39,8 @@ export interface LiveGroup {
   startedAt: number
   /** Declared with `exec({ service: true })`. */
   service?: boolean
+  /** The declared service's name, so a replacement can find the slot it frees. */
+  serviceName?: string
 }
 
 const live = new Map<string, LiveGroup>()
@@ -64,6 +66,19 @@ export function liveGroupHolders(limit = 6): LiveGroup[] {
 
 export function liveGroups(): LiveGroup[] {
   return [...live.values()].sort((a, b) => a.startedAt - b.startedAt)
+}
+
+/**
+ * The live groups a declared service holds right now. A replacement is about to
+ * stop that tree, so it counts the slot it frees — restarting a dev server at
+ * the cap is not a new process, it is the same one.
+ */
+export function liveGroupIdsForService(name: string): string[] {
+  const ids: string[] = []
+  for (const group of live.values()) {
+    if (group.service && group.serviceName === name) ids.push(group.id)
+  }
+  return ids
 }
 
 /** `bun run dev` → `bun run dev`, but a 300-character build script is clipped. */
@@ -98,11 +113,19 @@ export function describeHolders(limit = 6, now = Date.now()): string {
  * Why a new background command is refused right now, or `undefined` when there
  * is room. Foreground commands are never refused: they hold their slot for one
  * call and the user is waiting on the answer.
+ *
+ * `freedGroupIds` are groups this command is about to stop itself — a service
+ * replacement kills the tree it replaces before spawning — so the slot it frees
+ * is not counted against it.
  */
-export function processBudgetRefusal(env: NodeJS.ProcessEnv = process.env): string | undefined {
+export function processBudgetRefusal(
+  env: NodeJS.ProcessEnv = process.env,
+  freedGroupIds: string[] = [],
+): string | undefined {
   const cap = maxLiveProcessGroups(env)
+  const freed = freedGroupIds.filter((id) => live.has(id)).length
   const count = liveGroupCount()
-  if (count < cap) return undefined
+  if (count - freed < cap) return undefined
   return (
     `This runtime already holds ${count} live process groups (cap ${cap}), so a new background command would ` +
     `add to a process table that is already full. Oldest: ${describeHolders()}. ` +
