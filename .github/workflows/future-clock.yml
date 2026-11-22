@@ -11,17 +11,21 @@
 # 30 and 90 days. A failure at +N is by definition a test that passes today and
 # fails in N days, because `main` itself is green when this runs.
 #
-# How the clock moves (two mechanisms, one of them always works):
+# How the clock moves:
 #
-#   1. **libfaketime** (`FAKETIME="+7d"`, `LD_PRELOAD`, monotonic clock left
-#      alone) — a *ticking* offset, so `setTimeout`/backoff/duration assertions
-#      behave as they do today, and child processes inherit the shift.
-#   2. **`scripts/test-clock-offset-preload.ts`** — if Bun's `Date` is
-#      vDSO-backed and ignores `LD_PRELOAD`, the runner (`run-tests-isolated.ts`)
-#      adds this `--preload` to each `bun test` child instead and shifts
-#      `Date.now()` / `new Date()` in-process. It is pin-aware, so a test that
-#      calls `setSystemTime` still wins (a naive subclass reads pin+offset and
-#      would report every well-behaved test as a bomb).
+#   1. **`scripts/test-clock-offset-preload.ts`** (preferred) — a `--preload` that
+#      `run-tests-isolated.ts` hands to every `bun test` child. It shifts
+#      `Date.now()` / argument-less `new Date()` in-process and is *pin-aware*, so
+#      a test that calls `setSystemTime` still wins (a naive subclass reads
+#      pin+offset and would report every well-behaved test as a bomb). The
+#      filesystem keeps real time, so a file a fixture stamps from `Date.now()`
+#      reads back exactly as old as the shifted clock thinks it is.
+#   2. **libfaketime** (`FAKETIME="+7d"`, `LD_PRELOAD`) — only when the preload
+#      cannot shift the clock. It fakes `stat()` as well as `Date`, so an mtime a
+#      fixture derived from the already-shifted `Date.now()` is offset a second
+#      time on read: the first run of this job flagged 11 sweeper tests in
+#      packages/agent-runtime at +7/+30/+90 that all pass under the preload. Treat
+#      a red cell from this path as a hint, not proof.
 #
 # The step that picks a mechanism is also the guard: it fails the run if the
 # clock did not actually move, so a green night never means "nothing ran".
@@ -138,27 +142,49 @@ jobs:
         if: steps.workspace-clock-cache.outputs.cache-hit != 'true'
         run: bun run build:packages
 
-      - name: Install libfaketime
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libfaketime
-
-      # The guard: pick a mechanism that provably moved the clock, or fail the
-      # run. Every step after this inherits the choice through $GITHUB_ENV.
-      - name: Shift the clock (libfaketime, else the Date preload)
+      # The guard: shift the clock with something that provably moved it, or fail
+      # the run. Every step after this inherits the choice through $GITHUB_ENV.
+      #
+      # The in-process preload is tried FIRST, and the reason is a measurement,
+      # not taste. The first run of this job (libfaketime at +7/+30/+90) flagged
+      # 11 sweeper tests in packages/agent-runtime — "keeps fresh ones", the
+      # exec-cwd marker sweep, spool cleanup, task-output rows — and all 11 pass
+      # under the preload at the same offset. libfaketime fakes `stat()` as well
+      # as `Date`, so a fixture that derives an mtime from `Date.now()` (already
+      # shifted) has the offset applied a second time when it reads it back, and
+      # the sweeper sees files 30 days in the future. A harness that invents
+      # bombs is worse than no harness.
+      - name: Shift the clock and prove it moved
         id: clock
         run: |
           set -euo pipefail
-          lib=/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1
           expected=$(( OFFSET_DAYS * 86400 ))
           base=$(date -u +%s)
 
-          shifted=$(FAKETIME="+${OFFSET_DAYS}d" LD_PRELOAD="${lib}" FAKETIME_DONT_FAKE_MONOTONIC=1 \
-            bun -e 'console.log(Math.floor(Date.now() / 1000))')
-          delta=$(( shifted - base ))
-          echo "libfaketime probe: bun reads ${delta}s ahead of date(1) (expected ~${expected}s)"
+          # 1. The preload: only `Date` moves; the filesystem keeps real time, so a
+          #    file written "now" is as old as the process thinks it is.
+          preload_now=$(SHOGO_TEST_CLOCK_OFFSET_DAYS="${OFFSET_DAYS}" bun --no-env-file \
+            --preload ./scripts/test-clock-offset-preload.ts -e 'console.log(Math.floor(Date.now() / 1000))' \
+            || echo "${base}")
+          preload_delta=$(( preload_now - base ))
+          echo "preload probe: bun reads ${preload_delta}s ahead (expected ~${expected}s)"
+          if [ "${preload_delta}" -ge $(( expected - 3600 )) ] && [ "${preload_delta}" -le $(( expected + 3600 )) ]; then
+            echo "clock_mode=preload" >> "${GITHUB_ENV}"
+            echo "SHOGO_TEST_CLOCK_OFFSET_DAYS=${OFFSET_DAYS}" >> "${GITHUB_ENV}"
+            echo "Shifted the clock +${OFFSET_DAYS}d with the Bun Date preload."
+            exit 0
+          fi
 
+          # 2. libfaketime, for a Bun that will not take a preload. Still a valid
+          #    signal — but read a red cell with the stat() caveat above in mind.
+          echo "::warning::The preload did not shift the clock; falling back to libfaketime (which also fakes stat())."
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libfaketime
+          lib=/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1
+          shifted=$(FAKETIME="+${OFFSET_DAYS}d" LD_PRELOAD="${lib}" FAKETIME_DONT_FAKE_MONOTONIC=1 \
+            bun -e 'console.log(Math.floor(Date.now() / 1000))' || echo "${base}")
+          delta=$(( shifted - base ))
+          echo "libfaketime probe: bun reads ${delta}s ahead (expected ~${expected}s)"
           if [ "${delta}" -ge $(( expected - 3600 )) ]; then
             echo "clock_mode=libfaketime" >> "${GITHUB_ENV}"
             {
@@ -166,24 +192,12 @@ jobs:
               echo "FAKETIME_DONT_FAKE_MONOTONIC=1"
               echo "LD_PRELOAD=${lib}"
             } >> "${GITHUB_ENV}"
-            echo "Bun honours libfaketime — the suites run on a shifted system clock."
+            echo "Shifted the clock +${OFFSET_DAYS}d with libfaketime."
             exit 0
           fi
 
-          # Bun's Date is vDSO-backed and ignored LD_PRELOAD. Shift it in-process
-          # instead: run-tests-isolated.ts adds the preload to every `bun test`
-          # child when SHOGO_TEST_CLOCK_OFFSET_DAYS is set.
-          preload_now=$(SHOGO_TEST_CLOCK_OFFSET_DAYS="${OFFSET_DAYS}" bun --no-env-file \
-            --preload ./scripts/test-clock-offset-preload.ts -e 'console.log(Math.floor(Date.now() / 1000))')
-          preload_delta=$(( preload_now - base ))
-          echo "preload probe: bun reads ${preload_delta}s ahead (expected ~${expected}s)"
-          if [ "${preload_delta}" -lt $(( expected - 3600 )) ]; then
-            echo "::error::Neither libfaketime nor scripts/test-clock-offset-preload.ts moved the clock. Refusing to report a green run that tested today's date."
-            exit 1
-          fi
-          echo "clock_mode=preload" >> "${GITHUB_ENV}"
-          echo "SHOGO_TEST_CLOCK_OFFSET_DAYS=${OFFSET_DAYS}" >> "${GITHUB_ENV}"
-          echo "Bun ignored libfaketime — shifted the clock with the Date preload."
+          echo "::error::Neither scripts/test-clock-offset-preload.ts nor libfaketime moved the clock. Refusing to report a green run that tested today's date."
+          exit 1
 
       - name: Confirm the clock the suite will see
         run: |
