@@ -323,6 +323,7 @@
     "dist/**/*.d.ts",
     "dist/**/*.d.cts",
     "bin/cli.mjs",
+    "bin/bucket-cli.mjs",
     "bin/three-d-cli.mjs",
     "bin/three-d-cli.d.mts"
   ],
