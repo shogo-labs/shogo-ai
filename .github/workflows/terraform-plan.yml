@@ -1,0 +1,276 @@
+# =============================================================================
+# Terraform plan / apply for ONE environment (reusable workflow, SHO-515)
+# =============================================================================
+# Called by terraform.yml. Keeping the init/auth/plan/guard sequence in one
+# place is what makes "plan every env on every infra change" cheap to maintain:
+# there is exactly one copy of the credential wiring and one copy of the
+# protected-replacement guard.
+#
+# Inputs:
+#   environment  staging | production-us | production-eu | edge-global
+#   action       plan | apply
+#   pr_number    when > 0, the human-readable plan is posted as a PR comment
+#   fail_on_changes  fail when the plan is non-empty (drift detection)
+#   extra_args   appended to terraform plan (apply always applies the saved
+#                plan, so a targeted plan gives a targeted apply)
+#
+# The calling job is what sets `environment:` protection? No — this workflow's
+# own job does, so the environment's branch policy / reviewers apply to it.
+# =============================================================================
+
+name: Terraform plan/apply (one environment)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      action:
+        required: false
+        type: string
+        default: plan
+      pr_number:
+        required: false
+        type: number
+        default: 0
+      fail_on_changes:
+        required: false
+        type: boolean
+        default: false
+      extra_args:
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Serialize per environment so two applies can never race on the same state,
+# and so the daily drift plan never inspects a state an apply is mid-way
+# through changing.
+concurrency:
+  group: terraform-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: '1.5.7'
+  TF_IN_AUTOMATION: 'true'
+  TF_INPUT: 'false'
+  AWS_ACCESS_KEY_ID: ${{ secrets.OCI_S3_ACCESS_KEY }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
+
+jobs:
+  plan-or-apply:
+    name: ${{ inputs.action }} (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        working-directory: terraform/environments/${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      # edge-global is a Cloudflare-only env (no OCI/OKE resources), so skip
+      # the OCI key + OKE kubeconfig setup for it. Every other env needs them
+      # because its main.tf instantiates OKE/OCI modules that hit the
+      # oracle/oci + kubernetes providers.
+      - name: Write OCI API key
+        if: inputs.environment != 'edge-global'
+        run: |
+          mkdir -p "$HOME/.oci"
+          printf '%s' "${{ secrets.OCI_PRIVATE_KEY }}" > "$HOME/.oci/oci_api_key.pem"
+          chmod 600 "$HOME/.oci/oci_api_key.pem"
+
+      - name: Install OCI CLI
+        if: inputs.environment != 'edge-global'
+        run: pip install oci-cli --quiet
+
+      # Provision a kubeconfig for the env's OKE cluster so the kubernetes/helm
+      # providers (and provisioners that shell out to kubectl) can talk to it.
+      - name: Configure kubectl for OKE
+        if: inputs.environment != 'edge-global'
+        env:
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+        run: |
+          mkdir -p "$HOME/.kube"
+          oci ce cluster create-kubeconfig \
+            --cluster-id "${{ vars.OKE_CLUSTER_OCID }}" \
+            --file "$HOME/.kube/config" \
+            --region "${{ vars.OCI_REGION }}" \
+            --token-version 2.0.0 \
+            --kube-endpoint PUBLIC_ENDPOINT
+          chmod 600 "$HOME/.kube/config"
+
+      - name: terraform init
+        run: |
+          # production-eu has no committed lock file yet, so honor the lock
+          # where one exists and let init resolve versions where it doesn't.
+          lock_args=()
+          if [ -f .terraform.lock.hcl ]; then lock_args+=(-lockfile=readonly); fi
+          terraform init \
+            -backend-config="endpoint=${{ vars.OCI_S3_ENDPOINT }}" \
+            "${lock_args[@]}"
+
+      - name: terraform validate
+        run: terraform validate -no-color
+
+      - name: terraform plan
+        id: plan
+        env:
+          # OCI auth (oracle/oci provider via TF_VAR_*, plus the OCI CLI the
+          # kubernetes provider execs for a cluster auth token).
+          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key_path: /home/runner/.oci/oci_api_key.pem
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+          TF_VAR_compartment_id: ${{ vars.COMPARTMENT_ID }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # Custom domains (Cloudflare for SaaS) — declared only on the envs
+          # that enable them. `|| 'false'` keeps the bool parse valid when the
+          # var is unset on other environments.
+          TF_VAR_enable_custom_domains: ${{ vars.ENABLE_CUSTOM_DOMAINS || 'false' }}
+          TF_VAR_custom_domains_zone: ${{ vars.CUSTOM_DOMAINS_ZONE }}
+          # edge-global only — releases.shogo.ai resolver GitHub token.
+          TF_VAR_github_token: ${{ secrets.RELEASES_RESOLVER_GH_TOKEN }}
+          TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
+          TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
+          TF_VAR_signoz_ingestion_key: ${{ secrets.SIGNOZ_INGESTION_KEY }}
+          TF_VAR_edge_proxy_secret: ${{ secrets.EDGE_PROXY_SECRET }}
+          KUBE_CONFIG_PATH: /home/runner/.kube/config
+        run: |
+          set +e
+          terraform plan -no-color -detailed-exitcode -out=tfplan \
+            ${{ inputs.extra_args }} 2>&1 | tee plan.txt
+          ec=${PIPESTATUS[0]}
+          echo "exitcode=$ec" >> "$GITHUB_OUTPUT"
+          # 0 = no changes, 2 = changes, 1 = error
+          if [ "$ec" = "1" ]; then exit 1; fi
+
+      # A saved plan is the only reliable way to inspect what would change:
+      # grepping plan.txt misses replaces that span several lines.
+      - name: Export plan JSON
+        if: steps.plan.outputs.exitcode != ''
+        run: terraform show -json tfplan > plan.json
+
+      - name: Refuse protected replacements
+        if: steps.plan.outputs.exitcode != ''
+        working-directory: ${{ github.workspace }}
+        run: ./.github/scripts/check-terraform-plan-protected.sh "terraform/environments/${{ inputs.environment }}/plan.json"
+
+      - name: Publish plan summary
+        if: steps.plan.outputs.exitcode != ''
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          EXITCODE: ${{ steps.plan.outputs.exitcode }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          {
+            echo "### Terraform plan — ${ENVIRONMENT}"
+            echo
+            case "${EXITCODE}" in
+              0) echo "No changes." ;;
+              2) echo "**Pending changes** (full plan attached below)." ;;
+              *) echo "Plan failed (exit ${EXITCODE})." ;;
+            esac
+            echo
+            echo "<details><summary>Show plan</summary>"
+            echo
+            echo '```hcl'
+            head -c 60000 plan.txt
+            echo
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment plan on PR
+        if: inputs.pr_number > 0 && steps.plan.outputs.exitcode != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const env = '${{ inputs.environment }}';
+            const exitcode = '${{ steps.plan.outputs.exitcode }}';
+            const plan = fs.readFileSync(
+              `terraform/environments/${env}/plan.txt`,
+              'utf8',
+            );
+            const truncated = plan.length > 60000
+              ? plan.slice(0, 60000) + '\n\n…(truncated, see workflow logs for full plan)'
+              : plan;
+            const status = exitcode === '0'
+              ? 'No changes.'
+              : exitcode === '2'
+                ? '**Pending changes.**'
+                : `Plan failed (exit ${exitcode}).`;
+            const body = [
+              `### Terraform Plan — ${env}`,
+              '',
+              status,
+              '',
+              '<details><summary>Show plan</summary>',
+              '',
+              '```hcl',
+              truncated,
+              '```',
+              '',
+              '</details>',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ inputs.pr_number }},
+              body,
+            });
+
+      - name: terraform apply
+        if: inputs.action == 'apply' && steps.plan.outputs.exitcode != '1'
+        env:
+          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key_path: /home/runner/.oci/oci_api_key.pem
+          OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+          TF_VAR_compartment_id: ${{ vars.COMPARTMENT_ID }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          TF_VAR_enable_custom_domains: ${{ vars.ENABLE_CUSTOM_DOMAINS || 'false' }}
+          TF_VAR_custom_domains_zone: ${{ vars.CUSTOM_DOMAINS_ZONE }}
+          TF_VAR_github_token: ${{ secrets.RELEASES_RESOLVER_GH_TOKEN }}
+          TF_VAR_nfs_allowed_cidr: ${{ vars.NFS_ALLOWED_CIDR }}
+          TF_VAR_oke_api_allowed_cidrs: '["0.0.0.0/0"]'
+          TF_VAR_signoz_ingestion_key: ${{ secrets.SIGNOZ_INGESTION_KEY }}
+          TF_VAR_edge_proxy_secret: ${{ secrets.EDGE_PROXY_SECRET }}
+          KUBE_CONFIG_PATH: /home/runner/.kube/config
+        run: terraform apply -no-color -auto-approve tfplan
+
+      # Drift alarm: the daily run wants "no changes" to be the normal state.
+      # A non-empty plan means merged infra was never applied, or someone
+      # changed it out-of-band.
+      - name: Fail when changes are pending (drift)
+        if: inputs.fail_on_changes && steps.plan.outputs.exitcode == '2'
+        run: |
+          echo "::error::${{ inputs.environment }} has pending terraform changes."
+          echo "Merged infra must not sit unapplied: apply it (or revert the change)."
+          exit 1

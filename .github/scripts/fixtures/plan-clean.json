@@ -1,0 +1,106 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.5.7",
+  "resource_changes": [
+    {
+      "address": "module.cnpg.kubernetes_namespace.cnpg",
+      "module_address": "module.cnpg",
+      "mode": "managed",
+      "type": "kubernetes_namespace",
+      "name": "cnpg",
+      "provider_name": "registry.terraform.io/hashicorp/kubernetes",
+      "change": {
+        "actions": ["update"],
+        "before": { "metadata": [{ "labels": { "app": "cnpg" } }] },
+        "after": { "metadata": [{ "labels": { "app": "cnpg", "clock": "reconciled" } }] },
+        "after_unknown": {},
+        "before_sensitive": false,
+        "after_sensitive": false
+      }
+    },
+    {
+      "address": "module.studio_web_assets.oci_objectstorage_bucket.assets",
+      "module_address": "module.studio_web_assets",
+      "mode": "managed",
+      "type": "oci_objectstorage_bucket",
+      "name": "assets",
+      "provider_name": "registry.terraform.io/oracle/oci",
+      "change": {
+        "actions": ["update"],
+        "before": { "freeform_tags": { "Purpose": "studio-web-immutable-assets" } },
+        "after": { "freeform_tags": { "Purpose": "studio-web-immutable-assets", "Owner": "shogo" } },
+        "after_unknown": {},
+        "before_sensitive": false,
+        "after_sensitive": false
+      }
+    },
+    {
+      "address": "module.publish_hosting.cloudflare_worker_route.published_apps",
+      "module_address": "module.publish_hosting",
+      "mode": "managed",
+      "type": "cloudflare_worker_route",
+      "name": "published_apps",
+      "provider_name": "registry.terraform.io/cloudflare/cloudflare",
+      "change": {
+        "actions": ["update"],
+        "before": { "script_name": "subdomain-router", "pattern": "*.staging.shogo.one/*" },
+        "after": { "script_name": "subdomain-router-v2", "pattern": "*.staging.shogo.one/*" },
+        "after_unknown": {},
+        "before_sensitive": false,
+        "after_sensitive": false
+      }
+    },
+    {
+      "address": "module.object_storage.oci_identity_policy.lifecycle_service_principal[0]",
+      "module_address": "module.object_storage",
+      "deposed": "26eccc28",
+      "mode": "managed",
+      "type": "oci_identity_policy",
+      "name": "lifecycle_service_principal",
+      "index": 0,
+      "provider_name": "registry.terraform.io/oracle/oci",
+      "change": {
+        "actions": ["delete"],
+        "before": { "name": "objectstorage-lifecycle-policy-us-ashburn-1" },
+        "after": null,
+        "after_unknown": {},
+        "before_sensitive": false,
+        "after_sensitive": false
+      }
+    },
+    {
+      "address": "module.publish_hosting.oci_objectstorage_preauthrequest.published_apps",
+      "module_address": "module.publish_hosting",
+      "deposed": "b7dfdba9",
+      "mode": "managed",
+      "type": "oci_objectstorage_preauthrequest",
+      "name": "published_apps",
+      "provider_name": "registry.terraform.io/oracle/oci",
+      "change": {
+        "actions": ["delete"],
+        "before": { "name": "cloudflare-cdn-access" },
+        "after": null,
+        "after_unknown": {},
+        "before_sensitive": false,
+        "after_sensitive": false
+      }
+    },
+    {
+      "address": "module.knative.null_resource.kourier_gateway_capacity[0]",
+      "module_address": "module.knative",
+      "mode": "managed",
+      "type": "null_resource",
+      "name": "kourier_gateway_capacity",
+      "index": 0,
+      "provider_name": "registry.terraform.io/hashicorp/null",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": { "triggers": { "replicas": "3" } },
+        "after_unknown": { "id": true },
+        "before_sensitive": false,
+        "after_sensitive": false
+      }
+    }
+  ]
+}
