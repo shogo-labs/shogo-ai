@@ -1916,10 +1916,11 @@ export async function wakeHostTunnel(
   const name = row?.name ?? null
 
   const tunnelUp = await (opts._tunnelUp ?? ((id: string) => isTunnelConnectedAnywhere(id, { retry: false })))(instanceId)
+  const plannedAt = now()
   const plan = planHostWake({
     tunnelUp,
     lastSeenAt,
-    now: now(),
+    now: plannedAt,
     staleProbeMs: opts.staleProbeMs,
     maxWaitMs: opts.maxWaitMs,
   })
@@ -1934,8 +1935,11 @@ export async function wakeHostTunnel(
 
   if (await requestAndWaitForTunnel(instanceId, plan.waitMs)) return result('connected')
   // A fresh heartbeat is what separates "still opening" from "away": the machine
-  // is up either way, only its tunnel missed the window.
-  return result(isRecentlySeenViaHeartbeat(lastSeenAt, now()) ? 'connecting' : 'offline')
+  // is up either way, only its tunnel missed the window. Read it at the moment the
+  // wait was planned, not now: the wait is up to 75s long, so re-reading would
+  // turn a host that was up when we started into the non-retryable "offline" just
+  // because its own wait pushed that same heartbeat past the freshness line.
+  return result(isRecentlySeenViaHeartbeat(lastSeenAt, plannedAt) ? 'connecting' : 'offline')
 }
 
 /**

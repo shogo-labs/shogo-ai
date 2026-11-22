@@ -1277,6 +1277,14 @@ export interface AgentScheduleUpdateRequest {
   notifyThreadRootId?: string | null
 }
 
+/**
+ * Every call on this surface is `/api/internal/workspaces/:id/…`, and the API
+ * forwards any of them to the desktop hosting that workspace, where it waits for
+ * the host's tunnel first (SHO-506). So the default here is the wake-tolerant
+ * timeout: a 20s default cut the wait off on this side and reported a client
+ * abort for a `board_list` the API was about to answer. A caller that must fail
+ * fast (a prompt-filling probe) passes its own `timeoutMs`.
+ */
 async function personalFetch<T>(
   path: string,
   init: RequestInit & { parse?: (json: any) => T; timeoutMs?: number } = {},
@@ -1287,7 +1295,7 @@ async function personalFetch<T>(
   try {
     const res = await fetch(`${apiUrl}${path}`, {
       headers: getInternalHeaders(),
-      signal: AbortSignal.timeout(timeoutMs ?? 20_000),
+      signal: AbortSignal.timeout(timeoutMs ?? HOST_WAKE_TOLERANT_TIMEOUT_MS),
       ...rest,
     })
     const json = await res.json().catch(() => null) as any
