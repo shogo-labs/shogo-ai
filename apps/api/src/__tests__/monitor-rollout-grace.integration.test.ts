@@ -201,7 +201,16 @@ describe.skipIf(!JQ)('warm-pool-monitor: rollout grace window (real sh + jq, stu
   const script = cronJobScript('k8s/base/warm-pool-monitor.yaml')
   let dir: string
 
-  const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+  /**
+   * The clock the monitor's own processes read. The suite may run under the
+   * future-clock preload, which shifts only this Bun process's `Date`; the
+   * monitor's `sh`/`jq` children keep the real clock. Fixtures must be dated on
+   * the child's clock, or a "30 minutes ago" revision reads as 30 days in the
+   * future and never leaves the grace window.
+   */
+  let clockMs = Date.now()
+
+  const ago = (minutes: number) => new Date(clockMs - minutes * 60_000).toISOString().replace(/\.\d{3}Z$/, 'Z')
   const ready = (ok: boolean) => [{ type: 'Ready', status: ok ? 'True' : 'False' }]
 
   interface Cluster {
@@ -236,7 +245,7 @@ describe.skipIf(!JQ)('warm-pool-monitor: rollout grace window (real sh + jq, stu
   const run = (extra: Record<string, string> = {}) =>
     runScript(script, { PATH: `${dir}:${process.env.PATH}`, API_NS: 'sys', WP_NS: 'ws', ...extra })
 
-  beforeAll(() => {
+  beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'wpmon-'))
     // Routes exactly the reads the monitor makes; anything else fails loudly.
     writeFileSync(
@@ -255,6 +264,12 @@ esac
 `,
     )
     chmodSync(join(dir, 'kubectl'), 0o755)
+    // Date the fixtures on the clock the monitor's children read, not on this
+    // process's (possibly shifted) `Date`.
+    const probe = await runScript('date -u +%s', {})
+    const seconds = Number(probe.out.trim())
+    if (!Number.isFinite(seconds)) throw new Error(`date -u +%s returned ${JSON.stringify(probe.out)}`)
+    clockMs = seconds * 1000
   })
 
   afterAll(() => {

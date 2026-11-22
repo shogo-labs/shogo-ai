@@ -31,6 +31,7 @@ import { join, resolve } from 'path'
 import { Database } from 'bun:sqlite'
 import { spawnSync } from 'child_process'
 import { runPackagePool, type PackagePoolJob, type PackagePoolResult } from './lib/package-pool'
+import { clockOffsetPreloadArgs } from './lib/test-clock-offset'
 
 const REPO_ROOT = resolve(import.meta.dir, '..')
 
@@ -259,7 +260,12 @@ function createPackageTestJob(
   delete childEnv.AI_PROXY_URL
   delete childEnv.AI_PROXY_TOKEN
   const args = ['run', scriptName]
-  if (shard) args.push('--', '--shard', shard)
+  // The future-clock job shifts the wall clock through this preload when
+  // libfaketime can't reach Bun's Date. Packages whose `test` script routes
+  // through scripts/run-tests-isolated.ts already add it per file; the preload
+  // installs once per process, so adding it here too is harmless.
+  const extra = [...clockOffsetPreloadArgs(), ...(shard ? ['--shard', shard] : [])]
+  if (extra.length > 0) args.push('--', ...extra)
 
   return {
     name: pkg,

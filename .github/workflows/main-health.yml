@@ -1,0 +1,306 @@
+# =============================================================================
+# Main health — hourly unit run on main, one issue while it is red
+# =============================================================================
+# `ci.yml` runs on push and nightly. SHO-505 was neither: a commit landed on
+# 2026-11-18 while it was green, and the clock walked past the test's assumptions
+# about 72 hours later. `main` was red for hours before anyone saw it, and every
+# PR opened in that window inherited the red.
+#
+# So: the unit suites, once an hour, on `main` only. No e2e and no
+# `rbac-postgres` — those are slow and already covered by ci.yml; the point here
+# is to notice a suite that went red with no commit at all.
+#
+# While red: ONE `main-red` issue, commented on each hour instead of a new issue
+# per run. When it goes green the issue is closed with a "green again" line.
+# #shogo-dev lives in a local desktop workspace GitHub cannot call, so a disabled
+# workspace schedule reads this issue and posts the alert in the channel.
+#
+# `force_fail: true` (workflow_dispatch only) fails the run deliberately, to
+# prove the alert path end to end without waiting for a real bomb.
+#
+# Cost: three unit legs × 24 runs ≈ 1,000–1,200 runner-minutes/day on
+# `ubuntu-latest`, which is the same work ci.yml already does hourly for one
+# push — cheap next to a red main nobody noticed.
+# =============================================================================
+
+name: Main health
+
+on:
+  schedule:
+    # :20 past every hour. ci.yml owns :17 nightly, future-clock owns 04:43.
+    - cron: '20 * * * *'
+  workflow_dispatch:
+    inputs:
+      force_fail:
+        description: 'Fail this run on purpose, to prove the main-red alert path'
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  # Never let two hourly runs overlap on a slow night; queue one deep.
+  group: main-health
+  cancel-in-progress: false
+
+jobs:
+  test:
+    # A schedule always lands on the default branch; a dispatch may be run from a
+    # branch (that is how the alert path is proven before merge).
+    if: github.ref == 'refs/heads/main' || github.event_name != 'schedule'
+    name: Unit (${{ matrix.name }})
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    timeout-minutes: 25
+    env:
+      SHOGO_TEST_PACKAGE_CONCURRENCY: ${{ vars.CI_TEST_PACKAGE_CONCURRENCY || '2' }}
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+      CI_REQUIRE_REDIS: '1'
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api + mobile
+            packages: apps/api,apps/mobile
+            build_templates: false
+          - name: agent-runtime
+            packages: packages/agent-runtime
+            build_templates: true
+          - name: remaining
+            packages: packages/shared-runtime,packages/model-catalog,packages/authz,packages/sdk,scripts,packages/shared-app,apps/metal-agent,apps/shogo-ide,packages/agent,packages/core,packages/email,packages/voice,apps/desktop
+            build_templates: true
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: setup-bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.4'
+
+      # Same caches as ci.yml's `test` job, so an hourly run costs the test time
+      # and not a cold install.
+      - name: Restore node_modules
+        id: health-node-modules-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+
+      - name: Restore prepared build artifacts
+        id: workspace-health-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            apps/api/src/generated
+            packages/*/dist
+            templates/runtime-template/node_modules
+            templates/runtime-template/dist
+            packages/agent-runtime/templates/sales-bdr-pipeline/dist
+          key: ci-prepared-v2-${{ runner.os }}-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'apps/api/src/generated/*.ts', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+
+      - name: Restore bun dependencies
+        id: bun-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build workspace packages
+        if: steps.workspace-health-cache.outputs.cache-hit != 'true'
+        run: bun run build:packages
+
+      - name: Build runtime-template (Vite dist for workspace-seeding tests)
+        if: steps.workspace-health-cache.outputs.cache-hit != 'true' && matrix.build_templates
+        # Same recipe as ci.yml's identical step: the template is outside the
+        # root workspaces glob, pins `@shogo-ai/sdk` as `workspace:*` (which
+        # cannot resolve standalone) so it is materialized to a published range
+        # first, and the manifest rewrite is undone once dist/ exists.
+        run: |
+          bun run scripts/materialize-runtime-template.ts templates/runtime-template/package.json
+          (cd templates/runtime-template && bun install && bun run build)
+          git checkout -- templates/runtime-template/package.json templates/runtime-template/bun.lock
+        env:
+          # @vscode/ripgrep's postinstall 403s on the shared anonymous quota;
+          # see scripts/check-ci-bun-install-token.ts. (Same as ci.yml.)
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Test
+        if: inputs.force_fail != true
+        run: bun run test -- --packages "${{ matrix.packages }}"
+
+      # Proving the alert path must not depend on a real bomb existing, so a
+      # dispatched run with `force_fail` fails here instead of running the suite.
+      - name: Forced failure (workflow_dispatch force_fail)
+        if: inputs.force_fail == true
+        run: |
+          echo "::error::Forced failure: workflow_dispatch asked for force_fail=true, to prove the main-red issue path."
+          exit 1
+
+  # Owns the issue, so an hourly run can only ever touch one of them: two
+  # matrix legs going red in the same hour write to the same issue instead of
+  # racing to create two.
+  report:
+    name: main-red issue
+    needs: [test]
+    if: always() && (github.ref == 'refs/heads/main' || github.event_name != 'schedule')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Reading this run's job list and the per-job logs mid-run is an Actions
+      # API read. Without it the call 403s, the loop below finds no jobs, and the
+      # issue falls back to "no test-level lines found" with nothing explaining
+      # why. ci.yml's prelude declares the same scope for the same reason.
+      actions: read
+      # The only job that may write: it opens/comments/closes the single issue.
+      issues: write
+    timeout-minutes: 5
+    steps:
+      # Only the helper that turns a failed log into a list of failing tests.
+      # A full checkout would be wasted here: this job reads nothing else.
+      - name: Check out the failing-test helper
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: scripts/ci
+          sparse-checkout-cone-mode: false
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Open, update or close the main-red issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TESTS_RESULT: ${{ needs.test.result }}
+          FORCE_FAIL: ${{ inputs.force_fail }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          label=main-red
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          gh label create "${label}" --repo "${GITHUB_REPOSITORY}" --color B60205 \
+            --description "main's unit suites are red (hourly main-health run)" 2>/dev/null || true
+
+          existing=$(gh issue list --repo "${GITHUB_REPOSITORY}" --label "${label}" --state open \
+            --limit 1 --json number --jq '.[0].number // ""')
+
+          if [ "${TESTS_RESULT}" = "success" ] && [ "${FORCE_FAIL}" != "true" ]; then
+            if [ -z "${existing}" ]; then
+              echo "main is green, no open ${label} issue."
+              exit 0
+            fi
+            gh issue comment "${existing}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Green again: the unit suites pass on \`${REF_NAME}\` @ ${GITHUB_SHA}. Run: ${run_url}"
+            gh issue close "${existing}" --repo "${GITHUB_REPOSITORY}" --reason completed
+            echo "Closed ${label} #${existing}: main is green again."
+            exit 0
+          fi
+
+          # Cancelled or skipped says nothing about the suites: leave the issue as
+          # it is rather than claiming a red that nobody observed.
+          if [ "${TESTS_RESULT}" != "failure" ] && [ "${FORCE_FAIL}" != "true" ]; then
+            echo "test job ended ${TESTS_RESULT}; leaving ${label} untouched."
+            exit 0
+          fi
+
+          # Red. Pull the failing tests out of the per-job logs.
+          # A whole-run log read cannot be used here: this step runs while the run is
+          # still in progress, and `gh` refuses ("run is still in progress") — the
+          # whole log came back as that one error line and the issue said "no
+          # test-level names found". Per-job logs are served mid-run, so read those.
+          #
+          # Every read below records a reason on failure. An unreadable log must say
+          # so in the issue: the first version failed silently (a 403 on the job list
+          # ran the loop zero times) and the issue claimed there were no test-level
+          # lines, which reads exactly like a real empty result.
+          #
+          # The per-job log is fetched with curl, not `gh api`. A recent `gh` refuses
+          # to write a response that contains terminal escape sequences to a pipe
+          # ("pass --allow-escape-sequences to output it anyway"), and every runner
+          # log has them — so `gh api .../logs` exited non-zero with an empty body and
+          # the issue said only "could not read the log of job N". Ask the API for
+          # the redirect and fetch the blob ourselves, which also keeps the token off
+          # the storage host.
+          : > "${RUNNER_TEMP}/failed.log"
+          : > "${RUNNER_TEMP}/log-errors.txt"
+          log_errors=''
+          api="${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}"
+          if ! jobs_json=$(gh api "${api}/actions/runs/${GITHUB_RUN_ID}/jobs" 2>>"${RUNNER_TEMP}/log-errors.txt"); then
+            log_errors="could not read the run's job list (does this job still declare actions: read?); "
+            jobs_json=''
+          fi
+          for job_id in $(printf '%s' "${jobs_json}" \
+            | jq -r '.jobs // [] | .[] | select(.conclusion == "failure") | .id' 2>/dev/null); do
+            blob=$(curl -sS -o /dev/null -w '%{redirect_url}' \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              "${api}/actions/jobs/${job_id}/logs" 2>>"${RUNNER_TEMP}/log-errors.txt")
+            if [ -z "${blob}" ] \
+              || ! curl -fsS "${blob}" >> "${RUNNER_TEMP}/failed.log" 2>>"${RUNNER_TEMP}/log-errors.txt"; then
+              log_errors="${log_errors}could not read the log of job ${job_id}; "
+            fi
+          done
+          # Put the API's own reason in the issue: "could not read" alone sends the
+          # next reader hunting for a cause that the response already named.
+          if [ -n "${log_errors}" ] && [ -s "${RUNNER_TEMP}/log-errors.txt" ]; then
+            log_errors="${log_errors}reason: $(head -3 "${RUNNER_TEMP}/log-errors.txt" | tr '\n' ' ' | cut -c1-300)"
+          fi
+          bash scripts/ci/failing-tests.sh "${RUNNER_TEMP}/failed.log" 60 \
+            > "${RUNNER_TEMP}/failures.txt" || true
+
+          {
+            if [ "${FORCE_FAIL}" = "true" ]; then
+              echo "**Forced failure** — \`workflow_dispatch\` ran with \`force_fail: true\` to prove this alert path. Nothing may actually be broken."
+            else
+              echo "\`main\`'s unit suites are red on \`${REF_NAME}\` @ ${GITHUB_SHA}. ci.yml only runs on push and nightly, so this fired with no new commit — the usual cause is a test whose assumptions about the current date no longer hold (SHO-505)."
+            fi
+            echo
+            echo "Run: ${run_url}"
+            echo "Card: SHO-507"
+            echo
+            echo '<details><summary>failing tests</summary>'
+            echo
+            echo '```'
+            if [ -s "${RUNNER_TEMP}/failures.txt" ]; then
+              cat "${RUNNER_TEMP}/failures.txt"
+              if [ -n "${log_errors}" ]; then
+                echo
+                echo "(partial: ${log_errors})"
+              fi
+            elif [ -n "${log_errors}" ]; then
+              echo "could not read job logs: ${log_errors}"
+            else
+              echo '(no test-level lines found — see the run log)'
+            fi
+            echo '```'
+            echo
+            echo '</details>'
+            echo
+            echo "A test that hard-codes a date and compares it to the current time is the classic culprit: pin the clock (\`setSystemTime\`) or inject \`now\`. \`future-clock.yml\` runs the same suites at +7/+30/+90 days to catch the next one before it fires."
+          } > "${RUNNER_TEMP}/issue.md"
+
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --repo "${GITHUB_REPOSITORY}" --body-file "${RUNNER_TEMP}/issue.md"
+            echo "Commented on open ${label} #${existing}."
+          else
+            gh issue create --repo "${GITHUB_REPOSITORY}" \
+              --title "main-red: unit suites are failing on ${REF_NAME}" \
+              --label "${label}" --body-file "${RUNNER_TEMP}/issue.md"
+            echo "Opened ${label}."
+          fi

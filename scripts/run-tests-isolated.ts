@@ -29,6 +29,7 @@ import { readdirSync, statSync, existsSync, mkdirSync, rmSync, renameSync, readF
 import { join, relative, resolve } from 'path'
 import { spawn, spawnSync } from 'child_process'
 import { cpus } from 'os'
+import { clockOffsetPreloadArgs } from './lib/test-clock-offset'
 
 const TEST_FILE_RE = /\.(test|spec)\.(ts|tsx|js|jsx)$/
 const SKIP_DIR_RE = /(?:^|\/)(?:node_modules|dist|build|generated|\.next|coverage|integration)(?:\/|$)/
@@ -91,7 +92,7 @@ function runOneSync(
   // (sqlite `file:./shogo.db`, prisma config, fixture loading) resolve the
   // same way `bun test` from the package would.
   const relFile = relative(cwd, file)
-  const args = ['test', relFile, ...extraArgs]
+  const args = ['test', relFile, ...clockOffsetPreloadArgs(), ...extraArgs]
   let shardDir: string | null = null
   if (coverageOpts) {
     // We pass `--coverage`. Bun honours the package's `bunfig.toml` for
@@ -281,7 +282,7 @@ function runOneAsync(
     for (const k of Object.keys(childEnv)) {
       if (k.startsWith('KUBERNETES_')) delete childEnv[k]
     }
-    const procArgs = ['--no-env-file', '--conditions=development', 'test', relFile, ...extraArgs]
+    const procArgs = ['--no-env-file', '--conditions=development', 'test', relFile, ...clockOffsetPreloadArgs(), ...extraArgs]
     const proc = spawn('bun', procArgs, { env: childEnv, cwd })
 
     let stdout = ''
@@ -576,6 +577,12 @@ async function main() {
         )
         const idx = results.indexOf(old)
         if (idx >= 0) results[idx] = retried
+        // A rescued file is a pass, but it is not a clean pass: in the clock-offset
+        // job a file that fails in parallel and passes serially is usually a bomb
+        // whose failure depends on how far the clock moved between two reads. Print
+        // a greppable marker so the workflow can say so instead of reporting a
+        // silent 0-fail leg.
+        if (retried.exitCode === 0) console.log(`RETRY-RESCUED ${rel}`)
       }
     }
   }

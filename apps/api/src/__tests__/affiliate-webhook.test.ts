@@ -16,7 +16,7 @@
  * we don't re-test signature handling here.
  */
 
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test'
 import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 // ---------------------------------------------------------------------------
@@ -141,6 +141,10 @@ function makeInvoice(opts: { id: string; customer?: string; subscription?: strin
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
+  // The fixtures are dated 2026-01-01 and 2026-05-01; pin the clock to the same
+  // timeline so the L1 year-one window and the "now" the service reads stay in
+  // step with the seeds (and the future-clock run's shifted clock cannot leak in).
+  setSystemTime(new Date('2026-05-01'))
   affiliates = new Map()
   attributions = new Map()
   commissions = []
@@ -156,6 +160,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.SHOGO_AFFILIATES_NATIVE
+  setSystemTime()
 })
 
 function seedAffiliateAndAttribution(opts: { affiliateId: string; userId: string; referredUserId: string; customerId: string }) {
@@ -258,6 +263,11 @@ describe('runAffiliateInvoiceReconciliation', () => {
     ]
     const summary = await recon.runAffiliateInvoiceReconciliation({
       stripeFactory: () => makeStripe(),
+      // Pin the reconciliation to the fixture's own timeline. The attribution
+      // is seeded on 2026-01-01, so the default clock drifts past the L1
+      // year-one window as the calendar advances (the future-clock run read it
+      // as 400+ days old at +90d and recorded no commissions).
+      now: new Date('2026-05-01'),
     })
     expect(summary.invoicesScanned).toBe(2)
     expect(summary.commissionsCreated).toBe(2)
@@ -268,9 +278,12 @@ describe('runAffiliateInvoiceReconciliation', () => {
     seedAffiliateAndAttribution({ affiliateId: 'aff_1', userId: 'u-aff', referredUserId: 'u-ref', customerId: 'cus_x' })
     const inv = makeInvoice({ id: 'in_1', customer: 'cus_x' })
     stripeListPages = [[inv]]
-    await recon.runAffiliateInvoiceReconciliation({ stripeFactory: () => makeStripe() })
+    await recon.runAffiliateInvoiceReconciliation({ stripeFactory: () => makeStripe(), now: new Date('2026-05-01') })
     stripeListPages = [[inv]]
-    const summary2 = await recon.runAffiliateInvoiceReconciliation({ stripeFactory: () => makeStripe() })
+    const summary2 = await recon.runAffiliateInvoiceReconciliation({
+      stripeFactory: () => makeStripe(),
+      now: new Date('2026-05-01'),
+    })
     expect(summary2.invoicesScanned).toBe(1)
     expect(summary2.commissionsCreated).toBe(0)
   })
@@ -303,6 +316,7 @@ describe('runAffiliateInvoiceReconciliation', () => {
     }
     const summary = await recon.runAffiliateInvoiceReconciliation({
       stripeFactory: () => stripe,
+      now: new Date('2026-05-01'),
     })
     expect(summary.invoicesScanned).toBe(2)
     // bad-customer invoice short-circuits in the service (logged + 0),

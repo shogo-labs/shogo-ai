@@ -224,6 +224,10 @@ describe('evictStaleGitLock', () => {
       expect(existsSync(lock)).toBe(false)
 
       writeFileSync(lock, '')
+      // Stamp the fresh lock from the clock the eviction reads: an unstamped
+      // file carries the OS clock, which reads as `offset` older than a shifted
+      // clock, so the "fresh" lock would be evicted as stale.
+      utimesSync(lock, new Date(), new Date())
       expect(evictStaleGitLock(dir, 5_000, quiet)).toBe(false)
       expect(existsSync(lock)).toBe(true)
     } finally {

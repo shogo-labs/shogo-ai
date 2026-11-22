@@ -63,6 +63,8 @@
     "check:multiregion": "bun scripts/check-multiregion-cron-locks.ts",
     "check:ci-bun-install-token": "bun scripts/check-ci-bun-install-token.ts",
     "check:e2e-quarantine": "bun scripts/check-e2e-quarantine.ts",
+    "check:test-clock": "bun scripts/check-test-clock.ts",
+    "check:injected-clock": "bun scripts/check-injected-clock.ts",
     "check:higgsfield-docs": "bun scripts/check-higgsfield-docs.ts",
     "generate:runtime-env-doc": "bun scripts/gen-runtime-env-doc.ts",
     "check:runtime-env-doc": "bun scripts/gen-runtime-env-doc.ts --check",
