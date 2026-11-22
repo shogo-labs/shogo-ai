@@ -16,6 +16,8 @@ import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync, readFileSync, rea
 import { auth } from './auth'
 import { resolveSubscriptionContext, selectPlanItem } from './services/stripe-subscription-sync.service'
 import { resolveCheckoutPriceId, normalizeCheckoutPlanId } from './services/stripe-price-lookup.service'
+import { refreshStorageHealthInBackground, storageHealth } from './services/storage-health.service'
+import { buildHealthPayload } from './lib/health-payload'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import type { InstanceSizeName } from './config/instance-sizes'
 import { resolveWorkspaceDiskMiB, workspaceDiskIncludedGiB } from './config/instance-sizes'
@@ -1043,15 +1045,19 @@ const healthHandler = async (c: any) => {
   if (!redis.healthy) {
     console.warn('[Health] Redis unhealthy:', redis.error)
   }
-  const ok = !degraded && redis.healthy
-  const body = {
-    ok,
+  // Resolved on the first request and refreshed on a slow interval, so a probe
+  // never waits on a bucket. NOT part of `ok`: see lib/health-payload. The
+  // deploy gate asks for `?storage=refresh` so its verdict is authoritative.
+  const storage = await storageHealth({ force: c.req.query('storage') === 'refresh' })
+  const body = buildHealthPayload({
+    redis,
+    degraded,
+    storage,
     // The release this pod runs. Deploys fail their rollout gate on 0.0.0, so
     // admin analytics can always compare installs against the deployed tag.
     version: deployedAppVersionOrUnknown(),
-    redis: { healthy: redis.healthy, latencyMs: redis.latencyMs, degraded },
-  }
-  return c.json(body, ok ? 200 : 503)
+  })
+  return c.json(body, body.ok ? 200 : 503)
 }
 app.get('/api/health', healthHandler)
 app.get('/health', healthHandler)
@@ -1861,6 +1867,10 @@ startAgentScheduleWorker(getRuntimeManager())
 // Deliver workspace events (member.joined, Composio triggers) to their subscriptions.
 startEventDeliveryWorker(getRuntimeManager())
 void import('./services/composio-triggers.service').then((m) => m.startComposioTriggerReconciler()).catch(() => {})
+// Warm the object-storage verdict at boot (SHO-514). /api/health only ever
+// reads the cache — its probe timeout is 1s — so the first probe after a deploy
+// finds an answer instead of starting a HeadBucket round trip.
+refreshStorageHealthInBackground()
 startChatQueueWorker()
 startChatSweepWorker()
 // Journal retention for cloud too (SHO-482): the desktop sweep was the only one

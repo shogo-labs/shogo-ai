@@ -81,6 +81,22 @@ runtime checkpoints first (`PRAGMA wal_checkpoint(TRUNCATE)`), so the image's
 `dev.db` is a complete snapshot rather than one that is behind its own last
 write.
 
+**The project's own `.dockerignore` is honoured** (SHO-514). The context is built
+by Docker (`COPY . /app`), so the file a project already maintains applies — one
+direction only: it can remove paths, never bring back `.env*`, `.git/`,
+`node_modules`, `.shogo` or `-wal/-shm`, and never drop `package.json`, the
+lockfile, `prisma/schema.prisma` or `prisma/dev.db` — including when a rule matches
+the `prisma/` directory itself (`*`, `pr*`, an allowlist), since a pruned directory
+takes its required files with it. A blanket `*` rule therefore cannot produce an
+image without a schema. `.dockerignore` itself is not copied into the context
+(BuildKit would apply it a second time to the platform-added files). The publish
+output logs `N paths / X MB left out by .dockerignore`.
+
+So for big media there are two answers, and they are different: committed media
+belongs in LFS (pointers, above), and anything the app does not need at runtime —
+renders, raw footage, scratch output — belongs in `.dockerignore` or in the
+project bucket, not in the image.
+
 ## Cluster prerequisites
 
 These are per region and must exist **before** enabling the feature.

@@ -1,0 +1,143 @@
+# =============================================================================
+# Projects PostgreSQL Cluster (Production EU - OCI / OKE)
+# =============================================================================
+# Databases for PUBLISHED apps (SHO-308 §1): one per published environment,
+# `project_<uuid>` for production and `project_<uuid>_staging` for staging.
+#
+# This is deliberately NOT the platform cluster. Published apps are untrusted
+# user workloads with their own DDL, connection count and blast radius; keeping
+# them apart means an app's `db push` or a runaway connection pool can never
+# touch the workspace/user/billing tables.
+#
+# Deployed by `.github/workflows/deploy.yml` (`deploy-eu`), before the API
+# manifests, on every deploy — idempotent, so a re-run is a no-op. Do not apply
+# it by hand: a manual cluster and the workflow would drift.
+#
+# Note: published app databases are REGION-LOCAL. `platform-pg` replicates
+# workspace/project metadata across US<->EU, but a user app's own rows stay in
+# the region its environment was created in; a cross-region publish is a
+# cutover (docs/runbooks/published-cutover.md), not a replication.
+#
+# Sizing: 1 instance / 50Gi mirrors `platform-pg` in this region (same node
+# pool, `oci-bv`). `max_connections: 500` is what `projects-pooler.yaml` budgets
+# against (2 pooler instances x default_pool_size 25 = 50 backend connections,
+# leaving headroom for CNPG, monitoring and migrations).
+# =============================================================================
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: projects-pg
+  namespace: shogo-production-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    environment: production
+    region: eu-frankfurt-1
+spec:
+  # One instance, same as platform-pg in this region: EU carries the smaller
+  # share of published traffic, and a standby doubles block-volume cost without
+  # changing the publish path this cluster exists to prove.
+  instances: 1
+
+  enablePDB: false
+
+  # The API provisions one database + role per published environment, which
+  # needs a superuser. CNPG only writes `projects-pg-superuser` (the Secret the
+  # API overlay mounts as PROJECTS_DB_ADMIN_URL) when this is on; it is off by
+  # default, and without it the API silently stays on SQLite.
+  enableSuperuserAccess: true
+
+  # Published apps can burst CPU and memory, and the database must not be the
+  # pod that gets evicted. PriorityClass lives in
+  # k8s/overlays/production-eu/priority-classes.yaml and deploy-eu applies it
+  # before this cluster.
+  priorityClassName: shogo-db-critical
+
+  postgresql:
+    parameters:
+      # Sized to the pooler in this region: 2 x default_pool_size(25) = 50
+      # backend connections, well under this, with room for CNPG's own
+      # connections, monitoring and `prisma db push`.
+      max_connections: "500"
+      shared_buffers: "512MB"
+      effective_cache_size: "1536MB"
+      work_mem: "8MB"
+      maintenance_work_mem: "128MB"
+      wal_buffers: "16MB"
+      log_min_duration_statement: "1000"
+      log_checkpoints: "on"
+    pg_hba:
+      - host all all 10.0.0.0/8 md5
+      - host all all 172.16.0.0/12 md5
+
+  bootstrap:
+    initdb:
+      # The maintenance database `provisionDatabase` connects to in order to
+      # CREATE DATABASE. It holds no app data.
+      database: shogo_projects
+      owner: shogo
+
+  storage:
+    size: 50Gi
+    storageClass: oci-bv
+
+  # Backups MUST work before this cluster gets user data. The settings are
+  # identical to staging `projects-pg`, whose ContinuousArchiving condition is
+  # True on CNPG 1.29.1 (barman-cloud uploads accepted by OCI). See
+  # docs/runbooks/published-postgres.md (verify on staging before trusting it).
+  backup:
+    barmanObjectStore:
+      endpointURL: https://idin4oltblww.compat.objectstorage.eu-frankfurt-1.oraclecloud.com
+      # Separate prefix from platform backups: published app data is restored on
+      # its own schedule (and a PITR of one must never imply the other).
+      destinationPath: s3://shogo-pg-backups-production-eu/projects/
+      s3Credentials:
+        accessKeyId:
+          name: cnpg-s3-credentials
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: cnpg-s3-credentials
+          key: SECRET_ACCESS_KEY
+        region:
+          name: cnpg-s3-credentials
+          key: REGION
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+    retentionPolicy: "30d"
+
+  monitoring:
+    enablePodMonitor: true
+
+  resources:
+    requests:
+      memory: "1Gi"
+      cpu: "250m"
+    limits:
+      memory: "2Gi"
+      cpu: "1"
+
+  affinity:
+    nodeSelector:
+      node.kubernetes.io/purpose: system
+    topologyKey: kubernetes.io/hostname
+---
+# A base backup on a schedule, on top of continuous WAL archiving: WAL alone
+# restores to a point in time but needs a base to start from, and an untested
+# `Backup` is how a cluster ends up with archiving "on" and no restorable base.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: projects-pg-daily
+  namespace: shogo-production-system
+  labels:
+    app.kubernetes.io/part-of: shogo
+    environment: production
+    region: eu-frankfurt-1
+spec:
+  # CNPG cron has a seconds field: 02:30:00 daily.
+  schedule: "0 30 2 * * *"
+  # `self` so deleting the schedule does not delete the backups it took.
+  backupOwnerReference: self
+  cluster:
+    name: projects-pg

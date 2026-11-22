@@ -387,6 +387,9 @@ jobs:
         # timeout there reds the release (SHO-275). Cover it on every PR.
         run: bash .github/scripts/test/prisma_migrate_retry_test.sh
 
+      - name: Storage-health deploy gate (SHO-514)
+        run: bash .github/scripts/test/verify_storage_health_test.sh
+
       # Unit tests run with the other packages (apps/shogo-ide in TEST_PACKAGES).
       - name: Shogo Code extension (typecheck, phase checks)
         run: |
