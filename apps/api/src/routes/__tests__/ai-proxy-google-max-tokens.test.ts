@@ -55,6 +55,22 @@ describe('buildOpenAICompatibleBody — Gemini max_tokens injection', () => {
     expect(body.max_completion_tokens).toBeUndefined()
   })
 
+  // pi-ai's chat-completions client sends max_completion_tokens on every turn;
+  // Google 400s "max_tokens and max_completion_tokens cannot both be set".
+  it('folds a runtime max_completion_tokens into max_tokens, never sending both', () => {
+    const r = { ...req('gemini-4-carbon'), max_completion_tokens: 32_000 } as any
+    const body = buildOpenAICompatibleBody(r, googleConfig('gemini-4-carbon') as any, {})
+    expect(body.max_tokens).toBe(32_000)
+    expect(body.max_completion_tokens).toBeUndefined()
+  })
+
+  it('prefers an explicit max_tokens when both arrive', () => {
+    const r = { ...req('gemini-4-carbon', 1024), max_completion_tokens: 32_000 } as any
+    const body = buildOpenAICompatibleBody(r, googleConfig('gemini-4-carbon') as any, {})
+    expect(body.max_tokens).toBe(1024)
+    expect(body.max_completion_tokens).toBeUndefined()
+  })
+
   it('strips store / thinking / reasoning_content for Google', () => {
     const r = {
       ...req('gemini-4-argon'),
