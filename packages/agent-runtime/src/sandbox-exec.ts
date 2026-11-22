@@ -1103,12 +1103,14 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
   // promise's exitCode field instead of throwing.
   child.on('error', (err) => {
     untrack()
-    spawnError = err.message
     stderrBuf.push(`\n[shogo] spawn error: ${err.message}\n`)
-    // A refused spawn (`EAGAIN` at the fork limit) never emits 'exit', so
-    // without this the promise hung forever and the caller waited on a
-    // process that does not exist (SHO-509).
-    if (!exited) {
+    // A refused spawn (`EAGAIN` at the fork limit) leaves `child.pid`
+    // undefined and never emits 'exit', so without this the promise hung
+    // forever and the caller waited on a process that does not exist
+    // (SHO-509). A child that did spawn still reports through 'exit', so
+    // only the pid-less case resolves here.
+    if (child.pid === undefined && !exited) {
+      spawnError = err.message
       exited = true
       containment?.dispose()
       resolveDone?.({
