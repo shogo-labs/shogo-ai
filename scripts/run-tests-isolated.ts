@@ -29,6 +29,7 @@ import { readdirSync, statSync, existsSync, mkdirSync, rmSync, renameSync, readF
 import { join, relative, resolve } from 'path'
 import { spawn, spawnSync } from 'child_process'
 import { cpus } from 'os'
+import { clockOffsetPreloadArgs } from './lib/test-clock-offset'
 
 const TEST_FILE_RE = /\.(test|spec)\.(ts|tsx|js|jsx)$/
 const SKIP_DIR_RE = /(?:^|\/)(?:node_modules|dist|build|generated|\.next|coverage|integration)(?:\/|$)/
@@ -91,7 +92,7 @@ function runOneSync(
   // (sqlite `file:./shogo.db`, prisma config, fixture loading) resolve the
   // same way `bun test` from the package would.
   const relFile = relative(cwd, file)
-  const args = ['test', relFile, ...extraArgs]
+  const args = ['test', relFile, ...clockOffsetPreloadArgs(), ...extraArgs]
   let shardDir: string | null = null
   if (coverageOpts) {
     // We pass `--coverage`. Bun honours the package's `bunfig.toml` for
@@ -281,7 +282,7 @@ function runOneAsync(
     for (const k of Object.keys(childEnv)) {
       if (k.startsWith('KUBERNETES_')) delete childEnv[k]
     }
-    const procArgs = ['--no-env-file', '--conditions=development', 'test', relFile, ...extraArgs]
+    const procArgs = ['--no-env-file', '--conditions=development', 'test', relFile, ...clockOffsetPreloadArgs(), ...extraArgs]
     const proc = spawn('bun', procArgs, { env: childEnv, cwd })
 
     let stdout = ''

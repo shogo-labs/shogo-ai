@@ -1,0 +1,264 @@
+# =============================================================================
+# Future clock — the unit suites, run as if today were +7 / +30 / +90 days
+# =============================================================================
+# SHO-505 (2026-11-18): `qa-sho424-vm-compute-billing.acceptance.test.ts` seeded
+# rows dated 2026-11-18 and `reconcile()` compared them against `Date.now()`.
+# It passed when it was written and turned every commit on `main` red about 72
+# hours later — with no code change in between — and nothing could deploy.
+#
+# `main-health.yml` catches a bomb on the day it goes off. This job catches it
+# *before* it does: the same suites, run against a clock shifted forward by 7,
+# 30 and 90 days. A failure at +N is by definition a test that passes today and
+# fails in N days, because `main` itself is green when this runs.
+#
+# How the clock moves (two mechanisms, one of them always works):
+#
+#   1. **libfaketime** (`FAKETIME="+7d"`, `LD_PRELOAD`, monotonic clock left
+#      alone) — a *ticking* offset, so `setTimeout`/backoff/duration assertions
+#      behave as they do today, and child processes inherit the shift.
+#   2. **`scripts/test-clock-offset-preload.ts`** — if Bun's `Date` is
+#      vDSO-backed and ignores `LD_PRELOAD`, the runner (`run-tests-isolated.ts`)
+#      adds this `--preload` to each `bun test` child instead and shifts
+#      `Date.now()` / `new Date()` in-process. It is pin-aware, so a test that
+#      calls `setSystemTime` still wins (a naive subclass reads pin+offset and
+#      would report every well-behaved test as a bomb).
+#
+# The step that picks a mechanism is also the guard: it fails the run if the
+# clock did not actually move, so a green night never means "nothing ran".
+#
+# It is a signal, not a required check: no `pull_request` trigger, and it is not
+# part of the "Lint, Typecheck, Test" aggregate. A red run opens one
+# `future-clock-red` issue per offset+leg and comments on it while it stays red;
+# a green run closes it.
+# =============================================================================
+
+name: Future clock
+
+on:
+  # After ci.yml's 03:17 nightly, so a bomb that went off overnight is already
+  # attributable to a 03:17 run by the time this reports.
+  schedule:
+    - cron: '43 4 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  # One offset run at a time: the point is a clean signal per night, and an
+  # overlapping manual dispatch would double the runner minutes for nothing.
+  group: future-clock
+  cancel-in-progress: false
+
+jobs:
+  clock:
+    name: Clock +${{ matrix.offset_days }}d (${{ matrix.leg.name }})
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      # For the `future-clock-red` issue this job opens/comments on/closes.
+      issues: write
+    timeout-minutes: 45
+    env:
+      SHOGO_TEST_PACKAGE_CONCURRENCY: ${{ vars.CI_TEST_PACKAGE_CONCURRENCY || '2' }}
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+      CI_REQUIRE_REDIS: '1'
+      OFFSET_DAYS: ${{ matrix.offset_days }}
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    strategy:
+      # +7, +30 and +90 are three independent reports: keep going when one fails.
+      fail-fast: false
+      matrix:
+        offset_days: [7, 30, 90]
+        leg:
+          - name: api + mobile
+            packages: apps/api,apps/mobile
+          - name: agent-runtime
+            packages: packages/agent-runtime
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: setup-bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.4'
+
+      # Same caches as ci.yml's `test` job, so a nightly offset run reuses the
+      # main-scoped node_modules and prepared build artifacts instead of paying
+      # for a cold install on every offset.
+      - name: Restore node_modules
+        id: clock-node-modules-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+
+      - name: Restore prepared build artifacts
+        id: workspace-clock-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            apps/api/src/generated
+            packages/*/dist
+            templates/runtime-template/node_modules
+            templates/runtime-template/dist
+            packages/agent-runtime/templates/sales-bdr-pipeline/dist
+          key: ci-prepared-v2-${{ runner.os }}-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'apps/api/src/generated/*.ts', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+
+      - name: Restore bun dependencies
+        id: bun-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build workspace packages
+        # `bun run test` needs the compiled `dist/` artifacts for cross-package
+        # imports — see the "Build workspace packages" comment in ci.yml.
+        if: steps.workspace-clock-cache.outputs.cache-hit != 'true'
+        run: bun run build:packages
+
+      - name: Install libfaketime
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libfaketime
+
+      # The guard: pick a mechanism that provably moved the clock, or fail the
+      # run. Every step after this inherits the choice through $GITHUB_ENV.
+      - name: Shift the clock (libfaketime, else the Date preload)
+        id: clock
+        run: |
+          set -euo pipefail
+          lib=/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1
+          expected=$(( OFFSET_DAYS * 86400 ))
+          base=$(date -u +%s)
+
+          shifted=$(FAKETIME="+${OFFSET_DAYS}d" LD_PRELOAD="${lib}" FAKETIME_DONT_FAKE_MONOTONIC=1 \
+            bun -e 'console.log(Math.floor(Date.now() / 1000))')
+          delta=$(( shifted - base ))
+          echo "libfaketime probe: bun reads ${delta}s ahead of date(1) (expected ~${expected}s)"
+
+          if [ "${delta}" -ge $(( expected - 3600 )) ]; then
+            echo "clock_mode=libfaketime" >> "${GITHUB_ENV}"
+            {
+              echo "FAKETIME=+${OFFSET_DAYS}d"
+              echo "FAKETIME_DONT_FAKE_MONOTONIC=1"
+              echo "LD_PRELOAD=${lib}"
+            } >> "${GITHUB_ENV}"
+            echo "Bun honours libfaketime — the suites run on a shifted system clock."
+            exit 0
+          fi
+
+          # Bun's Date is vDSO-backed and ignored LD_PRELOAD. Shift it in-process
+          # instead: run-tests-isolated.ts adds the preload to every `bun test`
+          # child when SHOGO_TEST_CLOCK_OFFSET_DAYS is set.
+          preload_now=$(SHOGO_TEST_CLOCK_OFFSET_DAYS="${OFFSET_DAYS}" bun --no-env-file \
+            --preload ./scripts/test-clock-offset-preload.ts -e 'console.log(Math.floor(Date.now() / 1000))')
+          preload_delta=$(( preload_now - base ))
+          echo "preload probe: bun reads ${preload_delta}s ahead (expected ~${expected}s)"
+          if [ "${preload_delta}" -lt $(( expected - 3600 )) ]; then
+            echo "::error::Neither libfaketime nor scripts/test-clock-offset-preload.ts moved the clock. Refusing to report a green run that tested today's date."
+            exit 1
+          fi
+          echo "clock_mode=preload" >> "${GITHUB_ENV}"
+          echo "SHOGO_TEST_CLOCK_OFFSET_DAYS=${OFFSET_DAYS}" >> "${GITHUB_ENV}"
+          echo "Bun ignored libfaketime — shifted the clock with the Date preload."
+
+      - name: Confirm the clock the suite will see
+        run: |
+          set -euo pipefail
+          now=$(bun -e 'console.log(new Date().toISOString())')
+          echo "clock_mode=${clock_mode}: suite clock reads ${now} (offset +${OFFSET_DAYS}d)"
+          echo "### Clock +${OFFSET_DAYS}d — ${clock_mode}" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Test
+        id: test
+        run: |
+          set -o pipefail
+          bun run test -- --packages "${{ matrix.leg.packages }}" 2>&1 | tee "${RUNNER_TEMP}/clock.log"
+
+      # A failure at +N is a bomb: the suite is green on main today. List every
+      # failing file in the job summary and on the issue, so the fix does not
+      # start with "find the failing test in 17,000".
+      - name: Summarise the failures
+        if: failure()
+        run: |
+          set -euo pipefail
+          {
+            echo "### Clock +${OFFSET_DAYS}d — ${{ matrix.leg.name }} failed"
+            echo
+            echo "These tests pass on \`main\` today and fail ${OFFSET_DAYS} days from now (\`${clock_mode}\` clock)."
+            echo
+            echo '```'
+            grep -E '\.\.\. FAIL|^\(fail\)|✗ ' "${RUNNER_TEMP}/clock.log" | head -60 || true
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          grep -E '\.\.\. FAIL|^\(fail\)|✗ ' "${RUNNER_TEMP}/clock.log" | head -60 > "${RUNNER_TEMP}/failures.txt" || true
+
+      - name: Open or update the future-clock-red issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          label=future-clock-red
+          title="future-clock-red: clock +${OFFSET_DAYS}d breaks ${{ matrix.leg.name }}"
+          gh label create "${label}" --repo "${GITHUB_REPOSITORY}" --color D93F0B \
+            --description "A test that passes today and fails N days from now (future-clock nightly)" || true
+
+          existing=$(gh issue list --repo "${GITHUB_REPOSITORY}" --label "${label}" --state open \
+            --search "\"clock +${OFFSET_DAYS}d\" in:title" --limit 1 --json number --jq '.[0].number // ""')
+
+          {
+            echo "At ${OFFSET_DAYS} days from now, \`${{ matrix.leg.name }}\` fails on \`${GITHUB_REF_NAME}\` @ ${GITHUB_SHA}, with a clock that reads \`${clock_mode}\` +${OFFSET_DAYS}d. These tests are green on \`main\` today."
+            echo
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "Card: SHO-507"
+            echo
+            echo '<details><summary>failing tests</summary>'
+            echo
+            echo '```'
+            cat "${RUNNER_TEMP}/failures.txt" 2>/dev/null || echo '(see the run log)'
+            echo '```'
+            echo
+            echo '</details>'
+            echo
+            echo "Fix it the SHO-505 way: the production code takes one injected \`now\` per path, and the test pins the clock next to its seeds (\`setSystemTime\`) or derives them from \`Date.now()\`. Never widen a window or change a constant to make it pass."
+          } > "${RUNNER_TEMP}/issue.md"
+
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --repo "${GITHUB_REPOSITORY}" --body-file "${RUNNER_TEMP}/issue.md"
+          else
+            gh issue create --repo "${GITHUB_REPOSITORY}" --title "${title}" --label "${label}" \
+              --body-file "${RUNNER_TEMP}/issue.md"
+          fi
+
+      - name: Close the future-clock-red issue when this offset is green
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          label=future-clock-red
+          existing=$(gh issue list --repo "${GITHUB_REPOSITORY}" --label "${label}" --state open \
+            --search "\"clock +${OFFSET_DAYS}d\" in:title" --limit 1 --json number --jq '.[0].number // ""' 2>/dev/null || true)
+          [ -n "${existing}" ] || exit 0
+          gh issue comment "${existing}" --repo "${GITHUB_REPOSITORY}" \
+            --body "Green again: clock +${OFFSET_DAYS}d passes on \`${GITHUB_REF_NAME}\` @ ${GITHUB_SHA}. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh issue close "${existing}" --repo "${GITHUB_REPOSITORY}" --reason completed

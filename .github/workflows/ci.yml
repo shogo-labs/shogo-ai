@@ -407,6 +407,23 @@ jobs:
         if: needs.prelude.outputs.verified != 'true'
         run: bun run check:e2e-quarantine
 
+      - name: Check no test file hard-codes a date without pinning the clock
+        if: needs.prelude.outputs.verified != 'true'
+        # SHO-505: a suite seeded rows dated 2026-11-18 and compared them to
+        # `Date.now()`, so it passed on the day it was written and turned every
+        # commit on main red ~72h later. Existing offenders are baselined
+        # (scripts/test-clock-baseline.json) and only new ones fail; the nightly
+        # future-clock.yml runs the suites at +7/+30/+90 to find the armed ones.
+        run: bun run check:test-clock
+
+      - name: Check no function handed `now` reads the live clock
+        if: needs.prelude.outputs.verified != 'true'
+        # The other half of SHO-505: `reconcile()` took `now` from its caller and
+        # still called `Date.now()`. Uses the TypeScript compiler API because
+        # apps/api has no ESLint (the root `lint` script is a no-op). Baselined
+        # in scripts/injected-clock-baseline.json.
+        run: bun run check:injected-clock
+
       - name: Verify SDK license isolation (no AGPL leak)
         if: needs.prelude.outputs.verified != 'true'
         # Fails if @shogo-ai/sdk (MIT) declares or imports any @shogo/*
