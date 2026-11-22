@@ -149,4 +149,36 @@ describe('buildAccountContextPrompt', () => {
     expect(parseAccountContext({ publishHosting: 'metal' })).toEqual({})
     expect(buildAccountContextPrompt({ publishHosting: undefined as any })).toBeNull()
   })
+
+  // SHO-508: desktop was stamped "Workspace plan: **Free**" because it has no
+  // Subscription row, and agents used it to refuse heartbeats, schedules and
+  // models that work on the machine. The flag wins over the plan framing.
+  test('a desktop install says it has no plan limits instead of a plan gate', () => {
+    const out = buildAccountContextPrompt({
+      desktopUnlimited: true,
+      planId: 'pro',
+      publishHosting: { substrate: 'desktop', alwaysOn: false, maxReplicas: 1, staging: false },
+    })!
+    expect(out).toContain('Desktop install: this machine has no plan limits')
+    expect(out).toContain('Heartbeats, schedules, models')
+    expect(out).toContain('Linked Shogo Cloud account plan: **Pro**')
+    expect(out).not.toContain('Workspace plan')
+    expect(out).not.toContain('Free')
+  })
+
+  test('an unlinked desktop renders no plan line at all, only the no-limits line', () => {
+    const out = buildAccountContextPrompt({ desktopUnlimited: true })!
+    expect(out).toContain('no plan limits')
+    expect(out).not.toMatch(/Workspace plan:/)
+    expect(out).not.toMatch(/Linked Shogo Cloud account plan/)
+  })
+
+  test('the desktop flag is only ever read as strictly true', () => {
+    expect(parseAccountContext({ desktopUnlimited: true }).desktopUnlimited).toBe(true)
+    expect(parseAccountContext({ desktopUnlimited: 'yes' })).toEqual({})
+    expect(parseAccountContext({ desktopUnlimited: false })).toEqual({})
+    // Cloud mode: no flag, so a Free workspace keeps the paywall framing.
+    expect(buildAccountContextPrompt({ planId: 'free', canPublishSubdomain: false }))
+      .toContain('Workspace plan: **Free**')
+  })
 })

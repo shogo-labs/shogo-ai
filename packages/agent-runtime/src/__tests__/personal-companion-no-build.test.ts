@@ -126,4 +126,25 @@ describe('account context survives into the prompt', () => {
     expect(team).not.toContain('**Acme**')
     expect(team).not.toContain('no Team workspace yet')
   })
+
+  // SHO-508: the same trap as SHO-221 — the stamp is only in the prompt if
+  // `setAccountContext` copies it. Missing here, a desktop turn drops back to
+  // the plan framing and the agent refuses heartbeats that work.
+  test('the desktop no-limits flag reaches the prompt, and clears on a cloud turn', () => {
+    const ws = makeWs('account-context-desktop')
+    const gw = new AgentGateway(ws, 'p1')
+    gw.setAccountContext(parseAccountContext({ planId: 'pro', desktopUnlimited: true }))
+
+    const desktop: string = (gw as any).loadBootstrapContext(undefined, makeConfig({ capabilityProfile: 'team' }))
+    expect(desktop).toContain('this machine has no plan limits')
+    expect(desktop).toContain('Linked Shogo Cloud account plan: **Pro**')
+    expect(desktop).not.toContain('Workspace plan:')
+
+    // A cloud request carries no flag, so the same gateway must stop claiming
+    // the machine is unlimited.
+    gw.setAccountContext(parseAccountContext({ planId: 'free', canPublishSubdomain: false }))
+    const cloud: string = (gw as any).loadBootstrapContext(undefined, makeConfig({ capabilityProfile: 'team' }))
+    expect(cloud).not.toContain('no plan limits')
+    expect(cloud).toContain('Workspace plan: **Free**')
+  })
 })
