@@ -70,6 +70,30 @@ describe('findInjectedClockReads', () => {
     ).toEqual([])
   })
 
+  test('falling back onto the injected value is the seam, not a leak', () => {
+    // `adminComputeSummary(params: { now?: Date })` — the live read here is how a
+    // caller without a clock gets one. Flagging it would put an escape comment on
+    // correct code (it is what SHO-505's own fix looks like).
+    expect(
+      findInjectedClockReads(
+        `export function summary({ now }: { now?: Date }) { const at = now ?? new Date(); return at }`,
+      ),
+    ).toEqual([])
+    expect(
+      findInjectedClockReads(
+        `export function summary(opts: { now?: number }) { const at = opts.now || Date.now(); return at }`,
+      ),
+    ).toEqual([])
+  })
+
+  test('a `??` fallback that has nothing to do with the injected clock is still a leak', () => {
+    const findings = findInjectedClockReads(
+      `export function summary({ now }: { now?: Date }) { const at = cache.expiresAt ?? new Date(); return [at, now] }`,
+    )
+    expect(findings).toHaveLength(1)
+    expect(findings[0]!.kind).toBe('new Date()')
+  })
+
   test('`// injected-clock: live <reason>` on the line above takes the read out', () => {
     const findings = findInjectedClockReads(
       [

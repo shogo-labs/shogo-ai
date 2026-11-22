@@ -328,7 +328,6 @@ function summarizeCauses(rows: UsageRow[]): Array<{ cause: string; vmHours: numb
  * number below it is then wrong by that much.
  */
 export async function adminComputeSummary(params: { now?: Date; hostMonthlyUsd?: number } = {}) {
-  // injected-clock: live the panel defaults to now when the caller passes no clock
   const now = params.now ?? new Date()
   const hostMonthlyUsd = params.hostMonthlyUsd ?? Number(process.env.METAL_HOST_MONTHLY_USD ?? 500)
   const monthStart = startOfMonth(now)

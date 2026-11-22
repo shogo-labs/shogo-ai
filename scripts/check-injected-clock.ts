@@ -24,6 +24,11 @@
  *   // injected-clock: live running-since falls back to process start
  *   const runningSinceMs = Date.now()
  *
+ * The `??` fallback onto the injected value is *not* a finding and needs no
+ * comment: `now = params.now ?? new Date()` is where the live clock enters the
+ * privileged path on purpose, and flagging it would put an escape comment on
+ * correct code.
+ *
  * No ESLint runs over `apps/api` (the root `lint` script is a no-op), which is
  * why this is a compiler-API script like the other `check-*.ts` gates rather
  * than a rule.
@@ -130,6 +135,19 @@ function callableName(node: ts.Node): string | null {
   return null
 }
 
+/**
+ * `now = params.now ?? new Date()` — the fallback is the injection seam itself,
+ * not a leak past the caller's clock.
+ */
+function isNowFallback(node: ts.Node): boolean {
+  const parent = node.parent
+  if (!parent || !ts.isBinaryExpression(parent)) return false
+  const op = parent.operatorToken.kind
+  if (op !== ts.SyntaxKind.QuestionQuestionToken && op !== ts.SyntaxKind.BarBarToken) return false
+  const sibling = parent.left === node ? parent.right : parent.left
+  return /\bnow\b/.test(sibling.getText())
+}
+
 /** Names of the file's own functions called anywhere inside `body`. */
 function calledNames(body: ts.Node): Set<string> {
   const names = new Set<string>()
@@ -187,7 +205,7 @@ export function findInjectedClockReads(source: string, fileName = 'source.ts'): 
       const kind = readKind(node)
       if (kind) {
         const start = node.getStart(sourceFile)
-        if (!isEscaped(start)) {
+        if (!isNowFallback(node) && !isEscaped(start)) {
           const line = sourceFile.getLineAndCharacterOfPosition(start).line + 1
           const key = `${line} ${kind}`
           if (!seen.has(key)) {

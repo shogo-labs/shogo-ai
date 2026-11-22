@@ -137,6 +137,10 @@ jobs:
           bun run scripts/materialize-runtime-template.ts templates/runtime-template/package.json
           (cd templates/runtime-template && bun install && bun run build)
           git checkout -- templates/runtime-template/package.json templates/runtime-template/bun.lock
+        env:
+          # @vscode/ripgrep's postinstall 403s on the shared anonymous quota;
+          # see scripts/check-ci-bun-install-token.ts. (Same as ci.yml.)
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Test
         if: inputs.force_fail != true
@@ -190,6 +194,13 @@ jobs:
               --body "Green again: the unit suites pass on \`${REF_NAME}\` @ ${GITHUB_SHA}. Run: ${run_url}"
             gh issue close "${existing}" --repo "${GITHUB_REPOSITORY}" --reason completed
             echo "Closed ${label} #${existing}: main is green again."
+            exit 0
+          fi
+
+          # Cancelled or skipped says nothing about the suites: leave the issue as
+          # it is rather than claiming a red that nobody observed.
+          if [ "${TESTS_RESULT}" != "failure" ] && [ "${FORCE_FAIL}" != "true" ]; then
+            echo "test job ended ${TESTS_RESULT}; leaving ${label} untouched."
             exit 0
           fi
 

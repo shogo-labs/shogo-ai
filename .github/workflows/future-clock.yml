@@ -215,6 +215,10 @@ jobs:
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The whole job runs on a shifted clock; `gh` needs the real one or its
+          # TLS checks reject a +90d runner as out of certificate validity.
+          LD_PRELOAD: ''
+          FAKETIME: ''
         run: |
           set -euo pipefail
           label=future-clock-red
@@ -222,8 +226,11 @@ jobs:
           gh label create "${label}" --repo "${GITHUB_REPOSITORY}" --color D93F0B \
             --description "A test that passes today and fails N days from now (future-clock nightly)" || true
 
+          # Exact title, not a search: "clock +7d" also matches the other leg of
+          # the same offset, and a comment on the wrong issue is worse than none.
           existing=$(gh issue list --repo "${GITHUB_REPOSITORY}" --label "${label}" --state open \
-            --search "\"clock +${OFFSET_DAYS}d\" in:title" --limit 1 --json number --jq '.[0].number // ""')
+            --limit 100 --json number,title --jq '.[] | "\(.number)\t\(.title)"' \
+            | awk -F'\t' -v want="${title}" '$2 == want { print $1; exit }')
 
           {
             echo "At ${OFFSET_DAYS} days from now, \`${{ matrix.leg.name }}\` fails on \`${GITHUB_REF_NAME}\` @ ${GITHUB_SHA}, with a clock that reads \`${clock_mode}\` +${OFFSET_DAYS}d. These tests are green on \`main\` today."
@@ -253,11 +260,15 @@ jobs:
         if: success()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LD_PRELOAD: ''
+          FAKETIME: ''
         run: |
           set -euo pipefail
           label=future-clock-red
+          title="future-clock-red: clock +${OFFSET_DAYS}d breaks ${{ matrix.leg.name }}"
           existing=$(gh issue list --repo "${GITHUB_REPOSITORY}" --label "${label}" --state open \
-            --search "\"clock +${OFFSET_DAYS}d\" in:title" --limit 1 --json number --jq '.[0].number // ""' 2>/dev/null || true)
+            --limit 100 --json number,title --jq '.[] | "\(.number)\t\(.title)"' \
+            | awk -F'\t' -v want="${title}" '$2 == want { print $1; exit }')
           [ -n "${existing}" ] || exit 0
           gh issue comment "${existing}" --repo "${GITHUB_REPOSITORY}" \
             --body "Green again: clock +${OFFSET_DAYS}d passes on \`${GITHUB_REF_NAME}\` @ ${GITHUB_SHA}. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
