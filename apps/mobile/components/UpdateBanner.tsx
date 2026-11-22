@@ -96,7 +96,7 @@ export function UpdateBanner() {
     }
 
     return (
-      <View testID="shogo-update-banner" className="relative flex-row items-center justify-center bg-brand-landing px-8 py-1.5">
+      <View testID="shogo-update-banner" className="relative flex-row flex-wrap items-center justify-center bg-brand-landing px-8 py-1.5">
         {desktop.status === 'available' ? (
           <>
             {betaTag}
@@ -109,6 +109,16 @@ export function UpdateBanner() {
             <Pressable onPress={desktop.dismissAvailable} className="absolute right-2 p-1">
               <X size={12} className="text-white" />
             </Pressable>
+            {/* A download that failed comes back as `available` with a reason;
+                without it the banner silently looks like the offer again. */}
+            {desktop.downloadError && (
+              <Text
+                testID="shogo-update-banner-error"
+                className="mt-0.5 w-full text-center text-[11px] font-medium text-white/90"
+              >
+                {desktop.downloadError}
+              </Text>
+            )}
           </>
         ) : desktop.status === 'downloading' ? (
           <>
@@ -127,6 +137,16 @@ export function UpdateBanner() {
             <Pressable onPress={() => desktop.setDismissed(true)} className="absolute right-2 p-1">
               <X size={12} className="text-white" />
             </Pressable>
+            {/* An install that could not start keeps its reason here once the
+                choice is cancelled, so "Restart" is not a silent retry. */}
+            {desktop.installError && (
+              <Text
+                testID="shogo-update-banner-install-error"
+                className="mt-0.5 w-full text-center text-[11px] font-medium text-white/90"
+              >
+                {desktop.installError}
+              </Text>
+            )}
           </>
         )}
       </View>

@@ -34,8 +34,6 @@ interface ShogoDesktopUpdates {
   setUpdateChannel: (channel: UpdateChannel) => Promise<{ ok: boolean; channel?: UpdateChannel; error?: string }>
   checkForUpdates: () => Promise<{ ok: boolean; error?: string }>
   getUpdateStatus: () => Promise<DesktopUpdateStatusPayload>
-  onUpdateStatus: (callback: (data: DesktopUpdateStatusPayload) => void) => (() => void) | void
-  removeUpdateListener?: () => void
 }
 
 function getShogoDesktop(): ShogoDesktopUpdates | null {
@@ -126,8 +124,10 @@ export function UpdatesTab() {
   }, [desktop])
 
   // A download or install failure belongs in the page's existing error box,
-  // next to the retry — never swallowed (SHO-510).
-  const pageError = error ?? update.downloadError ?? update.installError
+  // next to the retry — never swallowed (SHO-510). The specific action's reason
+  // comes first: a stale "Could not switch update channel" must not hide why the
+  // download the person just pressed failed.
+  const pageError = update.downloadError ?? update.installError ?? error
 
   if (!desktop) {
     return (

@@ -86,6 +86,8 @@ function installBridge(options: {
   status?: { status: string; releaseName?: string | null; availableVersion?: string | null; error?: string | null }
   /** Answers in order, one per `installUpdate` call; the last one repeats. */
   installResults?: InstallResult[]
+  /** Makes `setUpdateChannel` fail, the way a channel switch does mid-update. */
+  channelError?: string
 } = {}): FakeUpdate {
   const statusListeners = new Set<(payload: any) => void>()
   const drainListeners = new Set<(payload: any) => void>()
@@ -100,7 +102,8 @@ function installBridge(options: {
     isDesktop: true,
     getSystemInfo: async () => ({ appVersion: '2.6.0' }),
     getUpdateChannel: async () => ({ channel: 'stable' }),
-    setUpdateChannel: async (channel: string) => ({ ok: true, channel }),
+    setUpdateChannel: async (channel: string) =>
+      options.channelError ? { ok: false, error: options.channelError } : { ok: true, channel },
     checkForUpdates: async () => ({ ok: true }),
     getUpdateStatus: async () => ({
       status: initial.status,
@@ -277,6 +280,36 @@ describe('Settings → Updates actions', () => {
       expect(box).toHaveTextContent('The download did not finish — try again.')
     })
     expect(screen.getByTestId('shogo-update-download')).toBeInTheDocument()
+  })
+
+  // The page's error box holds three kinds of failure; the one the person just
+  // caused must win, or a stale channel error reads like the download's reason.
+  test('a channel-switch error does not hide why the download failed', async () => {
+    const fake = installBridge({
+      status: { status: 'available', availableVersion: '2.7.0' },
+      channelError: 'Could not switch update channel — try again once the current update finishes.',
+    })
+    render(createElement(UpdatesTab))
+    await screen.findByTestId('shogo-update-download')
+
+    fireEvent.click(screen.getByTestId('shogo-update-channel-beta'))
+    await waitFor(() =>
+      expect(screen.getByText(/Could not switch update channel/)).toBeInTheDocument(),
+    )
+
+    act(() =>
+      fake.status({
+        status: 'available',
+        availableVersion: '2.7.0',
+        error: 'The download did not finish — try again.',
+      }),
+    )
+
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-rn-shim="shogo-update-error"]'),
+      ).toHaveTextContent('The download did not finish — try again.'),
+    )
   })
 
   test('leaving the Updates tab leaves the banner’s listeners alone', async () => {
