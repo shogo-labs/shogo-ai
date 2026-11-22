@@ -306,16 +306,12 @@ class PosixContainment implements ContainmentBackend {
 
     const afterSnap = posixMembersSnapshot(leader)
     const survivors = afterSnap.members.filter((member) => isAlive(member.pid))
-    const stillAliveInGroup = isAlive(leader) || groupAlive(leader)
-    if (survivors.length === 0 && !stillAliveInGroup && afterSnap.readable) {
+    if (afterSnap.readable && survivors.length === 0) {
       this.forget(leader)
     } else {
       // Leave the ledger entry alone: either processes survived or `ps` failed
       // (`EAGAIN`) so we could not verify detached descendants are gone.
       this.survivorsReported = true
-      if (survivors.length === 0 && stillAliveInGroup) {
-        survivors.push({ pid: leader, name: this.label })
-      }
     }
     return { survivors }
   }
