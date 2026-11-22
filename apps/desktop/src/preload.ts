@@ -295,12 +295,24 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     total: number
     activity: { agentRuns: number; backgroundCommands: number } | null
   }> => ipcRenderer.invoke('get-live-activity'),
-  /** "Restarting when idle — N working", and the counts under it. */
+  /**
+   * "Restarting when idle — N working", and the counts under it. Returns a
+   * per-listener unsubscribe: the banner and Settings → Updates both listen, so
+   * the shared `removeAllListeners` would cut the other one off (SHO-510).
+   */
   onRestartDrain: (
     callback: (data: { active: boolean; activity: { agentRuns: number; backgroundCommands: number } | null }) => void,
   ) => {
-    ipcRenderer.on('desktop-restart-drain', (_event, data) => callback(data))
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      data: { active: boolean; activity: { agentRuns: number; backgroundCommands: number } | null },
+    ) => callback(data)
+    ipcRenderer.on('desktop-restart-drain', listener)
+    return () => {
+      ipcRenderer.removeListener('desktop-restart-drain', listener)
+    }
   },
+  /** Kept for callers written before the per-listener unsubscribe existed. */
   removeRestartDrainListener: () => {
     ipcRenderer.removeAllListeners('desktop-restart-drain')
   },
@@ -310,16 +322,41 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   dismissInterruptedNotice: (): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('dismiss-interrupted-notice'),
   onInterruptedNotice: (callback: (data: { notice: string | null }) => void) => {
-    ipcRenderer.on('desktop-interrupted-notice', (_event, data) => callback(data))
+    const listener = (_event: Electron.IpcRendererEvent, data: { notice: string | null }) => callback(data)
+    ipcRenderer.on('desktop-interrupted-notice', listener)
+    return () => {
+      ipcRenderer.removeListener('desktop-interrupted-notice', listener)
+    }
   },
+  /** Kept for callers written before the per-listener unsubscribe existed. */
   removeInterruptedNoticeListener: () => {
     ipcRenderer.removeAllListeners('desktop-interrupted-notice')
   },
   onUpdateStatus: (
-    callback: (data: { status: string; releaseName: string | null; availableVersion: string | null; channel?: 'stable' | 'beta' }) => void,
+    callback: (data: {
+      status: string
+      releaseName: string | null
+      availableVersion: string | null
+      channel?: 'stable' | 'beta'
+      error?: string | null
+    }) => void,
   ) => {
-    ipcRenderer.on('desktop-update-status', (_event, data) => callback(data))
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      data: {
+        status: string
+        releaseName: string | null
+        availableVersion: string | null
+        channel?: 'stable' | 'beta'
+        error?: string | null
+      },
+    ) => callback(data)
+    ipcRenderer.on('desktop-update-status', listener)
+    return () => {
+      ipcRenderer.removeListener('desktop-update-status', listener)
+    }
   },
+  /** Kept for callers written before the per-listener unsubscribe existed. */
   removeUpdateListener: () => {
     ipcRenderer.removeAllListeners('desktop-update-status')
   },

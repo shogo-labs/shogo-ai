@@ -13,27 +13,28 @@ import {
   RefreshCw as RefreshCwIcon,
   CheckCircle2 as CheckCircle2Icon,
   AlertCircle as AlertCircleIcon,
+  Download as DownloadIcon,
+  RotateCw as RotateCwIcon,
 } from 'lucide-react-native'
 import { Card, CardContent, Button, Badge, cn } from '@shogo/shared-ui/primitives'
 import { Text, useAccountSheetIcons } from './account-sheet-chrome'
+import {
+  useDesktopUpdateStatus,
+  type DesktopUpdateChannel,
+  type DesktopUpdateStatus,
+  type DesktopUpdateStatusPayload,
+} from '@/lib/use-desktop-update'
 
-type UpdateChannel = 'stable' | 'beta'
-type UpdateStatus = 'idle' | 'available' | 'downloading' | 'ready' | 'error'
-
-interface UpdateStatusPayload {
-  status: UpdateStatus
-  releaseName: string | null
-  availableVersion: string | null
-  channel?: UpdateChannel
-}
+type UpdateChannel = DesktopUpdateChannel
+type UpdateStatus = DesktopUpdateStatus
 
 interface ShogoDesktopUpdates {
   getSystemInfo?: () => Promise<Record<string, unknown>>
   getUpdateChannel: () => Promise<{ channel: UpdateChannel }>
   setUpdateChannel: (channel: UpdateChannel) => Promise<{ ok: boolean; channel?: UpdateChannel; error?: string }>
   checkForUpdates: () => Promise<{ ok: boolean; error?: string }>
-  getUpdateStatus: () => Promise<UpdateStatusPayload>
-  onUpdateStatus: (callback: (data: UpdateStatusPayload) => void) => void
+  getUpdateStatus: () => Promise<DesktopUpdateStatusPayload>
+  onUpdateStatus: (callback: (data: DesktopUpdateStatusPayload) => void) => (() => void) | void
   removeUpdateListener?: () => void
 }
 
@@ -51,18 +52,23 @@ const STATUS_LABEL: Record<Exclude<UpdateStatus, 'idle' | 'error'>, string> = {
 }
 
 export function UpdatesTab() {
-  const { RefreshCw, CheckCircle2, AlertCircle } = useAccountSheetIcons({
+  const { RefreshCw, CheckCircle2, AlertCircle, Download, RotateCw } = useAccountSheetIcons({
     RefreshCw: RefreshCwIcon,
     CheckCircle2: CheckCircle2Icon,
     AlertCircle: AlertCircleIcon,
+    Download: DownloadIcon,
+    RotateCw: RotateCwIcon,
   })
+
+  // The lifecycle and both of its actions come from the hook shared with the
+  // banner. Download and Restart used to exist only on the banner, so dismissing
+  // it left no way to install this session (SHO-510).
+  const update = useDesktopUpdateStatus()
+  const { status, availableVersion, releaseName } = update
 
   const desktop = getShogoDesktop()
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const [channel, setChannel] = useState<UpdateChannel>('stable')
-  const [status, setStatus] = useState<UpdateStatus>('idle')
-  const [availableVersion, setAvailableVersion] = useState<string | null>(null)
-  const [releaseName, setReleaseName] = useState<string | null>(null)
   const [switching, setSwitching] = useState(false)
   const [checking, setChecking] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -76,22 +82,10 @@ export function UpdatesTab() {
     })
 
     desktop.getUpdateChannel().then((res) => setChannel(res.channel))
-
-    desktop.getUpdateStatus().then((data) => {
-      setStatus(data.status)
-      setAvailableVersion(data.availableVersion)
-      setReleaseName(data.releaseName)
-      if (data.channel) setChannel(data.channel)
-    })
-
-    desktop.onUpdateStatus((data) => {
-      setStatus(data.status)
-      setAvailableVersion(data.availableVersion)
-      setReleaseName(data.releaseName)
-      if (data.channel) setChannel(data.channel)
-    })
-
-    return () => desktop.removeUpdateListener?.()
+    // The update status itself — and the actions that go with it — come from the
+    // shared hook, which unsubscribes only its own listener. This tab used to
+    // clear every listener on the channel as it unmounted, which silenced the
+    // banner for the rest of the session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -131,6 +125,10 @@ export function UpdatesTab() {
     }
   }, [desktop])
 
+  // A download or install failure belongs in the page's existing error box,
+  // next to the retry — never swallowed (SHO-510).
+  const pageError = error ?? update.downloadError ?? update.installError
+
   if (!desktop) {
     return (
       <View className="flex-1 items-center justify-center p-8">
@@ -151,19 +149,115 @@ export function UpdatesTab() {
       </View>
 
       <Card>
-        <CardContent className="p-4 gap-2">
+        <CardContent className="p-4 gap-3">
           <View className="flex-row items-center justify-between">
             <Text className="text-sm font-medium text-foreground">Current version</Text>
             <Text className="text-sm text-muted-foreground font-mono">
               {appVersion ? `v${appVersion}` : '—'}
             </Text>
           </View>
+
           {status !== 'idle' && status !== 'error' && (
-            <Text className="text-xs text-muted-foreground">
+            <Text testID="shogo-update-line" className="text-xs text-muted-foreground">
               {status === 'available' && `${availableVersion ?? 'A new version'} is available.`}
               {status === 'downloading' && 'Downloading update…'}
               {status === 'ready' && `${releaseName ?? 'A new version'} is ready to install. Restart to apply it.`}
             </Text>
+          )}
+
+          {/* Download, then the same SHO-181 restart gate the banner uses — so
+              the page can install the version even with the banner dismissed. */}
+          {(status === 'available' || status === 'downloading') && (
+            <View className="flex-row items-center gap-2">
+              <Button
+                testID="shogo-update-download"
+                variant="outline"
+                size="sm"
+                className="flex-row items-center justify-center gap-2"
+                onPress={update.download}
+                disabled={status === 'downloading'}
+              >
+                {status === 'downloading' ? (
+                  <ActivityIndicator size="small" />
+                ) : (
+                  <Download size={16} color="#6b7280" />
+                )}
+                <Text className="text-sm font-medium text-foreground">Download</Text>
+              </Button>
+              {channel === 'beta' && <Badge variant="secondary">Beta</Badge>}
+            </View>
+          )}
+
+          {status === 'ready' && update.draining !== null && (
+            <View testID="shogo-update-restart-draining" className="gap-2">
+              <Text className="text-xs text-muted-foreground">
+                {update.draining === 0
+                  ? 'Restarting when idle — waiting for the last run to finish…'
+                  : `Restarting when idle — ${update.draining} agent ${update.draining === 1 ? 'run' : 'runs'} working`}
+              </Text>
+              <View className="flex-row flex-wrap items-center gap-2">
+                <Button
+                  testID="shogo-update-restart-cancel"
+                  variant="outline"
+                  size="sm"
+                  onPress={update.cancelRestart}
+                >
+                  <Text className="text-sm font-medium text-foreground">Cancel</Text>
+                </Button>
+                <Button
+                  testID="shogo-update-restart-now"
+                  variant="outline"
+                  size="sm"
+                  onPress={update.restartNow}
+                >
+                  <Text className="text-sm font-medium text-foreground">Restart now</Text>
+                </Button>
+              </View>
+            </View>
+          )}
+
+          {status === 'ready' && update.draining === null && update.choice && (
+            <View testID="shogo-update-restart-choice" className="gap-2">
+              <Text className="text-xs text-muted-foreground">{update.choice.message}</Text>
+              <View className="flex-row flex-wrap items-center gap-2">
+                <Button
+                  testID="shogo-update-restart-when-idle"
+                  variant="outline"
+                  size="sm"
+                  onPress={update.restartWhenIdle}
+                >
+                  <Text className="text-sm font-medium text-foreground">Restart when idle</Text>
+                </Button>
+                <Button
+                  testID="shogo-update-restart-now"
+                  variant="outline"
+                  size="sm"
+                  onPress={update.restartNow}
+                >
+                  <Text className="text-sm font-medium text-foreground">Restart now</Text>
+                </Button>
+                <Button
+                  testID="shogo-update-restart-cancel"
+                  variant="ghost"
+                  size="sm"
+                  onPress={update.cancelRestart}
+                >
+                  <Text className="text-sm font-medium text-foreground">Cancel</Text>
+                </Button>
+              </View>
+            </View>
+          )}
+
+          {status === 'ready' && update.draining === null && !update.choice && (
+            <Button
+              testID="shogo-update-restart"
+              variant="outline"
+              className="flex-row items-center justify-center gap-2"
+              onPress={update.install}
+            >
+              <RotateCw size={16} color="#6b7280" />
+              <Text className="text-sm font-medium text-foreground">Restart to update</Text>
+            </Button>
           )}
         </CardContent>
       </Card>
@@ -222,13 +316,13 @@ export function UpdatesTab() {
         </CardContent>
       </Card>
 
-      {error && (
+      {pageError && (
         <View
           testID="shogo-update-error"
           className="w-full flex-row items-start gap-2 rounded-lg border border-destructive bg-destructive/10 p-4"
         >
           <AlertCircle size={16} color="#ef4444" style={{ marginTop: 2 }} />
-          <Text className="flex-1 text-sm text-destructive">{error}</Text>
+          <Text className="flex-1 text-sm text-destructive">{pageError}</Text>
         </View>
       )}
 
