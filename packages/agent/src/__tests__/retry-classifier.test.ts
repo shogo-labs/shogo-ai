@@ -166,3 +166,34 @@ describe('a model that no longer exists', () => {
     expect(text).toContain('I completed 2 steps')
   })
 })
+
+/**
+ * SHO-517: the AI proxy now sends response headers before the provider answers,
+ * so a provider that fails *after* those headers can no longer be relayed as a
+ * real HTTP status. It rides on an SSE error frame instead — these are the three
+ * codes that carry the status' original retryability.
+ */
+describe('post-header provider errors keep status-based retryability', () => {
+  test('a 5xx after headers is retryable and reads as server_5xx', () => {
+    const message =
+      'The model provider rejected the request after the stream had started (HTTP 503): overloaded. [shogo:retryable=true;code=upstream_5xx]'
+    expect(classifyRetryability({ message })).toEqual({ retryable: true, reason: 'server_5xx' })
+  })
+
+  test('a 429 after headers is retryable and reads as overloaded', () => {
+    const message = 'Rate limited. [shogo:retryable=true;code=upstream_rate_limit]'
+    expect(classifyRetryability({ message })).toEqual({ retryable: true, reason: 'overloaded' })
+  })
+
+  test('a 4xx after headers (billing/auth) is never retryable', () => {
+    const message =
+      'Your credit balance is too low. [shogo:retryable=false;code=upstream_rejected]'
+    expect(classifyRetryability({ message })).toEqual({ retryable: false, reason: 'invalid_request' })
+  })
+
+  test('a turn cut off that way classifies as a network failure, not a refusal', () => {
+    const rawError =
+      'The model provider connection failed before it answered: The connection was closed. [shogo:retryable=true;code=network_drop]'
+    expect(classifyTurnFailure({ rawError, toolCalls: 2 })).toBe('network')
+  })
+})

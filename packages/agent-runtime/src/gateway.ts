@@ -5844,6 +5844,11 @@ export class AgentGateway {
       // summary, instead of stalling on a blank/boilerplate "ran out of steps"
       // turn. Synthetic continuation prompts accumulate into history so message
       // alternation stays valid; usage is folded forward for accurate billing.
+      //
+      // `maxIterationsExhausted` is also set when a provider error cut the turn
+      // short after real tool work (SHO-517): the call that failed is worth one
+      // more attempt, and the retry gets told to shrink a big write instead of
+      // sending the same oversized call again.
       const maxAutoContinuations = parseInt(process.env.AGENT_MAX_AUTO_CONTINUATIONS || '3', 10)
       let autoContinuations = 0
       const accumulatedNewMessages = [...result.newMessages]
@@ -5857,12 +5862,20 @@ export class AgentGateway {
       ) {
         autoContinuations++
         console.warn(
-          `${this.logPrefix} Auto-continuing after iteration ceiling (pass ${autoContinuations}/${maxAutoContinuations}) for session ${sessionId}`,
+          `${this.logPrefix} Auto-continuing after ${result.incompleteReason ?? 'iteration ceiling'} (pass ${autoContinuations}/${maxAutoContinuations}) for session ${sessionId}`,
         )
         const contHistory = [...history, ...accumulatedNewMessages]
+        // A failed large tool call (a whole file written in one request, on a
+        // huge context) is the one retry that must change shape, not just
+        // repeat: the provider had no first byte for over two minutes.
+        const splitWrites =
+          result.incompleteReason === 'provider_error'
+            ? ' If the call that failed was writing a large file in one go, split it: write_file for the first part, then append the rest in chunks of about 300 lines.'
+            : ''
         const contPrompt =
           'Continue — you ran out of steps before finishing. Pick up exactly where you left off and complete the remaining work. ' +
-          'When everything is done, end with a short summary of what you changed; if you are still not finished, say what remains.'
+          'When everything is done, end with a short summary of what you changed; if you are still not finished, say what remains.' +
+          splitWrites
         const contResult = await runAgentLoop({
           ...loopOptions,
           history: contHistory,

@@ -362,6 +362,12 @@ export interface AgentLoopResult {
   effectiveModelId?: string
   /** True when the loop stopped because maxIterations was reached, NOT because the model finished naturally */
   maxIterationsExhausted?: boolean
+  /**
+   * Why `maxIterationsExhausted` is set, when it is. The gateway's bounded
+   * auto-continue runs for all of them, but a provider error gets an extra
+   * instruction (split a big write instead of re-sending it whole).
+   */
+  incompleteReason?: 'iteration_ceiling' | 'provider_error' | 'output_truncated'
   /** The stop reason from the last LLM response (e.g. 'end_turn', 'tool_use', 'max_tokens') */
   lastStopReason?: string
   /** Whether the last turn included tool call executions (more reliable than checking stopReason) */
@@ -553,6 +559,8 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   let currentModelId = modelId
   let abortReason: 'external' | 'max_iterations' | 'loop_detected' | undefined
   let maxIterationsExhausted = false
+  /** Why the turn was left incomplete; the gateway keys its auto-continue off this. */
+  let incompleteReason: AgentLoopResult['incompleteReason'] = undefined
   let lastStopReason: string | undefined
   let lastTurnHadToolCalls = false
   // Index where this turn's messages begin in `agent.state.messages`.
@@ -785,6 +793,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         }
         if (iterations >= maxIterations && !abortTriggered) {
           maxIterationsExhausted = true
+          incompleteReason = 'iteration_ceiling'
           abortTriggered = true
           abortReason = 'max_iterations'
           agent.abort()
@@ -1333,6 +1342,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   // caller knows to continue.
   if (!maxIterationsExhausted && !abortTriggered && lastStopReason === 'length') {
     maxIterationsExhausted = true
+    incompleteReason = 'output_truncated'
     console.warn('[AgentLoop] Model output truncated (stop_reason=max_tokens/length) — marking as incomplete for continuation')
   }
 
@@ -1389,6 +1399,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   // don't treat it as a hard error — mark as exhausted so the caller can continue.
   if (coreError && !usageLimit && !implicitError && !promptError && toolCalls.length > 0 && !maxIterationsExhausted) {
     maxIterationsExhausted = true
+    incompleteReason = 'provider_error'
     console.warn(`[AgentLoop] Provider error mid-stream after ${toolCalls.length} tool calls — marking as incomplete for continuation: ${coreError}`)
   }
 
@@ -1433,10 +1444,9 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
             'Do not call any tools. If the request asked for code or JSON, output exactly one clean block in the requested format with no extra prose.',
           ].join('\n')
         : [
-          'Tool use is now closed for this visible turn.',
-          'Do not call any tools. Write the final response to the user now.',
-          'Summarize what was completed, include any important findings or blockers, and be explicit if the task is not fully finished.',
-          'Do not ask the user to type "continue" unless there is a true terminal blocker that requires user input.',
+          'Write the final response for this turn now, without calling any tools.',
+          'Summarize what was completed, what is left, and any blocker or error you hit, and be explicit if the task is not fully finished.',
+          'The task may resume automatically, so do not ask the user to type "continue" unless a true terminal blocker needs their input.',
         ].join('\n')
 
     // The ceiling gets the same tool-free finalizer as any other incomplete
@@ -1512,8 +1522,14 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
           finalText = finalizerText
           // At the ceiling the turn stays "exhausted" so the gateway's bounded
           // auto-continue still picks the task back up; the summary just
-          // describes where things stand (SHO-270).
-          if (!stoppedByIterationLimit) maxIterationsExhausted = false
+          // describes where things stand (SHO-270). The same holds for a turn
+          // cut short by a provider error after real work: resetting the flag
+          // there is what left the user with "the tool budget for this turn
+          // closed" and nothing to continue (SHO-517).
+          if (!stoppedByIterationLimit && incompleteReason !== 'provider_error') {
+            maxIterationsExhausted = false
+            incompleteReason = undefined
+          }
           promptError = undefined
         }
       } catch (err: any) {
@@ -1573,6 +1589,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     newMessages = [...newMessages, noticeMessage]
     allMessages = [...allMessages, noticeMessage]
     maxIterationsExhausted = false
+    incompleteReason = undefined
     promptError = undefined
   }
 
@@ -1594,6 +1611,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     error: promptError || implicitError,
     effectiveModelId: currentModelId,
     maxIterationsExhausted,
+    incompleteReason: maxIterationsExhausted ? incompleteReason : undefined,
     lastStopReason,
     lastTurnHadToolCalls,
     abortReason: abortTriggered ? abortReason : undefined,
