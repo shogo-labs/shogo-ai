@@ -192,6 +192,42 @@ describe('4 — a crashed API recovers once, not once per request', () => {
     await new Promise((r) => setTimeout(r, 10))
     expect(starts).toBe(1)
   }, 20_000)
+
+  test('a permanently crashing API backs off instead of retrying on a flat timer', async () => {
+    const { PreviewManager } = await import('../preview-manager')
+    const pm = new PreviewManager({ workspaceDir: dir, runtimePort: 0 } as any)
+    ;(pm as any).apiPhase = 'crashed'
+
+    let starts = 0
+    ;(pm as any)._startApiServerImpl = async () => {
+      starts += 1
+      // Crash straight back, the way a broken server.tsx does.
+      ;(pm as any).apiPhase = 'crashed'
+    }
+
+    // The first attempt after a crash is immediate — the waiting request gets
+    // its chance without an extra delay.
+    expect(pm.maybeRecoverApiServer()).toBe(true)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(starts).toBe(1)
+
+    // Crashed again: the next attempt waits 30s, not the old flat 5s.
+    ;(pm as any).apiPhase = 'crashed'
+    expect(pm.maybeRecoverApiServer()).toBe(false)
+    ;(pm as any).lastRecoveryAttemptAt = Date.now() - 30_000
+    expect(pm.maybeRecoverApiServer()).toBe(true)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(starts).toBe(2)
+
+    // Third: the cooldown doubled to 60s, so 30s is no longer enough.
+    ;(pm as any).apiPhase = 'crashed'
+    ;(pm as any).lastRecoveryAttemptAt = Date.now() - 30_000
+    expect(pm.maybeRecoverApiServer()).toBe(false)
+    ;(pm as any).lastRecoveryAttemptAt = Date.now() - 60_000
+    expect(pm.maybeRecoverApiServer()).toBe(true)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(starts).toBe(3)
+  }, 20_000)
 })
 
 describe('5 — a ledger group whose owner died is reaped', () => {
