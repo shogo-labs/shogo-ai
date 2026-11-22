@@ -849,6 +849,12 @@ const BUILT_IN_MS_PATTERN = /built in \d/
 const CRASH_BACKOFF_BASE_MS = 1000
 const CRASH_BACKOFF_MAX_MS = 30_000
 const MAX_CRASH_RESTARTS = 5
+/**
+ * Minimum gap between on-demand recovery attempts. A crash-looping sidecar
+ * behind a busy proxy would otherwise spawn once per request, which is how
+ * "preview recovery" leaked process trees (SHO-509).
+ */
+const RECOVERY_MIN_INTERVAL_MS = 5_000
 
 // `custom-routes.ts` is the agent-editable surface for non-CRUD routes
 // — see `templates/runtime-template/custom-routes.ts`. Saves trigger a
@@ -1210,6 +1216,13 @@ export class PreviewManager {
   private intentionalStop = false
   private crashCount = 0
   private crashRestartTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * When the last on-demand recovery was kicked off. Repeated `/api/*` requests
+   * against a crash-looping sidecar would each spawn a fresh process — the
+   * "preview recovery" leak in SHO-509 — so a second attempt inside the
+   * cooldown is refused and the caller keeps its 503.
+   */
+  private lastRecoveryAttemptAt = 0
   /**
    * `true` if `@expo/ngrok` was found at the time the last Metro tunnel
    * spawn was attempted. `null` means we haven't tried yet (no metro
@@ -4368,6 +4381,13 @@ export class PreviewManager {
   maybeRecoverApiServer(): boolean {
     if (this.apiPhase !== 'crashed') return false
     if (this.intentionalStop || this.regenerating) return false
+
+    // A crash-looping sidecar plus a busy proxy would otherwise spawn a fresh
+    // process per request (SHO-509). One recovery attempt per cooldown window;
+    // the caller keeps its 503 and the next request past the window retries.
+    const now = Date.now()
+    if (now - this.lastRecoveryAttemptAt < RECOVERY_MIN_INTERVAL_MS) return false
+    this.lastRecoveryAttemptAt = now
 
     console.log(`[${LOG_PREFIX}] API server is in 'crashed' state; attempting on-demand recovery`)
     // Fresh budget for this user-initiated attempt, and flip out of `crashed`
