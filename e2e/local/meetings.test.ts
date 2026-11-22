@@ -110,6 +110,14 @@ test.describe("meetings", () => {
   test("recording shows a live transcript and lands in the list without a reload", async ({ page }) => {
     test.setTimeout(180_000)
     const workspaceId = await personalWorkspaceId(page)
+    // A failed earlier attempt can leave its meeting in "recording"; the page
+    // would re-attach to it and show Stop instead of Start on every retry.
+    const leftovers = (await api(page, "GET", `/api/workspaces/${workspaceId}/meetings`)).meetings.filter(
+      (m: { status?: string }) => m.status === "recording",
+    )
+    for (const m of leftovers) {
+      await api(page, "DELETE", `/api/workspaces/${workspaceId}/meetings/${m.id}`).catch(() => {})
+    }
     const before = (await api(page, "GET", `/api/workspaces/${workspaceId}/meetings`)).meetings.length
 
     await page.goto("/meetings")
@@ -117,7 +125,9 @@ test.describe("meetings", () => {
     await expect(page.getByText("Your notes", { exact: true })).toBeVisible()
     await expect(page.getByText("Let everyone know you're recording")).toBeVisible()
     const live = page.getByLabel("Live transcript")
-    await expect(live).toContainText("Listening")
+    // With no transcriber, the stream can fall back (and say so) before the
+    // first paint of "Listening…", so either text means the panel is up.
+    await expect(live).toContainText(/Listening|Settings/)
     await page.getByLabel("Meeting notes").fill("Follow up on pricing.")
 
     // The fake mic's tone is loud enough to send a chunk after ~8 s. Locally

@@ -72,14 +72,19 @@ const db = prisma as any
 
 const HOST = 'metal-us-qa'
 /**
- * A fixed hour inside the current billing month (today is 2026-11-18).
+ * Hours are counted from yesterday 00:00 UTC (or the 1st, early in a month), so
+ * every slot stays inside the current billing month and inside the 72h window
+ * `reconcile()` reads. A fixed calendar date expires and fails CI days later.
  * Every ingest and every bill run takes the next slot: the job claims ONE run
  * per region-hour, so two scenarios sharing an hour would silently skip the
  * second (which is the behaviour we want in production, and the reason this is
  * a counter rather than a constant).
  */
 let slot = 9
-const nextHour = () => new Date(Date.UTC(2026, 10, 18, ++slot, 0, 0))
+const NOW = new Date()
+const MONTH_START = Date.UTC(NOW.getUTCFullYear(), NOW.getUTCMonth(), 1)
+const BASE_DAY = Math.max(MONTH_START, Date.UTC(NOW.getUTCFullYear(), NOW.getUTCMonth(), NOW.getUTCDate() - 1))
+const nextHour = () => new Date(BASE_DAY + ++slot * 3_600_000)
 
 let seeded: SeededWorkspace
 let superAdmin = ''
@@ -132,7 +137,7 @@ function heartbeat(fields: {
   }
 }
 
-const ASSIGNED_AT = Date.UTC(2026, 10, 18, 10, 0, 0)
+const ASSIGNED_AT = BASE_DAY + 10 * 3_600_000
 
 async function rowsFor(workspaceId: string) {
   return db.vmUsageHour.findMany({ where: { workspaceId }, orderBy: { hour: 'asc' } })
@@ -412,7 +417,7 @@ describe('GET /workspaces/:id/compute-usage', () => {
   test('the total is the price of the rows, not an average of them', async () => {
     const res = await requestAs(seeded.owner, `/workspaces/${seeded.workspaceId}/compute-usage`)
     const body: any = await res.json()
-    const rows = (await rowsFor(seeded.workspaceId)).filter((r: any) => r.hour >= new Date(Date.UTC(2026, 10, 1)))
+    const rows = (await rowsFor(seeded.workspaceId)).filter((r: any) => r.hour >= new Date(MONTH_START))
     const expected = rows.reduce(
       (sum: number, r: any) =>
         sum +
