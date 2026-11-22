@@ -89,6 +89,23 @@ describe('clock-guard workflows', () => {
     expect(script).toContain('scripts/ci/failing-tests.sh')
   })
 
+  test('the main-red report may read this run, and says so when it cannot', () => {
+    // Reading the job list and the per-job logs mid-run is an Actions API read.
+    // Without `actions: read` the call 403s, the `for` loop runs zero times under
+    // `set -e`, and the issue falls back to "no test-level lines found" — a silent
+    // failure that reads exactly like a real empty result (SHO-507 QA round 2).
+    const health = workflow('main-health.yml')
+    const report = health.jobs.report
+    expect(report.permissions.actions).toBe('read')
+
+    const script = report.steps.map((step: any) => step.run ?? '').join('\n')
+    // The unreadable path must reach the issue body, not be swallowed by `|| true`.
+    expect(script).toContain('could not read')
+    expect(script).toContain('log_errors')
+    // The test leg needs no extra scope: it only runs the suites.
+    expect(health.jobs.test.permissions?.actions).toBeUndefined()
+  })
+
   test('the clock probe loads the preload on the preload path', () => {
     // Without this, a +30d leg printed today's date and the log line contradicted
     // the guard above it (SHO-507 QA round 1, nit 3).

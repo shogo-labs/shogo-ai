@@ -164,6 +164,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # Reading this run's job list and the per-job logs mid-run is an Actions
+      # API read. Without it the call 403s, the loop below finds no jobs, and the
+      # issue falls back to "no test-level lines found" with nothing explaining
+      # why. ci.yml's prelude declares the same scope for the same reason.
+      actions: read
       # The only job that may write: it opens/comments/closes the single issue.
       issues: write
     timeout-minutes: 5
@@ -219,11 +224,22 @@ jobs:
           # still in progress, and `gh` refuses ("run is still in progress") — the
           # whole log came back as that one error line and the issue said "no
           # test-level names found". Per-job logs are served mid-run, so read those.
+          #
+          # Every read below records a reason on failure. An unreadable log must say
+          # so in the issue: the first version failed silently (a 403 on the job list
+          # ran the loop zero times) and the issue claimed there were no test-level
+          # lines, which reads exactly like a real empty result.
           : > "${RUNNER_TEMP}/failed.log"
-          for job_id in $(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
-            --jq '.jobs[] | select(.conclusion == "failure") | .id'); do
+          log_errors=''
+          if ! jobs_json=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs"); then
+            log_errors="could not read the run's job list (does this job still declare actions: read?); "
+            jobs_json=''
+          fi
+          for job_id in $(printf '%s' "${jobs_json}" \
+            | jq -r '.jobs // [] | .[] | select(.conclusion == "failure") | .id' 2>/dev/null); do
             gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${job_id}/logs" \
-              >> "${RUNNER_TEMP}/failed.log" 2>&1 || true
+              >> "${RUNNER_TEMP}/failed.log" 2>&1 \
+              || log_errors="${log_errors}could not read the log of job ${job_id}; "
           done
           bash scripts/ci/failing-tests.sh "${RUNNER_TEMP}/failed.log" 60 \
             > "${RUNNER_TEMP}/failures.txt" || true
@@ -243,6 +259,12 @@ jobs:
             echo '```'
             if [ -s "${RUNNER_TEMP}/failures.txt" ]; then
               cat "${RUNNER_TEMP}/failures.txt"
+              if [ -n "${log_errors}" ]; then
+                echo
+                echo "(partial: ${log_errors})"
+              fi
+            elif [ -n "${log_errors}" ]; then
+              echo "could not read job logs: ${log_errors}"
             else
               echo '(no test-level lines found — see the run log)'
             fi
