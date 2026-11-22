@@ -225,10 +225,10 @@ jobs:
             echo "These tests pass on \`main\` today and fail ${OFFSET_DAYS} days from now (\`${clock_mode}\` clock)."
             echo
             echo '```'
-            grep -E '\.\.\. FAIL|^\(fail\)|✗ ' "${RUNNER_TEMP}/clock.log" | head -60 || true
+            bash scripts/ci/failing-tests.sh "${RUNNER_TEMP}/clock.log" 60 || true
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
-          grep -E '\.\.\. FAIL|^\(fail\)|✗ ' "${RUNNER_TEMP}/clock.log" | head -60 > "${RUNNER_TEMP}/failures.txt" || true
+          bash scripts/ci/failing-tests.sh "${RUNNER_TEMP}/clock.log" 60 > "${RUNNER_TEMP}/failures.txt" || true
 
       - name: Open or update the future-clock-red issue
         if: failure()
