@@ -401,6 +401,66 @@ describe('AI proxy Shogo Cloud forwarding', () => {
     })
   })
 
+  describe('cloud early keepalives survive the desktop forwarder (SHO-517)', () => {
+    // The cloud proxy now answers a slow provider with `200 text/event-stream`
+    // plus `: keepalive` comments long before the model's first token. The
+    // desktop forwarder wraps that stream a second time, so a keepalive has to
+    // stay a comment: it is liveness, not content, and it must never stand in
+    // for the terminal event that ends the stream.
+    const anthropicStreamRequest = () => new Request('http://x/api/ai/anthropic/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': TOKEN,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        stream: true,
+        messages: [{ role: 'user', content: 'write the whole generator in one file' }],
+      }),
+    })
+
+    test('keepalives before the provider\'s first byte pass through and are not read as content', async () => {
+      nextFetchResponses.push(() => new Response([
+        ': keepalive 15000ms', '', ': keepalive 30000ms', '',
+        'event: message_start', 'data: {"type":"message_start","message":{"usage":{"input_tokens":7}}}', '',
+        'event: message_stop', 'data: {"type":"message_stop"}', '',
+      ].join('\n'), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }))
+
+      const app = buildApp()
+      const res = await app.fetch(anthropicStreamRequest())
+
+      expect(res.status).toBe(200)
+      expect(res.headers.get('Content-Type')).toContain('text/event-stream')
+      const text = await res.text()
+      expect(text).toContain(': keepalive 15000ms')
+      expect(text).toContain('message_start')
+      expect(text).toContain('message_stop')
+      // A completed stream stays completed: no synthetic truncation frame.
+      expect(text).not.toContain('upstream_truncated')
+      expect(text).not.toContain('[shogo:retryable=')
+    })
+
+    test('a cloud stream that dies after keepalives still ends as one retryable truncation frame', async () => {
+      nextFetchResponses.push(() => new Response(': keepalive 15000ms\n\n: keepalive 30000ms\n\n', {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }))
+
+      const app = buildApp()
+      const res = await app.fetch(anthropicStreamRequest())
+
+      expect(res.status).toBe(200)
+      const text = await res.text()
+      expect(text).toContain(': keepalive 15000ms')
+      // Keepalives are not a terminal event, so the dead provider is still
+      // reported as a retryable truncation rather than a clean finish.
+      expect(text).toContain('[shogo:retryable=true;code=upstream_truncated]')
+      expect(text.match(/\[shogo:retryable=/g) ?? []).toHaveLength(1)
+    })
+  })
+
   describe('workspace model allowlist applies to forwarded calls', () => {
     let invalidate: (workspaceId: string) => void
 
