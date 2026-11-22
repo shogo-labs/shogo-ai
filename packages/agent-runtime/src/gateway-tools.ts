@@ -16,7 +16,9 @@ import { join, resolve, extname, dirname, relative, sep } from 'path'
 import { execSync } from '@shogo/shared-runtime/child-process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
-import { declareService, deriveServiceName, serviceTmpWarning, undeclareService } from './services-registry'
+import { applyServiceDeclaration, declareService, deriveServiceName, planServiceDeclaration, readDeclaredServices, serviceTmpWarning, undeclareService, type ServiceDeclarationPlan } from './services-registry'
+import { claimedWorkItemKey } from './work-item-claim'
+import { describeSpawnExhaustion, isSpawnExhaustion, liveGroupCount, liveGroupHolders, liveGroupIdsForService, processBudgetRefusal, releaseLiveGroup, trackLiveGroup } from './process-budget'
 import type { SessionTodo, SessionTodosSnapshot } from './plan-continuation'
 import { createProjectTools, resolveProjectRef } from './project-tools'
 import {
@@ -354,6 +356,20 @@ export interface ToolContext {
   }
   /** Background tasks of this session (shell, subagents, remote tasks) — backs `wait` / `task_list` / `task_cancel`. */
   commandRegistry?: import('./task-registry').TaskRegistry
+  /**
+   * Stop a declared service by its name (SHO-509). A service's name is the only
+   * handle a re-declaration has on the tree it replaces, and its card needs the
+   * same handle when it reaches a terminal column. `undeclare: false` stops the
+   * tree but leaves the declaration in place — a replacement must not lose the
+   * service if its own spawn fails.
+   */
+  cancelServiceByName?: (name: string, options?: { undeclare?: boolean }) => Promise<boolean>
+  /**
+   * Called when a card reaches Done/Dismissed: undeclare the services declared
+   * for it, so a finished card stops restarting a dev server on every boot
+   * (SHO-509). Returns the names it released.
+   */
+  onCardFinished?: (cardKey: string) => Promise<string[]>
   /**
    * Steering state for the current turn (sleep polls already made, repeated
    * `wait` timeouts). Built per turn by the gateway, so a new turn steers
@@ -1716,6 +1732,53 @@ function buildSoftTimeoutResult(
 export const BACKGROUND_TASK_HINT =
   'Call wait({ task_ids: [task_id] }) to block on it, or end your turn and you will get a [Task update] when it finishes.'
 
+/** How long a `background: true` call waits for a spawn failure to report itself. */
+const SPAWN_FAILURE_GRACE_MS = 250
+
+/**
+ * Did the OS refuse to start this process at all?
+ *
+ * libuv fails a fork synchronously (`posix_spawn EAGAIN` when the process table
+ * is full), so `child.pid` is undefined and Node emits `error` on the next tick
+ * instead of `exit`. A background exec that returned on the spot would hand the
+ * agent a `task_id` with no process behind it — the silent hang that made this
+ * outage hard to see (SHO-509). Waits one tick (bounded), then reports.
+ */
+async function awaitSpawnFailure(handle: CommandHandle): Promise<string | undefined> {
+  if (handle.pid !== undefined) return undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const grace = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), SPAWN_FAILURE_GRACE_MS)
+    ;(timer as any)?.unref?.()
+  })
+  const outcome = await Promise.race([handle.done.then((result) => result.spawnError), grace])
+  if (timer) clearTimeout(timer)
+  // No pid and no reported error: the process is gone (or was never ours).
+  return outcome
+}
+
+/**
+ * The result of a command the OS refused to fork.
+ *
+ * `EAGAIN` at the fork limit is not a command failing — it is the machine
+ * saying no, and the agent cannot even run `ps` to find out why. The message
+ * comes from the in-process account of live groups, which is readable precisely
+ * because it needs no fork.
+ */
+function execSpawnFailureResult(raw: string): AgentToolResult<any> {
+  if (!isSpawnExhaustion(raw)) {
+    return textResult({ error: `The command could not start: ${raw}`, code: 'spawn_failed' })
+  }
+  const explained = describeSpawnExhaustion(raw)
+  console.error(`[process-pressure] ${explained}`)
+  return textResult({
+    error: explained,
+    code: 'process_exhausted',
+    live_groups: liveGroupCount(),
+    holders: liveGroupHolders().map((group) => ({ task_id: group.id, label: group.label, service: group.service ?? false })),
+  })
+}
+
 /**
  * Per-turn steering state. A tool instance is built per turn, but a test (or a
  * subagent) may build several from one context, so the state lives on the
@@ -1965,6 +2028,73 @@ function createExecTool(ctx: ToolContext): AgentTool {
       const cwdDirHost = execCwdDirFor(ctx.workspaceDir)
       const cwdFileHost = cwdDirHost ? join(cwdDirHost, cwdMarker) : join(ctx.workspaceDir, cwdMarker)
 
+      // A declared service is decided BEFORE anything spawns (SHO-509): a
+      // declaration that would add a fourth service, or duplicate one already
+      // on record, must not leave a process behind while the agent is told no.
+      // `replace` means the entry on record is this same service — same name,
+      // same command and cwd, or the same port — and its tree has to stop
+      // before the new one binds the port.
+      let servicePlan: ServiceDeclarationPlan | undefined
+      if (service) {
+        const serviceName = (name && name.trim()) || deriveServiceName(attributedCommand)
+        const workItemKey = claimedWorkItemKey(ctx.sessionId)
+        servicePlan = planServiceDeclaration(readDeclaredServices(ctx.workspaceDir), {
+          name: serviceName,
+          command,
+          cwd: currentCwd,
+          sessionId: ctx.sessionId ?? '',
+          declaredAt: Date.now(),
+          ...(workItemKey ? { workItemKey } : {}),
+        })
+        if (servicePlan.action === 'refuse') {
+          return textResult({
+            error: servicePlan.error,
+            code: 'service_cap',
+            services: readDeclaredServices(ctx.workspaceDir).map((s) => s.name),
+          })
+        }
+      }
+
+      // One runtime can only hold so many live process groups before the OS
+      // stops handing out slots altogether (SHO-509). A foreground command is
+      // never refused — the user is waiting on the answer and it holds its slot
+      // for one call — but a background one that would push past the budget is.
+      // This runs BEFORE the replace kill: refusing after the old tree is dead
+      // leaves the service stopped with nothing in its place. A replacement
+      // counts the slot it is about to free, so restarting a dev server at the
+      // cap is not a new process.
+      if (background) {
+        const freedGroupIds = servicePlan?.action === 'replace' && servicePlan.replaced
+          ? liveGroupIdsForService(servicePlan.replaced.name)
+          : []
+        const budgetRefusal = processBudgetRefusal(process.env, freedGroupIds)
+        if (budgetRefusal) {
+          console.warn(`[process-pressure] background exec refused: ${liveGroupCount()} live groups`)
+          return textResult({
+            error: budgetRefusal,
+            code: 'process_budget',
+            live_groups: liveGroupCount(),
+            holders: liveGroupHolders().map((group) => ({ task_id: group.id, label: group.label, service: group.service ?? false })),
+          })
+        }
+      }
+
+      // `replace`: the declaration on record is this same service. Its tree
+      // stops BEFORE the new one spawns — cancelling afterwards would find the
+      // entry we just registered and kill the replacement instead. The
+      // declaration stays until the spawn succeeds: an EAGAIN here must not
+      // lose the service for good.
+      if (servicePlan?.action === 'replace' && servicePlan.replaced) {
+        const previous = servicePlan.replaced
+        const stopped = ctx.cancelServiceByName
+          ? await ctx.cancelServiceByName(previous.name, { undeclare: false })
+          : false
+        if (!stopped) {
+          const stale = ctx.commandRegistry?.listAll().find((task) => task.service && task.name === previous.name)
+          if (stale) await ctx.commandRegistry!.cancel(stale.id)
+        }
+      }
+
       const isSandboxed = shouldSandbox({
         command: attributedCommand,
         workspaceDir: ctx.workspaceDir,
@@ -2043,9 +2173,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // completes within the soft timeout (defensive against races where the
       // model decided to wait while we were already returning).
       const registry = ctx.commandRegistry ?? new CommandRegistry()
-      const serviceMeta = service
-        ? { name: (name && name.trim()) || deriveServiceName(attributedCommand) }
-        : undefined
+      const serviceMeta = servicePlan ? { name: servicePlan.service.name } : undefined
       const entry = registry.register(attributedCommand, handle, {
         cwd: currentCwd,
         service: !!serviceMeta,
@@ -2054,21 +2182,40 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // A shell task's thread is its own output file — the log the dock shows.
       entry.link = { kind: 'log', path: registry.displayPath(entry.outputFile) }
 
+      // Every group this runtime starts is counted against the live-process
+      // budget, so a refusal or an `EAGAIN` can name the holders without
+      // forking (SHO-509). Released when the process settles, however it ends.
+      trackLiveGroup({
+        id: entry.id,
+        label: attributedCommand,
+        ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+        startedAt: handle.startedAt,
+        ...(serviceMeta ? { service: true, serviceName: serviceMeta.name } : {}),
+      })
+      void handle.done.then(
+        () => releaseLiveGroup(entry.id),
+        () => releaseLiveGroup(entry.id),
+      )
+
       if (background) {
         registry.markBackgrounded(entry.id)
+        // A spawn the OS refused (`posix_spawn EAGAIN` at the fork limit) never
+        // creates a process and never emits 'exit'. Without this the agent gets
+        // a task_id for something that does not exist and waits on it forever —
+        // exactly the silent timeout that hid this outage (SHO-509).
+        const spawnFailure = await awaitSpawnFailure(handle)
+        if (spawnFailure) {
+          await registry.cancel(entry.id)
+          return execSpawnFailureResult(spawnFailure)
+        }
         if (serviceMeta && ctx.sessionId) {
           // The declaration is what brings it back after a restart or a VM
           // recycle; it lives in `.shogo/`, which is in the source backup.
-          declareService(ctx.workspaceDir, {
-            name: serviceMeta.name,
-            command,
-            cwd: currentCwd,
-            sessionId: ctx.sessionId,
-            declaredAt: Date.now(),
-          })
+          applyServiceDeclaration(ctx.workspaceDir, servicePlan!)
           const tmpWarning = serviceTmpWarning(command)
           const result = await buildSoftTimeoutResult(ctx, entry, null, {
             service: serviceMeta.name,
+            ...(servicePlan?.replaced ? { replaced: servicePlan.replaced.name } : {}),
             ...(tmpWarning ? { warning: tmpWarning } : {}),
           })
           return result
@@ -2090,9 +2237,15 @@ function createExecTool(ctx: ToolContext): AgentTool {
       stopped.dispose()
 
       if (winner === SOFT_TIMEOUT || winner === STOPPED) {
-        registry.markBackgrounded(entry.runId)
+        // A foreground command that overran its soft timeout is handed back as a
+        // background task: it keeps its slot only while its session is active.
+        registry.markHandedBack(entry.runId)
         return buildSoftTimeoutResult(ctx, entry, winner === STOPPED ? null : softTimeoutMs)
       }
+
+      // The shell never started: say why in the machine's own terms instead of
+      // reporting exit code 1 and a bare errno (SHO-509).
+      if (winner.spawnError) return execSpawnFailureResult(winner.spawnError)
 
       const completed = buildCompletedExecResult({ ctx, entry, finalResult: winner })
       return withOtherProjectFolderWarning(
