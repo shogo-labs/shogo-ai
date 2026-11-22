@@ -17,9 +17,13 @@
 #      `run-tests-isolated.ts` hands to every `bun test` child. It shifts
 #      `Date.now()` / argument-less `new Date()` in-process and is *pin-aware*, so
 #      a test that calls `setSystemTime` still wins (a naive subclass reads
-#      pin+offset and would report every well-behaved test as a bomb). The
-#      filesystem keeps real time, so a file a fixture stamps from `Date.now()`
-#      reads back exactly as old as the shifted clock thinks it is.
+#      pin+offset and would report every well-behaved test as a bomb).
+#      The filesystem keeps real time: an mtime stamped with raw `Date.now()`
+#      reads back `offset` older than the shifted clock expects, so a sweep
+#      that compares mtime against `Date.now()` fails here even though the
+#      same fixture passes today. Fixtures that stamp mtimes must stamp them
+#      on the shifted clock (`stampMtime` in
+#      `packages/agent-runtime/src/__tests__/helpers/stamp-mtime.ts`).
 #   2. **libfaketime** (`FAKETIME="+7d"`, `LD_PRELOAD`) — only when the preload
 #      cannot shift the clock. It fakes `stat()` as well as `Date`, so an mtime a
 #      fixture derived from the already-shifted `Date.now()` is offset a second
