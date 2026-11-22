@@ -117,6 +117,35 @@ describe('readLiveSeedArchive', () => {
     expect(res).toEqual({ ok: true, value: null })
   })
 
+  // A HEAD that fails for any reason OTHER than "no such object" is not evidence
+  // of absence: reading it as one would seed Postgres from the builder's dev.db
+  // and orphan everything the live site wrote.
+  for (const [label, err] of [
+    ['403 AccessDenied', Object.assign(new Error('Forbidden'), { name: 'Forbidden', $metadata: { httpStatusCode: 403 } })],
+    ['500 InternalError', Object.assign(new Error('boom'), { name: 'InternalError', $metadata: { httpStatusCode: 500 } })],
+    ['a timeout', Object.assign(new Error('timed out'), { name: 'TimeoutError', code: 'ETIMEDOUT' })],
+    ['a missing bucket', Object.assign(new Error('no bucket'), { name: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } })],
+  ] as const) {
+    it(`fails the publish on ${label} instead of seeding dev.db`, async () => {
+      failWith = err
+      const res = await readLiveSeedArchive('live-app')
+      expect(res.ok).toBe(false)
+      if (res.ok) return
+      expect(res.code).toBe('live_seed_unreadable')
+      expect(res.message).toContain('not "no archive"')
+    })
+  }
+
+  it('still treats a genuine 404 as "nothing to carry over"', async () => {
+    failWith = Object.assign(new Error('NotFound'), { name: 'NotFound', $metadata: { httpStatusCode: 404 } })
+    expect(await readLiveSeedArchive('live-app')).toEqual({ ok: true, value: null })
+  })
+
+  it('treats a NoSuchKey without a status code as "nothing to carry over"', async () => {
+    failWith = Object.assign(new Error('NoSuchKey'), { name: 'NoSuchKey' })
+    expect(await readLiveSeedArchive('live-app')).toEqual({ ok: true, value: null })
+  })
+
   it('returns nothing to carry over without a subdomain (an unpublished environment)', async () => {
     stored = { body: await archiveWith({ 'prisma/dev.db': 'sqlite-bytes' }) }
     const res = await readLiveSeedArchive('')

@@ -85,8 +85,10 @@ write.
 by Docker (`COPY . /app`), so the file a project already maintains applies — one
 direction only: it can remove paths, never bring back `.env*`, `.git/`,
 `node_modules`, `.shogo` or `-wal/-shm`, and never drop `package.json`, the
-lockfile, `prisma/schema.prisma` or `prisma/dev.db`. A blanket `*` rule therefore
-cannot blank an image. `.dockerignore` itself is not copied into the context
+lockfile, `prisma/schema.prisma` or `prisma/dev.db` — including when a rule matches
+the `prisma/` directory itself (`*`, `pr*`, an allowlist), since a pruned directory
+takes its required files with it. A blanket `*` rule therefore cannot produce an
+image without a schema. `.dockerignore` itself is not copied into the context
 (BuildKit would apply it a second time to the platform-added files). The publish
 output logs `N paths / X MB left out by .dockerignore`.
 

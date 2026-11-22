@@ -57,6 +57,25 @@ export type ReadLiveSeedArchiveResult =
   | { ok: false; code: 'live_seed_too_large' | 'live_seed_unreadable'; message: string }
 
 /**
+ * Whether a HEAD failure means "there is no archive" rather than "we could not
+ * find out".
+ *
+ * Only a genuine absence counts: a 403, a timeout or a 5xx must fail the publish
+ * as `live_seed_unreadable`. Reading those as "nothing to carry over" would seed
+ * Postgres from the builder's `dev.db` — the orphan-the-live-rows loss this
+ * module exists to prevent, and the opposite of the rule the health check states
+ * for its own bucket probe (a 403 is never "missing").
+ */
+function isMissingObject(err: any): boolean {
+  const name = String(err?.name ?? err?.Code ?? err?.code ?? '')
+  // A missing BUCKET is a deployment fault, not "this app has no archive" — S3
+  // answers both with a 404, so the name decides first.
+  if (name === 'NoSuchBucket') return false
+  if (err?.$metadata?.httpStatusCode === 404) return true
+  return name === 'NotFound' || name === 'NoSuchKey'
+}
+
+/**
  * Read a published environment's live SQLite database out of its durable
  * archive, as a small gzipped tar the project runtime can seed from.
  *
@@ -77,9 +96,17 @@ export async function readLiveSeedArchive(subdomain: string): Promise<ReadLiveSe
       new HeadObjectCommand({ Bucket: PUBLISH_DATA_BUCKET, Key: key }),
     )
     contentLength = Number(head.ContentLength ?? 0)
-  } catch {
+  } catch (err: any) {
     // No archive: a first publish, or an app whose pod never had writable state.
-    return { ok: true, value: null }
+    if (isMissingObject(err)) return { ok: true, value: null }
+    return {
+      ok: false,
+      code: 'live_seed_unreadable',
+      message:
+        `Could not check for the live database archive ${key}: ${err?.message ?? err}. ` +
+        `A 403 or a timeout is not "no archive" — the app may be live on SQLite with real rows, ` +
+        `so it was not switched. Fix storage access, then publish again.`,
+    }
   }
 
   if (contentLength > MAX_LIVE_SEED_ARCHIVE_BYTES) {

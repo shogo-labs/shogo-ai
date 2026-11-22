@@ -145,6 +145,7 @@ fallback:
 |---|---|
 | Archive > 64 MB | `413 live_seed_too_large` — raise the cap deliberately, or reduce live data |
 | Archive present but unreadable | `413 live_seed_unreadable` — falling back to `dev.db` here would silently ship builder rows over live data |
+| The archive check fails at all (403, timeout, 5xx, missing bucket) | `413 live_seed_unreadable` — only a 404/`NotFound`/`NoSuchKey` means "no archive yet"; anything else is "we could not find out", and guessing wrong orphans the live rows |
 | Archive has no database | **not** an error: a static app has nothing to carry over, so it seeds from `dev.db` |
 
 `PreparedEnvironmentDatabase.seededFrom` reports `live-archive` or `dev.db`, and
@@ -232,6 +233,11 @@ API that answered 200 — the API does not need a bucket to serve a page.
 - **Uploads are still pod-local** (§3). `maxReplicas > 1` therefore lifts for
   Postgres-backed environments on the database half of AC 6 only; object-backed
   uploads land with §3.
+- **The 64 MB seed cap counts the whole writable-state archive**, uploads
+  included, so a live site with more than 64 MB of media is refused even when its
+  database is a few MB. Follow-up: stream the `GetObject` body through gunzip/tar
+  and cap the extracted database instead, so uploads stop counting against the
+  seed.
 - **`.dockerignore` only removes paths.** A published build context honours the
   project's own `.dockerignore`, but it can never re-add `.env*`, `.git/`,
   `node_modules`, `-wal`/`-shm` files or the files the image boots from

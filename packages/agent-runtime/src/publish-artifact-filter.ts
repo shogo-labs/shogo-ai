@@ -62,6 +62,28 @@ const PLATFORM_REQUIRED = new Set([
   'prisma/dev.db',
 ])
 
+/**
+ * Every directory that contains a `PLATFORM_REQUIRED` file.
+ *
+ * `fs.cp` calls its filter on a directory BEFORE descending into it, so a
+ * `.dockerignore` rule that matches the directory (`*`, `pr*`, an allowlist shape
+ * like `*` + `!src`) prunes the whole subtree — and `PLATFORM_REQUIRED.has()`
+ * only ever saw full file paths. Without this, the common "ship nothing but what
+ * I list" `.dockerignore` silently stripped `prisma/`: the Dockerfile's
+ * `prisma generate` was skipped and a SQLite-mode pod booted with no database.
+ */
+const PLATFORM_REQUIRED_DIRS = new Set(
+  [...PLATFORM_REQUIRED].flatMap((required) => {
+    const parts = required.split('/')
+    return parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('/'))
+  }),
+)
+
+/** A path the platform needs, or a directory leading to one. */
+function keepForPlatform(rel: string): boolean {
+  return PLATFORM_REQUIRED.has(rel) || PLATFORM_REQUIRED_DIRS.has(rel)
+}
+
 export interface ArtifactFilterOptions {
   /** Absolute project directory the copy starts from. */
   projectDir: string
@@ -140,7 +162,7 @@ export function createPublishedArtifactFilter(
     // The context is built BY Docker, so shipping `.dockerignore` would make
     // BuildKit apply it a second time to the platform-added files.
     if (normalized === DOCKERIGNORE_FILE) return false
-    if (PLATFORM_REQUIRED.has(normalized)) return true
+    if (keepForPlatform(normalized)) return true
     if (dockerignore?.ignores(normalized)) return false
     return true
   }
@@ -155,8 +177,12 @@ export function createPublishedArtifactFilter(
 export function measureDockerignoreExclusion(
   opts: ArtifactFilterOptions,
 ): { paths: number; bytes: number } {
-  const dockerignore = readDockerignore(opts.projectDir)
-  if (!dockerignore) return { paths: 0, bytes: 0 }
+  if (!readDockerignore(opts.projectDir)) return { paths: 0, bytes: 0 }
+  // Ask the filter itself rather than re-deriving the rules here: the number in
+  // the publish output has to be what the context actually lost, and a second
+  // copy of those rules is how it stops being that (a directory-pruning rule
+  // once counted `prisma/` as dropped while the image kept it).
+  const keep = createPublishedArtifactFilter(opts)
   let paths = 0
   let bytes = 0
   const walk = (dir: string): void => {
@@ -170,37 +196,17 @@ export function measureDockerignoreExclusion(
       const full = join(dir, entry.name)
       const rel = relative(opts.projectDir, full).replace(/\\/g, '/')
       if (hardExcluded(rel, opts.stagingDirName)) continue
-      if (rel === DOCKERIGNORE_FILE || PLATFORM_REQUIRED.has(rel)) continue
-      if (dockerignore.ignores(rel)) {
-        // A matched directory excludes its whole subtree; count what is below.
-        if (entry.isDirectory()) walkExcluded(full)
-        else {
-          paths++
-          try {
-            bytes += statSync(full).size
-          } catch {}
-        }
+      if (entry.isDirectory()) {
+        walk(full)
         continue
       }
-      if (entry.isDirectory()) walk(full)
-    }
-  }
-  const walkExcluded = (dir: string): void => {
-    let entries: Dirent[]
-    try {
-      entries = readdirSync(dir, { withFileTypes: true })
-    } catch {
-      return
-    }
-    for (const entry of entries) {
-      const full = join(dir, entry.name)
-      if (entry.isDirectory()) walkExcluded(full)
-      else {
-        paths++
-        try {
-          bytes += statSync(full).size
-        } catch {}
-      }
+      // Kept in the context, or excluded by the platform rather than by the
+      // project — either way it is not the `.dockerignore`'s doing.
+      if (keep(full) || rel === DOCKERIGNORE_FILE || PLATFORM_REQUIRED.has(rel)) continue
+      paths++
+      try {
+        bytes += statSync(full).size
+      } catch {}
     }
   }
   walk(opts.projectDir)
