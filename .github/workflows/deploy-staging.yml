@@ -418,15 +418,17 @@ jobs:
           kubectl patch configmap config-defaults -n knative-serving --type merge \
             -p '{"data":{"max-revision-timeout-seconds":"3600","revision-idle-timeout-seconds":"0"}}' || true
 
-      # SHO-506: `revision-response-start-timeout-seconds` defaults to 300s, and
-      # queue-proxy arms that timer per request. It never disarms on a hijacked
-      # (WebSocket) connection, so every desktop tunnel — and every upgraded
-      # stream — was severed at exactly 5:00 with `1006` on the client, whatever
-      # the revision's own `timeoutSeconds` (1800 on the api) said. queue-proxy
-      # logged "response.WriteHeader on hijacked connection" at each cut.
-      # 0 disables the response-start bound; the revision request timeout still
-      # bounds a request, and `revision-idle-timeout-seconds: 0` keeps a live
-      # stream alive (idle is not a signal we can honour here).
+      # SHO-506: `revision-response-start-timeout-seconds` defaults to 300s and is
+      # armed per request by queue-proxy, which never disarms it on a hijacked
+      # (WebSocket) stream — so a desktop tunnel that opened cleanly was closed
+      # from behind at exactly 5:00 (`1006` on the client), whatever the
+      # revision's own `timeoutSeconds` (1800 on the api) said.
+      # The other 300s candidates are already off or ruled out: kourier
+      # `stream-idle-timeout: 0s` (patched above), the OCI LB's
+      # `oci-load-balancer-connection-idle-timeout` is 1800, and the kourier
+      # access log records `dur=300001` at each cut. 0 disables the
+      # response-start bound; the revision request timeout still bounds a
+      # request, and `revision-idle-timeout-seconds: 0` keeps a live stream alive.
       - name: Ensure Knative queue-proxy does not cut hijacked WebSocket streams at 5 minutes
         run: |
           kubectl patch configmap config-defaults -n knative-serving --type merge \
