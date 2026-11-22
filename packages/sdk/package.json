@@ -415,12 +415,6 @@
     "ai": {
       "optional": true
     },
-    "mobx": {
-      "optional": true
-    },
-    "react": {
-      "optional": true
-    },
     "react-native": {
       "optional": true
     },
