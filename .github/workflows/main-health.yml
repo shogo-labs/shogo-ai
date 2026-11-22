@@ -148,13 +148,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Test
-        if: inputs.force_fail != true && github.event_name != 'push'
+        if: inputs.force_fail != true
         run: bun run test -- --packages "${{ matrix.packages }}"
 
       # Proving the alert path must not depend on a real bomb existing, so a
       # dispatched run with `force_fail` fails here instead of running the suite.
       - name: Forced failure (workflow_dispatch force_fail)
-        if: inputs.force_fail == true || github.event_name == 'push'
+        if: inputs.force_fail == true
         run: |
           echo "::error::Forced failure: workflow_dispatch asked for force_fail=true, to prove the main-red issue path."
           exit 1
