@@ -1491,6 +1491,7 @@ export class AgentGateway {
   setAccountContext(ctx: AccountContext): void {
     this.accountContext = {
       ...(ctx.planId ? { planId: ctx.planId } : {}),
+      ...(ctx.desktopUnlimited ? { desktopUnlimited: true } : {}),
       ...(typeof ctx.canPublishSubdomain === 'boolean'
         ? { canPublishSubdomain: ctx.canPublishSubdomain }
         : {}),

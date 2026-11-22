@@ -2,12 +2,12 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 
-let planImpl: () => Promise<string>
+let planImpl: () => Promise<{ planId: string | null; desktopUnlimited: boolean }>
 let canPublishImpl: () => Promise<boolean>
 let alwaysOnImpl: () => Promise<number>
 
 mock.module('../../services/billing.service', () => ({
-  getEffectivePlanId: () => planImpl(),
+  getPlanStamp: () => planImpl(),
   canPublishSubdomain: () => canPublishImpl(),
   getAlwaysOnAllowanceForWorkspace: () => alwaysOnImpl(),
 }))
@@ -21,7 +21,7 @@ const originalSubstrate = process.env.PUBLISH_SUBSTRATE
 const originalLocalMode = process.env.SHOGO_LOCAL_MODE
 
 beforeEach(() => {
-  planImpl = async () => 'free'
+  planImpl = async () => ({ planId: 'free', desktopUnlimited: false })
   canPublishImpl = async () => false
   alwaysOnImpl = async () => 0
   delete process.env.PUBLISH_SUBSTRATE
@@ -66,6 +66,45 @@ describe('stampWorkspacePlan', () => {
     await stampWorkspacePlan(body, 'ws-1')
     expect(body).toEqual({ planId: 'free', canPublishSubdomain: false })
     expect('publishHosting' in body).toBe(false)
+  })
+
+  // SHO-508: desktop has no Subscription row, so the old stamp wrote 'free'
+  // into the agent's account context and agents refused heartbeats and models
+  // that work on the machine. The plan now comes from the linked cloud account
+  // and `desktopUnlimited` says the machine has no limits at all.
+  test('on desktop, stamps the linked cloud plan and the no-limits flag', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    planImpl = async () => ({ planId: 'pro', desktopUnlimited: true })
+    canPublishImpl = async () => true
+    const body: any = {}
+    await stampWorkspacePlan(body, 'ws-local')
+    expect(body).toEqual({
+      planId: 'pro',
+      desktopUnlimited: true,
+      canPublishSubdomain: true,
+      publishHosting: { substrate: 'desktop', alwaysOn: false, maxReplicas: 1, staging: false },
+    })
+  })
+
+  test('an unlinked desktop stamps no planId at all, never free', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    planImpl = async () => ({ planId: null, desktopUnlimited: true })
+    const body: any = {}
+    await stampWorkspacePlan(body, 'ws-local')
+    expect('planId' in body).toBe(false)
+    expect(body.desktopUnlimited).toBe(true)
+    expect(body.publishHosting).toEqual({ substrate: 'desktop', alwaysOn: false, maxReplicas: 1, staging: false })
+  })
+
+  // Local mode is unlimited (channel rule, SHO-43), so cloud mode must not
+  // start stamping the flag: a cloud Free workspace still gets the paywall
+  // framing in its account context.
+  test('cloud mode never stamps the desktop flag', async () => {
+    planImpl = async () => ({ planId: 'pro', desktopUnlimited: false })
+    const body: any = {}
+    await stampWorkspacePlan(body, 'ws-1')
+    expect('desktopUnlimited' in body).toBe(false)
+    expect(body.planId).toBe('pro')
   })
 })
 

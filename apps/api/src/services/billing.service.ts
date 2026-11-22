@@ -57,6 +57,18 @@ export { usageLimitErrorPayload, type BalanceCheck, type UsageBlockReason };
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 
 /**
+ * Local mode read at call time, for decisions that must follow the env as it
+ * is *now* rather than as it was at import. `isLocalMode` above caches the
+ * import-time value, which is right for the process-lifetime gates but wrong
+ * for anything a test flips mid-run: `mail.integration.test.ts` boots with
+ * `SHOGO_LOCAL_MODE=true` and then deletes it to exercise the cloud gating,
+ * and a cached `true` made `getPlanStamp` answer "desktop" there (SHO-508).
+ */
+function localModeNow(): boolean {
+  return process.env.SHOGO_LOCAL_MODE === 'true'
+}
+
+/**
  * USD source a usage event was charged against. Mirrors the DB enum.
  * `window` = charged against a rolling usage window (the time-gated
  * "unlimited" path); `overage` = beyond the window, metered to Stripe.
@@ -303,20 +315,51 @@ export async function getActiveGrantsForWorkspace(
 }
 
 /**
- * Resolve the "effective" plan id for a workspace given its active
- * paid subscription (if any) and active grants. Returns the highest
- * tier from either source; falls back to `'free'` when neither is
- * present. Normalized via `normalizePlanId`, so callers get one of
- * `free|basic|pro|business|enterprise`.
+ * The plan a workspace is on, plus whether the *install itself* is uncapped.
  *
- * A paid subscription always wins over a grant's `planId` (the
- * subscription is what Stripe is actually billing); the grant only
- * meaningfully upgrades workspaces without a paid sub.
+ * `planId` is `null` only on desktop (`SHOGO_LOCAL_MODE`) with no linked cloud
+ * plan to report — "we don't know", which is not the same as `'free'` and must
+ * never be stamped as one (SHO-508). Keyed like `PLAN_RANK`, so
+ * `free|basic|pro|business|enterprise` in cloud mode.
  */
-export async function getEffectivePlanId(
+export interface PlanStamp {
+  planId: keyof typeof PLAN_RANK | null
+  /**
+   * Desktop has no plan limits at all (channel rule, SHO-43): every gate next
+   * to this one (`hasPaidSubscription`, `hasAdvancedModelAccess`,
+   * `canPublishSubdomain`, ...) already short-circuits on `isLocalMode`. This
+   * flag is how a caller that only needs the *plan id* can still tell
+   * "unlimited desktop" from "free workspace".
+   */
+  desktopUnlimited: boolean
+}
+
+/**
+ * Resolve the plan a workspace is on, as one value, for everything that shows
+ * it to a user or an agent.
+ *
+ * In cloud mode: the highest tier from the active paid subscription (if any)
+ * and active grants, normalized via `normalizePlanId`. A paid subscription
+ * always wins over a grant's `planId` (the subscription is what Stripe is
+ * actually billing); the grant only meaningfully upgrades workspaces without a
+ * paid sub.
+ *
+ * On desktop: there is no `Subscription` row and no grant, so the local rows
+ * can only ever answer `free` — which is a lie when the install is signed into
+ * a paid Shogo Cloud account, and the lie is what made agents refuse working
+ * features (`lib/stamp-workspace-plan.ts` stamped it into the system prompt,
+ * SHO-508). The linked cloud workspace is the only source of truth, so this
+ * reads that instead. Not linked, or the cloud knows no plan: `planId: null`
+ * with `desktopUnlimited: true`.
+ */
+export async function getPlanStamp(
   workspaceId: string,
   now: Date = new Date(),
-): Promise<keyof typeof PLAN_RANK> {
+): Promise<PlanStamp> {
+  if (localModeNow()) {
+    const { getLinkedCloudPlanId } = await import('../lib/linked-cloud-plan')
+    return { planId: await getLinkedCloudPlanId(), desktopUnlimited: true }
+  }
   // Child workspaces pool the parent's plan tier.
   const billingWorkspaceId = await resolveBillingWorkspaceId(workspaceId)
   const sub = await prisma.subscription.findFirst({
@@ -324,10 +367,26 @@ export async function getEffectivePlanId(
     select: { planId: true },
   })
   if (sub) {
-    return normalizePlanId(sub.planId) ?? 'free'
+    return { planId: normalizePlanId(sub.planId) ?? 'free', desktopUnlimited: false }
   }
   const grant = await getActiveGrantsForWorkspace(billingWorkspaceId, now)
-  return normalizePlanId(grant.planId) ?? 'free'
+  return { planId: normalizePlanId(grant.planId) ?? 'free', desktopUnlimited: false }
+}
+
+/**
+ * Resolve the "effective" plan id for a workspace. Same resolution as
+ * `getPlanStamp`, flattened to a `PLAN_RANK` key for the gates that compare
+ * ranks: on desktop the linked cloud plan, falling back to `'free'` only
+ * because this signature has no way to say "unknown". Callers that must not
+ * mistake desktop for free (anything that stamps the plan into a prompt) use
+ * `getPlanStamp` instead.
+ */
+export async function getEffectivePlanId(
+  workspaceId: string,
+  now: Date = new Date(),
+): Promise<keyof typeof PLAN_RANK> {
+  const stamp = await getPlanStamp(workspaceId, now)
+  return stamp.planId ?? 'free'
 }
 
 /**

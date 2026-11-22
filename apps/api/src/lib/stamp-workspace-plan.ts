@@ -60,24 +60,41 @@ export function buildPublishHostingStamp(
  * the user about the Pro-plan publish gate BEFORE doing deploy work instead of
  * discovering it from a failed `publish`.
  *
+ * On desktop the plan comes from the linked cloud workspace
+ * (`getPlanStamp`), never from the local rows that can only answer `free`, and
+ * `desktopUnlimited` says this machine has no plan limits at all — without it
+ * an agent reads "Workspace plan: Free" and refuses heartbeats, models and
+ * schedules that work here (SHO-508). Unlinked desktop stamps no `planId` at
+ * all rather than a wrong one.
+ *
  * Mutates `parsedBody` in place. Best-effort: a billing lookup failure leaves
  * every field unset and the chat proceeds.
  */
 export async function stampWorkspacePlan(
-  parsedBody: { planId?: unknown; canPublishSubdomain?: unknown; publishHosting?: unknown },
+  parsedBody: {
+    planId?: unknown
+    desktopUnlimited?: unknown
+    canPublishSubdomain?: unknown
+    publishHosting?: unknown
+  },
   workspaceId: string,
 ): Promise<void> {
+  // `null` = desktop, no known plan; `undefined` = the lookup failed.
   let planId: string | null | undefined
   try {
-    const [effectivePlanId, canPublish] = await Promise.all([
-      billingService.getEffectivePlanId(workspaceId),
+    const [stamp, canPublish] = await Promise.all([
+      billingService.getPlanStamp(workspaceId),
       billingService.canPublishSubdomain(workspaceId),
     ])
-    planId = effectivePlanId
-    parsedBody.planId = effectivePlanId
+    planId = stamp.planId
+    if (stamp.planId) parsedBody.planId = stamp.planId
+    else delete parsedBody.planId
+    if (stamp.desktopUnlimited) parsedBody.desktopUnlimited = true
+    else delete parsedBody.desktopUnlimited
     parsedBody.canPublishSubdomain = canPublish
   } catch (err: any) {
     delete parsedBody.planId
+    delete parsedBody.desktopUnlimited
     delete parsedBody.canPublishSubdomain
     console.warn(`[stampWorkspacePlan] plan lookup failed for ${workspaceId}:`, err?.message ?? err)
   }
@@ -89,7 +106,11 @@ export async function stampWorkspacePlan(
   // the loser of the race is an unhandled rejection that bun reports as a
   // failed test in every suite that mocks a partial prisma.
   try {
-    const effectivePlanId = planId ?? (await billingService.getEffectivePlanId(workspaceId))
+    // A failed plan lookup is retried here so a billing outage keeps the
+    // hosting line off too, as before.
+    const effectivePlanId = planId === undefined
+      ? (await billingService.getPlanStamp(workspaceId)).planId
+      : planId
     const alwaysOnAllowance = await billingService.getAlwaysOnAllowanceForWorkspace(workspaceId)
     parsedBody.publishHosting = buildPublishHostingStamp(effectivePlanId, alwaysOnAllowance)
   } catch (err: any) {

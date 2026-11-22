@@ -18,6 +18,7 @@ import {
   getUpstreamWorkspaceId,
 } from '../lib/federated-upstream'
 import { markCloudKeyRejectedIfConfirmed } from '../lib/cloud-key-state'
+import { readLinkedCloudPlan } from '../lib/linked-cloud-plan'
 
 type StoredKeyInfo = {
   workspace?: { id?: string; name?: string; slug?: string }
@@ -75,12 +76,11 @@ export function localCloudBillingRoutes() {
     }
 
     try {
-      const response = await fetchUpstream('/api/billing/workspace-plan', {
-        method: 'GET',
-        search: `?workspaceId=${encodeURIComponent(workspace.id)}`,
-      })
-      const plan = await upstreamJson(response)
-      if (response.status === 401) {
+      // Same read the chat stamp uses for the desktop plan (SHO-508), so the
+      // card and the agent's account context can never disagree.
+      const read = await readLinkedCloudPlan(workspace.id)
+      const plan = read.body
+      if (read.status === 401) {
         const cloudKeyRejected = await markCloudKeyRejectedIfConfirmed(
           'billing summary 401',
           await getUpstreamCredential(),
@@ -93,7 +93,7 @@ export function localCloudBillingRoutes() {
           plan,
         }, 401)
       }
-      if (!response.ok) {
+      if (!read.ok) {
         // Return 200 (not the upstream status) so the client still receives
         // the workspace + cloud URLs and can keep Upgrade / Manage working
         // while it shows the plan-load error. Only a confirmed 401 above is
@@ -103,7 +103,7 @@ export function localCloudBillingRoutes() {
           workspace,
           ...cloudBillingUrls(workspace.id),
           error: plan,
-          upstreamStatus: response.status,
+          upstreamStatus: read.status,
         })
       }
 
