@@ -29,12 +29,18 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { prisma } from './prisma'
 import { hostedWorkspacesResolveHere } from './cloud-topology'
 import { isAgentStreamPath } from './agent-stream-paths'
+import { wakeRefusal } from './host-wake'
 
 export const HOST_TUNNEL_PREFIX = '/api/internal/host-tunnel'
 
 const SECRET = process.env.SHOGO_HOST_TUNNEL_SECRET || randomBytes(24).toString('hex')
 
-/** How long a request waits for a sleeping desktop's tunnel before `host_offline`. */
+/**
+ * The short probe a *stale* host gets. A desktop whose heartbeat is older than
+ * `POLL_INTERVAL_IDLE_S * 2` has nothing polling to answer the wake, so waiting
+ * longer only delays the honest `host_offline` (SHO-506). A fresh host's wait is
+ * decided from its heartbeat by `wakeHostTunnel`, not by this value.
+ */
 const WAKE_DEADLINE_MS = Math.max(0, Number(process.env.SHOGO_HOST_WAKE_DEADLINE_MS ?? 5_000) || 0)
 
 /** The same deadline, for callers that forward over the tunnel themselves (SHO-493). */
@@ -100,14 +106,6 @@ export function hostTunnelRuntimeUrl(
  */
 export function clientRuntimeUrl(resolved: { mode: string; url?: string | null }): string | null {
   return resolved.mode === 'host-tunnel' ? null : resolved.url ?? null
-}
-
-export class HostOfflineError extends Error {
-  readonly code = 'host_offline'
-  constructor(readonly instanceId: string, readonly hostName: string | null) {
-    super(`${hostName || 'The desktop hosting this workspace'} is offline`)
-    this.name = 'HostOfflineError'
-  }
 }
 
 /**
@@ -193,6 +191,14 @@ function secretMatches(given: string): boolean {
 /** The instance-tunnel transport (the real one lives in `routes/instances`). */
 export type TunnelTransport = {
   ensureTunnelConnected: (instanceId: string, deadlineMs: number) => Promise<boolean>
+  /**
+   * The wake that tells `connected` from `connecting` from `offline` (SHO-506).
+   * Optional so a test double built before it existed still fits.
+   */
+  wakeHostTunnel?: (
+    instanceId: string,
+    opts?: { staleProbeMs?: number; maxWaitMs?: number },
+  ) => Promise<import('../routes/instances').HostWakeResult>
   sendTunnelRequest: (instanceId: string, payload: any) => Promise<{ status: number; headers?: Record<string, string>; body?: string }>
   sendTunnelStreamRequest: (instanceId: string, payload: any, onChunk: (chunk: any) => void) => { cancel: () => void }
   generateRequestId: () => string
@@ -270,10 +276,13 @@ export async function handleHostTunnel(c: Context, opts: HostTunnelOptions = {})
 
   const tunnel: TunnelTransport =
     opts._tunnel ?? ((await import('../routes/instances')) as unknown as TunnelTransport)
-  const { ensureTunnelConnected, sendTunnelRequest, sendTunnelStreamRequest, generateRequestId } = tunnel
-  if (!(await ensureTunnelConnected(instanceId, WAKE_DEADLINE_MS))) {
-    const err = new HostOfflineError(instanceId, instance.name)
-    return c.json({ error: { code: err.code, message: err.message, instanceId, retryable: true } }, 503)
+  const { wakeHostTunnel, ensureTunnelConnected, sendTunnelRequest, sendTunnelStreamRequest, generateRequestId } = tunnel
+  const wake = wakeHostTunnel
+    ? await wakeHostTunnel(instanceId, { staleProbeMs: WAKE_DEADLINE_MS })
+    : { state: (await ensureTunnelConnected(instanceId, WAKE_DEADLINE_MS)) ? 'connected' : 'offline', instanceId, name: instance.name, lastSeenAt: null, retryAfterSeconds: 0 } as any
+  if (wake.state !== 'connected') {
+    const refusal = wakeRefusal(wake, 'host', { subject: instance.name })
+    return c.json({ error: refusal }, 503)
   }
 
   const method = c.req.method

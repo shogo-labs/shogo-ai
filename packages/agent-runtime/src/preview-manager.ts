@@ -849,6 +849,17 @@ const BUILT_IN_MS_PATTERN = /built in \d/
 const CRASH_BACKOFF_BASE_MS = 1000
 const CRASH_BACKOFF_MAX_MS = 30_000
 const MAX_CRASH_RESTARTS = 5
+/**
+ * Gap between on-demand recovery attempts. A crash-looping sidecar behind a
+ * busy proxy would otherwise spawn once per request, which is how "preview
+ * recovery" leaked process trees (SHO-509). The first attempt after a crash is
+ * immediate; each further attempt while the API stays `crashed` waits longer
+ * (30s, 60s, 2m, … capped at 10 min), so a permanently broken `server.tsx`
+ * costs a handful of spawns an hour instead of one every five seconds. A
+ * healthy start clears the count.
+ */
+const RECOVERY_BACKOFF_BASE_MS = 30_000
+const RECOVERY_BACKOFF_MAX_MS = 10 * 60_000
 
 // `custom-routes.ts` is the agent-editable surface for non-CRUD routes
 // — see `templates/runtime-template/custom-routes.ts`. Saves trigger a
@@ -1210,6 +1221,19 @@ export class PreviewManager {
   private intentionalStop = false
   private crashCount = 0
   private crashRestartTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * When the last on-demand recovery was kicked off. Repeated `/api/*` requests
+   * against a crash-looping sidecar would each spawn a fresh process — the
+   * "preview recovery" leak in SHO-509 — so a second attempt inside the
+   * cooldown is refused and the caller keeps its 503.
+   */
+  private lastRecoveryAttemptAt = 0
+  /**
+   * Consecutive on-demand recoveries since the API last came up healthy. Drives
+   * the growing cooldown in {@link recoveryCooldownMs} and is reset on every
+   * healthy start, so a server that recovers cleanly gets the fast path again.
+   */
+  private recoveryAttempts = 0
   /**
    * `true` if `@expo/ngrok` was found at the time the last Metro tunnel
    * spawn was attempted. `null` means we haven't tried yet (no metro
@@ -4151,6 +4175,7 @@ export class PreviewManager {
       // running server that crashes once tomorrow doesn't run out of
       // retries because of yesterday's bad start.
       this.crashCount = 0
+      this.recoveryAttempts = 0
       console.log(`[${LOG_PREFIX}] API server healthy on port ${this.apiPort}`)
     } else if (this.apiServerProcess === proc && !proc.killed) {
       // Process is up but /health never responded — treat as best-effort
@@ -4161,6 +4186,7 @@ export class PreviewManager {
       this.apiPhase = 'healthy'
       this.apiListening = true
       this.crashCount = 0
+      this.recoveryAttempts = 0
       console.warn(`[${LOG_PREFIX}] API server started but /health never returned 2xx — proceeding anyway`)
     }
 
@@ -4369,6 +4395,17 @@ export class PreviewManager {
     if (this.apiPhase !== 'crashed') return false
     if (this.intentionalStop || this.regenerating) return false
 
+    // A crash-looping sidecar plus a busy proxy would otherwise spawn a fresh
+    // process per request (SHO-509). The first attempt after a crash is
+    // immediate; each further attempt while the API stays `crashed` waits
+    // longer (30s, 60s, 2m … capped at 10 min), so a permanently broken
+    // `server.tsx` cannot spawn a generate every few seconds. The caller keeps
+    // its 503 and the next request past the cooldown retries.
+    const now = Date.now()
+    if (now - this.lastRecoveryAttemptAt < this.recoveryCooldownMs()) return false
+    this.lastRecoveryAttemptAt = now
+    this.recoveryAttempts += 1
+
     console.log(`[${LOG_PREFIX}] API server is in 'crashed' state; attempting on-demand recovery`)
     // Fresh budget for this user-initiated attempt, and flip out of `crashed`
     // immediately so concurrent requests don't each spawn a sidecar.
@@ -4378,6 +4415,18 @@ export class PreviewManager {
       console.error(`[${LOG_PREFIX}] On-demand API recovery failed: ${err?.message ?? err}`)
     })
     return true
+  }
+
+  /**
+   * How long to wait before the next on-demand recovery. Zero for the first
+   * attempt after a crash (the caller's request should not be made to wait),
+   * then exponential from {@link RECOVERY_BACKOFF_BASE_MS}, capped at
+   * {@link RECOVERY_BACKOFF_MAX_MS}. A healthy start resets the count.
+   */
+  private recoveryCooldownMs(): number {
+    if (this.recoveryAttempts <= 0) return 0
+    const exponent = Math.min(this.recoveryAttempts - 1, 16)
+    return Math.min(RECOVERY_BACKOFF_BASE_MS * 2 ** exponent, RECOVERY_BACKOFF_MAX_MS)
   }
 
   /**
@@ -4495,6 +4544,7 @@ export class PreviewManager {
             this.apiPhase = 'healthy'
             this.apiListening = true
             this.crashCount = 0
+            this.recoveryAttempts = 0
           }
           this.apiReloadedAt = Date.now()
           return {

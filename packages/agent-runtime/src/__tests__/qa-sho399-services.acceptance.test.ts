@@ -12,6 +12,7 @@ import { join } from 'path'
 import { createTools, type ToolContext } from '../gateway-tools'
 import { CommandRegistry } from '../command-registry'
 import { readDeclaredServices, undeclareService } from '../services-registry'
+import { releaseLiveGroup, resetProcessBudgetForTests, trackLiveGroup } from '../process-budget'
 import { AgentGateway } from '../gateway'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
@@ -211,5 +212,56 @@ describe('a gateway restart', () => {
     expect(rows[0]!.service).toBe(true)
     expect(rows[0]!.status).toBe('running')
     await chatRegistry!.killAll().catch(() => {})
+  }, 20_000)
+})
+
+describe('replacing a service (SHO-509)', () => {
+  test('the old tree stops without its declaration being dropped', async () => {
+    resetProcessBudgetForTests()
+    const seen: Array<{ name: string; options?: { undeclare?: boolean } }> = []
+    const ctx = makeCtx({
+      commandRegistry: registry,
+      cancelServiceByName: async (name: string, options?: { undeclare?: boolean }) => {
+        seen.push({ name, options })
+        return true
+      },
+    })
+    await run(ctx, 'exec', { command: 'sleep 30', background: true, service: true, name: 'sleeper' })
+    const again = await run(ctx, 'exec', { command: 'sleep 31', background: true, service: true, name: 'sleeper' })
+    expect(again.error).toBeUndefined()
+
+    // The replacement must NOT undeclare: if its own spawn fails with EAGAIN the
+    // declaration is the only thing that brings the service back on next boot.
+    expect(seen).toEqual([{ name: 'sleeper', options: { undeclare: false } }])
+    expect(readDeclaredServices(TEST_DIR).map((s) => s.command)).toEqual(['sleep 31'])
+  }, 20_000)
+
+  test('a refused replacement leaves the service running and declared', async () => {
+    resetProcessBudgetForTests()
+    const saved = process.env.SHOGO_MAX_PROCESS_GROUPS
+    process.env.SHOGO_MAX_PROCESS_GROUPS = '1'
+    try {
+      const ctx = makeCtx({ commandRegistry: registry })
+      const first = await run(ctx, 'exec', { command: 'sleep 30', background: true, service: true, name: 'sleeper' })
+      expect(first.error).toBeUndefined()
+
+      // A stray group puts the runtime over the cap, so even after the
+      // replacement frees its own slot the budget still refuses.
+      trackLiveGroup({ id: 't_stray', label: 'sleep 300', startedAt: Date.now() })
+      const refused = await run(ctx, 'exec', { command: 'sleep 31', background: true, service: true, name: 'sleeper' })
+      expect(refused.code).toBe('process_budget')
+
+      // The refusal came BEFORE the kill: the old service is still running…
+      const listed = await run(ctx, 'task_list', {})
+      const row = listed.tasks.find((t: any) => t.task_id === first.task_id)
+      expect(row?.status).toBe('running')
+      // …and still declared, so the next boot brings it back.
+      expect(readDeclaredServices(TEST_DIR).map((s) => s.command)).toEqual(['sleep 30'])
+    } finally {
+      releaseLiveGroup('t_stray')
+      resetProcessBudgetForTests()
+      if (saved === undefined) delete process.env.SHOGO_MAX_PROCESS_GROUPS
+      else process.env.SHOGO_MAX_PROCESS_GROUPS = saved
+    }
   }, 20_000)
 })

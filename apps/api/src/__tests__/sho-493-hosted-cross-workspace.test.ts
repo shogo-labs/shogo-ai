@@ -59,17 +59,30 @@ let hostedBoardName: string
 /** The instance-tunnel transport, faked: the wake answer and the answer/error. */
 interface TunnelBehaviour {
   online: boolean
+  /** What the wake answers when it is not `online` (SHO-506). */
+  wake?: 'connecting' | 'offline'
   response?: { status: number; headers?: Record<string, string>; body?: string }
   error?: Error
 }
 let behaviour: TunnelBehaviour
 const tunnelCalls: Array<{ instanceId: string; payload: any }> = []
-const wakeCalls: Array<{ instanceId: string; deadlineMs: number }> = []
+const wakeCalls: Array<{ instanceId: string; staleProbeMs?: number; maxWaitMs?: number }> = []
 
 const tunnel = {
   ensureTunnelConnected: async (instanceId: string, deadlineMs: number) => {
-    wakeCalls.push({ instanceId, deadlineMs })
+    wakeCalls.push({ instanceId, staleProbeMs: deadlineMs })
     return behaviour.online
+  },
+  wakeHostTunnel: async (instanceId: string, opts: { staleProbeMs?: number; maxWaitMs?: number } = {}) => {
+    wakeCalls.push({ instanceId, ...opts })
+    const state = behaviour.online ? ('connected' as const) : (behaviour.wake ?? ('offline' as const))
+    return {
+      state,
+      instanceId,
+      name: 'samasra',
+      lastSeenAt: new Date(),
+      retryAfterSeconds: state === 'connecting' ? 15 : 0,
+    }
   },
   sendTunnelRequest: async (instanceId: string, payload: any) => {
     tunnelCalls.push({ instanceId, payload })
@@ -256,7 +269,7 @@ describe('B · forwarding over the host tunnel', () => {
     expect(res.status).toBe(200)
     expect(await res.text()).toBe(desktopBody)
 
-    expect(wakeCalls[0]).toEqual({ instanceId: hostInstanceId, deadlineMs: 25 })
+    expect(wakeCalls[0]).toEqual({ instanceId: hostInstanceId, staleProbeMs: 25 })
     expect(tunnelCalls).toHaveLength(1)
     const sent = tunnelCalls[0].payload
     // The desktop's local API, same path, same query — not the agent proxy.
@@ -300,6 +313,23 @@ describe('B · forwarding over the host tunnel', () => {
     expect(body.message).toContain('last seen')
     expect(body.instanceId).toBe(hostInstanceId)
     expect(typeof body.lastSeenAt).toBe('string')
+    expect(tunnelCalls).toHaveLength(0)
+  })
+
+  test('a host that is up but still opening answers a retryable device_connecting', async () => {
+    // The machine polled seconds ago; its tunnel just missed the wake window
+    // (SHO-506). Calling that `device_offline` is what made a cloud agent tell the
+    // user their Mac was off.
+    behaviour = { online: false, wake: 'connecting' }
+    const res = await call()
+    expect(res.status).toBe(503)
+    const body = (await res.json<any>()).error
+    expect(body.code).toBe('device_connecting')
+    expect(body.retryable).toBe(true)
+    expect(body.retryAfterSeconds).toBe(15)
+    expect(body.message).toContain('still opening')
+    expect(body.instanceId).toBe(hostInstanceId)
+    // Nothing was forwarded, and the host was told what it can do next.
     expect(tunnelCalls).toHaveLength(0)
   })
 

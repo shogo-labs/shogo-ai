@@ -140,6 +140,32 @@ async function crossWorkspaceRequest(
 }
 
 /**
+ * Move a machine's heartbeat into the past, around the API.
+ *
+ * `wakeHostTunnel` decides "still opening" from "away" by how old the heartbeat
+ * is (SHO-506), and a machine that has been killed sends no more of them — so
+ * this is the same state an hour of silence produces, without an hour of test
+ * time. The row is read fresh on every wake, so the next call sees it.
+ */
+async function ageMachineHeartbeat(instanceId: string, minutes = 10): Promise<void> {
+  const { Client } = await import('pg')
+  const client = new Client({ connectionString: cloud.dbUrl })
+  await client.connect()
+  try {
+    // `now() AT TIME ZONE 'UTC'` is deliberate: Prisma stores a DateTime in a
+    // naive `timestamp` column and reads it back as UTC, so a bare `now()` is
+    // written in the server's own timezone and comes back in the future (a host
+    // that looks *more* recently seen the older it gets).
+    await client.query(
+      'UPDATE instances SET "lastSeenAt" = (now() AT TIME ZONE \'UTC\') - make_interval(mins => $1) WHERE id = $2',
+      [minutes, instanceId],
+    )
+  } finally {
+    await client.end()
+  }
+}
+
+/**
  * Write straight to the cloud's Postgres, around the API. The host change log
  * that syncs a write down to the desktop is a Prisma extension, so a raw UPDATE
  * reaches Postgres and never reaches the desktop — which is exactly the
@@ -492,11 +518,40 @@ describeIfInfra('a workspace hosted on a paired desktop (SHO-285)', () => {
     expect(mine, `the post in the desktop's channel: ${JSON.stringify(onDesktop.data).slice(0, 800)}`).toBeTruthy()
     expect(mine.blocks?.onBehalfOf?.userId ?? mine.metadata?.onBehalfOf?.userId).toBe(cloudUserId)
 
-    // --- with the host off it says so, with the machine's last-seen time -----
+    // --- a host whose socket just died is "still opening", not "away" --------
+    // Its heartbeat is still fresh, so the wake waits for its next poll before
+    // giving up — and what it answers then is the retryable `device_connecting`.
+    // That is the point of SHO-506: a Mac that polled forty seconds ago is not a
+    // Mac that is off, whatever its socket is doing right now.
     await machine.kill()
     // The cloud notices the closed socket a moment after the process dies; until
     // then a forwarded call can still fail as a tunnel error. What it may never
-    // do is answer 200 with nothing in it.
+    // do is answer 200 with nothing in it. One attempt can spend the whole wake
+    // window (up to 75s), so this poll has to outlast one of them.
+    const connecting = await waitForSync(
+      'the cloud to say the host is online but still connecting',
+      async () => {
+        const res = await crossWorkspaceRequest('GET', `/api/internal/workspaces/${hosted}/agent-boards`)
+        expect(res.status, JSON.stringify(res.data).slice(0, 300)).not.toBe(200)
+        return res.status === 503 && res.data?.error?.code === 'device_connecting' ? res : null
+      },
+      180_000,
+      2_000,
+    )
+    const opening = connecting.data?.error
+    expect(opening?.instanceId).toBe(machine.machineId)
+    expect(typeof opening?.lastSeenAt).toBe('string')
+    expect(opening?.retryable).toBe(true)
+    expect(opening?.retryAfterSeconds).toBeGreaterThan(0)
+    expect(String(opening?.message ?? '')).toContain(machine.machineName)
+    expect(String(opening?.message ?? '')).toContain('try again')
+    expect(String(opening?.message ?? '')).not.toContain('offline')
+
+    // --- once its heartbeat is stale it is honestly offline ------------------
+    // The machine is dead, so nothing refreshes its heartbeat: aging the row is
+    // exactly the state an hour of silence produces, and the answer stops
+    // inviting a retry.
+    await ageMachineHeartbeat(machine.machineId)
     const offline = await waitForSync(
       'the cloud to report the host offline',
       async () => {
@@ -509,6 +564,7 @@ describeIfInfra('a workspace hosted on a paired desktop (SHO-285)', () => {
     )
     expect(offline.data?.error?.instanceId).toBe(machine.machineId)
     expect(typeof offline.data?.error?.lastSeenAt).toBe('string')
+    expect(offline.data?.error?.retryable).toBe(false)
     expect(String(offline.data?.error?.message ?? '')).toContain(machine.machineName)
     expect(offline.data?.error?.message ?? '').toContain('offline')
 

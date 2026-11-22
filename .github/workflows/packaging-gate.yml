@@ -1,0 +1,79 @@
+# =============================================================================
+# Packaging gate — pack and install every published @shogo-ai/* tarball
+# =============================================================================
+# Every other check we run tests the *source tree*: the SDK suite resolves
+# `exports` through the `development` condition (so `src/*`), and inside the
+# monorepo `workspace:*` links to the full checkout. Neither can see a tarball
+# that is missing a file, so 2.6.1 shipped a `bin/bucket-cli.mjs` that wasn't in
+# `files` and an `exports["./bucket"]` with no build target (SHO-511).
+#
+# `scripts/verify-packed-packages.ts` builds the packages, packs them the way
+# the release workflows do, installs the tarballs into a scratch consumer
+# outside the repo, and imports every `exports` subpath, runs every `bin
+# --help`, and statically checks every relative reference in `dist/` and
+# `bin/`. This workflow runs it on the PRs that can break packaging.
+#
+# Path-filtered on purpose: a docs or mobile change should not pay for a build
+# + pack + install cycle, and "Lint, Typecheck, Test" stays the fast gate.
+# =============================================================================
+
+name: Packaging Gate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'packages/*/package.json'
+      - 'packages/*/bin/**'
+      - 'packages/*/tsup.config.ts'
+      - 'packages/*/src/**/index.ts'
+      - 'packages/*/src/**/*.ts'
+      - 'scripts/verify-packed-packages.ts'
+      - 'scripts/packaging-lists.ts'
+      - 'scripts/build-packages.ts'
+      - '.github/workflows/packaging-gate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packaging-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Packed tarball smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: setup-bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.4'
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        # `GITHUB_TOKEN` is required so `@vscode/ripgrep`'s postinstall
+        # authenticates its api.github.com lookup (see
+        # scripts/check-ci-bun-install-token.ts).
+        run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Static list agreement
+        # Fast half: `files`, `exports`, `bin` and `tsup.config.ts` must agree
+        # in every published package. Fails in milliseconds when they don't.
+        run: bun test scripts/__tests__/packaging-lists.test.ts
+
+      - name: Pack and install every published tarball
+        # Slow half: build, pack, install into a scratch consumer outside the
+        # repo, then import every exports subpath and run every bin.
+        run: bun run scripts/verify-packed-packages.ts
