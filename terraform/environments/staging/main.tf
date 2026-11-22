@@ -242,7 +242,7 @@ module "object_storage" {
   compartment_id = var.compartment_id
   environment    = local.environment
   region         = var.region
-  tags           = local.tags
+  tags           = merge(local.tags, { Sho515Proof = "pending-object-storage-change" })
 
   # Per-bucket compartment overrides — see module doc for why these exist.
   # Two of the four staging buckets were bootstrapped outside the staging
