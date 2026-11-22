@@ -40,6 +40,11 @@ on:
   schedule:
     - cron: '43 4 * * *'
   workflow_dispatch:
+  # TEMPORARY (SHO-507): `workflow_dispatch` only works for a workflow file that
+  # already exists on the default branch, so the offsets cannot be proven from a
+  # PR branch without a trigger. Removed in the commit right after the runs.
+  push:
+    branches: [sho-507-test-time-bombs]
 
 permissions: {}
 
