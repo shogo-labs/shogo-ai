@@ -19,6 +19,7 @@
  */
 
 import { WorkerTunnel, type ResolveRejection, type RuntimeResolver } from './tunnel'
+import { rejectionKey } from './tunnel'
 
 export interface TunnelWorkerInit {
   type: 'init'
@@ -40,8 +41,8 @@ export interface HostProjectStatus {
 
 /** Worker → host: something the tunnel needs resolved on the main thread. */
 export type WorkerRequest =
-  | { type: 'resolve'; id: number; path: string; projectId?: string }
-  | { type: 'token'; id: number; projectId: string }
+  | { type: 'resolve'; id: number; path: string; projectId?: string; workspaceId?: string }
+  | { type: 'token'; id: number; projectId?: string; workspaceId?: string }
   | { type: 'refresh'; id: number }
   | { type: 'machineSnapshot'; id: number }
 
@@ -73,10 +74,11 @@ export type WorkerEvent =
 
 type Pending = { resolve: (value: any) => void }
 
+
 /** A request before the id is assigned. */
 type WorkerRequestInput =
-  | { type: 'resolve'; path: string; projectId?: string }
-  | { type: 'token'; projectId: string }
+  | { type: 'resolve'; path: string; projectId?: string; workspaceId?: string }
+  | { type: 'token'; projectId?: string; workspaceId?: string }
   | { type: 'refresh' }
   | { type: 'machineSnapshot' }
 
@@ -122,19 +124,33 @@ class BridgedResolver implements RuntimeResolver {
     entry.resolve(reply)
   }
 
-  async resolveLocalUrl(pathWithQuery: string, projectId?: string): Promise<string | null> {
-    const reply = (await this.request({ type: 'resolve', path: pathWithQuery, projectId })) as Extract<
-      HostReply,
-      { type: 'resolved' }
-    >
+  async resolveLocalUrl(
+    pathWithQuery: string,
+    projectId?: string,
+    workspaceId?: string,
+  ): Promise<string | null> {
+    const reply = (await this.request({
+      type: 'resolve',
+      path: pathWithQuery,
+      projectId,
+      workspaceId,
+    })) as Extract<HostReply, { type: 'resolved' }>
     if (reply.url === null && reply.rejection) {
-      this.rejections.set(`${pathWithQuery}|${projectId ?? ''}`, reply.rejection)
+      this.rejections.set(rejectionKey(pathWithQuery, projectId, workspaceId), reply.rejection)
     }
     return reply.url
   }
 
   async deriveRuntimeToken(projectId: string): Promise<string | null> {
     const reply = (await this.request({ type: 'token', projectId })) as Extract<
+      HostReply,
+      { type: 'token-result' }
+    >
+    return reply.token
+  }
+
+  async deriveWorkspaceRuntimeToken(workspaceId: string): Promise<string | null> {
+    const reply = (await this.request({ type: 'token', workspaceId })) as Extract<
       HostReply,
       { type: 'token-result' }
     >
@@ -151,9 +167,13 @@ class BridgedResolver implements RuntimeResolver {
     return { status: project.status, agentPort: project.agentPort }
   }
 
-  describeRejection(pathWithQuery: string, projectId?: string): ResolveRejection {
+  describeRejection(
+    pathWithQuery: string,
+    projectId?: string,
+    workspaceId?: string,
+  ): ResolveRejection {
     return (
-      this.rejections.get(`${pathWithQuery}|${projectId ?? ''}`) ?? {
+      this.rejections.get(rejectionKey(pathWithQuery, projectId, workspaceId)) ?? {
         code: 'NO_LOCAL_RUNTIME',
         message: `no local runtime available for path: ${pathWithQuery}`,
       }

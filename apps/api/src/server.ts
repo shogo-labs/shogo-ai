@@ -3891,6 +3891,10 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   // Only the header carrying it needs forwarding; the `ETag` on the way back
   // already survives the response-header copy below.
   const ifNoneMatch = c.req.header('if-none-match')
+  // Media playback through the tunnel asks for byte ranges; the runtime already
+  // answers 206s, but the range never reached it (SHO-526).
+  const rangeHeader = c.req.header('range')
+  const ifRangeHeader = c.req.header('if-range')
   // Every project is served by a merged-root runtime that authenticates with
   // the WORKSPACE token, not the project token — sending the project token
   // here 401s every proxied call (config, quick-actions, workspace
@@ -3947,6 +3951,8 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       if (contentType) tunnelHeaders['content-type'] = contentType
       if (accept) tunnelHeaders['accept'] = accept
       if (ifNoneMatch) tunnelHeaders['if-none-match'] = ifNoneMatch
+      if (rangeHeader) tunnelHeaders['range'] = rangeHeader
+      if (ifRangeHeader) tunnelHeaders['if-range'] = ifRangeHeader
       tunnelHeaders['x-runtime-token'] = runtimeToken
       if (isChatStream && authedUserId) tunnelHeaders['x-billing-user-id'] = authedUserId
       if (chatSessionIdHeader) tunnelHeaders['x-chat-session-id'] = chatSessionIdHeader
