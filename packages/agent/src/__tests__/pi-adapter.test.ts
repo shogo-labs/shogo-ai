@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { resolveModel } from '../pi-adapter.js'
+import { extractAssistantText, extractFinalText, resolveModel } from '../pi-adapter.js'
 import { clearDynamicModels, registerDynamicModels } from '../model-catalog'
 
 describe('resolveModel — custom OpenAI-compatible (DB) providers', () => {
@@ -136,5 +136,31 @@ describe('resolveModel — Google (Gemini) models', () => {
     const model = resolveModel('google', 'gemini-2.5-pro')
     expect(model.api).toBe('openai-completions')
     expect(model.baseUrl).toBe('https://api.example.test/api/ai/v1')
+  })
+})
+
+// SHO-523: the proxy now forwards Gemini's thought summary as
+// `reasoning_content`, which pi-ai turns into a `thinking` block. Anything that
+// builds a summary from the turn (compaction, plan translation) must see only
+// the answer, never the model's thinking.
+describe('extractFinalText — thinking blocks stay out of the reply text', () => {
+  it('joins text blocks only, skipping thinking alongside them', () => {
+    const thinkingThenAnswer = {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'Let me work out the ball-and-bat riddle.' },
+        { type: 'text', text: 'The ball costs 5 cents.' },
+      ],
+    } as any
+    expect(extractAssistantText(thinkingThenAnswer)).toBe('The ball costs 5 cents.')
+  })
+
+  it('returns an empty string for a thinking-only turn', () => {
+    const thinkingOnly = {
+      role: 'assistant',
+      content: [{ type: 'thinking', thinking: 'still working' }],
+    } as any
+    expect(extractAssistantText(thinkingOnly)).toBe('')
+    expect(extractFinalText([thinkingOnly])).toBe('')
   })
 })

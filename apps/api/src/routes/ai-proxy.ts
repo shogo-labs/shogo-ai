@@ -2471,52 +2471,287 @@ export function applyGoogleThoughtSignatures(messages: any[]): any[] {
   })
 }
 
+// ---------------------------------------------------------------------------
+// Gemini thinking summaries
+// ---------------------------------------------------------------------------
+
 /**
- * Per-stream rewriter for Gemini SSE. A signature can arrive in the same chunk
- * as its tool call or in a later chunk that only carries the call's `index`, so
- * the id is remembered across lines.
+ * Gemini's OpenAI-compatible layer reports its thinking summary as ordinary
+ * `content`, wrapped in `<thought>` … `</thought>` and (usually) flagged with
+ * `extra_content.google.thought`. pi-ai has no notion of either, so without
+ * this the summary is rendered as reply text. The proxy rewrites it into
+ * `reasoning_content`, the field pi-ai already turns into a thinking block.
+ *
+ * A tag can be split across two SSE chunks ("…</thou" then "ght>The ball
+ * costs…"), so one state object per response carries the open/closed state and
+ * whatever trailing tag prefix is being held back.
  */
-export function createGoogleSseRewriter(): (line: string) => string {
+const GOOGLE_THOUGHT_OPEN = '<thought>'
+const GOOGLE_THOUGHT_CLOSE = '</thought>'
+
+interface GoogleThoughtState {
+  /** A `</thought>` is still owed before the text is reply content again. */
+  inside: boolean
+  /** Content or a tool call has been seen; an opening tag is only valid before that. */
+  started: boolean
+  /** A trailing prefix of a tag, held until the next chunk completes or denies it. */
+  held: string
+}
+
+/** Length of the longest suffix of `text` that is a proper prefix of `tag`. */
+function heldTagPrefix(text: string, tag: string): number {
+  for (let length = Math.min(tag.length - 1, text.length); length > 0; length -= 1) {
+    if (text.endsWith(tag.slice(0, length))) return length
+  }
+  return 0
+}
+
+/**
+ * Split one chunk of Gemini `content` into thinking (`reasoning`) and reply
+ * (`content`) text.
+ *
+ *  - A chunk Google flagged as a thought is thinking, with its `<thought>`
+ *    opener stripped.
+ *  - Otherwise `<thought>` only opens a thought at the very start of the
+ *    stream, so a reply that quotes the literal text passes through untouched.
+ *  - While a thought is open, everything up to `</thought>` is thinking. The
+ *    text after the closing tag is reply content, which is why one chunk can
+ *    produce both.
+ */
+function splitGoogleThoughtChunk(
+  state: GoogleThoughtState,
+  text: string,
+  thoughtFlagged: boolean,
+): { state: GoogleThoughtState; reasoning: string; content: string } {
+  let buffer = state.held + text
+  let inside = state.inside
+  let started = state.started
+
+  if (!inside && (thoughtFlagged || !started)) {
+    if (buffer.startsWith(GOOGLE_THOUGHT_OPEN)) {
+      inside = true
+      started = true
+      buffer = buffer.slice(GOOGLE_THOUGHT_OPEN.length)
+    } else if (!thoughtFlagged && !started && GOOGLE_THOUGHT_OPEN.startsWith(buffer)) {
+      // Wholly a prefix of the opening tag — hold it until the next chunk.
+      return { state: { inside, started, held: buffer }, reasoning: '', content: '' }
+    } else if (thoughtFlagged) {
+      inside = true
+      started = true
+    }
+  }
+
+  if (!inside) {
+    return { state: { inside, started: started || buffer.length > 0, held: '' }, reasoning: '', content: buffer }
+  }
+
+  const close = buffer.indexOf(GOOGLE_THOUGHT_CLOSE)
+  if (close >= 0) {
+    return {
+      state: { inside: false, started: true, held: '' },
+      reasoning: buffer.slice(0, close),
+      content: buffer.slice(close + GOOGLE_THOUGHT_CLOSE.length),
+    }
+  }
+
+  const held = heldTagPrefix(buffer, GOOGLE_THOUGHT_CLOSE)
+  return {
+    state: { inside, started: true, held: buffer.slice(buffer.length - held) },
+    reasoning: buffer.slice(0, buffer.length - held),
+    content: '',
+  }
+}
+
+/** Cursor over one response's thought state, shared by the stream and non-stream paths. */
+function createGoogleThoughtReader() {
+  let state: GoogleThoughtState = { inside: false, started: false, held: '' }
+  return {
+    push(text: string, thoughtFlagged = false) {
+      const part = splitGoogleThoughtChunk(state, text, thoughtFlagged)
+      state = part.state
+      return { reasoning: part.reasoning, content: part.content }
+    },
+    /** A tool call counts as content for the "opening tag must be first" rule. */
+    markStarted() {
+      state = { ...state, started: true }
+    },
+    /** Release whatever was held back when the stream ends. */
+    drain() {
+      const { held, inside } = state
+      state = { ...state, held: '' }
+      return inside ? { reasoning: held, content: '' } : { reasoning: '', content: held }
+    },
+  }
+}
+
+/**
+ * Move a complete (non-streamed) message's thought summary out of `content`
+ * and into `reasoning_content`, dropping the marker Google attaches to it.
+ */
+export function splitGoogleThoughtMessage(payload: any): boolean {
+  const choices = Array.isArray(payload?.choices) ? payload.choices : []
+  let changed = false
+  for (const choice of choices) {
+    const message = choice?.message
+    if (!message || typeof message.content !== 'string' || message.content.length === 0) continue
+    const flagged = message?.extra_content?.google?.thought === true
+    if (!flagged && !message.content.includes(GOOGLE_THOUGHT_OPEN)) continue
+    const reader = createGoogleThoughtReader()
+    const head = reader.push(message.content, flagged)
+    const tail = reader.drain()
+    const reasoning = head.reasoning + tail.reasoning
+    const content = head.content + tail.content
+    delete message.extra_content
+    if (reasoning) {
+      message.reasoning_content = typeof message.reasoning_content === 'string'
+        ? message.reasoning_content + reasoning
+        : reasoning
+    }
+    message.content = content || null
+    changed = true
+  }
+  return changed
+}
+
+/** A line rewriter may need to emit more than one line, and may hold text back. */
+export interface SseLineRewriter {
+  (line: string): string | string[]
+  /** Lines owed when the upstream stream ends (text held back mid-tag). */
+  flush?: () => string | string[]
+}
+
+/**
+ * Per-stream rewriter for Gemini SSE. Two jobs:
+ *
+ *  - A thought signature can arrive in the same chunk as its tool call or in a
+ *    later chunk that only carries the call's `index`, so the id is remembered
+ *    across lines.
+ *  - Thinking summaries are moved into `reasoning_content`.
+ *
+ * A chunk carrying `"</thought>answer"` has to become two lines: pi-ai reads
+ * `content` before `reasoning_content` within one delta, so a single delta
+ * would emit the answer's text block in front of the thinking block.
+ */
+export function createGoogleSseRewriter(): SseLineRewriter {
   const idByIndex = new Map<number, string>()
-  return (line: string) => {
+  const thoughts = createGoogleThoughtReader()
+  let envelope: Record<string, unknown> | null = null
+
+  const standalone = (data: Record<string, unknown>): string =>
+    `data: ${JSON.stringify({
+      ...(envelope ?? { id: null, object: 'chat.completion.chunk', created: 0, model: 'unknown' }),
+      choices: [{ index: 0, delta: data, finish_reason: null }],
+    })}`
+
+  const rewriter = (line: string): string | string[] => {
     if (!line.startsWith('data: ')) return line
     const raw = line.slice(6).trim()
-    if (!raw || raw === '[DONE]') return line
+    if (!raw) return line
+    if (raw === '[DONE]') {
+      // Same field choice as `flush` below: a held prefix of `<thought>` that
+      // never completed is reply text, not thinking.
+      const owed = thoughts.drain()
+      if (!owed.reasoning && !owed.content) return line
+      const tail = owed.reasoning ? { reasoning_content: owed.reasoning } : { content: owed.content }
+      return [standalone(tail), line]
+    }
     let parsed: any
     try {
       parsed = JSON.parse(raw)
     } catch {
       return line
     }
+    if (parsed?.id !== undefined || parsed?.model !== undefined) {
+      envelope = {
+        id: parsed.id ?? envelope?.id ?? null,
+        object: parsed.object ?? envelope?.object ?? 'chat.completion.chunk',
+        created: parsed.created ?? envelope?.created ?? 0,
+        model: parsed.model ?? envelope?.model ?? 'unknown',
+      }
+    }
     const choices = Array.isArray(parsed?.choices) ? parsed.choices : []
+    const reasoningChunks: string[] = []
     let changed = false
     for (const choice of choices) {
       const delta = choice?.delta
-      const toolCalls = delta?.tool_calls
-      if (!Array.isArray(toolCalls)) continue
-      const found: Array<{ id: string; data: string }> = []
-      for (const toolCall of toolCalls) {
-        const index = typeof toolCall?.index === 'number' ? toolCall.index : undefined
-        const id = typeof toolCall?.id === 'string' && toolCall.id ? toolCall.id : undefined
-        if (index !== undefined && id) idByIndex.set(index, id)
-        const signature = googleThoughtSignature(toolCall)
-        if (!signature) continue
-        delete toolCall.extra_content
-        const owner = id ?? (index === undefined ? undefined : idByIndex.get(index))
-        if (!owner) continue
-        found.push({ id: owner, data: signature })
-        changed = true
+      if (!delta) continue
+      const toolCalls = delta.tool_calls
+      if (Array.isArray(toolCalls)) {
+        thoughts.markStarted()
+        const found: Array<{ id: string; data: string }> = []
+        for (const toolCall of toolCalls) {
+          const index = typeof toolCall?.index === 'number' ? toolCall.index : undefined
+          const id = typeof toolCall?.id === 'string' && toolCall.id ? toolCall.id : undefined
+          if (index !== undefined && id) idByIndex.set(index, id)
+          const signature = googleThoughtSignature(toolCall)
+          if (!signature) continue
+          delete toolCall.extra_content
+          const owner = id ?? (index === undefined ? undefined : idByIndex.get(index))
+          if (!owner) continue
+          found.push({ id: owner, data: signature })
+          changed = true
+        }
+        if (found.length > 0) {
+          const details: any[] = Array.isArray(delta.reasoning_details) ? [...delta.reasoning_details] : []
+          for (const item of found) {
+            if (details.some((detail) => detail?.id === item.id)) continue
+            details.push({ type: 'reasoning.encrypted', id: item.id, data: item.data })
+          }
+          delta.reasoning_details = details
+        }
       }
-      if (found.length === 0) continue
-      const details: any[] = Array.isArray(delta.reasoning_details) ? [...delta.reasoning_details] : []
-      for (const item of found) {
-        if (details.some((detail) => detail?.id === item.id)) continue
-        details.push({ type: 'reasoning.encrypted', id: item.id, data: item.data })
+
+      const flagged = delta?.extra_content?.google?.thought === true
+      if (typeof delta.content === 'string' && (flagged || delta.content.length > 0)) {
+        const { reasoning, content } = thoughts.push(delta.content, flagged)
+        if (flagged) {
+          delete delta.extra_content.google.thought
+          if (Object.keys(delta.extra_content.google).length === 0) delete delta.extra_content
+        }
+        if (reasoning || content !== delta.content) {
+          changed = true
+          if (content) {
+            delta.content = content
+          } else {
+            delete delta.content
+          }
+          if (reasoning) {
+            const handed = typeof delta.reasoning_content === 'string' ? delta.reasoning_content : ''
+            if (content) {
+              // Emit the reasoning as its own line so it lands before the text
+              // block pi-ai builds for this delta's content.
+              reasoningChunks.push(standaloneChoice(parsed, choice, handed + reasoning))
+              delete delta.reasoning_content
+            } else {
+              delta.reasoning_content = handed + reasoning
+            }
+          }
+        }
       }
-      delta.reasoning_details = details
     }
-    return changed ? `data: ${JSON.stringify(parsed)}` : line
+    if (!changed) return line
+    const lines = [...reasoningChunks.map((payload) => `data: ${payload}`), `data: ${JSON.stringify(parsed)}`]
+    return lines.length === 1 ? lines[0] : lines
   }
+
+  rewriter.flush = () => {
+    const owed = thoughts.drain()
+    const extra = owed.reasoning || owed.content
+    if (!extra) return []
+    return [standalone(owed.reasoning ? { reasoning_content: extra } : { content: extra })]
+  }
+
+  return rewriter
+}
+
+/** A standalone reasoning line for a delta that also carries reply text. */
+function standaloneChoice(parsed: any, choice: any, reasoning: string): string {
+  const payload: any = {
+    ...parsed,
+    choices: [{ index: choice?.index ?? 0, delta: { reasoning_content: reasoning }, finish_reason: null }],
+  }
+  delete payload.usage
+  return JSON.stringify(payload)
 }
 
 /**
@@ -2697,6 +2932,48 @@ export function bridgeVideoContentBlocks(
   return mutated ? next : messages
 }
 
+/**
+ * Thinking levels each Gemini text model accepts, and the lowest one it will
+ * run at. Thinking cannot be turned off on Gemini 3 and newer, so `off` — and
+ * every other "less than the minimum" effort — becomes that model's floor
+ * instead of a disabled config.
+ *
+ * The Flash family keeps `minimal`: `gemini-3.5-flash-lite` is billed at the
+ * `minimal` rate, so flooring it at `low` would quietly make our cheapest model
+ * more expensive on every call. `xhigh` is accepted only by Neon and Hydrogen.
+ *
+ * Do not widen a set without probing it — an unsupported level is a 400, not a
+ * silent downgrade. To re-check a model, send one request per level:
+ *
+ *   curl -s -o /dev/null -w '%{http_code}\n' \
+ *     -H "Authorization: Bearer $GOOGLE_API_KEY" -H 'Content-Type: application/json' \
+ *     -d '{"model":"<model>","max_tokens":1,"messages":[{"role":"user","content":"hi"}],
+ *          "extra_body":{"google":{"thinking_config":{"thinking_level":"<level>","include_thoughts":true}}}}' \
+ *     "$GOOGLE_BASE_URL/chat/completions"
+ */
+const GOOGLE_THINKING_LEVELS: Record<string, { levels: readonly string[]; lowest: string }> = {
+  'gemini-4-carbon': { levels: ['low', 'medium', 'high'], lowest: 'low' },
+  'gemini-4-argon': { levels: ['low', 'medium', 'high'], lowest: 'low' },
+  'gemini-4-neon': { levels: ['low', 'medium', 'high', 'xhigh'], lowest: 'low' },
+  'gemini-4-hydrogen': { levels: ['low', 'medium', 'high', 'xhigh'], lowest: 'low' },
+  'gemini-3.1-pro-preview': { levels: ['low', 'medium', 'high'], lowest: 'low' },
+  'gemini-3.8-flash': { levels: ['minimal', 'low', 'medium', 'high'], lowest: 'minimal' },
+  'gemini-3.5-flash-lite': { levels: ['minimal', 'low', 'medium', 'high'], lowest: 'minimal' },
+}
+
+/** A model this table has never seen: the levels every Gemini text model takes. */
+const DEFAULT_GOOGLE_THINKING = { levels: ['low', 'medium', 'high'], lowest: 'low' } as const
+
+/** Map a caller's reasoning effort onto a `thinking_level` the model accepts. */
+export function googleThinkingLevel(apiModel: string, effort?: string): string {
+  const { levels, lowest } = GOOGLE_THINKING_LEVELS[apiModel] ?? DEFAULT_GOOGLE_THINKING
+  const requested = (effort ?? 'medium').trim().toLowerCase()
+  if (requested === 'off' || requested === 'none') return lowest
+  if (requested === 'minimal') return levels.includes('minimal') ? 'minimal' : lowest
+  if (requested === 'xhigh') return levels.includes('xhigh') ? 'xhigh' : 'high'
+  return levels.includes(requested) ? requested : 'medium'
+}
+
 export function buildOpenAICompatibleBody(
   request: ChatCompletionRequest,
   modelConfig: ModelConfig,
@@ -2744,11 +3021,57 @@ export function buildOpenAICompatibleBody(
   // rejects OpenAI-only bookkeeping fields, cannot disable thinking on 3 and
   // newer, and enforces thought signatures on replayed function calls.
   if (modelConfig.provider === 'google') {
+    // Read the effort before the provider-options bag is dropped: pi-ai's
+    // shogo namespace is the caller's explicit override, ahead of the field it
+    // sends itself and the catalog default.
+    const providerOptions = body.providerOptions as ProviderOptionsField | undefined
+    // `modelConfig.reasoningEffort` only carries a value for DB-routed rows, so
+    // fall back to the merged catalog entry: it is the same table the picker
+    // reads, and it is what keeps Flash-Lite on `minimal`.
+    const catalogEffort = modelConfig.reasoningEffort ?? getMergedModelEntrySync(modelConfig.apiModel)?.reasoningEffort
+    const requestedEffort =
+      providerOptions?.shogo?.reasoning_effort ??
+      (typeof body.reasoning_effort === 'string' ? body.reasoning_effort : undefined) ??
+      catalogEffort ??
+      'medium'
+
     delete body.store
     delete body.providerOptions
     delete body.thinking
     delete body.reasoning_content
-    if (body.reasoning_effort === 'none') delete body.reasoning_effort
+    // Google rejects `reasoning_effort` alongside a custom `thinking_config`
+    // ("Expected one of either reasoning_effort or custom thinking_config;
+    // found both"), so the level is the only control we send.
+    delete body.reasoning_effort
+
+    // Thinking cannot be turned off on Gemini 3 and newer, and a turn that
+    // thinks with no summaries is a user staring at an empty bubble until the
+    // first tool call. Always ask for the summary, at the level the model will
+    // accept.
+    const existingExtra =
+      body.extra_body && typeof body.extra_body === 'object' && !Array.isArray(body.extra_body)
+        ? (body.extra_body as Record<string, unknown>)
+        : {}
+    const existingGoogle =
+      existingExtra.google && typeof existingExtra.google === 'object' && !Array.isArray(existingExtra.google)
+        ? (existingExtra.google as Record<string, unknown>)
+        : {}
+    const existingThinking =
+      existingGoogle.thinking_config && typeof existingGoogle.thinking_config === 'object'
+        ? (existingGoogle.thinking_config as Record<string, unknown>)
+        : {}
+    body.extra_body = {
+      ...existingExtra,
+      google: {
+        ...existingGoogle,
+        thinking_config: {
+          ...existingThinking,
+          thinking_level: googleThinkingLevel(modelConfig.apiModel, requestedEffort),
+          include_thoughts: true,
+        },
+      },
+    }
+
     if (Array.isArray(body.messages)) {
       body.messages = applyGoogleThoughtSignatures(body.messages as any[])
     }
@@ -3127,7 +3450,7 @@ export async function proxyOpenAIStream(
     }
   }
 
-  const buildTransformStream = (lineRewriter: ((line: string) => string) | null) =>
+  const buildTransformStream = (lineRewriter: SseLineRewriter | null) =>
     new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
         const rewrite = lineRewriter
@@ -3149,40 +3472,51 @@ export async function proxyOpenAIStream(
           return
         }
 
+        // A rewriter can turn one upstream line into several (the Gemini
+        // thought rewriter splits "</thought>answer" into thinking then text),
+        // so each piece is enqueued and counted on its own.
+        const emit = (rewritten: string | string[]) => {
+          for (const piece of Array.isArray(rewritten) ? rewritten : [rewritten]) {
+            if (piece.startsWith('data: ')) {
+              const data = piece.slice(6).trim()
+              if (data && data !== '[DONE]') {
+                try {
+                  noteUsage(JSON.parse(data))
+                } catch {
+                  // Skip unparseable lines
+                }
+              }
+            }
+            controller.enqueue(encoder.encode(`${piece}\n`))
+          }
+        }
+
         sseBuffer += decoder.decode(chunk, { stream: true })
         const lines = sseBuffer.split('\n')
         sseBuffer = lines.pop() ?? ''
         for (const line of lines) {
-          const rewritten = rewrite(line)
-          if (rewritten.startsWith('data: ')) {
-            const data = rewritten.slice(6).trim()
-            if (data && data !== '[DONE]') {
-              try {
-                noteUsage(JSON.parse(data))
-              } catch {
-                // Skip unparseable lines
-              }
-            }
-          }
-          controller.enqueue(encoder.encode(`${rewritten}\n`))
+          emit(rewrite(line))
         }
       },
       flush(controller) {
         const rewrite = lineRewriter
-        if (rewrite && sseBuffer) {
-          const rewritten = rewrite(sseBuffer)
-          if (rewritten.startsWith('data: ')) {
-            const data = rewritten.slice(6).trim()
-            if (data && data !== '[DONE]') {
-              try {
-                noteUsage(JSON.parse(data))
-              } catch {
-                // Skip unparseable lines
+        const emit = (rewritten: string | string[] | undefined) => {
+          for (const piece of rewritten === undefined ? [] : Array.isArray(rewritten) ? rewritten : [rewritten]) {
+            if (piece.startsWith('data: ')) {
+              const data = piece.slice(6).trim()
+              if (data && data !== '[DONE]') {
+                try {
+                  noteUsage(JSON.parse(data))
+                } catch {
+                  // Skip unparseable lines
+                }
               }
             }
+            controller.enqueue(encoder.encode(`${piece}\n`))
           }
-          controller.enqueue(encoder.encode(`${rewritten}\n`))
         }
+        if (rewrite && sseBuffer) emit(rewrite(sseBuffer))
+        if (rewrite?.flush) emit(rewrite.flush())
         onComplete?.(inputTokens, outputTokens, cachedInputTokens, reasoningTokens, cacheWriteTokens)
       },
     })
@@ -3244,6 +3578,9 @@ export async function proxyOpenAINonStream(
   const result = await response.json()
   if (served.provider === 'google') {
     liftGoogleThoughtSignatures(result)
+    // Non-streamed Gemini reports its summary the same way the stream does —
+    // inside `content`, wrapped in <thought> tags.
+    splitGoogleThoughtMessage(result)
   }
   if (shouldRewriteOpenRouterReasoning(served)) {
     rewriteOpenRouterReasoningPayload(result)
