@@ -293,13 +293,19 @@ function vacuumInto(srcPath: string, destPath: string): void {
  * to overwrite an existing file, so `destPath` must be a fresh path.
  *
  * TWO readers, because one is not enough. The first reads the workspace's own
- * database in place, which is the cheap, proven path. When that fails the
- * database is usually not corrupt at all: a WAL database is read *through* its
- * `-shm` index, and an index left behind by an earlier copy — the guest's own
- * `-shm` after a torn VM stop, or sidecars restored next to a database they do
- * not belong to — can send reads at the wrong WAL frames and come back
- * `database disk image is malformed`. A reader that rebuilds its index from the
- * WAL alone (a staged copy WITHOUT the `-shm`) is unaffected.
+ * database in place, which is the cheap, proven path. The second reads a copy of
+ * `dev.db` + `-wal` taken into the export's own scratch directory, WITHOUT the
+ * `-shm`: SQLite rebuilds the WAL index from the WAL rather than trusting the
+ * one next to the file, and a file set the first reader cannot open read-write
+ * is still readable from a copy nothing else holds.
+ *
+ * What this does not claim: that a mismatched `-shm` is what produced Samsara's
+ * `database disk image is malformed` (SHO-541). Damaged sidecars — zeroed,
+ * truncated, foreign, deleted — are all read fine by the first reader, which
+ * validates the wal-index against the WAL header and rebuilds it. The
+ * production cause was never established. If the database's own pages are
+ * corrupt neither reader helps, and the caller gets the named error below,
+ * which is a person's decision rather than a retry.
  *
  * The staged copy is `dev.db` + `-wal` into the export's own scratch directory,
  * never the workspace: nothing here writes to the user's files, and the copy is

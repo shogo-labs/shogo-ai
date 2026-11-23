@@ -4108,8 +4108,9 @@ app.post('/pool/export-data', async (c) => {
     //
     // A snapshot failure carries a NAMED code so the host can tell a database
     // it cannot read from a guest that is merely unhappy: it records the code
-    // on the VM, alerts once, and stops retrying a backup that will never
-    // succeed (SHO-541). Everything else stays a plain 500.
+    // on the VM, alerts once, and backs the retry off to hours instead of
+    // re-exporting a backup that keeps failing every few minutes (SHO-541).
+    // Everything else stays a plain 500.
     const code = typeof err?.code === 'string' ? err.code : 'export_failed'
     console.error(`[pool/export-data] failed (${code}):`, err?.message ?? err)
     return c.json({ error: err?.message ?? 'export failed', code }, 500)

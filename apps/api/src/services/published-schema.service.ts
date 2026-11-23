@@ -312,7 +312,7 @@ export async function prepareEnvironmentDatabase(
       return fail(
         'runtime_outdated',
         'The editing runtime is older than this publish needs: it would seed Postgres from the ' +
-          "builder's database, not the live site's. Start the project once so its runtime updates, then publish again.",
+          "builder's database, not the live site's. Its runtime has to be recycled onto the current build before this publish can go through.",
         409,
         { environment, seedSource: seedSource ?? null },
       )
