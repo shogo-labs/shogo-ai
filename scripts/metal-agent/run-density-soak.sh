@@ -71,7 +71,10 @@ ARGS=(--host "$HOST_ID" --steps "$STEPS" --hold "$HOLD" --mix "$MIX")
 [[ "$DRY_RUN" == "1" ]] && ARGS+=(--dry-run)
 
 echo "== Run density soak (host=$HOST_ID steps=$STEPS hold=$HOLD) =="
-ssh_ "cd ~/metal-agent && DENSITY_SOAK_ADMIN_TOKEN='$ADMIN_TOKEN' ~/.bun/bin/bun run load/density-soak.ts ${ARGS[*]}"
+# Run inside the agent's own environment: the staging control plane's certificate
+# is self-signed and the host sets NODE_TLS_REJECT_UNAUTHORIZED=0 for it, and the
+# runner reads METAL_PUBLIC_HOST / METAL_REGISTER_TOKEN from the same place.
+ssh_ "cd ~/metal-agent && set -a && . /etc/metal-agent.env && set +a && DENSITY_SOAK_ADMIN_TOKEN='$ADMIN_TOKEN' ~/.bun/bin/bun run load/density-soak.ts ${ARGS[*]}"
 
 echo "== Copy results =="
 mkdir -p "$OUT_DIR"

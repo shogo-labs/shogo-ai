@@ -17,7 +17,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { DensitySoak, parseArgs, parseDuration, parseEnvFile, renderEnvFile } from '../density-soak'
+import { DensitySoak, parseArgs, parseDuration, parseEnvFile, renderEnvFile, resolveGuestUrl } from '../density-soak'
 
 interface FakeState {
   assigned: { projectId: string }[]
@@ -256,5 +256,36 @@ describe('parseArgs', () => {
     expect(o.mix).toEqual({ agent: 0.16, app: 0.01, idle: 0.83 })
     expect(o.allowHosts).toEqual(['latitude-dal-1'])
     expect(o.allowControlPlanes).toContain('api-staging.shogo.ai')
+  })
+})
+
+describe('resolveGuestUrl', () => {
+  // The live run died at baseline with "Unable to connect" because `/assign`
+  // hands back the published address and the host cannot hairpin its own DNAT.
+  const rules = [
+    '-A PREROUTING -p tcp -m tcp --dport 20044 -j DNAT --to-destination 172.16.111.218:8080',
+    '-A PREROUTING -p tcp -m tcp --dport 20011 -j DNAT --to-destination 172.16.25.234:8080',
+    '-A PREROUTING -p tcp -m tcp --dport 2004 -j DNAT --to-destination 172.16.99.1:8080',
+  ].join('\n')
+
+  test('rewrites the host\'s own published address to the guest private IP', () => {
+    expect(resolveGuestUrl('http://72.46.85.83:20044', '72.46.85.83', () => rules)).toBe('http://172.16.111.218:8080')
+  })
+
+  test('matches the dport exactly, not as a prefix', () => {
+    expect(resolveGuestUrl('http://72.46.85.83:2004', '72.46.85.83', () => rules)).toBe('http://172.16.99.1:8080')
+  })
+
+  test('leaves a URL from another host alone', () => {
+    expect(resolveGuestUrl('http://10.0.0.5:20044', '72.46.85.83', () => rules)).toBe('http://10.0.0.5:20044')
+  })
+
+  test('leaves a URL alone when no DNAT rule matches it', () => {
+    expect(resolveGuestUrl('http://72.46.85.83:29999', '72.46.85.83', () => rules)).toBe('http://72.46.85.83:29999')
+  })
+
+  test('is a no-op without a URL or a known public host', () => {
+    expect(resolveGuestUrl(undefined, '72.46.85.83', () => rules)).toBeUndefined()
+    expect(resolveGuestUrl('http://72.46.85.83:20044', '', () => rules)).toBe('http://72.46.85.83:20044')
   })
 })

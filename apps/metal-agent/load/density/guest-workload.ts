@@ -22,6 +22,34 @@
 
 import { guestExec } from '../../src/test-harness/guest-exec'
 
+/**
+ * Wait until a freshly assigned guest answers on its runtime port.
+ *
+ * `assign` returns as soon as the microVM is up, but the runtime inside it needs
+ * another moment before it serves `/terminal/sessions`. Without this the first
+ * command of a run loses the race and the whole soak aborts at baseline.
+ */
+export async function waitForGuest(url: string, timeoutMs = 120_000, token = 'e2e'): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  let lastErr = ''
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${url}/terminal/sessions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-runtime-token': token },
+        body: JSON.stringify({ cols: 80, rows: 24 }),
+        signal: AbortSignal.timeout(5_000),
+      })
+      if (res.ok) return
+      lastErr = `HTTP ${res.status}`
+    } catch (err: any) {
+      lastErr = err?.message ?? String(err)
+    }
+    await sleep(1_000)
+  }
+  throw new Error(`guest at ${url} never answered within ${timeoutMs}ms (last: ${lastErr})`)
+}
+
 export interface TurnTimings {
   cpuMs: number
   installMs: number
@@ -109,6 +137,7 @@ function heredoc(dir: string, files: Record<string, string>): string {
  * step measures CPU and disk rather than the npm registry.
  */
 export async function primeWarmCache(url: string, dir = DEFAULT_TEMPLATE_DIR, timeoutMs = 300_000): Promise<void> {
+  await waitForGuest(url)
   const seed = await guestExec(url, heredoc(dir, TEMPLATE_FILES), 60_000)
   if (seed.code !== 0) throw new Error(`seeding ${dir} failed (exit ${seed.code}): ${seed.out.slice(-800)}`)
   const install = await guestExec(url, `cd ${dir} && bun install --frozen-lockfile 2>/dev/null || bun install`, timeoutMs)
@@ -173,6 +202,7 @@ export interface AppLoadHandle {
  * guest IP at `APP_SERVER_PORT`.
  */
 export async function startAppLoad(guestUrl: string, ratePerSec: number, port = APP_SERVER_PORT): Promise<AppLoadHandle> {
+  await waitForGuest(guestUrl)
   const started = await guestExec(guestUrl, `cd ${DEFAULT_TEMPLATE_DIR} && (pkill -f app-server.ts || true) && nohup bun run app-server.ts >/tmp/app-server.log 2>&1 & sleep 1; curl -sf http://127.0.0.1:${port}/health`, 30_000)
   if (started.code !== 0) throw new Error(`app server did not come up (exit ${started.code}): ${started.out.slice(-400)}`)
 

@@ -50,7 +50,19 @@ export interface StagingGuardResult {
 }
 
 export const DEFAULT_STAGING_HOSTS = ['latitude-dal-1']
-export const DEFAULT_STAGING_CONTROL_PLANES = ['api-staging.shogo.ai', 'staging.shogo.ai', '*.staging.shogo.ai']
+/**
+ * The staging control plane answers on the staging kourier LB's sslip.io alias
+ * (`terraform/environments/staging/main.tf` → `staging_kourier_lb_ip`), which is
+ * what the live host actually heartbeats to. Without it the guard rejects the
+ * real staging host and the only way through is a manual allow-list override —
+ * i.e. it would protect nothing.
+ */
+export const DEFAULT_STAGING_CONTROL_PLANES = [
+  'api-staging.shogo.ai',
+  'staging.shogo.ai',
+  '*.staging.shogo.ai',
+  'api.141.148.27.1.sslip.io',
+]
 
 /** Hostnames that are production, whatever else is configured. */
 const PROD_CONTROL_PLANES = ['api.shogo.ai', 'shogo.ai', 'studio.shogo.ai']

@@ -214,6 +214,30 @@ class AgentClient {
 
 const ASSIGN_ENV = { RUNTIME_AUTH_SECRET: 'e2e', PROJECT_TIER: 'starter' }
 
+/**
+ * Rewrite an assign URL into one this host can actually reach.
+ *
+ * `/assign` returns the guest's *published* address (`METAL_PUBLIC_HOST:<dnat>`),
+ * which is correct for a caller outside the host but unusable from the host
+ * itself: the DNAT lives in PREROUTING, so a connection the host originates to
+ * its own public IP never matches it and times out. (This is the bug that made
+ * the first live run die at baseline with "Unable to connect".) The guest is on
+ * a /30 behind a tap device, so we resolve the same DNAT rule and talk to the
+ * guest's private address directly.
+ */
+export function resolveGuestUrl(publicUrl: string | undefined, publicHost: string, natRules: () => string): string | undefined {
+  if (!publicUrl) return publicUrl
+  let u: URL
+  try {
+    u = new URL(publicUrl)
+  } catch {
+    return publicUrl
+  }
+  if (!publicHost || u.hostname !== publicHost || !u.port) return publicUrl
+  const m = new RegExp(`--dport ${u.port}\\s.*--to-destination ([0-9.]+):(\\d+)`).exec(natRules())
+  return m ? `http://${m[1]}:${m[2]}` : publicUrl
+}
+
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
@@ -276,10 +300,15 @@ export class DensitySoak {
 
   private sh(cmd: string, args: string[]): string {
     try {
-      return execFileSync(cmd, args, { encoding: 'utf8', timeout: 60_000 }).trim()
+      return execFileSync(cmd, args, { encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
     } catch {
       return ''
     }
+  }
+
+  /** The address this host publishes guests on, so we can tell a local URL apart. */
+  private guestUrl(publicUrl: string | undefined): string | undefined {
+    return resolveGuestUrl(publicUrl, this.originalEnv?.METAL_PUBLIC_HOST ?? '', () => this.sh('iptables', ['-t', 'nat', '-S']))
   }
 
   private collectHostInfo(): void {
@@ -454,7 +483,7 @@ export class DensitySoak {
       while (next < toAdd.length) {
         const item = toAdd[next++]
         const a = await this.agent.assign(item.projectId, ASSIGN_ENV)
-        const vm: SoakVm = { projectId: item.projectId, role: item.role, url: a.json?.url, assigned: a.ok }
+        const vm: SoakVm = { projectId: item.projectId, role: item.role, url: this.guestUrl(a.json?.url), assigned: a.ok }
         this.vms.push(vm)
         if (!a.ok) log('ramp', `assign ${item.projectId} failed (${a.status}): ${JSON.stringify(a.json).slice(0, 160)}`)
       }
