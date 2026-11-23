@@ -7,7 +7,6 @@ import {
   Pressable,
   ScrollView,
   TextInput,
-  ActivityIndicator,
   Platform,
   InteractionManager,
   Share,
@@ -48,6 +47,7 @@ import {
 import { densityFor } from "../../../lib/phone-density"
 import { MarkdownText } from "../../chat/MarkdownText"
 import { errorMessage } from '../../../lib/error-message'
+import { Spinner } from '@/components/ui/spinner'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -820,7 +820,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
                 </Pressable>
               </View>
               {isSearching ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
                 searchResults.map((r, i) => (
                   <Pressable
@@ -846,7 +846,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
             </View>
           ) : isLoadingTree ? (
             <View className="flex-1 items-center justify-center p-4">
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             </View>
           ) : (
             <View className="p-1">
@@ -1093,7 +1093,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
 
             {isLoadingFile ? (
               <View className="flex-1 items-center justify-center">
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               </View>
             ) : selectedPath && /\.mdx?$/i.test(selectedPath) && mdMode === 'preview' ? (
               <ScrollView className="flex-1 p-4" testID="ide-md-preview">

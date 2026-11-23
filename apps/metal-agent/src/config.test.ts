@@ -100,3 +100,25 @@ describe('classConfig', () => {
     expect(VM_CLASSES).toEqual(['standard', 'docker'])
   })
 })
+
+describe('idle reclaim + free page reporting defaults (SHO-534)', () => {
+  // Both features change the host's memory behaviour, so shipping them on by
+  // default would apply them to prod without the staging numbers that authorise
+  // it. A host that exports neither variable must read exactly as today does.
+  test.skipIf(!!process.env.METAL_IDLE_RECLAIM || !!process.env.METAL_BALLOON_FREE_PAGE_REPORTING)(
+    'both are off unless the host turns them on',
+    () => {
+      expect(config.idleReclaim).toBe(false)
+      expect(config.balloonFreePageReporting).toBe(false)
+    },
+  )
+
+  test('the idle floor defaults to the snapshot floor (one headroom number)', () => {
+    expect(config.idleReclaimFloorMiB).toBe(config.balloonFloorMiB)
+  })
+
+  test('the idle window is short enough to fire before the idle-suspend window', () => {
+    // bootstrapped hosts run METAL_IDLE_SUSPEND_MS=900000 (15m); reclaim is 5m
+    expect(config.idleReclaimMs).toBe(300_000)
+  })
+})

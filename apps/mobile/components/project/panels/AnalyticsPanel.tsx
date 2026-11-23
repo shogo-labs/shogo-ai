@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { View, Text, Pressable, ScrollView, ActivityIndicator } from 'react-native'
+import { View, Text, Pressable, ScrollView } from 'react-native'
 import {
   BarChart3,
   TrendingUp,
@@ -29,6 +29,7 @@ import {
   phonePaneScrollProps,
 } from "../../phone/NativePhonePane"
 import { errorMessage } from '../../../lib/error-message'
+import { Spinner } from '@/components/ui/spinner'
 
 type Period = '7d' | '30d' | '90d'
 type DailyCount = { date: string; count: number }
@@ -467,7 +468,7 @@ function DailyActivityChart({
           <Text className="text-xs font-medium text-foreground">Daily Activity</Text>
           <Text className="text-[10px] text-muted-foreground">Usage events and sessions, {rangeLabel}</Text>
         </View>
-        {loading && <ActivityIndicator size="small" />}
+        {loading && <Spinner size="small" />}
       </View>
 
       <View className="flex-row flex-wrap gap-2">

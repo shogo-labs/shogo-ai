@@ -11,9 +11,10 @@
  */
 
 import { useEffect, useState } from "react"
-import { ActivityIndicator, Platform, View } from "react-native"
+import { Platform, View } from "react-native"
 import { useVideoPlayer, VideoView, type VideoSource } from "expo-video"
 import { getAgentImageSource } from "../../../lib/agent-image-source"
+import { Spinner } from '@/components/ui/spinner'
 
 export function useAgentVideoSource(
   uri: string,
@@ -85,7 +86,7 @@ export default function GeneratedVideoPlayer({ url, width, aspectRatio, onError 
           allowsPictureInPicture
         />
       ) : (
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       )}
     </View>
   )

@@ -4,9 +4,10 @@
  * Image or video inside rendered chat markdown (iOS / Android).
  */
 import React, { Suspense, lazy, useState } from "react"
-import { ActivityIndicator, Image, Pressable, Text, View } from "react-native"
+import { Image, Pressable, Text, View } from "react-native"
 import { PlayCircle } from "lucide-react-native"
 import { useMarkdownImageUri, useMarkdownMedia, type MarkdownMediaTarget } from "./markdown-media"
+import { Spinner } from '@/components/ui/spinner'
 
 const ImagePreviewModal = lazy(() => import("./ImagePreviewModal").then((m) => ({ default: m.ImagePreviewModal })))
 const VideoPreviewModal = lazy(() => import("./VideoPreviewModal").then((m) => ({ default: m.VideoPreviewModal })))
@@ -28,7 +29,7 @@ function MarkdownImage({ target }: { target: MarkdownMediaTarget }) {
   if (!uri) {
     return (
       <View className="my-1 h-24 w-40 items-center justify-center rounded-md bg-muted">
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       </View>
     )
   }

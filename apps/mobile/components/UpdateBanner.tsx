@@ -25,7 +25,7 @@ export function UpdateBanner() {
     return (
       <View
         testID="shogo-interrupted-notice"
-        className="relative flex-row items-center justify-center bg-amber-600 px-8 py-1.5"
+        className="relative flex-row items-center justify-center bg-warning-700 px-8 py-1.5 dark:bg-warning-100"
       >
         <Text className="text-xs font-medium text-white">{desktop.interruptedNotice}</Text>
         <Pressable onPress={desktop.dismissNotice} className="absolute right-2 p-1">
@@ -37,8 +37,8 @@ export function UpdateBanner() {
 
   if (showDesktopBanner) {
     const betaTag = desktop.channel === 'beta' ? (
-      <View className="mr-2 rounded bg-white/20 px-1.5 py-0.5">
-        <Text className="text-[10px] font-semibold uppercase text-white">Beta</Text>
+      <View className="mr-2 rounded bg-primary-foreground/20 px-1.5 py-0.5">
+        <Text className="text-[10px] font-semibold uppercase text-primary-foreground">Beta</Text>
       </View>
     ) : null
 
@@ -48,18 +48,18 @@ export function UpdateBanner() {
       return (
         <View
           testID="shogo-update-banner-draining"
-          className="relative flex-row items-center justify-center bg-brand-landing px-8 py-1.5"
+          className="relative flex-row items-center justify-center bg-primary px-8 py-1.5"
         >
-          <Text className="text-xs font-medium text-white">
+          <Text className="text-xs font-medium text-primary-foreground">
             {desktop.draining === 0
               ? 'Restarting when idle — waiting for the last run to finish…'
               : `Restarting when idle — ${desktop.draining} agent ${desktop.draining === 1 ? 'run' : 'runs'} working`}
           </Text>
-          <Pressable onPress={desktop.cancelRestart} className="ml-2 rounded bg-white/20 px-2 py-0.5">
-            <Text className="text-xs font-semibold text-white">Cancel</Text>
+          <Pressable onPress={desktop.cancelRestart} className="ml-2 rounded bg-primary-foreground/20 px-2 py-0.5">
+            <Text className="text-xs font-semibold text-primary-foreground">Cancel</Text>
           </Pressable>
-          <Pressable onPress={desktop.restartNow} className="ml-2 rounded bg-white/20 px-2 py-0.5">
-            <Text className="text-xs font-semibold text-white">Restart now</Text>
+          <Pressable onPress={desktop.restartNow} className="ml-2 rounded bg-primary-foreground/20 px-2 py-0.5">
+            <Text className="text-xs font-semibold text-primary-foreground">Restart now</Text>
           </Pressable>
         </View>
       )
@@ -71,50 +71,50 @@ export function UpdateBanner() {
       return (
         <View
           testID="shogo-update-banner-choice"
-          className="relative flex-row flex-wrap items-center justify-center bg-brand-landing px-8 py-1.5"
+          className="relative flex-row flex-wrap items-center justify-center bg-primary px-8 py-1.5"
         >
-          <Text className="text-xs font-medium text-white">{desktop.choice.message}</Text>
+          <Text className="text-xs font-medium text-primary-foreground">{desktop.choice.message}</Text>
           <Pressable
             onPress={desktop.restartWhenIdle}
-            className="ml-2 rounded bg-white/20 px-2 py-0.5"
+            className="ml-2 rounded bg-primary-foreground/20 px-2 py-0.5"
             testID="update-restart-when-idle"
           >
-            <Text className="text-xs font-semibold text-white">Restart when idle</Text>
+            <Text className="text-xs font-semibold text-primary-foreground">Restart when idle</Text>
           </Pressable>
           <Pressable
             onPress={desktop.restartNow}
-            className="ml-2 rounded bg-white/10 px-2 py-0.5"
+            className="ml-2 rounded bg-primary-foreground/10 px-2 py-0.5"
             testID="update-restart-now"
           >
-            <Text className="text-xs font-semibold text-white">Restart now</Text>
+            <Text className="text-xs font-semibold text-primary-foreground">Restart now</Text>
           </Pressable>
           <Pressable onPress={desktop.cancelRestart} className="absolute right-2 p-1">
-            <X size={12} className="text-white" />
+            <X size={12} className="text-primary-foreground" />
           </Pressable>
         </View>
       )
     }
 
     return (
-      <View testID="shogo-update-banner" className="relative flex-row flex-wrap items-center justify-center bg-brand-landing px-8 py-1.5">
+      <View testID="shogo-update-banner" className="relative flex-row flex-wrap items-center justify-center bg-primary px-8 py-1.5">
         {desktop.status === 'available' ? (
           <>
             {betaTag}
-            <Text className="text-xs font-medium text-white">
+            <Text className="text-xs font-medium text-primary-foreground">
               {desktop.availableVersion ?? 'A new version'} is available.
             </Text>
-            <Pressable onPress={desktop.download} className="ml-2 rounded bg-white/20 px-2 py-0.5">
-              <Text className="text-xs font-semibold text-white">Download</Text>
+            <Pressable onPress={desktop.download} className="ml-2 rounded bg-primary-foreground/20 px-2 py-0.5">
+              <Text className="text-xs font-semibold text-primary-foreground">Download</Text>
             </Pressable>
             <Pressable onPress={desktop.dismissAvailable} className="absolute right-2 p-1">
-              <X size={12} className="text-white" />
+              <X size={12} className="text-primary-foreground" />
             </Pressable>
             {/* A download that failed comes back as `available` with a reason;
                 without it the banner silently looks like the offer again. */}
             {desktop.downloadError && (
               <Text
                 testID="shogo-update-banner-error"
-                className="mt-0.5 w-full text-center text-[11px] font-medium text-white/90"
+                className="mt-0.5 w-full text-center text-[11px] font-medium text-primary-foreground/90"
               >
                 {desktop.downloadError}
               </Text>
@@ -123,26 +123,26 @@ export function UpdateBanner() {
         ) : desktop.status === 'downloading' ? (
           <>
             {betaTag}
-            <Text className="text-xs font-medium text-white">Downloading update…</Text>
+            <Text className="text-xs font-medium text-primary-foreground">Downloading update…</Text>
           </>
         ) : (
           <>
             {betaTag}
-            <Text className="text-xs font-medium text-white">
+            <Text className="text-xs font-medium text-primary-foreground">
               {desktop.releaseName ?? 'A new version'} is ready to install.
             </Text>
-            <Pressable onPress={desktop.install} className="ml-2 rounded bg-white/20 px-2 py-0.5">
-              <Text className="text-xs font-semibold text-white">Restart</Text>
+            <Pressable onPress={desktop.install} className="ml-2 rounded bg-primary-foreground/20 px-2 py-0.5">
+              <Text className="text-xs font-semibold text-primary-foreground">Restart</Text>
             </Pressable>
             <Pressable onPress={() => desktop.setDismissed(true)} className="absolute right-2 p-1">
-              <X size={12} className="text-white" />
+              <X size={12} className="text-primary-foreground" />
             </Pressable>
             {/* An install that could not start keeps its reason here once the
                 choice is cancelled, so "Restart" is not a silent retry. */}
             {desktop.installError && (
               <Text
                 testID="shogo-update-banner-install-error"
-                className="mt-0.5 w-full text-center text-[11px] font-medium text-white/90"
+                className="mt-0.5 w-full text-center text-[11px] font-medium text-primary-foreground/90"
               >
                 {desktop.installError}
               </Text>
@@ -154,20 +154,20 @@ export function UpdateBanner() {
   }
 
   return (
-    <View className="relative flex-row items-center justify-center bg-brand-landing px-8 py-1.5">
-      <Text className="text-xs font-medium text-white">
+    <View className="relative flex-row items-center justify-center bg-primary px-8 py-1.5">
+      <Text className="text-xs font-medium text-primary-foreground">
         A new version is available.
       </Text>
       <Pressable
         onPress={() => {
           if (typeof window !== 'undefined') window.location.reload()
         }}
-        className="ml-2 rounded bg-white/20 px-2 py-0.5"
+        className="ml-2 rounded bg-primary-foreground/20 px-2 py-0.5"
       >
-        <Text className="text-xs font-semibold text-white">Refresh</Text>
+        <Text className="text-xs font-semibold text-primary-foreground">Refresh</Text>
       </Pressable>
       <Pressable onPress={dismissWeb} className="absolute right-2 p-1">
-        <X size={12} className="text-white" />
+        <X size={12} className="text-primary-foreground" />
       </Pressable>
     </View>
   )

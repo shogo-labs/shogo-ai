@@ -9,7 +9,6 @@ import {
   FlatList,
   Modal,
   Alert,
-  ActivityIndicator,
   Platform,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
@@ -39,6 +38,7 @@ import {
   PopoverContent,
 } from '@/components/ui/popover'
 import { useAuth } from '../../contexts/auth'
+import { Spinner } from '@/components/ui/spinner'
 
 /**
  * Starred projects span workspaces, so there is no single workspace role to
@@ -498,7 +498,7 @@ export default observer(function StarredProjectsPage() {
       {/* Content */}
       {isLoading ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" />
+          <Spinner size="large" />
         </View>
       ) : filteredEntries.length === 0 ? (
         <View className="flex-1 items-center justify-center px-6">

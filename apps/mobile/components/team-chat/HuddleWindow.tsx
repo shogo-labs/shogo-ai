@@ -187,7 +187,7 @@ export function HuddlePill({ onExpand }: { onExpand: () => void }) {
         {call.muted ? <MicOff size={15} className="text-destructive" /> : <Mic size={15} className="text-foreground" />}
       </Pressable>
       <Pressable onPress={() => void leaveHuddleCall()} accessibilityRole="button" accessibilityLabel="Leave huddle" className="h-8 w-8 items-center justify-center rounded-full bg-destructive active:opacity-80">
-        <PhoneOff size={15} color="white" />
+        <PhoneOff className="text-destructive-foreground" size={15} />
       </Pressable>
     </View>
   )

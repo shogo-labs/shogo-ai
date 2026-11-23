@@ -16,7 +16,7 @@
  *  - Standalone React web (via react-native-web)
  */
 
-import { View, Text, Pressable, ActivityIndicator, Modal, ScrollView } from 'react-native'
+import { View, Text, Pressable, Modal, ScrollView } from 'react-native'
 import {
   Monitor,
   Laptop,
@@ -27,6 +27,7 @@ import {
 import { cn } from '../primitives/cn'
 import type { Instance, UseInstancePickerResult } from '@shogo/shared-app/hooks'
 import type { ActiveInstance } from '@shogo/shared-app/hooks'
+import { Spinner } from '../primitives/Spinner'
 
 // ─── Sub-components ─────────────────────────────────────────────────────────
 
@@ -80,7 +81,7 @@ function InstancePickerBody({
 
       {loading && (
         <View className="px-4 py-3 items-center">
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         </View>
       )}
 
@@ -131,7 +132,7 @@ function InstancePickerBody({
                   </Text>
                 </View>
               </View>
-              {isConnecting && <ActivityIndicator size="small" />}
+              {isConnecting && <Spinner size="small" />}
               {isActive && !isConnecting && (
                 <Check size={16} className="text-primary" />
               )}

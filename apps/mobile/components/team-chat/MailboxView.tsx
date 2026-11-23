@@ -7,7 +7,7 @@
  * opens its chat thread, where every email and team comment lives.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import { Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { Mail, Pencil, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
@@ -25,6 +25,7 @@ import {
 } from '../../lib/mail-api'
 import type { Mentionables } from '../../lib/team-chat-api'
 import { snoozeOptions } from './MailThreadBar'
+import { Spinner } from '@/components/ui/spinner'
 
 const api = mailApi()
 
@@ -154,7 +155,7 @@ export function MailThreadList({
       </View>
       {error ? <Text className="px-4 pt-2 text-xs text-destructive">{error}</Text> : null}
       {threads === null && !error ? (
-        <ActivityIndicator className="mt-6" />
+        <Spinner className="mt-6" />
       ) : threads && !threads.length ? (
         <Text className="px-4 pt-6 text-center text-sm text-muted-foreground">Nothing here.</Text>
       ) : (
@@ -237,7 +238,7 @@ export function ScreenerList({ workspaceId, mailbox }: { workspaceId: string; ma
         First-time senders wait here. Allow them into the Inbox, send them to Feed or Paper trail, or block them.
       </Text>
       {error ? <Text className="text-xs text-destructive">{error}</Text> : null}
-      {senders === null && !error ? <ActivityIndicator className="mt-4" /> : null}
+      {senders === null && !error ? <Spinner className="mt-4" /> : null}
       {senders && !senders.length ? <Text className="pt-4 text-center text-sm text-muted-foreground">No one is waiting.</Text> : null}
       {(senders ?? []).map((s) => (
         <View key={s.address} className="gap-1.5 rounded-lg border border-border bg-card p-3" testID="screener-sender">

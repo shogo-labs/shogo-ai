@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useEffect, useMemo, useState } from "react"
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native"
+import { Pressable, ScrollView, Text, View } from "react-native"
 import { MessageSquarePlus } from "lucide-react-native"
 import { useDomainHttp } from "../../contexts/domain"
 import { chatSessionEvents } from "../../lib/chat-session-events"
@@ -14,6 +14,7 @@ import {
 import { StatusDot } from "./IslandCollapsed"
 import { mergeSessionRows, type IslandSessionRow } from "./island-inbox"
 import type { IslandSession } from "./types"
+import { Spinner } from '@/components/ui/spinner'
 
 export function relativeTime(timestamp: number): string {
   if (!timestamp) return ""
@@ -103,7 +104,7 @@ export function SessionList({
       </Pressable>
       {apiSessions === null && !error ? (
         <View className="items-center py-4">
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         </View>
       ) : null}
       {error ? <Text className="px-2 py-2 text-[11px] text-rose-400">{error}</Text> : null}

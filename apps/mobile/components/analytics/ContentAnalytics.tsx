@@ -15,7 +15,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { View, Text, Pressable, ActivityIndicator } from 'react-native'
+import { View, Text, Pressable } from 'react-native'
 import Svg, { Path, Defs, LinearGradient, Stop, Line, Text as SvgText, Circle, G } from 'react-native-svg'
 import {
   Eye,
@@ -28,6 +28,7 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import type { ContentAnalytics } from '../../lib/affiliate-api'
 import { openExternalLink } from '../../lib/open-external-link';
+import { Spinner } from '@/components/ui/spinner'
 
 type SeriesId = 'views' | 'engagement' | 'likes' | 'comments' | 'shares'
 
@@ -181,7 +182,7 @@ export function ContentAnalyticsPanel({ fetcher, refreshKey = 0 }: ContentAnalyt
 
       {loading ? (
         <View className="h-72 items-center justify-center">
-          <ActivityIndicator />
+          <Spinner />
         </View>
       ) : error ? (
         <View className="h-32 items-center justify-center">

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useCallback, useMemo, useState } from 'react'
-import { View, Text, ActivityIndicator, Pressable } from 'react-native'
+import { View, Text, Pressable } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { Eye, EyeOff } from 'lucide-react-native'
 import { api, createHttpClient } from '../../lib/api'
 import { Button, Input, Alert, AlertDescription } from '@shogo/shared-ui/primitives'
 import { AuthSurface } from './AuthSurface'
+import { Spinner } from '@/components/ui/spinner'
 
 const TOGGLE_ICON = '#71717a'
 const ACTIVITY_ON_BRAND = '#ffffff'
@@ -128,7 +129,7 @@ export default function ResetPasswordScreen() {
         ) : null}
 
         <Button variant="brand" onPress={handleSubmit} disabled={submitting || password.length < 8}>
-          {submitting ? <ActivityIndicator color={ACTIVITY_ON_BRAND} size="small" /> : 'Update password'}
+          {submitting ? <Spinner tone="onBrand" size="small" /> : 'Update password'}
         </Button>
 
         <Pressable onPress={() => router.replace('/(auth)/sign-in')} className="mt-5 self-center py-2">

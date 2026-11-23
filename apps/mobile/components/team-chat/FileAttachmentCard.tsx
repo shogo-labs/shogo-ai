@@ -17,7 +17,7 @@
  */
 
 import { useCallback, useState } from 'react'
-import { ActivityIndicator, Pressable, Text, View } from 'react-native'
+import { Pressable, Text, View } from 'react-native'
 import { Download } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { downloadAttachment } from '../../lib/attachment-download'
@@ -26,6 +26,7 @@ import { formatFileSize } from '../../lib/composer-attachments'
 import { shareFileErrorText } from '../../lib/share-file-links'
 import type { AttachmentPreview } from '../../lib/team-chat-api'
 import { AttachmentPreviewBody } from './AttachmentPreviewBody'
+import { Spinner } from '@/components/ui/spinner'
 
 export interface FileAttachmentCardProps {
   /** File name as uploaded, which is also the name it is saved under. */
@@ -88,7 +89,7 @@ export function DownloadBadge({
         className,
       )}
     >
-      {busy ? <ActivityIndicator size="small" color="#fff" /> : <Download size={15} color="#fff" />}
+      {busy ? <Spinner className="text-white" size="small" /> : <Download size={15} color="#fff" />}
     </Pressable>
   )
 }

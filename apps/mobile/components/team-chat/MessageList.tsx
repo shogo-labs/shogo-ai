@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, FlatList, Platform, Pressable, Text, View, type NativeScrollEvent, type NativeSyntheticEvent, type ViewToken } from 'react-native'
+import { FlatList, Platform, Pressable, Text, View, type NativeScrollEvent, type NativeSyntheticEvent, type ViewToken } from 'react-native'
 import { ArrowDown, ArrowUp, X } from 'lucide-react-native'
 import type { ChatMessage, Mentionables } from '../../lib/team-chat-api'
 import { firstUnreadIndex, startsGroup, type MentionNames, type TimelineState } from '../../lib/team-chat-state'
@@ -12,6 +12,7 @@ import { foldStatusRuns, type TimelineItem } from '../../lib/team-chat-kinds'
 import { MessageRow, type MessageRowProps } from './MessageRow'
 import { StatusRunRow } from './AgentStatus'
 import { DayDivider } from './DayDivider'
+import { Spinner } from '@/components/ui/spinner'
 
 type RowHandlers = Omit<MessageRowProps, 'message' | 'grouped' | 'me' | 'names' | 'streaming' | 'canManage' | 'inThread' | 'highlighted' | 'mentionables' | 'channelMemberIds'>
 
@@ -209,7 +210,7 @@ export function MessageList({
   if (loading && !state.messages.length) {
     return (
       <View className="flex-1 items-center justify-center">
-        <ActivityIndicator />
+        <Spinner />
       </View>
     )
   }
@@ -241,7 +242,7 @@ export function MessageList({
           <View>
             {state.hasMoreOlder && onLoadOlder ? (
               <View className="items-center py-3">
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               </View>
             ) : (
               header ?? null

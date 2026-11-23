@@ -168,7 +168,7 @@ export const ProjectCard = memo(function ProjectCard({
                   : 'border-muted-foreground/40 bg-background/80',
               )}
             >
-              {isSelected && <Check size={14} color="#fff" />}
+              {isSelected && <Check className="text-primary-foreground" size={14} />}
             </View>
           </Pressable>
         )}

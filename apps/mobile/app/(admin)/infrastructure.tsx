@@ -12,7 +12,6 @@ import {
   TextInput,
   ScrollView,
   Pressable,
-  ActivityIndicator,
   RefreshControl,
   Alert,
   useWindowDimensions,
@@ -39,6 +38,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
 import { nativeActivePill } from '../../lib/native-active-shadow'
 import { errorMessage } from '../../lib/error-message'
+import { Spinner } from '@/components/ui/spinner'
 
 const LOCAL_API_BASE = `${API_URL}/api/admin`
 const AUTO_REFRESH_INTERVAL = 15_000
@@ -557,7 +557,7 @@ function InfraHistoryChart({
   if (loading) {
     return (
       <View className="h-40 items-center justify-center">
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       </View>
     )
   }
@@ -777,7 +777,7 @@ function MetalFleetPanel({
                       )}
                     >
                       {cordoning === h.hostId ? (
-                        <ActivityIndicator size="small" />
+                        <Spinner size="small" />
                       ) : (
                         <Text className={cn('text-[10px] font-medium', h.cordoned ? 'text-green-400' : 'text-amber-400')}>
                           {h.cordoned ? 'Uncordon' : 'Drain'}
@@ -827,7 +827,7 @@ function MetalFleetPanel({
                       className="flex-row items-center gap-1 px-3 py-1.5 rounded-md bg-primary/10 border border-primary/20"
                     >
                       {savingConfig === h.hostId ? (
-                        <ActivityIndicator size="small" />
+                        <Spinner size="small" />
                       ) : (
                         <>
                           <Save size={12} className="text-primary" />
@@ -957,7 +957,7 @@ function PromotedPodTable({
                 className="px-2 py-1 bg-red-500/10 border border-red-500/20 rounded-md"
               >
                 {evicting === pod.projectId ? (
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                 ) : (
                   <Text className="text-[10px] text-red-400 font-medium">Evict</Text>
                 )}
@@ -1141,7 +1141,7 @@ function InfraSettingsPanel({
           )}
         >
           {saving ? (
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           ) : (
             <Save size={13} className="text-primary-foreground" />
           )}
@@ -1319,7 +1319,7 @@ export default function InfrastructurePage() {
   if (loading) {
     return (
       <View className="flex-1 bg-background items-center justify-center">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
         <Text className="text-muted-foreground mt-3 text-sm">Loading infrastructure...</Text>
       </View>
     )
@@ -1373,7 +1373,7 @@ export default function InfrastructurePage() {
               )}
             >
               {gcRunning ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
                 <Trash2 size={13} className="text-red-400" />
               )}

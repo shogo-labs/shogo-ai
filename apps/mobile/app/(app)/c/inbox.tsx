@@ -5,7 +5,7 @@
  * your messages, and reminders, newest first.
  */
 import { useState } from 'react'
-import { ActivityIndicator, FlatList, Pressable, Text, View } from 'react-native'
+import { FlatList, Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { AlarmClock, AtSign, CheckCheck, Heart, Megaphone, MessageCircleQuestion, MessageSquare, MessagesSquare, Tag } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -14,6 +14,7 @@ import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { useInbox } from '../../../hooks/useChatPrefs'
 import { openConversationTarget } from '../../../lib/team-chat-nav'
 import type { InboxItem, InboxKind } from '../../../lib/team-chat-api'
+import { Spinner } from '@/components/ui/spinner'
 
 const ICONS: Record<InboxKind, typeof AtSign> = {
   mention: AtSign,
@@ -102,7 +103,7 @@ export default function TeamChatInbox() {
               <Text className={cn('text-xs', unreadOnly === u ? 'text-primary' : 'text-muted-foreground')}>{u ? 'Unread' : 'All'}</Text>
             </Pressable>
           ))}
-          {loading ? <ActivityIndicator size="small" /> : null}
+          {loading ? <Spinner size="small" /> : null}
         </View>
         {error ? <Text className="mt-3 text-sm text-destructive">{error}</Text> : null}
       </View>
@@ -151,7 +152,7 @@ export default function TeamChatInbox() {
         ListFooterComponent={
           loadingMore ? (
             <View className="items-center py-4">
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             </View>
           ) : hasMore ? (
             <Pressable

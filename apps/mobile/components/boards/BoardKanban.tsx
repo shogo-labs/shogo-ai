@@ -6,7 +6,7 @@
  * board reloads when the server (or another teammate or agent) changes it.
  */
 import { useMemo, useState } from 'react'
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, TextInput, View, useWindowDimensions, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
+import { Platform, Pressable, ScrollView, Text, TextInput, View, useWindowDimensions, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
 import { AlertTriangle, ArrowUpDown, Bot, Clock, GitPullRequest, KanbanSquare, List, Plus, Search, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import type { Mentionables } from '../../lib/team-chat-api'
@@ -34,6 +34,7 @@ import { PRIORITY_DOT } from './priority'
 import { PullRequestChip } from './PullRequestChip'
 import { WorkItemRow } from './WorkItemRow'
 import { WorkingIndicator } from './WorkingIndicator'
+import { Spinner } from '@/components/ui/spinner'
 
 const api = workBoardsApi()
 
@@ -120,7 +121,7 @@ export function BoardKanban({ boardId, workspaceId, mentionables, selectedItemId
             </Pressable>
           </>
         ) : (
-          <ActivityIndicator />
+          <Spinner />
         )}
       </View>
     )

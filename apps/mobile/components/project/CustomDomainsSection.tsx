@@ -22,7 +22,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { View, Text, TextInput, Pressable, ActivityIndicator, ScrollView } from 'react-native'
+import { View, Text, TextInput, Pressable, ScrollView } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { CheckCircle, Copy, Trash2, RefreshCw, RotateCw, AlertTriangle, Globe, ExternalLink, Star, Circle, XCircle } from 'lucide-react-native'
 import type { HttpClient } from '@shogo-ai/sdk'
@@ -34,6 +34,7 @@ import {
   type CustomDomainStage,
 } from '../../lib/api'
 import { openExternalLink } from '../../lib/open-external-link';
+import { Spinner } from '@/components/ui/spinner'
 
 /** Customer-facing setup guide (Docusaurus, docs.shogo.ai). */
 const SETUP_GUIDE_URL = 'https://docs.shogo.ai/features/custom-domains'
@@ -155,7 +156,7 @@ function StatusTimeline({ domain }: { domain: CustomDomain }) {
               ) : isCurrent && stalled ? (
                 <AlertTriangle size={12} color="#f59e0b" />
               ) : isCurrent ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
                 <Circle size={12} className="text-muted-foreground" />
               )}
@@ -445,7 +446,7 @@ export function CustomDomainsSection({ projectId, http, embedded = true }: Custo
   if (loading) {
     return (
       <View className={cn('items-center', embedded ? 'py-3' : 'flex-1 justify-center')}>
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       </View>
     )
   }
@@ -667,7 +668,7 @@ export function CustomDomainsSection({ projectId, http, embedded = true }: Custo
                     className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md border border-border active:bg-muted"
                   >
                     {groupBusy ? (
-                      <ActivityIndicator size="small" />
+                      <Spinner size="small" />
                     ) : (
                       <>
                         <RefreshCw size={12} className="text-foreground" />
@@ -682,7 +683,7 @@ export function CustomDomainsSection({ projectId, http, embedded = true }: Custo
                       className="flex-1 flex-row items-center justify-center gap-1.5 h-8 rounded-md bg-amber-500/15 border border-amber-500/40 active:bg-amber-500/25"
                     >
                       {groupBusy ? (
-                        <ActivityIndicator size="small" />
+                        <Spinner size="small" />
                       ) : (
                         <>
                           <RotateCw size={12} color="#d97706" />
@@ -723,7 +724,7 @@ export function CustomDomainsSection({ projectId, http, embedded = true }: Custo
             )}
           >
             {adding ? (
-              <ActivityIndicator size="small" color="#fff" />
+              <Spinner tone="onPrimary" size="small" />
             ) : (
               <Text
                 className={cn(

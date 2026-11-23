@@ -17,7 +17,6 @@ import {
   Text,
   TextInput,
   Pressable,
-  ActivityIndicator,
   Alert,
 } from 'react-native'
 import {
@@ -59,6 +58,7 @@ import {
 } from './usePublishProgress'
 import { openExternalLink } from '../../lib/open-external-link';
 import { errorMessage } from '../../lib/error-message'
+import { Spinner } from '@/components/ui/spinner'
 
 export type AccessLevel = 'anyone' | 'authenticated' | 'private' | 'password'
 
@@ -513,7 +513,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
               className="gap-1 p-3 bg-primary/10 rounded-lg border border-primary/20 mb-4"
             >
               <View className="flex-row items-center gap-2">
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
                 <Text className="text-sm text-foreground">{publishProgressLabel(publishStep)}</Text>
               </View>
               <Text className="text-[11px] text-muted-foreground leading-4">
@@ -580,7 +580,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
                 className="flex-1 h-10 px-3 text-sm text-foreground web:outline-none"
               />
               <View className="pr-3">
-                {subdomainStatus.checking && <ActivityIndicator size="small" />}
+                {subdomainStatus.checking && <Spinner size="small" />}
                 {!subdomainStatus.checking && subdomainStatus.available === true && subdomain !== publishedSubdomain && (
                   <CheckCircle size={16} color="#10b981" />
                 )}
@@ -658,7 +658,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
                       )}
                     >
                       {isSavingPassword ? (
-                        <ActivityIndicator size="small" />
+                        <Spinner size="small" />
                       ) : (
                         <Text
                           className={cn(
@@ -768,7 +768,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
                 )}
               >
                 {isPushingData ? (
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                 ) : (
                   <UploadCloud size={13} className="text-foreground" />
                 )}
@@ -845,7 +845,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
                     className={cn('flex-1 h-10 rounded-lg items-center justify-center flex-row gap-1.5', isRepublishing || isPublishingInFlight ? 'bg-muted' : 'bg-primary')}
                   >
                     {isRepublishing || isPublishingInFlight ? (
-                      <ActivityIndicator size="small" color="#fff" />
+                      <Spinner tone="onPrimary" size="small" />
                     ) : (
                       <UploadCloud size={14} className="text-primary-foreground" />
                     )}
@@ -882,7 +882,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
                     className={cn('flex-1 h-10 rounded-lg items-center justify-center', canPublish ? 'bg-primary' : 'bg-muted')}
                   >
                     {isPublishing ? (
-                      <ActivityIndicator size="small" color="#fff" />
+                      <Spinner tone="onPrimary" size="small" />
                     ) : (
                       <Text className={cn('text-sm font-medium', canPublish ? 'text-primary-foreground' : 'text-muted-foreground')}>
                         Publish

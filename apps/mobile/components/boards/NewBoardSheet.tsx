@@ -6,9 +6,10 @@
  * columns can be changed later, or by the workspace agent.
  */
 import { useState } from 'react'
-import { ActivityIndicator, Modal, Pressable, Text, TextInput, View } from 'react-native'
+import { Modal, Pressable, Text, TextInput, View } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { ITEM_TYPE_LABELS, workBoardsApi, type Board, type ItemType } from '../../lib/work-boards-api'
+import { Spinner } from '@/components/ui/spinner'
 
 const api = workBoardsApi()
 
@@ -75,7 +76,7 @@ export function NewBoardSheet({ workspaceId, conversationId, onCreated, onClose 
               <Text className="text-sm text-muted-foreground">Cancel</Text>
             </Pressable>
             <Pressable accessibilityRole="button" onPress={() => void create()} disabled={busy} className="flex-row items-center gap-2 rounded-md bg-primary px-3 py-1.5" testID="create-board">
-              {busy ? <ActivityIndicator size="small" /> : null}
+              {busy ? <Spinner size="small" /> : null}
               <Text className="text-sm text-primary-foreground">Create</Text>
             </Pressable>
           </View>

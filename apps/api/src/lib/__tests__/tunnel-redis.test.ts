@@ -911,3 +911,88 @@ describe('relay payload cap (SHO-410)', () => {
     expect(tr.RELAY_CHUNK_MAX_BYTES).toBeGreaterThan(TRANSFER_MAX_ARCHIVE_BASE64_CHARS)
   })
 })
+
+/**
+ * SHO-546: a cross-pod relay of an agent turn is bounded by silence, not by the
+ * wall clock. The windows are env-tunable, so these tests shrink them to tens of
+ * milliseconds instead of waiting out the production ten minutes.
+ */
+describe('cross-pod stream relay — agent turns are bounded by silence (SHO-546)', () => {
+  const MAX_MS = 80
+  const IDLE_MS = 80
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+  function setWindows(max: number, idle: number) {
+    process.env.SHOGO_TUNNEL_STREAM_RELAY_TIMEOUT_MS = String(max)
+    process.env.SHOGO_TUNNEL_STREAM_RELAY_IDLE_TIMEOUT_MS = String(idle)
+  }
+
+  afterEach(() => {
+    delete process.env.SHOGO_TUNNEL_STREAM_RELAY_TIMEOUT_MS
+    delete process.env.SHOGO_TUNNEL_STREAM_RELAY_IDLE_TIMEOUT_MS
+  })
+
+  /** Act as the owning pod: answer a stream request with `chunks`, `gapMs` apart. */
+  function answerWith(chunks: string[], gapMs: number, opts: { end?: boolean } = {}) {
+    sub().subscriptions.add('tunnel:pod:peer:stream-request')
+    sub().on('message', async (channel: string, message: string) => {
+      if (channel !== 'tunnel:pod:peer:stream-request') return
+      const parsed = JSON.parse(message)
+      for (const data of chunks) {
+        await pub().publish(`tunnel:pod:${parsed.replyPod}:stream-request`, JSON.stringify({
+          relayId: parsed.relayId,
+          chunk: { type: 'stream-chunk', requestId: parsed.request.requestId, data },
+        }))
+        await sleep(gapMs)
+      }
+      if (opts.end !== false) {
+        await pub().publish(`tunnel:pod:${parsed.replyPod}:stream-request`, JSON.stringify({
+          relayId: parsed.relayId,
+          chunk: { type: 'stream-end', requestId: parsed.request.requestId },
+        }))
+      }
+    })
+  }
+
+  it('a turn that keeps streaming outlives the relay wall clock', async () => {
+    setWindows(MAX_MS, IDLE_MS)
+    // 12 chunks 25 ms apart ≈ 300 ms, nearly 4× the wall-clock window.
+    answerWith(Array.from({ length: 12 }, (_, i) => `data-turn-seq ${i}`), 25)
+    const chunks: any[] = []
+    const handle = tr.relayTunnelStreamRequest('peer', 'i-agent', {
+      type: 'request', requestId: 'sr-agent', method: 'GET', path: '/agent/chat/s-1/stream?fromSeq=0',
+    }, (c) => chunks.push(c))
+    await sleep(500)
+    handle.cancel()
+
+    expect(chunks.filter((c) => c.type === 'stream-chunk')).toHaveLength(12)
+    expect(chunks.some((c) => c.type === 'stream-error')).toBe(false)
+    expect(chunks.some((c) => c.type === 'stream-end')).toBe(true)
+  })
+
+  it('a turn relay that goes silent is still killed', async () => {
+    setWindows(MAX_MS, IDLE_MS)
+    answerWith(['only one chunk'], 10_000, { end: false })
+    const chunks: any[] = []
+    const handle = tr.relayTunnelStreamRequest('peer', 'i-quiet', {
+      type: 'request', requestId: 'sr-quiet', method: 'GET', path: '/agent/chat/s-1/stream?fromSeq=0',
+    }, (c) => chunks.push(c))
+    await sleep(300)
+    handle.cancel()
+
+    expect(chunks.some((c) => c.type === 'stream-error' && /timed out/.test(c.error))).toBe(true)
+  })
+
+  it('a non-agent stream keeps its wall-clock cap even while streaming', async () => {
+    setWindows(MAX_MS, IDLE_MS)
+    answerWith(Array.from({ length: 20 }, (_, i) => `frame ${i}`), 20)
+    const chunks: any[] = []
+    const handle = tr.relayTunnelStreamRequest('peer', 'i-canvas', {
+      type: 'request', requestId: 'sr-canvas', method: 'GET', path: '/agent/files/list',
+    }, (c) => chunks.push(c))
+    await sleep(300)
+    handle.cancel()
+
+    expect(chunks.some((c) => c.type === 'stream-error' && /timed out/.test(c.error))).toBe(true)
+  })
+})

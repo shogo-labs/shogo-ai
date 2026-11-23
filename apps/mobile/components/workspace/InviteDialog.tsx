@@ -25,7 +25,6 @@ import {
   type ReactNode,
 } from 'react'
 import {
-  ActivityIndicator,
   Modal,
   Platform,
   Pressable,
@@ -60,6 +59,7 @@ import {
   closeInviteDialog,
   useInviteDialogRequest,
 } from './invite-dialog-context'
+import { Spinner } from '@/components/ui/spinner'
 
 // ─── Email parsing ────────────────────────────────────────
 
@@ -487,7 +487,7 @@ export function InviteDialog({ visible, workspaceId, initialEmails = [], onClose
                       className="flex-row items-center gap-0.5 rounded-full px-1 active:bg-background"
                     >
                       {resending === chip.value ? (
-                        <ActivityIndicator size="small" />
+                        <Spinner size="small" />
                       ) : (
                         <RefreshCw size={10} className="text-primary" />
                       )}
@@ -627,7 +627,7 @@ export function InviteDialog({ visible, workspaceId, initialEmails = [], onClose
                   accessibilityLabel="Create invite link"
                   className="h-9 flex-row items-center justify-center gap-1.5 rounded-md border border-border px-3"
                 >
-                  {linkBusy ? <ActivityIndicator size="small" /> : <Link2 size={13} className="text-muted-foreground" />}
+                  {linkBusy ? <Spinner size="small" /> : <Link2 size={13} className="text-muted-foreground" />}
                   <Text className="text-xs text-foreground">Create link</Text>
                 </Pressable>
               </>
@@ -653,7 +653,7 @@ export function InviteDialog({ visible, workspaceId, initialEmails = [], onClose
               )}
             >
               {sending ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
                 <>
                   <UserPlus size={14} className="text-primary-foreground" />

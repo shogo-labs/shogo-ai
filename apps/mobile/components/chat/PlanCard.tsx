@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { memo, useState } from "react"
-import { ActivityIndicator, View, Text, Pressable, ScrollView } from "react-native"
+import { View, Text, Pressable, ScrollView } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
   CheckCircle2,
@@ -15,6 +15,7 @@ import { MarkdownText } from "./MarkdownText"
 import { PlanBuildActions } from "./PlanBuildActions"
 import { usePlanBuildModel } from "./usePlanBuildModel"
 import { usePhoneLayout } from "../../lib/native-phone-layout"
+import { Spinner } from '@/components/ui/spinner'
 
 export type PlanSummaryStatus = "idle" | "pending" | "ready" | "error"
 
@@ -204,18 +205,18 @@ function PlanCardImpl({
             onPress={() => setActiveTab("summary")}
             className={cn(
               "flex-1 flex-row items-center justify-center gap-1 py-2",
-              activeTab === "summary" && "border-b-2 border-sky-400"
+              activeTab === "summary" && "border-b-2 border-primary"
             )}
           >
             <Text
               className={cn(
                 "text-xs font-semibold",
-                activeTab === "summary" ? "text-sky-400" : "text-muted-foreground"
+                activeTab === "summary" ? "text-primary" : "text-muted-foreground"
               )}
             >
               Summary
             </Text>
-            {summaryStatus === "pending" && <ActivityIndicator size="small" />}
+            {summaryStatus === "pending" && <Spinner size="small" />}
           </Pressable>
         </View>
       )}
@@ -232,7 +233,7 @@ function PlanCardImpl({
           {isSummaryTab ? (
             summaryStatus === "pending" ? (
               <View className="flex-row items-center gap-2 py-3">
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
                 <Text className="text-xs text-muted-foreground">Generating summary...</Text>
               </View>
             ) : summaryStatus === "error" ? (
@@ -297,11 +298,11 @@ function PlanCardImpl({
                 )}
               >
                 {generating ? (
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                 ) : (
-                  <Languages className="h-3.5 w-3.5 text-sky-400" size={14} />
+                  <Languages className="h-3.5 w-3.5 text-primary" size={14} />
                 )}
-                <Text className="text-xs font-semibold text-sky-400">{generating ? "Generating..." : "Summary"}</Text>
+                <Text className="text-xs font-semibold text-primary">{generating ? "Generating..." : "Summary"}</Text>
               </Pressable>
             ) : null}
           </View>

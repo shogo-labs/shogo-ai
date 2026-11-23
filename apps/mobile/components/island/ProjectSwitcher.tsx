@@ -91,7 +91,7 @@ export const ProjectSwitcher = observer(function ProjectSwitcher({
   return (
     <View style={{ flexShrink: 1, minHeight: 0 }}>
       <View className="mx-3 mb-1 mt-2 flex-row items-center gap-2 rounded-lg border border-white/10 bg-black/30 px-2.5">
-        <Search size={13} color="#71717a" />
+        <Search className="text-muted-foreground" size={13} />
         <TextInput
           ref={inputRef}
           value={query}

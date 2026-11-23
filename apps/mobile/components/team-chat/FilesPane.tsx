@@ -5,7 +5,7 @@
  * file, or jump to the message that shared it.
  */
 import { useCallback, useState } from 'react'
-import { ActivityIndicator, FlatList, Image, Pressable, Text, TextInput, View } from 'react-native'
+import { FlatList, Image, Pressable, Text, TextInput, View } from 'react-native'
 import { Download, MessageSquare, Paperclip, Search, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { SegmentedFilter } from '../phone/SegmentedFilter'
@@ -19,6 +19,7 @@ import { useShareFileOpener } from '../chat/share-file-context'
 import { fileTypeMeta } from '../../lib/file-type'
 import { openExternalLink } from '../../lib/open-external-link';
 import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../layout/PhoneScreenHeader';
+import { Spinner } from '@/components/ui/spinner'
 
 type KindFilter = 'all' | ConversationFileKind
 
@@ -95,14 +96,14 @@ export function FilesPane({ workspaceId, conversationId, title, onClose, onShowI
         onEndReachedThreshold={0.5}
         ListEmptyComponent={
           loading ? (
-            <View className="items-center py-10"><ActivityIndicator /></View>
+            <View className="items-center py-10"><Spinner /></View>
           ) : (
             <Text className="px-6 py-10 text-center text-sm text-muted-foreground">
               {filtered ? 'No files match.' : 'No files have been shared here yet.'}
             </Text>
           )
         }
-        ListFooterComponent={loadingMore ? <View className="items-center py-3"><ActivityIndicator size="small" /></View> : null}
+        ListFooterComponent={loadingMore ? <View className="items-center py-3"><Spinner size="small" /></View> : null}
       />
     </View>
   )

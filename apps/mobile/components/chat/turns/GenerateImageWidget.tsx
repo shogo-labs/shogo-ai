@@ -14,7 +14,6 @@ import {
   Text,
   Image,
   Pressable,
-  ActivityIndicator,
   Platform,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -42,6 +41,7 @@ import {
   getGenerateImagePaths,
   parseGenerateImageResult,
 } from "./generate-image-result"
+import { Spinner } from '@/components/ui/spinner'
 
 export interface GenerateImageWidgetProps {
   tool: ToolCallData
@@ -203,7 +203,7 @@ export function GenerateImageWidget({ tool }: GenerateImageWidgetProps) {
             }}
             className="h-12 w-12 items-center justify-center rounded-full bg-primary/10"
           >
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           </Motion.View>
           <Text className="mt-2 text-sm font-medium text-foreground">
             Creating image{elapsed ? ` · ${Math.floor(elapsed / 1000)}s` : "…"}
@@ -238,7 +238,7 @@ export function GenerateImageWidget({ tool }: GenerateImageWidgetProps) {
           className="items-center justify-center bg-muted/50"
           style={{ width: imageWidth, aspectRatio }}
         >
-          {!isLoaded && !hasError ? <ActivityIndicator size="small" /> : null}
+          {!isLoaded && !hasError ? <Spinner size="small" /> : null}
           {hasError ? (
             <>
               <ImageIcon size={24} className="text-muted-foreground" />
@@ -295,7 +295,7 @@ export function GenerateImageWidget({ tool }: GenerateImageWidgetProps) {
           accessibilityLabel="Save generated image"
         >
           {action === "save" ? (
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           ) : (
             <Download size={14} className="text-foreground" />
           )}
@@ -309,7 +309,7 @@ export function GenerateImageWidget({ tool }: GenerateImageWidgetProps) {
           accessibilityLabel="Share generated image"
         >
           {action === "share" ? (
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           ) : (
             <Share2 size={14} className="text-foreground" />
           )}

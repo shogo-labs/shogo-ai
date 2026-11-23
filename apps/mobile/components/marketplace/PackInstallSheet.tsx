@@ -12,8 +12,9 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import { Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { X } from 'lucide-react-native'
+import { Spinner } from '@/components/ui/spinner'
 
 export interface PackQuestion {
   id: string
@@ -118,7 +119,7 @@ export function PackInstallSheet({
           <ScrollView className="px-5" contentContainerStyle={{ paddingBottom: 20 }} keyboardShouldPersistTaps="handled">
             {loading && (
               <View className="py-8 items-center">
-                <ActivityIndicator />
+                <Spinner />
                 <Text className="text-muted-foreground text-sm mt-2">Checking what this will create…</Text>
               </View>
             )}
@@ -226,7 +227,7 @@ export function PackInstallSheet({
               className={`rounded-xl py-3 items-center ${loading || installing ? 'bg-primary/50' : 'bg-primary'}`}
             >
               {installing ? (
-                <ActivityIndicator color="#fff" />
+                <Spinner tone="onPrimary" />
               ) : (
                 <Text className="text-primary-foreground text-sm font-semibold">Install</Text>
               )}

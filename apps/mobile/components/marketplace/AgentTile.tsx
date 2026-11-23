@@ -355,7 +355,7 @@ function RatingAndInstalls({ listing }: { listing: AgentTileListing }) {
         </View>
       )}
       <View className="flex-row items-center gap-0.5">
-        <Download size={10} color="#a1a1aa" />
+        <Download className="text-muted-foreground" size={10} />
         <Text className="text-[10px] text-muted-foreground">
           {formatCount(listing.installCount)}
         </Text>

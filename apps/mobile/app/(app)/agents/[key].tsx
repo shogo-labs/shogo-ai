@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /** An agent's profile; `key` is a project id, or `ws` for the workspace agent. */
-import { ActivityIndicator, View } from 'react-native'
+import { View } from 'react-native'
 import { useLocalSearchParams } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import { AgentProfileScreen } from '../../../components/team-chat/AgentProfileScreen'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
+import { Spinner } from '@/components/ui/spinner'
 
 /**
  * `observer`: `useActiveWorkspace` reads the workspaces collection, which is
@@ -20,7 +21,7 @@ export default observer(function AgentProfileRoute() {
   if (!workspace?.id) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator />
+        <Spinner />
       </View>
     )
   }

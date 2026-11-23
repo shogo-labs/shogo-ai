@@ -19,7 +19,7 @@
  * permission steps follow: `computer-use`, `files-apps` and `dictation`.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Platform, Text, View } from 'react-native'
+import { Platform, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import { Button } from '@shogo/shared-ui/primitives'
@@ -49,6 +49,7 @@ import {
   shouldShowDesktopPermissionSteps,
   useDesktopPermissionSteps,
 } from '../desktop/useDesktopPermissionSteps'
+import { Spinner } from '@/components/ui/spinner'
 
 /** Names the local bootstrap seeds before the user has told us theirs. */
 const PLACEHOLDER_USER_NAMES = new Set(['', 'local', 'local user'])
@@ -585,7 +586,7 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
   if (!loaded) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
       </View>
     )
   }
