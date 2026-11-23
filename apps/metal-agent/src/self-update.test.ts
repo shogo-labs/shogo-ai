@@ -9,14 +9,16 @@
  * yes only on a real, well-formed version change.
  */
 
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { config } from './config'
 import {
   SELF_ACTIVATE_AFTER_MS,
   activateStagedImages,
   dockerRuntimeImage,
+  maybeActivateRootfs,
   rootfsActivationDecision,
   shouldRebuildRootfs,
   shouldUpdate,
@@ -184,5 +186,73 @@ describe('dockerRuntimeImage', () => {
 
   test('appends -docker when the tag has no multiarch segment', () => {
     expect(dockerRuntimeImage('example.com/runtime:latest')).toBe('example.com/runtime:latest-docker')
+  })
+})
+
+/**
+ * Activation is a rename over the live image, and a rootfs with no
+ * `/usr/local/bin/fc-init` does not boot: the kernel execs it and panics with
+ * `error -2` before userspace. Staging activated exactly that image on
+ * 2026-11-23 and lost every cold boot on the host (SHO-549), so the rename now
+ * has to be earned — including on the self-activate path, where no control-plane
+ * word is involved.
+ */
+describe('maybeActivateRootfs refuses an image that cannot boot', () => {
+  const saved = { agentDir: config.agentDir, baseRootfs: config.baseRootfs }
+  let dir: string
+  const marker = () => join(dir, 'ROOTFS_STAGED')
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'activate-gate-'))
+    ;(config as any).agentDir = dir
+    ;(config as any).baseRootfs = join(dir, 'rootfs.ext4')
+    writeFileSync(config.baseRootfs, 'live image')
+    writeFileSync(stagedRootfsPath(config.baseRootfs), 'staged image with no guest init')
+    writeFileSync(
+      marker(),
+      JSON.stringify({ version: 'v2', identities: { standard: 'sz1-mt1' }, stagedAt: 1_000_000 }),
+    )
+  })
+
+  afterEach(() => {
+    ;(config as any).agentDir = saved.agentDir
+    ;(config as any).baseRootfs = saved.baseRootfs
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  const noInit = () => '/usr/local/bin/fc-init is not in the image — every VM built on it panics at boot'
+
+  test("an explicit activateRootfs does not rename it over the live image", async () => {
+    const switched = await maybeActivateRootfs('v2', { guestInitProblem: noInit })
+    expect(switched).toBe(false)
+    expect(readFileSync(config.baseRootfs, 'utf8')).toBe('live image')
+    // Kept for inspection, not deleted: it is the evidence of what went wrong.
+    expect(existsSync(stagedRootfsPath(config.baseRootfs))).toBe(true)
+    // Marker cleared so the next heartbeat rebuilds instead of retrying this file.
+    expect(existsSync(marker())).toBe(false)
+  })
+
+  test('the self-activate path after 3h refuses it too', async () => {
+    const switched = await maybeActivateRootfs(
+      null,
+      { guestInitProblem: noInit },
+      1_000_000 + SELF_ACTIVATE_AFTER_MS,
+    )
+    expect(switched).toBe(false)
+    expect(readFileSync(config.baseRootfs, 'utf8')).toBe('live image')
+    expect(existsSync(stagedRootfsPath(config.baseRootfs))).toBe(true)
+    expect(existsSync(marker())).toBe(false)
+  })
+
+  test('a staged image that does pass the gate is still activated', async () => {
+    // Positive control for the gate: same setup, a probe that finds the init.
+    const switched = await maybeActivateRootfs('v2', {
+      guestInitProblem: () => null,
+      promote: () => 0,
+    })
+    // It kicks off `systemctl restart metal-agent` on a dev box, which may fail to
+    // spawn; the switch itself is what this asserts.
+    expect(switched).toBe(true)
+    expect(readFileSync(config.baseRootfs, 'utf8')).toBe('staged image with no guest init')
   })
 })

@@ -389,6 +389,40 @@ Without it the suite skips its fault tests rather than failing.
 
 ## After a rollout that rebuilds the rootfs
 
+### A staged image without its guest init is never activated
+
+Every rootfs image must carry an executable `/usr/local/bin/fc-init`: the kernel
+execs it as PID 1, and an image without it does not boot badly, it does not boot
+at all — `Kernel panic - not syncing: Requested init /usr/local/bin/fc-init
+failed (error -2)` before userspace. On 2026-11-23 staging activated such an
+image and lost every cold boot on the host until it was rebuilt by hand.
+
+Three gates now stand between a broken build and the fleet, and a failure at any
+of them leaves the live image in service:
+
+1. `build-runtime-rootfs.sh` builds into a private `mktemp -d` (its own
+   `rootfs.tar` and mountpoint, `flock` on `$WORKDIR/.build.lock`), and after the
+   unmount reads the staged file itself with `debugfs` — not the mountpoint —
+   before the rename. `VERIFY_ROOTFS_IMAGE_ONLY=<image> bash
+   build-runtime-rootfs.sh` runs just that check against any image file.
+2. `buildRootfsImage` refuses to rename a build whose guest init is missing.
+3. `maybeActivateRootfs` probes each staged image before the rename — on the
+   control plane's `activateRootfs` and on the self-activate path after 3h. On a
+   bad one it logs `REFUSING to activate rootfs …`, leaves the staged file for
+   inspection, clears the staged marker so the next heartbeat rebuilds, and the
+   host keeps serving its current image.
+
+To check a host by hand:
+
+```bash
+debugfs -R 'stat /usr/local/bin/fc-init' /opt/fc-spike/img/runtime.ext4
+# Inode: … Mode:  0755 …
+```
+
+An image replaced out of band (a manual rebuild over `METAL_ROOTFS`) also needs
+the agent's shared base loop re-attached; the agent re-checks the loop's backing
+path and does that on the next VM, so no restart is needed.
+
 A release that rebuilds the guest rootfs (`metal-agent-deploy` with
 `rebuild_rootfs=true`, or any release that changes the runtime image) makes
 every existing snapshot stale. Without help, each user's next open cold-boots
@@ -571,7 +605,7 @@ multi-GB tar. Triage:
 ssh root@<host>
 docker images --format '{{.Repository}}:{{.Tag}}' | grep -c shogo-runtime   # expect 1-2
 journalctl -u metal-agent | grep image-gc                                    # removals + disk % before/after
-ls -la /opt/fc-spike/build/rootfs.tar                                        # should not exist
+ls -la /opt/fc-spike/build/                                       # no leftover build.* dirs
 ```
 
 Cordon the host until it is back under 80%; the fleet keeps serving from its

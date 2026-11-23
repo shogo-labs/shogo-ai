@@ -64,4 +64,35 @@ describe('build-runtime-rootfs.sh contract', () => {
     expect(verifyAt).toBeGreaterThan(source.indexOf('chmod 0755 "$MNT/usr/local/bin/fc-init"'))
     expect(verifyAt).toBeLessThan(source.indexOf('mv -f "$STAGE" "$OUT"'))
   })
+
+  it('verifies the image that ships, not just the mountpoint, before the rename', () => {
+    // A mountpoint can belong to another filesystem than the file about to be
+    // renamed into place. On staging a standard image with no fc-init in it
+    // passed `verify_rootfs "$MNT"`, went live, and every cold boot on the host
+    // died with `Requested init /usr/local/bin/fc-init failed (error -2)`
+    // (SHO-549, 2026-11-23). The last gate must read $STAGE itself with debugfs,
+    // after the unmount.
+    expect(source).toContain('verify_rootfs_image() {')
+    expect(source).toContain('debugfs -R "stat $path"')
+    const gateAt = source.indexOf('verify_rootfs_image "$STAGE"')
+    expect(gateAt).toBeGreaterThan(source.indexOf('umount "$MNT"'))
+    expect(gateAt).toBeLessThan(source.indexOf('mv -f "$STAGE" "$OUT"'))
+  })
+
+  it('gives every run its own tar and its own mountpoint', () => {
+    // Both images (and every retry) shared $WORKDIR/rootfs.tar and
+    // $WORKDIR/mnt. A second build mounted on top of the first, one build's
+    // extract and fc-init landed in the other's image, and both read a clean
+    // contract at the shared mountpoint.
+    expect(source).toContain('RUN_DIR="$(mktemp -d "$WORKDIR/build.XXXXXX")"')
+    expect(source).toContain('TAR="$RUN_DIR/rootfs.tar"')
+    expect(source).toContain('MNT="$RUN_DIR/mnt"')
+    expect(source).not.toContain('MNT="$WORKDIR/mnt"')
+    expect(source).not.toContain('TAR="$WORKDIR/rootfs.tar"')
+    // Serialised where flock(1) exists, i.e. on every host this runs on.
+    expect(source).toContain('flock -w 3600 9')
+    // And the EXIT trap must never recurse into a tree that is still mounted:
+    // that would delete the staged image's own files.
+    expect(source).toContain('grep -q " $MNT " /proc/self/mountinfo')
+  })
 })
