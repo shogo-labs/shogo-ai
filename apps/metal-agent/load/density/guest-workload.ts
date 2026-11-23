@@ -123,14 +123,6 @@ const TEMPLATE_FILES: Record<string, string> = {
   ].join('\n'),
 }
 
-function heredoc(dir: string, files: Record<string, string>): string {
-  const parts = [`mkdir -p ${dir}/src`]
-  for (const [rel, body] of Object.entries(files)) {
-    const marker = `__DENSITY_${rel.replace(/[^A-Za-z0-9]/g, '_')}__`
-    parts.push(`cat > ${dir}/${rel} <<'${marker}'\n${body}\n${marker}`)
-  }
-  return parts.join('\n')
-}
 
 /**
  * Seed the template and prime the package cache once per VM, so the `install`
@@ -138,8 +130,17 @@ function heredoc(dir: string, files: Record<string, string>): string {
  */
 export async function primeWarmCache(url: string, dir = DEFAULT_TEMPLATE_DIR, timeoutMs = 300_000): Promise<void> {
   await waitForGuest(url)
-  const seed = await guestExec(url, heredoc(dir, TEMPLATE_FILES), 60_000)
-  if (seed.code !== 0) throw new Error(`seeding ${dir} failed (exit ${seed.code}): ${seed.out.slice(-800)}`)
+  // One file per command. The guest PTY is a canonical-mode tty with a 4 KiB
+  // line buffer, so a single 5 KiB heredoc is silently truncated and the shell
+  // sits waiting for the rest of it — which is how the second live run hung at
+  // baseline for 60 s.
+  const mk = await guestExec(url, `mkdir -p ${dir}/src`, 30_000)
+  if (mk.code !== 0) throw new Error(`creating ${dir} failed (exit ${mk.code}): ${mk.out.slice(-800)}`)
+  for (const [rel, body] of Object.entries(TEMPLATE_FILES)) {
+    const marker = `__DENSITY_${rel.replace(/[^A-Za-z0-9]/g, '_')}__`
+    const one = await guestExec(url, `cat > ${dir}/${rel} <<'${marker}'\n${body}\n${marker}`, 30_000)
+    if (one.code !== 0) throw new Error(`seeding ${dir}/${rel} failed (exit ${one.code}): ${one.out.slice(-800)}`)
+  }
   const install = await guestExec(url, `cd ${dir} && bun install --frozen-lockfile 2>/dev/null || bun install`, timeoutMs)
   if (install.code !== 0) throw new Error(`priming bun cache failed (exit ${install.code}): ${install.out.slice(-800)}`)
   const git = await guestExec(
