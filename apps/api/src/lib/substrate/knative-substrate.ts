@@ -66,6 +66,16 @@ export interface KnativeBackend {
     timeoutMs?: number,
     environment?: PublishedEnvironmentName,
   ): Promise<boolean>
+  /** The revision the last create/republish rolled (SHO-536 §C). */
+  getPublishedCreatedRevision(
+    projectId: string,
+    environment?: PublishedEnvironmentName,
+  ): Promise<string | null>
+  /** Wait for that revision to be Ready, or say why it is not. */
+  waitForPublishedRevisionReady(
+    projectId: string,
+    opts: { timeoutMs: number; revisionName?: string | null; environment?: PublishedEnvironmentName },
+  ): Promise<{ ready: true } | { ready: false; reason: string }>
 }
 
 /**
@@ -160,9 +170,27 @@ export class KnativeSubstrate implements ProjectSubstrate {
       })
       await this.backend.createPublishedDomainMapping(subdomain, projectId, environment)
       await kv.setServerBackedFlag(subdomain, 'knative')
+      // The revision this publish rolled, and a way to wait for it: recording a
+      // deployment as `ready` before it serves is how a dead app kept a healthy
+      // Deployment tab (SHO-536 §C).
+      const revisionName = await this.backend
+        .getPublishedCreatedRevision(projectId, environment)
+        .catch(() => null)
       // Report the image the ksvc actually runs, so the recorded deployment
       // cannot drift from it when PUBLISHED_RUNTIME_IMAGE is set.
-      return { serverBacked: true, substrate: this.kind, url, imageRef: resolvePublishedRuntimeImage(opts.image) }
+      return {
+        serverBacked: true,
+        substrate: this.kind,
+        url,
+        imageRef: resolvePublishedRuntimeImage(opts.image),
+        ...(revisionName ? { revisionName } : {}),
+        awaitReady: (timeoutMs: number) =>
+          this.backend.waitForPublishedRevisionReady(projectId, {
+            timeoutMs,
+            revisionName,
+            environment,
+          }),
+      }
     }
 
     // Static app. The Cloudflare Worker serves it entirely from PUBLISH_BUCKET,

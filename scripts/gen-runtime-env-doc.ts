@@ -116,6 +116,7 @@ const PURPOSE: Record<string, string> = {
   AGENT_BASIC_THINKING_LEVEL: 'Reasoning effort for `basic` agent mode.',
   SHOGO_RUNTIME_REVISION: 'Commit the image was built from. Baked in at build time.',
   DRAIN_TIMEOUT_MS: 'How long SIGTERM waits for in-flight streams. See [Lifecycle](#lifecycle).',
+  SHOGO_LFS_CONCURRENT_TRANSFERS: 'In-flight `git lfs push` transfers. Defaults to `2` (capped at `16`) so a small VM does not buffer eight objects at once.',
 }
 
 function walk(dir: string, out: string[]): void {

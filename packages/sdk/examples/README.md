@@ -22,11 +22,16 @@ installing, e.g.:
 
 ```jsonc
 // package.json
-"@shogo-ai/sdk": "^1.7.0"   // use the latest published version
+"@shogo-ai/sdk": "2.6.1",   // the version you mean — check the latest on npm
 ```
 
+Pin the exact version rather than a range: a range is re-resolved against npm on
+every install, so a bad release can reach an app that never asked for it (that
+is how 2.6.1 reached apps whose image only said `^2.6.0`).
+
 Or run the repo's materialize helper against the copied manifest, which rewrites
-every `@shogo-ai/*` `workspace:*` pin to the latest published `^X.Y.Z`:
+every `@shogo-ai/*` `workspace:*` pin to the latest published `X.Y.Z`
+(exact, never a range):
 
 ```sh
 bun run scripts/materialize-runtime-template.ts path/to/your-copy/package.json

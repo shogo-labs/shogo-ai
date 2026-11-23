@@ -28,7 +28,7 @@ import {
 } from "../lib/publish-storage"
 import { flushGitSync } from "../services/publish-git.service"
 import { teardownPublishedSite } from "../services/published-site-teardown"
-import { publishStepTimeouts } from "@shogo/shared-runtime/publish-timeouts"
+import { publishReadinessTimeoutMs, publishStepTimeouts } from "@shogo/shared-runtime/publish-timeouts"
 import { recordCheckpointForCommit } from "../services/checkpoint.service"
 import {
   getCustomHostnamesConfig,
@@ -123,6 +123,14 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 // warm-pool GC honors this annotation and skips deletion while a publish
 // is mid-flight; the TTL means a forgotten/crashed lock self-heals.
 const PUBLISH_IN_FLIGHT_TTL_MS = 10 * 60 * 1000
+
+/**
+ * How long a publish watches the revision it just rolled before refusing it
+ * (SHO-536 §C). The configure step's budget covers this window (see
+ * {@link publishConfigureTimeoutMs}); without waiting at all, a publish recorded
+ * its deployment as `ready` while the revision was still crash-looping.
+ */
+const PUBLISH_READINESS_TIMEOUT_MS = publishReadinessTimeoutMs()
 
 // Check if we're in Kubernetes (S3 publishing mode) or local dev
 function isKubernetes(): boolean {
@@ -574,14 +582,19 @@ export async function publishConfigureTimeoutMs(
   try {
     const { getPublishSubstrate } = await import("../lib/substrate/router")
     const substrate = await getPublishSubstrate(projectId)
-    if (substrate.kind === 'metal') return PUBLISH_CONFIGURE_TIMEOUT_METAL_MS
+    // A server-backed publish now waits for its revision to be Ready before it
+    // records the deployment (SHO-536 §C), so that window belongs to the budget
+    // too — otherwise the outer timeout fires while the revision is still booting.
+    const readinessMs = opts?.serverBacked ? PUBLISH_READINESS_TIMEOUT_MS : 0
+    if (substrate.kind === 'metal') return PUBLISH_CONFIGURE_TIMEOUT_METAL_MS + readinessMs
     if (opts?.serverBacked) {
       const { shouldBuildPublishedImage, publishedImageBuildTimeoutMs } = await import(
         "../lib/published-build-config"
       )
       if (shouldBuildPublishedImage('knative')) {
-        return PUBLISH_CONFIGURE_TIMEOUT_MS + publishedImageBuildTimeoutMs()
+        return PUBLISH_CONFIGURE_TIMEOUT_MS + publishedImageBuildTimeoutMs() + readinessMs
       }
+      return PUBLISH_CONFIGURE_TIMEOUT_MS + readinessMs
     }
   } catch (err: any) {
     console.warn(`[Publish] Could not resolve publish substrate for ${projectId}: ${err?.message ?? err}`)
@@ -1104,12 +1117,13 @@ async function configurePublishedService(
       `(serverBacked=${result.serverBacked}${result.url ? `, url=${result.url}` : ""})`,
   )
 
-  // Record what this environment is now serving so rollback, redeploy and
-  // promote have a real image to point at (SHO-308 §4/§5). Without this row the
-  // three ops actions have nothing to switch to.
-  const { recordPublishedDeployment } = await import("../services/published-deployments.service")
+  // Record what this publish is rolling *before* waiting on it: a revision that
+  // never becomes Ready must leave a `failed` row with its name, not a `ready`
+  // one that supersedes the healthy deployment before it (SHO-536 §C).
+  const { recordPublishedDeployment, markPublishedDeploymentReady, markPublishedDeploymentFailed } =
+    await import("../services/published-deployments.service")
   const { resolvePublishedImageRef } = await import("../services/published-ops.service")
-  await recordPublishedDeployment({
+  const deployment = await recordPublishedDeployment({
     environmentId: environment.id,
     commitSha: commitSha ?? "",
     // Prefer what the substrate reported running; the resolver is the same
@@ -1119,8 +1133,21 @@ async function configurePublishedService(
     // moved, so it is recorded next to the ref rather than derived from it.
     imageDigest: publishedImageDigest,
     revisionName: result.revisionName ?? null,
-    status: "ready",
+    status: "pending",
   })
+
+  if (result.awaitReady) {
+    const readiness = await result.awaitReady(PUBLISH_READINESS_TIMEOUT_MS)
+    if (!readiness.ready) {
+      const { setEnvironmentPublishStatus } = await import("../services/published-ops.service")
+      const detail = `revision_not_ready: ${readiness.reason}`
+      await markPublishedDeploymentFailed(deployment.id).catch(() => undefined)
+      await setEnvironmentPublishStatus(environment.id, "failed", detail).catch(() => undefined)
+      console.warn(`[Publish] ${projectId}/${environmentName}: ${detail}`)
+      throw new PublishConfigureError("revision_not_ready", detail, 503)
+    }
+  }
+  await markPublishedDeploymentReady(deployment.id)
 
   return { serverBacked: result.serverBacked }
 }
@@ -1247,6 +1274,81 @@ async function purgePublishedCache(subdomain: string): Promise<void> {
   } catch (err: any) {
     console.warn('[Publish] Cloudflare cache purge failed (continuing):', err?.message ?? err)
   }
+}
+
+/**
+ * Take a published site live, in the only order that cannot half-publish it.
+ *
+ * A server-backed publish rolls the backend first — the environment database
+ * (prepare + first-deploy seed), the image build, the ksvc roll and the
+ * readiness wait from SHO-536 §C — and only then replaces the static files.
+ * A configure failure therefore leaves the previous bundle serving, instead of a
+ * new frontend in front of an old or dead server (and a failed database step
+ * leaves the files from the last successful publish alone). A static publish has
+ * no backend to roll and keeps the upload-first order.
+ *
+ * This is one helper for the production publish, staging and `/republish`
+ * because three copies of this order is exactly how they drifted apart: all
+ * three uploaded (and purged the cache) before configure had a chance to fail
+ * (SHO-536 §B).
+ */
+export type TakePublishedSiteLiveResult =
+  | { ok: true }
+  | {
+      ok: false
+      stage: 'configure' | 'upload'
+      code: string
+      message: string
+      status: number
+      details?: Record<string, unknown>
+    }
+
+export async function takePublishedSiteLive(input: {
+  serverBacked: boolean
+  /** Called before each step, so the caller's status row follows the real order. */
+  onStage?: (stage: 'configuring' | 'uploading') => Promise<unknown>
+  configure: () => Promise<unknown>
+  upload: () => Promise<unknown>
+}): Promise<TakePublishedSiteLiveResult> {
+  const steps: Array<{ stage: 'configure' | 'upload'; run: () => Promise<unknown> }> = input.serverBacked
+    ? [
+        { stage: 'configure', run: input.configure },
+        { stage: 'upload', run: input.upload },
+      ]
+    : [
+        { stage: 'upload', run: input.upload },
+        { stage: 'configure', run: input.configure },
+      ]
+
+  for (const step of steps) {
+    await input.onStage?.(step.stage === 'configure' ? 'configuring' : 'uploading')
+    try {
+      await step.run()
+    } catch (err: any) {
+      const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+      const isRefusal = err instanceof PublishConfigureError
+      if (step.stage === 'configure') {
+        return {
+          ok: false,
+          stage: 'configure',
+          code: isRefusal ? (err as PublishConfigureError).code : isTimeout ? 'configure_timeout' : 'configure_failed',
+          message: err?.message || 'Failed to configure published service',
+          status: isRefusal ? (err as PublishConfigureError).status : 500,
+          ...(isRefusal && (err as PublishConfigureError).details
+            ? { details: (err as PublishConfigureError).details }
+            : {}),
+        }
+      }
+      return {
+        ok: false,
+        stage: 'upload',
+        code: isTimeout ? 'upload_timeout' : 'upload_failed',
+        message: err?.message || 'Failed to upload to S3',
+        status: 500,
+      }
+    }
+  }
+  return { ok: true }
 }
 
 /**
@@ -1482,52 +1584,44 @@ export async function publishProject(
           return { ok: false, status: 400, code: "no_files", message: "No files to publish - build may have failed" }
         }
 
-        // Step 3: Upload to S3
-        await setPublishStatus(projectId, 'uploading')
-        try {
-          await withTimeout(uploadToS3(subdomain, files), PUBLISH_UPLOAD_TIMEOUT_MS, 'S3 upload')
-          await purgePublishedCache(subdomain)
-        } catch (err: any) {
-          console.error("[Publish] Failed to upload to S3:", err)
-          const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
-          const code = isTimeout ? 'upload_timeout' : 'upload_failed'
-          await setPublishStatus(projectId, 'failed', code)
-          return { ok: false, status: 500, code, message: err.message || "Failed to upload to S3" }
-        }
-
-        // Step 4+5: Provision the published service (server-backed pod OR
-        // static nginx), its DomainMapping, and the SERVER_BACKED edge flag.
-        await setPublishStatus(projectId, 'configuring')
-        try {
-          // `serverBacked` was probed before the download (step 1.5): the
-          // configure budget depends on it, and so did the download's cleanup.
-          const configureTimeoutMs = await publishConfigureTimeoutMs(projectId, { serverBacked })
-          await withTimeout(
-            configurePublishedService(projectId, subdomain, {
-              alwaysOn,
-              allowDataLoss: opts.allowDataLoss === true,
-              serverBacked,
-              // The publish flow built the app in step 1, so the image build
-              // must not build it a second time.
-              artifactAlreadyBuilt: fileSource.kind !== 'uploaded',
-            }),
-            configureTimeoutMs,
-            'Publish configure',
-          )
-        } catch (err: any) {
-          console.warn("[Publish] Published service/DomainMapping creation failed:", err.message)
-          const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
-          // A database preflight refusal keeps its own code and status: the user
-          // has to know it was their schema (or the cluster), not the deploy.
-          const code =
-            err instanceof PublishConfigureError ? err.code : isTimeout ? 'configure_timeout' : 'configure_failed'
-          await setPublishStatus(projectId, 'failed', code)
+        // Steps 3-5: the static bundle and the published service, in the order
+        // `takePublishedSiteLive` owns — configure first for a server-backed app,
+        // so a failed roll leaves the previous files live (SHO-536 §B).
+        const configureTimeoutMs = await publishConfigureTimeoutMs(projectId, { serverBacked })
+        const live = await takePublishedSiteLive({
+          serverBacked,
+          onStage: (stage) => setPublishStatus(projectId, stage),
+          configure: () =>
+            withTimeout(
+              configurePublishedService(projectId, subdomain, {
+                alwaysOn,
+                allowDataLoss: opts.allowDataLoss === true,
+                serverBacked,
+                // The publish flow built the app in step 1, so the image build
+                // must not build it a second time.
+                artifactAlreadyBuilt: fileSource.kind !== 'uploaded',
+              }),
+              configureTimeoutMs,
+              'Publish configure',
+            ),
+          upload: async () => {
+            await withTimeout(uploadToS3(subdomain, files), PUBLISH_UPLOAD_TIMEOUT_MS, 'S3 upload')
+            await purgePublishedCache(subdomain)
+          },
+        })
+        if (!live.ok) {
+          if (live.stage === 'configure') {
+            console.warn('[Publish] Published service/DomainMapping creation failed:', live.message)
+          } else {
+            console.error('[Publish] Failed to upload to S3:', live.message)
+          }
+          await setPublishStatus(projectId, 'failed', live.code)
           return {
             ok: false,
-            status: err instanceof PublishConfigureError ? err.status : 500,
-            code,
-            message: err.message || "Failed to configure published service",
-            ...(err instanceof PublishConfigureError ? { details: err.details } : {}),
+            status: live.status,
+            code: live.code,
+            message: live.message,
+            ...(live.details ? { details: live.details } : {}),
           }
         }
       } finally {
@@ -1707,26 +1801,32 @@ export async function deployToStaging(
         await setEnvironmentPublishStatus(staging.id, "failed", "no_files")
         return { ok: false, status: 400, code: "no_files", message: "No files to publish - build may have failed" }
       }
-      await setEnvironmentPublishStatus(staging.id, "uploading")
-      await uploadToS3(subdomain, files)
-      await purgePublishedCache(subdomain)
-
-      await setEnvironmentPublishStatus(staging.id, "configuring")
+      // Order comes from the same helper the production publish uses: a
+      // server-backed staging environment rolls its backend before the new files
+      // replace the old ones (SHO-536 §B).
       const serverBacked = await detectServerBacked(projectId)
-      try {
-        await configurePublishedService(projectId, subdomain, {
-          serverBacked,
-          environment: "staging",
-          allowDataLoss: opts.allowDataLoss === true,
-        })
-      } catch (err: any) {
+      const live = await takePublishedSiteLive({
+        serverBacked,
+        onStage: (stage) => setEnvironmentPublishStatus(staging.id, stage),
+        configure: () =>
+          configurePublishedService(projectId, subdomain, {
+            serverBacked,
+            environment: "staging",
+            allowDataLoss: opts.allowDataLoss === true,
+          }),
+        upload: async () => {
+          await uploadToS3(subdomain, files)
+          await purgePublishedCache(subdomain)
+        },
+      })
+      if (!live.ok) {
         // Without this the row stays on "configuring" forever and the panel
         // shows a publish that never finished — including a refused per-commit
-        // image build (§2), whose detail is already on the row.
-        const detail =
-          err instanceof PublishConfigureError ? err.message : `configuring: ${err?.message ?? String(err)}`
+        // image build (§2) and a refused revision (§C), whose detail is already
+        // on the row.
+        const detail = live.stage === "configure" ? live.message : `${live.code}: ${live.message}`
         await setEnvironmentPublishStatus(staging.id, "failed", detail).catch(() => undefined)
-        throw err
+        throw new PublishConfigureError(live.code, live.message, live.status, live.details)
       }
 
       // The deployment row is recorded by configurePublishedService, for
@@ -2505,33 +2605,35 @@ export function publishRoutes() {
             }, 400)
           }
 
-          await setPublishStatus(projectId, 'uploading')
-          try {
-            await withTimeout(uploadToS3(subdomain, files), PUBLISH_UPLOAD_TIMEOUT_MS, 'S3 upload')
-            await purgePublishedCache(subdomain)
-          } catch (err: any) {
-            const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
-            const code = isTimeout ? 'upload_timeout' : 'upload_failed'
-            await setPublishStatus(projectId, 'failed', code)
-            return c.json({ error: { code, message: err.message || 'Failed to upload to S3' } }, 500)
-          }
-
-          // Re-provision the published service. configurePublishedService
-          // re-creates the right service type (which bumps the Knative
-          // revision / re-syncs content) and handles static<->server-backed
-          // transitions, the DomainMapping, and the SERVER_BACKED edge flag.
-          // seedPublishedData is a no-op when an archive already exists, so a
-          // republish never clobbers accumulated end-user writes.
-          await setPublishStatus(projectId, 'configuring')
-          try {
-            const configureTimeoutMs = await publishConfigureTimeoutMs(projectId)
-            await withTimeout(
-              configurePublishedService(projectId, subdomain, { alwaysOn }),
-              configureTimeoutMs,
-              'Publish configure',
-            )
-          } catch (err: any) {
-            console.warn("[Publish] Failed to reconfigure published service:", err.message)
+          // The static bundle and the service recreate, in the order
+          // `takePublishedSiteLive` owns: a republish that cannot roll its
+          // backend must not replace the files in front of it (SHO-536 §B).
+          // configurePublishedService re-creates the right service type (which
+          // bumps the Knative revision / re-syncs content) and handles
+          // static<->server-backed transitions, the DomainMapping, and the
+          // SERVER_BACKED edge flag. seedPublishedData is a no-op when an archive
+          // already exists, so a republish never clobbers accumulated end-user
+          // writes.
+          const serverBacked = await detectServerBacked(projectId)
+          const configureTimeoutMs = await publishConfigureTimeoutMs(projectId, { serverBacked })
+          const live = await takePublishedSiteLive({
+            serverBacked,
+            onStage: (stage) => setPublishStatus(projectId, stage),
+            configure: () =>
+              withTimeout(
+                configurePublishedService(projectId, subdomain, { alwaysOn, serverBacked }),
+                configureTimeoutMs,
+                'Publish configure',
+              ),
+            upload: async () => {
+              await withTimeout(uploadToS3(subdomain, files), PUBLISH_UPLOAD_TIMEOUT_MS, 'S3 upload')
+              await purgePublishedCache(subdomain)
+            },
+          })
+          if (!live.ok) {
+            console.warn("[Publish] Republish failed to go live:", live.message)
+            await setPublishStatus(projectId, 'failed', live.code)
+            return c.json({ error: { code: live.code, message: live.message } }, live.status as any)
           }
         } finally {
           await releasePublishLock(projectId)

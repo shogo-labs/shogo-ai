@@ -182,6 +182,9 @@ mock.module(resolve(import.meta.dir, "../../../../hooks/useActiveWorkspace"), ()
 }));
 
 const { WorkspaceChatsPanel } = await import("../WorkspaceChatsPanel");
+const { SidebarScrollProvider, createSidebarScrollSignal } = await import(
+  "../SidebarScrollContext"
+);
 const { chatActivityEvents, chatSessionEvents } = await import(
   "../../../../lib/chat-session-events"
 );
@@ -445,5 +448,78 @@ describe("WorkspaceChatsPanel device cache", () => {
 
     expect(screen.getByLabelText("Chat: Birthday party")).toBeTruthy();
     expect(screen.queryByText("Loading…")).toBeNull();
+  });
+});
+
+// ─── SHO-530: Home grows as the sidebar scrolls ─────────────────────────────
+//
+// Russell: "workspace chats shouldn't have a show 5 more, it should be
+// infinite scroll." The panel now pages on the sidebar's scroll signal, so it
+// hands no `onSeeAll` down and draws no paging row at all.
+
+/** 75 chats, newest first — the order `sortSideChats` renders them in. */
+const manyChats = (count = 75) =>
+  Array.from({ length: count }, (_, index) => {
+    const stamp = new Date(Date.now() - index * 3600_000).toISOString();
+    return {
+      id: `chat-${index + 1}`,
+      workspaceId: "w1",
+      name: `Chat ${index + 1}`,
+      createdAt: stamp,
+      lastActiveAt: stamp,
+      isPinned: false,
+      isArchived: false,
+    };
+  });
+
+const renderedChatLabels = () =>
+  screen.getAllByLabelText(/^Chat: /).map((row) => row.getAttribute("aria-label"));
+
+const renderInPanelScroll = (signal: any) =>
+  render(
+    <SidebarScrollProvider signal={signal}>
+      <WorkspaceChatsPanel />
+    </SidebarScrollProvider>,
+  );
+
+describe("WorkspaceChatsPanel infinite paging", () => {
+  test("AC1: 75 chats draw 30 rows and no Show more / Show less / See all row", async () => {
+    listWorkspaceSessions.mockImplementation(async () => manyChats());
+    renderInPanelScroll(createSidebarScrollSignal());
+
+    await screen.findByLabelText("Chat: Chat 1");
+    expect(renderedChatLabels()).toHaveLength(30);
+    expect(screen.queryByLabelText(/Show more chats/)).toBeNull();
+    expect(screen.queryByLabelText(/Show fewer chats/)).toBeNull();
+    expect(screen.queryByLabelText(/See all chats/)).toBeNull();
+    expect(screen.queryByText(/^See all/)).toBeNull();
+    expect(screen.queryByText("Show more")).toBeNull();
+  });
+
+  test("AC2: a sidebar scroll-end draws the next 30, then the last 15", async () => {
+    const signal = createSidebarScrollSignal();
+    listWorkspaceSessions.mockImplementation(async () => manyChats());
+    renderInPanelScroll(signal);
+
+    await screen.findByLabelText("Chat: Chat 1");
+
+    act(() => signal.notify());
+    expect(renderedChatLabels()).toHaveLength(60);
+
+    act(() => signal.notify());
+    const labels = renderedChatLabels();
+    expect(labels).toHaveLength(75);
+    expect(labels[0]).toBe("Chat: Chat 1");
+    expect(labels[74]).toBe("Chat: Chat 75");
+    expect(new Set(labels).size).toBe(75);
+  });
+
+  test("AC7: with no sidebar scroll view it draws every chat rather than hiding them", async () => {
+    listWorkspaceSessions.mockImplementation(async () => manyChats());
+    render(<WorkspaceChatsPanel />);
+
+    await screen.findByLabelText("Chat: Chat 75");
+    expect(renderedChatLabels()).toHaveLength(75);
+    expect(screen.queryByLabelText(/See all chats/)).toBeNull();
   });
 });
