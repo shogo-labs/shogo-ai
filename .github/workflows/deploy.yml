@@ -275,6 +275,7 @@ jobs:
       docs_changed: ${{ steps.set-matrix.outputs.docs_changed }}
       base_tag: ${{ steps.set-matrix.outputs.base_tag }}
       promote: ${{ steps.set-matrix.outputs.promote }}
+      release_sdk_pin: ${{ steps.set-matrix.outputs.release_sdk_pin }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -298,6 +299,42 @@ jobs:
           IS_PRODUCTION: ${{ needs.setup.outputs.is_production }}
           FORCE_REBUILD_PRODUCTION: ${{ github.event.inputs.force_rebuild_production || 'false' }}
         run: |
+          # The SDK version a production release must ship (SHO-522). Releases
+          # publish `@shogo-ai/sdk@X.Y.Z` from the same `vX.Y.Z` tag, so the
+          # tag names the exact pin every runtime image of this release must
+          # carry. Empty on staging/main and on a non-release tag.
+          RELEASE_SDK_PIN=""
+          if [ "$IS_PRODUCTION" = "true" ] && [ "$IS_TAG_PUSH" = "true" ]; then
+            if [[ "$CURRENT_TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
+              RELEASE_SDK_PIN="${BASH_REMATCH[1]}"
+              echo "::notice::release tag $CURRENT_TAG — runtime images must pin @shogo-ai/sdk@$RELEASE_SDK_PIN"
+            fi
+          fi
+          echo "release_sdk_pin=$RELEASE_SDK_PIN" >> "$GITHUB_OUTPUT"
+
+          # Content-hash tag for the runtime base image. Hash exactly the
+          # inputs that define the base (the same files that drive
+          # runtime_base_changed above): Dockerfile.base, both Expo starter
+          # package.json files that feed the Bun prewarm, and the SDK
+          # examples. The base is built and pushed under
+          # shogo-runtime-base:<base_tag> only when this tag is absent in
+          # OCIR, and the runtime image is built FROM that exact tag. So the
+          # heavy base layers stay byte-identical until these inputs actually
+          # change (and a revert reuses the previously built tag).
+          #
+          # Computed for the promote path too: rebuild-release-runtime rebuilds
+          # the runtime chain on a tag and needs the same base (SHO-522).
+          BASE_HASH=$(
+            {
+              sha256sum packages/agent-runtime/Dockerfile.base \
+                        packages/agent-runtime/tech-stacks/expo-three/starter/package.json \
+                        packages/agent-runtime/tech-stacks/expo-app/starter/package.json 2>/dev/null
+              find packages/sdk/examples -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum 2>/dev/null
+            } | sha256sum | cut -c1-16
+          )
+          echo "base_tag=base-$BASE_HASH" >> $GITHUB_OUTPUT
+          echo "Runtime base content tag: base-$BASE_HASH"
+
           # Production promotes the images staging already built and tested
           # for this commit (promote-images) instead of rebuilding them. Every
           # service gets the release tag; resolve-release-images.sh skips the
@@ -313,7 +350,6 @@ jobs:
               echo "docs_changed=true"
               echo "runtime_changed=true"
               echo "runtime_base_changed=false"
-              echo "base_tag="
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -413,26 +449,6 @@ jobs:
           echo "runtime_changed=$RUNTIME_CHANGED" >> $GITHUB_OUTPUT
           echo "runtime_base_changed=$RUNTIME_BASE_CHANGED" >> $GITHUB_OUTPUT
           echo "docs_changed=$DOCS_CHANGED" >> $GITHUB_OUTPUT
-
-          # Content-hash tag for the runtime base image. Hash exactly the
-          # inputs that define the base (the same files that drive
-          # runtime_base_changed above): Dockerfile.base, both Expo starter
-          # package.json files that feed the Bun prewarm, and the SDK
-          # examples. The base is built and pushed under
-          # shogo-runtime-base:<base_tag> only when this tag is absent in
-          # OCIR, and the runtime image is built FROM that exact tag. So the
-          # heavy base layers stay byte-identical until these inputs actually
-          # change (and a revert reuses the previously built tag).
-          BASE_HASH=$(
-            {
-              sha256sum packages/agent-runtime/Dockerfile.base \
-                        packages/agent-runtime/tech-stacks/expo-three/starter/package.json \
-                        packages/agent-runtime/tech-stacks/expo-app/starter/package.json 2>/dev/null
-              find packages/sdk/examples -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum 2>/dev/null
-            } | sha256sum | cut -c1-16
-          )
-          echo "base_tag=base-$BASE_HASH" >> $GITHUB_OUTPUT
-          echo "Runtime base content tag: base-$BASE_HASH"
 
           ENTRIES=""
           add_entry() {
@@ -602,12 +618,138 @@ jobs:
           platforms: linux/arm64
           push: true
           provenance: false
+          # On a release tag this pins the tag's own SDK and waits for npm to
+          # serve it (SHO-522); empty everywhere else, which pins npm `latest`.
+          build-args: |
+            SHOGO_SDK_PIN_VERSION=${{ needs.detect-changes.outputs.release_sdk_pin }}
           tags: |
             ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-workspace-deps:latest
             ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-workspace-deps:${{ github.sha }}
           # Durable in-region OCIR registry cache (see build-base-image).
           cache-from: type=registry,ref=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/buildcache:workspace-deps
           cache-to: type=registry,ref=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/buildcache:workspace-deps,mode=max,image-manifest=true,oci-mediatypes=true
+
+  # ===========================================================================
+  # Stage 1.6: Rebuild the release's runtime images for its own SDK (SHO-522)
+  # ===========================================================================
+  # A production deploy promotes images built on `main`, i.e. BEFORE the tag
+  # existed — so the promoted runtime chain pins whatever `@shogo-ai/sdk` was
+  # `latest` then, which for a release is the PREVIOUS release's SDK. That is
+  # how the v2.6.1 image shipped pinning `^2.6.0`.
+  #
+  # Promotion cannot deliver a new pin, so on a `vX.Y.Z` tag the two images in
+  # the runtime chain are rebuilt here instead of promoted:
+  #   - shogo-workspace-deps (materializes templates/runtime-template and is
+  #     the carrier of the pin for the api image too), and
+  #   - shogo-runtime (the pod image; COPYs the template from workspace-deps).
+  # Both are rebuilt with SHOGO_SDK_PIN_VERSION=<tag>, which BLOCKS until npm
+  # serves that exact version and fails the deploy if it never does — never a
+  # silent fallback to the previous release.
+  #
+  # api / web / docs are still promoted untouched (their bytes are the ones
+  # staging e2e tested, and only workspace-deps/runtime carry the pin).
+  # Registry cache keeps the rebuild to the layers above the template install.
+  #
+  # It waits on build-base-image: the runtime build is FROM
+  # shogo-runtime-base:<base_tag>, and that tag is only pushed (or confirmed
+  # present) by that job. Running the two in parallel would race a pull of a
+  # tag that does not exist yet; `skipped` is fine (has_changes=false, so the
+  # tag already exists).
+  # ===========================================================================
+  rebuild-release-runtime:
+    name: Rebuild runtime images pinned to the release SDK
+    runs-on: ubuntu-24.04-arm
+    needs: [resolve-config, detect-changes, build-base-image]
+    if: |
+      always() &&
+      needs.resolve-config.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
+      (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&
+      needs.detect-changes.outputs.promote == 'true' &&
+      needs.detect-changes.outputs.release_sdk_pin != '' &&
+      needs.resolve-config.outputs.dry_run != 'true'
+    environment: production-us
+    timeout-minutes: 90
+    steps:
+      - name: Free disk space (runtime image is ~14GB)
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Login to OCIR
+        run: |
+          echo "${{ secrets.OCI_AUTH_TOKEN }}" | docker login \
+            ${{ vars.OCI_REGION }}.ocir.io \
+            -u "${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}" \
+            --password-stdin
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build + push workspace-deps with the release SDK pin
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: docker/workspace-deps/Dockerfile
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          build-args: |
+            SHOGO_SDK_PIN_VERSION=${{ needs.detect-changes.outputs.release_sdk_pin }}
+          tags: ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-workspace-deps:production-${{ github.sha }}
+          cache-from: type=registry,ref=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/buildcache:workspace-deps
+          cache-to: type=registry,ref=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/buildcache:workspace-deps,mode=max,image-manifest=true,oci-mediatypes=true
+
+      - name: Build + push the runtime image with the release SDK pin
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: packages/agent-runtime/Dockerfile
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-runtime:production-${{ github.sha }}
+            ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-runtime:production-latest
+          build-args: |
+            BASE_IMAGE=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-runtime-base:${{ needs.detect-changes.outputs.base_tag }}
+            WORKSPACE_DEPS=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-workspace-deps:production-${{ github.sha }}
+            SHOGO_RUNTIME_REVISION=${{ github.sha }}
+          cache-from: type=registry,ref=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/buildcache:runtime
+          cache-to: type=registry,ref=${{ needs.resolve-config.outputs.ocir_registry }}/shogo/buildcache:runtime,mode=max,image-manifest=true,oci-mediatypes=true
+
+      # The acceptance evidence: read the pin straight out of the image this
+      # release will run. Nothing else in the pipeline proves the promoted
+      # artifact carries the release's own SDK.
+      - name: Verify the runtime image pins the release's SDK
+        env:
+          PIN: ${{ needs.detect-changes.outputs.release_sdk_pin }}
+          RUNTIME_IMAGE: ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/shogo-runtime:production-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          GOT="$(docker run --rm --entrypoint cat "$RUNTIME_IMAGE" \
+            /app/templates/runtime-template/package.json | jq -r '.dependencies["@shogo-ai/sdk"]')"
+          echo "\`templates/runtime-template/package.json\` pins \`@shogo-ai/sdk\` **${GOT}** (release: **${PIN}**)"
+          {
+            echo "## Runtime SDK pin"
+            echo ""
+            echo "| Image | \`@shogo-ai/sdk\` | Release |"
+            echo "|---|---|---|"
+            echo "| \`shogo-runtime:production-${{ github.sha }}\` | \`${GOT}\` | \`${PIN}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$GOT" != "$PIN" ]; then
+            echo "::error::The release runtime image pins @shogo-ai/sdk '${GOT}', not the release's '${PIN}' — refusing to deploy an image that installs a different SDK than this release published."
+            exit 1
+          fi
 
   # ===========================================================================
   # Stage 2: Build and Push Docker Images to OCIR (in parallel)
@@ -795,8 +937,11 @@ jobs:
   promote-images:
     name: Promote staging images
     runs-on: ubuntu-latest
-    needs: [resolve-config, detect-changes]
-    if: needs.detect-changes.outputs.promote == 'true' && needs.resolve-config.outputs.dry_run != 'true'
+    needs: [resolve-config, detect-changes, rebuild-release-runtime]
+    if: |
+      needs.detect-changes.outputs.promote == 'true' &&
+      needs.resolve-config.outputs.dry_run != 'true' &&
+      (needs.rebuild-release-runtime.result == 'success' || needs.rebuild-release-runtime.result == 'skipped')
     environment: production-us
     # 75 > IMAGE_GATE_TIMEOUT_MS (60) so the gate's own timeout message wins.
     timeout-minutes: 75
@@ -807,6 +952,10 @@ jobs:
       OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
       SRC_TAG: staging-${{ github.sha }}
       DST_TAG: production-${{ github.sha }}
+      # When rebuild-release-runtime ran, it already pushed the tag-pinned
+      # shogo-runtime (SHO-522) — promoting the staging one would overwrite it
+      # with an image carrying the previous release's SDK.
+      RELEASE_SDK_PIN: ${{ needs.detect-changes.outputs.release_sdk_pin }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -833,6 +982,12 @@ jobs:
         run: |
           set -euo pipefail
           REPOS="shogo-api shogo-web shogo-docs shogo-runtime"
+          # shogo-runtime comes from rebuild-release-runtime on a release tag:
+          # its SDK pin is the release's, not the one staging built (SHO-522).
+          if [ -n "$RELEASE_SDK_PIN" ]; then
+            REPOS="shogo-api shogo-web shogo-docs"
+            echo "::notice::shogo-runtime is built by rebuild-release-runtime (pinned to @shogo-ai/sdk ${RELEASE_SDK_PIN}) — not promoting the staging one"
+          fi
           # Belt-and-braces: 'Wait for the staging tag set' already blocked on
           # these tags, so this must never fire. If it does, the gate has a bug.
           MISSING=""
@@ -868,10 +1023,11 @@ jobs:
   replicate-images:
     name: Replicate to ${{ matrix.target_region.region }}
     runs-on: ubuntu-latest
-    needs: [resolve-config, detect-changes, build-base-image, build-and-push, promote-images]
+    needs: [resolve-config, detect-changes, build-base-image, build-and-push, promote-images, rebuild-release-runtime]
     if: |
       always() &&
       needs.resolve-config.outputs.is_production == 'true' &&
+      (needs.rebuild-release-runtime.result == 'success' || needs.rebuild-release-runtime.result == 'skipped') &&
       needs.resolve-config.outputs.dry_run != 'true' &&
       needs.resolve-config.result == 'success' &&
       needs.detect-changes.result == 'success' &&
@@ -1197,7 +1353,7 @@ jobs:
   deploy-us:
     name: Deploy to US (primary)
     runs-on: ubuntu-latest
-    needs: [setup, resolve-config, detect-changes, build-base-image, build-and-push, promote-images, staging-e2e-gate]
+    needs: [setup, resolve-config, detect-changes, build-base-image, build-and-push, promote-images, staging-e2e-gate, rebuild-release-runtime]
     if: |
       always() &&
       needs.setup.outputs.build_only != 'true' &&
@@ -1208,7 +1364,8 @@ jobs:
       needs.detect-changes.result == 'success' &&
       (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
-      (needs.promote-images.result == 'success' || needs.promote-images.result == 'skipped')
+      (needs.promote-images.result == 'success' || needs.promote-images.result == 'skipped') &&
+      (needs.rebuild-release-runtime.result == 'success' || needs.rebuild-release-runtime.result == 'skipped')
     environment: production-us
     # deploy-eu refreshes the US subscription after EU publishes new tables.
     outputs:
@@ -2865,7 +3022,9 @@ jobs:
   metal-runtime-image:
     name: Prod metal runtime image
     runs-on: ubuntu-latest
-    needs: [resolve-config, deploy-us, deploy-eu, metal-fleet-eu]
+    # detect-changes: its `release_sdk_pin` is what the promotion must preserve
+    # in the guest image (SHO-522).
+    needs: [resolve-config, detect-changes, deploy-us, deploy-eu, metal-fleet-eu]
     # metal-fleet-eu is deliberately not required to succeed: a missing EU
     # fleet reading only makes the gate rebuild.
     if: |
@@ -2915,6 +3074,10 @@ jobs:
           SHA: ${{ github.sha }}
           REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
           FORCE_BUILD: ${{ github.event.inputs.force_rebuild_production || 'false' }}
+          # On a release tag the promoted guest image must pin this release's
+          # SDK; the script prefers this tag's own build and refuses an older
+          # image that pins a different SDK (SHO-522).
+          SDK_PIN: ${{ needs.detect-changes.outputs.release_sdk_pin }}
           OCI_NS: ${{ vars.OCI_TENANCY_NAMESPACE }}
           OCI_USERNAME: ${{ secrets.OCI_USERNAME }}
           OCI_AUTH_TOKEN: ${{ secrets.OCI_AUTH_TOKEN }}

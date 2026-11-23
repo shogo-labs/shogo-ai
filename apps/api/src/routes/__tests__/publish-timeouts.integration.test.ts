@@ -95,13 +95,18 @@ describe('publish build timeout and retry', () => {
   test('a server-backed knative publish gets the image build budget on top of configure', async () => {
     // The image build runs inside the configure step, so a 60s configure
     // timeout killed every server app while its build was still running.
+    // SHO-536 also spends part of that step waiting for the new revision to be
+    // Ready, so the readiness window belongs to the same budget.
     const previous = process.env.PUBLISH_BUILD_IMAGES
     process.env.PUBLISH_BUILD_IMAGES = 'on'
     try {
       substrate.kind = 'knative'
       const configure = Number(process.env.PUBLISH_CONFIGURE_TIMEOUT_MS) || 60_000
       const imageBuild = Number(process.env.PUBLISH_IMAGE_BUILD_TIMEOUT_MS) || 900_000
-      expect(await publishConfigureTimeoutMs('proj-1', { serverBacked: true })).toBe(configure + imageBuild)
+      const readiness = Number(process.env.PUBLISH_READINESS_TIMEOUT_MS) || 120_000
+      expect(await publishConfigureTimeoutMs('proj-1', { serverBacked: true })).toBe(
+        configure + imageBuild + readiness,
+      )
       // A static publish keeps the short budget so a hang still fails fast.
       expect(await publishConfigureTimeoutMs('proj-1', { serverBacked: false })).toBe(configure)
     } finally {

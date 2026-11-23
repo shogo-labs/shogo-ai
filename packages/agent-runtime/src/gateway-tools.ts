@@ -128,7 +128,7 @@ import {
 import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { addQuickAction, validateQuickActions } from './quick-actions'
 import { withActionRules, withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, scratchPathForWrite, type PermissionEngine } from './permission-engine'
-import { applyAbilityGate } from './access-gate'
+import { abilityDenialBody, applyAbilityGate } from './access-gate'
 import {
   crossWorkspaceEnabled,
   crossWorkspaceEnabledFor,
@@ -5404,11 +5404,29 @@ function customDomainSuccess(action: string, data: { fallbackOrigin?: string; do
   }
 }
 
+/**
+ * The server's refusal of a `publish` call for the person it acts for (SHO-539).
+ *
+ * Publishing is a *project* permission (`project:publish`), so the per-turn
+ * workspace gate must not decide it — the internal route does, with the
+ * project role. When it refuses, answer in the shape `withAbilityGate` uses so
+ * a project viewer gets the same named permission instead of a raw 403.
+ */
+function publishAbilityDenial(res: { code?: string }) {
+  if (res.code !== 'ability_not_allowed') return null
+  return abilityDenialBody(
+    'project:publish',
+    'Ask a workspace admin for publish access to this project. Nothing was published.',
+  )
+}
+
 /** Map a domain-route error code onto something the agent can act on. */
 function customDomainFailure(
   action: string,
   res: { status?: number; code?: string; error?: string },
 ) {
+  const denial = publishAbilityDenial(res)
+  if (denial) return { ...denial, ok: false, action, status: res.status ?? null }
   const code = res.code ?? 'domain_action_failed'
   const messages: Record<string, string> = {
     not_published:
@@ -5875,7 +5893,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
           replica,
         })
         if (!ops.ok) {
-          return textResult({ error: ops.error, code: ops.code })
+          return textResult(publishAbilityDenial(ops) ?? { error: ops.error, code: ops.code })
         }
         return textResult(ops.data ?? {})
       }
@@ -5905,6 +5923,8 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       })
 
       if (!res.ok) {
+        const denial = publishAbilityDenial(res)
+        if (denial) return textResult(denial)
         if (res.code === 'subdomain_taken') {
           return textResult({
             error: `The subdomain "${targetSubdomain}" is already in use. Ask the user to choose a different one, then publish again.`,

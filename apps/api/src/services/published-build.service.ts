@@ -45,7 +45,11 @@ import {
   type BuildKitJobObject,
 } from '../lib/published-build-job'
 import { PUBLISHED_DOCKERFILE_NAME, publishedDockerfile } from '../lib/published-dockerfile'
-import { publishArtifactMaxBytes, publishArtifactUploadTimeoutMs } from '@shogo/shared-runtime/publish-timeouts'
+import {
+  publishArtifactInlineMaxBytes,
+  publishArtifactMaxBytes,
+  publishArtifactUploadTimeoutMs,
+} from '@shogo/shared-runtime/publish-timeouts'
 
 export type PublishedBuildFailureCode =
   | 'build_not_configured'
@@ -375,6 +379,17 @@ function describeArtifactFailure(result: { status: number; body: string }): stri
   return `artifact request failed: ${result.status} ${result.body.slice(0, 200)}`
 }
 
+/**
+ * How many bytes a base64 string decodes to, without decoding it.
+ *
+ * Used to refuse an inline artifact *before* `Buffer.from` — the guard has to
+ * work on a string too large to decode (SHO-536).
+ */
+function decodedBase64Bytes(base64: string): number {
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
+  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding)
+}
+
 export async function fetchPublishedArtifact(
   input: { projectId: string; alreadyBuilt?: boolean },
   deps: ArtifactFetchDeps,
@@ -409,15 +424,18 @@ export async function fetchPublishedArtifact(
  * the Vite/Expo publish build in the API.
  *
  * It also uploads it (SHO-485 §2b): the API names the bucket and key, the
- * runtime writes them with its own client and answers `{ key, bytes }`. The old
- * contract — a base64 tarball in a JSON body — is still understood, because an
- * API rolls out before the runtimes it talks to, and the reverse must not break
- * a publish either.
+ * runtime writes them with its own client and answers `{ key, bytes }`. When
+ * the runtime has no object store it writes them through a presigned PUT the
+ * API mints here (SHO-536). The old contract — a base64 tarball in a JSON body
+ * — is still understood, because an API rolls out before the runtimes it talks
+ * to, and the reverse must not break a publish either; above
+ * {@link publishArtifactInlineMaxBytes} it is refused by name rather than
+ * decoded into a V8 string that cannot exist.
  *
  * The artifact is a build input, not a served asset, so it lives under
  * `artifacts/` and is only ever read by the Job.
  */
-async function uploadPublishedArtifact(input: {
+export async function uploadPublishedArtifact(input: {
   projectId: string
   subdomain: string
   commitSha: string
@@ -441,8 +459,20 @@ async function uploadPublishedArtifact(input: {
     const podUrl = await getProjectPodUrl(input.projectId)
     const key = `${input.subdomain}/artifacts/${input.commitSha}.tar.gz`
 
+    // The runtime may have no object store of its own (a runtime whose env never
+    // got `S3_LFS_BUCKET`/`S3_WORKSPACES_BUCKET`), and base64 cannot carry a
+    // multi-gigabyte context. Presign a PUT with the same internal client the
+    // Job's GET uses, so such a runtime still streams the tar (SHO-536 §A).
+    const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner')
+    const { PutObjectCommand } = await import('@aws-sdk/client-s3')
+    const putUrl = await getSignedUrl(
+      getS3Client(),
+      new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: 'application/gzip' }),
+      { expiresIn: 3600 },
+    )
+
     const requestArtifact = async (projectId: string) => {
-      const query = new URLSearchParams({ projectId, bucket, key })
+      const query = new URLSearchParams({ projectId, bucket, key, putUrl })
       const res = await fetch(`${podUrl}/agent/publish-artifact?${query.toString()}`, {
         headers: { 'x-runtime-token': await deriveProjectRuntimeToken(projectId) },
         signal: AbortSignal.timeout(publishArtifactUploadTimeoutMs()),
@@ -451,7 +481,19 @@ async function uploadPublishedArtifact(input: {
         const body = await res.text().catch(() => '')
         return { ok: false as const, status: res.status, body }
       }
-      const body = (await res.json()) as { key?: string; bytes?: number; archive?: string; message?: string }
+      const body = (await res.json()) as {
+        key?: string
+        bytes?: number
+        archive?: string
+        message?: string
+        offload?: { skipped?: string }
+      }
+      if (body.offload?.skipped === 'no_object_store') {
+        console.warn(
+          `[PublishedBuild] ${projectId}: the runtime has no object store, so the project's media ` +
+            'stayed in the build context',
+        )
+      }
       if (body.key && typeof body.bytes === 'number') {
         return { ok: true as const, ref: { key: body.key, bytes: body.bytes } }
       }
@@ -459,6 +501,21 @@ async function uploadPublishedArtifact(input: {
       // Take it in once, here, so the streaming contract stays the one the rest
       // of this file sees.
       if (body.archive) {
+        // Refuse above the inline cap *before* decoding. `Buffer.from` on the
+        // string is the same 2^31−1 limit that killed the publish this card is
+        // about; a named refusal beats a V8 crash (SHO-536 §A).
+        const decodedBytes = decodedBase64Bytes(body.archive)
+        if (decodedBytes > publishArtifactInlineMaxBytes()) {
+          return {
+            ok: false as const,
+            status: 413,
+            body:
+              `artifact_too_large_for_inline: ${decodedBytes} bytes decoded from ` +
+              `${body.archive.length} base64 characters, over the ` +
+              `${publishArtifactInlineMaxBytes()} byte inline limit — the artifact must go ` +
+              'through object storage',
+          }
+        }
         const bytes = Buffer.from(body.archive, 'base64')
         if (bytes.length === 0) {
           return { ok: false as const, status: res.status, body: 'artifact tarball was empty' }
@@ -470,7 +527,6 @@ async function uploadPublishedArtifact(input: {
             body: `artifact_too_large: ${bytes.length} bytes exceeds ${publishArtifactMaxBytes()}`,
           }
         }
-        const { PutObjectCommand } = await import('@aws-sdk/client-s3')
         await getS3Client().send(
           new PutObjectCommand({ Bucket: bucket, Key: key, Body: bytes, ContentType: 'application/gzip' }),
         )
@@ -510,7 +566,6 @@ async function uploadPublishedArtifact(input: {
 
     // Presign with the *internal* client: the Job runs inside the cluster and
     // must reach the internal endpoint, not the public one.
-    const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner')
     const { GetObjectCommand } = await import('@aws-sdk/client-s3')
     const url = await getSignedUrl(getS3Client(), new GetObjectCommand({ Bucket: bucket, Key: artifact.ref.key }), {
       expiresIn: 3600,
