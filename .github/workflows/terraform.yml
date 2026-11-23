@@ -160,7 +160,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        environment: [staging, production-us, production-eu]
+        environment: [staging, production-us, production-eu, edge-global]
     defaults:
       run:
         working-directory: terraform/environments/${{ matrix.environment }}
