@@ -36,6 +36,7 @@ import type { InstanceSizeName } from '../config/instance-sizes'
 import { buildAiProxyUrl, buildToolsProxyUrl } from './cloud-urls'
 import { fnv1a64 } from './advisory-lock'
 import { parseProjectSettings } from './project-settings'
+import { publishedRevisionState } from './published-revision-status'
 import {
   buildPublishedScaleAnnotations,
   publishedContainerResources,
@@ -1391,6 +1392,91 @@ export class KnativeProjectManager {
         name: serviceName,
       })
       return svc?.status?.latestReadyRevisionName ?? svc?.status?.latestCreatedRevisionName ?? null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * The revision this publish just created — `latestCreatedRevisionName`, not
+   * `latestReadyRevisionName`, which still names the previous one while the new
+   * one boots (SHO-536 §C).
+   */
+  async getPublishedCreatedRevision(
+    projectId: string,
+    environment: PublishedEnvironmentName = 'production',
+  ): Promise<string | null> {
+    const serviceName = publishedServiceName(projectId, environment)
+    const api = getCustomApi()
+    try {
+      const svc: any = await api.getNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: 'services',
+        name: serviceName,
+      })
+      return svc?.status?.latestCreatedRevisionName ?? null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Wait for a published revision to be Ready, or report why it is not.
+   *
+   * Two checks, both required: the Revision's own Ready condition (which is what
+   * turns an ExitCode137 or a `RevisionFailed` into a name) and the pod's
+   * `/ready` probe (which is what a visit would actually hit). A publish that
+   * records a deployment only after this returns true cannot claim `ready` for a
+   * revision that never served (SHO-536 §C).
+   */
+  async waitForPublishedRevisionReady(
+    projectId: string,
+    opts: {
+      timeoutMs: number
+      revisionName?: string | null
+      environment?: PublishedEnvironmentName
+    },
+  ): Promise<{ ready: true } | { ready: false; reason: string }> {
+    const environment = opts.environment ?? 'production'
+    const deadline = Date.now() + opts.timeoutMs
+    let revisionName = opts.revisionName ?? null
+    let last = 'the published service reported no revision'
+    for (;;) {
+      if (!revisionName) revisionName = await this.getPublishedCreatedRevision(projectId, environment)
+      const revision = await this.readPublishedRevision(revisionName)
+      const state = publishedRevisionState(revision)
+      if (state.state === 'failed') return { ready: false, reason: state.reason }
+      if (state.state === 'ready') {
+        const name = revision?.metadata?.name ?? revisionName ?? 'the new revision'
+        if (await this.healthCheckPublished(projectId, 5000, environment)) return { ready: true }
+        last = `${name} reports Ready but its pod does not answer /ready yet`
+      } else {
+        last = state.reason
+      }
+      if (Date.now() + 2000 > deadline) {
+        return {
+          ready: false,
+          reason: `not Ready within ${Math.round(opts.timeoutMs / 1000)}s — ${last}`,
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+    }
+  }
+
+  /** One Revision by name, or null when it does not exist (yet). */
+  private async readPublishedRevision(revisionName: string | null): Promise<any | null> {
+    if (!revisionName) return null
+    const api = getCustomApi()
+    try {
+      return await api.getNamespacedCustomObject({
+        group: KNATIVE_GROUP,
+        version: KNATIVE_VERSION,
+        namespace: this.namespace,
+        plural: 'revisions',
+        name: revisionName,
+      })
     } catch {
       return null
     }
