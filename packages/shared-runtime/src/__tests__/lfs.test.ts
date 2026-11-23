@@ -71,8 +71,33 @@ describe('lfsConfigArgs', () => {
       '-c', 'lfs.url=https://studio.example.test/api/projects/p1/git/info/lfs',
       '-c', 'http.https://studio.example.test/.extraHeader=Authorization: Bearer tok',
       '-c', 'lfs.locksverify=false',
+      '-c', 'lfs.concurrenttransfers=2',
     ])
     expect(args.some((a) => a.startsWith('http.extraHeader='))).toBe(false)
+  })
+
+  it('caps concurrent transfers low by default and honours the override', () => {
+    const cfg = {
+      workspaceDir: '/w',
+      cloudApiUrl: 'https://studio.example.test/',
+      runtimeAuthSecret: 'tok',
+      projectId: 'p1',
+    }
+    // git-lfs defaults to 8 in-flight object buffers; a 4 GiB guest cannot
+    // afford that while the clean filter is also running (SHO-531).
+    expect(lfsConfigArgs(cfg)).toContain('lfs.concurrenttransfers=2')
+    const saved = process.env.SHOGO_LFS_CONCURRENT_TRANSFERS
+    try {
+      process.env.SHOGO_LFS_CONCURRENT_TRANSFERS = '6'
+      expect(lfsConfigArgs(cfg)).toContain('lfs.concurrenttransfers=6')
+      process.env.SHOGO_LFS_CONCURRENT_TRANSFERS = '99'
+      expect(lfsConfigArgs(cfg)).toContain('lfs.concurrenttransfers=16')
+      process.env.SHOGO_LFS_CONCURRENT_TRANSFERS = 'nonsense'
+      expect(lfsConfigArgs(cfg)).toContain('lfs.concurrenttransfers=2')
+    } finally {
+      if (saved === undefined) delete process.env.SHOGO_LFS_CONCURRENT_TRANSFERS
+      else process.env.SHOGO_LFS_CONCURRENT_TRANSFERS = saved
+    }
   })
 })
 

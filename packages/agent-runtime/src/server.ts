@@ -103,6 +103,7 @@ import {
   autoTrackLargeFiles,
   lfsPushAll,
   lfsPushIncremental,
+  lfsPushedTips,
   LfsPushError,
   LfsPushRunner,
   lfsPull,
@@ -586,6 +587,25 @@ function lfsPushFailureBody(err: LfsPushError) {
 }
 
 /**
+ * Push this repo's new LFS objects for a save, through the SAME runner the
+ * `/pool/export*` routes use, and answer whether the bytes are now durable.
+ *
+ * It used to call `lfsPushAll` directly (SHO-531): `tips: null`, outside the
+ * runner, so a save and a host export each ran a full-history scan plus a full
+ * push, concurrently, on a 2 vCPU guest. Now the tips come from the repo's own
+ * pushed-tips marker (so `rev-list` walks only the commits since the last
+ * successful push) and the runner makes the export join this job instead of
+ * starting a second one.
+ */
+async function pushLfsForSave(dir: string): Promise<boolean> {
+  if (!isLfsActive() || !existsSync(join(dir, '.git'))) return false
+  const cfg = lfsRemoteConfigFromEnv(dir)
+  if (!cfg) return false
+  const push = await awaitLfsPush(dir, lfsPushedTips(dir), LFS_PUSH_WAIT_MS)
+  return push?.state === 'done'
+}
+
+/**
  * Persist `.git` to object storage, first offloading LFS object bytes to OCI
  * when LFS is active. The local `.git/lfs/objects` cache is excluded from the
  * tarball ONLY when the push succeeded — otherwise the bytes would be durable
@@ -600,8 +620,7 @@ function lfsPushFailureBody(err: LfsPushError) {
 async function persistDurableRepo(): Promise<{ ok: boolean; changed: boolean; reason?: string }> {
   if (isHostMediatedDurability()) {
     if (isLfsActive()) {
-      const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
-      if (lfsCfg) s3SyncInstance?.setLfsObjectsDurable(await lfsPushAll(lfsCfg))
+      s3SyncInstance?.setLfsObjectsDurable(await pushLfsForSave(WORKSPACE_DIR))
     }
     // LFS bytes are offloaded via the API; the host packs `.git` on export.
     return { ok: true, changed: false, reason: 'host-mediated' }
@@ -610,13 +629,10 @@ async function persistDurableRepo(): Promise<{ ok: boolean; changed: boolean; re
   if (!repoCfg) return { ok: true, changed: false, reason: 'no-store-config' }
   let excludeLfsObjects = false
   if (isLfsActive()) {
-    const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
-    if (lfsCfg) {
-      excludeLfsObjects = await lfsPushAll(lfsCfg)
-      // The same "bytes are durable now" fact decides whether the project
-      // archive may store LFS files as pointer text (SHO-478).
-      s3SyncInstance?.setLfsObjectsDurable(excludeLfsObjects)
-    }
+    excludeLfsObjects = await pushLfsForSave(WORKSPACE_DIR)
+    // The same "bytes are durable now" fact decides whether the project
+    // archive may store LFS files as pointer text (SHO-478).
+    s3SyncInstance?.setLfsObjectsDurable(excludeLfsObjects)
   }
   return persistRepoToStore(WORKSPACE_DIR, repoCfg, { excludeLfsObjects })
 }
@@ -3597,7 +3613,9 @@ app.post('/pool/export', async (c) => {
     if (isLfsActive() && existsSync(join(destinationDir, '.git'))) {
       const lfsCfg = lfsRemoteConfigFromEnv(destinationDir)
       if (lfsCfg) {
-        const push = await lfsPushRunner.run(lfsCfg, null)
+        // Same tips as the save path, so this joins a running push instead of
+        // starting a second full scan (SHO-531).
+        const push = await lfsPushRunner.run(lfsCfg, lfsPushedTips(destinationDir))
         sync.setLfsObjectsDurable((await lfsPushRunner.settle(push, 0)) === 'done')
       }
     }
@@ -3678,7 +3696,9 @@ app.post('/pool/export-repo', async (c) => {
     // `.git/lfs/objects` itself, so waiting on a push would only delay it.
     if (body?.skipLfsPush !== true) {
       const waitMs = Math.min(Math.max(Number(body?.waitMs) || LFS_PUSH_WAIT_MS, 0), 120_000)
-      const push = await awaitLfsPush(destinationDir, null, waitMs)
+      // Marker tips, like the save path: this is the same job when a save is
+      // already pushing, and a one-commit walk when it is not (SHO-531).
+      const push = await awaitLfsPush(destinationDir, lfsPushedTips(destinationDir), waitMs)
       // Only a finished push lets the tarball drop the local object store;
       // otherwise the bytes would be durable nowhere.
       excludeLfsObjects = push?.state === 'done'
