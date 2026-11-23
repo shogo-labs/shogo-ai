@@ -94,10 +94,12 @@ annotations:
                                                 # hourly sweep runs
          docker image prune -f                  # dangling layers
          docker container prune -f --filter label=shogo-rootfs-build=1
-    3. Look for a leftover export tar from a failed rebuild:
-         ls -la /opt/fc-spike/build/rootfs.tar
-       (the build script's EXIT trap removes it; a multi-GB file here means an
-       old script or a killed build — delete it).
+    3. Look for leftovers from a failed rebuild — each run builds in its own
+       `/opt/fc-spike/build/build.XXXXXX/` and its EXIT trap removes the whole
+       directory:
+         ls -la /opt/fc-spike/build/
+       A `build.*` directory left behind means an old script or a killed build;
+       a multi-GB `rootfs.tar` inside it is safe to delete.
     4. Check the agent's log for image-gc lines: `journalctl -u metal-agent |
        grep image-gc`. They report images removed and root-disk % before/after.
     5. If one host is hot, cordon it and free space before it starts failing

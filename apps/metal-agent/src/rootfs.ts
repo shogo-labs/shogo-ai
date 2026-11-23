@@ -37,6 +37,7 @@ import {
   ftruncateSync,
   mkdirSync,
   openSync,
+  readFileSync,
   renameSync,
   rmSync,
   statSync,
@@ -47,6 +48,20 @@ import type { MetalConfig } from './config'
 import { allocatedBytes } from './disk'
 
 export type RootfsMode = 'full' | 'reflink' | 'dm'
+
+/**
+ * Is the shared base loop still attached to the golden image that is on disk?
+ *
+ * A replaced image is renamed into place, and the kernel then reports the loop's
+ * backing path as `<path> (deleted)` — the exact string that kept an old image
+ * in service after a new one was renamed in (SHO-549). Anything other than the
+ * current path is stale; an unreadable backing path is 'unknown' and must not be
+ * treated as a switch.
+ */
+export function baseLoopState(backingFile: string, baseRootfs: string): 'current' | 'stale' | 'unknown' {
+  if (!backingFile) return 'unknown'
+  return backingFile === baseRootfs ? 'current' : 'stale'
+}
 
 function sh(cmd: string, args: string[]): string {
   return execFileSync(cmd, args, { encoding: 'utf8' }).trim()
@@ -464,11 +479,54 @@ export class RootfsProvisioner {
     return join(this.cfg.dmCowDir, `${vmId}.cow`)
   }
 
-  /** Loop-mount the golden base read-only, once, shared by all VMs. */
+  /**
+   * Loop-mount the golden base read-only, once, shared by all VMs.
+   *
+   * The cached device is re-examined rather than trusted. A golden image is
+   * replaced by rename — `activateStagedImages`, or an operator rebuild straight
+   * over `METAL_ROOTFS` — and a loop attached before that rename keeps pointing
+   * at the old inode for the life of the process: the host then snapshots the
+   * *previous* image for every new VM while the file on disk is the new one.
+   * That is how a fixed image stayed inert on staging (SHO-549): the replacement
+   * carried /usr/local/bin/fc-init, the loop still bound the image that did not,
+   * and every cold boot kept panicking with
+   * `Requested init /usr/local/bin/fc-init failed (error -2)`.
+   */
   private ensureBaseLoop(): string {
-    if (this.baseLoop && existsSync(this.baseLoop)) return this.baseLoop
+    if (this.baseLoop) {
+      const state = baseLoopState(this.baseLoopBackingFile(this.baseLoop), this.cfg.baseRootfs)
+      // 'unknown' is a lost sysfs read, not evidence of a switch — keep the old
+      // device-node test for that case only.
+      if (state === 'current' || (state === 'unknown' && existsSync(this.baseLoop))) return this.baseLoop
+      this.detachBaseLoop()
+    }
     this.baseLoop = sh('losetup', ['--find', '--show', '--read-only', this.cfg.baseRootfs])
     return this.baseLoop
+  }
+
+  /** The path a loop device is attached to, as the kernel reports it. */
+  private baseLoopBackingFile(loop: string): string {
+    try {
+      return readFileSync(`/sys/class/block/${basename(loop)}/loop/backing_file`, 'utf8').trim()
+    } catch {
+      return ''
+    }
+  }
+
+  /**
+   * Drop our shared base loop. A loop that a live dm-snapshot still uses as its
+   * origin refuses to detach (EBUSY) and that is fine: those VMs keep the image
+   * they booted, the next attach simply picks a fresh device for the new one.
+   */
+  private detachBaseLoop(): void {
+    const loop = this.baseLoop
+    this.baseLoop = null
+    if (!loop) return
+    try {
+      execFileSync('losetup', ['-d', loop])
+    } catch {
+      /* still an origin for a live snapshot — leave it to the GC */
+    }
   }
 
   private baseSectors(): number {
