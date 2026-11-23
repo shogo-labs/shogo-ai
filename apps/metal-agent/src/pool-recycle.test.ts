@@ -201,9 +201,9 @@ describe('pool.recycle', () => {
 
   /**
    * A database nobody can snapshot (SHO-541). Rotation needs a final backup,
-   * so this used to abort forever — Samsara's VM sat on a superseded rootfs for
-   * four days. It may now rotate, but only when the durable archive is already
-   * the newest copy, and never by silently dropping the DB.
+   * so this aborts — and it must keep aborting: a VM that has never completed
+   * an export can still be full of writes only it holds, which is exactly the
+   * state Samsara's VM was in when it had been failing for four days.
    */
   describe('a database that cannot be snapshotted', () => {
     /** The guest answering `/pool/export-data` with the named failure. */
@@ -229,36 +229,34 @@ describe('pool.recycle', () => {
       expect(pool.events).not.toContain('data p1')
     })
 
-    test('rotates anyway when the roll-out policy allows it and the archive is the newest copy', async () => {
-      // What part A of SHO-541's rule exists for: the VM has never completed an
-      // export (so nothing newer than the archive can exist), and the archive a
-      // cold boot restores is already what it would get. Staying put only keeps
-      // it on a superseded runtime (no SHO-485/514), which is worse.
+    test('still aborts a stale-rootfs rotation: a VM that never saved can be full of live writes', async () => {
+      // The tempting shortcut — "it never completed an export, so nothing newer
+      // than the archive can exist" — is false. Samsara's VM had 336 failed
+      // exports and four days of users writing. Rotating would have swapped that
+      // for a four-day-old archive and called it a repair.
       const pool = makePool()
       pool.add('p1', { dataParentEtag: '"arch"' })
       pool.dataExport = snapshotFailure()
 
-      const r = await pool.recycle('p1', { reason: 'stale-rootfs', tolerateSnapshotFailure: true })
-      expect(r.steps.find((s) => s.step === 'data')?.ok).toBe(true)
-      expect(r.aborted).toBe(false)
-      expect(r.notices?.join(' ')).toMatch(/could not be snapshotted/i)
-      expect(stopped).toEqual(['vm-1'])
+      const r = await pool.recycle('p1', { reason: 'stale-rootfs' })
+      expect(r.aborted).toBe(true)
+      expect(r.steps.find((s) => s.step === 'data')?.detail).toMatch(/database disk image is malformed/)
+      expect(stopped).toEqual([])
+      expect(pool.events).not.toContain('data p1')
     })
 
-    test('still refuses when this run saved its database before the failures began', async () => {
-      // The archive is older than real writes that live only on this VM now.
-      // Rotating would trade a stuck runtime for lost data, so it stays put.
+    test('aborts even after the run saved its database once, and says why', async () => {
       const pool = makePool()
       pool.add('p1', { dataParentEtag: '"arch"', dataLastUploadAt: Date.now() - 60_000 })
       pool.dataExport = snapshotFailure()
 
-      const r = await pool.recycle('p1', { reason: 'stale-rootfs', tolerateSnapshotFailure: true })
+      const r = await pool.recycle('p1', { reason: 'stale-rootfs' })
       expect(r.aborted).toBe(true)
-      expect(r.steps.find((s) => s.step === 'data')?.detail).toMatch(/saved its database earlier in this run/)
+      expect(r.steps.find((s) => s.step === 'data')?.detail).toMatch(/database not persisted/)
       expect(stopped).toEqual([])
     })
 
-    test('rotates a workspace VM only when every member has a durable archive', async () => {
+    test('aborts a workspace VM whose member database cannot be snapshotted', async () => {
       const pool = makePool()
       pool.add('ws:proj:m1', {
         workspaceMemberIds: ['m1'],
@@ -266,15 +264,10 @@ describe('pool.recycle', () => {
       })
       pool.dataExport = snapshotFailure()
 
-      const covered = await pool.recycle('ws:proj:m1', { tolerateSnapshotFailure: true })
-      expect(covered.aborted).toBe(false)
-
-      const pool2 = makePool()
-      pool2.add('ws:proj:m2', { workspaceMemberIds: ['m2'], memberData: { m2: { parentEtag: '"a"', lastUploadAt: Date.now() } } })
-      pool2.dataExport = snapshotFailure()
-      const refused = await pool2.recycle('ws:proj:m2', { tolerateSnapshotFailure: true })
-      expect(refused.aborted).toBe(true)
-      expect(refused.steps.find((s) => s.step === 'data')?.detail).toMatch(/member m2 saved its database/)
+      const r = await pool.recycle('ws:proj:m1')
+      expect(r.aborted).toBe(true)
+      expect(r.steps.find((s) => s.step === 'data')?.detail).toMatch(/database disk image is malformed/)
+      expect(stopped).toEqual([])
     })
   })
 

@@ -246,16 +246,17 @@ export type DriveResizeResult = { fromMiB: number; toMiB: number } | 'unchanged'
 export const ROTATE_RETRY_MS = 10 * 60_000
 
 /**
- * Aborted rotations to tolerate before a VM whose ONLY failing backup is its
- * database snapshot is rotated anyway (and only when the durable archive is
- * the newest copy that can exist — see `dataCoveredByDurableArchive`).
+ * How long a rotation that is BLOCKED on an un-snapshottable database waits
+ * before trying again.
  *
- * Three attempts at {@link ROTATE_RETRY_MS} apart is half an hour of retries
- * with the export failing on its own backoff in between: long enough to rule
- * out a transient lock, short enough that a broken database does not pin a VM
- * to a superseded runtime for days (SHO-541: four days, 336 failed exports).
+ * Retrying every {@link ROTATE_RETRY_MS} is how one broken database re-exported
+ * and re-uploaded its 1.7 GB source bundle every ten minutes for four days
+ * (SHO-541). A database that cannot be snapshotted does not heal on its own —
+ * it needs a fixed guest or a human to recover it — so this retry is a slow
+ * safety net, not a repair loop. Blocked is reported on `/status` and alerted
+ * once, so it does not depend on anyone reading these retries.
  */
-export const ROTATE_SNAPSHOT_FAILURES_TOLERATED = 3
+export const ROTATE_BLOCKED_RETRY_MS = 6 * 60 * 60_000
 
 const REPO_EXPORT_MAX_BACKOFF_MS = 30 * 60_000
 const REPO_EXPORT_MIN_BACKOFF_MS = 60_000
@@ -1030,13 +1031,6 @@ export interface RecycleOpts {
   force?: boolean
   /** Release rotation: settle background tasks before the source backup. */
   stopBackgroundTasks?: boolean
-  /**
-   * Let a database that cannot be snapshotted pass the data step, but only
-   * when the durable archive is already the newest copy (SHO-541). Set by the
-   * roll-out rotation after repeated failures, never by a user-initiated
-   * recycle.
-   */
-  tolerateSnapshotFailure?: boolean
 }
 
 /**
@@ -4745,46 +4739,6 @@ export class MetalWarmPool {
   }
 
   /**
-   * Whether the durable copies already in the store cover this VM's database,
-   * i.e. whether rotating away from it now can only lose writes the backups
-   * never had either.
-   *
-   * The test is deliberately narrow: a durable archive must exist for every
-   * backup target, and NOTHING may have been successfully made durable during
-   * this assignment. A VM that exported fine earlier and then broke has real
-   * writes only it holds — that one stays put and reports
-   * `stale_rootfs_blocked`, because rotating it would trade a stuck runtime
-   * for lost data. A VM that has never completed an export has nothing newer
-   * than the archive a cold boot would restore anyway (SHO-541).
-   */
-  private dataCoveredByDurableArchive(a: AssignedVm): { ok: true } | { ok: false; reason: string } {
-    if (a.dataUntrustedReason) {
-      return { ok: false, reason: `its database is untrusted (${a.dataUntrustedReason})` }
-    }
-    if (!a.projectId.startsWith('ws:')) {
-      if (!a.dataParentEtag) {
-        return { ok: false, reason: 'there is no durable writable-state archive for it' }
-      }
-      if (a.dataLastUploadAt !== undefined) {
-        return { ok: false, reason: 'it saved its database earlier in this run, so newer writes exist only here' }
-      }
-      return { ok: true }
-    }
-    const members = Object.entries(a.memberData ?? {}).filter(([id]) => ownMemberIds(a.projectId).includes(id))
-    if (members.length === 0) {
-      return { ok: false, reason: 'no workspace member database is known yet' }
-    }
-    for (const [id, s] of members) {
-      if (s.untrustedReason) return { ok: false, reason: `member ${id}'s database is untrusted (${s.untrustedReason})` }
-      if (!s.parentEtag) return { ok: false, reason: `there is no durable writable-state archive for member ${id}` }
-      if (s.lastUploadAt !== undefined) {
-        return { ok: false, reason: `member ${id} saved its database earlier in this run, so newer writes exist only here` }
-      }
-    }
-    return { ok: true }
-  }
-
-  /**
    * Pull the guest's CURRENT writable state and upload it under the guard.
    *
    * Serialized per project: the periodic exporter and `suspend()` both call
@@ -6758,14 +6712,14 @@ export class MetalWarmPool {
    * separately because the control plane boots them again instead of leaving
    * them suspended.
    *
-   * A failed backup blocks rotation, and it used to block it FOREVER: one
-   * database that could not be snapshotted kept its VM on a pre-SHO-485/514
-   * runtime for four days (SHO-541). After
-   * {@link ROTATE_SNAPSHOT_FAILURES_TOLERATED} attempts the rotation retries
-   * with `tolerateSnapshotFailure`, which only lets the DATA step pass, and
-   * only when the durable archive is the newest copy that can exist. Anything
-   * else — a failed source, repo or checkpoint, or a database that saved later
-   * than its archive — stays put and is reported as `stale_rootfs_blocked`.
+   * A failed backup blocks rotation, and it blocked it FOREVER and silently:
+   * one database that could not be snapshotted kept its VM on a
+   * pre-SHO-485/514 runtime for four days while the rotation re-uploaded a
+   * 1.7 GB source bundle every ten minutes (SHO-541). It still refuses to
+   * rotate — there is no way to prove the durable archive already holds a
+   * database nobody can read — but it now names the failure on the VM's status
+   * as `stale_rootfs_blocked`, alerts once, and backs off to
+   * {@link ROTATE_BLOCKED_RETRY_MS} instead of hammering the host.
    */
   async rotateStale(now = Date.now()): Promise<{ retired: string[]; alwaysOn: string[] }> {
     const out = { retired: [] as string[], alwaysOn: [] as string[] }
@@ -6778,11 +6732,7 @@ export class MetalWarmPool {
     for (const a of stale) if (!this.staleSince.has(a.projectId)) this.staleSince.set(a.projectId, now)
 
     for (const id of this.rotateRetryAt.keys()) if (!staleIds.has(id)) this.rotateRetryAt.delete(id)
-    for (const id of this.rotateAttempts.keys()) {
-      if (staleIds.has(id)) continue
-      this.rotateAttempts.delete(id)
-      this.rotationBlocked.delete(id)
-    }
+    for (const id of this.rotationBlocked.keys()) if (!staleIds.has(id)) this.rotationBlocked.delete(id)
 
     const due = stale.filter((a) => {
       if (now < (this.rotateRetryAt.get(a.projectId) ?? 0)) return false
@@ -6798,9 +6748,6 @@ export class MetalWarmPool {
     if (cap > 0 && due.length > cap) due.length = cap
     for (const a of due) {
       const alwaysOn = !!a.alwaysOn
-      // 1-based, and read BEFORE the attempt: the tolerance policy asks how
-      // many attempts this one is, not how many have already failed.
-      const attempt = (this.rotateAttempts.get(a.projectId) ?? 0) + 1
       try {
         const r = await this.recycle(a.projectId, {
           reason: 'stale-rootfs',
@@ -6808,40 +6755,43 @@ export class MetalWarmPool {
           // the release as its reason, not a generic restart; the guest settles
           // them `interrupted` and the owner hears about it after the recycle.
           stopBackgroundTasks: true,
-          // Only once this VM has proven it cannot back its database up. The
-          // data step still refuses if anything newer than the durable archive
-          // could exist only on this VM.
-          tolerateSnapshotFailure: attempt >= ROTATE_SNAPSHOT_FAILURES_TOLERATED,
         })
         if (r.aborted) {
-          this.rotateAttempts.set(a.projectId, attempt)
-          this.rotateRetryAt.set(a.projectId, now + ROTATE_RETRY_MS)
           const failed = r.steps.filter((s) => !s.ok)
           const detail = failed.map((s) => `${s.step}: ${s.detail ?? 'failed'}`).join('; ') || 'no step failed'
-          console.warn(
-            `[pool] rollout rotation of ${a.projectId} aborted (${detail}); ` +
-              `retrying in ${ROTATE_RETRY_MS / 60_000}m`,
-          )
-          // Name the state it is stuck in as soon as rotation gives up on its
-          // own, so it is not merely a journal line nobody reads.
+          // A database nobody can snapshot is not going to become snapshot-able
+          // by retrying, and rotating anyway would replace it with whatever the
+          // durable archive happens to hold. Name the state it is stuck in, alert
+          // once, and stop burning a 1.7 GB source export every ten minutes on a
+          // rotation that cannot succeed (SHO-541: four days of exactly that).
           const dataOnly = failed.length > 0 && failed.every((s) => s.step === 'data') && !!a.dataSnapshotFailure
-          if (dataOnly && attempt >= ROTATE_SNAPSHOT_FAILURES_TOLERATED) {
-            const covered = this.dataCoveredByDurableArchive(a)
-            if (!covered.ok) {
-              this.markRotationBlocked(a, `${detail} — ${covered.reason}`)
-            }
+          if (dataOnly) {
+            this.markRotationBlocked(
+              a,
+              `its database cannot be snapshotted (${a.dataSnapshotFailure!.message}), so the final backup ` +
+                `rotation requires will not happen; the VM stays on its current runtime`,
+            )
+            this.rotateRetryAt.set(a.projectId, now + ROTATE_BLOCKED_RETRY_MS)
+            console.warn(
+              `[pool] rollout rotation of ${a.projectId} BLOCKED (${detail}); ` +
+                `retrying in ${ROTATE_BLOCKED_RETRY_MS / 3_600_000}h`,
+            )
+          } else {
+            this.rotateRetryAt.set(a.projectId, now + ROTATE_RETRY_MS)
+            console.warn(
+              `[pool] rollout rotation of ${a.projectId} aborted (${detail}); ` +
+                `retrying in ${ROTATE_RETRY_MS / 60_000}m`,
+            )
           }
           continue
         }
       } catch (err: any) {
-        this.rotateAttempts.set(a.projectId, attempt)
         this.rotateRetryAt.set(a.projectId, now + ROTATE_RETRY_MS)
         console.error(`[pool] rollout rotation failed for ${a.projectId}:`, err?.message ?? err)
         continue
       }
       this.staleSince.delete(a.projectId)
       this.rotateRetryAt.delete(a.projectId)
-      this.rotateAttempts.delete(a.projectId)
       this.rotationBlocked.delete(a.projectId)
       metrics.inc(M.rolloutRotated)
       ;(alwaysOn ? out.alwaysOn : out.retired).push(a.projectId)
@@ -6868,8 +6818,6 @@ export class MetalWarmPool {
   private staleSince = new Map<string, number>()
   /** A rotation that aborted (a backup failed) waits until then: each attempt re-runs every backup. */
   private rotateRetryAt = new Map<string, number>()
-  /** Consecutive aborted rotations per VM, reset when one lands. */
-  private rotateAttempts = new Map<string, number>()
   /** VMs on a superseded rootfs that rotation has given up on, and why. */
   private rotationBlocked = new Map<string, { reason: string; since: number }>()
 
@@ -8087,7 +8035,7 @@ export class MetalWarmPool {
     let removedDurable = false
 
     this.rotationBlocked.delete(projectId)
-    this.rotateAttempts.delete(projectId)
+    this.rotateRetryAt.delete(projectId)
     const a = this.assigned.get(projectId)
     if (a) {
       await this.mgr.stopVM(a.handle).catch(() => {})
@@ -8146,12 +8094,10 @@ export class MetalWarmPool {
    * The next open then cold-boots from the durable backups. Without `force`, a
    * failed step aborts before anything is removed and the VM keeps running.
    *
-   * `tolerateSnapshotFailure` is the roll-out rotation's escape hatch for a
-   * database that cannot be snapshotted at all (SHO-541): the data step is
-   * allowed to pass when the durable archive is the newest copy that exists
-   * anyway (see `dataCoveredByDurableArchive`). It never lets a failed source,
-   * repo or checkpoint through, and never when a newer copy could exist only
-   * on this VM.
+   * A database the guest cannot snapshot fails the `data` step and therefore
+   * aborts the recycle: there is no way to prove the durable archive already
+   * holds it, and a cold boot would replace it with whatever the archive did
+   * hold. `rotateStale` reports that as `stale_rootfs_blocked` (SHO-541).
    */
   async recycle(
     runtimeKey: string,
@@ -8240,9 +8186,7 @@ export class MetalWarmPool {
       const ok = await this.backupForRecycle(a, steps, {
         stopBackgroundTasks: opts.stopBackgroundTasks,
         reason: opts.reason,
-        notices,
         noteTmp,
-        tolerateSnapshotFailure: opts.tolerateSnapshotFailure,
       })
       if (!ok && !force) {
         console.error(`[pool] recycle ${runtimeKey} ABORTED — a backup step failed; nothing removed`)
@@ -8268,9 +8212,7 @@ export class MetalWarmPool {
     opts: {
       stopBackgroundTasks?: boolean
       reason?: string
-      notices?: string[]
       noteTmp?: (tmp: DroppedTmpReport) => void
-      tolerateSnapshotFailure?: boolean
     } = {},
   ): Promise<boolean> {
     const run = async (step: string, fn: () => Promise<string | null>) => {
@@ -8344,7 +8286,7 @@ export class MetalWarmPool {
       // Twice: the first may join an in-flight periodic export (possibly
       // throttled). The second is a cheap 304 when the first already landed.
       // Caught rather than thrown: a snapshot failure has to be classified
-      // before it can be tolerated, and `run` would otherwise record the raw
+      // before it can be named, and `run` would otherwise record the raw
       // SQLite message as the reason.
       let saveError: unknown
       try {
@@ -8354,22 +8296,13 @@ export class MetalWarmPool {
         saveError = err
       }
       if (a.dataExportUnsupported) return 'guest cannot export its database (predates /pool/export-data)'
-      // The database itself could not be snapshotted. Rotation refuses to drop
-      // a DB it could not back up — unless the roll-out policy decided the
-      // durable archive is the newest copy that can exist, in which case the
-      // runtime stays stuck on a superseded image forever instead, which is
-      // what SHO-541's VM did for four days.
+      // A database the guest cannot snapshot is a database this recycle cannot
+      // carry across: the cold boot would hydrate whatever the durable archive
+      // last held, and nothing can prove that is still this data. Refusing is
+      // the only option that cannot lose writes; `rotateStale` turns this into
+      // `stale_rootfs_blocked` with the SQLite error on the VM's status.
       if (a.dataSnapshotFailure) {
-        const covered = this.dataCoveredByDurableArchive(a)
-        if (opts.tolerateSnapshotFailure && covered.ok) {
-          opts.notices?.push(
-            `the database could not be snapshotted (${a.dataSnapshotFailure.message}) and was not backed up after ` +
-              `${a.dataSnapshotFailure.attempts} attempts; the VM was rotated anyway because the durable archive ` +
-              `is the newest copy that exists`,
-          )
-          return null
-        }
-        return `database not persisted — ${a.dataSnapshotFailure.message} (${covered.ok ? 'rotation will retry' : covered.reason})`
+        return `database not persisted — ${a.dataSnapshotFailure.message}`
       }
       if (saveError) throw saveError
       const untrusted = isWorkspace

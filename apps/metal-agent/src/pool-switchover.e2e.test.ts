@@ -19,7 +19,7 @@ import { existsSync, mkdtempSync, mkdirSync, renameSync, rmSync, utimesSync, wri
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { metrics, M } from './metrics'
-import { MetalWarmPool, ROTATE_RETRY_MS, StagedRootfsUnavailableError } from './pool'
+import { MetalWarmPool, ROTATE_BLOCKED_RETRY_MS, ROTATE_RETRY_MS, StagedRootfsUnavailableError } from './pool'
 import { activateStagedImages, stagedRootfsPath } from './self-update'
 import { computeRootfsIdentity, type SnapshotStore } from './snapshot-store'
 import { FakeHost, FakeS3, fakeHostConfig, git, tarOf, useFakeS3Env } from './test-harness/fake-metal-host'
@@ -359,9 +359,12 @@ describe('retire on a superseded image', () => {
 
     /**
      * A database the guest cannot snapshot (SHO-541). Rotation needs a final
-     * backup, so this used to block forever: Samsara's EU VM sat on a runtime
-     * from before SHO-485/514 for four days, which is what crashed its publish
-     * and would have seeded Postgres with the builder's rows.
+     * backup, so this still blocks: there is no proof the durable archive holds
+     * the data, and a VM that has never completed an export can still be full
+     * of writes only it holds — Samsara's EU VM had 336 failed exports over four
+     * days of live use. What changed is that it is now NAMED and ALERTED, and
+     * the retry backs off instead of re-uploading a 1.7 GB source bundle every
+     * ten minutes forever.
      */
     describe('when only the database snapshot fails', () => {
       const SNAPSHOT_FAILURE = {
@@ -371,7 +374,7 @@ describe('retire on a superseded image', () => {
       }
 
       /** A VM on a replaced image whose export keeps failing, with `recycle` stubbed. */
-      async function withFailingSnapshot(extra: Record<string, unknown>, covered = true) {
+      async function withFailingSnapshot(extra: Record<string, unknown> = {}) {
         const { pool, vm } = await onReplacedImage()
         const t0 = Date.now()
         vm.lastRealActivityAt = t0 - 20 * MIN
@@ -384,55 +387,46 @@ describe('retire on a superseded image', () => {
           },
           ...extra,
         })
-        const calls: Array<{ tolerate?: boolean }> = []
-        ;(pool as any).recycle = async (_id: string, opts: any) => {
-          calls.push({ tolerate: opts?.tolerateSnapshotFailure })
-          // Stands in for recycleInner: the data step refuses until the pool
-          // tolerates the failure, exactly as the real one does.
-          const ok = opts?.tolerateSnapshotFailure === true && covered
-          return ok
-            ? { aborted: false, steps: [{ step: 'data', ok: true }] }
-            : { aborted: true, steps: [SNAPSHOT_FAILURE] }
+        let calls = 0
+        ;(pool as any).recycle = async () => {
+          calls++
+          return { aborted: true, steps: [SNAPSHOT_FAILURE] }
         }
-        return { pool, vm, t0, calls }
+        return { pool, vm, t0, calls: () => calls }
       }
 
-      test('retries a few times, then rotates because the archive is the newest copy', async () => {
+      test('refuses, reports stale_rootfs_blocked once, and backs off instead of retrying every 10 minutes', async () => {
         const { pool, t0, calls } = await withFailingSnapshot({ dataParentEtag: '"arch"' })
-
-        // Attempt 1: retried, not tolerated.
-        await pool.rotateStale(t0)
-        expect(calls.map((c) => c.tolerate)).toEqual([false])
-
-        // Attempts 2 and 3 still retry; from the third on the policy tolerates.
-        await pool.rotateStale(t0 + ROTATE_RETRY_MS)
-        await pool.rotateStale(t0 + 2 * ROTATE_RETRY_MS)
-        expect(calls.map((c) => c.tolerate)).toEqual([false, false, true])
-        expect(pool.getProjectStatus('p1').rotationBlocked).toBeUndefined()
-      }, 30_000)
-
-      test('gives up and reports stale_rootfs_blocked when the VM holds newer writes', async () => {
-        // It saved its database earlier in this run, so writes exist only on
-        // this VM: rotating would trade a stuck runtime for lost data.
-        const { pool, vm, t0 } = await withFailingSnapshot({ dataParentEtag: '"arch"' }, false)
-        vm.dataLastUploadAt = t0 - 60_000
-
         const before = metrics.getCounter(M.rotationBlocked)
-        await pool.rotateStale(t0)
-        await pool.rotateStale(t0 + ROTATE_RETRY_MS)
-        expect(pool.getProjectStatus('p1').rotationBlocked).toBeUndefined()
 
-        await pool.rotateStale(t0 + 2 * ROTATE_RETRY_MS)
+        await pool.rotateStale(t0)
         const blocked = pool.getProjectStatus('p1').rotationBlocked
         expect(blocked?.code).toBe('stale_rootfs_blocked')
-        expect(blocked?.reason).toMatch(/saved its database earlier in this run/)
+        expect(blocked?.reason).toMatch(/database disk image is malformed/)
         // Counted once, not once per pass: the alert reads the gauge, the
         // journal gets one line.
         expect(metrics.getCounter(M.rotationBlocked) - before).toBe(1)
         expect(pool.getAssigned('p1')).toBeDefined()
+
+        // The short retry is gone: a blocked rotation waits hours, because the
+        // database will not heal and each attempt re-exports the whole source.
+        await pool.rotateStale(t0 + ROTATE_RETRY_MS)
+        expect(calls()).toBe(1)
+        await pool.rotateStale(t0 + ROTATE_BLOCKED_RETRY_MS)
+        expect(calls()).toBe(2)
+        expect(pool.getProjectStatus('p1').rotationBlocked?.since).toBe(blocked!.since)
       }, 30_000)
 
-      test('a failure that is not the database is never tolerated, however many attempts', async () => {
+      test('says so when the VM had newer writes, not just when it never saved', async () => {
+        const { pool, vm, t0 } = await withFailingSnapshot({ dataParentEtag: '"arch"' })
+        vm.dataLastUploadAt = t0 - 60_000
+
+        await pool.rotateStale(t0)
+        expect(pool.getProjectStatus('p1').rotationBlocked?.code).toBe('stale_rootfs_blocked')
+        expect(pool.getAssigned('p1')).toBeDefined()
+      }, 30_000)
+
+      test('a failure that is not only the database still retries on the short cadence', async () => {
         const { pool, vm } = await onReplacedImage()
         const t0 = Date.now()
         vm.lastRealActivityAt = t0 - 20 * MIN
@@ -451,6 +445,8 @@ describe('retire on a superseded image', () => {
         for (let i = 0; i < 4; i++) await pool.rotateStale(t0 + i * ROTATE_RETRY_MS)
         expect(attempts).toBe(4)
         expect(pool.getAssigned('p1')).toBeDefined()
+        // A source backup can come good, so this is not the blocked state.
+        expect(pool.getProjectStatus('p1').rotationBlocked).toBeUndefined()
       }, 30_000)
     })
 
