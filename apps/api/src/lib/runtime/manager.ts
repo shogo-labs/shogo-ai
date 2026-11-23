@@ -1577,8 +1577,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
   /**
    * Rewrite `@shogo-ai/* : workspace:*` specifiers in a freshly-seeded
-   * project's `package.json` to a concrete `^X.Y.Z` so `bun install`
-   * resolves them standalone. Mirrors
+   * project's `package.json` to a concrete `X.Y.Z` (exact — no caret,
+   * SHO-522: a range is re-resolved against npm on every install, so a
+   * broken release could reach an app whose image only pinned `^X.Y.Z`)
+   * so `bun install` resolves them standalone. Mirrors
    * `scripts/materialize-runtime-template.ts`, but offline: in host/desktop
    * mode the monorepo's `packages/<pkg>` is present, so we pin to its
    * in-repo version (no network, deterministic). No-op when the template
@@ -1607,7 +1609,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         if (!name.startsWith('@shogo-ai/')) continue
         const version = this.resolveInRepoPackageVersion(name)
         if (version) {
-          deps[name] = `^${version}`
+          deps[name] = version
         } else {
           // No in-repo package to pin against (e.g. a partial bundle).
           // Fall back to the published `latest` so the install can still

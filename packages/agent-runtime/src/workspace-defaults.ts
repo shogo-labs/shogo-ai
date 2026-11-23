@@ -897,6 +897,10 @@ export function restoreMissingRuntimeTemplateFiles(dir: string): string[] {
  * does: strip a concrete `X.Y.Z` out of its range, or — in a dev checkout
  * where the template's own pin is the unmaterialized `workspace:*` sentinel —
  * fall back to the sibling monorepo `packages/sdk` package's version.
+ *
+ * The pin written is exact (`X.Y.Z`, no caret — SHO-522): a range is
+ * re-resolved against npm on every install, which is how a broken release
+ * (2.6.1) reached apps whose image only pinned `^2.6.0`.
  */
 function ensureShogoSdkDependencyDeclared(dir: string, templatePath: string): void {
   const pkgPath = join(dir, 'package.json')
@@ -915,13 +919,13 @@ function ensureShogoSdkDependencyDeclared(dir: string, templatePath: string): vo
     if (typeof range === 'string') {
       const m = range.match(/(\d+\.\d+\.\d+)/)
       if (m) {
-        templateSdkRange = `^${m[1]}`
+        templateSdkRange = m[1]
       } else if (range.startsWith('workspace:')) {
         try {
           const repoSdkPkg = JSON.parse(
             readFileSync(join(templatePath, '..', '..', 'packages', 'sdk', 'package.json'), 'utf-8'),
           )
-          if (typeof repoSdkPkg.version === 'string') templateSdkRange = `^${repoSdkPkg.version}`
+          if (typeof repoSdkPkg.version === 'string') templateSdkRange = repoSdkPkg.version
         } catch { /* no co-located packages/sdk — leave null, no-op */ }
       }
     }
@@ -986,6 +990,11 @@ export function seedRuntimeTemplate(dir: string): boolean {
  * `bun install` outside the monorepo can resolve. Rewrite it to the sibling
  * `packages/sdk` version, as `migrateLegacyShogoSdkPin` does for existing
  * workspaces. Shipped templates are already materialized, so this no-ops.
+ *
+ * Exact `X.Y.Z`, never `^X.Y.Z` (SHO-522) — the same rule as
+ * `scripts/materialize-runtime-template.ts` and
+ * `ensureShogoSdkDependencyDeclared`: the SDK a pod installs must be the one
+ * its image was released with.
  */
 function materializeWorkspaceSdkPin(dir: string, templatePath: string): void {
   const pkgPath = join(dir, 'package.json')
@@ -1001,7 +1010,7 @@ function materializeWorkspaceSdkPin(dir: string, templatePath: string): void {
     version = JSON.parse(readFileSync(join(templatePath, '..', '..', 'packages', 'sdk', 'package.json'), 'utf-8')).version
   } catch { return }
   if (typeof version !== 'string') return
-  pkgJson.dependencies['@shogo-ai/sdk'] = `^${version}`
+  pkgJson.dependencies['@shogo-ai/sdk'] = version
   writeFileSync(pkgPath, JSON.stringify(pkgJson, null, 2) + (raw.endsWith('\n') ? '\n' : ''))
 }
 
@@ -1749,7 +1758,9 @@ function compareSemver(a: string, b: string): number {
  *
  *   - If the workspace pins a version of `@shogo-ai/sdk` strictly less
  *     than what the bundled runtime-template carries, rewrite the pin
- *     to `^${bundled-version}`. The new pin matches the SDK that the
+ *     to `${bundled-version}` (exact — no caret, SHO-522: a range would be
+ *     re-resolved against npm on install and could pull a newer, broken
+ *     release). The new pin matches the SDK that the
  *     desktop app's own runtime-template/node_modules is built against,
  *     so we ship a known-working pair.
  *   - If the workspace's `scripts.generate` matches the legacy
@@ -1801,7 +1812,7 @@ export function migrateLegacyShogoSdkPin(dir: string): { upgraded: boolean; befo
           // `workspace:*` sentinel, which carries no concrete version.
           // This only happens in a dev checkout where getRuntimeTemplatePath
           // resolves to the source tree (shipped templates are always
-          // materialized to a concrete `^X.Y.Z` first). Best-effort: read the
+          // materialized to a concrete `X.Y.Z` first). Best-effort: read the
           // sibling monorepo SDK version so dev workspaces still heal; if the
           // package isn't co-located, fall through to a clean no-op.
           try {
@@ -1831,7 +1842,7 @@ export function migrateLegacyShogoSdkPin(dir: string): { upgraded: boolean; befo
     //     compareSemver result, but we log it explicitly so we know
     //     we're healing the bug, not just bumping for fun)
     if (userVer && compareSemver(userVer, templateSdkVersion) < 0) {
-      const newRange = `^${templateSdkVersion}`
+      const newRange = templateSdkVersion
       pkgJson.dependencies!['@shogo-ai/sdk'] = newRange
       beforePin = userSdkRange
       afterPin = newRange

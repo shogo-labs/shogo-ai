@@ -26,7 +26,8 @@ installing, e.g.:
 ```
 
 Or run the repo's materialize helper against the copied manifest, which rewrites
-every `@shogo-ai/*` `workspace:*` pin to the latest published `^X.Y.Z`:
+every `@shogo-ai/*` `workspace:*` pin to the latest published `X.Y.Z`
+(exact, never a range — a range is re-resolved against npm at install time):
 
 ```sh
 bun run scripts/materialize-runtime-template.ts path/to/your-copy/package.json
