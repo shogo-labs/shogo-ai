@@ -10899,6 +10899,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             recentTools={recentToolsList}
             waiting={taskWait}
             agentIdle={!isStreaming}
+            sessionId={currentSessionId}
             loadOutput={loadTaskOutput}
             onOpenTask={(proc) =>
               void openTaskThread(proc.id ?? proc.runId, {
