@@ -166,6 +166,53 @@ fails and then "recovers" at a higher N is noise, not headroom.
 next to it. The report also gives the RAM ceiling at 2 GiB and 4 GiB VMs from the
 measured per-VM RSS, because RAM is per-VM and the idle tail dominates.
 
+## What the first live run changed (2026-11-23, `latitude-dal-1`)
+
+Running this on the real host found four defects that neither the unit tests nor
+the fake node-agent could, all now fixed on `sho-445-metal-density-soak`:
+
+1. **A guest is not reachable at its `/assign` URL from the host itself.**
+   `/assign` returns `METAL_PUBLIC_HOST:<dnat>`, and that DNAT rule lives in
+   PREROUTING — a connection the host originates to its own public address never
+   matches it and times out. `resolveGuestUrl()` maps the port back through
+   `iptables -t nat -S` to the guest's private address, where the runtime answers
+   200.
+2. **`assign` returns before the in-guest runtime serves `/terminal/sessions`.**
+   The first PTY lost the race. `waitForGuest()` polls until it answers (2 min
+   ceiling).
+3. **A heredoc cannot go through `guestExec`.** It wraps the command as
+   `stty -echo; { <cmd> ; } 2>&1; echo <marker>`, so the closing `; }` lands on
+   the heredoc's terminator line: the shell never sees a bare marker and reads
+   the heredoc until the command times out. The template is now written one file
+   per command with `printf %s <b64> | base64 -d > file`.
+4. **The staging guard rejected the real staging control plane.** The host
+   heartbeats to `api.141.148.27.1.sslip.io` (the staging kourier LB —
+   `terraform/environments/staging/main.tf:517`), which was missing from the
+   allow-list, and a bare shell does not inherit the host's
+   `NODE_TLS_REJECT_UNAUTHORIZED=0`. `run-density-soak.sh` now sources
+   `/etc/metal-agent.env` before it runs the runner.
+
+Two operational notes from that attempt:
+
+- **Launch the run under `systemd-run`, not a bare SSH command.** If the SSH
+  session dies (or the caller caps long commands) the runner is SIGKILLed, no
+  trap fires, and the host is left with `METAL_MAX_VMS_PER_HOST` raised,
+  idle-suspend disabled and `soak-` VMs alive — that happened here twice.
+  `systemd-run --unit=density-soak --property=Type=exec ...` survives it.
+  **After any interrupted run, restore before starting the next one:** remove
+  `METAL_MAX_VMS_PER_HOST`, set `METAL_IDLE_SUSPEND_MS=1800000`, destroy every
+  `soak-` VM, restart `metal-agent`.
+- **The host was not empty, and could not be measured as empty.** On 2026-11-23
+  `latitude-dal-1` carried **308 resident staging projects** (86 running, ~202
+  suspended, 93–105 Firecracker processes, 295 taps), reported `utilPct 108`
+  against the 80 default, and was **not cordoned**. New guest boots began failing
+  with `FC API socket never appeared`, so the run aborted at baseline without
+  starting a single soak VM. That is a real density result in itself: at 2 vCPU /
+  4 GiB this host saturates well before the 160 step — and 160 × 4 GiB = 640 GiB
+  cannot fit in 503 GiB of RAM whatever else is resident. The step ladder needs a
+  **cordoned, drained** host (and the super-admin session to cordon it) to
+  measure the host rather than the tenants already on it.
+
 ## Recommendation from the completed run
 
 > **Not yet filled in.** The harness, its unit tests and this runbook are
