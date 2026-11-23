@@ -6,10 +6,12 @@
  * The list draws 5 chats, "Show more" ten at a time up to `MAX_INLINE_CHATS`,
  * and beyond that its footer row becomes "See all (N)". With no `onSeeAll` that
  * press falls back to `handleShowMore`, which is already capped at 20 — so a
- * caller that passes neither `onSeeAll` nor `renderAll` silently hides chat 21
- * and up. That is how the phone drawer lost the row SHO-131's e2e looked for
- * after SHO-119 put it on the shared list; the drawer scrolls itself, so it
- * takes `renderAll`.
+ * caller that passes neither `onSeeAll`, `renderAll` nor `paging="infinite"`
+ * silently hides chat 21 and up. That is how the phone drawer lost the row
+ * SHO-131's e2e looked for after SHO-119 put it on the shared list; the drawer
+ * scrolls itself, so it takes `renderAll`. Home grows on the sidebar's scroll
+ * instead (SHO-530), so it takes `paging="infinite"`: no paging row at all, and
+ * every chat eventually drawn.
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
@@ -55,9 +57,10 @@ describe("ChatSessionList paging", () => {
         const line = block.split("\n")[0].trim();
         const hasSeeAll = /\bonSeeAll[=\s]/.test(block);
         const rendersAll = /\brenderAll\b/.test(block);
+        const growsOnScroll = /\bpaging\s*=\s*["']infinite["']/.test(block);
         expect(
-          hasSeeAll || rendersAll,
-          `${relative} ${line} pages without onSeeAll: chats past MAX_INLINE_CHATS would be unreachable`,
+          hasSeeAll || rendersAll || growsOnScroll,
+          `${relative} ${line} pages without onSeeAll, renderAll or paging="infinite": chats past MAX_INLINE_CHATS would be unreachable`,
         ).toBe(true);
       }
     });

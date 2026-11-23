@@ -13,8 +13,8 @@ forcing a particular gateway shape, persistence layer, or transport.
 
 | Subpath | What |
 | --- | --- |
-| `@shogo-ai/agent/agent-loop` | `runAgentLoop` — the iteration loop with loop detection, microcompaction, and tool orchestration baked in. |
-| `@shogo-ai/agent/pi-adapter` | Helpers for resolving models/keys, packing/unpacking pi-ai messages, and converting between pi-agent-core's `AgentMessage` and pi-ai's `Message`. |
+| `@shogo-ai/agent/agent-loop` | `runAgentLoop` — the iteration loop with loop detection, microcompaction, and tool orchestration baked in. *Subpath-only; needs the optional pi peers.* |
+| `@shogo-ai/agent/pi-adapter` | Helpers for resolving models/keys, packing/unpacking pi-ai messages, and converting between pi-agent-core's `AgentMessage` and pi-ai's `Message`. *Subpath-only; needs the optional pi peers.* |
 | `@shogo-ai/agent/model-catalog` | Authoritative model list with capabilities, pricing, tier defaults. |
 | `@shogo-ai/agent/model-router` | Auto-routing between model tiers based on task complexity classification. |
 | `@shogo-ai/agent/tool-orchestration` | Concurrency-safe tool dispatch (`Semaphore`, `WriteMutex`, `wrapToolsWithOrchestration`). |
@@ -23,15 +23,31 @@ forcing a particular gateway shape, persistence layer, or transport.
 | `@shogo-ai/agent/prefix-fingerprint` | Deterministic hashing of system/tools/messages for prefix-cache eligibility. |
 | `@shogo-ai/agent/hooks` | Event-driven hook system with two bundled defaults (`command-logger`, `session-memory`). |
 
-## Required peers
+## Importing
 
-`@mariozechner/pi-ai` and `@mariozechner/pi-agent-core` are declared as
-optional peer dependencies. Install them when you actually use the
-loop, adapter, or any module that touches pi-ai types:
+`import ... from '@shogo-ai/agent'` gives you the model catalog, model router,
+tool orchestration, loop detector, microcompact, prefix fingerprint, hooks,
+`ai-client` and `ai-proxy`. The three pi-backed modules are **subpath-only**, so
+the aggregate entry never loads the optional pi peers:
+
+```ts
+import { runAgentLoop } from '@shogo-ai/agent/agent-loop'
+```
+
+## Optional peers
+
+`@mariozechner/pi-ai` and `@mariozechner/pi-agent-core` are optional peer
+dependencies — `npm install @shogo-ai/agent` does not install them. You need
+them for `@shogo-ai/agent/agent-loop`, `@shogo-ai/agent/pi-adapter` and
+`@shogo-ai/agent/vision-fallback`, and not for anything the root entry exports:
 
 ```bash
 bun add @mariozechner/pi-ai @mariozechner/pi-agent-core
 ```
+
+The other subpaths load without pi, though their type declarations still
+reference pi-ai types — a consumer with `skipLibCheck: false` needs the peers
+installed to typecheck.
 
 ## License
 
