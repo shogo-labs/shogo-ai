@@ -22,6 +22,7 @@ import { NATIVE_PCM_SAMPLE_RATE } from './native-pcm'
 import { toWsBase } from './live-stream'
 import { startAdaptiveLive } from './live-transcription'
 import { useLiveMeetingTranscript } from './use-live-meeting-transcript'
+import { errorMessage } from './error-message'
 
 export { formatDuration } from './format-duration'
 
@@ -390,7 +391,7 @@ export function useRecording() {
           console.warn('[Recording] WAV conversion produced empty file, uploading raw audio')
         }
       } catch (convErr: any) {
-        console.warn('[Recording] WAV conversion failed, uploading raw audio:', convErr.message)
+        console.warn('[Recording] WAV conversion failed, uploading raw audio:', errorMessage(convErr))
       }
 
       // Use raw fetch because the SDK HttpClient JSON-serializes all bodies,

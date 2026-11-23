@@ -28,6 +28,7 @@ import { useWorkItem } from '../../hooks/useWorkBoards'
 import { MarkdownText } from '../chat/MarkdownText'
 import { TimelinePane } from '../team-chat/TimelinePane'
 import { OptionSheet } from './OptionSheet'
+import { errorMessage } from '../../lib/error-message'
 import { PRIORITY_DOT } from './priority'
 import { PullRequestSection } from './PullRequestChip'
 import { openConversationTarget } from '../../lib/team-chat-nav'
@@ -108,7 +109,7 @@ export function CardPane({ itemId, workspaceId, me, mentionables, conversation, 
     await api.follow(item.id, next).catch(() => reload())
   }
   const archive = async () => {
-    await api.archiveItem(item.id).catch((err: Error) => setNotice(err.message))
+    await api.archiveItem(item.id).catch((err: unknown) => setNotice(errorMessage(err)))
     onClose()
   }
   const cardActions = floating ? (
@@ -411,7 +412,7 @@ function CardThread({ detail, workspaceId, me, mentionables, conversation, visib
     if (!conversationId) return
     if (conversation?.id === conversationId) return setChannel(conversation)
     let live = true
-    chat.get(conversationId).then((c) => live && setChannel(c)).catch((err: Error) => live && setError(err.message))
+    chat.get(conversationId).then((c) => live && setChannel(c)).catch((err: unknown) => live && setError(errorMessage(err)))
     return () => {
       live = false
     }

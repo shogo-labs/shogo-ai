@@ -9,6 +9,7 @@ import { ActivityIndicator, Modal, Pressable, Text, View } from 'react-native'
 import type { ChatMessage } from '../../lib/team-chat-api'
 import { ITEM_TYPE_LABELS, workBoardsApi, type Board, type WorkItem } from '../../lib/work-boards-api'
 import { OptionSheet } from './OptionSheet'
+import { errorMessage } from '../../lib/error-message'
 
 const api = workBoardsApi()
 
@@ -31,7 +32,7 @@ export function MakeCardSheet({ workspaceId, conversationId, message, onCreated,
         const here = all.filter((b) => b.conversationId === conversationId)
         setBoards([...here, ...all.filter((b) => b.conversationId !== conversationId)])
       })
-      .catch((err: Error) => live && setError(err.message))
+      .catch((err: unknown) => live && setError(errorMessage(err)))
     return () => {
       live = false
     }

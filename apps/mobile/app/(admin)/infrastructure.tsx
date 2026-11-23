@@ -38,6 +38,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
 import { nativeActivePill } from '../../lib/native-active-shadow'
+import { errorMessage } from '../../lib/error-message'
 
 const LOCAL_API_BASE = `${API_URL}/api/admin`
 const AUTO_REFRESH_INTERVAL = 15_000
@@ -225,7 +226,7 @@ async function saveInfraSettings(apiBase: string, patch: Partial<InfraSettings>)
     if (!res.ok) return { ok: false, error: json.error || 'Failed to save' }
     return { ok: true, config: json.config }
   } catch (err: any) {
-    return { ok: false, error: err.message }
+    return { ok: false, error: errorMessage(err) }
   }
 }
 

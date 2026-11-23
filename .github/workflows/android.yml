@@ -289,7 +289,7 @@ jobs:
             --message "$SUBJECT" \
             --non-interactive
 
-      - name: Upload OTA sourcemaps to Sentry (optional, non-fatal)
+      - name: Upload OTA sourcemaps to Sentry (fatal on a release build)
         # `eas update` publishes what `expo export` produces — a Hermes
         # bytecode bundle plus its composed map — so the upload has to come
         # from that same command. A separate `expo export:embed` re-bundle is
@@ -301,7 +301,13 @@ jobs:
         # iOS step: `expo export` writes no map unless asked, and `eas update`
         # passes the flag to its own export.
         #
-        # Non-fatal: a Sentry misconfiguration must not block an OTA roll-out.
+        # Staging stays non-fatal, so a Sentry hiccup cannot block a staging
+        # roll-out. A release build (a tag, or environment=production) is the
+        # opposite: a missing token or a failed upload there means every event
+        # from that bundle is unreadable (`index.android.bundle:1`), so it is
+        # a failure — and every way out of this step is reported, because a
+        # `::notice` that a step skipped is how this went unnoticed
+        # (SHO-525 / Sentry SHOGO-ANDROID-11).
         working-directory: apps/mobile
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
@@ -313,11 +319,30 @@ jobs:
           EXPO_PUBLIC_APP_VERSION: ${{ needs.check-fingerprint.outputs.app_version }}
           EXPO_PUBLIC_SENTRY_DSN_ANDROID: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_ANDROID }}
           EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
+          SENTRY_UPLOAD_REQUIRED: ${{ startsWith(github.ref, 'refs/tags/') || needs.check-fingerprint.outputs.environment == 'production' }}
         run: |
           set +e
-          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
-            echo "::notice title=Sentry sourcemap upload (Android OTA)::SENTRY_AUTH_TOKEN secret not configured — skipping."
+          # The only way out of this step on any failure. It always warns,
+          # always leaves a section in the run summary, and fails the job when
+          # the build is a release.
+          skip_upload() {
+            echo "::warning title=Sentry sourcemap upload (Android OTA)::$1 — skipping upload."
+            {
+              echo "## Sentry sourcemap upload (Android OTA)"
+              echo ""
+              echo "_SKIPPED — $1_"
+              echo ""
+              echo "Release: \`$EXPO_PUBLIC_BUILD_HASH\` (dist=\`android\`, environment=\`$EXPO_PUBLIC_APP_ENV\`)"
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [ "$SENTRY_UPLOAD_REQUIRED" = "true" ]; then
+              echo "::error title=Sentry sourcemap upload (Android OTA)::Release build: this OTA bundle shipped without sourcemaps, so its stack traces can never be symbolicated."
+              exit 1
+            fi
+            echo "Staging build: continuing without Android OTA symbolication."
             exit 0
+          }
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            skip_upload "SENTRY_AUTH_TOKEN secret is not configured"
           fi
           BUNDLE_DIR="$RUNNER_TEMP/ota-android-export"
           rm -rf "$BUNDLE_DIR"
@@ -328,15 +353,13 @@ jobs:
             --clear
           EXPORT_RC=$?
           if [ "$EXPORT_RC" -ne 0 ]; then
-            echo "::warning title=Sentry sourcemap upload (Android OTA)::expo export exited $EXPORT_RC — skipping upload."
-            exit 0
+            skip_upload "expo export exited $EXPORT_RC"
           fi
           # `expo export` names the bundle after a content hash, so find the
           # directory it wrote rather than guessing the file name.
           JS_DIR=$(find "$BUNDLE_DIR" -type d -path '*_expo/static/js/android' | head -1)
           if [ -z "$JS_DIR" ]; then
-            echo "::warning title=Sentry sourcemap upload (Android OTA)::no exported JS bundle under $BUNDLE_DIR — skipping upload."
-            exit 0
+            skip_upload "no exported JS bundle under $BUNDLE_DIR"
           fi
           SENTRY_CLI="./node_modules/.bin/sentry-cli"
           [ -x "$SENTRY_CLI" ] || SENTRY_CLI="bunx @sentry/cli"
@@ -358,8 +381,13 @@ jobs:
             "$JS_DIR"
           UPLOAD_RC=$?
           if [ "$UPLOAD_RC" -ne 0 ]; then
-            echo "::warning title=Sentry sourcemap upload (Android OTA)::sentry-cli exited $UPLOAD_RC — release continuing without symbolication."
+            skip_upload "sentry-cli exited $UPLOAD_RC"
           fi
+          {
+            echo "## Sentry sourcemap upload (Android OTA)"
+            echo ""
+            echo "Uploaded the exported bundle + map (release=\`$EXPO_PUBLIC_BUILD_HASH\`, dist=\`android\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
           exit 0
 
       - name: Summary

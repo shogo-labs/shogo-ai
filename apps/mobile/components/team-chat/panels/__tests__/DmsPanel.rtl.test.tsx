@@ -141,4 +141,18 @@ describe("DmsPanel", () => {
     expect(screen.getByTestId("row-ana")).toBeTruthy()
     expect(screen.queryByText("Note to self")).toBeNull()
   })
+
+  // SHOGO-IOS-14: the panel returned null above its last two useMemos, so a
+  // workspace that switched team chat on mid-session rendered more hooks than
+  // the previous render and React threw. Every hook must run before the return.
+  test("rerendering from disabled to enabled does not change the hook count", () => {
+    chat = { enabled: false, workspaceId: null, list: [convo({ id: "ana" })], activeId: null, openConversation: () => {}, startCreate: () => {} }
+    const { rerender } = render(createElement(DmsPanel, {}))
+    expect(screen.queryByTestId("row-ana")).toBeNull()
+
+    chat = { ...chat, enabled: true, workspaceId: "w1" }
+    rerender(createElement(DmsPanel, {}))
+
+    expect(screen.getByTestId("row-ana")).toBeTruthy()
+  })
 })

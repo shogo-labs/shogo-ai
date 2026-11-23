@@ -44,6 +44,7 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
 import { SegmentedFilter } from "../../components/phone/SegmentedFilter"
+import { errorMessage } from '../../lib/error-message'
 
 const API_BASE = `${API_URL}/api/admin`
 const AUTO_REFRESH_INTERVAL = 15_000
@@ -200,7 +201,7 @@ async function triggerProject(projectId: string): Promise<{ ok: boolean; error?:
     if (!res.ok) return { ok: false, error: json?.error?.message || `HTTP ${res.status}` }
     return json.data ?? { ok: true }
   } catch (err: any) {
-    return { ok: false, error: err.message }
+    return { ok: false, error: errorMessage(err) }
   }
 }
 
@@ -227,7 +228,7 @@ async function patchProject(
     }
     return { ok: true }
   } catch (err: any) {
-    return { ok: false, error: err.message }
+    return { ok: false, error: errorMessage(err) }
   }
 }
 

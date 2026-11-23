@@ -2,12 +2,13 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import React, { useCallback, useState } from "react";
-import { Platform, ScrollView, View } from "react-native";
+import { Alert, Platform, ScrollView, View } from "react-native";
 import { X } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import type { UsageWindows } from "@shogo/shared-app/hooks";
 import type { UsageOverageContext } from "../../../../lib/billing-config";
 import { api } from "../../../../lib/api";
+import { errorMessage } from "../../../../lib/error-message";
 import {
   shareCachedFile,
   writeBlobToFile,
@@ -138,14 +139,13 @@ export function ProjectDropdownContent({
         console.error("[ProjectTopBar] Export failed:", err);
         setShowExportModal(false);
         if (Platform.OS !== "web") {
-          const { Alert } = await import("react-native");
           Alert.alert(
             "Export Failed",
-            err.message || "Failed to export project",
+            errorMessage(err) || "Failed to export project",
           );
         } else if (typeof window !== "undefined") {
           window.alert(
-            `Export Failed: ${err?.message || "Failed to export project"}`,
+            `Export Failed: ${errorMessage(err) || "Failed to export project"}`,
           );
         }
       } finally {
