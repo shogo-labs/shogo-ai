@@ -29,7 +29,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { prisma } from './prisma'
 import { hostedWorkspacesResolveHere } from './cloud-topology'
 import { isAgentStreamPath } from './agent-stream-paths'
-import { isWorkspaceDownloadPath, relayWorkspaceDownload, tunnelResponseBody } from './tunnel-body'
+import { tunnelResponseBody } from './tunnel-body'
 import { wakeRefusal, type WakeRefusal } from './host-wake'
 import { EDGE_RESPONSE_BUDGET_MS, HOST_RETRY_AFTER_S, HOST_WAKE_INTERACTIVE_MS } from './tunnel-timeouts'
 import type { HostWakeResult } from '../routes/instances'
@@ -479,7 +479,12 @@ export async function handleHostTunnel(c: Context, opts: HostTunnelOptions = {})
 
     // One frame round trip. `acceptBodyEncoding` is what makes a binary body
     // survive: without it the desktop hands back text and every image or clip
-    // takes a lossy UTF-8 trip through the tunnel (SHO-526).
+    // takes a lossy UTF-8 trip through the tunnel (SHO-526). A file is sent as
+    // one body here, not range-windowed: the desktop's generic agent proxy drops
+    // a `Range` header on the way to the runtime, so windowing this route could
+    // only ever collect full bodies — and asking for one cost the two hosted
+    // file-share downloads in `remote-workspace/files.e2e` their 200 (the extra
+    // header is enough for the runtime to answer 401 `auth_mismatch`).
     const send = (pathWithQuery: string, headersToSend: Record<string, string>) =>
       sendTunnelRequest(instanceId, {
         type: 'request',
@@ -491,18 +496,14 @@ export async function handleHostTunnel(c: Context, opts: HostTunnelOptions = {})
         acceptBodyEncoding: ['base64'],
       })
 
-    const answer = isWorkspaceDownloadPath(method, target.rest)
-      ? // A whole file cannot cross one frame: the same shared windower the
-        // instance proxy uses streams it in range windows (SHO-526).
-        relayWorkspaceDownload({ agentPath: `${target.rest}${query}`, headers, send })
-      : send(path, headers).then((resp) => {
-          const out = new Headers()
-          for (const [key, value] of Object.entries(resp.headers ?? {})) {
-            if (value && !DROP_RESPONSE_HEADERS.has(key.toLowerCase())) out.set(key, value)
-          }
-          if (!out.has('content-type')) out.set('content-type', 'application/json')
-          return new Response(tunnelResponseBody(resp) as BodyInit, { status: resp.status, headers: out })
-        })
+    const answer = send(path, headers).then((resp) => {
+      const out = new Headers()
+      for (const [key, value] of Object.entries(resp.headers ?? {})) {
+        if (value && !DROP_RESPONSE_HEADERS.has(key.toLowerCase())) out.set(key, value)
+      }
+      if (!out.has('content-type')) out.set('content-type', 'application/json')
+      return new Response(tunnelResponseBody(resp) as BodyInit, { status: resp.status, headers: out })
+    })
 
     return await withinEdgeBudget(answer, remaining)
   } catch (err: any) {

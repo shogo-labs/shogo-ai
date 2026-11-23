@@ -127,20 +127,26 @@ describe('handleHostTunnel — binary bodies', () => {
     expect(sha(new Uint8Array(await res.arrayBuffer()))).toBe(sha(PNG))
   })
 
-  test('a whole clip is windowed, not sent as one frame', async () => {
+  test('a whole clip comes back byte-exact in one frame', async () => {
     const res = await app().request(
       tunnelPath('/api/workspaces/ws-1/agent-proxy/agent/workspace/download/clip.mp4'),
       { method: 'GET' },
     )
 
     expect(res.status).toBe(200)
-    expect(res.headers.get('content-length')).toBe(String(CLIP.byteLength))
-    expect(sha(new Uint8Array(await res.arrayBuffer()))).toBe(sha(CLIP))
-    // One round trip per window, not one for the file.
-    expect(state.forwarded.length).toBeGreaterThan(1)
+    const body = new Uint8Array(await res.arrayBuffer())
+    expect(body.byteLength).toBe(CLIP.byteLength)
+    expect(sha(body)).toBe(sha(CLIP))
+    // One round trip for the file, and no `Range` the client did not ask for:
+    // the desktop's generic agent proxy drops it before the runtime sees it, and
+    // sending one anyway is what broke the hosted file-share downloads
+    // (`remote-workspace/files.e2e`, 401 `auth_mismatch`).
+    expect(state.forwarded).toHaveLength(1)
+    expect(state.forwarded[0].payload.headers.range).toBeUndefined()
+    expect(state.forwarded[0].payload.acceptBodyEncoding).toEqual(['base64'])
   })
 
-  test("the client's range is forwarded, so a hosted workspace's video can be seeked", async () => {
+  test("the client's range is forwarded untouched, so a hosted workspace's video can be seeked", async () => {
     const res = await app().request(
       tunnelPath('/api/workspaces/ws-1/agent-proxy/agent/workspace/download/clip.mp4'),
       { method: 'GET', headers: { range: 'bytes=0-1023' } },
