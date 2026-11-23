@@ -195,6 +195,15 @@ mock.module('../publish', () => ({
     interrupted: false,
   }),
   markPublishInterrupted: async () => {},
+  markEnvironmentPublishInterrupted: async () => {},
+  // `publishError` holds `code` or `code: detail`; the route splits it so the
+  // body can carry the bare code and the reason separately.
+  splitPublishError: (stored: string | null | undefined) => {
+    if (!stored) return { code: null, detail: null }
+    const at = stored.indexOf(': ')
+    if (at === -1) return { code: stored, detail: null }
+    return { code: stored.slice(0, at), detail: stored.slice(at + 2) || null }
+  },
 }))
 
 const app = (await import('../internal')).default
@@ -1248,14 +1257,18 @@ describe('GET /projects/:projectId/publish', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       ok: true,
+      // The row this answer describes: production unless the caller asks for
+      // staging (SHO-542).
+      environment: 'production',
       published: true,
       subdomain: 'my-site',
       publishedAt: new Date('2026-01-02T03:04:05.000Z').getTime(),
       accessLevel: 'public',
       hasPassword: false,
       publishStatus: 'published',
-      // A settled publish: no error code, and nothing to describe.
+      // A settled publish: no error code or reason, and nothing to describe.
       publishError: null,
+      publishErrorMessage: null,
       publishErrorDetails: null,
     })
   })
@@ -1272,6 +1285,7 @@ describe('GET /projects/:projectId/publish', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       ok: true,
+      environment: 'production',
       published: false,
       subdomain: null,
       publishedAt: null,
@@ -1279,6 +1293,7 @@ describe('GET /projects/:projectId/publish', () => {
       hasPassword: true,
       publishStatus: null,
       publishError: null,
+      publishErrorMessage: null,
       publishErrorDetails: null,
     })
   })
