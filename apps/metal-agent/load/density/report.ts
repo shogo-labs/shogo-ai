@@ -167,7 +167,11 @@ export function renderReportMarkdown(input: ReportInput): string {
 
   out.push(`# Metal density soak — ${env.hostId} — ${env.startedAt}`)
   out.push('')
-  out.push(`**Recommendation: \`METAL_MAX_VMS_PER_HOST=${recommendation.maxVmsPerHost}\`** at ${env.memMiB} MiB / ${env.vcpus} vCPU VMs.`)
+  out.push(
+    recommendation.maxVmsPerHost > 0
+      ? `**Recommendation: \`METAL_MAX_VMS_PER_HOST=${recommendation.maxVmsPerHost}\`** at ${env.memMiB} MiB / ${env.vcpus} vCPU VMs.`
+      : '**No recommendation:** no measured density met the bounds. That is a failed measurement, not a host that cannot run VMs — inspect the failing steps before setting a cap.',
+  )
   out.push('')
   out.push(`CPU knee **${recommendation.cpuKnee}**, RAM knee **${recommendation.ramKnee}** — the recommendation is the lower of the two.`)
   out.push('')
@@ -193,7 +197,7 @@ export function renderReportMarkdown(input: ReportInput): string {
 
   out.push('## Baseline (N=1)')
   out.push('')
-  out.push(`| step | p50 ms |`)
+  out.push('| step | p95 ms |')
   out.push('|---|---|')
   for (const s of TURN_STEPS) out.push(`| ${s} | ${f(baseline[s])} |`)
   out.push('')
@@ -245,7 +249,11 @@ export function renderReportMarkdown(input: ReportInput): string {
   out.push('')
   out.push(`- **CPU knee: ${knees.cpuKnee}** — highest N where turn-step p95 stayed within the bounds, CPU PSI \`some avg60\` stayed under the limit, and resume p95 held the 2 s SLO.`)
   out.push(`- **RAM knee: ${knees.ramKnee}** — highest N with zero OOM kills, no sustained swap-in, memory PSI \`full avg60\` under the limit, and MemAvailable above the floor.`)
-  out.push(`- **Recommended \`METAL_MAX_VMS_PER_HOST\`: ${recommendation.maxVmsPerHost}** = min(${recommendation.cpuKnee}, ${recommendation.ramKnee}).`)
+  out.push(
+    recommendation.maxVmsPerHost > 0
+      ? `- **Recommended \`METAL_MAX_VMS_PER_HOST\`: ${recommendation.maxVmsPerHost}** = min(${recommendation.cpuKnee}, ${recommendation.ramKnee}).`
+      : '- **Recommended `METAL_MAX_VMS_PER_HOST`: none** — a knee of 0 means no measured step passed the bounds; it is not a capacity of zero.',
+  )
   out.push('')
 
   out.push('## RAM at each prod VM size')

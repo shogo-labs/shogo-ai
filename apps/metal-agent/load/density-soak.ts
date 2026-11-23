@@ -215,6 +215,27 @@ class AgentClient {
 const ASSIGN_ENV = { RUNTIME_AUTH_SECRET: 'e2e', PROJECT_TIER: 'starter' }
 
 /**
+ * Turns measured on the lone baseline VM. `percentile` is nearest-rank, so p95
+ * of 9 samples is just the max; 20 puts it on the second-highest instead.
+ */
+const BASELINE_TURNS = 20
+
+/**
+ * The N=1 baseline, as the statistic the bounds are actually applied to.
+ *
+ * `evaluateStep` compares each step's turn p95 against this number, so it has to
+ * be a p95 as well: against a p50 baseline a host with no contention at all
+ * fails on its own tail (soak #5: N=40 at 0.3% CPU PSI failed `install p95 2.68x`
+ * because the baseline was the median of the same distribution).
+ */
+export function baselineFromTurns(turns: TurnTimings[]): Record<TurnStep, number> {
+  const ok = turns.filter((t) => t.ok)
+  const out = {} as Record<TurnStep, number>
+  for (const s of TURN_STEPS) out[s] = +percentile(ok.map((t) => Number((t as any)[`${s}Ms`]) || 0), 95).toFixed(1)
+  return out
+}
+
+/**
  * Rewrite an assign URL into one this host can actually reach.
  *
  * `/assign` returns the guest's *published* address (`METAL_PUBLIC_HOST:<dnat>`),
@@ -599,17 +620,21 @@ export class DensitySoak {
     for (let i = 0; i < 3; i++) this.probeIds.push(`soak-${this.runId}-probe-${i}`)
     for (const pid of this.probeIds) await this.agent.assign(pid, ASSIGN_ENV)
 
-    // Baseline: one VM, alone, 5 turns with no llm wait.
-    log('baseline', 'N=1, 5 turns')
+    // Baseline: one VM, alone, turns with no llm wait.
+    log('baseline', `N=1, ${BASELINE_TURNS} turns`)
     await this.growTo(1)
     const baseVm = this.vms[0]
     if (!baseVm?.url) throw new Error('baseline VM did not come up')
     await primeWarmCache(baseVm.url)
     const baselineTurns: TurnTimings[] = []
-    for (let i = 0; i < 5; i++) baselineTurns.push(await runAgentTurn(baseVm.url, { skipLlmWait: true }))
-    const baseline = {} as Record<TurnStep, number>
-    for (const s of TURN_STEPS) baseline[s] = +percentile(baselineTurns.map((t) => Number((t as any)[`${s}Ms`]) || 0), 50).toFixed(1)
-    log('baseline', TURN_STEPS.map((s) => `${s} ${baseline[s]}ms`).join(' '))
+    for (let i = 0; i < BASELINE_TURNS; i++) {
+      const t = await runAgentTurn(baseVm.url, { skipLlmWait: true })
+      baselineTurns.push(t)
+      this.turns.push({ n: 1, role: 'agent', projectId: baseVm.projectId, t: { ...t } })
+    }
+    if (baselineTurns.filter((t) => t.ok).length === 0) throw new Error('all baseline turns failed; cannot derive the N=1 baseline')
+    const baseline = baselineFromTurns(baselineTurns)
+    log('baseline', TURN_STEPS.map((s) => `${s} ${baseline[s]}ms p95`).join(' '))
 
     const rows: StepRow[] = []
     const burstRows: BurstRow[] = []
