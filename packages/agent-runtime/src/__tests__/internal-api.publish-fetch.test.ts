@@ -10,6 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { abilityDenial } from '@shogo/authz'
 import { getPublishState, publishProject } from '../internal-api'
 
 const realFetch = globalThis.fetch
@@ -94,5 +95,20 @@ describe('publishFetch error mapping', () => {
     expect(res.ok).toBe(false)
     expect(res.status).toBe(502)
     expect(res.error).toBe('HTTP 502')
+  })
+
+  // SHO-539: the internal publish route refuses a project viewer with the
+  // shared `abilityDenial` envelope (not `forbidden`). The tool keys on
+  // `code`, so this hop is what makes its mapping fire at all.
+  test('a 403 ability envelope reaches the caller as ability_not_allowed', async () => {
+    nextResponse = () =>
+      Response.json({ error: abilityDenial('project:publish') }, { status: 403 })
+
+    const res = await publishProject('p1', { subdomain: 'my-site' })
+
+    expect(res.ok).toBe(false)
+    expect(res.status).toBe(403)
+    expect(res.code).toBe('ability_not_allowed')
+    expect(res.error).toBe('Ask a workspace admin for project:publish.')
   })
 })
