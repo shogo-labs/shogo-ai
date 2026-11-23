@@ -627,3 +627,130 @@ describe('Gemini thinking summaries — replay', () => {
     expect(body.extra_body.google.thinking_config).toEqual({ thinking_level: 'medium', include_thoughts: true })
   })
 })
+
+const CAPTURE_TEXT_CHUNKS = [
+  "{\"choices\":[{\"delta\":{\"content\":\"<thought>**Solving the Riddle**\\n\\nI've got the riddle now. I'm focusing on breaking it down mathematically. I'm letting 'x' represent the ball's cost. Next, I need to express the bat's cost in terms of 'x'. Then, I can set up an equation using the total cost.\\n\\n\\n\",\"extra_content\":{\"google\":{\"thought\":true}},\"role\":\"assistant\"},\"index\":0}],\"created\":1795399391,\"id\":\"2Z4Da7HUGue-vr0P7f3b2QU\",\"model\":\"gemini-4-carbon\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":0,\"prompt_tokens\":110,\"total_tokens\":233}}",
+  "{\"choices\":[{\"delta\":{\"content\":\"</thought>The ball costs **5 cents ($0.05)**.\",\"role\":\"assistant\"},\"index\":0}],\"created\":1795399393,\"id\":\"2Z4Da7HUGue-vr0P7f3b2QU\",\"model\":\"gemini-4-carbon\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":12,\"prompt_tokens\":110,\"total_tokens\":426}}",
+  "{\"choices\":[{\"delta\":{\"content\":\" \\n\\n**Explanation:** \\nIf the ball costs $0.05, and the bat costs $1.00\",\"role\":\"assistant\"},\"index\":0}],\"created\":1795399393,\"id\":\"2Z4Da7HUGue-vr0P7f3b2QU\",\"model\":\"gemini-4-carbon\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":38,\"prompt_tokens\":110,\"total_tokens\":452}}",
+  "{\"choices\":[{\"delta\":{\"content\":\" more than the ball, then the bat costs $1.05. Together, $0.05 + $1.\",\"role\":\"assistant\"},\"index\":0}],\"created\":1795399393,\"id\":\"2Z4Da7HUGue-vr0P7f3b2QU\",\"model\":\"gemini-4-carbon\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":64,\"prompt_tokens\":110,\"total_tokens\":478}}",
+  "{\"choices\":[{\"delta\":{\"content\":\"05 = $1.10. \\n\\n*(Note: A common intuitive guess is $0.10,\",\"role\":\"assistant\"},\"index\":0}],\"created\":1795399393,\"id\":\"2Z4Da7HUGue-vr0P7f3b2QU\",\"model\":\"gemini-4-carbon\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":89,\"prompt_tokens\":110,\"total_tokens\":503}}",
+  "{\"choices\":[{\"delta\":{\"content\":\" which doesn't work because the bat would then cost $1.10, bringing the total to $1.20.)*\",\"role\":\"assistant\"},\"index\":0}],\"created\":1795399394,\"id\":\"2Z4Da7HUGue-vr0P7f3b2QU\",\"model\":\"gemini-4-carbon\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":117,\"prompt_tokens\":110,\"total_tokens\":531}}",
+]
+
+const CAPTURE_TOOL_CHUNKS = [
+  "{\"choices\":[{\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"extra_content\":{\"google\":{\"thought_signature\":\"EtEBCs4BAWkUfRPUvNtIYsBYFWTFhu9sFLMB640l8gg0WkieGVnypfF05Yxdz+E1AyvRIkhBL8yq4rBRo9FacoEQJT6poy1By/H5c5coFhaVjBpDoRw6AFZ4z14uiPE6xc39xOPkKk6oJ6z0HY8HoKCz+w5bk+iGEyW4yWOm5ynLiLvtZY6ixSeqOdcxgSPcOaIOpIebeqfu6m4Gz5vT5mqQKQAc5S7l6AbEFqj5Qflm38Oogoz6KECCPZXb1FY7NaMHudUarmh+IB9QYgOPG4goew4=\"}},\"function\":{\"arguments\":\"{\\\"path\\\":\\\"src/App.tsx\\\"}\",\"name\":\"read_file\"},\"id\":\"call_11906536371955678501\",\"type\":\"function\"}]},\"index\":0}],\"created\":1795399387,\"id\":\"2Z4Da9bGEMCw2roPk76t6Q4\",\"model\":\"gemini-4-carbon\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":20,\"prompt_tokens\":102,\"total_tokens\":137}}",
+  "{\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"index\":0}],\"created\":1795399387,\"id\":\"2Z4Da9bGEMCw2roPk76t6Q4\",\"model\":\"gemini-4-carbon\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":26,\"prompt_tokens\":102,\"total_tokens\":143}}",
+]
+
+// =========================================================================
+// QA gate: the live 2026-11-23 capture, replayed through the route
+// =========================================================================
+//
+// `gemini-4-carbon` on Google's OpenAI-compatible endpoint, captured live by QA
+// on 2026-11-23 with `extra_body.google.thinking_config = { thinking_level:
+// 'medium', include_thoughts: true }`. These are the exact bytes the endpoint
+// sent; the unit-level fixtures above are hand-built, these are not.
+//
+// The capture's last line is a message-level `thought_signature` chunk, which
+// the capture script truncated at 900 characters, so it is rebuilt here with a
+// stand-in signature — the rewriter treats it as opaque.
+
+const CAPTURE_SIGNATURE_CHUNK = JSON.stringify({
+  choices: [{ delta: { extra_content: { google: { thought_signature: 'Ep0JCpoJ-capture' } }, role: 'assistant' }, index: 0 }],
+  created: 1795399394,
+  id: '2Z4Da7HUGue-vr0P7f3b2QU',
+  model: 'gemini-4-carbon',
+  object: 'chat.completion.chunk',
+})
+
+const CAPTURE_THOUGHT =
+  '**Solving the Riddle**\n\n' +
+  "I've got the riddle now. I'm focusing on breaking it down mathematically. " +
+  "I'm letting 'x' represent the ball's cost. Next, I need to express the bat's cost in terms of 'x'. " +
+  'Then, I can set up an equation using the total cost.\n\n\n'
+
+const CAPTURE_ANSWER =
+  'The ball costs **5 cents ($0.05)**.' +
+  ' \n\n**Explanation:** \nIf the ball costs $0.05, and the bat costs $1.00' +
+  ' more than the ball, then the bat costs $1.05. Together, $0.05 + $1.' +
+  '05 = $1.10. \n\n*(Note: A common intuitive guess is $0.10,' +
+  " which doesn't work because the bat would then cost $1.10, bringing the total to $1.20.)*"
+
+describe('Gemini thinking summaries — the live capture', () => {
+  test('the thought is reasoning, the answer follows it, no tags survive', async () => {
+    nextFetchResponses.push(() => sseResponse([...CAPTURE_TEXT_CHUNKS, CAPTURE_SIGNATURE_CHUNK, '[DONE]']))
+    const res = await post({ model: 'gemini-4-carbon', stream: true, messages: [{ role: 'user', content: 'riddle' }] })
+    expect(res.status).toBe(200)
+    const payloads = ssePayloads(await drain(res))
+    const chunks = deltas(payloads)
+
+    const reasoning = chunks.map((d: any) => d.reasoning_content).filter(Boolean)
+    expect(reasoning).toEqual([CAPTURE_THOUGHT])
+
+    const answer = chunks.map((d: any) => d.content).filter(Boolean)
+    expect(answer.join('')).toBe(CAPTURE_ANSWER)
+
+    // pi-ai builds the text block from `content` before it builds the thinking
+    // block, so a delta carrying both would show the answer above its thinking.
+    // The reasoning line therefore has to come first.
+    const reasoningAt = chunks.findIndex((d: any) => d.reasoning_content)
+    const answerAt = chunks.findIndex((d: any) => typeof d.content === 'string' && d.content.length > 0)
+    expect(reasoningAt).toBeGreaterThanOrEqual(0)
+    expect(answerAt).toBeGreaterThan(reasoningAt)
+
+    const wire = JSON.stringify(payloads)
+    expect(wire).not.toContain('<thought>')
+    expect(wire).not.toContain('</thought>')
+    expect(wire).not.toContain('"thought":true')
+
+    // The turn's signature chunk is untouched — replay needs it for any tool
+    // call in the same turn.
+    expect(payloads.at(-1)?.choices[0].delta.extra_content).toEqual({
+      google: { thought_signature: 'Ep0JCpoJ-capture' },
+    })
+  })
+
+  test('a held opener prefix is reply text when the stream dies before it completes', async () => {
+    // A reply that begins "<thou" is held back in case the tag is about to
+    // complete. If the stream ends there, the held text is reply content — a
+    // thinking block would lose it from the answer.
+    nextFetchResponses.push(() => sseResponse([
+      JSON.stringify({ choices: [{ index: 0, delta: { content: '<thou' } }] }),
+      '[DONE]',
+    ]))
+    const res = await post({ model: 'gemini-4-carbon', stream: true, messages: [{ role: 'user', content: 'go' }] })
+    const payloads = ssePayloads(await drain(res))
+    expect(deltas(payloads).map((d: any) => d.content).filter(Boolean)).toEqual(['<thou'])
+    expect(deltas(payloads).map((d: any) => d.reasoning_content).filter(Boolean)).toEqual([])
+  })
+
+  test('the tool-only capture gains no thought rewriting', async () => {
+    // A turn that goes straight to a tool call had no thought chunk, so the
+    // only change to its stream is the thought-signature lift this proxy has
+    // always done — no reasoning, no content, nothing re-ordered.
+    nextFetchResponses.push(() => sseResponse([...CAPTURE_TOOL_CHUNKS, '[DONE]']))
+    const res = await post({ model: 'gemini-4-carbon', stream: true, messages: [{ role: 'user', content: 'read App.tsx' }] })
+    const payloads = ssePayloads(await drain(res))
+    const chunks = deltas(payloads)
+
+    expect(chunks).toHaveLength(CAPTURE_TOOL_CHUNKS.length)
+    for (const delta of chunks) {
+      expect(delta.reasoning_content).toBeUndefined()
+      expect(delta.content).toBeUndefined()
+    }
+    expect(JSON.stringify(payloads)).not.toContain('<thought>')
+
+    const call = chunks[0].tool_calls[0]
+    expect(call.id).toBe('call_11906536371955678501')
+    expect(call.function).toEqual({ arguments: '{"path":"src/App.tsx"}', name: 'read_file' })
+    expect(call.extra_content).toBeUndefined()
+    expect(chunks[0].reasoning_details).toEqual([
+      {
+        type: 'reasoning.encrypted',
+        id: 'call_11906536371955678501',
+        data: 'EtEBCs4BAWkUfRPUvNtIYsBYFWTFhu9sFLMB640l8gg0WkieGVnypfF05Yxdz+E1AyvRIkhBL8yq4rBRo9FacoEQJT6poy1By/H5c5coFhaVjBpDoRw6AFZ4z14uiPE6xc39xOPkKk6oJ6z0HY8HoKCz+w5bk+iGEyW4yWOm5ynLiLvtZY6ixSeqOdcxgSPcOaIOpIebeqfu6m4Gz5vT5mqQKQAc5S7l6AbEFqj5Qflm38Oogoz6KECCPZXb1FY7NaMHudUarmh+IB9QYgOPG4goew4=',
+      },
+    ])
+  })
+})
+

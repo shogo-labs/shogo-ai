@@ -2648,9 +2648,12 @@ export function createGoogleSseRewriter(): SseLineRewriter {
     const raw = line.slice(6).trim()
     if (!raw) return line
     if (raw === '[DONE]') {
+      // Same field choice as `flush` below: a held prefix of `<thought>` that
+      // never completed is reply text, not thinking.
       const owed = thoughts.drain()
-      const extra = owed.reasoning || owed.content
-      return extra ? [standalone({ reasoning_content: extra }), line] : line
+      if (!owed.reasoning && !owed.content) return line
+      const tail = owed.reasoning ? { reasoning_content: owed.reasoning } : { content: owed.content }
+      return [standalone(tail), line]
     }
     let parsed: any
     try {
