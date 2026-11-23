@@ -8,6 +8,7 @@
 import { useMemo } from 'react'
 import { useIsRemoteSource } from '@shogo/shared-app/domain'
 import { useActiveWorkspace } from './useActiveWorkspace'
+import { useHostTunnelWake } from './useHostTunnelWake'
 import { workspaceInView, type WorkspaceInView } from '../lib/workspace-in-view'
 
 export type { WorkspaceInView }
@@ -18,6 +19,11 @@ export function useWorkspaceInView(): WorkspaceInView | null {
   const cloudName = cloud?.name ?? null
   const cloudKind = cloud?.kind ?? null
   const hostInstanceId = (cloud as { hostInstanceId?: string | null } | null)?.hostInstanceId || null
+  // A hosted workspace's runtime is on that desktop, so opening the workspace
+  // starts waking its tunnel here — before the first plans or files read asks
+  // for it (SHO-538). Every surface derives the workspace in view from this one
+  // hook, so the wake is asked for once, wherever the workspace is opened.
+  useHostTunnelWake(hostInstanceId, cloudId)
   return useMemo(
     () => workspaceInView(cloudId ? { id: cloudId, name: cloudName, kind: cloudKind, hostInstanceId } : null),
     [cloudId, cloudName, cloudKind, hostInstanceId],

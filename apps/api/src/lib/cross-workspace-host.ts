@@ -53,14 +53,18 @@ export async function forwardToHostOnHost(
   } catch {
     return offline()
   }
-  const { hostWakeDeadlineMs } = await import('./host-tunnel')
+  const { hostWakeDeadlineMs, hostWakeInteractiveMs } = await import('./host-tunnel')
   const staleProbeMs = opts._wakeDeadlineMs ?? hostWakeDeadlineMs()
+  // Capped like the host tunnel itself (SHO-538): an unbounded wake waits out an
+  // idle desktop's whole heartbeat (up to 75 s) and then forwards on top of it,
+  // which is past the edge's 100 s. `hostWakeInteractiveMs()` + the proxy timeout
+  // this forward runs under stays inside one edge budget.
   const wake = tunnel.wakeHostTunnel
     ? await tunnel
-        .wakeHostTunnel(input.hostInstanceId, { staleProbeMs })
+        .wakeHostTunnel(input.hostInstanceId, { staleProbeMs, maxWaitMs: hostWakeInteractiveMs() })
         .catch(() => ({ state: 'offline' as const, instanceId: input.hostInstanceId, name: instance.name, lastSeenAt: instance.lastSeenAt, retryAfterSeconds: 0 }))
     : {
-        state: (await tunnel.ensureTunnelConnected(input.hostInstanceId, staleProbeMs).catch(() => false))
+        state: (await tunnel.ensureTunnelConnected(input.hostInstanceId, Math.min(staleProbeMs, hostWakeInteractiveMs())).catch(() => false))
           ? ('connected' as const)
           : ('offline' as const),
         instanceId: input.hostInstanceId,

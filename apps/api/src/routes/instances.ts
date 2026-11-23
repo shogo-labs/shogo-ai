@@ -53,7 +53,8 @@ import {
   relayWorkspaceDownload,
   tunnelResponseBody,
 } from '../lib/tunnel-body'
-import { PROXY_TIMEOUT_MS, RELAY_TIMEOUT_MS } from '../lib/tunnel-timeouts'
+import { HOST_RETRY_AFTER_S, PROXY_TIMEOUT_MS, RELAY_TIMEOUT_MS } from '../lib/tunnel-timeouts'
+import { hostOfWorkspace } from '../lib/host-tunnel'
 import { isAgentStreamPath } from '../lib/agent-stream-paths'
 import { RelayTimeoutError } from '../lib/tunnel-errors'
 import { openSession, closeSession, hasSession } from '../lib/proxy-billing-session'
@@ -110,7 +111,7 @@ const WAKE_MIN_WAIT_MS = 5_000
 const WAKE_MAX_WAIT_MS = 75_000
 const WAKE_HEARTBEAT_MARGIN_MS = 15_000
 /** Suggested client retry, in seconds, for a host that is connecting (not offline). */
-const WAKE_RETRY_AFTER_S = 15
+const WAKE_RETRY_AFTER_S = HOST_RETRY_AFTER_S
 
 // ─── Viewer tracking (Redis-primary, in-memory fallback) ────────────────────
 
@@ -809,6 +810,17 @@ export function instanceRoutes() {
     }
 
     const id = c.req.param('id')
+    // A hosted workspace's viewer names the workspace it is opening (SHO-538):
+    // that workspace's runtime lives on this machine, so waking it is part of
+    // opening it.
+    // Only a JSON body is read: the federated fallback below forwards the raw
+    // bytes, so a request without one must reach it untouched.
+    const requestedWorkspaceId = /application\/json/i.test(c.req.header('content-type') ?? '')
+      ? await c.req
+          .json<{ workspaceId?: string }>()
+          .then((body) => (typeof body?.workspaceId === 'string' ? body.workspaceId : null))
+          .catch(() => null)
+      : null
     const instance = await prisma.instance.findUnique({ where: { id } })
     if (!instance) {
       if (await isFederatedEnabled()) {
@@ -821,14 +833,27 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
-    if (!(await can(c, 'workspace:read', { workspaceId: instance.workspaceId }))) {
+    // Legacy rows with no recorded owner (userId null) fall back to the
+    // membership check below, as they always have.
+    const ownsMachine = !instance.userId || instance.userId === auth.userId
+
+    // A machine serves two kinds of caller: the person it belongs to, and anyone
+    // who may open a workspace it hosts (SHO-285) — that workspace's runtime runs
+    // on this machine, so opening it has to be able to wake it (SHO-538). It is
+    // still only that one workspace, and only when it is this machine's.
+    const wakesHostedWorkspace =
+      !ownsMachine &&
+      !!requestedWorkspaceId &&
+      (await can(c, 'workspace:read', { workspaceId: requestedWorkspaceId })) &&
+      (await hostOfWorkspace(requestedWorkspaceId)) === instance.id
+
+    if (!wakesHostedWorkspace && !(await can(c, 'workspace:read', { workspaceId: instance.workspaceId }))) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
     // Machines are scoped to the user who paired them. A workspace member
-    // may not view or drive another member's machine. Legacy rows with no
-    // recorded owner (userId null) fall back to the membership check above.
-    if (instance.userId && instance.userId !== auth.userId) {
+    // may not view or drive another member's machine.
+    if (!ownsMachine && !wakesHostedWorkspace) {
       return c.json({ error: { code: 'forbidden', message: 'Not your machine' } }, 403)
     }
 
