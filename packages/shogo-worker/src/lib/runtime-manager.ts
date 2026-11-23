@@ -773,9 +773,16 @@ export class WorkerRuntimeManager implements RuntimeResolver {
    * (the worker doesn't host an apps/api locally — the desktop adapter
    * subclasses this to add that fallback).
    */
-  async resolveLocalUrl(pathWithQuery: string, projectId?: string): Promise<string | null> {
+  async resolveLocalUrl(
+    pathWithQuery: string,
+    projectId?: string,
+    workspaceId?: string,
+  ): Promise<string | null> {
     const { pathname, search } = splitPathAndQuery(pathWithQuery);
     if (!(pathname.startsWith('/agent/') || pathname === '/agent')) return null;
+    // A workspace-targeted request names a workspace runtime, and this worker
+    // runs per-project runtimes only — never guess one of those instead.
+    if (workspaceId && !projectId) return null;
     if (!projectId) {
       // Without a projectId we can't pick a runtime; pick the first active
       // one if there's exactly one — matches the desktop's permissive fallback.
@@ -818,12 +825,22 @@ export class WorkerRuntimeManager implements RuntimeResolver {
    *                                    single active project to fall
    *                                    back to.
    */
-  describeRejection(pathWithQuery: string, projectId?: string): ResolveRejection {
+  describeRejection(
+    pathWithQuery: string,
+    projectId?: string,
+    workspaceId?: string,
+  ): ResolveRejection {
     const { pathname } = splitPathAndQuery(pathWithQuery);
     if (!(pathname.startsWith('/agent/') || pathname === '/agent')) {
       return {
         code: 'CLI_WORKER_HAS_NO_DATA_API',
         message: `cli-worker only serves /agent/* paths; tried: ${pathname}`,
+      };
+    }
+    if (workspaceId && !projectId) {
+      return {
+        code: 'NO_LOCAL_RUNTIME',
+        message: `cli-worker hosts project runtimes only; workspace=${workspaceId}, path=${pathname}`,
       };
     }
     return {

@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { ResolveRejection, RuntimeResolver } from './tunnel'
 import type { HostProjectStatus, HostReply, WorkerEvent, WorkerRequest } from './tunnel-worker'
+import { rejectionKey } from './tunnel'
 
 /**
  * How long the worker gets to answer `ready` before it is written off.
@@ -183,18 +184,24 @@ export function startTunnelInWorker(options: TunnelHostOptions): TunnelHost {
     const resolver = options.resolver
     try {
       if (request.type === 'resolve') {
-        const url = await resolver.resolveLocalUrl(request.path, request.projectId)
+        const url = await resolver.resolveLocalUrl(request.path, request.projectId, request.workspaceId)
         const rejection =
           url === null
-            ? await Promise.resolve(resolver.describeRejection?.(request.path, request.projectId))
+            ? await Promise.resolve(
+                resolver.describeRejection?.(request.path, request.projectId, request.workspaceId),
+              )
             : undefined
-        if (rejection) rejections.set(`${request.path}|${request.projectId ?? ''}`, rejection)
+        if (rejection) {
+          rejections.set(rejectionKey(request.path, request.projectId, request.workspaceId), rejection)
+        }
         reply({ type: 'resolved', id: request.id, url, rejection })
         return
       }
 
       if (request.type === 'token') {
-        const token = await resolver.deriveRuntimeToken(request.projectId)
+        const token = request.workspaceId && !request.projectId
+          ? await (resolver.deriveWorkspaceRuntimeToken?.(request.workspaceId) ?? null)
+          : await resolver.deriveRuntimeToken(request.projectId ?? '')
         reply({ type: 'token-result', id: request.id, token })
         return
       }

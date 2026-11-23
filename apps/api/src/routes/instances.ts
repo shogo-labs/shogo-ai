@@ -48,6 +48,11 @@ import {
   verifyPodAlive,
 } from '../lib/tunnel-redis'
 import { sendPushToInstance } from '../lib/push-notifications'
+import {
+  isWorkspaceDownloadPath,
+  relayWorkspaceDownload,
+  tunnelResponseBody,
+} from '../lib/tunnel-body'
 import { PROXY_TIMEOUT_MS, RELAY_TIMEOUT_MS } from '../lib/tunnel-timeouts'
 import { isAgentStreamPath } from '../lib/agent-stream-paths'
 import { RelayTimeoutError } from '../lib/tunnel-errors'
@@ -205,6 +210,10 @@ export interface TunnelRequest {
   body?: string
   /** From /api/projects/:id/agent-proxy/... before path normalization; desktop uses this to start the right runtime. */
   projectId?: string
+  /** From /api/workspaces/:id/agent-proxy/... before path normalization. */
+  workspaceId?: string
+  /** Response body encodings the cloud can decode. `['base64']` is what makes binary bodies survive. */
+  acceptBodyEncoding?: string[]
 }
 
 export interface TunnelResponse {
@@ -213,6 +222,8 @@ export interface TunnelResponse {
   status: number
   headers?: Record<string, string>
   body?: string
+  /** Set when `body` is base64-encoded bytes rather than text. */
+  bodyEncoding?: 'base64'
 }
 
 export interface TunnelStreamChunk {
@@ -1460,9 +1471,16 @@ export function instanceRoutes() {
     const afterPrefix = c.req.param('rest') || ''
     const rawPath = '/' + afterPrefix
 
-    // Extract projectId from wrapped agent-proxy paths before stripping
+    // Extract the target's id from wrapped agent-proxy paths before stripping.
+    // Both wrappers name their runtime: a project chat names a project, a
+    // workspace chat names a workspace (the personal companion, or a paired
+    // desktop's own). Dropping the workspace id sent the request to whichever
+    // runtime happened to be running, with no token — a 401 (SHO-526).
     const tunnelProjectId = rawPath.match(
       /^\/api\/projects\/([^/]+)\/agent-proxy(?:\/|$)/,
+    )?.[1]
+    const tunnelWorkspaceId = rawPath.match(
+      /^\/api\/workspaces\/([^/]+)\/agent-proxy(?:\/|$)/,
     )?.[1]
 
     // ── Path normalization ─────────────────────────────────────────────
@@ -1483,6 +1501,12 @@ export function instanceRoutes() {
     if (contentType) forwardHeaders['content-type'] = contentType
     const accept = c.req.header('accept')
     if (accept) forwardHeaders['accept'] = accept
+    // Video and audio seeking: the runtime already answers 206s, but the range
+    // never reached it, so a player could only ever get the whole file.
+    const range = c.req.header('range')
+    if (range) forwardHeaders['range'] = range
+    const ifRange = c.req.header('if-range')
+    if (ifRange) forwardHeaders['if-range'] = ifRange
 
     // Inject the cloud-authenticated userId so the desktop API can
     // identify who is making the request without needing a session
@@ -1585,6 +1609,8 @@ export function instanceRoutes() {
                 method,
                 path: agentPath,
                 projectId: tunnelProjectId,
+                workspaceId: tunnelWorkspaceId,
+                acceptBodyEncoding: ['base64'],
                 headers: forwardHeaders,
                 body,
               },
@@ -1639,15 +1665,38 @@ export function instanceRoutes() {
 
     // Non-streaming: forward and return the response directly
     try {
-      const resp = await sendTunnelRequest(instanceId, {
-        type: 'request',
-        requestId,
-        method,
-        path: agentPath,
-        projectId: tunnelProjectId,
-        headers: forwardHeaders,
-        body,
-      })
+      const send = (pathWithQuery: string, headers: Record<string, string>) =>
+        sendTunnelRequest(instanceId, {
+          type: 'request',
+          requestId: generateRequestId(),
+          method,
+          path: pathWithQuery,
+          projectId: tunnelProjectId,
+          workspaceId: tunnelWorkspaceId,
+          acceptBodyEncoding: ['base64'],
+          headers,
+          body,
+        })
+
+      // A whole file cannot cross one frame: window the download and stream it.
+      if (isWorkspaceDownloadPath(method, cleanPath)) {
+        const response = await relayWorkspaceDownload({
+          agentPath,
+          headers: forwardHeaders,
+          send: async (pathWithQuery, headers) => send(pathWithQuery, headers),
+        })
+        logRemoteAction({
+          instanceId,
+          userId: auth.userId,
+          action: classifyAction(method, agentPath),
+          path: agentPath,
+          method,
+          result: `HTTP ${response.status}`,
+        })
+        return response
+      }
+
+      const resp = await send(agentPath, forwardHeaders)
 
       logRemoteAction({
         instanceId,
@@ -1668,7 +1717,7 @@ export function instanceRoutes() {
         responseHeaders['content-type'] = 'application/json'
       }
 
-      return new Response(resp.body || '', {
+      return new Response(tunnelResponseBody(resp) as BodyInit, {
         status: resp.status,
         headers: responseHeaders,
       })

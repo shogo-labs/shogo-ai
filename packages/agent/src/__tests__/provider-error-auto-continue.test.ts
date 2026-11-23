@@ -11,7 +11,7 @@
  * this was not the step ceiling — so the gateway's bounded auto-continue never
  * ran and the user had to type "continue" themselves.
  */
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import type { AgentTool, StreamFn } from '@mariozechner/pi-agent-core'
 import {
   createAssistantMessageEventStream,
@@ -215,5 +215,106 @@ describe('provider error after tool work leaves the turn continuable (SHO-517)',
     expect(closing[0]).toContain('may resume automatically')
     // The finalizer still wrote the turn's closing line.
     expect(result.text).toBe('Cut off after reading a.txt.')
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────────────
+// SHO-529: `upstream_timeout` means the provider never sent a first byte.
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A marker that says the provider never started. The transport must not spend
+ * another full wait window on the identical call: the turn ends as
+ * `provider_error` and the gateway's continuation reshapes the call instead.
+ */
+const UPSTREAM_TIMEOUT =
+  'The model did not start responding within 240s. Split large tool calls (e.g. write_file then append). ' +
+  '[shogo:retryable=true;code=upstream_timeout]'
+
+describe('upstream_timeout is continuable but never re-sent (SHO-529)', () => {
+  const prev = {
+    inferenceRetry: process.env.SHOGO_INFERENCE_RETRY,
+    base: process.env.SHOGO_INFERENCE_RETRY_BASE_MS,
+    providerRetry: process.env.SHOGO_PROVIDER_RETRY,
+    probe: process.env.AI_UPSTREAM_HEALTH_URL,
+  }
+
+  beforeEach(() => {
+    // Retries ON, backoff OFF: the fast tier (2 re-issues) is what a retryable
+    // failure would exercise, so "how many times was the call sent" is exact.
+    process.env.SHOGO_INFERENCE_RETRY = '1'
+    process.env.SHOGO_INFERENCE_RETRY_BASE_MS = '1'
+    process.env.SHOGO_PROVIDER_RETRY = 'off'
+    delete process.env.AI_UPSTREAM_HEALTH_URL
+  })
+
+  afterEach(() => {
+    for (const [key, value] of [
+      ['SHOGO_INFERENCE_RETRY', prev.inferenceRetry],
+      ['SHOGO_INFERENCE_RETRY_BASE_MS', prev.base],
+      ['SHOGO_PROVIDER_RETRY', prev.providerRetry],
+      ['AI_UPSTREAM_HEALTH_URL', prev.probe],
+    ] as const) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  })
+
+  /**
+   * Plays one tool call, then fails every later model call with `errorText` —
+   * except the tool-free closing pass, which answers with `summary`.
+   */
+  function failAfterToolWork(errorText: string, summary: string) {
+    const state = { primed: false, failing: 0 }
+    const stream = ((_model: Model<Api>, ctx: any) => {
+      const last = Array.isArray(ctx?.messages) ? ctx.messages[ctx.messages.length - 1] : undefined
+      const text = promptText(last)
+
+      if (last?.role === 'user' && text.includes(CLOSING_PROMPT_MARKER)) {
+        return playStep({ text: summary }, 0)
+      }
+      if (!state.primed) {
+        state.primed = true
+        return playStep(READ_A_TXT, 0)
+      }
+
+      state.failing++
+      const message = {
+        role: 'assistant',
+        content: [{ type: 'text', text: '' }],
+        api: 'openai-completions', provider: 'openai', model: 'fake',
+        usage, stopReason: 'error', errorMessage: errorText, timestamp: 0,
+      } as AssistantMessage
+      const s = createAssistantMessageEventStream()
+      queueMicrotask(() => {
+        s.push({ type: 'start', partial: message } as AssistantMessageEvent)
+        s.push({ type: 'done', reason: 'error', message } as AssistantMessageEvent)
+      })
+      return s
+    }) as StreamFn
+    return { stream, state }
+  }
+
+  test('the call is sent once, and the turn is left continuable as provider_error', async () => {
+    const { stream, state } = failAfterToolWork(UPSTREAM_TIMEOUT, 'Cut off before the giant write.')
+
+    const result = await run(stream)
+
+    // The whole point: no second attempt of the identical oversized call.
+    expect(state.failing).toBe(1)
+    expect(result.toolCalls).toHaveLength(1)
+    expect(result.maxIterationsExhausted).toBe(true)
+    expect(result.incompleteReason).toBe('provider_error')
+    expect(result.text).toBe('Cut off before the giant write.')
+  })
+
+  test('a marker that is safe to re-send still uses the retry ladder (control)', async () => {
+    const { stream, state } = failAfterToolWork(NETWORK_ERROR, 'Cut off by a dropped connection.')
+
+    await run(stream)
+
+    // Proof the retry ladder was live in the test above: the same shape with a
+    // network_drop marker is re-issued (2 fast attempts by default).
+    expect(state.failing).toBe(3)
   })
 })

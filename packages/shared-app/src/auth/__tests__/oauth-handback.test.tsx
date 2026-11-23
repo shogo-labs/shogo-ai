@@ -15,6 +15,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn } from 'bu
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { installHappyDom, restoreHappyDom } from '../../hooks/__tests__/happy-dom-setup.ts'
 import { AuthProvider, MIN_NATIVE_OAUTH_SHEET_MS, useAuth, type AuthErrorContext } from '../AuthProvider'
+import { AuthRequestError } from '../auth-error'
 
 installHappyDom()
 
@@ -53,7 +54,7 @@ afterEach(() => {
  */
 function fakeAuthClient(opts: {
   cookieStored: boolean
-  socialError?: { message: string }
+  socialError?: { message: string; status?: number; statusText?: string }
   socialThrows?: Error
   /** What `/sign-in/social` hands back; defaults to a Google authorize URL. */
   redirectUrl?: string
@@ -66,6 +67,11 @@ function fakeAuthClient(opts: {
    * person actually finished; `300` is the App Review crawler's dismissal.
    */
   sheetMs?: number
+  /**
+   * The hand-back verdict the native client stamps on the result (SHO-527).
+   * Omitted models a client that does not report it (web, an older binary).
+   */
+  nativeHandback?: 'none' | 'received'
 }) {
   const state = { cookieStored: opts.cookieStored, sessionReads: 0, socialCalls: 0 }
   return {
@@ -86,6 +92,7 @@ function fakeAuthClient(opts: {
           data: {
             url: opts.redirectUrl ?? 'https://accounts.google.com/o/oauth2/auth',
             redirect: opts.redirect ?? true,
+            ...(opts.nativeHandback ? { nativeHandback: opts.nativeHandback } : {}),
           },
           error: null,
         }
@@ -166,6 +173,44 @@ describe('Google sign-in hand-back', () => {
     expect(errors[0].context).toEqual({ provider: 'google', stage: 'sign_in' })
   })
 
+  /**
+   * SHO-527: a provider failure used to reach `onAuthError` as the raw object
+   * Better Fetch rolled, so 1Z grouped as "Object captured as exception with
+   * keys: status, statusText" and a 4xx the API answered on purpose was
+   * reported as a defect. Wrapping it in `AuthRequestError` keeps the status
+   * (tagged by the host) and lets `shouldReportAuthError` apply.
+   */
+  it('keeps the status of a provider failure so it is tagged, and reports a 5xx', async () => {
+    const errors: Array<{ error: unknown; context: AuthErrorContext }> = []
+    const client = fakeAuthClient({
+      cookieStored: false,
+      socialError: { message: 'Object captured as exception', status: 504, statusText: 'Gateway Timeout' },
+    })
+    const probe = await renderProvider(client, (error, context) => errors.push({ error, context }))
+
+    await act(async () => { await probe.signInWithGoogle() })
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0].context).toEqual({ provider: 'google', stage: 'sign_in' })
+    expect(errors[0].error).toBeInstanceOf(AuthRequestError)
+    expect((errors[0].error as AuthRequestError).status).toBe(504)
+    expect(probe.error).toBe('Object captured as exception')
+  })
+
+  it('does not report a 4xx the API answered with, but still tells the person', async () => {
+    const errors: Array<{ error: unknown; context: AuthErrorContext }> = []
+    const client = fakeAuthClient({
+      cookieStored: false,
+      socialError: { message: 'Invalid provider', status: 422, statusText: 'Unprocessable Entity' },
+    })
+    const probe = await renderProvider(client, (error, context) => errors.push({ error, context }))
+
+    await act(async () => { await probe.signInWithGoogle() })
+
+    expect(errors).toEqual([])
+    expect(probe.error).toBe('Invalid provider')
+  })
+
   it('reports a thrown provider exception with the google provider tag', async () => {
     const errors: Array<{ error: unknown; context: AuthErrorContext }> = []
     const client = fakeAuthClient({ cookieStored: false, socialThrows: new Error('browser unavailable') })
@@ -204,6 +249,39 @@ describe('Google sign-in hand-back', () => {
   it('reports session_missing only once the sheet stayed up, and says so on screen', async () => {
     const errors: Array<{ error: unknown; context: AuthErrorContext }> = []
     const client = fakeAuthClient({ cookieStored: false, sheetMs: MIN_NATIVE_OAUTH_SHEET_MS + 1 })
+    const probe = await renderProvider(client, (error, context) => errors.push({ error, context }))
+
+    await act(async () => { await probe.signInWithGoogle() })
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0].context).toEqual({ provider: 'google', stage: 'session_missing' })
+    expect(probe.error).toContain('without a session')
+  })
+
+  /**
+   * SHO-527: Play's pre-launch report robot taps Continue with Google, looks at
+   * Google's screen for 2–24 s and backs out. No hand-back ever reaches the app,
+   * so the client stamps `nativeHandback: 'none'` — a dismissal, however long
+   * the sheet was up. Reporting it as `session_missing` was all 62 events on
+   * SHOGO-ANDROID-1W.
+   */
+  it("treats a closed sheet with no hand-back as a dismissal, even after 10 s: no report, told to try again", async () => {
+    const errors: Array<{ error: unknown; context: AuthErrorContext }> = []
+    const client = fakeAuthClient({ cookieStored: false, sheetMs: 10_000, nativeHandback: 'none' })
+    const probe = await renderProvider(client, (error, context) => errors.push({ error, context }))
+    const readsAfterMount = client.state.sessionReads
+
+    await act(async () => { await probe.signInWithGoogle() })
+
+    expect(errors).toEqual([])
+    expect(probe.user).toBeNull()
+    expect(client.state.sessionReads).toBe(readsAfterMount)
+    expect(probe.error).toContain('closed before it finished')
+  })
+
+  it('reports session_missing when the hand-back reached the app but no session did', async () => {
+    const errors: Array<{ error: unknown; context: AuthErrorContext }> = []
+    const client = fakeAuthClient({ cookieStored: false, sheetMs: 300, nativeHandback: 'received' })
     const probe = await renderProvider(client, (error, context) => errors.push({ error, context }))
 
     await act(async () => { await probe.signInWithGoogle() })

@@ -36,6 +36,7 @@ import { getRuntimeManager } from './runtime'
 import { collectMachineSnapshot } from './machine-snapshot'
 import { wipeCloudKey } from './cloud-key-wipe'
 import { deriveProjectRuntimeToken } from './project-runtime-token'
+import { deriveWorkspaceRuntimeToken as mintWorkspaceRuntimeToken } from './workspace-runtime-token'
 import { getShogoCloudUrl } from './cloud-urls'
 import { resolveLocalApiPort } from './local-api-port'
 import { registerInstanceIdSource } from './tunnel-instance-id'
@@ -84,7 +85,7 @@ const startRequestedAt = new Map<string, number>()
 const STARTING_WINDOW_MS = 60_000
 
 const desktopResolver: RuntimeResolver = {
-  async resolveLocalUrl(pathWithQuery, projectId) {
+  async resolveLocalUrl(pathWithQuery, projectId, workspaceId) {
     const { pathname, search } = splitPathAndQuery(pathWithQuery)
     const path = pathname || '/'
 
@@ -96,6 +97,37 @@ const desktopResolver: RuntimeResolver = {
         // inside a tunnel request froze the local API's event loop, which is in
         // the same process as this tunnel, so `/health` stopped answering and the
         // desktop supervisor killed the API mid-request (SHO-185).
+        if (workspaceId && !projectId) {
+          // A workspace chat names no project of its own. The workspace's
+          // runtime may live in the `ws:<id>` slot or in the anchored
+          // `ws:proj:<anchor>` one, so ask for both — and never fall through to
+          // "whichever runtime is up": another workspace's runtime has no token
+          // for this one and answers 401 (SHO-526).
+          const runtime = manager.runningWorkspaceRuntime(workspaceId)
+          if (runtime?.agentPort) {
+            return `http://localhost:${runtime.agentPort}${path}${search}`
+          }
+          const key = `ws:${workspaceId}`
+          const requestedAt = startRequestedAt.get(key)
+          if (requestedAt === undefined || Date.now() - requestedAt >= STARTING_WINDOW_MS) {
+            startRequestedAt.set(key, Date.now())
+            // Same resolve the local `/api/workspaces/:id/agent-proxy` route
+            // uses, so the spawn (and its SHO-107 dedupe) is identical. Not
+            // awaited: the cloud answers `runtime_starting` and retries.
+            void import('./resolve-workspace-runtime-url')
+              .then(({ resolveWorkspaceRuntimeUrl }) =>
+                resolveWorkspaceRuntimeUrl(workspaceId, {
+                  attachedProjectIds: [],
+                  logTag: 'InstanceTunnel',
+                }),
+              )
+              .catch((err: any) => {
+                console.warn(`[InstanceTunnel] Background start failed for ${key}: ${err?.message ?? err}`)
+              })
+          }
+          return null
+        }
+
         if (projectId) {
           const runtime = manager.status(projectId)
           if (runtime?.agentPort && runtime.status === 'running') {
@@ -114,8 +146,8 @@ const desktopResolver: RuntimeResolver = {
           return null
         }
 
-        // No project named: use whichever runtime is already up rather than
-        // starting all of them to find out.
+        // No target named (an older cloud): use whichever runtime is already up
+        // rather than starting all of them to find out.
         for (const pid of manager.getActiveProjects()) {
           const runtime = manager.status(pid)
           if (runtime?.agentPort && runtime.status === 'running') {
@@ -143,6 +175,21 @@ const desktopResolver: RuntimeResolver = {
     }
   },
 
+  /**
+   * The token a workspace runtime accepts — the same one the local
+   * `/api/workspaces/:id/agent-proxy` route derives. Without it the runtime
+   * cannot tell a cloud-forwarded request from an anonymous one and answers
+   * 401 (SHO-526).
+   */
+  async deriveWorkspaceRuntimeToken(workspaceId) {
+    try {
+      return mintWorkspaceRuntimeToken(workspaceId)
+    } catch (err: any) {
+      console.warn(`[InstanceTunnel] workspace runtime token for ${workspaceId} unavailable: ${err?.message ?? err}`)
+      return null
+    }
+  },
+
   getActiveProjects() {
     try {
       return getRuntimeManager().getActiveProjects()
@@ -157,15 +204,16 @@ const desktopResolver: RuntimeResolver = {
    * `NO_LOCAL_RUNTIME`, so Studio can say "starting…" rather than show an error
    * while a cold runtime comes up (SHO-185).
    */
-  describeRejection(pathWithQuery: string, projectId?: string) {
+  describeRejection(pathWithQuery: string, projectId?: string, workspaceId?: string) {
     const { pathname } = splitPathAndQuery(pathWithQuery)
     const path = pathname || '/'
-    const requestedAt = projectId ? startRequestedAt.get(projectId) : undefined
+    const key = workspaceId && !projectId ? `ws:${workspaceId}` : projectId
+    const requestedAt = key ? startRequestedAt.get(key) : undefined
     const starting = requestedAt !== undefined && Date.now() - requestedAt < STARTING_WINDOW_MS
-    if (projectId && starting && (path.startsWith('/agent/') || path === '/agent')) {
+    if (key && starting && (path.startsWith('/agent/') || path === '/agent')) {
       return {
         code: 'RUNTIME_STARTING',
-        message: `runtime for project ${projectId} is starting`,
+        message: `runtime for ${workspaceId && !projectId ? 'workspace' : 'project'} ${key.replace(/^ws:/, '')} is starting`,
       }
     }
     return { code: 'NO_LOCAL_RUNTIME', message: `no local runtime available for path: ${path}` }
@@ -201,6 +249,13 @@ const desktopResolver: RuntimeResolver = {
     }
   },
 }
+
+/**
+ * The desktop resolver, exposed for its own tests: it is the half of the tunnel
+ * protocol that decides which local runtime serves a request, and the only place
+ * that knows a workspace may be served from a project-anchored slot (SHO-107).
+ */
+export const _desktopResolver = desktopResolver
 
 // ─── Module-level singletons (desktop expects this shape) ───────────────────
 

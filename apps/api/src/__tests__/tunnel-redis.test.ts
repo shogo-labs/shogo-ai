@@ -308,6 +308,85 @@ describe('tunnel redis cross-pod helpers', () => {
     ])
   })
 
+  // SHO-526: a relayed frame carries the workspace target and, for a binary
+  // body, the encoding the cloud can decode — both have to survive the chunked
+  // publish/reassemble path that a big payload takes.
+  test('a chunked relay keeps the workspace target and a base64 body intact', async () => {
+    tunnelRedis.__setRelayChunkBytesForTests(256)
+    try {
+      const requestBody = 'x'.repeat(2_000)
+      const request = {
+        type: 'request',
+        requestId: 'big-req',
+        method: 'GET',
+        path: '/agent/workspace/download/clip.mp4',
+        body: requestBody,
+        workspaceId: 'ws-1',
+        acceptBodyEncoding: ['base64'],
+      }
+      const logical = JSON.stringify({
+        relayId: 'relay-big',
+        instanceId: 'inst-big',
+        replyPod: 'other-pod',
+        request,
+      })
+      const parts: string[] = []
+      for (let offset = 0; offset < logical.length; offset += 256) {
+        parts.push(logical.slice(offset, offset + 256))
+      }
+
+      let received: any = null
+      tunnelRedis.setLocalTunnelHandlers(
+        async (_instanceId, req) => {
+          received = req
+          return {
+            type: 'response',
+            requestId: req.requestId,
+            status: 206,
+            headers: { 'content-type': 'video/mp4' },
+            body: 'A'.repeat(2_000),
+            bodyEncoding: 'base64',
+          }
+        },
+        () => ({ cancel: () => {} }),
+      )
+
+      publishCalls.length = 0
+      for (let seq = 0; seq < parts.length; seq++) {
+        await redisInstances[0].publish(
+          'tunnel:pod:pod-a:request',
+          JSON.stringify({ relayChunk: { id: 'chunk-big', seq, total: parts.length, data: parts[seq] } }),
+        )
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20))
+
+      // The request arrived whole, with the target and the negotiation intact.
+      expect(received).toMatchObject({
+        requestId: 'big-req',
+        workspaceId: 'ws-1',
+        acceptBodyEncoding: ['base64'],
+        body: requestBody,
+      })
+
+      // The reply was published in parts; joining them gives back the frame,
+      // encoding included.
+      const frames = publishCalls
+        .filter((call) => call.channel === 'tunnel:pod:other-pod:request')
+        .map((call) => JSON.parse(call.message))
+        .filter((message) => message.relayChunk)
+        .sort((a, b) => a.relayChunk.seq - b.relayChunk.seq)
+      expect(frames.length).toBeGreaterThan(1)
+      const reply = JSON.parse(frames.map((message) => message.relayChunk.data).join(''))
+      expect(reply.response).toMatchObject({
+        status: 206,
+        bodyEncoding: 'base64',
+        body: 'A'.repeat(2_000),
+      })
+    } finally {
+      tunnelRedis.__setRelayChunkBytesForTests(256 * 1024)
+    }
+  })
+
   test('shutdown disconnects clients and allows later health checks to fail closed', async () => {
     await tunnelRedis.shutdownTunnelRedis()
 

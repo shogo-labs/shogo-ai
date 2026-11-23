@@ -40,6 +40,19 @@ export interface ResolveRejection {
 }
 
 /**
+ * Cache key for a resolve rejection. The target is part of the key: the same
+ * path can be answered by a different runtime per workspace, so keying on the
+ * path alone would hand one workspace's `RUNTIME_STARTING` to another.
+ */
+export function rejectionKey(
+  pathWithQuery: string,
+  projectId?: string,
+  workspaceId?: string,
+): string {
+  return `${pathWithQuery}|${projectId ?? ''}|${workspaceId ?? ''}`;
+}
+
+/**
  * Pluggable resolver for the tunnel — provided by whoever owns the local
  * services that the cloud's tunneled requests should be forwarded to.
  *
@@ -63,10 +76,22 @@ export interface RuntimeResolver {
    * paths; cold-start latency surfaces to the cloud as request
    * latency, which is the right knob for per-project runtimes.
    */
-  resolveLocalUrl(pathWithQuery: string, projectId?: string): Promise<string | null>;
+  resolveLocalUrl(
+    pathWithQuery: string,
+    projectId?: string,
+    workspaceId?: string,
+  ): Promise<string | null>;
 
   /** Mint the `x-runtime-token` the local runtime serving `projectId` accepts. */
   deriveRuntimeToken(projectId: string): string | null | Promise<string | null>;
+
+  /**
+   * Mint the `x-runtime-token` for a workspace-targeted request (a chat in a
+   * workspace that has no project of its own — the personal companion, or a
+   * paired desktop's own workspace). Same token the desktop's local
+   * `/api/workspaces/:id/agent-proxy` route hands its runtime.
+   */
+  deriveWorkspaceRuntimeToken?(workspaceId: string): string | null | Promise<string | null>;
 
   /** Return the project ids the worker currently has runtimes for. */
   getActiveProjects(): string[];
@@ -83,6 +108,7 @@ export interface RuntimeResolver {
   describeRejection?(
     pathWithQuery: string,
     projectId?: string,
+    workspaceId?: string,
   ): ResolveRejection | Promise<ResolveRejection>;
 
   /**
@@ -113,6 +139,19 @@ interface TunnelRequest {
   body?: string;
   stream?: boolean;
   projectId?: string;
+  /**
+   * From `/api/workspaces/:id/agent-proxy/...` before path normalization. A
+   * workspace chat has no project of its own, so this is the only target the
+   * desktop gets — without it it fell back to *whichever* runtime was running
+   * and that runtime answered 401 (SHO-526).
+   */
+  workspaceId?: string;
+  /**
+   * Response body encodings the cloud can decode. Absent (an older cloud) means
+   * text frames only, exactly as before; `['base64']` lets a binary body cross
+   * the tunnel without a lossy UTF-8 round trip.
+   */
+  acceptBodyEncoding?: string[];
 }
 
 interface CancelMessage {
@@ -177,6 +216,43 @@ const WS_RECONNECT_MAX_ATTEMPTS = 5;
  *   3 — Remote state sync (projects, history routed through tunnel)
  */
 export const TUNNEL_PROTOCOL_VERSION = 3;
+
+/**
+ * Largest raw response body one non-stream frame may carry.
+ *
+ * A frame is JSON over the cloud's WebSocket, which Bun caps at 16 MiB
+ * (`maxPayloadLength` default). Base64 inflates by 4/3, so a body over ~11 MiB
+ * cannot fit even before the envelope. Over the cap the worker answers a
+ * structured 502 instead of sending a frame that closes the socket — the socket
+ * drop used to take the whole tunnel down for one oversized MP4 (SHO-526).
+ */
+export const TUNNEL_MAX_FRAME_BODY_BYTES = 11 * 1024 * 1024;
+
+/**
+ * Whether a response body is text that survives a UTF-8 frame.
+ *
+ * A missing content-type counts as binary: guessing wrong on text is a garbled
+ * string, guessing wrong on a JPEG is a corrupt image, and only the latter is
+ * unrecoverable.
+ */
+export function isTextualContentType(contentType: string | null | undefined): boolean {
+  if (!contentType) return false;
+  const type = contentType.split(';')[0]!.trim().toLowerCase();
+  if (!type) return false;
+  return (
+    type.startsWith('text/') ||
+    type === 'application/json' ||
+    type.endsWith('+json') ||
+    type === 'application/xml' ||
+    type.endsWith('+xml') ||
+    type === 'application/javascript' ||
+    type === 'application/x-javascript' ||
+    type === 'application/x-www-form-urlencoded' ||
+    type === 'application/event-stream' ||
+    type === 'text/event-stream'
+  );
+}
+
 
 export interface WorkerTunnelOptions {
   apiKey: string;
@@ -543,7 +619,7 @@ export class WorkerTunnel {
     this.activeAbortControllers.set(msg.requestId, controller);
 
     try {
-      const url = await this.resolveLocalUrl(msg.path, msg.projectId);
+      const url = await this.resolveLocalUrl(msg.path, msg.projectId, msg.workspaceId);
       if (!url) {
         // Structured 502 body so future debuggers reading the response
         // (without access to worker logs) can tell what happened. The
@@ -551,7 +627,7 @@ export class WorkerTunnel {
         // back the original path so the operator doesn't have to
         // correlate request-ids to figure out which fetch failed.
         const rejection: ResolveRejection = this.opts.resolver.describeRejection
-          ? await this.opts.resolver.describeRejection(msg.path, msg.projectId)
+          ? await this.opts.resolver.describeRejection(msg.path, msg.projectId, msg.workspaceId)
           : { code: 'NO_LOCAL_RUNTIME', message: `no local runtime available for path: ${msg.path}` };
         this.sendFrame({
           type: 'response',
@@ -569,9 +645,14 @@ export class WorkerTunnel {
 
       const headers: Record<string, string> = { ...(msg.headers ?? {}) };
 
-      if (msg.projectId && (msg.path.startsWith('/agent/') || msg.path === '/agent')) {
-        const token = await this.opts.resolver.deriveRuntimeToken(msg.projectId);
-        if (token) headers['x-runtime-token'] = token;
+      if (msg.path.startsWith('/agent/') || msg.path === '/agent') {
+        if (msg.projectId) {
+          const token = await this.opts.resolver.deriveRuntimeToken(msg.projectId);
+          if (token) headers['x-runtime-token'] = token;
+        } else if (msg.workspaceId) {
+          const token = await this.opts.resolver.deriveWorkspaceRuntimeToken?.(msg.workspaceId);
+          if (token) headers['x-runtime-token'] = token;
+        }
       }
 
       const init: RequestInit = {
@@ -620,15 +701,32 @@ export class WorkerTunnel {
           }
         }
       } else {
-        const body = await resp.text();
+        const acceptsBase64 = Array.isArray(msg.acceptBodyEncoding) && msg.acceptBodyEncoding.includes('base64');
+        const binary = acceptsBase64 && !isTextualContentType(resp.headers.get('content-type'));
+        const declared = Number(resp.headers.get('content-length') ?? '');
+        if (acceptsBase64 && Number.isFinite(declared) && declared > TUNNEL_MAX_FRAME_BODY_BYTES) {
+          this.sendTooLarge(msg, declared);
+          return;
+        }
+        const bytes = new Uint8Array(await resp.arrayBuffer());
+        if (acceptsBase64 && bytes.byteLength > TUNNEL_MAX_FRAME_BODY_BYTES) {
+          this.sendTooLarge(msg, bytes.byteLength);
+          return;
+        }
         const respHeaders: Record<string, string> = {};
         resp.headers.forEach((v, k) => { respHeaders[k] = v; });
+        // `fetch` has already decompressed the body, so the framed length and
+        // encoding describe bytes the cloud no longer holds. Drop both and let
+        // its Response set the length from what it actually writes.
+        delete respHeaders['content-length'];
+        delete respHeaders['content-encoding'];
         this.sendFrame({
           type: 'response',
           requestId: msg.requestId,
           status: resp.status,
           headers: respHeaders,
-          body,
+          body: binary ? Buffer.from(bytes).toString('base64') : new TextDecoder().decode(bytes),
+          ...(binary ? { bodyEncoding: 'base64' } : {}),
         });
       }
     } catch (err: any) {
@@ -653,8 +751,31 @@ export class WorkerTunnel {
    * no opinion about which paths route where; that's the resolver's
    * job (see `RuntimeResolver`).
    */
-  private async resolveLocalUrl(pathWithQuery: string, projectId?: string): Promise<string | null> {
-    return this.opts.resolver.resolveLocalUrl(pathWithQuery, projectId);
+  private async resolveLocalUrl(
+    pathWithQuery: string,
+    projectId?: string,
+    workspaceId?: string,
+  ): Promise<string | null> {
+    return this.opts.resolver.resolveLocalUrl(pathWithQuery, projectId, workspaceId);
+  }
+
+  /**
+   * Refuse a body that cannot fit one frame, as a normal 502 the cloud can
+   * read — never as a frame that makes the cloud close the socket.
+   */
+  private sendTooLarge(msg: TunnelRequest, size: number): void {
+    this.sendFrame({
+      type: 'response',
+      requestId: msg.requestId,
+      status: 502,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        code: 'TUNNEL_BODY_TOO_LARGE',
+        size,
+        limit: TUNNEL_MAX_FRAME_BODY_BYTES,
+        path: msg.path,
+      }),
+    });
   }
 
   private sendFrame(frame: Record<string, unknown>): void {
