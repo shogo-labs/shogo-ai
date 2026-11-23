@@ -16,6 +16,7 @@ import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { resolveAbilities } from '@shogo/authz'
 import * as realInternalApi from '../internal-api'
 import type { ToolContext } from '../gateway-tools'
 
@@ -496,6 +497,17 @@ describe('publish tool', () => {
     expect(domain.permission).toBe('project:publish')
     expect(publishCalls).toEqual([])
   })
+
+  // SHO-539 acceptance 1, through the real gateway tool list: a turn with a
+  // known ability set must still advertise `publish`, because the server — not
+  // the per-turn workspace gate — decides the project permission.
+  for (const role of ['owner', 'admin', 'member', 'viewer'] as const) {
+    test(`createTools advertises publish for a ${role} ability set`, () => {
+      const abilities = new Set<string>(resolveAbilities(role, []))
+      const names = createTools({ ...baseCtx(), abilities } as ToolContext).map((t) => t.name)
+      expect(names).toContain('publish')
+    })
+  }
 
   test('maps server_backed_requires_cloud_project to "sync then publish in the cloud"', async () => {
     publishProjectImpl = async () => ({
