@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Linking, Platform } from 'react-native'
+import * as Sentry from '@sentry/react-native'
 import { createAuthClient } from '@shogo/shared-app/auth'
 import { createAuthClient as createBetterAuthClient } from 'better-auth/react'
 import type { BetterFetch } from 'better-auth/react'
 import { expoClient, getSetCookie, normalizeCookieName } from '@better-auth/expo/client'
 import * as SecureStore from 'expo-secure-store'
-import { watchOAuthRedirectCookie, withOAuthRedirectCapture } from './android-oauth-redirect'
+import {
+  readStoredSessionToken,
+  watchOAuthRedirectCookie,
+  withOAuthRedirectCapture,
+} from './android-oauth-redirect'
 import { API_URL } from './api-url'
 import { authStoragePrefixFor, getActiveEnvKey } from './env-override'
 
@@ -62,6 +67,7 @@ function createMobileAuthClient() {
 
   const storagePrefix = authStoragePrefixFor(getActiveEnvKey())
   const storage = tolerantSecureStore(SecureStore)
+  const cookiePrefix = 'shogo'
   const client = createBetterAuthClient({
     baseURL: API_URL!,
     basePath: '/api/auth',
@@ -69,7 +75,7 @@ function createMobileAuthClient() {
       expoClient({
         scheme: 'shogo',
         storagePrefix,
-        cookiePrefix: 'shogo',
+        cookiePrefix,
         storage,
       }),
     ],
@@ -80,19 +86,35 @@ function createMobileAuthClient() {
     ;(client as any).getCookie = () => normalizeCookieHeader(getCookie())
   }
 
-  if (Platform.OS === 'android') {
-    return withOAuthRedirectCapture(client, () =>
-      watchOAuthRedirectCookie({
-        linking: Linking,
-        storage,
-        storagePrefix,
-        scheme: 'shogo',
-        getSetCookie,
-        normalizeCookieName,
-      }),
-    )
-  }
-  return client
+  // Every native social sign-in says whether the sheet handed back to the app
+  // (SHO-527). Android additionally has to catch the deep link itself, because
+  // the plugin's AppState race can drop it (SHO-483).
+  return withOAuthRedirectCapture(client, {
+    platform: Platform.OS,
+    readSessionToken: () =>
+      readStoredSessionToken({ storage, storagePrefix, cookiePrefix, normalizeCookieName }),
+    watch: Platform.OS === 'android'
+      ? () =>
+          watchOAuthRedirectCookie({
+            linking: Linking,
+            storage,
+            storagePrefix,
+            scheme: 'shogo',
+            getSetCookie,
+            normalizeCookieName,
+          })
+      : undefined,
+    // A dismissal, not a failure: a breadcrumb keeps the trail for the next
+    // real error without filing an issue for someone tapping back.
+    onSheetClosed: ({ platform, sheetMs }) => {
+      Sentry.addBreadcrumb({
+        category: 'auth',
+        level: 'info',
+        message: 'auth.oauth_sheet_closed',
+        data: { platform, sheetMs },
+      })
+    },
+  })
 }
 
 export const authClient = createMobileAuthClient()

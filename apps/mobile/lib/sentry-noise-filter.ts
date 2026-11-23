@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
+import { Platform } from "react-native"
+import * as Device from "expo-device"
+
 /**
  * production_web Sentry noise filter.
  *
@@ -14,6 +17,49 @@
  * structurally (a subset of `@sentry/*` `ErrorEvent`) so the filter has no
  * runtime dependency on the SDK.
  */
+
+/**
+ * The device facts the virtual-device rule needs. Passed in rather than read
+ * from `expo-device` so the rule is unit-testable without a native module.
+ */
+export interface DeviceProfile {
+  platform: string
+  /** Primary ABI first, as `Device.supportedCpuArchitectures` reports it. */
+  architectures: readonly string[] | null | undefined
+  /** `expo-device`'s `DeviceType`: 1 PHONE, 2 TABLET, 3 DESKTOP, 4 TV. */
+  deviceType: number | null | undefined
+}
+
+/** `expo-device`'s `DeviceType.DESKTOP`. */
+const DEVICE_TYPE_DESKTOP = 3
+
+/**
+ * A virtual Android device: Google Play's pre-launch report robot, or a local
+ * x86_64 emulator. Play's robot is an `OnePlus8Pro` Firebase Test Lab VM whose
+ * primary ABI is `x86_64`; a real OnePlus 8 Pro is arm64-only. It backs out of
+ * the OAuth sheet within seconds of opening it, so every event it files is about
+ * the robot, not a person (SHO-527).
+ *
+ * x86 devices that are genuinely in use are ChromeOS/ARC, and `expo-device`
+ * reports those as DESKTOP — hence the third condition. This uses `expo-device`,
+ * already in the binary, so the filter ships over the air; a native module would
+ * change the runtime fingerprint and stop OTAs.
+ */
+export function isVirtualAndroidDevice(profile: DeviceProfile): boolean {
+  if (profile.platform !== "android") return false
+  const [primaryAbi] = profile.architectures ?? []
+  if (primaryAbi !== "x86" && primaryAbi !== "x86_64") return false
+  return profile.deviceType !== DEVICE_TYPE_DESKTOP
+}
+
+/** This device, as `expo-device` describes it. */
+export function currentDeviceProfile(): DeviceProfile {
+  return {
+    platform: Platform.OS,
+    architectures: Device.supportedCpuArchitectures,
+    deviceType: Device.deviceType,
+  }
+}
 
 export interface NoiseFilterFrame {
   filename?: string
