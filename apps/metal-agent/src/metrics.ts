@@ -247,6 +247,28 @@ export const M = {
   // is holding it — the next pass suspends it, so a sustained non-zero
   // `evictable` means the reaper is not keeping up (SHO-533).
   idleHoldReason: 'metal_idle_hold_reason',
+  // Idle-VM reclaim (SHO-534): MiB the balloon has taken out of idle guests
+  // (a total, so the fleet's saved RAM is one sum), how many assigned VMs are
+  // currently holding reclaimed RAM (state), how many deflates happened and how
+  // long one took. The deflate latency matters because it sits behind the first
+  // request after an idle period: it is off the request's critical path, but a
+  // slow PATCH is why the first click after an idle spell feels sluggish.
+  balloonReclaimedMiB: 'metal_balloon_reclaimed_mib_total',
+  balloonDeflated: 'metal_balloon_deflated_total',
+  idleReclaimedVms: 'metal_idle_reclaimed_vms',
+  idleReclaimDeflateMs: 'metal_idle_reclaim_deflate_ms',
+  // Host RAM and KSM (SHO-534). `hostMemUsedMiB` is MemTotal - MemAvailable, not
+  // the sum of FC RSS: a restored VM's guest memory is a MAP_PRIVATE file
+  // mapping, so per-process RSS under-counts the page cache the host really
+  // holds. The KSM gauges are what the ksmd CPU budget and the dedup gain are
+  // read from while KSM is being evaluated on staging; they stay zero on a host
+  // with KSM off, which is every prod host until Russell signs off on it.
+  hostMemUsedMiB: 'metal_host_mem_used_mib',
+  hostMemAvailableMiB: 'metal_host_mem_available_mib',
+  ksmPagesSharing: 'metal_ksm_pages_sharing',
+  ksmPagesShared: 'metal_ksm_pages_shared',
+  ksmFullScans: 'metal_ksm_full_scans',
+  ksmdCpuPct: 'metal_ksmd_cpu_pct',
   // Idle-suspend refusals: each one means the guest's HEAD is not in the durable
   // repo yet, so the VM may not be suspended (SHO-442). Counted per attempt
   // (`refused`) and summed per reaper pass for VMs waiting out their backoff

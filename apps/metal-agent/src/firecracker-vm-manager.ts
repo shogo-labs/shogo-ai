@@ -461,9 +461,15 @@ export class FirecrackerVMManager {
         await api.dataDrive(workspaceDrive, 'workspace')
       }
       // Enable balloon statistics pre-boot when reclaim is on — they can't be
-      // turned on after InstanceStart, and snapshotVM() polls them to size the
-      // pre-snapshot reclaim.
-      await api.machineConfig(vcpus, memoryMB, true, this.cfg.balloonReclaim ? 1 : 0)
+      // turned on after InstanceStart, and both the idle pass and snapshotVM()
+      // poll them to size the reclaim. Free page reporting is pre-boot only too.
+      await api.machineConfig(
+        vcpus,
+        memoryMB,
+        true,
+        this.cfg.balloonReclaim || this.cfg.idleReclaim ? 1 : 0,
+        this.cfg.balloonFreePageReporting,
+      )
       await api.networkInterface('eth0', net.tap, net.guestMac)
       await api.instanceStart()
 
@@ -737,49 +743,105 @@ export class FirecrackerVMManager {
   }
 
   /**
-   * Inflate the balloon to reclaim idle guest RAM right before a snapshot, then
-   * wait (bounded) for the driver to converge. Stats-guided when available
-   * (reclaim only what's free/reclaimable, leaving `balloonFloorMiB` headroom);
-   * for VMs booted without stats (older snapshots) it falls back to a blind
-   * reclaim of everything above the floor and simply waits out the window.
-   * Fully best-effort — any error is logged and the snapshot proceeds.
+   * Hand all ballooned RAM back to the guest (balloon target → 0). Fire-and-forget
+   * by callers: `deflate_on_oom` already returns pages under pressure, so nothing
+   * user-facing depends on this landing before the next request.
    */
-  private async reclaimBeforeSnapshot(api: FcApi, configuredMiB: number): Promise<void> {
-    try {
-      const stats = await api.balloonStats()
-      const amount = stats
-        ? computeReclaimMiB({
-            configuredMiB,
-            availableMiB: stats.availableMib,
-            floorMiB: this.cfg.balloonFloorMiB,
-          })
-        : Math.max(0, configuredMiB - Math.max(0, this.cfg.balloonFloorMiB))
-      if (amount <= 0) return
+  async deflate(handle: FcVmHandle): Promise<void> {
+    await new FcApi(handle.socketPath).balloonDeflate()
+  }
 
-      await api.balloonInflate(amount)
+  /**
+   * MiB the balloon is currently targeting (0 = nothing reclaimed), or undefined
+   * on a guest with no balloon statistics. Used to re-adopt a VM's balloon state
+   * after an agent restart — the target lives in the guest/vmstate, not in us.
+   */
+  async balloonTargetMiB(handle: FcVmHandle): Promise<number | undefined> {
+    const stats = await new FcApi(handle.socketPath).balloonStats()
+    return stats?.targetMib
+  }
 
-      // Inflation is async and guest-driver paced (~seconds to reclaim GiBs).
-      // Poll actual→target and stop as soon as it converges OR plateaus (the
-      // driver can't get more — e.g. the rest is a pinned working set), so we
-      // don't burn the whole window once reclaim is effectively done. With no
-      // stats (older snapshots) we can't observe progress, so we wait out the
-      // window to give the blind inflate time to land.
-      const deadline = Date.now() + this.cfg.balloonMaxWaitMs
-      let prev = -1
-      let stagnant = 0
-      while (Date.now() < deadline) {
-        await Bun.sleep(this.cfg.balloonPollMs)
-        const s = await api.balloonStats()
-        if (!s) continue
-        if (s.actualMib + 8 >= amount) break // reached target
-        // Plateau: <8 MiB gained since last poll. Two in a row → driver is done.
-        if (s.actualMib <= prev + 8) {
-          if (++stagnant >= 2) break
-        } else {
-          stagnant = 0
-        }
-        prev = s.actualMib
+  /**
+   * Reclaim a running VM's free guest RAM through the virtio-balloon. The ONE
+   * inflate implementation: the idle pass and the pre-snapshot path both come
+   * through here, so there is a single place that decides how much to ask for
+   * and how long to wait.
+   *
+   * Stats-guided and never blind: we read the balloon's available/free estimate
+   * and target what is actually reclaimable, leaving `floorMiB` of headroom, then
+   * never lower a target that is already higher (an idle VM being topped up
+   * before its snapshot must not be deflated first and re-inflated).
+   *
+   * `maxWaitMs` bounds the wait for the driver to converge: inflation is async
+   * and takes seconds for GiBs, which the snapshot path must wait out (the pause
+   * follows) but a reaper tick must not. `0` sets the target and returns.
+   *
+   * A VM with no balloon stats (booted by an agent that never enabled them) is
+   * skipped rather than blindly inflated — there is no way to ask it for RAM
+   * back later without guessing how much it can spare.
+   */
+  async reclaimIdle(
+    handle: FcVmHandle,
+    opts: { floorMiB: number; maxWaitMs: number },
+  ): Promise<{ reclaimedMiB: number; increasedMiB: number; statsAvailable: boolean }> {
+    const api = new FcApi(handle.socketPath)
+    const stats = await api.balloonStats()
+    if (!stats) return { reclaimedMiB: 0, increasedMiB: 0, statsAvailable: false }
+
+    const floorMiB = Math.max(0, opts.floorMiB)
+    const want = Math.max(
+      stats.targetMib,
+      computeReclaimMiB({ configuredMiB: handle.memoryMB, availableMiB: stats.availableMib, floorMiB }),
+    )
+    // Nothing new to ask for. Without a wait budget that is the whole answer; with
+    // one (the snapshot path, where the pause follows) still wait out an inflation
+    // an earlier pass set, so the mem image is as empty as it can be.
+    if (want <= stats.targetMib) {
+      const converged = stats.actualMib + 8 >= want
+      if (opts.maxWaitMs <= 0 || converged) {
+        return { reclaimedMiB: stats.targetMib, increasedMiB: 0, statsAvailable: true }
       }
+    } else {
+      await api.balloonInflate(want)
+    }
+
+    // Poll actual→target and stop as soon as it converges OR plateaus (the
+    // driver can't get more — e.g. the rest is a pinned working set), so we don't
+    // burn the whole window once reclaim is effectively done.
+    const deadline = Date.now() + Math.max(0, opts.maxWaitMs)
+    let prev = -1
+    let stagnant = 0
+    while (Date.now() < deadline) {
+      await Bun.sleep(this.cfg.balloonPollMs)
+      const s = await api.balloonStats()
+      if (!s) continue
+      if (s.actualMib + 8 >= want) break // reached target
+      // Plateau: <8 MiB gained since last poll. Two in a row → driver is done.
+      if (s.actualMib <= prev + 8) {
+        if (++stagnant >= 2) break
+      } else {
+        stagnant = 0
+      }
+      prev = s.actualMib
+    }
+    return {
+      reclaimedMiB: want,
+      increasedMiB: Math.max(0, want - stats.targetMib),
+      statsAvailable: true,
+    }
+  }
+
+  /**
+   * Pre-snapshot reclaim: top the balloon up to the snapshot floor and wait for
+   * it to land, so the mem image is mostly zeros (→ ~3x smaller mem.gz). Fully
+   * best-effort — any error is logged and the snapshot proceeds.
+   */
+  private async reclaimBeforeSnapshot(api: FcApi, handle: FcVmHandle): Promise<void> {
+    try {
+      await this.reclaimIdle(handle, {
+        floorMiB: this.cfg.balloonFloorMiB,
+        maxWaitMs: this.cfg.balloonMaxWaitMs,
+      })
     } catch (err: any) {
       console.error('[fc] balloon reclaim before snapshot failed:', err?.message ?? err)
     }
@@ -800,7 +862,7 @@ export class FirecrackerVMManager {
     // Reclaim idle guest RAM before the freeze so the mem image is mostly zeros
     // (→ ~3x smaller mem.gz). Must run while the VM is Resumed (the driver can't
     // allocate while paused). Best-effort: never fail a snapshot over reclaim.
-    if (this.cfg.balloonReclaim) await this.reclaimBeforeSnapshot(api, handle.memoryMB)
+    if (this.cfg.balloonReclaim) await this.reclaimBeforeSnapshot(api, handle)
 
     await api.pause()
     await api.createSnapshot(snapshotPath, memFilePath)

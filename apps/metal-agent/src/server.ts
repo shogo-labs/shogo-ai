@@ -502,6 +502,17 @@ if (config.idleSuspendMs > 0) {
           lastIdleReason = w.reason
         }
         metrics.gauge(M.idleWindowMs, w.idleMs)
+        // Before the reaper: a VM idle enough to reclaim is idle enough to be
+        // about to be suspended, and reclaiming first means the snapshot path
+        // finds a balloon already inflated (it tops it up rather than starting
+        // from scratch). Always-on VMs are only ever reached by this pass — they
+        // are never suspended, so their RAM was never given back at all (SHO-534).
+        return pool.reclaimIdleVms().then((reclaimed) => ({ w, reclaimed }))
+      })
+      .then(({ w, reclaimed }) => {
+        if (reclaimed.length) {
+          console.log(`[metal-agent] idle-reclaimed (balloon): ${reclaimed.join(', ')}`)
+        }
         const retired: string[] = []
         return pool.reapIdle(w.idleMs, { tier: w.tier, retired }).then((ids) => ({ ids, retired }))
       })
@@ -545,6 +556,29 @@ if (config.idleSuspendMs > 0) {
       .then(() => {
         pool.reconcile().catch((err) => console.error('[metal-agent] warm pool refill error:', err?.message ?? err))
       }),
+  )
+}
+
+// Idle-VM reclaim on a host with no reaper (SHO-534). The reclaim pass is
+// normally the step just before `reapIdle` in the tick above, because it needs a
+// fresh activity poll to know nobody is using a VM. With idle-suspend disabled —
+// an operator's choice, and how the density soak runs — that tick does not exist,
+// so reclaim gets its own small loop: poll, then reclaim. Nothing else from the
+// reaper runs here.
+let reclaimLoop: GuardedInterval | null = null
+if (config.idleSuspendMs <= 0 && config.idleReclaim) {
+  console.log(
+    `[metal-agent] idle reclaim on (no idle-suspend): idleMs=${config.idleReclaimMs} scan=${config.reapIntervalMs}ms`,
+  )
+  reclaimLoop = guardedInterval('idle reclaim', config.reapIntervalMs, () =>
+    pool
+      .pollActivity()
+      .catch(() => {})
+      .then(() => pool.reclaimIdleVms())
+      .then((ids) => {
+        if (ids.length) console.log(`[metal-agent] idle-reclaimed (balloon): ${ids.join(', ')}`)
+      })
+      .catch((err) => console.error('[metal-agent] idle reclaim error:', err?.message ?? err)),
   )
 }
 
@@ -678,6 +712,7 @@ process.on('SIGTERM', async () => {
   stopRegistration()
   serialWatcher?.stop()
   reaper?.stop()
+  reclaimLoop?.stop()
   if (gc) clearInterval(gc)
   if (pubDataExporter) clearInterval(pubDataExporter)
   projectDataExporter?.stop()
