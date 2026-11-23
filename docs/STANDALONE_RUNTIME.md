@@ -144,7 +144,7 @@ the table does not list, or the table lists one the code no longer reads.
 
 <!-- BEGIN GENERATED ENV TABLE -->
 
-The runtime reads 177 environment variables. This table is generated from the source by
+The runtime reads 178 environment variables. This table is generated from the source by
 `scripts/gen-runtime-env-doc.ts`; a test fails when the code and the table disagree.
 
 | Variable | Standalone | Default | Purpose |
@@ -271,6 +271,7 @@ The runtime reads 177 environment variables. This table is generated from the so
 | `SHOGO_INDEX_PREWARM` | optional | `` | — |
 | `SHOGO_INDEX_START_DELAY_MS` | optional | `3000` | — |
 | `SHOGO_INTERACTIVE_CWD` | optional | — | — |
+| `SHOGO_LFS_CONCURRENT_TRANSFERS` | optional | `` | In-flight `git lfs push` transfers. Defaults to `2` (capped at `16`) so a small VM does not buffer eight objects at once. |
 | `SHOGO_LOCAL_MODE` | optional | — | — |
 | `SHOGO_LSP_DEPS_WAIT_MS` | optional | `60000` | — |
 | `SHOGO_LSP_START_DELAY_MS` | optional | `2000` | — |

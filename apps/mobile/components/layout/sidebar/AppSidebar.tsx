@@ -12,7 +12,6 @@ import {
   View,
   Text,
   Pressable,
-  ScrollView,
   BackHandler,
   useWindowDimensions,
   Platform,
@@ -128,6 +127,7 @@ import { DmsPanel } from "../../team-chat/panels/DmsPanel";
 import { AgentsPanel } from "../../team-chat/panels/AgentsPanel";
 import { ActivityFeed } from "../../activity/ActivityFeed";
 import { WideSidebar } from "./WideSidebar";
+import { SidebarScrollView } from "./SidebarScrollContext";
 import { HomePanel, MorePanel } from "./TabPanels";
 import {
   MENU_ITEM_RADIO_ROLE,
@@ -1457,7 +1457,7 @@ export const AppSidebar = observer(function AppSidebar({
           <ActivityFeed compact />
         </View>
       ) : (
-      <ScrollView
+      <SidebarScrollView
         className={cn("flex-1", isNativeDrawer ? "pt-3" : "pt-2")}
         showsVerticalScrollIndicator={false}
       >
@@ -1534,7 +1534,7 @@ export const AppSidebar = observer(function AppSidebar({
         {experience.showProjectsTree && projectsBlock}
         </>
         )}
-      </ScrollView>
+      </SidebarScrollView>
       )}
 
       {/* ── Bottom Section ── */}

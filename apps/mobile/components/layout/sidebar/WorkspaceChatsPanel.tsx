@@ -70,6 +70,7 @@ export function WorkspaceChatsPanel({ onNavPress }: { onNavPress?: () => void })
         archivedSessions={chats.archived}
         activeChatId={activeId}
         revealActiveChat
+        paging="infinite"
         streamingIds={chats.streamingIds}
         completedIds={chats.completedIds}
         variant={workspacePane ? 'workspacePane' : undefined}
@@ -82,10 +83,6 @@ export function WorkspaceChatsPanel({ onNavPress }: { onNavPress?: () => void })
           icon: <Plus size={12} className="text-muted-foreground shrink-0" />,
           onPress: () => void startNewChat(),
           busy: chats.creating,
-        }}
-        onSeeAll={() => {
-          router.push('/(app)/chats' as any)
-          onNavPress?.()
         }}
         onSelect={openChat}
         onTogglePin={(id, next) => void chats.updateChat(id, { isPinned: next })}
