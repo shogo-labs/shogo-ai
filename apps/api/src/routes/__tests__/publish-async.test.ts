@@ -378,4 +378,34 @@ describe('publish as a background job', () => {
     expect((await res.json()).error.code).toBe('invalid_subdomain')
     expect(statusWrites).toHaveLength(0)
   })
+
+  it('a refused retry keeps the claim the running publish holds', async () => {
+    // The claim is per subdomain, and the 409 path used to release it — so a
+    // double-tap on one project dropped the claim its own publish was holding,
+    // and another project could then take the name and upload over the running
+    // publish's files (the SHO-207 window the claim exists to close).
+    seed('p1')
+    let releaseUpload!: () => void
+    uploadGate = new Promise<void>((r) => {
+      releaseUpload = r
+    })
+
+    expect((await postPublish('p1', { subdomain: 'held-app' })).status).toBe(202)
+    await until(() => projects.get('p1')!.publishStatus === 'uploading', 'uploading')
+
+    const retry = await postPublish('p1', { subdomain: 'held-app' })
+    expect(retry.status).toBe(409)
+    expect((await retry.json()).error.code).toBe('publish_in_progress')
+
+    // The name is still p1's: a different project is refused by the claim, not
+    // merely by the DB check (which cannot see an uncommitted subdomain).
+    seed('p2')
+    const other = await postPublish('p2', { subdomain: 'held-app' })
+    expect(other.status).toBe(409)
+    expect((await other.json()).error.code).toBe('subdomain_taken')
+
+    releaseUpload()
+    await until(() => projects.get('p1')!.publishStatus === 'live', 'live')
+    expect(projects.get('p1')!.publishedSubdomain).toBe('held-app')
+  })
 })

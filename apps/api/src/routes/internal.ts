@@ -376,6 +376,12 @@ app.get('/projects/:projectId/publish', async (c) => {
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
   if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
 
+  // A staging deploy writes the staging environment row, never the project
+  // (SHO-308 §8), so a caller following one has to name the row it is watching.
+  // Without this the tool polled production's `live` and reported a staging
+  // build that was still running — or had failed — as a success.
+  const environment: 'production' | 'staging' = c.req.query('environment') === 'staging' ? 'staging' : 'production'
+
   try {
     const { prisma } = await import('../lib/prisma')
     const project = (await prisma.project.findUnique({
@@ -392,21 +398,54 @@ app.get('/projects/:projectId/publish', async (c) => {
     })) as Record<string, any> | null
     if (!project) return c.json({ error: 'Project not found' }, 404)
 
+    // Access settings belong to the project; only the deploy state differs.
+    const access = {
+      accessLevel: project.accessLevel ?? null,
+      hasPassword: !!project.sitePasswordHash,
+    }
+
     // Publishing runs in the background (SHO-542), so this GET is how the
     // agent's publish tool learns the outcome. An in-flight status past its
     // lease is a dead publish, not a running one.
-    const { resolveReportedPublishStatus, markPublishInterrupted } = await import('./publish')
+    const { resolveReportedPublishStatus, markPublishInterrupted, markEnvironmentPublishInterrupted } = await import('./publish')
+
+    if (environment === 'staging') {
+      const { getEnvironment } = await import('../services/published-environments.service')
+      const staging = (await getEnvironment(projectId, 'staging')) as Record<string, any> | null
+      if (!staging) return c.json({ error: 'Staging environment not found' }, 404)
+      const reported = resolveReportedPublishStatus(staging)
+      if (reported.interrupted) await markEnvironmentPublishInterrupted(staging.id)
+      const publishError = reported.interrupted ? reported.error : (staging.publishError ?? null)
+      return c.json({
+        ok: true,
+        environment,
+        published: reported.status === 'live',
+        subdomain: staging.subdomain ?? null,
+        // The environment has no publishedAt; a staging deploy is described by
+        // its status, and callers that need a timestamp use `publishStatusAt`.
+        publishedAt: null,
+        publishStatusAt: staging.publishStatusAt ? new Date(staging.publishStatusAt).getTime() : null,
+        ...access,
+        publishStatus: reported.status,
+        publishError,
+        publishErrorDetails:
+          publishError === 'destructive_schema_change'
+            ? await describeDestructivePublish(projectId, environment)
+            : null,
+      })
+    }
+
     const reported = resolveReportedPublishStatus(project)
     if (reported.interrupted) await markPublishInterrupted(projectId)
     const publishError = reported.interrupted ? reported.error : (project.publishError ?? null)
 
     return c.json({
       ok: true,
+      environment,
       published: !!project.publishedSubdomain,
       subdomain: project.publishedSubdomain ?? null,
       publishedAt: project.publishedAt ? new Date(project.publishedAt).getTime() : null,
-      accessLevel: project.accessLevel ?? null,
-      hasPassword: !!project.sitePasswordHash,
+      ...access,
       publishStatus: reported.status,
       publishError,
       // A refused publish's machine-actionable context is not on the row (no
@@ -415,7 +454,7 @@ app.get('/projects/:projectId/publish', async (c) => {
       // destructive schema change would drop.
       publishErrorDetails:
         publishError === 'destructive_schema_change'
-          ? await describeDestructivePublish(projectId)
+          ? await describeDestructivePublish(projectId, environment)
           : null,
     })
   } catch (err: any) {
@@ -429,12 +468,15 @@ app.get('/projects/:projectId/publish', async (c) => {
  * Best-effort: a diff that cannot be computed must not turn a clear
  * `destructive_schema_change` into a 500.
  */
-async function describeDestructivePublish(projectId: string): Promise<Record<string, unknown> | null> {
+async function describeDestructivePublish(
+  projectId: string,
+  environment: 'production' | 'staging',
+): Promise<Record<string, unknown> | null> {
   try {
     const { describePendingDestructiveChanges } = await import('../services/published-schema.service')
-    const described = await describePendingDestructiveChanges(projectId, 'production')
+    const described = await describePendingDestructiveChanges(projectId, environment)
     if (!described) return null
-    return { environment: 'production', changes: described.changes }
+    return { environment, changes: described.changes }
   } catch (err: any) {
     console.warn(`[Internal] could not describe destructive changes for ${projectId}:`, err?.message ?? err)
     return null

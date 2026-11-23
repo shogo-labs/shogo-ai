@@ -214,3 +214,71 @@ describe('publishProject follows a background publish (202 → status)', () => {
     expect(res.data?.subdomain).toBe('my-site')
   })
 })
+
+// ---------------------------------------------------------------------------
+// A staging deploy writes the STAGING environment row, never the project, so
+// the follower has to ask for that row. Polling the project reported
+// production's `live` about two seconds after the accept — "success" for a
+// staging build that had not started — and swallowed a staging failure
+// (SHO-542 QA round 1).
+// ---------------------------------------------------------------------------
+
+describe('publishProject follows the environment it accepted', () => {
+  const stagingAccepted = () =>
+    Response.json(
+      {
+        ok: true,
+        accepted: true,
+        status: 'building',
+        subdomain: 'my-site--staging',
+        url: 'https://my-site--staging.shogo.one',
+        environment: 'staging',
+      },
+      { status: 202 },
+    )
+
+  test('a staging accept polls the staging row and reports its failure', async () => {
+    const calls = stubScripted(stagingAccepted, [
+      // What production is doing at the same moment: live and unchanged. A
+      // follower reading the project would stop here and call it a success.
+      { publishStatus: 'building' },
+      { publishStatus: 'failed', publishError: 'build_failed' },
+    ])
+
+    const res = await publishProject('p1', { subdomain: 'my-site', environment: 'staging' }, FAST)
+
+    expect(res.ok).toBe(false)
+    expect(res.code).toBe('build_failed')
+    expect(res.error).toMatch(/build failed/i)
+    const gets = calls.filter((c) => c.startsWith('GET '))
+    expect(gets.length).toBeGreaterThan(0)
+    for (const call of gets) expect(call).toContain('?environment=staging')
+  })
+
+  test('a staging deploy that goes live returns the staging URL', async () => {
+    const calls = stubScripted(stagingAccepted, [
+      { publishStatus: 'uploading' },
+      { publishStatus: 'live', published: true, subdomain: 'my-site--staging' },
+    ])
+
+    const res = await publishProject('p1', { subdomain: 'my-site', environment: 'staging' }, FAST)
+
+    expect(res.ok).toBe(true)
+    expect(res.data?.url).toBe('https://my-site--staging.shogo.one')
+    expect(res.data?.subdomain).toBe('my-site--staging')
+    for (const call of calls.filter((c) => c.startsWith('GET '))) {
+      expect(call).toContain('?environment=staging')
+    }
+  })
+
+  test('a production publish keeps polling the project row', async () => {
+    const calls = stubScripted(accepted, [{ publishStatus: 'live', published: true, subdomain: 'my-site' }])
+
+    const res = await publishProject('p1', { subdomain: 'my-site' }, FAST)
+
+    expect(res.ok).toBe(true)
+    for (const call of calls.filter((c) => c.startsWith('GET '))) {
+      expect(call).not.toContain('environment=')
+    }
+  })
+})

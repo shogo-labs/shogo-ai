@@ -461,13 +461,26 @@ async function setPublishStatus(
 const SUBDOMAIN_CLAIM_TTL_MS = PUBLISH_IN_FLIGHT_TTL_MS
 const subdomainClaims = new Map<string, { projectId: string; expiresAt: number }>()
 
-/** Take the claim on `subdomain`, or report that someone else holds it. */
-function claimSubdomain(subdomain: string, projectId: string): boolean {
+/**
+ * Take the claim on `subdomain`, or report that someone else holds it.
+ *
+ * `fresh` says whether *this* call created the claim. Same-project re-entry is
+ * allowed, so a second request for a publish that is already running keeps the
+ * claim the running publish holds — and a refusal (409 `publish_in_progress`,
+ * 400 bad password) must not release it: releasing would open the SHO-207
+ * window for another project to take the same name and upload over the running
+ * publish's files. Only `fresh` claims are released on refusal;
+ * `runPublishPipeline`'s `finally` is the release for a publish that started.
+ */
+function claimSubdomain(subdomain: string, projectId: string): { claimed: boolean; fresh: boolean } {
   const now = Date.now()
   const held = subdomainClaims.get(subdomain)
-  if (held && held.expiresAt > now && held.projectId !== projectId) return false
+  if (held && held.expiresAt > now) {
+    if (held.projectId === projectId) return { claimed: true, fresh: false }
+    return { claimed: false, fresh: false }
+  }
   subdomainClaims.set(subdomain, { projectId, expiresAt: now + SUBDOMAIN_CLAIM_TTL_MS })
-  return true
+  return { claimed: true, fresh: true }
 }
 
 /** Release the claim, but only if this project still holds it. */
@@ -630,6 +643,32 @@ export async function markPublishInterrupted(projectId: string): Promise<void> {
     })
   } catch (err: any) {
     console.warn(`[Publish] markPublishInterrupted(${projectId}) failed:`, err.message)
+  }
+}
+
+/**
+ * The same write-back for a staging environment row.
+ *
+ * A staging deploy writes only the environment (SHO-308 §8), so an interrupted
+ * one has to be recorded there — marking the project would report production
+ * failed for a deploy that never touched it.
+ */
+export async function markEnvironmentPublishInterrupted(environmentId: string): Promise<void> {
+  try {
+    await prisma.publishedEnvironment.updateMany({
+      where: {
+        id: environmentId,
+        publishStatus: { in: [...PUBLISH_IN_FLIGHT_STATUSES] },
+        publishStatusAt: { lt: stalePublishBefore() },
+      },
+      data: {
+        publishStatus: 'failed',
+        publishError: PUBLISH_INTERRUPTED_CODE,
+        publishStatusAt: new Date(),
+      },
+    })
+  } catch (err: any) {
+    console.warn(`[Publish] markEnvironmentPublishInterrupted(${environmentId}) failed:`, err.message)
   }
 }
 
@@ -1587,6 +1626,12 @@ interface PreparedPublish {
   fileSource: PublishFileSource
   /** Set when this publish moves the project off an older subdomain. */
   previousSubdomain?: string
+  /**
+   * Whether this prepare took the subdomain claim rather than inheriting the one
+   * a same-project publish already holds. A refusal may only release a fresh
+   * claim (see `claimSubdomain`).
+   */
+  claimFresh: boolean
 }
 
 /**
@@ -1648,7 +1693,8 @@ async function preparePublish(
   // Take the in-flight claim now — before any build or upload — so a second
   // project cannot pass the same check and overwrite this one's files in
   // `{subdomain}/`. Same-project re-entry is allowed (a republish is idempotent).
-  if (!claimSubdomain(subdomain, projectId)) {
+  const claim = claimSubdomain(subdomain, projectId)
+  if (!claim.claimed) {
     return { ok: false, status: 409, code: "subdomain_taken", message: "Subdomain is already in use" }
   }
 
@@ -1662,7 +1708,7 @@ async function preparePublish(
     existingSubdomain: project.publishedSubdomain ?? null,
   })
   if (!sitePassword.ok) {
-    releaseSubdomainClaim(subdomain, projectId)
+    if (claim.fresh) releaseSubdomainClaim(subdomain, projectId)
     return { ok: false, status: 400, code: sitePassword.code, message: sitePassword.message }
   }
 
@@ -1695,6 +1741,7 @@ async function preparePublish(
       alwaysOn,
       allowDataLoss: opts.allowDataLoss === true,
       fileSource,
+      claimFresh: claim.fresh,
       previousSubdomain:
         project.publishedSubdomain && project.publishedSubdomain !== subdomain
           ? project.publishedSubdomain
@@ -1939,10 +1986,12 @@ export async function startPublish(
   if (!prepared.ok) {
     return { ok: false, status: prepared.status, code: prepared.code, message: prepared.message, details: prepared.details }
   }
-  const { subdomain } = prepared.prepared
+  const { subdomain, claimFresh } = prepared.prepared
 
   if (!(await claimPublishInFlight(projectId))) {
-    releaseSubdomainClaim(subdomain, projectId)
+    // The publish already running for this project owns the claim; releasing it
+    // here is what let another project take the same name (see `claimSubdomain`).
+    if (claimFresh) releaseSubdomainClaim(subdomain, projectId)
     return {
       ok: false,
       status: 409,

@@ -349,6 +349,28 @@ describe('localPublishProject', () => {
     expect(projects.p1.publishError).toBe('configure_failed')
   })
 
+  it('leaves the local row in flight when the poll budget expires mid-publish', async () => {
+    // The cloud is still configuring when our 20-minute budget runs out. The
+    // publish is not failed — marking the row `failed` made the panel offer
+    // Publish again, and the cloud then refused that upload with 409.
+    cloudPublishStates = [{ publishStatus: 'configuring' }]
+
+    const result = await localPublishProject(
+      'p1',
+      { subdomain: 'my-app' },
+      { ...deps, publishPoll: { startDelayMs: 1, maxDelayMs: 2, timeoutMs: 40 } },
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.status).toBe(504)
+    expect(result.code).toBe('upload_timeout')
+    expect(result.message).toMatch(/may still finish/i)
+    // In flight, not failed: no `failed` write, and nothing cleared.
+    expect(projects.p1.publishStatus).not.toBe('failed')
+    expect(projects.p1.publishError).toBeNull()
+    expect(projects.p1.publishedSubdomain).toBeNull()
+  })
+
   it('stores a password-gate hash so the panel reports hasPassword', async () => {
     // The cloud reports the mirrored settings on the followed status (SHO-542).
     cloudPublishStates = [

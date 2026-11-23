@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { existsSync, readFileSync } from 'fs'
 import { publishRequestTimeoutMs } from '@shogo/shared-runtime/publish-timeouts'
+import { publishFailureMessage } from '@shogo/shared-runtime/publish-status'
 import { resolveApiUrl } from '@shogo/shared-runtime/standalone'
 import { requesterTicketHeaders } from './credential-scope'
 import { crossWorkspaceHeaders } from './cross-workspace-scope'
@@ -793,8 +794,15 @@ async function publishFetch<T>(
   }
 }
 
-export async function getPublishState(projectId: string): Promise<CheckpointCallResult<PublishState>> {
-  return publishFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/publish`, {
+export async function getPublishState(
+  projectId: string,
+  environment?: 'production' | 'staging',
+): Promise<CheckpointCallResult<PublishState>> {
+  // The environment names the row being watched: a staging deploy writes only
+  // the staging environment, so reading the project would answer production's
+  // `live` (SHO-542 QA round 1).
+  const query = environment === 'staging' ? '?environment=staging' : ''
+  return publishFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/publish${query}`, {
     method: 'GET',
     parse: (j) => j as PublishState,
   })
@@ -879,6 +887,7 @@ export async function publishProject(
     status?: string
     subdomain?: string
     url?: string
+    environment?: 'production' | 'staging'
   }>(
     `/api/internal/projects/${encodeURIComponent(projectId)}/publish`,
     {
@@ -910,7 +919,7 @@ export async function publishProject(
  */
 async function waitForPublish(
   projectId: string,
-  accepted: { subdomain?: string; url?: string },
+  accepted: { subdomain?: string; url?: string; environment?: 'production' | 'staging' },
   budgetMs: number,
   timing?: PublishPollTiming,
 ): Promise<CheckpointCallResult<PublishResult>> {
@@ -922,7 +931,10 @@ async function waitForPublish(
     await new Promise((resolve) => setTimeout(resolve, Math.min(delayMs, Math.max(0, deadline - Date.now()))))
     delayMs = Math.min(maxDelayMs, delayMs + 1_000)
 
-    const state = await getPublishState(projectId)
+    // Follow the environment that was accepted. A staging deploy writes only
+    // the staging row, so polling production would report its `live` as the
+    // staging outcome before the staging build had even finished.
+    const state = await getPublishState(projectId, accepted.environment)
     if (!state.ok) return publishFailure(state)
     lastStatus = state.data?.publishStatus ?? null
 
@@ -933,7 +945,7 @@ async function waitForPublish(
         ok: false,
         status: 500,
         code,
-        error: describePublishFailure(code),
+        error: publishFailureMessage(code),
         ...(details ? { details: details as Record<string, any> } : {}),
       }
     }
@@ -963,41 +975,6 @@ async function waitForPublish(
       `Publishing did not finish within ${Math.round(budgetMs / 1000)}s ` +
       `(last status: ${lastStatus ?? 'unknown'}). It may still be running server-side — ` +
       'check the publish state before starting another one, and do not retry blindly.',
-  }
-}
-
-/**
- * The sentence behind a publish failure code, for the tool's `error` field.
- * Mirrors `publishFailureMessage` in `@shogo/shared-runtime/publish-status`;
- * duplicated here because the runtime ships without that module's friends.
- */
-function describePublishFailure(code: string): string {
-  switch (code) {
-    case 'destructive_schema_change':
-      return 'This publish would destroy data in the published database. Nothing was deployed.'
-    case 'build_failed':
-    case 'build_timeout':
-      return "The app's build failed, so nothing was deployed."
-    case 'no_files':
-      return 'The build produced no files to publish.'
-    case 'download_failed':
-    case 'download_timeout':
-      return 'The build finished but its output could not be read back.'
-    case 'upload_failed':
-    case 'upload_timeout':
-      return "Publishing failed while uploading the site to Shogo's storage."
-    case 'configure_failed':
-    case 'configure_timeout':
-    case 'revision_not_ready':
-      return "Publishing failed on Shogo's hosting side while setting up the published service."
-    case 'database_unavailable':
-    case 'schema_push_failed':
-    case 'seed_failed':
-      return 'The published database could not be prepared, so publishing stopped before deploying.'
-    case 'publish_interrupted':
-      return 'The publish stopped before it finished (the server restarted mid-publish).'
-    default:
-      return 'Publishing failed.'
   }
 }
 

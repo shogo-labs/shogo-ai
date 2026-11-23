@@ -82,9 +82,10 @@ export interface LocalPublishDeps {
   /**
    * Poll cadence while following the cloud's background publish (SHO-542).
    * Only tests set this — nobody wants to spend the real 2 s → 5 s ramp per
-   * assertion.
+   * assertion, or wait out the 20-minute budget to see what happens when it
+   * expires.
    */
-  publishPoll?: { startDelayMs?: number; maxDelayMs?: number }
+  publishPoll?: { startDelayMs?: number; maxDelayMs?: number; timeoutMs?: number }
 }
 
 const defaultDeps: LocalPublishDeps = {
@@ -496,7 +497,12 @@ export async function localPublishProject(
   // until it is live (or failed) before reporting to the desktop's own panel.
   const followed = await waitForCloudPublish(projectId, cloudKey, deps)
   if (!followed.ok) {
-    await setLocalPublishStatus(projectId, 'failed', followed.code ?? 'publish_failed')
+    // A budget expiry is not a failed publish: the cloud is still configuring
+    // the site, so the local row stays in flight. Marking it failed made the
+    // panel offer Publish again, and that upload was then refused with 409.
+    if (!followed.stillRunning) {
+      await setLocalPublishStatus(projectId, 'failed', followed.code ?? 'publish_failed')
+    }
     return followed
   }
   const state = followed.state
@@ -561,9 +567,9 @@ async function waitForCloudPublish(
   // Not `LocalPublishResult` for the failure arm: its `ok: boolean` would stop
   // `if (!followed.ok)` from narrowing, and the caller needs `state`.
   | { ok: true; state: CloudPublishState }
-  | { ok: false; status: number; code: string; message: string }
+  | { ok: false; status: number; code: string; message: string; stillRunning?: boolean }
 > {
-  const deadline = Date.now() + LOCAL_PUBLISH_POLL_TIMEOUT_MS
+  const deadline = Date.now() + (deps.publishPoll?.timeoutMs ?? LOCAL_PUBLISH_POLL_TIMEOUT_MS)
   const maxDelayMs = deps.publishPoll?.maxDelayMs ?? LOCAL_PUBLISH_POLL_MAX_INTERVAL_MS
   let delayMs = deps.publishPoll?.startDelayMs ?? LOCAL_PUBLISH_POLL_INTERVAL_MS
   let lastStatus: string | null = null
@@ -607,6 +613,7 @@ async function waitForCloudPublish(
     ok: false,
     status: 504,
     code: 'upload_timeout',
+    stillRunning: true,
     message:
       `Shogo Cloud is still publishing this site (last status: ${lastStatus ?? 'unknown'}) ` +
       `after ${Math.round(LOCAL_PUBLISH_POLL_TIMEOUT_MS / 60_000)} minutes. It may still finish — ` +
