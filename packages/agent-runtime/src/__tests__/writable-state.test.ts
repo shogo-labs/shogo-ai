@@ -443,11 +443,17 @@ describe('snapshotSqlite when the live database cannot be read in place', () => 
     live.exec("INSERT INTO t VALUES('in the wal')")
     live.close()
 
-    // A decoy index from a different database, same name.
+    // A decoy index from a different database, same name. The handle stays open
+    // across the copy because a clean close deletes the `-shm` on Linux (it
+    // lingers on macOS), and this file has to exist to be mismatched.
     const decoy = workspaceWithDb(20)
+    const decoyDb = new Database(decoy.dbPath, { readwrite: true })
+    decoyDb.exec('PRAGMA wal_autocheckpoint=0')
+    decoyDb.exec("INSERT INTO t VALUES('decoy')")
     const decoyShm = `${decoy.dbPath}-shm`
     expect(existsSync(decoyShm)).toBe(true)
     copyFileSync(decoyShm, `${dbPath}-shm`)
+    decoyDb.close()
 
     const out = join(scratch(), 'snap.db')
     snapshotSqlite(dbPath, out)
