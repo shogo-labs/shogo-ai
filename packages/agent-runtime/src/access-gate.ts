@@ -17,7 +17,7 @@
  */
 
 import type { AgentTool } from '@mariozechner/pi-agent-core'
-import type { AbilityPermission } from '@shogo/authz'
+import { abilityDenial, type AbilityPermission } from '@shogo/authz'
 import { deriveApiUrl, getInternalHeaders, hasInternalApiCredentials } from './internal-api'
 
 /**
@@ -130,21 +130,6 @@ export function isToolAllowed(name: string, abilities: ReadonlySet<string> | nul
 }
 
 /**
- * The answer a denied call gets: the permission to ask an admin for.
- *
- * One shape for both denials — the per-turn gate below, and a server refusal a
- * tool maps itself (SHO-539: `publish`'s permission is per project, so only the
- * internal route can decide it).
- */
-export function abilityDenial(permission: string, message?: string) {
-  return {
-    error: 'ability_not_allowed' as const,
-    permission,
-    message: message ?? `Ask a workspace admin for ${permission}.`,
-  }
-}
-
-/**
  * Wrap a tool so a call that slipped past the filter still answers with the
  * permission to ask for, instead of running.
  */
@@ -159,13 +144,23 @@ export function withAbilityGate(tool: AgentTool, abilities: ReadonlySet<string> 
         content: [
           {
             type: 'text',
-            text: JSON.stringify(abilityDenial(ability)),
+            text: JSON.stringify(abilityDenialBody(ability)),
           },
         ],
         details: { error: 'ability_not_allowed', permission: ability },
       } as any
     },
   } as AgentTool
+}
+
+/**
+ * The decision as the model sees it. A tool result is not the API's error
+ * envelope, so the shared `code` becomes the result's `error` string — the same
+ * body every other denied call returns.
+ */
+export function abilityDenialBody(permission: string, message?: string) {
+  const { code, ...rest } = abilityDenial(permission, message)
+  return { error: code, ...rest }
 }
 
 /**

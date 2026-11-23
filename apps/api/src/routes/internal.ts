@@ -15,7 +15,7 @@ import { getMetalWarmPoolController } from '../lib/metal-warm-pool-controller'
 import { saveAgentAvatar } from '../services/workspace-agent-cloud-storage'
 import { authenticate, authorizeWorkspaceScope, validateAuth } from './internal-auth'
 import { decide, loadAccess, resolveAgentActor } from '../lib/authz'
-import type { Permission } from '@shogo/authz'
+import { abilityDenial, type Permission } from '@shogo/authz'
 import { numberOr, runtimeInternalRoutes } from './internal-runtime-routes'
 import { signSharedFileToken, sharedFilePathProblem, sharedFilePublicOrigin } from '../lib/shared-file-token'
 import { mintSharedFileLink } from '../lib/shared-file-mint'
@@ -358,7 +358,16 @@ async function enforceProjectAbility(
   if (!actor?.principal.userId || actor.unscoped) return null
   const access = await loadAccess(actor.principal, { projectId })
   const decision = await decide(access, permission, actor.principal, `${c.req.method} ${c.req.path}`)
-  if (!decision.ok) return c.json({ error: { code: decision.code, message: decision.message } }, decision.status)
+  if (!decision.ok) {
+    // A *project* permission can only be decided here, so this is where the
+    // agent's tool learns it was refused. Answer in the runtime gate's envelope
+    // (`withAbilityGate`) rather than `forbidden`: the tool maps the code to the
+    // permission the person has to ask an admin for (SHO-539). 401/404 keep
+    // their own meaning — "not signed in" and "no such project" are not an
+    // ability the admin can grant.
+    if (decision.status === 403) return c.json({ error: abilityDenial(permission) }, 403)
+    return c.json({ error: { code: decision.code, message: decision.message } }, decision.status)
+  }
   return null
 }
 

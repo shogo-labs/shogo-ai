@@ -128,7 +128,7 @@ import {
 import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { addQuickAction, validateQuickActions } from './quick-actions'
 import { withActionRules, withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, scratchPathForWrite, type PermissionEngine } from './permission-engine'
-import { abilityDenial, applyAbilityGate } from './access-gate'
+import { abilityDenialBody, applyAbilityGate } from './access-gate'
 import {
   crossWorkspaceEnabled,
   crossWorkspaceEnabledFor,
@@ -5414,7 +5414,7 @@ function customDomainSuccess(action: string, data: { fallbackOrigin?: string; do
  */
 function publishAbilityDenial(res: { code?: string }) {
   if (res.code !== 'ability_not_allowed') return null
-  return abilityDenial(
+  return abilityDenialBody(
     'project:publish',
     'Ask a workspace admin for publish access to this project. Nothing was published.',
   )
