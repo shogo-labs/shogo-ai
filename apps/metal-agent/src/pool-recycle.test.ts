@@ -199,6 +199,85 @@ describe('pool.recycle', () => {
     expect(stopped).toEqual([])
   })
 
+  /**
+   * A database nobody can snapshot (SHO-541). Rotation needs a final backup,
+   * so this used to abort forever — Samsara's VM sat on a superseded rootfs for
+   * four days. It may now rotate, but only when the durable archive is already
+   * the newest copy, and never by silently dropping the DB.
+   */
+  describe('a database that cannot be snapshotted', () => {
+    /** The guest answering `/pool/export-data` with the named failure. */
+    function snapshotFailure(): Error {
+      const err = new Error('Could not snapshot the project database: database disk image is malformed') as Error & {
+        code: string
+      }
+      err.code = 'sqlite_snapshot_failed'
+      return err
+    }
+
+    test('aborts a plain recycle, naming the failure instead of a bare 500', async () => {
+      const pool = makePool()
+      pool.add('p1', { dataParentEtag: '"arch"' })
+      pool.dataExport = snapshotFailure()
+
+      const r = await pool.recycle('p1')
+      expect(r.aborted).toBe(true)
+      const data = r.steps.find((s) => s.step === 'data')
+      expect(data?.detail).toContain('database disk image is malformed')
+      // Nothing was removed: the durable archive is untouched.
+      expect(stopped).toEqual([])
+      expect(pool.events).not.toContain('data p1')
+    })
+
+    test('rotates anyway when the roll-out policy allows it and the archive is the newest copy', async () => {
+      // What part A of SHO-541's rule exists for: the VM has never completed an
+      // export (so nothing newer than the archive can exist), and the archive a
+      // cold boot restores is already what it would get. Staying put only keeps
+      // it on a superseded runtime (no SHO-485/514), which is worse.
+      const pool = makePool()
+      pool.add('p1', { dataParentEtag: '"arch"' })
+      pool.dataExport = snapshotFailure()
+
+      const r = await pool.recycle('p1', { reason: 'stale-rootfs', tolerateSnapshotFailure: true })
+      expect(r.steps.find((s) => s.step === 'data')?.ok).toBe(true)
+      expect(r.aborted).toBe(false)
+      expect(r.notices?.join(' ')).toMatch(/could not be snapshotted/i)
+      expect(stopped).toEqual(['vm-1'])
+    })
+
+    test('still refuses when this run saved its database before the failures began', async () => {
+      // The archive is older than real writes that live only on this VM now.
+      // Rotating would trade a stuck runtime for lost data, so it stays put.
+      const pool = makePool()
+      pool.add('p1', { dataParentEtag: '"arch"', dataLastUploadAt: Date.now() - 60_000 })
+      pool.dataExport = snapshotFailure()
+
+      const r = await pool.recycle('p1', { reason: 'stale-rootfs', tolerateSnapshotFailure: true })
+      expect(r.aborted).toBe(true)
+      expect(r.steps.find((s) => s.step === 'data')?.detail).toMatch(/saved its database earlier in this run/)
+      expect(stopped).toEqual([])
+    })
+
+    test('rotates a workspace VM only when every member has a durable archive', async () => {
+      const pool = makePool()
+      pool.add('ws:proj:m1', {
+        workspaceMemberIds: ['m1'],
+        memberData: { m1: { parentEtag: '"arch-m1"' } },
+      })
+      pool.dataExport = snapshotFailure()
+
+      const covered = await pool.recycle('ws:proj:m1', { tolerateSnapshotFailure: true })
+      expect(covered.aborted).toBe(false)
+
+      const pool2 = makePool()
+      pool2.add('ws:proj:m2', { workspaceMemberIds: ['m2'], memberData: { m2: { parentEtag: '"a"', lastUploadAt: Date.now() } } })
+      pool2.dataExport = snapshotFailure()
+      const refused = await pool2.recycle('ws:proj:m2', { tolerateSnapshotFailure: true })
+      expect(refused.aborted).toBe(true)
+      expect(refused.steps.find((s) => s.step === 'data')?.detail).toMatch(/member m2 saved its database/)
+    })
+  })
+
   test('an untrusted home aborts: credentials set up since boot would be dropped', async () => {
     const pool = makePool()
     pool.add('p1', { homeUntrustedReason: 'home-state hydrate failed at assign' })

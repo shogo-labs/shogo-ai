@@ -357,6 +357,103 @@ describe('retire on a superseded image', () => {
       expect(await pool.rotateStale(t0 + ROTATE_RETRY_MS)).toEqual({ retired: ['p1'], alwaysOn: [] })
     }, 30_000)
 
+    /**
+     * A database the guest cannot snapshot (SHO-541). Rotation needs a final
+     * backup, so this used to block forever: Samsara's EU VM sat on a runtime
+     * from before SHO-485/514 for four days, which is what crashed its publish
+     * and would have seeded Postgres with the builder's rows.
+     */
+    describe('when only the database snapshot fails', () => {
+      const SNAPSHOT_FAILURE = {
+        step: 'data',
+        ok: false,
+        detail: 'database not persisted — Could not snapshot the project database: database disk image is malformed',
+      }
+
+      /** A VM on a replaced image whose export keeps failing, with `recycle` stubbed. */
+      async function withFailingSnapshot(extra: Record<string, unknown>, covered = true) {
+        const { pool, vm } = await onReplacedImage()
+        const t0 = Date.now()
+        vm.lastRealActivityAt = t0 - 20 * MIN
+        Object.assign(vm, {
+          dataSnapshotFailure: {
+            code: 'sqlite_snapshot_failed',
+            message: 'Could not snapshot the project database: database disk image is malformed',
+            since: t0,
+            attempts: 4,
+          },
+          ...extra,
+        })
+        const calls: Array<{ tolerate?: boolean }> = []
+        ;(pool as any).recycle = async (_id: string, opts: any) => {
+          calls.push({ tolerate: opts?.tolerateSnapshotFailure })
+          // Stands in for recycleInner: the data step refuses until the pool
+          // tolerates the failure, exactly as the real one does.
+          const ok = opts?.tolerateSnapshotFailure === true && covered
+          return ok
+            ? { aborted: false, steps: [{ step: 'data', ok: true }] }
+            : { aborted: true, steps: [SNAPSHOT_FAILURE] }
+        }
+        return { pool, vm, t0, calls }
+      }
+
+      test('retries a few times, then rotates because the archive is the newest copy', async () => {
+        const { pool, t0, calls } = await withFailingSnapshot({ dataParentEtag: '"arch"' })
+
+        // Attempt 1: retried, not tolerated.
+        await pool.rotateStale(t0)
+        expect(calls.map((c) => c.tolerate)).toEqual([false])
+
+        // Attempts 2 and 3 still retry; from the third on the policy tolerates.
+        await pool.rotateStale(t0 + ROTATE_RETRY_MS)
+        await pool.rotateStale(t0 + 2 * ROTATE_RETRY_MS)
+        expect(calls.map((c) => c.tolerate)).toEqual([false, false, true])
+        expect(pool.getProjectStatus('p1').rotationBlocked).toBeUndefined()
+      }, 30_000)
+
+      test('gives up and reports stale_rootfs_blocked when the VM holds newer writes', async () => {
+        // It saved its database earlier in this run, so writes exist only on
+        // this VM: rotating would trade a stuck runtime for lost data.
+        const { pool, vm, t0 } = await withFailingSnapshot({ dataParentEtag: '"arch"' }, false)
+        vm.dataLastUploadAt = t0 - 60_000
+
+        const before = metrics.getCounter(M.rotationBlocked)
+        await pool.rotateStale(t0)
+        await pool.rotateStale(t0 + ROTATE_RETRY_MS)
+        expect(pool.getProjectStatus('p1').rotationBlocked).toBeUndefined()
+
+        await pool.rotateStale(t0 + 2 * ROTATE_RETRY_MS)
+        const blocked = pool.getProjectStatus('p1').rotationBlocked
+        expect(blocked?.code).toBe('stale_rootfs_blocked')
+        expect(blocked?.reason).toMatch(/saved its database earlier in this run/)
+        // Counted once, not once per pass: the alert reads the gauge, the
+        // journal gets one line.
+        expect(metrics.getCounter(M.rotationBlocked) - before).toBe(1)
+        expect(pool.getAssigned('p1')).toBeDefined()
+      }, 30_000)
+
+      test('a failure that is not the database is never tolerated, however many attempts', async () => {
+        const { pool, vm } = await onReplacedImage()
+        const t0 = Date.now()
+        vm.lastRealActivityAt = t0 - 20 * MIN
+        Object.assign(vm, {
+          dataSnapshotFailure: { code: 'sqlite_snapshot_failed', message: 'malformed', since: t0, attempts: 9 },
+        })
+        let attempts = 0
+        ;(pool as any).recycle = async () => {
+          attempts++
+          return {
+            aborted: true,
+            steps: [SNAPSHOT_FAILURE, { step: 'source', ok: false, detail: 'S3 503' }],
+          }
+        }
+
+        for (let i = 0; i < 4; i++) await pool.rotateStale(t0 + i * ROTATE_RETRY_MS)
+        expect(attempts).toBe(4)
+        expect(pool.getAssigned('p1')).toBeDefined()
+      }, 30_000)
+    })
+
     test('a VM whose only work is a background task is rotated at the deadline, not before (SHO-399)', async () => {
       const { pool, vm } = await onReplacedImage()
       const t0 = Date.now()

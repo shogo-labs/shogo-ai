@@ -45,6 +45,8 @@ let runtimeCalls: Array<Record<string, any>>
 let pushCalls: Array<{ schema: string; seedSql: string | null; databaseUrl: string }>
 let liveSeedCalls: string[]
 let liveSeedResult: Awaited<ReturnType<typeof import('../published-live-seed').readLiveSeedArchive>>
+/** How the stubbed runtime answers an `export`. A current runtime by default. */
+let runtimeReply: (body: any) => any
 
 const LIVE_ARCHIVE = 'H4sI-live-archive-base64'
 
@@ -63,6 +65,7 @@ function reset() {
   pushCalls = []
   liveSeedCalls = []
   liveSeedResult = { ok: true, value: { archive: LIVE_ARCHIVE, bytes: 4096 } }
+  runtimeReply = currentRuntimeReply
 }
 
 reset()
@@ -124,19 +127,23 @@ mock.module('../../lib/project-runtime-token', () => ({
   deriveProjectRuntimeToken: async () => 'runtime-token',
 }))
 
+function currentRuntimeReply(body: any) {
+  // A CURRENT runtime: it says where the seed's rows came from, and the API
+  // refuses a live-archive publish unless that is `archive` (SHO-541).
+  return {
+    ok: true,
+    schema: { content: POSTGRES_SCHEMA, hash: 'hash-1', warnings: [] },
+    seed: { sql: 'BEGIN; INSERT INTO "User" (email) VALUES (\'live@example.com\'); COMMIT;', tables: 1, rows: 1 },
+    seedSource: body.seedArchive ? 'archive' : 'workspace',
+  }
+}
+
 const realFetch = globalThis.fetch
 globalThis.fetch = (async (_url: any, init: any) => {
   const body = JSON.parse(String(init?.body ?? '{}'))
   runtimeCalls.push(body)
   if (body.mode === 'export') {
-    return new Response(
-      JSON.stringify({
-        ok: true,
-        schema: { content: POSTGRES_SCHEMA, hash: 'hash-1', warnings: [] },
-        seed: { sql: 'BEGIN; INSERT INTO "User" (email) VALUES (\'live@example.com\'); COMMIT;', tables: 1, rows: 1 },
-      }),
-      { status: 200 },
-    )
+    return new Response(JSON.stringify(runtimeReply(body)), { status: 200 })
   }
   return new Response(
     JSON.stringify({ ok: true, schema: { content: POSTGRES_SCHEMA, hash: 'hash-1', warnings: [] } }),
@@ -186,6 +193,29 @@ describe('prepareEnvironmentDatabase on a live SQLite environment', () => {
     expect(exportCall?.seedArchive).toBeUndefined()
     expect(exportCall?.seed).toBe(true)
     expect(res.value.seededFrom).toBe('dev.db')
+  })
+
+  it('refuses a live-archive publish to a runtime that ignores the archive', async () => {
+    // An old runtime (before SHO-514's second half) accepts `seedArchive` and
+    // reads the builder's `prisma/dev.db` instead. Its reply carries a seed but
+    // no `seedSource`, which is the only way the API can tell. Pushing that
+    // seed would put the BUILDER's rows in Postgres and report success — the
+    // exact loss SHO-514 exists to prevent (SHO-541).
+    runtimeReply = (body: any) => ({
+      ok: true,
+      schema: { content: POSTGRES_SCHEMA, hash: 'hash-1', warnings: [] },
+      seed: { sql: 'BEGIN; INSERT INTO "User" (email) VALUES (\'builder@example.com\'); COMMIT;', tables: 1, rows: 84 },
+    })
+
+    const res = await prepareEnvironmentDatabase(PROJECT, 'production')
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.code).toBe('runtime_outdated')
+    expect(res.message).toContain('builder')
+    // No SQL was pushed and the pod was never pointed at the database.
+    expect(pushCalls).toHaveLength(0)
+    expect(ensureCalls.every((call) => call.exposeToPod === false)).toBe(true)
+    expect(res.details?.seedSource).toBeNull()
   })
 
   it('refuses the publish when the live archive cannot be carried over', async () => {

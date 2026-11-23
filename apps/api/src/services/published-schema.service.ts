@@ -295,6 +295,28 @@ export async function prepareEnvironmentDatabase(
     if (!schema?.content) {
       return fail('schema_unavailable', 'The runtime returned no schema to apply', 502, { environment })
     }
+
+    // The runtime must PROVE it seeded from the archive we sent (SHO-541). A
+    // runtime older than SHO-514's second half accepts `seedArchive` and
+    // ignores it: it reads the builder's `prisma/dev.db` instead, which on a
+    // SQLite→Postgres switchover means Postgres gets the BUILDER's rows while
+    // the API reports a successful seed — the live site's sign-ups and uploads
+    // orphaned, silently. Samsara's EU VM did exactly this four times on 23 Nov,
+    // and only survived because the builder's own `dev.db` happened to be
+    // unreadable.
+    //
+    // A reply with no seed at all is fine: nothing is pushed, so nothing can be
+    // wrong. It is a seed WITH rows from somewhere else that must stop here.
+    const seedSource = exported.data?.seedSource
+    if (liveSeed && exported.data?.seed && seedSource !== 'archive') {
+      return fail(
+        'runtime_outdated',
+        'The editing runtime is older than this publish needs: it would seed Postgres from the ' +
+          "builder's database, not the live site's. Start the project once so its runtime updates, then publish again.",
+        409,
+        { environment, seedSource: seedSource ?? null },
+      )
+    }
     const seedSql: string | null = seed ? (exported.data?.seed?.sql ?? null) : null
 
     const pushed = await pushPublishedSchema({

@@ -4085,8 +4085,14 @@ app.post('/pool/export-data', async (c) => {
     // Deliberately NOT falling back to copying the database files: a torn copy
     // restores as a healthy-looking database with wrong contents, which is
     // worse than no new backup at all (the last good archive stays intact).
-    console.error('[pool/export-data] failed:', err?.message ?? err)
-    return c.json({ error: err?.message ?? 'export failed' }, 500)
+    //
+    // A snapshot failure carries a NAMED code so the host can tell a database
+    // it cannot read from a guest that is merely unhappy: it records the code
+    // on the VM, alerts once, and stops retrying a backup that will never
+    // succeed (SHO-541). Everything else stays a plain 500.
+    const code = typeof err?.code === 'string' ? err.code : 'export_failed'
+    console.error(`[pool/export-data] failed (${code}):`, err?.message ?? err)
+    return c.json({ error: err?.message ?? 'export failed', code }, 500)
   } finally {
     await fsp.rm(stage, { recursive: true, force: true }).catch(() => {})
   }
@@ -6813,6 +6819,11 @@ app.post('/agent/published-schema', async (c) => {
       transformed: result.schema.transformed,
     },
     seed: result.seed,
+    // Where the seed's rows came from. The API REQUIRES this to be `archive`
+    // when it sent `seedArchive`: a runtime that predates SHO-514 ignores the
+    // archive and seeds from the builder's `prisma/dev.db`, and the API has no
+    // other way to tell that from a successful switchover (SHO-541).
+    ...(result.seedSource ? { seedSource: result.seedSource } : {}),
   })
 })
 
