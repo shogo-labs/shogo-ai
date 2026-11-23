@@ -238,9 +238,13 @@ async function handle(req: Request, srv: PeerLookup): Promise<Response> {
       }
 
       if (path === '/resume' && req.method === 'POST') {
-        const { projectId, env } = await json(req)
+        const { projectId, env, cause } = await json(req)
         if (!projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
-        const r = await pool.resume(projectId, env ?? {})
+        // Same contract as /assign (SHO-533): a resume nobody asked for must not
+        // look like a user opening the project, or `userSeenSinceAssign` hands it
+        // the relaxed idle window. Absent/unknown `cause` stays `user_open`, so
+        // every existing caller behaves exactly as before.
+        const r = await pool.resume(projectId, env ?? {}, undefined, isVmCause(cause) ? cause : 'user_open')
         if (!r) return Response.json({ error: 'no restorable snapshot (cold miss)' }, { status: 409 })
         const url = await fwd.ensure(projectId, r.assigned.handle.guestIp)
         return Response.json({ url, source: r.source, readyMs: r.readyMs, suspendReason: r.suspendReason })
