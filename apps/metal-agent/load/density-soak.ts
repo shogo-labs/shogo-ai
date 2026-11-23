@@ -290,6 +290,12 @@ export class DensitySoak {
   private readonly startedAt = new Date().toISOString()
   private readonly startedMs = Date.now()
   private originalEnv: Record<string, string> | null = null
+  /**
+   * Host-wide Firecracker RSS before the soak added a single VM. `fcRssMiB` sums
+   * every guest on the host, including the projects that were already resident,
+   * so the soak's share of it is the delta from here.
+   */
+  private rssBeforeMiB = 0
   /** The env file exactly as it was, so teardown restores it byte-for-byte. */
   private originalEnvText: string | null = null
   private cordoned = false
@@ -630,6 +636,8 @@ export class DensitySoak {
       return this.buildReport([], [], { cpuKnee: 0, ramKnee: 0, recommended: 0, verdicts: [] })
     }
 
+    this.rssBeforeMiB = this.sampler.sample().fcRssMiB
+    log('preflight', `FC RSS before the soak: ${this.rssBeforeMiB} MiB`)
     this.startSampling()
     this.startKeepAlive()
 
@@ -710,7 +718,7 @@ export class DensitySoak {
         ...metrics,
         cpuOversubRatio: this.hostInfo.threads > 0 ? +((assigned * vcpus) / this.hostInfo.threads).toFixed(2) : 0,
         ramCommittedMiB: assigned * memMiB,
-        ramPhysicalMiB: last?.fcRssMiB ?? 0,
+        ramPhysicalMiB: Math.max(0, (last?.fcRssMiB ?? 0) - this.rssBeforeMiB),
         turnP50: this.turnP50(n),
         runDelayP95MsPerSec: last?.runDelayMsPerSec?.p95 ?? 0,
         apiP95Ms: +percentile(api, 95).toFixed(1),
@@ -733,7 +741,14 @@ export class DensitySoak {
         const deadline = from + this.opts.burstWindowMs
         const started = Math.max(1, Math.round(n * this.opts.burstFraction))
         log('burst', `N=${n}: ${started} turns in ${Math.round(this.opts.burstWindowMs / 1000)}s`)
-        const targets2 = this.vms.filter((v) => v.assigned && v.url).slice(0, started)
+        // Agent VMs only. The burst is "many turns start at once", and the idle
+        // and app guests are never primed with the template — a turn on one fails
+        // at its first step (`cd: /app/workspace/... no such file`) and records
+        // nothing. 15 of 20 burst turns were empty on the 2026-11-23 run.
+        const targets2 = this.vms.filter((v) => v.role === 'agent' && v.assigned && v.url).slice(0, started)
+        if (targets2.length < started) {
+          log('burst', `N=${n}: only ${targets2.length} primed agent VM(s) available for ${started} burst turn(s)`)
+        }
         await Promise.all(
           targets2.map(async (vm) => {
             try {

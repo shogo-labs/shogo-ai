@@ -185,7 +185,7 @@ measured per-VM RSS, because RAM is per-VM and the idle tail dominates.
 
 ## What the first live run changed (2026-11-23, `latitude-dal-1`)
 
-Running this on the real host found six defects that neither the unit tests nor
+Running this on the real host found eight defects that neither the unit tests nor
 the fake node-agent could, all now fixed on `sho-445-metal-density-soak`:
 
 1. **A guest is not reachable at its `/assign` URL from the host itself.**
@@ -221,6 +221,16 @@ the fake node-agent could, all now fixed on `sho-445-metal-density-soak`:
    `218` for both 2048 MiB and 4096 MiB guests because the observed RSS (2124
    MiB) replaced the configured size in the calculation. Each row now budgets
    `max(configured size, measured RSS)`.
+7. **"RAM physical" was every Firecracker process on the host**, tenants
+   included, so the per-VM RSS and the whole RAM-ceiling table were derived from
+   other projects' memory: a step with 160 GiB committed by the soak reported
+   258 GiB "physical". The column is now the delta over the FC RSS measured
+   before the soak's first VM.
+8. **The burst ran on unprimed guests.** It took the first N VMs regardless of
+   role, and 83% of the mix is idle — a guest that was never primed has no
+   template, so its turn died at the first step (`cd: /app/workspace/... no such
+   file`) and recorded nothing. 15 of 20 burst turns on 2026-11-23 were empty;
+   the burst now targets primed agent VMs only.
 
 Two operational notes from that attempt:
 
@@ -245,20 +255,73 @@ Two operational notes from that attempt:
 
 ## Recommendation from the completed run
 
-> **Not yet filled in.** The harness, its unit tests and this runbook are
-> complete, but the live run needs SSH to the staging host (and a super-admin
-> token for the cordon), which the developer sandbox does not have. The run is
-> the one remaining step; see the card thread for exactly what is needed. Do not
-> guess a number here — the whole point of the card is that the current 80/120
-> are guesses.
+**Hold prod at `METAL_MAX_VMS_PER_HOST=80`; do not raise it to 120.** Two runs
+completed on `latitude-dal-1`: `density-2026-11-23T0707` (67 tenant projects
+resident) and `density-2026-11-23T1106` (120 resident). The binding constraints
+are memory pressure and restore latency, and they land at 80–100 VMs.
 
-When the run lands, replace this section with:
+From `density-2026-11-23T1106/report.md` (2 vCPU / 4096 MiB guests, EPYC 7443P,
+24 threads, 503 GiB):
 
-- the recommended `METAL_MAX_VMS_PER_HOST` and which knee set it,
-- whether `METAL_MEM_MIB` should change,
-- the burst result at the recommended N,
-- RAM-overcommit settings worth a follow-up (swappiness, balloon reclaim of idle
-  guests / free-page reporting, KSM).
+| signal | limit | 40 | 60 | 80 | 100 | 120 | 160 |
+|---|---|---|---|---|---|---|---|
+| CPU PSI `some avg60` | 25% | 0.3 | 0.3 | 0.3 | 0.3 | 1.1 | 3.3 |
+| `MemAvailable` | ≥ 10% | 44.0 | 34.3 | 25.2 | 26.3 | 34.9 | 14.2 |
+| swap-in pages/s | < 100 | 2.1 | 5.8 | 8.3 | 33.7 | 39.9 | **136.2** |
+| memory PSI `full avg60` | < 1% | 0.0 | 0.0 | 0.0 | **1.38** | **1.76** | **4.92** |
+| resume p95 | < 2000 ms | 651 | 918 | 1239 | 604 | 634 | **3954** |
+| OOM kills | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| turn p95 `install` vs baseline | ≤ 1.5× | **2.78×** | **2.79×** | **1.93×** | **2.95×** | **1.72×** | **3.73×** |
+
+**RAM knee = 80.** memory PSI `full avg60` is 0.0% through 80 and crosses the 1%
+limit at 100; swap-in climbs from 8 to 34 pages/s between 80 and 100 and reaches
+136 at 160; `MemAvailable` falls to 14.2% at 160. There were no OOM kills at any
+step, so the RAM knee arrives as pressure, not as a crash.
+
+**The CPU knee is 0, and that is a statement about the bound, not the host.** No
+step met the 1.5× turn-p95 bound — including N=40, at 3.33:1 vCPU
+oversubscription with CPU PSI **0.3%** and 44% of RAM free. `install` p95 goes
+2.78× → 2.79× → 1.93× → 2.95× → 1.72× → 3.73× as density rises monotonically:
+latency *improves* from 60 to 80 and from 100 to 120. A fleet-wide p95 over N
+guests is not the same statistic as the p95 of one warm guest — more guests means
+more unlucky samples, and each step's p95 is set by a handful of pathological
+turns. So `min(CPU knee, RAM knee)` is 0 and the report says **no
+recommendation**, which is honest but not actionable on its own; the number above
+comes from the RAM knee and the restore SLO.
+
+**No bound was changed to make this pass.** Moving a limit because a run
+disagrees with it is how this number becomes fiction. The open follow-up, for the
+planner to decide:
+
+- compare fleet **p50** against baseline p50 (both "the typical turn"), keeping
+  the absolute p95 as its own SLO, or
+- re-measure the baseline VM **during** each step so both sides of the ratio see
+  the same interference, or
+- set the ratio limit from the bound's own measured noise floor instead of 1.5×.
+
+**CPU is not what runs out first.** At 160 VMs (13.3:1) CPU PSI is 3.3% against a
+25% limit and API p95 stays at 6–10 ms through 120. What fails is memory
+pressure, and then restore latency.
+
+**A burst at 80 has no headroom.** 13 concurrent agent turns at N=80: `install`
+p95 2360 ms (11× base) and `build` p95 3613 ms. 80 describes the steady-state
+mix, not a thundering herd of turns.
+
+**`METAL_MEM_MIB` should not change** on this host: the RAM knee is set by
+per-VM pressure at 4 GiB, and the RAM ceilings from measured RSS (111 VMs at
+either size, once the per-VM attribution is correct) sit far above both knees, so
+guest sizing is not what limits density — the tail does.
+
+Follow-ups worth their own cards: swap pressure above 100 VMs (swappiness, balloon
+reclaim of idle guests, free-page reporting, KSM), and the turn-latency bound
+above.
+
+The run itself — report and per-step table, as recorded and then re-derived by
+the rules in this branch — is committed at
+[`runs/metal-density-latitude-dal-1-2026-11-23T1106.md`](./runs/metal-density-latitude-dal-1-2026-11-23T1106.md)
+(and `.steps.csv`). `apps/metal-agent/load/results/` is gitignored, so the raw
+`samples.csv` / `turns.csv` stay on the host at
+`/root/metal-agent/load/results/density-2026-11-23T1106/`.
 
 ## Related
 

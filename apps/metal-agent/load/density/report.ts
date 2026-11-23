@@ -205,7 +205,7 @@ export function renderReportMarkdown(input: ReportInput): string {
   out.push('## Steps')
   out.push('')
   out.push(
-    '| N | vCPU over | RAM committed | RAM physical | ' +
+    '| N | vCPU over | RAM committed | RAM physical (soak) | ' +
       TURN_STEPS.map((s) => `${s} p95`).join(' | ') +
       ' | run_delay p95 | cpu PSI | MemAvail | swap-in/s | OOM | mem PSI full | resume p95 | API p95 | CPU | RAM |',
   )
