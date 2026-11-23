@@ -14,9 +14,9 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, writeFileSync } from 'fs'
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { DensitySoak, parseArgs, parseDuration, parseEnvFile, renderEnvFile, resolveGuestUrl } from '../density-soak'
 
 interface FakeState {
@@ -73,7 +73,7 @@ METAL_REGISTER_TOKEN=tok
 METAL_VCPUS=2
 METAL_MEM_MIB=2048
 METAL_MAX_VMS_PER_HOST=80
-METAL_IDLE_SUSPEND_MS=0
+METAL_IDLE_SUSPEND_MS=1800000
 `
 }
 
@@ -124,7 +124,7 @@ describe('parseEnvFile / renderEnvFile', () => {
     expect(env.METAL_HOST_ID).toBe('soak-test-host')
     expect(env.METAL_MAX_VMS_PER_HOST).toBe('80')
     expect(renderEnvFile(env)).toBe(
-      'METAL_HOST_ID=soak-test-host\nMETAL_REGION=us\nMETAL_CONTROL_PLANE_URL=https://api-staging.shogo.ai\nMETAL_REGISTER_TOKEN=tok\nMETAL_VCPUS=2\nMETAL_MEM_MIB=2048\nMETAL_MAX_VMS_PER_HOST=80\nMETAL_IDLE_SUSPEND_MS=0\n',
+      'METAL_HOST_ID=soak-test-host\nMETAL_REGION=us\nMETAL_CONTROL_PLANE_URL=https://api-staging.shogo.ai\nMETAL_REGISTER_TOKEN=tok\nMETAL_VCPUS=2\nMETAL_MEM_MIB=2048\nMETAL_MAX_VMS_PER_HOST=80\nMETAL_IDLE_SUSPEND_MS=1800000\n',
     )
   })
 
@@ -174,6 +174,28 @@ describe('preflight', () => {
     await soak.preflight()
     expect(readFileSync(envFile, 'utf8')).toBe(envText)
   })
+
+  test('refuses an env that an interrupted run left soaked', async () => {
+    // The failure mode this guards: a run dies without its trap, leaving
+    // IDLE_SUSPEND_MS=0 and MAX=200. The next run then captures *those* as its
+    // original env and restores them at the end.
+    const state: FakeState = { assigned: [], suspended: [], destroyed: [], suspendedCalls: [], touched: [], fleetHosts: [{ hostId: 'soak-test-host', live: true }] }
+    const { envFile, base } = setup(state)
+    writeFileSync(envFile, originalEnv('https://api-staging.shogo.ai').replace('METAL_IDLE_SUSPEND_MS=1800000', 'METAL_IDLE_SUSPEND_MS=0'))
+    const soak = new DensitySoak(opts(envFile, base))
+    await expect(soak.preflight()).rejects.toThrow(/left the host soaked/)
+  })
+
+  test('saves the pre-run env under a run-scoped name', async () => {
+    const state: FakeState = { assigned: [], suspended: [], destroyed: [], suspendedCalls: [], touched: [], fleetHosts: [{ hostId: 'soak-test-host', live: true }] }
+    const { envFile, base, envText } = setup(state)
+    const soak = new DensitySoak(opts(envFile, base))
+    await soak.preflight()
+    const backups = readdirSync(dirname(envFile)).filter((f) => f.includes('.pre-soak-') && f.endsWith('.bak'))
+    expect(backups).toHaveLength(1)
+    expect(readFileSync(join(dirname(envFile), backups[0]), 'utf8')).toBe(envText)
+    await soak.teardown()
+  })
 })
 
 describe('teardown', () => {
@@ -198,6 +220,8 @@ describe('teardown', () => {
 
     // Every soak VM was destroyed and none is left.
     for (const id of soakIds) expect(state.destroyed).toContain(id)
+    // Destroy only: suspending first uploads a snapshot per guest (~90 s each).
+    expect(state.suspendedCalls).toHaveLength(0)
     expect(state.assigned.filter((v) => v.projectId.startsWith('soak-'))).toHaveLength(0)
     expect(state.suspended.filter((v) => v.projectId.startsWith('soak-'))).toHaveLength(0)
 

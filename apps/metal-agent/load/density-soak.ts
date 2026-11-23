@@ -220,6 +220,9 @@ const ASSIGN_ENV = { RUNTIME_AUTH_SECRET: 'e2e', PROJECT_TIER: 'starter' }
  */
 const BASELINE_TURNS = 20
 
+/** Simultaneous destroys in teardown; the node-agent handles this fine. */
+const TEARDOWN_CONCURRENCY = 8
+
 /**
  * The N=1 baseline, as the statistic the bounds are actually applied to.
  *
@@ -363,6 +366,17 @@ export class DensitySoak {
     }
     this.originalEnvText = readFileSync(this.opts.envFile, 'utf8')
     this.originalEnv = parseEnvFile(this.originalEnvText)
+    if (this.originalEnv.METAL_IDLE_SUSPEND_MS === '0') {
+      throw new Error(
+        `refusing to soak: ${this.opts.envFile} already has METAL_IDLE_SUSPEND_MS=0, so an earlier run was interrupted and left the host soaked. ` +
+          'Restore it first (drop METAL_MAX_VMS_PER_HOST, set METAL_IDLE_SUSPEND_MS=1800000), restart metal-agent, then run.',
+      )
+    }
+    // A run-scoped copy. A single shared `.pre-soak.bak` gets overwritten by the
+    // *next* run's capture, which is how a host ends up with its "original" env
+    // recorded as MAX=200 / IDLE=0.
+    writeFileSync(`${this.opts.envFile}.pre-soak-${this.runId}.bak`, this.originalEnvText)
+    log('preflight', `pre-run env saved to ${this.opts.envFile}.pre-soak-${this.runId}.bak`)
     const controlPlaneUrl = this.originalEnv.METAL_CONTROL_PLANE_URL ?? ''
     const region = this.originalEnv.METAL_REGION ?? ''
 
@@ -675,21 +689,33 @@ export class DensitySoak {
       this.stopAppRoles()
       const to = Date.now()
 
-      const metrics = this.stepMetrics(n, from, to, resume, api)
+      // Density is the number of VMs that actually came up, not the target. A
+      // ramp that loses boots to `FC API socket never appeared` leaves the step
+      // holding fewer guests than its N claims.
+      const assigned = this.vms.filter((v) => v.assigned).length
+      if (assigned === 0) {
+        log('step', `target N=${n} skipped: no VM was assigned`)
+        continue
+      }
+
+      const metrics = { ...this.stepMetrics(n, from, to, resume, api), n: assigned }
       const verdict = computeKnees([metrics], baseline, this.opts.bounds).verdicts[0]
       const win = this.windowSamples(from, to)
       const last = win[win.length - 1]
       rows.push({
         ...metrics,
-        cpuOversubRatio: this.hostInfo.threads > 0 ? +((n * vcpus) / this.hostInfo.threads).toFixed(2) : 0,
-        ramCommittedMiB: n * memMiB,
+        cpuOversubRatio: this.hostInfo.threads > 0 ? +((assigned * vcpus) / this.hostInfo.threads).toFixed(2) : 0,
+        ramCommittedMiB: assigned * memMiB,
         ramPhysicalMiB: last?.fcRssMiB ?? 0,
         turnP50: this.turnP50(n),
         runDelayP95MsPerSec: last?.runDelayMsPerSec?.p95 ?? 0,
         apiP95Ms: +percentile(api, 95).toFixed(1),
         verdict,
       })
-      log('step', `N=${n} cpu=${verdict.cpuPass ? 'pass' : 'FAIL'} ram=${verdict.ramPass ? 'pass' : 'FAIL'} memAvail=${metrics.memAvailablePct}%`)
+      log(
+        'step',
+        `target N=${n} measured N=${assigned} cpu=${verdict.cpuPass ? 'pass' : 'FAIL'} ram=${verdict.ramPass ? 'pass' : 'FAIL'} memAvail=${metrics.memAvailablePct}%`,
+      )
     }
 
     // Burst: at the highest passing N and at N=80 for comparison.
@@ -792,10 +818,17 @@ export class DensitySoak {
 
     const ids = [...this.vms.map((v) => v.projectId), ...this.probeIds]
     log('teardown', `destroying ${ids.length} soak VM(s)`)
-    for (const pid of ids) {
-      await this.agent.suspend(pid).catch(() => {})
-      await this.agent.destroy(pid).catch(() => {})
+    // Destroy only, in parallel. Suspending first uploads a snapshot per guest
+    // (~90 s each, 160 guests = hours) and buys nothing: the VM is thrown away
+    // either way.
+    let next = 0
+    const worker = async () => {
+      while (next < ids.length) {
+        const pid = ids[next++]
+        await this.agent.destroy(pid).catch(() => {})
+      }
     }
+    await Promise.all(Array.from({ length: Math.min(TEARDOWN_CONCURRENCY, ids.length) }, worker))
 
     // Verify nothing of ours is left.
     const vms = await this.agent.vms()
