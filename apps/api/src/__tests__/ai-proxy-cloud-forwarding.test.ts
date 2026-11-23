@@ -459,6 +459,27 @@ describe('AI proxy Shogo Cloud forwarding', () => {
       expect(text).toContain('[shogo:retryable=true;code=upstream_truncated]')
       expect(text.match(/\[shogo:retryable=/g) ?? []).toHaveLength(1)
     })
+
+    test('an upstream_timeout frame from cloud reaches the desktop as exactly one frame (SHO-529)', async () => {
+      // The cloud now ends a provider that never sent a first byte with one
+      // typed frame. The desktop wraps that stream a second time, and the
+      // wrapper must read it as terminal instead of appending a truncation
+      // frame on top of it — the agent keys off `code=upstream_timeout`.
+      nextFetchResponses.push(() => new Response([
+        ': keepalive 15000ms', '',
+        'event: error',
+        'data: {"type":"error","error":{"type":"stream_error","code":"upstream_timeout","retryable":true,"message":"The model did not start responding within 240s. Split large tool calls (e.g. write_file then append). [shogo:retryable=true;code=upstream_timeout]","meta":{"chunks":0,"bytes":0,"durationMs":0,"idleMs":0}}}', '',
+      ].join('\n'), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }))
+
+      const app = buildApp()
+      const res = await app.fetch(anthropicStreamRequest())
+
+      expect(res.status).toBe(200)
+      const text = await res.text()
+      expect(text).toContain('[shogo:retryable=true;code=upstream_timeout]')
+      expect(text.match(/\[shogo:retryable=/g) ?? []).toHaveLength(1)
+      expect(text).not.toContain('upstream_truncated')
+    })
   })
 
   describe('workspace model allowlist applies to forwarded calls', () => {

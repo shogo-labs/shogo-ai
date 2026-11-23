@@ -38,6 +38,7 @@ import {
   classifyTurnFailure,
   isFailoverFailure,
   isUsageLimitFailure,
+  parseStreamErrorMarker,
   buildTurnFailureMessage,
   type TurnFailureClass,
 } from './retry-classifier'
@@ -1161,6 +1162,18 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       }
       lastFailureLength = trimmed.length
 
+      // A provider that never answered has nothing to "reconnect" to: one more
+      // send costs another full wait window and returns the same nothing. End
+      // the turn here so the gateway continues it with a reshaped call instead.
+      if (isFirstByteTimeout(failure.errorText)) {
+        console.warn(
+          '[AgentLoop] UPSTREAM_TIMEOUT the provider sent no first byte — not re-issuing the same call; ' +
+            'the turn ends as provider_error so the continuation can split the oversized call',
+        )
+        endEpisode('gave_up')
+        break
+      }
+
       if (retryAttempt < inferenceRetry.maxAttempts) {
         // Fast tier: short bounded backoff for blips (default 2 attempts,
         // 0.5-8s). This is unchanged from before Layer 7 existed.
@@ -1852,6 +1865,20 @@ function parseProviderError(raw: string): string {
     } catch {}
   }
   return raw
+}
+
+/**
+ * The provider never sent its first byte: the AI proxy waited out
+ * `EARLY_SSE_MAX_WAIT_MS` and wrote one `upstream_timeout` frame (SHO-529).
+ *
+ * Re-issuing the identical call spends the same minutes again for the same
+ * answer, and a huge context writing a whole file in one tool call is exactly
+ * the shape that produced it. So the transport does not retry it: the turn ends
+ * as `provider_error` and the gateway's bounded continuation tells the model to
+ * split the oversized call (see `splitWrites` in the gateway's auto-continue).
+ */
+function isFirstByteTimeout(errorText?: string | null): boolean {
+  return parseStreamErrorMarker(errorText)?.code === 'upstream_timeout'
 }
 
 function isContextOverflowError(err: any): boolean {
