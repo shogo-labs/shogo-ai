@@ -407,7 +407,8 @@ app.get('/projects/:projectId/publish', async (c) => {
     // Publishing runs in the background (SHO-542), so this GET is how the
     // agent's publish tool learns the outcome. An in-flight status past its
     // lease is a dead publish, not a running one.
-    const { resolveReportedPublishStatus, markPublishInterrupted, markEnvironmentPublishInterrupted } = await import('./publish')
+    const { resolveReportedPublishStatus, markPublishInterrupted, markEnvironmentPublishInterrupted, splitPublishError } =
+      await import('./publish')
 
     if (environment === 'staging') {
       const { getEnvironment } = await import('../services/published-environments.service')
@@ -415,7 +416,8 @@ app.get('/projects/:projectId/publish', async (c) => {
       if (!staging) return c.json({ error: 'Staging environment not found' }, 404)
       const reported = resolveReportedPublishStatus(staging)
       if (reported.interrupted) await markEnvironmentPublishInterrupted(staging.id)
-      const publishError = reported.interrupted ? reported.error : (staging.publishError ?? null)
+      const storedError = reported.interrupted ? reported.error : (staging.publishError ?? null)
+      const { code: publishError, detail: publishErrorDetail } = splitPublishError(storedError)
       return c.json({
         ok: true,
         environment,
@@ -428,6 +430,7 @@ app.get('/projects/:projectId/publish', async (c) => {
         ...access,
         publishStatus: reported.status,
         publishError,
+        publishErrorMessage: publishErrorDetail,
         publishErrorDetails:
           publishError === 'destructive_schema_change'
             ? await describeDestructivePublish(projectId, environment)
@@ -437,7 +440,8 @@ app.get('/projects/:projectId/publish', async (c) => {
 
     const reported = resolveReportedPublishStatus(project)
     if (reported.interrupted) await markPublishInterrupted(projectId)
-    const publishError = reported.interrupted ? reported.error : (project.publishError ?? null)
+    const storedError = reported.interrupted ? reported.error : (project.publishError ?? null)
+    const { code: publishError, detail: publishErrorDetail } = splitPublishError(storedError)
 
     return c.json({
       ok: true,
@@ -448,6 +452,8 @@ app.get('/projects/:projectId/publish', async (c) => {
       ...access,
       publishStatus: reported.status,
       publishError,
+      /** Why the failing step failed, when it said (`publishError` is the code). */
+      publishErrorMessage: publishErrorDetail,
       // A refused publish's machine-actionable context is not on the row (no
       // schema change), so it is rebuilt on demand for the one code whose
       // caller needs it: the agent has to tell the user exactly what a

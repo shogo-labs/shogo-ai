@@ -36,6 +36,7 @@ import {
   markPublishInterrupted,
   resolveReportedPublishStatus,
   resolveSitePasswordHash,
+  splitPublishError,
   startPublish,
   syncSitePasswordKv,
   unpublishProject,
@@ -416,7 +417,8 @@ export async function getUploadedSiteState(input: {
   // interrupted rather than leaving the desktop polling forever (SHO-542 §1.4).
   const reported = resolveReportedPublishStatus(host)
   if (reported.interrupted) await markPublishInterrupted(host.id)
-  const publishError = reported.interrupted ? reported.error : (host.publishError ?? null)
+  const storedError = reported.interrupted ? reported.error : (host.publishError ?? null)
+  const { code: publishError, detail: publishErrorDetail } = splitPublishError(storedError)
   return {
     ok: true as const,
     published: !!host.publishedSubdomain,
@@ -426,7 +428,8 @@ export async function getUploadedSiteState(input: {
     hasPassword: !!host.sitePasswordHash,
     publishStatus: reported.status,
     publishError,
-    publishErrorMessage: publishError ? publishFailureMessage(publishError) : null,
+    // The failing step's own reason when it recorded one, else the code's sentence.
+    publishErrorMessage: publishError ? (publishErrorDetail ?? publishFailureMessage(publishError)) : null,
     hostProjectId: host.id,
   }
 }

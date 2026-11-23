@@ -423,19 +423,40 @@ async function setPublishStatus(
   projectId: string,
   status: 'idle' | 'building' | 'uploading' | 'configuring' | 'live' | 'failed',
   errorCode: string | null = null,
+  /** Why the step failed — kept next to the code as `code: detail`. */
+  errorDetail: string | null = null,
 ): Promise<void> {
   try {
     await prisma.project.update({
       where: { id: projectId },
       data: {
         publishStatus: status as any,
-        publishError: errorCode,
+        // The code is what clients switch on; the detail is what a person needs
+        // to act. `splitPublishError` is the reader, so the code stays exact.
+        publishError: errorCode ? (errorDetail ? `${errorCode}: ${errorDetail}` : errorCode) : null,
         publishStatusAt: new Date(),
       },
     })
   } catch (err: any) {
     console.warn(`[Publish] setPublishStatus(${projectId}, ${status}) failed:`, err.message)
   }
+}
+
+/**
+ * Split a stored `publishError` into the machine code and the human detail.
+ *
+ * `publishError` holds `code`, or `code: detail` when the failing step could say
+ * more (a configure refusal names the substrate's reason). Clients compare the
+ * code exactly, so the split happens here rather than in every reader.
+ */
+export function splitPublishError(stored: string | null | undefined): {
+  code: string | null
+  detail: string | null
+} {
+  if (!stored) return { code: null, detail: null }
+  const at = stored.indexOf(': ')
+  if (at === -1) return { code: stored, detail: null }
+  return { code: stored.slice(0, at), detail: stored.slice(at + 2) || null }
 }
 
 /**
@@ -1855,7 +1876,9 @@ async function runPublishPipeline(prepared: PreparedPublish): Promise<PublishPro
           } else {
             console.error('[Publish] Failed to upload to S3:', live.message)
           }
-          await setPublishStatus(projectId, 'failed', live.code)
+          // Keep the reason next to the code: the pipeline now runs in the
+          // background, so `publishError` is the only channel left for it.
+          await setPublishStatus(projectId, 'failed', live.code, live.message)
           return {
             ok: false,
             status: live.status,
@@ -2186,7 +2209,11 @@ async function runStagingPipeline(prepared: PreparedStagingPublish): Promise<Pub
     }
   } catch (error: any) {
     console.error("[Publish] Deploy to staging failed:", error)
-    await setEnvironmentPublishStatus(environmentId, "failed", error instanceof PublishConfigureError ? error.code : "staging_publish_failed").catch(() => undefined)
+    // Keep the reason next to the code: the deploy runs in the background now,
+    // so the row is the only place a person (or the tool) can read why.
+    const code = error instanceof PublishConfigureError ? error.code : "staging_publish_failed"
+    const detail = error instanceof PublishConfigureError ? error.message : (error?.message ?? String(error))
+    await setEnvironmentPublishStatus(environmentId, "failed", `${code}: ${detail}`).catch(() => undefined)
     if (error instanceof PublishConfigureError) {
       return { ok: false, status: error.status, code: error.code, message: error.message }
     }
@@ -2879,7 +2906,8 @@ export function publishRoutes() {
       // publish. Report it as failed and write that back (SHO-542 §1.4).
       const reported = resolveReportedPublishStatus(project)
       if (reported.interrupted) await markPublishInterrupted(projectId)
-      const publishError = reported.interrupted ? reported.error : (project.publishError ?? null)
+      const storedError = reported.interrupted ? reported.error : (project.publishError ?? null)
+      const { code: publishError, detail: publishErrorDetail } = splitPublishError(storedError)
 
       // Always-on surface: the slot meter (pooled per workspace) and whether
       // this app can use it at all (server-backed). `serverBacked` is read from
@@ -2907,8 +2935,13 @@ export function publishRoutes() {
         publishStatus: reported.status ?? undefined,
         /** The code of the last failure (`null` once a publish succeeds). */
         publishError: publishError ?? undefined,
-        /** One line of user-facing text for `publishError`. */
-        publishErrorMessage: publishError ? publishFailureMessage(publishError) : undefined,
+        /**
+         * User-facing text for `publishError`: the failing step's own reason when
+         * it recorded one, otherwise the code's sentence.
+         */
+        publishErrorMessage: publishError
+          ? (publishErrorDetail ?? publishFailureMessage(publishError))
+          : undefined,
         publishedCommitSha: project.publishedCommitSha ?? undefined,
         publishedTag: project.publishedTag ?? undefined,
         alwaysOn: project.publishedAlwaysOn === true,

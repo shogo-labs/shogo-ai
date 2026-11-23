@@ -62,6 +62,17 @@ const prismaApi = {
       Object.assign(projectRow, data)
       return { ...projectRow }
     },
+    // The in-flight lease (SHO-542): a conditional claim, so a second publish
+    // while one is running counts zero rows.
+    updateMany: async ({ where, data }: any) => {
+      if (!projectRow || projectRow.id !== where.id) return { count: 0 }
+      const inFlight = ['building', 'uploading', 'configuring'].includes(projectRow.publishStatus)
+      const at = projectRow.publishStatusAt instanceof Date ? projectRow.publishStatusAt.getTime() : 0
+      const stale = !at || Date.now() - at > 30 * 60_000
+      if (inFlight && !stale) return { count: 0 }
+      Object.assign(projectRow, data)
+      return { count: 1 }
+    },
   },
   publishedEnvironment: {
     findUnique: async ({ where }: any) => {
@@ -91,6 +102,18 @@ const prismaApi = {
       if (!row) throw new Error(`no environment ${where.id}`)
       Object.assign(row, data)
       return { ...row }
+    },
+    // Staging's in-flight lease lives on the environment row, like production's
+    // on the project (SHO-542).
+    updateMany: async ({ where, data }: any) => {
+      const row = Object.values(envRows).find((e) => e.id === where.id)
+      if (!row) return { count: 0 }
+      const inFlight = ['building', 'uploading', 'configuring'].includes(row.publishStatus)
+      const at = row.publishStatusAt instanceof Date ? row.publishStatusAt.getTime() : 0
+      const stale = !at || Date.now() - at > 30 * 60_000
+      if (inFlight && !stale) return { count: 0 }
+      Object.assign(row, data)
+      return { count: 1 }
     },
   },
   publishedDeployment: {
@@ -249,8 +272,39 @@ function stubPodFetch() {
   }) as any
 }
 
-const { publishProject, deployToStaging, publishRoutes } = await import('../publish')
+const { startPublish, publishRoutes } = await import('../publish')
 const republish = publishRoutes()
+
+/**
+ * Start a publish and wait for the background pipeline's outcome.
+ *
+ * The routes answer 202 and the client follows `publishStatus` (SHO-542); these
+ * cases assert what the pipeline did to the substrate/S3/deployment rows, so
+ * they await the same promise the route hands off.
+ */
+async function publishAndWait(projectId: string, opts: any, fileSource?: any) {
+  const started = await startPublish(projectId, opts, fileSource)
+  if (!started.ok) {
+    return {
+      ok: false as const,
+      status: started.status,
+      code: started.code!,
+      message: started.message!,
+    }
+  }
+  return await started.finished!
+}
+
+/** Poll the publish state until the background pipeline settles. */
+async function waitForState(projectId: string): Promise<any> {
+  for (let i = 0; i < 400; i++) {
+    const res = await republish.request(`/projects/${projectId}/publish`)
+    const body = (await res.json()) as any
+    if (body.publishStatus === 'live' || body.publishStatus === 'failed') return body
+    await new Promise((r) => setTimeout(r, 10))
+  }
+  throw new Error('publish did not settle')
+}
 
 beforeEach(() => {
   for (const key of Object.keys(envRows)) delete envRows[key]
@@ -317,7 +371,7 @@ describe('a server-backed publish configures before it goes live (SHO-536 §B)',
       throw new Error('image build refused: base image pull denied')
     }
 
-    const result = await publishProject('p1', { subdomain: 'my-app' })
+    const result = await publishAndWait('p1', { subdomain: 'my-app' })
 
     expect(result.ok).toBe(false)
     expect(result.code).toBe('configure_failed')
@@ -341,7 +395,7 @@ describe('a server-backed publish configures before it goes live (SHO-536 §B)',
       }),
     })
 
-    const result = await publishProject('p1', { subdomain: 'my-app' })
+    const result = await publishAndWait('p1', { subdomain: 'my-app' })
 
     expect(result.ok).toBe(false)
     expect(result.code).toBe('revision_not_ready')
@@ -372,7 +426,7 @@ describe('a server-backed publish configures before it goes live (SHO-536 §B)',
       },
     })
 
-    const result = await publishProject('p1', { subdomain: 'my-app' })
+    const result = await publishAndWait('p1', { subdomain: 'my-app' })
 
     expect(result.ok).toBe(true)
     // Configure (and its readiness wait) ran before the upload.
@@ -394,7 +448,7 @@ describe('a server-backed publish configures before it goes live (SHO-536 §B)',
     }
 
     const files = new Map([['index.html', Buffer.from('<html>static</html>')]])
-    const result = await publishProject('p1', { subdomain: 'my-app' }, {
+    const result = await publishAndWait('p1', { subdomain: 'my-app' }, {
       kind: 'uploaded',
       files,
       serverBacked: false,
@@ -412,7 +466,7 @@ describe('staging and /republish keep the same order (SHO-536 §B)', () => {
       throw new Error('revision failed to start')
     }
 
-    const result = await deployToStaging('p1')
+    const result = await publishAndWait('p1', { subdomain: 'my-app', environment: 'staging' })
 
     expect(result.ok).toBe(false)
     expect(s3Puts).toEqual([])
@@ -428,13 +482,15 @@ describe('staging and /republish keep the same order (SHO-536 §B)', () => {
     }
 
     const res = await republish.request('/projects/p1/republish', { method: 'POST' })
+    // 202: the republish runs in the background (SHO-542), so its outcome — and
+    // the reason — come back through the publish state, not the POST's body.
+    expect(res.status).toBe(202)
 
-    expect(res.status).toBe(500)
-    const body = (await res.json()) as { error: { code: string; message: string } }
-    expect(body.error.code).toBe('configure_failed')
-    expect(body.error.message).toContain('ksvc patch refused')
+    const state = await waitForState('p1')
+    expect(state.publishStatus).toBe('failed')
+    expect(state.publishError).toBe('configure_failed')
+    expect(state.publishErrorMessage).toContain('ksvc patch refused')
     expect(s3Puts).toEqual([])
     expect(purges).toEqual([])
-    expect(projectRow.publishStatus).toBe('failed')
   })
 })

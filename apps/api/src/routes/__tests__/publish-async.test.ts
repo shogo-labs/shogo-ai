@@ -193,7 +193,9 @@ mock.module('../../services/published-environments.service', () => ({
   scaleSettingsOf: () => ({ minReplicas: 0, maxReplicas: 1, size: 's' }),
 }))
 mock.module('../../services/published-deployments.service', () => ({
-  recordPublishedDeployment: async () => {},
+  recordPublishedDeployment: async () => ({ id: 'dep-1' }),
+  markPublishedDeploymentReady: async () => {},
+  markPublishedDeploymentFailed: async () => {},
 }))
 mock.module('../../services/published-ops.service', () => ({
   resolvePublishedImageRef: () => 'img:test',
@@ -316,12 +318,14 @@ describe('publish as a background job', () => {
     expect((await postPublish('p1', { subdomain: 'broken-app' })).status).toBe(202)
     await until(() => projects.get('p1')!.publishStatus === 'failed', 'failed')
 
-    expect(projects.get('p1')!.publishError).toBe('configure_failed')
+    expect(projects.get('p1')!.publishError).toBe('configure_failed: knative said no')
 
     const state = await (await getState('p1')).json()
     expect(state.subdomain).toBeUndefined()
     expect(state.publishStatus).toBe('failed')
+    // The code is what a client switches on; the reason is what a person reads.
     expect(state.publishError).toBe('configure_failed')
+    expect(state.publishErrorMessage).toBe('knative said no')
 
     // AC 5: the failed pipeline released the subdomain claim, so the same name
     // can be published again as soon as the cause is fixed.

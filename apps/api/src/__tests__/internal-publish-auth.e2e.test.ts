@@ -81,6 +81,14 @@ mock.module('../routes/publish', () => ({
   markEnvironmentPublishInterrupted: async (environmentId: string) => {
     store.markedEnvironments.push(environmentId)
   },
+  // `publishError` holds `code` or `code: detail`; the real route splits it so
+  // clients can compare the code exactly.
+  splitPublishError: (stored: string | null | undefined) => {
+    if (!stored) return { code: null, detail: null }
+    const at = stored.indexOf(': ')
+    if (at === -1) return { code: stored, detail: null }
+    return { code: stored.slice(0, at), detail: stored.slice(at + 2) || null }
+  },
 }))
 
 const { deriveRuntimeToken } = await import('../lib/runtime-token')

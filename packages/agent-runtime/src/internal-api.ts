@@ -714,6 +714,11 @@ export interface PublishState {
   /** The code the last publish failed with (`null` when it did not fail). */
   publishError?: string | null
   /**
+   * Why the failing step failed, when the API recorded a reason (a configure
+   * refusal names the substrate's). `publishError` stays the machine code.
+   */
+  publishErrorMessage?: string | null
+  /**
    * A refused publish's machine-actionable context, rebuilt on demand by the
    * API for `destructive_schema_change` (the one code whose caller — the tool —
    * has to quote what would be lost).
@@ -945,7 +950,9 @@ async function waitForPublish(
         ok: false,
         status: 500,
         code,
-        error: publishFailureMessage(code),
+        // The step's own reason beats the generic sentence for this code: it is
+        // what tells the agent whether the app or the hosting side failed.
+        error: state.data?.publishErrorMessage ?? publishFailureMessage(code),
         ...(details ? { details: details as Record<string, any> } : {}),
       }
     }
