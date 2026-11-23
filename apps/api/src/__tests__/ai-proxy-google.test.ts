@@ -115,7 +115,15 @@ beforeEach(() => {
 
 const { Hono } = await import('hono')
 const aiProxyModule = await import('../routes/ai-proxy')
-const { aiProxyRoutes, liftGoogleThoughtSignatures, applyGoogleThoughtSignatures, createGoogleSseRewriter } = aiProxyModule
+const {
+  aiProxyRoutes,
+  liftGoogleThoughtSignatures,
+  applyGoogleThoughtSignatures,
+  createGoogleSseRewriter,
+  splitGoogleThoughtMessage,
+  googleThinkingLevel,
+  buildOpenAICompatibleBody,
+} = aiProxyModule
 const { generateProxyToken } = await import('../lib/ai-proxy-token')
 
 let TOKEN = ''
@@ -294,5 +302,328 @@ describe('POST /ai/v1/chat/completions — Gemini', () => {
     expect(withCall).toBeDefined()
     expect(withCall.choices[0].delta.tool_calls[0].extra_content).toBeUndefined()
     expect(withCall.choices[0].delta.reasoning_details).toEqual([{ type: 'reasoning.encrypted', id: 'call_3', data: SIG }])
+  })
+})
+
+// =========================================================================
+// Thinking summaries — request body
+// =========================================================================
+
+const effortLevels: Array<[string | undefined, string, string]> = [
+  // [reasoning_effort sent, model, expected thinking_level]
+  ['off', 'gemini-4-carbon', 'low'],
+  ['none', 'gemini-4-carbon', 'low'],
+  ['minimal', 'gemini-4-carbon', 'low'],
+  ['low', 'gemini-4-carbon', 'low'],
+  ['medium', 'gemini-4-carbon', 'medium'],
+  ['high', 'gemini-4-carbon', 'high'],
+  ['xhigh', 'gemini-4-carbon', 'high'],
+  [undefined, 'gemini-4-carbon', 'medium'],
+]
+
+describe('Gemini thinking summaries — request body', () => {
+  for (const [effort, model, level] of effortLevels) {
+    test(`effort ${effort ?? '(missing)'} on ${model} → thinking_level ${level}`, async () => {
+      const res = await post({
+        model,
+        ...(effort ? { reasoning_effort: effort } : {}),
+        messages: [{ role: 'user', content: 'hi' }],
+      })
+      expect(res.status).toBe(200)
+      const body = forwardedBody()
+      expect(body.extra_body.google.thinking_config).toEqual({ thinking_level: level, include_thoughts: true })
+      // Google rejects the two controls together.
+      expect(body.reasoning_effort).toBeUndefined()
+    })
+  }
+
+  test('xhigh is kept on the models that accept it', async () => {
+    await post({ model: 'gemini-4-neon', reasoning_effort: 'xhigh', messages: [{ role: 'user', content: 'hi' }] })
+    expect(forwardedBody().extra_body.google.thinking_config.thinking_level).toBe('xhigh')
+    await post({ model: 'gemini-4-hydrogen', reasoning_effort: 'xhigh', messages: [{ role: 'user', content: 'hi' }] })
+    expect(forwardedBody().extra_body.google.thinking_config.thinking_level).toBe('xhigh')
+  })
+
+  test('the Flash family keeps minimal so flash-lite does not get more expensive', async () => {
+    await post({ model: 'gemini-3.5-flash-lite', reasoning_effort: 'minimal', messages: [{ role: 'user', content: 'hi' }] })
+    expect(forwardedBody().extra_body.google.thinking_config.thinking_level).toBe('minimal')
+    await post({ model: 'gemini-3.5-flash-lite', reasoning_effort: 'off', messages: [{ role: 'user', content: 'hi' }] })
+    expect(forwardedBody().extra_body.google.thinking_config.thinking_level).toBe('minimal')
+    await post({ model: 'gemini-3.8-flash', reasoning_effort: 'none', messages: [{ role: 'user', content: 'hi' }] })
+    expect(forwardedBody().extra_body.google.thinking_config.thinking_level).toBe('minimal')
+  })
+
+  test('a caller that sends no effort at all gets the catalog default', async () => {
+    // pi-ai sends no `reasoning_effort` for a thinking-off caller (compaction,
+    // plan translation, local LLM). Flash-Lite's catalog default is minimal —
+    // flooring it at low would quietly raise the cost of every summary.
+    await post({ model: 'gemini-3.5-flash-lite', messages: [{ role: 'user', content: 'summarise' }] })
+    expect(forwardedBody().extra_body.google.thinking_config.thinking_level).toBe('minimal')
+    await post({ model: 'gemini-4-argon', messages: [{ role: 'user', content: 'summarise' }] })
+    expect(forwardedBody().extra_body.google.thinking_config.thinking_level).toBe('high')
+  })
+
+  test('providerOptions.shogo.reasoning_effort wins over the field pi-ai sent', async () => {
+    await post({
+      model: 'gemini-4-carbon',
+      reasoning_effort: 'high',
+      providerOptions: { shogo: { reasoning_effort: 'low' } },
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    const body = forwardedBody()
+    expect(body.extra_body.google.thinking_config.thinking_level).toBe('low')
+    expect(body.providerOptions).toBeUndefined()
+  })
+
+  test('a caller-supplied thinking_config is merged, not replaced', async () => {
+    await post({
+      model: 'gemini-4-carbon',
+      reasoning_effort: 'high',
+      extra_body: { google: { thinking_config: { thinking_budget: 1234 }, safety_settings: [{ category: 'x' }] } },
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    const body = forwardedBody()
+    expect(body.extra_body.google.thinking_config).toEqual({
+      thinking_budget: 1234,
+      thinking_level: 'high',
+      include_thoughts: true,
+    })
+    expect(body.extra_body.google.safety_settings).toEqual([{ category: 'x' }])
+  })
+
+  test('googleThinkingLevel maps the unknown-model fallback', () => {
+    expect(googleThinkingLevel('gemini-9-unheard-of', 'xhigh')).toBe('high')
+    expect(googleThinkingLevel('gemini-9-unheard-of', 'minimal')).toBe('low')
+    expect(googleThinkingLevel('gemini-9-unheard-of', undefined)).toBe('medium')
+  })
+})
+
+// =========================================================================
+// Thinking summaries — stream rewriter
+// =========================================================================
+
+/** QA's 2026-11-23 capture: gemini-4-carbon, OpenAI-compatible endpoint. */
+const thoughtChunks = [
+  JSON.stringify({
+    id: 'chatcmpl-t',
+    object: 'chat.completion.chunk',
+    model: 'gemini-4-carbon',
+    choices: [{
+      index: 0,
+      delta: {
+        role: 'assistant',
+        content: '<thought>**Solving the Riddle**\n\nBall plus bat is $1.10.',
+        extra_content: { google: { thought: true } },
+      },
+    }],
+  }),
+  JSON.stringify({
+    id: 'chatcmpl-t',
+    object: 'chat.completion.chunk',
+    model: 'gemini-4-carbon',
+    choices: [{ index: 0, delta: { content: '</thought>The ball costs **5 cents**.' } }],
+  }),
+  JSON.stringify({
+    id: 'chatcmpl-t',
+    object: 'chat.completion.chunk',
+    model: 'gemini-4-carbon',
+    choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 20, completion_tokens: 40, total_tokens: 60 },
+  }),
+  '[DONE]',
+]
+
+const rewriteAll = (chunks: string[]): any[] => {
+  const rewrite = createGoogleSseRewriter()
+  const out: any[] = []
+  for (const chunk of chunks) {
+    const rewritten = rewrite(`data: ${chunk}`)
+    for (const line of Array.isArray(rewritten) ? rewritten : [rewritten]) {
+      if (line === 'data: [DONE]') continue
+      out.push(JSON.parse(line.slice(6)))
+    }
+  }
+  const flushed = rewrite.flush?.()
+  for (const line of Array.isArray(flushed) ? flushed : flushed ? [flushed] : []) {
+    out.push(JSON.parse(line.slice(6)))
+  }
+  return out
+}
+
+const deltas = (payloads: any[]): any[] => payloads.map((p) => p.choices[0].delta)
+
+describe('Gemini thinking summaries — stream rewriter', () => {
+  test('a thought chunk becomes reasoning_content with the tag removed', async () => {
+    nextFetchResponses.push(() => sseResponse(thoughtChunks))
+    const res = await post({ model: 'gemini-4-carbon', stream: true, messages: [{ role: 'user', content: 'riddle' }] })
+    expect(res.status).toBe(200)
+    const body = await drain(res)
+    const payloads = ssePayloads(body)
+
+    const reasoning = payloads.filter((p) => p.choices?.[0]?.delta?.reasoning_content)
+    expect(reasoning).toHaveLength(1)
+    expect(reasoning[0].choices[0].delta.reasoning_content).toBe('**Solving the Riddle**\n\nBall plus bat is $1.10.')
+
+    const answer = payloads.find((p) => typeof p.choices?.[0]?.delta?.content === 'string' && p.choices[0].delta.content)
+    expect(answer.choices[0].delta.content).toBe('The ball costs **5 cents**.')
+    // The answer must come *after* the thinking, not inside it and not before.
+    expect(payloads.indexOf(answer)).toBeGreaterThan(payloads.indexOf(reasoning[0]))
+
+    for (const payload of payloads) {
+      expect(JSON.stringify(payload)).not.toContain('<thought>')
+      expect(JSON.stringify(payload)).not.toContain('</thought>')
+    }
+    // The Google marker is consumed, not forwarded.
+    expect(JSON.stringify(payloads)).not.toContain('"thought":true')
+  })
+
+  test('a closing tag with no open thought is literal text', async () => {
+    const payloads = rewriteAll([
+      JSON.stringify({ choices: [{ index: 0, delta: { content: '</thought>just text' } }] }),
+    ])
+    expect(deltas(payloads)[0].content).toBe('</thought>just text')
+  })
+
+  test('a closing tag and its answer in one chunk are emitted as two lines', () => {
+    const rewrite = createGoogleSseRewriter()
+    rewrite(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: '<thought>thinking, ', extra_content: { google: { thought: true } } } }] })}`)
+    const out = rewrite(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'still thinking</thought>the answer' } }] })}`)
+    expect(Array.isArray(out)).toBe(true)
+    const lines = out as string[]
+    expect(lines).toHaveLength(2)
+    const first = JSON.parse(lines[0].slice(6)).choices[0].delta
+    const second = JSON.parse(lines[1].slice(6)).choices[0].delta
+    expect(first.reasoning_content).toBe('still thinking')
+    expect(first.content).toBeUndefined()
+    expect(second.content).toBe('the answer')
+    expect(second.reasoning_content).toBeUndefined()
+  })
+
+  test('a tag split across two chunks is released across them', async () => {
+    nextFetchResponses.push(() => sseResponse([
+      JSON.stringify({ choices: [{ index: 0, delta: { content: '<thought>first half</thou', extra_content: { google: { thought: true } } } }] }),
+      JSON.stringify({ choices: [{ index: 0, delta: { content: 'ght>the answer' } }] }),
+      '[DONE]',
+    ]))
+    const res = await post({ model: 'gemini-4-carbon', stream: true, messages: [{ role: 'user', content: 'go' }] })
+    const payloads = ssePayloads(await drain(res))
+    const reasoning = payloads.map((p) => p.choices?.[0]?.delta?.reasoning_content).filter(Boolean)
+    expect(reasoning).toEqual(['first half'])
+    const content = payloads.map((p) => p.choices?.[0]?.delta?.content).filter(Boolean)
+    expect(content).toEqual(['the answer'])
+  })
+
+  test('held text is flushed when the stream ends without closing the tag', async () => {
+    nextFetchResponses.push(() => sseResponse([
+      JSON.stringify({ choices: [{ index: 0, delta: { content: '<thought>a thought ending in </thou', extra_content: { google: { thought: true } } } }] }),
+      '[DONE]',
+    ]))
+    const res = await post({ model: 'gemini-4-carbon', stream: true, messages: [{ role: 'user', content: 'go' }] })
+    const payloads = ssePayloads(await drain(res))
+    const reasoning = payloads.map((p) => p.choices?.[0]?.delta?.reasoning_content).filter(Boolean).join('')
+    expect(reasoning).toBe('a thought ending in </thou')
+  })
+
+  test('a reply that quotes <thought> mid-answer passes through untouched', async () => {
+    const quoted = 'Use the literal <thought> and </thought> tags.'
+    const payloads = rewriteAll([
+      JSON.stringify({ choices: [{ index: 0, delta: { content: 'Answer first.' } }] }),
+      JSON.stringify({ choices: [{ index: 0, delta: { content: quoted } }] }),
+    ])
+    expect(deltas(payloads).map((d) => d.content).filter(Boolean)).toEqual(['Answer first.', quoted])
+  })
+
+  test('a tool-call-only stream is byte-identical', async () => {
+    const chunks = [
+      JSON.stringify({ id: 's1', choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'call_1', function: { name: 'exec', arguments: '' } }] } }] }),
+      JSON.stringify({ id: 's1', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{"cmd":"ls"}' } }] } }] }),
+      JSON.stringify({ id: 's1', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 } }),
+      '[DONE]',
+    ]
+    nextFetchResponses.push(() => sseResponse(chunks))
+    const res = await post({ model: 'gemini-4-carbon', stream: true, messages: [{ role: 'user', content: 'list' }] })
+    const out = await drain(res)
+    expect(out).toBe(chunks.map((c) => `data: ${c}\n\n`).join(''))
+  })
+
+  test('non-streaming: one message is split into reasoning_content and content', async () => {
+    nextFetchResponses.push(() => new Response(JSON.stringify({
+      id: 'chatcmpl-n',
+      object: 'chat.completion',
+      model: 'gemini-4-carbon',
+      choices: [{
+        index: 0,
+        finish_reason: 'stop',
+        message: {
+          role: 'assistant',
+          content: '<thought>Let me solve it.</thought>The ball costs **5 cents**.',
+          extra_content: { google: { thought: false } },
+        },
+      }],
+      usage: { prompt_tokens: 11, completion_tokens: 9, total_tokens: 20 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    const res = await post({ model: 'gemini-4-carbon', messages: [{ role: 'user', content: 'riddle' }] })
+    const data: any = await res.json()
+    const message = data.choices[0].message
+    expect(message.reasoning_content).toBe('Let me solve it.')
+    expect(message.content).toBe('The ball costs **5 cents**.')
+    expect(message.extra_content).toBeUndefined()
+  })
+
+  test('splitGoogleThoughtMessage leaves a plain message alone', () => {
+    const payload = { choices: [{ message: { role: 'assistant', content: 'no thinking here' } }] }
+    expect(splitGoogleThoughtMessage(payload)).toBe(false)
+    expect(payload.choices[0].message.content).toBe('no thinking here')
+  })
+})
+
+// =========================================================================
+// Replay
+// =========================================================================
+
+describe('Gemini thinking summaries — replay', () => {
+  const modelConfig = { provider: 'google' as const, apiModel: 'gemini-4-carbon', displayName: 'Carbon' }
+
+  test('thought text from pi-ai never goes back to Google as content', () => {
+    const body: any = buildOpenAICompatibleBody(
+      {
+        model: 'gemini-4-carbon',
+        messages: [
+          { role: 'user', content: 'riddle' },
+          {
+            role: 'assistant',
+            content: null,
+            reasoning_content: 'thinking out loud',
+            reasoning_details: [{ type: 'reasoning.encrypted', id: 'call_1', data: SIG }],
+            tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{"path":"a"}' } }],
+          },
+          { role: 'tool', tool_call_id: 'call_1', content: 'file body' },
+        ],
+      },
+      modelConfig as any,
+      {},
+    )
+    const assistant = body.messages[1]
+    expect(assistant.reasoning_content).toBeUndefined()
+    expect(assistant.reasoning_details).toBeUndefined()
+    expect(assistant.content).toBeNull()
+    expect(JSON.stringify(assistant)).not.toContain('thinking out loud')
+    // …and the turn-1 signature is still on the turn-2 tool call.
+    expect(assistant.tool_calls[0].extra_content).toEqual({ google: { thought_signature: SIG } })
+  })
+
+  test('every Gemini request asks for a thought summary, including a thinking-off caller', () => {
+    const body: any = buildOpenAICompatibleBody(
+      {
+        model: 'gemini-4-carbon',
+        thinking: { type: 'disabled' },
+        messages: [{ role: 'user', content: 'summarise' }],
+      },
+      modelConfig as any,
+      {},
+    )
+    expect(body.thinking).toBeUndefined()
+    expect(body.extra_body.google.thinking_config).toEqual({ thinking_level: 'medium', include_thoughts: true })
   })
 })
