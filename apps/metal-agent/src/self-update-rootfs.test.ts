@@ -11,13 +11,16 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { spawnSync } from 'child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
 import {
+  DEFAULT_GUEST_INIT,
   _setGuestInitProbe,
   _setImageGc,
+  defaultGuestInitProbe,
+  guestInitPath,
   buildRootfsImage,
   getRootfsRevision,
   imagesToKeep,
@@ -294,5 +297,76 @@ describe('image GC around a rebuild', () => {
       if (prev === undefined) delete process.env.RUNTIME_IMAGE
       else process.env.RUNTIME_IMAGE = prev
     }
+  })
+})
+
+/**
+ * The gate must check the path the VM is actually booted with: `guestBootArgs`
+ * passes `init=${config.guestInit}`, so a host that sets `METAL_GUEST_INIT`
+ * elsewhere would have a good image refused — and because a refusal clears the
+ * staged marker, the same version would be rebuilt on every heartbeat (QA
+ * round 1 on SHO-549).
+ */
+describe('the guest-init probe follows METAL_GUEST_INIT', () => {
+  const saved = { guestInit: config.guestInit, path: process.env.PATH }
+  const custom = '/usr/local/bin/pool-init.sh'
+  let bin: string
+  let image: string
+
+  beforeEach(() => {
+    bin = join(dir, 'bin')
+    image = join(dir, 'runtime.ext4')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(image, 'stand-in for the ext4 bytes')
+    // e2fsprogs is not on a dev box; a PATH `debugfs` answers for the image.
+    process.env.PATH = `${bin}:${process.env.PATH}`
+    ;(config as any).guestInit = custom
+  })
+
+  afterEach(() => {
+    process.env.PATH = saved.path
+    ;(config as any).guestInit = saved.guestInit
+  })
+
+  /** A `debugfs` that finds exactly `present` and nothing else. */
+  function fakeDebugfs(present: string[]): void {
+    writeFileSync(
+      join(bin, 'debugfs'),
+      `#!/usr/bin/env bash
+cmd=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -R) cmd="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$cmd" in
+  stat*)
+    for m in ${present.join(' ')}; do
+      [ "stat $m" = "$cmd" ] && { echo "Inode: 4242   Type: regular    Mode:  0755   Flags: 0x0"; exit 0; }
+    done ;;
+esac
+echo "debugfs: File not found by ext2_lookup" >&2
+exit 1
+`,
+    )
+    chmodSync(join(bin, 'debugfs'), 0o755)
+  }
+
+  test('an image carrying the configured init passes', () => {
+    fakeDebugfs([custom])
+    expect(defaultGuestInitProbe()(image)).toBeNull()
+  })
+
+  test('the same image is refused for the path it does not carry', () => {
+    // The default path is present, but this host boots the custom one.
+    fakeDebugfs([DEFAULT_GUEST_INIT])
+    expect(defaultGuestInitProbe()(image)).toContain(`${custom} is not in ${image}`)
+  })
+
+  test('guestInitPath prefers the host setting and falls back to the installed path', () => {
+    expect(guestInitPath({ guestInit: custom })).toBe(custom)
+    expect(guestInitPath({ guestInit: '' })).toBe(DEFAULT_GUEST_INIT)
+    expect(guestInitPath({})).toBe(DEFAULT_GUEST_INIT)
   })
 })
