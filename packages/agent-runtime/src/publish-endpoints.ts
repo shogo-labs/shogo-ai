@@ -35,7 +35,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Context } from 'hono'
 import { isMacOSJunkName, putFileToObjectStore } from '@shogo/shared-runtime'
-import { publishArtifactMaxBytes } from '@shogo/shared-runtime/publish-timeouts'
+import { publishArtifactInlineMaxBytes, publishArtifactMaxBytes } from '@shogo/shared-runtime/publish-timeouts'
 import { cleanupStagingOutput } from './build-output-commit'
 import {
   ArtifactMediaOffloadError,
@@ -141,8 +141,12 @@ export function handleDistFiles(c: Context, deps: PublishEndpointDeps): Response
  *
  * **The archive never crosses the API** (SHO-485). Given `bucket` + `key`, the
  * runtime uploads the tar straight to object storage and answers
- * `{ bucket, key, bytes }`. Without them it falls back to the old base64 body,
- * which is what an API that has not been rolled out yet still asks for.
+ * `{ bucket, key, bytes }`. With no object store of its own it streams the tar
+ * to the `putUrl` the API presigned (SHO-536). Without either it falls back to
+ * the old base64 body, which is what an API that has not been rolled out yet
+ * still asks for — and above
+ * {@link publishArtifactInlineMaxBytes} that body is refused with
+ * `artifact_too_large_for_inline` instead of dying on V8's string limit.
  *
  * Always cleans up after itself: it is the last reader of the staging dir.
  */
@@ -185,7 +189,20 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
 
   const targetBucket = (c.req.query('bucket') || '').trim()
   const targetKey = (c.req.query('key') || '').trim()
+  // A presigned PUT for the same bucket+key (SHO-536). The API mints it with
+  // its own credentials, so a runtime that has no object store of its own can
+  // still stream the tar out instead of handing it back base64.
+  const targetPutUrl = (c.req.query('putUrl') || '').trim()
   const store = deps.objectStore?.() ?? null
+  if (!store && (targetBucket || targetPutUrl)) {
+    // Why a named target has no store to write it with: the env is the answer,
+    // so say which one was missing rather than only failing later (SHO-536 §A).
+    console.warn(
+      '[agent-runtime] publish-artifact: no object store on this runtime ' +
+        '(S3_LFS_BUCKET/S3_WORKSPACES_BUCKET unset) — media stays in the archive' +
+        (targetPutUrl ? ', tar streamed to the API\'s presigned PUT' : ''),
+    )
+  }
 
   const { cp, mkdtemp, readFile, rm, stat } = await import('fs/promises')
   const os = await import('os')
@@ -233,6 +250,13 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
     const { size: bytes } = await stat(archivePath)
     cleanupStagingOutput(outputRoot, PUBLISH_STAGING_DIR)
 
+    // With no store the media stays in the tar, and a size refusal that follows
+    // is caused by that rather than by the project (SHO-536).
+    const offload = store ? null : { skipped: 'no_object_store' as const }
+    const mediaStayed = offload
+      ? ' Media could not be moved out because this runtime has no object store, so the context carries the project\'s media.'
+      : ''
+
     // The Job's src volume is a 2 Gi `emptyDir`: an artifact over the limit is
     // an eviction with no explanation, so refuse it here with a name, before
     // spending the upload (SHO-485 §2c).
@@ -243,7 +267,7 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
           error: 'artifact_too_large',
           message:
             `The publish build context is ${(bytes / (1024 * 1024)).toFixed(0)} MB, over the ` +
-            `${(maxBytes / (1024 * 1024)).toFixed(0)} MB limit for an image build.`,
+            `${(maxBytes / (1024 * 1024)).toFixed(0)} MB limit for an image build.${mediaStayed}`,
         },
         413,
       )
@@ -256,14 +280,62 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
         archivePath,
         { bytes, contentType: 'application/gzip' },
       )
-      return c.json({ bucket: targetBucket, key: targetKey, bytes, offloaded })
+      return c.json({ bucket: targetBucket, key: targetKey, bytes, offloaded, ...(offload ? { offload } : {}) })
     }
 
+    if (targetBucket && targetKey && targetPutUrl) {
+      try {
+        await putArtifactToPresignedUrl(targetPutUrl, archivePath, bytes)
+      } catch (err: any) {
+        return c.json(
+          { error: 'artifact_upload_failed', message: err?.message ?? String(err) },
+          502,
+        )
+      }
+      return c.json({ bucket: targetBucket, key: targetKey, bytes, offloaded, ...(offload ? { offload } : {}) })
+    }
+
+    // Last resort: the old base64 body, for an API that named no target and
+    // minted no PUT. Above this cap the answer is a name, never a V8 string
+    // crash — base64 of 1.5 GiB is one character past V8's 2^31−1 limit.
+    const inlineMaxBytes = publishArtifactInlineMaxBytes()
+    if (bytes > inlineMaxBytes) {
+      return c.json(
+        {
+          error: 'artifact_too_large_for_inline',
+          message:
+            `The publish build context is ${(bytes / (1024 * 1024)).toFixed(0)} MB, over the ` +
+            `${(inlineMaxBytes / (1024 * 1024)).toFixed(0)} MB this runtime can send inline: the ` +
+            `artifact must go through object storage.${mediaStayed}`,
+        },
+        413,
+      )
+    }
     const buf = await readFile(archivePath)
-    return c.json({ archive: buf.toString('base64'), bytes: buf.length, offloaded })
+    return c.json({ archive: buf.toString('base64'), bytes: buf.length, offloaded, ...(offload ? { offload } : {}) })
   } catch (err: any) {
     return c.json({ error: 'artifact_failed', message: err?.message ?? String(err) }, 500)
   } finally {
     await rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+/**
+ * PUT the archive to a presigned URL the API minted (SHO-536).
+ *
+ * Streams from disk: a runtime without S3 credentials of its own can still
+ * upload a multi-gigabyte build context, and the tar never becomes a string or
+ * a single `Buffer` in this process. The explicit `content-length` keeps an S3
+ * endpoint from treating the body as a chunked upload it cannot size.
+ */
+async function putArtifactToPresignedUrl(url: string, filePath: string, bytes: number): Promise<void> {
+  const res = await fetch(url, {
+    method: 'PUT',
+    body: Bun.file(filePath),
+    headers: { 'content-length': String(bytes), 'content-type': 'application/gzip' },
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`object storage refused the artifact (HTTP ${res.status}): ${detail.slice(0, 200)}`)
   }
 }
