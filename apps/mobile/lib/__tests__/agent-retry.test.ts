@@ -5,20 +5,19 @@
  * tried again, once the host says it is up.
  *
  * The cloud answers `503 host_connecting` / `504 host_runtime_starting` instead
- * of holding the request past Cloudflare's edge, so the retry belongs here, in
- * the one place every agent-proxy loader goes through. Only a request that
- * changes nothing may be sent twice, and the last response is always handed back
- * so the caller still sees the real error.
+ * of holding the request past Cloudflare's edge, so the retry lives here and
+ * hangs off the one place every agent-proxy loader goes through (`agentFetch`).
+ * Only a request that changes nothing may be sent twice, and the last response
+ * is always handed back so the caller still sees the real error.
  *
- *   bun test apps/mobile/lib/__tests__/agent-fetch-retry.test.ts
+ *   bun test apps/mobile/lib/__tests__/agent-retry.test.ts
  */
 
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { beforeEach, describe, expect, test } from 'bun:test'
 
-mock.module('react-native', () => ({ Platform: { OS: 'web' } }))
-mock.module('../auth-client', () => ({ authClient: { getCookie: () => null } }))
-
-const { fetchWithWakeRetry, agentErrorMessage } = await import('../agent-fetch')
+// The pure module: no react-native, no session cookie, nothing the app's test
+// preload swaps out (it mocks `lib/agent-fetch` wholesale).
+import { fetchWithWakeRetry, agentErrorMessage, isWakeRetryable } from '../agent-retry'
 
 const wakeRefusal = (code: string, retryAfterSeconds = 0, retryable = true) =>
   new Response(
@@ -46,6 +45,18 @@ function send() {
 beforeEach(() => {
   calls = 0
   answers = []
+})
+
+describe('isWakeRetryable', () => {
+  test('only a request that changes nothing may be sent twice', () => {
+    expect(isWakeRetryable(undefined)).toBe(true)
+    expect(isWakeRetryable('GET')).toBe(true)
+    expect(isWakeRetryable('get')).toBe(true)
+    expect(isWakeRetryable('HEAD')).toBe(true)
+    expect(isWakeRetryable('POST')).toBe(false)
+    expect(isWakeRetryable('PATCH')).toBe(false)
+    expect(isWakeRetryable('DELETE')).toBe(false)
+  })
 })
 
 describe('fetchWithWakeRetry', () => {

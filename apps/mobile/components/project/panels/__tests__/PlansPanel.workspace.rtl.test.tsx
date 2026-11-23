@@ -46,9 +46,6 @@ mock.module(resolve(import.meta.dir, "../../../../lib/dual-plan-preference"), ()
 const requestedUrls: string[] = []
 
 mock.module(resolve(import.meta.dir, "../../../../lib/agent-fetch"), () => ({
-  // No refusal in these cases; the panel's error wording is covered against the
-  // real helper in lib/__tests__/agent-fetch-retry.test.ts.
-  agentErrorMessage: () => null,
   agentFetch: async (input: RequestInfo | URL) => {
     const url = String(input)
     requestedUrls.push(url)

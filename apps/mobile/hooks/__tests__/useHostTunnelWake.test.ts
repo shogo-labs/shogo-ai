@@ -7,31 +7,29 @@
  * while the request was already waiting. The workspace in view now says it as
  * soon as it is on screen — once per instance, however many screens read it.
  *
+ * `agentFetch` is mocked by the app's preload (`test/testing-library.ts`), so
+ * this goes through the same `installAgentFetchMock` every other screen test
+ * uses (SHO-434) instead of stubbing `globalThis.fetch`.
+ *
  *   bun test apps/mobile/hooks/__tests__/useHostTunnelWake.test.ts
  */
 
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
-
-mock.module('react-native', () => ({ Platform: { OS: 'web' } }))
-mock.module('../../lib/auth-client', () => ({ authClient: { getCookie: () => null } }))
-mock.module('../../lib/api', () => ({ API_URL: 'https://cloud.test' }))
-
-const asked: Array<{ url: string; init: RequestInit }> = []
-
-globalThis.fetch = (async (url: any, init: any) => {
-  asked.push({ url: String(url), init: init ?? {} })
-  return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } })
-}) as any
+import { beforeEach, describe, expect, test } from 'bun:test'
+import { installAgentFetchMock, recordedAgentFetch, restoreAgentFetch } from '../../test/helpers/mockAgentFetch'
 
 const { requestHostTunnel, _resetHostTunnelWakeForTests } = await import('../useHostTunnelWake')
-const { API_URL } = await import('../../lib/api')
+const { API_URL } = await import('../../lib/api-url')
 
 /** Let the fire-and-forget request settle. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
 
+let fetcher: ReturnType<typeof recordedAgentFetch>
+
 beforeEach(() => {
-  asked.length = 0
   _resetHostTunnelWakeForTests()
+  fetcher = recordedAgentFetch()
+  fetcher.setCatchAll(() => new Response('{"ok":true}', { status: 200 }))
+  installAgentFetchMock(fetcher.handler)
 })
 
 describe('requestHostTunnel', () => {
@@ -39,10 +37,10 @@ describe('requestHostTunnel', () => {
     requestHostTunnel('inst-mac', 'ws-hosted')
     await settle()
 
-    expect(asked).toHaveLength(1)
-    expect(asked[0].url).toBe(`${API_URL}/api/instances/inst-mac/request-connect`)
-    expect(asked[0].init.method).toBe('POST')
-    expect(JSON.parse(String(asked[0].init.body))).toEqual({ workspaceId: 'ws-hosted' })
+    expect(fetcher.calls).toHaveLength(1)
+    expect(fetcher.calls[0].url).toBe(`${API_URL}/api/instances/inst-mac/request-connect`)
+    expect(fetcher.calls[0].init?.method).toBe('POST')
+    expect(JSON.parse(String(fetcher.calls[0].init?.body))).toEqual({ workspaceId: 'ws-hosted' })
   })
 
   test('every screen that reads the workspace in view shares one request', async () => {
@@ -51,7 +49,7 @@ describe('requestHostTunnel', () => {
     requestHostTunnel('inst-mac', 'ws-hosted')
     await settle()
 
-    expect(asked).toHaveLength(1)
+    expect(fetcher.calls).toHaveLength(1)
   })
 
   test('a different host is its own request', async () => {
@@ -59,6 +57,16 @@ describe('requestHostTunnel', () => {
     requestHostTunnel('inst-pc', 'ws-hosted')
     await settle()
 
-    expect(asked).toHaveLength(2)
+    expect(fetcher.calls).toHaveLength(2)
+  })
+
+  test('a refused pre-wake does not throw into the screen that asked', async () => {
+    fetcher.setCatchAll(() => new Response('{"error":{"code":"forbidden"}}', { status: 403 }))
+
+    requestHostTunnel('inst-mac', 'ws-hosted')
+    await settle()
+
+    expect(fetcher.calls).toHaveLength(1)
+    restoreAgentFetch()
   })
 })

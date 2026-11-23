@@ -16,7 +16,7 @@
  * to square one — and every mount shares one request per instance.
  */
 import { useEffect } from 'react'
-import { API_URL } from '../lib/api'
+import { API_URL } from '../lib/api-url'
 import { agentFetch } from '../lib/agent-fetch'
 
 /** Inside the API's `WS_REQUEST_TTL_MS` (2 min), so a viewer never lapses to an idle poll. */
