@@ -72,9 +72,6 @@ image_has_exec() {
   [ $(( 0$mode & 0111 )) -ne 0 ]
 }
 
-image_has_file() {
-  debugfs -R "stat $2" "$1" 2>/dev/null | grep -q '^Inode:'
-}
 
 # verify_rootfs reads a mountpoint, and a mountpoint can belong to a different
 # filesystem than the file this script is about to ship. That is not
@@ -95,10 +92,14 @@ verify_rootfs_image() {
   image_has_exec "$img" /usr/bin/git || fail "/usr/bin/git missing in the staged image"
   image_has_exec "$img" /usr/local/bin/fc-init ||
     fail "/usr/local/bin/fc-init missing or not executable in the staged image — every VM built on it panics at boot"
-  image_has_file "$img" /sbin/blkid || image_has_file "$img" /usr/sbin/blkid ||
-    fail "blkid missing in the staged image (fc-init finds the workspace drive by label)"
-  image_has_file "$img" /sbin/resize2fs || image_has_file "$img" /usr/sbin/resize2fs ||
-    fail "resize2fs missing in the staged image (a grown workspace drive would never be grown on disk)"
+  # Same shape as verify_rootfs above: -x, because a present-but-not-executable
+  # tool fails exactly like a missing one at the moment the guest needs it.
+  image_has_exec "$img" /sbin/blkid || image_has_exec "$img" /usr/sbin/blkid ||
+    fail "blkid missing or not executable in the staged image (fc-init finds the workspace drive by label)"
+  image_has_exec "$img" /sbin/resize2fs || image_has_exec "$img" /usr/sbin/resize2fs ||
+    fail "resize2fs missing or not executable in the staged image (a grown workspace drive would never be grown on disk)"
+  image_has_exec "$img" /sbin/fsfreeze || image_has_exec "$img" /usr/sbin/fsfreeze ||
+    fail "fsfreeze missing or not executable in the staged image (a live drive grow cannot freeze the guest)"
   if debugfs -R "cat /etc/gitconfig" "$img" >"$tmp/gitconfig" 2>/dev/null; then
     grep -Eq '^[[:space:]]*directory[[:space:]]*=[[:space:]]*\*' "$tmp/gitconfig" ||
       fail "/etc/gitconfig lacks safe.directory = * in the staged image"

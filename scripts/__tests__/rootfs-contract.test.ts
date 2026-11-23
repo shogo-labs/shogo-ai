@@ -79,6 +79,18 @@ describe('build-runtime-rootfs.sh contract', () => {
     expect(gateAt).toBeLessThan(source.indexOf('mv -f "$STAGE" "$OUT"'))
   })
 
+  it('checks the image with the same strictness as the mount it replaces', () => {
+    // QA round 1: the image gate used presence checks for the tools the mount
+    // gate demanded -x for, and skipped fsfreeze — a 0644 or missing tool would
+    // have passed in exactly the overlap case the gate exists for.
+    const gate = source.slice(source.indexOf('verify_rootfs_image() {'), source.indexOf('if [ -n "${VERIFY_ROOTFS_ONLY'))
+    for (const tool of ['/sbin/blkid', '/sbin/resize2fs', '/sbin/fsfreeze']) {
+      expect(gate).toContain(`image_has_exec "$img" ${tool}`)
+    }
+    expect(gate).not.toContain('image_has_file')
+    expect(source).not.toContain('image_has_file()')
+  })
+
   it('gives every run its own tar and its own mountpoint', () => {
     // Both images (and every retry) shared $WORKDIR/rootfs.tar and
     // $WORKDIR/mnt. A second build mounted on top of the first, one build's

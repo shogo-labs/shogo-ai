@@ -10,7 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
@@ -254,5 +254,85 @@ describe('maybeActivateRootfs refuses an image that cannot boot', () => {
     // spawn; the switch itself is what this asserts.
     expect(switched).toBe(true)
     expect(readFileSync(config.baseRootfs, 'utf8')).toBe('staged image with no guest init')
+  })
+})
+
+/**
+ * The same gate through the probe a real host builds — no hook, a PATH `debugfs`,
+ * and `METAL_GUEST_INIT` pointing somewhere else. This is the case QA round 1
+ * broke: checking the hardcoded `/usr/local/bin/fc-init` on a host that boots
+ * `/usr/local/bin/pool-init.sh` refused a good image, and because a refusal
+ * clears the staged marker the control plane rebuilt the same version every
+ * heartbeat.
+ */
+describe('activation follows the configured guest init', () => {
+  const saved = {
+    agentDir: config.agentDir,
+    baseRootfs: config.baseRootfs,
+    guestInit: config.guestInit,
+    path: process.env.PATH,
+  }
+  const custom = '/usr/local/bin/pool-init.sh'
+  let dir: string
+
+  /** A `debugfs` for which exactly `present` exists (mode 0755). */
+  function fakeImage(present: string[]): void {
+    writeFileSync(
+      join(dir, 'bin', 'debugfs'),
+      `#!/usr/bin/env bash
+cmd=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -R) cmd="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+for m in ${present.join(' ')}; do
+  [ "stat $m" = "$cmd" ] && { echo "Inode: 4242   Type: regular    Mode:  0755   Flags: 0x0"; exit 0; }
+done
+echo "debugfs: File not found by ext2_lookup" >&2
+exit 1
+`,
+    )
+    chmodSync(join(dir, 'bin', 'debugfs'), 0o755)
+  }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'activate-init-'))
+    mkdirSync(join(dir, 'bin'), { recursive: true })
+    ;(config as any).agentDir = dir
+    ;(config as any).baseRootfs = join(dir, 'rootfs.ext4')
+    ;(config as any).guestInit = custom
+    writeFileSync(config.baseRootfs, 'live image')
+    writeFileSync(stagedRootfsPath(config.baseRootfs), 'staged image')
+    writeFileSync(
+      join(dir, 'ROOTFS_STAGED'),
+      JSON.stringify({ version: 'v2', identities: { standard: 'sz1-mt1' }, stagedAt: 1_000_000 }),
+    )
+    process.env.PATH = `${join(dir, 'bin')}:${process.env.PATH}`
+  })
+
+  afterEach(() => {
+    process.env.PATH = saved.path
+    ;(config as any).agentDir = saved.agentDir
+    ;(config as any).baseRootfs = saved.baseRootfs
+    ;(config as any).guestInit = saved.guestInit
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('a staged image carrying the configured init is activated', async () => {
+    fakeImage([custom])
+    const switched = await maybeActivateRootfs('v2', { promote: () => 0 })
+    expect(switched).toBe(true)
+    expect(readFileSync(config.baseRootfs, 'utf8')).toBe('staged image')
+  })
+
+  test('a staged image carrying only the old default path is refused', async () => {
+    fakeImage(['/usr/local/bin/fc-init'])
+    const switched = await maybeActivateRootfs('v2', { promote: () => 0 })
+    expect(switched).toBe(false)
+    expect(readFileSync(config.baseRootfs, 'utf8')).toBe('live image')
+    // Marker cleared so the heartbeat rebuilds; staged file kept for inspection.
+    expect(existsSync(join(dir, 'ROOTFS_STAGED'))).toBe(false)
   })
 })

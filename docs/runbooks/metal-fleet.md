@@ -391,9 +391,10 @@ Without it the suite skips its fault tests rather than failing.
 
 ### A staged image without its guest init is never activated
 
-Every rootfs image must carry an executable `/usr/local/bin/fc-init`: the kernel
-execs it as PID 1, and an image without it does not boot badly, it does not boot
-at all — `Kernel panic - not syncing: Requested init /usr/local/bin/fc-init
+Every rootfs image must carry an executable guest init — `METAL_GUEST_INIT`,
+default `/usr/local/bin/fc-init`, the same path `guestBootArgs` passes as
+`init=`: the kernel execs it as PID 1, and an image without it does not boot
+badly, it does not boot at all — `Kernel panic - not syncing: Requested init /usr/local/bin/fc-init
 failed (error -2)` before userspace. On 2026-11-23 staging activated such an
 image and lost every cold boot on the host until it was rebuilt by hand.
 

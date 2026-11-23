@@ -124,8 +124,11 @@ exec /entrypoint.sh
 `
 
 describe('build-runtime-rootfs.sh shipped-image gate', () => {
-  /** A fake `debugfs` that answers for `missing` paths as "not there". */
-  function runGate(missing: string[]) {
+  /**
+  * A fake `debugfs`: `missing` paths do not exist, `notExec` paths are present
+  * but mode 0644, everything else is present and executable.
+  */
+  function runGate(missing: string[], notExec: string[] = []) {
     const bin = join(dir, 'bin')
     const img = join(dir, 'runtime.ext4')
     const fixture = join(dir, 'fc-init.fixture')
@@ -150,6 +153,9 @@ case "$cmd" in
   stat*)
     for m in ${missing.join(' ')}; do
       [ "stat $m" = "$cmd" ] && { echo "debugfs: File not found by ext2_lookup" >&2; exit 1; }
+    done
+    for m in ${notExec.join(' ')}; do
+      [ "stat $m" = "$cmd" ] && { echo "Inode: 4242   Type: regular    Mode:  0644   Flags: 0x0"; exit 0; }
     done
     echo "Inode: 4242   Type: regular    Mode:  0755   Flags: 0x0"
     exit 0 ;;
@@ -182,9 +188,21 @@ exit 1
   })
 
   test('refuses an image without the entrypoint or the workspace tools', () => {
-    const { res } = runGate(['/entrypoint.sh', '/sbin/resize2fs', '/usr/sbin/resize2fs'])
+    const { res } = runGate(['/entrypoint.sh', '/sbin/resize2fs', '/usr/sbin/resize2fs', '/sbin/fsfreeze', '/usr/sbin/fsfreeze'])
     expect(res.status).not.toBe(0)
     expect(res.stdout).toContain('/entrypoint.sh missing or not executable in the staged image')
-    expect(res.stdout).toContain('resize2fs missing in the staged image')
+    expect(res.stdout).toContain('resize2fs missing or not executable in the staged image')
+    expect(res.stdout).toContain('fsfreeze missing or not executable in the staged image')
+  })
+
+  test('a present but non-executable tool is a contract failure, not a pass', () => {
+    // verify_rootfs on the mount demanded -x for blkid/resize2fs/fsfreeze; a
+    // presence-only image gate would let a 0644 tool through in exactly the
+    // overlap case this gate exists for (QA round 1 on SHO-549).
+    // Both spellings: the real image resolves /sbin to /usr/sbin, so a 0644
+    // /usr/sbin/fsfreeze is 0644 through either path.
+    const { res } = runGate([], ['/sbin/fsfreeze', '/usr/sbin/fsfreeze'])
+    expect(res.status).not.toBe(0)
+    expect(res.stdout).toContain('fsfreeze missing or not executable in the staged image')
   })
 })

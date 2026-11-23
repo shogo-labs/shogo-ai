@@ -130,13 +130,24 @@ const revisionCache = new Map<string, { key: string; revision: string | null }>(
 export const DEFAULT_GUEST_INIT = '/usr/local/bin/fc-init'
 
 /**
+ * Where the guest's PID 1 lives: `METAL_GUEST_INIT` when the host sets it, else
+ * the path the build script installs. The VM is booted with
+ * `init=${config.guestInit}`, so a gate that checked a different path would
+ * refuse a perfectly good image — and, because a refusal clears the staged
+ * marker, rebuild the same version on every heartbeat (QA round 1 on SHO-549).
+ */
+export function guestInitPath(cfg: { guestInit?: string } = config): string {
+  return cfg.guestInit || DEFAULT_GUEST_INIT
+}
+
+/**
  * Why `image` cannot boot, or null when it can: does it hold an executable
  * `initPath`? Read with debugfs like `readImageRevision`, so nothing is mounted
  * and the answer is about the file that will actually be booted.
  *
  * A rootfs without its guest init does not boot badly, it does not boot at all —
- * the kernel execs `/usr/local/bin/fc-init` and panics with `error -2` before
- * userspace. Staging shipped one of those on 2026-11-23 (SHO-549).
+ * the kernel execs the init and panics with `error -2` before userspace. Staging
+ * shipped one of those on 2026-11-23 (SHO-549).
  */
 export function guestInitProblem(image: string, initPath: string = DEFAULT_GUEST_INIT): string | null {
   const r = spawnSync('debugfs', ['-R', `stat ${initPath}`, image], {
@@ -153,13 +164,21 @@ export function guestInitProblem(image: string, initPath: string = DEFAULT_GUEST
 }
 
 /**
+ * The probe a real host uses: the configured guest init, read at call time so it
+ * always matches the `init=` the next VM will boot with.
+ */
+export function defaultGuestInitProbe(): (image: string) => string | null {
+  return (image) => guestInitProblem(image, guestInitPath())
+}
+
+/**
  * The probe every gate uses, replaceable for tests: e2fsprogs is not on a dev
  * box, and `stageRootfs` builds through this without a deps argument.
  */
-let guestInitProbe: (image: string) => string | null = guestInitProblem
+let guestInitProbe: (image: string) => string | null = defaultGuestInitProbe()
 
 export function _setGuestInitProbe(fn: ((image: string) => string | null) | null): void {
-  guestInitProbe = fn ?? guestInitProblem
+  guestInitProbe = fn ?? defaultGuestInitProbe()
 }
 
 /**
