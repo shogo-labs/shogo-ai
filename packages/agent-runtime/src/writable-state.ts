@@ -33,7 +33,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 /** The project database. Snapshotted, never copied. */
@@ -245,17 +245,31 @@ function openForSnapshot(dbPath: string): { exec: Function; close: Function } {
 }
 
 /**
- * Write a transactionally consistent copy of `dbPath` to `destPath` using
- * `VACUUM INTO`. Throws if the source is not a usable SQLite database or the
- * snapshot cannot be produced — callers must NOT fall back to copying the
- * file, which is the corruption case this exists to avoid.
+ * A `VACUUM INTO` of the project database failed, and so did the repaired
+ * retry.
  *
- * `VACUUM INTO` needs free space on the order of the database size and refuses
- * to overwrite an existing file, so `destPath` must be a fresh path.
+ * Carries a stable `code` so the caller can name the failure instead of
+ * forwarding a bare SQLite message as an anonymous 500: the host records it on
+ * the VM and alerts on it once (SHO-541 — Samsara's VM logged
+ * `database disk image is malformed` 336 times in 14 hours with nothing
+ * surfacing it, and could never rotate because rotation needs a final backup).
  */
-export function snapshotSqlite(dbPath: string, destPath: string): void {
-  mkdirSync(dirname(destPath), { recursive: true })
-  const src = openForSnapshot(dbPath)
+export class SqliteSnapshotError extends Error {
+  readonly code = 'sqlite_snapshot_failed'
+  /** What each reader said, in the order they were tried. */
+  readonly attempts: Array<{ reader: string; message: string }>
+
+  constructor(attempts: Array<{ reader: string; message: string }>) {
+    const cause = attempts[attempts.length - 1]?.message ?? 'unknown error'
+    super(`Could not snapshot the project database: ${cause}`)
+    this.name = 'SqliteSnapshotError'
+    this.attempts = attempts
+  }
+}
+
+/** `VACUUM INTO` `srcPath` → `destPath`. `destPath` must not exist. */
+function vacuumInto(srcPath: string, destPath: string): void {
+  const src = openForSnapshot(srcPath)
   try {
     // Ride out a writer's short exclusive lock instead of failing the whole
     // export; a periodic exporter that gives up on the first busy database
@@ -266,6 +280,70 @@ export function snapshotSqlite(dbPath: string, destPath: string): void {
     try {
       src.close()
     } catch {}
+  }
+}
+
+/**
+ * Write a transactionally consistent copy of `dbPath` to `destPath` using
+ * `VACUUM INTO`. Throws {@link SqliteSnapshotError} if the snapshot cannot be
+ * produced — callers must NOT fall back to copying the file, which is the
+ * corruption case this exists to avoid.
+ *
+ * `VACUUM INTO` needs free space on the order of the database size and refuses
+ * to overwrite an existing file, so `destPath` must be a fresh path.
+ *
+ * TWO readers, because one is not enough. The first reads the workspace's own
+ * database in place, which is the cheap, proven path. The second reads a copy of
+ * `dev.db` + `-wal` taken into the export's own scratch directory, WITHOUT the
+ * `-shm`: SQLite rebuilds the WAL index from the WAL rather than trusting the
+ * one next to the file, and a file set the first reader cannot open read-write
+ * is still readable from a copy nothing else holds.
+ *
+ * What this does not claim: that a mismatched `-shm` is what produced Samsara's
+ * `database disk image is malformed` (SHO-541). Damaged sidecars — zeroed,
+ * truncated, foreign, deleted — are all read fine by the first reader, which
+ * validates the wal-index against the WAL header and rebuilds it. The
+ * production cause was never established. If the database's own pages are
+ * corrupt neither reader helps, and the caller gets the named error below,
+ * which is a person's decision rather than a retry.
+ *
+ * The staged copy is `dev.db` + `-wal` into the export's own scratch directory,
+ * never the workspace: nothing here writes to the user's files, and the copy is
+ * deleted either way. Copying a database a writer is checkpointing can itself
+ * tear, which is why it is the second attempt and not the first — a torn copy
+ * fails the same way and reports `sqlite_snapshot_failed` rather than shipping
+ * a snapshot with mixed state.
+ */
+export function snapshotSqlite(dbPath: string, destPath: string): void {
+  const dir = dirname(destPath)
+  mkdirSync(dir, { recursive: true })
+  const attempts: Array<{ reader: string; message: string }> = []
+
+  try {
+    rmSync(destPath, { force: true })
+    vacuumInto(dbPath, destPath)
+    return
+  } catch (err: any) {
+    attempts.push({ reader: 'live', message: err?.message ?? String(err) })
+  }
+
+  const staged = join(dir, 'snapshot-source')
+  try {
+    rmSync(staged, { recursive: true, force: true })
+    mkdirSync(staged, { recursive: true })
+    const copy = join(staged, 'dev.db')
+    copyFileSync(dbPath, copy)
+    // The WAL holds committed data the snapshot must include. The `-shm`
+    // deliberately does not travel: it is a rebuildable index holding no data,
+    // and a stale one is the very thing this reader exists to get away from.
+    if (existsSync(`${dbPath}-wal`)) copyFileSync(`${dbPath}-wal`, `${copy}-wal`)
+    rmSync(destPath, { force: true })
+    vacuumInto(copy, destPath)
+  } catch (err: any) {
+    attempts.push({ reader: 'staged copy', message: err?.message ?? String(err) })
+    throw new SqliteSnapshotError(attempts)
+  } finally {
+    rmSync(staged, { recursive: true, force: true })
   }
 }
 

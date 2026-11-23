@@ -17,6 +17,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -33,6 +34,7 @@ import {
   closeWritableStateHandles,
   packWritableState,
   snapshotSqlite,
+  SqliteSnapshotError,
   SQLITE_DB_REL,
   SQLITE_SIDECAR_RELS,
   writableStateTag,
@@ -391,6 +393,113 @@ async function realDataArchive(rows: number): Promise<string> {
   await packWritableState({ workspaceDir: realWs, stageDir: scratch(), outPath: out })
   return out
 }
+
+/**
+ * A database nobody can snapshot, and the two ways that happens (SHO-541).
+ *
+ * The metal host treats a 500 from `/pool/export-data` as a transient guest
+ * problem, so a database it can never read has to fail as a NAMED condition:
+ * one VM retried this for four days and 336 attempts with nothing surfacing it.
+ */
+describe('snapshotSqlite when the live database cannot be read in place', () => {
+  test('falls back to a staged copy when the workspace cannot be written', async () => {
+    // A read-only workspace mount, or a directory owned by another uid. SQLite
+    // cannot create the `-shm` a WAL database needs and refuses to open it at
+    // all ("unable to open database file"), while reading the bytes is still
+    // fine. A copy somewhere writable builds a fresh index from the WAL, so the
+    // rows committed but not yet checkpointed come across.
+    const { ws, dbPath } = workspaceWithDb(4)
+    const live = new Database(dbPath, { readwrite: true })
+    live.exec('PRAGMA wal_autocheckpoint=0')
+    live.exec("INSERT INTO t VALUES('only in the wal')")
+    live.close()
+    const prisma = join(ws, 'prisma')
+    try {
+      chmodSync(dbPath, 0o444)
+      chmodSync(prisma, 0o555)
+
+      const out = join(scratch(), 'snap.db')
+      snapshotSqlite(dbPath, out)
+
+      const restored = new Database(out, { readonly: true })
+      expect(restored.query('SELECT count(*) n FROM t').get()).toEqual({ n: 5 })
+      expect(restored.query('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' })
+      restored.close()
+    } finally {
+      chmodSync(prisma, 0o755)
+      chmodSync(dbPath, 0o644)
+    }
+  })
+
+  test('a WAL database whose -shm does not match still snapshots, and never writes the workspace', () => {
+    // The candidate cause on the metal guest: a `-shm` left behind by an
+    // earlier copy of the VM, sitting next to a WAL it does not describe.
+    // SQLite validates the index against the WAL header and rebuilds when it
+    // does not match, so this snapshots — the assertion that matters is that it
+    // does not throw SQLITE_CORRUPT at the caller.
+    const { ws, dbPath } = workspaceWithDb(3)
+    const live = new Database(dbPath, { readwrite: true })
+    live.exec('PRAGMA wal_autocheckpoint=0')
+    live.exec("INSERT INTO t VALUES('in the wal')")
+    live.close()
+
+    // A decoy index from a different database, same name. The handle stays open
+    // across the copy because a clean close deletes the `-shm` on Linux (it
+    // lingers on macOS), and this file has to exist to be mismatched.
+    const decoy = workspaceWithDb(20)
+    const decoyDb = new Database(decoy.dbPath, { readwrite: true })
+    decoyDb.exec('PRAGMA wal_autocheckpoint=0')
+    decoyDb.exec("INSERT INTO t VALUES('decoy')")
+    const decoyShm = `${decoy.dbPath}-shm`
+    expect(existsSync(decoyShm)).toBe(true)
+    copyFileSync(decoyShm, `${dbPath}-shm`)
+    decoyDb.close()
+
+    const out = join(scratch(), 'snap.db')
+    snapshotSqlite(dbPath, out)
+
+    const restored = new Database(out, { readonly: true })
+    expect(restored.query('SELECT count(*) n FROM t').get()).toEqual({ n: 4 })
+    restored.close()
+    expect(ws).toBeTruthy()
+  })
+
+  test('names the failure when the database really cannot be read', async () => {
+    // Not a sidecar problem: the bytes are not a database at all. Both readers
+    // fail, and the caller gets a code it can act on instead of a bare SQLite
+    // message in an anonymous 500.
+    const { ws, dbPath } = workspaceWithDb(1)
+    for (const rel of SQLITE_SIDECAR_RELS) rmSync(join(ws, rel), { force: true })
+    writeFileSync(dbPath, Buffer.from('this is not a sqlite database'.repeat(64)))
+
+    const out = join(scratch(), 'snap.db')
+    let caught: any
+    try {
+      snapshotSqlite(dbPath, out)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(SqliteSnapshotError)
+    expect(caught.code).toBe('sqlite_snapshot_failed')
+    const readers = caught.attempts.map((a: any) => a.reader)
+    expect(readers).toEqual(['live', 'staged copy'])
+    for (const attempt of caught.attempts) expect(attempt.message).toBeTruthy()
+    // No half-written snapshot left behind for the packer to archive.
+    expect(existsSync(out)).toBe(false)
+  })
+
+  test('packWritableState propagates the named failure rather than archiving nothing', async () => {
+    const { ws, dbPath } = workspaceWithDb(1)
+    for (const rel of SQLITE_SIDECAR_RELS) rmSync(join(ws, rel), { force: true })
+    writeFileSync(dbPath, Buffer.from('not a database'.repeat(64)))
+
+    const out = join(scratch(), 'data.tar.gz')
+    await expect(
+      packWritableState({ workspaceDir: ws, stageDir: scratch(), outPath: out }),
+    ).rejects.toThrow(/sqlite|snapshot/i)
+    expect(existsSync(out)).toBe(false)
+  })
+})
 
 describe('stale sidecar handling on restore', () => {
   test('a leftover WAL silently REVERTS a restored snapshot', async () => {
