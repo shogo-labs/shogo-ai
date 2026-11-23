@@ -263,7 +263,7 @@ beforeEach(() => {
     id: 'p1',
     workspaceId: 'ws-a',
     publishedSubdomain: 'my-app',
-    publishedAt: new Date('2026-11-20T00:00:00Z'),
+    publishedAt: new Date(Date.now() - 86_400_000),
     publishStatus: 'live',
     publishError: null,
     publishStatusAt: null,
