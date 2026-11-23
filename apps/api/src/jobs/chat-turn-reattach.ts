@@ -20,7 +20,7 @@
 import { randomUUID } from 'node:crypto'
 import type { TrackedStreamResult } from '../routes/project-chat'
 import { TURN_REATTACH_AFTER_MS } from '../services/chat-turn-state.service'
-import { hostedSessionExclusion } from '../lib/hosted-workspace'
+import { hostedSessionExclusion, hostedSessionInclusion } from '../lib/hosted-workspace'
 
 const TICK_MS = 30_000
 const LEASE_KEY = 'chat-turn-reattach:leader'
@@ -67,6 +67,20 @@ type RuntimeTarget = {
   fetchRuntime: (path: string) => Promise<Response>
 }
 
+/**
+ * Which of these turns the *cloud* relay was following (SHO-546).
+ *
+ * A hosted workspace's turn can be started by the cloud (the person sent the
+ * message from studio, and the cloud API relayed the turn through the host
+ * tunnel) or by the desktop itself (the message arrived there first and is
+ * mirrored up). Only the first kind is the cloud's to recover, and the journal
+ * is what tells them apart: `TurnJournalWriter` writes a frame row for every
+ * frame the relay forwards, and `chat_turn_frames` is not mirrored from a
+ * desktop — so a turn with frames here is a turn this side started. No schema
+ * change: the rows are already there.
+ */
+type CloudTurnCheck = (turnIds: string[]) => Promise<Set<string>>
+
 export type ReattachDeps = {
   db: any
   acquireLease: () => Promise<boolean>
@@ -90,6 +104,12 @@ export type ReattachDeps = {
   recoverFromJournal?: typeof import('../services/chat-turn-recovery').recoverTurnFromJournal
   homeSessionWhere: () => Record<string, unknown> | null
   now: () => number
+  /**
+   * Turns whose frames this side journalled — i.e. turns the cloud relay was
+   * tracking through the host tunnel. Injected so a hosted-turn sweep is
+   * testable without a database.
+   */
+  cloudTrackedTurns?: CloudTurnCheck
 }
 
 async function defaultDeps(): Promise<ReattachDeps> {
@@ -159,6 +179,20 @@ async function defaultDeps(): Promise<ReattachDeps> {
       return home ? { OR: [{ project: { workspace: home } }, { workspace: home }] } : null
     },
     now: () => Date.now(),
+    cloudTrackedTurns: async (turnIds) => {
+      const ids = [...new Set(turnIds.filter(Boolean))]
+      if (!ids.length || !(prisma as any).chatTurnFrame) return new Set()
+      try {
+        const rows: Array<{ turnId: string }> = await prisma.chatTurnFrame.findMany({
+          where: { turnId: { in: ids } },
+          select: { turnId: true },
+          distinct: ['turnId'],
+        })
+        return new Set(rows.map((row) => row.turnId))
+      } catch {
+        return new Set()
+      }
+    },
   }
 }
 
@@ -199,30 +233,57 @@ export async function reattachStaleTurns(depsArg?: ReattachDeps): Promise<string
   // there, and the cloud has no runtime buffer for it. Claiming it wrote an
   // "I was interrupted" note into the copy and queued a resume that then ran on
   // the cloud (SHO-276).
-  const machine = hostedSessionExclusion(await machineWorkspaceIdsFrom(deps.db))
+  const machineWorkspaceIds = await machineWorkspaceIdsFrom(deps.db)
+  const machine = hostedSessionExclusion(machineWorkspaceIds)
+  const staleShape = {
+    activeTurnId: { not: null } as const,
+    activeTurnHeartbeatAt: { lt: new Date(now - TURN_REATTACH_AFTER_MS), gt: new Date(now - MAX_HEARTBEAT_AGE_MS) },
+    activeTurnStartedAt: { gt: new Date(now - MAX_TURN_AGE_MS) },
+    ...(home ?? {}),
+  }
+  const select = {
+    id: true,
+    contextType: true,
+    contextId: true,
+    workspaceId: true,
+    activeTurnId: true,
+    activeTurnStartedAt: true,
+    activeTurnHeartbeatAt: true,
+  } as const
   const candidates: StaleTurn[] = await deps.db.chatSession.findMany({
-    where: {
-      activeTurnId: { not: null },
-      activeTurnHeartbeatAt: { lt: new Date(now - TURN_REATTACH_AFTER_MS), gt: new Date(now - MAX_HEARTBEAT_AGE_MS) },
-      activeTurnStartedAt: { gt: new Date(now - MAX_TURN_AGE_MS) },
-      ...(home ?? {}),
-      ...machine,
-    },
-    select: {
-      id: true,
-      contextType: true,
-      contextId: true,
-      workspaceId: true,
-      activeTurnId: true,
-      activeTurnStartedAt: true,
-      activeTurnHeartbeatAt: true,
-    },
+    where: { ...staleShape, ...machine },
+    select,
     orderBy: { activeTurnHeartbeatAt: 'asc' },
     take: MAX_CLAIMS_PER_TICK,
   })
 
+  // A hosted session is only this side's to recover when the cloud relay was
+  // the one following the turn (SHO-546). A desktop-started turn has no frames
+  // here at all — the desktop journal is its own database — so it stays
+  // excluded exactly as SHO-276 requires, while a turn the cloud started
+  // through the host tunnel is picked up and its buffer replayed.
+  if (machineWorkspaceIds.length) {
+    const hostedRows: StaleTurn[] = await deps.db.chatSession.findMany({
+      // `AND` keeps a home-region `OR` from `staleShape` and this inclusion
+      // composing instead of the later one replacing the former.
+      where: { ...staleShape, AND: [hostedSessionInclusion(machineWorkspaceIds)] },
+      select,
+      orderBy: { activeTurnHeartbeatAt: 'asc' },
+      take: MAX_CLAIMS_PER_TICK,
+    })
+    if (hostedRows.length && deps.cloudTrackedTurns) {
+      const tracked = await deps
+        .cloudTrackedTurns(hostedRows.map((row) => row.activeTurnId).filter((id): id is string => !!id))
+        .catch(() => new Set<string>())
+      for (const row of hostedRows) {
+        if (row.activeTurnId && tracked.has(row.activeTurnId)) candidates.push(row)
+      }
+      candidates.sort((a, b) => (a.activeTurnHeartbeatAt?.getTime() ?? 0) - (b.activeTurnHeartbeatAt?.getTime() ?? 0))
+    }
+  }
+
   const claimed: string[] = []
-  for (const session of candidates) {
+  for (const session of candidates.slice(0, MAX_CLAIMS_PER_TICK)) {
     if (!session.activeTurnId || !session.activeTurnStartedAt || reattaching.has(session.id)) continue
     const won = await deps.db.chatSession.updateMany({
       where: { id: session.id, activeTurnId: session.activeTurnId, activeTurnHeartbeatAt: session.activeTurnHeartbeatAt },
