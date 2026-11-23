@@ -182,8 +182,14 @@ describe('AC1 — an agent can delete a draft, a scheduled post and a failed pos
     const res = await agent(`/social/posts/${post.id}`, { method: 'DELETE' })
 
     expect(res.status).toBe(200)
-    // A row deleted locally but still queued at Zernio would ship anyway.
-    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(['DELETE /posts/provider_sched_1'])
+    // A row deleted locally but still queued at Zernio would ship anyway. Since
+    // SHO-543 the delete reads the post first — the row's own `status` cannot be
+    // trusted — and an answer that names no target changes nothing, so this one
+    // is still only scheduled and is cancelled at the provider as before.
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      'GET /posts/provider_sched_1',
+      'DELETE /posts/provider_sched_1',
+    ])
     expect(await db.socialPost.findUnique({ where: { id: post.id } })).toBeNull()
   })
 
