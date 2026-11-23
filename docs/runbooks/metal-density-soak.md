@@ -313,10 +313,12 @@ all (below), so the honest statement today is: 80 is the steady-state knee, and
 its burst headroom is **unmeasured**. A second follow-up run is the only thing
 that closes it.
 
-**`METAL_MEM_MIB` should not change** on this host: the RAM knee is set by
-per-VM pressure at 4 GiB, and the measured RSS per soak VM (~2.1 GiB resident for
-a 4 GiB guest) leaves host RAM far above both knees, so guest sizing is not what
-limits density — the tail does.
+**`METAL_MEM_MIB` should not change** on this host: the RAM knee arrives as
+pressure at 4 GiB guests (memory PSI crossing 1% between 80 and 100), with
+`MemAvailable` still at 14.2% of 503 GiB when the ladder ended at 160 — so host
+RAM is not what runs out, the tail is. A per-size ceiling cannot be quoted until
+a run measures RSS per soak VM (see below); the ceilings are not what set the
+number above.
 
 **Measured host RSS is attributable only to the soak.** Run 1106 recorded every
 Firecracker process on the host in its RAM column, so its 258 941 MiB over 40 soak
