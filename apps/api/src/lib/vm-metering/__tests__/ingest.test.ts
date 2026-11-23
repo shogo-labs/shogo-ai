@@ -35,6 +35,7 @@ interface Cursor {
 }
 
 interface UsageRow {
+  id: string
   workspaceId: string
   projectId: string
   hour: Date
@@ -54,6 +55,19 @@ let projects: Array<{ id: string; workspaceId: string }> = []
 let workspaces: Array<{ id: string }> = []
 
 const cursorKey = (hostId: string, vmId: string, assignedAt: bigint) => `${hostId}|${vmId}|${assignedAt}`
+
+/** The `@@unique` identity of a `VmUsageHour` row. */
+function sameRow(r: UsageRow, w: any): boolean {
+  return (
+    r.workspaceId === w.workspaceId &&
+    r.projectId === w.projectId &&
+    r.hour.getTime() === w.hour.getTime() &&
+    r.hostId === w.hostId &&
+    r.vcpus === w.vcpus &&
+    r.memMiB === w.memMiB &&
+    r.cause === w.cause
+  )
+}
 
 function sameTriple(c: Cursor, where: any): boolean {
   return (
@@ -119,18 +133,21 @@ const fakePrisma: any = {
     },
   },
   vmUsageHour: {
+    findUnique: async (args: any) => {
+      const w = args.where.workspaceId_projectId_hour_hostId_vcpus_memMiB_cause
+      return usageRows.find((r) => sameRow(r, w)) ?? null
+    },
+    update: async (args: any) => {
+      const row = usageRows.find((r) => r.id === args.where.id)
+      if (!row) throw new Error(`no usage row ${args.where.id}`)
+      row.agentSeconds += args.data.agentSeconds?.increment ?? 0
+      row.appSeconds += args.data.appSeconds?.increment ?? 0
+      row.idleSeconds += args.data.idleSeconds?.increment ?? 0
+      return row
+    },
     upsert: async (args: any) => {
       const w = args.where.workspaceId_projectId_hour_hostId_vcpus_memMiB_cause
-      const found = usageRows.find(
-        (r) =>
-          r.workspaceId === w.workspaceId &&
-          r.projectId === w.projectId &&
-          r.hour.getTime() === w.hour.getTime() &&
-          r.hostId === w.hostId &&
-          r.vcpus === w.vcpus &&
-          r.memMiB === w.memMiB &&
-          r.cause === w.cause,
-      )
+      const found = usageRows.find((r) => sameRow(r, w))
       if (found) {
         found.agentSeconds += args.update.agentSeconds?.increment ?? 0
         found.appSeconds += args.update.appSeconds?.increment ?? 0
@@ -138,6 +155,7 @@ const fakePrisma: any = {
         return found
       }
       const row: UsageRow = {
+        id: `use_${nextId++}`,
         workspaceId: args.create.workspaceId,
         projectId: args.create.projectId,
         hour: args.create.hour,
@@ -376,7 +394,110 @@ describe('ingestMetalMeters', () => {
 
     expect(cursors.map((c) => `${c.hostId}/${c.vmId}`).sort()).toEqual(['metal-us-1/vm-2', 'other-host/vm-1'])
   })
+
+  /**
+   * SHO-532. Prod had rows of 4.4M seconds per hour: the host's counters restart
+   * at zero when it adopts a VM across a restart, and a report that jumps by days
+   * is then read as a delta of days. Whatever the counters grew by, it cannot
+   * exceed the wall clock since the last heartbeat.
+   */
+  it('bounds a delta by the wall clock and drops the excess instead of carrying it', async () => {
+    const assignedAt = T0 - 200_000_000
+    const errors = captureErrors()
+    try {
+      // Cursor at 3 h agent + 2 d idle.
+      await ingestMetalMeters({
+        hostId: HOST,
+        payload: payload({ assignedAt, agentMs: 3 * 3_600_000, idleMs: 2 * 86_400_000 }),
+        now: new Date(T0),
+      })
+      // 30 s later a report that looks like 30 days of idle (the prod shape).
+      const out = await ingestMetalMeters({
+        hostId: HOST,
+        payload: payload({ seq: 2, assignedAt, agentMs: 0, idleMs: 30 * 86_400_000 }),
+        now: new Date(T0 + 30_000),
+      })
+
+      expect(out.clamped).toBe(1)
+      // 30 s of wall clock + the 60 s slack, and not a second more.
+      expect(out.idleSeconds).toBeLessThanOrEqual(90)
+      expect(out.agentSeconds + out.appSeconds + out.idleSeconds).toBeLessThanOrEqual(90)
+      expect(errors.lines.some((e) => e.includes('OVERCOUNT'))).toBe(true)
+      for (const r of usageRows) {
+        expect(r.agentSeconds + r.appSeconds + r.idleSeconds).toBeLessThanOrEqual(3600)
+      }
+    } finally {
+      errors.restore()
+    }
+  })
+
+  /**
+   * SHO-532: attribution used to be "the hour the heartbeat lands in", so a gap
+   * longer than an hour (a slow register, a 5xx that withheld the ack, an agent
+   * restart) piled the whole delta into one hour.
+   */
+  it('splits a delta that spans an hour edge across both hours, pro rata', async () => {
+    const H9 = Date.UTC(2026, 10, 18, 9, 50, 0)
+    const H10 = Date.UTC(2026, 10, 18, 10, 10, 0)
+    await ingestMetalMeters({ hostId: HOST, payload: payload({ assignedAt: H9 }), now: new Date(H9) })
+    const out = await ingestMetalMeters({
+      hostId: HOST,
+      payload: payload({ seq: 2, assignedAt: H9, agentMs: 600_000, appMs: 600_000 }),
+      now: new Date(H10),
+    })
+
+    expect(out.metered).toBe(1)
+    const at = (hour: number) => usageRows.find((r) => r.hour.getTime() === hour)
+    // 09:50 → 10:10 is 20 minutes: 10 in each hour, each class pro rata.
+    expect(at(Date.UTC(2026, 10, 18, 9, 0))).toMatchObject({ agentSeconds: 300, appSeconds: 300 })
+    expect(at(Date.UTC(2026, 10, 18, 10, 0))).toMatchObject({ agentSeconds: 300, appSeconds: 300 })
+  })
+
+  it('never lets one hour row bill more than the 3600 s in that hour', async () => {
+    const now = Date.UTC(2026, 10, 18, 10, 45, 0)
+    const assignedAt = now - 2_400_000
+    const errors = captureErrors()
+    try {
+      await ingestMetalMeters({
+        hostId: HOST,
+        payload: payload({ vmId: 'vm-a', assignedAt, agentMs: 2_400_000 }),
+        now: new Date(now),
+      })
+      // A second VM of the same size and cause sharing the row (a legacy bare key
+      // and `ws:proj:` runtime). 2400 + 2400 would be 4800 s in one hour.
+      await ingestMetalMeters({
+        hostId: HOST,
+        payload: payload({ seq: 2, vmId: 'vm-b', assignedAt, agentMs: 2_400_000 }),
+        now: new Date(now),
+      })
+    } finally {
+      errors.restore()
+    }
+
+    expect(usageRows).toHaveLength(1)
+    expect(usageRows[0].agentSeconds).toBe(3600)
+    expect(errors.lines.some((e) => e.includes('ROW_CAP'))).toBe(true)
+  })
 })
+
+/**
+ * Collect `console.error` for the duration of a test. The over-count and
+ * row-cap paths are only observable through their log lines, and a silent clamp
+ * would be an under-bill nobody can find later.
+ */
+function captureErrors() {
+  const lines: string[] = []
+  const original = console.error
+  console.error = (...args: any[]) => {
+    lines.push(args.map((a) => String(a)).join(' '))
+  }
+  return {
+    lines,
+    restore: () => {
+      console.error = original
+    },
+  }
+}
 
 describe('advanceCounter', () => {
   it('treats a missing cursor as zero', () => {
