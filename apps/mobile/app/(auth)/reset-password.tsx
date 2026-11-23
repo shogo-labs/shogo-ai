@@ -129,7 +129,7 @@ export default function ResetPasswordScreen() {
         ) : null}
 
         <Button variant="brand" onPress={handleSubmit} disabled={submitting || password.length < 8}>
-          {submitting ? <Spinner tone="onPrimary" size="small" /> : 'Update password'}
+          {submitting ? <Spinner tone="onBrand" size="small" /> : 'Update password'}
         </Button>
 
         <Pressable onPress={() => router.replace('/(auth)/sign-in')} className="mt-5 self-center py-2">

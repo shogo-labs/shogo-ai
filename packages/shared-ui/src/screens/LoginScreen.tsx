@@ -538,7 +538,7 @@ function SignInForm({
       ) : null}
 
       <Button variant="brand" onPress={handleSubmit} disabled={isLoading || !email || !password} className="mt-1">
-        {isLoading ? <Spinner tone="onPrimary" size="small" /> : 'Sign In'}
+        {isLoading ? <Spinner tone="onBrand" size="small" /> : 'Sign In'}
       </Button>
     </View>
   )
@@ -688,7 +688,7 @@ function SignUpForm({
       ) : null}
 
       <Button variant="brand" onPress={handleSubmit} disabled={isLoading || !isFormValid} className="mt-1">
-        {isLoading ? <Spinner tone="onPrimary" size="small" /> : 'Sign Up'}
+        {isLoading ? <Spinner tone="onBrand" size="small" /> : 'Sign Up'}
       </Button>
     </View>
   )

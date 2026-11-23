@@ -471,23 +471,15 @@ export function WorkspaceMenuSection({
               onClose();
             }}
             className={cn(
-              "flex-row items-center justify-center gap-2 rounded-md",
+              "flex-row items-center justify-center gap-2 rounded-md bg-primary",
               isNative ? "h-11" : "h-9",
             )}
-            style={
-              Platform.OS === "web"
-                ? ({
-                    backgroundImage:
-                      "linear-gradient(to right, #3b82f6, #9333ea)",
-                  } as any)
-                : { backgroundColor: "#7c3aed" }
-            }
           >
             <Zap
               size={isNative ? density.icon.md : 16}
-              className="text-white"
+              className="text-primary-foreground"
             />
-            <Text className={cn("font-medium text-white", density.text.body)}>
+            <Text className={cn("font-medium text-primary-foreground", density.text.body)}>
               {UPGRADE_CTA_LABEL}
             </Text>
           </Pressable>

@@ -70,8 +70,25 @@ const LITERAL_ALLOW_LIST: Record<string, string> = {
   'apps/mobile/components/analytics/ContentAnalytics.tsx': 'chart series colours, not UI colour',
   'apps/mobile/components/meetings/MeetingTranscript.tsx': 'per-speaker palette, not UI colour',
   'apps/mobile/components/project/panels/ChannelsPanel.tsx': 'third-party brand swatches (WhatsApp, Telegram, Slack)',
+  'apps/mobile/components/project/panels/ide/terminal/XtermView.tsx': 'terminal emulator theme, not app colour',
+  'apps/mobile/components/project/panels/ide/agentEditAnimation.ts': 'IDE edit-pulse colours drawn inside the editor',
+  'apps/mobile/components/team-chat/HuddlePip.tsx': 'video pip is always a black surface',
+  'apps/mobile/components/team-chat/HuddleVideo.tsx': 'video surface is always black',
+  'apps/mobile/components/canvas/CanvasWebView.tsx':
+    'the WebView loading/error overlay is canvas chrome with its own fixed palette',
+  'apps/mobile/components/notifications/NotificationStack.tsx': 'toast cards are a fixed dark surface in both modes',
+  'apps/mobile/components/chat/turns/MessageContent.tsx':
+    "the outgoing ('me') bubble is a deliberate fixed dark surface with white text",
+  'apps/mobile/components/settings/MemberUsageDetail.tsx': 'chart series colour, not UI colour',
+  'apps/mobile/components/layout/MobileWorkspaceShell.tsx': 'black letterbox behind the shell',
+  'apps/mobile/components/island/IslandIdle.tsx': 'island look is always a black surface',
+  'apps/mobile/components/island/lab/BrandLab.tsx': 'brand lab renders the brand palette',
+  'apps/mobile/components/island/buddy/webview-entry.ts': 'buddy look defaults',
+  'apps/mobile/components/island/buddy/look.ts': 'buddy look palette',
   'apps/mobile/components/canvas/canvas-themes.ts': 'user-selectable canvas themes',
   'apps/mobile/components/canvas/CanvasThemePicker.tsx': 'previews user-selectable canvas themes',
+  'apps/mobile/app/dev/island-demo.tsx': 'dev-only demo screen for the island look',
+  'packages/shared-ui/src/branding/ShogoWordmark.tsx': 'the wordmark artwork itself',
 }
 
 /** Why the accent must not be named as a hex literal. */
@@ -90,6 +107,45 @@ const NEUTRAL_LITERALS = ['#71717a', '#a1a1aa', '#6b7280', '#888']
 
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+}
+
+/** Colour props React Native takes on a style object (or an SVG icon). */
+const STYLE_COLOUR_PROPS = [
+  'backgroundColor',
+  'borderColor',
+  'borderTopColor',
+  'borderBottomColor',
+  'borderLeftColor',
+  'borderRightColor',
+  'color',
+  'tintColor',
+  'thumbColor',
+  'trackColor',
+  'placeholderTextColor',
+  'selectionColor',
+  'fill',
+  'stroke',
+]
+
+/**
+ * A hex or `rgb()` literal assigned to a colour prop. `shadowColor` is not in
+ * the list on purpose: a shadow is black in every theme.
+ */
+const STYLE_LITERAL = new RegExp(
+  `(?:^|[\\s,{])(?:${STYLE_COLOUR_PROPS.join('|')})\\s*:\\s*['"](#[0-9a-fA-F]{3,8}|rgba?\\([^)]*\\))['"]`,
+  'g',
+)
+
+/**
+ * A grey is mode-neutral enough to sit in a style (a translucent scrim, a
+ * neutral border); a hue has to come from a token. Hexes always count, because
+ * an opaque hex pins one mode.
+ */
+function hasHue(value: string): boolean {
+  if (value.startsWith('#')) return true
+  const channels = value.match(/[\d.]+/g)?.slice(0, 3).map(Number)
+  if (!channels || channels.length < 3) return false
+  return Math.max(...channels) - Math.min(...channels) > 12
 }
 
 function sourceFiles(dir: string): string[] {
@@ -149,6 +205,16 @@ describe('theme colour guard (SHO-544)', () => {
     expect(offenders).toEqual([])
   })
 
+  test('no style object pins a colour literally', () => {
+    const offenders: string[] = []
+    for (const { repoPath, source } of guardedFiles) {
+      for (const match of source.matchAll(STYLE_LITERAL)) {
+        if (hasHue(match[1])) offenders.push(`${repoPath}: ${match[0].trim()}`)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+
   test('the allow-list only names files that still exist', () => {
     const files = new Set(SCAN_DIRS.flatMap(sourceFiles).map((file) => relative(repoRoot, file)))
     const missing = Object.keys(LITERAL_ALLOW_LIST).filter((path) => !files.has(path))
@@ -165,6 +231,18 @@ describe('theme colour guard (SHO-544)', () => {
     expect(primitive).toContain('nativeStyleToProp')
     for (const tone of ['primary', 'primary-foreground', 'muted-foreground', 'destructive']) {
       expect(primitive).toContain(`text-${tone}`)
+    }
+    // `nativeStyleToProp` is native-only, so the className alone leaves web on
+    // react-native-web's #1976D2. Every tone needs a real colour for web too.
+    expect(primitive).toContain('TONE_WEB_COLOR')
+    expect(primitive).toContain("Platform.OS === 'web'")
+    for (const token of [
+      'rgb(var(--color-primary))',
+      'rgb(var(--color-primary-foreground))',
+      'rgb(var(--color-muted-foreground))',
+      'rgb(var(--color-destructive))',
+    ]) {
+      expect(primitive).toContain(token)
     }
   })
 })

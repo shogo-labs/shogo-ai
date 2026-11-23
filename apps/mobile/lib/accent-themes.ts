@@ -52,6 +52,17 @@ export function accentTripletToRgb(triplet: string): string {
 }
 
 /**
+ * `rgb(226, 121, 39)` + `0.32` → `rgba(226, 121, 39, 0.32)`. React Native has no
+ * `color-mix`/alpha channel syntax, so a tint of a theme colour is built here
+ * rather than by string-concatenating at each call site.
+ */
+export function withAlpha(color: string, alpha: number): string {
+  const channels = color.match(/[\d.]+/g)
+  if (!channels || channels.length < 3) return color
+  return `rgba(${channels.slice(0, 3).join(', ')}, ${alpha})`
+}
+
+/**
  * The live accent for code that cannot use a hook — the root error boundary
  * renders when the providers it would read from may not be mounted. On web it
  * reads the same stored preference and `dark` class the accent provider writes;

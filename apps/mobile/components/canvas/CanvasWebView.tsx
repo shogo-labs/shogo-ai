@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useMemo, useState } from 'react'
 import { Platform, View, StyleSheet, Text, TouchableOpacity } from 'react-native'
 import { useCanvasThemeOptional } from './CanvasThemeContext'
 import { useAccentColors } from '../../contexts/accent-theme'
+import { withAlpha } from '../../lib/accent-themes'
 import type { CanvasThemeVariant } from './canvas-themes'
 import { canvasDocumentUrl } from '../../lib/preview-gate'
 import { agentFetch } from '../../lib/agent-fetch'
@@ -73,15 +74,10 @@ function postCanvasError(
 }
 
 /**
- * The accent hook hands back `rgb(r g b)`, which React Native styles cannot
+ * The accent hook hands back `rgb(r, g, b)`, which React Native styles cannot
  * take an alpha on. Only the RGB channels are read back out, so the bar's
  * button tints stay anchored to whatever foreground the accent chose.
  */
-function withAlpha(color: string, alpha: number): string {
-  const channels = color.match(/[\d.]+/g)
-  if (!channels || channels.length < 3) return color
-  return `rgba(${channels.slice(0, 3).join(', ')}, ${alpha})`
-}
 
 // ---------------------------------------------------------------------------
 // CanvasWebView — public component
