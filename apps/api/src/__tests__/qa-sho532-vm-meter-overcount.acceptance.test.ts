@@ -25,7 +25,7 @@
  *   bun --no-env-file test src/__tests__/qa-sho532-vm-meter-overcount.acceptance.test.ts
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, describe, expect, setSystemTime, test } from 'bun:test'
 import { rmSync } from 'fs'
 import { seedWorkspace, setupChannelsTestDb } from './helpers/channels-test-db'
 
@@ -42,12 +42,18 @@ const HOUR = 3_600_000
 const DAY = 86_400_000
 
 afterAll(() => {
+  setSystemTime()
   try { rmSync(dir, { recursive: true }) } catch {}
 })
 
 let seed: Awaited<ReturnType<typeof seedWorkspace>>
 
 beforeAll(async () => {
+  // Every instant below is passed into `ingest`/`repairOvercount` explicitly, so
+  // the clock is only pinned to keep a literal from ever being read as "now"
+  // (SHO-505: a test that seeds 2026-11-18 and compares it to the live clock
+  // passes today and goes red in 72 hours).
+  setSystemTime(new Date('2026-11-23T05:00:00Z'))
   seed = await seedWorkspace(prisma as any)
 })
 

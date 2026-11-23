@@ -21,7 +21,7 @@
  * ones (unique keys, compare-and-swap on the counter triple).
  */
 
-import { beforeEach, describe, expect, it, mock } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, mock, setSystemTime } from 'bun:test'
 
 interface Cursor {
   id: string
@@ -53,6 +53,11 @@ let usageRows: UsageRow[] = []
 let nextId = 1
 let projects: Array<{ id: string; workspaceId: string }> = []
 let workspaces: Array<{ id: string }> = []
+
+// Every instant in this file is passed into `ingestMetalMeters` as `now`; pin the
+// clock so no literal can ever be compared against the live one (SHO-505).
+beforeAll(() => setSystemTime(new Date('2026-11-23T05:00:00Z')))
+afterAll(() => setSystemTime())
 
 const cursorKey = (hostId: string, vmId: string, assignedAt: bigint) => `${hostId}|${vmId}|${assignedAt}`
 

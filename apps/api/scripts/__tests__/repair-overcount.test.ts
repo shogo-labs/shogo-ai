@@ -11,10 +11,17 @@
  * billed row is never re-read, so nothing can be re-charged).
  */
 
-import { describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, setSystemTime, test } from 'bun:test'
 import { planRowRepair, repairOvercount, type OvercountRow } from '../vm-metering/repair-overcount'
 
 const HOUR = 3_600_000
+
+// `repairOvercount` defaults `--before` to now, and the fixture rows are dated
+// 2026-11-21/22, so the clock is pinned just past them: an unpinned clock would
+// make "every closed hour before now" drift into a different answer over time
+// (SHO-505).
+beforeAll(() => setSystemTime(new Date('2026-11-23T05:00:00Z')))
+afterAll(() => setSystemTime())
 
 function row(fields: Partial<OvercountRow> & { id: string }): OvercountRow {
   return {
