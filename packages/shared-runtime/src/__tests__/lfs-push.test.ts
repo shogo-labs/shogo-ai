@@ -247,9 +247,11 @@ describe('lfsPushIncremental', () => {
     expect(first.pushed).toBe(3)
     expect(first.missing).toEqual([])
     expect(first.skipped).toBe(0)
-    // The whole 200-object history was not walked: one batch, three oids.
-    expect(lfs.batches).toHaveLength(1)
-    expect(lfs.batches[0].oids).toHaveLength(3)
+    // The whole 200-object history was not walked. Two batch calls, each about
+    // the three new oids: ours ("does the server have these?") and git-lfs's own
+    // upload negotiation. Neither ever mentions the 200 older objects.
+    expect(lfs.batches.length).toBeLessThanOrEqual(2)
+    for (const b of lfs.batches) expect(b.oids).toHaveLength(3)
     expect(lfs.uploads).toHaveLength(3)
 
     // Nothing new since those tips -> nothing pushed, no batch call.
@@ -284,9 +286,11 @@ describe('lfsPushIncremental', () => {
 
     const result = await lfsPushIncremental(cfg, { tips: null })
     expect(result.missing).toEqual([])
-    expect(result.skipped).toBe(all.length - headObjects.length)
-    expect(result.pushed).toBe(headObjects.length)
-    // The server already held every byte, so git-lfs's own dedup moved none.
+    // Every object is either absent locally but on the server, or present
+    // locally and already on the server. Both count as skipped, and NOTHING is
+    // uploaded: a local cache is not evidence that the server lacks the bytes.
+    expect(result.skipped).toBe(all.length)
+    expect(result.pushed).toBe(0)
     expect(lfs.uploads).toEqual([])
   }, 90_000)
 
