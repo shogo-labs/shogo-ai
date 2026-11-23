@@ -55,6 +55,16 @@ describe('release SDK pin wiring (SHO-522)', () => {
     expect(wf).toContain('/app/templates/runtime-template/package.json')
     // A failed rebuild must stop the deploy, not silently promote a stale image.
     expect(wf).toContain("(needs.rebuild-release-runtime.result == 'success' || needs.rebuild-release-runtime.result == 'skipped')")
+    // The runtime build is FROM shogo-runtime-base:<base_tag>, which only
+    // build-base-image pushes — in parallel, the pull races a tag that does not
+    // exist yet and the release fails on a missing base.
+    const rebuild = wf.slice(wf.indexOf('rebuild-release-runtime:'))
+    expect(rebuild.slice(0, rebuild.indexOf('steps:'))).toContain(
+      'needs: [resolve-config, detect-changes, build-base-image]',
+    )
+    expect(rebuild.slice(0, rebuild.indexOf('steps:'))).toContain(
+      "(needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped')",
+    )
   })
 
   test('the metal promotion is told the release pin', () => {

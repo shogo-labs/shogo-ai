@@ -185,7 +185,12 @@ So on a `vX.Y.Z` tag:
 
 `@shogo-ai/sdk` pins are always exact (`2.6.1`, never `^2.6.1`) so an app
 installs the SDK its image was released with; a bad npm release cannot reach
-running apps until an image that pins it is released.
+running apps until an image that pins it is released. The one exception is
+deliberate: a **source checkout** seeding a project (`workspace:*` in the
+template, `packages/sdk/package.json` says the unpublished placeholder
+`1.7.0`) has no published version to pin, so those writers keep the
+checkout's own `^X.Y.Z` line. Every released artifact is materialized, so it
+never carries that range.
 
 Because one image serves both environments, **never add an
 environment-specific build arg** to the image builds. The studio's

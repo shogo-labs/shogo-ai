@@ -649,12 +649,22 @@ jobs:
   # api / web / docs are still promoted untouched (their bytes are the ones
   # staging e2e tested, and only workspace-deps/runtime carry the pin).
   # Registry cache keeps the rebuild to the layers above the template install.
+  #
+  # It waits on build-base-image: the runtime build is FROM
+  # shogo-runtime-base:<base_tag>, and that tag is only pushed (or confirmed
+  # present) by that job. Running the two in parallel would race a pull of a
+  # tag that does not exist yet; `skipped` is fine (has_changes=false, so the
+  # tag already exists).
   # ===========================================================================
   rebuild-release-runtime:
     name: Rebuild runtime images pinned to the release SDK
     runs-on: ubuntu-24.04-arm
-    needs: [resolve-config, detect-changes]
+    needs: [resolve-config, detect-changes, build-base-image]
     if: |
+      always() &&
+      needs.resolve-config.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
+      (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&
       needs.detect-changes.outputs.promote == 'true' &&
       needs.detect-changes.outputs.release_sdk_pin != '' &&
       needs.resolve-config.outputs.dry_run != 'true'
