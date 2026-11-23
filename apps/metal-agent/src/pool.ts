@@ -244,6 +244,20 @@ export type DriveResizeResult = { fromMiB: number; toMiB: number } | 'unchanged'
 
 /** How long a rollout rotation that aborted waits before trying again. */
 export const ROTATE_RETRY_MS = 10 * 60_000
+
+/**
+ * How long a rotation that is BLOCKED on an un-snapshottable database waits
+ * before trying again.
+ *
+ * Retrying every {@link ROTATE_RETRY_MS} is how one broken database re-exported
+ * and re-uploaded its 1.7 GB source bundle every ten minutes for four days
+ * (SHO-541). A database that cannot be snapshotted does not heal on its own —
+ * it needs a fixed guest or a human to recover it — so this retry is a slow
+ * safety net, not a repair loop. Blocked is reported on `/status` and alerted
+ * once, so it does not depend on anyone reading these retries.
+ */
+export const ROTATE_BLOCKED_RETRY_MS = 6 * 60 * 60_000
+
 const REPO_EXPORT_MAX_BACKOFF_MS = 30 * 60_000
 const REPO_EXPORT_MIN_BACKOFF_MS = 60_000
 
@@ -469,6 +483,19 @@ export interface ProjectStatus {
    * on `saving-failing` for more than 30 minutes.
    */
   durability?: ProjectDurability
+  /**
+   * The project database this VM is running cannot be snapshotted, so its
+   * writable state is not being backed up (SHO-541). Present only while the
+   * failure streak is live; `attempts` says how many consecutive exports
+   * failed and `since` when the streak began.
+   */
+  dataSnapshot?: DataSnapshotFailure
+  /**
+   * The VM is on a superseded rootfs that rotation refuses to take, with the
+   * reason. `stale_rootfs_blocked` means it will stay on the old runtime until
+   * someone acts — the state Samsara's VM sat in for four days (SHO-541).
+   */
+  rotationBlocked?: RotationBlocked
 }
 
 /** Git durability of a running VM, as the API and the UI see it. */
@@ -479,6 +506,32 @@ export interface ProjectDurability {
   /** When this VM's HEAD last reached the durable repo, if it ever did. */
   lastSavedAt?: number
   reason?: string
+}
+
+/**
+ * A VM whose database could not be snapshotted (SHO-541).
+ *
+ * `attempts` counts consecutive failures, so `since` is when the current
+ * streak began and not when the VM was assigned — an alert needs to know how
+ * long the project has had no writable-state backup.
+ */
+export interface DataSnapshotFailure {
+  code: string
+  message: string
+  since: number
+  attempts: number
+}
+
+/**
+ * Why a VM on a superseded rootfs is still running, when rotation has given up
+ * on its own. `stale_rootfs_blocked` is the state Samsara's VM sat in for four
+ * days: rotation needs a final backup, the backup could not be taken, and
+ * nothing reported it (SHO-541).
+ */
+export interface RotationBlocked {
+  code: 'stale_rootfs_blocked'
+  reason: string
+  since: number
 }
 
 /** How a suspend request ended (see `suspendOrRetire`). */
@@ -805,6 +858,18 @@ export interface AssignedVm {
   /** Epoch ms before which the periodic exporter should not retry. */
   dataExportRetryAfter?: number
   /**
+   * The guest answered `/pool/export-data` with `sqlite_snapshot_failed`: it
+   * cannot produce a snapshot of the project database. Set from the guest's
+   * named code rather than the message, because the message is SQLite's and
+   * changes with the shape of the damage.
+   *
+   * Until this exists a failing snapshot looked exactly like a slow guest: it
+   * logged a 500 line every cycle and nothing else (SHO-541 — Samsara's VM went
+   * four days and 336 failures with no alert, and could never rotate because
+   * rotation needs a final backup first).
+   */
+  dataSnapshotFailure?: DataSnapshotFailure
+  /**
    * ETag of the encrypted home-directory archive (`home-state.enc`) this VM's
    * `~/.ssh`, `~/.oci`, ... descend from. Same role as `dataParentEtag`.
    */
@@ -956,6 +1021,53 @@ function readTmpReport(raw: Partial<DroppedTmpReport> | null | undefined): Dropp
 interface DataSaveOpts {
   final?: boolean
   reason?: 'periodic' | 'final' | 'recycle'
+}
+
+/** What `recycle()` may be asked to do. */
+export interface RecycleOpts {
+  reason?: string
+  env?: Record<string, string>
+  /** Remove the VM even if a backup failed (the caller knows it is gone). */
+  force?: boolean
+  /** Release rotation: settle background tasks before the source backup. */
+  stopBackgroundTasks?: boolean
+}
+
+/**
+ * The guest's named code for "I cannot snapshot the project database"
+ * (`packages/agent-runtime/src/writable-state.ts`). A string the two sides
+ * share, so a rename on one side fails loudly instead of quietly matching
+ * nothing.
+ */
+export const SQLITE_SNAPSHOT_FAILED = 'sqlite_snapshot_failed'
+
+/** An error from the guest's export endpoint, carrying the code it sent. */
+export interface GuestExportError extends Error {
+  code?: string
+}
+
+/** What `/pool/export-data` gave back: bytes, or why it gave none. */
+type DataExportResult = { bytes: Uint8Array; tag: string | null } | 'unchanged' | 'unsupported' | null
+
+/**
+ * Turn a failed `/pool/export-data` reply into an error, keeping the guest's
+ * own `code`. The body is JSON (`{ error, code }`) for a named failure and may
+ * be anything at all for an unhandled one, so the raw text is kept for the log
+ * and the guest's own message is used when there is one — that message ends up
+ * on the VM's status, where `{"error":…}` JSON is unreadable.
+ */
+async function exportError(res: Response): Promise<GuestExportError> {
+  const text = await res.text()
+  let code: string | undefined
+  let message = text
+  try {
+    const parsed = JSON.parse(text)
+    if (parsed && typeof parsed.code === 'string') code = parsed.code
+    if (parsed && typeof parsed.error === 'string' && parsed.error.trim()) message = parsed.error.trim()
+  } catch {}
+  const err = new Error(`/pool/export-data failed (${res.status}): ${message}`) as GuestExportError
+  if (code) err.code = code
+  return err
 }
 
 /**
@@ -1791,6 +1903,7 @@ export class MetalWarmPool {
         backupParentEtag: e.backupParentEtag,
         dataParentEtag: e.dataParentEtag,
         dataUntrustedReason: e.dataUntrustedReason,
+        dataSnapshotFailure: e.dataSnapshotFailure,
         homeParentEtag: e.homeParentEtag,
         homeUntrustedReason: e.homeUntrustedReason,
         memberData: e.memberData,
@@ -1856,6 +1969,7 @@ export class MetalWarmPool {
       backupParentEtag: a.backupParentEtag,
       dataParentEtag: a.dataParentEtag,
       dataUntrustedReason: a.dataUntrustedReason,
+      dataSnapshotFailure: a.dataSnapshotFailure,
       homeParentEtag: a.homeParentEtag,
       homeUntrustedReason: a.homeUntrustedReason,
       memberData: a.memberData,
@@ -3330,7 +3444,7 @@ export class MetalWarmPool {
     token?: string,
     knownTag?: string,
     dir?: string,
-  ): Promise<{ bytes: Uint8Array; tag: string | null } | 'unchanged' | 'unsupported' | null> {
+  ): Promise<DataExportResult> {
     const dl = exportDeadline(this.cfg.hydrateTimeoutMs)
     try {
       const res = await fetch(`${handle.agentUrl}/pool/export-data`, {
@@ -3348,7 +3462,7 @@ export class MetalWarmPool {
       // A guest from before this endpoint existed. Distinguished from a real
       // failure because it is permanent for this VM and must not be retried.
       if (res.status === 404) return 'unsupported'
-      if (!res.ok) throw new Error(`/pool/export-data failed (${res.status}): ${await res.text()}`)
+      if (!res.ok) throw await exportError(res)
       const buf = await res.arrayBuffer()
       if (!buf.byteLength) return null
       return { bytes: new Uint8Array(buf), tag: res.headers.get('etag') }
@@ -4601,6 +4715,36 @@ export class MetalWarmPool {
   }
 
   /**
+   * Record a failed writable-state export on the VM, so a database nobody can
+   * snapshot is VISIBLE instead of being one 500 line among hundreds.
+   *
+   * Only a named snapshot failure gets an entry, and only the first one of a
+   * streak raises the alert: a guest that keeps failing is retried on its
+   * backoff and every retry is already logged, but the fleet-wide signal (the
+   * gauge, the journal line naming the project and the SQLite message) fires
+   * once per streak. Otherwise a VM stuck for four days would page every ten
+   * minutes (SHO-541).
+   */
+  private noteDataExportError(a: AssignedVm, slot: DataSlot, err: any): void {
+    if (err?.code !== SQLITE_SNAPSHOT_FAILED) return
+    const message = String(err?.message ?? err).slice(0, 500)
+    const prev = a.dataSnapshotFailure
+    a.dataSnapshotFailure = {
+      code: SQLITE_SNAPSHOT_FAILED,
+      message,
+      since: prev?.since ?? Date.now(),
+      attempts: (prev?.attempts ?? 0) + 1,
+    }
+    this.writeLive(a)
+    if (prev) return
+    metrics.inc(M.dataSnapshotFailed)
+    console.error(
+      `[pool] writable-state snapshot FAILED for ${slot.label} (${SQLITE_SNAPSHOT_FAILED}): ${message}. ` +
+        `Its database is not being backed up; the exports are retried with backoff.`,
+    )
+  }
+
+  /**
    * Pull the guest's CURRENT writable state and upload it under the guard.
    *
    * Serialized per project: the periodic exporter and `suspend()` both call
@@ -4710,7 +4854,13 @@ export class MetalWarmPool {
     // The guest short-circuits on an unchanged tag, so an idle project costs
     // one round-trip with no snapshot, no packing and no transfer.
     const known = this.dataTags.get(slot.flightKey)
-    const exported = await this.fetchDataExport(a.handle, a.runtimeToken, known, slot.dir)
+    let exported: DataExportResult
+    try {
+      exported = await this.fetchDataExport(a.handle, a.runtimeToken, known, slot.dir)
+    } catch (err: any) {
+      this.noteDataExportError(a, slot, err)
+      throw err
+    }
     if (exported === 'unchanged') {
       metrics.inc(M.dataUnchanged)
       return false
@@ -4728,6 +4878,14 @@ export class MetalWarmPool {
     }
     if (!exported) return false
     const { bytes, tag } = exported
+    // A snapshot arrived, so whatever the last failure was, it is over. Cleared
+    // before the upload, not after: the guest producing a snapshot is the fact
+    // the rotation rule and the alert care about, and a refused upload
+    // (`conflict`) is a different, already-tracked problem.
+    if (a.dataSnapshotFailure) {
+      a.dataSnapshotFailure = undefined
+      this.writeLive(a)
+    }
 
     if (lineage.kind === 'descends') await this.ensureDailyRestorePoint(slot, now)
 
@@ -6559,6 +6717,15 @@ export class MetalWarmPool {
    * agent turn. Unlike `reapIdle`, always-on VMs rotate too; they come back
    * separately because the control plane boots them again instead of leaving
    * them suspended.
+   *
+   * A failed backup blocks rotation, and it blocked it FOREVER and silently:
+   * one database that could not be snapshotted kept its VM on a
+   * pre-SHO-485/514 runtime for four days while the rotation re-uploaded a
+   * 1.7 GB source bundle every ten minutes (SHO-541). It still refuses to
+   * rotate — there is no way to prove the durable archive already holds a
+   * database nobody can read — but it now names the failure on the VM's status
+   * as `stale_rootfs_blocked`, alerts once, and backs off to
+   * {@link ROTATE_BLOCKED_RETRY_MS} instead of hammering the host.
    */
   async rotateStale(now = Date.now()): Promise<{ retired: string[]; alwaysOn: string[] }> {
     const out = { retired: [] as string[], alwaysOn: [] as string[] }
@@ -6571,6 +6738,7 @@ export class MetalWarmPool {
     for (const a of stale) if (!this.staleSince.has(a.projectId)) this.staleSince.set(a.projectId, now)
 
     for (const id of this.rotateRetryAt.keys()) if (!staleIds.has(id)) this.rotateRetryAt.delete(id)
+    for (const id of this.rotationBlocked.keys()) if (!staleIds.has(id)) this.rotationBlocked.delete(id)
 
     const due = stale.filter((a) => {
       if (now < (this.rotateRetryAt.get(a.projectId) ?? 0)) return false
@@ -6595,12 +6763,32 @@ export class MetalWarmPool {
           stopBackgroundTasks: true,
         })
         if (r.aborted) {
-          this.rotateRetryAt.set(a.projectId, now + ROTATE_RETRY_MS)
-          const failed = r.steps.filter((s) => !s.ok).map((s) => `${s.step}: ${s.detail ?? 'failed'}`)
-          console.warn(
-            `[pool] rollout rotation of ${a.projectId} aborted (${failed.join('; ') || 'no step failed'}); ` +
-              `retrying in ${ROTATE_RETRY_MS / 60_000}m`,
-          )
+          const failed = r.steps.filter((s) => !s.ok)
+          const detail = failed.map((s) => `${s.step}: ${s.detail ?? 'failed'}`).join('; ') || 'no step failed'
+          // A database nobody can snapshot is not going to become snapshot-able
+          // by retrying, and rotating anyway would replace it with whatever the
+          // durable archive happens to hold. Name the state it is stuck in, alert
+          // once, and stop burning a 1.7 GB source export every ten minutes on a
+          // rotation that cannot succeed (SHO-541: four days of exactly that).
+          const dataOnly = failed.length > 0 && failed.every((s) => s.step === 'data') && !!a.dataSnapshotFailure
+          if (dataOnly) {
+            this.markRotationBlocked(
+              a,
+              `its database cannot be snapshotted (${a.dataSnapshotFailure!.message}), so the final backup ` +
+                `rotation requires will not happen; the VM stays on its current runtime`,
+            )
+            this.rotateRetryAt.set(a.projectId, now + ROTATE_BLOCKED_RETRY_MS)
+            console.warn(
+              `[pool] rollout rotation of ${a.projectId} BLOCKED (${detail}); ` +
+                `retrying in ${ROTATE_BLOCKED_RETRY_MS / 3_600_000}h`,
+            )
+          } else {
+            this.rotateRetryAt.set(a.projectId, now + ROTATE_RETRY_MS)
+            console.warn(
+              `[pool] rollout rotation of ${a.projectId} aborted (${detail}); ` +
+                `retrying in ${ROTATE_RETRY_MS / 60_000}m`,
+            )
+          }
           continue
         }
       } catch (err: any) {
@@ -6610,16 +6798,50 @@ export class MetalWarmPool {
       }
       this.staleSince.delete(a.projectId)
       this.rotateRetryAt.delete(a.projectId)
+      this.rotationBlocked.delete(a.projectId)
       metrics.inc(M.rolloutRotated)
       ;(alwaysOn ? out.alwaysOn : out.retired).push(a.projectId)
     }
     return out
   }
 
+  /**
+   * This VM's database durability for the status surfaces: how long the
+   * current snapshot-failure streak has run, or nothing when it is healthy.
+   */
+  private dataHealthOf(a: AssignedVm, now = Date.now()): (DataSnapshotFailure & { failingMs: number }) | undefined {
+    const f = a.dataSnapshotFailure
+    return f ? { ...f, failingMs: Math.max(0, now - f.since) } : undefined
+  }
+
+  /** Why rotation gave up on this project's VM, if it did. */
+  private rotationBlockedOf(projectId: string): RotationBlocked | undefined {
+    const b = this.rotationBlocked.get(projectId)
+    return b ? { code: 'stale_rootfs_blocked', reason: b.reason, since: b.since } : undefined
+  }
+
   /** When this host first saw each assigned VM on a superseded rootfs (see `rotateStale`). */
   private staleSince = new Map<string, number>()
   /** A rotation that aborted (a backup failed) waits until then: each attempt re-runs every backup. */
   private rotateRetryAt = new Map<string, number>()
+  /** VMs on a superseded rootfs that rotation has given up on, and why. */
+  private rotationBlocked = new Map<string, { reason: string; since: number }>()
+
+  /**
+   * Record — and report once — that a VM cannot leave a superseded rootfs.
+   * The alternative was a journal line every ten minutes and nothing else;
+   * the status field is what the pool and Ops views read (SHO-541).
+   */
+  private markRotationBlocked(a: AssignedVm, reason: string): void {
+    const prev = this.rotationBlocked.get(a.projectId)
+    if (prev && prev.reason === reason) return
+    this.rotationBlocked.set(a.projectId, { reason, since: prev?.since ?? Date.now() })
+    metrics.inc(M.rotationBlocked)
+    console.error(
+      `[pool] stale_rootfs_blocked: ${a.projectId} is on a superseded rootfs and rotation cannot take it — ` +
+        `${reason}. It stays on the old runtime until this is resolved.`,
+    )
+  }
   /** VMs already reported by the busy-idle ceiling, so a failed suspend logs once, not every pass. */
   private busyIdleCeilingLogged = new Set<string>()
 
@@ -7486,6 +7708,21 @@ export class MetalWarmPool {
     metrics.gauge(M.repoUntrustedOldestSec, oldestUntrustedSec)
     metrics.gauge(M.repoUnsavedSeconds, worstUnsavedSec)
 
+    // Writable-state durability (SHO-541). A database that cannot be
+    // snapshotted is a project with no backup at all, and until these existed
+    // the only trace of it was one 500 line per export cycle.
+    let snapshotFailing = 0
+    let oldestSnapshotFailingSec = 0
+    for (const a of this.assigned.values()) {
+      const f = a.dataSnapshotFailure
+      if (!f) continue
+      snapshotFailing++
+      oldestSnapshotFailingSec = Math.max(oldestSnapshotFailingSec, Math.round((now - f.since) / 1000))
+    }
+    metrics.gauge(M.dataSnapshotFailedVms, snapshotFailing)
+    metrics.gauge(M.dataSnapshotFailedOldestSec, oldestSnapshotFailingSec)
+    metrics.gauge(M.rotationBlockedVms, this.rotationBlocked.size)
+
     // Only dm mode has exception stores to run out of; the other rootfs modes
     // give each VM its own file and fail with an ordinary ENOSPC.
     if (this.cfg.rootfsCow !== 'dm') return
@@ -7805,6 +8042,8 @@ export class MetalWarmPool {
     let removedLocal = false
     let removedDurable = false
 
+    this.rotationBlocked.delete(projectId)
+    this.rotateRetryAt.delete(projectId)
     const a = this.assigned.get(projectId)
     if (a) {
       await this.mgr.stopVM(a.handle).catch(() => {})
@@ -7862,10 +8101,15 @@ export class MetalWarmPool {
    *
    * The next open then cold-boots from the durable backups. Without `force`, a
    * failed step aborts before anything is removed and the VM keeps running.
+   *
+   * A database the guest cannot snapshot fails the `data` step and therefore
+   * aborts the recycle: there is no way to prove the durable archive already
+   * holds it, and a cold boot would replace it with whatever the archive did
+   * hold. `rotateStale` reports that as `stale_rootfs_blocked` (SHO-541).
    */
   async recycle(
     runtimeKey: string,
-    opts: { reason?: string; force?: boolean; env?: Record<string, string>; stopBackgroundTasks?: boolean } = {},
+    opts: RecycleOpts = {},
   ): Promise<RecycleReport> {
     if (this.openFlight.has(runtimeKey) || this.suspendFlight.has(runtimeKey)) {
       return {
@@ -7880,10 +8124,7 @@ export class MetalWarmPool {
     return this.recycleFlight.run(runtimeKey, () => this.recycleInner(runtimeKey, opts))
   }
 
-  private async recycleInner(
-    runtimeKey: string,
-    opts: { reason?: string; force?: boolean; env?: Record<string, string>; stopBackgroundTasks?: boolean },
-  ): Promise<RecycleReport> {
+  private async recycleInner(runtimeKey: string, opts: RecycleOpts): Promise<RecycleReport> {
     const force = !!opts.force
     const state = this.getProjectStatus(runtimeKey).state
     const steps: RecycleStep[] = []
@@ -7953,7 +8194,6 @@ export class MetalWarmPool {
       const ok = await this.backupForRecycle(a, steps, {
         stopBackgroundTasks: opts.stopBackgroundTasks,
         reason: opts.reason,
-        notices,
         noteTmp,
       })
       if (!ok && !force) {
@@ -7974,7 +8214,15 @@ export class MetalWarmPool {
    * refused or quarantined write counts as a failure, because the cold boot
    * that follows restores the durable copy, not the quarantined one.
    */
-  private async backupForRecycle(a: AssignedVm, steps: RecycleStep[], opts: { stopBackgroundTasks?: boolean; reason?: string; notices?: string[]; noteTmp?: (tmp: DroppedTmpReport) => void } = {}): Promise<boolean> {
+  private async backupForRecycle(
+    a: AssignedVm,
+    steps: RecycleStep[],
+    opts: {
+      stopBackgroundTasks?: boolean
+      reason?: string
+      noteTmp?: (tmp: DroppedTmpReport) => void
+    } = {},
+  ): Promise<boolean> {
     const run = async (step: string, fn: () => Promise<string | null>) => {
       try {
         const problem = await fn()
@@ -8045,9 +8293,26 @@ export class MetalWarmPool {
     await run('data', async () => {
       // Twice: the first may join an in-flight periodic export (possibly
       // throttled). The second is a cheap 304 when the first already landed.
-      await this.saveProjectDataToStore(a, { final: true, reason: 'recycle' })
-      await this.saveProjectDataToStore(a, { final: true, reason: 'recycle' })
+      // Caught rather than thrown: a snapshot failure has to be classified
+      // before it can be named, and `run` would otherwise record the raw
+      // SQLite message as the reason.
+      let saveError: unknown
+      try {
+        await this.saveProjectDataToStore(a, { final: true, reason: 'recycle' })
+        await this.saveProjectDataToStore(a, { final: true, reason: 'recycle' })
+      } catch (err) {
+        saveError = err
+      }
       if (a.dataExportUnsupported) return 'guest cannot export its database (predates /pool/export-data)'
+      // A database the guest cannot snapshot is a database this recycle cannot
+      // carry across: the cold boot would hydrate whatever the durable archive
+      // last held, and nothing can prove that is still this data. Refusing is
+      // the only option that cannot lose writes; `rotateStale` turns this into
+      // `stale_rootfs_blocked` with the SQLite error on the VM's status.
+      if (a.dataSnapshotFailure) {
+        return `database not persisted — ${a.dataSnapshotFailure.message}`
+      }
+      if (saveError) throw saveError
       const untrusted = isWorkspace
         ? Object.entries(a.memberData ?? {})
             .filter(([, s]) => s.untrustedReason)
@@ -8137,6 +8402,8 @@ export class MetalWarmPool {
         snapshotRootfsIdentity: this.bootRootfsIdentity(a),
         ...(staged ? { stagedSnapshotIdentity: staged.rootfsIdentity } : {}),
         durability: this.durabilityOf(a),
+        ...(a.dataSnapshotFailure ? { dataSnapshot: a.dataSnapshotFailure } : {}),
+        ...(this.rotationBlockedOf(a.projectId) ? { rotationBlocked: this.rotationBlockedOf(a.projectId) } : {}),
       }
     }
     const s = this.suspended.get(projectId)
@@ -8236,6 +8503,11 @@ export class MetalWarmPool {
         unhealthy: a.lastHealthOk === false,
         apiUnhealthyMs: a.apiUnhealthySince !== undefined ? now - a.apiUnhealthySince : null,
         apiUnhealthyProjects: a.apiUnhealthyProjects ?? null,
+        // Writable-state durability of this VM's database (SHO-541). `data` is
+        // set only while the snapshot keeps failing; `rotation` names a VM on a
+        // superseded rootfs that rotation has given up on.
+        data: this.dataHealthOf(a, now),
+        rotation: this.rotationBlockedOf(a.projectId),
       })),
       suspended: [...this.suspended.values()].map((s) => ({
         projectId: s.projectId,

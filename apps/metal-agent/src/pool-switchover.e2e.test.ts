@@ -19,7 +19,7 @@ import { existsSync, mkdtempSync, mkdirSync, renameSync, rmSync, utimesSync, wri
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { metrics, M } from './metrics'
-import { MetalWarmPool, ROTATE_RETRY_MS, StagedRootfsUnavailableError } from './pool'
+import { MetalWarmPool, ROTATE_BLOCKED_RETRY_MS, ROTATE_RETRY_MS, StagedRootfsUnavailableError } from './pool'
 import { activateStagedImages, stagedRootfsPath } from './self-update'
 import { computeRootfsIdentity, type SnapshotStore } from './snapshot-store'
 import { FakeHost, FakeS3, fakeHostConfig, git, tarOf, useFakeS3Env } from './test-harness/fake-metal-host'
@@ -356,6 +356,99 @@ describe('retire on a superseded image', () => {
       ;(pool as any).recycle = recycle
       expect(await pool.rotateStale(t0 + ROTATE_RETRY_MS)).toEqual({ retired: ['p1'], alwaysOn: [] })
     }, 30_000)
+
+    /**
+     * A database the guest cannot snapshot (SHO-541). Rotation needs a final
+     * backup, so this still blocks: there is no proof the durable archive holds
+     * the data, and a VM that has never completed an export can still be full
+     * of writes only it holds — Samsara's EU VM had 336 failed exports over four
+     * days of live use. What changed is that it is now NAMED and ALERTED, and
+     * the retry backs off instead of re-uploading a 1.7 GB source bundle every
+     * ten minutes forever.
+     */
+    describe('when only the database snapshot fails', () => {
+      const SNAPSHOT_FAILURE = {
+        step: 'data',
+        ok: false,
+        detail: 'database not persisted — Could not snapshot the project database: database disk image is malformed',
+      }
+
+      /** A VM on a replaced image whose export keeps failing, with `recycle` stubbed. */
+      async function withFailingSnapshot(extra: Record<string, unknown> = {}) {
+        const { pool, vm } = await onReplacedImage()
+        const t0 = Date.now()
+        vm.lastRealActivityAt = t0 - 20 * MIN
+        Object.assign(vm, {
+          dataSnapshotFailure: {
+            code: 'sqlite_snapshot_failed',
+            message: 'Could not snapshot the project database: database disk image is malformed',
+            since: t0,
+            attempts: 4,
+          },
+          ...extra,
+        })
+        let calls = 0
+        ;(pool as any).recycle = async () => {
+          calls++
+          return { aborted: true, steps: [SNAPSHOT_FAILURE] }
+        }
+        return { pool, vm, t0, calls: () => calls }
+      }
+
+      test('refuses, reports stale_rootfs_blocked once, and backs off instead of retrying every 10 minutes', async () => {
+        const { pool, t0, calls } = await withFailingSnapshot({ dataParentEtag: '"arch"' })
+        const before = metrics.getCounter(M.rotationBlocked)
+
+        await pool.rotateStale(t0)
+        const blocked = pool.getProjectStatus('p1').rotationBlocked
+        expect(blocked?.code).toBe('stale_rootfs_blocked')
+        expect(blocked?.reason).toMatch(/database disk image is malformed/)
+        // Counted once, not once per pass: the alert reads the gauge, the
+        // journal gets one line.
+        expect(metrics.getCounter(M.rotationBlocked) - before).toBe(1)
+        expect(pool.getAssigned('p1')).toBeDefined()
+
+        // The short retry is gone: a blocked rotation waits hours, because the
+        // database will not heal and each attempt re-exports the whole source.
+        await pool.rotateStale(t0 + ROTATE_RETRY_MS)
+        expect(calls()).toBe(1)
+        await pool.rotateStale(t0 + ROTATE_BLOCKED_RETRY_MS)
+        expect(calls()).toBe(2)
+        expect(pool.getProjectStatus('p1').rotationBlocked?.since).toBe(blocked!.since)
+      }, 30_000)
+
+      test('says so when the VM had newer writes, not just when it never saved', async () => {
+        const { pool, vm, t0 } = await withFailingSnapshot({ dataParentEtag: '"arch"' })
+        vm.dataLastUploadAt = t0 - 60_000
+
+        await pool.rotateStale(t0)
+        expect(pool.getProjectStatus('p1').rotationBlocked?.code).toBe('stale_rootfs_blocked')
+        expect(pool.getAssigned('p1')).toBeDefined()
+      }, 30_000)
+
+      test('a failure that is not only the database still retries on the short cadence', async () => {
+        const { pool, vm } = await onReplacedImage()
+        const t0 = Date.now()
+        vm.lastRealActivityAt = t0 - 20 * MIN
+        Object.assign(vm, {
+          dataSnapshotFailure: { code: 'sqlite_snapshot_failed', message: 'malformed', since: t0, attempts: 9 },
+        })
+        let attempts = 0
+        ;(pool as any).recycle = async () => {
+          attempts++
+          return {
+            aborted: true,
+            steps: [SNAPSHOT_FAILURE, { step: 'source', ok: false, detail: 'S3 503' }],
+          }
+        }
+
+        for (let i = 0; i < 4; i++) await pool.rotateStale(t0 + i * ROTATE_RETRY_MS)
+        expect(attempts).toBe(4)
+        expect(pool.getAssigned('p1')).toBeDefined()
+        // A source backup can come good, so this is not the blocked state.
+        expect(pool.getProjectStatus('p1').rotationBlocked).toBeUndefined()
+      }, 30_000)
+    })
 
     test('a VM whose only work is a background task is rotated at the deadline, not before (SHO-399)', async () => {
       const { pool, vm } = await onReplacedImage()

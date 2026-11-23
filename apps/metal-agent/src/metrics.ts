@@ -156,6 +156,20 @@ export const M = {
   dataUploadRecycle: 'metal_data_upload_recycle_total',
   // Periodic uploads skipped by the large-database cadence limit.
   dataUploadThrottled: 'metal_data_upload_throttled_total',
+  // The guest could not snapshot its database at all (named code
+  // `sqlite_snapshot_failed`), so this project has NO writable-state backup.
+  // Counted once per failure streak, not per retry (SHO-541).
+  dataSnapshotFailed: 'metal_data_snapshot_failed_total',
+  // A VM on a superseded rootfs that rotation cannot take. Non-zero means a
+  // runtime is stuck on old code with no way out but a human (SHO-541).
+  rotationBlocked: 'metal_rotation_blocked_total',
+  // Durability gauges for writable state: how many assigned VMs cannot back
+  // their database up, how long the oldest has been unable to, and how many
+  // are pinned to a superseded rootfs. The alert reads these — one broken
+  // database used to be invisible for four days (SHO-541).
+  dataSnapshotFailedVms: 'metal_data_snapshot_failed_vms',
+  dataSnapshotFailedOldestSec: 'metal_data_snapshot_failed_oldest_seconds',
+  rotationBlockedVms: 'metal_rotation_blocked_vms',
   // End-of-day restore points (`project-data/daily/<date>.tar.gz`).
   dataDailyCopied: 'metal_data_daily_copy_ok_total',
   dataDailyCopyFailed: 'metal_data_daily_copy_failed_total',

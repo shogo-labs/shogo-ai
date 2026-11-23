@@ -199,6 +199,78 @@ describe('pool.recycle', () => {
     expect(stopped).toEqual([])
   })
 
+  /**
+   * A database nobody can snapshot (SHO-541). Rotation needs a final backup,
+   * so this aborts — and it must keep aborting: a VM that has never completed
+   * an export can still be full of writes only it holds, which is exactly the
+   * state Samsara's VM was in when it had been failing for four days.
+   */
+  describe('a database that cannot be snapshotted', () => {
+    /** The guest answering `/pool/export-data` with the named failure. */
+    function snapshotFailure(): Error {
+      const err = new Error('Could not snapshot the project database: database disk image is malformed') as Error & {
+        code: string
+      }
+      err.code = 'sqlite_snapshot_failed'
+      return err
+    }
+
+    test('aborts a plain recycle, naming the failure instead of a bare 500', async () => {
+      const pool = makePool()
+      pool.add('p1', { dataParentEtag: '"arch"' })
+      pool.dataExport = snapshotFailure()
+
+      const r = await pool.recycle('p1')
+      expect(r.aborted).toBe(true)
+      const data = r.steps.find((s) => s.step === 'data')
+      expect(data?.detail).toContain('database disk image is malformed')
+      // Nothing was removed: the durable archive is untouched.
+      expect(stopped).toEqual([])
+      expect(pool.events).not.toContain('data p1')
+    })
+
+    test('still aborts a stale-rootfs rotation: a VM that never saved can be full of live writes', async () => {
+      // The tempting shortcut — "it never completed an export, so nothing newer
+      // than the archive can exist" — is false. Samsara's VM had 336 failed
+      // exports and four days of users writing. Rotating would have swapped that
+      // for a four-day-old archive and called it a repair.
+      const pool = makePool()
+      pool.add('p1', { dataParentEtag: '"arch"' })
+      pool.dataExport = snapshotFailure()
+
+      const r = await pool.recycle('p1', { reason: 'stale-rootfs' })
+      expect(r.aborted).toBe(true)
+      expect(r.steps.find((s) => s.step === 'data')?.detail).toMatch(/database disk image is malformed/)
+      expect(stopped).toEqual([])
+      expect(pool.events).not.toContain('data p1')
+    })
+
+    test('aborts even after the run saved its database once, and says why', async () => {
+      const pool = makePool()
+      pool.add('p1', { dataParentEtag: '"arch"', dataLastUploadAt: Date.now() - 60_000 })
+      pool.dataExport = snapshotFailure()
+
+      const r = await pool.recycle('p1', { reason: 'stale-rootfs' })
+      expect(r.aborted).toBe(true)
+      expect(r.steps.find((s) => s.step === 'data')?.detail).toMatch(/database not persisted/)
+      expect(stopped).toEqual([])
+    })
+
+    test('aborts a workspace VM whose member database cannot be snapshotted', async () => {
+      const pool = makePool()
+      pool.add('ws:proj:m1', {
+        workspaceMemberIds: ['m1'],
+        memberData: { m1: { parentEtag: '"arch-m1"' } },
+      })
+      pool.dataExport = snapshotFailure()
+
+      const r = await pool.recycle('ws:proj:m1')
+      expect(r.aborted).toBe(true)
+      expect(r.steps.find((s) => s.step === 'data')?.detail).toMatch(/database disk image is malformed/)
+      expect(stopped).toEqual([])
+    })
+  })
+
   test('an untrusted home aborts: credentials set up since boot would be dropped', async () => {
     const pool = makePool()
     pool.add('p1', { homeUntrustedReason: 'home-state hydrate failed at assign' })
