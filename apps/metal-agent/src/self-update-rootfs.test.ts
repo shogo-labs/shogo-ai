@@ -16,6 +16,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
 import {
+  _setGuestInitProbe,
   _setImageGc,
   buildRootfsImage,
   getRootfsRevision,
@@ -50,6 +51,7 @@ function fakeBuild(published: Record<string, string>): BuildRootfsDeps {
       writeFileSync(env!.OUT, rev)
     },
     readRevision: (image) => readFileSync(image, 'utf8') || null,
+    guestInitProblem: () => null,
   }
 }
 
@@ -78,6 +80,7 @@ describe('buildRootfsImage', () => {
           writeFileSync(env!.OUT, SHA)
         },
         readRevision: (p) => readFileSync(p, 'utf8'),
+        guestInitProblem: () => null,
       },
     )
     expect(seen).toEqual([{ OUT: `${out}.new`, RUNTIME_IMAGE: pinned }])
@@ -121,6 +124,22 @@ describe('buildRootfsImage', () => {
     await expect(
       buildRootfsImage({ script: 's.sh', out, runtimeImage: pinned, runtimeRevision: SHA }, fakeBuild({})),
     ).rejects.toThrow(/exited 1/)
+    expect(readFileSync(out, 'utf8')).toBe('old')
+    expect(existsSync(`${out}.new`)).toBe(false)
+  })
+
+  test('refuses a build that lost its guest init: old image stays, temp file removed', async () => {
+    // The one defect that makes every VM on the host panic before userspace
+    // (SHO-549). The build script gates it too; this is the agent's own gate for
+    // a host whose bundle still carries an older script.
+    const out = join(dir, 'runtime.ext4')
+    writeFileSync(out, 'old')
+    await expect(
+      buildRootfsImage({ script: 's.sh', out, runtimeImage: pinned, runtimeRevision: SHA }, {
+        ...fakeBuild({ [pinned]: SHA }),
+        guestInitProblem: () => '/usr/local/bin/fc-init is not in the image',
+      }),
+    ).rejects.toThrow(/rootfs built without its guest init \(\/usr\/local\/bin\/fc-init is not in the image\)/)
     expect(readFileSync(out, 'utf8')).toBe('old')
     expect(existsSync(`${out}.new`)).toBe(false)
   })
@@ -206,6 +225,8 @@ describe('image GC around a rebuild', () => {
 
   beforeEach(() => {
     calls = []
+    // The fake build writes text, not an ext4 image: no guest-init gate here.
+    _setGuestInitProbe(() => null)
     _setImageGc(async (reason, keep) => {
       calls.push({ reason, keep })
     })
@@ -218,6 +239,7 @@ describe('image GC around a rebuild', () => {
   })
 
   afterEach(() => {
+    _setGuestInitProbe(null)
     _setImageGc(null)
     ;(config as any).agentDir = saved.agentDir
     ;(config as any).baseRootfs = saved.baseRootfs
