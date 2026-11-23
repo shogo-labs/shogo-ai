@@ -228,15 +228,24 @@ describe('internal publish auth e2e (real runtime token, production mode)', () =
  * (SHO-542 QA round 1).
  */
 describe('internal publish state reads the environment it was asked about', () => {
+  /**
+   * Derived from the clock, not hard-coded: `resolveReportedPublishStatus`
+   * compares `publishStatusAt` to `Date.now()`, so a fixed date means something
+   * different every few days (the SHO-505 date bomb), and `check:test-clock`
+   * fails the build on one. The rows seeded here are `live` and `failed`, never
+   * in flight, so any settled instant behaves the same.
+   */
+  const SETTLED_AT = new Date(Date.now() - 3 * 24 * 60 * 60_000)
+
   test('?environment=staging reports the staging row, not production', async () => {
     store.prismaProjectFindUnique = {
       publishedSubdomain: 'my-app',
-      publishedAt: new Date('2026-11-01T00:00:00Z'),
+      publishedAt: SETTLED_AT,
       accessLevel: 'anyone',
       sitePasswordHash: null,
       publishStatus: 'live',
       publishError: null,
-      publishStatusAt: new Date('2026-11-01T00:00:00Z'),
+      publishStatusAt: SETTLED_AT,
     }
     store.stagingRow = {
       id: 'env-staging',
@@ -245,7 +254,7 @@ describe('internal publish state reads the environment it was asked about', () =
       subdomain: 'my-app--staging',
       publishStatus: 'failed',
       publishError: 'build_failed',
-      publishStatusAt: new Date('2026-11-20T00:00:00Z'),
+      publishStatusAt: SETTLED_AT,
     }
 
     const token = deriveRuntimeToken(PROJECT_ID)
@@ -265,12 +274,12 @@ describe('internal publish state reads the environment it was asked about', () =
   test('without the query the same project still reports production', async () => {
     store.prismaProjectFindUnique = {
       publishedSubdomain: 'my-app',
-      publishedAt: new Date('2026-11-01T00:00:00Z'),
+      publishedAt: SETTLED_AT,
       accessLevel: 'anyone',
       sitePasswordHash: null,
       publishStatus: 'live',
       publishError: null,
-      publishStatusAt: new Date('2026-11-01T00:00:00Z'),
+      publishStatusAt: SETTLED_AT,
     }
     store.stagingRow = {
       id: 'env-staging',
