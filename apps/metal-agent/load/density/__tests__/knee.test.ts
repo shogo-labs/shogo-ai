@@ -119,11 +119,26 @@ describe('computeKnees', () => {
     expect(k.recommended).toBe(60)
   })
 
-  test('the knee is the last unbroken pass, not the highest pass', () => {
-    // 80 fails, 100 "recovers" — that is noise, not headroom.
-    const steps = [healthy(40), healthy(60), healthy(80, { cpuPsiSomeAvg60: 30 }), healthy(100)]
-    const k = computeKnees(steps, baseline)
-    expect(k.cpuKnee).toBe(60)
+  test('a failing step does not cap a knee that a higher step reaches', () => {
+    // The real shape, against the baseline this run actually measured: the first
+    // step's guests are cold and miss a turn bound, then the same bounds pass at
+    // 60 and 80 VMs and break at 100.
+    const measured: Record<TurnStep, number> = { cpu: 3034, install: 209, build: 1052 }
+    const steps = [
+      healthy(40, { turnP95: { cpu: 3025, install: 506, build: 1912 } }),
+      healthy(60, { turnP95: { cpu: 3044, install: 251, build: 1190 } }),
+      healthy(80, { turnP95: { cpu: 3041, install: 281, build: 1445 } }),
+      healthy(100, { turnP95: { cpu: 3341, install: 1649, build: 4745 }, resumeP95Ms: 2211 }),
+    ]
+    const k = computeKnees(steps, measured)
+    expect(k.verdicts.find((v) => v.n === 40)!.cpuPass).toBe(false)
+    expect(k.cpuKnee).toBe(80)
+  })
+
+  test('a step that fails and has nothing passing above it is still the knee boundary', () => {
+    // 80 is the highest pass; 100 and 120 break, so 80 is the answer.
+    const steps = [healthy(80), healthy(100, { cpuPsiSomeAvg60: 30 }), healthy(120, { cpuPsiSomeAvg60: 40 })]
+    expect(computeKnees(steps, baseline).cpuKnee).toBe(80)
   })
 
   test('sorts steps by N before walking', () => {
@@ -131,7 +146,7 @@ describe('computeKnees', () => {
     expect(computeKnees(steps, baseline).cpuKnee).toBe(80)
   })
 
-  test('a first step that fails gives a knee of 0', () => {
+  test('a series where nothing passes gives 0', () => {
     const k = computeKnees([healthy(40, { oomKills: 1 })], baseline)
     expect(k.ramKnee).toBe(0)
     expect(k.recommended).toBe(0)

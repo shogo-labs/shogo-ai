@@ -195,7 +195,7 @@ describe('writeReport', () => {
   test('writes every file', () => {
     const dir = join(mkdtempSync(join(tmpdir(), 'density-report-')), 'density-test')
     const written = writeReport(dir, input([step(40)]), [], [])
-    expect(written.files.sort()).toEqual(['env.json', 'report.md', 'samples.csv', 'steps.csv', 'turns.csv'])
+    expect(written.files.sort()).toEqual(['burst.csv', 'env.json', 'report.md', 'samples.csv', 'steps.csv', 'turns.csv'])
     expect(readFileSync(join(dir, 'report.md'), 'utf8')).toContain('Metal density soak')
     expect(JSON.parse(readFileSync(join(dir, 'env.json'), 'utf8')).hostId).toBe('latitude-dal-1')
   })

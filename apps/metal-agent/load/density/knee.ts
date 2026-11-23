@@ -109,24 +109,27 @@ export interface Knees {
 }
 
 /**
- * The knee is the highest N reached by an unbroken run of passing steps from
- * the smallest N. A step that fails and then "recovers" at a higher N is noise
- * (a GC pause, a neighbour's burst), not headroom — the host already degraded
- * at the lower N, so the knee stays there.
+ * The knee is the highest N observed to meet the bounds.
+ *
+ * Deliberately *not* "the last unbroken pass from the smallest N". On the real
+ * host the first step missed a turn-latency bound that the same bounds then
+ * passed at 60 and 80 VMs — the first step's guests are cold (fresh image, cold
+ * page cache) and its turn p95 mixes them with warm ones, so a low step can miss
+ * a bound for a reason that has nothing to do with density. Under the prefix
+ * rule that one sample became a knee of 0, twice, and the report recommended
+ * running zero VMs on a host that was carrying 160.
+ *
+ * Each step is a held multi-minute measurement, so a higher step that passes is
+ * evidence the host met the bounds at that density. A lower step's miss is
+ * reported next to it (report.md lists every failing step and says when one sits
+ * below the knee) rather than extrapolated over it.
  */
 export function computeKnees(steps: StepMetrics[], baseline: Record<TurnStep, number>, bounds: Bounds = DEFAULT_BOUNDS): Knees {
   const ordered = [...steps].sort((a, b) => a.n - b.n)
   const verdicts = ordered.map((s) => evaluateStep(s, baseline, bounds))
-  let cpuKnee = 0
-  let ramKnee = 0
-  let cpuOpen = true
-  let ramOpen = true
-  for (const v of verdicts) {
-    if (cpuOpen && v.cpuPass) cpuKnee = v.n
-    else cpuOpen = false
-    if (ramOpen && v.ramPass) ramKnee = v.n
-    else ramOpen = false
-  }
+  const highest = (pass: (v: StepVerdict) => boolean) => verdicts.filter(pass).reduce((max, v) => Math.max(max, v.n), 0)
+  const cpuKnee = highest((v) => v.cpuPass)
+  const ramKnee = highest((v) => v.ramPass)
   return { cpuKnee, ramKnee, recommended: Math.min(cpuKnee, ramKnee), verdicts }
 }
 

@@ -247,8 +247,22 @@ export function renderReportMarkdown(input: ReportInput): string {
 
   out.push('## Knees')
   out.push('')
-  out.push(`- **CPU knee: ${knees.cpuKnee}** — highest N where turn-step p95 stayed within the bounds, CPU PSI \`some avg60\` stayed under the limit, and resume p95 held the 2 s SLO.`)
-  out.push(`- **RAM knee: ${knees.ramKnee}** — highest N with zero OOM kills, no sustained swap-in, memory PSI \`full avg60\` under the limit, and MemAvailable above the floor.`)
+  out.push(
+    `- **CPU knee: ${knees.cpuKnee}** — the highest N whose turn-step p95 stayed within 1.5× the baseline, CPU PSI \`some avg60\` stayed under the limit, and resume p95 held the 2 s SLO.`,
+  )
+  out.push(
+    `- **RAM knee: ${knees.ramKnee}** — the highest N with zero OOM kills, no sustained swap-in, memory PSI \`full avg60\` under the limit, and MemAvailable above the floor.`,
+  )
+  const top = steps.length > 0 ? Math.max(...steps.map((r) => r.n)) : 0
+  const belowKnee = steps.filter((r) => r.n < recommendation.maxVmsPerHost && (!r.verdict.cpuPass || !r.verdict.ramPass))
+  if (belowKnee.length > 0) {
+    out.push(
+      `- **Below the knee:** ${belowKnee.map((r) => `N=${r.n}`).join(', ')} missed a bound while a higher N passed the same bounds. Those guests were cold (fresh image, cold page cache), so read the miss as warm-up, not as headroom — the passing step above it is the measurement.`,
+    )
+  }
+  if (top > 0 && recommendation.maxVmsPerHost > 0 && recommendation.maxVmsPerHost === top) {
+    out.push(`- **No knee found:** every step up to N=${top} passed. The ladder stopped there, not the host.`)
+  }
   out.push(
     recommendation.maxVmsPerHost > 0
       ? `- **Recommended \`METAL_MAX_VMS_PER_HOST\`: ${recommendation.maxVmsPerHost}** = min(${recommendation.cpuKnee}, ${recommendation.ramKnee}).`
@@ -280,11 +294,43 @@ export interface WrittenReport {
   files: string[]
 }
 
+/** One row per burst, so a recompute does not lose the burst result. */
+export function burstCsv(rows: BurstRow[]): string {
+  const head = [
+    'n',
+    'fraction',
+    'window_ms',
+    'turns_started',
+    ...TURN_STEPS.map((s) => `${s}_p95_ms`),
+    'cpu_psi_some_avg60',
+    'mem_available_pct',
+    'oom_kills',
+    'resume_p95_ms',
+    'pass',
+  ]
+  const lines = rows.map((b) =>
+    [
+      b.n,
+      b.fraction,
+      b.windowMs,
+      b.turnsStarted,
+      ...TURN_STEPS.map((s) => b.turnP95[s]),
+      b.cpuPsiSomeAvg60,
+      b.memAvailablePct,
+      b.oomKills,
+      b.resumeP95Ms,
+      b.pass ? 'pass' : 'FAIL',
+    ].join(','),
+  )
+  return [head.join(','), ...lines].join('\n') + '\n'
+}
+
 /** Write the whole run directory. */
 export function writeReport(dir: string, input: ReportInput, samples: HostSample[], turns: Parameters<typeof turnsCsv>[0]): WrittenReport {
   mkdirSync(dir, { recursive: true })
   const files: Record<string, string> = {
     'steps.csv': stepsCsv(input.steps),
+    'burst.csv': burstCsv(input.burst),
     'samples.csv': samplesCsv(samples),
     'turns.csv': turnsCsv(turns),
     'report.md': renderReportMarkdown(input),

@@ -159,8 +159,25 @@ baseline + teardown.
 1.5× the N=1 baseline, CPU PSI `some avg60` stayed under 25%, and resume p95 held
 the 2 s SLO. The RAM knee is the highest N with zero OOM kills, no sustained
 swap-in (≥ 100 pages/s), memory PSI `full avg60` under 1%, and `MemAvailable`
-above 10%. Both are the last **unbroken** pass from the smallest N: a step that
-fails and then "recovers" at a higher N is noise, not headroom.
+above 10%.
+
+The knee is the **highest N that passed**, not the last unbroken pass from the
+smallest N. The first step of a ladder is cold — fresh image, cold page cache,
+turn p95 mixing warm-up with steady state — and on the real host it missed a turn
+bound that the same bounds then passed at 60 and 80 VMs. Under a
+first-failure-closes-the-gate rule that one sample reported a knee of 0. Each step
+is a held 10-minute measurement, so a higher pass is evidence; a lower miss is
+listed in the report under **Below the knee** rather than extrapolated over it.
+
+The baseline those ratios divide by is the **p95** of 20 lone-VM turns — the same
+statistic the steps are compared on. It has to be: with a p50 baseline a host
+with no contention fails on its own tail (see defect 5 below). The baseline turns
+are written to `turns.csv` as `n=1` rows, so the denominator is auditable.
+
+**Nominal N is not assigned N.** The ramp runs one VM at a time and the hold
+starts when the step does, so a step reaches ~80–93% of its nominal N (N=160
+assigned 132 over a 10 min hold). Read the `assigned` count in the log and the
+RAM-committed column, and treat the recommendation as a nominal cap.
 
 **The recommendation** is `min(CPU knee, RAM knee)`, with the burst result shown
 next to it. The report also gives the RAM ceiling at 2 GiB and 4 GiB VMs from the
@@ -168,7 +185,7 @@ measured per-VM RSS, because RAM is per-VM and the idle tail dominates.
 
 ## What the first live run changed (2026-11-23, `latitude-dal-1`)
 
-Running this on the real host found four defects that neither the unit tests nor
+Running this on the real host found six defects that neither the unit tests nor
 the fake node-agent could, all now fixed on `sho-445-metal-density-soak`:
 
 1. **A guest is not reachable at its `/assign` URL from the host itself.**
@@ -191,6 +208,19 @@ the fake node-agent could, all now fixed on `sho-445-metal-density-soak`:
    allow-list, and a bare shell does not inherit the host's
    `NODE_TLS_REJECT_UNAUTHORIZED=0`. `run-density-soak.sh` now sources
    `/etc/metal-agent.env` before it runs the runner.
+5. **The baseline was measured as p50 and compared as p95.** The first run that
+   completed every step (`density-2026-11-23T0707`) reported `CPU knee 0 · RAM
+   knee 100 · recommend METAL_MAX_VMS_PER_HOST=0` for a host that had just
+   carried 160 VMs. It failed N=40 with `install p95 2.68x baseline` at **CPU PSI
+   0.3%** — the step's tail against the baseline's median of the same
+   distribution. `computeKnees` closes a gate at the first failure, so that one
+   noise sample became a CPU knee of 0 and a recommendation to run nothing.
+   `baselineFromTurns()` now uses p95, and a knee of 0 renders as "no
+   recommendation / failed measurement" instead of a capacity of zero.
+6. **The per-size RAM table priced every size at the measured RSS.** It printed
+   `218` for both 2048 MiB and 4096 MiB guests because the observed RSS (2124
+   MiB) replaced the configured size in the calculation. Each row now budgets
+   `max(configured size, measured RSS)`.
 
 Two operational notes from that attempt:
 

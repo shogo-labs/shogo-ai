@@ -38,6 +38,7 @@ import { DEFAULT_BOUNDS, TURN_STEPS, computeKnees, ramCeilingsBySize, type Bound
 import { primeWarmCache, runAgentTurn, startAppLoad, type AppLoadHandle, type TurnTimings } from './density/guest-workload'
 import { assertStagingHost, DEFAULT_STAGING_CONTROL_PLANES, DEFAULT_STAGING_HOSTS } from './density/staging-guard'
 import { writeReport, type BurstRow, type ReportInput, type RunEnv, type StepRow } from './density/report'
+import { recomputeReport } from './density/recompute'
 
 // ---------------------------------------------------------------------------
 // Flags
@@ -67,6 +68,8 @@ export interface SoakOptions {
   allowControlPlanes: string[]
   bounds: Bounds
   dryRun: boolean
+  /** Re-derive the report of an already-recorded run instead of soaking. */
+  fromResults?: string
 }
 
 const num = (v: string | undefined, d: number) => {
@@ -126,6 +129,7 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv = process.env):
       .filter(Boolean),
     bounds: DEFAULT_BOUNDS,
     dryRun: has('dry-run'),
+    fromResults: get('from-results'),
   }
 }
 
@@ -859,6 +863,13 @@ export class DensitySoak {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2))
+  if (opts.fromResults) {
+    const { report, path } = recomputeReport(opts.fromResults, opts.bounds)
+    console.log(`\n===== DENSITY SOAK (recomputed) =====`)
+    console.log(`CPU knee ${report.knees.cpuKnee} · RAM knee ${report.knees.ramKnee} · recommend METAL_MAX_VMS_PER_HOST=${report.recommendation.maxVmsPerHost}`)
+    console.log(`report: ${path}`)
+    return
+  }
   const soak = new DensitySoak(opts)
   let report: ReportInput | null = null
   let failed: unknown = null
