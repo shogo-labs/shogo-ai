@@ -740,7 +740,7 @@ export async function ensureLfsRepoSetup(
     // `git lfs install --system --skip-smudge`; it makes local dev (no system
     // install) behave identically to production.
     await runGit(['lfs', 'install', '--local', '--skip-smudge'], workspaceDir)
-    writeManagedGitAttributes(workspaceDir)
+    writeManagedGitAttributes(workspaceDir, { pathRules: readManagedAttributePaths(workspaceDir) })
     return true
   } catch (err: any) {
     logger.warn(`[lfs] repo setup failed: ${err?.message ?? err}`)
