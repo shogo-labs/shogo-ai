@@ -303,14 +303,30 @@ planner to decide:
 25% limit and API p95 stays at 6–10 ms through 120. What fails is memory
 pressure, and then restore latency.
 
-**A burst at 80 has no headroom.** 13 concurrent agent turns at N=80: `install`
-p95 2360 ms (11× base) and `build` p95 3613 ms. 80 describes the steady-state
-mix, not a thundering herd of turns.
+**The burst at 80 is not yet measured on the fixed harness.** Run 1106's burst
+turns were driven at idle guests that had never run a turn, so 15 of its 20 burst
+turns failed to start at all; the two figures this section used to carry
+(`install` 2360 ms, `build` 3613 ms) were the max of the 5 that did run, which is
+not a burst result and is no longer reported as one. The follow-up run that primes
+the guests first aborted at its baseline because staging could not boot a VM at
+all (below), so the honest statement today is: 80 is the steady-state knee, and
+its burst headroom is **unmeasured**. A second follow-up run is the only thing
+that closes it.
 
 **`METAL_MEM_MIB` should not change** on this host: the RAM knee is set by
-per-VM pressure at 4 GiB, and the RAM ceilings from measured RSS (111 VMs at
-either size, once the per-VM attribution is correct) sit far above both knees, so
-guest sizing is not what limits density — the tail does.
+per-VM pressure at 4 GiB, and the measured RSS per soak VM (~2.1 GiB resident for
+a 4 GiB guest) leaves host RAM far above both knees, so guest sizing is not what
+limits density — the tail does.
+
+**Measured host RSS is attributable only to the soak.** Run 1106 recorded every
+Firecracker process on the host in its RAM column, so its 258 941 MiB over 40 soak
+VMs was 6473 MiB per VM against 4096 MiB guests — it counted the 120 resident
+tenants too, and the 111-VM-per-size table that came from it was that number
+divided by a configured size. `steps.csv` now carries `ram_physical_basis`, the
+report labels an unattributed column as host-wide instead of soak RAM, and per-VM
+RSS and the per-size ceiling are derived only from `soak-delta` steps. Run 1106
+predates the column, so its artifact says "not measured" rather than repeating the
+old figure.
 
 Follow-ups worth their own cards: swap pressure above 100 VMs (swappiness, balloon
 reclaim of idle guests, free-page reporting, KSM), and the turn-latency bound
@@ -320,8 +336,32 @@ The run itself — report and per-step table, as recorded and then re-derived by
 the rules in this branch — is committed at
 [`runs/metal-density-latitude-dal-1-2026-11-23T1106.md`](./runs/metal-density-latitude-dal-1-2026-11-23T1106.md)
 (and `.steps.csv`). `apps/metal-agent/load/results/` is gitignored, so the raw
-`samples.csv` / `turns.csv` stay on the host at
-`/root/metal-agent/load/results/density-2026-11-23T1106/`.
+`samples.csv` / `turns.csv` were kept on the host at
+`/root/metal-agent/load/results/density-2026-11-23T1106/`; staging self-updated
+its runtime image at 12:58Z and the staging harness staging step re-creates
+`/root/metal-agent`, so the host copy is gone. A working copy of the four CSVs is
+in the project's `.tmp-results/` on the machine that ran the soak, and the
+committed `.steps.csv` is the part the numbers above come from.
+
+**Blocker for the burst run (2026-11-23T13:15Z).** Staging release `718a651`
+rebuilt the golden rootfs from
+`shogo-runtime:staging-multiarch-718a651fc7b4352876b4b13510138c63377746b9` and
+activated it at 12:58Z. That image has no `/usr/local/bin/fc-init`, which is what
+`METAL_GUEST_INIT` points at, so every cold boot now dies before userspace:
+
+```
+[    0.438396] Kernel panic - not syncing: Requested init /usr/local/bin/fc-init failed (error -2).
+```
+
+Mounting the image confirms it: `/opt/fc-spike/img/runtime.ext4` has no
+`fc-init`, while `img/docker-runtime.ext4` does. Warm boots from the pre-update
+snapshots keep working, which is why existing workspace traffic survives; new
+assigns fail host-wide (`VM … exited before healthy` / `FC API socket never
+appeared` in the metal-agent journal). The soak's baseline VM was one of them, so
+the run stops before its first step and restores the host. Nothing in the harness
+can work around a missing guest init, and the run must not be retried against a
+different image than the one measured — those numbers would not be comparable to
+the ladder above.
 
 ## Related
 

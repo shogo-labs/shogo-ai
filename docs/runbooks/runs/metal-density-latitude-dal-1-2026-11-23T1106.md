@@ -62,5 +62,5 @@ Not measured in this run: no step carries host RSS attributed to the soak, and h
 
 - Re-derived from steps.csv and turns.csv of the recorded run (2026-11-23T11:06:25.840Z), not a fresh soak.
 - This run recorded no burst rows, so none are claimed here. Its `turns.csv` does carry 20 burst turns recorded before the primed-guest fix, 15 of which never started a turn — a harness result, not a burst result, so it is not reported as one.
-- RAM physical is the host's whole Firecracker RSS in this run (the step column predates soak attribution), so no per-VM RSS and no per-size ceiling are derived from it. Those come from `metal-density-latitude-dal-1-2026-11-23T1320.md`, the same host measured with `ram_physical_basis=soak-delta`.
+- RAM physical is the host's whole Firecracker RSS in this run (the step column predates soak attribution), so no per-VM RSS and no per-size ceiling are derived from it. They are measured only by a run that records `ram_physical_basis=soak-delta`, and the first attempt at that run stopped at its baseline because staging could not cold-boot a VM (see the runbook's blocker note).
 - The ladder numbers above are unaffected by either defect: every RAM bound (OOM, swap-in, memory PSI, MemAvailable) is a host signal, which is why the RAM knee of 80 stands.
