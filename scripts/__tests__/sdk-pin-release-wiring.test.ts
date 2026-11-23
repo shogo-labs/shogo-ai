@@ -86,4 +86,23 @@ describe('release SDK pin wiring (SHO-522)', () => {
     // The materialize script writes the bare version.
     expect(read('scripts', 'materialize-runtime-template.ts')).toContain('deps[name] = version')
   })
+
+  test('a dev checkout never pins the unpublished in-repo version (ETARGET)', () => {
+    // The `workspace:*` branch means a source checkout, whose
+    // `packages/<pkg>/package.json` version is a development placeholder the
+    // release never publishes (v2.6.1's tree still said 1.7.0). Writing it
+    // bare fails `bun install` with ETARGET, so it must not be a pin source:
+    // `npm view @shogo-ai/sdk@1.7.0` → 404, and a seeded project that pinned it
+    // never built (remote-workspace preview e2e, run 45109364954).
+    const runtime = read('packages', 'agent-runtime', 'src', 'workspace-defaults.ts')
+    expect(runtime).not.toContain("join(templatePath, '..', '..', 'packages', 'sdk', 'package.json')")
+    // Nor may `migrateLegacyShogoSdkPin` treat it as an upgrade target.
+
+    // apps/api resolves what the registry actually serves, and keeps `latest`
+    // as the offline fallback.
+    const manager = read('apps', 'api', 'src', 'lib', 'runtime', 'manager.ts')
+    expect(manager).toContain('resolvePublishedDepVersion')
+    expect(manager).toContain('registry.npmjs.org')
+    expect(manager).toContain("deps[name] = 'latest'")
+  })
 })

@@ -1525,7 +1525,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       // shipped/desktop template is already materialized at build time, so
       // this is a no-op there; it only does work in monorepo/host dev where
       // the bundled template still carries `workspace:*`.
-      this.materializeWorkspaceDeps(projectDir, projectId)
+      await this.materializeWorkspaceDeps(projectDir, projectId)
 
       // Template-shaped workspace (manifest identical to the template's):
       // clone the installed store instead of running the package manager.
@@ -1577,16 +1577,24 @@ export class ShogoErrorBoundary extends Component<Props, State> {
 
   /**
    * Rewrite `@shogo-ai/* : workspace:*` specifiers in a freshly-seeded
-   * project's `package.json` to a concrete `X.Y.Z` (exact — no caret,
-   * SHO-522: a range is re-resolved against npm on every install, so a
-   * broken release could reach an app whose image only pinned `^X.Y.Z`)
-   * so `bun install` resolves them standalone. Mirrors
-   * `scripts/materialize-runtime-template.ts`, but offline: in host/desktop
-   * mode the monorepo's `packages/<pkg>` is present, so we pin to its
-   * in-repo version (no network, deterministic). No-op when the template
-   * was already materialized at build time (no `workspace:*` deps left).
+   * project's `package.json` to a concrete published `X.Y.Z` (exact — no
+   * caret, SHO-522: a range is re-resolved against npm on every install, so a
+   * broken release could reach an app whose image only pinned `^X.Y.Z`) so
+   * `bun install` resolves them standalone. No-op when the template was
+   * already materialized at build time (no `workspace:*` deps left), which is
+   * every released image — the pin a pod installs is the one its image was
+   * released with, and only a source checkout takes this branch.
+   *
+   * The pin cannot be the checkout's `packages/<pkg>/package.json` version:
+   * that value is a development placeholder, never the published one (the
+   * release stamps the tag's version into the tarball, so the v2.6.1 tree
+   * still said `1.7.0`), and writing it bare fails the install with ETARGET —
+   * `@shogo-ai/sdk@1.7.0` was never published. So resolve what the registry
+   * actually serves: the checkout's version when it really exists, otherwise
+   * the current `latest`, pinned exact. The `latest` specifier stays as the
+   * fallback for an unreachable registry.
    */
-  private materializeWorkspaceDeps(projectDir: string, projectId: string): void {
+  private async materializeWorkspaceDeps(projectDir: string, projectId: string): Promise<void> {
     const pkgPath = join(projectDir, 'package.json')
     if (!existsSync(pkgPath)) return
 
@@ -1607,15 +1615,15 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       for (const [name, spec] of Object.entries(deps)) {
         if (typeof spec !== 'string' || !spec.startsWith('workspace:')) continue
         if (!name.startsWith('@shogo-ai/')) continue
-        const version = this.resolveInRepoPackageVersion(name)
+        const version = await this.resolvePublishedDepVersion(name, this.resolveInRepoPackageVersion(name))
         if (version) {
           deps[name] = version
         } else {
-          // No in-repo package to pin against (e.g. a partial bundle).
-          // Fall back to the published `latest` so the install can still
-          // resolve rather than dying on the `workspace:` protocol.
+          // Registry unreachable (offline seeding). Fall back to the published
+          // `latest` so the install can still resolve rather than dying on the
+          // `workspace:` protocol.
           console.warn(
-            `[RuntimeManager] No in-repo version for ${name} while seeding ${projectId} — pinning to "latest"`,
+            `[RuntimeManager] Could not resolve a published version for ${name} while seeding ${projectId} — pinning to "latest"`,
           )
           deps[name] = 'latest'
         }
@@ -1650,6 +1658,40 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     } catch {
       return null
     }
+  }
+
+  /**
+   * The exact `@shogo-ai/<pkg>` version npm actually serves, for pinning into
+   * a seeded project's manifest. `localVersion` is only a hint — a checkout's
+   * in-repo version is a development placeholder that was never published
+   * (SHO-522), so it is used only when the registry really has it; otherwise
+   * the current `latest` version is pinned. Null when the registry cannot be
+   * reached. Cached per process: seeding many projects resolves each package
+   * once.
+   */
+  private publishedDepVersions = new Map<string, string | null>()
+
+  private async resolvePublishedDepVersion(name: string, localVersion: string | null): Promise<string | null> {
+    const cacheKey = `${name}@${localVersion ?? ''}`
+    if (this.publishedDepVersions.has(cacheKey)) return this.publishedDepVersions.get(cacheKey) ?? null
+
+    const fetchVersion = async (spec: string): Promise<string | null> => {
+      try {
+        const res = await fetch(`https://registry.npmjs.org/${name}/${spec}`, {
+          headers: { accept: 'application/json' },
+          signal: AbortSignal.timeout(10_000),
+        })
+        if (!res.ok) return null
+        const body = (await res.json()) as { version?: unknown }
+        return typeof body?.version === 'string' ? body.version : null
+      } catch {
+        return null
+      }
+    }
+
+    const version = (localVersion ? await fetchVersion(localVersion) : null) ?? (await fetchVersion('latest'))
+    this.publishedDepVersions.set(cacheKey, version)
+    return version
   }
 
   private async getProjectInfo(projectId: string): Promise<ProjectInfo> {
@@ -2908,7 +2950,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         if (existsSync(buildingDir)) rmSync(buildingDir, { recursive: true, force: true })
         const store = await this.ensureDepsStore(sourceTemplate)
         this.copyTemplateInto(sourceTemplate, buildingDir)
-        this.materializeWorkspaceDeps(buildingDir, '__warm__')
+        await this.materializeWorkspaceDeps(buildingDir, '__warm__')
         if (store) {
           await this.cloneDepsFromStore(store, buildingDir, '__warm__')
         } else {
@@ -3006,7 +3048,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         mkdirSync(warmRoot, { recursive: true })
         if (existsSync(buildingDir)) rmSync(buildingDir, { recursive: true, force: true })
         this.copyTemplateInto(template, buildingDir)
-        this.materializeWorkspaceDeps(buildingDir, '__deps__')
+        await this.materializeWorkspaceDeps(buildingDir, '__deps__')
         await pkg.installAsync(buildingDir)
         writeFileSync(join(buildingDir, 'node_modules', '.install-ok'), new Date().toISOString())
         writeFileSync(join(buildingDir, 'node_modules', DEPS_KEY_FILE), depsKey)

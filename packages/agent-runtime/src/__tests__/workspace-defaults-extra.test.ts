@@ -427,6 +427,43 @@ describe('getRuntimeTemplatePath / seedRuntimeTemplate', () => {
     expect(existsSync(join(dir, 'src', 'real.ts'))).toBe(true)
   })
 
+  test('seeded pin for an unmaterialized (workspace:*) template is installable, never the unpublished in-repo version', () => {
+    // Regression: SHO-522 made every pin writer exact, which wrote the
+    // checkout's `packages/sdk` version bare. That version is a development
+    // placeholder the release never publishes (v2.6.1's tree still says
+    // 1.7.0), so `bun install` failed with ETARGET and the app never built.
+    const root = makeTmp()
+    const tplDir = join(root, 'templates', 'runtime-template')
+    mkdirSync(tplDir, { recursive: true })
+    writeFileSync(join(tplDir, 'package.json'), JSON.stringify({
+      name: 'tpl',
+      dependencies: { '@shogo-ai/sdk': 'workspace:*' },
+    }))
+    mkdirSync(join(root, 'packages', 'sdk'), { recursive: true })
+    writeFileSync(join(root, 'packages', 'sdk', 'package.json'), JSON.stringify({ name: '@shogo-ai/sdk', version: '1.7.0' }))
+    process.env.RUNTIME_TEMPLATE_DIR = tplDir
+
+    const dir = makeTmp()
+    expect(wd.seedRuntimeTemplate(dir)).toBe(true)
+    const pin = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')).dependencies['@shogo-ai/sdk']
+    expect(pin).toBe('latest')
+    expect(pin).not.toContain('1.7.0')
+  })
+
+  test('seeded pin for a materialized template is the template version, exactly', () => {
+    const tplDir = makeTmp()
+    writeFileSync(join(tplDir, 'package.json'), JSON.stringify({
+      name: 'tpl',
+      dependencies: { '@shogo-ai/sdk': '2.6.1' },
+    }))
+    process.env.RUNTIME_TEMPLATE_DIR = tplDir
+
+    const dir = makeTmp()
+    expect(wd.seedRuntimeTemplate(dir)).toBe(true)
+    const pin = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')).dependencies['@shogo-ai/sdk']
+    expect(pin).toBe('2.6.1')
+  })
+
   test('restores the prisma scaffold even when package.json already exists', () => {
     // Regression: a pre-existing workspace (has package.json, so the full seed
     // is skipped) that lacks its Prisma scaffold previously got nothing back —
@@ -1103,8 +1140,12 @@ describe('migrateLegacyShogoSdkPin', () => {
     expect(wd.migrateLegacyShogoSdkPin(dir)).toEqual({ upgraded: false })
   })
 
-  test('workspace:* template (unmaterialized) falls back to co-located packages/sdk version', () => {
-    // Lay out a fake monorepo: <root>/templates/runtime-template + <root>/packages/sdk.
+  test('workspace:* template (unmaterialized) is not an upgrade target — no-op', () => {
+    // A dev checkout's template carries the `workspace:*` sentinel, and the
+    // only local version is `packages/sdk`'s development placeholder, which is
+    // never published (the release stamps the tag's version into the tarball).
+    // Upgrading to it would pin an unpublished version and fail `bun install`
+    // with ETARGET, so the workspace's own pin is left alone.
     const root = makeTmp()
     const tplDir = join(root, 'templates', 'runtime-template')
     mkdirSync(tplDir, { recursive: true })
@@ -1120,9 +1161,8 @@ describe('migrateLegacyShogoSdkPin', () => {
     writeFileSync(join(dir, 'package.json'), JSON.stringify({
       dependencies: { '@shogo-ai/sdk': '^0.4.0' },
     }))
-    const result = wd.migrateLegacyShogoSdkPin(dir)
-    expect(result.upgraded).toBe(true)
-    expect(result.after).toBe('1.9.0')
+    expect(wd.migrateLegacyShogoSdkPin(dir)).toEqual({ upgraded: false })
+    expect(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')).dependencies['@shogo-ai/sdk']).toBe('^0.4.0')
   })
 
   test('workspace:* template with no co-located packages/sdk → clean no-op', () => {
