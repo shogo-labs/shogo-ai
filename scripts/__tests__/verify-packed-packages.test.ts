@@ -103,6 +103,23 @@ describe('rewriteManifestForPublish', () => {
     }
   })
 
+  it('treats a dep on @shogo-ai/worker as a sibling, not a stranger', () => {
+    // `packages/shogo-worker` publishes as `@shogo-ai/worker`, so the published
+    // name cannot be derived from the directory. On main every `@shogo-ai/*` dep
+    // was rewritten; a name-derived set that got this one wrong would strip it.
+    const dir = fixture({
+      name: '@shogo-ai/sdk',
+      version: '1.7.0',
+      dependencies: { '@shogo-ai/worker': 'workspace:*' },
+    })
+    try {
+      rewriteManifestForPublish(dir, GATE_VERSION)
+      expect(readManifest(dir).dependencies).toEqual({ '@shogo-ai/worker': GATE_VERSION })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('strips the development export condition and keeps the rest', () => {
     const dir = fixture({
       name: '@shogo-ai/sdk',

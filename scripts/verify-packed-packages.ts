@@ -101,11 +101,25 @@ export const STANDALONE_PACKAGES = ['shogo-worker'] as const
 export const PUBLISHED_PACKAGES = [...LOCKSTEP_PACKAGES, ...STANDALONE_PACKAGES] as const
 
 /**
- * `@shogo-ai/<dir>` for every package the workflows publish. A dependency on one
+ * The registry name of every package the workflows publish. A dependency on one
  * of these is a sibling: it always resolves to the version being published, and
- * never to the registry.
+ * never to the registry. The name comes from the package's own manifest because
+ * the directory is not always the name — `packages/shogo-worker` publishes as
+ * `@shogo-ai/worker`, and a dep on it must not be mistaken for a stranger's.
  */
-const PUBLISHED_NAMES = new Set<string>(PUBLISHED_PACKAGES.map((dir) => `@shogo-ai/${dir}`))
+const PUBLISHED_NAMES = new Set<string>(PUBLISHED_PACKAGES.map(publishedName))
+
+function publishedName(dir: string): string {
+  try {
+    const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'packages', dir, 'package.json'), 'utf8')) as {
+      name?: unknown
+    }
+    if (typeof manifest.name === 'string' && manifest.name.length > 0) return manifest.name
+  } catch {
+    // Fall through to the directory-derived name; a missing manifest fails later.
+  }
+  return `@shogo-ai/${dir}`
+}
 
 /** Synthetic version so every tarball in a run satisfies its siblings' ranges. */
 const GATE_VERSION = '0.0.0-gate'
