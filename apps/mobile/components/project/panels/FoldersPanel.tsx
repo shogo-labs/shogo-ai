@@ -22,7 +22,7 @@
  * control (their own dev server).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import { Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
   Boxes,
@@ -45,6 +45,7 @@ import {
   phonePaneScrollProps,
 } from "../../phone/NativePhonePane";
 import { densityFor } from "../../../lib/phone-density"
+import { Spinner } from '@/components/ui/spinner'
 
 interface ProjectFolder {
   id: string
@@ -400,7 +401,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
         </View>
         {restarting ? (
           <View testID="runtime-restarting" className="flex-row items-center gap-1.5">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
             <Text className={cn('text-muted-foreground', density.text.body)}>Restarting context…</Text>
           </View>
         ) : null}
@@ -408,7 +409,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
 
       {isLoading && !project ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         </View>
       ) : (
         <ScrollView
@@ -580,7 +581,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                           className="rounded-md px-2 py-1 active:bg-muted"
                         >
                           {busy === `primary-${folder.id}` ? (
-                            <ActivityIndicator size="small" />
+                            <Spinner size="small" />
                           ) : (
                             <Star size={13} className="text-muted-foreground" />
                           )}
@@ -598,7 +599,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                           className="rounded-md px-2 py-1 active:bg-destructive/10"
                         >
                           {busy === `remove-folder-${folder.id}` ? (
-                            <ActivityIndicator size="small" />
+                            <Spinner size="small" />
                           ) : (
                             <Trash2 size={density.icon.md} className="text-destructive" />
                           )}
@@ -671,7 +672,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                           density.text.body)} numberOfLines={1}>
                         {p.name || p.id}
                       </Text>
-                      {busy === `attach-${p.id}` ? <ActivityIndicator size="small" /> : null}
+                      {busy === `attach-${p.id}` ? <Spinner size="small" /> : null}
                     </Pressable>
                   ))
                 )}
@@ -739,7 +740,7 @@ export function FoldersPanel({ projectId, visible, onChange }: FoldersPanelProps
                       className="rounded-md px-2 py-1 active:bg-destructive/10"
                     >
                       {busy === `detach-${att.attachedProjectId}` ? (
-                        <ActivityIndicator size="small" />
+                        <Spinner size="small" />
                       ) : (
                         <Trash2 size={density.icon.md} className="text-destructive" />
                       )}

@@ -12,6 +12,11 @@
  * integers natively, so it may pass there even before the fix — noted in the
  * PR body.
  *
+ * SHO-532 bounded what a report may BILL: the counter is still stored in full
+ * (that is what these cases guard), but a first report cannot charge more than
+ * the wall clock since the VM was assigned, so case (a) now asserts 61 s rather
+ * than 24.8 days.
+ *
  * Run individually:
  *   CHANNELS_TEST_PG_URL=postgresql://shogo:shogo@127.0.0.1:5432/shogo \
  *     bun --no-env-file test src/__tests__/vm-meter-cursor-overflow.integration.test.ts
@@ -87,8 +92,12 @@ describe('SHO-475: BigInt cursor counters (real DB)', () => {
 
     const usage = await (prisma as any).vmUsageHour.findMany({ where: { hostId: HOST } })
     const totalAgent = usage.reduce((s: number, r: any) => s + r.agentSeconds, 0)
-    // first report: floor(firstMs / 1000) = 2147488 s; second: 30 more → total = 2147488 + 30
-    expect(totalAgent).toBe(Math.floor(firstMs / 1000) + 30)
+    // The full value is stored as BigInt (asserted above), but what is BILLED is
+    // bounded by the wall clock: this VM was assigned one second ago and reports
+    // 24.8 days of agent time, so 1 s + the 60 s slack is all it can have used
+    // (SHO-532). The second report adds its own legitimate 30 s.
+    expect(totalAgent).toBe(61 + 30)
+    for (const r of usage) expect(r.agentSeconds + r.appSeconds + r.idleSeconds).toBeLessThanOrEqual(3600)
   })
 
   /**

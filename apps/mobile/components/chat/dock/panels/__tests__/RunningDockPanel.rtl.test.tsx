@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { resolve } from "node:path"
-import { describe, expect, jest, mock, test } from "bun:test"
+import { beforeEach, describe, expect, jest, mock, test } from "bun:test"
 import { act, fireEvent, render, waitFor } from "@testing-library/react"
 import { createElement } from "react"
 import type { DockPanelDescriptor } from "../../../../../lib/chat-dock-store"
@@ -13,6 +13,23 @@ import {
   DOCK_FINISHED_LINGER_MS,
   DOCK_FINISHED_MIN_VISIBLE_MS,
 } from "../../finished-rows"
+
+// The seen ledger hydrates from AsyncStorage on mount — stub it with the same
+// in-memory backing store the other ChatPanel tests use.
+mock.module("@react-native-async-storage/async-storage", () => {
+  const backing = new Map<string, string>()
+  return {
+    default: {
+      getItem: async (k: string) => backing.get(k) ?? null,
+      setItem: async (k: string, v: string) => {
+        backing.set(k, v)
+      },
+      removeItem: async (k: string) => {
+        backing.delete(k)
+      },
+    },
+  }
+})
 
 mock.module("react-native", () =>
   createReactNativeMock({
@@ -33,8 +50,12 @@ mock.module(resolve(import.meta.dir, "../../useDockPanel"), () => ({
 }))
 
 const { RunningDockPanel } = await import("../RunningDockPanel")
+const { __resetDockSeenLedgerForTests, __seedDockSeenLedgerForTests } = await import(
+  "../../../../../lib/dock-seen-ledger"
+)
 
 let bodyRoot: ReturnType<typeof render> | null = null
+let panelRoot: ReturnType<typeof render> | null = null
 let lastNow = Date.now()
 
 function task(overrides: Partial<RunningProcess>): RunningProcess {
@@ -50,10 +71,29 @@ function task(overrides: Partial<RunningProcess>): RunningProcess {
   } as RunningProcess
 }
 
-function mountPanel(props: Partial<React.ComponentProps<typeof RunningDockPanel>>) {
-  descriptor = null
+/** A settled row: finished a second ago, so it has its whole linger to run. */
+function doneTask(id: string, at: number): RunningProcess {
+  return task({
+    id,
+    command: `run ${id}`,
+    status: "completed",
+    startedAt: at - 60_000,
+    finishedAt: at - 1_000,
+  })
+}
+
+/** Drop the mounted tree — what leaving a chat does to the dock. */
+function unmountPanel() {
+  bodyRoot?.unmount()
+  panelRoot?.unmount()
   bodyRoot = null
-  return render(
+  panelRoot = null
+  descriptor = null
+}
+
+function mountPanel(props: Partial<React.ComponentProps<typeof RunningDockPanel>>) {
+  unmountPanel()
+  panelRoot = render(
     <RunningDockPanel
       processes={[]}
       onKillProcess={() => {}}
@@ -62,6 +102,7 @@ function mountPanel(props: Partial<React.ComponentProps<typeof RunningDockPanel>
       {...props}
     />,
   )
+  return panelRoot
 }
 
 function renderPanel(props: Partial<React.ComponentProps<typeof RunningDockPanel>>) {
@@ -97,6 +138,11 @@ function advance(ms: number) {
 }
 
 describe("RunningDockPanel", () => {
+  // The ledger is process state: every test starts with an empty one.
+  beforeEach(() => {
+    __resetDockSeenLedgerForTests()
+  })
+
   test("registers nothing when no task runs and the agent is not waiting", () => {
     expect(renderPanel({})).toBeNull()
   })
@@ -495,5 +541,154 @@ describe("RunningDockPanel", () => {
     fireEvent.click(view.getByRole("button", { name: "SUP-12 Fix login" }))
     expect(opened).toHaveLength(1)
     expect(opened[0]!.link?.kind).toBe("card")
+  })
+
+  describe("reopening a chat only replays what finished since the last visit", () => {
+    test("rows this device already watched retire render nothing and register no panel", () => {
+      jest.useFakeTimers()
+      lastNow = Date.now()
+      __seedDockSeenLedgerForTests("chat-1", ["t_a", "t_b"], lastNow - 30_000)
+      mountPanel({
+        sessionId: "chat-1",
+        processes: [doneTask("t_a", lastNow), doneTask("t_b", lastNow)],
+      })
+      expect(descriptor).toBeNull()
+      expect(body().queryByText("completed")).toBeNull()
+      // No animation is playing either: nothing appears later.
+      advance(DOCK_FINISHED_LINGER_MS)
+      expect(descriptor).toBeNull()
+
+      jest.useRealTimers()
+    })
+
+    test("leaving and reopening the same chat does not replay a row that already left", () => {
+      jest.useFakeTimers()
+      lastNow = Date.now()
+      const t0 = lastNow
+      const done = doneTask("t_a", t0)
+
+      mountPanel({ sessionId: "chat-1", processes: [done] })
+      expect(descriptor!.title).toBe("Finished")
+      expect(body().getByText("run t_a")).toBeTruthy()
+      advance(DOCK_FINISHED_LINGER_MS + DOCK_FINISHED_EXIT_MS + 100)
+      expect(descriptor).toBeNull()
+
+      unmountPanel()
+      renderPanel({ sessionId: "chat-1", processes: [{ ...done }] })
+      expect(descriptor).toBeNull()
+      advance(DOCK_FINISHED_LINGER_MS)
+      expect(descriptor).toBeNull()
+
+      jest.useRealTimers()
+    })
+
+    test("a task that finished while the chat was closed still plays on the next open", () => {
+      jest.useFakeTimers()
+      lastNow = Date.now()
+      const t0 = lastNow
+      const seen = doneTask("t_seen", t0)
+
+      mountPanel({ sessionId: "chat-1", processes: [seen] })
+      advance(DOCK_FINISHED_LINGER_MS + DOCK_FINISHED_EXIT_MS + 100)
+      expect(descriptor).toBeNull()
+
+      const fresh = doneTask("t_new", t0)
+      unmountPanel()
+      renderPanel({ sessionId: "chat-1", processes: [seen, fresh] })
+      expect(descriptor!.summary).toBe("1 finished")
+      const view = body()
+      expect(view.getByText("run t_new")).toBeTruthy()
+      expect(view.queryByText("run t_seen")).toBeNull()
+
+      // The new row keeps the readable window and its exit.
+      advance(DOCK_FINISHED_MIN_VISIBLE_MS)
+      expect(view.getByText("run t_new")).toBeTruthy()
+      advance(DOCK_FINISHED_EXIT_MS + 100)
+      expect(descriptor).toBeNull()
+
+      jest.useRealTimers()
+    })
+
+    test("a dock emptied on a session switch does not make the rows replay", () => {
+      jest.useFakeTimers()
+      lastNow = Date.now()
+      const t0 = lastNow
+      const done = doneTask("t_a", t0)
+
+      const panel = mountPanel({ sessionId: "chat-1", processes: [done] })
+      advance(DOCK_FINISHED_LINGER_MS + DOCK_FINISHED_EXIT_MS + 100)
+      expect(descriptor).toBeNull()
+
+      // `ChatPanel` clears `runningProcesses` while the chat is switched away.
+      act(() => {
+        panel.rerender(
+          <RunningDockPanel
+            processes={[]}
+            onKillProcess={() => {}}
+            subagents={[]}
+            recentTools={[]}
+            sessionId="chat-1"
+          />,
+        )
+      })
+      expect(descriptor).toBeNull()
+
+      act(() => {
+        panel.rerender(
+          <RunningDockPanel
+            processes={[{ ...done }]}
+            onKillProcess={() => {}}
+            subagents={[]}
+            recentTools={[]}
+            sessionId="chat-1"
+          />,
+        )
+      })
+      expect(descriptor).toBeNull()
+
+      jest.useRealTimers()
+    })
+
+    test("leaving during the readable window leaves the row unread, so it plays again", () => {
+      jest.useFakeTimers()
+      lastNow = Date.now()
+      const t0 = lastNow
+      const done = doneTask("t_a", t0)
+
+      mountPanel({ sessionId: "chat-1", processes: [done] })
+      advance(500)
+      expect(descriptor!.title).toBe("Finished")
+
+      unmountPanel()
+      renderPanel({ sessionId: "chat-1", processes: [{ ...done }] })
+      expect(descriptor!.title).toBe("Finished")
+      expect(body().getByText("run t_a")).toBeTruthy()
+
+      jest.useRealTimers()
+    })
+
+    test("the same task id in another chat is a different row", () => {
+      jest.useFakeTimers()
+      lastNow = Date.now()
+      __seedDockSeenLedgerForTests("chat-1", ["t_a"], lastNow - 30_000)
+
+      renderPanel({ sessionId: "chat-2", processes: [doneTask("t_a", lastNow)] })
+      expect(descriptor!.title).toBe("Finished")
+      expect(body().getByText("run t_a")).toBeTruthy()
+
+      jest.useRealTimers()
+    })
+
+    test("without a session id the dock behaves exactly as before", () => {
+      jest.useFakeTimers()
+      lastNow = Date.now()
+      __seedDockSeenLedgerForTests("chat-1", ["t_a"], lastNow - 30_000)
+
+      renderPanel({ processes: [doneTask("t_a", lastNow)] })
+      expect(descriptor!.title).toBe("Finished")
+      expect(body().getByText("run t_a")).toBeTruthy()
+
+      jest.useRealTimers()
+    })
   })
 })

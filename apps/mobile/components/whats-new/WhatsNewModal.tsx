@@ -40,7 +40,7 @@ const ICONS = {
 
 function HighlightIcon({ name }: { name?: string }) {
   const Icon = ICONS[name as keyof typeof ICONS] ?? Sparkles;
-  return <Icon size={18} color="#f97316" strokeWidth={2.2} />;
+  return <Icon className="text-primary" size={18} strokeWidth={2.2} />;
 }
 
 export function WhatsNewModal({

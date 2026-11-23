@@ -45,7 +45,10 @@
  * is optional, so the gate honours that contract, but a root that throws without
  * it is a real papercut for anyone who runs `npm install <pkg>` and imports the
  * root. A missing *required* peer or dependency is always a failure. (The SDK's
- * own root needed `mobx` and `react` this way; both are required peers now.)
+ * own root needed `mobx` and `react` this way; both are required peers now.
+ * `@shogo-ai/agent`'s root re-exported `agent-loop`, `pi-adapter` and
+ * `vision-fallback`, which value-import the optional `@mariozechner/*` peers —
+ * those are subpath-only now, so the agent root loads on a plain install.)
  *
  * Usage
  * -----

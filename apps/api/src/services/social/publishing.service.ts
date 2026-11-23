@@ -782,6 +782,16 @@ function postStatusFromCounts(targets: Array<{ status: string }>): PostStatus {
   return 'publishing'
 }
 
+/** Rows that have not gone out yet, so no provider read may call them `publishing`. */
+const NOT_YET_OUT = new Set(['draft', 'scheduled'])
+
+/** A provider answer's targets, which Zernio names `platforms` on a read and `targets` on a create. */
+function providerTargetsOf(remote: any): any[] {
+  if (Array.isArray(remote?.platforms)) return remote.platforms
+  if (Array.isArray(remote?.targets)) return remote.targets
+  return []
+}
+
 /**
  * The one writer for a provider post's state, shared by the read path and the
  * webhook so a post cannot end up described two different ways.
@@ -791,11 +801,7 @@ function postStatusFromCounts(targets: Array<{ status: string }>): PostStatus {
  * re-applying the same state writes nothing — a redelivered webhook is a no-op.
  */
 export async function applyProviderPostState(post: any, remote: any) {
-  const platforms: any[] = Array.isArray(remote?.platforms)
-    ? remote.platforms
-    : Array.isArray(remote?.targets)
-      ? remote.targets
-      : []
+  const platforms = providerTargetsOf(remote)
   const byAccount = new Map(
     platforms.map((entry: any) => [providerAccountId(entry), entry] as const).filter(([id]) => !!id),
   )
@@ -810,7 +816,17 @@ export async function applyProviderPostState(post: any, remote: any) {
     where: { postId: post.id },
     select: { status: true },
   })
-  const status = postStatusFromCounts(targets)
+  const derived = postStatusFromCounts(targets)
+  // `publishing` is what the counts say when nothing has gone out yet, which is
+  // true of a scheduled post the provider has not started. Calling that
+  // `publishing` would claim a post is on its way out when it is still waiting,
+  // so a row that had not gone out stays where it was unless a leg is in flight.
+  const status =
+    derived === 'publishing' &&
+    NOT_YET_OUT.has(post.status) &&
+    !targets.some((row: any) => row.status === 'publishing')
+      ? post.status
+      : derived
   // The provider's own `publishedAt` is the truth; without one, the moment we
   // first saw the post go out is. An existing value is never overwritten, so a
   // second read cannot walk the date forward.
@@ -876,8 +892,8 @@ async function rereadPost(workspaceId: string, post: any) {
 }
 
 /** Read one post we already handed to Zernio, by the id it gave us. */
-async function reconcileKnownPost(workspaceId: string, post: any) {
-  if (!dueForProviderCheck(post)) return post
+async function reconcileKnownPost(workspaceId: string, post: any, opts: { force?: boolean } = {}) {
+  if (!opts.force && !dueForProviderCheck(post)) return post
   let detail: any
   try {
     const answer = await getSocialClient().request<any>({
@@ -894,6 +910,9 @@ async function reconcileKnownPost(workspaceId: string, post: any) {
     return post
   }
   if (!detail) return post
+  // An answer that names no target tells us nothing about this post's legs, and
+  // applying it would derive a status from targets it never mentioned.
+  if (providerTargetsOf(detail).length === 0) return post
   await applyProviderPostState(post, detail)
   return rereadPost(workspaceId, post)
 }
@@ -907,10 +926,14 @@ async function reconcileKnownPost(workspaceId: string, post: any) {
  * A scheduled post keeps `scheduled` for ever because nothing ever wrote the
  * provider's eventual answer back, so once it is due the same read fetches it by
  * `zernioPostId`. Both end in `applyProviderPostState`, the one writer.
+ *
+ * `force` is for an explicit delete, which is worth one read even for a row that
+ * is not due yet: a post can go out early, and delete is the one call where
+ * believing a stale `scheduled` asks the provider to delete a live post.
  */
-export async function reconcilePost(workspaceId: string, post: any) {
+export async function reconcilePost(workspaceId: string, post: any, opts: { force?: boolean } = {}) {
   if (!post) return post
-  if (post.zernioPostId) return reconcileKnownPost(workspaceId, post)
+  if (post.zernioPostId) return reconcileKnownPost(workspaceId, post, opts)
   if (post.status !== 'publishing') return post
   const createdAt = post.createdAt instanceof Date ? post.createdAt : new Date(post.createdAt)
   if (!Number.isFinite(createdAt.getTime())) return post
@@ -980,7 +1003,12 @@ export async function listPosts(
     orderBy: [{ scheduledFor: 'asc' }, { createdAt: 'desc' }],
     take: Math.min(Math.max(opts.limit ?? 50, 1), 200),
   })
-  return reconcileList(workspaceId, posts)
+  const reconciled = await reconcileList(workspaceId, posts)
+  if (!opts.status) return reconciled
+  // The filter was applied to the stale row. A post that reconciled to another
+  // status is no longer in the set the caller asked for — it shows up under the
+  // status the same read now gives it.
+  return reconciled.filter((post: any) => post.status === opts.status)
 }
 
 /** Will reading this row ask the provider anything? */
@@ -1114,52 +1142,49 @@ export interface DeletePostResult {
   manual: Array<DeletePostRemoval & { reason: string }>
 }
 
+/** Rows that hold, or may hold, a post that is out — so delete takes it down rather than dropping the record. */
+function isLiveStatus(status: string): boolean {
+  return status === 'published' || status === 'partial' || status === 'publishing'
+}
+
 /**
- * Delete a post, at the provider and here.
- *
- * A draft, a scheduled post, a failed one or a cancelled one is removed
- * outright — Zernio is told first so a scheduled post cannot still ship. A post
- * that went out is a different thing: it is unpublished per target, and only on
- * the platforms Zernio can unpublish. Instagram, TikTok and Snapchat have no
- * removal API, so those targets come back under `manual` with their links and
- * the row is kept (`cancelled` once nothing is left live) so the history and the
- * analytics stay honest.
+ * "Published posts cannot be deleted" — Zernio's refusal to cancel a post that
+ * has already gone out, sent as a 400 `invalid_request_error` that names the
+ * unpublish routes the platform does not have. The sentence is the reliable
+ * part: a 400 alone could be anything.
  */
-export async function deletePost(workspaceId: string, postId: string): Promise<DeletePostResult> {
-  // The full account row, not `getPost`'s trimmed one: unpublish needs the
-  // provider's account id.
-  const post = await db.socialPost.findFirst({
+function isPublishedRefusal(err: unknown): boolean {
+  return err instanceof SocialError && /published posts cannot be deleted/i.test(err.message)
+}
+
+/** The row as delete needs it — the full account, because unpublish needs its provider id. */
+async function loadPostForDelete(workspaceId: string, postId: string) {
+  return db.socialPost.findFirst({
     where: { id: postId, workspaceId },
     include: { targets: { include: { account: true } } },
   })
-  if (!post) throw new SocialError(404, 'post_not_found', 'Post not found')
+}
 
-  // A publish that timed out is still in flight and carries no provider id, so
-  // there is nothing to cancel or unpublish. Deleting the row would hide a post
-  // that may be about to go live — the caller has to look again instead.
-  if (post.status === 'publishing' && !post.zernioPostId) {
-    throw new SocialError(
-      409,
-      'post_in_flight',
-      'This post is still publishing and has no provider id yet. Check "posts" again in a minute, then delete it.',
-    )
-  }
-
-  const live = post.status === 'published' || post.status === 'partial' || post.status === 'publishing'
-  if (!live) {
-    // A scheduled post lives at Zernio too: dropping only our row leaves it
-    // queued and it still ships. Cancel there first; keep our row if that fails.
-    if (post.zernioPostId) {
-      await getSocialClient().request({
-        workspaceId,
-        method: 'DELETE',
-        path: `/posts/${encodeURIComponent(post.zernioPostId)}`,
-      })
-    }
-    await db.socialPost.delete({ where: { id: post.id } })
-    return { deleted: true, removed: [], manual: [] }
-  }
-
+/**
+ * Take a live post down, per target: unpublish where the provider can, and hand
+ * the rest to the person with their links. Instagram, TikTok and Snapchat have
+ * no removal API, so those targets come back under `manual` and the row is kept
+ * (`cancelled` once nothing is left live) so the history and the analytics stay
+ * honest.
+ *
+ * `assumeLive` is for the delete the provider refused because the post is out:
+ * that refusal is proof it went out, so a target still reading `pending` is
+ * treated as live for this call rather than left looking queued — but it is not
+ * written as published, because which legs went out is the provider's answer to
+ * give, and the next read asks for it.
+ */
+async function takeDownLive(
+  workspaceId: string,
+  post: any,
+  opts: { assumeLive?: boolean } = {},
+): Promise<DeletePostResult> {
+  const liveTarget = (target: any) =>
+    target.status === 'published' || (opts.assumeLive === true && target.status === 'pending')
   const removed: DeletePostRemoval[] = []
   const manual: Array<DeletePostRemoval & { reason: string }> = []
   const removedIds = new Set<string>()
@@ -1174,7 +1199,7 @@ export async function deletePost(workspaceId: string, postId: string): Promise<D
       manual.push({ ...entry, reason: 'Still being published — check again in a minute, then delete again.' })
       continue
     }
-    if (target.status !== 'published') continue
+    if (!liveTarget(target)) continue
 
     const label = PLATFORM_LABELS[target.platform] ?? target.platform
     if ((UNPUBLISH_UNSUPPORTED_PLATFORMS as readonly string[]).includes(target.platform)) {
@@ -1207,7 +1232,15 @@ export async function deletePost(workspaceId: string, postId: string): Promise<D
         },
       })
     } catch (err) {
-      manual.push({ ...entry, reason: `The provider could not remove it: ${detailOf(err).message}` })
+      // The provider's own sentence for "it is out and cannot be taken down" is
+      // the one thing this path must not repeat back: the person needs to know
+      // what to do, not what Zernio called it.
+      manual.push({
+        ...entry,
+        reason: isPublishedRefusal(err)
+          ? `The provider would not take this ${label} post down — remove it in the ${label} app.`
+          : `The provider could not remove it: ${detailOf(err).message}`,
+      })
       continue
     }
     await db.socialPostTarget.update({ where: { id: target.id }, data: { status: 'cancelled' } })
@@ -1217,7 +1250,7 @@ export async function deletePost(workspaceId: string, postId: string): Promise<D
 
   const stillLive = post.targets.filter(
     (target: any) =>
-      !removedIds.has(target.id) && (target.status === 'published' || target.status === 'publishing'),
+      !removedIds.has(target.id) && (liveTarget(target) || target.status === 'publishing'),
   ).length
   if (stillLive === 0) {
     await db.socialPost.update({ where: { id: post.id }, data: { status: 'cancelled' } })
@@ -1228,6 +1261,64 @@ export async function deletePost(workspaceId: string, postId: string): Promise<D
     include: { targets: { include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } } } },
   })
   return { deleted: false, kept: true, post: updated, removed, manual }
+}
+
+/**
+ * Delete a post, at the provider and here.
+ *
+ * A draft, a scheduled post, a failed one or a cancelled one is removed
+ * outright — Zernio is told first so a scheduled post cannot still ship. A post
+ * that went out is a different thing: it is taken down per target by
+ * `takeDownLive`.
+ *
+ * Which of the two it is has to come from the provider, not from the row's own
+ * `status`: a row that went out but was never reconciled still reads `scheduled`
+ * here, and deleting it would ask Zernio to cancel a post that is already live.
+ */
+export async function deletePost(workspaceId: string, postId: string): Promise<DeletePostResult> {
+  const loaded = await loadPostForDelete(workspaceId, postId)
+  if (!loaded) throw new SocialError(404, 'post_not_found', 'Post not found')
+
+  // A publish that timed out is still in flight and carries no provider id, so
+  // there is nothing to cancel or unpublish. Deleting the row would hide a post
+  // that may be about to go live — the caller has to look again instead.
+  if (loaded.status === 'publishing' && !loaded.zernioPostId) {
+    throw new SocialError(
+      409,
+      'post_in_flight',
+      'This post is still publishing and has no provider id yet. Check "posts" again in a minute, then delete it.',
+    )
+  }
+
+  // Ask the provider before the row's status decides anything. A live row needs
+  // no read — the take-down path is the same either way — but a row that reads
+  // "not live" with an id to cancel is exactly the stale case, and an explicit
+  // delete is worth one read even when it is not due yet.
+  const suspect = !isLiveStatus(loaded.status) && !!loaded.zernioPostId
+  let post = await reconcilePost(workspaceId, loaded, { force: suspect }).catch(() => loaded)
+
+  if (isLiveStatus(post.status)) return takeDownLive(workspaceId, post)
+
+  if (post.zernioPostId) {
+    try {
+      // A scheduled post lives at Zernio too: dropping only our row leaves it
+      // queued and it still ships. Cancel there first; keep our row if that fails.
+      await getSocialClient().request({
+        workspaceId,
+        method: 'DELETE',
+        path: `/posts/${encodeURIComponent(post.zernioPostId)}`,
+      })
+    } catch (err) {
+      // Zernio refuses to delete a post that is already out. That is the answer
+      // the read above could not get, so take it as proof it is live and hand
+      // the person the links instead of repeating the refusal back at them.
+      if (!isPublishedRefusal(err)) throw err
+      const again = await reconcilePost(workspaceId, post, { force: true }).catch(() => post)
+      return takeDownLive(workspaceId, again, { assumeLive: !isLiveStatus(again.status) })
+    }
+  }
+  await db.socialPost.delete({ where: { id: post.id } })
+  return { deleted: true, removed: [], manual: [] }
 }
 
 /** Calendar window: everything scheduled or published between `from` and `to`. */

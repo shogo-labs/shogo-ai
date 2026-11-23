@@ -118,7 +118,7 @@ export function HuddleRinger() {
           accessibilityLabel="Decline huddle"
           className="h-10 w-10 items-center justify-center rounded-full bg-destructive active:opacity-80"
         >
-          <PhoneOff size={18} color="white" />
+          <PhoneOff className="text-destructive-foreground" size={18} />
         </Pressable>
         {huddleMediaSupported ? (
           <Pressable

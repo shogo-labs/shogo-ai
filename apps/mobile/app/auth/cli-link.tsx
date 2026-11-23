@@ -43,12 +43,13 @@
  */
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import { View, Text, ActivityIndicator, Platform, Pressable } from 'react-native'
+import { View, Text, Platform, Pressable } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { Button, cn } from '@shogo/shared-ui/primitives'
 import { type WorkspaceSummary, PlatformApi } from '@shogo-ai/sdk'
 import { useAuth } from '../../contexts/auth'
 import { DomainProvider, useDomainHttp } from '../../contexts/domain'
+import { Spinner } from '@/components/ui/spinner'
 
 interface CliLinkParams {
   state?: string
@@ -284,7 +285,7 @@ function CliLinkBridge() {
 
         {status === 'checking-auth' && (
           <>
-            <ActivityIndicator />
+            <Spinner />
             <Text className="text-sm text-muted-foreground text-center">Checking your session...</Text>
           </>
         )}
@@ -295,7 +296,7 @@ function CliLinkBridge() {
 
         {(status === 'loading-state' || status === 'loading-workspaces') && (
           <>
-            <ActivityIndicator />
+            <Spinner />
             <Text className="text-sm text-muted-foreground text-center">
               {status === 'loading-state' ? 'Loading sign-in request...' : 'Loading your workspaces...'}
             </Text>
@@ -366,7 +367,7 @@ function CliLinkBridge() {
 
         {status === 'approving' && (
           <>
-            <ActivityIndicator />
+            <Spinner />
             <Text className="text-sm text-muted-foreground text-center">
               Authorizing your sign-in...
             </Text>

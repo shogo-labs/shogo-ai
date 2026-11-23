@@ -4,13 +4,15 @@
  * The chat list every sidebar renders: project chats under a project row and
  * the workspace agent's chats on Home. Presentation only — the caller owns the
  * fetch, the ordering (see `sortSideChats` / `visibleProjectChatItems`) and what
- * a row action does. Paging (5 initial, +10 per step, max 20), the Archived
- * subsection and the delete confirmation live here so both lists behave the
- * same by construction.
+ * a row action does. Paging, the Archived subsection and the delete
+ * confirmation live here so both lists behave the same by construction.
+ *
+ * Two paging modes: `inline` (the default — 5 rows, +10 per "Show more", capped
+ * at 20, then "See all"), and `infinite`, where the list grows 30 rows at a
+ * time as the panel's scroll view nears its end and draws no paging rows at all.
  */
 import { useCallback, useState, type ReactNode } from "react";
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   Text,
@@ -23,11 +25,17 @@ import { cn } from "@shogo/shared-ui/primitives";
 import { projectChatLabel } from "../../../lib/project-chat-sessions";
 import { ChatTreeItem } from "./ChatTreeItem";
 import { ConfirmDeleteDialog } from "./ConfirmDeleteDialog";
+import { useSidebarScrollEnd } from "./SidebarScrollContext";
+import { Spinner } from '@/components/ui/spinner'
 
 export const INITIAL_VISIBLE_CHATS = 5;
 export const INLINE_CHAT_INCREMENT = 10;
 export const MAX_INLINE_CHATS = 20;
+/** Rows added per scroll-end in `paging="infinite"`. */
+export const INFINITE_CHAT_PAGE = 30;
 const ARCHIVED_CHAT_ROW_ID = "archived-chats" as const;
+
+export type ChatSessionListPaging = "inline" | "infinite";
 
 export type ChatSessionListHeaderAction = {
   label: string;
@@ -201,6 +209,7 @@ export function ChatSessionList({
   variant,
   mobileProjectDetail,
   renderAll = false,
+  paging = "inline",
   loaded = true,
   emptyLabel,
   loadingLabel = "Loading…",
@@ -239,6 +248,14 @@ export function ChatSessionList({
    * all" row that has nowhere to go when the caller passes no `onSeeAll`.
    */
   renderAll?: boolean;
+  /**
+   * `inline` (default) pages with "Show more" / "Show less" / "See all".
+   * `infinite` draws no paging rows and grows `INFINITE_CHAT_PAGE` rows at a
+   * time as the sidebar panel nears its end; with no `SidebarScrollView` above
+   * it, it renders every chat instead of hiding rows behind a trigger that
+   * can't fire.
+   */
+  paging?: ChatSessionListPaging;
   loaded?: boolean;
   /** Copy shown when there are no chats at all. */
   emptyLabel: string;
@@ -270,10 +287,17 @@ export function ChatSessionList({
   inactiveTextClassName?: string;
 }) {
   const archived = archivedSessions ?? [];
-  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_CHATS);
-  const [archivedVisibleCount, setArchivedVisibleCount] = useState(
-    INITIAL_VISIBLE_CHATS,
-  );
+  const infinite = paging === "infinite";
+  const firstPage = infinite ? INFINITE_CHAT_PAGE : INITIAL_VISIBLE_CHATS;
+  // One state for both subsections so a scroll-end can decide between them
+  // (active first, archived once active is exhausted) without reading the
+  // other updater's pending value.
+  const [page, setPage] = useState({
+    active: firstPage,
+    archived: firstPage,
+  });
+  const visibleCount = page.active;
+  const archivedVisibleCount = page.archived;
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{
     id: string;
@@ -281,18 +305,25 @@ export function ChatSessionList({
   } | null>(null);
 
   const handleShowMore = useCallback((scope: "active" | "archived") => {
-    const setCount =
-      scope === "active" ? setVisibleCount : setArchivedVisibleCount;
-    setCount((current) =>
-      Math.min(current + INLINE_CHAT_INCREMENT, MAX_INLINE_CHATS),
-    );
+    setPage((current) => ({
+      ...current,
+      [scope]: Math.min(current[scope] + INLINE_CHAT_INCREMENT, MAX_INLINE_CHATS),
+    }));
   }, []);
 
   const handleShowLess = useCallback((scope: "active" | "archived") => {
-    const setCount =
-      scope === "active" ? setVisibleCount : setArchivedVisibleCount;
-    setCount(INITIAL_VISIBLE_CHATS);
+    setPage((current) => ({ ...current, [scope]: INITIAL_VISIBLE_CHATS }));
   }, []);
+
+  const toggleArchived = useCallback(() => {
+    // Re-expanding starts at the first page in infinite mode (there is no
+    // "Show less" to undo a long scroll); inline keeps the page it had, as on
+    // main.
+    if (archivedExpanded && infinite) {
+      setPage((current) => ({ ...current, archived: firstPage }));
+    }
+    setArchivedExpanded((value) => !value);
+  }, [archivedExpanded, firstPage, infinite]);
 
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -306,10 +337,46 @@ export function ChatSessionList({
     [hasMore, loadingMore, onLoadMore],
   );
 
-  const activeSessionsForList =
-    mobileProjectDetail || renderAll
-      ? [...sessions]
-      : sessions.slice(0, visibleCount);
+  // Infinite mode: each "near the end" grows the active rows first and, once
+  // those are all drawn, the archived rows (when the subsection is open).
+  const growInfinitePage = useCallback(() => {
+    setPage((current) => {
+      if (current.active < sessions.length) {
+        return {
+          ...current,
+          active: Math.min(current.active + INFINITE_CHAT_PAGE, sessions.length),
+        };
+      }
+      if (archivedExpanded && current.archived < archived.length) {
+        return {
+          ...current,
+          archived: Math.min(
+            current.archived + INFINITE_CHAT_PAGE,
+            archived.length,
+          ),
+        };
+      }
+      return current;
+    });
+    if (hasMore && !loadingMore) onLoadMore?.();
+  }, [
+    sessions.length,
+    archived.length,
+    archivedExpanded,
+    hasMore,
+    loadingMore,
+    onLoadMore,
+  ]);
+
+  const infinitePaging = infinite && !mobileProjectDetail && !renderAll;
+  const hasScrollSignal = useSidebarScrollEnd(growInfinitePage, infinitePaging);
+  // No paging rows to press and no scroll signal to grow on: draw every row.
+  const renderEverything =
+    mobileProjectDetail || renderAll || (infinitePaging && !hasScrollSignal);
+
+  const activeSessionsForList = renderEverything
+    ? [...sessions]
+    : sessions.slice(0, visibleCount);
   if (revealActiveChat && !mobileProjectDetail && activeChatId) {
     const activeSession = sessions.find(
       (session) => session.id === activeChatId,
@@ -321,12 +388,11 @@ export function ChatSessionList({
       activeSessionsForList.push(activeSession);
     }
   }
-  const archivedSessionsForList =
-    mobileProjectDetail || renderAll
-      ? [...archived]
-      : archivedExpanded
-        ? archived.slice(0, archivedVisibleCount)
-        : [];
+  const archivedSessionsForList = renderEverything
+    ? [...archived]
+    : archivedExpanded
+      ? archived.slice(0, archivedVisibleCount)
+      : [];
 
   const renderChat = (session: any, key = session.id) => (
     <ChatTreeItem
@@ -369,7 +435,7 @@ export function ChatSessionList({
       archivedShownCount: mobileProjectDetail
         ? archived.length
         : archivedVisibleCount,
-      includeFooter: !mobileProjectDetail && !renderAll,
+      includeFooter: paging === "inline" && !mobileProjectDetail && !renderAll,
       hasMoreChats: hasMore,
       totalChats: Math.max(totalCount ?? sessions.length, sessions.length),
     },
@@ -445,7 +511,7 @@ export function ChatSessionList({
             />
           )
         }
-        onPress={() => setArchivedExpanded((value) => !value)}
+        onPress={toggleArchived}
       />
     );
   });
@@ -478,7 +544,7 @@ export function ChatSessionList({
           accessibilityLabel={headerAction.accessibilityLabel}
           icon={
             headerAction.busy ? (
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             ) : (
               headerAction.icon
             )

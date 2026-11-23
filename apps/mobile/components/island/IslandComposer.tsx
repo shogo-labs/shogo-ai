@@ -183,7 +183,7 @@ export const IslandComposer = forwardRef<
           accessibilityLabel="Attach files"
           className="flex-row items-center gap-1"
         >
-          <Paperclip size={12} color="#a1a1aa" />
+          <Paperclip className="text-muted-foreground" size={12} />
           <Text className="text-[10px] text-zinc-400">Attach</Text>
         </Pressable>
         <input

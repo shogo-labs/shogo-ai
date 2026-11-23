@@ -80,7 +80,7 @@ export function LearnProfileSection({
             </View>
             {learn.streak.current > 0 ? (
               <View className="flex-row items-center gap-1">
-                <Flame size={12} color="#f97316" />
+                <Flame className="text-primary" size={12} />
                 <Text className="text-xs text-muted-foreground">{learn.streak.current}-day streak</Text>
               </View>
             ) : null}

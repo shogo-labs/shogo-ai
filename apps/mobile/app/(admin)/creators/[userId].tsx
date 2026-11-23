@@ -15,7 +15,6 @@ import {
   Pressable,
   RefreshControl,
   TextInput,
-  ActivityIndicator,
   useWindowDimensions,
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
@@ -40,6 +39,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL, type AdminCreatorDetail } from '../../../lib/api'
 import { ContentAnalyticsPanel } from '../../../components/analytics/ContentAnalytics'
 import type { ContentAnalytics } from '../../../lib/affiliate-api'
+import { Spinner } from '@/components/ui/spinner'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -412,7 +412,7 @@ function AffiliateCard({
                   className="flex-row items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 active:opacity-80"
                 >
                   {busy === 'approve' ? (
-                    <ActivityIndicator size="small" color="#fff" />
+                    <Spinner className="text-white" size="small" />
                   ) : (
                     <CheckCircle2 size={14} color="#fff" />
                   )}
@@ -428,7 +428,7 @@ function AffiliateCard({
                   className="flex-row items-center gap-1.5 px-3 py-2 rounded-lg border border-red-500/40 active:opacity-80"
                 >
                   {busy === 'reject' ? (
-                    <ActivityIndicator size="small" color="#dc2626" />
+                    <Spinner tone="destructive" size="small" />
                   ) : (
                     <XCircle size={14} color="#dc2626" />
                   )}
@@ -545,7 +545,7 @@ function AffiliateCard({
             )}
           >
             {socialBusy ? (
-              <ActivityIndicator size="small" color="#fff" />
+              <Spinner tone="onPrimary" size="small" />
             ) : (
               <Plus
                 size={14}
@@ -589,7 +589,7 @@ function AffiliateCard({
             )}
           >
             {busy === 'payout' ? (
-              <ActivityIndicator size="small" color="#fff" />
+              <Spinner tone="onPrimary" size="small" />
             ) : (
               <Wallet size={14} className={a.payableUsd > 0 && payoutReady ? 'text-primary-foreground' : 'text-muted-foreground'} />
             )}

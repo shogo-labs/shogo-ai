@@ -13,13 +13,14 @@
  */
 
 import { useState } from 'react'
-import { ActivityIndicator, Modal, Pressable, Text, View } from 'react-native'
+import { Modal, Pressable, Text, View } from 'react-native'
 import { Camera, Image as ImageIcon } from 'lucide-react-native'
 import { Avatar, Button, cn } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
 import { pickAvatarPhoto, type AvatarPhotoSource } from '../../lib/avatar-picker'
 import { prepareAvatarImage, removeAvatar, uploadAvatar } from '../../lib/avatar-image'
 import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
+import { Spinner } from '@/components/ui/spinner'
 
 function initials(name: string | null | undefined): string {
   const parts = (name ?? '').trim().split(/\s+/).filter(Boolean)
@@ -88,7 +89,7 @@ export function ProfilePhoto({ isPhone = false }: { isPhone?: boolean }) {
         <Avatar fallback={initials(user?.name)} src={shown} size="lg" />
         {busy && (
           <View className="absolute inset-0 items-center justify-center rounded-full bg-background/60">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           </View>
         )}
       </View>

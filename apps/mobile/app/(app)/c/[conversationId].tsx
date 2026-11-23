@@ -20,7 +20,7 @@
  * from one member. The filter is in-place: other panes stay open.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, AppState, KeyboardAvoidingView, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
+import { AppState, KeyboardAvoidingView, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
 import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type ConversationFile } from '../../../lib/team-chat-api'
@@ -58,6 +58,7 @@ import { useChannelBoards } from '../../../hooks/useWorkBoards'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import type { WorkItem } from '../../../lib/work-boards-api'
 import { usePhoneChromeOverlay } from '../../../components/layout/PhoneChromeOverlay'
+import { Spinner } from '@/components/ui/spinner'
 
 const api = teamChatApi()
 const THREAD_SIDE_PANE_MIN_WIDTH = 1024
@@ -378,7 +379,7 @@ export default function ConversationScreen() {
   if (!conversation || !workspaceId) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator />
+        <Spinner />
       </View>
     )
   }

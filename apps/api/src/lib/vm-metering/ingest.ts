@@ -21,9 +21,21 @@
  * memory): the new value is taken as the delta rather than subtracting, which is
  * the only reading that cannot bill a negative amount.
  *
- * Attribution granularity: a delta is charged to the hour the heartbeat lands
- * in, not spread across a sub-tick boundary. Heartbeats are 30 s apart, so the
- * worst-case misplacement is one tick at an hour edge.
+ * Two bounds keep a report honest (SHO-532). Neither can be derived from the
+ * counters, because the counters are reported by the host and a bad report is
+ * exactly what goes wrong:
+ *
+ *  - **Wall clock.** The counters cannot grow by more than the time since the
+ *    last heartbeat: `wallMs = now − last seen + 60 s slack`. Anything larger is
+ *    scaled down proportionally and dropped (never carried), because a host that
+ *    adopts a VM across a restart re-reports its lifetime as new usage.
+ *  - **The hour row.** A `(workspace, project, hour, host, size, cause)` row
+ *    prices one wall-clock hour, so it can never hold more than 3600 s.
+ *
+ * Attribution: the billed interval is `[now − billed, now]` and it is split
+ * across every hour it touches, each class pro rata. Heartbeats are 30 s apart,
+ * but a slow register, a withheld ack or an agent restart leaves gaps, and the
+ * whole gap must not land in the hour the heartbeat happened to arrive in.
  *
  * Region safety: `hostId` is part of every key below, and a host heartbeats to
  * exactly one region, so the write sets of the two regions are disjoint and
@@ -39,6 +51,11 @@ const CURSOR_TTL_MS = 24 * 60 * 60_000
 const MAX_VMS_PER_HEARTBEAT = 500
 /** CAS retries per VM row when a peer replica advanced the same cursor. */
 const CAS_ATTEMPTS = 3
+/** Scheduling jitter allowed on top of the wall clock since the last heartbeat. */
+const WALL_CLOCK_SLACK_MS = 60_000
+/** One `VmUsageHour` row prices one wall-clock hour of machine time. */
+const ROW_SECONDS = 3600
+const HOUR_MS = 3_600_000
 
 export function truncateToHour(d: Date): Date {
   return new Date(Math.floor(d.getTime() / 3_600_000) * 3_600_000)
@@ -198,6 +215,7 @@ export async function ingestMetalMeters(params: {
     appSeconds: 0,
     idleSeconds: 0,
     invalid: 0,
+    clamped: 0,
     failed: 0,
   }
   if (!isMeterPayload(params.payload)) return result
@@ -218,7 +236,6 @@ export async function ingestMetalMeters(params: {
   }
 
   const resolved = await resolveRuntimeKeys([...new Set(rows.map((r) => r.runtimeKey))])
-  const hour = truncateToHour(now)
 
   for (const row of rows) {
     try {
@@ -230,8 +247,10 @@ export async function ingestMetalMeters(params: {
         await advanceCursor(params.hostId, row, row.agentMs, row.appMs, row.idleMs, now).catch(() => {})
         continue
       }
-      const delta = await ingestOneVm(params.hostId, target, row, hour, now)
-      if (!delta) continue
+      const res = await ingestOneVm(params.hostId, target, row, now)
+      if (!res) continue
+      if (res.clamped) result.clamped++
+      const delta = res.delta
       if (delta.agentMs + delta.appMs + delta.idleMs <= 0) continue
       result.metered++
       result.agentSeconds += Math.round(delta.agentMs / 1000)
@@ -272,21 +291,148 @@ interface MeterDelta {
   idleMs: number
 }
 
+/** One hour's slice of a delta: what goes into that hour's row. */
+export interface HourSlice {
+  hour: Date
+  agentSeconds: number
+  appSeconds: number
+  idleSeconds: number
+}
+
+/**
+ * Scale three class counters down proportionally so their total is at most
+ * `cap`. The ratios between the classes survive (that is what the bill prices),
+ * and any rounding leftover goes to the largest remainder so nothing is lost to
+ * truncation.
+ */
+export function scaleToCap(parts: readonly number[], cap: number): number[] {
+  const total = parts.reduce((s, n) => s + n, 0)
+  if (total <= cap) return [...parts]
+  if (cap <= 0 || total <= 0) return parts.map(() => 0)
+  const out = parts.map((n) => Math.floor((n * cap) / total))
+  let left = cap - out.reduce((s, n) => s + n, 0)
+  const byRemainder = parts.map((n, i) => ({ i, rem: (n * cap) % total })).sort((a, b) => b.rem - a.rem)
+  for (const { i } of byRemainder) {
+    if (left <= 0) break
+    out[i]++
+    left--
+  }
+  return out
+}
+
+/**
+ * Spread a delta over the hours its interval `[now − billed, now]` touches, each
+ * class pro rata. The remainder of the division lands in the newest hour, which
+ * is the hour the heartbeat arrived in — where the old code charged all of it.
+ */
+export function splitAcrossHours(
+  billed: { agent: number; app: number; idle: number },
+  now: Date,
+): HourSlice[] {
+  const totalSec = billed.agent + billed.app + billed.idle
+  if (totalSec <= 0) return []
+  const endMs = now.getTime()
+  const startMs = endMs - totalSec * 1000
+  const spans: Array<{ hour: Date; ms: number }> = []
+  let totalMs = 0
+  for (let h = truncateToHour(new Date(startMs)).getTime(); h <= endMs; h += HOUR_MS) {
+    const from = Math.max(h, startMs)
+    const to = Math.min(h + HOUR_MS, endMs)
+    if (to <= from) continue
+    spans.push({ hour: new Date(h), ms: to - from })
+    totalMs += to - from
+  }
+  if (totalMs <= 0) return []
+  const share = (sec: number) => {
+    const out = spans.map((s) => Math.floor((sec * s.ms) / totalMs))
+    let left = sec - out.reduce((s, n) => s + n, 0)
+    for (let i = out.length - 1; i >= 0 && left > 0; i--) {
+      out[i]++
+      left--
+    }
+    return out
+  }
+  const agent = share(billed.agent)
+  const app = share(billed.app)
+  const idle = share(billed.idle)
+  return spans
+    .map((s, i) => ({ hour: s.hour, agentSeconds: agent[i], appSeconds: app[i], idleSeconds: idle[i] }))
+    .filter((s) => s.agentSeconds + s.appSeconds + s.idleSeconds > 0)
+}
+
+interface HourRowKey {
+  workspaceId: string
+  projectId: string
+  hour: Date
+  hostId: string
+  vcpus: number
+  memMiB: number
+  cause: string
+}
+
+/**
+ * Add one hour's slice to its row, clamped so the row never bills more than the
+ * 3600 s that hour contains. Returns true when the clamp bit.
+ *
+ * Two VMs share a row only when a legacy bare `X` and a `ws:proj:X` runtime run
+ * at once on one host with the same size and cause. Under-billing that rare case
+ * is the safe direction; a row above 3600 s is not.
+ */
+async function writeHourRow(
+  tx: any,
+  key: HourRowKey,
+  slice: { agentSeconds: number; appSeconds: number; idleSeconds: number },
+): Promise<boolean> {
+  const where = { workspaceId_projectId_hour_hostId_vcpus_memMiB_cause: key }
+  const existing = await tx.vmUsageHour.findUnique({ where })
+  const used = existing ? existing.agentSeconds + existing.appSeconds + existing.idleSeconds : 0
+  const want = [slice.agentSeconds, slice.appSeconds, slice.idleSeconds]
+  const wantTotal = want[0] + want[1] + want[2]
+  const room = Math.max(0, ROW_SECONDS - used)
+  const capped = wantTotal > room
+  const add = capped ? scaleToCap(want, room) : want
+  if (capped) {
+    console.error(
+      `[metal/meter] ROW_CAP ${key.hostId} ${key.workspaceId}/${key.projectId || '-'} ` +
+        `hour=${key.hour.toISOString()} size=${key.vcpus}v${key.memMiB} cause=${key.cause} ` +
+        `dropped=${wantTotal - add[0] - add[1] - add[2]}s`,
+    )
+  }
+  if (add[0] + add[1] + add[2] <= 0) return capped
+  const data = {
+    agentSeconds: { increment: add[0] },
+    appSeconds: { increment: add[1] },
+    idleSeconds: { increment: add[2] },
+  }
+  if (existing) {
+    await tx.vmUsageHour.update({ where: { id: existing.id }, data })
+  } else {
+    // Upsert, not create: a peer replica can create this row between our read and
+    // our write, and the unique key is what arbitrates (P2002 inside a
+    // transaction would poison the cursor CAS on Postgres).
+    await tx.vmUsageHour.upsert({
+      where,
+      create: { ...key, agentSeconds: add[0], appSeconds: add[1], idleSeconds: add[2] },
+      update: data,
+    })
+  }
+  return capped
+}
+
 /**
  * Turn ONE VM's cumulative counters into a delta and write it, with the cursor
  * update in the same transaction so a crash between the two cannot double-count
  * or lose time.
  *
- * Returns the delta, or null when a peer replica advanced the cursor first
- * (the delta was theirs to record).
+ * Returns the delta written (`null` when a peer replica advanced the cursor
+ * first — the delta was theirs to record).
  */
 async function ingestOneVm(
   hostId: string,
   target: ResolvedRuntime,
   row: VmMeterReport,
-  hour: Date,
   now: Date,
-): Promise<MeterDelta | null> {
+): Promise<{ delta: MeterDelta; clamped: boolean } | null> {
   const key = { hostId_vmId_assignedAt: { hostId, vmId: row.vmId, assignedAt: BigInt(row.assignedAt) } }
 
   for (let attempt = 1; attempt <= CAS_ATTEMPTS; attempt++) {
@@ -300,16 +446,39 @@ async function ingestOneVm(
     const agent = advanceCounter(cursor ? Number(cursor.agentMs) : undefined, row.agentMs)
     const app = advanceCounter(cursor ? Number(cursor.appMs) : undefined, row.appMs)
     const idle = advanceCounter(cursor ? Number(cursor.idleMs) : undefined, row.idleMs)
-    const agentSec = agent.seconds
-    const appSec = app.seconds
-    const idleSec = idle.seconds
-    const total = agentSec + appSec + idleSec
+
+    // Wall-clock bound. A host's counters restart at zero when it adopts a VM
+    // across a restart, so a report can jump by the VM's whole life; that jump is
+    // not usage. Anything above the elapsed time (plus scheduling slack) is
+    // scaled down and DROPPED — the cursor still advances to the reported
+    // counters below, so it is not carried into the next hour either.
+    const since = cursor ? cursor.lastSeenAt.getTime() : row.assignedAt
+    const allowedSec = Math.max(
+      0,
+      Math.floor((now.getTime() - Math.min(since, now.getTime()) + WALL_CLOCK_SLACK_MS) / 1000),
+    )
+    const billed = { agent: agent.seconds, app: app.seconds, idle: idle.seconds }
+    const reportedSec = billed.agent + billed.app + billed.idle
+    let clamped = false
+    if (reportedSec > allowedSec) {
+      const [a, p, i] = scaleToCap([billed.agent, billed.app, billed.idle], allowedSec)
+      console.error(
+        `[metal/meter] OVERCOUNT ${hostId} ${row.vmId} ${row.runtimeKey} ` +
+          `reported=${reportedSec}s allowed=${allowedSec}s dropped=${reportedSec - a - p - i}s`,
+      )
+      billed.agent = a
+      billed.app = p
+      billed.idle = i
+      clamped = true
+    }
+
     const nextCounters = {
       agentMs: BigInt(agent.cursorMs),
       appMs: BigInt(app.cursorMs),
       idleMs: BigInt(idle.cursorMs),
     }
 
+    let rowCapped = false
     const wrote = await prisma.$transaction(async (tx) => {
       if (cursor) {
         // Compare-and-swap on the exact counters we read: exactly one writer can
@@ -350,43 +519,27 @@ async function ingestOneVm(
         }
       }
 
-      if (total > 0) {
-        await tx.vmUsageHour.upsert({
-          where: {
-            workspaceId_projectId_hour_hostId_vcpus_memMiB_cause: {
-              workspaceId: target.workspaceId,
-              projectId: target.projectId,
-              hour,
-              hostId,
-              vcpus: row.vcpus,
-              memMiB: row.memMiB,
-              cause: row.cause,
-            },
-          },
-          create: {
-            workspaceId: target.workspaceId,
-            projectId: target.projectId,
-            hour,
-            hostId,
-            vcpus: row.vcpus,
-            memMiB: row.memMiB,
-            cause: row.cause,
-            agentSeconds: agentSec,
-            appSeconds: appSec,
-            idleSeconds: idleSec,
-          },
-          update: {
-            agentSeconds: { increment: agentSec },
-            appSeconds: { increment: appSec },
-            idleSeconds: { increment: idleSec },
-          },
-        })
+      const slices = splitAcrossHours(billed, now)
+      for (const slice of slices) {
+        const key: HourRowKey = {
+          workspaceId: target.workspaceId,
+          projectId: target.projectId,
+          hour: slice.hour,
+          hostId,
+          vcpus: row.vcpus,
+          memMiB: row.memMiB,
+          cause: row.cause,
+        }
+        if (await writeHourRow(tx, key, slice)) rowCapped = true
       }
       return true
     })
 
     if (wrote) {
-      return { agentMs: agentSec * 1000, appMs: appSec * 1000, idleMs: idleSec * 1000 }
+      return {
+        delta: { agentMs: billed.agent * 1000, appMs: billed.app * 1000, idleMs: billed.idle * 1000 },
+        clamped: clamped || rowCapped,
+      }
     }
   }
   // Every attempt lost the CAS: a peer replica is ingesting this host. Its

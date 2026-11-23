@@ -69,7 +69,7 @@ export function SectionHeader({
           accessibilityLabel={`${seeAllLabel} ${title}`}
         >
           <Text className={`${isNative ? 'text-xs' : 'text-sm'} font-medium text-primary`}>{seeAllLabel}</Text>
-          <ChevronRight size={14} color="#e27927" />
+          <ChevronRight className="text-primary" size={14} />
         </Pressable>
       )}
     </View>

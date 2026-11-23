@@ -114,7 +114,7 @@ export function HuddlePrejoin({ pending }: { pending: PendingHuddleJoin }) {
               accessibilityLabel={micOn ? 'Join with microphone on' : 'Join muted'}
               className={cn('h-10 w-10 items-center justify-center rounded-full', micOn ? 'bg-muted' : 'bg-destructive')}
             >
-              {micOn ? <Mic size={18} className="text-foreground" /> : <MicOff size={18} color="white" />}
+              {micOn ? <Mic size={18} className="text-foreground text-destructive-foreground" /> : <MicOff size={18} />}
             </Pressable>
             <Pressable
               onPress={() => setCameraOn((v) => !v)}

@@ -143,6 +143,35 @@ describe('MetalWarmPool.adopt', () => {
     expect(reg.get('live-proj')?.pid).toBe(liveChild.pid)
   })
 
+  test('re-adopts a reclaimed VM’s balloon target when idle reclaim is on (SHO-534)', async () => {
+    // The balloon target lives in the guest/vmstate, not in the agent's memory: a
+    // restart mid-idle must not forget that a VM is running with RAM taken out, or
+    // nothing would ever deflate it and the guest stays short until it OOMs.
+    const cfg = { ...makeCfg(), idleReclaim: true }
+    const guest = Bun.serve({ port: 0, fetch: () => new Response('ok') })
+    cleanups.push(() => guest.stop(true))
+    const agentUrl = `http://localhost:${guest.port}`
+    const child = Bun.spawn(['sleep', '30'])
+    cleanups.push(() => child.kill('SIGKILL'))
+
+    const reg = new LiveRegistry(cfg.runDir)
+    reg.put(entry(cfg, 'reclaimed-proj', child.pid, agentUrl))
+    reg.put(entry(cfg, 'plain-proj', child.pid, agentUrl))
+
+    const fakeMgr = {
+      adoptVM: () => {},
+      reapHostOrphans: () => 0,
+      procCount: () => 0,
+      balloonTargetMiB: async (h: any) => (h.id === 'fcvm-reclaimed-proj' ? 2048 : 0),
+    }
+    const pool = new MetalWarmPool(fakeMgr as any, cfg as any)
+    await pool.adopt()
+
+    expect(pool.getAssigned('reclaimed-proj')?.balloonedMiB).toBe(2048)
+    // A target of 0 is "nothing reclaimed", not "reclaimed 0 MiB".
+    expect(pool.getAssigned('plain-proj')?.balloonedMiB).toBeUndefined()
+  })
+
   test('carries publishedDataLoaded across a restart, and its absence too', async () => {
     const cfg = makeCfg()
     const guest = Bun.serve({ port: 0, fetch: () => new Response('ok') })

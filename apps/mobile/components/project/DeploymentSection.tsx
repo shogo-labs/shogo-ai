@@ -16,7 +16,7 @@
  */
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native'
+import { Pressable, ScrollView, Text, View } from 'react-native'
 import { AlertTriangle, Boxes, RefreshCw, RotateCcw, Rocket, Trash2 } from 'lucide-react-native'
 import type { HttpClient } from '@shogo-ai/sdk'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -28,6 +28,7 @@ import {
   type PublishedPlanCaps,
   type PublishedSize,
 } from '../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 type EnvName = 'production' | 'staging'
 
@@ -147,7 +148,7 @@ export function DeploymentSection({ projectId, http, embedded = true }: Deployme
   if (loading) {
     return (
       <View className="items-center justify-center py-10">
-        <ActivityIndicator />
+        <Spinner />
       </View>
     )
   }

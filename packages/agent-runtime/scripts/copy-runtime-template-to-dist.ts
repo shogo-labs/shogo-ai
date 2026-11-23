@@ -103,8 +103,8 @@ async function main(): Promise<void> {
 
   // The source template pins `@shogo-ai/sdk` as `workspace:*`, which a pod
   // can't resolve. Rewrite the bundled copy's `package.json` to a concrete
-  // `^X.Y.Z` resolved from npm's `latest` dist-tag so the standalone-deploy
-  // package installs cleanly (and always tracks the latest published SDK).
+  // `X.Y.Z` (exact — see SHO-522) resolved from npm's `latest` dist-tag so the
+  // standalone-deploy package installs cleanly.
   await materialize(join(TEMPLATE_DEST, 'package.json'))
   console.log(`[copy-runtime-template-to-dist] materialized @shogo-ai/* pins in ${TEMPLATE_DEST}/package.json`)
 }

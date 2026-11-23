@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Image, Pressable, ScrollView, View } from 'react-native'
+import { Image, Pressable, ScrollView, View } from 'react-native'
 import { ChevronDown, ChevronUp, Download, Lock } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../contexts/domain'
@@ -30,6 +30,7 @@ import {
 } from '../../lib/engagement-utils'
 import { Text } from '../settings/account-sheet-chrome'
 import { RangeSwitch } from './UsageDashboard'
+import { Spinner } from '@/components/ui/spinner'
 
 type SortKey =
   | 'name'
@@ -188,7 +189,7 @@ export function TeamWorkTable({
       {!state.data ? (
         <View className="py-8 items-center justify-center">
           {state.loading ? (
-            <ActivityIndicator />
+            <Spinner />
           ) : (
             <Text className="text-sm text-muted-foreground">{state.error ?? 'No team activity'}</Text>
           )}

@@ -18,7 +18,6 @@ import {
   Pressable,
   TextInput,
   FlatList,
-  ActivityIndicator,
   useColorScheme,
   type ListRenderItemInfo,
 } from "react-native"
@@ -54,6 +53,7 @@ import {
   ArchiveRestore,
 } from "lucide-react-native"
 import { Spin } from "@/components/ui/Spin";
+import { Spinner } from '@/components/ui/spinner'
 
 export interface ChatSession {
   id: string
@@ -339,7 +339,7 @@ export function ChatSessionPicker({
               ListFooterComponent={
                 isLoadingMore ? (
                   <View className="py-3 items-center">
-                    <ActivityIndicator size="small" />
+                    <Spinner size="small" />
                   </View>
                 ) : null
               }
@@ -895,7 +895,7 @@ export function ChatSessionSidebar({
         ListFooterComponent={
           isLoadingMore ? (
             <View className="py-3 items-center">
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             </View>
           ) : null
         }

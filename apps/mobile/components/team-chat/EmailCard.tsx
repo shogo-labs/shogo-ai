@@ -9,7 +9,7 @@
  * row renders under this card as usual.
  */
 import { createElement, useEffect, useState } from 'react'
-import { ActivityIndicator, Platform, Pressable, Text, TextInput, View } from 'react-native'
+import { Platform, Pressable, Text, TextInput, View } from 'react-native'
 import { AlertTriangle, ArrowDownLeft, ArrowUpRight, Paperclip, ShieldAlert, ShieldCheck } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
@@ -20,6 +20,7 @@ import {
   type EmailBlock,
   type MailStatus,
 } from '../../lib/mail-api'
+import { Spinner } from '@/components/ui/spinner'
 
 const api = mailApi()
 
@@ -117,7 +118,7 @@ export function EmailHtmlView({ workspaceId, mailId }: { workspaceId: string; ma
   }, [workspaceId, mailId, images])
 
   if (error) return <Text className="mt-1 text-xs text-destructive">{error}</Text>
-  if (html === null) return <ActivityIndicator className="mt-2 self-start" />
+  if (html === null) return <Spinner className="mt-2 self-start" />
   return (
     <View className="mt-2 gap-1">
       {!images ? (

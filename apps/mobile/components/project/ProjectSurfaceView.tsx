@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { observer } from "mobx-react-lite";
 import { RefreshCw } from "lucide-react-native";
 import { useAgentUrl } from "@shogo/shared-app/hooks";
@@ -21,6 +21,7 @@ import {
 } from "../../lib/preview-gate";
 import { usePreviewGateTimers, usePreviewPhase } from "../../lib/use-preview-phase";
 import { useWorkspaceBudgetToast } from "./WorkspaceBudgetNotice";
+import { Spinner } from '@/components/ui/spinner'
 
 export type ProjectSurface = "canvas" | "files" | "plans" | "settings";
 
@@ -175,7 +176,7 @@ function ProjectCanvasSurface({
   if (gate === "waiting-runtime") {
     return (
       <View className="flex-1 items-center justify-center px-6">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
         <Text className="mt-3 text-center text-sm text-muted-foreground">
           Connecting to agent runtime…
         </Text>
@@ -192,7 +193,7 @@ function ProjectCanvasSurface({
       : "Starting canvas…";
   return (
     <View className="flex-1 items-center justify-center px-6">
-      <ActivityIndicator size="large" />
+      <Spinner size="large" />
       <Text className="mt-3 text-center text-sm text-muted-foreground">{phaseLabel}</Text>
       {statusErrors >= 2 && lastStatusError && (
         <Text className="mt-2 text-center text-xs text-muted-foreground/70">
@@ -265,7 +266,7 @@ export const ProjectSurfaceView = observer(function ProjectSurfaceView({
   if (!projectId) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator />
+        <Spinner />
       </View>
     );
   }

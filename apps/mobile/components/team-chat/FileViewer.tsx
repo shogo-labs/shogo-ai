@@ -16,7 +16,7 @@
  * such, rather than as an opaque chip that only offers a download.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { ActivityIndicator, Image, Platform, Pressable, ScrollView, Text, View } from 'react-native'
+import { Image, Platform, Pressable, ScrollView, Text, View } from 'react-native'
 import { AlertCircle, ClipboardCopy, Download, ExternalLink } from 'lucide-react-native'
 import { attachmentDownloadUrl, downloadAttachment } from '../../lib/attachment-download'
 import { formatFileSize } from '../../lib/composer-attachments'
@@ -33,6 +33,7 @@ import { FileContentView, viewerPathKey } from '../files/FileContentView'
 import { fileViewKind } from '../files/file-view-kind'
 import { VoiceNotePlayer } from './VoiceNotePlayer'
 import { openExternalLink } from '../../lib/open-external-link';
+import { Spinner } from '@/components/ui/spinner'
 
 const api = teamChatApi()
 
@@ -83,7 +84,7 @@ export function FileViewer({ attachmentId, fallbackName }: FileViewerProps) {
   if (state.status === 'loading') {
     return (
       <View className="flex-1 items-center justify-center gap-2 p-6" testID="file-viewer-loading">
-        <ActivityIndicator />
+        <Spinner />
         {fallbackName ? <Text className="text-sm text-muted-foreground">{fallbackName}</Text> : null}
       </View>
     )
@@ -211,7 +212,7 @@ function TextView({
   if (loading) {
     return (
       <View className="flex-1 items-center justify-center" testID="file-viewer-text-loading">
-        <ActivityIndicator />
+        <Spinner />
       </View>
     )
   }
@@ -285,7 +286,7 @@ function DownloadButton({ url, name }: { url: string; name: string }) {
       accessibilityLabel={`Download ${name}`}
       className="flex-row items-center gap-2 rounded-md bg-primary px-3 py-2 active:opacity-90"
     >
-      {busy ? <ActivityIndicator size="small" color="#fff" /> : <Download size={14} color="#fff" />}
+      {busy ? <Spinner className="text-primary-foreground" tone="onPrimary" size="small" /> : <Download size={14} />}
       <Text className="text-sm font-semibold text-primary-foreground">Download</Text>
     </Pressable>
   )

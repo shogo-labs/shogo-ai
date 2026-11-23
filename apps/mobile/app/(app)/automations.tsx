@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useEffect } from 'react'
-import { ActivityIndicator, View } from 'react-native'
+import { View } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
+import { Spinner } from '@/components/ui/spinner'
 
 /**
  * /automations[?workspace=<id>] — a linkable address for Settings >
@@ -20,7 +21,7 @@ export default function AutomationsRedirect() {
 
   return (
     <View className="flex-1 items-center justify-center bg-background">
-      <ActivityIndicator />
+      <Spinner />
     </View>
   )
 }

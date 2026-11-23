@@ -4,7 +4,7 @@
  * Team chat home: browse and join channels, start DMs.
  */
 import { useMemo, useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import { Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { Hash, Lock, MessageSquarePlus, Plus, Radio, Search } from 'lucide-react-native'
 import { useWorkspaceInView } from '../../../hooks/useWorkspaceInView'
@@ -15,6 +15,7 @@ import { NewConversationModal, type NewConversationMode } from '../../../compone
 import { conversationHref } from '../../../components/team-chat/ConversationRows'
 import { TabScreenHeader } from '../../../components/layout/TabScreenHeader'
 import { usePhoneLayout } from '../../../lib/native-phone-layout'
+import { Spinner } from '@/components/ui/spinner'
 
 const api = teamChatApi()
 
@@ -89,7 +90,7 @@ export default function TeamChatHome() {
       </View>
 
       {loading && !list.length ? (
-        <ActivityIndicator className="mt-8" />
+        <Spinner className="mt-8" />
       ) : error && !list.length ? (
         <Text className="mt-8 text-center text-sm text-muted-foreground">{error}</Text>
       ) : (
@@ -111,7 +112,7 @@ export default function TeamChatHome() {
                   <Text className="text-xs text-muted-foreground">Joined</Text>
                 ) : (
                   <Pressable onPress={() => void join(c)} disabled={joining === c.id} className="rounded-md bg-primary px-3 py-1">
-                    {joining === c.id ? <ActivityIndicator size="small" /> : <Text className="text-xs font-medium text-primary-foreground">Join</Text>}
+                    {joining === c.id ? <Spinner size="small" /> : <Text className="text-xs font-medium text-primary-foreground">Join</Text>}
                   </Pressable>
                 )}
               </Pressable>

@@ -5,11 +5,12 @@
  * who owns it and the channels it works in, with links to its full profile and
  * its project. Opened by tapping an agent's avatar or name.
  */
-import { ActivityIndicator, Modal, Pressable, Text, View } from 'react-native'
+import { Modal, Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { ExternalLink, FolderOpen, PanelRight, X } from 'lucide-react-native'
 import { AgentAvatar } from './AgentAvatar'
 import { AgentProfileBody, triggerLabel, useAgentCard } from './AgentProfileBody'
+import { Spinner } from '@/components/ui/spinner'
 
 // Kept here so existing imports keep working.
 export { AgentAvatar, triggerLabel }
@@ -76,7 +77,7 @@ export function AgentProfileCard({ workspaceId, projectId, name, iconUrl, onClos
             ) : null}
           </View>
 
-          {!card && !failed ? <ActivityIndicator className="mt-4" /> : null}
+          {!card && !failed ? <Spinner className="mt-4" /> : null}
           {failed ? <Text className="mt-3 text-xs text-muted-foreground">Couldn’t load this agent’s details.</Text> : null}
 
           {card ? (

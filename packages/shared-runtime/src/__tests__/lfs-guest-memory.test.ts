@@ -51,6 +51,8 @@ import {
   localLfsObjectPath,
   resetLfsStats,
   writeManagedGitAttributes,
+  ensureLfsRepoSetup,
+  readManagedAttributePaths,
   LfsPushRunner,
   type LfsRemoteConfig,
 } from '../lfs'
@@ -582,4 +584,58 @@ describe('SHO-531 AC7 — a prod-shaped repo through 20 commits', () => {
       delete process.env.SHOGO_LFS_BUDGET_GB
     }
   }, 300_000)
+})
+
+// QA round 1 on SHO-531: the gate used to open again whenever eviction *ran*,
+// even when that pass freed nothing. On the production repo the store is one
+// committed object set that HEAD references, so every pass is a no-op — and the
+// tracker happily started adding to a store that can never shrink.
+describe('SHO-531 QA round 1 — the over-budget gate is judged on the resulting size', () => {
+  it('keeps tracking off when a pass runs but frees nothing', async () => {
+    const { url } = startFakeLfs()
+    const dir = initRepo()
+    const cfg = cfgFor(dir, url)
+    mkdirSync(join(dir, 'media'), { recursive: true })
+    // Committed and HEAD-referenced: inside the keep set, so nothing to evict.
+    commitLfsFile(dir, 'media/kept.png', 300_000, 7, 'kept')
+    mkdirSync(join(dir, 'incoming'), { recursive: true })
+    writeFileSync(join(dir, 'incoming', 'new.xyz'), Buffer.alloc(2 * MB, 9))
+
+    process.env.SHOGO_LFS_BUDGET_GB = '0.0001' // ~107 KB against a ~293 KB store
+    try {
+      resetLfsStats()
+      expect(await autoTrackLargeFiles(dir, 1 * MB, { logger: quiet, cfg })).toBe(0)
+      // The scenario really is "eviction ran and freed nothing", not "it bailed".
+      const stats = lfsStats()
+      expect(stats.evictions).toBeGreaterThanOrEqual(1)
+      expect(stats.evictedBytes).toBe(0)
+      expect(readFileSync(join(dir, '.gitattributes'), 'utf-8')).not.toContain('incoming/')
+    } finally {
+      delete process.env.SHOGO_LFS_BUDGET_GB
+    }
+  }, 60_000)
+})
+
+// QA round 2 on SHO-531: ensureLfsRepoSetup ran on every git_only boot and
+// called writeManagedGitAttributes with no pathRules, wiping any rules that
+// autoTrackLargeFiles had just written into the managed block. The fix is to
+// read the existing rules back and preserve them on the rewrite.
+describe('SHO-531 QA round 2 — ensureLfsRepoSetup preserves auto-tracked path rules', () => {
+  it('keeps an auto-tracked rule after a boot-time ensureLfsRepoSetup call', async () => {
+    const { url } = startFakeLfs()
+    const dir = initRepo()
+    const cfg = cfgFor(dir, url)
+
+    // Simulate what autoTrackLargeFiles does: add a custom path rule.
+    writeManagedGitAttributes(dir, { pathRules: ['media/custom.xyz filter=lfs diff=lfs merge=lfs -text'] })
+    expect(readManagedAttributePaths(dir)).toHaveLength(1)
+
+    // Now simulate the boot path running.
+    await ensureLfsRepoSetup(dir, { logger: quiet })
+
+    // The rule must survive.
+    const paths = readManagedAttributePaths(dir)
+    expect(paths).toHaveLength(1)
+    expect(paths[0]).toContain('media/custom.xyz')
+  }, 30_000)
 })

@@ -4,6 +4,7 @@
 export * from './permissions'
 export * from './roles'
 export * from './policy'
+export * from './denial'
 export {
   resolveAccess,
   hasPermission,

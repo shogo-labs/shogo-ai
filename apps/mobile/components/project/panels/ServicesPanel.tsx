@@ -6,7 +6,6 @@ import {
   Text,
   Pressable,
   ScrollView,
-  ActivityIndicator,
   Platform,
 } from 'react-native'
 import * as ExpoLinking from 'expo-linking'
@@ -21,6 +20,7 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { openAuthFlow, preCreateAuthWindow } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 const LOG_PREFIX = '[ServicesPanel]'
 import { useDomainHttp } from '../../../contexts/domain'
@@ -174,7 +174,7 @@ export function ServicesPanel({ projectId, agentUrl, visible }: ServicesPanelPro
       <ScrollView className="flex-1" contentContainerStyle={{ padding: 16 }}>
         {isLoading ? (
           <View className="items-center py-8">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
             <Text className="text-sm text-muted-foreground mt-2">Loading services...</Text>
           </View>
         ) : activeConnections.length === 0 ? (
@@ -244,7 +244,7 @@ export function ServicesPanel({ projectId, agentUrl, visible }: ServicesPanelPro
                         )}
                       >
                         {isDisconnecting ? (
-                          <ActivityIndicator size="small" />
+                          <Spinner size="small" />
                         ) : (
                           <LogOut size={14} className="text-muted-foreground" />
                         )}

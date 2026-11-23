@@ -8,7 +8,6 @@ import {
   ScrollView,
   Pressable,
   RefreshControl,
-  ActivityIndicator,
   useWindowDimensions,
 } from 'react-native'
 import {
@@ -23,6 +22,7 @@ import {
 import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 const API_BASE = `${API_URL}/api/admin/evals`
 
@@ -162,7 +162,7 @@ export default function ModelComparisonPage() {
   if (loading && !data) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
         <Text className="text-sm text-muted-foreground mt-3">Loading model comparison...</Text>
       </View>
     )
@@ -229,7 +229,7 @@ export default function ModelComparisonPage() {
 
       {loading && (
         <View className="items-center py-8">
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         </View>
       )}
 

@@ -33,7 +33,6 @@ import {
   View,
   Image,
   StyleSheet,
-  ActivityIndicator,
 } from 'react-native'
 import { Text } from 'react-native'
 import {
@@ -46,6 +45,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useDomOverlayOpen } from '../../lib/use-dom-overlay-open'
+import { Spinner } from '@/components/ui/spinner'
 
 interface PreviewBridge {
   open: (
@@ -404,7 +404,7 @@ export function ExternalPreviewWebView({
             className="flex-1 text-xs text-foreground"
             style={addressInputStyle}
           />
-          {loading ? <ActivityIndicator size="small" /> : null}
+          {loading ? <Spinner size="small" /> : null}
         </View>
         {detectedUrl && detectedUrl !== currentUrl ? (
           <Pressable
@@ -472,7 +472,7 @@ export function ExternalPreviewWebView({
             className="absolute top-2 left-1/2 -translate-x-1/2 rounded-full bg-amber-500/10 border border-amber-300/30 px-3 py-1 flex-row items-center gap-1.5"
             pointerEvents="none"
           >
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
             <Text className="text-[11px] text-amber-700 dark:text-amber-300">
               Waiting for dev server… {loadError ? `(${loadError})` : null}
             </Text>

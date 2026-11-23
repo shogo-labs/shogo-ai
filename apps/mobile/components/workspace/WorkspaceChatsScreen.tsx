@@ -10,7 +10,7 @@
  * immediately visible in both.
  */
 import { useCallback } from 'react'
-import { ActivityIndicator, FlatList, Pressable, Text, View, useWindowDimensions } from 'react-native'
+import { FlatList, Pressable, Text, View, useWindowDimensions } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
@@ -29,6 +29,7 @@ import { Spin } from '@/components/ui/Spin'
 import { GlassButton } from '../team-chat/FloatingChrome'
 import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../layout/PhoneScreenHeader'
 import { isPhoneLayout } from '../../lib/native-phone-layout'
+import { Spinner } from '@/components/ui/spinner'
 
 export const WorkspaceChatsScreen = observer(function WorkspaceChatsScreen() {
   const router = useRouter()
@@ -72,7 +73,7 @@ export const WorkspaceChatsScreen = observer(function WorkspaceChatsScreen() {
           onLayout={header.onLayout}
           actions={
             <GlassButton label="New chat" onPress={() => void startNewChat()}>
-              {chats.creating ? <ActivityIndicator size="small" /> : <Plus size={20} className="text-foreground" />}
+              {chats.creating ? <Spinner size="small" /> : <Plus size={20} className="text-foreground" />}
             </GlassButton>
           }
         />
@@ -93,7 +94,7 @@ export const WorkspaceChatsScreen = observer(function WorkspaceChatsScreen() {
             accessibilityLabel="New chat"
             className="rounded-md p-2 active:bg-muted disabled:opacity-50"
           >
-            {chats.creating ? <ActivityIndicator size="small" /> : <Plus size={22} className="text-foreground" />}
+            {chats.creating ? <Spinner size="small" /> : <Plus size={22} className="text-foreground" />}
           </Pressable>
         </View>
       )}
@@ -101,7 +102,7 @@ export const WorkspaceChatsScreen = observer(function WorkspaceChatsScreen() {
       <View className="min-h-0 flex-1" style={phone ? { paddingTop: header.height } : undefined}>
       {chats.loading ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator />
+          <Spinner />
         </View>
       ) : chats.sessions.length === 0 ? (
         <View className="flex-1 items-center justify-center px-8">

@@ -17,9 +17,10 @@
  * resolves — no more Expo "Unmatched Route".
  */
 import { useEffect, useRef } from 'react'
-import { View, ActivityIndicator, Platform } from 'react-native'
+import { View, Platform } from 'react-native'
 import { Redirect, useLocalSearchParams, useRouter } from 'expo-router'
 import { API_URL } from '../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 const REF_COOKIE = '__shogo_ref'
 const VISITOR_COOKIE = '__shogo_ref_visitor'
@@ -87,7 +88,7 @@ export default function AffiliateReferralRedirect() {
 
   return (
     <View className="flex-1 items-center justify-center bg-background">
-      <ActivityIndicator />
+      <Spinner />
     </View>
   )
 }

@@ -15,7 +15,6 @@
 
 import { Suspense, lazy, useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
-  ActivityIndicator,
   Platform,
   Pressable,
   ScrollView,
@@ -46,6 +45,7 @@ import {
   unsupportedPresentationMessage,
   unsupportedDocumentMessage,
 } from "../project/panels/ide/slides-viewer-protocol"
+import { Spinner } from '@/components/ui/spinner'
 
 type MonacoNs = typeof import("monaco-editor")
 
@@ -510,7 +510,7 @@ function NativeVideo({
       }}
     >
       {size.width > 0 && size.height > 0 ? (
-        <Suspense fallback={<ActivityIndicator className="mt-6" />}>
+        <Suspense fallback={<Spinner className="mt-6" />}>
           <NativeVideoView
             url={url}
             width={size.width}
@@ -519,7 +519,7 @@ function NativeVideo({
           />
         </Suspense>
       ) : (
-        <ActivityIndicator className="mt-6" />
+        <Spinner className="mt-6" />
       )}
     </View>
   )
@@ -576,7 +576,7 @@ function DownloadControl({ url, name }: { url: string; name: string }) {
       testID="file-view-download"
       className="flex-row items-center gap-2 rounded-md bg-primary px-3 py-2 active:opacity-90"
     >
-      {busy ? <ActivityIndicator size="small" color="#fff" /> : <Download size={14} color="#fff" />}
+      {busy ? <Spinner className="text-primary-foreground" tone="onPrimary" size="small" /> : <Download size={14} />}
       <Text className="text-sm font-semibold text-primary-foreground">Download</Text>
     </Pressable>
   )
@@ -728,7 +728,7 @@ function NativeOffice({
       />
       {state === "loading" ? (
         <View className="absolute inset-0 items-center justify-center" pointerEvents="none">
-          <ActivityIndicator />
+          <Spinner />
         </View>
       ) : null}
     </View>

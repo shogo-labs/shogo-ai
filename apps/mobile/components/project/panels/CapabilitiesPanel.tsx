@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
-import { View, Text, Pressable, ScrollView, ActivityIndicator, TextInput } from 'react-native'
+import { View, Text, Pressable, ScrollView, TextInput } from 'react-native'
 import {
   Globe,
   Monitor,
@@ -66,6 +66,7 @@ import {
   PopoverBody,
   PopoverContent,
 } from '@/components/ui/popover'
+import { Spinner } from '@/components/ui/spinner'
 
 const AGENT_TYPE_ICON = 22
 const STACK_ICON_BOX = 44
@@ -841,7 +842,7 @@ export function CapabilitiesConfigPane({
                   disabled={modelUpdating}
                 >
                   {modelUpdating ? (
-                    <ActivityIndicator size="small" />
+                    <Spinner size="small" />
                   ) : (
                     <>
                       <Text
@@ -1098,7 +1099,7 @@ export function CapabilitiesConfigPane({
                               )}
                             >
                               {tokenSaving ? (
-                                <ActivityIndicator size="small" />
+                                <Spinner size="small" />
                               ) : tokenSaved ? (
                                 <Check size={12} className="text-emerald-600" />
                               ) : (

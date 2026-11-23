@@ -12,7 +12,6 @@ import {
   View,
   Text,
   Pressable,
-  ScrollView,
   BackHandler,
   useWindowDimensions,
   Platform,
@@ -128,6 +127,7 @@ import { DmsPanel } from "../../team-chat/panels/DmsPanel";
 import { AgentsPanel } from "../../team-chat/panels/AgentsPanel";
 import { ActivityFeed } from "../../activity/ActivityFeed";
 import { WideSidebar } from "./WideSidebar";
+import { SidebarScrollView } from "./SidebarScrollContext";
 import { HomePanel, MorePanel } from "./TabPanels";
 import {
   MENU_ITEM_RADIO_ROLE,
@@ -1457,7 +1457,7 @@ export const AppSidebar = observer(function AppSidebar({
           <ActivityFeed compact />
         </View>
       ) : (
-      <ScrollView
+      <SidebarScrollView
         className={cn("flex-1", isNativeDrawer ? "pt-3" : "pt-2")}
         showsVerticalScrollIndicator={false}
       >
@@ -1534,7 +1534,7 @@ export const AppSidebar = observer(function AppSidebar({
         {experience.showProjectsTree && projectsBlock}
         </>
         )}
-      </ScrollView>
+      </SidebarScrollView>
       )}
 
       {/* ── Bottom Section ── */}
@@ -1562,19 +1562,11 @@ export const AppSidebar = observer(function AppSidebar({
                 onNavPress();
               }}
               className={cn(
-                "flex-row items-center rounded-md",
+                "flex-row items-center rounded-md bg-primary/10",
                 isNativeDrawer
                   ? "min-h-[72px] gap-3 px-4 py-3"
                   : "gap-2 px-3 py-2",
               )}
-              style={
-                Platform.OS === "web"
-                  ? ({
-                      backgroundImage:
-                        "linear-gradient(to right, rgba(59,130,246,0.1), rgba(168,85,247,0.1))",
-                    } as any)
-                  : { backgroundColor: "rgba(59,130,246,0.1)" }
-              }
             >
               <View className="flex-1">
                 <Text

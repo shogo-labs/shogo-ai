@@ -108,6 +108,17 @@ export function hostedSessionExclusion(workspaceIds: string[]): Record<string, u
   }
 }
 
+/**
+ * The mirror image of {@link hostedSessionExclusion}: sessions whose workspace is
+ * one of `workspaceIds`, directly or through their project.
+ */
+export function hostedSessionInclusion(workspaceIds: string[]): Record<string, unknown> {
+  if (!workspaceIds.length) return {}
+  return {
+    OR: [{ workspaceId: { in: workspaceIds } }, { project: { workspaceId: { in: workspaceIds } } }],
+  }
+}
+
 /** Whether this session's background work (resume notes, queue drain) belongs to a desktop. */
 export async function isHostedWorkspaceSession(
   session: { workspaceId?: string | null; contextType?: string | null; contextId?: string | null } | null,

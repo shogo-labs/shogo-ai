@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, Alert, Animated, Easing, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native'
+import { Alert, Animated, Easing, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
 import { Archive, Bell, BellOff, Check, ChevronLeft, ChevronRight, FileText, Filter, Hash, Lock, LogOut, MoreHorizontal, Paperclip, Pencil, Pin, Radio, Sparkles, Star, Trash2, UserPlus, Users, X } from 'lucide-react-native'
@@ -34,6 +34,7 @@ import { usePermissions } from '../../hooks/usePermissions'
 import { UserAvatar } from './UserAvatar'
 import { HuddleButton } from './Huddle'
 import { ChannelTabList, type ChannelTabItem } from './ChannelTabs'
+import { Spinner } from '@/components/ui/spinner'
 
 const api = teamChatApi()
 
@@ -251,7 +252,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
   actions.push({
     key: 'catchup',
     label: 'Catch me up',
-    icon: (s) => (catchingUp ? <ActivityIndicator size="small" /> : <Sparkles size={s} className="text-muted-foreground" />),
+    icon: (s) => (catchingUp ? <Spinner size="small" /> : <Sparkles size={s} className="text-muted-foreground" />),
     onPress: doCatchUp,
   })
   if (conversation.kind !== 'dm' && conversation.kind !== 'activity') {

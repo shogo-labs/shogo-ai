@@ -11,10 +11,11 @@
  * no SSE frames arrive.
  */
 import { useState, useEffect, useRef } from "react"
-import { View, Text, Pressable, ActivityIndicator } from "react-native"
+import { View, Text, Pressable } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { ChevronDown, ChevronUp, Terminal, X, Clock } from "lucide-react-native"
 import type { TaskLink } from "../../lib/task-link"
+import { Spinner } from '@/components/ui/spinner'
 
 export interface RunningProcess {
   runId: string
@@ -182,7 +183,7 @@ export function ProcessPanel({
                     )}
                   >
                     {isKilling ? (
-                      <ActivityIndicator size="small" color="#ef4444" />
+                      <Spinner tone="destructive" size="small" />
                     ) : (
                       <X size={10} className="text-red-400" />
                     )}

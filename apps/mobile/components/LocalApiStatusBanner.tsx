@@ -134,7 +134,7 @@ export function LocalApiStatusBanner() {
     return (
       <View
         testID="shogo-local-api-banner"
-        className="relative flex-row flex-wrap items-center justify-center gap-x-2 bg-amber-500 px-8 py-1.5"
+        className="relative flex-row flex-wrap items-center justify-center gap-x-2 bg-warning-700 px-8 py-1.5 dark:bg-warning-100"
       >
         <RotateCw size={12} className="text-white" />
         <Text className="text-xs font-medium text-white">
@@ -147,7 +147,7 @@ export function LocalApiStatusBanner() {
   return (
     <View
       testID="shogo-local-api-banner"
-      className="relative flex-row flex-wrap items-center justify-center gap-x-2 gap-y-1 bg-red-600 px-8 py-1.5"
+      className="relative flex-row flex-wrap items-center justify-center gap-x-2 gap-y-1 bg-error-700 px-8 py-1.5 dark:bg-error-100"
     >
       <Text className="text-xs font-medium text-white">
         Local API is down — agents can’t run until it restarts.

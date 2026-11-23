@@ -7,7 +7,6 @@ import {
   Pressable,
   ScrollView,
   Platform,
-  ActivityIndicator,
   useWindowDimensions,
   Alert,
 } from 'react-native'
@@ -36,6 +35,7 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { openAuthFlow, preCreateAuthWindow } from '@shogo/ui-kit/platform'
 import { API_URL, api } from '../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 const LOG_PREFIX = '[IntegrationsCard]'
 import { useDomainHttp } from '../../contexts/domain'
@@ -489,7 +489,7 @@ export function IntegrationsCard({
       >
         {loadingStatuses ? (
           <View className={cn('items-center', compact ? 'py-4' : 'py-6')}>
-            <ActivityIndicator size="small" className="text-muted-foreground" />
+            <Spinner tone="muted" size="small" />
           </View>
         ) : (
           <View style={{ gap: compact ? 6 : 8 }}>

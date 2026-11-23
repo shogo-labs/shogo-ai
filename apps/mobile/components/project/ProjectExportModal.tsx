@@ -176,7 +176,7 @@ export function ProjectExportModal({
           </Button>
           <Button onPress={handleExport} disabled={!canExport}>
             {isExporting ? (
-              <ButtonSpinner className="text-typography-0" />
+              <ButtonSpinner />
             ) : (
               <ButtonIcon as={Download} className="text-typography-0" />
             )}

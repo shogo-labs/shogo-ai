@@ -23,7 +23,6 @@ import {
   Text,
   Pressable,
   FlatList,
-  ActivityIndicator,
   RefreshControl,
   Modal,
   TextInput,
@@ -46,6 +45,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { SegmentedFilter } from '../../../../components/phone/SegmentedFilter'
 
 import { fetchAdminJson, postAdmin, formatCents, formatRelative } from './_helpers'
+import { Spinner } from '@/components/ui/spinner'
 
 type PayoutStatusValue =
   | 'not_setup'
@@ -171,7 +171,7 @@ function HoldModal({
               )}
             >
               {busy ? (
-                <ActivityIndicator size="small" color="#fff" />
+                <Spinner className="text-white" size="small" />
               ) : (
                 <Pause size={14} color="#fff" />
               )}
@@ -314,7 +314,7 @@ function PendingTab({ isWide }: { isWide: boolean }) {
                 : 'border-border bg-card',
           )}
         >
-          {isSelected && <CheckCircle2 size={12} color="#fff" />}
+          {isSelected && <CheckCircle2 className="text-primary-foreground" size={12} />}
         </Pressable>
 
         <View className={cn('min-w-0 mr-2', isWide ? 'w-[260px]' : 'flex-1')}>
@@ -406,9 +406,9 @@ function PendingTab({ isWide }: { isWide: boolean }) {
           )}
         >
           {releasing ? (
-            <ActivityIndicator size="small" color="#fff" />
+            <Spinner tone="onPrimary" size="small" />
           ) : (
-            <Banknote size={14} color="#fff" />
+            <Banknote className="text-primary-foreground" size={14} />
           )}
           <Text className="text-sm font-semibold text-primary-foreground">
             {releasing
@@ -469,7 +469,7 @@ function PendingTab({ isWide }: { isWide: boolean }) {
         />
         {loading && !refreshing && (
           <View className="absolute inset-0 items-center justify-center bg-background/80">
-            <ActivityIndicator size="large" />
+            <Spinner size="large" />
           </View>
         )}
       </View>
@@ -686,7 +686,7 @@ function HistoryTab({ isWide }: { isWide: boolean }) {
         />
         {loading && !refreshing && (
           <View className="absolute inset-0 items-center justify-center bg-background/80">
-            <ActivityIndicator size="large" />
+            <Spinner size="large" />
           </View>
         )}
       </View>

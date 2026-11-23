@@ -18,9 +18,10 @@
  * `useWelcomeMessage.ts`, which this otherwise mirrors).
  */
 import { useCallback, useEffect, useState } from 'react'
-import { ActivityIndicator, Pressable, Text, View } from 'react-native'
+import { Pressable, Text, View } from 'react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { Sparkles, X } from 'lucide-react-native'
+import { Spinner } from '@/components/ui/spinner'
 
 const STORAGE_KEY_PREFIX = 'shogo:personal-space-offer-dismissed:'
 
@@ -98,7 +99,7 @@ export function CreatePersonalSpaceBanner({
           className="mt-3 flex-row items-center gap-2 self-start rounded-md bg-primary px-3 py-1.5 active:opacity-80"
         >
           {creating ? (
-            <ActivityIndicator size="small" color="#fff" />
+            <Spinner tone="onPrimary" size="small" />
           ) : (
             <Text className="text-sm font-medium text-primary-foreground">
               Create it — it's free
