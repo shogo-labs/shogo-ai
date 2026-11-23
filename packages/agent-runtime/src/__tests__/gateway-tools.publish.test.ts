@@ -465,6 +465,38 @@ describe('publish tool', () => {
     expect(details.error).toMatch(/nothing was deployed/i)
   })
 
+  // SHO-539 acceptance 2: the server decides `project:publish` per project. Its
+  // refusal must arrive as the same named answer `withAbilityGate` gives, not a
+  // raw 403 — and nothing may be deployed.
+  const ABILITY_DENIAL = {
+    ok: false,
+    status: 403,
+    code: 'ability_not_allowed',
+    error: 'Ask a workspace admin for project:publish.',
+  }
+
+  test('a project viewer gets a named project:publish refusal from publish', async () => {
+    publishProjectImpl = async () => ABILITY_DENIAL
+    const details = await run(baseCtx(), { subdomain: 'my-site' })
+    expect(details.error).toBe('ability_not_allowed')
+    expect(details.permission).toBe('project:publish')
+    expect(details.message).toMatch(/publish access to this project/i)
+    expect(details.ok).toBeUndefined()
+  })
+
+  test('a project viewer gets the same refusal from ops_action and domain_action', async () => {
+    publishOpsImpl = async () => ABILITY_DENIAL
+    const ops = await run(baseCtx(), { ops_action: 'status' })
+    expect(ops.error).toBe('ability_not_allowed')
+    expect(ops.permission).toBe('project:publish')
+
+    addCustomDomainImpl = async () => ABILITY_DENIAL
+    const domain = await run(baseCtx(), { domain_action: 'add', domain: 'example.com' })
+    expect(domain.error).toBe('ability_not_allowed')
+    expect(domain.permission).toBe('project:publish')
+    expect(publishCalls).toEqual([])
+  })
+
   test('maps server_backed_requires_cloud_project to "sync then publish in the cloud"', async () => {
     publishProjectImpl = async () => ({
       ok: false,

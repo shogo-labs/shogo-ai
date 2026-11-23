@@ -17,10 +17,21 @@
  */
 
 import type { AgentTool } from '@mariozechner/pi-agent-core'
+import type { AbilityPermission } from '@shogo/authz'
 import { deriveApiUrl, getInternalHeaders, hasInternalApiCredentials } from './internal-api'
 
-/** Tools whose use needs a workspace ability. Unmapped tools are always allowed. */
-export const TOOL_ABILITIES: Readonly<Record<string, string>> = {
+/**
+ * Tools whose use needs a workspace ability. Unmapped tools are always allowed.
+ *
+ * A value must be one of `@shogo/authz`'s `ABILITY_PERMISSIONS`: those are the
+ * only permissions `GET /api/internal/workspaces/:id/access/effective` ever
+ * returns (`policy.ts` resolves `WORKSPACE_ROLE_BASE_PERMISSIONS +
+ * ABILITY_PERMISSIONS`). Mapping a tool to a base or *project* permission hides
+ * it from every turn, owners included (SHO-539: `publish` → `project:publish`).
+ * A *project* permission is decided per project, so it belongs on the internal
+ * route, not on a per-turn gate.
+ */
+export const TOOL_ABILITIES: Readonly<Record<string, AbilityPermission>> = {
   exec: 'agent.exec:use',
   browser: 'agent.browser:use',
   generate_image: 'agent.media:generate',
@@ -38,7 +49,6 @@ export const TOOL_ABILITIES: Readonly<Record<string, string>> = {
   trigger_update: 'trigger:manage',
   trigger_delete: 'trigger:manage',
   system_apply: 'system:apply',
-  publish: 'project:publish',
   share_file: 'project.files:share_public',
   connect: 'integrations:connect',
   member_activity: 'members.activity:read',
@@ -120,6 +130,21 @@ export function isToolAllowed(name: string, abilities: ReadonlySet<string> | nul
 }
 
 /**
+ * The answer a denied call gets: the permission to ask an admin for.
+ *
+ * One shape for both denials — the per-turn gate below, and a server refusal a
+ * tool maps itself (SHO-539: `publish`'s permission is per project, so only the
+ * internal route can decide it).
+ */
+export function abilityDenial(permission: string, message?: string) {
+  return {
+    error: 'ability_not_allowed' as const,
+    permission,
+    message: message ?? `Ask a workspace admin for ${permission}.`,
+  }
+}
+
+/**
  * Wrap a tool so a call that slipped past the filter still answers with the
  * permission to ask for, instead of running.
  */
@@ -134,11 +159,7 @@ export function withAbilityGate(tool: AgentTool, abilities: ReadonlySet<string> 
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              error: 'ability_not_allowed',
-              permission: ability,
-              message: `Ask a workspace admin for ${ability}.`,
-            }),
+            text: JSON.stringify(abilityDenial(ability)),
           },
         ],
         details: { error: 'ability_not_allowed', permission: ability },
