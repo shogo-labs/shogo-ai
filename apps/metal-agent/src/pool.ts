@@ -6278,8 +6278,6 @@ export class MetalWarmPool {
           }
 
           // Legacy runtime: no per-class signal exists, so the catch-all is the
-
-          // Legacy runtime: no per-class signal exists, so the catch-all is the
           // best available proxy for a user and must keep the VM alive.
           if (!a.perClassActivity && catchAllAdvanced) {
             a.lastRealActivityAt = now
@@ -6301,14 +6299,6 @@ export class MetalWarmPool {
     )
   }
 
-  /**
-   * True if the project's guest is mid-generation — an active agent message
-   * stream (`activeStreams > 0` from /pool/activity). Suspending it would
-   * snapshot away a live turn, so both the explicit `/stop` and the idle reaper
-   * consult this first. Fail-SAFE: a poll error → treat as busy (don't suspend
-   * on an unknown state); a clean 404 (guest opts out) or `activeStreams:0` →
-   * not busy. Only assigned (running) projects can be busy.
-   */
   /**
    * Whether this guest is doing real work, as far as the last activity poll can
    * tell. The guest's own `busy` verdict wins when it reports one; older guests
@@ -6342,6 +6332,17 @@ export class MetalWarmPool {
     return (a.activeTurns ?? 0) > 0 || (a.liveStreams ?? 0) > 0
   }
 
+  /**
+   * Is this guest mid-generation, asked live rather than from the last cached
+   * poll — the explicit `POST /stop` consults this before suspending, so it must
+   * not act on a 30s-old answer. Reads the same guest verdict `vmBusy` reads:
+   * `busy` (the guest's own count, which excludes a leaked `activeStreams`) and
+   * the counter only as the fallback for an older guest.
+   *
+   * Fail-SAFE: an unreachable guest is busy (don't snapshot a turn we cannot
+   * see), except a mute guest whose last agent turn is old — then it is safe to
+   * stop. A clean 404 (guest opts out) is not busy. Only assigned VMs can be.
+   */
   async isBusy(projectId: string): Promise<boolean> {
     const a = this.assigned.get(projectId)
     if (!a) return false
@@ -6458,13 +6459,24 @@ export class MetalWarmPool {
     // heartbeat ticks (SHO-533). A continuously busy guest is still caught by
     // the busy-idle ceiling — the second clause, which overrides `busy`,
     // `activeStreams`, `activeTurns` and tasks.
-    const stale = [...this.assigned.values()]
-      .filter(
-        (a) =>
-          !a.alwaysOn &&
-          ((idleFor(a) >= this.idleWindowFor(a, idleMs) && !this.vmBusy(a)) ||
-            this.pastBusyIdleCeiling(a, now)),
-      )
+    // A VM whose HEAD could not be made durable is not suspendable, and every
+    // attempt pays a full repo export. Retrying it on every scan starves the pass
+    // every other idle VM needs (SHO-533: one VM on dal-1 was refused 2,367 times
+    // in 24h), so it sits out its backoff — and it is dropped here, BEFORE the
+    // per-pass cap. Filtering it after the cap was worse than not filtering at
+    // all: refused VMs have the longest `idleFor`, so they sort to the head, take
+    // every slot, and a host whose refused set reached `METAL_REAP_MAX_PER_PASS`
+    // would suspend nothing, ever (QA round 1).
+    const candidates = [...this.assigned.values()].filter(
+      (a) =>
+        !a.alwaysOn &&
+        ((idleFor(a) >= this.idleWindowFor(a, idleMs) && !this.vmBusy(a)) ||
+          this.pastBusyIdleCeiling(a, now)),
+    )
+    const backingOff = candidates.filter((a) => this.refuseBackoffActive(a, now))
+    if (backingOff.length) metrics.inc(M.idleReapRefusedBackoff, backingOff.length)
+    const stale = candidates
+      .filter((a) => !this.refuseBackoffActive(a, now))
       .sort((x, y) => idleFor(y) - idleFor(x))
     // VMs the reaper would have suspended if their guest did not report busy.
     metrics.gauge(
@@ -6485,14 +6497,6 @@ export class MetalWarmPool {
     }
     const done: string[] = []
     for (const a of stale) {
-      // A VM whose HEAD could not be made durable is not suspendable, and every
-      // attempt pays a full repo export. Retrying it on every scan starves the
-      // pass every other idle VM needs, so it waits out its backoff instead
-      // (SHO-533: one VM on dal-1 was refused 2,367 times in 24h).
-      if (this.refuseBackoffActive(a, now)) {
-        metrics.inc(M.idleReapRefusedBackoff)
-        continue
-      }
       const byCeiling = this.pastBusyIdleCeiling(a, now)
       if (byCeiling && !this.busyIdleCeilingLogged.has(a.projectId)) {
         this.busyIdleCeilingLogged.add(a.projectId)
@@ -7665,11 +7669,11 @@ export class MetalWarmPool {
 
   /**
    * Decompose the assigned (running) set by liveness class for the fleet
-   * gauges. A VM counts as `agentActive` if it reported an in-flight agent turn
-   * at the last poll, `appActive` if it served end-user app traffic within
-   * {@link APP_ACTIVE_WINDOW_MS}, and `idleTail` otherwise (running but neither
-   * being used nor edited — the 30-min idle-suspend tail). agent-active wins
-   * when a VM is both, so the buckets are disjoint and sum to `assigned.size`.
+   * gauges, using exactly {@link vmLiveness}: `agentActive` for a streamed turn
+   * in flight or a recent agent request, `appActive` for end-user app traffic
+   * within {@link ACTIVITY_WINDOW_MS}, `idleTail` otherwise (running but neither
+   * being used nor edited — the idle-suspend tail). agent-active wins when a VM
+   * is both, so the buckets are disjoint and sum to `assigned.size`.
    *
    * `active` / `evictable` are the OTHER decomposition of the same set (see
    * {@link vmResidency}): whether the VM is holding a slot someone needs, or is

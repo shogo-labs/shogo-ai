@@ -599,6 +599,32 @@ describe('SHO-533 — refusals are counted, backed off and visible', () => {
     expect(warnings.filter((w) => w.includes('idle-suspend is HELD')).length).toBe(1)
   })
 
+  test('VMs waiting out a backoff do not consume the per-pass cap', async () => {
+    const pool = makePool(dir)
+    const now = Date.now()
+    const old = now - 20 * IDLE_MS
+    // Two VMs whose HEAD cannot be made durable, both idle longest, so both sort
+    // ahead of everything else in every pass.
+    pool.seed('undurable-a', { lastRealActivityAt: old, assignedAt: old })
+    pool.seed('undurable-b', { lastRealActivityAt: old, assignedAt: old })
+    pool.refuseSuspend = true
+    await pool.reapIdle(IDLE_MS)
+    expect(pool.peek('undurable-a')!.refuseRetryAt).toBeDefined()
+    expect(pool.peek('undurable-b')!.refuseRetryAt).toBeDefined()
+
+    // A healthy idle VM that sorts LAST. With one slot per pass and the backoff
+    // filtered after the cap, the two refused VMs would take it, be skipped, and
+    // the reaper would suspend nothing — forever. Filtered before the cap, the
+    // slot goes to the VM that can actually be suspended (QA round 1).
+    pool.refuseSuspend = false
+    pool.seed('healthy', { lastRealActivityAt: old + IDLE_MS, assignedAt: old + IDLE_MS })
+    const backingOff = metrics.getCounter(M.idleReapRefusedBackoff)
+    expect(await pool.reapIdle(IDLE_MS, { maxPerPass: 1 })).toEqual(['healthy'])
+    expect(metrics.getCounter(M.idleReapRefusedBackoff) - backingOff).toBe(2)
+    expect(pool.peek('undurable-a')).toBeDefined()
+    expect(pool.peek('undurable-b')).toBeDefined()
+  })
+
   test('the streak backs the retry off further each time, and a suspend clears it', async () => {
     const pool = makePool(dir)
     pool.refuseSuspend = true
