@@ -3766,6 +3766,26 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   }
 
   /**
+   * The runtime currently serving workspace W, in whichever slot it lives.
+   *
+   * A workspace-level resolve that mounts nothing of its own is served by the
+   * workspace's *project-anchored* runtime (`ws:proj:<anchor>`, SHO-107), so
+   * asking only `ws:<id>` would answer "not running" for a workspace that is
+   * very much up. Synchronous on purpose: the tunnel resolver answers one
+   * request at a time and must never await a spawn (SHO-185).
+   */
+  runningWorkspaceRuntime(workspaceId: string): IProjectRuntime | null {
+    const direct = this.status(workspaceRuntimeKey(workspaceId))
+    if (direct?.agentPort && direct.status === 'running') return direct
+    for (const [key, owner] of this.runtimeOwners) {
+      if (!key.startsWith('ws:proj:') || owner.workspaceId !== workspaceId) continue
+      const anchored = this.status(key)
+      if (anchored?.agentPort && anchored.status === 'running') return anchored
+    }
+    return null
+  }
+
+  /**
    * Is this workspace's runtime up, and is it mid-turn?
    *
    * Switching workspaces deliberately leaves runtimes warm (Decision 3), so the

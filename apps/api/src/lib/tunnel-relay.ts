@@ -26,6 +26,11 @@
 
 import type { Context } from 'hono'
 import {
+  isWorkspaceDownloadPath,
+  relayWorkspaceDownload,
+  tunnelResponseBody,
+} from './tunnel-body'
+import {
   generateRequestId,
   markControllerActive,
   sendTunnelRequest,
@@ -180,6 +185,7 @@ export async function relayAgentProxyViaTunnel(opts: TunnelRelayOptions): Promis
             method,
             path: agentPath,
             projectId,
+            acceptBodyEncoding: ['base64'],
             headers: forwardHeaders,
             body,
           } satisfies TunnelRequest,
@@ -229,15 +235,27 @@ export async function relayAgentProxyViaTunnel(opts: TunnelRelayOptions): Promis
 
   // ─── Non-streaming ──────────────────────────────────────────────────
   try {
-    const resp = await sendTunnelRequest(instanceId, {
-      type: 'request',
-      requestId,
-      method,
-      path: agentPath,
-      projectId,
-      headers: forwardHeaders,
-      body,
-    })
+    const send = (pathWithQuery: string, frameHeaders: Record<string, string>) =>
+      sendTunnelRequest(instanceId, {
+        type: 'request',
+        requestId: generateRequestId(),
+        method,
+        path: pathWithQuery,
+        projectId,
+        acceptBodyEncoding: ['base64'],
+        headers: frameHeaders,
+        body,
+      })
+
+    if (isWorkspaceDownloadPath(method, cleanPath)) {
+      return await relayWorkspaceDownload({
+        agentPath,
+        headers: forwardHeaders,
+        send: async (pathWithQuery, frameHeaders) => send(pathWithQuery, frameHeaders),
+      })
+    }
+
+    const resp = await send(agentPath, forwardHeaders)
 
     const responseHeaders = new Headers()
     if (resp.headers) {
@@ -257,7 +275,7 @@ export async function relayAgentProxyViaTunnel(opts: TunnelRelayOptions): Promis
     }
     applyCorsHeaders(responseHeaders, c.req.header('origin'))
 
-    return new Response(resp.body || '', {
+    return new Response(tunnelResponseBody(resp) as BodyInit, {
       status: resp.status,
       headers: responseHeaders,
     })

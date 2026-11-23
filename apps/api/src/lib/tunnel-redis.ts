@@ -481,6 +481,10 @@ interface RelayRequest {
     path: string
     headers?: Record<string, string>
     body?: string
+    /** Workspace target, for a chat with no project of its own (SHO-526). */
+    workspaceId?: string
+    /** Body encodings the receiving pod's cloud can decode. */
+    acceptBodyEncoding?: string[]
   }
 }
 
@@ -492,6 +496,8 @@ interface RelayResponse {
     status: number
     headers?: Record<string, string>
     body?: string
+    /** Set when `body` is base64-encoded bytes rather than text. */
+    bodyEncoding?: 'base64'
   }
   error?: string
 }
@@ -507,6 +513,10 @@ interface StreamRelayRequest {
     path: string
     headers?: Record<string, string>
     body?: string
+    /** Workspace target, for a chat with no project of its own (SHO-526). */
+    workspaceId?: string
+    /** Body encodings the receiving pod's cloud can decode. */
+    acceptBodyEncoding?: string[]
   }
 }
 
