@@ -383,6 +383,24 @@ describe('publish as a background job', () => {
     expect(statusWrites).toHaveLength(0)
   })
 
+  it('refuses a password-gated publish with no password, and hands the name back', async () => {
+    // AC 2's fourth synchronous refusal. It used to be the one path that both
+    // refused and gave up the claim; `preparePublish` owns it now.
+    seed('p1')
+    const refused = await postPublish('p1', { subdomain: 'gated-app', accessLevel: 'password' })
+    expect(refused.status).toBe(400)
+    expect((await refused.json()).error.code).toBe('password_required')
+    // Nothing was started: the lease was never taken.
+    expect(statusWrites).toHaveLength(0)
+    expect(projects.get('p1')!.publishStatus).toBe('idle')
+
+    // The claim this call took was released on the way out, so the name is free.
+    seed('p2')
+    expect((await postPublish('p2', { subdomain: 'gated-app' })).status).toBe(202)
+    await until(() => projects.get('p2')!.publishStatus === 'live', 'live')
+    expect(projects.get('p2')!.publishedSubdomain).toBe('gated-app')
+  })
+
   it('a refused retry keeps the claim the running publish holds', async () => {
     // The claim is per subdomain, and the 409 path used to release it — so a
     // double-tap on one project dropped the claim its own publish was holding,
