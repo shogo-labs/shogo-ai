@@ -15,7 +15,7 @@ import { getMetalWarmPoolController } from '../lib/metal-warm-pool-controller'
 import { saveAgentAvatar } from '../services/workspace-agent-cloud-storage'
 import { authenticate, authorizeWorkspaceScope, validateAuth } from './internal-auth'
 import { decide, loadAccess, resolveAgentActor } from '../lib/authz'
-import type { Permission } from '@shogo/authz'
+import { abilityDenial, type Permission } from '@shogo/authz'
 import { numberOr, runtimeInternalRoutes } from './internal-runtime-routes'
 import { signSharedFileToken, sharedFilePathProblem, sharedFilePublicOrigin } from '../lib/shared-file-token'
 import { mintSharedFileLink } from '../lib/shared-file-mint'
@@ -358,7 +358,16 @@ async function enforceProjectAbility(
   if (!actor?.principal.userId || actor.unscoped) return null
   const access = await loadAccess(actor.principal, { projectId })
   const decision = await decide(access, permission, actor.principal, `${c.req.method} ${c.req.path}`)
-  if (!decision.ok) return c.json({ error: { code: decision.code, message: decision.message } }, decision.status)
+  if (!decision.ok) {
+    // A *project* permission can only be decided here, so this is where the
+    // agent's tool learns it was refused. Answer in the runtime gate's envelope
+    // (`withAbilityGate`) rather than `forbidden`: the tool maps the code to the
+    // permission the person has to ask an admin for (SHO-539). 401/404 keep
+    // their own meaning — "not signed in" and "no such project" are not an
+    // ability the admin can grant.
+    if (decision.status === 403) return c.json({ error: abilityDenial(permission) }, 403)
+    return c.json({ error: { code: decision.code, message: decision.message } }, decision.status)
+  }
   return null
 }
 
@@ -562,7 +571,10 @@ app.post('/projects/:projectId/publish/ops', async (c) => {
  *
  * Same handlers the publish panel's session routes call (routes/publish.ts), so
  * the agent reads and writes exactly what the Settings → Custom domain panel
- * does. Auth: K8s SA token (cluster) OR HMAC-signed `x-runtime-token`.
+ * does. Auth: K8s SA token (cluster) OR HMAC-signed `x-runtime-token`. Every
+ * write is behind `project:publish`, like the publish routes themselves — the
+ * runtime no longer gates the `publish` tool by a workspace ability (SHO-539),
+ * so this route is the gate for `domain_action` too.
  */
 app.get('/projects/:projectId/domains', async (c) => {
   const projectId = c.req.param('projectId')
@@ -578,6 +590,9 @@ app.post('/projects/:projectId/domains', async (c) => {
   const projectId = c.req.param('projectId')
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
   if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  const denied = await enforceProjectAbility(c, projectId, 'project:publish')
+  if (denied) return denied
 
   let body: { hostname?: string }
   try {
@@ -596,6 +611,9 @@ app.post('/projects/:projectId/domains/:domainId/verify', async (c) => {
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
   if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
 
+  const denied = await enforceProjectAbility(c, projectId, 'project:publish')
+  if (denied) return denied
+
   const { verifyCustomDomain } = await import('./publish')
   const result = await verifyCustomDomain(projectId, c.req.param('domainId'))
   return c.json(result.body, result.status as any)
@@ -605,6 +623,9 @@ app.post('/projects/:projectId/domains/:domainId/retrigger', async (c) => {
   const projectId = c.req.param('projectId')
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
   if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  const denied = await enforceProjectAbility(c, projectId, 'project:publish')
+  if (denied) return denied
 
   const { retriggerCustomDomain } = await import('./publish')
   const result = await retriggerCustomDomain(projectId, c.req.param('domainId'))
@@ -616,6 +637,9 @@ app.patch('/projects/:projectId/domains/:domainId/primary', async (c) => {
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
   if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
 
+  const denied = await enforceProjectAbility(c, projectId, 'project:publish')
+  if (denied) return denied
+
   const { setPrimaryCustomDomain } = await import('./publish')
   const result = await setPrimaryCustomDomain(projectId, c.req.param('domainId'))
   return c.json(result.body, result.status as any)
@@ -625,6 +649,9 @@ app.delete('/projects/:projectId/domains/:domainId', async (c) => {
   const projectId = c.req.param('projectId')
   if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
   if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+  const denied = await enforceProjectAbility(c, projectId, 'project:publish')
+  if (denied) return denied
 
   const { deleteCustomDomain } = await import('./publish')
   const result = await deleteCustomDomain(projectId, c.req.param('domainId'))

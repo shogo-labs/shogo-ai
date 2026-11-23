@@ -112,6 +112,12 @@ const prismaApi = {
       deploymentRows.push(row)
       return { ...row }
     },
+    update: async ({ where, data }: any) => {
+      const row = deploymentRows.find((d) => d.id === where.id)
+      if (!row) throw new Error(`no deployment ${where.id}`)
+      Object.assign(row, data)
+      return { ...row }
+    },
     updateMany: async () => ({ count: 0 }),
     findUnique: async ({ where }: any) => deploymentRows.find((d) => d.id === where.id) ?? null,
   },

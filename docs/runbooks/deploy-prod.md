@@ -162,6 +162,36 @@ says no rebuild, no production multi-arch image is made for the release.
 So a manual `metal-agent-deploy.yml` rebuild for production must pass
 `runtime_image` explicitly.
 
+### The one thing a release does rebuild: the runtime's SDK pin (SHO-522)
+
+Promotion re-tags images built on `main`, i.e. **before the tag existed**, so
+a promoted runtime image can only carry the *previous* release's
+`@shogo-ai/sdk` pin. That is how the v2.6.1 image shipped pinning `^2.6.0`.
+So on a `vX.Y.Z` tag:
+
+- `rebuild-release-runtime` rebuilds `shogo-workspace-deps` and
+  `shogo-runtime` with `SHOGO_SDK_PIN_VERSION=<tag>` (the pin is exact, and
+  the build blocks until npm serves that version, failing the release if it
+  never appears), pushes `production-<sha>` for both, and reads
+  `templates/runtime-template/package.json` back out of the image to prove it.
+- `promote-images` still promotes `shogo-api`, `shogo-web` and `shogo-docs`
+  untouched — the bytes staging e2e tested. The api image's bundled template
+  carries the older pin, which each pod repairs on first boot
+  (`migrateLegacyShogoSdkPin` upgrades to the runtime image's exact pin).
+- `metal-runtime-image` prefers this tag's own build
+  (`release-multiarch-<sha>`, which only a tag build publishes) and skips any
+  candidate whose `org.opencontainers.image.sdk-pin` label names a different
+  SDK. Unlabelled images from before this change are still accepted.
+
+`@shogo-ai/sdk` pins are always exact (`2.6.1`, never `^2.6.1`) so an app
+installs the SDK its image was released with; a bad npm release cannot reach
+running apps until an image that pins it is released. The one exception is
+deliberate: a **source checkout** seeding a project (`workspace:*` in the
+template, `packages/sdk/package.json` says the unpublished placeholder
+`1.7.0`) has no published version to pin, so those writers keep the
+checkout's own `^X.Y.Z` line. Every released artifact is materialized, so it
+never carries that range.
+
 Because one image serves both environments, **never add an
 environment-specific build arg** to the image builds. The studio's
 per-environment values (`SHOGO_APP_ENV`, `SHOGO_APP_VERSION`, GA4 and

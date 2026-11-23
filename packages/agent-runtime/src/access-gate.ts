@@ -17,10 +17,21 @@
  */
 
 import type { AgentTool } from '@mariozechner/pi-agent-core'
+import { abilityDenial, type AbilityPermission } from '@shogo/authz'
 import { deriveApiUrl, getInternalHeaders, hasInternalApiCredentials } from './internal-api'
 
-/** Tools whose use needs a workspace ability. Unmapped tools are always allowed. */
-export const TOOL_ABILITIES: Readonly<Record<string, string>> = {
+/**
+ * Tools whose use needs a workspace ability. Unmapped tools are always allowed.
+ *
+ * A value must be one of `@shogo/authz`'s `ABILITY_PERMISSIONS`: those are the
+ * only permissions `GET /api/internal/workspaces/:id/access/effective` ever
+ * returns (`policy.ts` resolves `WORKSPACE_ROLE_BASE_PERMISSIONS +
+ * ABILITY_PERMISSIONS`). Mapping a tool to a base or *project* permission hides
+ * it from every turn, owners included (SHO-539: `publish` → `project:publish`).
+ * A *project* permission is decided per project, so it belongs on the internal
+ * route, not on a per-turn gate.
+ */
+export const TOOL_ABILITIES: Readonly<Record<string, AbilityPermission>> = {
   exec: 'agent.exec:use',
   browser: 'agent.browser:use',
   generate_image: 'agent.media:generate',
@@ -38,7 +49,6 @@ export const TOOL_ABILITIES: Readonly<Record<string, string>> = {
   trigger_update: 'trigger:manage',
   trigger_delete: 'trigger:manage',
   system_apply: 'system:apply',
-  publish: 'project:publish',
   share_file: 'project.files:share_public',
   connect: 'integrations:connect',
   member_activity: 'members.activity:read',
@@ -134,17 +144,23 @@ export function withAbilityGate(tool: AgentTool, abilities: ReadonlySet<string> 
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              error: 'ability_not_allowed',
-              permission: ability,
-              message: `Ask a workspace admin for ${ability}.`,
-            }),
+            text: JSON.stringify(abilityDenialBody(ability)),
           },
         ],
         details: { error: 'ability_not_allowed', permission: ability },
       } as any
     },
   } as AgentTool
+}
+
+/**
+ * The decision as the model sees it. A tool result is not the API's error
+ * envelope, so the shared `code` becomes the result's `error` string — the same
+ * body every other denied call returns.
+ */
+export function abilityDenialBody(permission: string, message?: string) {
+  const { code, ...rest } = abilityDenial(permission, message)
+  return { error: code, ...rest }
 }
 
 /**

@@ -50,6 +50,7 @@
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@mozilla/readability": "^0.6.0",
     "@shogo-ai/sdk": "workspace:*",
+    "@shogo/authz": "workspace:*",
     "@shogo/model-catalog": "workspace:*",
     "@shogo/pty-core": "workspace:*",
     "@shogo/shared-runtime": "workspace:*",

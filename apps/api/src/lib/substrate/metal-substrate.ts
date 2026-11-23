@@ -36,6 +36,8 @@ export interface MetalBackend {
   listProjects(): Promise<RuntimeSummary[]>
   // --- published site (published:{id} microVM) ---
   getMetalPublishedUrl(projectId: string, subdomain: string, opts?: { alwaysOn?: boolean }): Promise<{ url: string; hostId?: string; region?: string }>
+  /** The published microVM's own status, for the readiness wait (SHO-536 §C). */
+  getPublishedStatus(projectId: string): Promise<{ exists: boolean; ready: boolean; message?: string }>
   destroyPublished(projectId: string, subdomain?: string): Promise<void>
   setPublishedAlwaysOn(projectId: string, subdomain: string, on: boolean): Promise<void>
 }
@@ -152,7 +154,35 @@ export class MetalSubstrate implements ProjectSubstrate {
     // edge to proxy `/api/*` to the API published endpoint (backend='metal').
     const { url } = await this.backend.getMetalPublishedUrl(projectId, subdomain, { alwaysOn })
     await kv.setServerBackedFlag(subdomain, 'metal')
-    return { serverBacked: true, substrate: this.kind, url }
+    return {
+      serverBacked: true,
+      substrate: this.kind,
+      url,
+      // The host is the only thing that knows whether the microVM came up;
+      // resolving a placement is not the same as it serving (SHO-536 §C).
+      awaitReady: (timeoutMs: number) => this.waitForPublishedVmReady(projectId, timeoutMs),
+    }
+  }
+
+  /** Poll the published microVM's status until the host reports it serving. */
+  private async waitForPublishedVmReady(
+    projectId: string,
+    timeoutMs: number,
+  ): Promise<{ ready: true } | { ready: false; reason: string }> {
+    const deadline = Date.now() + timeoutMs
+    let last = 'the host has not reported the published microVM yet'
+    for (;;) {
+      const status = await this.backend.getPublishedStatus(projectId).catch(() => null)
+      if (status?.ready) return { ready: true }
+      if (status?.message) last = status.message
+      if (Date.now() + 2000 > deadline) {
+        return {
+          ready: false,
+          reason: `the published microVM was not ready within ${Math.round(timeoutMs / 1000)}s — ${last}`,
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+    }
   }
 
   async unpublish(projectId: string, subdomain: string): Promise<void> {

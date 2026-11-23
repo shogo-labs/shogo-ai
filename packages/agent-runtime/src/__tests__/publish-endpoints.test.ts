@@ -210,3 +210,150 @@ describe('publish-artifact size guard', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// A runtime with no object store never base64s a large artifact (SHO-536 §A)
+// ---------------------------------------------------------------------------
+
+function mountWithoutStore(workspaceDir: string): Hono {
+  const deps: PublishEndpointDeps = {
+    projectDir: () => workspaceDir,
+    outputRoot: (_projectId, projectDir) => projectDir,
+  }
+  const hono = new Hono()
+  hono.get('/agent/publish-artifact', (c) => handlePublishArtifact(c, deps))
+  return hono
+}
+
+async function withEnv(name: string, value: string, fn: () => Promise<void>): Promise<void> {
+  const previous = process.env[name]
+  process.env[name] = value
+  try {
+    await fn()
+  } finally {
+    if (previous === undefined) delete process.env[name]
+    else process.env[name] = previous
+  }
+}
+
+describe('publish-artifact with no object store', () => {
+  it('streams the tar to the API presigned PUT instead of base64ing it', async () => {
+    const received: number[] = []
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        received.push((await req.arrayBuffer()).byteLength)
+        return new Response(null, { status: 200 })
+      },
+    })
+    try {
+      const putUrl = `http://127.0.0.1:${server.port}/upload`
+      const res = await mountWithoutStore(workspace).fetch(
+        new Request(
+          'http://runtime.test/agent/publish-artifact?projectId=p1&bucket=publish' +
+            `&key=acme/artifacts/abc.tar.gz&putUrl=${encodeURIComponent(putUrl)}`,
+        ),
+      )
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as {
+        key: string
+        bytes: number
+        archive?: string
+        offload?: { skipped?: string }
+      }
+      expect(body.archive).toBeUndefined()
+      expect(body.key).toBe('acme/artifacts/abc.tar.gz')
+      expect(body.bytes).toBeGreaterThan(0)
+      // What the API put in the bucket is the whole tar, not a truncated body.
+      expect(received).toEqual([body.bytes])
+      // And the API is told the media stayed in it.
+      expect(body.offload).toEqual({ skipped: 'no_object_store' })
+    } finally {
+      server.stop(true)
+    }
+  })
+
+  it('refuses an artifact over the inline limit by name instead of crashing on a V8 string', async () => {
+    await withEnv('PUBLISH_ARTIFACT_INLINE_MAX_BYTES', '1', async () => {
+      const res = await mountWithoutStore(workspace).fetch(
+        new Request('http://runtime.test/agent/publish-artifact?projectId=p1'),
+      )
+      expect(res.status).toBe(413)
+      const body = (await res.json()) as { error: string; message: string }
+      expect(body.error).toBe('artifact_too_large_for_inline')
+      expect(body.message).toContain('must go through object storage')
+    })
+  })
+
+  it('still streams a context over the inline limit when the API minted a PUT', async () => {
+    const received: number[] = []
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        received.push((await req.arrayBuffer()).byteLength)
+        return new Response(null, { status: 200 })
+      },
+    })
+    try {
+      await withEnv('PUBLISH_ARTIFACT_INLINE_MAX_BYTES', '1', async () => {
+        const putUrl = `http://127.0.0.1:${server.port}/upload`
+        const res = await mountWithoutStore(workspace).fetch(
+          new Request(
+            'http://runtime.test/agent/publish-artifact?projectId=p1&bucket=publish' +
+              `&key=acme/artifacts/abc.tar.gz&putUrl=${encodeURIComponent(putUrl)}`,
+          ),
+        )
+        expect(res.status).toBe(200)
+        expect(received).toHaveLength(1)
+      })
+    } finally {
+      server.stop(true)
+    }
+  })
+
+  it('names the missing object store when the size limit is what trips', async () => {
+    await withEnv('PUBLISH_ARTIFACT_MAX_BYTES', '1', async () => {
+      const res = await mountWithoutStore(workspace).fetch(
+        new Request('http://runtime.test/agent/publish-artifact?projectId=p1'),
+      )
+      expect(res.status).toBe(413)
+      const body = (await res.json()) as { error: string; message: string }
+      expect(body.error).toBe('artifact_too_large')
+      expect(body.message).toContain('no object store')
+    })
+  })
+
+  it('uploads through the store when the runtime has one, and reports the media offload', async () => {
+    const puts: number[] = []
+    const hono = mountWithStoreForTest(workspace, {
+      bucket: 'workspaces',
+      client: {
+        async send(command: any) {
+          if (command.constructor.name === 'PutObjectCommand') {
+            puts.push(Buffer.from(command.input.Body).length)
+            return { ETag: '"etag"' }
+          }
+          return {}
+        },
+      },
+    })
+    const res = await hono.fetch(
+      new Request('http://runtime.test/agent/publish-artifact?projectId=p1&bucket=publish&key=acme/artifacts/abc.tar.gz'),
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { bytes: number; offload?: unknown }
+    expect(puts).toEqual([body.bytes])
+    expect(body.offload).toBeUndefined()
+  })
+})
+
+function mountWithStoreForTest(workspaceDir: string, store: any): Hono {
+  const deps: PublishEndpointDeps = {
+    projectDir: () => workspaceDir,
+    outputRoot: (_projectId, projectDir) => projectDir,
+    objectStore: () => store,
+  }
+  const hono = new Hono()
+  hono.get('/agent/publish-artifact', (c) => handlePublishArtifact(c, deps))
+  return hono
+}

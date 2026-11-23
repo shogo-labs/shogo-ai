@@ -166,3 +166,119 @@ describe('promote-metal-runtime-image.sh', () => {
     expect(creates).toEqual([])
   })
 })
+
+// ---------------------------------------------------------------------------
+// The release's own SDK (SHO-522)
+//
+// A main-push image pins the SDK that was `latest` when it built, which for a
+// release is the PREVIOUS release. Only a tag build pins the release's SDK, so
+// with SDK_PIN set the script prefers `release-*` and refuses a candidate whose
+// sdk-pin label names a different version.
+// ---------------------------------------------------------------------------
+describe('promote-metal-runtime-image.sh — release SDK pin', () => {
+  let pinBin: string
+  let labels: string
+
+  const LABEL = 'org.opencontainers.image.sdk-pin'
+
+  beforeAll(() => {
+    pinBin = join(root, 'bin-pin')
+    labels = join(root, 'labels')
+    mkdirSync(pinBin, { recursive: true })
+    writeFileSync(
+      join(pinBin, 'docker'),
+      `#!/usr/bin/env bash
+cmd="$3"; shift 3
+case "$cmd" in
+  inspect)
+    if [ "\${1:-}" = "--raw" ]; then
+      ref="$2"
+      grep -qxF "$ref" "$PUBLISHED" || exit 1
+      tag="\${ref##*:}"
+      printf '{"manifests":[{"platform":{"architecture":"arm64"},"digest":"sha256:%s"}]}\n' "$tag"
+      exit 0
+    fi
+    if [ "\${2:-}" = "--format" ]; then
+      tag="\${1##*:}"
+      pin="$(awk -v t="$tag" '$1==t {print $2}' "$LABELS" | head -n1)"
+      printf '{"config":{"Labels":{"${LABEL}":"%s"}}}\n' "$pin"
+      exit 0
+    fi
+    grep -qxF "$1" "$PUBLISHED"
+    ;;
+  create) echo "$*" >> "$CREATED" ;;
+  *) exit 2 ;;
+esac
+`,
+    )
+    chmodSync(join(pinBin, 'docker'), 0o755)
+  })
+
+  beforeEach(() => {
+    writeFileSync(labels, '')
+  })
+
+  /** Publish a tag, optionally recording the SDK version it pins. */
+  function publishTag(tag: string, pin?: string) {
+    writeFileSync(published, readFileSync(published, 'utf8') + `${REPO}:${tag}\n`)
+    if (pin !== undefined) writeFileSync(labels, readFileSync(labels, 'utf8') + `${tag} ${pin}\n`)
+  }
+
+  function runPin(sha: string, pin: string, env: Record<string, string> = {}) {
+    return run(sha, {
+      PATH: `${pinBin}:${process.env.PATH}`,
+      LABELS: labels,
+      SDK_PIN: pin,
+      SDK_PIN_WAIT_SECONDS: '0',
+      ...env,
+    })
+  }
+
+  test("prefers this tag's own release image, which pins the release SDK", () => {
+    publishTag(`release-multiarch-${c4}`, '2.6.2')
+    publishTag(`release-docker-multiarch-${c4}`, '2.6.2')
+    // A stale main-push build for the same commit also exists and pins the
+    // previous SDK — it must not win.
+    publishTag(`staging-multiarch-${c4}`, '2.6.1')
+    publishTag(`staging-docker-multiarch-${c4}`, '2.6.1')
+
+    const { outputs, creates } = runPin(c4, '2.6.2')
+    expect(outputs).toEqual({ source: 'promoted', image: `${REPO}:production-multiarch-${c4}`, revision: c4 })
+    expect(creates[0]).toBe(
+      `--prefer-index=false --tag ${REPO}:production-multiarch-${c4} --tag ${REPO}:production-multiarch-latest ${REPO}:release-multiarch-${c4}`,
+    )
+    expect(creates[1]).toBe(
+      `--prefer-index=false --tag ${REPO}:production-docker-multiarch-${c4} --tag ${REPO}:production-docker-multiarch-latest ${REPO}:release-docker-multiarch-${c4}`,
+    )
+  })
+
+  test('skips a staging candidate that pins a different SDK, even if its chain matches', () => {
+    publishTag(`staging-multiarch-${c4}`, '2.6.1')
+    publishTag(`staging-docker-multiarch-${c4}`, '2.6.1')
+    const { outputs, creates } = runPin(c4, '2.6.2')
+    expect(outputs.source).toBe('build')
+    expect(creates).toEqual([])
+  })
+
+  test('falls further back to an image that does pin the release SDK', () => {
+    publishTag(`staging-multiarch-${c1}`, '2.6.2')
+    publishTag(`staging-docker-multiarch-${c1}`, '2.6.2')
+    // Newer image, older SDK — must be skipped.
+    publishTag(`staging-multiarch-${c2}`, '2.6.1')
+    publishTag(`staging-docker-multiarch-${c2}`, '2.6.1')
+    expect(runPin(c3, '2.6.2').outputs.revision).toBe(c1)
+  })
+
+  test('accepts an unlabelled image (built before SHO-522) rather than forcing a rebuild', () => {
+    publishTag(`staging-multiarch-${c2}`)
+    publishTag(`staging-docker-multiarch-${c2}`)
+    expect(runPin(c3, '2.6.2').outputs.revision).toBe(c2)
+  })
+
+  test('does not wait for release tags on a dry run', () => {
+    const started = Date.now()
+    const { outputs } = runPin(c4, '2.6.2', { DRY_RUN: 'true', SDK_PIN_WAIT_SECONDS: '600' })
+    expect(outputs.source).toBe('build')
+    expect(Date.now() - started).toBeLessThan(5000)
+  })
+})
