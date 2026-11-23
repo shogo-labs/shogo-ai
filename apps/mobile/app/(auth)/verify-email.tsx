@@ -2,11 +2,12 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useCallback, useEffect } from 'react'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { ActivityIndicator, Text, View } from 'react-native'
+import { Text, View } from 'react-native'
 import { Mail } from 'lucide-react-native'
 import { useAuth } from '../../contexts/auth'
 import { Button } from '@shogo/shared-ui/primitives'
 import { AuthSurface } from './AuthSurface'
+import { Spinner } from '@/components/ui/spinner'
 
 const RESEND_COOLDOWN_SECONDS = 60
 
@@ -93,7 +94,7 @@ export default function VerifyEmailScreen() {
         </Button>
         <Button variant="outline" onPress={handleResend} disabled={!canResend}>
           {isResending ? (
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           ) : cooldown > 0 ? (
             `Resend email (${cooldown}s)`
           ) : resendCount > 0 ? (

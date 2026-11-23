@@ -7,7 +7,6 @@ import {
   Pressable,
   ScrollView,
   TextInput,
-  ActivityIndicator,
   Platform,
 } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -34,6 +33,7 @@ import { PlanBuildActions } from "../../chat/PlanBuildActions"
 import { usePlanStreamSafe } from "../../chat/PlanStreamContext"
 import { useDualPlan } from "../../../lib/dual-plan-preference"
 import { planFilenameFromPath, shouldListInMemoryPlan } from "../../../lib/plan-stream-publish"
+import { Spinner } from '@/components/ui/spinner'
 
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback
@@ -438,7 +438,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           </Pressable>
           <View className="flex-1 min-w-0">
             <View className="flex-row items-center gap-2">
-              {isStreamingDetail && <ActivityIndicator size="small" />}
+              {isStreamingDetail && <Spinner size="small" />}
               <Text className="font-semibold text-sm text-foreground flex-shrink" numberOfLines={1}>
                 {detailName}
               </Text>
@@ -467,16 +467,16 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           {canGenerateOnDemand && (
             <Pressable
               onPress={handleGenerateSummary}
-              className="flex-row items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5"
+              className="flex-row items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5"
             >
-              <Languages className="h-3.5 w-3.5 text-sky-400" size={14} />
-              <Text className="text-xs font-semibold text-sky-400">Summary</Text>
+              <Languages className="h-3.5 w-3.5 text-primary" size={14} />
+              <Text className="text-xs font-semibold text-primary">Summary</Text>
             </Pressable>
           )}
           {isSummarizingThisPlan && (
-            <View className="flex-row items-center gap-1.5 rounded-lg border border-sky-500/30 bg-sky-500/5 px-3 py-1.5">
-              <ActivityIndicator size="small" />
-              <Text className="text-xs font-semibold text-sky-400">Generating...</Text>
+            <View className="flex-row items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-3 py-1.5">
+              <Spinner size="small" />
+              <Text className="text-xs font-semibold text-primary">Generating...</Text>
             </View>
           )}
 
@@ -521,20 +521,20 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               className={cn(
                 "flex-1 flex-row items-center justify-center gap-1.5",
                 planTabPadClass,
-                activeTab === "summary" && "border-b-2 border-sky-400"
+                activeTab === "summary" && "border-b-2 border-primary"
               )}
             >
               <Text
                 className={cn(
                   planTabLabelClass,
                   activeTab === "summary"
-                    ? "text-sky-400"
+                    ? "text-primary"
                     : "text-muted-foreground"
                 )}
               >
                 Summary
               </Text>
-              {summaryStatus === "pending" && <ActivityIndicator size="small" />}
+              {summaryStatus === "pending" && <Spinner size="small" />}
             </Pressable>
           </View>
         )}
@@ -553,7 +553,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
         {/* Detail body */}
         <ScrollView className="flex-1 px-4 py-3">
           {!isStreamingDetail && detailLoading ? (
-            <ActivityIndicator className="mt-8" />
+            <Spinner className="mt-8" />
           ) : !isStreamingDetail && detailError ? (
             <View className="items-center justify-center py-12 px-4">
               <AlertTriangle className="h-8 w-8 text-destructive/60 mb-3" size={32} />
@@ -575,7 +575,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               <MarkdownText>{summaryText}</MarkdownText>
             ) : summaryStatus === "pending" ? (
               <View className="flex-row items-center gap-2 py-3">
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
                 <Text className="text-xs text-muted-foreground">
                   Generating summary...
                 </Text>
@@ -649,21 +649,21 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               "flex-row items-center gap-1 rounded-md px-2",
               isNative ? "min-h-9" : "h-7",
               dualPlan
-                ? "border border-sky-500/45 bg-sky-500/12"
+                ? "border border-primary/45 bg-primary/12"
                 : "bg-muted/50"
             )}
           >
             <Languages
               className={cn(
                 "h-3 w-3",
-                dualPlan ? "text-sky-400" : "text-muted-foreground"
+                dualPlan ? "text-primary" : "text-muted-foreground"
               )}
               size={isNative ? 16 : 12}
             />
             <Text
               className={cn(
                 isNative ? "text-sm font-medium" : "text-[11px] font-medium",
-                dualPlan ? "text-sky-400" : "text-muted-foreground"
+                dualPlan ? "text-primary" : "text-muted-foreground"
               )}
             >
               Summary
@@ -715,7 +715,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
             )}
           >
             {planStream.isPlanStreaming ? (
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             ) : (
               <ClipboardList className="text-muted-foreground" size={isNative ? 20 : 16} />
             )}
@@ -737,7 +737,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           </Pressable>
         ) : planStream?.isPlanStreaming && filteredPlans.length === 0 && !loading ? (
           <View className="items-center justify-center px-4">
-            <ActivityIndicator className="mb-3" />
+            <Spinner className="mb-3" />
             <Text className="text-sm text-muted-foreground text-center">
               Shogo is researching...
             </Text>
@@ -750,13 +750,13 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
         {/* Researching banner when plans already exist */}
         {planStream?.isPlanStreaming && !planStream.streamingPlan && filteredPlans.length > 0 && (
           <View className="flex-row items-center gap-2 px-4 py-2.5 border-b border-primary/20 bg-primary/5">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
             <Text className="text-xs text-primary">Creating a new plan...</Text>
           </View>
         )}
 
         {loading && !planStream?.isPlanStreaming ? (
-          <ActivityIndicator className="mt-8" />
+          <Spinner className="mt-8" />
         ) : plansError && filteredPlans.length === 0 && !planStream?.isPlanStreaming && !showInMemoryRow ? (
           <View className="items-center justify-center px-4">
             <ClipboardList className="text-muted-foreground/40 mb-3" size={isNative ? 40 : 32} />

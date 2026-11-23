@@ -19,7 +19,18 @@ mock.module("react-native", () =>
 mock.module("@shogo/shared-ui/primitives", () => ({ cn: (...args: unknown[]) => args.filter(Boolean).join(" "), Avatar: () => createElement("span") }))
 mock.module("lucide-react-native", () => ({ Plus: () => createElement("span"), ChevronRight: () => createElement("span") }))
 mock.module(resolve(import.meta.dir, "../../PresenceDot"), () => ({ PresenceDot: () => createElement("span") }))
+// SHO-537: DmsPanel renders agent rows through the shared ChatRowView, so the
+// stub has to exist here even though this file only asserts person rows.
+const iconSize = (comfortable: boolean) => (comfortable ? 22 : 12)
 mock.module(resolve(import.meta.dir, "../../ConversationRows"), () => ({
+  ChatRowView: ({ title, subtitle, testID, comfortable }: any) =>
+    createElement(
+      "div",
+      { "data-testid": testID ?? "chat-row", "data-comfortable": String(comfortable) },
+      createElement("span", { "data-testid": "chat-row-title" }, title),
+      subtitle ? createElement("span", { "data-testid": "chat-row-subtitle" }, subtitle) : null,
+    ),
+  rowIconSize: iconSize,
   ConversationRow: ({ conversation }: any) => createElement("div", { "data-testid": `row-${conversation.id}` }),
   PanelSection: ({ label, children }: any) => createElement("section", { "data-section": label }, createElement("h3", null, label), children),
   PanelLink: ({ label, onPress }: any) => createElement("button", { onClick: onPress }, label),
@@ -140,6 +151,25 @@ describe("DmsPanel", () => {
     expect(screen.getByTestId("row-mine")).toBeTruthy()
     expect(screen.getByTestId("row-ana")).toBeTruthy()
     expect(screen.queryByText("Note to self")).toBeNull()
+  })
+
+  // SHO-537: people are the reason you open this panel, so they lead the list;
+  // agents follow under their own heading.
+  test("under All, every people row and the New message link come before the Agents heading", () => {
+    chat.list = [
+      convo({ id: "ana", starred: true, participants: [person("ana")] }),
+      convo({ id: "bob", participants: [person("bob")] }),
+    ]
+    chat.mentionables = { agents: [{ key: "ws", name: "Workspace agent", projectId: null, description: null, image: null }] }
+    render(createElement(DmsPanel, {}))
+
+    const html = document.body.innerHTML
+    const agentsHeading = html.indexOf('data-section="Agents"')
+    expect(agentsHeading).toBeGreaterThan(-1)
+    expect(html.indexOf("row-ana")).toBeLessThan(agentsHeading)
+    expect(html.indexOf("row-bob")).toBeLessThan(agentsHeading)
+    expect(html.indexOf("New message")).toBeLessThan(agentsHeading)
+    expect(html.indexOf("agent-row")).toBeGreaterThan(agentsHeading)
   })
 
   // SHOGO-IOS-14: the panel returned null above its last two useMemos, so a

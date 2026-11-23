@@ -8,7 +8,7 @@
  * `update-channel.ts` for the feed-resolution side of this.
  */
 import { useState, useEffect, useCallback } from 'react'
-import { View, ScrollView, ActivityIndicator, Pressable } from 'react-native'
+import { View, ScrollView, Pressable } from 'react-native'
 import {
   RefreshCw as RefreshCwIcon,
   CheckCircle2 as CheckCircle2Icon,
@@ -24,6 +24,7 @@ import {
   type DesktopUpdateStatus,
   type DesktopUpdateStatusPayload,
 } from '@/lib/use-desktop-update'
+import { Spinner } from '@/components/ui/spinner'
 
 type UpdateChannel = DesktopUpdateChannel
 type UpdateStatus = DesktopUpdateStatus
@@ -178,9 +179,9 @@ export function UpdatesTab() {
                 disabled={status === 'downloading'}
               >
                 {status === 'downloading' ? (
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                 ) : (
-                  <Download size={16} color="#6b7280" />
+                  <Download className="text-muted-foreground" size={16} />
                 )}
                 <Text className="text-sm font-medium text-foreground">Download</Text>
               </Button>
@@ -255,7 +256,7 @@ export function UpdatesTab() {
               className="flex-row items-center justify-center gap-2"
               onPress={update.install}
             >
-              <RotateCw size={16} color="#6b7280" />
+              <RotateCw className="text-muted-foreground" size={16} />
               <Text className="text-sm font-medium text-foreground">Restart to update</Text>
             </Button>
           )}
@@ -309,7 +310,7 @@ export function UpdatesTab() {
 
           {switching && (
             <View className="flex-row items-center gap-2">
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
               <Text className="text-xs text-muted-foreground">Switching channel…</Text>
             </View>
           )}
@@ -333,7 +334,7 @@ export function UpdatesTab() {
         onPress={handleCheck}
         disabled={checking}
       >
-        {checking ? <ActivityIndicator size="small" /> : <RefreshCw size={16} color="#6b7280" />}
+        {checking ? <Spinner className="text-muted-foreground" size="small" /> : <RefreshCw size={16} />}
         <Text className="text-sm font-medium text-foreground">
           {checking ? 'Checking…' : 'Check for updates'}
         </Text>

@@ -13,7 +13,7 @@
  */
 
 import { useState } from 'react'
-import { View, ActivityIndicator, Pressable } from 'react-native'
+import { View, Pressable } from 'react-native'
 import { FlaskConical, Plus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Card, CardContent, Button } from '@shogo/shared-ui/primitives'
@@ -28,6 +28,7 @@ import {
   getModelDisplayName,
   getModelTextColor,
 } from './SharedAnalytics'
+import { Spinner } from '@/components/ui/spinner'
 
 export interface ExperimentItem {
   id: string
@@ -96,7 +97,7 @@ export function ExperimentsSection({
     return (
       <Card>
         <CardContent className="p-8 items-center">
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
           <Text className="text-xs text-muted-foreground mt-2">Loading...</Text>
         </CardContent>
       </Card>

@@ -136,8 +136,19 @@ export class FcApi {
    * poll the guest's available/actual sizes — this MUST be set pre-boot, FC
    * refuses to enable stats after InstanceStart. `ballooning=false` skips the
    * device entirely.
+   *
+   * `freePageReporting` asks the guest to report pages as it frees them, so FC
+   * drops them from the host continuously instead of only when the balloon is
+   * inflated — an active VM gets smaller too. Pre-boot only: FC's BalloonUpdate
+   * (PATCH /balloon) takes `amount_mib` alone, so it cannot be switched on later.
    */
-  machineConfig(vcpus: number, memMiB: number, ballooning = true, statsIntervalS = 0) {
+  machineConfig(
+    vcpus: number,
+    memMiB: number,
+    ballooning = true,
+    statsIntervalS = 0,
+    freePageReporting = false,
+  ) {
     return this.put('/machine-config', {
       vcpu_count: vcpus,
       mem_size_mib: memMiB,
@@ -149,6 +160,9 @@ export class FcApi {
             amount_mib: 0,
             deflate_on_oom: true,
             stats_polling_interval_s: Math.max(0, Math.floor(statsIntervalS)),
+            // Only sent when asked for: an older FC that predates the field
+            // rejects the whole PUT, so the default body stays byte-identical.
+            ...(freePageReporting ? { free_page_reporting: true } : {}),
           })
         : undefined,
     )

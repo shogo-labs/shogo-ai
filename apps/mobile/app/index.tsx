@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { ActivityIndicator, Platform, View } from 'react-native'
+import { Platform, View } from 'react-native'
 import { Redirect, useLocalSearchParams } from 'expo-router'
 import { useAuth } from '../contexts/auth'
 import { usePlatformConfig } from '../lib/platform-config'
@@ -9,6 +9,7 @@ import { API_URL } from '../lib/api'
 import { autoSignInLocally } from '../lib/auth-client'
 import { appRedirectHref } from '../lib/root-redirect'
 import { peekLearnReturn, resumeLearnReturn } from '../lib/learn-return'
+import { Spinner } from '@/components/ui/spinner'
 
 export default function RootIndex() {
   const { isAuthenticated, isLoading: authLoading, refreshSession } = useAuth()
@@ -63,7 +64,7 @@ export default function RootIndex() {
   if (!platformConfig.configLoaded || authLoading || checkingOnboarding || autoSigningIn || onboardingUnknown) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
       </View>
     )
   }
@@ -71,7 +72,7 @@ export default function RootIndex() {
   if (isIdeEmbed && platformConfig.localMode && !isAuthenticated) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
       </View>
     )
   }
@@ -84,7 +85,7 @@ export default function RootIndex() {
     if (pendingLearnReturn) {
       return (
         <View className="flex-1 items-center justify-center bg-background">
-          <ActivityIndicator size="large" />
+          <Spinner size="large" />
         </View>
       )
     }

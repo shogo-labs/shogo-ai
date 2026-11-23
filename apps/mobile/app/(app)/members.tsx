@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useEffect } from 'react'
-import { ActivityIndicator, Text, View } from 'react-native'
+import { Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Users } from 'lucide-react-native'
+import { Spinner } from '@/components/ui/spinner'
 
 /**
  * Legacy /members route — redirects to Settings > People tab.
@@ -30,7 +31,7 @@ export default function MembersRedirect() {
             Member management now lives with your workspace settings.
           </Text>
           <View className="mt-5 flex-row items-center gap-2 border-t border-border pt-4">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
             <Text className="text-sm text-muted-foreground">Taking you there…</Text>
           </View>
         </View>

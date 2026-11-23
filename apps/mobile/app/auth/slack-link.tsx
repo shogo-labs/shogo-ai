@@ -34,11 +34,12 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { View, Text, ActivityIndicator, Platform } from 'react-native'
+import { View, Text, Platform } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { Button } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
 import { DomainProvider, useDomainHttp } from '../../contexts/domain'
+import { Spinner } from '@/components/ui/spinner'
 
 /** Long enough to read "✓ Account linked", short enough not to feel stuck. */
 const REDIRECT_TO_SETTINGS_DELAY_MS = 1200
@@ -124,7 +125,7 @@ function SlackLinkBridge() {
 
         {status === 'checking-auth' && (
           <>
-            <ActivityIndicator />
+            <Spinner />
             <Text className="text-sm text-muted-foreground text-center">Checking your session...</Text>
           </>
         )}
@@ -135,7 +136,7 @@ function SlackLinkBridge() {
 
         {status === 'linking' && (
           <>
-            <ActivityIndicator />
+            <Spinner />
             <Text className="text-sm text-muted-foreground text-center">Linking your Shogo account...</Text>
           </>
         )}
@@ -149,7 +150,7 @@ function SlackLinkBridge() {
                 : 'Return to Slack and send your request again.'}
             </Text>
             <View className="flex-row items-center gap-2 mt-1">
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
               <Text className="text-xs text-muted-foreground">Opening your Slack settings…</Text>
             </View>
           </View>

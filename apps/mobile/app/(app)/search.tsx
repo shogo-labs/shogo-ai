@@ -7,7 +7,6 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ActivityIndicator,
   Animated,
   FlatList,
   Platform,
@@ -48,6 +47,7 @@ import {
   useNativePhoneIconChrome,
 } from '../../lib/native-phone-layout';
 import { usePhoneOnlyRoute } from "../../lib/use-phone-only-route"
+import { Spinner } from '@/components/ui/spinner'
 
 const SEARCH_MIN_KEYBOARD_PAD = 8
 const SEARCH_TAB_ROW_HEIGHT = 52
@@ -293,7 +293,7 @@ export default observer(function SearchPage() {
           <View className="absolute -right-5 -top-8 h-24 w-24 rounded-full bg-primary/10" />
           <View className="flex-row items-center gap-2">
             <View className="h-8 w-8 items-center justify-center rounded-xl bg-primary/15">
-              <Search size={17} color="#e27927" strokeWidth={2.2} />
+              <Search className="text-primary" size={17} strokeWidth={2.2} />
             </View>
             <Text className="text-xs font-bold uppercase tracking-[1.4px] text-primary">Workspace</Text>
           </View>
@@ -367,7 +367,7 @@ export default observer(function SearchPage() {
         <View className="flex-1">
         {loading ? (
           <View className="flex-1 items-center justify-center" style={{ paddingBottom: restDockBleed }}>
-            <ActivityIndicator />
+            <Spinner />
           </View>
         ) : rows.length === 0 ? (
           <View className="flex-1" style={{ paddingBottom: restDockBleed }}>
@@ -441,7 +441,7 @@ export default observer(function SearchPage() {
               className="ml-2 h-12 w-12 items-center justify-center rounded-full border border-primary/15 bg-primary/10"
               style={[{ overflow: 'hidden' }, dockGlass]}
             >
-              <X size={20} color="#e27927" strokeWidth={iconChrome.strokeWidth} />
+              <X className="text-primary" size={20} strokeWidth={iconChrome.strokeWidth} />
             </Pressable>
           </View>
           <Animated.View style={{ height: composerKeyboardPad, backgroundColor: pageBg }} />

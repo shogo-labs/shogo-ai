@@ -16,12 +16,13 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { View, Pressable, ActivityIndicator } from 'react-native'
+import { View, Pressable } from 'react-native'
 import { Cpu, RefreshCcw, Check } from 'lucide-react-native'
 import { Text } from '../settings/account-sheet-chrome'
 import { cn } from '@shogo/shared-ui/primitives'
 import { Card, CardContent, Button } from '@shogo/shared-ui/primitives'
 import { getModelColor, getModelDisplayName, getModelTextColor } from './SharedAnalytics'
+import { Spinner } from '@/components/ui/spinner'
 
 // ============================================================================
 // Built-in sub-agent catalog — kept in sync with getBuiltinSubagentConfig()
@@ -178,7 +179,7 @@ export function SubAgentModelsSection({
     return (
       <Card>
         <CardContent className="p-6 items-center">
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
           <Text className="text-xs text-muted-foreground mt-2">Loading sub-agent models…</Text>
         </CardContent>
       </Card>
@@ -301,7 +302,7 @@ export function SubAgentModelsSection({
 
               {isPending && (
                 <View className="flex-row items-center justify-center mt-2 gap-1.5">
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                   <Text className="text-[10px] text-muted-foreground">Applying…</Text>
                 </View>
               )}

@@ -9,7 +9,7 @@
  * same path Home and the phone drawer read.
  */
 import { useCallback } from 'react'
-import { ActivityIndicator, FlatList, Pressable, Text, View, useWindowDimensions } from 'react-native'
+import { FlatList, Pressable, Text, View, useWindowDimensions } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import { ArrowLeft, ChevronRight, Loader2, MessageSquare, MessagesSquare, Pin, Plus } from 'lucide-react-native'
@@ -20,6 +20,7 @@ import { Spin } from "@/components/ui/Spin";
 import { GlassButton } from '../team-chat/FloatingChrome'
 import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../layout/PhoneScreenHeader'
 import { isPhoneLayout } from '../../lib/native-phone-layout'
+import { Spinner } from '@/components/ui/spinner'
 
 export const SideChatsScreen = observer(function SideChatsScreen() {
   const router = useRouter()
@@ -65,7 +66,7 @@ export const SideChatsScreen = observer(function SideChatsScreen() {
           onLayout={header.onLayout}
           actions={
             <GlassButton label="New side chat" onPress={() => void startNewChat()}>
-              {chats.creating ? <ActivityIndicator size="small" /> : <Plus size={20} className="text-foreground" />}
+              {chats.creating ? <Spinner size="small" /> : <Plus size={20} className="text-foreground" />}
             </GlassButton>
           }
         />
@@ -86,7 +87,7 @@ export const SideChatsScreen = observer(function SideChatsScreen() {
             accessibilityLabel="New side chat"
             className="rounded-md p-2 active:bg-muted disabled:opacity-50"
           >
-            {chats.creating ? <ActivityIndicator size="small" /> : <Plus size={22} className="text-foreground" />}
+            {chats.creating ? <Spinner size="small" /> : <Plus size={22} className="text-foreground" />}
           </Pressable>
         </View>
       )}
@@ -94,7 +95,7 @@ export const SideChatsScreen = observer(function SideChatsScreen() {
       <View className="min-h-0 flex-1" style={phone ? { paddingTop: header.height } : undefined}>
       {chats.loading ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator />
+          <Spinner />
         </View>
       ) : chats.sessions.length === 0 ? (
         <View className="flex-1 items-center justify-center px-8">

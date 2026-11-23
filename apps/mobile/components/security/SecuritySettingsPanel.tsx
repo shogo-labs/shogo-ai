@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { View, Pressable, ActivityIndicator } from 'react-native'
+import { View, Pressable } from 'react-native'
 import {
   Shield as ShieldIcon,
   Plus as PlusIcon,
@@ -24,6 +24,7 @@ import {
   TextInput,
   useAccountSheetIcons,
 } from '../settings/account-sheet-chrome'
+import { Spinner } from '@/components/ui/spinner'
 
 type SecurityMode = 'strict' | 'balanced' | 'full_autonomy'
 
@@ -167,7 +168,7 @@ export function SecuritySettingsPanel() {
   if (loading) {
     return (
       <View className="flex-1 items-center justify-center py-12">
-        <ActivityIndicator />
+        <Spinner />
       </View>
     )
   }
@@ -187,7 +188,7 @@ export function SecuritySettingsPanel() {
       <View className="gap-3">
         <View className="flex-row items-center justify-between">
           <Text className="text-base font-semibold text-foreground">Default Security Mode</Text>
-          {saving && <ActivityIndicator size="small" />}
+          {saving && <Spinner size="small" />}
         </View>
         <SecurityPreferenceSelector value={prefs.mode} onChange={handleModeChange} compact />
       </View>

@@ -8,11 +8,12 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { View, Text, ActivityIndicator, Platform } from 'react-native'
+import { View, Text, Platform } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { Button } from '@shogo/shared-ui/primitives'
 import { useAuth } from '../../contexts/auth'
 import { DomainProvider, useDomainHttp } from '../../contexts/domain'
+import { Spinner } from '@/components/ui/spinner'
 
 type Status = 'checking-auth' | 'redirect-signin' | 'linking' | 'linked' | 'error'
 
@@ -75,7 +76,7 @@ function ChatLinkBridge() {
 
         {(status === 'checking-auth' || status === 'linking') && (
           <>
-            <ActivityIndicator />
+            <Spinner />
             <Text className="text-sm text-muted-foreground text-center">
               {status === 'linking' ? 'Linking your Shogo account...' : 'Checking your session...'}
             </Text>

@@ -12,13 +12,14 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from 'react-native'
+import { Alert, Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from 'react-native'
 import { observer } from 'mobx-react-lite'
 import { useRouter } from 'expo-router'
 import { ArrowLeft, CalendarClock, Hash, LayoutGrid, RefreshCw } from 'lucide-react-native'
 import { useDomainHttp } from '../../../contexts/domain'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { PackInstallSheet, type PackPreviewResponse, type PackQuestion } from '../../../components/marketplace'
+import { Spinner } from '@/components/ui/spinner'
 
 interface PackCatalogEntry {
   id: string
@@ -124,7 +125,7 @@ export default observer(function PacksScreen() {
       >
         <View className="flex-row items-center gap-3">
           <Pressable onPress={() => router.back()} hitSlop={8} className="p-1 -ml-1" accessibilityRole="button" accessibilityLabel="Back to marketplace">
-            <ArrowLeft size={18} color="#a1a1aa" />
+            <ArrowLeft className="text-muted-foreground" size={18} />
           </Pressable>
           <View className="flex-1">
             {isWide && (
@@ -133,14 +134,14 @@ export default observer(function PacksScreen() {
             <Text className="text-lg font-semibold text-foreground">Agent packs</Text>
           </View>
           <Pressable onPress={() => void loadPacks()} hitSlop={8} className="p-1" accessibilityRole="button" accessibilityLabel="Reload packs">
-            <RefreshCw size={16} color="#71717a" />
+            <RefreshCw className="text-muted-foreground" size={16} />
           </Pressable>
         </View>
       </View>
 
       {loading ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" />
+          <Spinner size="large" />
         </View>
       ) : (
         <ScrollView contentContainerStyle={{ padding: 16, gap: 12, paddingBottom: 40 }}>
@@ -168,13 +169,13 @@ export default observer(function PacksScreen() {
               <View className="flex-row flex-wrap gap-x-3 gap-y-1 mt-3">
                 {pack.channels.map((channel) => (
                   <View key={channel} className="flex-row items-center gap-1">
-                    <Hash size={11} color="#71717a" />
+                    <Hash className="text-muted-foreground" size={11} />
                     <Text className="text-[11px] text-muted-foreground">{channel}</Text>
                   </View>
                 ))}
                 {pack.schedules.map((schedule) => (
                   <View key={schedule.key} className="flex-row items-center gap-1">
-                    <CalendarClock size={11} color="#71717a" />
+                    <CalendarClock className="text-muted-foreground" size={11} />
                     <Text className="text-[11px] text-muted-foreground">
                       {schedule.name}
                       {schedule.enabled ? '' : ' (off)'}
@@ -182,7 +183,7 @@ export default observer(function PacksScreen() {
                   </View>
                 ))}
                 <View className="flex-row items-center gap-1">
-                  <LayoutGrid size={11} color="#71717a" />
+                  <LayoutGrid className="text-muted-foreground" size={11} />
                   <Text className="text-[11px] text-muted-foreground">{pack.questions.length} questions</Text>
                 </View>
               </View>

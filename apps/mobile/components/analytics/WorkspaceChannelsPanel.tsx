@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, ScrollView, View } from 'react-native'
+import { ScrollView, View } from 'react-native'
 import { AtSign, Hash, Lock, MessagesSquare, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../contexts/domain'
@@ -24,6 +24,7 @@ import { compactNumber, formatLastActive } from '../../lib/engagement-utils'
 import { Text } from '../settings/account-sheet-chrome'
 import { DateRangePills } from './DateRangePills'
 import { StatCard, type AnalyticsPeriod } from './SharedAnalytics'
+import { Spinner } from '@/components/ui/spinner'
 
 export interface ChannelBreakdownRow {
   conversationId: string
@@ -194,7 +195,7 @@ export function WorkspaceChannelsPanel({ workspaceId }: { workspaceId?: string }
         {!state.data ? (
           <View className="py-10 items-center justify-center gap-2">
             {state.loading ? (
-              <ActivityIndicator />
+              <Spinner />
             ) : (
               <Text className="text-sm text-muted-foreground">
                 {state.error ?? 'Channel activity is unavailable right now'}

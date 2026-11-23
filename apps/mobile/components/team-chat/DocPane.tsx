@@ -7,7 +7,7 @@
  * formatting toolbar that autosaves. Unrelated to project canvases.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import { Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { useRouter } from 'expo-router'
 import {
@@ -57,6 +57,7 @@ import { mentionNames, renderMentionsMarkdown } from '../../lib/team-chat-state'
 import { relativeTime } from '../../lib/activity-feed'
 import { GlassButton } from './FloatingChrome'
 import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../layout/PhoneScreenHeader'
+import { Spinner } from '@/components/ui/spinner'
 
 const api = teamChatApi()
 
@@ -318,7 +319,7 @@ export function DocPane({ conversation, workspaceId, mentionables, onClose, onOp
 
       {!state.loaded ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator />
+          <Spinner />
         </View>
       ) : editing ? (
         <View className="flex-1">
@@ -561,7 +562,7 @@ function ArchivesModal({
             </Pressable>
           </View>
           {error ? <Text className="text-sm text-destructive">{error}</Text> : null}
-          {!archives && !error ? <ActivityIndicator /> : null}
+          {!archives && !error ? <Spinner /> : null}
           {selected ? (
             <>
               <ScrollView className="max-h-[60vh] rounded-md border border-border p-3" testID="archive-body">
@@ -690,7 +691,7 @@ function HistoryModal({
             </Pressable>
           </View>
           {error ? <Text className="text-sm text-destructive">{error}</Text> : null}
-          {!revisions && !error ? <ActivityIndicator /> : null}
+          {!revisions && !error ? <Spinner /> : null}
           {selected ? (
             <>
               <ScrollView className="max-h-[60vh] rounded-md border border-border p-3">

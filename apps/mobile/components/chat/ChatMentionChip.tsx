@@ -179,8 +179,8 @@ export function ChatMentionChip({
       suppressHighlighting
       className={
         inverted
-          ? "text-[13px] font-medium text-sky-100 underline"
-          : "text-[13px] font-medium text-sky-600 underline dark:text-sky-300"
+          ? "text-[13px] font-medium text-white underline"
+          : "text-[13px] font-medium text-primary underline"
       }
     >
       @{label}

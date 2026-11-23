@@ -13,7 +13,6 @@ import {
   Text,
   ScrollView,
   Pressable,
-  ActivityIndicator,
   Image,
   RefreshControl,
   useWindowDimensions,
@@ -46,6 +45,7 @@ import { Button, ButtonText } from '@/components/ui/button'
 import { API_URL, type AdminScopeDef } from '../../../lib/api'
 import { resolveAvatarUrl } from "../../../lib/chat-attachment-url"
 import { usePlatformConfig } from '../../../lib/platform-config'
+import { Spinner } from '@/components/ui/spinner'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -237,7 +237,7 @@ export default function AdminUserDetailPage() {
   if (loading) {
     return (
       <View className="flex-1 bg-background items-center justify-center">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
       </View>
     )
   }

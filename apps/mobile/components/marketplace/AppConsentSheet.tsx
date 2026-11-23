@@ -8,9 +8,10 @@
  */
 
 import { useEffect, useState } from 'react'
-import { ActivityIndicator, Modal, Pressable, ScrollView, Text, View } from 'react-native'
+import { Modal, Pressable, ScrollView, Text, View } from 'react-native'
 import { Check, X } from 'lucide-react-native'
 import type { AppConsentRequest } from '../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 export interface AppConsent {
   accept: true
@@ -173,7 +174,7 @@ export function AppConsentSheet({
               testID="app-consent-accept"
             >
               {installing ? (
-                <ActivityIndicator size="small" color="#fff" />
+                <Spinner tone="onPrimary" size="small" />
               ) : (
                 <Text className="text-sm font-medium text-primary-foreground">Allow and install</Text>
               )}

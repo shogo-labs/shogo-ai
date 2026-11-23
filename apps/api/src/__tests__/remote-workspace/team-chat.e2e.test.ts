@@ -315,18 +315,45 @@ describeIfInfra('remote workspace · team chat', () => {
 
       // An agent reply produced on the computer (its own socket sees it first;
       // the cloud must hear about it within the budget of that write).
+      //
+      // Two things make this ordinary-looking wait go red for a reason that is
+      // nothing to do with the push path (SHO-548, three runs on 23 Nov):
+      //
+      //   • both sockets are workspace-scoped, so any agent message in any
+      //     conversation of the workspace arrives on them — a schedule firing,
+      //     the workspace agent answering another chat. The reply is the agent
+      //     message in *this* channel created after this mention, and nothing
+      //     else may stand in for it.
+      //   • the cloud's copy can legitimately reach its socket *before* the
+      //     desktop's own does: for a row the cloud wrote, the desktop learns it
+      //     from the puller and announces it then (SHO-486's other direction).
+      //     Anchoring the cloud wait to the desktop's arrival time therefore
+      //     asks for an event that has already happened, and it times out with
+      //     the reply delivered on both sides.
+      //
+      // `postedAt` is when the mention was sent, so the cloud's event has to be
+      // after it — a stale re-announcement cannot satisfy the wait.
       const peerLive = opened.peer!
       const mention = `@${t.seed.projectNames[0]} ${uniq('desktop mention')}`
-      expect(
-        (await send(peer.api, 'POST', `/api/conversations/${encodeURIComponent(t.seed.channelId)}/messages`, { text: mention })).status,
-      ).toBe(201)
+      const postedAt = peerLive.mark()
+      const sent = await send(peer.api, 'POST', `/api/conversations/${encodeURIComponent(t.seed.channelId)}/messages`, { text: mention })
+      expect(sent.status, JSON.stringify(sent.data)).toBe(201)
+      // A reply that finished after other messages landed is re-announced as
+      // `message.created` when it moves to the end of the timeline
+      // (`updateMessageInternal`'s `moveToEnd`), keeping its own `createdAt`:
+      // an earlier reply must not win this race.
+      const mentionCreatedAt = Date.parse(sent.data?.message?.createdAt ?? '')
       const onDesktop = await peerLive.waitForEvent(
-        (e) => e.type === 'message.created' && e.message?.authorType === 'agent',
+        (e) =>
+          e.type === 'message.created' &&
+          e.message?.conversationId === t.seed.channelId &&
+          e.message?.authorType === 'agent' &&
+          !(Date.parse(e.message?.createdAt ?? '') < mentionCreatedAt),
         { label: 'the agent reply on the desktop', timeoutMs: 90_000 },
       )
       await opened.live.waitForEvent((e) => e.type === 'message.created' && e.message?.id === onDesktop.event.message.id, {
         label: 'the same reply in the cloud',
-        since: onDesktop.at,
+        since: postedAt,
       })
     } finally {
       opened.live.close()

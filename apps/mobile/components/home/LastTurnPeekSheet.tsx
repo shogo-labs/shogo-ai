@@ -6,7 +6,7 @@
  * it answered. Tap "Open chat" to go on from there.
  */
 import { useMemo } from 'react'
-import { ActivityIndicator, Pressable, Text, View } from 'react-native'
+import { Pressable, Text, View } from 'react-native'
 import { AlertTriangle, Check, Loader2 } from 'lucide-react-native'
 import type { AgentRow } from '../../lib/agent-urgency'
 import { stateLabel } from '../../lib/agent-urgency'
@@ -14,6 +14,7 @@ import type { LastTurn } from '../../lib/last-turn'
 import { useLastTurn } from '../../hooks/useLastTurn'
 import { NativePhoneSheet } from '../phone/NativePhoneSheet'
 import { fileChangeFromParams, IslandDiffPreview } from '../island/IslandDiffPreview'
+import { Spinner } from '@/components/ui/spinner'
 
 const MAX_CHANGES = 4
 const MAX_STEPS = 12
@@ -130,7 +131,7 @@ export function LastTurnPeekSheet({ row, onClose, onOpen }: { row: AgentRow | nu
           <Text className="py-6 text-center text-sm text-muted-foreground">There is no chat to look at yet.</Text>
         ) : loading && !turn ? (
           <View className="items-center py-8">
-            <ActivityIndicator />
+            <Spinner />
           </View>
         ) : error ? (
           <Text className="py-6 text-center text-sm text-destructive">{error}</Text>

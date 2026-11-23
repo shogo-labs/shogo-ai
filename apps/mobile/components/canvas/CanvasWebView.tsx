@@ -10,12 +10,15 @@
  */
 
 import { useCallback, useEffect, useRef, useMemo, useState } from 'react'
-import { Platform, View, StyleSheet, ActivityIndicator, Text, TouchableOpacity } from 'react-native'
+import { Platform, View, StyleSheet, Text, TouchableOpacity } from 'react-native'
 import { useCanvasThemeOptional } from './CanvasThemeContext'
+import { useAccentColors } from '../../contexts/accent-theme'
+import { withAlpha } from '../../lib/accent-themes'
 import type { CanvasThemeVariant } from './canvas-themes'
 import { canvasDocumentUrl } from '../../lib/preview-gate'
 import { agentFetch } from '../../lib/agent-fetch'
 import { authClient } from '../../lib/auth-client'
+import { Spinner } from '@/components/ui/spinner'
 
 interface CanvasCapabilities {
   supportsTheme: boolean
@@ -69,6 +72,12 @@ function postCanvasError(
     body: JSON.stringify(payload),
   }).catch(() => {})
 }
+
+/**
+ * The accent hook hands back `rgb(r, g, b)`, which React Native styles cannot
+ * take an alpha on. Only the RGB channels are read back out, so the bar's
+ * button tints stay anchored to whatever foreground the accent chose.
+ */
 
 // ---------------------------------------------------------------------------
 // CanvasWebView — public component
@@ -283,7 +292,7 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
       <View style={styles.previewPane}>
         {loading && !error && (
           <View style={styles.loadingOverlay}>
-            <ActivityIndicator size="large" color="#888" />
+            <Spinner tone="muted" size="large" />
             <Text style={styles.loadingText}>Loading preview…</Text>
           </View>
         )}
@@ -323,7 +332,7 @@ function CanvasIframe({ url, agentUrl, themeMessage, onCanvasError, onCanvasCapa
 
 /**
  * "Update available" bar, styled like the app's own UpdateBanner: a slim
- * full-width orange row with a Refresh button and a dismiss ×. It sits in
+ * full-width accent row with a Refresh button and a dismiss ×. It sits in
  * normal layout ABOVE the preview, so a rebuild never covers the app.
  */
 function CanvasUpdateBar({
@@ -335,11 +344,16 @@ function CanvasUpdateBar({
   onDismiss: () => void
   testID?: string
 }) {
+  const accent = useAccentColors()
   return (
-    <View testID={testID} style={styles.updateBar}>
-      <Text style={styles.updateBarText}>Update available</Text>
-      <TouchableOpacity testID="canvas-update-refresh" onPress={onRefresh} style={styles.updateBarButton}>
-        <Text style={styles.updateBarButtonText}>Refresh</Text>
+    <View testID={testID} style={{ ...styles.updateBar, backgroundColor: accent.primary }}>
+      <Text style={{ ...styles.updateBarText, color: accent.primaryForeground }}>Update available</Text>
+      <TouchableOpacity
+        testID="canvas-update-refresh"
+        onPress={onRefresh}
+        style={{ ...styles.updateBarButton, backgroundColor: withAlpha(accent.primaryForeground, 0.2) }}
+      >
+        <Text style={{ ...styles.updateBarButtonText, color: accent.primaryForeground }}>Refresh</Text>
       </TouchableOpacity>
       <TouchableOpacity
         testID="canvas-update-dismiss"
@@ -347,7 +361,7 @@ function CanvasUpdateBar({
         style={styles.updateBarDismiss}
         accessibilityLabel="Dismiss update"
       >
-        <Text style={styles.updateBarDismissText}>×</Text>
+        <Text style={{ ...styles.updateBarDismissText, color: accent.primaryForeground }}>×</Text>
       </TouchableOpacity>
     </View>
   )
@@ -522,7 +536,7 @@ function CanvasNativeWebView({ url, agentUrl, themeMessage, onCanvasError, onCan
       />
       {loading && !error && (
         <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="large" color="#888" />
+          <Spinner tone="muted" size="large" />
           <Text style={styles.loadingText}>Loading preview…</Text>
         </View>
       )}
@@ -555,14 +569,13 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'transparent',
   },
-  // Matches apps/mobile/components/UpdateBanner.tsx (`bg-brand-landing`,
-  // `text-xs font-medium text-white`, white/20 button) so the canvas banner
-  // reads as the same component.
+  // Colours come from the live accent (`useAccentColors`) in CanvasUpdateBar so
+  // the bar matches apps/mobile/components/UpdateBanner.tsx in every accent and
+  // in both light and dark; only layout lives here.
   updateBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgb(226, 121, 39)',
     paddingVertical: 6,
     paddingHorizontal: 32,
     position: 'relative',
@@ -570,19 +583,16 @@ const styles = StyleSheet.create({
   updateBarText: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#fff',
   },
   updateBarButton: {
     marginLeft: 8,
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
   },
   updateBarButtonText: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#fff',
   },
   updateBarDismiss: {
     position: 'absolute',
@@ -595,7 +605,6 @@ const styles = StyleSheet.create({
   updateBarDismissText: {
     fontSize: 15,
     lineHeight: 15,
-    color: '#fff',
   },
   placeholder: {
     flex: 1,

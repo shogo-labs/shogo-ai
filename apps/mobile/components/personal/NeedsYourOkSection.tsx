@@ -11,11 +11,12 @@
  */
 import { useCallback, useState } from 'react'
 import { useRouter } from 'expo-router'
-import { ActivityIndicator, Pressable, Text, View } from 'react-native'
+import { Pressable, Text, View } from 'react-native'
 import { CircleCheck, CircleX, ShieldQuestion } from 'lucide-react-native'
 import { useDomainHttp } from '../../contexts/domain'
 import { setChatPrefill } from '../../hooks/useChatPrefill'
 import { api, type PersonalWorkspaceActivity } from '../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 export interface NeedsYourOkSectionProps {
   workspaceId: string
@@ -95,7 +96,7 @@ function NeedsYourOkCard({
           className="flex-1 flex-row items-center justify-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-2 active:opacity-80 disabled:opacity-50"
         >
           {pending === 'approved' ? (
-            <ActivityIndicator size="small" color="#fff" />
+            <Spinner className="text-white" size="small" />
           ) : (
             <CircleCheck size={15} className="text-white" />
           )}
@@ -109,7 +110,7 @@ function NeedsYourOkCard({
           className="flex-1 flex-row items-center justify-center gap-1.5 rounded-xl border border-border bg-card px-3 py-2 active:opacity-80 disabled:opacity-50"
         >
           {pending === 'declined' ? (
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           ) : (
             <CircleX size={15} className="text-muted-foreground" />
           )}

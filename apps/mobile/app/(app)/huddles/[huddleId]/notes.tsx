@@ -7,7 +7,7 @@
  * conversation; deleting them is for the starter or a workspace admin.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, Text, useWindowDimensions, View } from 'react-native'
+import { Pressable, ScrollView, Text, useWindowDimensions, View } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { AlertTriangle, ArrowLeft, CheckSquare, NotebookPen, Square, Trash2 } from 'lucide-react-native'
@@ -19,6 +19,7 @@ import { MarkdownText } from '../../../../components/chat/MarkdownText'
 import { MeetingTranscript } from '../../../../components/meetings/MeetingTranscript'
 import { formatDuration } from '../../../../lib/format-duration'
 import { teamChatApi, type HuddleNotesDetail } from '../../../../lib/team-chat-api'
+import { Spinner } from '@/components/ui/spinner'
 
 function errorText(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback
@@ -88,7 +89,7 @@ export default function HuddleNotesScreen() {
                 onPress={() => (confirmDelete ? void remove() : setConfirmDelete(true))}
               >
                 {deleting ? (
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                 ) : (
                   <Trash2 size={20} className={confirmDelete ? 'text-destructive' : 'text-foreground'} />
                 )}
@@ -118,7 +119,7 @@ export default function HuddleNotesScreen() {
               accessibilityLabel={confirmDelete ? 'Delete these notes for good' : 'Delete these notes'}
               className={cn('h-9 flex-row items-center gap-1 rounded-md px-2 active:bg-muted', confirmDelete && 'bg-destructive/10')}
             >
-              {deleting ? <ActivityIndicator size="small" /> : <Trash2 size={16} className={confirmDelete ? 'text-destructive' : 'text-muted-foreground'} />}
+              {deleting ? <Spinner size="small" /> : <Trash2 size={16} className={confirmDelete ? 'text-destructive' : 'text-muted-foreground'} />}
               {confirmDelete ? <Text className="text-xs font-medium text-destructive">Delete?</Text> : null}
             </Pressable>
           ) : null}
@@ -128,7 +129,7 @@ export default function HuddleNotesScreen() {
       <View className="min-h-0 flex-1" style={phone ? { paddingTop: header.height } : undefined}>
         {loading ? (
           <View className="flex-1 items-center justify-center">
-            <ActivityIndicator />
+            <Spinner />
           </View>
         ) : error ? (
           <View className="flex-1 items-center justify-center gap-2 px-6">

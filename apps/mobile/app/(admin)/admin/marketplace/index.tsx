@@ -20,7 +20,6 @@ import {
   Text,
   Pressable,
   FlatList,
-  ActivityIndicator,
   RefreshControl,
   TextInput,
   Modal,
@@ -50,6 +49,7 @@ import {
   type AuditFinding,
   type AuditStatus,
 } from './_helpers'
+import { Spinner } from '@/components/ui/spinner'
 
 interface ReviewQueueItem {
   id: string
@@ -197,7 +197,7 @@ function RejectModal({
               )}
             >
               {busy ? (
-                <ActivityIndicator size="small" color="#fff" />
+                <Spinner className="text-white" size="small" />
               ) : (
                 <XCircle size={14} color="#fff" />
               )}
@@ -252,7 +252,7 @@ function ApproveModal({
               )}
             >
               {busy ? (
-                <ActivityIndicator size="small" color="#fff" />
+                <Spinner className="text-white" size="small" />
               ) : (
                 <CheckCircle2 size={14} color="#fff" />
               )}
@@ -468,7 +468,7 @@ export default function MarketplaceReviewQueuePage() {
                 )}
               >
                 {isBusy ? (
-                  <ActivityIndicator size="small" color="#fff" />
+                  <Spinner className="text-white" size="small" />
                 ) : (
                   <CheckCircle2 size={13} color="#fff" />
                 )}
@@ -504,7 +504,7 @@ export default function MarketplaceReviewQueuePage() {
                 isBusy ? 'bg-green-500/40' : 'bg-green-600 active:opacity-80',
               )}
             >
-              {isBusy ? <ActivityIndicator size="small" color="#fff" /> : <CheckCircle2 size={13} color="#fff" />}
+              {isBusy ? <Spinner className="text-white" size="small" /> : <CheckCircle2 size={13} color="#fff" />}
               <Text className="text-xs font-semibold text-white">Approve</Text>
             </Pressable>
           </View>
@@ -553,7 +553,7 @@ export default function MarketplaceReviewQueuePage() {
           />
           {loading && !refreshing && (
             <View className="absolute inset-0 items-center justify-center bg-background/80">
-              <ActivityIndicator size="large" />
+              <Spinner size="large" />
             </View>
           )}
         </View>

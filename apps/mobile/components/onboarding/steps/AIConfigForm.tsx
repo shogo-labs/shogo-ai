@@ -5,7 +5,6 @@ import {
   View,
   Text,
   Pressable,
-  ActivityIndicator,
 } from 'react-native'
 import {
   Cloud,
@@ -19,6 +18,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { PlatformApi } from '@shogo-ai/sdk'
 import { createHttpClient } from '../../../lib/api'
 import { ProviderSetupCard } from '../../admin/ProviderSetupCard'
+import { Spinner } from '@/components/ui/spinner'
 
 function hasDesktopBridge(): boolean {
   if (typeof window === 'undefined') return false
@@ -220,9 +220,9 @@ export function AIConfigForm({ onReadyChange }: AIConfigFormProps) {
                 )}
               >
                 {shogoLoginStatus === 'connecting' ? (
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                 ) : (
-                  <LogIn size={14} color="#fff" />
+                  <LogIn className="text-primary-foreground" size={14} />
                 )}
                 <Text
                   className={cn(
