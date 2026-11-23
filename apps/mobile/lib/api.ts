@@ -816,6 +816,19 @@ function throwIfBetterAuthErrorPayload(data: unknown): void {
 
 // ─── Published environments (SHO-308) ─────────────────────────
 
+/**
+ * The answer to POST /publish and /republish: the publish was accepted and is
+ * running server-side (SHO-542). `status` is the publish status it starts at —
+ * follow `getPublishState` for the outcome rather than the response.
+ */
+export interface PublishAccepted {
+  accepted: boolean
+  status: string
+  subdomain?: string
+  url?: string
+  environment?: 'production' | 'staging'
+}
+
 export type PublishedSize = 's' | 'm' | 'l'
 
 export interface PublishedScaleSettings {
@@ -1745,6 +1758,14 @@ export const api = {
       publishedCommitSha?: string
       publishedTag?: string
       publishStatus?: string
+      /**
+       * The code the last publish failed with. `publish_interrupted` means the
+       * pipeline died with its server (a publish runs in the background now,
+       * SHO-542) — publish again rather than waiting for it.
+       */
+      publishError?: string
+      /** One line of user-facing text for `publishError`. */
+      publishErrorMessage?: string
       /** Whether the published app keeps a warm pod (min-scale=1). */
       alwaysOn?: boolean
       /** Pooled always-on slots for the workspace; null = unlimited. */
@@ -1895,13 +1916,10 @@ export const api = {
   // the site doesn't already have a password salted by this subdomain. The
   // server hashes it; the raw value is never persisted.
   //
-  // Publishing can take a while (build + upload + provisioning), but every
-  // step on the server now has its own timeout (60s each, see publish.ts) —
-  // so bounding the whole request at a generous 5 minutes here is purely a
-  // backstop against a request that never got a response at all (dropped
-  // connection, proxy hiccup), not against normal publish latency. Without
-  // this, a hung connection leaves the Publish button spinner running
-  // indefinitely with no way to retry.
+  // This returns as soon as the publish is ACCEPTED (202): the build → upload →
+  // configure pipeline runs server-side, past Cloudflare's ~100 s edge limit
+  // (SHO-542). Callers follow `getPublishState` until `live`/`failed`; there is
+  // no request to abort because there is no long request any more.
   async publishProject(
     http: HttpClient,
     projectId: string,
@@ -1909,17 +1927,11 @@ export const api = {
     accessLevel: string,
     password?: string,
   ) {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 5 * 60_000)
-    try {
-      const res = await http.request<{ subdomain: string; publishedAt: number; accessLevel?: string; hasPassword?: boolean }>(
-        `/api/projects/${projectId}/publish`,
-        { method: 'POST', body: { subdomain, accessLevel, ...(password ? { password } : {}) }, signal: controller.signal },
-      )
-      return res.data
-    } finally {
-      clearTimeout(timer)
-    }
+    const res = await http.request<PublishAccepted>(
+      `/api/projects/${projectId}/publish`,
+      { method: 'POST', body: { subdomain, accessLevel, ...(password ? { password } : {}) } },
+    )
+    return res.data
   },
 
   async unpublishProject(http: HttpClient, projectId: string) {
@@ -1957,10 +1969,9 @@ export const api = {
 
   // Rebuild + re-upload the current commit to the same subdomain (and re-tag
   // HEAD as the new live commit). Used by the "Publish latest changes" action.
+  // Accepted (202) like `publishProject` — follow `getPublishState` after it.
   async republishProject(http: HttpClient, projectId: string) {
-    const res = await http.post<{ url: string; subdomain: string; publishedAt: number }>(
-      `/api/projects/${projectId}/republish`,
-    )
+    const res = await http.post<PublishAccepted>(`/api/projects/${projectId}/republish`)
     return res.data
   },
 

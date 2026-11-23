@@ -43,6 +43,13 @@ const prismaApi = {
       if (projectRow && projectRow.id === where.id) Object.assign(projectRow, data)
       return { ...projectRow }
     },
+    // The in-flight lease (SHO-542).
+    updateMany: async ({ where, data }: any) => {
+      if (!projectRow || projectRow.id !== where.id) return { count: 0 }
+      updateCalls.push({ where, data })
+      Object.assign(projectRow, data)
+      return { count: 1 }
+    },
   },
   customDomain: {
     findMany: async () => [],
@@ -101,12 +108,26 @@ afterEach(() => {
   globalThis.fetch = realFetch
 })
 
-const { publishProject } = await import('../publish')
+const { startPublish } = await import('../publish')
+
+/** Accepted (202) or refused, then wait for the background pipeline (SHO-542). */
+async function publish(projectId: string, subdomain: string) {
+  const started = await startPublish(projectId, { subdomain })
+  const result = started.finished ? await started.finished : null
+  return { started, result }
+}
+
+async function settleUntilLive() {
+  for (let i = 0; i < 200 && projectRow?.publishStatus !== 'live'; i++) {
+    await new Promise((r) => setTimeout(r, 5))
+  }
+}
 
 describe('publishProject subdomain Pro+ gate', () => {
   it('blocks a first publish for free/basic with 402 plan_not_allowed', async () => {
     canPublish = false
-    const res = await publishProject('p1', { subdomain: 'my-app' })
+    const { started } = await publish('p1', 'my-app')
+    const res = started
     expect(res.ok).toBe(false)
     expect(res.status).toBe(402)
     expect(res.code).toBe('plan_not_allowed')
@@ -118,7 +139,8 @@ describe('publishProject subdomain Pro+ gate', () => {
   it('blocks a subdomain CHANGE for free/basic with 402 plan_not_allowed', async () => {
     canPublish = false
     projectRow!.publishedSubdomain = 'old-app'
-    const res = await publishProject('p1', { subdomain: 'new-app' })
+    const { started } = await publish('p1', 'new-app')
+    const res = started
     expect(res.ok).toBe(false)
     expect(res.status).toBe(402)
     expect(res.code).toBe('plan_not_allowed')
@@ -129,19 +151,20 @@ describe('publishProject subdomain Pro+ gate', () => {
   it('allows republishing the SAME subdomain even when the plan cannot publish', async () => {
     canPublish = false
     projectRow!.publishedSubdomain = 'my-app'
-    const res = await publishProject('p1', { subdomain: 'my-app' })
-    expect(res.ok).toBe(true)
-    expect(res.status).toBe(200)
-    expect(res.subdomain).toBe('my-app')
+    const { started, result } = await publish('p1', 'my-app')
+    expect(started.ok).toBe(true)
+    expect(started.status).toBe(202)
+    expect(result?.subdomain).toBe('my-app')
     expect(updateCalls.length).toBeGreaterThan(0)
   })
 
   it('allows a first publish for Pro+', async () => {
     canPublish = true
-    const res = await publishProject('p1', { subdomain: 'my-app' })
-    expect(res.ok).toBe(true)
-    expect(res.status).toBe(200)
-    expect(res.subdomain).toBe('my-app')
+    const { started } = await publish('p1', 'my-app')
+    expect(started.ok).toBe(true)
+    expect(started.status).toBe(202)
+    expect(started.subdomain).toBe('my-app')
+    await settleUntilLive()
     expect(projectRow?.publishedSubdomain).toBe('my-app')
   })
 })

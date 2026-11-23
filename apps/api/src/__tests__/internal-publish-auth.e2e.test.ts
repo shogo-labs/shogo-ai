@@ -55,10 +55,20 @@ mock.module('../lib/prisma', () => ({
 }))
 
 mock.module('../routes/publish', () => ({
-  publishProject: async (projectId: string, opts: any) => {
+  // SHO-542: the internal POST shares the async runner with the session route,
+  // so it validates and returns `accepted` while the pipeline runs behind it.
+  startPublish: async (projectId: string, opts: any) => {
     store.publishCalledWith = { projectId, opts }
     return store.publishResult
   },
+  // The GET asks these two about a stale in-flight status; a publish that is
+  // not running comes back exactly as stored.
+  resolveReportedPublishStatus: (row: any) => ({
+    status: row?.publishStatus ?? null,
+    interrupted: false,
+    error: row?.publishError ?? null,
+  }),
+  markPublishInterrupted: async (_projectId: string) => {},
 }))
 
 const { deriveRuntimeToken } = await import('../lib/runtime-token')
@@ -81,11 +91,11 @@ beforeEach(() => {
   }
   store.publishResult = {
     ok: true,
+    accepted: true,
+    publishStatus: 'building',
     url: 'https://my-site.shogo.one',
     subdomain: 'my-site',
-    publishedAt: 1700000000000,
-    accessLevel: 'public',
-    hasPassword: false,
+    environment: 'production',
   }
   store.publishCalledWith = null
   store.resolvedWorkspaceId = null
@@ -107,14 +117,22 @@ describe('internal publish auth e2e (real runtime token, production mode)', () =
     expect(body.published).toBe(false)
   })
 
-  test('POST publish: metal-shaped request reaches publishProject', async () => {
+  test('POST publish: metal-shaped request reaches the shared publish runner', async () => {
     const token = deriveRuntimeToken(PROJECT_ID)
     const res = await app.request(`/projects/${PROJECT_ID}/publish`, {
       method: 'POST',
       headers: { 'x-runtime-token': token, ...JSON_H },
       body: JSON.stringify({ subdomain: 'my-site' }),
     })
-    expect(res.status).toBe(200)
+    // 202: the pipeline runs in the background and the tool follows the GET
+    // above for the outcome (SHO-542).
+    expect(res.status).toBe(202)
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      accepted: true,
+      status: 'building',
+      subdomain: 'my-site',
+    })
     expect(store.publishCalledWith).toEqual({
       projectId: PROJECT_ID,
       opts: {

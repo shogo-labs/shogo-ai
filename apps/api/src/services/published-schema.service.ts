@@ -75,6 +75,39 @@ function isKubernetes(): boolean {
 }
 
 /**
+ * The destructive changes a pending publish would make, without applying any of
+ * them.
+ *
+ * `prepareEnvironmentDatabase` learns this mid-pipeline — it needs the app's
+ * schema as the runtime resolves it — so a refusal only reaches the caller as a
+ * code (`destructive_schema_change`). Publishing is a background job now
+ * (SHO-542), so the agent's `publish` tool reads the outcome from the publish
+ * status and asks for the details with this: same describe call, same
+ * classifier, no provision, no push, no seed.
+ */
+export async function describePendingDestructiveChanges(
+  projectId: string,
+  environment: PublishedEnvironmentName,
+): Promise<{ message: string; changes: Array<{ kind: string; name: string; message: string }> } | null> {
+  const env = await prisma.publishedEnvironment.findUnique({
+    where: { projectId_name: { projectId, name: environment } },
+    select: { dbSchema: true, dbSchemaHash: true },
+  })
+  if (!env?.dbSchema) return null
+
+  const described = await callRuntimeSchema(projectId, { mode: 'describe' })
+  const resolved = described.ok ? (described.data?.schema as { content: string; hash: string } | null) : null
+  if (!resolved || env.dbSchemaHash === resolved.hash) return null
+
+  const destructive = classifySchemaChange(env.dbSchema, resolved.content)
+  if (destructive.length === 0) return null
+  return {
+    message: describeDestructiveChanges(destructive),
+    changes: destructive.map((change) => ({ kind: change.kind, name: change.name, message: change.message })),
+  }
+}
+
+/**
  * Call the project's runtime publish-schema endpoint.
  *
  * Same auth and namespace as `/agent/dist-files`: `x-runtime-token` derived for

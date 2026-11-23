@@ -710,6 +710,14 @@ export interface PublishState {
   accessLevel: string | null
   hasPassword: boolean
   publishStatus: string | null
+  /** The code the last publish failed with (`null` when it did not fail). */
+  publishError?: string | null
+  /**
+   * A refused publish's machine-actionable context, rebuilt on demand by the
+   * API for `destructive_schema_change` (the one code whose caller — the tool —
+   * has to quote what would be lost).
+   */
+  publishErrorDetails?: { environment?: string; changes?: Array<{ kind?: string; name?: string; message?: string }> } | null
 }
 
 export interface PublishResult {
@@ -831,15 +839,166 @@ export async function postWorkspaceNotification(input: {
   }
 }
 
+/**
+ * Poll cadence while following an accepted publish. Only tests set this: they
+ * cannot spend the real 2 s → 5 s ramp per assertion.
+ */
+export interface PublishPollTiming {
+  startDelayMs?: number
+  maxDelayMs?: number
+}
+
+/**
+ * Re-shape another publish call's failure envelope into this call's result type.
+ *
+ * The envelope's fields do not depend on `T`, but `CheckpointCallResult<A>` is
+ * not assignable to `CheckpointCallResult<B>` when `A` is narrower, so a plain
+ * `return failed` does not typecheck.
+ */
+function publishFailure<T>(failed: CheckpointCallResult<unknown>): CheckpointCallResult<T> {
+  return {
+    ok: false,
+    status: failed.status,
+    ...(failed.error !== undefined ? { error: failed.error } : {}),
+    ...(failed.code !== undefined ? { code: failed.code } : {}),
+    ...(failed.details ? { details: failed.details } : {}),
+  }
+}
+
 export async function publishProject(
   projectId: string,
   opts: PublishOptions,
+  pollTiming?: PublishPollTiming,
 ): Promise<CheckpointCallResult<PublishResult>> {
-  return publishFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/publish`, {
-    method: 'POST',
-    body: JSON.stringify(opts),
-    parse: (j) => j as PublishResult,
-  }, publishRequestTimeoutMs())
+  // The API accepts the publish and runs the pipeline in the background
+  // (SHO-542), so a long publish is a 202 plus a status to follow — not one
+  // request held open (which the edge turns into a 524). Poll the internal GET
+  // until it settles, so the tool's result stays exactly what it was.
+  const started = await publishFetch<{
+    accepted?: boolean
+    status?: string
+    subdomain?: string
+    url?: string
+  }>(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/publish`,
+    {
+      method: 'POST',
+      body: JSON.stringify(opts),
+      parse: (j) => j,
+    },
+    publishRequestTimeoutMs(),
+  )
+  if (!started.ok) return publishFailure(started)
+
+  const accepted = started.data
+  // An API that still runs the pipeline inline answers 200 with the final
+  // result; a version-skewed desktop must keep working, so pass it through.
+  if (!accepted?.accepted) {
+    return { ok: true, status: started.status, data: accepted as unknown as PublishResult }
+  }
+
+  return waitForPublish(projectId, accepted, publishRequestTimeoutMs(), pollTiming)
+}
+
+/**
+ * Follow an accepted publish until it is `live` or `failed`.
+ *
+ * Backs off 2 s → 5 s: the first seconds of a publish are the build, so polling
+ * hard then only costs requests. The budget is the same one the old
+ * request-scoped POST used, so a publish that used to time out now reports its
+ * own step's error instead of a gateway's.
+ */
+async function waitForPublish(
+  projectId: string,
+  accepted: { subdomain?: string; url?: string },
+  budgetMs: number,
+  timing?: PublishPollTiming,
+): Promise<CheckpointCallResult<PublishResult>> {
+  const deadline = Date.now() + budgetMs
+  const maxDelayMs = timing?.maxDelayMs ?? 5_000
+  let delayMs = timing?.startDelayMs ?? 2_000
+  let lastStatus: string | null = null
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(delayMs, Math.max(0, deadline - Date.now()))))
+    delayMs = Math.min(maxDelayMs, delayMs + 1_000)
+
+    const state = await getPublishState(projectId)
+    if (!state.ok) return publishFailure(state)
+    lastStatus = state.data?.publishStatus ?? null
+
+    if (lastStatus === 'failed') {
+      const code = state.data?.publishError ?? 'publish_failed'
+      const details = state.data?.publishErrorDetails ?? undefined
+      return {
+        ok: false,
+        status: 500,
+        code,
+        error: describePublishFailure(code),
+        ...(details ? { details: details as Record<string, any> } : {}),
+      }
+    }
+    if (lastStatus === 'live') {
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          url: accepted.url ?? `https://${state.data?.subdomain ?? accepted.subdomain}.shogo.one`,
+          subdomain: state.data?.subdomain ?? accepted.subdomain ?? '',
+          publishedAt: state.data?.publishedAt ?? undefined,
+          accessLevel: state.data?.accessLevel ?? undefined,
+          hasPassword: state.data?.hasPassword,
+        },
+      }
+    }
+  }
+
+  // Still running when the budget ran out: report the step it is stuck on
+  // rather than pretending it failed, and do not tell the agent to retry — a
+  // retry is refused with `publish_in_progress` while it really is running.
+  return {
+    ok: false,
+    status: 504,
+    code: 'publish_timeout',
+    error:
+      `Publishing did not finish within ${Math.round(budgetMs / 1000)}s ` +
+      `(last status: ${lastStatus ?? 'unknown'}). It may still be running server-side — ` +
+      'check the publish state before starting another one, and do not retry blindly.',
+  }
+}
+
+/**
+ * The sentence behind a publish failure code, for the tool's `error` field.
+ * Mirrors `publishFailureMessage` in `@shogo/shared-runtime/publish-status`;
+ * duplicated here because the runtime ships without that module's friends.
+ */
+function describePublishFailure(code: string): string {
+  switch (code) {
+    case 'destructive_schema_change':
+      return 'This publish would destroy data in the published database. Nothing was deployed.'
+    case 'build_failed':
+    case 'build_timeout':
+      return "The app's build failed, so nothing was deployed."
+    case 'no_files':
+      return 'The build produced no files to publish.'
+    case 'download_failed':
+    case 'download_timeout':
+      return 'The build finished but its output could not be read back.'
+    case 'upload_failed':
+    case 'upload_timeout':
+      return "Publishing failed while uploading the site to Shogo's storage."
+    case 'configure_failed':
+    case 'configure_timeout':
+    case 'revision_not_ready':
+      return "Publishing failed on Shogo's hosting side while setting up the published service."
+    case 'database_unavailable':
+    case 'schema_push_failed':
+    case 'seed_failed':
+      return 'The published database could not be prepared, so publishing stopped before deploying.'
+    case 'publish_interrupted':
+      return 'The publish stopped before it finished (the server restarted mid-publish).'
+    default:
+      return 'Publishing failed.'
+  }
 }
 
 export interface PublishOpsOptions {

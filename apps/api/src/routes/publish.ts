@@ -16,6 +16,7 @@
  */
 
 import { Hono } from "hono"
+import type { Context } from "hono"
 import { PutObjectCommand, CopyObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3"
 import { prisma } from "../lib/prisma"
 import { removePublishedCustomDomainMapping } from "../lib/published-custom-domain-mapping"
@@ -29,6 +30,15 @@ import {
 import { flushGitSync } from "../services/publish-git.service"
 import { teardownPublishedSite } from "../services/published-site-teardown"
 import { publishReadinessTimeoutMs, publishStepTimeouts } from "@shogo/shared-runtime/publish-timeouts"
+import {
+  PUBLISH_IN_FLIGHT_STATUSES,
+  PUBLISH_IN_PROGRESS_CODE,
+  PUBLISH_INTERRUPTED_CODE,
+  isPublishInFlight,
+  publishFailureMessage,
+  publishInFlightTtlMs,
+  type PublishStatusValue,
+} from "@shogo/shared-runtime/publish-status"
 import { recordCheckpointForCommit } from "../services/checkpoint.service"
 import {
   getCustomHostnamesConfig,
@@ -119,10 +129,14 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   })
 }
 
-// In-flight lock TTL on the project's Knative Service annotation. The
-// warm-pool GC honors this annotation and skips deletion while a publish
-// is mid-flight; the TTL means a forgotten/crashed lock self-heals.
-const PUBLISH_IN_FLIGHT_TTL_MS = 10 * 60 * 1000
+// In-flight lock TTL for a publish: the window in which a `building` /
+// `uploading` / `configuring` status is believed, and the expiry written onto
+// the project's Knative Service annotation that tells the warm-pool GC to skip
+// it. Both uses want the same number — the whole pipeline's worst case, not one
+// step's — because a shorter lease would let a second publish start on top of a
+// live one (and let the GC reap the runtime mid-publish). It is derived from the
+// step budgets below, so an override of any of them moves this too.
+const PUBLISH_IN_FLIGHT_TTL_MS = publishInFlightTtlMs()
 
 /**
  * How long a publish watches the revision it just rolled before refusing it
@@ -501,6 +515,121 @@ async function releasePublishLock(projectId: string): Promise<void> {
     })
   } catch (err: any) {
     console.warn(`[Publish] releasePublishLock(${projectId}) failed:`, err.message)
+  }
+}
+
+/** `publishStatusAt` older than this means the publish holding it is dead. */
+function stalePublishBefore(): Date {
+  return new Date(Date.now() - PUBLISH_IN_FLIGHT_TTL_MS)
+}
+
+/**
+ * Take the in-flight lease on a publish, atomically.
+ *
+ * Publishing is a background job now (SHO-542), so a second request must be
+ * refused *before* it starts a second build/upload into the same subdomain
+ * prefix. The check and the write are one conditional `updateMany`: a row that
+ * is not in flight (or whose in-flight status is older than the lease) becomes
+ * `building`; anything else counts zero rows and the caller answers 409. Doing
+ * it in one statement is what makes two API pods — the desktop's API and a
+ * cloud replica, say — unable to both start.
+ */
+async function claimPublishInFlight(projectId: string): Promise<boolean> {
+  const stale = stalePublishBefore()
+  try {
+    const claimed = await prisma.project.updateMany({
+      where: {
+        id: projectId,
+        OR: [
+          { publishStatus: { notIn: [...PUBLISH_IN_FLIGHT_STATUSES] as any } },
+          { publishStatusAt: null },
+          { publishStatusAt: { lt: stale } },
+        ],
+      },
+      data: {
+        // The new publish owns the status from here, so it also clears the last
+        // attempt's error rather than leaving a stale code next to `building`.
+        publishStatus: 'building' as any,
+        publishError: null,
+        publishStatusAt: new Date(),
+      },
+    })
+    return claimed.count > 0
+  } catch (err: any) {
+    console.warn(`[Publish] claimPublishInFlight(${projectId}) failed:`, err.message)
+    // A DB blip must not turn into a silently accepted second publish.
+    return false
+  }
+}
+
+/** Same lease, on a staging environment row (staging state never touches prod). */
+async function claimEnvironmentPublishInFlight(environmentId: string): Promise<boolean> {
+  const stale = stalePublishBefore()
+  try {
+    const claimed = await prisma.publishedEnvironment.updateMany({
+      where: {
+        id: environmentId,
+        OR: [
+          { publishStatus: { notIn: [...PUBLISH_IN_FLIGHT_STATUSES] } },
+          { publishStatusAt: null },
+          { publishStatusAt: { lt: stale } },
+        ],
+      },
+      data: {
+        publishStatus: 'building',
+        publishError: null,
+        publishStatusAt: new Date(),
+      },
+    })
+    return claimed.count > 0
+  } catch (err: any) {
+    console.warn(`[Publish] claimEnvironmentPublishInFlight(${environmentId}) failed:`, err.message)
+    return false
+  }
+}
+
+/**
+ * What a reader should be told about a publish status.
+ *
+ * A publish runs in the API process, so its in-flight statuses are a lease, not
+ * a fact: if the pod that was running it restarts (deploy, OOM, node drain) the
+ * row keeps saying `building` forever, the panel spins, and the next publish is
+ * refused as `publish_in_progress`. An in-flight status past its lease is
+ * therefore reported — and written back — as `failed` / `publish_interrupted`.
+ */
+export function resolveReportedPublishStatus(row: {
+  publishStatus?: string | null
+  publishStatusAt?: Date | string | null
+}): { status: string | null; error: string | null; interrupted: boolean } {
+  const status = row.publishStatus ?? null
+  if (!isPublishInFlight(status)) return { status, error: null, interrupted: false }
+  const at = row.publishStatusAt ? new Date(row.publishStatusAt).getTime() : 0
+  if (at && Date.now() - at < PUBLISH_IN_FLIGHT_TTL_MS) return { status, error: null, interrupted: false }
+  return { status: 'failed', error: PUBLISH_INTERRUPTED_CODE, interrupted: true }
+}
+
+/**
+ * Persist the interruption `resolveReportedPublishStatus` reports, so the next
+ * publish is accepted without waiting for another read. Conditional on the row
+ * still being that same stale in-flight status — a publish that started in the
+ * meantime must not be marked failed by an old GET.
+ */
+export async function markPublishInterrupted(projectId: string): Promise<void> {
+  try {
+    await prisma.project.updateMany({
+      where: {
+        id: projectId,
+        publishStatus: { in: [...PUBLISH_IN_FLIGHT_STATUSES] as any },
+        publishStatusAt: { lt: stalePublishBefore() },
+      },
+      data: {
+        publishStatus: 'failed' as any,
+        publishError: PUBLISH_INTERRUPTED_CODE,
+        publishStatusAt: new Date(),
+      },
+    })
+  } catch (err: any) {
+    console.warn(`[Publish] markPublishInterrupted(${projectId}) failed:`, err.message)
   }
 }
 
@@ -1412,125 +1541,189 @@ export type PublishFileSource =
     }
 
 /**
- * Core publish pipeline shared by the session-authenticated route
- * (POST /api/projects/:id/publish) and the internal/runtime route
- * (POST /api/internal/projects/:id/publish, used by the agent's publish tool).
- *
- * Validates the subdomain + access level, builds/downloads/uploads the dist,
- * provisions the published Knative service + DomainMapping, tags the commit,
- * records a checkpoint, and persists publish state — preserving the exact error
- * codes/statuses the route previously returned.
- *
- * `fileSource` defaults to the pod (build + download). Passing `uploaded` runs
- * the identical pipeline against files the caller already produced, which is
- * how the cloud hosts a site the desktop built (`routes/published-sites.ts`).
+ * What `POST /publish` answers now (SHO-542): the request was accepted, and the
+ * pipeline runs in the background. Clients watch `publishStatus` (the GETs)
+ * instead of holding one HTTP request open past Cloudflare's ~100 s edge limit.
  */
-export async function publishProject(
+export interface StartPublishResult {
+  ok: boolean
+  /** HTTP status for the caller: 202 accepted, or the validation status. */
+  status: number
+  accepted?: boolean
+  /** The status the publish starts at — `building`. */
+  publishStatus?: PublishStatusValue
+  subdomain?: string
+  url?: string
+  environment?: 'production' | 'staging'
+  code?: string
+  message?: string
+  /** Machine-actionable context for a refusal (`destructive_schema_change`). */
+  details?: Record<string, unknown>
+  /**
+   * The background pipeline's outcome, or null when nothing was started.
+   *
+   * The HTTP routes never await it (that is the whole point); tests and the
+   * synchronous composition below do, so a caller that came from the old
+   * request-scoped pipeline can still get a result without polling.
+   */
+  finished?: Promise<PublishProjectResult> | null
+}
+
+type PublishRefusal = { ok: false; status: number; code: string; message: string; details?: Record<string, unknown> }
+type PublishOk = { ok: true }
+
+/** Everything `preparePublish` resolved; `runPublishPipeline` needs nothing else. */
+interface PreparedPublish {
+  projectId: string
+  /** The row as read at prepare time (name/workspace for the activity feed). */
+  project: { id: string; workspaceId: string; name: string }
+  subdomain: string
+  accessLevel: AccessLevel
+  sitePasswordHash: string | null
+  siteTitle?: string
+  siteDescription?: string
+  alwaysOn: boolean
+  allowDataLoss: boolean
+  fileSource: PublishFileSource
+  /** Set when this publish moves the project off an older subdomain. */
+  previousSubdomain?: string
+}
+
+/**
+ * Everything a publish can refuse synchronously, before any work starts.
+ *
+ * Split out of the old `publishProject` (SHO-542) so a request can still fail
+ * fast with today's exact 4xx bodies while the pipeline itself runs in the
+ * background. It takes the per-subdomain claim — the window it closes opens at
+ * the same moment as before, before any build or upload — and the caller
+ * releases it if the publish never starts (a 409 `publish_in_progress`).
+ */
+async function preparePublish(
   projectId: string,
   opts: PublishProjectOptions,
-  fileSource: PublishFileSource = { kind: 'pod' },
-): Promise<PublishProjectResult> {
-  // Staging is a separate ksvc + DB at `{sub}--staging`, with its own deploy
-  // path. Production's publish flow never touches it.
-  if (opts.environment === 'staging') {
-    return deployToStaging(projectId, { allowDataLoss: opts.allowDataLoss })
+  fileSource: PublishFileSource,
+): Promise<{ ok: true; prepared: PreparedPublish } | PublishRefusal> {
+  const { subdomain: rawSubdomain, accessLevel = "anyone", password, siteTitle, siteDescription } = opts
+  const subdomain = rawSubdomain.toLowerCase()
+
+  const validation = validateSubdomain(subdomain)
+  if (!validation.valid) {
+    return { ok: false, status: 400, code: "invalid_subdomain", message: validation.reason! }
   }
 
-  // Set once this publish takes the per-subdomain in-flight claim, so the
-  // `finally` below can release it on every exit path (including a throw).
-  let claimedSubdomain: string | null = null
-  try {
-    const { subdomain: rawSubdomain, accessLevel = "anyone", password, siteTitle, siteDescription } = opts
-    const subdomain = rawSubdomain.toLowerCase()
+  if (!ACCESS_LEVELS.has(accessLevel)) {
+    return { ok: false, status: 400, code: "invalid_access_level", message: `Unknown access level: ${accessLevel}` }
+  }
 
-    const validation = validateSubdomain(subdomain)
-    if (!validation.valid) {
-      return { ok: false, status: 400, code: "invalid_subdomain", message: validation.reason }
+  const project = await prisma.project.findUnique({ where: { id: projectId } })
+  if (!project) {
+    return { ok: false, status: 404, code: "project_not_found", message: "Project not found" }
+  }
+
+  // Subdomain publishing is gated to Pro+. Only gate a first publish or a
+  // subdomain change — republishing the same subdomain stays allowed so a
+  // workspace that downgraded keeps a live site updatable.
+  if (project.publishedSubdomain !== subdomain) {
+    const { canPublishSubdomain } = await import("../services/billing.service")
+    if (!(await canPublishSubdomain(project.workspaceId))) {
+      return {
+        ok: false,
+        status: 402,
+        code: "plan_not_allowed",
+        message: "Publishing to a subdomain is available on the Business plan. Upgrade to publish.",
+      }
     }
 
-    if (!ACCESS_LEVELS.has(accessLevel)) {
-      return { ok: false, status: 400, code: "invalid_access_level", message: `Unknown access level: ${accessLevel}` }
-    }
-
-    // Get the project
-    const project = await prisma.project.findUnique({
-      where: { id: projectId },
+    // The DB check below only sees COMMITTED reservations, and we don't write
+    // `publishedSubdomain` until the end of the pipeline.
+    const existingProject = await prisma.project.findUnique({
+      where: { publishedSubdomain: subdomain },
+      select: { id: true },
     })
-    if (!project) {
-      return { ok: false, status: 404, code: "project_not_found", message: "Project not found" }
-    }
-
-    // Subdomain publishing is gated to Pro+. Only gate a first publish or a
-    // subdomain change — republishing the same subdomain stays allowed so a
-    // workspace that downgraded keeps a live site updatable.
-    if (project.publishedSubdomain !== subdomain) {
-      const { canPublishSubdomain } = await import("../services/billing.service")
-      if (!(await canPublishSubdomain(project.workspaceId))) {
-        return {
-          ok: false,
-          status: 402,
-          code: "plan_not_allowed",
-          message: "Publishing to a subdomain is available on the Business plan. Upgrade to publish.",
-        }
-      }
-    }
-
-    // Check if subdomain is available (unless it's the same project's subdomain)
-    if (project.publishedSubdomain !== subdomain) {
-      const existingProject = await prisma.project.findUnique({
-        where: { publishedSubdomain: subdomain },
-        select: { id: true },
-      })
-
-      if (existingProject) {
-        return { ok: false, status: 409, code: "subdomain_taken", message: "Subdomain is already in use" }
-      }
-    }
-
-    // The DB check above only sees COMMITTED reservations, and we don't write
-    // `publishedSubdomain` until the end of the pipeline. Take the in-flight
-    // claim now — before any build or upload — so a second project cannot pass
-    // the same check and overwrite this one's files in `{subdomain}/`.
-    if (!claimSubdomain(subdomain, projectId)) {
+    if (existingProject) {
       return { ok: false, status: 409, code: "subdomain_taken", message: "Subdomain is already in use" }
     }
-    claimedSubdomain = subdomain
+  }
 
-    // If project already has a different subdomain, clean up old S3 files
-    if (project.publishedSubdomain && project.publishedSubdomain !== subdomain) {
+  // Take the in-flight claim now — before any build or upload — so a second
+  // project cannot pass the same check and overwrite this one's files in
+  // `{subdomain}/`. Same-project re-entry is allowed (a republish is idempotent).
+  if (!claimSubdomain(subdomain, projectId)) {
+    return { ok: false, status: 409, code: "subdomain_taken", message: "Subdomain is already in use" }
+  }
+
+  // Resolve the password-gate hash before doing any expensive build work so
+  // bad input (missing/short password) fails fast with a 400.
+  const sitePassword = resolveSitePasswordHash({
+    accessLevel,
+    password,
+    subdomain,
+    existingHash: (project as any).sitePasswordHash ?? null,
+    existingSubdomain: project.publishedSubdomain ?? null,
+  })
+  if (!sitePassword.ok) {
+    releaseSubdomainClaim(subdomain, projectId)
+    return { ok: false, status: 400, code: sitePassword.code, message: sitePassword.message }
+  }
+
+  // Resolve the always-on intent for this (re)publish: honor the saved flag,
+  // but re-validate entitlement so a downgrade / seat removal since the last
+  // toggle clamps the app back to scale-to-zero. Applies to both static and
+  // server-backed apps.
+  let alwaysOn = (project as any).publishedAlwaysOn === true
+  if (alwaysOn) {
+    const { canEnableAlwaysOn } = await import("../services/billing.service")
+    const gate = await canEnableAlwaysOn(project.workspaceId, projectId)
+    if (!gate.allowed) {
+      console.warn(
+        `[Publish] always-on no longer entitled for ${projectId} (${gate.used}/${gate.allowance}) — clamping off`,
+      )
+      alwaysOn = false
+    }
+  }
+
+  return {
+    ok: true,
+    prepared: {
+      projectId,
+      project: { id: project.id, workspaceId: project.workspaceId, name: project.name },
+      subdomain,
+      accessLevel,
+      sitePasswordHash: sitePassword.hash,
+      siteTitle,
+      siteDescription,
+      alwaysOn,
+      allowDataLoss: opts.allowDataLoss === true,
+      fileSource,
+      previousSubdomain:
+        project.publishedSubdomain && project.publishedSubdomain !== subdomain
+          ? project.publishedSubdomain
+          : undefined,
+    },
+  }
+}
+
+/**
+ * The publish pipeline itself: build (or take the uploaded files), download,
+ * upload, purge, configure, tag the commit, record the checkpoint and persist
+ * publish state.
+ *
+ * Runs in the background now (SHO-542), which is exactly why every step keeps
+ * its own timeout and every failure keeps its own code: the outcome is only
+ * visible through `publishStatus` / `publishError`, so it has to be complete.
+ * The `finally` releases the publish lock and the subdomain claim on every exit
+ * path — success, structured failure and throw.
+ */
+async function runPublishPipeline(prepared: PreparedPublish): Promise<PublishProjectResult> {
+  const { projectId, project, subdomain, accessLevel, sitePasswordHash, alwaysOn, fileSource } = prepared
+  try {
+    // Move the project off its old prefix only once this publish is really
+    // starting (the caller has accepted it), and before anything is uploaded.
+    if (prepared.previousSubdomain) {
       try {
-        await deletePublishedStaticBundle(project.publishedSubdomain)
+        await deletePublishedStaticBundle(prepared.previousSubdomain)
       } catch (err) {
         console.warn("[Publish] Failed to delete old S3 files:", err)
-      }
-    }
-
-    // Resolve the password-gate hash before doing any expensive build work so
-    // bad input (missing/short password) fails fast with a 400.
-    const sitePassword = resolveSitePasswordHash({
-      accessLevel,
-      password,
-      subdomain,
-      existingHash: (project as any).sitePasswordHash ?? null,
-      existingSubdomain: project.publishedSubdomain ?? null,
-    })
-    if (!sitePassword.ok) {
-      return { ok: false, status: 400, code: sitePassword.code, message: sitePassword.message }
-    }
-
-    // Resolve the always-on intent for this (re)publish: honor the saved
-    // flag, but re-validate entitlement so a downgrade / seat removal since
-    // the last toggle clamps the app back to scale-to-zero. Applies to both
-    // static and server-backed apps.
-    let alwaysOn = (project as any).publishedAlwaysOn === true
-    if (alwaysOn) {
-      const { canEnableAlwaysOn } = await import("../services/billing.service")
-      const gate = await canEnableAlwaysOn(project.workspaceId, projectId)
-      if (!gate.allowed) {
-        console.warn(
-          `[Publish] always-on no longer entitled for ${projectId} (${gate.used}/${gate.allowance}) — clamping off`,
-        )
-        alwaysOn = false
       }
     }
 
@@ -1595,7 +1788,7 @@ export async function publishProject(
             withTimeout(
               configurePublishedService(projectId, subdomain, {
                 alwaysOn,
-                allowDataLoss: opts.allowDataLoss === true,
+                allowDataLoss: prepared.allowDataLoss,
                 serverBacked,
                 // The publish flow built the app in step 1, so the image build
                 // must not build it a second time.
@@ -1625,8 +1818,8 @@ export async function publishProject(
           }
         }
       } finally {
-        // Always release the lock, even on a thrown error path. The
-        // 10-min TTL is a backstop, not the primary release mechanism.
+        // Always release the lock, even on a thrown error path. The TTL is a
+        // backstop, not the primary release mechanism.
         await releasePublishLock(projectId)
       }
     } else {
@@ -1643,14 +1836,10 @@ export async function publishProject(
     // An uploaded bundle has no repo on this side: the files came from the
     // user's machine and the project row here is a hidden host with no pod, so
     // there is nothing to tag (and resolving a pod URL for it could spawn one).
-    const previousSubdomain =
-      project.publishedSubdomain && project.publishedSubdomain !== subdomain
-        ? project.publishedSubdomain
-        : undefined
     const tagged = fileSource.kind === 'uploaded'
       ? null
       : await tagPublishedCommit(projectId, subdomain, {
-          deletePointerSubdomains: previousSubdomain ? [previousSubdomain] : [],
+          deletePointerSubdomains: prepared.previousSubdomain ? [prepared.previousSubdomain] : [],
         })
 
     // Update project with publish info
@@ -1664,9 +1853,9 @@ export async function publishProject(
         publishError: null,
         publishStatusAt: publishedAt,
         accessLevel: accessLevel as any,
-        sitePasswordHash: sitePassword.hash,
-        siteTitle,
-        siteDescription,
+        sitePasswordHash: sitePasswordHash,
+        siteTitle: prepared.siteTitle,
+        siteDescription: prepared.siteDescription,
         publishedAlwaysOn: alwaysOn,
         ...(tagged && { publishedCommitSha: tagged.sha, publishedTag: tagged.tag }),
       } as any,
@@ -1674,8 +1863,8 @@ export async function publishProject(
 
     // Reflect the password gate to the edge. On a subdomain change also clear
     // the old subdomain's gate (its hash was salted with the old subdomain).
-    if (previousSubdomain) await clearSitePassword(previousSubdomain)
-    await syncSitePasswordKv(subdomain, accessLevel, sitePassword.hash)
+    if (prepared.previousSubdomain) await clearSitePassword(prepared.previousSubdomain)
+    await syncSitePasswordKv(subdomain, accessLevel, sitePasswordHash)
 
     // Record the live commit as a checkpoint so "what's live" is a real,
     // rollback-able point in history (idempotent on commitSha). Best-effort.
@@ -1713,7 +1902,7 @@ export async function publishProject(
       subdomain,
       publishedAt: publishedAt.getTime(),
       accessLevel,
-      hasPassword: !!sitePassword.hash,
+      hasPassword: !!sitePasswordHash,
     }
   } catch (error: any) {
     console.error("[Publish] Publish error:", error)
@@ -1724,81 +1913,189 @@ export async function publishProject(
   } finally {
     // Always drop the claim — success (the row is committed by now), a structured
     // failure, or a throw. The TTL is a backstop, not the release mechanism.
-    if (claimedSubdomain) releaseSubdomainClaim(claimedSubdomain, projectId)
+    releaseSubdomainClaim(subdomain, projectId)
   }
 }
 
 /**
- * Deploy the current commit to the project's staging environment (SHO-308 §8).
+ * Accept a publish and run it in the background (SHO-542).
  *
- * Same build as a production publish, uploaded under the staging subdomain and
- * provisioned as its own ksvc + DomainMapping. Staging's database is seeded from
- * `dev.db`, never from production. Publishing to production is unaffected, and
- * `promote` ships this exact image to prod without a rebuild.
+ * Validation stays synchronous and keeps today's exact codes/statuses; an
+ * accepted publish returns immediately with `202` and is observable through
+ * `GET /projects/:id/publish`. A publish already in flight for this project is
+ * refused with `409 publish_in_progress` — a retry used to collide with the
+ * build that was still running server-side.
  */
-export async function deployToStaging(
+export async function startPublish(
   projectId: string,
-  opts: { allowDataLoss?: boolean } = {},
-): Promise<PublishProjectResult> {
+  opts: PublishProjectOptions,
+  fileSource: PublishFileSource = { kind: 'pod' },
+): Promise<StartPublishResult> {
+  // Staging is a separate ksvc + DB at `{sub}--staging` with its own status row;
+  // production's publish flow never touches it.
+  if (opts.environment === 'staging') return startStagingPublish(projectId, opts)
+
+  const prepared = await preparePublish(projectId, opts, fileSource)
+  if (!prepared.ok) {
+    return { ok: false, status: prepared.status, code: prepared.code, message: prepared.message, details: prepared.details }
+  }
+  const { subdomain } = prepared.prepared
+
+  if (!(await claimPublishInFlight(projectId))) {
+    releaseSubdomainClaim(subdomain, projectId)
+    return {
+      ok: false,
+      status: 409,
+      code: PUBLISH_IN_PROGRESS_CODE,
+      message: publishFailureMessage(PUBLISH_IN_PROGRESS_CODE),
+    }
+  }
+
+  // Deliberately not awaited: the pipeline outlives the HTTP request. Its
+  // rejection is already handled inside `runPublishPipeline`, and the `.catch`
+  // here only guards against that handler itself throwing.
+  const finished = runPublishPipeline(prepared.prepared).catch((err: any) => {
+    console.error(`[Publish] Background publish for ${projectId} crashed:`, err)
+    void setPublishStatus(projectId, 'failed', 'publish_failed')
+    return { ok: false, status: 500, code: 'publish_failed', message: err?.message ?? 'Publish failed' } as PublishProjectResult
+  })
+  finished.catch(() => {})
+
+  console.log(`[Publish] Accepted background publish for ${projectId} → ${subdomain}.${PUBLISH_DOMAIN}`)
+  return {
+    ok: true,
+    status: 202,
+    accepted: true,
+    publishStatus: 'building',
+    subdomain,
+    url: `https://${subdomain}.${PUBLISH_DOMAIN}`,
+    environment: 'production',
+    finished,
+  }
+}
+
+/**
+ * Republish the live site from the current HEAD, with the settings it is
+ * already published with.
+ *
+ * `/republish` used to carry its own copy of the pipeline (SHO-542 §C), which
+ * is how its upload/configure order drifted away from the publish flow's. It is
+ * now the same runner with the project's saved subdomain, access level, title
+ * and description — a setting the user did not change must not be cleared by a
+ * republish.
+ */
+export async function startRepublish(projectId: string): Promise<StartPublishResult> {
+  const project = (await prisma.project.findUnique({ where: { id: projectId } })) as Record<string, any> | null
+  if (!project) return { ok: false, status: 404, code: "project_not_found", message: "Project not found" }
+  if (!project.publishedSubdomain) {
+    return { ok: false, status: 400, code: "not_published", message: "Project is not published" }
+  }
+  return startPublish(projectId, {
+    subdomain: project.publishedSubdomain,
+    accessLevel: (project.accessLevel ?? 'anyone') as AccessLevel,
+    siteTitle: project.siteTitle ?? undefined,
+    siteDescription: project.siteDescription ?? undefined,
+  })
+}
+
+/** A staging publish's resolved target — the staging environment's own row. */
+interface PreparedStagingPublish {
+  projectId: string
+  environmentId: string
+  subdomain: string
+  allowDataLoss: boolean
+}
+
+/**
+ * Everything a staging deploy can refuse synchronously (SHO-308 §8, SHO-542).
+ *
+ * Staging is a separate ksvc + DB at `{sub}--staging` with its own status row,
+ * so production's publish state is never touched — and neither is its in-flight
+ * lease: the claim below is on the environment row.
+ */
+async function prepareStagingPublish(
+  projectId: string,
+  opts: { allowDataLoss?: boolean },
+): Promise<{ ok: true; prepared: PreparedStagingPublish } | PublishRefusal> {
+  const project = await prisma.project.findUnique({ where: { id: projectId } })
+  if (!project) return { ok: false, status: 404, code: "project_not_found", message: "Project not found" }
+  const baseSubdomain = (project as any).publishedSubdomain as string | null
+  if (!baseSubdomain) {
+    return {
+      ok: false,
+      status: 409,
+      code: "not_published",
+      message: "Publish the app to production before creating a staging environment",
+    }
+  }
+
+  const { createStagingEnvironment, getEnvironment } = await import("../services/published-environments.service")
+  const created = await createStagingEnvironment(projectId)
+  if (!created.ok) {
+    return { ok: false, status: created.status, code: created.code, message: created.message }
+  }
+  const staging = await getEnvironment(projectId, "staging")
+  if (!staging) {
+    return { ok: false, status: 500, code: "staging_missing", message: "Could not create staging" }
+  }
+
+  // Environments need a substrate that can hold more than one runtime. Metal
+  // keeps a single published microVM per project, so refuse rather than let a
+  // staging publish re-point production's VM (SHO-308 §8).
+  const { getPublishSubstrate } = await import("../lib/substrate/router")
+  const substrate = await getPublishSubstrate(projectId)
+  if (substrate.kind !== "knative") {
+    return {
+      ok: false,
+      status: 409,
+      code: "staging_requires_knative",
+      message:
+        "Staging environments run on Knative. This workspace is set to the metal substrate, which serves one published runtime per project.",
+    }
+  }
+
+  return {
+    ok: true,
+    prepared: {
+      projectId,
+      environmentId: staging.id,
+      subdomain: staging.subdomain,
+      allowDataLoss: opts.allowDataLoss === true,
+    },
+  }
+}
+
+/**
+ * The staging deploy pipeline: same build as a production publish, uploaded
+ * under the staging subdomain and provisioned as its own ksvc + DomainMapping.
+ * Staging's database is seeded from `dev.db`, never from production. Publishing
+ * to production is unaffected, and `promote` ships this exact image to prod
+ * without a rebuild.
+ */
+async function runStagingPipeline(prepared: PreparedStagingPublish): Promise<PublishProjectResult> {
+  const { projectId, environmentId, subdomain } = prepared
+  // Staging deploy state lives on the staging row, never on the project: a
+  // failed staging build must not mark production failed (SHO-308 §8).
+  const { setEnvironmentPublishStatus } = await import("../services/published-ops.service")
   try {
-    const project = await prisma.project.findUnique({ where: { id: projectId } })
-    if (!project) return { ok: false, status: 404, code: "project_not_found", message: "Project not found" }
-    const baseSubdomain = (project as any).publishedSubdomain as string | null
-    if (!baseSubdomain) {
-      return {
-        ok: false,
-        status: 409,
-        code: "not_published",
-        message: "Publish the app to production before creating a staging environment",
-      }
-    }
-
-    const { createStagingEnvironment, getEnvironment, scaleSettingsOf } = await import(
-      "../services/published-environments.service"
-    )
-    const created = await createStagingEnvironment(projectId)
-    if (!created.ok) {
-      return { ok: false, status: created.status, code: created.code, message: created.message }
-    }
-    const staging = await getEnvironment(projectId, "staging")
-    if (!staging) {
-      return { ok: false, status: 500, code: "staging_missing", message: "Could not create staging" }
-    }
-    const subdomain = staging.subdomain
-
-    // Environments need a substrate that can hold more than one runtime. Metal
-    // keeps a single published microVM per project, so refuse rather than let a
-    // staging publish re-point production's VM (SHO-308 §8).
-    const { getPublishSubstrate } = await import("../lib/substrate/router")
-    const substrate = await getPublishSubstrate(projectId)
-    if (substrate.kind !== "knative") {
-      return {
-        ok: false,
-        status: 409,
-        code: "staging_requires_knative",
-        message:
-          "Staging environments run on Knative. This workspace is set to the metal substrate, which serves one published runtime per project.",
-      }
-    }
-
     if (!isKubernetes()) {
+      // Local dev has no substrate to deploy to; the deploy is a no-op that
+      // reports what the panel would have shown.
+      await setEnvironmentPublishStatus(environmentId, "live")
       return { ok: true, status: 200, subdomain, environment: "staging" } as PublishProjectResult
     }
 
     await acquirePublishLock(projectId)
-    // Staging deploy state lives on the staging row, never on the project: a
-    // failed staging build must not mark production failed (SHO-308 §8).
-    const { setEnvironmentPublishStatus } = await import("../services/published-ops.service")
     try {
-      await setEnvironmentPublishStatus(staging.id, "building")
+      await setEnvironmentPublishStatus(environmentId, "building")
       const build = await triggerBuildWithRetry(projectId)
       if (!build.success) {
-        await setEnvironmentPublishStatus(staging.id, "failed", build.code || "build_failed")
+        await setEnvironmentPublishStatus(environmentId, "failed", build.code || "build_failed")
         return { ok: false, status: 500, code: build.code || "build_failed", message: build.error || "Build failed" }
       }
       const files = await downloadDistFiles(projectId)
       if (files.size === 0) {
-        await setEnvironmentPublishStatus(staging.id, "failed", "no_files")
+        await setEnvironmentPublishStatus(environmentId, "failed", "no_files")
         return { ok: false, status: 400, code: "no_files", message: "No files to publish - build may have failed" }
       }
       // Order comes from the same helper the production publish uses: a
@@ -1807,12 +2104,12 @@ export async function deployToStaging(
       const serverBacked = await detectServerBacked(projectId)
       const live = await takePublishedSiteLive({
         serverBacked,
-        onStage: (stage) => setEnvironmentPublishStatus(staging.id, stage),
+        onStage: (stage) => setEnvironmentPublishStatus(environmentId, stage),
         configure: () =>
           configurePublishedService(projectId, subdomain, {
             serverBacked,
             environment: "staging",
-            allowDataLoss: opts.allowDataLoss === true,
+            allowDataLoss: prepared.allowDataLoss === true,
           }),
         upload: async () => {
           await uploadToS3(subdomain, files)
@@ -1825,7 +2122,7 @@ export async function deployToStaging(
         // image build (§2) and a refused revision (§C), whose detail is already
         // on the row.
         const detail = live.stage === "configure" ? live.message : `${live.code}: ${live.message}`
-        await setEnvironmentPublishStatus(staging.id, "failed", detail).catch(() => undefined)
+        await setEnvironmentPublishStatus(environmentId, "failed", detail).catch(() => undefined)
         throw new PublishConfigureError(live.code, live.message, live.status, live.details)
       }
 
@@ -1833,17 +2130,56 @@ export async function deployToStaging(
       // whichever environment it published — recording again here would write a
       // duplicate whose twin is immediately superseded, leaving rollback to
       // "roll back" to the same image and change nothing.
-      await setEnvironmentPublishStatus(staging.id, "live")
+      await setEnvironmentPublishStatus(environmentId, "live")
       return { ok: true, status: 200, subdomain, environment: "staging" } as PublishProjectResult
     } finally {
       await releasePublishLock(projectId)
     }
   } catch (error: any) {
     console.error("[Publish] Deploy to staging failed:", error)
+    await setEnvironmentPublishStatus(environmentId, "failed", error instanceof PublishConfigureError ? error.code : "staging_publish_failed").catch(() => undefined)
     if (error instanceof PublishConfigureError) {
       return { ok: false, status: error.status, code: error.code, message: error.message }
     }
     return { ok: false, status: 500, code: "staging_publish_failed", message: error.message }
+  }
+}
+
+/** Accept a staging deploy and run it in the background (SHO-542). */
+async function startStagingPublish(
+  projectId: string,
+  opts: PublishProjectOptions,
+): Promise<StartPublishResult> {
+  const prepared = await prepareStagingPublish(projectId, { allowDataLoss: opts.allowDataLoss })
+  if (!prepared.ok) {
+    return { ok: false, status: prepared.status, code: prepared.code, message: prepared.message, details: prepared.details }
+  }
+  const { subdomain, environmentId } = prepared.prepared
+
+  if (!(await claimEnvironmentPublishInFlight(environmentId))) {
+    return {
+      ok: false,
+      status: 409,
+      code: PUBLISH_IN_PROGRESS_CODE,
+      message: publishFailureMessage(PUBLISH_IN_PROGRESS_CODE),
+    }
+  }
+
+  const finished = runStagingPipeline(prepared.prepared).catch((err: any) => {
+    console.error(`[Publish] Background staging deploy for ${projectId} crashed:`, err)
+    return { ok: false, status: 500, code: 'staging_publish_failed', message: err?.message ?? 'Staging deploy failed' } as PublishProjectResult
+  })
+  finished.catch(() => {})
+
+  return {
+    ok: true,
+    status: 202,
+    accepted: true,
+    publishStatus: 'building',
+    subdomain,
+    url: `https://${subdomain}.${PUBLISH_DOMAIN}`,
+    environment: 'staging',
+    finished,
   }
 }
 
@@ -2395,6 +2731,36 @@ export async function deleteCustomDomain(projectId: string, domainId: string): P
 }
 
 /**
+ * One response shape for both accept-202 routes: `{ accepted, status, subdomain,
+ * url }` on success, today's exact `{ error: { code, message, details } }` on a
+ * synchronous refusal.
+ */
+export function publishStartResponse(c: Context, started: StartPublishResult) {
+  if (!started.ok) {
+    return c.json(
+      {
+        error: {
+          code: started.code,
+          message: started.message,
+          ...(started.details ? { details: started.details } : {}),
+        },
+      },
+      (started.status || 500) as any,
+    )
+  }
+  return c.json(
+    {
+      accepted: started.accepted === true,
+      status: started.publishStatus ?? 'building',
+      subdomain: started.subdomain,
+      url: started.url,
+      ...(started.environment ? { environment: started.environment } : {}),
+    },
+    202,
+  )
+}
+
+/**
  * Create publish routes
  */
 export function publishRoutes() {
@@ -2447,6 +2813,8 @@ export function publishRoutes() {
           siteTitle: true,
           siteDescription: true,
           publishStatus: true,
+          publishError: true,
+          publishStatusAt: true,
           publishedCommitSha: true,
           publishedTag: true,
           publishedAlwaysOn: true,
@@ -2455,6 +2823,14 @@ export function publishRoutes() {
       if (!project) {
         return c.json({ error: { code: "project_not_found", message: "Project not found" } }, 404)
       }
+
+      // A publish runs in the API process, so an in-flight status is a lease:
+      // past its TTL the pipeline is gone (pod restart) and reporting
+      // `building` forever would both spin the panel and block the next
+      // publish. Report it as failed and write that back (SHO-542 §1.4).
+      const reported = resolveReportedPublishStatus(project)
+      if (reported.interrupted) await markPublishInterrupted(projectId)
+      const publishError = reported.interrupted ? reported.error : (project.publishError ?? null)
 
       // Always-on surface: the slot meter (pooled per workspace) and whether
       // this app can use it at all (server-backed). `serverBacked` is read from
@@ -2479,7 +2855,11 @@ export function publishRoutes() {
         hasPassword: !!project.sitePasswordHash,
         siteTitle: project.siteTitle ?? undefined,
         siteDescription: project.siteDescription ?? undefined,
-        publishStatus: project.publishStatus ?? undefined,
+        publishStatus: reported.status ?? undefined,
+        /** The code of the last failure (`null` once a publish succeeds). */
+        publishError: publishError ?? undefined,
+        /** One line of user-facing text for `publishError`. */
+        publishErrorMessage: publishError ? publishFailureMessage(publishError) : undefined,
         publishedCommitSha: project.publishedCommitSha ?? undefined,
         publishedTag: project.publishedTag ?? undefined,
         alwaysOn: project.publishedAlwaysOn === true,
@@ -2502,6 +2882,12 @@ export function publishRoutes() {
 
   /**
    * POST /projects/:projectId/publish - Publish a project
+   *
+   * Validates synchronously (today's 4xx bodies), then hands the build →
+   * upload → configure pipeline to a background runner and answers 202
+   * (SHO-542). A non-trivial app takes minutes, which is past Cloudflare's
+   * ~100 s origin limit — holding the request open turned a successful publish
+   * into a 524 in the browser.
    */
   router.post("/projects/:projectId/publish", async (c) => {
     const projectId = c.req.param("projectId")
@@ -2512,23 +2898,8 @@ export function publishRoutes() {
       return c.json({ error: { code: "invalid_body", message: "Invalid JSON body" } }, 400)
     }
 
-    const result = await publishProject(projectId, body)
-    if (!result.ok) {
-      return c.json(
-        { error: { code: result.code, message: result.message, ...(result.details ? { details: result.details } : {}) } },
-        result.status as any,
-      )
-    }
-    return c.json(
-      {
-        url: result.url,
-        subdomain: result.subdomain,
-        publishedAt: result.publishedAt,
-        accessLevel: result.accessLevel,
-        hasPassword: result.hasPassword,
-      },
-      200,
-    )
+    const started = await startPublish(projectId, body)
+    return publishStartResponse(c, started)
   })
 
   /**
@@ -2544,149 +2915,16 @@ export function publishRoutes() {
 
   /**
    * POST /projects/:projectId/republish - Republish with latest changes
+   *
+   * The same runner as `/publish`, with the settings the project is already
+   * published with (subdomain, access level, title, description) — it no longer
+   * carries its own copy of the pipeline (SHO-542 §C). 202 for the same reason.
    */
   router.post("/projects/:projectId/republish", async (c) => {
-    try {
-      const projectId = c.req.param("projectId")
-
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-      })
-      if (!project) {
-        return c.json({ error: { code: "project_not_found", message: "Project not found" } }, 404)
-      }
-
-      if (!project.publishedSubdomain) {
-        return c.json({ error: { code: "not_published", message: "Project is not published" } }, 400)
-      }
-
-      const subdomain = project.publishedSubdomain
-
-      // Re-validate always-on entitlement on each republish (clamp off on a
-      // downgrade). Applies to both static and server-backed apps.
-      let alwaysOn = (project as any).publishedAlwaysOn === true
-      if (alwaysOn) {
-        const { canEnableAlwaysOn } = await import("../services/billing.service")
-        const gate = await canEnableAlwaysOn(project.workspaceId, projectId)
-        if (!gate.allowed) {
-          console.warn(
-            `[Publish] always-on no longer entitled for ${projectId} (${gate.used}/${gate.allowance}) — clamping off`,
-          )
-          alwaysOn = false
-        }
-      }
-
-      if (isKubernetes()) {
-        await acquirePublishLock(projectId)
-        try {
-          await setPublishStatus(projectId, 'building')
-          const buildResult = await triggerBuildWithRetry(projectId)
-          if (!buildResult.success) {
-            await setPublishStatus(projectId, 'failed', buildResult.code || 'build_failed')
-            return c.json({
-              error: { code: buildResult.code || "build_failed", message: buildResult.error || "Build failed" }
-            }, 500)
-          }
-
-          let files: Map<string, Buffer>
-          try {
-            files = await downloadDistFiles(projectId)
-          } catch (err: any) {
-            const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
-            const code = isTimeout ? 'download_timeout' : 'download_failed'
-            await setPublishStatus(projectId, 'failed', code)
-            return c.json({ error: { code, message: err.message || 'Failed to download build files' } }, 500)
-          }
-
-          if (files.size === 0) {
-            await setPublishStatus(projectId, 'failed', 'no_files')
-            return c.json({
-              error: { code: "no_files", message: "No files to publish" }
-            }, 400)
-          }
-
-          // The static bundle and the service recreate, in the order
-          // `takePublishedSiteLive` owns: a republish that cannot roll its
-          // backend must not replace the files in front of it (SHO-536 §B).
-          // configurePublishedService re-creates the right service type (which
-          // bumps the Knative revision / re-syncs content) and handles
-          // static<->server-backed transitions, the DomainMapping, and the
-          // SERVER_BACKED edge flag. seedPublishedData is a no-op when an archive
-          // already exists, so a republish never clobbers accumulated end-user
-          // writes.
-          const serverBacked = await detectServerBacked(projectId)
-          const configureTimeoutMs = await publishConfigureTimeoutMs(projectId, { serverBacked })
-          const live = await takePublishedSiteLive({
-            serverBacked,
-            onStage: (stage) => setPublishStatus(projectId, stage),
-            configure: () =>
-              withTimeout(
-                configurePublishedService(projectId, subdomain, { alwaysOn, serverBacked }),
-                configureTimeoutMs,
-                'Publish configure',
-              ),
-            upload: async () => {
-              await withTimeout(uploadToS3(subdomain, files), PUBLISH_UPLOAD_TIMEOUT_MS, 'S3 upload')
-              await purgePublishedCache(subdomain)
-            },
-          })
-          if (!live.ok) {
-            console.warn("[Publish] Republish failed to go live:", live.message)
-            await setPublishStatus(projectId, 'failed', live.code)
-            return c.json({ error: { code: live.code, message: live.message } }, live.status as any)
-          }
-        } finally {
-          await releasePublishLock(projectId)
-        }
-      }
-
-      // Tag the republished commit in the durable git repo (replaces the
-      // old WORKSPACES_DIR-based auto-checkpoint — see the publish handler).
-      const tagged = await tagPublishedCommit(projectId, subdomain)
-
-      // Update publishedAt timestamp
-      const publishedAt = new Date()
-      await prisma.project.update({
-        where: { id: projectId },
-        data: {
-          publishedAt,
-          publishStatus: 'live' as any,
-          publishError: null,
-          publishStatusAt: publishedAt,
-          publishedAlwaysOn: alwaysOn,
-          ...(tagged && { publishedCommitSha: tagged.sha, publishedTag: tagged.tag }),
-        } as any,
-      })
-
-      // Record the (new) live commit as a checkpoint, idempotent on commitSha.
-      if (tagged?.sha) {
-        try {
-          await recordCheckpointForCommit(projectId, tagged.sha, {
-            name: `Published to ${subdomain}`,
-            commitMessage: `Published ${subdomain}.${PUBLISH_DOMAIN}`,
-            isAutomatic: true,
-          })
-        } catch (err: any) {
-          console.warn(`[Publish] Failed to record republish checkpoint for ${projectId}:`, err?.message ?? err)
-        }
-      }
-
-      // Keep custom-domain routing in sync with the republished content.
-      await syncCustomDomainKv(projectId, subdomain)
-
-      return c.json({
-        url: `https://${subdomain}.${PUBLISH_DOMAIN}`,
-        subdomain,
-        publishedAt: publishedAt.getTime(),
-      }, 200)
-    } catch (error: any) {
-      console.error("[Publish] Republish error:", error)
-      try {
-        await setPublishStatus(c.req.param("projectId"), 'failed', 'republish_failed')
-      } catch {}
-      return c.json({ error: { code: "republish_failed", message: error.message } }, 500)
-    }
+    const started = await startRepublish(c.req.param("projectId"))
+    return publishStartResponse(c, started)
   })
+
 
   /**
    * POST /projects/:projectId/publish/push-data - Push the current dev database

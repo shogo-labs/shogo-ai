@@ -71,6 +71,17 @@ const prismaApi = {
       Object.assign(row, data)
       return { ...row }
     },
+    // The in-flight publish lease (SHO-542).
+    updateMany: async ({ where, data }: any) => {
+      const row = rows[where.id]
+      if (!row) return { count: 0 }
+      const inFlight = ['building', 'uploading', 'configuring'].includes(row.publishStatus)
+      const at = row.publishStatusAt ? new Date(row.publishStatusAt).getTime() : 0
+      if (inFlight && at && Date.now() - at < 30 * 60_000) return { count: 0 }
+      updateCalls.push({ where, data })
+      Object.assign(row, data)
+      return { count: 1 }
+    },
   },
   // SHO-308: every publish has a `production` environment row carrying the
   // Knative scale settings. This fake keeps the same in-memory shape.
@@ -189,6 +200,18 @@ const app = publishedSitesRoutes()
 const INDEX = { path: 'index.html', content: Buffer.from('<html>hi</html>').toString('base64') }
 const ASSET = { path: 'assets/app.js', content: Buffer.from('console.log(1)').toString('base64') }
 
+/**
+ * The upload is accepted with 202 and the cloud finishes hosting it in the
+ * background (SHO-542); these tests wait for the pipeline before asserting.
+ */
+async function settle(hostId: string) {
+  for (let i = 0; i < 400; i++) {
+    const status = rows[hostId]?.publishStatus
+    if (status === 'live' || status === 'failed') return
+    await new Promise((r) => setTimeout(r, 5))
+  }
+}
+
 function post(path: string, body: any, key: string | null = 'shogo_sk_test') {
   return app.request(path, {
     method: 'POST',
@@ -229,15 +252,18 @@ afterEach(() => {
 describe('POST /published-sites/:sourceProjectId', () => {
   it('creates a hidden host project and uploads the bundle to the subdomain prefix', async () => {
     const res = await post('/published-sites/desktop-1', { subdomain: 'my-app', files: [INDEX, ASSET] })
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(202)
 
     const body = await res.json()
     expect(body.ok).toBe(true)
+    expect(body.accepted).toBe(true)
+    expect(body.status).toBe('building')
     expect(body.url).toBe('https://my-app.shogo.one')
     expect(body.subdomain).toBe('my-app')
 
     const hostId = hostProjectIdFor('ws-a', 'desktop-1')
     expect(body.hostProjectId).toBe(hostId)
+    await settle(hostId)
     expect(createCalls).toHaveLength(1)
     expect(createCalls[0].id).toBe(hostId)
     expect(createCalls[0].hidden).toBe(true)
@@ -301,12 +327,14 @@ describe('POST /published-sites/:sourceProjectId', () => {
 
   it('reuses the same host project on republish, including with no subdomain given', async () => {
     const first = await post('/published-sites/desktop-1', { subdomain: 'my-app', files: [INDEX] })
-    expect(first.status).toBe(200)
+    expect(first.status).toBe(202)
     const hostId = hostProjectIdFor('ws-a', 'desktop-1')
+    await settle(hostId)
 
     s3Puts.length = 0
     const second = await post('/published-sites/desktop-1', { files: [INDEX, ASSET] })
-    expect(second.status).toBe(200)
+    expect(second.status).toBe(202)
+    await settle(hostId)
     const body = await second.json()
     expect(body.subdomain).toBe('my-app')
     expect(body.hostProjectId).toBe(hostId)
@@ -362,7 +390,8 @@ describe('POST /published-sites/:sourceProjectId', () => {
     // Workspace A derives its OWN host id, so it publishes into its own row and
     // never reads or writes workspace B's.
     const res = await post('/published-sites/desktop-1', { subdomain: 'my-app', files: [INDEX] })
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(202)
+    await settle(hostProjectIdFor('ws-a', 'desktop-1'))
     expect(rows[hostId].publishedSubdomain).toBeNull()
     expect(createCalls[0].workspaceId).toBe('ws-a')
   })
@@ -372,6 +401,7 @@ describe('PATCH /published-sites/:sourceProjectId', () => {
   it('changes the access level on the host row without a rebuild', async () => {
     await post('/published-sites/desktop-1', { subdomain: 'my-app', files: [INDEX] })
     const hostId = hostProjectIdFor('ws-a', 'desktop-1')
+    await settle(hostId)
     s3Puts.length = 0
 
     const res = await patch('/published-sites/desktop-1', { accessLevel: 'password', password: 'hunter2' })
@@ -386,6 +416,7 @@ describe('PATCH /published-sites/:sourceProjectId', () => {
 
   it('400s an unknown access level', async () => {
     await post('/published-sites/desktop-1', { subdomain: 'my-app', files: [INDEX] })
+    await settle(hostProjectIdFor('ws-a', 'desktop-1'))
     const res = await patch('/published-sites/desktop-1', { accessLevel: 'everyone' })
     expect(res.status).toBe(400)
     expect((await res.json()).error.code).toBe('invalid_access_level')
@@ -396,6 +427,7 @@ describe('POST /published-sites/:sourceProjectId/unpublish', () => {
   it('clears the host project', async () => {
     await post('/published-sites/desktop-1', { subdomain: 'my-app', files: [INDEX] })
     const hostId = hostProjectIdFor('ws-a', 'desktop-1')
+    await settle(hostId)
 
     const res = await post('/published-sites/desktop-1/unpublish', {})
     expect(res.status).toBe(200)

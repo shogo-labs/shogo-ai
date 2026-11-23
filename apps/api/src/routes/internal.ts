@@ -386,9 +386,19 @@ app.get('/projects/:projectId/publish', async (c) => {
         accessLevel: true,
         sitePasswordHash: true,
         publishStatus: true,
+        publishError: true,
+        publishStatusAt: true,
       } as any,
     })) as Record<string, any> | null
     if (!project) return c.json({ error: 'Project not found' }, 404)
+
+    // Publishing runs in the background (SHO-542), so this GET is how the
+    // agent's publish tool learns the outcome. An in-flight status past its
+    // lease is a dead publish, not a running one.
+    const { resolveReportedPublishStatus, markPublishInterrupted } = await import('./publish')
+    const reported = resolveReportedPublishStatus(project)
+    if (reported.interrupted) await markPublishInterrupted(projectId)
+    const publishError = reported.interrupted ? reported.error : (project.publishError ?? null)
 
     return c.json({
       ok: true,
@@ -397,13 +407,39 @@ app.get('/projects/:projectId/publish', async (c) => {
       publishedAt: project.publishedAt ? new Date(project.publishedAt).getTime() : null,
       accessLevel: project.accessLevel ?? null,
       hasPassword: !!project.sitePasswordHash,
-      publishStatus: project.publishStatus ?? null,
+      publishStatus: reported.status,
+      publishError,
+      // A refused publish's machine-actionable context is not on the row (no
+      // schema change), so it is rebuilt on demand for the one code whose
+      // caller needs it: the agent has to tell the user exactly what a
+      // destructive schema change would drop.
+      publishErrorDetails:
+        publishError === 'destructive_schema_change'
+          ? await describeDestructivePublish(projectId)
+          : null,
     })
   } catch (err: any) {
     console.error(`[Internal] publish state for ${projectId} failed:`, err.message)
     return c.json({ error: 'Failed to get publish state' }, 500)
   }
 })
+
+/**
+ * The changes a refused publish would have destroyed, for the tool to quote.
+ * Best-effort: a diff that cannot be computed must not turn a clear
+ * `destructive_schema_change` into a 500.
+ */
+async function describeDestructivePublish(projectId: string): Promise<Record<string, unknown> | null> {
+  try {
+    const { describePendingDestructiveChanges } = await import('../services/published-schema.service')
+    const described = await describePendingDestructiveChanges(projectId, 'production')
+    if (!described) return null
+    return { environment: 'production', changes: described.changes }
+  } catch (err: any) {
+    console.warn(`[Internal] could not describe destructive changes for ${projectId}:`, err?.message ?? err)
+    return null
+  }
+}
 
 /**
  * POST /api/internal/projects/:projectId/publish — publish/republish a project.
@@ -442,8 +478,13 @@ app.post('/projects/:projectId/publish', async (c) => {
   }
 
   try {
-    const { publishProject } = await import('./publish')
-    const result = await publishProject(projectId, {
+    const { startPublish } = await import('./publish')
+    // Same runner as the session route: validate synchronously, record
+    // `building`, then let the pipeline run in the background and answer 202.
+    // The tool polls the GET above for the outcome (SHO-542) — the metal
+    // runtime reaches this API through the public URL, which has the same
+    // ~100 s edge limit.
+    const started = await startPublish(projectId, {
       subdomain: body.subdomain ?? '',
       accessLevel: body.accessLevel,
       password: body.password,
@@ -452,20 +493,23 @@ app.post('/projects/:projectId/publish', async (c) => {
       environment,
       allowDataLoss: body.allowDataLoss === true,
     })
-    if (!result.ok) {
+    if (!started.ok) {
       return c.json(
-        { error: { code: result.code, message: result.message, ...(result.details ? { details: result.details } : {}) } },
-        result.status as any,
+        { error: { code: started.code, message: started.message, ...(started.details ? { details: started.details } : {}) } },
+        started.status as any,
       )
     }
-    return c.json({
-      ok: true,
-      url: result.url,
-      subdomain: result.subdomain,
-      publishedAt: result.publishedAt,
-      accessLevel: result.accessLevel,
-      hasPassword: result.hasPassword,
-    })
+    return c.json(
+      {
+        ok: true,
+        accepted: true,
+        status: started.publishStatus ?? 'building',
+        subdomain: started.subdomain,
+        url: started.url,
+        environment: started.environment,
+      },
+      202,
+    )
   } catch (err: any) {
     console.error(`[Internal] publish for ${projectId} failed:`, err.message)
     return c.json({ error: { code: 'publish_failed', message: 'Failed to publish' } }, 500)

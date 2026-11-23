@@ -180,13 +180,21 @@ mock.module('../../services/cost-analytics.service', () => ({
 }))
 
 // The internal POST publish route lazily `await import('./publish')` and calls
-// publishProject; mock it so the heavy build/Knative pipeline never runs.
+// startPublish; mock it so the heavy build/Knative pipeline never runs.
 mock.module('../publish', () => ({
-  publishProject: async (projectId: string, opts: any) => {
+  startPublish: async (projectId: string, opts: any) => {
     store.publishCalledWith = { projectId, opts }
     if (store.publishThrow) throw store.publishThrow
     return store.publishResult
   },
+  // The GET's stale-lease helpers (SHO-542): these tests are about the route's
+  // shape, so report the row's status as-is and never write back.
+  resolveReportedPublishStatus: (row: any) => ({
+    status: row.publishStatus ?? null,
+    error: null,
+    interrupted: false,
+  }),
+  markPublishInterrupted: async () => {},
 }))
 
 const app = (await import('../internal')).default
@@ -1246,6 +1254,9 @@ describe('GET /projects/:projectId/publish', () => {
       accessLevel: 'public',
       hasPassword: false,
       publishStatus: 'published',
+      // A settled publish: no error code, and nothing to describe.
+      publishError: null,
+      publishErrorDetails: null,
     })
   })
 
@@ -1267,6 +1278,8 @@ describe('GET /projects/:projectId/publish', () => {
       accessLevel: 'password',
       hasPassword: true,
       publishStatus: null,
+      publishError: null,
+      publishErrorDetails: null,
     })
   })
 
@@ -1300,13 +1313,16 @@ describe('GET /projects/:projectId/publish', () => {
 // so the agent's publish tool can deploy `{subdomain}.shogo.one` from the pod.
 // Delegates to the shared `publishProject` service (mocked here).
 describe('POST /projects/:projectId/publish', () => {
+  // Accepted, not finished: the pipeline runs in the background (SHO-542) and
+  // the tool follows the GET until it settles.
   const ok = {
     ok: true,
+    status: 202,
+    accepted: true,
+    publishStatus: 'building',
     url: 'https://my-site.shogo.one',
     subdomain: 'my-site',
-    publishedAt: 1700000000000,
-    accessLevel: 'public',
-    hasPassword: false,
+    environment: 'production',
   }
 
   test('401 when auth fails', async () => {
@@ -1332,7 +1348,7 @@ describe('POST /projects/:projectId/publish', () => {
     expect((await res.json()).error.code).toBe('subdomain_required')
   })
 
-  test('200 publishes and forwards options to publishProject', async () => {
+  test('202 accepts and forwards options to startPublish', async () => {
     store.publishResult = ok
     const res = await app.request('/projects/proj-x/publish', {
       method: 'POST', headers: { ...SA, ...JSON_H },
@@ -1341,14 +1357,14 @@ describe('POST /projects/:projectId/publish', () => {
         siteTitle: 'My Site', siteDescription: 'desc',
       }),
     })
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(202)
     expect(await res.json()).toEqual({
       ok: true,
-      url: 'https://my-site.shogo.one',
+      accepted: true,
+      status: 'building',
       subdomain: 'my-site',
-      publishedAt: 1700000000000,
-      accessLevel: 'public',
-      hasPassword: false,
+      url: 'https://my-site.shogo.one',
+      environment: 'production',
     })
     expect(store.publishCalledWith).toEqual({
       projectId: 'proj-x',
@@ -1363,7 +1379,7 @@ describe('POST /projects/:projectId/publish', () => {
     })
   })
 
-  test('maps a structured publishProject failure to its status + code', async () => {
+  test('maps a structured startPublish refusal to its status + code', async () => {
     store.publishResult = { ok: false, code: 'subdomain_taken', message: 'Taken', status: 409 }
     const res = await app.request('/projects/proj-x/publish', {
       method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify({ subdomain: 'taken' }),
@@ -1372,7 +1388,7 @@ describe('POST /projects/:projectId/publish', () => {
     expect((await res.json()).error).toEqual({ code: 'subdomain_taken', message: 'Taken' })
   })
 
-  test('500 when publishProject throws', async () => {
+  test('500 when startPublish throws', async () => {
     store.publishThrow = new Error('knative down')
     const res = await app.request('/projects/proj-x/publish', {
       method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify({ subdomain: 'my-site' }),
@@ -1381,7 +1397,7 @@ describe('POST /projects/:projectId/publish', () => {
     expect((await res.json()).error.code).toBe('publish_failed')
   })
 
-  test('200 with runtime token in production (metal-shaped, no SHOGO_LOCAL_MODE)', async () => {
+  test('202 with runtime token in production (metal-shaped, no SHOGO_LOCAL_MODE)', async () => {
     delete process.env.SHOGO_LOCAL_MODE
     store.podIdentity = null
     store.runtimeVerify = { ok: true, projectId: 'p-local' }
@@ -1390,7 +1406,7 @@ describe('POST /projects/:projectId/publish', () => {
       method: 'POST', headers: { 'x-runtime-token': 'rt', ...JSON_H },
       body: JSON.stringify({ subdomain: 'my-site' }),
     })
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(202)
   })
 })
 
