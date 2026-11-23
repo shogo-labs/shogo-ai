@@ -14,16 +14,41 @@ import { join } from 'path'
 import type { HostSample } from './host-sampler'
 import { TURN_STEPS, type Knees, type StepMetrics, type StepVerdict, type TurnStep } from './knee'
 
+/**
+ * What `ramPhysicalMiB` counts. `soak-delta` is the host's Firecracker RSS
+ * minus the RSS recorded before the soak added a guest, so it is the soak's own
+ * share. `host-wide` is every Firecracker process on the host, tenants
+ * included — it is not attributable to the soak and must not be divided by N.
+ * Steps.csv rows written before the column existed are `host-wide`, because
+ * that is what the old code recorded.
+ */
+export type RamPhysicalBasis = 'soak-delta' | 'host-wide'
+
 export interface StepRow extends StepMetrics {
   /** vCPUs committed / physical threads. */
   cpuOversubRatio: number
   /** Guest RAM committed (N × configured MiB) and host RAM physically used. */
   ramCommittedMiB: number
   ramPhysicalMiB: number
+  ramPhysicalBasis: RamPhysicalBasis
   turnP50: Record<TurnStep, number>
   runDelayP95MsPerSec: number
   apiP95Ms: number
   verdict: StepVerdict
+}
+
+/**
+ * Host RSS per resident soak VM, taken from the densest step whose RAM was
+ * attributed to the soak. 0 when no step carries an attributable number — the
+ * card's per-size table is only meaningful when this is measured, never
+ * inferred from host-wide RSS.
+ */
+export function perVmRssMiB(steps: StepRow[]): number {
+  const attributed = steps
+    .filter((s) => s.ramPhysicalBasis === 'soak-delta' && s.n > 0 && s.ramPhysicalMiB > 0)
+    .sort((a, b) => b.n - a.n)
+  const top = attributed[0]
+  return top ? Math.round(top.ramPhysicalMiB / top.n) : 0
 }
 
 export interface BurstRow {
@@ -83,6 +108,7 @@ export function stepsCsv(rows: StepRow[]): string {
     'cpu_oversub_ratio',
     'ram_committed_mib',
     'ram_physical_mib',
+    'ram_physical_basis',
     ...TURN_STEPS.flatMap((s) => [`${s}_p50_ms`, `${s}_p95_ms`]),
     'run_delay_p95_ms_per_s',
     'cpu_psi_some_avg60',
@@ -101,6 +127,7 @@ export function stepsCsv(rows: StepRow[]): string {
       f(r.cpuOversubRatio, 2),
       r.ramCommittedMiB,
       r.ramPhysicalMiB,
+      r.ramPhysicalBasis,
       ...TURN_STEPS.flatMap((s) => [f(r.turnP50[s]), f(r.turnP95[s])]),
       f(r.runDelayP95MsPerSec, 2),
       f(r.cpuPsiSomeAvg60, 2),
@@ -204,8 +231,10 @@ export function renderReportMarkdown(input: ReportInput): string {
 
   out.push('## Steps')
   out.push('')
+  const anyHostWide = steps.some((r) => r.ramPhysicalBasis === 'host-wide')
   out.push(
-    '| N | vCPU over | RAM committed | RAM physical (soak) | ' +
+    '| N | vCPU over | RAM committed | RAM physical ' +
+      (anyHostWide ? '(host FC, not soak) | ' : '(soak) | ') +
       TURN_STEPS.map((s) => `${s} p95`).join(' | ') +
       ' | run_delay p95 | cpu PSI | MemAvail | swap-in/s | OOM | mem PSI full | resume p95 | API p95 | CPU | RAM |',
   )
@@ -218,6 +247,12 @@ export function renderReportMarkdown(input: ReportInput): string {
     )
   }
   out.push('')
+  if (anyHostWide) {
+    out.push(
+      '> The RAM physical column in this run is the host\'s whole Firecracker RSS, tenants included — it was recorded before the harness attributed RSS to the soak, so it cannot be read per VM. Use the committed run that carries `ram_physical_basis=soak-delta` for host RSS per VM.',
+    )
+    out.push('')
+  }
 
   const failures = steps.filter((r) => !r.verdict.cpuPass || !r.verdict.ramPass)
   if (failures.length > 0) {
@@ -257,7 +292,7 @@ export function renderReportMarkdown(input: ReportInput): string {
   const belowKnee = steps.filter((r) => r.n < recommendation.maxVmsPerHost && (!r.verdict.cpuPass || !r.verdict.ramPass))
   if (belowKnee.length > 0) {
     out.push(
-      `- **Below the knee:** ${belowKnee.map((r) => `N=${r.n}`).join(', ')} missed a bound while a higher N passed the same bounds. Those guests were cold (fresh image, cold page cache), so read the miss as warm-up, not as headroom — the passing step above it is the measurement.`,
+      `- **Below the knee:** ${belowKnee.map((r) => `N=${r.n}`).join(', ')} missed a bound while a higher N passed the same bounds. A step that fails below a passing step is not a capacity limit — the queue, the page cache or one slow turn at that N explains it — so the passing step above it is the measurement.`,
     )
   }
   if (top > 0 && recommendation.maxVmsPerHost > 0 && recommendation.maxVmsPerHost === top) {
@@ -272,11 +307,17 @@ export function renderReportMarkdown(input: ReportInput): string {
 
   out.push('## RAM at each prod VM size')
   out.push('')
-  out.push(`Measured host RSS per resident VM: **${recommendation.perVmRssMiB} MiB**.`)
-  out.push('')
-  out.push('| configured VM size | max VMs in host RAM |')
-  out.push('|---|---|')
-  for (const s of recommendation.bySize) out.push(`| ${s.sizeMiB} MiB | ${s.maxVms} |`)
+  if (recommendation.perVmRssMiB > 0) {
+    out.push(`Measured host RSS per resident VM: **${recommendation.perVmRssMiB} MiB**.`)
+    out.push('')
+    out.push('| configured VM size | max VMs in host RAM |')
+    out.push('|---|---|')
+    for (const s of recommendation.bySize) out.push(`| ${s.sizeMiB} MiB | ${s.maxVms} |`)
+  } else {
+    out.push(
+      'Not measured in this run: no step carries host RSS attributed to the soak, and host-wide Firecracker RSS cannot be divided by N while tenants are resident. The per-size table comes from a run that records `ram_physical_basis=soak-delta`.',
+    )
+  }
   out.push('')
 
   if (input.notes && input.notes.length > 0) {

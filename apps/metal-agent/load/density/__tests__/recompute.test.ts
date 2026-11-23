@@ -41,6 +41,7 @@ function step(n: number, occur: Partial<StepMetrics> = {}): StepRow {
     cpuOversubRatio: +((n * 2) / 24).toFixed(2),
     ramCommittedMiB: n * 4096,
     ramPhysicalMiB: n * 2124,
+    ramPhysicalBasis: 'soak-delta',
     turnP50: metrics.turnP95,
     runDelayP95MsPerSec: 0.5,
     apiP95Ms: 8,
@@ -118,6 +119,44 @@ describe('recomputeReport', () => {
     expect(md).toContain('METAL_MAX_VMS_PER_HOST=80')
     expect(md).toContain('**Below the knee:** N=40')
     expect(md).toContain('Re-derived from steps.csv')
+  })
+
+  test('a run without the basis column is read as host-wide, not as soak RAM', () => {
+    // Run #2 predates the attribution: its steps.csv has no basis column and its
+    // RAM column sums every Firecracker process on the host. Dividing that by N
+    // produced 6473 MiB per VM against 4096 MiB guests.
+    const dir = record()
+    const csv = readFileSync(join(dir, 'steps.csv'), 'utf8')
+    const legacy = csv
+      .split('\n')
+      .map((line, i) => {
+        if (i === 0) return line.split(',').filter((_, c) => c !== 4).join(',')
+        const cells = line.split(',')
+        if (cells.length < 4) return line
+        cells.splice(4, 1)
+        return cells.join(',')
+      })
+      .join('\n')
+    writeFileSync(join(dir, 'steps.csv'), legacy)
+
+    const { report, path } = recomputeReport(dir)
+    expect(report.steps[0].ramPhysicalBasis).toBe('host-wide')
+    expect(report.recommendation.perVmRssMiB).toBe(0)
+    expect(report.recommendation.bySize).toEqual([])
+    const md = readFileSync(path, 'utf8')
+    expect(md).toContain('Not measured in this run')
+  })
+
+  test('does not clobber a recorded burst it cannot reproduce', () => {
+    const dir = record()
+    const withBurst = readFileSync(join(dir, 'report.md'), 'utf8') + '\n## Burst\n\n| N | pass |\n|---|---|\n| 80 | FAIL |\n'
+    writeFileSync(join(dir, 'report.md'), withBurst)
+    writeFileSync(join(dir, 'burst.csv'), '')
+
+    const { path } = recomputeReport(dir)
+    expect(path).toEndWith('report.recomputed.md')
+    expect(readFileSync(join(dir, 'report.md'), 'utf8')).toContain('## Burst')
+    expect(readFileSync(path, 'utf8')).not.toContain('see the original report')
   })
 
   test('refuses a run recorded before the baseline turns existed', () => {

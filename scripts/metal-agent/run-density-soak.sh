@@ -48,8 +48,11 @@ ssh_() { ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "$@"; }
 scp_() { scp "${SSH_OPTS[@]}" "$@"; }
 
 echo "== Preflight =="
-ssh_ "test -e /dev/kvm && test -x $WORK/bin/firecracker && test -f $WORK/img/vmlinux && test -f $WORK/img/rootfs.ext4" \
-  || { echo "! Host missing FC artifacts under $WORK — run scripts/firecracker-spike/run-spike-ssh.sh first."; exit 3; }
+# The host's own env names the artifacts (METAL_WORK / METAL_ROOTFS); hardcoding
+# rootfs.ext4 failed on a host provisioned by host-bootstrap.sh, which ships
+# img/runtime.ext4. Read the host's values instead of guessing.
+ssh_ 'set -a; . /etc/metal-agent.env; set +a; test -e /dev/kvm && test -x "${METAL_WORK}/bin/firecracker" && test -f "${METAL_WORK}/img/vmlinux" && test -f "${METAL_ROOTFS}"' \
+  || { echo "! Host missing FC artifacts (METAL_WORK/bin/firecracker, img/vmlinux, METAL_ROOTFS) — run scripts/firecracker-spike/run-spike-ssh.sh first."; exit 3; }
 ssh_ "test -f /etc/metal-agent.env" \
   || { echo "! /etc/metal-agent.env not found — is the metal-agent installed on this host?"; exit 3; }
 

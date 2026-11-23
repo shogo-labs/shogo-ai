@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { computeKnees, type StepMetrics, type TurnStep } from '../knee'
-import { renderReportMarkdown, samplesCsv, stepsCsv, turnsCsv, writeReport, type ReportInput, type StepRow } from '../report'
+import { perVmRssMiB, renderReportMarkdown, samplesCsv, stepsCsv, turnsCsv, writeReport, type ReportInput, type StepRow } from '../report'
 import type { HostSample } from '../host-sampler'
 
 const baseline: Record<TurnStep, number> = { cpu: 3000, install: 2000, build: 3000 }
@@ -29,6 +29,7 @@ function step(n: number, over: Partial<StepMetrics> = {}): StepRow {
     cpuOversubRatio: (n * 2) / 48,
     ramCommittedMiB: n * 2048,
     ramPhysicalMiB: n * 1024,
+    ramPhysicalBasis: 'soak-delta',
     turnP50: { cpu: 2900, install: 1900, build: 2900 },
     runDelayP95MsPerSec: 1.5,
     apiP95Ms: 12,
@@ -188,6 +189,28 @@ describe('renderReportMarkdown', () => {
 
   test('labels the baseline table with the statistic the bounds compare', () => {
     expect(renderReportMarkdown(input([step(40)]))).toContain('| step | p95 ms |')
+  })
+
+  test('a host-wide RSS column is never presented as the soak\'s RAM', () => {
+    // Run #2 recorded every Firecracker process on the host, so 6473 MiB per
+    // soak VM appeared against 4096 MiB guests. The table must say what it is.
+    const rows = [{ ...step(40), ramPhysicalBasis: 'host-wide' as const, ramPhysicalMiB: 258941 }]
+    const i = input(rows)
+    i.recommendation = { ...i.recommendation, perVmRssMiB: 0, bySize: [] }
+    const md = renderReportMarkdown(i)
+    expect(md).toContain('RAM physical (host FC, not soak)')
+    expect(md).not.toContain('RAM physical (soak)')
+    expect(md).toContain('Not measured in this run')
+  })
+
+  test('per-VM RSS comes from attributed steps only, at the densest one', () => {
+    const rows = [
+      { ...step(40), ramPhysicalBasis: 'host-wide' as const, ramPhysicalMiB: 258941 },
+      { ...step(80), ramPhysicalBasis: 'soak-delta' as const, ramPhysicalMiB: 80 * 2100 },
+      { ...step(100), ramPhysicalBasis: 'soak-delta' as const, ramPhysicalMiB: 100 * 2000 },
+    ]
+    expect(perVmRssMiB(rows)).toBe(2000)
+    expect(perVmRssMiB([rows[0]])).toBe(0)
   })
 })
 

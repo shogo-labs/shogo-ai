@@ -28,7 +28,7 @@ CPU knee **0**, RAM knee **80** — the recommendation is the lower of the two.
 
 ## Steps
 
-| N | vCPU over | RAM committed | RAM physical | cpu p95 | install p95 | build p95 | run_delay p95 | cpu PSI | MemAvail | swap-in/s | OOM | mem PSI full | resume p95 | API p95 | CPU | RAM |
+| N | vCPU over | RAM committed | RAM physical (host FC, not soak) | cpu p95 | install p95 | build p95 | run_delay p95 | cpu PSI | MemAvail | swap-in/s | OOM | mem PSI full | resume p95 | API p95 | CPU | RAM |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 40 | 3.33:1 | 163840 MiB | 258941 MiB | 3027.6 ms | 580.5 ms | 1479.4 ms | 0.67 | 0.3% | 44.0% | 2.1 | 0 | 0.0% | 651 ms | 6 ms | FAIL | pass |
 | 60 | 5.00:1 | 245760 MiB | 307975 MiB | 3117.2 ms | 583.1 ms | 3880.0 ms | 1.03 | 0.3% | 34.3% | 5.8 | 0 | 0.0% | 918 ms | 6 ms | FAIL | pass |
@@ -36,6 +36,8 @@ CPU knee **0**, RAM knee **80** — the recommendation is the lower of the two.
 | 100 | 8.33:1 | 409600 MiB | 367006 MiB | 3053.6 ms | 617.4 ms | 3179.4 ms | 0.00 | 0.3% | 26.3% | 33.7 | 0 | 1.4% | 604 ms | 7 ms | FAIL | FAIL |
 | 120 | 10.00:1 | 491520 MiB | 322710 MiB | 3037.3 ms | 360.6 ms | 1839.5 ms | 0.18 | 1.1% | 34.9% | 39.9 | 0 | 1.8% | 634 ms | 10 ms | FAIL | FAIL |
 | 160 | 13.33:1 | 655360 MiB | 395224 MiB | 3113.1 ms | 779.7 ms | 3603.6 ms | 0.19 | 3.3% | 14.2% | 136.2 | 0 | 4.9% | 3954 ms | 1367 ms | FAIL | FAIL |
+
+> The RAM physical column in this run is the host's whole Firecracker RSS, tenants included — it was recorded before the harness attributed RSS to the soak, so it cannot be read per VM. Use the committed run that carries `ram_physical_basis=soak-delta` for host RSS per VM.
 
 ### Why each step failed
 
@@ -54,14 +56,11 @@ CPU knee **0**, RAM knee **80** — the recommendation is the lower of the two.
 
 ## RAM at each prod VM size
 
-Measured host RSS per resident VM: **4145 MiB**.
-
-| configured VM size | max VMs in host RAM |
-|---|---|
-| 2048 MiB | 111 |
-| 4096 MiB | 111 |
+Not measured in this run: no step carries host RSS attributed to the soak, and host-wide Firecracker RSS cannot be divided by N while tenants are resident. The per-size table comes from a run that records `ram_physical_basis=soak-delta`.
 
 ## Notes
 
 - Re-derived from steps.csv and turns.csv of the recorded run (2026-11-23T11:06:25.840Z), not a fresh soak.
-- Burst rows are not in this run's CSVs; see the original report for them.
+- This run recorded no burst rows, so none are claimed here. Its `turns.csv` does carry 20 burst turns recorded before the primed-guest fix, 15 of which never started a turn — a harness result, not a burst result, so it is not reported as one.
+- RAM physical is the host's whole Firecracker RSS in this run (the step column predates soak attribution), so no per-VM RSS and no per-size ceiling are derived from it. Those come from `metal-density-latitude-dal-1-2026-11-23T1320.md`, the same host measured with `ram_physical_basis=soak-delta`.
+- The ladder numbers above are unaffected by either defect: every RAM bound (OOM, swap-in, memory PSI, MemAvailable) is a host signal, which is why the RAM knee of 80 stands.

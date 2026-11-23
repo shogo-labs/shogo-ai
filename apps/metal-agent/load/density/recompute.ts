@@ -15,7 +15,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { percentile } from './host-sampler'
 import { TURN_STEPS, computeKnees, DEFAULT_BOUNDS, evaluateStep, ramCeilingsBySize, type Bounds, type TurnStep } from './knee'
-import { renderReportMarkdown, type BurstRow, type ReportInput, type RunEnv, type StepRow } from './report'
+import { perVmRssMiB, renderReportMarkdown, type BurstRow, type ReportInput, type RunEnv, type StepRow } from './report'
 
 type Row = Record<string, string>
 
@@ -58,6 +58,9 @@ export function stepsFromCsv(text: string, bounds: Bounds = DEFAULT_BOUNDS): Ste
       cpuOversubRatio: n(r.cpu_oversub_ratio),
       ramCommittedMiB: n(r.ram_committed_mib),
       ramPhysicalMiB: n(r.ram_physical_mib),
+      // Runs recorded before the column existed wrote host-wide RSS there, so an
+      // absent value means `host-wide`, never a soak-attributable zero.
+      ramPhysicalBasis: r.ram_physical_basis === 'soak-delta' ? 'soak-delta' : 'host-wide',
       turnP50,
       runDelayP95MsPerSec: n(r.run_delay_p95_ms_per_s),
       apiP95Ms: n(r.api_p95_ms),
@@ -111,9 +114,7 @@ export function recomputeReport(dir: string, bounds: Bounds = DEFAULT_BOUNDS): {
   const burstPath = join(dir, 'burst.csv')
   const burst = existsSync(burstPath) ? burstFromCsv(readFileSync(burstPath, 'utf8')) : []
   const knees = computeKnees(evaluated, baseline, bounds)
-
-  const rss = evaluated.map((s) => (s.n > 0 ? s.ramPhysicalMiB / s.n : 0)).filter((x) => x > 0)
-  const perVmRssMiB = rss.length > 0 ? Math.round(rss.reduce((a, b) => a + b, 0) / rss.length) : 0
+  const rssMiB = perVmRssMiB(evaluated)
 
   const report: ReportInput = {
     env,
@@ -125,16 +126,22 @@ export function recomputeReport(dir: string, bounds: Bounds = DEFAULT_BOUNDS): {
       maxVmsPerHost: knees.recommended,
       cpuKnee: knees.cpuKnee,
       ramKnee: knees.ramKnee,
-      bySize: ramCeilingsBySize({ hostMemMiB: env.hostMemMiB, perVmRssMiB, reservePct: bounds.memAvailablePct }),
-      perVmRssMiB,
+      bySize: rssMiB > 0 ? ramCeilingsBySize({ hostMemMiB: env.hostMemMiB, perVmRssMiB: rssMiB, reservePct: bounds.memAvailablePct }) : [],
+      perVmRssMiB: rssMiB,
     },
     mix: { agent: 0.16, app: 0.01, idle: 0.83 },
     notes: [
       `Re-derived from steps.csv and turns.csv of the recorded run (${env.startedAt}), not a fresh soak.`,
-      burst.length === 0 ? 'Burst rows are not in this run\'s CSVs; see the original report for them.' : `Burst rows: ${burst.length}.`,
+      burst.length === 0
+        ? 'This run recorded no burst rows, so none are claimed here; the burst evidence lives in the run whose burst.csv is committed.'
+        : `Burst rows: ${burst.length}.`,
     ],
   }
-  const path = join(dir, 'report.md')
+  // A recompute that cannot reproduce the burst must not overwrite a report that
+  // has one: write beside it, so the recorded burst result survives.
+  const target = join(dir, 'report.md')
+  const existing = existsSync(target) ? readFileSync(target, 'utf8') : ''
+  const path = burst.length === 0 && /^## Burst$/m.test(existing) ? join(dir, 'report.recomputed.md') : target
   writeFileSync(path, renderReportMarkdown(report))
   return { report, path }
 }

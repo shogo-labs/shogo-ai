@@ -37,7 +37,7 @@ import { DEFAULT_MIX, allocateRoles, parseMix, roleCounts, type Mix, type Role }
 import { DEFAULT_BOUNDS, TURN_STEPS, computeKnees, ramCeilingsBySize, type Bounds, type StepMetrics, type TurnStep } from './density/knee'
 import { primeWarmCache, runAgentTurn, startAppLoad, type AppLoadHandle, type TurnTimings } from './density/guest-workload'
 import { assertStagingHost, DEFAULT_STAGING_CONTROL_PLANES, DEFAULT_STAGING_HOSTS } from './density/staging-guard'
-import { writeReport, type BurstRow, type ReportInput, type RunEnv, type StepRow } from './density/report'
+import { perVmRssMiB as perVmRssMiBFrom, writeReport, type BurstRow, type ReportInput, type RunEnv, type StepRow } from './density/report'
 import { recomputeReport } from './density/recompute'
 
 // ---------------------------------------------------------------------------
@@ -719,6 +719,7 @@ export class DensitySoak {
         cpuOversubRatio: this.hostInfo.threads > 0 ? +((assigned * vcpus) / this.hostInfo.threads).toFixed(2) : 0,
         ramCommittedMiB: assigned * memMiB,
         ramPhysicalMiB: Math.max(0, (last?.fcRssMiB ?? 0) - this.rssBeforeMiB),
+        ramPhysicalBasis: 'soak-delta',
         turnP50: this.turnP50(n),
         runDelayP95MsPerSec: last?.runDelayMsPerSec?.p95 ?? 0,
         apiP95Ms: +percentile(api, 95).toFixed(1),
@@ -784,7 +785,7 @@ export class DensitySoak {
     const vcpus = this.opts.vcpus ?? Number(this.originalEnv?.METAL_VCPUS ?? 2)
     const memMiB = this.opts.memMiB ?? Number(this.originalEnv?.METAL_MEM_MIB ?? 1024)
     const last = this.samples[this.samples.length - 1]
-    const perVmRssMiB = rows.length > 0 && rows[rows.length - 1].n > 0 ? Math.round(rows[rows.length - 1].ramPhysicalMiB / rows[rows.length - 1].n) : 0
+    const rssPerVmMiB = perVmRssMiBFrom(rows)
     const env: RunEnv = {
       hostId: this.opts.host,
       hostModel: this.hostInfo.model,
@@ -815,8 +816,8 @@ export class DensitySoak {
         maxVmsPerHost: knees.recommended,
         cpuKnee: knees.cpuKnee,
         ramKnee: knees.ramKnee,
-        bySize: ramCeilingsBySize({ hostMemMiB: this.hostInfo.memMiB, perVmRssMiB, reservePct: this.opts.bounds.memAvailablePct }),
-        perVmRssMiB,
+        bySize: rssPerVmMiB > 0 ? ramCeilingsBySize({ hostMemMiB: this.hostInfo.memMiB, perVmRssMiB: rssPerVmMiB, reservePct: this.opts.bounds.memAvailablePct }) : [],
+        perVmRssMiB: rssPerVmMiB,
       },
       mix: this.opts.mix,
       notes: [
