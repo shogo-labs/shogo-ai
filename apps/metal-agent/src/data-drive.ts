@@ -31,10 +31,10 @@
  */
 
 import { closeSync, existsSync, ftruncateSync, openSync, rmSync, statSync } from 'fs'
-import { execFileSync } from 'child_process'
 import { join } from 'path'
 import type { MetalConfig } from './config'
 import { allocatedBytes } from './disk'
+import { run } from './run'
 
 /** ext4 label fc-init mounts at /data (build-runtime-rootfs.sh). */
 export const WORKSPACE_DRIVE_LABEL = 'shogo-ws'
@@ -61,7 +61,7 @@ export class DataDriveProvisioner {
    * Create a fresh, formatted, empty data drive for a new VM. Sparse — logical
    * size is `sizeMiB`, but only blocks the guest actually writes consume NVMe.
    */
-  provision(vmId: string, sizeMiB: number, kind: DataDriveKind = 'docker'): string {
+  async provision(vmId: string, sizeMiB: number, kind: DataDriveKind = 'docker'): Promise<string> {
     const dst = this.path(vmId, kind)
     const fd = openSync(dst, 'w')
     try {
@@ -69,17 +69,17 @@ export class DataDriveProvisioner {
     } finally {
       closeSync(fd)
     }
-    this.runMkfs(dst, kind === 'workspace' ? WORKSPACE_DRIVE_LABEL : DOCKER_DRIVE_LABEL)
+    await this.runMkfs(dst, kind === 'workspace' ? WORKSPACE_DRIVE_LABEL : DOCKER_DRIVE_LABEL)
     return dst
   }
 
   /** Overridable seam for tests — the real host always has mkfs.ext4. */
-  protected runMkfs(path: string, label?: string): void {
+  protected async runMkfs(path: string, label?: string): Promise<void> {
     // -q quiet, -F force (operating on a plain file, not a block device).
     // A labelled (workspace) drive also drops the 5% root reservation: the
     // guest runtime is root, so reserved blocks would only hide free space.
     const args = label ? ['-q', '-F', '-L', label, '-m', '0', path] : ['-q', '-F', path]
-    execFileSync('mkfs.ext4', args)
+    await run('mkfs.ext4', args)
   }
 
   /** True if a data-drive backing file exists at this path (restore check). */

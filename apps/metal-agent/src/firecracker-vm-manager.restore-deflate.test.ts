@@ -31,7 +31,7 @@ afterEach(() => {
 
 /** A manager whose FC child and tap are stubbed away; everything else is real. */
 class TestMgr extends FirecrackerVMManager {
-  protected setupRestoreTap(): void {}
+  async setupRestoreTap(): Promise<void> {}
   /** restoreVM reads the pid back out of `procs`, so register a fake one. */
   spawnFc(id: string, _socketPath: string, _serialLog: string): any {
     const proc = { pid: 4242, kill: () => {} }

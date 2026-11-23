@@ -116,13 +116,13 @@ describe('withReadOnlyMount', () => {
 })
 
 describe('RootfsProvisioner.quarantine (file modes)', () => {
-  test('moves the image under runDir/quarantine, out of the GC sweep', () => {
+  test('moves the image under runDir/quarantine, out of the GC sweep', async () => {
     const runDir = mkdtempSync(join(tmpdir(), 'rescue-run-'))
     try {
       const prov = new RootfsProvisioner({ ...config, rootfsCow: 'full', runDir } as typeof config)
       const img = join(runDir, 'fcvm-1.rootfs.ext4')
       writeFileSync(img, 'disk')
-      const kept = prov.quarantine(img, 'p1/../x-123')
+      const kept = await prov.quarantine(img, 'p1/../x-123')
       expect(kept).toBe(join(runDir, 'quarantine', 'p1_.._x-123.rootfs.ext4'))
       expect(existsSync(img)).toBe(false)
       expect(existsSync(kept!)).toBe(true)

@@ -84,9 +84,9 @@ function makePool(
   mkdirSync(cfg.snapDir, { recursive: true })
   mkdirSync(cfg.runDir, { recursive: true })
   const fakeMgr = {
-    releaseRootfs: (p: string) => rmSync(p, { force: true }),
+    releaseRootfs: async (p: string) => rmSync(p, { force: true }),
     // Default: no dm devices are mapped (so dm-mode orphan cow files reclaim).
-    rootfsDeviceMapped: () => false,
+    rootfsDeviceMapped: async () => false,
     procCount: () => 0,
     reapOrphans: () => 0,
     ...mgrOver,
@@ -160,7 +160,7 @@ describe('pool GC', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  test('rehydrate restores locality from the index and drops entries with missing artifacts', () => {
+  test('rehydrate restores locality from the index and drops entries with missing artifacts', async () => {
     const { pool, cfg } = makePool(dir, new FakeStore('test-id'))
     seed(cfg, 'live', 100)
     // An index entry whose artifacts don't exist must be dropped on rehydrate.
@@ -171,17 +171,17 @@ describe('pool GC', () => {
       memFilePath: join(cfg.snapDir, 'ghost.mem'),
       rootfs: join(cfg.runDir, 'ghost.rootfs.ext4'),
     })
-    const n = pool.rehydrate()
+    const n = await pool.rehydrate()
     expect(n).toBe(1)
     const s = pool.status()
     expect(s.suspended.map((x) => x.projectId)).toEqual(['live'])
     expect(new CacheIndex(cfg.snapDir).get('ghost')).toBeNull()
   })
 
-  test('reclaimOrphans deletes unreferenced files but keeps rehydrated ones', () => {
+  test('reclaimOrphans deletes unreferenced files but keeps rehydrated ones', async () => {
     const { pool, cfg } = makePool(dir, new FakeStore('test-id'))
     const live = seed(cfg, 'live', 100)
-    pool.rehydrate()
+    await pool.rehydrate()
     // Orphans: files no cache entry / running VM references. Backdate them past
     // the in-flight grace window so they qualify as genuine orphans.
     const orphanState = join(cfg.snapDir, 'fcvm-99.vmstate')
@@ -193,7 +193,7 @@ describe('pool GC', () => {
       utimesSync(p, old, old)
     }
 
-    const removed = pool.reclaimOrphans()
+    const removed = await pool.reclaimOrphans()
     expect(removed).toBe(3)
     expect(existsSync(orphanState)).toBe(false)
     expect(existsSync(orphanRoot)).toBe(false)
@@ -202,27 +202,27 @@ describe('pool GC', () => {
     expect(existsSync(live.rootfs)).toBe(true)
   })
 
-  test('reclaimOrphans spares young in-flight artifacts (cold-boot/assign window)', () => {
+  test('reclaimOrphans spares young in-flight artifacts (cold-boot/assign window)', async () => {
     // Regression: a VM's rootfs/mem/vmstate exist on disk before the project is
     // recorded in `assigned`/`suspended` (mid cold-boot or mid-snapshot). A
     // map-only guard deleted them, torpedoing the subsequent durable push
     // ("artifact missing/empty"). Fresh (just-written) orphan-looking files
     // must be left alone until they age past the grace window.
     const { pool, cfg } = makePool(dir, new FakeStore('test-id'))
-    pool.rehydrate()
+    await pool.rehydrate()
     const youngState = join(cfg.snapDir, 'fcvm-inflight.vmstate')
     const youngMem = join(cfg.snapDir, 'fcvm-inflight.mem')
     const youngRoot = join(cfg.runDir, 'fcvm-inflight.rootfs.ext4')
     for (const p of [youngState, youngMem, youngRoot]) writeFileSync(p, 'x') // mtime = now
 
-    const removed = pool.reclaimOrphans()
+    const removed = await pool.reclaimOrphans()
     expect(removed).toBe(0)
     expect(existsSync(youngState)).toBe(true)
     expect(existsSync(youngMem)).toBe(true)
     expect(existsSync(youngRoot)).toBe(true)
   })
 
-  test('reclaimOrphans (dm) never reclaims a CoW whose mapper device is still live', () => {
+  test('reclaimOrphans (dm) never reclaims a CoW whose mapper device is still live', async () => {
     // Regression for the staging cold-start: a pooled VM claimed mid-assign is
     // briefly in neither `available` nor `assigned`, and its CoW mtime is
     // already past the age gate. The map+age guards alone unlinked that live
@@ -235,7 +235,7 @@ describe('pool GC', () => {
       dir,
       new FakeStore('test-id'),
       { rootfsCow: 'dm' as const },
-      { rootfsDeviceMapped: (vmId: string) => vmId === liveVm },
+      { rootfsDeviceMapped: async (vmId: string) => vmId === liveVm },
     )
     mkdirSync(cfg.dmCowDir, { recursive: true })
     const liveCow = join(cfg.dmCowDir, `${liveVm}.cow`)
@@ -247,13 +247,13 @@ describe('pool GC', () => {
       utimesSync(p, old, old)
     }
 
-    const removed = pool.reclaimOrphans()
+    const removed = await pool.reclaimOrphans()
     expect(removed).toBe(1)
     expect(existsSync(liveCow)).toBe(true) // device mapped → spared
     expect(existsSync(orphanCow)).toBe(false) // device gone → reclaimed
   })
 
-  test('reclaimOrphans keeps a suspended snapshot\'s workspace drive and reaps an orphaned one', () => {
+  test('reclaimOrphans keeps a suspended snapshot\'s workspace drive and reaps an orphaned one', async () => {
     const { pool, cfg } = makePool(dir, new FakeStore('test-id'), {}, { releaseDataDrive: (p: string) => rmSync(p, { force: true }) })
     seed(cfg, 'live', 100)
     const liveDrive = join(cfg.runDir, 'vm-live.ws.ext4')
@@ -265,9 +265,9 @@ describe('pool GC', () => {
     }
     const idx = new CacheIndex(cfg.snapDir)
     idx.put({ ...(idx.get('live') as CacheEntry), workspaceDrive: liveDrive })
-    pool.rehydrate()
+    await pool.rehydrate()
 
-    expect(pool.reclaimOrphans()).toBe(1)
+    expect(await pool.reclaimOrphans()).toBe(1)
     expect(existsSync(liveDrive)).toBe(true)
     expect(existsSync(orphanDrive)).toBe(false)
   })
@@ -280,13 +280,13 @@ describe('pool GC', () => {
     writeFileSync(drive, 'x')
     const idx = new CacheIndex(cfg.snapDir)
     idx.put({ ...(idx.get('p1') as CacheEntry), workspaceDrive: drive })
-    pool.rehydrate()
+    await pool.rehydrate()
 
     expect(await pool.evictForGc('p1')).toBe(true)
     expect(released).toEqual([drive])
   })
 
-  test('reconcileOrphanDevices forwards owned rootfs vmIds and returns the count (dm)', () => {
+  test('reconcileOrphanDevices forwards owned rootfs vmIds and returns the count (dm)', async () => {
     // Wiring for the dm device/loop/CoW leak net: the pool must hand the manager
     // the vmIds it still owns (so live/suspended devices are spared) and surface
     // the reclaimed count. Keep-set is derived from the rootfs PATH, so a
@@ -297,7 +297,7 @@ describe('pool GC', () => {
       new FakeStore('test-id'),
       { rootfsCow: 'dm' as const },
       {
-        reconcileOrphanRootfs: (keep: Set<string>) => {
+        reconcileOrphanRootfs: async (keep: Set<string>) => {
           captured = keep
           return 7
         },
@@ -335,32 +335,32 @@ describe('pool GC', () => {
     // test env, so drive ownedRootfsVmIds via an available VM instead by using
     // the public reclaim path is unavailable — assert on the manager call, which
     // is exercised regardless of whether the suspended entry survived rehydrate.
-    const n = pool.reconcileOrphanDevices()
+    const n = await pool.reconcileOrphanDevices()
     expect(n).toBe(7)
     expect(captured).toBeInstanceOf(Set)
   })
 
-  test('reconcileOrphanDevices is a no-op when not in dm mode', () => {
+  test('reconcileOrphanDevices is a no-op when not in dm mode', async () => {
     let called = false
     const { pool } = makePool(
       dir,
       new FakeStore('test-id'),
       { rootfsCow: 'full' as const },
       {
-        reconcileOrphanRootfs: () => {
+        reconcileOrphanRootfs: async () => {
           called = true
           return 0
         },
       },
     )
-    expect(pool.reconcileOrphanDevices()).toBe(0)
+    expect(await pool.reconcileOrphanDevices()).toBe(0)
     expect(called).toBe(false)
   })
 
   test('evictForGc refuses when the durable copy is absent (only local copy)', async () => {
     const { pool, cfg } = makePool(dir, new FakeStore('test-id', /*present*/ false))
     const a = seed(cfg, 'a', 100)
-    pool.rehydrate()
+    await pool.rehydrate()
     const ok = await pool.evictForGc('a')
     expect(ok).toBe(false)
     expect(existsSync(a.snapshotPath)).toBe(true) // not evicted
@@ -369,7 +369,7 @@ describe('pool GC', () => {
   test('evictForGc drops local files + index when durably backed', async () => {
     const { pool, cfg } = makePool(dir, new FakeStore('test-id'))
     const a = seed(cfg, 'a', 100)
-    pool.rehydrate()
+    await pool.rehydrate()
     const ok = await pool.evictForGc('a')
     expect(ok).toBe(true)
     expect(existsSync(a.snapshotPath)).toBe(false)
@@ -383,7 +383,7 @@ describe('pool GC', () => {
     const now = Date.now()
     seed(cfg, 'fresh', now) // within active window → keep durable
     seed(cfg, 'stale', now - 10_000) // older than window → drop durable too
-    pool.rehydrate()
+    await pool.rehydrate()
 
     const report = await pool.gcSweep({ force: true })
     expect(report.evicted.sort()).toEqual(['fresh', 'stale'])
@@ -413,7 +413,7 @@ describe('pool resume rootfs-identity gate', () => {
     const store = new FakeStore('OLD', /*present*/ false) // no durable copy → cold miss
     const { pool, cfg } = makePool(dir, store, { rootfsIdentity: 'NEW' })
     const a = seedWithIdentity(cfg, 'proj', 'OLD')
-    pool.rehydrate()
+    await pool.rehydrate()
     expect(pool.status().suspended.map((s) => s.projectId)).toEqual(['proj'])
 
     const r = await pool.resume('proj')
@@ -440,7 +440,7 @@ describe('pool resume rootfs-identity gate', () => {
     const stale = seedWithIdentity(cfg, 'stale', 'OLD')
     const match = seedWithIdentity(cfg, 'match', 'NEW')
     const legacy = seedWithIdentity(cfg, 'legacy', '') // pre-identity entry
-    pool.rehydrate()
+    await pool.rehydrate()
 
     const report = await pool.gcSweep()
 
@@ -472,7 +472,7 @@ describe('pool resume rootfs-identity gate', () => {
     // drain across sweeps the way the orphan-device reconcile does.
     const { pool, cfg } = makePool(dir, new FakeStore('NEW'), { rootfsIdentity: 'NEW', ...noPressure })
     for (let i = 0; i < 105; i++) seedWithIdentity(cfg, `p${i}`, 'OLD')
-    pool.rehydrate()
+    await pool.rehydrate()
     expect(pool.status().suspended.length).toBe(105)
 
     const first = await pool.gcSweep()
@@ -499,14 +499,14 @@ describe('pool resume rootfs-identity gate', () => {
       new FakeStore('NEW'),
       { rootfsIdentity: 'NEW', ...noPressure },
       {
-        releaseRootfs: (p: string) => {
+        releaseRootfs: async (p: string) => {
           order.push('del')
           rmSync(p, { force: true })
         },
       },
     )
     for (let i = 0; i < 4; i++) seedWithIdentity(cfg, `p${i}`, 'OLD')
-    pool.rehydrate()
+    await pool.rehydrate()
 
     // Stand in for the HTTP server: work queued on the loop, re-arming itself.
     let stop = false
@@ -532,7 +532,7 @@ describe('pool resume rootfs-identity gate', () => {
     // pass over the same entries is wasted work at best.
     const { pool, cfg } = makePool(dir, new FakeStore('NEW'), { rootfsIdentity: 'NEW', ...noPressure })
     for (let i = 0; i < 150; i++) seedWithIdentity(cfg, `p${i}`, 'OLD')
-    pool.rehydrate()
+    await pool.rehydrate()
 
     const [first, second] = await Promise.all([pool.gcSweep(), pool.gcSweep()])
 
@@ -547,7 +547,7 @@ describe('pool resume rootfs-identity gate', () => {
     // project decides its snapshot's fate, not the GC timer.
     const { pool, cfg } = makePool(dir, new FakeStore('NEW'), { rootfsIdentity: 'NEW', ...noPressure })
     const a = seedWithIdentity(cfg, 'busy', 'OLD')
-    pool.rehydrate()
+    await pool.rehydrate()
     ;(pool as any).assigned.set('busy', { projectId: 'busy', handle: { rootfs: a.rootfs } })
 
     const report = await pool.gcSweep()
@@ -556,12 +556,12 @@ describe('pool resume rootfs-identity gate', () => {
     expect(existsSync(a.snapshotPath)).toBe(true)
   })
 
-  test('localSnapshotIsStale: mismatch=stale, match=fresh, missing identity=compatible', () => {
+  test('localSnapshotIsStale: mismatch=stale, match=fresh, missing identity=compatible', async () => {
     const { pool, cfg } = makePool(dir, new FakeStore('NEW'), { rootfsIdentity: 'NEW' })
     seedWithIdentity(cfg, 'match', 'NEW')
     seedWithIdentity(cfg, 'stale', 'OLD')
     seedWithIdentity(cfg, 'legacy', '') // pre-identity entry
-    pool.rehydrate()
+    await pool.rehydrate()
 
     const isStale = (id: string) => (pool as any).localSnapshotIsStale((pool as any).suspended.get(id))
     expect(isStale('stale')).toBe(true)

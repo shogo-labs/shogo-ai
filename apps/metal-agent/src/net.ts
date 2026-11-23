@@ -15,14 +15,14 @@
  * re-run on restore (the tap must exist again before LoadSnapshot).
  */
 
-import { execFileSync } from 'child_process'
+import { run } from './run'
 
-function ip(args: string[]): void {
-  execFileSync('ip', args, { stdio: 'pipe' })
+async function ip(args: string[]): Promise<void> {
+  await run('ip', args)
 }
-function tryIp(args: string[]): void {
+async function tryIp(args: string[]): Promise<void> {
   try {
-    ip(args)
+    await ip(args)
   } catch {
     /* idempotent best-effort */
   }
@@ -96,16 +96,16 @@ export function deriveNet(n: number, base = '172.16.0.0'): VmNet {
 }
 
 /** Create (or re-create) the tap device and its host-side address + NAT. */
-export function setupTap(net: VmNet, uplink?: string): void {
-  tryIp(['link', 'del', net.tap]) // clear any stale device
-  ip(['tuntap', 'add', 'dev', net.tap, 'mode', 'tap'])
-  ip(['addr', 'add', `${net.hostIp}/30`, 'dev', net.tap])
-  ip(['link', 'set', 'dev', net.tap, 'up'])
+export async function setupTap(net: VmNet, uplink?: string): Promise<void> {
+  await tryIp(['link', 'del', net.tap]) // clear any stale device
+  await ip(['tuntap', 'add', 'dev', net.tap, 'mode', 'tap'])
+  await ip(['addr', 'add', `${net.hostIp}/30`, 'dev', net.tap])
+  await ip(['link', 'set', 'dev', net.tap, 'up'])
 
   // Best-effort outbound NAT so guests can reach the internet / mesh.
   if (uplink) {
     try {
-      execFileSync('sh', [
+      await run('sh', [
         '-c',
         `sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1;
          iptables -t nat -C POSTROUTING -o ${uplink} -j MASQUERADE 2>/dev/null ||
@@ -121,16 +121,16 @@ export function setupTap(net: VmNet, uplink?: string): void {
   }
 }
 
-export function teardownTap(net: VmNet): void {
-  teardownTapByName(net.tap)
+export async function teardownTap(net: VmNet): Promise<void> {
+  await teardownTapByName(net.tap)
 }
 
 /**
  * Delete a tap by device name. The GC sweep reclaims leaked devices it found on
  * the host with no owning VM, so it has a name and no {@link VmNet}.
  */
-export function teardownTapByName(tap: string): void {
-  tryIp(['link', 'del', tap])
+export async function teardownTapByName(tap: string): Promise<void> {
+  await tryIp(['link', 'del', tap])
 }
 
 export interface HostTap {
@@ -159,9 +159,9 @@ export interface HostTap {
  * unparseable/flagless line is reported as attached, so ambiguity can only ever
  * make the GC skip a device, never reap one.
  */
-export function existingTaps(): HostTap[] {
+export async function existingTaps(): Promise<HostTap[]> {
   try {
-    return parseTapLinks(execFileSync('ip', ['-o', 'link', 'show'], { encoding: 'utf8' }))
+    return parseTapLinks(await run('ip', ['-o', 'link', 'show']))
   } catch {
     return [] // no `ip`, not Linux → nothing to reclaim
   }
@@ -211,10 +211,10 @@ export function tapIndex(net: VmNet): number | null {
  * 172.16.0.x mesh IPs, dead guests, agent-proxy/preview 502s). Best-effort:
  * returns an empty set if `ip` is unavailable or none are present.
  */
-export function existingTapIndices(): Set<number> {
+export async function existingTapIndices(): Promise<Set<number>> {
   const out = new Set<number>()
   try {
-    const txt = execFileSync('ip', ['-o', 'link', 'show'], { encoding: 'utf8' })
+    const txt = await run('ip', ['-o', 'link', 'show'])
     for (const m of txt.matchAll(/\bfctap(\d+)\b/g)) out.add(parseInt(m[1], 10))
   } catch {
     /* no `ip`, not Linux, or none present → empty (allocator falls back to counter) */
@@ -223,11 +223,9 @@ export function existingTapIndices(): Set<number> {
 }
 
 /** Best-effort default-route interface, used as the NAT uplink. */
-export function defaultUplink(): string | undefined {
+export async function defaultUplink(): Promise<string | undefined> {
   try {
-    const out = execFileSync('sh', ['-c', "ip route show default | awk '{print $5; exit}'"], {
-      encoding: 'utf8',
-    }).trim()
+    const out = await run('sh', ['-c', "ip route show default | awk '{print $5; exit}'"])
     return out || undefined
   } catch {
     return undefined
