@@ -898,7 +898,7 @@ export function restoreMissingRuntimeTemplateFiles(dir: string): string[] {
  * install, which is how a broken release (2.6.1) reached apps whose image only
  * pinned `^2.6.0`). The `workspace:*` sentinel means a dev checkout, whose only
  * local version is the never-published `packages/sdk` placeholder, so the
- * published `latest` is declared instead of a version that cannot install.
+ * checkout's own line is declared as a range instead.
  */
 function ensureShogoSdkDependencyDeclared(dir: string, templatePath: string): void {
   const pkgPath = join(dir, 'package.json')
@@ -923,11 +923,17 @@ function ensureShogoSdkDependencyDeclared(dir: string, templatePath: string): vo
         // local version is `packages/sdk`'s development placeholder. That
         // version was never published (the release stamps the tag's version
         // into the tarball, so the v2.6.1 tree still says `1.7.0`), so pinning
-        // it here fails the install with ETARGET. The sentinel carries no
-        // published version and this path has no registry access, so declare
-        // the published `latest` — installed images never reach this branch,
-        // their template is already materialized exact.
-        templateSdkRange = 'latest'
+        // it bare fails the install with ETARGET; `latest` is no better, it
+        // jumps a major to a release this checkout was never tested against.
+        // Keep the checkout's own line as a range — it resolves to a published
+        // version in that line. Installed images never reach this branch, their
+        // template is already materialized exact.
+        try {
+          const repoSdkPkg = JSON.parse(
+            readFileSync(join(templatePath, '..', '..', 'packages', 'sdk', 'package.json'), 'utf-8'),
+          )
+          if (typeof repoSdkPkg.version === 'string') templateSdkRange = `^${repoSdkPkg.version}`
+        } catch { /* no co-located packages/sdk — leave null, no-op */ }
       }
     }
   } catch { /* template package.json missing/malformed — no pin to add */ }
@@ -988,12 +994,12 @@ export function seedRuntimeTemplate(dir: string): boolean {
 
 /**
  * A dev checkout's template pins `@shogo-ai/sdk` to `workspace:*`, which no
- * `bun install` outside the monorepo can resolve. Rewrite it to the version the
- * template itself pins — exact `X.Y.Z`, never `^X.Y.Z` (SHO-522), the same rule
- * as `scripts/materialize-runtime-template.ts` and
+ * `bun install` outside the monorepo can resolve. A materialized template's own
+ * concrete pin is written exactly — never `^X.Y.Z` (SHO-522), the same rule as
+ * `scripts/materialize-runtime-template.ts` and
  * `ensureShogoSdkDependencyDeclared`: the SDK a pod installs must be the one its
- * image was released with. A shipped template is already materialized, so this
- * only does work in a source checkout.
+ * image was released with. A shipped template is already materialized, so the
+ * sentinel only appears in a source checkout, whose own line is kept as a range.
  */
 function materializeWorkspaceSdkPin(dir: string, templatePath: string): void {
   const pkgPath = join(dir, 'package.json')
@@ -1007,16 +1013,26 @@ function materializeWorkspaceSdkPin(dir: string, templatePath: string): void {
 
   // A concrete template pin is the version that template's own node_modules
   // was built against, so write it exactly. The `workspace:*` sentinel means a
-  // dev checkout (a shipped template is always materialized), where the only
-  // local version is `packages/sdk`'s development placeholder — never
-  // published, so a bare pin of it fails `bun install` with ETARGET. Name the
-  // published `latest` there instead.
-  let version: string | undefined
+  // dev checkout (a shipped template is always materialized), whose only local
+  // version is `packages/sdk`'s development placeholder: never published, so a
+  // bare pin of it fails `bun install` with ETARGET, and `latest` jumps a major
+  // to a release this checkout was never tested against. Keep the checkout's
+  // own line as a range, which resolves to a published version in that line.
+  let pin: string | undefined
   try {
     const range = JSON.parse(readFileSync(join(templatePath, 'package.json'), 'utf-8')).dependencies?.['@shogo-ai/sdk']
-    version = typeof range === 'string' ? range.match(/(\d+\.\d+\.\d+)/)?.[1] : undefined
-  } catch { /* shipped template missing — still replace the sentinel below */ }
-  pkgJson.dependencies['@shogo-ai/sdk'] = version ?? 'latest'
+    pin = typeof range === 'string' ? range.match(/(\d+\.\d+\.\d+)/)?.[1] : undefined
+  } catch { /* template missing — fall through to the checkout's own line */ }
+  if (!pin) {
+    try {
+      const repoSdkVersion = JSON.parse(
+        readFileSync(join(templatePath, '..', '..', 'packages', 'sdk', 'package.json'), 'utf-8'),
+      ).version
+      if (typeof repoSdkVersion !== 'string') return
+      pin = `^${repoSdkVersion}`
+    } catch { return }
+  }
+  pkgJson.dependencies['@shogo-ai/sdk'] = pin
   writeFileSync(pkgPath, JSON.stringify(pkgJson, null, 2) + (raw.endsWith('\n') ? '\n' : ''))
 }
 
@@ -1764,11 +1780,13 @@ function compareSemver(a: string, b: string): number {
  *
  *   - If the workspace pins a version of `@shogo-ai/sdk` strictly less
  *     than what the bundled runtime-template carries, rewrite the pin
- *     to `${bundled-version}` (exact — no caret, SHO-522: a range would be
+ *     to `${bundled-version}` — exact, no caret (SHO-522: a range is
  *     re-resolved against npm on install and could pull a newer, broken
  *     release). The new pin matches the SDK that the
  *     desktop app's own runtime-template/node_modules is built against,
- *     so we ship a known-working pair.
+ *     so we ship a known-working pair. A source checkout's template carries
+ *     the `workspace:*` sentinel instead, so it heals onto that checkout's own
+ *     line as a `^X.Y.Z` range — bare would be unpublished (ETARGET).
  *   - If the workspace's `scripts.generate` matches the legacy
  *     `bunx shogo …` / `bun x shogo …` shape, rewrite it to the
  *     path-based form
@@ -1802,6 +1820,9 @@ export function migrateLegacyShogoSdkPin(dir: string): { upgraded: boolean; befo
   // SDK version — its node_modules/ ships pre-installed in the desktop
   // app, so whatever it pins is guaranteed to resolve.
   let templateSdkVersion: string | null = null
+  // The pin to write when upgrading: exact `X.Y.Z` for a materialized template
+  // (SHO-522), `^X.Y.Z` for a source checkout's own line.
+  let templateSdkPin: string | null = null
   const templatePath = getRuntimeTemplatePath()
   if (templatePath) {
     try {
@@ -1813,14 +1834,25 @@ export function migrateLegacyShogoSdkPin(dir: string): { upgraded: boolean; befo
         const m = range.match(/(\d+\.\d+\.\d+)/)
         if (m) {
           templateSdkVersion = m[1]
+          templateSdkPin = m[1]
         } else if (range.startsWith('workspace:')) {
           // Source (unmaterialized) template — a dev checkout, where the only
           // local version is `packages/sdk`'s development placeholder. That
           // version was never published (the release stamps the tag's version
           // into the tarball, so the v2.6.1 tree still says `1.7.0`), so it is
-          // not an upgrade target: pinning it would fail the install with
-          // ETARGET. No concrete version to compare against here, so leave the
-          // workspace's existing pin alone (it still resolves on install).
+          // written as the checkout's own line, as a range, exactly like the
+          // other dev-checkout writers: bare fails the install with ETARGET,
+          // and `latest` jumps a major. No co-located packages/sdk → clean
+          // no-op.
+          try {
+            const repoSdkPkg = JSON.parse(
+              readFileSync(join(templatePath, '..', '..', 'packages', 'sdk', 'package.json'), 'utf-8'),
+            )
+            if (typeof repoSdkPkg.version === 'string') {
+              templateSdkVersion = repoSdkPkg.version
+              templateSdkPin = `^${repoSdkPkg.version}`
+            }
+          } catch { /* no co-located packages/sdk — leave null, migration no-ops */ }
         }
       }
     } catch { /* template package.json missing/malformed — no upgrade target */ }
@@ -1842,7 +1874,7 @@ export function migrateLegacyShogoSdkPin(dir: string): { upgraded: boolean; befo
     //     compareSemver result, but we log it explicitly so we know
     //     we're healing the bug, not just bumping for fun)
     if (userVer && compareSemver(userVer, templateSdkVersion) < 0) {
-      const newRange = templateSdkVersion
+      const newRange = templateSdkPin ?? templateSdkVersion
       pkgJson.dependencies!['@shogo-ai/sdk'] = newRange
       beforePin = userSdkRange
       afterPin = newRange

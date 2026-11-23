@@ -8,7 +8,9 @@
  * resolved 2.6.1 — the release that shipped without `bin/bucket-cli.mjs`.
  *
  * These assertions pin the three things that keep that from recurring:
- *   1. every writer pins an exact `X.Y.Z` (a range is re-resolved on install),
+ *   1. every release-path writer pins an exact `X.Y.Z` (a range is re-resolved
+ *      on install) — while a source checkout keeps its own `^X.Y.Z` line, whose
+ *      bare version is unpublished and whose `latest` is a different major,
  *   2. a release-tag image build pins the tag's own SDK and fails if npm never
  *      serves it (never falling back to `latest`), and
  *   3. the publish smoke check waits for the exact version instead of hammering
@@ -74,35 +76,42 @@ describe('release SDK pin wiring (SHO-522)', () => {
     expect(wf).toContain('--cache "$DIR/.npm-cache"')
   })
 
-  test('no writer still emits a caret pin for @shogo-ai/sdk', () => {
-    const writers = [
-      read('scripts', 'materialize-runtime-template.ts'),
-      read('packages', 'agent-runtime', 'src', 'workspace-defaults.ts'),
-      read('apps', 'api', 'src', 'lib', 'runtime', 'manager.ts'),
-    ]
-    for (const src of writers) {
-      expect(src.match(/dependencies\['@shogo-ai\/sdk'\] = `\^/g)).toBeNull()
-    }
-    // The materialize script writes the bare version.
-    expect(read('scripts', 'materialize-runtime-template.ts')).toContain('deps[name] = version')
+  test('every release-path writer pins an exact @shogo-ai/sdk, never a range', () => {
+    // Release paths: the materializer that stamps a template, and the branches
+    // of the runtime writers that read a *materialized* template's own pin.
+    // A range there is re-resolved against npm on install, which is how a
+    // broken release reached an image that had only pinned `^2.6.0`.
+    const materialize = read('scripts', 'materialize-runtime-template.ts')
+    expect(materialize).toContain('deps[name] = version')
+    expect(materialize).not.toContain('deps[name] = `^')
+
+    const runtime = read('packages', 'agent-runtime', 'src', 'workspace-defaults.ts')
+    // The materialized-template branches write the bare version.
+    expect(runtime).toContain("templateSdkRange = m[1]")
+    expect(runtime).toContain("pin = typeof range === 'string' ? range.match(/(\\d+\\.\\d+\\.\\d+)/)?.[1] : undefined")
+    expect(runtime).toContain('templateSdkPin = m[1]')
   })
 
-  test('a dev checkout never pins the unpublished in-repo version (ETARGET)', () => {
-    // The `workspace:*` branch means a source checkout, whose
+  test('a source checkout keeps its own caret range — never the bare placeholder, never latest', () => {
+    // The `workspace:*` sentinel means a source checkout, whose
     // `packages/<pkg>/package.json` version is a development placeholder the
-    // release never publishes (v2.6.1's tree still said 1.7.0). Writing it
-    // bare fails `bun install` with ETARGET, so it must not be a pin source:
-    // `npm view @shogo-ai/sdk@1.7.0` → 404, and a seeded project that pinned it
-    // never built (remote-workspace preview e2e, run 45109364954).
+    // release never publishes (v2.6.1's tree still said 1.7.0): pinning it bare
+    // fails `bun install` with ETARGET. `latest` is the other failure mode — it
+    // jumps a major, and 2.6.1's published tarball omits `bin/bucket-cli.mjs`,
+    // so every `shogo generate` in a seeded project died and E2E went red
+    // (chat-resume-on-send, run 45113235623). The checkout's own line, as a
+    // range, is the one shape that installs.
     const runtime = read('packages', 'agent-runtime', 'src', 'workspace-defaults.ts')
-    expect(runtime).not.toContain("join(templatePath, '..', '..', 'packages', 'sdk', 'package.json')")
-    // Nor may `migrateLegacyShogoSdkPin` treat it as an upgrade target.
+    expect(runtime).toContain("templateSdkRange = `^${repoSdkPkg.version}`")
+    expect(runtime).toContain('pin = `^${repoSdkVersion}`')
+    expect(runtime).toContain('templateSdkPin = `^${repoSdkPkg.version}`')
+    expect(runtime).not.toContain("templateSdkRange = 'latest'")
+    expect(runtime).not.toContain("?? 'latest'")
 
-    // apps/api resolves what the registry actually serves, and keeps `latest`
-    // as the offline fallback.
+    // apps/api seeds a project from the same checkout: caret on its in-repo
+    // version, `latest` only when there is no in-repo package at all.
     const manager = read('apps', 'api', 'src', 'lib', 'runtime', 'manager.ts')
-    expect(manager).toContain('resolvePublishedDepVersion')
-    expect(manager).toContain('registry.npmjs.org')
-    expect(manager).toContain("deps[name] = 'latest'")
+    expect(manager).toContain('deps[name] = `^${version}`')
+    expect(manager).toContain('resolveInRepoPackageVersion')
   })
 })

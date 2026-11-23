@@ -427,11 +427,14 @@ describe('getRuntimeTemplatePath / seedRuntimeTemplate', () => {
     expect(existsSync(join(dir, 'src', 'real.ts'))).toBe(true)
   })
 
-  test('seeded pin for an unmaterialized (workspace:*) template is installable, never the unpublished in-repo version', () => {
-    // Regression: SHO-522 made every pin writer exact, which wrote the
-    // checkout's `packages/sdk` version bare. That version is a development
-    // placeholder the release never publishes (v2.6.1's tree still says
-    // 1.7.0), so `bun install` failed with ETARGET and the app never built.
+  test('seeded pin for an unmaterialized (workspace:*) template keeps the checkout line, never the bare placeholder or latest', () => {
+    // Regression (SHO-522): making every pin writer exact wrote the checkout's
+    // `packages/sdk` version bare. That version is a development placeholder the
+    // release never publishes (v2.6.1's tree still says 1.7.0), so `bun install`
+    // failed with ETARGET. Pinning `latest` is no better: it jumps a major to a
+    // release this checkout was never tested against — 2.6.1's published tarball
+    // omits `bin/bucket-cli.mjs`, so its `shogo` CLI dies on import. Keep the
+    // checkout's own line as a range.
     const root = makeTmp()
     const tplDir = join(root, 'templates', 'runtime-template')
     mkdirSync(tplDir, { recursive: true })
@@ -446,8 +449,8 @@ describe('getRuntimeTemplatePath / seedRuntimeTemplate', () => {
     const dir = makeTmp()
     expect(wd.seedRuntimeTemplate(dir)).toBe(true)
     const pin = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')).dependencies['@shogo-ai/sdk']
-    expect(pin).toBe('latest')
-    expect(pin).not.toContain('1.7.0')
+    expect(pin).toBe('^1.7.0')
+    expect(pin).not.toBe('latest')
   })
 
   test('seeded pin for a materialized template is the template version, exactly', () => {
@@ -1140,12 +1143,12 @@ describe('migrateLegacyShogoSdkPin', () => {
     expect(wd.migrateLegacyShogoSdkPin(dir)).toEqual({ upgraded: false })
   })
 
-  test('workspace:* template (unmaterialized) is not an upgrade target — no-op', () => {
+  test('workspace:* template (unmaterialized) heals onto the checkout line as a range, never bare', () => {
     // A dev checkout's template carries the `workspace:*` sentinel, and the
     // only local version is `packages/sdk`'s development placeholder, which is
     // never published (the release stamps the tag's version into the tarball).
-    // Upgrading to it would pin an unpublished version and fail `bun install`
-    // with ETARGET, so the workspace's own pin is left alone.
+    // Writing it bare fails `bun install` with ETARGET, so the heal keeps the
+    // checkout's line as a range — which does resolve on install.
     const root = makeTmp()
     const tplDir = join(root, 'templates', 'runtime-template')
     mkdirSync(tplDir, { recursive: true })
@@ -1161,8 +1164,8 @@ describe('migrateLegacyShogoSdkPin', () => {
     writeFileSync(join(dir, 'package.json'), JSON.stringify({
       dependencies: { '@shogo-ai/sdk': '^0.4.0' },
     }))
-    expect(wd.migrateLegacyShogoSdkPin(dir)).toEqual({ upgraded: false })
-    expect(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')).dependencies['@shogo-ai/sdk']).toBe('^0.4.0')
+    expect(wd.migrateLegacyShogoSdkPin(dir)).toEqual({ upgraded: true, before: '^0.4.0', after: '^1.9.0', scriptRewritten: false })
+    expect(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')).dependencies['@shogo-ai/sdk']).toBe('^1.9.0')
   })
 
   test('workspace:* template with no co-located packages/sdk → clean no-op', () => {
