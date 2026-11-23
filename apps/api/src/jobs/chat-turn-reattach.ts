@@ -181,7 +181,7 @@ async function defaultDeps(): Promise<ReattachDeps> {
     now: () => Date.now(),
     cloudTrackedTurns: async (turnIds) => {
       const ids = [...new Set(turnIds.filter(Boolean))]
-      if (!ids.length || !(prisma as any).chatTurnFrame) return new Set()
+      if (!ids.length || !prisma.chatTurnFrame) return new Set()
       try {
         const rows: Array<{ turnId: string }> = await prisma.chatTurnFrame.findMany({
           where: { turnId: { in: ids } },

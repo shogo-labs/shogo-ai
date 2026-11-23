@@ -22,7 +22,7 @@ import type { ReattachDeps } from '../chat-turn-reattach'
 
 const { reattachStaleTurns } = await import('../chat-turn-reattach')
 
-const NOW = Date.parse('2026-11-23T08:00:00Z')
+const NOW = Date.now()
 const minutesAgo = (m: number) => new Date(NOW - m * 60_000)
 const HOSTED_WS = 'ws-hosted'
 const CLOUD_WS = 'ws-cloud'

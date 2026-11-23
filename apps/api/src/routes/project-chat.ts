@@ -1194,7 +1194,11 @@ export async function trackUsageFromStream(
   // Every leg replays into a fresh accumulator set and only replaces what we
   // hold once it has caught up, so a cut leg never shrinks the row.
   let resumeOutcome: 'not-attempted' | 'recovered' | 'buffer-gone' | 'failed' = 'not-attempted'
-  const streamEndedWithoutTurnComplete = !observedTurnComplete
+  // A read error is not an EOF (SHO-546 kept main's guard): the socket died
+  // under us rather than the upstream body ending cleanly, so there is no
+  // "ended without turn-complete" to resume from and the outcome stays
+  // `interrupted` — persisting what the cut stream gave us.
+  const streamEndedWithoutTurnComplete = !originalStreamErrored && !observedTurnComplete
 
   if (streamEndedWithoutTurnComplete && chatSessionId && options.resume) {
     console.log(
