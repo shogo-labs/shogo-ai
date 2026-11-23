@@ -225,6 +225,8 @@ const RESOLVER_FILES: Record<string, string> = {
   'lib/admin-runtime-recycle.ts': 'guard: admin recycle resolves via the resolver layer',
   'lib/chat-runtime-fetch.ts': 'guard: resolves via resolveWorkspaceRuntimeUrl (home-region guard); callers are route-pinned or home-region filtered (chat-turn-reattach)',
   'lib/heartbeat-scheduler.ts': 'cron: partitioned by workspace home region (#1233) + guard backstop',
+  'lib/instance-tunnel.ts':
+    'local-only: the desktop tunnel, started by local-server.ts and reached only through the local-only routes. The workspace runtime it kicks off (SHO-526) is the one on that same machine, and Local mode has no regions to boot a second one in',
   'lib/knative-project-manager.ts': 'resolver: getProjectPodUrl/resolveProjectPodUrl definitions',
   'lib/metal-rewarm.ts': 'cron: rollout re-warm resolves via resolveWorkspaceRuntimeUrl (guard)',
   'lib/project-port-mutations.ts': 'route-pin: called from /api/projects/:projectId/ports routes',
