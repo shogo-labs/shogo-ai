@@ -130,15 +130,18 @@ const TEMPLATE_FILES: Record<string, string> = {
  */
 export async function primeWarmCache(url: string, dir = DEFAULT_TEMPLATE_DIR, timeoutMs = 300_000): Promise<void> {
   await waitForGuest(url)
-  // One file per command. The guest PTY is a canonical-mode tty with a 4 KiB
-  // line buffer, so a single 5 KiB heredoc is silently truncated and the shell
-  // sits waiting for the rest of it — which is how the second live run hung at
-  // baseline for 60 s.
+  // Write each file with base64, one short command per file.
+  //
+  // Not a heredoc: guestExec wraps the command as `stty -echo; { <cmd> ; } ...`,
+  // so the closing `; }` lands on the same line as the heredoc terminator and
+  // the shell never sees a bare marker — it waits for the rest of the heredoc
+  // until the command times out. (Two live runs died exactly there.) base64 is
+  // also immune to the tty's 4 KiB canonical line limit.
   const mk = await guestExec(url, `mkdir -p ${dir}/src`, 30_000)
   if (mk.code !== 0) throw new Error(`creating ${dir} failed (exit ${mk.code}): ${mk.out.slice(-800)}`)
   for (const [rel, body] of Object.entries(TEMPLATE_FILES)) {
-    const marker = `__DENSITY_${rel.replace(/[^A-Za-z0-9]/g, '_')}__`
-    const one = await guestExec(url, `cat > ${dir}/${rel} <<'${marker}'\n${body}\n${marker}`, 30_000)
+    const b64 = Buffer.from(body, 'utf8').toString('base64')
+    const one = await guestExec(url, `printf %s '${b64}' | base64 -d > ${dir}/${rel}`, 30_000)
     if (one.code !== 0) throw new Error(`seeding ${dir}/${rel} failed (exit ${one.code}): ${one.out.slice(-800)}`)
   }
   const install = await guestExec(url, `cd ${dir} && bun install --frozen-lockfile 2>/dev/null || bun install`, timeoutMs)
