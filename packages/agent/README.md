@@ -13,8 +13,8 @@ forcing a particular gateway shape, persistence layer, or transport.
 
 | Subpath | What |
 | --- | --- |
-| `@shogo-ai/agent/agent-loop` | `runAgentLoop` — the iteration loop with loop detection, microcompaction, and tool orchestration baked in. |
-| `@shogo-ai/agent/pi-adapter` | Helpers for resolving models/keys, packing/unpacking pi-ai messages, and converting between pi-agent-core's `AgentMessage` and pi-ai's `Message`. |
+| `@shogo-ai/agent/agent-loop` | `runAgentLoop` — the iteration loop with loop detection, microcompaction, and tool orchestration baked in. *Subpath-only; needs the optional pi peers.* |
+| `@shogo-ai/agent/pi-adapter` | Helpers for resolving models/keys, packing/unpacking pi-ai messages, and converting between pi-agent-core's `AgentMessage` and pi-ai's `Message`. *Subpath-only; needs the optional pi peers.* |
 | `@shogo-ai/agent/model-catalog` | Authoritative model list with capabilities, pricing, tier defaults. |
 | `@shogo-ai/agent/model-router` | Auto-routing between model tiers based on task complexity classification. |
 | `@shogo-ai/agent/tool-orchestration` | Concurrency-safe tool dispatch (`Semaphore`, `WriteMutex`, `wrapToolsWithOrchestration`). |
@@ -25,12 +25,13 @@ forcing a particular gateway shape, persistence layer, or transport.
 
 ## Importing
 
-`import ... from '@shogo-ai/agent'` gives you every module above. The three
-pi-backed modules are **subpath-only**, so the aggregate entry never loads the
-optional pi peers:
+`import ... from '@shogo-ai/agent'` gives you the model catalog, model router,
+tool orchestration, loop detector, microcompact, prefix fingerprint, hooks,
+`ai-client` and `ai-proxy`. The three pi-backed modules are **subpath-only**, so
+the aggregate entry never loads the optional pi peers:
 
 ```ts
-import { Agent, runAgentLoop } from '@shogo-ai/agent/agent-loop'
+import { runAgentLoop } from '@shogo-ai/agent/agent-loop'
 ```
 
 ## Optional peers
