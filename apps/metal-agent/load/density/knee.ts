@@ -151,5 +151,11 @@ export function ramCeilingsBySize(input: {
   sizesMiB?: number[]
 }): { sizeMiB: number; maxVms: number }[] {
   const sizes = input.sizesMiB ?? [2048, 4096]
-  return sizes.map((sizeMiB) => ({ sizeMiB, maxVms: ramCeilingForSize({ ...input, perVmRssMiB: input.perVmRssMiB }) }))
+  // Budget the *configured* size: a guest sized 4096 MiB may touch all of it, so
+  // a host cannot be told it fits 218 of them because they happened to stay idle
+  // during the soak. Measured RSS is only a floor.
+  return sizes.map((sizeMiB) => ({
+    sizeMiB,
+    maxVms: ramCeilingForSize({ ...input, perVmRssMiB: Math.max(sizeMiB, input.perVmRssMiB) }),
+  }))
 }

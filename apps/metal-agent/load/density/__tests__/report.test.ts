@@ -174,6 +174,21 @@ describe('renderReportMarkdown', () => {
     expect(md).toContain('| 2048 MiB | 115 |')
     expect(md).toContain('| 4096 MiB | 57 |')
   })
+
+  test('a zero knee is a failed measurement, not a capacity of zero', () => {
+    // Soak #5 recommended `METAL_MAX_VMS_PER_HOST=0` for a host that carried
+    // 160 VMs; a knee of 0 means nothing measured passed, never "run nothing".
+    const i = input([step(40)])
+    i.recommendation = { ...i.recommendation, maxVmsPerHost: 0, cpuKnee: 0, ramKnee: 0 }
+    const md = renderReportMarkdown(i)
+    expect(md).not.toContain('METAL_MAX_VMS_PER_HOST=0')
+    expect(md).toContain('No recommendation')
+    expect(md).toContain('not a capacity of zero')
+  })
+
+  test('labels the baseline table with the statistic the bounds compare', () => {
+    expect(renderReportMarkdown(input([step(40)]))).toContain('| step | p95 ms |')
+  })
 })
 
 describe('writeReport', () => {

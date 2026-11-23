@@ -174,4 +174,17 @@ describe('ramCeilingForSize', () => {
     const rows = ramCeilingsBySize({ hostMemMiB: 262144, perVmRssMiB: 2048, reservePct: 10 })
     expect(rows.map((r) => r.sizeMiB)).toEqual([2048, 4096])
   })
+
+  test('bySize budgets the configured size, not the observed RSS', () => {
+    // Soak #5 printed 218 for both rows because the measured RSS (2124 MiB)
+    // replaced the size in the calculation, making a 4096 MiB guest look as
+    // cheap as a 2048. A guest may touch all of its configured size.
+    const input = { hostMemMiB: 515643, perVmRssMiB: 2124, reservePct: 10 }
+    const rows = ramCeilingsBySize(input)
+    const by2048 = rows.find((r) => r.sizeMiB === 2048)!.maxVms
+    const by4096 = rows.find((r) => r.sizeMiB === 4096)!.maxVms
+    expect(by2048).toBe(ramCeilingForSize(input))
+    expect(by4096).toBe(ramCeilingForSize({ ...input, perVmRssMiB: 4096 }))
+    expect(by4096).toBeLessThan(by2048)
+  })
 })
