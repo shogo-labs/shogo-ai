@@ -801,6 +801,7 @@ export type StreamErrorCode =
   | 'upstream_5xx'         // provider answered 5xx after our headers had gone out
   | 'upstream_rate_limit'  // provider answered 429 after our headers had gone out
   | 'upstream_rejected'    // provider answered 4xx after our headers had gone out
+  | 'upstream_timeout'     // provider sent no headers at all within EARLY_SSE_MAX_WAIT_MS
 
 export interface StreamErrorPayload {
   type: 'error'
@@ -1056,18 +1057,37 @@ export function wrapSseForErrorVisibility(
 /** How long a streaming request may wait for provider headers. */
 const EARLY_HEADERS_GRACE_MS = 10_000
 
+/**
+ * Hard ceiling on the wait for provider headers once the early `200` has gone
+ * out. Nothing the client can do about a provider that never answers, so the
+ * stream must end with a typed `upstream_timeout` frame it can act on instead of
+ * leaving it to whatever infrastructure happens to notice first (Knative's
+ * 300s activator cut, the desktop local server's 255s socket idle timeout, a
+ * Cloudflare reset) — each of which lands as plain text or a raw ECONNRESET,
+ * which the agent then retries as a network blip.
+ *
+ * 240s sits under all of them, and above the longest first byte a huge-context
+ * write actually takes in production.
+ */
+const EARLY_SSE_MAX_WAIT_MS = 240_000
+
 let earlySseTiming = {
   graceMs: EARLY_HEADERS_GRACE_MS,
   keepaliveMs: KEEPALIVE_INTERVAL_MS,
+  maxWaitMs: EARLY_SSE_MAX_WAIT_MS,
 }
 
-/** Test hook: shrink the grace/keepalive windows so a unit test can observe them. */
+/**
+ * Test hook: shrink the grace/keepalive/max-wait windows so a unit test can
+ * observe them.
+ */
 export function __setEarlySseTimingForTests(
-  timing?: { graceMs?: number; keepaliveMs?: number },
+  timing?: { graceMs?: number; keepaliveMs?: number; maxWaitMs?: number },
 ): void {
   earlySseTiming = {
     graceMs: timing?.graceMs ?? EARLY_HEADERS_GRACE_MS,
     keepaliveMs: timing?.keepaliveMs ?? KEEPALIVE_INTERVAL_MS,
+    maxWaitMs: timing?.maxWaitMs ?? EARLY_SSE_MAX_WAIT_MS,
   }
 }
 
@@ -1126,6 +1146,14 @@ interface DeferredSseOptions {
   dialect: 'anthropic' | 'openai'
   keepaliveMs: number
   startedAt: number
+  /**
+   * Ceiling on the wait for provider headers, measured from `startedAt`. When
+   * it expires the upstream request is aborted and the client gets one typed
+   * `upstream_timeout` frame instead of waiting for a hop to reset the socket.
+   */
+  maxWaitMs: number
+  /** Aborts the in-flight upstream request (used by the cap above). */
+  abortUpstream: () => void
   transform?: (body: ReadableStream<Uint8Array>, upstream: Response) => ReadableStream<Uint8Array>
 }
 
@@ -1136,14 +1164,18 @@ function openDeferredSse(
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
   let keepaliveTimer: ReturnType<typeof setInterval> | null = null
+  let capTimer: ReturnType<typeof setTimeout> | null = null
   let innerReader: ReadableStreamDefaultReader<Uint8Array> | null = null
   let cancelled = false
+  let capped = false
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
-      const stopKeepalive = () => {
+      const stopTimers = () => {
         if (keepaliveTimer) clearInterval(keepaliveTimer)
         keepaliveTimer = null
+        if (capTimer) clearTimeout(capTimer)
+        capTimer = null
       }
       const emitFrame = (payload: StreamErrorPayload) => {
         if (cancelled) return
@@ -1156,8 +1188,7 @@ function openDeferredSse(
       const close = () => {
         try { controller.close() } catch { /* already closed / cancelled */ }
       }
-
-      keepaliveTimer = setInterval(() => {
+      const keepalive = () => {
         if (cancelled) return
         try {
           controller.enqueue(
@@ -1166,12 +1197,40 @@ function openDeferredSse(
         } catch {
           cancelled = true
         }
-      }, options.keepaliveMs)
+      }
+
+      // Flush the response head *now*. Nothing is written until the first chunk,
+      // so waiting for the interval to tick put the "early" 200 out a full
+      // keepalive period late (10s grace + 15s tick = 25s) — most of the edge's
+      // header budget spent for nothing.
+      keepalive()
+      keepaliveTimer = setInterval(keepalive, options.keepaliveMs)
+
+      capTimer = setTimeout(() => {
+        if (cancelled || capped) return
+        capped = true
+        stopTimers()
+        options.abortUpstream()
+        const seconds = Math.round(options.maxWaitMs / 1000)
+        console.warn(
+          `[AI Proxy] ${options.providerLabel} sent no response headers within ${options.maxWaitMs}ms — aborting the upstream request`,
+        )
+        // Nothing was generated, so nothing is metered: the caller's completion
+        // hook only runs off the upstream body, which never existed.
+        emitFrame(
+          deferredErrorPayload(
+            'upstream_timeout',
+            `The model did not start responding within ${seconds}s. Split large tool calls (e.g. write_file then append).`,
+            true,
+          ),
+        )
+        close()
+      }, Math.max(0, options.maxWaitMs - (Date.now() - options.startedAt)))
 
       try {
         const upstream = await pending
-        stopKeepalive()
-        if (cancelled) {
+        stopTimers()
+        if (capped || cancelled) {
           try { upstream.body?.cancel() } catch { /* noop */ }
           return
         }
@@ -1209,7 +1268,8 @@ function openDeferredSse(
 
         // Keepalives + mid-stream error framing come from the same wrapper every
         // other streaming path uses, so an early stream and a fast stream end
-        // exactly the same way.
+        // exactly the same way. The cap above only ever covers the wait *for
+        // headers*: a stream that has started is never cut (SHO-529).
         const wrapped = wrapSseForErrorVisibility(upstream.body, options.providerLabel, {
           keepaliveMs: options.keepaliveMs,
           dialect: options.dialect,
@@ -1223,8 +1283,8 @@ function openDeferredSse(
         }
         close()
       } catch (err: any) {
-        stopKeepalive()
-        if (cancelled || err?.name === 'AbortError') {
+        stopTimers()
+        if (capped || cancelled || err?.name === 'AbortError') {
           close()
           return
         }
@@ -1242,12 +1302,13 @@ function openDeferredSse(
         )
         close()
       } finally {
-        stopKeepalive()
+        stopTimers()
       }
     },
     cancel(reason) {
       cancelled = true
       if (keepaliveTimer) clearInterval(keepaliveTimer)
+      if (capTimer) clearTimeout(capTimer)
       try { innerReader?.cancel(reason) } catch { /* noop */ }
       pending.then((upstream) => {
         try { upstream.body?.cancel() } catch { /* noop */ }
@@ -1285,6 +1346,14 @@ export interface EarlySseOptions {
   graceMs?: number
   /** Keepalive override (tests). */
   keepaliveMs?: number
+  /** Ceiling on the wait for provider headers, measured from the request start. */
+  maxWaitMs?: number
+  /**
+   * The caller's own abort signal (usually `c.req.raw.signal`). It is combined
+   * with the cap's controller and handed to `startUpstream`, so a client cancel
+   * and an `upstream_timeout` abort both reach the provider fetch.
+   */
+  signal?: AbortSignal
 }
 
 /**
@@ -1293,20 +1362,29 @@ export interface EarlySseOptions {
  *
  * - Provider answers inside the grace window → identical to fetching directly:
  *   real status, real body; a non-2xx is handed to `onUpstreamError`.
- * - Provider is slower → `200 text/event-stream` immediately, `: keepalive`
- *   comments every `keepaliveMs`, then the provider's stream (or one typed
- *   `[shogo:retryable=…;code=…]` error frame if it fails after headers).
+ * - Provider is slower → `200 text/event-stream` immediately (flushed with the
+ *   first `: keepalive` comment), `: keepalive` comments every `keepaliveMs`,
+ *   then the provider's stream (or one typed `[shogo:retryable=…;code=…]` error
+ *   frame if it fails after headers).
+ * - Provider still silent at `maxWaitMs` → the upstream request is aborted and
+ *   the client gets one `upstream_timeout` frame, so the agent can reshape the
+ *   call instead of waiting for a hop to drop the socket.
  */
 export async function proxySseWithEarlyHeaders(
-  startUpstream: () => Promise<Response>,
+  startUpstream: (signal: AbortSignal) => Promise<Response>,
   options: EarlySseOptions,
 ): Promise<Response> {
   const dialect = options.dialect ?? 'anthropic'
   const clientDialect = options.clientDialect ?? dialect
   const graceMs = options.graceMs ?? earlySseTiming.graceMs
   const keepaliveMs = options.keepaliveMs ?? earlySseTiming.keepaliveMs
+  const maxWaitMs = options.maxWaitMs ?? earlySseTiming.maxWaitMs
   const startedAt = Date.now()
-  const pending = startUpstream()
+  const capController = new AbortController()
+  const upstreamSignal = options.signal
+    ? AbortSignal.any([options.signal, capController.signal])
+    : capController.signal
+  const pending = startUpstream(upstreamSignal)
 
   // Race the headers, not the body. A rejection inside the window is the
   // caller's problem (throw it); a rejection after it becomes an SSE frame.
@@ -1376,6 +1454,10 @@ export async function proxySseWithEarlyHeaders(
       dialect: clientDialect,
       keepaliveMs,
       startedAt,
+      maxWaitMs,
+      abortUpstream: () => {
+        capController.abort(new Error('upstream_timeout'))
+      },
       transform: options.transform,
     }),
     { status: 200, headers: sseHeaders },
@@ -2104,7 +2186,7 @@ export async function proxyAnthropicStream(
   // thinking: Cloudflare drops a headerless request at 125s, which a large
   // context writing a whole file in one tool call easily exceeds.
   return proxySseWithEarlyHeaders(
-    () => fetchAnthropicWithRetry(
+    (upstreamSignal) => fetchAnthropicWithRetry(
       'https://api.anthropic.com/v1/messages',
       {
         method: 'POST',
@@ -2114,9 +2196,9 @@ export async function proxyAnthropicStream(
           'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify(body),
-        signal,
+        signal: upstreamSignal,
       },
-      { label: 'anthropic', signal },
+      { label: 'anthropic', signal: upstreamSignal },
     ),
     {
       providerLabel: 'anthropic',
@@ -2125,6 +2207,7 @@ export async function proxyAnthropicStream(
       // gone out never reaches `transformStream`, so it must be written in the
       // dialect the caller's SDK parses.
       clientDialect: 'openai',
+      signal,
       headers: {
         'X-Proxy-Provider': 'anthropic',
         'X-Proxy-Model': modelConfig.apiModel,
@@ -3191,13 +3274,13 @@ export async function proxyOpenAIStream(
   // thinking: Cloudflare drops a headerless request at 125s, and a Gemini call
   // on a huge context writing a whole file emits nothing for longer than that.
   return proxySseWithEarlyHeaders(
-    async () => {
+    async (upstreamSignal) => {
       const { response, served: upstreamServed } = await fetchOpenAICompatible(
         request,
         apiKey,
         modelConfig,
         { stream: true, stream_options: { include_usage: true } },
-        signal,
+        upstreamSignal,
       )
       served = upstreamServed
       return response
@@ -3205,6 +3288,7 @@ export async function proxyOpenAIStream(
     {
       providerLabel: modelConfig.provider,
       dialect: 'openai',
+      signal,
       headers: openAIProxyHeaders(modelConfig),
       transform: (upstreamBody) => {
         const lineRewriter = pickLineRewriter(served)
@@ -5989,18 +6073,19 @@ export function aiProxyRoutes() {
       })
 
       const streamedResponse = await proxySseWithEarlyHeaders(
-        () => fetch('https://api.openai.com/v1/responses', {
+        (upstreamSignal) => fetch('https://api.openai.com/v1/responses', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${apiKey}`,
           },
           body: JSON.stringify(forwardBody),
-          signal: c.req.raw.signal,
+          signal: upstreamSignal,
         }),
         {
           providerLabel: 'openai-responses',
           dialect: 'openai',
+          signal: c.req.raw.signal,
           headers: {
             'X-Proxy-Provider': modelConfig.provider,
             'X-Proxy-Model': modelConfig.apiModel,
@@ -6608,19 +6693,20 @@ export function aiProxyRoutes() {
       // and the headers go out inside the grace window so a slow first byte
       // (a huge context writing a whole file) is not cut off by the edge.
       const streamedResponse = await proxySseWithEarlyHeaders(
-        () => fetchAnthropicWithRetry(
+        (upstreamSignal) => fetchAnthropicWithRetry(
           'https://api.anthropic.com/v1/messages',
           {
             method: 'POST',
             headers,
             body: forwardBody,
-            signal: c.req.raw.signal,
+            signal: upstreamSignal,
           },
-          { label: 'anthropic', signal: c.req.raw.signal },
+          { label: 'anthropic', signal: upstreamSignal },
         ),
         {
           providerLabel: 'anthropic',
           dialect: 'anthropic',
+          signal: c.req.raw.signal,
           headers: responseHeaders,
           transform: (upstreamBody) => upstreamBody.pipeThrough(tokenTrackingTransform),
           onUpstreamError: async (response) => {

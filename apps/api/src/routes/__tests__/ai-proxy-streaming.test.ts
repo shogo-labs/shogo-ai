@@ -758,3 +758,180 @@ describe('early SSE headers keep a slow provider inside the edge timeout (SHO-51
     expect(await res.text()).toContain('bad request')
   })
 })
+
+// ──────────────────────────────────────────────────────────────────────────────
+// SHO-529: flush the early headers at the grace window, and bound the wait for
+// a provider that never answers.
+//
+// Live evidence from SHO-517's check: the "early" 200 actually reached the
+// client at 25.3s (10s grace + one 15s keepalive tick, because Bun writes no
+// response head until the first body chunk), and a provider that never answered
+// left the stream open until some hop reset it — 300s of plain-text `request
+// timeout` on staging, a bare ECONNRESET at 465.7s through the desktop — with no
+// typed frame for the agent to act on.
+//
+// Windows are scaled down here (tens of ms) exactly as in the SHO-517 block: the
+// invariants are "the first byte goes out with the headers" and "the cap fires
+// before anything else does", not the absolute numbers.
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('early SSE: flush at the grace window, then cap the wait for headers (SHO-529)', () => {
+  const origFetch = globalThis.fetch
+  afterEach(() => {
+    globalThis.fetch = origFetch
+    __setEarlySseTimingForTests()
+  })
+
+  /** Resolves after `delayMs`, then rejects the way an aborted fetch does. */
+  function neverAnswer(): { start: (signal: AbortSignal) => Promise<Response>; aborted: () => boolean } {
+    let aborted = false
+    return {
+      start: (signal: AbortSignal) =>
+        new Promise<Response>((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            aborted = true
+            reject(Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }))
+          })
+        }),
+      aborted: () => aborted,
+    }
+  }
+
+  test('Anthropic: the first body chunk is a keepalive that lands with the headers, not one keepalive later', async () => {
+    const GRACE = 20
+    const KEEPALIVE = 300
+    __setEarlySseTimingForTests({ graceMs: GRACE, keepaliveMs: KEEPALIVE })
+    scriptFetch([slowFetch(
+      () => new Response(ANTHROPIC_FULL_SSE, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+      200,
+    )])
+
+    const res = await proxyAnthropicStream(
+      {
+        model: 'claude-opus-4-8',
+        messages: [{ role: 'user', content: 'write the whole generator in one file' }],
+        stream: true,
+      },
+      'k',
+      { provider: 'anthropic', apiModel: 'claude-opus-4-8', displayName: 'Claude Opus 4.8' },
+    )
+    expect(res.status).toBe(200)
+
+    // Bun sends no response head until a body chunk exists, so the head is
+    // only really out once this read resolves.
+    const readAt = Date.now()
+    const reader = res.body!.getReader()
+    const first = await reader.read()
+    const firstChunkAt = Date.now() - readAt
+    expect(TD.decode(first.value!)).toContain(': keepalive')
+    expect(firstChunkAt).toBeLessThan(KEEPALIVE)
+    await reader.cancel()
+  })
+
+  test('OpenAI-compatible (Google): same immediate flush on the Gemini path', async () => {
+    const GRACE = 20
+    const KEEPALIVE = 300
+    __setEarlySseTimingForTests({ graceMs: GRACE, keepaliveMs: KEEPALIVE })
+    const googleSse =
+      'data: {"choices":[{"delta":{"content":"GEMINI_OK"},"finish_reason":null}]}\n\n' +
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":4,"total_tokens":15}}\n\n' +
+      'data: [DONE]\n\n'
+    scriptFetch([slowFetch(
+      () => new Response(googleSse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+      200,
+    )])
+
+    const res = await proxyOpenAIStream(
+      {
+        model: 'gemini-4-carbon',
+        messages: [{ role: 'user', content: 'write the whole generator in one file' }],
+        stream: true,
+      },
+      'k',
+      { provider: 'google', apiModel: 'gemini-4-carbon', displayName: 'Gemini 4 Carbon' },
+    )
+    expect(res.status).toBe(200)
+
+    const readAt = Date.now()
+    const reader = res.body!.getReader()
+    const first = await reader.read()
+    expect(Date.now() - readAt).toBeLessThan(KEEPALIVE)
+    expect(TD.decode(first.value!)).toContain(': keepalive')
+    await reader.cancel()
+  })
+
+  test('a provider that never answers gets exactly one upstream_timeout frame at the cap, and its fetch is aborted', async () => {
+    __setEarlySseTimingForTests({ graceMs: 20, keepaliveMs: 10, maxWaitMs: 150 })
+    const upstream = neverAnswer()
+
+    const res = await proxySseWithEarlyHeaders(upstream.start, {
+      providerLabel: 'google',
+      dialect: 'openai',
+    })
+    expect(res.status).toBe(200)
+
+    const sse = await collect(res.body!)
+    const frames = sse.split('\n\n').filter((block) => block.includes('"stream_error"'))
+    expect(frames).toHaveLength(1)
+    expect(sse).toContain('[shogo:retryable=true;code=upstream_timeout]')
+    // The instruction the agent needs: the call that never started is too big.
+    expect(sse).toContain('Split large tool calls (e.g. write_file then append).')
+    // The upstream request does not keep running in the background.
+    expect(upstream.aborted()).toBe(true)
+    // Keepalives still flowed before the cap.
+    expect(sse).toContain(': keepalive')
+  })
+
+  test('the cap writes the Anthropic dialect too (event: error)', async () => {
+    __setEarlySseTimingForTests({ graceMs: 20, keepaliveMs: 10, maxWaitMs: 150 })
+    const upstream = neverAnswer()
+
+    const res = await proxySseWithEarlyHeaders(upstream.start, {
+      providerLabel: 'anthropic',
+      dialect: 'anthropic',
+    })
+
+    const sse = await collect(res.body!)
+    expect(sse.split('\n\n').filter((block) => block.includes('"stream_error"'))).toHaveLength(1)
+    expect(sse).toContain('event: error')
+    expect(sse).toContain('[shogo:retryable=true;code=upstream_timeout]')
+  })
+
+  test('a stream that starts before the cap is never cut, however long it then runs', async () => {
+    __setEarlySseTimingForTests({ graceMs: 20, keepaliveMs: 10, maxWaitMs: 150 })
+    // Headers at 100ms (before the 150ms cap), then 4 chunks × 60ms = 240ms of
+    // body — well past it.
+    scriptFetch([() => new Promise<Response>((resolve) => {
+      setTimeout(() => {
+        resolve(new Response(
+          sseStreamFrom([
+            'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":5}}}\n\n',
+            'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"STILL"}}\n\n',
+            'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"_ALIVE"}}\n\n',
+            'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+          ], { delayMsBetween: 60 }),
+          { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+        ))
+      }, 100)
+    })])
+
+    const startedAt = Date.now()
+    const res = await proxyAnthropicStream(
+      {
+        model: 'claude-opus-4-8',
+        messages: [{ role: 'user', content: 'write the whole generator in one file' }],
+        stream: true,
+      },
+      'k',
+      { provider: 'anthropic', apiModel: 'claude-opus-4-8', displayName: 'Claude Opus 4.8' },
+      () => {},
+    )
+
+    const sse = await collect(res.body!)
+    expect(Date.now() - startedAt).toBeGreaterThan(150)
+    expect(sse).toContain('STILL')
+    expect(sse).toContain('_ALIVE')
+    expect(sse).not.toContain('upstream_timeout')
+    expect(sse).not.toContain('[shogo:retryable=')
+  })
+})
