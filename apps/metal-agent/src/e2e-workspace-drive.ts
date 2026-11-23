@@ -39,6 +39,7 @@ import { allocatedBytes } from './disk'
 import { FcApi } from './fc-api'
 import { FirecrackerVMManager, type FcVmHandle } from './firecracker-vm-manager'
 import { createSnapshotStore, type SnapshotMeta } from './snapshot-store'
+import { GUEST_AUTH, guestExec } from './test-harness/guest-exec'
 
 const BOOT_TIMEOUT_MS = parseInt(process.env.E2E_BOOT_TIMEOUT_MS ?? '180000', 10)
 const BIG_MIB = parseInt(process.env.E2E_BIG_MIB ?? '6144', 10)
@@ -67,12 +68,8 @@ async function waitHealthy(mgr: FirecrackerVMManager, h: FcVmHandle, timeoutMs: 
   fail(`VM ${h.id} never became healthy within ${timeoutMs}ms (serial: ${h.serialLog})`)
 }
 
-/**
- * Run a shell command in the guest through a PTY session and return its output
- * and exit status. Frames: client DATA = 0x01 + bytes; server DATA = 0x81 +
- * 4-byte seq + bytes (packages/pty-core/src/pty-protocol.ts).
- */
-const AUTH = { 'x-runtime-token': 'e2e' }
+/** The guest's pool-mode runtime token (see test-harness/guest-exec.ts). */
+const AUTH = GUEST_AUTH
 
 /** Bind the booted guest to a throwaway project so its authed routes (the PTY) open up. */
 async function assign(url: string, projectId: string): Promise<void> {
@@ -83,59 +80,6 @@ async function assign(url: string, projectId: string): Promise<void> {
     signal: AbortSignal.timeout(30_000),
   })
   if (!res.ok) fail(`/pool/assign failed (${res.status}): ${await res.text()}`)
-}
-
-async function guestExec(url: string, cmd: string, timeoutMs = 120_000): Promise<{ out: string; code: number }> {
-  const created = await fetch(`${url}/terminal/sessions`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', ...AUTH },
-    body: JSON.stringify({ cols: 200, rows: 50 }),
-    signal: AbortSignal.timeout(10_000),
-  })
-  if (!created.ok) fail(`PTY create failed (${created.status}): ${await created.text()}`)
-  const { id } = (await created.json()) as { id: string }
-  const nonce = Math.random().toString(36).slice(2, 10)
-  const endRe = new RegExp(`__END_${nonce}_(\\d+)__`)
-  let buf = ''
-  try {
-    return await new Promise((resolve, reject) => {
-      const ws = new WebSocket(`${url.replace(/^http/, 'ws')}/terminal/sessions/${id}/ws`, { headers: AUTH } as unknown as string[])
-      ws.binaryType = 'arraybuffer'
-      const timer = setTimeout(() => {
-        ws.close()
-        reject(new Error(`guest command timed out after ${timeoutMs}ms: ${cmd}\n${buf.slice(-2000)}`))
-      }, timeoutMs)
-      ws.onopen = () => {
-        // stty -echo keeps our own command line (which contains the marker) out
-        // of the output we parse.
-        const line = `stty -echo; { ${cmd} ; } 2>&1; echo "__END_${nonce}_$?__"\r`
-        const bytes = new TextEncoder().encode(line)
-        const frame = new Uint8Array(1 + bytes.length)
-        frame[0] = 0x01
-        frame.set(bytes, 1)
-        ws.send(frame)
-      }
-      ws.onmessage = (ev) => {
-        const data = new Uint8Array(ev.data as ArrayBuffer)
-        if (data[0] !== 0x81 || data.length < 5) return
-        buf += new TextDecoder().decode(data.subarray(5))
-        const m = endRe.exec(buf)
-        if (!m) return
-        clearTimeout(timer)
-        ws.close()
-        const start = buf.lastIndexOf('stty -echo;')
-        const body = buf.slice(0, m.index)
-        const out = (start >= 0 ? body.slice(body.indexOf('\n', start) + 1) : body).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r/g, '').trim()
-        resolve({ out, code: parseInt(m[1], 10) })
-      }
-      ws.onerror = () => {
-        clearTimeout(timer)
-        reject(new Error(`PTY websocket error running: ${cmd}`))
-      }
-    })
-  } finally {
-    await fetch(`${url}/terminal/sessions/${encodeURIComponent(id)}`, { method: 'DELETE', headers: AUTH }).catch(() => {})
-  }
 }
 
 async function must(url: string, cmd: string, timeoutMs?: number): Promise<string> {
