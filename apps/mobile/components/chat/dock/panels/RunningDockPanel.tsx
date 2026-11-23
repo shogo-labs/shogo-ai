@@ -28,6 +28,13 @@ import {
   isFinishedProcess,
   processKey,
 } from "../finished-rows"
+import {
+  getDockSeenLedgerRevision,
+  hydrateDockSeenLedger,
+  markDockRowShown,
+  subscribeDockSeenLedger,
+  wasDockRowShown,
+} from "../../../../lib/dock-seen-ledger"
 
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000))
@@ -60,6 +67,12 @@ export interface RunningDockPanelProps {
   loadOutput?: (taskId: string) => Promise<TaskOutputInfo | null>
   /** Open a task's destination (thread, card, project session, log) in the side window. */
   onOpenTask?: (proc: RunningProcess) => void
+  /**
+   * The chat this dock belongs to. Rows this device already watched retire in
+   * that chat never play again, so reopening it only animates what finished
+   * since the last visit. Without it the dock behaves as it always has.
+   */
+  sessionId?: string | null
 }
 
 const SOURCE_ICON: Record<string, typeof Terminal> = {
@@ -459,6 +472,7 @@ function without(set: ReadonlySet<string>, key: string): Set<string> {
 
 export function RunningDockPanel(props: RunningDockPanelProps) {
   const { processes, subagents, recentTools, waiting, agentIdle } = props
+  const sessionId = props.sessionId ?? null
   const runningSubagents = subagents.filter((s) => s.status === "running").length
 
   // A settled row is readable for DOCK_FINISHED_LINGER_MS, then animates out.
@@ -476,6 +490,15 @@ export function RunningDockPanel(props: RunningDockPanelProps) {
   // When the dock first rendered each row as settled — the anchor for the
   // readable window. Written once per task, so a poll cannot restart it.
   const firstSettledAt = useRef<Map<string, number>>(new Map())
+
+  // Which rows this device already watched retire in this chat. Read once and
+  // followed, so a ledger that finishes loading after the mount still hides
+  // rows it knows about instead of replaying them.
+  const [seenRevision, setSeenRevision] = useState(() => getDockSeenLedgerRevision())
+  useEffect(() => {
+    void hydrateDockSeenLedger()
+    return subscribeDockSeenLedger(() => setSeenRevision(getDockSeenLedgerRevision()))
+  }, [])
 
   const clearTimers = useCallback(() => {
     for (const timer of timers.current.values()) {
@@ -551,7 +574,11 @@ export function RunningDockPanel(props: RunningDockPanelProps) {
     for (const proc of processes) {
       if (!isFinishedProcess(proc)) continue
       const key = processKey(proc)
-      if (retirement.gone.has(key) || retirement.exiting.has(key) || held.has(key)) continue
+      if (retirement.gone.has(key) || retirement.exiting.has(key)) continue
+      // Retired on an earlier visit to this chat: `visible` filters it out
+      // before it is ever rendered, so there is nothing to schedule here.
+      if (wasDockRowShown(sessionId, key, now)) continue
+      if (held.has(key)) continue
       if (timers.current.has(key)) continue
 
       const timer: { linger: ReturnType<typeof setTimeout>; exit?: ReturnType<typeof setTimeout> } = {
@@ -583,6 +610,9 @@ export function RunningDockPanel(props: RunningDockPanelProps) {
               )
               return
             }
+            // The row finished leaving on screen: this device has read it, so a
+            // reopen inside the runtime's ten-minute listing must not replay it.
+            markDockRowShown(sessionId, key)
             setRetirement((prev) => {
               if (prev.gone.has(key)) return prev
               return {
@@ -597,11 +627,33 @@ export function RunningDockPanel(props: RunningDockPanelProps) {
       }
       timers.current.set(key, timer)
     }
-  }, [processes, held, retirement])
+    // `seenRevision` re-runs this when the ledger finishes loading.
+  }, [processes, held, retirement, sessionId, seenRevision])
+
+  // Rows this device already watched retire in this chat are not shown at all,
+  // so reopening a chat animates only what finished since the last visit. They
+  // are derived here rather than written into `gone` by an effect, so the first
+  // painted frame is already clean.
+  const seenElsewhere = useMemo(() => {
+    const keys = new Set<string>()
+    if (!sessionId) return keys
+    for (const proc of processes) {
+      if (!isFinishedProcess(proc)) continue
+      const key = processKey(proc)
+      if (wasDockRowShown(sessionId, key)) keys.add(key)
+    }
+    return keys
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [processes, sessionId, seenRevision])
 
   const visible = useMemo(
-    () => processes.filter((proc) => !retirement.gone.has(processKey(proc))),
-    [processes, retirement.gone],
+    () =>
+      processes.filter((proc) => {
+        const key = processKey(proc)
+        if (retirement.gone.has(key)) return false
+        return !seenElsewhere.has(key)
+      }),
+    [processes, retirement.gone, seenElsewhere],
   )
 
   const descriptor = useMemo<DockPanelDescriptor | null>(() => {
