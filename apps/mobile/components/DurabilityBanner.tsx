@@ -102,7 +102,7 @@ export function DurabilityBanner() {
     <View
       testID="durability-banner"
       className={`flex-row flex-wrap items-center justify-center gap-x-2 gap-y-1 px-4 py-1.5 ${
-        untrusted ? 'bg-red-700' : 'bg-amber-600'
+        untrusted ? 'bg-error-700 dark:bg-error-100' : 'bg-warning-700 dark:bg-warning-100'
       }`}
     >
       <AlertTriangle size={12} className="text-white" />

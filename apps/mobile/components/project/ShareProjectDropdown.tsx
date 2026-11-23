@@ -6,7 +6,6 @@ import {
   Text,
   TextInput,
   Pressable,
-  ActivityIndicator,
 } from 'react-native'
 import {
   Share2,

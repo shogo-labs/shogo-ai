@@ -10,7 +10,7 @@
  * the huddle (not the conversation), guests get a call and nothing else.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native'
+import { Pressable, Text, TextInput, View } from 'react-native'
 import { HuddleNotesNotice } from '../../../components/team-chat/HuddleNotesPill'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
@@ -19,6 +19,7 @@ import { useAuth } from '../../../contexts/auth'
 import { HuddlePanel } from '../../../components/team-chat/HuddleWindow'
 import { joinHuddleAsGuest, joinHuddleCall, leaveHuddleCall, setHuddleView, useHuddleCall } from '../../../lib/huddle-call'
 import { teamChatApi, type HuddleLinkInfo, type HuddleRequestResult } from '../../../lib/team-chat-api'
+import { Spinner } from '@/components/ui/spinner'
 
 /** How often the waiting screen asks whether someone answered. The API rate-limits this. */
 export const KNOCK_POLL_MS = 2_500
@@ -203,7 +204,7 @@ export default function HuddleJoinScreen() {
   if (authLoading || phase.kind === 'loading') {
     return (
       <Frame>
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
       </Frame>
     )
   }
@@ -254,7 +255,7 @@ export default function HuddleJoinScreen() {
   if (phase.kind === 'waiting') {
     return (
       <Frame>
-        <ActivityIndicator />
+        <Spinner />
         <Text className="text-center text-lg font-semibold text-foreground">Asking to join…</Text>
         <Text className="text-center text-sm text-muted-foreground">Everyone in the call can see your request. You'll go in as soon as someone lets you.</Text>
         <Button label="Cancel" tone="ghost" onPress={() => { void leaveHuddleCall(); setPhase({ kind: 'ready', info: phase.info }) }} />

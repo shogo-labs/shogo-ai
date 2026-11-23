@@ -8,7 +8,6 @@ import {
   Pressable,
   ScrollView,
   TextInput,
-  ActivityIndicator,
   Image,
   FlatList,
   Platform,
@@ -34,6 +33,7 @@ import {
   PopoverBody,
   PopoverContent,
 } from '@/components/ui/popover'
+import { Spinner } from '@/components/ui/spinner'
 
 interface LeaderboardCreator {
   id: string
@@ -139,7 +139,7 @@ export default observer(function CreatorsDirectoryScreen() {
       <View className="px-5 pt-4 pb-3 gap-3">
         <View className="flex-row items-center gap-2">
           <View className="flex-row items-center bg-card border border-input rounded-xl px-3 h-11 flex-1">
-            <Search size={16} color="#71717a" />
+            <Search className="text-muted-foreground" size={16} />
             <TextInput
               className="flex-1 ml-2 text-sm text-foreground web:outline-none no-focus-ring"
               placeholder="Search creators…"
@@ -151,7 +151,7 @@ export default observer(function CreatorsDirectoryScreen() {
             />
             {search.length > 0 && (
               <Pressable onPress={() => setSearch('')} hitSlop={6}>
-                <X size={14} color="#71717a" />
+                <X className="text-muted-foreground" size={14} />
               </Pressable>
             )}
           </View>
@@ -243,7 +243,7 @@ export default observer(function CreatorsDirectoryScreen() {
           accessibilityRole="button"
           accessibilityLabel="Back to marketplace"
         >
-          <ArrowLeft size={20} color="#71717a" />
+          <ArrowLeft className="text-muted-foreground" size={20} />
         </Pressable>
         <View className="flex-1">
           {isWide && (
@@ -294,7 +294,7 @@ export default observer(function CreatorsDirectoryScreen() {
           ListEmptyComponent={
             !loading ? (
               <View className="items-center py-20 px-6">
-                <Search size={32} color="#a1a1aa" />
+                <Search className="text-muted-foreground" size={32} />
                 <Text className="text-foreground font-medium mt-3 mb-1">
                   No creators match
                 </Text>
@@ -304,7 +304,7 @@ export default observer(function CreatorsDirectoryScreen() {
               </View>
             ) : (
               <View className="items-center py-12">
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               </View>
             )
           }
@@ -350,7 +350,7 @@ function CreatorSpotlight({
             <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
               {creator.displayName}
             </Text>
-            {creator.verified && <ShieldCheck size={12} color="#3b82f6" />}
+            {creator.verified && <ShieldCheck className="text-primary" size={12} />}
           </View>
           <Text className="text-xs text-muted-foreground capitalize">
             {TIER_LABEL[creator.creatorTier]} · {creator.reputationScore} rep
@@ -402,7 +402,7 @@ function CreatorGridCard({
             >
               {creator.displayName}
             </Text>
-            {creator.verified && <ShieldCheck size={12} color="#3b82f6" />}
+            {creator.verified && <ShieldCheck className="text-primary" size={12} />}
           </View>
           <Text className="text-[11px] text-muted-foreground capitalize">
             {TIER_LABEL[creator.creatorTier]}
@@ -472,7 +472,7 @@ function SortMenu({
           <Text className="text-xs font-medium text-foreground">
             {SORT_LABELS[value]}
           </Text>
-          <ChevronDown size={12} color="#71717a" />
+          <ChevronDown className="text-muted-foreground" size={12} />
         </Pressable>
       )}
     >

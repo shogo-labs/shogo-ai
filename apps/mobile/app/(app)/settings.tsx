@@ -15,7 +15,6 @@ import {
   ScrollView,
   Pressable,
   Modal,
-  ActivityIndicator,
   Platform,
   StyleSheet,
   useWindowDimensions,
@@ -177,6 +176,7 @@ import { useRequireBiometricApproval } from "../../lib/approval-lock";
 import { useDualPlan } from "../../lib/dual-plan-preference";
 import { openDownloadUrl, openExternalLink } from "../../lib/open-external-link";
 import { isCloudWorkspace } from "../../lib/workspace-route";
+import { Spinner } from '@/components/ui/spinner'
 
 const latestAnnouncedRelease = whatsNewCatalog.find((release) => release.announce);
 
@@ -2685,7 +2685,7 @@ const PeopleTab = observer(function PeopleTab() {
           <CardContent className="p-0">
             {isLoading ? (
               <View className="py-12 items-center">
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
                 <Text className="text-sm text-muted-foreground mt-2">
                   Loading members...
                 </Text>
@@ -2803,7 +2803,7 @@ const PeopleTab = observer(function PeopleTab() {
               <CardContent className="p-0">
                 {isLoading ? (
                   <View className="py-12 items-center">
-                    <ActivityIndicator size="small" />
+                    <Spinner size="small" />
                     <Text className="text-sm text-muted-foreground mt-2">
                       Loading...
                     </Text>
@@ -3192,7 +3192,7 @@ const WorkspaceFamilySection = observer(function WorkspaceFamilySection({
 
         {loading ? (
           <View className="py-4 items-center">
-            <ActivityIndicator />
+            <Spinner />
           </View>
         ) : children.length === 0 ? (
           <Text className="text-xs text-muted-foreground">

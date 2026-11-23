@@ -2,10 +2,11 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /** The "Create a channel" form, shared by the modal (wide) and the `/c/new` screen (phone). */
 import { useState } from 'react'
-import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native'
+import { Pressable, Text, TextInput, View } from 'react-native'
 import { Check, Hash, Lock } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { teamChatApi, type ConversationSummary } from '../../lib/team-chat-api'
+import { Spinner } from '@/components/ui/spinner'
 
 export function NewChannelForm({
   workspaceId,
@@ -88,7 +89,7 @@ export function NewChannelForm({
         className={cn('mt-1 items-center rounded-md py-2.5', name.trim() ? 'bg-primary' : 'bg-muted')}
       >
         {busy ? (
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         ) : (
           <Text className={cn('text-sm font-medium', name.trim() ? 'text-primary-foreground' : 'text-muted-foreground')}>Create channel</Text>
         )}

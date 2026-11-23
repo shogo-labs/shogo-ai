@@ -15,11 +15,12 @@
  */
 
 import { useMemo } from 'react'
-import { View, ActivityIndicator } from 'react-native'
+import { View } from 'react-native'
 import { TrendingDown, Beaker, GraduationCap, Wand2 } from 'lucide-react-native'
 import { Card, CardContent } from '@shogo/shared-ui/primitives'
 import { Text } from '../settings/account-sheet-chrome'
 import { getModelDisplayName, getModelTextColor } from './SharedAnalytics'
+import { Spinner } from '@/components/ui/spinner'
 
 // Inline copy of the response type so this file stays decoupled from api.ts.
 export interface OptimizerInActionData {
@@ -120,7 +121,7 @@ export function OptimizerInActionSection({ data, isLoading, error }: OptimizerIn
   if (isLoading && !data) {
     return (
       <View className="py-8 items-center justify-center">
-        <ActivityIndicator />
+        <Spinner />
         <Text className="text-muted-foreground text-sm mt-2">Loading optimizer report…</Text>
       </View>
     )

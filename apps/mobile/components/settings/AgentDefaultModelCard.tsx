@@ -11,7 +11,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, View } from 'react-native'
+import { Pressable, ScrollView, View } from 'react-native'
 import { Bot as BotIcon, Check as CheckIcon, ChevronDown as ChevronDownIcon, Lock as LockIcon } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { AUTO_MODEL_ID } from '@shogo/model-catalog'
@@ -19,6 +19,7 @@ import { api } from '../../lib/api'
 import { workspaceHttpProxy } from '../../lib/workspace-http'
 import { resolveDisplayName, useModelPickerList } from '../../lib/visible-models'
 import { Text, useAccountSheetIcons } from './account-sheet-chrome'
+import { Spinner } from '@/components/ui/spinner'
 
 export function AgentDefaultModelCard({ workspaceId, className }: { workspaceId: string; className?: string }) {
   const { Bot, Check, ChevronDown, Lock } = useAccountSheetIcons({
@@ -102,7 +103,7 @@ export function AgentDefaultModelCard({ workspaceId, className }: { workspaceId:
 
       <View className="px-5 pb-4 gap-2">
         {loading ? (
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         ) : (
           <Pressable
             onPress={() => setOpen((v) => !v)}
@@ -117,7 +118,7 @@ export function AgentDefaultModelCard({ workspaceId, className }: { workspaceId:
             <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
               {resolveDisplayName(selectedId)}
             </Text>
-            {saving ? <ActivityIndicator size="small" /> : canManage ? <ChevronDown size={14} className="text-muted-foreground" /> : null}
+            {saving ? <Spinner size="small" /> : canManage ? <ChevronDown size={14} className="text-muted-foreground" /> : null}
           </Pressable>
         )}
 

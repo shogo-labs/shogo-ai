@@ -17,7 +17,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { View, Text, TextInput, Pressable, ActivityIndicator, Alert } from 'react-native'
+import { View, Text, TextInput, Pressable, Alert } from 'react-native'
 import {
   CheckCircle,
   KeyRound,
@@ -43,6 +43,7 @@ import {
   type NativeReleaseRow,
 } from '../../lib/api'
 import { openExternalLink } from '../../lib/open-external-link';
+import { Spinner } from '@/components/ui/spinner'
 
 /** Store-setup walkthrough (docs.shogo.ai). */
 const SETUP_GUIDE_URL = 'https://docs.shogo.ai/features/native-release'
@@ -275,7 +276,7 @@ export function AppStoresSection({ projectId, workspaceId, http, embedded = fals
   if (loading) {
     return (
       <View className="flex-1 items-center justify-center py-16">
-        <ActivityIndicator />
+        <Spinner />
       </View>
     )
   }
@@ -359,7 +360,7 @@ export function AppStoresSection({ projectId, workspaceId, http, embedded = fals
             )}
           >
             {savingIds ? (
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             ) : (
               <Text
                 className={cn(
@@ -483,7 +484,7 @@ export function AppStoresSection({ projectId, workspaceId, http, embedded = fals
                     )}
                   >
                     {savingKind === kind ? (
-                      <ActivityIndicator size="small" />
+                      <Spinner size="small" />
                     ) : (
                       <Text
                         className={cn(

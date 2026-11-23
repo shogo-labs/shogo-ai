@@ -16,9 +16,10 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { View, Text, ScrollView, Pressable, ActivityIndicator, RefreshControl } from 'react-native'
+import { View, Text, ScrollView, Pressable, RefreshControl } from 'react-native'
 import { ShieldAlert, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react-native'
 import { API_URL } from '../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 const API_BASE = `${API_URL}/api/admin/signup-risk`
 
@@ -166,7 +167,7 @@ function SignupRiskTab() {
     void load()
   }
 
-  if (loading) return <ActivityIndicator className="mt-8" />
+  if (loading) return <Spinner className="mt-8" />
 
   return (
     <ScrollView
@@ -217,7 +218,7 @@ function SignupRiskTab() {
                   {item.bannedAt ? ' · BANNED' : ''}
                 </Text>
               </View>
-              {expanded ? <ChevronDown size={14} color="#6b7280" /> : <ChevronRight size={14} color="#6b7280" />}
+              {expanded ? <ChevronDown className="text-muted-foreground" size={14} /> : <ChevronRight size={14} />}
             </Pressable>
             {expanded && (
               <View className="gap-2 pt-1">
@@ -307,7 +308,7 @@ function AbuseTab() {
     void load()
   }
 
-  if (loading) return <ActivityIndicator className="mt-8" />
+  if (loading) return <Spinner className="mt-8" />
 
   return (
     <ScrollView
@@ -397,7 +398,7 @@ export default function SignupRiskScreen() {
     <View className="flex-1 bg-background">
       <View className="flex-row items-center justify-between px-4 pt-4 pb-2">
         <View className="flex-row items-center gap-2">
-          <ShieldAlert size={18} color="#6b7280" />
+          <ShieldAlert className="text-muted-foreground" size={18} />
           <Text className="text-lg font-semibold text-foreground">Admin · Security</Text>
         </View>
       </View>

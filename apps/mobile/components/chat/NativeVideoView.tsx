@@ -6,11 +6,12 @@
  */
 
 import { useEffect } from "react"
-import { ActivityIndicator, View } from "react-native"
+import { View } from "react-native"
 import { useVideoPlayer, VideoView } from "expo-video"
 import { API_URL } from "../../lib/api-url"
 import { isUrlOnOrigin } from "../../lib/same-origin-url"
 import { useAgentVideoSource } from "./turns/GeneratedVideoPlayer"
+import { Spinner } from '@/components/ui/spinner'
 
 export interface NativeVideoViewProps {
   url: string
@@ -54,7 +55,7 @@ export default function NativeVideoView({ url, width, height, onError }: NativeV
           allowsPictureInPicture
         />
       ) : (
-        <ActivityIndicator size="large" color="#ffffff" />
+        <Spinner className="text-white" size="large" />
       )}
     </View>
   )

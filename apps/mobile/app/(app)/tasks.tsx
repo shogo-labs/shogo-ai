@@ -2,12 +2,13 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Alert, Keyboard, Pressable, RefreshControl, ScrollView, Text, TextInput, View, useWindowDimensions } from 'react-native'
+import { Alert, Keyboard, Pressable, RefreshControl, ScrollView, Text, TextInput, View, useWindowDimensions } from 'react-native'
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import { Check, CheckCircle2, CircleAlert, Clock3, Folder, KanbanSquare, List, ListTodo, LoaderCircle, Play, Plus, Search, Trash2, X, XCircle } from 'lucide-react-native'
 import { useDomainHttp, useProjectCollection, type IProject } from '../../contexts/domain'
 import { useResolvedTheme } from '../../contexts/theme'
+import { useAccentColors } from '../../contexts/accent-theme'
 import { useWorkspaceDataScope, useWorkspaceInView } from '../../hooks/useWorkspaceInView'
 import { api, type AgentTask, type AgentTaskStatus } from '../../lib/api'
 import { agentTaskEvents } from '../../lib/agent-task-events'
@@ -19,6 +20,7 @@ import { getPinnedProjectIds } from '../../lib/project-prefs-store'
 import { TASK_LANES, taskDropAction, taskLane } from '../../lib/agent-task-board'
 import { Lane } from '../../components/boards/Lane'
 import { DraggableCard } from '../../components/boards/drag'
+import { Spinner } from '@/components/ui/spinner'
 
 /** Wide enough for five lanes side by side. */
 const TASK_BOARD_MIN_WIDTH = 900
@@ -90,7 +92,7 @@ const TasksScreen = observer(function TasksScreen() {
   const projects = useProjectCollection()
   const { everyWorkspace } = useWorkspaceDataScope()
   const isDark = useResolvedTheme() === 'dark'
-  const primaryActionColor = isDark ? '#18181b' : '#ffffff'
+  const accent = useAccentColors()
   const params = useLocalSearchParams<{ projectId?: string; taskId?: string }>()
   const requestedProjectId = Array.isArray(params.projectId) ? params.projectId[0] : params.projectId
   const requestedTaskId = Array.isArray(params.taskId) ? params.taskId[0] : params.taskId
@@ -349,7 +351,7 @@ const TasksScreen = observer(function TasksScreen() {
         <View className="mt-4 flex-row items-center gap-2 border-t border-border/70 pt-3.5">
           {task.status === 'draft' ? (
             <Pressable onPress={() => void mutateTask(task, 'start')} disabled={busy} className="h-12 flex-row items-center gap-2 rounded-full bg-primary px-4 active:opacity-80">
-              {busy ? <ActivityIndicator size="small" color={primaryActionColor} /> : <Play size={18} color={primaryActionColor} />}
+              {busy ? <Spinner size="small" tone="onPrimary" /> : <Play size={18} className="text-primary-foreground" />}
               <Text className="text-[15px] font-semibold text-primary-foreground">Start agent</Text>
             </Pressable>
           ) : null}
@@ -388,7 +390,7 @@ const TasksScreen = observer(function TasksScreen() {
         <View className="flex-row items-center gap-1.5">
           {task.status === 'draft' ? (
             <Pressable onPress={() => void mutateTask(task, 'start')} disabled={busy} accessibilityLabel="Start agent" className="flex-row items-center gap-1 rounded bg-primary px-2 py-0.5">
-              <Play size={11} color={primaryActionColor} />
+              <Play size={11} className="text-primary-foreground" />
               <Text className="text-[11px] font-medium text-primary-foreground">Start</Text>
             </Pressable>
           ) : null}
@@ -490,7 +492,7 @@ const TasksScreen = observer(function TasksScreen() {
           </Pressable>
         </View>
       ) : null}
-      {loading ? <View className="flex-1 items-center justify-center"><ActivityIndicator /></View> : (
+      {loading ? <View className="flex-1 items-center justify-center"><Spinner /></View> : (
         <ScrollView ref={taskListRef} className="flex-1" contentContainerStyle={{ paddingTop: 8, paddingBottom: 132 }} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load() }} />}>
           <View className="px-4 pb-6 pt-4">
             <View className="flex-row items-start justify-between gap-4">
@@ -513,7 +515,7 @@ const TasksScreen = observer(function TasksScreen() {
                 accessibilityLabel="Create task"
                 className="h-11 flex-row items-center gap-1.5 rounded-full bg-primary px-4 active:opacity-80"
               >
-                <Plus size={17} color={primaryActionColor} />
+                <Plus size={17} className="text-primary-foreground" />
                 <Text className="text-[14px] font-semibold text-primary-foreground">New</Text>
               </Pressable>
             </View>
@@ -541,7 +543,7 @@ const TasksScreen = observer(function TasksScreen() {
                 accessibilityLabel="Load older tasks"
                 className="flex-row items-center gap-2 rounded-full border border-border px-4 py-2 active:bg-muted"
               >
-                {loadingMore ? <ActivityIndicator size="small" /> : <Clock3 size={15} className="text-muted-foreground" />}
+                {loadingMore ? <Spinner size="small" /> : <Clock3 size={15} className="text-muted-foreground" />}
                 <Text className="text-[14px] font-semibold text-foreground">{loadingMore ? 'Loading…' : 'Load older tasks'}</Text>
               </Pressable>
             </View>
@@ -583,7 +585,7 @@ const TasksScreen = observer(function TasksScreen() {
               onChangeText={setTitle}
               placeholder="Research hotels for Goa"
               placeholderTextColor={isDark ? '#a3a3a3' : '#52525b'}
-              selectionColor={isDark ? '#f09050' : '#c2410c'}
+              selectionColor={accent.primary}
               returnKeyType="next"
               className="min-h-14 rounded-2xl border border-border bg-muted/70 px-4 py-3.5 text-base text-foreground"
               accessibilityLabel="Task title"
@@ -599,7 +601,7 @@ const TasksScreen = observer(function TasksScreen() {
               onChangeText={setNotes}
               placeholder="Add context for the agent"
               placeholderTextColor={isDark ? '#a3a3a3' : '#52525b'}
-              selectionColor={isDark ? '#f09050' : '#c2410c'}
+              selectionColor={accent.primary}
               multiline
               className="min-h-28 rounded-2xl border border-border bg-muted/70 px-4 py-3.5 text-base leading-5 text-foreground"
               textAlignVertical="top"
@@ -630,7 +632,7 @@ const TasksScreen = observer(function TasksScreen() {
                   onChangeText={setProjectQuery}
                   placeholder="Search projects"
                   placeholderTextColor={isDark ? '#a3a3a3' : '#52525b'}
-                  selectionColor={isDark ? '#f09050' : '#c2410c'}
+                  selectionColor={accent.primary}
                   autoFocus
                   returnKeyType="search"
                   className="h-12 flex-1 px-2.5 text-base text-foreground"

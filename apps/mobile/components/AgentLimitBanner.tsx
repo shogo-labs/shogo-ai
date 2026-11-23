@@ -77,7 +77,7 @@ export function AgentLimitBanner() {
   return (
     <View
       testID="agent-limit-banner"
-      className="relative flex-row flex-wrap items-center justify-center gap-x-2 gap-y-1 bg-amber-600 px-8 py-1.5"
+      className="relative flex-row flex-wrap items-center justify-center gap-x-2 gap-y-1 bg-warning-700 px-8 py-1.5 dark:bg-warning-100"
     >
       <Text className="text-xs font-medium text-white">
         Agent limit reached: {capacity.running} running, {queued} queued.

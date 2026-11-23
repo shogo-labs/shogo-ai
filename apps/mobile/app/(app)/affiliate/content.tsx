@@ -17,8 +17,12 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import {
-  View, Text, ScrollView, Pressable, ActivityIndicator,
-  RefreshControl, Platform,
+  View,
+  Text,
+  ScrollView,
+  Pressable,
+  RefreshControl,
+  Platform,
 } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { useRouter } from 'expo-router'
@@ -36,6 +40,7 @@ import {
   type SocialPlatform,
 } from '../../../lib/affiliate-api'
 import { ContentAnalyticsPanel } from '../../../components/analytics/ContentAnalytics'
+import { Spinner } from '@/components/ui/spinner'
 
 function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`
@@ -213,7 +218,7 @@ export default function AffiliateContentScreen() {
       >
         <View className="w-full max-w-5xl self-center gap-5">
           {loading ? (
-            <View className="py-16 items-center"><ActivityIndicator /></View>
+            <View className="py-16 items-center"><Spinner /></View>
           ) : errorMsg ? (
             <Card>
               <CardContent className="flex-row items-start gap-3 p-4">
@@ -494,7 +499,7 @@ function ProgramStatusCard({
         ) : null}
         <Button onPress={onApply} disabled={applying || !hasVerified}>
           {applying ? (
-            <ActivityIndicator />
+            <Spinner />
           ) : (
             <View className="flex-row items-center gap-2">
               <Send size={14} className="text-primary-foreground" />
@@ -580,7 +585,7 @@ function AddHandleCard({
           </View>
         ) : null}
         <Button onPress={onAdd} disabled={adding}>
-          {adding ? <ActivityIndicator /> : <Text className="text-primary-foreground font-medium">Connect</Text>}
+          {adding ? <Spinner /> : <Text className="text-primary-foreground font-medium">Connect</Text>}
         </Button>
       </CardContent>
     </Card>
@@ -629,7 +634,7 @@ function AccountCard({
             ) : null}
             <View className="flex-row gap-2">
               <Button variant="secondary" onPress={onVerify} disabled={busy} className="flex-1">
-                {busy ? <ActivityIndicator /> : <Text className="text-foreground text-sm">Verify</Text>}
+                {busy ? <Spinner /> : <Text className="text-foreground text-sm">Verify</Text>}
               </Button>
               <Pressable onPress={onRemove} disabled={busy} hitSlop={8} className="px-3 py-2 items-center justify-center">
                 <Trash2 size={16} className="text-red-500" />

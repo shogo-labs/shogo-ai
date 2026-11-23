@@ -6,13 +6,14 @@
  * people who aren't in the channel.
  */
 import { useMemo, useState } from 'react'
-import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import { Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { Check, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useMentionables, useMyUserId } from '../../hooks/useTeamChat'
 import { cancelHuddleCallInvite, inviteToHuddleCall } from '../../lib/huddle-call'
 import type { Huddle } from '../../lib/team-chat-api'
 import { PresenceDot } from './PresenceDot'
+import { Spinner } from '@/components/ui/spinner'
 
 export interface InvitablePerson {
   id: string
@@ -138,7 +139,7 @@ export function HuddleInviteSheet({
               className="mt-3 items-center rounded-md bg-emerald-600 py-3 active:opacity-80"
             >
               {busy ? (
-                <ActivityIndicator size="small" color="white" />
+                <Spinner className="text-white" size="small" />
               ) : (
                 <Text className="text-sm font-medium text-white">Ring {selected.length} {selected.length === 1 ? 'person' : 'people'}</Text>
               )}

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { ActivityIndicator, View } from 'react-native'
+import { View } from 'react-native'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { CloudOnboarding } from '../../components/onboarding/cloud/CloudOnboarding'
+import { Spinner } from '@/components/ui/spinner'
 
 export default function OnboardingPage() {
   const { configLoaded, localMode } = usePlatformConfig()
@@ -10,7 +11,7 @@ export default function OnboardingPage() {
   if (!configLoaded) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
       </View>
     )
   }

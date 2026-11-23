@@ -9,7 +9,7 @@
  */
 
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react"
-import { View, Text, Pressable, ActivityIndicator } from "react-native"
+import { View, Text, Pressable } from "react-native"
 import { Motion } from "@legendapp/motion"
 import { Clapperboard, Download, RefreshCw, Share2 } from "lucide-react-native"
 import type { ToolCallData } from "../tools/types"
@@ -18,6 +18,7 @@ import { buildAgentWorkspaceUrl } from "../../../lib/agent-workspace-url"
 import { useChatImageWidth } from "./use-chat-image-width"
 import { runGeneratedImageAction } from "../generated-image-actions"
 import { parseGenerateVideoResult, videoCardState } from "./generate-video-result"
+import { Spinner } from '@/components/ui/spinner'
 
 const GeneratedVideoPlayer = lazy(() => import("./GeneratedVideoPlayer"))
 
@@ -126,7 +127,7 @@ export function GenerateVideoWidget({ tool }: GenerateVideoWidgetProps) {
               transition={{ type: "timing", duration: 900, repeat: Infinity, repeatReverse: true }}
               className="h-12 w-12 items-center justify-center rounded-full bg-primary/10"
             >
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             </Motion.View>
           ) : (
             <View className="h-12 w-12 items-center justify-center rounded-full bg-primary/10">
@@ -150,7 +151,7 @@ export function GenerateVideoWidget({ tool }: GenerateVideoWidgetProps) {
         <Suspense
           fallback={
             <View className="items-center justify-center rounded-lg bg-muted/50" style={{ width, aspectRatio }}>
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             </View>
           }
         >
@@ -181,7 +182,7 @@ export function GenerateVideoWidget({ tool }: GenerateVideoWidgetProps) {
           accessibilityRole="button"
           accessibilityLabel="Download generated video"
         >
-          {action === "save" ? <ActivityIndicator size="small" /> : <Download size={14} className="text-foreground" />}
+          {action === "save" ? <Spinner size="small" /> : <Download size={14} className="text-foreground" />}
           <Text className="text-xs font-medium text-foreground">Download</Text>
         </Pressable>
         <Pressable
@@ -191,7 +192,7 @@ export function GenerateVideoWidget({ tool }: GenerateVideoWidgetProps) {
           accessibilityRole="button"
           accessibilityLabel="Share generated video"
         >
-          {action === "share" ? <ActivityIndicator size="small" /> : <Share2 size={14} className="text-foreground" />}
+          {action === "share" ? <Spinner size="small" /> : <Share2 size={14} className="text-foreground" />}
           <Text className="text-xs font-medium text-foreground">Share</Text>
         </Pressable>
       </View>

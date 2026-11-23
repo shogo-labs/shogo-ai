@@ -17,7 +17,6 @@
 
 import { useCallback, useRef, useState } from 'react'
 import {
-  ActivityIndicator,
   Alert,
   Platform,
   Pressable,
@@ -48,6 +47,7 @@ import {
 import { useDomainHttp } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { openExternalLink } from '../../lib/open-external-link';
+import { Spinner } from '@/components/ui/spinner'
 
 type Tab = 'accounts' | 'compose' | 'calendar' | 'inbox' | 'comments' | 'automations'
 
@@ -330,7 +330,7 @@ export default function SocialScreen() {
 
       {loading ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator />
+          <Spinner />
         </View>
       ) : (
         <ScrollView
@@ -503,7 +503,7 @@ function AccountsTab({
                 }`}
               >
                 {busy ? (
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                 ) : (
                   <Icon size={14} className="text-foreground" />
                 )}
@@ -532,7 +532,7 @@ function AccountsTab({
           }`}
         >
           {connecting === 'instagram' ? (
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           ) : (
             <Facebook size={14} className="text-foreground" />
           )}
@@ -602,7 +602,7 @@ function AccountsTab({
                         className="flex-row items-center gap-1.5 self-start px-2.5 py-1.5 rounded-lg border border-border"
                       >
                         {busy ? (
-                          <ActivityIndicator size="small" />
+                          <Spinner size="small" />
                         ) : (
                           <RefreshCw size={12} className="text-foreground" />
                         )}

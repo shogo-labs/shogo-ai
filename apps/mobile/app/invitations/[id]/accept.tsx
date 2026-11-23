@@ -18,7 +18,7 @@
  * Hand-rolling PATCH + POST /api/members here would be a second one.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { View, Text, ActivityIndicator } from 'react-native'
+import { View, Text } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Users, CheckCircle2, AlertTriangle, MailX, Ban } from 'lucide-react-native'
@@ -32,6 +32,7 @@ import {
   normalizeInvitationId,
   type InvitationPhase,
 } from '../../../lib/invitation-link'
+import { Spinner } from '@/components/ui/spinner'
 
 const ACTIVITY_ON_BRAND = '#ffffff'
 
@@ -122,7 +123,7 @@ function Centered({ children }: { children: React.ReactNode }) {
 function Loading() {
   return (
     <SafeAreaView className="flex-1 bg-background items-center justify-center">
-      <ActivityIndicator size="large" />
+      <Spinner size="large" />
     </SafeAreaView>
   )
 }
@@ -239,7 +240,7 @@ function AcceptPanel({ invitationId, info }: { invitationId: string; info: Invit
           </Button>
         ) : (
           <Button className="w-full" onPress={handleAccept} disabled={isAccepting || !user?.id}>
-            {isAccepting ? <ActivityIndicator color={ACTIVITY_ON_BRAND} /> : 'Accept Invitation'}
+            {isAccepting ? <Spinner tone="onPrimary" /> : 'Accept Invitation'}
           </Button>
         )}
         <Button variant="ghost" className="w-full" onPress={() => router.replace('/')}>

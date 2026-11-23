@@ -8,12 +8,13 @@
  */
 
 import React, { useState } from 'react'
-import { View, Text, FlatList, Modal, Pressable, ActivityIndicator } from 'react-native'
+import { View, Text, FlatList, Modal, Pressable } from 'react-native'
 import { Button } from '../primitives/Button'
 import { Card, CardContent } from '../primitives/Card'
 import { Input } from '../primitives/Input'
 import { Badge } from '../primitives/Badge'
 import { Skeleton } from '../primitives/Skeleton'
+import { Spinner } from '../primitives/Spinner'
 
 export interface ProjectItem {
   id: string
@@ -180,7 +181,7 @@ export function ProjectListScreen({
                   onPress={handleCreate}
                   disabled={creating || !newName.trim()}
                 >
-                  {creating ? <ActivityIndicator color="#fff" size="small" /> : 'Create'}
+                  {creating ? <Spinner tone="onPrimary" size="small" /> : 'Create'}
                 </Button>
               </View>
             </CardContent>

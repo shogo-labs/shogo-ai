@@ -19,7 +19,6 @@ import {
   View,
   Text,
   Pressable,
-  ActivityIndicator,
   Platform,
 } from "react-native";
 import { cn } from "@shogo/shared-ui/primitives";
@@ -27,6 +26,7 @@ import { Download } from "lucide-react-native";
 import { nativeAuthHeaders } from "../../../lib/agent-fetch";
 import { buildAgentWorkspaceUrl } from "../../../lib/agent-workspace-url";
 import { downloadFileToCache, shareCachedFile } from "../../../lib/download-to-file";
+import { Spinner } from '@/components/ui/spinner'
 
 export interface DownloadChipProps {
   /** Workspace-relative path of the deliverable file (e.g. `report.pptx`). */
@@ -102,7 +102,7 @@ export function DownloadChip({ path, agentUrl, className, variant = "chip" }: Do
         {...(error ? ({ title: error } as Record<string, string>) : {})}
       >
         {busy ? (
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         ) : (
           <Download size={15} className="text-muted-foreground" />
         )}
@@ -120,7 +120,7 @@ export function DownloadChip({ path, agentUrl, className, variant = "chip" }: Do
         accessibilityLabel={`Download ${name}`}
       >
         {busy ? (
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         ) : (
           <Download size={12} className="text-foreground" />
         )}

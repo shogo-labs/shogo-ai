@@ -8,7 +8,6 @@ import {
   ScrollView,
   Pressable,
   RefreshControl,
-  ActivityIndicator,
   useWindowDimensions,
   TextInput,
   Modal,
@@ -41,6 +40,7 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 const API_BASE = `${API_URL}/api/admin/evals`
 
@@ -419,7 +419,7 @@ function StatusBanner({ status, error, data, onStop }: { status: string; error: 
     return (
       <View className="rounded-xl border border-primary/30 bg-primary/5 p-4 mb-4">
         <View className="flex-row items-center gap-3 mb-2">
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
           <View className="flex-1">
             <Text className="text-sm font-semibold text-foreground">Eval Run In Progress</Text>
             {total > 0 ? (
@@ -964,7 +964,7 @@ function EvalRow({
             className="flex-row items-center gap-1.5 mt-1 active:opacity-70"
           >
             {logLoading ? (
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             ) : (
               <FileText size={12} className="text-primary" />
             )}
@@ -1065,7 +1065,7 @@ export default function EvalRunDetail() {
   if (loading) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
         <Text className="text-sm text-muted-foreground mt-3">Loading results...</Text>
       </View>
     )
@@ -1337,7 +1337,7 @@ export default function EvalRunDetail() {
 
       {isRunning && (!data.progress || data.progress.length === 0) && data.results.length === 0 && (
         <View className="items-center justify-center py-16 rounded-xl border border-dashed border-border">
-          <ActivityIndicator size="large" />
+          <Spinner size="large" />
           <Text className="text-sm font-medium text-muted-foreground mt-4">Waiting for first eval to complete...</Text>
           <Text className="text-xs text-muted-foreground mt-1">Docker workers are setting up workspaces</Text>
         </View>

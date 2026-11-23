@@ -16,7 +16,6 @@ import {
   type ReactNode,
 } from "react";
 import {
-  ActivityIndicator,
   Alert,
   Animated,
   Modal,
@@ -105,6 +104,7 @@ import {
   MobileWorkspaceSwitcherRow,
   MobileWorkspaceSwitcherSheet,
 } from "./MobileWorkspaceSwitcher";
+import { Spinner } from '@/components/ui/spinner'
 
 interface MobileWorkspaceShellProps {
   children: ReactNode;
@@ -1237,7 +1237,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                               <View className="ml-5 pl-2">
                                 {chats?.loading ? (
                                   <View className="px-2 py-2">
-                                    <ActivityIndicator size="small" />
+                                    <Spinner size="small" />
                                   </View>
                                 ) : (
                                   <>

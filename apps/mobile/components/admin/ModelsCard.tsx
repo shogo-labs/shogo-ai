@@ -22,7 +22,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { View, Text, ScrollView, Pressable, ActivityIndicator, TextInput, Modal } from 'react-native'
+import { View, Text, ScrollView, Pressable, TextInput, Modal } from 'react-native'
 import {
   Boxes,
   Plus,
@@ -48,6 +48,7 @@ import {
   type PublicModel,
 } from '@shogo-ai/sdk'
 import { invalidateVisibleModelsCache } from '../../lib/visible-models'
+import { Spinner } from '@/components/ui/spinner'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -386,7 +387,7 @@ function PublicModelsSection({
           </Text>
 
           {loading ? (
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           ) : (
             <>
               {error && <Text className="text-xs text-red-500">{error}</Text>}
@@ -550,7 +551,7 @@ function PublicModelsSection({
                                   selected ? 'border-primary bg-primary' : 'border-border',
                                 )}
                               >
-                                {selected && <Check size={11} color="#fff" />}
+                                {selected && <Check className="text-primary-foreground" size={11} />}
                               </View>
                               <View className="flex-1">
                                 <Text className="text-sm text-foreground">{m.displayName}</Text>
@@ -588,7 +589,7 @@ function PublicModelsSection({
                 className={cn('items-center py-2.5 rounded-md', canSubmit && !busy ? 'bg-primary' : 'bg-muted')}
               >
                 {busy ? (
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                 ) : (
                   <Text
                     className={cn(
@@ -983,7 +984,7 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
   if (isLoading) {
     return (
       <View className="bg-card border border-border rounded-xl px-5 py-6 items-center">
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       </View>
     )
   }
@@ -1020,7 +1021,7 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
             className="flex-row items-center gap-1 px-2 py-1 rounded bg-muted active:bg-muted/70"
           >
             {pricingRefreshing ? (
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             ) : (
               <RefreshCw size={11} className="text-muted-foreground" />
             )}
@@ -1200,7 +1201,7 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
                   </Text>
                 ) : discoveryLoading[form.provider] ? (
                   <View className="flex-row items-center gap-2 py-1.5">
-                    <ActivityIndicator size="small" />
+                    <Spinner size="small" />
                     <Text className="text-xs text-muted-foreground">Loading {form.provider} models…</Text>
                   </View>
                 ) : discoveryError[form.provider] ? (
@@ -1249,7 +1250,7 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
                                   selected ? 'border-primary bg-primary' : 'border-border',
                                 )}
                               >
-                                {selected && <Check size={11} color="#fff" />}
+                                {selected && <Check className="text-primary-foreground" size={11} />}
                               </View>
                               <View className="flex-1">
                                 <Text className="text-sm text-foreground">{m.displayName}</Text>
@@ -1489,7 +1490,7 @@ export function ModelsCard({ platform, localMode }: { platform: PlatformApi; loc
                   className={cn('items-center py-2.5 rounded-md', canSubmit && !busy ? 'bg-primary' : 'bg-muted')}
                 >
                   {busy ? (
-                    <ActivityIndicator size="small" />
+                    <Spinner size="small" />
                   ) : (
                     <Text className={cn('text-sm font-medium', canSubmit ? 'text-primary-foreground' : 'text-muted-foreground')}>
                       {editingId ? 'Save changes' : 'Add model'}

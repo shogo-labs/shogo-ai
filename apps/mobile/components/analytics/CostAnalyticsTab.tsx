@@ -11,7 +11,6 @@ import { useState, useCallback, useEffect } from 'react'
 import {
   View,
   Pressable,
-  ActivityIndicator,
   ScrollView,
 } from 'react-native'
 import {
@@ -34,6 +33,7 @@ import {
   Text,
   useAccountSheetIcons,
 } from '../settings/account-sheet-chrome'
+import { Spinner } from '@/components/ui/spinner'
 
 const COST_ANALYTICS_ICON_MAP = {
   DollarSign: DollarSignIcon,
@@ -768,7 +768,7 @@ function LoadingCard() {
   return (
     <Card>
       <CardContent className="p-8 items-center">
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
         <Text className="text-xs text-muted-foreground mt-2">Loading...</Text>
       </CardContent>
     </Card>

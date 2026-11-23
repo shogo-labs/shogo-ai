@@ -9,7 +9,7 @@
  * with a block, which means votes and upvotes sync live to everyone.
  */
 import { useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import { Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { BarChart3, HelpCircle, Plus, Send, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useConversationTimeline, useMentionables, useMyUserId } from '../../hooks/useTeamChat'
@@ -19,6 +19,7 @@ import { audienceQuestionOf, pollOf, sortQuestions } from '../../lib/team-chat-k
 import { AudienceQuestionCardView, PollCardView } from './PollCard'
 import { formatTime } from '../../lib/team-chat-time'
 import { HuddleWakeNote, huddleWakeBlockOf } from './HuddleWakeNote'
+import { Spinner } from '@/components/ui/spinner'
 
 type Tab = 'chat' | 'qa'
 
@@ -114,7 +115,7 @@ export function HuddleThreadPanel({
         contentContainerStyle={{ padding: 10, gap: 8 }}
         onContentSizeChange={() => tab === 'chat' && scroller.current?.scrollToEnd({ animated: false })}
       >
-        {timeline.loading && !messages.length ? <ActivityIndicator /> : null}
+        {timeline.loading && !messages.length ? <Spinner /> : null}
         {tab === 'chat'
           ? messages.length
             ? messages.map((m) => <ThreadLine key={m.id} message={m} me={me} names={names} canModerate={canModerate} />)

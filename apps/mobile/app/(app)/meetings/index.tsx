@@ -7,7 +7,6 @@ import {
   Text,
   Pressable,
   FlatList,
-  ActivityIndicator,
   RefreshControl,
   TextInput,
 } from 'react-native'
@@ -26,13 +25,14 @@ import {
   type MeetingSummary,
 } from '../../../lib/meetings-api'
 import { LiveTranscript } from '../../../components/meetings/LiveTranscript'
+import { Spinner } from '@/components/ui/spinner'
 
 function StatusBadge({ meeting }: { meeting: MeetingSummary }) {
   if (meeting.status === 'ready' && meeting.enhanceStatus === 'running') {
     return (
-      <View className="flex-row items-center gap-1 bg-orange-500/10 rounded-full px-2 py-0.5">
-        <Sparkles size={10} className="text-orange-600" />
-        <Text className="text-xs text-orange-600 font-medium">Writing notes</Text>
+      <View className="flex-row items-center gap-1 bg-primary/10 rounded-full px-2 py-0.5">
+        <Sparkles size={10} className="text-primary" />
+        <Text className="text-xs text-primary font-medium">Writing notes</Text>
       </View>
     )
   }
@@ -160,8 +160,8 @@ export default function MeetingsScreen() {
       accessibilityLabel={`Open ${item.title || 'untitled meeting'}`}
       className="mb-2 flex-row items-center rounded-2xl border border-border/70 bg-card px-4 py-3.5 active:bg-muted/50"
     >
-      <View className="mr-3 h-10 w-10 items-center justify-center rounded-xl bg-orange-500/10">
-        <Mic size={18} className="text-orange-600 dark:text-orange-300" />
+      <View className="mr-3 h-10 w-10 items-center justify-center rounded-xl bg-primary/10">
+        <Mic size={18} className="text-primary" />
       </View>
       <View className="flex-1 min-w-0">
         <Text className="text-sm font-medium text-foreground" numberOfLines={1}>
@@ -208,12 +208,12 @@ export default function MeetingsScreen() {
       accessibilityLabel={isUploading ? 'Uploading recording' : isRecording ? 'Stop recording' : 'Start recording'}
       className={cn(
         'min-h-11 flex-row items-center gap-2 rounded-xl px-4',
-        isUploading ? 'bg-muted' : isRecording ? 'bg-red-600 active:bg-red-700' : 'bg-orange-500 active:bg-orange-600',
+        isUploading ? 'bg-muted' : isRecording ? 'bg-red-600 active:bg-red-700' : 'bg-primary active:bg-primary/80',
       )}
     >
       {isUploading ? (
         <>
-          <ActivityIndicator size="small" color="white" />
+          <Spinner tone="muted" size="small" />
           <Text className="text-sm font-medium text-muted-foreground">Uploading...</Text>
         </>
       ) : isRecording ? (
@@ -223,8 +223,8 @@ export default function MeetingsScreen() {
         </>
       ) : (
         <>
-          <Mic size={14} color="white" />
-          <Text className="text-sm font-medium text-white">Record</Text>
+          <Mic className="text-primary-foreground" size={14} />
+          <Text className="text-sm font-medium text-primary-foreground">Record</Text>
         </>
       )}
     </Pressable>
@@ -248,7 +248,7 @@ export default function MeetingsScreen() {
         ) : (
           <View className="flex-row items-center justify-between">
             <View className="min-w-0 flex-1 pr-3">
-              <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-orange-600 dark:text-orange-300">
+              <Text className="text-[11px] font-semibold uppercase tracking-[1.2px] text-primary">
                 Capture
               </Text>
               <Text className="mt-1 text-[28px] font-semibold tracking-[-0.6px] text-foreground">Meetings</Text>
@@ -325,12 +325,12 @@ export default function MeetingsScreen() {
         />
       ) : loading || !workspaceId ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator color="#f97316" />
+          <Spinner />
         </View>
       ) : meetings.length === 0 ? (
         <View className="flex-1 items-center justify-center px-8">
-          <View className="mb-4 h-16 w-16 items-center justify-center rounded-2xl border border-orange-500/20 bg-orange-500/10">
-            <Mic size={28} className="text-orange-600 dark:text-orange-300" />
+          <View className="mb-4 h-16 w-16 items-center justify-center rounded-2xl border border-primary/20 bg-primary/10">
+            <Mic size={28} className="text-primary" />
           </View>
           <Text className="text-lg font-semibold text-foreground mb-1">No meetings yet</Text>
           <Text className="text-sm text-muted-foreground text-center mb-4">
@@ -339,10 +339,10 @@ export default function MeetingsScreen() {
           {canRecord && !isRecording && (
             <Pressable
               onPress={startRecording}
-              className="min-h-11 flex-row items-center gap-2 rounded-xl bg-orange-500 px-4 active:bg-orange-600"
+              className="min-h-11 flex-row items-center gap-2 rounded-xl bg-primary px-4 active:bg-primary/80"
             >
-              <Mic size={14} color="white" />
-              <Text className="text-sm font-medium text-white">Start Recording</Text>
+              <Mic className="text-primary-foreground" size={14} />
+              <Text className="text-sm font-medium text-primary-foreground">Start Recording</Text>
             </Pressable>
           )}
         </View>

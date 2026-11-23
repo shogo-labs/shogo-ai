@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { View, Text, Pressable, ActivityIndicator, type LayoutChangeEvent } from "react-native"
+import { View, Text, Pressable, type LayoutChangeEvent } from "react-native"
 import { Motion, AnimatePresence } from "@legendapp/motion"
 import { cn } from "@shogo/shared-ui/primitives"
 import { AlertTriangle, AtSign, Ban, Bot, ChevronRight, CircleCheck, CircleX, Clock, Hourglass, KanbanSquare, Send, Terminal, X } from "lucide-react-native"
@@ -35,6 +35,7 @@ import {
   subscribeDockSeenLedger,
   wasDockRowShown,
 } from "../../../../lib/dock-seen-ledger"
+import { Spinner } from '@/components/ui/spinner'
 
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000))
@@ -256,7 +257,7 @@ function TaskRow({
             className="rounded px-1.5 py-0.5 active:opacity-60"
           >
             {loading ? (
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             ) : (
               <Text className="text-[10px] text-muted-foreground">{output !== null ? "Hide" : "Output"}</Text>
             )}
@@ -274,7 +275,7 @@ function TaskRow({
               killing && "opacity-40",
             )}
           >
-            {killing ? <ActivityIndicator size="small" color="#ef4444" /> : <X size={10} className="text-red-400" />}
+            {killing ? <Spinner tone="destructive" size="small" /> : <X size={10} className="text-red-400" />}
             <Text className="text-[10px] font-medium text-red-400">
               {proc.stale ? "Dismiss" : isShell ? "Kill" : "Cancel"}
             </Text>

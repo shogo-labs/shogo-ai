@@ -11,7 +11,7 @@
  * in the Settings page and in the phone's Account sheet.
  */
 import { useEffect, useMemo, useState } from 'react'
-import { ActivityIndicator, Pressable, View } from 'react-native'
+import { Pressable, View } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, Globe, Inbox, Trash2 } from 'lucide-react-native'
 import { Button, Card, CardContent, Switch, cn } from '@shogo/shared-ui/primitives'
@@ -35,6 +35,7 @@ import {
   type MailboxKind,
   type MailRule,
 } from '../../lib/mail-api'
+import { Spinner } from '@/components/ui/spinner'
 
 const api = mailApi()
 
@@ -558,7 +559,7 @@ function RulesEditor({ workspaceId, mailbox }: { workspaceId: string; mailbox: M
   return (
     <View className="gap-2" testID="mail-rules">
       <Label>Rules</Label>
-      {rules === null && !error ? <ActivityIndicator className="self-start" /> : null}
+      {rules === null && !error ? <Spinner className="self-start" /> : null}
       {(rules ?? []).map((r) => (
         <View key={r.id} className="flex-row items-start gap-2 rounded-md border border-border p-2">
           <View className="min-w-0 flex-1 gap-0.5">
@@ -779,7 +780,7 @@ export function EmailSettingsTab() {
   if (!workspaceId || loading) {
     return (
       <View className="items-center py-12">
-        <ActivityIndicator />
+        <Spinner />
       </View>
     )
   }

@@ -10,8 +10,9 @@ import {
   type VariantProps,
 } from '@gluestack-ui/utils/nativewind-utils';
 import { cssInterop } from 'nativewind';
-import { ActivityIndicator, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 import { PressableScale } from '@shogo/shared-ui/primitives';
+import { Spinner } from '@/components/ui/spinner';
 import { PrimitiveIcon, UIIcon } from '@gluestack-ui/core/icon/creator';
 
 const SCOPE = 'BUTTON';
@@ -19,11 +20,25 @@ const SCOPE = 'BUTTON';
 // Dips on press-down and springs back, like the rest of the app's buttons.
 const Root = withStyleContext(PressableScale, SCOPE);
 
+/**
+ * The button spinner is the app's themed Spinner. On a solid action it takes
+ * that button's own foreground so it reads on the accent (or status) fill;
+ * everywhere else it stays on the accent instead of react-native-web's blue.
+ */
+const ThemedButtonSpinner = React.forwardRef<
+  React.ComponentRef<typeof Spinner>,
+  React.ComponentPropsWithoutRef<typeof Spinner>
+>((props, ref) => {
+  const { variant, action } = useStyleContext(SCOPE);
+  const onSolidFill = variant === 'solid' && action !== 'secondary';
+  return <Spinner ref={ref} tone={onSolidFill ? 'onPrimary' : 'primary'} {...props} />;
+});
+
 const UIButton = createButton({
   Root: Root,
   Text,
   Group: View,
-  Spinner: ActivityIndicator,
+  Spinner: ThemedButtonSpinner,
   Icon: UIIcon,
 });
 

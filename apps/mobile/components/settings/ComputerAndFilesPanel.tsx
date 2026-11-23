@@ -9,7 +9,7 @@
  * their state and links there.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native'
+import { Pressable, Text, TextInput, View } from 'react-native'
 import { HardDrive, Mic, Monitor, MousePointerClick, Plus, X } from 'lucide-react-native'
 import { Switch, cn } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../contexts/domain'
@@ -31,6 +31,7 @@ import {
 import { useLocalApps, useOsPermissions } from '../../lib/use-os-permissions'
 import { OptionSelect } from '../onboarding/desktop/OptionSelect'
 import { PermissionRow } from '../onboarding/desktop/PermissionRow'
+import { Spinner } from '@/components/ui/spinner'
 
 function Section({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
   return (
@@ -173,7 +174,7 @@ function MemoryForCommandsSection({
           >
             <Text className="text-xs font-medium text-primary-foreground">Set</Text>
           </Pressable>
-          {busy ? <ActivityIndicator size="small" /> : null}
+          {busy ? <Spinner size="small" /> : null}
         </View>
         {error ? <Text className="text-xs text-destructive">{error}</Text> : null}
       </View>
@@ -281,7 +282,7 @@ export function ComputerAndFilesPanel() {
   if (loading) {
     return (
       <View className="items-center justify-center py-12">
-        <ActivityIndicator />
+        <Spinner />
       </View>
     )
   }
@@ -494,7 +495,7 @@ export function ComputerAndFilesPanel() {
       </Section>
 
       <View className="h-5 flex-row items-center gap-2">
-        {saving ? <ActivityIndicator size="small" /> : null}
+        {saving ? <Spinner size="small" /> : null}
         {error ? <Text className="text-xs text-destructive">{error}</Text> : null}
       </View>
     </View>

@@ -9,7 +9,7 @@
  * messages with numbered citations.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, FlatList, Pressable, Text, TextInput, View } from 'react-native'
+import { FlatList, Pressable, Text, TextInput, View } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { Bot, Hash, Lock, MessageSquare, Search as SearchIcon, Sparkles, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -23,6 +23,7 @@ import { TabScreenHeader } from '../../../components/layout/TabScreenHeader'
 import { teamChatApi, type AskResult, type SearchResponse } from '../../../lib/team-chat-api'
 import { mentionNames, renderMentions, searchSnippet } from '../../../lib/team-chat-state'
 import { openConversationTarget } from '../../../lib/team-chat-nav'
+import { Spinner } from '@/components/ui/spinner'
 
 const api = teamChatApi()
 const DEBOUNCE_MS = 250
@@ -215,7 +216,7 @@ export default function TeamChatSearch() {
                 <Text className="text-[11px] text-muted-foreground">{chip}</Text>
               </Pressable>
             ))}
-            {loading ? <ActivityIndicator size="small" /> : null}
+            {loading ? <Spinner size="small" /> : null}
           </View>
         ) : (
           <View className="mt-3 flex-row items-center gap-2">
@@ -229,7 +230,7 @@ export default function TeamChatSearch() {
                 <Text className="text-xs font-semibold text-primary-foreground">Ask</Text>
               </Pressable>
             ) : null}
-            {loading ? <ActivityIndicator size="small" /> : null}
+            {loading ? <Spinner size="small" /> : null}
             {mode === 'semantic' && data?.semantic === false ? (
               <Text className="text-xs text-muted-foreground">Search by meaning isn't set up on this server yet.</Text>
             ) : null}

@@ -14,7 +14,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { View, Text, ScrollView, Pressable, ActivityIndicator, TextInput } from 'react-native'
+import { View, Text, ScrollView, Pressable, TextInput } from 'react-native'
 import {
   ListFilter,
   Check,
@@ -31,6 +31,7 @@ import {
   type ProviderKeyState,
   type SetupProviderId,
 } from './providerModelDiscovery'
+import { Spinner } from '@/components/ui/spinner'
 
 export const SETUP_PROVIDERS: Array<{
   id: SetupProviderId
@@ -68,7 +69,7 @@ function StatusIndicator({ status }: { status: SaveStatus }) {
   if (status === 'idle') return null
   return (
     <View className="flex-row items-center gap-1.5">
-      {status === 'saving' && <ActivityIndicator size="small" />}
+      {status === 'saving' && <Spinner size="small" />}
       {status === 'saved' && <CheckCircle size={14} className="text-green-500" />}
       {status === 'error' && <AlertTriangle size={14} className="text-destructive" />}
       <Text
@@ -335,7 +336,7 @@ export function ProviderSetupCard({
               <View className="gap-2">
                 {loadingModels[provider.id] && (
                   <View className="flex-row items-center gap-2 py-2">
-                    <ActivityIndicator size="small" />
+                    <Spinner size="small" />
                     <Text className="text-xs text-muted-foreground">Loading {provider.name} models…</Text>
                   </View>
                 )}
@@ -385,7 +386,7 @@ export function ProviderSetupCard({
                                 checked ? 'border-primary bg-primary' : 'border-border',
                               )}
                             >
-                              {checked && <Check size={11} color="#fff" />}
+                              {checked && <Check className="text-primary-foreground" size={11} />}
                             </View>
                             <View className="flex-1">
                               <Text className="text-sm text-foreground">{m.displayName}</Text>
@@ -419,7 +420,7 @@ export function ProviderSetupCard({
     if (isLoading) {
       return (
         <View className="py-6 items-center">
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         </View>
       )
     }
@@ -429,7 +430,7 @@ export function ProviderSetupCard({
   if (isLoading) {
     return (
       <View className="bg-card border border-border rounded-xl px-5 py-6 items-center">
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       </View>
     )
   }
@@ -457,7 +458,7 @@ export function ProviderSetupCard({
             className="flex-row items-center gap-1 px-2 py-1 rounded bg-muted active:bg-muted/70"
           >
             {pricingRefreshing ? (
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             ) : (
               <RefreshCw size={11} className="text-muted-foreground" />
             )}

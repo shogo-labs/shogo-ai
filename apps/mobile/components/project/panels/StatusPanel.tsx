@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { View, Text, Pressable, ScrollView, ActivityIndicator } from 'react-native'
+import { View, Text, Pressable, ScrollView } from 'react-native'
 import {
   Activity,
   Radio,
@@ -39,6 +39,7 @@ import {
 } from "../../phone/NativePhonePane";
 import { MarkdownText } from '../../chat/MarkdownText'
 import { errorMessage } from '../../../lib/error-message'
+import { Spinner } from '@/components/ui/spinner'
 
 const CONTEXT_FILES = [
   { id: 'AGENTS.md', label: 'Agent' },
@@ -456,7 +457,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
       >
         {isLoading && !status ? (
           <View className="items-center justify-center py-16 gap-3">
-            <ActivityIndicator size="large" />
+            <Spinner size="large" />
             <Text className="text-sm text-muted-foreground">Loading agent status...</Text>
           </View>
         ) : !status ? (
@@ -553,7 +554,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
             >
               {isLoadingContext ? (
                 <View className="px-3 py-4 items-center">
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                 </View>
               ) : contextMarkdown ? (
                 <View className="px-3 py-2">
@@ -675,7 +676,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
 
                             {detail?.loading && !detail.data ? (
                               <View className="py-3 items-center">
-                                <ActivityIndicator size="small" />
+                                <Spinner size="small" />
                               </View>
                             ) : detail?.error ? (
                               <View className="flex-row items-center gap-2">

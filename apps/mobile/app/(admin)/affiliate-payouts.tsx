@@ -19,7 +19,6 @@ import {
   Text,
   ScrollView,
   Pressable,
-  ActivityIndicator,
   RefreshControl,
   useWindowDimensions,
 } from 'react-native'
@@ -27,6 +26,7 @@ import { useRouter } from 'expo-router'
 import { Wallet, Clock, RefreshCw, CheckCircle2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL, type AdminAffiliateOwed } from '../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -104,7 +104,7 @@ export default function AffiliatePayoutsScreen() {
   if (loading) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator size="large" />
+        <Spinner size="large" />
       </View>
     )
   }
@@ -200,7 +200,7 @@ export default function AffiliatePayoutsScreen() {
                         )}
                       >
                         {busy ? (
-                          <ActivityIndicator size="small" color="#fff" />
+                          <Spinner tone="onPrimary" size="small" />
                         ) : (
                           <Wallet size={14} className={ready ? 'text-primary-foreground' : 'text-muted-foreground'} />
                         )}
