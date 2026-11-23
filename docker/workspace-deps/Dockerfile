@@ -115,11 +115,29 @@ RUN bun run generate:routes
 # bun.lock has drift relative to its package.json on this branch and the
 # original apps/api/runtime Dockerfiles also use plain bun install here.
 # Materialize the `@shogo-ai/sdk: workspace:*` sentinel to a concrete
-# `^X.Y.Z` first (this image has npm + network, so it resolves npm's latest
+# `X.Y.Z` first (this image has npm + network, so it resolves npm's latest
 # published version). The resulting node_modules is transient — it only
 # feeds build-template-dists and is removed below.
+#
+# SHOGO_SDK_PIN_VERSION (SHO-522): on a release-tag build the caller passes
+# the tag's own SDK version, and the script WAITS for npm to serve that exact
+# version before pinning it (failing the build if it never appears). Without
+# it the build pins npm `latest`, which on a tag is the PREVIOUS release —
+# exactly how the v2.6.1 image ended up pinning `^2.6.0`. Either way the pin
+# is exact, so a pod installs the SDK its image was released with.
+ARG SHOGO_SDK_PIN_VERSION=""
 RUN --mount=type=cache,target=/home/appuser/.bun/install/cache,uid=1001,gid=1001 \
+    export SHOGO_SDK_PIN_VERSION="${SHOGO_SDK_PIN_VERSION}" && \
     bun run scripts/materialize-runtime-template.ts templates/runtime-template/package.json && \
+    bun -e 'const pkg = await Bun.file("./templates/runtime-template/package.json").json(); \
+      const pin = pkg.dependencies?.["@shogo-ai/sdk"]; \
+      if (!pin || !/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(pin)) { \
+        throw new Error(`@shogo-ai/sdk pin must be an exact X.Y.Z, got "${pin}" — a range would be re-resolved against npm at install time (SHO-522)`); \
+      } \
+      if (process.env.SHOGO_SDK_PIN_VERSION && pin !== process.env.SHOGO_SDK_PIN_VERSION) { \
+        throw new Error(`@shogo-ai/sdk pinned ${pin} but this image build was told to pin the release SDK ${process.env.SHOGO_SDK_PIN_VERSION}`); \
+      } \
+      console.log(`[workspace-deps] @shogo-ai/sdk pinned exactly at ${pin}`);' && \
     cd templates/runtime-template && \
     bun install && \
     cd /app && \

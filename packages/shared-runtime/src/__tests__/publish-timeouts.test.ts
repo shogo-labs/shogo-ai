@@ -6,10 +6,13 @@ import {
   DEFAULT_PUBLISH_CONFIGURE_TIMEOUT_METAL_MS,
   DEFAULT_PUBLISH_DOWNLOAD_TIMEOUT_MS,
   DEFAULT_PUBLISH_IMAGE_BUILD_TIMEOUT_MS,
+  DEFAULT_PUBLISH_READINESS_TIMEOUT_MS,
   DEFAULT_PUBLISH_UPLOAD_TIMEOUT_MS,
   PUBLISH_REQUEST_SLACK_MS,
   DEFAULT_PUBLISH_ARTIFACT_MAX_BYTES,
   DEFAULT_PUBLISH_ARTIFACT_UPLOAD_TIMEOUT_MS,
+  DEFAULT_PUBLISH_ARTIFACT_INLINE_MAX_BYTES,
+  publishArtifactInlineMaxBytes,
   publishArtifactMaxBytes,
   publishArtifactUploadTimeoutMs,
   publishRequestTimeoutMs,
@@ -17,13 +20,14 @@ import {
 } from '../publish-timeouts'
 
 describe('publish timeouts', () => {
-  test('defaults cover two builds, download, upload, metal configure, image build, and slack', () => {
+  test('defaults cover two builds, download, upload, metal configure, image build, readiness, and slack', () => {
     expect(publishRequestTimeoutMs({})).toBe(
       DEFAULT_PUBLISH_BUILD_TIMEOUT_MS * 2
         + DEFAULT_PUBLISH_DOWNLOAD_TIMEOUT_MS
         + DEFAULT_PUBLISH_UPLOAD_TIMEOUT_MS
         + DEFAULT_PUBLISH_CONFIGURE_TIMEOUT_METAL_MS
         + DEFAULT_PUBLISH_IMAGE_BUILD_TIMEOUT_MS
+        + DEFAULT_PUBLISH_READINESS_TIMEOUT_MS
         + PUBLISH_REQUEST_SLACK_MS,
     )
   })
@@ -41,6 +45,7 @@ describe('publish timeouts', () => {
         + DEFAULT_PUBLISH_UPLOAD_TIMEOUT_MS
         + DEFAULT_PUBLISH_CONFIGURE_TIMEOUT_METAL_MS
         + DEFAULT_PUBLISH_IMAGE_BUILD_TIMEOUT_MS
+        + DEFAULT_PUBLISH_READINESS_TIMEOUT_MS
         + PUBLISH_REQUEST_SLACK_MS,
     )
   })
@@ -67,6 +72,19 @@ describe('publish artifact limits', () => {
     expect(publishArtifactMaxBytes({ PUBLISH_ARTIFACT_MAX_BYTES: '1048576' })).toBe(1024 * 1024)
     // Nonsense is ignored, not treated as zero (which would refuse every publish).
     expect(publishArtifactMaxBytes({ PUBLISH_ARTIFACT_MAX_BYTES: 'lots' })).toBe(DEFAULT_PUBLISH_ARTIFACT_MAX_BYTES)
+  })
+
+  test('the inline ceiling is small enough that base64 of it is still a legal V8 string', () => {
+    const chars = (bytes: number) => Math.ceil(bytes / 3) * 4
+    // V8 refuses a string over 2^31-1 characters — which is what a tar at the
+    // build-context ceiling produced before this cap (SHO-536).
+    expect(chars(DEFAULT_PUBLISH_ARTIFACT_MAX_BYTES)).toBeGreaterThan(2 ** 31 - 1)
+    expect(chars(DEFAULT_PUBLISH_ARTIFACT_INLINE_MAX_BYTES)).toBeLessThan(2 ** 31 - 1)
+    expect(publishArtifactInlineMaxBytes({})).toBe(DEFAULT_PUBLISH_ARTIFACT_INLINE_MAX_BYTES)
+    expect(publishArtifactInlineMaxBytes({ PUBLISH_ARTIFACT_INLINE_MAX_BYTES: '4096' })).toBe(4096)
+    expect(publishArtifactInlineMaxBytes({ PUBLISH_ARTIFACT_INLINE_MAX_BYTES: 'lots' })).toBe(
+      DEFAULT_PUBLISH_ARTIFACT_INLINE_MAX_BYTES,
+    )
   })
 
   test('the artifact upload budget is minutes, not the 3-minute app build budget', () => {

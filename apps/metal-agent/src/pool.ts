@@ -1835,6 +1835,12 @@ export class MetalWarmPool {
         // happening now, so their `now` seed is already the truth.
         lastUserActivityAt: Date.now(),
         needsUserActivityBaseline: true,
+        // Billing counters start at the restart, not at the registry's original
+        // assignedAt: the counters live in memory, so charging `now - assignedAt`
+        // on the first tick would bill the VM's whole life again to whichever
+        // class it happens to be in (SHO-532). The restart gap itself (seconds)
+        // goes unbilled — bounded, and the safe direction.
+        meter: { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: Date.now() },
         restoredFrom: e.restoredFrom,
         bootRootfsIdentity: e.bootRootfsIdentity,
         workspaceOrigin: e.workspaceOrigin,
@@ -7834,7 +7840,9 @@ export class MetalWarmPool {
   }
 
   private advanceOneMeter(a: AssignedVm, now: number): VmMeter {
-    const m = (a.meter ??= { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: a.assignedAt })
+    // `now`, never `assignedAt`: a meter created in the past would charge every
+    // second since the VM was assigned on its first tick.
+    const m = (a.meter ??= { agentMs: 0, appMs: 0, idleMs: 0, advancedAt: now })
     // Clamped: a clock step backwards must not subtract metered time.
     const elapsed = Math.max(0, now - m.advancedAt)
     m.advancedAt = now

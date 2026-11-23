@@ -101,6 +101,9 @@ const metalCase: Case = {
       async destroyPublished(id) {
         unpublished.push(id)
       },
+      async getPublishedStatus() {
+        return { exists: true, ready: true }
+      },
       async setPublishedAlwaysOn(_id, subdomain, on) {
         alwaysOn.push(`${subdomain}:${on}`)
       },
@@ -161,6 +164,14 @@ const knativeCase: Case = {
       },
       async healthCheckPublished(id) {
         return id !== 'fails'
+      },
+      async getPublishedCreatedRevision() {
+        return 'published-p1-00001'
+      },
+      async waitForPublishedRevisionReady(_id, opts) {
+        return opts.revisionName === 'fails'
+          ? { ready: false as const, reason: 'published-p1-00002 exited with ExitCode137' }
+          : { ready: true as const }
       },
     }
     const resolve = async (id: string) => {
@@ -309,6 +320,7 @@ describe('MetalSubstrate addresses the anchored workspace runtime key', () => {
       async listProjects() { return [] },
       async getMetalPublishedUrl(_id, subdomain) { return { url: `http://metal/published/${subdomain}` } },
       async destroyPublished() {},
+      async getPublishedStatus() { return { exists: true, ready: true } },
       async setPublishedAlwaysOn() {},
     }
     return { calls, substrate: new MetalSubstrate(backend, makeKv(new Map())) }
@@ -382,6 +394,7 @@ describe('MetalSubstrate.wakePublished forwards alwaysOn (regression)', () => {
         return { url: `http://metal/published/${subdomain}` }
       },
       async destroyPublished() {},
+      async getPublishedStatus() { return { exists: true, ready: true } },
       async setPublishedAlwaysOn() {},
     }
     const substrate = new MetalSubstrate(backend, makeKv(new Map()))

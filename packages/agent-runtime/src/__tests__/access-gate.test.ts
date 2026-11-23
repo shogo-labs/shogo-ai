@@ -4,13 +4,15 @@
  * The runtime half of SHO-417: the tool gate and the downgrade notice.
  *
  * The gate is a turn-saver, not the security boundary — the server refuses the
- * internal route either way. So the two properties that matter here are:
- * an unknown ability set allows everything (a runtime that cannot reach the
- * API must not lose every tool), and a known set hides exactly the tools whose
- * ability is missing.
+ * internal route either way. So the properties that matter here are: an unknown
+ * ability set allows everything (a runtime that cannot reach the API must not
+ * lose every tool), a known set hides exactly the tools whose ability is
+ * missing, and every mapped ability is one `access/effective` can return
+ * (SHO-539 — a *project* permission there hides the tool from everyone).
  */
 
 import { describe, expect, test } from 'bun:test'
+import { ABILITY_PERMISSIONS, resolveAbilities, type AbilityPermission } from '@shogo/authz'
 import {
   TOOL_ABILITIES,
   abilityForTool,
@@ -18,6 +20,7 @@ import {
   isToolAllowed,
   withAbilityGate,
 } from '../access-gate'
+import { createToolProfile } from '../tool-profile'
 import { modelDowngradeNotice, parseModelDowngrade } from '../model-downgrade'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 
@@ -51,13 +54,28 @@ describe('abilityForTool', () => {
     }
   })
 
-  test('publish is gated on project:publish', () => {
-    expect(abilityForTool('publish')).toBe('project:publish')
+  // The invariant this module cannot express in types alone: a mapped ability
+  // must be one `access/effective` can actually return. It resolves
+  // `WORKSPACE_ROLE_BASE_PERMISSIONS + ABILITY_PERMISSIONS`, so a *project*
+  // permission in this map hides the tool from every turn, owners included
+  // (SHO-539: `publish` → `project:publish`).
+  test('every mapped ability is in ABILITY_PERMISSIONS', () => {
+    for (const [tool, ability] of Object.entries(TOOL_ABILITIES)) {
+      expect({ tool, ability, grantable: (ABILITY_PERMISSIONS as readonly string[]).includes(ability) }).toEqual({
+        tool,
+        ability,
+        grantable: true,
+      })
+    }
+  })
+
+  test('a project permission never gates a tool', () => {
+    expect(abilityForTool('publish')).toBeNull()
   })
 
   test('every ability the plan names has at least one tool behind it', () => {
     const mapped = new Set(Object.values(TOOL_ABILITIES))
-    for (const ability of [
+    const named: AbilityPermission[] = [
       'agent.exec:use',
       'agent.browser:use',
       'agent.media:generate',
@@ -67,12 +85,12 @@ describe('abilityForTool', () => {
       'schedule:manage',
       'trigger:manage',
       'system:apply',
-      'project:publish',
       'project.files:share_public',
       'integrations:connect',
       'members.activity:read',
       'boards:manage',
-    ]) {
+    ]
+    for (const ability of named) {
       expect(mapped.has(ability)).toBe(true)
     }
   })
@@ -125,6 +143,30 @@ describe('applyAbilityGate', () => {
   test('an unknown ability set leaves the list untouched', () => {
     const tools = [tool('exec'), tool('browser')]
     expect(applyAbilityGate(tools, null)).toBe(tools)
+  })
+
+  // SHO-539 acceptance 1: `publish` is decided per project by the server, so a
+  // real member's ability set — whatever their role — must not hide it. These
+  // sets are what `access/effective` returns for each role, not hand-built.
+  for (const role of ['owner', 'admin', 'member', 'viewer'] as const) {
+    test(`publish survives the filter for a real ${role} ability set`, () => {
+      const abilities = new Set<string>(resolveAbilities(role, []))
+      expect(abilities.size).toBeGreaterThan(0)
+      const gated = applyAbilityGate([tool('publish'), tool('read_file')], abilities)
+      expect(gated.map((t) => t.name)).toEqual(['publish', 'read_file'])
+      expect(isToolAllowed('publish', abilities)).toBe(true)
+    })
+  }
+
+  // The other half of acceptance 1: a hidden tool is also absent from the
+  // profile, so `read_guide({ tool: 'publish' })` answered "Unknown tool" in
+  // production. A filtered-in tool must be describable.
+  test('read_guide can describe publish after the gate', () => {
+    const abilities = new Set<string>(resolveAbilities('owner', []))
+    const gated = applyAbilityGate([tool('publish'), tool('read_file')], abilities)
+    const profile = createToolProfile(gated)
+    expect(profile.describe('publish')).toContain('publish')
+    expect(profile.deferredNames()).not.toContain('read_file')
   })
 
   test('a denied tool that is called anyway answers with the ability to ask for', async () => {
