@@ -790,8 +790,8 @@ async function autoTrackLargeFilesUnlocked(
   // tracking in this same pass — the gate exists to stop tracking into a store
   // that can never shrink, not to stop tracking forever.
   if (lfsOverBudget(workspaceDir, { logger })) {
-    const eviction = await evictLfsOverBudgetUnlocked(workspaceDir, cfg, logger)
-    if (!eviction.ran && lfsOverBudget(workspaceDir, { logger })) return 0
+    await evictLfsOverBudgetUnlocked(workspaceDir, cfg, logger)
+    if (lfsOverBudget(workspaceDir, { logger })) return 0
   }
 
   const candidates: string[] = []

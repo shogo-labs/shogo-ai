@@ -583,3 +583,33 @@ describe('SHO-531 AC7 — a prod-shaped repo through 20 commits', () => {
     }
   }, 300_000)
 })
+
+// QA round 1 on SHO-531: the gate used to open again whenever eviction *ran*,
+// even when that pass freed nothing. On the production repo the store is one
+// committed object set that HEAD references, so every pass is a no-op — and the
+// tracker happily started adding to a store that can never shrink.
+describe('SHO-531 QA round 1 — the over-budget gate is judged on the resulting size', () => {
+  it('keeps tracking off when a pass runs but frees nothing', async () => {
+    const { url } = startFakeLfs()
+    const dir = initRepo()
+    const cfg = cfgFor(dir, url)
+    mkdirSync(join(dir, 'media'), { recursive: true })
+    // Committed and HEAD-referenced: inside the keep set, so nothing to evict.
+    commitLfsFile(dir, 'media/kept.png', 300_000, 7, 'kept')
+    mkdirSync(join(dir, 'incoming'), { recursive: true })
+    writeFileSync(join(dir, 'incoming', 'new.xyz'), Buffer.alloc(2 * MB, 9))
+
+    process.env.SHOGO_LFS_BUDGET_GB = '0.0001' // ~107 KB against a ~293 KB store
+    try {
+      resetLfsStats()
+      expect(await autoTrackLargeFiles(dir, 1 * MB, { logger: quiet, cfg })).toBe(0)
+      // The scenario really is "eviction ran and freed nothing", not "it bailed".
+      const stats = lfsStats()
+      expect(stats.evictions).toBeGreaterThanOrEqual(1)
+      expect(stats.evictedBytes).toBe(0)
+      expect(readFileSync(join(dir, '.gitattributes'), 'utf-8')).not.toContain('incoming/')
+    } finally {
+      delete process.env.SHOGO_LFS_BUDGET_GB
+    }
+  }, 60_000)
+})
