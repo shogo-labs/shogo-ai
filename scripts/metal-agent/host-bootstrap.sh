@@ -15,6 +15,9 @@
 #   WORK        artifact dir (default /opt/fc-spike)
 #   FC_VERSION  firecracker version (default 1.16.1; >=1.16 supports the
 #               clock_realtime restore flag we rely on to fix resume clock-skew)
+#   METAL_KSM   0|1 — provision host KSM (same-page merging) via tmpfiles.d and
+#               MemoryKSM= on the unit. Default 0: it is a cross-tenant security
+#               decision as much as a memory one (see docs/runbooks/metal-idle-memory.md)
 # =============================================================================
 set -euo pipefail
 
@@ -134,6 +137,58 @@ fi
 grep -qF "$SWAPFILE" /etc/fstab || echo "$SWAPFILE none swap sw 0 0" >> /etc/fstab
 printf 'vm.swappiness=10\n' > /etc/sysctl.d/99-metal-swap.conf
 sysctl -w vm.swappiness=10 >/dev/null
+
+# >>> ksm-setup (SHO-534) — extracted verbatim by
+# apps/metal-agent/src/host-bootstrap-ksm.test.ts, so keep the markers.
+# --- KSM (same-page merging), opt-in per host -------------------------------
+# KSM is the only way to shrink the part of an idle VM that neither the balloon
+# nor free page reporting can reach: pages the guest still holds but that are
+# byte-identical across VMs (the same libc, the same node_modules, the same
+# kernel-adjacent runtime image). ksmd merges them into one host page.
+#
+# It only works on memory that has been marked MADV_MERGEABLE, and Firecracker
+# does not do that itself. `MemoryKSM=yes` (systemd >= 254) sets
+# PR_SET_MEMORY_MERGE on the metal-agent service, and the FC children — which are
+# its children — inherit the flag across fork+exec, so their guest mappings become
+# mergeable without patching Firecracker.
+#
+# Default OFF, and not just because it is unmeasured: merging pages BETWEEN
+# TENANTS opens dedup timing side channels (a guest can infer whether another VM
+# holds a given page, leaking low-entropy secrets and library fingerprints) and
+# makes Rowhammer flips across shared pages practical (Flip Feng Shui class).
+# Staging turns it on to measure the gain; prod only if Russell signs off on
+# those numbers (docs/runbooks/metal-idle-memory.md).
+METAL_KSM="${METAL_KSM:-0}"
+KSM_TMPFILES="${KSM_TMPFILES:-/etc/tmpfiles.d/metal-ksm.conf}"
+if [ "$METAL_KSM" = "1" ]; then
+  log "KSM: enabling (pages_to_scan=1000 sleep_millisecs=50 use_zero_pages=1)..."
+  mkdir -p "$(dirname "$KSM_TMPFILES")"
+  cat > "$KSM_TMPFILES" <<'KSM'
+# Managed by scripts/metal-agent/host-bootstrap.sh (METAL_KSM=1).
+# Re-running the bootstrap rewrites this file; deleting it (METAL_KSM=0) turns
+# KSM back off on the next boot. Values are the staging starting point: scan
+# 1000 pages every 50ms, and merge zero pages (cheap, and a large win on idle
+# guests). Tune from the measured ksmd CPU against the 10%-of-one-thread budget.
+w /sys/kernel/mm/ksm/run              - - - - 1
+w /sys/kernel/mm/ksm/pages_to_scan    - - - - 1000
+w /sys/kernel/mm/ksm/sleep_millisecs  - - - - 50
+w /sys/kernel/mm/ksm/use_zero_pages   - - - - 1
+KSM
+  # tmpfiles runs at boot; apply it now too, so re-running the bootstrap on a
+  # live host converges without a reboot.
+  systemd-tmpfiles --create "$KSM_TMPFILES" >/dev/null 2>&1 || \
+    log "WARN: systemd-tmpfiles --create failed; KSM applies on next boot"
+else
+  # A host that never had KSM writes and logs nothing: prod's bootstrap output
+  # must stay byte-identical with the default env. One that DID have it is turned
+  # back off, live as well as at boot.
+  if [ -f "$KSM_TMPFILES" ]; then
+    rm -f "$KSM_TMPFILES"
+    log "KSM: disabling (removed $KSM_TMPFILES)"
+    [ -w /sys/kernel/mm/ksm/run ] && echo 0 > /sys/kernel/mm/ksm/run 2>/dev/null || true
+  fi
+fi
+# <<< ksm-setup
 
 ARCH="$(uname -m)"  # x86_64 on Latitude s3-large-x86 / c3-large-x86
 # Install OR upgrade firecracker. The binary is host infrastructure (not shipped
@@ -292,6 +347,20 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 UNIT
+# KSM (SHO-534). `MemoryKSM=yes` makes systemd call PR_SET_MEMORY_MERGE on the
+# service, and the firecracker children inherit it across fork+exec — that is what
+# marks guest memory MADV_MERGEABLE for ksmd, without patching Firecracker. Only
+# added when the host opted in, so a default host's unit file is unchanged.
+# Needs systemd >= 254 (the hosts run 255 on Ubuntu 24.04); an older systemd
+# ignores the unknown key with a warning, so gate it rather than risk that.
+if [ "$METAL_KSM" = "1" ]; then
+  if [ "$(systemctl --version 2>/dev/null | head -1 | awk '{print $2}')" -ge 254 ] 2>/dev/null; then
+    sed -i '/^\[Service\]$/a MemoryKSM=yes' /etc/systemd/system/metal-agent.service
+    log "KSM: MemoryKSM=yes on metal-agent.service"
+  else
+    log "WARN: systemd < 254 — no MemoryKSM=; KSM would sit idle (see runbook fallback)"
+  fi
+fi
 systemctl daemon-reload
 
 # --- Host log shipper: otelcol-contrib (journald -> SigNoz) ------------------

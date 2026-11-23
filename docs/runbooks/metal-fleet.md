@@ -130,6 +130,12 @@ p95 for `evicted` against `idle` before lowering any host count.
 | `METAL_EVICT_MAX_PER_ASSIGN` | `3` | Most VMs one assign/resume may evict. |
 | `METAL_EVICT_HEADROOM_SLOTS` | `2` | Slots the reaper keeps free proactively. 0 disables the pass. |
 | `METAL_IDLE_SUSPEND_MS` | `900000` (15m) | Also the evictable threshold. `0` disables idle-suspend **and** eviction. |
+| `METAL_IDLE_RECLAIM` | `0` | Inflate the balloon on a VM idle for `METAL_IDLE_RECLAIM_MS` (5m) so an idle VM — including an always-on one — costs a fraction of its RAM. Deflated on the next request. Off until the staging numbers land: see [metal-idle-memory.md](metal-idle-memory.md). |
+| `METAL_BALLOON_FREE_PAGE_REPORTING` | `0` | Pre-boot balloon flag: the guest reports freed pages continuously so an active VM shrinks too. |
+
+`METAL_KSM` (`0`) is a **host-bootstrap** variable, not an agent one: it
+provisions host KSM behind a security decision. See
+[metal-idle-memory.md](metal-idle-memory.md).
 
 Billing is unchanged: an evictable VM is still metered as the `idle` class and
 charged nothing (`idleBilling: 'none'`), and eviction goes through

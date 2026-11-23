@@ -36,6 +36,7 @@ import { FcApi } from './fc-api'
 import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
 import { planEvictions, type EvictionCandidate } from './gc-policy'
 import { hostMemory } from './host-memory'
+import { hostKsm, type KsmCounters } from './host-ksm'
 import { LiveRegistry, pidAlive, type MemberDataState } from './live-registry'
 import { M, metrics } from './metrics'
 import { tapIndex, existingTapIndices, TAP_NET_CAPACITY, type VmNet } from './net'
@@ -688,6 +689,28 @@ export interface AssignedVm {
    */
   lastRealActivityAt?: number
   /**
+   * MiB the balloon is currently holding, i.e. RAM this idle VM has handed back
+   * to the host (SHO-534). `undefined` = nothing reclaimed. Set by
+   * `reclaimIdleVms`, cleared by the first sign of activity (`deflateReclaimed`),
+   * which is fire-and-forget so it never sits on a request's path.
+   */
+  balloonedMiB?: number
+  /**
+   * This VM's agent does not expose balloon statistics (it booted before reclaim
+   * asked for them), so its RAM cannot be sized safely. `reclaimIdleVms` skips it
+   * from then on instead of re-probing every tick, and never blind-inflates it.
+   */
+  balloonUnsupported?: boolean
+  /**
+   * Wall-clock (ms) of the last time this VM's balloon was touched — handed back
+   * on activity, or probed by the idle pass and found to have nothing above the
+   * floor. The hysteresis for `reclaimIdleVms`: a VM is not reclaimed again until
+   * a full window passes, so a VM woken every few seconds cannot flap between
+   * inflated and deflated, and a guest that is already at its floor is not
+   * re-probed on every tick.
+   */
+  lastBalloonAt?: number
+  /**
    * Wall-clock (ms) of the last time a PERSON used this VM, on a clock that only
    * real user requests move. `lastRealActivityAt` cannot serve this purpose: it
    * is stamped on every poll where the guest reports busy, so a guest stuck
@@ -1258,6 +1281,15 @@ const ACTIVITY_WINDOW_MS = 120_000
  */
 const CLOSED_METER_TTL_MS = 60 * 60_000
 const MAX_CLOSED_METERS = 2_000
+
+/**
+ * How many VMs one reaper tick will hand RAM back for (SHO-534). Each reclaim is
+ * a stats read plus one PATCH (the inflate itself lands later, guest-paced), so
+ * a pass costs a few milliseconds per VM — but a host that suddenly goes quiet
+ * saw 150 VMs idle at once, and a tick that touched all of them at once would
+ * still be a burst of FC control traffic. The rest wait for the next tick.
+ */
+const MAX_IDLE_RECLAIMS_PER_PASS = 8
 
 /**
  * Hard ceiling on a hydrate deadline, whatever the per-MiB budget works out to.
@@ -1926,6 +1958,17 @@ export class MetalWarmPool {
         workspaceDrive: e.workspaceDrive,
       }
       this.mgr.adoptVM(handle)
+      // A VM reclaimed before the restart still has its balloon inflated, but the
+      // accounting lived in this process's memory. Read the target back, so a
+      // request can deflate it and the idle pass can re-bank it, instead of
+      // leaving the guest short of RAM until it hits OOM. `deflate_on_oom` is the
+      // backstop, not the plan. Gated: with reclaim off this is an FC call per
+      // adopted VM that nothing would ever act on.
+      let balloonedMiB: number | undefined
+      if (this.cfg.idleReclaim) {
+        const target = await this.mgr.balloonTargetMiB(handle).catch(() => undefined)
+        if (target && target > 0) balloonedMiB = target
+      }
       this.assigned.set(e.projectId, {
         projectId: e.projectId,
         alwaysOn: e.alwaysOn,
@@ -1933,6 +1976,7 @@ export class MetalWarmPool {
         publishedSubdomain: e.publishedSubdomain,
         publishedDataLoaded: e.publishedDataLoaded,
         handle,
+        balloonedMiB,
         assignedAt: e.assignedAt,
         lastTouchedAt: Date.now(),
         // Fresh idle window across the restart, like lastTouchedAt: the guest's
@@ -6284,7 +6328,44 @@ export class MetalWarmPool {
   /** Mark a project as active so the idle reaper doesn't suspend it. */
   touch(projectId: string): void {
     const a = this.assigned.get(projectId)
-    if (a) a.lastTouchedAt = Date.now()
+    if (!a) return
+    a.lastTouchedAt = Date.now()
+    // Every proxied request lands here, so this is where an idle-reclaimed VM
+    // gets its RAM back before the request reaches the guest. Fire-and-forget:
+    // a `deflate_on_oom` balloon already hands pages back under pressure, so no
+    // request may wait on (or fail because of) the PATCH.
+    this.deflateReclaimed(a, 'request')
+  }
+
+  /**
+   * Hand a reclaimed VM's RAM back to the guest. Never throws and never awaited
+   * by the request or poll that calls it — the balloon's `deflate_on_oom` is the
+   * safety net if the PATCH is slow or lost — but always clears the accounting
+   * first, so a burst of requests cannot queue up N deflates.
+   *
+   * `lastBalloonAt` is the hysteresis: the VM is not reclaimed again until a
+   * full `METAL_IDLE_RECLAIM_MS` passes, so a request every few seconds cannot
+   * flap the balloon (each inflate/deflate costs the guest real work).
+   */
+  private deflateReclaimed(a: AssignedVm, why: string): void {
+    if (a.balloonedMiB === undefined) return
+    const reclaimedMiB = a.balloonedMiB
+    a.balloonedMiB = undefined
+    a.lastBalloonAt = Date.now()
+    const started = performance.now()
+    void this.mgr
+      .deflate(a.handle)
+      .then(() => {
+        metrics.gauge(M.idleReclaimDeflateMs, +(performance.now() - started).toFixed(1))
+      })
+      .catch((err: any) => {
+        console.error(
+          `[pool] balloon deflate (${why}) failed for ${a.projectId}:`,
+          err?.message ?? err,
+        )
+      })
+    metrics.inc(M.balloonDeflated)
+    console.log(`[pool] balloon deflated ${reclaimedMiB} MiB (${why}): ${a.projectId}`)
   }
 
   /**
@@ -6430,6 +6511,13 @@ export class MetalWarmPool {
           if (this.vmLiveness(a, now) !== 'idle') {
             a.lastTouchedAt = now
             a.lastRealActivityAt = now
+            // Someone is using it: hand back any RAM the idle pass reclaimed.
+            this.deflateReclaimed(a, 'activity')
+          } else if (this.vmBusy(a)) {
+            // Nobody is using it, but the guest is doing real work (a background
+            // task, a scheduled run). It needs the RAM it has, so give it back
+            // too — reclaim only ever targets a VM that is doing nothing.
+            this.deflateReclaimed(a, 'busy')
           }
           if (typeof body.appRequestCount === 'number') a.appRequestCount = body.appRequestCount
 
@@ -6584,6 +6672,77 @@ export class MetalWarmPool {
   /** Whether this VM is in its refusal backoff window (don't attempt it again yet). */
   private refuseBackoffActive(a: AssignedVm, now = Date.now()): boolean {
     return a.refuseRetryAt !== undefined && a.refuseRetryAt > now
+  }
+
+  /**
+   * Reclaim the host RAM of VMs nobody is using, without suspending them
+   * (SHO-534). Driven by the same reaper tick as `reapIdle`, immediately after
+   * the activity poll and before it, so an idle VM gets small long before it is
+   * ever snapshotted — and an always-on VM, which is never suspended at all, is
+   * the case this exists for.
+   *
+   * "Idle" is `vmLiveness` — the one classifier the reaper, the meter and the
+   * fleet gauges share — not a second opinion about who is using a VM. On top of
+   * it: the guest must not be busy (`vmBusy`; a background task or heartbeat run
+   * needs its RAM), the full `METAL_IDLE_RECLAIM_MS` window must have passed
+   * since the last real user activity, and the VM must not have been deflated
+   * within that window (hysteresis, so a request every few seconds cannot make
+   * the balloon flap).
+   *
+   * The inflate itself is stats-guided and bounded: `maxWaitMs: 0` sets the
+   * target and returns, because a reaper tick must never sit through GiB-scale
+   * inflation. A VM whose agent has no balloon statistics is marked and skipped
+   * for good — never blind-inflated.
+   */
+  async reclaimIdleVms(now = Date.now()): Promise<string[]> {
+    if (!this.cfg.idleReclaim) return []
+    const windowMs = this.cfg.idleReclaimMs
+    if (!(windowMs > 0)) return []
+
+    const picked: AssignedVm[] = []
+    for (const a of this.assigned.values()) {
+      if (picked.length >= MAX_IDLE_RECLAIMS_PER_PASS) break
+      if (a.balloonedMiB !== undefined || a.balloonUnsupported) continue
+      if (this.vmLiveness(a, now) !== 'idle') continue
+      if (this.vmBusy(a)) continue
+      if (now - (a.lastRealActivityAt ?? a.assignedAt) < windowMs) continue
+      if (a.lastBalloonAt !== undefined && now - a.lastBalloonAt < windowMs) continue
+      picked.push(a)
+    }
+    if (!picked.length) return []
+
+    const reclaimed: string[] = []
+    for (const a of picked) {
+      try {
+        const r = await this.mgr.reclaimIdle(a.handle, {
+          floorMiB: this.cfg.idleReclaimFloorMiB,
+          maxWaitMs: 0,
+        })
+        if (!r.statsAvailable) {
+          a.balloonUnsupported = true
+          continue
+        }
+        // Either way the balloon has been looked at: a guest with nothing above
+        // the floor is not re-probed on every tick, and one that was reclaimed
+        // earlier (before an agent restart lost the accounting) is re-adopted
+        // rather than counted twice.
+        a.lastBalloonAt = now
+        if (r.reclaimedMiB <= 0) continue
+        const already = a.balloonedMiB !== undefined
+        a.balloonedMiB = r.reclaimedMiB
+        metrics.inc(M.balloonReclaimedMiB, r.increasedMiB)
+        if (already) continue
+        reclaimed.push(a.projectId)
+        const idleMin = Math.round((now - (a.lastRealActivityAt ?? a.assignedAt)) / 60_000)
+        console.log(
+          `[pool] idle reclaim: ballooned ${r.reclaimedMiB} MiB on ${a.projectId} ` +
+            `(idle ${idleMin}m${a.alwaysOn ? ', always-on' : ''})`,
+        )
+      } catch (err: any) {
+        console.error(`[pool] idle reclaim failed for ${a.projectId}:`, err?.message ?? err)
+      }
+    }
+    return reclaimed
   }
 
   /**
@@ -6846,6 +7005,13 @@ export class MetalWarmPool {
    */
   protected hostMemoryNow(): { totalMiB: number; availableMiB: number } | undefined {
     return hostMemory()
+  }
+
+  /** KSM counters for the host gauges; `undefined` off Linux or with no KSM. */
+  protected hostKsmNow():
+    | (KsmCounters & { ksmdCpuPct?: number; ksmdCpuWindowMs?: number })
+    | undefined {
+    return hostKsm()
   }
 
   /**
@@ -7891,6 +8057,31 @@ export class MetalWarmPool {
     metrics.gauge(M.dataSnapshotFailedOldestSec, oldestSnapshotFailingSec)
     metrics.gauge(M.rotationBlockedVms, this.rotationBlocked.size)
 
+    // Idle reclaim + host memory (SHO-534). Emitted BEFORE the dm-only early
+    // return below, because a reflink host (every prod host today) is exactly
+    // where the density question is asked, and it has no CoW store to sample.
+    let balloonedVms = 0
+    for (const a of this.assigned.values()) {
+      if (a.balloonedMiB === undefined) continue
+      balloonedVms++
+    }
+    metrics.gauge(M.idleReclaimedVms, balloonedVms)
+    const mem = this.hostMemoryNow()
+    if (mem) {
+      metrics.gauge(M.hostMemAvailableMiB, mem.availableMiB)
+      metrics.gauge(M.hostMemUsedMiB, Math.max(0, mem.totalMiB - mem.availableMiB))
+    }
+    const ksm = this.hostKsmNow()
+    if (ksm) {
+      metrics.gauge(M.ksmPagesSharing, ksm.pagesSharing)
+      metrics.gauge(M.ksmPagesShared, ksm.pagesShared)
+      metrics.gauge(M.ksmFullScans, ksm.fullScans)
+      if (ksm.ksmdCpuPct !== undefined) metrics.gauge(M.ksmdCpuPct, ksm.ksmdCpuPct)
+      if (ksm.ksmdCpuWindowMs !== undefined) {
+        metrics.gauge(M.ksmdCpuWindowMs, ksm.ksmdCpuWindowMs)
+      }
+    }
+
     // Only dm mode has exception stores to run out of; the other rootfs modes
     // give each VM its own file and fail with an ordinary ENOSPC.
     if (this.cfg.rootfsCow !== 'dm') return
@@ -8745,6 +8936,12 @@ export class MetalWarmPool {
         // Reports busy, but no user activity past the ceiling: the reaper will
         // suspend it on its next pass.
         busyIdle: this.vmBusy(a) && this.pastBusyIdleCeiling(a, now),
+        // MiB this idle VM has handed back to the host via the balloon (SHO-534),
+        // and when it was last handed back. Debug only, per VM: VM ids are not
+        // metric labels, so per-VM numbers live here and only the sums are gauges.
+        balloonedMiB: a.balloonedMiB ?? null,
+        balloonUnsupported: a.balloonUnsupported === true,
+        balloonIdleMs: a.lastBalloonAt !== undefined ? now - a.lastBalloonAt : null,
         appIdleMs: a.lastAppRequestAt ? now - a.lastAppRequestAt : null,
         appRequestCount: a.appRequestCount ?? 0,
         agentIdleMs: a.lastAgentRequestAt ? now - a.lastAgentRequestAt : null,
