@@ -114,8 +114,9 @@ jobs:
 
       - name: terraform init
         run: |
-          # production-eu has no committed lock file yet, so honor the lock
-          # where one exists and let init resolve versions where it doesn't.
+          # Honor the committed lock file, and let an env without one resolve
+          # versions for itself: every planned env (staging, production-us,
+          # production-eu) commits a lock, edge-global has none yet.
           lock_args=()
           if [ -f .terraform.lock.hcl ]; then lock_args+=(-lockfile=readonly); fi
           terraform init \
