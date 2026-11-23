@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createElement } from "react";
 import { createReactNativeMock } from "../../../../test/react-native-mock";
 
@@ -96,6 +96,9 @@ mock.module(
 );
 
 const { ChatSessionList } = await import("../ChatSessionList");
+const { SidebarScrollProvider, createSidebarScrollSignal } = await import(
+  "../SidebarScrollContext"
+);
 
 const session = (id: string, name: string, hours = 2) => ({
   id,
@@ -116,19 +119,38 @@ const handlers = () => ({
   onDeleteChat: mock((_id: string) => {}),
 });
 
-function renderList(overrides: Record<string, unknown> = {}) {
+function renderList(
+  overrides: Record<string, unknown> = {},
+  signal?: ReturnType<typeof createSidebarScrollSignal>,
+) {
   const spies = handlers();
-  render(
+  const list = (
     <ChatSessionList
       sessions={[]}
       emptyLabel="No chats yet"
       scopeLabel="Project one"
       {...spies}
       {...(overrides as any)}
-    />,
+    />
+  );
+  render(
+    signal ? (
+      <SidebarScrollProvider signal={signal}>{list}</SidebarScrollProvider>
+    ) : (
+      list
+    ),
   );
   return spies;
 }
+
+const chats = (count: number, prefix = "Chat") =>
+  Array.from({ length: count }, (_, index) =>
+    session(`chat-${index}`, `${prefix} ${index}`, index + 1),
+  );
+
+const chatLabels = () =>
+  screen.getAllByLabelText(/^Chat: /).map((row) => row.getAttribute("aria-label"));
+
 
 beforeEach(() => {
   cleanup();
@@ -304,5 +326,129 @@ describe("ChatSessionList", () => {
 
     expect(spies.onDeleteChat).not.toHaveBeenCalled();
     expect(screen.queryByText("Delete chat")).toBeNull();
+  });
+});
+
+// ─── SHO-530: paging="infinite" ─────────────────────────────────────────────
+//
+// Home grows the list as the sidebar panel nears its end: no "Show more" /
+// "Show less" / "See all" row at all, and every chat is reachable by scrolling.
+
+describe("ChatSessionList paging=infinite", () => {
+  test("AC1: draws the first 30 rows and no paging row of any kind", () => {
+    renderList({ sessions: chats(75), paging: "infinite" }, createSidebarScrollSignal());
+
+    expect(screen.getAllByLabelText(/^Chat: /)).toHaveLength(30);
+    expect(screen.queryByLabelText(/Show more chats for/)).toBeNull();
+    expect(screen.queryByLabelText(/Show fewer chats for/)).toBeNull();
+    expect(screen.queryByLabelText(/See all chats for/)).toBeNull();
+    expect(screen.queryByText("Show more")).toBeNull();
+    expect(screen.queryByText("Show less")).toBeNull();
+    expect(screen.queryByText(/^See all/)).toBeNull();
+  });
+
+  test("AC2: each scroll-end adds 30 rows until all 75 are drawn, in order, once each", () => {
+    const signal = createSidebarScrollSignal();
+    renderList({ sessions: chats(75), paging: "infinite" }, signal);
+
+    act(() => signal.notify());
+    expect(chatLabels()).toHaveLength(60);
+
+    act(() => signal.notify());
+    const labels = chatLabels();
+    expect(labels).toHaveLength(75);
+    expect(labels[0]).toBe("Chat: Chat 0");
+    expect(labels[74]).toBe("Chat: Chat 74");
+    expect(new Set(labels).size).toBe(75);
+
+    // Past the end there is nothing left to grow: still 75, still once each.
+    act(() => signal.notify());
+    expect(chatLabels()).toHaveLength(75);
+  });
+
+  test("AC4: expanded archived rows grow the same way, and re-expanding starts from page one", () => {
+    const signal = createSidebarScrollSignal();
+    const archived = Array.from({ length: 45 }, (_, index) => ({
+      ...session(`archived-${index}`, `Archived ${index}`, index + 1),
+      isArchived: true,
+    }));
+    renderList(
+      { sessions: [session("a", "Alpha")], archivedSessions: archived, paging: "infinite" },
+      signal,
+    );
+
+    fireEvent.click(screen.getByLabelText("Expand archived chats"));
+    expect(chatLabels()).toHaveLength(1 + 30);
+    expect(screen.getByText("45")).toBeTruthy();
+
+    act(() => signal.notify());
+    expect(chatLabels()).toHaveLength(1 + 45);
+
+    fireEvent.click(screen.getByLabelText("Collapse archived chats"));
+    fireEvent.click(screen.getByLabelText("Expand archived chats"));
+    expect(chatLabels()).toHaveLength(1 + 30);
+  });
+
+  test("AC5: the open chat is visible on first paint and drawn exactly once once the window reaches it", () => {
+    const signal = createSidebarScrollSignal();
+    renderList(
+      {
+        sessions: chats(75),
+        paging: "infinite",
+        activeChatId: "chat-49",
+        revealActiveChat: true,
+      },
+      signal,
+    );
+
+    expect(screen.getByLabelText("Chat: Chat 49")).toBeTruthy();
+    // The window's 30 rows plus the revealed chat.
+    expect(chatLabels()).toHaveLength(31);
+
+    act(() => signal.notify());
+    act(() => signal.notify());
+
+    const labels = chatLabels();
+    expect(labels).toHaveLength(75);
+    expect(labels.filter((label) => label === "Chat: Chat 49")).toHaveLength(1);
+  });
+
+  test("AC7: with no scroll signal above it, infinite mode draws every row and no footer", () => {
+    renderList({ sessions: chats(75), paging: "infinite" });
+
+    expect(screen.getAllByLabelText(/^Chat: /)).toHaveLength(75);
+    expect(screen.queryByLabelText(/See all chats for/)).toBeNull();
+    expect(screen.queryByLabelText(/Show more chats for/)).toBeNull();
+  });
+
+  test("inline paging is untouched: 5 rows, Show more, then See all", () => {
+    const onSeeAll = mock(() => {});
+    renderList({ sessions: chats(30), onSeeAll }, createSidebarScrollSignal());
+
+    expect(screen.getAllByLabelText(/^Chat: /)).toHaveLength(5);
+    fireEvent.click(screen.getByLabelText("Show more chats for Project one"));
+    expect(screen.getAllByLabelText(/^Chat: /)).toHaveLength(15);
+    fireEvent.click(screen.getByLabelText("Show more chats for Project one"));
+    expect(screen.getAllByLabelText(/^Chat: /)).toHaveLength(20);
+    fireEvent.click(screen.getByLabelText("See all chats for Project one"));
+    expect(onSeeAll).toHaveBeenCalledTimes(1);
+  });
+
+  test("inline archived keeps the page it had when collapsed and re-expanded (as on main)", () => {
+    const archived = Array.from({ length: 8 }, (_, index) => ({
+      ...session(`archived-${index}`, `Archived ${index}`, index + 1),
+      isArchived: true,
+    }));
+    renderList({ sessions: [session("a", "Alpha")], archivedSessions: archived });
+
+    fireEvent.click(screen.getByLabelText("Expand archived chats"));
+    expect(chatLabels()).toHaveLength(1 + 5);
+
+    fireEvent.click(screen.getByLabelText("Show more chats for Project one"));
+    expect(chatLabels()).toHaveLength(1 + 8);
+
+    fireEvent.click(screen.getByLabelText("Collapse archived chats"));
+    fireEvent.click(screen.getByLabelText("Expand archived chats"));
+    expect(chatLabels()).toHaveLength(1 + 8);
   });
 });

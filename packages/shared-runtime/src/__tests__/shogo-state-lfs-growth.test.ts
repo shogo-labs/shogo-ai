@@ -26,7 +26,7 @@ import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 
 import { GitWorkspaceSync } from '../git-sync'
-import { autoTrackLargeFiles, lfsBudgetBytes, lfsOverBudget, pruneLfsBudget } from '../lfs'
+import { autoTrackLargeFiles, evictLfsOverBudget, lfsBudgetBytes, lfsOverBudget } from '../lfs'
 import { classifyLargeFiles } from '../large-file-sync'
 import { directorySizeBytes, ensureShogoExcludes, prepareCheckpointRepo } from '../shogo-state-paths'
 
@@ -132,17 +132,29 @@ describe('large-file classification and the LFS auto-tracker', () => {
         writeFileSync(join(dir, '.shogo', 'sessions.db-wal'), 'x'.repeat(6 * MB))
         writeFileSync(join(dir, '.tmp', 'dump.bin'), 'x'.repeat(6 * MB))
         writeFileSync(join(dir, 'ignored', 'cached.bin'), 'x'.repeat(6 * MB))
-        writeFileSync(join(dir, 'assets', 'big.bin'), 'x'.repeat(6 * MB))
+        writeFileSync(join(dir, 'assets', 'blob.dat'), 'x'.repeat(6 * MB))
         writeFileSync(join(dir, '.gitignore'), 'ignored/\n')
         ensureShogoExcludes(dir, quiet)
 
         const tracked = await autoTrackLargeFiles(dir, 5 * MB, { logger: quiet })
         expect(tracked).toBe(1)
         const attributes = readFileSync(join(dir, '.gitattributes'), 'utf-8')
-        expect(attributes).toContain('assets/big.bin filter=lfs')
+        // Quoted and rooted so the pattern claims exactly this path.
+        expect(attributes).toContain('"/assets/blob.dat" filter=lfs')
         expect(attributes).not.toContain('.shogo/sessions.db')
         expect(attributes).not.toContain('.tmp/dump.bin')
         expect(attributes).not.toContain('ignored/cached.bin')
+        // The rule git actually applies is the contract, not the text: the
+        // clean filter only sees this file as LFS if check-attr says so.
+        expect(git(dir, 'check-attr', 'filter', '--', 'assets/blob.dat')).toBe(
+          'assets/blob.dat: filter: lfs',
+        )
+        // A same-named file elsewhere is not swept in by a root-anchored rule.
+        mkdirSync(join(dir, 'deep', 'assets'), { recursive: true })
+        writeFileSync(join(dir, 'deep', 'assets', 'blob.dat'), 'x')
+        expect(git(dir, 'check-attr', 'filter', '--', 'deep/assets/blob.dat')).toBe(
+          'deep/assets/blob.dat: filter: unspecified',
+        )
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }
@@ -282,8 +294,10 @@ describe('local LFS budget', () => {
       expect(
         lfsOverBudget(dir, { env: { SHOGO_LFS_BUDGET_GB: '0.000001' }, logger: quiet })
       ).toBe(true)
-      // Pruning a repo with no lfs binary is a no-op, not a crash.
-      expect(typeof (await pruneLfsBudget(dir, quiet))).toBe('boolean')
+      // Eviction with no remote to confirm against frees nothing and never throws.
+      const evicted = await evictLfsOverBudget(dir, { cfg: null, logger: quiet })
+      expect(evicted.ran).toBe(false)
+      expect(existsSync(join(dir, '.git', 'lfs', 'objects', 'aa', 'bb', 'x'))).toBe(true)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
