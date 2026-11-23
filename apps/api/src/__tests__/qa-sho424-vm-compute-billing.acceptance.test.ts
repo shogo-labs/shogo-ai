@@ -160,7 +160,13 @@ function heartbeat(fields: {
   }
 }
 
-const ASSIGNED_AT = Date.UTC(2026, 10, 18, 10, 0, 0)
+/**
+ * An hour before the first seeded slot, so a VM that reports 1,800 s (or a full
+ * hour) on its FIRST heartbeat is reporting something it could physically have
+ * used. Ingest bounds a delta by the wall clock since assignment (SHO-532), and
+ * the interval it bills `[now − billed, now]` then sits inside one hour.
+ */
+const ASSIGNED_AT = Date.UTC(2026, 10, 18, 9, 0, 0)
 
 async function rowsFor(workspaceId: string) {
   return db.vmUsageHour.findMany({ where: { workspaceId }, orderBy: { hour: 'asc' } })

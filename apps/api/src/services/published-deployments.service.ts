@@ -79,6 +79,38 @@ export async function recordPublishedDeployment(
   }
 }
 
+/**
+ * Complete a deployment recorded as `pending`: it is now serving, so it becomes
+ * the environment's current one and supersedes the previous `ready` row.
+ *
+ * The publish flow records `pending` before it waits for the revision, and calls
+ * this only once the substrate confirms the runtime answered (SHO-536 §C).
+ */
+export async function markPublishedDeploymentReady(id: string): Promise<void> {
+  const row = await prisma.publishedDeployment.findUnique({ where: { id } })
+  if (!row) return
+  await prisma.publishedDeployment.update({ where: { id }, data: { status: 'ready' } })
+  await prisma.publishedEnvironment.update({
+    where: { id: row.environmentId },
+    data: { currentDeploymentId: id },
+  })
+  await prisma.publishedDeployment.updateMany({
+    where: { environmentId: row.environmentId, id: { not: id }, status: 'ready' },
+    data: { status: 'superseded' },
+  })
+}
+
+/**
+ * Fail a deployment that never served, leaving the previous one current.
+ *
+ * `recordPublishedDeployment(..., 'ready')` used to be called as soon as the
+ * ksvc was created, so a revision that died with ExitCode137 still superseded
+ * the healthy deployment before it (SHO-536 §C).
+ */
+export async function markPublishedDeploymentFailed(id: string): Promise<void> {
+  await prisma.publishedDeployment.update({ where: { id }, data: { status: 'failed' } })
+}
+
 /** The environment's deployment history, newest first (for the Deployment tab). */
 export async function listDeployments(environmentId: string, limit = 20) {
   const rows = await prisma.publishedDeployment.findMany({
