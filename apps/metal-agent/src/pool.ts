@@ -7008,7 +7008,9 @@ export class MetalWarmPool {
   }
 
   /** KSM counters for the host gauges; `undefined` off Linux or with no KSM. */
-  protected hostKsmNow(): (KsmCounters & { ksmdCpuPct?: number }) | undefined {
+  protected hostKsmNow():
+    | (KsmCounters & { ksmdCpuPct?: number; ksmdCpuWindowMs?: number })
+    | undefined {
     return hostKsm()
   }
 
@@ -8075,6 +8077,9 @@ export class MetalWarmPool {
       metrics.gauge(M.ksmPagesShared, ksm.pagesShared)
       metrics.gauge(M.ksmFullScans, ksm.fullScans)
       if (ksm.ksmdCpuPct !== undefined) metrics.gauge(M.ksmdCpuPct, ksm.ksmdCpuPct)
+      if (ksm.ksmdCpuWindowMs !== undefined) {
+        metrics.gauge(M.ksmdCpuWindowMs, ksm.ksmdCpuWindowMs)
+      }
     }
 
     // Only dm mode has exception stores to run out of; the other rootfs modes

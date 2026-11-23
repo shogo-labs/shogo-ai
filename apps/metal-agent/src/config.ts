@@ -400,9 +400,11 @@ export const config = {
   /**
    * Cap on how long to wait for inflation to settle before snapshotting. The
    * driver reclaims GiBs over several seconds; the stats-guided poll breaks
-   * early on convergence/plateau so this is an upper bound, mostly hit only by
-   * the no-stats blind-inflate path (older snapshots). Suspend is a background
-   * op, so this latency isn't user-facing.
+   * early on convergence/plateau, so this is an upper bound — reached only when
+   * the guest really is still handing pages over at the deadline. Suspend is a
+   * background op, so this latency isn't user-facing. Reclaim reads no stats for
+   * nothing: a guest without balloon statistics is skipped, never blind-inflated
+   * (there is no way to ask it for the RAM back safely later).
    */
   balloonMaxWaitMs: parseInt(env('METAL_SNAP_BALLOON_MAX_WAIT_MS', '10000'), 10),
   /** Poll interval while waiting for the balloon `actual` size to converge. */

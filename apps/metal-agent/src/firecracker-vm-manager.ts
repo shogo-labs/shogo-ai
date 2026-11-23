@@ -203,7 +203,9 @@ export class FirecrackerVMManager {
     return guestBootArgs({ bootIpArg: net.bootIpArg, guestInit: this.cfg.guestInit, extra })
   }
 
-  private spawnFc(id: string, socketPath: string, serialLog: string): Subprocess {
+  // protected so a restore can be exercised without a real FC binary (see
+  // firecracker-vm-manager.restore-deflate.test.ts); nothing outside the class family.
+  protected spawnFc(id: string, socketPath: string, serialLog: string): Subprocess {
     if (existsSync(socketPath)) rmSync(socketPath, { force: true })
     const fd = openSync(serialLog, 'a')
     const proc = spawn([this.cfg.fcBin, '--api-sock', socketPath, '--id', id], {
@@ -314,7 +316,8 @@ export class FirecrackerVMManager {
     return killed
   }
 
-  private async waitForSocket(socketPath: string, timeoutMs = 3000): Promise<void> {
+  // protected for the same reason as spawnFc: a test can stand in for the socket.
+  protected async waitForSocket(socketPath: string, timeoutMs = 3000): Promise<void> {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       if (existsSync(socketPath)) return
@@ -913,6 +916,16 @@ export class FirecrackerVMManager {
   }
 
   /**
+   * Recreate a restored VM's tap on the host. Split into a method (rather than
+   * calling `setupTap` inline) only so a restore can be exercised somewhere other
+   * than a rooted Linux host: it needs CAP_NET_ADMIN, and everything else in
+   * `restoreVM` is FC control traffic plus files.
+   */
+  protected setupRestoreTap(net: VmNet): void {
+    setupTap(net, this.uplink)
+  }
+
+  /**
    * Restore a snapshot into a fresh FC process and resume it.
    * The tap must exist again before LoadSnapshot (network device is part of
    * the vmstate). Returns a handle addressing the same guest IP as before.
@@ -929,7 +942,7 @@ export class FirecrackerVMManager {
     const socketPath = join(this.cfg.runDir, `${id}.sock`)
     const serialLog = join(this.cfg.runDir, `${id}.serial`)
 
-    setupTap(snap.net, this.uplink) // recreate the exact device name
+    this.setupRestoreTap(snap.net) // recreate the exact device name
     // Ensure the rootfs backing path baked into the vmstate is live again
     // (dm-snapshot: rebuild the device from the persisted CoW store).
     this.rootfs.prepareRestore(snap.rootfs)
@@ -960,7 +973,15 @@ export class FirecrackerVMManager {
       // now so the woken guest gets its full memory back. Best-effort: a failure
       // here just leaves the guest at the smaller footprint (deflate_on_oom still
       // hands pages back under pressure).
-      if (this.cfg.balloonReclaim) {
+      //
+      // Also when only idle reclaim is on: an idle-inflated VM that gets
+      // snapshotted carries the balloon in its vmstate, and the pool's accounting
+      // does not survive the round trip — the restored VM gets a fresh AssignedVm
+      // with no `balloonedMiB`, so `touch()` no-ops and nothing would ever deflate
+      // it. The guest would then run its first turn short of RAM until a full idle
+      // window re-seeded the accounting. Whichever feature inflated it, restore
+      // deflates it.
+      if (this.cfg.balloonReclaim || this.cfg.idleReclaim) {
         api.balloonDeflate().catch((err: any) =>
           console.error('[fc] balloon deflate after restore failed:', err?.message ?? err),
         )

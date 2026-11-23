@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { findKsmdPid, ksmdCpuPct, parseKsmCounters, procCpuTicks } from './host-ksm'
+import { findKsmdPid, KsmdCpuTracker, ksmdCpuPct, parseKsmCounters, procCpuTicks } from './host-ksm'
 
 describe('parseKsmCounters', () => {
   test('reads the sysfs counters a host with KSM enabled reports', () => {
@@ -67,6 +67,43 @@ describe('ksmdCpuPct', () => {
   test('a clock stepping backwards or a vanished thread yields no spike', () => {
     expect(ksmdCpuPct({ ticks: 100, at: 10_000 }, { ticks: 200, at: 10_000 })).toBeUndefined()
     expect(ksmdCpuPct({ ticks: 5_000, at: 10_000 }, { ticks: 10, at: 20_000 })).toBe(0)
+  })
+})
+
+describe('KsmdCpuTracker', () => {
+  test('first reading establishes the window, it does not report a rate', () => {
+    const t = new KsmdCpuTracker()
+    expect(t.push({ ticks: 5_000, at: 0 })).toEqual({})
+  })
+
+  test('a sample inside the window keeps the window open and repeats the last real rate', () => {
+    // publishGauges runs from the reaper tick, GC, destroy AND GET /vms, so
+    // back-to-back calls must not each become a 1 ms-wide delta.
+    const t = new KsmdCpuTracker()
+    t.push({ ticks: 0, at: 0 })
+    expect(t.push({ ticks: 4, at: 1 })).toEqual({}) // 1 ms in: nothing to say
+    expect(t.push({ ticks: 8, at: 1_000 })).toEqual({}) // still inside the window
+    // 300 ticks = 3s of CPU over 31s → 9.68% of one core, measured over 31s.
+    expect(t.push({ ticks: 300, at: 31_000 })).toEqual({ pct: 9.68, windowMs: 31_000 })
+    // A poll 2 ms later repeats that number instead of reporting ~0%.
+    expect(t.push({ ticks: 300, at: 31_002 })).toEqual({ pct: 9.68, windowMs: 31_000 })
+  })
+
+  test('the window restarts once a rate has been reported', () => {
+    const t = new KsmdCpuTracker()
+    t.push({ ticks: 0, at: 0 })
+    t.push({ ticks: 100, at: 30_000 }) // 1s over 30s → 3.33%
+    // Next window is measured from THAT sample, not from process start.
+    expect(t.push({ ticks: 150, at: 60_000 })).toEqual({ pct: 1.67, windowMs: 30_000 })
+  })
+
+  test('a clock that steps backwards does not produce a bogus rate or move the window', () => {
+    const t = new KsmdCpuTracker()
+    t.push({ ticks: 1_000, at: 30_000 })
+    expect(t.push({ ticks: 9_000, at: 20_000 })).toEqual({}) // window negative: ignored
+    // Still measured from the last GOOD sample (1000 @ 30s), not the bogus one:
+    // 8300 ticks = 83s of CPU over 31s.
+    expect(t.push({ ticks: 9_300, at: 61_000 })).toEqual({ pct: 267.74, windowMs: 31_000 })
   })
 })
 

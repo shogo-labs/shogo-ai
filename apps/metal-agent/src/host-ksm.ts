@@ -75,6 +75,49 @@ export function ksmdCpuPct(
 }
 
 /**
+ * How often the ksmd CPU rate is recomputed. `metal_ksmd_cpu_pct` is the number
+ * AC9's "≤ 10% of one thread" budget is read from, and the gauge is published
+ * from `pool.status()`, which runs on the reaper tick, on every GC pass, on
+ * every destroy and on every `GET /vms` — so computing a delta per call would
+ * make the series the width of whatever caller came last (back-to-back calls are
+ * ~1 ms wide, and a soak polling `/vms` would set the whole series).
+ *
+ * A fixed window also matches the budget, which is an average over a soak's holds,
+ * not a reaction to a 1 ms spike.
+ */
+export const KSM_CPU_WINDOW_MS = 30_000
+
+/**
+ * Fixed-cadence ksmd CPU rate: keeps the last accepted sample as the window
+ * start, recomputes only once `KSM_CPU_WINDOW_MS` has passed, and repeats the
+ * last real number in between. The window it actually used is reported with the
+ * rate, so a reader never has to guess.
+ */
+export class KsmdCpuTracker {
+  private sample: KsmdCpuSample | undefined
+  private rate: { pct: number; windowMs: number } | undefined
+
+  /** Feed one cumulative reading; returns the rate (if one is current). */
+  push(cur: KsmdCpuSample): { pct?: number; windowMs?: number } {
+    if (!this.sample) {
+      this.sample = cur
+      return {}
+    }
+    const elapsed = cur.at - this.sample.at
+    if (elapsed < KSM_CPU_WINDOW_MS) {
+      // Too short to mean anything: keep the last real number rather than
+      // reporting a 1 ms-wide delta, and let the window keep growing.
+      return this.rate ? { ...this.rate } : {}
+    }
+    const pct = ksmdCpuPct(this.sample, cur)
+    this.sample = cur
+    if (pct === undefined) return this.rate ? { ...this.rate } : {}
+    this.rate = { pct, windowMs: elapsed }
+    return { ...this.rate }
+  }
+}
+
+/**
  * Find ksmd's pid. KSM is a kernel thread named `ksmd`, so it is the only
  * process whose `comm` matches; there is one per host. Returns undefined when
  * the thread is not running (KSM never started), which is the normal state of
@@ -99,15 +142,18 @@ export function procCpuTicks(stat: string | undefined): number | undefined {
   return utime + stime
 }
 
-let lastKsmd: KsmdCpuSample | undefined
+const ksmdCpu = new KsmdCpuTracker()
 
 /**
- * Sample everything KSM on this host, keeping the previous ksmd CPU sample
- * between calls so the percentage is a real delta. Called from the pool's gauge
- * pass (per reaper tick / heartbeat), which is frequent enough for a
- * meaningful rate on a counter that moves over seconds to minutes.
+ * Sample everything KSM on this host. Counters are read straight from sysfs; the
+ * ksmd CPU rate goes through a fixed 30s window (see `KsmdCpuTracker`), so
+ * calling this from every `status()` — which the reaper tick, GC, destroy and
+ * `GET /vms` all do — cannot make the series the width of whichever caller came
+ * last. `ksmdCpuWindowMs` reports the window the percentage was measured over.
  */
-export function hostKsm(now = Date.now()): (KsmCounters & { ksmdCpuPct?: number }) | undefined {
+export function hostKsm(
+  now = Date.now(),
+): (KsmCounters & { ksmdCpuPct?: number; ksmdCpuWindowMs?: number }) | undefined {
   const base = '/sys/kernel/mm/ksm/'
   const read = (file: string) => {
     try {
@@ -146,8 +192,7 @@ export function hostKsm(now = Date.now()): (KsmCounters & { ksmdCpuPct?: number 
     })(),
   )
   if (ticks === undefined) return counters
-  const prev = lastKsmd
-  lastKsmd = { ticks, at: now }
-  const pct = ksmdCpuPct(prev, lastKsmd)
-  return pct === undefined ? counters : { ...counters, ksmdCpuPct: pct }
+  const rate = ksmdCpu.push({ ticks, at: now })
+  if (rate.pct === undefined) return counters
+  return { ...counters, ksmdCpuPct: rate.pct, ksmdCpuWindowMs: rate.windowMs }
 }

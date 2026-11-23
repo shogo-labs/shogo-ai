@@ -269,6 +269,8 @@ export const M = {
   ksmPagesShared: 'metal_ksm_pages_shared',
   ksmFullScans: 'metal_ksm_full_scans',
   ksmdCpuPct: 'metal_ksmd_cpu_pct',
+  /** Window (ms) the ksmd CPU percentage was measured over — a fixed 30s. */
+  ksmdCpuWindowMs: 'metal_ksmd_cpu_window_ms',
   // Idle-suspend refusals: each one means the guest's HEAD is not in the durable
   // repo yet, so the VM may not be suspended (SHO-442). Counted per attempt
   // (`refused`) and summed per reaper pass for VMs waiting out their backoff

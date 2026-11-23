@@ -76,6 +76,21 @@ it is a **pre-boot** flag: a VM already running cannot be switched over, and the
 field is omitted entirely when the flag is off, so an older FC's `PUT` body is
 byte-identical to today's.
 
+**A stats-less guest is no longer blind-inflated, even with every flag off.** The
+release that shipped before this card fell back to inflating
+`mem_size − floor` on a VM with no balloon statistics (an old snapshot, or a guest
+booted by an agent that never enabled `stats_polling_interval_s`). That fallback
+is gone: `reclaimIdle()` reads stats, and a guest that has none is skipped. This
+is a deliberate behaviour change with all flags off — the blind path could not be
+sized, could not be observed, and could take RAM a running guest needed (there was
+no stats read to ask for less later). On a bootstrapped host it is a non-event:
+`METAL_SNAP_BALLOON` (default on) has enabled stats at boot since the snapshot
+reclaim shipped, so every VM those hosts boot has them, and a snapshot old
+enough to predate stats is well past the GC's cache horizon. **Check it on
+staging** with the A run: snapshot a VM, restore it, and confirm `mem.gz` is still
+~3x smaller than the raw mem image — if it is, the old blind path was not pulling
+its weight and nothing was lost by deleting it.
+
 **`MemoryKSM=` needs systemd ≥ 254** (hosts run 255 on Ubuntu 24.04). The
 bootstrap gates on `systemctl --version` and warns instead of writing the key on
 an older systemd. Firecracker does not `madvise(MADV_MERGEABLE)` its guest
@@ -125,9 +140,18 @@ Per host (gauges, through `/metrics` and the heartbeat's `gauges` block):
 | `metal_host_mem_used_mib` / `metal_host_mem_available_mib` | MemTotal − MemAvailable / MemAvailable |
 | `metal_ksm_pages_sharing` / `metal_ksm_pages_shared` / `metal_ksm_full_scans` | the dedup gain and whether ksmd is keeping up |
 | `metal_ksmd_cpu_pct` | ksmd CPU as a % of one core — the 10%-of-one-thread budget is read from here |
+| `metal_ksmd_cpu_window_ms` | the window that percentage was measured over (fixed 30 s, see below) |
+
+`metal_ksmd_cpu_pct` is computed over a **fixed 30 s window**, not per call: the
+gauge is published from `pool.status()`, which runs on the reaper tick, on every
+GC pass, on every destroy *and* on every `GET /vms`, so a per-call delta would be
+as wide as whatever caller came last (back-to-back calls are ~1 ms, and a soak
+polling `/vms` would set the whole series). Inside the window the gauge repeats
+the last real number, and `metal_ksmd_cpu_window_ms` always says which window it
+came from.
 
 Per VM (debug only, in `GET /vms` under `assigned[]` — VM ids are not metric
-labels): `balloonedMiB`, `balloonUnsupported`, `deflatedIdleMs`.
+labels): `balloonedMiB`, `balloonUnsupported`, `balloonIdleMs`.
 
 **Measure host memory, not FC RSS.** A restored VM's guest memory is a
 `MAP_PRIVATE` file mapping, so `VmRSS` per Firecracker process under-counts the
@@ -169,6 +193,14 @@ while sleep 5; do
   awk '/^MemAvailable|^MemTotal/{printf "%s=%s ", $1, $2}' /proc/meminfo; echo
 done >> /root/ksm-sample-<run>.log
 ```
+
+`--assume-cordoned` skips the cordon API, so the run needs no super-admin token —
+SSH to the host is enough (checked by QA from their sandbox on 2026-11-23).
+
+Careful with the baseline: the card's "dal-1: 56 VMs = 139 GiB" is stale — that
+host was at **256 VMs / 361 GiB used** on 2026-11-23 12:39Z. Measure **A on a
+clean host**, or the per-idle-VM baseline and the VMs-per-host knee will not be
+comparable with B and C.
 
 Restore the host between runs: `METAL_IDLE_RECLAIM=0`,
 `METAL_BALLOON_FREE_PAGE_REPORTING=0`, `METAL_KSM=0 bash host-bootstrap.sh`,
