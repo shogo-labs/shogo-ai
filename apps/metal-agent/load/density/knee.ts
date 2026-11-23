@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+
+/**
+ * Where a host stops carrying VMs well — the CPU knee and the RAM knee.
+ *
+ * They are reported separately because they fail for different reasons and
+ * have different fixes. The CPU knee is contention: turn steps slow down, PSI
+ * `some` climbs, resumes miss the 2 s SLO. The RAM knee is exhaustion: OOM
+ * kills, sustained swap-in, memory PSI `full`, MemAvailable gone. A host can
+ * hit one long before the other, and the recommendation is the lower of the
+ * two at prod VM sizing.
+ *
+ * Pure: every bound is an input, so a synthetic series with a known knee is a
+ * unit test.
+ */
+
+export interface Bounds {
+  /** Turn-step p95 may be at most this multiple of the N=1 baseline. */
+  turnP95Ratio: number
+  /** CPU PSI `some avg60` must stay under this percent. */
+  cpuPsiSomeAvg60: number
+  /** Resume p95 must stay under this many ms (the existing e2e-load SLO). */
+  resumeP95Ms: number
+  /** Sustained swap-in, pages/s averaged over the hold. */
+  swapInPagesPerSec: number
+  /** Memory PSI `full avg60` must stay under this percent. */
+  memPsiFullAvg60: number
+  /** MemAvailable must stay at or above this percent of MemTotal. */
+  memAvailablePct: number
+}
+
+export const DEFAULT_BOUNDS: Bounds = {
+  turnP95Ratio: 1.5,
+  cpuPsiSomeAvg60: 25,
+  resumeP95Ms: 2000,
+  swapInPagesPerSec: 100,
+  memPsiFullAvg60: 1,
+  memAvailablePct: 10,
+}
+
+/** The turn steps whose p95 is compared against the N=1 baseline. */
+export const TURN_STEPS = ['cpu', 'install', 'build'] as const
+export type TurnStep = (typeof TURN_STEPS)[number]
+
+export interface StepMetrics {
+  n: number
+  /** p95 wall-clock ms per turn step at this N. */
+  turnP95: Record<TurnStep, number>
+  cpuPsiSomeAvg60: number
+  resumeP95Ms: number
+  oomKills: number
+  swapInPagesPerSec: number
+  memPsiFullAvg60: number
+  memAvailablePct: number
+}
+
+export interface StepVerdict {
+  n: number
+  cpuPass: boolean
+  ramPass: boolean
+  /** Human-readable reasons a bound was missed, e.g. `build p95 2.1x baseline`. */
+  cpuReasons: string[]
+  ramReasons: string[]
+}
+
+const round = (x: number, d = 2) => +x.toFixed(d)
+
+/** Evaluate one step against the bounds, given the N=1 baseline turn latencies. */
+export function evaluateStep(step: StepMetrics, baseline: Record<TurnStep, number>, bounds: Bounds = DEFAULT_BOUNDS): StepVerdict {
+  const cpuReasons: string[] = []
+  const ramReasons: string[] = []
+
+  for (const s of TURN_STEPS) {
+    const base = baseline[s]
+    if (!(base > 0)) continue
+    const ratio = step.turnP95[s] / base
+    if (ratio > bounds.turnP95Ratio) cpuReasons.push(`${s} p95 ${round(ratio)}x baseline (limit ${bounds.turnP95Ratio}x)`)
+  }
+  if (step.cpuPsiSomeAvg60 >= bounds.cpuPsiSomeAvg60) {
+    cpuReasons.push(`cpu PSI some avg60 ${round(step.cpuPsiSomeAvg60)}% (limit ${bounds.cpuPsiSomeAvg60}%)`)
+  }
+  if (step.resumeP95Ms >= bounds.resumeP95Ms) {
+    cpuReasons.push(`resume p95 ${round(step.resumeP95Ms, 0)}ms (limit ${bounds.resumeP95Ms}ms)`)
+  }
+
+  if (step.oomKills > 0) ramReasons.push(`${step.oomKills} OOM kill(s)`)
+  if (step.swapInPagesPerSec >= bounds.swapInPagesPerSec) {
+    ramReasons.push(`swap-in ${round(step.swapInPagesPerSec, 1)} pages/s (limit ${bounds.swapInPagesPerSec})`)
+  }
+  if (step.memPsiFullAvg60 >= bounds.memPsiFullAvg60) {
+    ramReasons.push(`memory PSI full avg60 ${round(step.memPsiFullAvg60)}% (limit ${bounds.memPsiFullAvg60}%)`)
+  }
+  if (step.memAvailablePct < bounds.memAvailablePct) {
+    ramReasons.push(`MemAvailable ${round(step.memAvailablePct, 1)}% (floor ${bounds.memAvailablePct}%)`)
+  }
+
+  return { n: step.n, cpuPass: cpuReasons.length === 0, ramPass: ramReasons.length === 0, cpuReasons, ramReasons }
+}
+
+export interface Knees {
+  /** Highest N that passed the CPU bounds, or 0 if even the first step failed. */
+  cpuKnee: number
+  /** Highest N that passed the RAM bounds, or 0. */
+  ramKnee: number
+  /** min(cpuKnee, ramKnee) — the number to recommend. */
+  recommended: number
+  verdicts: StepVerdict[]
+}
+
+/**
+ * The knee is the highest N reached by an unbroken run of passing steps from
+ * the smallest N. A step that fails and then "recovers" at a higher N is noise
+ * (a GC pause, a neighbour's burst), not headroom — the host already degraded
+ * at the lower N, so the knee stays there.
+ */
+export function computeKnees(steps: StepMetrics[], baseline: Record<TurnStep, number>, bounds: Bounds = DEFAULT_BOUNDS): Knees {
+  const ordered = [...steps].sort((a, b) => a.n - b.n)
+  const verdicts = ordered.map((s) => evaluateStep(s, baseline, bounds))
+  let cpuKnee = 0
+  let ramKnee = 0
+  let cpuOpen = true
+  let ramOpen = true
+  for (const v of verdicts) {
+    if (cpuOpen && v.cpuPass) cpuKnee = v.n
+    else cpuOpen = false
+    if (ramOpen && v.ramPass) ramKnee = v.n
+    else ramOpen = false
+  }
+  return { cpuKnee, ramKnee, recommended: Math.min(cpuKnee, ramKnee), verdicts }
+}
+
+/**
+ * How many VMs of a given configured size fit in host RAM, from the measured
+ * per-VM host RSS. `reservePct` is the headroom the host itself needs (kernel,
+ * page cache, the agent) — the RAM knee's MemAvailable floor, expressed as a
+ * share of MemTotal.
+ */
+export function ramCeilingForSize(input: { hostMemMiB: number; perVmRssMiB: number; reservePct: number }): number {
+  const { hostMemMiB, perVmRssMiB, reservePct } = input
+  if (!(hostMemMiB > 0) || !(perVmRssMiB > 0)) return 0
+  const usable = hostMemMiB * (1 - Math.min(Math.max(reservePct, 0), 95) / 100)
+  return Math.floor(usable / perVmRssMiB)
+}
+
+/** The recommendation table: the same measured RSS, at each prod VM size. */
+export function ramCeilingsBySize(input: {
+  hostMemMiB: number
+  perVmRssMiB: number
+  reservePct: number
+  sizesMiB?: number[]
+}): { sizeMiB: number; maxVms: number }[] {
+  const sizes = input.sizesMiB ?? [2048, 4096]
+  return sizes.map((sizeMiB) => ({ sizeMiB, maxVms: ramCeilingForSize({ ...input, perVmRssMiB: input.perVmRssMiB }) }))
+}
