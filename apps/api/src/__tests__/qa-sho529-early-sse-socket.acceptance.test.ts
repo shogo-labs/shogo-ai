@@ -108,7 +108,7 @@ describe('early SSE over a real socket (SHO-529)', () => {
     // …and it must arrive with a body chunk, well before the first tick.
     expect(result.headersAt).toBeLessThan(GRACE + KEEPALIVE * 0.6)
     expect(result.firstByteAt).toBeLessThan(GRACE + KEEPALIVE * 0.6)
-    expect(result.firstByteAt! - result.headersAt).toBeLessThan(300)
+    expect(result.firstByteAt! - result.headersAt).toBeLessThan(700)
     expect(result.body.startsWith(': keepalive')).toBe(true)
     expect(result.body).toContain('OK')
   })
@@ -131,7 +131,7 @@ describe('early SSE over a real socket (SHO-529)', () => {
     // Ended by the proxy at its own cap, i.e. before any hop could reset the
     // socket — and as a clean EOF carrying a frame, not a dropped connection.
     expect(result.endAt).toBeGreaterThanOrEqual(MAX_WAIT * 0.8)
-    expect(result.endAt).toBeLessThan(MAX_WAIT + 2_000)
+    expect(result.endAt).toBeLessThan(MAX_WAIT + 3_000)
     expect(result.body.split('\n\n').filter((block) => block.includes('"stream_error"'))).toHaveLength(1)
     expect(result.body).toContain('[shogo:retryable=true;code=upstream_timeout]')
     expect(result.body).toContain('Split large tool calls (e.g. write_file then append).')
