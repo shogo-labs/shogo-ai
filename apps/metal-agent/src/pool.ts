@@ -499,6 +499,29 @@ export type SuspendOutcome =
 export type VmResidency = 'active' | 'evictable'
 
 /**
+ * Liveness class of one assigned VM. `agent` = a streamed turn in flight or a
+ * recent agent request, `app` = recent end-user app traffic, `idle` = neither —
+ * including a guest that is busy with work no person asked for. See
+ * `vmLiveness`, the ONE classifier the gauges, the bill and the reaper share.
+ */
+export type VmLiveness = 'agent' | 'app' | 'idle'
+
+/**
+ * Why the idle reaper is leaving an assigned VM resident right now.
+ *
+ *   alwaysOn  — paid, never idle-suspended
+ *   refused   — its HEAD is not durable yet, so a suspend would lose work (backed off)
+ *   busy      — a turn or task is in flight (`vmBusy`), retried at the next quiet poll
+ *   window    — inside the idle window the reaper is applying
+ *   legacy    — no per-class activity: its clock is the catch-all, which our own exports move
+ *   evictable — past the window and idle: the next reaper pass suspends it
+ *
+ * `window`/`evictable` use the window the reaper ACTUALLY applied (the control
+ * plane's relaxed directive when it has one), not `METAL_IDLE_SUSPEND_MS`.
+ */
+export type VmHoldReason = 'window' | 'busy' | 'refused' | 'alwaysOn' | 'legacy' | 'evictable'
+
+/**
  * Why a VM was suspended. `idle` is the reaper's window; `evicted` is an
  * on-demand suspend to make room for an assign/resume on the same host (see
  * `makeRoom`). Carried on the snapshot so a resume can label its wake latency
@@ -699,6 +722,32 @@ export interface AssignedVm {
    * companion to `activeStreams` for a turn that is still in flight.
    */
   lastAgentRequestAt?: number
+  /**
+   * Whether a PERSON has used this VM since it was placed. `false` on a VM the
+   * platform started on its own initiative (a schedule tick, an agent wake, a
+   * `rewarm`/`prewarm`), `true` for a `user_open`/`published` one, and flipped
+   * to `true` by the first app/agent request that arrives afterwards.
+   *
+   * It narrows the idle window for such a VM to the aggressive one even under a
+   * relaxed directive: nobody asked for those 4 hours, so a scheduled wake must
+   * not buy them (SHO-533). `undefined` (an adopted VM, cause unknown) is never
+   * narrowed.
+   */
+  userSeenSinceAssign?: boolean
+  /**
+   * Consecutive idle-suspend refusals and when the streak started. A refusal
+   * means the guest's HEAD is not in the durable repo yet (SHO-442), so the VM
+   * cannot be suspended — but every attempt pays a full repo export, so retrying
+   * one every scan starves the reaper of the passes every OTHER idle VM needs.
+   * The streak backs the retry off (see `refuseBackoffMs`) and is cleared by the
+   * first suspend that succeeds.
+   */
+  refuseCount?: number
+  refusedSince?: number
+  /** Don't attempt this VM again before this wall-clock (refusal backoff). */
+  refuseRetryAt?: number
+  /** The once-per-VM refusal warning has been logged. */
+  refusalLogged?: boolean
   /**
    * Whether the guest reports the per-class fields at all. An older runtime
    * image omits them entirely (as opposed to sending `null`, which means
@@ -1073,13 +1122,20 @@ function yieldToEventLoop(): Promise<void> {
 }
 
 /**
- * How recently a VM must have served end-user *app* traffic to count as
- * "app-active" in the fleet gauges. Generous enough to bridge the gaps between
- * a real user's requests (page loads, API calls) without flapping the bucket,
- * short enough that a genuinely-abandoned app falls into the idle tail. Purely
- * an observability window — it does not affect suspend/reap decisions.
+ * How recently a VM must have served a request of a given class — an end-user
+ * app request, or an agent turn — to still count as live in that class.
+ * Generous enough to bridge the gaps between a real user's requests (page
+ * loads, API calls) without flapping the bucket, short enough that a
+ * genuinely-abandoned VM falls into the idle tail.
+ *
+ * One window for both classes, and one consumer: `vmLiveness` decides the
+ * fleet gauges, the bill AND (through `lastRealActivityAt`) whether the idle
+ * reaper may suspend the VM. A VM the reaper has to leave resident because
+ * someone just used it is the same VM the meter must not call idle — the two
+ * disagreeing is what billed 96% idle VM-hours on boxes that never idled
+ * (SHO-533).
  */
-const APP_ACTIVE_WINDOW_MS = 120_000
+const ACTIVITY_WINDOW_MS = 120_000
 
 /**
  * How long a stopped VM's final meter is retried before it is dropped, and how
@@ -2498,6 +2554,11 @@ export class MetalWarmPool {
       lastTouchedAt: now,
       lastRealActivityAt: now,
       lastUserActivityAt: now,
+      // Only a person opening the project (or a visitor hitting a published
+      // site) has earned the relaxed idle window. A schedule tick, an agent
+      // wake or a prewarm gets the aggressive one until someone actually shows
+      // up (SHO-533).
+      userSeenSinceAssign: cause === 'user_open' || cause === 'published',
       // Warm VMs never outlive the agent process (prepareForRestart kills
       // them), so this one booted from the image this process was started on.
       bootRootfsIdentity: stagedIdentity ?? this.classRootfsIdentity(vm.handle.vmClass),
@@ -5905,6 +5966,9 @@ export class MetalWarmPool {
       lastTouchedAt: now,
       lastRealActivityAt: now,
       lastUserActivityAt: now,
+      // Same rule as assign: a resume nobody asked for (schedule / agent_wake /
+      // rewarm / prewarm) does not buy the relaxed window (SHO-533).
+      userSeenSinceAssign: cause === 'user_open' || cause === 'published',
       restoredFrom: { vmstate: s.snapshot.snapshotPath, mem: s.snapshot.memFilePath },
       // The restored guest runs the image its snapshot was taken on (already
       // gated fresh above); unstamped legacy snapshots count as current.
@@ -6117,13 +6181,15 @@ export class MetalWarmPool {
           // SHO-399). `undefined` on a guest too old to report them.
           a.activeTurns = typeof body.activeTurns === 'number' ? body.activeTurns : undefined
           a.liveStreams = typeof body.liveStreams === 'number' ? body.liveStreams : undefined
-          if (this.vmBusy(a)) {
-            a.lastTouchedAt = now // an active turn is activity
-            a.lastRealActivityAt = now
-            // Deliberately NOT lastUserActivityAt: a guest that wrongly reports
-            // busy would then look freshly used forever, and the busy-idle
-            // ceiling could never fire (SHO-420).
-          }
+          // A busy guest — a turn, a background task, a heartbeat run — is NOT
+          // activity in the reaper's sense, so it no longer moves
+          // `lastRealActivityAt` (SHO-533). It used to, on every poll, and since
+          // the recipes tick every 10-60 min the window never elapsed: 120-190
+          // VMs stayed resident for 13-24h while the meter billed them idles.
+          // `vmBusy` still blocks suspension (see `reapIdle`), so a real turn is
+          // never snapshotted away; it just cannot buy another full window. The
+          // reaper's clock moves below, only when `vmLiveness` says someone is
+          // using this VM.
           // Did the catch-all counter move since the previous poll? Captured
           // before we overwrite it, because the legacy fallback below needs it.
           const prevSeen = a.lastActivityAt
@@ -6179,6 +6245,7 @@ export class MetalWarmPool {
               a.lastTouchedAt = now
               a.lastRealActivityAt = now // an end user hit the app
               a.lastUserActivityAt = now
+              a.userSeenSinceAssign = true
             }
           }
           if (typeof agentAt === 'number') {
@@ -6188,7 +6255,17 @@ export class MetalWarmPool {
               a.lastTouchedAt = now
               a.lastRealActivityAt = now // someone talked to the agent
               a.lastUserActivityAt = now
+              a.userSeenSinceAssign = true
             }
+          }
+          // The one clock the reaper, the meter and the fleet gauges share
+          // (`vmLiveness`). A live streamed turn or a request of either class
+          // inside the activity window is "someone is using this"; anything
+          // else — a heartbeat run, a background task, an export sweep — is not,
+          // however busy it makes the guest look.
+          if (this.vmLiveness(a, now) !== 'idle') {
+            a.lastTouchedAt = now
+            a.lastRealActivityAt = now
           }
           if (typeof body.appRequestCount === 'number') a.appRequestCount = body.appRequestCount
 
@@ -6207,6 +6284,7 @@ export class MetalWarmPool {
           if (!a.perClassActivity && catchAllAdvanced) {
             a.lastRealActivityAt = now
             a.lastUserActivityAt = now
+            a.userSeenSinceAssign = true
           }
         } catch {
           a.lastTouchedAt = now // fail open: never evict on missing data
@@ -6316,6 +6394,34 @@ export class MetalWarmPool {
   }
 
   /**
+   * The idle window this VM gets, given the window the reaper is applying on
+   * this pass.
+   *
+   * A VM the platform started on its own initiative — a schedule tick, an agent
+   * wake, a `rewarm`/`prewarm` — has not been asked for by any person yet, so it
+   * only gets the aggressive window (`METAL_IDLE_SUSPEND_MS`) even while the
+   * region's directive says relaxed. An automated wake buying four hours of
+   * resident RAM nobody wanted is a large share of the idle bill (SHO-533). The
+   * first real app/agent request lifts the narrowing (`userSeenSinceAssign`).
+   */
+  private idleWindowFor(a: AssignedVm, windowMs: number): number {
+    if (a.userSeenSinceAssign === false && this.cfg.idleSuspendMs > 0) {
+      return Math.min(windowMs, this.cfg.idleSuspendMs)
+    }
+    return windowMs
+  }
+
+  /** Retry delay after the Nth consecutive idle-suspend refusal: 1m doubling to 1h. */
+  private refuseBackoffMs(count: number): number {
+    return Math.min(60 * 60_000, 60_000 * 2 ** Math.min(Math.max(count, 1) - 1, 6))
+  }
+
+  /** Whether this VM is in its refusal backoff window (don't attempt it again yet). */
+  private refuseBackoffActive(a: AssignedVm, now = Date.now()): boolean {
+    return a.refuseRetryAt !== undefined && a.refuseRetryAt > now
+  }
+
+  /**
    * Suspend assigned VMs that have been idle past the threshold. Driven by the
    * reaper timer in server.ts. Returns the projectIds that were suspended.
    */
@@ -6328,6 +6434,9 @@ export class MetalWarmPool {
       return []
     }
     const now = Date.now()
+    // What `status()` reports as each VM's `holdReason`, so "why is this one
+    // still resident" is answerable from the window the reaper actually used.
+    this.reapWindowMs = idleMs
     // Final tick before anything is suspended: a VM's last running seconds are
     // metered while it is still assigned, so suspending it never loses billable
     // time (`closeMeter` is the belt to this braces).
@@ -6344,14 +6453,17 @@ export class MetalWarmPool {
     // activity poll saw mid-stream — never snapshot away an active agent
     // message. (The reaper timer polls activity immediately before this.)
     //
-    // The second clause is the busy-idle ceiling: a VM whose guest keeps
-    // reporting busy but which no person has used for hours is suspended
-    // anyway, overriding `busy`, `activeStreams`, `activeTurns` and tasks.
+    // `vmBusy` blocks the suspend but no longer extends the window: once the
+    // window has passed, the VM goes on the first quiet poll between two
+    // heartbeat ticks (SHO-533). A continuously busy guest is still caught by
+    // the busy-idle ceiling — the second clause, which overrides `busy`,
+    // `activeStreams`, `activeTurns` and tasks.
     const stale = [...this.assigned.values()]
       .filter(
         (a) =>
           !a.alwaysOn &&
-          ((idleFor(a) >= idleMs && !this.vmBusy(a)) || this.pastBusyIdleCeiling(a, now)),
+          ((idleFor(a) >= this.idleWindowFor(a, idleMs) && !this.vmBusy(a)) ||
+            this.pastBusyIdleCeiling(a, now)),
       )
       .sort((x, y) => idleFor(y) - idleFor(x))
     // VMs the reaper would have suspended if their guest did not report busy.
@@ -6361,6 +6473,10 @@ export class MetalWarmPool {
         (a) => !a.alwaysOn && this.vmBusy(a) && now - (a.lastUserActivityAt ?? a.assignedAt) >= idleMs,
       ).length,
     )
+    metrics.gauge(
+      M.idleSuspendRefusedVms,
+      [...this.assigned.values()].filter((a) => this.refuseBackoffActive(a, now)).length,
+    )
     for (const id of this.busyIdleCeilingLogged) if (!this.assigned.has(id)) this.busyIdleCeilingLogged.delete(id)
     const cap = opts.maxPerPass ?? this.cfg.reapMaxPerPass ?? 0
     if (cap > 0 && stale.length > cap) {
@@ -6369,6 +6485,14 @@ export class MetalWarmPool {
     }
     const done: string[] = []
     for (const a of stale) {
+      // A VM whose HEAD could not be made durable is not suspendable, and every
+      // attempt pays a full repo export. Retrying it on every scan starves the
+      // pass every other idle VM needs, so it waits out its backoff instead
+      // (SHO-533: one VM on dal-1 was refused 2,367 times in 24h).
+      if (this.refuseBackoffActive(a, now)) {
+        metrics.inc(M.idleReapRefusedBackoff)
+        continue
+      }
       const byCeiling = this.pastBusyIdleCeiling(a, now)
       if (byCeiling && !this.busyIdleCeilingLogged.has(a.projectId)) {
         this.busyIdleCeilingLogged.add(a.projectId)
@@ -6384,10 +6508,14 @@ export class MetalWarmPool {
         const outcome = await this.suspendOrRetire(a.projectId, { reason: 'idle' })
         if (outcome.kind === 'retired') opts.retired?.push(a.projectId)
         else if (outcome.kind === 'refused') {
-          // Not stopped: its HEAD is not durable yet. Leave it running and let
-          // the next sweep retry (SHO-442).
+          // Not stopped: its HEAD is not durable yet (SHO-442). Leave it running,
+          // but back off — a refusal costs a full repo export (seconds to a
+          // minute), so retrying it every scan is what starved the reaper of the
+          // passes every OTHER idle VM needed (SHO-533).
+          this.noteSuspendRefused(a, outcome.reason, now)
           continue
         } else done.push(a.projectId)
+        this.clearSuspendRefusal(a)
         metrics.inc(`${M.idleSuspendedByTier}{tier="${opts.tier ?? 'static'}"}`)
         if (byCeiling) metrics.inc(M.busyIdleCeilingSuspended)
       } catch (err: any) {
@@ -6395,6 +6523,34 @@ export class MetalWarmPool {
       }
     }
     return done
+  }
+
+  /**
+   * Record one more consecutive idle-suspend refusal on this VM and back its next
+   * attempt off. Warns once per VM with the reason and how long it has been
+   * refused: the underlying export path already logs every attempt, and with the
+   * backoff that is now once an hour instead of once a scan.
+   */
+  private noteSuspendRefused(a: AssignedVm, reason: string, now: number): void {
+    a.refuseCount = (a.refuseCount ?? 0) + 1
+    a.refusedSince ??= now
+    a.refuseRetryAt = now + this.refuseBackoffMs(a.refuseCount)
+    metrics.inc(M.idleSuspendRefused)
+    if (!a.refusalLogged) {
+      a.refusalLogged = true
+      console.warn(
+        `[pool] idle-suspend is HELD for ${a.projectId} by a non-durable HEAD: ${reason}. ` +
+          `Backing off ${Math.round(this.refuseBackoffMs(a.refuseCount) / 60_000)}m per attempt ` +
+          `(refused since ${new Date(a.refusedSince).toISOString()}); counted in ${M.idleSuspendRefused}.`,
+      )
+    }
+  }
+
+  private clearSuspendRefusal(a: AssignedVm): void {
+    a.refuseCount = undefined
+    a.refusedSince = undefined
+    a.refuseRetryAt = undefined
+    a.refusalLogged = undefined
   }
 
   /**
@@ -6616,6 +6772,14 @@ export class MetalWarmPool {
   private rotateRetryAt = new Map<string, number>()
   /** VMs already reported by the busy-idle ceiling, so a failed suspend logs once, not every pass. */
   private busyIdleCeilingLogged = new Set<string>()
+  /**
+   * The idle window the last reaper pass applied (see `idleWindowFor`): the
+   * control plane's relaxed directive when it has one, else the aggressive
+   * `METAL_IDLE_SUSPEND_MS`. `status()` reports each VM's `holdReason` against
+   * it, so "why is this one still resident" answers against the window that
+   * actually kept it, not the configured one.
+   */
+  private reapWindowMs?: number
 
   /**
    * Tear down a tracked VM: drop it from the assigned map + adopt-on-restart
@@ -7531,7 +7695,7 @@ export class MetalWarmPool {
     let evictable = 0
     for (const a of this.assigned.values()) {
       if (a.lastHealthOk === false) unhealthy++
-      const cls = this.vmMeterClass(a, now)
+      const cls = this.vmLiveness(a, now)
       if (cls === 'agent') agentActive++
       else if (cls === 'app') appActive++
       else idleTail++
@@ -7539,6 +7703,28 @@ export class MetalWarmPool {
       else active++
     }
     return { appActive, agentActive, idleTail, unhealthy, active, evictable }
+  }
+
+  /**
+   * The assigned set counted by `vmHoldReason`, and the same numbers pushed out
+   * as one gauge per reason. Disjoint and they sum to `assigned.size`, so a host
+   * reporting 140 resident with `evictable=0` reads immediately as "nothing is
+   * reapable", and one with `refused=3` says which three VMs to go look at.
+   */
+  protected countHoldReasons(now = Date.now()): Record<VmHoldReason, number> {
+    const counts: Record<VmHoldReason, number> = {
+      window: 0,
+      busy: 0,
+      refused: 0,
+      alwaysOn: 0,
+      legacy: 0,
+      evictable: 0,
+    }
+    for (const a of this.assigned.values()) counts[this.vmHoldReason(a, now)]++
+    for (const [reason, n] of Object.entries(counts)) {
+      metrics.gauge(`${M.idleHoldReason}{reason="${reason}"}`, n)
+    }
+    return counts
   }
 
   /**
@@ -7570,14 +7756,62 @@ export class MetalWarmPool {
   }
 
   /**
-   * Liveness class of ONE VM: an in-flight agent turn wins, then recent end-user
-   * app traffic, else the idle tail. `classifyAssigned` buckets the fleet with
-   * exactly this, and the billing meter charges time to exactly this — one
-   * classifier, so the fleet gauges and the bill can never disagree.
+   * Why the idle reaper is leaving this VM resident right now — the answer to
+   * "150 VMs are resident and ~20 projects are active; what is holding the other
+   * 130?". Reported per VM by `status()` and summed per reason into a gauge, so
+   * one curl answers it instead of a forensic pass over five hosts (SHO-533).
+   *
+   * Read against the window the reaper actually applied (`reapWindowMs`), which
+   * is why it can say `window` for a VM `vmResidency` already calls `evictable`:
+   * residency answers "may this be evicted if room is needed" (the aggressive
+   * window), the hold reason answers "why is the reaper not suspending it" (the
+   * relaxed window it is running under).
    */
-  private vmMeterClass(a: AssignedVm, now: number): 'agent' | 'app' | 'idle' {
-    if ((a.activeStreams ?? 0) > 0) return 'agent'
-    if (a.lastAppRequestAt && now - a.lastAppRequestAt <= APP_ACTIVE_WINDOW_MS) return 'app'
+  protected vmHoldReason(a: AssignedVm, now = Date.now()): VmHoldReason {
+    if (a.alwaysOn) return 'alwaysOn'
+    if (this.refuseBackoffActive(a, now)) return 'refused'
+    if (this.vmBusy(a)) return 'busy'
+    const windowMs = this.reapWindowMs ?? this.cfg.idleSuspendMs
+    if (now - (a.lastRealActivityAt ?? a.assignedAt) < this.idleWindowFor(a, windowMs)) return 'window'
+    if (a.perClassActivity !== true) return 'legacy'
+    return 'evictable'
+  }
+
+  /**
+   * Whether a streamed turn is still in flight, as opposed to the guest merely
+   * reporting `busy`. `liveStreams` is streams that still hold their turn; the
+   * raw `activeStreams` counter can outlive one (SHO-348), and a guest that
+   * reports its own `busy: false` has said so itself. A guest too old to
+   * break the count down only has `busy`/`activeStreams`, which is why the
+   * fallback is `vmBusy` rather than the counter.
+   */
+  private vmStreaming(a: AssignedVm): boolean {
+    if (a.liveStreams === undefined) return this.vmBusy(a)
+    return a.liveStreams > 0
+  }
+
+  /**
+   * Liveness class of ONE VM — the single answer to "is anyone using this?"
+   * that the fleet gauges, the bill AND the idle reaper all read.
+   *
+   *   agent — a streamed turn is in flight, or someone talked to the agent
+   *           within the activity window;
+   *   app   — an end-user app request within the activity window;
+   *   idle  — everything else, including a guest that is busy with work no
+   *           person asked for (a heartbeat run, a background task) and a
+   *           leaked `activeStreams` with no live stream behind it.
+   *
+   * `classifyAssigned` buckets the fleet with exactly this, `advanceOneMeter`
+   * charges time to exactly this, and `pollActivity` moves the reaper's clock
+   * (`lastRealActivityAt`) only when this is not `idle`. One classifier, so the
+   * gauges, the bill and the reaper cannot disagree about what "idle" means —
+   * which is what let production bill 96% idle VM-hours while the same VMs were
+   * never suspended (SHO-533).
+   */
+  protected vmLiveness(a: AssignedVm, now = Date.now()): VmLiveness {
+    if (this.vmStreaming(a)) return 'agent'
+    if (a.lastAgentRequestAt && now - a.lastAgentRequestAt <= ACTIVITY_WINDOW_MS) return 'agent'
+    if (a.lastAppRequestAt && now - a.lastAppRequestAt <= ACTIVITY_WINDOW_MS) return 'app'
     return 'idle'
   }
 
@@ -7601,7 +7835,7 @@ export class MetalWarmPool {
     const elapsed = Math.max(0, now - m.advancedAt)
     m.advancedAt = now
     if (elapsed > 0) {
-      const cls = this.vmMeterClass(a, now)
+      const cls = this.vmLiveness(a, now)
       if (cls === 'agent') m.agentMs += elapsed
       else if (cls === 'app') m.appMs += elapsed
       else m.idleMs += elapsed
@@ -8171,6 +8405,9 @@ export class MetalWarmPool {
     const now = Date.now()
     this.publishGauges()
     const liveness = this.classifyAssigned(now)
+    // Per-reason counts of the resident set, so the next "why are 150 VMs loaded
+    // while 20 projects are active" is one curl instead of a forensic pass.
+    const holds = this.countHoldReasons(now)
     return {
       store: this.store.kind,
       idleSuspendMs: this.cfg.idleSuspendMs,
@@ -8197,6 +8434,10 @@ export class MetalWarmPool {
       // Assigned (running) set decomposed by why each VM is live, so the raw
       // count can be read as app-users + agent-turns + idle-tail.
       liveness,
+      // The same set decomposed by what is KEEPING it resident (see
+      // `vmHoldReason`), plus the window it was judged against.
+      holdReasons: holds,
+      reapWindowMs: this.reapWindowMs ?? this.cfg.idleSuspendMs,
       // Live FC processes vs tracked VMs — a growing gap flags a process leak.
       fcProcs: this.mgr.procCount(),
       assigned: [...this.assigned.values()].map((a) => ({
@@ -8219,6 +8460,9 @@ export class MetalWarmPool {
         // `active` = holding a slot someone needs; `evictable` = warm but free
         // capacity, suspended early only when an assign here needs the room.
         residency: this.vmResidency(a, now),
+        // Why the reaper is leaving it resident (window | busy | refused |
+        // alwaysOn | legacy | evictable). `evictable` = the next pass suspends it.
+        holdReason: this.vmHoldReason(a, now),
         // Reports busy, but no user activity past the ceiling: the reaper will
         // suspend it on its next pass.
         busyIdle: this.vmBusy(a) && this.pastBusyIdleCeiling(a, now),

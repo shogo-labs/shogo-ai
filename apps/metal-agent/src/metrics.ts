@@ -226,6 +226,21 @@ export const M = {
   idleSuspendedByTier: 'metal_idle_suspended_by_tier_total',
   idleReapDeferred: 'metal_idle_reap_deferred_total',
   idleWindowMs: 'metal_idle_window_ms',
+  // Why each assigned VM is still resident, as a gauge per reason
+  // `{reason="window"|"busy"|"refused"|"alwaysOn"|"legacy"|"evictable"}`. They
+  // are disjoint and sum to `metal_assigned_count`, so one scrape answers "why
+  // are 140 VMs loaded while 20 projects are active". `evictable` means nothing
+  // is holding it — the next pass suspends it, so a sustained non-zero
+  // `evictable` means the reaper is not keeping up (SHO-533).
+  idleHoldReason: 'metal_idle_hold_reason',
+  // Idle-suspend refusals: each one means the guest's HEAD is not in the durable
+  // repo yet, so the VM may not be suspended (SHO-442). Counted per attempt
+  // (`refused`) and summed per reaper pass for VMs waiting out their backoff
+  // (`refused_backoff`), because a refusal costs a full repo export and retrying
+  // one every scan starves the reaper (SHO-533).
+  idleSuspendRefused: 'metal_idle_suspend_refused_total',
+  idleSuspendRefusedVms: 'metal_idle_suspend_refused_vms',
+  idleReapRefusedBackoff: 'metal_idle_reap_refused_backoff_total',
   // VMs the reaper would have suspended if their guest did not report busy:
   // assigned, not always-on, `busy` true, and no user activity for the current
   // idle window. A non-zero gauge is the "reports busy, does nothing" tail that
