@@ -19,7 +19,7 @@
  * Run: bun test apps/api/src/routes/__tests__/ai-proxy-streaming.test.ts
  */
 
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { describe, test, expect, beforeAll, beforeEach, afterEach, mock } from 'bun:test'
 import {
   fetchAnthropicWithRetry,
   wrapSseForErrorVisibility,
@@ -34,6 +34,7 @@ import {
   type ChatCompletionRequest,
   type ModelConfig,
 } from '../ai-proxy'
+import { ensureModelRegistryLoaded } from '../../services/model-registry.service'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -666,6 +667,13 @@ const ANTHROPIC_FULL_SSE =
 
 describe('early SSE headers keep a slow provider inside the edge timeout (SHO-517)', () => {
   const origFetch = globalThis.fetch
+  // The Gemini path reads the model registry, and its first touch starts a
+  // cold Prisma load that can stall the event loop for 100ms+ on a CI runner.
+  // Servers prime the registry at startup; do the same here so the timed
+  // assertions measure header latency, not that one-off load.
+  beforeAll(async () => {
+    await ensureModelRegistryLoaded()
+  })
   afterEach(() => {
     globalThis.fetch = origFetch
     __setEarlySseTimingForTests()
