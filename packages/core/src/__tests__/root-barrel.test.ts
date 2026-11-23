@@ -59,16 +59,32 @@ function staticSpecifiers(source: string): string[] {
 function resolveModule(fromFile: string, specifier: string): string | null {
   if (!specifier.startsWith('.')) return null
   const base = resolve(dirname(fromFile), specifier)
-  for (const candidate of [`${base}.ts`, join(base, 'index.ts'), base]) {
+  // ESM-style `./x.js` still means `./x.ts` in this source tree.
+  const withoutJsExtension = base.replace(/\.(js|mjs|cjs)$/, '')
+  const candidates = [
+    `${base}.ts`,
+    `${base}.tsx`,
+    join(base, 'index.ts'),
+    join(base, 'index.tsx'),
+    base,
+    `${withoutJsExtension}.ts`,
+    `${withoutJsExtension}.tsx`,
+  ]
+  for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate
   }
   return null
 }
 
 /** Every module reachable from the root barrel by static import/export. */
-function rootBarrelGraph(): { files: Set<string>; external: Map<string, string[]> } {
+function rootBarrelGraph(): {
+  files: Set<string>
+  external: Map<string, string[]>
+  unresolved: string[]
+} {
   const files = new Set<string>()
   const external = new Map<string, string[]>()
+  const unresolved: string[] = []
   const queue = [join(srcDir, 'index.ts')]
 
   while (queue.length > 0) {
@@ -82,14 +98,17 @@ function rootBarrelGraph(): { files: Set<string>; external: Map<string, string[]
         queue.push(resolved)
         continue
       }
+      const importer = relative(packageDir, file)
       if (!specifier.startsWith('.')) {
-        const importer = relative(packageDir, file)
         external.set(specifier, [...(external.get(specifier) ?? []), importer])
+      } else {
+        // Dropping it silently would hide everything behind it from the scan.
+        unresolved.push(`${importer} → ${specifier}`)
       }
     }
   }
 
-  return { files, external }
+  return { files, external, unresolved }
 }
 
 const graph = rootBarrelGraph()
@@ -114,6 +133,12 @@ describe('@shogo-ai/core root barrel', () => {
     // Re-adding it here would put every optional OpenTelemetry peer back in the
     // root entry. Do that only after the module stops importing them eagerly.
     expect(reachable).not.toContain('instrumentation.ts')
+  })
+
+  it('resolves every relative import, so nothing escapes the scan', () => {
+    // A specifier the walker cannot resolve used to fall out of the graph
+    // silently, so an optional peer behind it would never be seen.
+    expect(graph.unresolved).toEqual([])
   })
 
   it('still re-exports every peer-free module', () => {
