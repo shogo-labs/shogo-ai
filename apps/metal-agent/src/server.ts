@@ -389,7 +389,7 @@ console.log(
 )
 console.log('[metal-agent] warming pool...')
 pool.start().then(
-  (adoption) => {
+  async (adoption) => {
     console.log('[metal-agent] pool ready')
     // Rolling deploy: adopt() re-attached live VMs that survived this restart.
     // Re-assert their (persisted) DNAT rules and tear down forwards for any VM
@@ -407,7 +407,7 @@ pool.start().then(
     // Reclaim files left over from a prior run once the suspended index is
     // rehydrated (start() calls rehydrate()), so a deploy doesn't leak disk.
     try {
-      const n = pool.reclaimOrphans()
+      const n = await pool.reclaimOrphans()
       if (n) console.log(`[metal-agent] startup reclaimed ${n} orphaned artifact(s)`)
     } catch (err: any) {
       console.error('[metal-agent] startup orphan reclaim failed:', err?.message ?? err)
@@ -552,41 +552,57 @@ if (config.gcIntervalMs > 0) {
     `[metal-agent] gc on: interval=${config.gcIntervalMs}ms high=${config.diskHighPct}% low=${config.diskLowPct}% ` +
       `cacheMax=${config.cacheMaxBytes || 'off'} rootfsCow=${config.rootfsCow}`,
   )
-  gc = setInterval(() => {
-    // Safety net: SIGKILL any firecracker process orphaned by a failure/race
-    // path (the churn leak). Normally 0 — every failure path now stops its own
-    // VM — but this guarantees the host can't accumulate untracked FC processes.
+  // Single-flight: the sweep's teardown calls are child processes now (awaited,
+  // so they no longer block the loop and starve a boot's socket waiter), which
+  // means one sweep can outlive the interval. Two overlapping sweeps would
+  // reconcile the same orphans twice, so a tick that arrives mid-sweep is
+  // dropped and the next one picks it up.
+  let sweeping = false
+  const sweep = async (): Promise<void> => {
+    if (sweeping) return
+    sweeping = true
     try {
-      pool.reapOrphanProcs()
-    } catch (err: any) {
-      console.error('[metal-agent] orphan-proc reap error:', err?.message ?? err)
-    }
-    // Reclaim leaked tap devices, which each hold a /30 out of a finite space
-    // (16384 per host). Runs before the disk GC because exhausting it fails
-    // every new VM outright, and it fills silently.
-    try {
-      pool.reapOrphanTaps()
-    } catch (err: any) {
-      console.error('[metal-agent] orphan-tap reap error:', err?.message ?? err)
-    }
-    // Reclaim leaked dm devices / loops / CoW files from teardown races (bounded
-    // per sweep so a large backlog drains gradually without stalling the timer).
-    try {
-      const n = pool.reconcileOrphanDevices()
-      if (n) console.log(`[metal-agent] reconciled ${n} orphaned dm device(s)/CoW`)
-    } catch (err: any) {
-      console.error('[metal-agent] orphan-device reconcile error:', err?.message ?? err)
-    }
-    pool.gcSweep().then(
-      (report) => {
+      // Safety net: SIGKILL any firecracker process orphaned by a failure/race
+      // path (the churn leak). Normally 0 — every failure path now stops its own
+      // VM — but this guarantees the host can't accumulate untracked FC processes.
+      try {
+        pool.reapOrphanProcs()
+      } catch (err: any) {
+        console.error('[metal-agent] orphan-proc reap error:', err?.message ?? err)
+      }
+      // Reclaim leaked tap devices, which each hold a /30 out of a finite space
+      // (16384 per host). Runs before the disk GC because exhausting it fails
+      // every new VM outright, and it fills silently.
+      try {
+        await pool.reapOrphanTaps()
+      } catch (err: any) {
+        console.error('[metal-agent] orphan-tap reap error:', err?.message ?? err)
+      }
+      // Reclaim leaked dm devices / loops / CoW files from teardown races
+      // (bounded per sweep so a large backlog drains gradually without stalling
+      // the timer).
+      try {
+        const n = await pool.reconcileOrphanDevices()
+        if (n) console.log(`[metal-agent] reconciled ${n} orphaned dm device(s)/CoW`)
+      } catch (err: any) {
+        console.error('[metal-agent] orphan-device reconcile error:', err?.message ?? err)
+      }
+      try {
+        const report = await pool.gcSweep()
         for (const id of report.evicted) reportPlacement(report.durableRemoved.includes(id) ? 'cold' : 'evicted', id)
         // Same shape as an LRU eviction from the registry's point of view: the
         // local copy is gone, the durable one is not. Told promptly so routing
         // stops preferring this host for a snapshot it can no longer restore.
         for (const id of report.staleReclaimed) reportPlacement('evicted', id)
-      },
-      (err) => console.error('[metal-agent] gc error:', err?.message ?? err),
-    )
+      } catch (err: any) {
+        console.error('[metal-agent] gc error:', err?.message ?? err)
+      }
+    } finally {
+      sweeping = false
+    }
+  }
+  gc = setInterval(() => {
+    void sweep().catch((err: any) => console.error('[metal-agent] gc sweep error:', err?.message ?? err))
   }, config.gcIntervalMs)
 }
 

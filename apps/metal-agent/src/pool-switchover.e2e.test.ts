@@ -153,7 +153,7 @@ describe('staged pre-warm', () => {
 
     // The heartbeat's onStaged hook after a rebuild.
     const C = r.stage(4096, 1_700_000_200)
-    expect(pool.dropStagedSnapshots([C])).toBe(2)
+    expect(await pool.dropStagedSnapshots([C])).toBe(2)
     expect(pool.stagedSnapshot('p1')).toBeUndefined()
 
     // A restart in between rebuilds finds the same: nothing for an old image survives.
@@ -182,7 +182,7 @@ describe('activation', () => {
     const promotedBefore = metrics.getCounter(M.stagedSnapshotsPromoted)
     activateStagedImages(r.baseRootfs)
     expect(r.current()).toBe(B)
-    expect(pool.promoteStagedSnapshots([B])).toBe(1)
+    expect(await pool.promoteStagedSnapshots([B])).toBe(1)
     expect(metrics.getCounter(M.stagedSnapshotsPromoted)).toBe(promotedBefore + 1)
 
     const next = await r.agent()
@@ -206,7 +206,7 @@ describe('activation', () => {
     await pool.suspend('p2')
 
     activateStagedImages(r.baseRootfs)
-    expect(pool.promoteStagedSnapshots([B])).toBe(1)
+    expect(await pool.promoteStagedSnapshots([B])).toBe(1)
     // The draining agent's last sweep: the old-image snapshot goes, the promoted one stays.
     const gc = await pool.gcSweep()
     expect(gc.staleReclaimed).toEqual(['p2'])
@@ -225,7 +225,7 @@ describe('activation', () => {
     await pool.suspend('p1')
     const B = r.stage()
     activateStagedImages(r.baseRootfs)
-    pool.promoteStagedSnapshots([B])
+    await pool.promoteStagedSnapshots([B])
 
     const next = await r.agent()
     expect(next.getProjectStatus('p1').rootfsFresh).toBe(false)
@@ -247,7 +247,7 @@ describe('activation', () => {
     await pool.open('p1', ENV)
     ;(pool as any).stagedSuspended.set('p1', held)
     activateStagedImages(r.baseRootfs)
-    expect(pool.promoteStagedSnapshots([B])).toBe(0)
+    expect(await pool.promoteStagedSnapshots([B])).toBe(0)
     expect(pool.getAssigned('p1')).toBeDefined()
   }, 30_000)
 })

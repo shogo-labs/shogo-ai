@@ -102,6 +102,24 @@ export interface FcSnapshot {
   workspaceDrive?: string
 }
 
+/** How often `waitForSocket` looks for the socket (and notices a dead child). */
+const FC_SOCKET_POLL_MS = 5
+
+/** Wall-clock half of the socket wait's budget (see {@link waitForSocket}). */
+const FC_SOCKET_WAIT_MS = 10_000
+
+/** Last lines of a VM's serial log, for an error message. */
+function serialTail(path: string, lines = 10): string {
+  try {
+    const txt = readFileSync(path, 'utf8')
+    if (!txt) return ''
+    const tail = txt.trimEnd().split('\n').slice(-lines).join('\n')
+    return tail ? `\n--- serial tail ---\n${tail}` : ''
+  } catch {
+    return ''
+  }
+}
+
 /**
  * Grace before the orphan reaper will SIGKILL a firecracker process that is not
  * referenced by any pool map. Must exceed the longest legitimate window in which
@@ -110,6 +128,14 @@ export interface FcSnapshot {
  * this is a genuine leak from a failure/race path.
  */
 const ORPHAN_PROC_GRACE_MS = parseInt(process.env.METAL_ORPHAN_PROC_GRACE_MS || '120000', 10)
+
+/**
+ * How long an index handed out by `nextVmIndex` stays claimed against a
+ * concurrent allocator. It only has to cover the gap until `setupTap` creates
+ * the device (milliseconds), and is pruned on read, so a host that never runs
+ * the tap GC cannot slowly accumulate permanently-taken indices.
+ */
+const TAP_RESERVATION_MS = 60_000
 
 /**
  * Kernel cmdline for a guest boot. `clocksource=kvm-clock` is not optional:
@@ -188,7 +214,8 @@ export class FirecrackerVMManager {
    * guard behind the ownership and NO-CARRIER checks.
    */
   private tapOrphanStrikes = new Map<number, number>()
-  private uplink = defaultUplink()
+  /** NAT uplink, resolved once from the host's default route (first boot). */
+  private uplinkPending: Promise<string | undefined> | null = null
   private rootfs: RootfsProvisioner
   private dataDrives: DataDriveProvisioner
 
@@ -201,6 +228,12 @@ export class FirecrackerVMManager {
 
   private baseBootArgs(net: VmNet, extra?: string): string {
     return guestBootArgs({ bootIpArg: net.bootIpArg, guestInit: this.cfg.guestInit, extra })
+  }
+
+  /** The host's default-route interface, resolved once (used as the NAT uplink). */
+  private uplink(): Promise<string | undefined> {
+    this.uplinkPending ??= defaultUplink()
+    return this.uplinkPending
   }
 
   private spawnFc(id: string, socketPath: string, serialLog: string): Subprocess {
@@ -314,13 +347,50 @@ export class FirecrackerVMManager {
     return killed
   }
 
-  private async waitForSocket(socketPath: string, timeoutMs = 3000): Promise<void> {
-    const deadline = Date.now() + timeoutMs
-    while (Date.now() < deadline) {
+  /**
+   * How long to wait for a freshly-spawned Firecracker process to create its API
+   * socket — wall-clock AND a number of completed poll ticks, never one alone.
+   *
+   * Wall-clock alone is not enough: this loop shares its thread with every other
+   * boot's work, so a synchronous `dmsetup`/`mkfs`/rootfs copy on the boot path
+   * could freeze it past a short deadline and fail a boot whose socket had been
+   * created the whole time (the parallel-assign `FC API socket never appeared`
+   * failures — 19/40 on staging, SHO-545). Polling enough times is the actual
+   * observation the wait needs, so both must expire before this gives up, and
+   * the socket is looked at one final time after that.
+   *
+   * A child that has already exited fails immediately with its exit code and the
+   * serial tail: that is a real Firecracker failure and must not be reported (or
+   * waited out) as a socket timeout.
+   */
+  private async waitForSocket(
+    id: string,
+    socketPath: string,
+    serialLog: string,
+    budgetMs = FC_SOCKET_WAIT_MS,
+  ): Promise<void> {
+    const proc = this.procs.get(id)
+    const deadline = Date.now() + budgetMs
+    // Half the polls we'd make in an idle budget: enough that a frozen loop
+    // (zero polls) can never satisfy it, few enough that a healthy boot doesn't.
+    const minPolls = Math.max(1, Math.ceil(budgetMs / FC_SOCKET_POLL_MS / 2))
+    let polls = 0
+    while (true) {
       if (existsSync(socketPath)) return
-      await Bun.sleep(5)
+      const code = proc?.exitCode
+      if (code !== null && code !== undefined) {
+        throw new Error(
+          `FC process exited (code ${code}) before its API socket appeared: ${socketPath}` +
+            serialTail(serialLog),
+        )
+      }
+      if (Date.now() >= deadline && polls >= minPolls) break
+      polls++
+      await Bun.sleep(FC_SOCKET_POLL_MS)
     }
-    throw new Error(`FC API socket never appeared: ${socketPath}`)
+    // The socket can appear during the last sleep — check once more before failing.
+    if (existsSync(socketPath)) return
+    throw new Error(`FC API socket never appeared: ${socketPath}${serialTail(serialLog)}`)
   }
 
   // --- VMManager interface -------------------------------------------------
@@ -341,18 +411,18 @@ export class FirecrackerVMManager {
   }
 
   /** Tap indices currently live on the host. Overridable seam for tests. */
-  protected hostTapIndices(): Set<number> {
+  protected hostTapIndices(): Promise<Set<number>> {
     return existingTapIndices()
   }
 
   /** Host taps with their in-use flag. Overridable seam for tests. */
-  protected hostTaps(): HostTap[] {
+  protected hostTaps(): Promise<HostTap[]> {
     return existingTaps()
   }
 
   /** Delete one tap device by name. Overridable seam for tests. */
-  protected deleteTap(name: string): void {
-    teardownTapByName(name)
+  protected deleteTap(name: string): Promise<void> {
+    return teardownTapByName(name)
   }
 
   /**
@@ -360,8 +430,8 @@ export class FirecrackerVMManager {
    * for the same reason it routes rootfs teardown (`releaseRootfs`): host
    * resources are owned here, so there is one path to fix and one to stub.
    */
-  releaseTap(net: VmNet): void {
-    this.deleteTap(net.tap)
+  async releaseTap(net: VmNet): Promise<void> {
+    await this.deleteTap(net.tap)
   }
 
   /**
@@ -372,11 +442,16 @@ export class FirecrackerVMManager {
    * (the counter resets to 0), and a resumed VM re-takes its persisted index
    * out-of-band. Cross-checking `ip link` closes both holes — we never hand a
    * fresh VM a device a live guest is still using, so setupTap's
-   * delete-then-recreate can't blackhole a running guest. Fully synchronous (no
-   * await) so concurrent spawns each reserve a distinct index before yielding.
+   * delete-then-recreate can't blackhole a running guest. Reservations made by
+   * an earlier `nextVmIndex` call are folded in as well, since the device does
+   * not exist on the host yet — so two boots that scan concurrently still land
+   * on distinct indices.
    */
-  private nextVmIndex(): number {
-    const taken = this.hostTapIndices()
+  private async nextVmIndex(): Promise<number> {
+    const now = Date.now()
+    for (const [n, at] of [...this.reservedAt]) if (now - at > TAP_RESERVATION_MS) this.reservedAt.delete(n)
+    const taken = new Set(await this.hostTapIndices())
+    for (const n of this.reservedAt.keys()) taken.add(n)
     const cap = tapCapacity(this.cfg.tapCidrBase)
     // Scan upward from the last position for locality, but WRAP within
     // [0, cap) and skip every physically-present device. Both live and
@@ -420,7 +495,7 @@ export class FirecrackerVMManager {
     const vmClass: VmClass = cfg.vmClass ?? 'standard'
     const cc = classConfig(this.cfg, vmClass)
 
-    const n = this.nextVmIndex()
+    const n = await this.nextVmIndex()
     const id = `fcvm-${n}-${Date.now().toString(36)}`
     const net = deriveNet(n, this.cfg.tapCidrBase)
     const vcpus = cfg.cpus ?? cc.vcpus
@@ -434,30 +509,33 @@ export class FirecrackerVMManager {
     // to 'standard' by isVmClassSupported()/callers, so it never reaches here
     // with a non-default base — provision() always uses cfg.baseRootfs in dm
     // mode regardless of what's passed.
-    const rootfs = this.rootfs.provision(id, cfg.rootfsBase ?? cc.baseRootfs)
+    const rootfs = await this.rootfs.provision(id, cfg.rootfsBase ?? cc.baseRootfs)
     let dataDrive: string | undefined
     let workspaceDrive: string | undefined
     // From here on any throw must NOT leak the FC process / tap / rootfs: a
     // partial boot (socket never appears, an FC API call fails, guest never
     // starts) otherwise leaves a live `firecracker` child untracked by the pool
     // — the churn leak that piled up ~700 processes and thrashed the host.
+    // The cleanup is awaited as well: these are child processes now, so a
+    // fire-and-forget teardown could still be running when the next boot reuses
+    // the index.
     try {
-      setupTap(net, this.uplink)
+      await setupTap(net, await this.uplink())
 
       this.spawnFc(id, socketPath, serialLog)
-      await this.waitForSocket(socketPath)
+      await this.waitForSocket(id, socketPath, serialLog)
       const api = new FcApi(socketPath)
 
       await api.bootSource(cc.kernel, this.baseBootArgs(net, cfg.extraBootArgs))
       await api.rootDrive(rootfs, false)
       if (cc.dataDriveMiB > 0) {
-        dataDrive = this.dataDrives.provision(id, cc.dataDriveMiB)
+        dataDrive = await this.dataDrives.provision(id, cc.dataDriveMiB)
         await api.dataDrive(dataDrive)
       }
       // After the docker drive so that one stays /dev/vdb for the docker
       // rootfs; fc-init finds this one by label, not by device name.
       if (this.cfg.workspaceDriveMiB > 0) {
-        workspaceDrive = this.dataDrives.provision(id, this.cfg.workspaceDriveMiB, 'workspace')
+        workspaceDrive = await this.dataDrives.provision(id, this.cfg.workspaceDriveMiB, 'workspace')
         await api.dataDrive(workspaceDrive, 'workspace')
       }
       // Enable balloon statistics pre-boot when reclaim is on — they can't be
@@ -486,11 +564,11 @@ export class FirecrackerVMManager {
       }
     } catch (err) {
       this.killProc(id)
-      try { teardownTap(net) } catch { /* ignore */ }
+      try { await teardownTap(net) } catch { /* ignore */ }
       try { rmSync(socketPath, { force: true }) } catch { /* ignore */ }
-      try { this.rootfs.release(rootfs) } catch { /* ignore */ }
-      try { if (dataDrive) this.dataDrives.release(dataDrive) } catch { /* ignore */ }
-      try { if (workspaceDrive) this.dataDrives.release(workspaceDrive) } catch { /* ignore */ }
+      try { await this.rootfs.release(rootfs) } catch { /* ignore */ }
+      try { if (dataDrive) await this.dataDrives.release(dataDrive) } catch { /* ignore */ }
+      try { if (workspaceDrive) await this.dataDrives.release(workspaceDrive) } catch { /* ignore */ }
       throw err
     }
   }
@@ -503,9 +581,9 @@ export class FirecrackerVMManager {
    */
   async stopVM(handle: FcVmHandle, opts: { keepRootfs?: boolean } = {}): Promise<void> {
     this.killProc(handle.id)
-    teardownTap(handle.net)
+    await teardownTap(handle.net)
     rmSync(handle.socketPath, { force: true })
-    if (!opts.keepRootfs) this.rootfs.release(handle.rootfs)
+    if (!opts.keepRootfs) await this.rootfs.release(handle.rootfs)
     if (handle.dataDrive) this.dataDrives.release(handle.dataDrive)
     if (handle.workspaceDrive && !opts.keepRootfs) this.dataDrives.release(handle.workspaceDrive)
   }
@@ -527,12 +605,12 @@ export class FirecrackerVMManager {
         packRescuedWorkspace(root, outDir, undefined, WORKSPACE_DRIVE_WORKSPACE_REL),
       )
     }
-    const { device, loop } = this.rootfs.readOnlySource(disks.rootfs)
+    const { device, loop } = await this.rootfs.readOnlySource(disks.rootfs)
     return withReadOnlyMount(device, scratch, { loop }, (root) => packRescuedWorkspace(root, outDir))
   }
 
   /** Keep a stopped VM's disk out of GC's reach. Returns the kept path or null. */
-  quarantineRootfs(rootfsPath: string, label: string): string | null {
+  quarantineRootfs(rootfsPath: string, label: string): Promise<string | null> {
     return this.rootfs.quarantine(rootfsPath, label)
   }
 
@@ -567,7 +645,7 @@ export class FirecrackerVMManager {
    * the way `startVM`'s provisioning is; the caller attaches the returned path
    * as the snapshot's `dataDrive` before restoreVM.
    */
-  provisionFreshDataDrive(id: string, sizeMiB: number): string {
+  provisionFreshDataDrive(id: string, sizeMiB: number): Promise<string> {
     return this.dataDrives.provision(id, sizeMiB)
   }
 
@@ -616,8 +694,8 @@ export class FirecrackerVMManager {
    * dm: remove the mapper device + loop + CoW store). Used by the GC to reclaim
    * an evicted snapshot's rootfs and to clean orphaned rootfs files.
    */
-  releaseRootfs(rootfsPath: string): void {
-    this.rootfs.release(rootfsPath)
+  async releaseRootfs(rootfsPath: string): Promise<void> {
+    await this.rootfs.release(rootfsPath)
   }
 
   /** Durable-store artifact + mode for a rootfs (see RootfsProvisioner). */
@@ -635,7 +713,7 @@ export class FirecrackerVMManager {
    * definitive orphan test for CoW store files — a CoW whose device is mapped
    * backs a live/suspended/claimed VM and must never be reclaimed.
    */
-  rootfsDeviceMapped(vmId: string): boolean {
+  rootfsDeviceMapped(vmId: string): Promise<boolean> {
     return this.rootfs.deviceMapped(vmId)
   }
 
@@ -645,7 +723,7 @@ export class FirecrackerVMManager {
    * vmIds the pool still tracks; everything else that's unused + past the grace
    * window is a leaked orphan. Returns the number of devices reclaimed.
    */
-  reconcileOrphanRootfs(keepVmIds: Set<string>, graceMs: number, max = 200): number {
+  async reconcileOrphanRootfs(keepVmIds: Set<string>, graceMs: number, max = 200): Promise<number> {
     return this.rootfs.reconcileOrphanDevices(keepVmIds, graceMs, max)
   }
 
@@ -680,16 +758,16 @@ export class FirecrackerVMManager {
    * timer inside a burst of netlink calls. Returns what it removed and how many
    * taps are currently in use, for the capacity gauge.
    */
-  reconcileOrphanTaps(
+  async reconcileOrphanTaps(
     keepIndices: Set<number>,
     graceMs: number,
     max = 200,
-  ): { removed: number; suspected: number; inUse: number } {
+  ): Promise<{ removed: number; suspected: number; inUse: number }> {
     const now = Date.now()
     const cutoff = now - graceMs
     for (const [n, at] of [...this.reservedAt]) if (at < cutoff) this.reservedAt.delete(n)
 
-    const taps = this.hostTaps()
+    const taps = await this.hostTaps()
     const suspects: number[] = []
     for (const t of taps) {
       if (keepIndices.has(t.index)) continue
@@ -711,7 +789,7 @@ export class FirecrackerVMManager {
         continue
       }
       if (removed >= max) break // the rest keep their strike for the next sweep
-      this.deleteTap(`fctap${n}`)
+      await this.deleteTap(`fctap${n}`)
       this.tapOrphanStrikes.delete(n)
       this.reservedAt.delete(n)
       removed++
@@ -723,7 +801,7 @@ export class FirecrackerVMManager {
    * How close per-VM CoW stores are to overflowing, and how many already have
    * (see RootfsProvisioner.sampleCowUsage). Empty in non-dm rootfs modes.
    */
-  sampleCowUsage(): CowUsage {
+  sampleCowUsage(): Promise<CowUsage> {
     return this.rootfs.sampleCowUsage()
   }
 
@@ -867,10 +945,10 @@ export class FirecrackerVMManager {
     const socketPath = join(this.cfg.runDir, `${id}.sock`)
     const serialLog = join(this.cfg.runDir, `${id}.serial`)
 
-    setupTap(snap.net, this.uplink) // recreate the exact device name
+    await setupTap(snap.net, await this.uplink()) // recreate the exact device name
     // Ensure the rootfs backing path baked into the vmstate is live again
     // (dm-snapshot: rebuild the device from the persisted CoW store).
-    this.rootfs.prepareRestore(snap.rootfs)
+    await this.rootfs.prepareRestore(snap.rootfs)
     // The data drive is a plain file that suspend never touched — it should
     // simply still be there. A missing file (evicted/corrupted local state)
     // must fail loudly here rather than let LoadSnapshot bake a dangling
@@ -890,7 +968,7 @@ export class FirecrackerVMManager {
     // cold-boot without losing the workspace.
     try {
       this.spawnFc(id, socketPath, serialLog)
-      await this.waitForSocket(socketPath)
+      await this.waitForSocket(id, socketPath, serialLog)
       const api = new FcApi(socketPath)
       await api.loadSnapshot(snap.snapshotPath, snap.memFilePath, true)
 
@@ -923,7 +1001,7 @@ export class FirecrackerVMManager {
       }
     } catch (err) {
       this.killProc(id)
-      try { teardownTap(snap.net) } catch { /* ignore */ }
+      try { await teardownTap(snap.net) } catch { /* ignore */ }
       try { rmSync(socketPath, { force: true }) } catch { /* ignore */ }
       throw err
     }

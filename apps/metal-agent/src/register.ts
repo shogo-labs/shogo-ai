@@ -55,7 +55,7 @@ function stagedRootfsReport(pool: MetalWarmPool) {
  */
 export { hostMemory } from './host-memory'
 
-function payload(pool: MetalWarmPool, opts: { restarting?: boolean } = {}) {
+async function payload(pool: MetalWarmPool, opts: { restarting?: boolean } = {}) {
   const s = pool.status()
   const cap = pool.capacity()
   const rootDisk = rootDiskUsage('/')
@@ -125,7 +125,7 @@ function payload(pool: MetalWarmPool, opts: { restarting?: boolean } = {}) {
       // else: nothing degrades until the last block is gone, and then every
       // /assign here fails. The GC reclaims leaked devices, so a number far
       // above available+assigned+suspended means the leak is outrunning it.
-      taps: pool.tapUsage(),
+      taps: await pool.tapUsage(),
       // Host RAM, so warm-up work is gated on real headroom rather than on a
       // VM count (idle VMs are small; a count cap held a staging pre-warm back
       // for its whole window).
@@ -185,7 +185,7 @@ async function announce(
         'Content-Type': 'application/json',
         ...(config.registerToken ? { Authorization: `Bearer ${config.registerToken}` } : {}),
       },
-      body: JSON.stringify(payload(pool, opts)),
+      body: JSON.stringify(await payload(pool, opts)),
       signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),
     })
     if (!res.ok) {
@@ -239,7 +239,7 @@ export async function announceRestarting(pool: MetalWarmPool): Promise<void> {
 export function rootfsHooks(pool: MetalWarmPool): RootfsHooks {
   const list = (ids: { standard: string; docker?: string }) => [ids.standard, ...(ids.docker ? [ids.docker] : [])]
   return {
-    onStaged: (ids) => void pool.dropStagedSnapshots(list(ids)),
+    onStaged: (ids) => pool.dropStagedSnapshots(list(ids)),
     promote: (ids) => pool.promoteStagedSnapshots(list(ids)),
   }
 }

@@ -37,10 +37,10 @@ function makeMgr(taps: HostTap[]) {
     rootfsCow: 'full' as const,
   }
   class TestMgr extends FirecrackerVMManager {
-    protected hostTaps(): HostTap[] {
+    protected async hostTaps(): Promise<HostTap[]> {
       return taps
     }
-    protected deleteTap(name: string): void {
+    protected async deleteTap(name: string): Promise<void> {
       deleted.push(name)
       taps = taps.filter((t) => t.name !== name) // the device is gone now
     }
@@ -55,88 +55,88 @@ afterEach(() => {
 })
 
 describe('FirecrackerVMManager.reconcileOrphanTaps', () => {
-  test('reclaims an unowned, unattached tap — but only on the second sweep', () => {
+  test('reclaims an unowned, unattached tap — but only on the second sweep', async () => {
     const { mgr, deleted } = makeMgr([tap(7)])
 
     // First sighting only records suspicion: a single sweep is never enough,
     // so a tap that looks orphaned for one instant of bad bookkeeping survives.
-    const first = mgr.reconcileOrphanTaps(new Set(), 1000)
+    const first = await mgr.reconcileOrphanTaps(new Set(), 1000)
     expect(first.removed).toBe(0)
     expect(first.suspected).toBe(1)
     expect(deleted).toEqual([])
 
-    const second = mgr.reconcileOrphanTaps(new Set(), 1000)
+    const second = await mgr.reconcileOrphanTaps(new Set(), 1000)
     expect(second.removed).toBe(1)
     expect(deleted).toEqual(['fctap7'])
   })
 
-  test('never touches a tap the pool still owns, however many sweeps run', () => {
+  test('never touches a tap the pool still owns, however many sweeps run', async () => {
     // 3 = warm/assigned VM, 4 = suspended VM (no process, tap deliberately kept).
     const { mgr, deleted } = makeMgr([tap(3, true), tap(4), tap(9)])
     const owned = new Set([3, 4])
 
-    for (let i = 0; i < 5; i++) mgr.reconcileOrphanTaps(owned, 1000)
+    for (let i = 0; i < 5; i++) await mgr.reconcileOrphanTaps(owned, 1000)
 
     expect(deleted).toEqual(['fctap9'])
   })
 
-  test('never touches a tap a process still holds open, even if unowned', () => {
+  test('never touches a tap a process still holds open, even if unowned', async () => {
     // The kernel's own answer outranks our bookkeeping: NO-CARRIER is absent, so
     // a firecracker has this fd. If the pool has lost track of that VM, killing
     // its networking is strictly worse than leaking one /30.
     const { mgr, deleted } = makeMgr([tap(11, true)])
 
-    for (let i = 0; i < 3; i++) mgr.reconcileOrphanTaps(new Set(), 1000)
+    for (let i = 0; i < 3; i++) await mgr.reconcileOrphanTaps(new Set(), 1000)
 
     expect(deleted).toEqual([])
   })
 
-  test('never touches an index just handed to a booting VM', () => {
+  test('never touches an index just handed to a booting VM', async () => {
     const { mgr, deleted, setTaps } = makeMgr([])
-    const n = (mgr as any).nextVmIndex() as number
+    const n = (await (mgr as any).nextVmIndex()) as number
     // Mid-cold-boot: setupTap has run, the VM is in no pool map yet, and FC has
     // not opened the fd — the exact window a naive sweep would delete.
     setTaps([tap(n)])
 
-    for (let i = 0; i < 3; i++) mgr.reconcileOrphanTaps(new Set(), 60_000)
+    for (let i = 0; i < 3; i++) await mgr.reconcileOrphanTaps(new Set(), 60_000)
     expect(deleted).toEqual([])
 
     // Wind the reservation back past the window: nothing ever claimed the index,
     // so the boot died somewhere and this is a real leak.
     ;(mgr as any).reservedAt.set(n, Date.now() - 120_000)
-    mgr.reconcileOrphanTaps(new Set(), 60_000)
-    mgr.reconcileOrphanTaps(new Set(), 60_000)
+    await mgr.reconcileOrphanTaps(new Set(), 60_000)
+    await mgr.reconcileOrphanTaps(new Set(), 60_000)
     expect(deleted).toEqual([`fctap${n}`])
   })
 
-  test('a tap that stops looking orphaned loses its strike', () => {
+  test('a tap that stops looking orphaned loses its strike', async () => {
     const { mgr, deleted, setTaps } = makeMgr([tap(5)])
 
-    mgr.reconcileOrphanTaps(new Set(), 1000) // strike 1
+    await mgr.reconcileOrphanTaps(new Set(), 1000) // strike 1
     setTaps([tap(5, true)]) // a VM claimed index 5 (or was re-registered)
-    mgr.reconcileOrphanTaps(new Set(), 1000)
+    await mgr.reconcileOrphanTaps(new Set(), 1000)
     setTaps([tap(5)]) // unattached again — must start over, not delete
-    mgr.reconcileOrphanTaps(new Set(), 1000)
+    await mgr.reconcileOrphanTaps(new Set(), 1000)
 
     expect(deleted).toEqual([])
-    expect(mgr.reconcileOrphanTaps(new Set(), 1000).removed).toBe(1)
+    expect((await mgr.reconcileOrphanTaps(new Set(), 1000)).removed).toBe(1)
   })
 
-  test('bounded per sweep so a large backlog drains gradually', () => {
+  test('bounded per sweep so a large backlog drains gradually', async () => {
     const many = Array.from({ length: 10 }, (_, i) => tap(i))
     const { mgr, deleted } = makeMgr(many)
 
-    mgr.reconcileOrphanTaps(new Set(), 1000, 4) // all 10 get a strike
+    await mgr.reconcileOrphanTaps(new Set(), 1000, 4) // all 10 get a strike
     expect(deleted).toEqual([])
-    expect(mgr.reconcileOrphanTaps(new Set(), 1000, 4).removed).toBe(4)
-    expect(mgr.reconcileOrphanTaps(new Set(), 1000, 4).removed).toBe(4)
-    expect(mgr.reconcileOrphanTaps(new Set(), 1000, 4).removed).toBe(2)
+    expect((await mgr.reconcileOrphanTaps(new Set(), 1000, 4)).removed).toBe(4)
+    expect((await mgr.reconcileOrphanTaps(new Set(), 1000, 4)).removed).toBe(4)
+    expect((await mgr.reconcileOrphanTaps(new Set(), 1000, 4)).removed).toBe(2)
     expect(deleted).toHaveLength(10)
   })
 
-  test('reports taps in use for the capacity gauge', () => {
+  test('reports taps in use for the capacity gauge', async () => {
     const { mgr } = makeMgr([tap(1, true), tap(2, true), tap(3)])
 
-    expect(mgr.reconcileOrphanTaps(new Set([1, 2, 3]), 1000).inUse).toBe(3)
+    expect((await mgr.reconcileOrphanTaps(new Set([1, 2, 3]), 1000)).inUse).toBe(3)
   })
 })

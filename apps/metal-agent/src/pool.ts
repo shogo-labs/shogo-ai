@@ -1613,7 +1613,7 @@ export class MetalWarmPool {
   }
 
   async start(): Promise<{ adopted: string[]; reaped: number }> {
-    this.rehydrate()
+    await this.rehydrate()
     // Adopt live VMs that survived the restart BEFORE filling the pool (fillPool
     // spawns new FCs; adopt must first claim survivors + reap non-adopted ones
     // so the host-scan reaper can't race a freshly-booted warm VM).
@@ -1622,7 +1622,7 @@ export class MetalWarmPool {
     // tap BEFORE reconcile() fills the warm pool — otherwise a fresh warm VM
     // would reuse a device name still held by an adopted VM (or reclaimed on a
     // suspended project's resume) and setupTap would tear down that live tap.
-    this.seedVmIndexAllocator()
+    await this.seedVmIndexAllocator()
     await this.reconcile()
     return adoption
   }
@@ -1633,7 +1633,7 @@ export class MetalWarmPool {
    * (suspended, whose exact device is recreated on resume). Without this the
    * counter reset to 0 on every restart and warm VMs collided with survivors.
    */
-  private seedVmIndexAllocator(): void {
+  private async seedVmIndexAllocator(): Promise<void> {
     let maxIdx = -1
     for (const e of this.live.all()) {
       const n = tapIndex(e.net)
@@ -1651,14 +1651,14 @@ export class MetalWarmPool {
     // setupTap deletes-then-recreates it and blackholes the running guest (the
     // prod incident: duplicate 172.16.0.x mesh IPs, dead guests, 502s). `ip
     // link` is the ground truth that survives the registry wipe.
-    for (const n of this.hostTapIndices()) {
+    for (const n of await this.hostTapIndices()) {
       if (n > maxIdx) maxIdx = n
     }
     if (maxIdx >= 0) this.mgr.seedVmSeq(maxIdx + 1)
   }
 
   /** Live host tap indices (`ip link`). Overridable seam for tests. */
-  protected hostTapIndices(): Set<number> {
+  protected hostTapIndices(): Promise<Set<number>> {
     return existingTapIndices()
   }
 
@@ -1868,7 +1868,7 @@ export class MetalWarmPool {
    * so a node-agent restart keeps NVMe locality (no store re-pull stampede).
    * Entries whose artifacts are missing are dropped (their index file removed).
    */
-  rehydrate(): number {
+  async rehydrate(): Promise<number> {
     let n = 0
     for (const e of this.index.all()) {
       const s = this.entryToSuspended(e)
@@ -1885,7 +1885,7 @@ export class MetalWarmPool {
     for (const e of this.stagedIndex.all()) {
       const s = this.entryToSuspended(e)
       if (!s || s.rootfsIdentity !== this.stagedRootfs(s.snapshot.vmClass ?? 'standard')?.identity) {
-        if (s) this.deleteLocalArtifacts(s.snapshot)
+        if (s) await this.deleteLocalArtifacts(s.snapshot)
         this.stagedIndex.remove(e.projectId)
         continue
       }
@@ -2204,11 +2204,11 @@ export class MetalWarmPool {
         if (held && held.rootfsIdentity === staged.identity && !this.assigned.has(projectId)) {
           return { mode: 'prewarmed', stagedSnapshotIdentity: staged.identity }
         }
-        if (held) this.dropStaged(projectId)
+        if (held) await this.dropStaged(projectId)
       } else if (this.stagedSuspended.has(projectId)) {
         // A user open changes the project's data, so a snapshot pre-warmed
         // before it is already behind.
-        this.dropStaged(projectId)
+        await this.dropStaged(projectId)
       }
       // Idempotent: if the project is already live here, hand back the same VM
       // rather than restoring a duplicate from the store (which a re-/assign
@@ -2316,7 +2316,7 @@ export class MetalWarmPool {
             `[pool] resume failed for ${projectId}, falling back to cold boot:`,
             err?.message ?? err,
           )
-          this.evictLocal(projectId)
+          await this.evictLocal(projectId)
         }
       } else {
         staleReason = 'no_snapshot'
@@ -5353,10 +5353,10 @@ export class MetalWarmPool {
         // `stagedSuspended`); the project's current snapshot keeps serving.
         if (untrustedSource) {
           console.error(`[pool] not keeping a pre-warmed snapshot of ${projectId} — source tree untrusted (${untrustedSource})`)
-          this.deleteLocalArtifacts(snapshot)
+          await this.deleteLocalArtifacts(snapshot)
           return s
         }
-        this.dropStaged(projectId)
+        await this.dropStaged(projectId)
         this.stagedSuspended.set(projectId, s)
         this.writeIndex(s, this.stagedIndex)
         return s
@@ -5365,7 +5365,9 @@ export class MetalWarmPool {
       // Replaces a current snapshot only a staged boot leaves behind (a normal
       // assign resumes, which consumes it).
       const prior = this.suspended.get(projectId)
-      if (prior && prior.snapshot.snapshotPath !== snapshot.snapshotPath) this.deleteLocalArtifacts(prior.snapshot)
+      if (prior && prior.snapshot.snapshotPath !== snapshot.snapshotPath) {
+        await this.deleteLocalArtifacts(prior.snapshot)
+      }
       this.suspended.set(projectId, s)
       this.writeIndex(s)
 
@@ -5377,7 +5379,7 @@ export class MetalWarmPool {
           `[pool] not keeping a snapshot of ${projectId} — its source tree is untrusted (${untrustedSource}). ` +
             `The next open cold-boots from the durable backups.`,
         )
-        this.evictLocal(projectId)
+        await this.evictLocal(projectId)
         return s
       }
 
@@ -5721,7 +5723,7 @@ export class MetalWarmPool {
           `${this.classRootfsIdentity(s.snapshot.vmClass ?? 'standard')}) — evicting and cold-booting for fresh guest code`,
       )
       this.lastStaleReason.set(projectId, 'rootfs')
-      this.evictLocal(projectId)
+      await this.evictLocal(projectId)
       s = undefined
     }
 
@@ -5732,7 +5734,7 @@ export class MetalWarmPool {
         console.warn(
           `[pool] local snapshot for ${projectId} holds foreign workspace members ${foreign.join(',')}; evicting it`,
         )
-        this.evictLocal(projectId)
+        await this.evictLocal(projectId)
         s = undefined
       }
     }
@@ -5746,7 +5748,7 @@ export class MetalWarmPool {
       } else if (drift.length) {
         skipStale(drift[0].kind)
         console.warn(`[pool] local snapshot for ${projectId} is behind durable storage — ${drift[0].detail}; evicting it`)
-        this.evictLocal(projectId)
+        await this.evictLocal(projectId)
         s = undefined
       }
     }
@@ -5812,7 +5814,10 @@ export class MetalWarmPool {
       // than fail the whole resume over a file that was never going to be here.
       const dataDrive =
         pulled.meta.dataDriveMiB && pulled.meta.dataDriveMiB > 0
-          ? this.mgr.provisionFreshDataDrive(`restored-${projectId}-${Date.now().toString(36)}`, pulled.meta.dataDriveMiB)
+          ? await this.mgr.provisionFreshDataDrive(
+              `restored-${projectId}-${Date.now().toString(36)}`,
+              pulled.meta.dataDriveMiB,
+            )
           : undefined
       const snapshot: FcSnapshot = {
         vmId: `restored-${projectId}`,
@@ -6656,7 +6661,7 @@ export class MetalWarmPool {
         if (await this.rescueFromDisk(a)) {
           metrics.inc(M.rescueDisk)
           console.log(`[pool] rescued ${a.projectId} from its disk before discard (${why})`)
-          try { this.mgr.releaseRootfs(a.handle.rootfs) } catch { /* GC reclaims it */ }
+          try { await this.mgr.releaseRootfs(a.handle.rootfs) } catch { /* GC reclaims it */ }
           if (a.handle.workspaceDrive) {
             try { this.mgr.releaseDataDrive(a.handle.workspaceDrive) } catch { /* GC reclaims it */ }
           }
@@ -6675,7 +6680,7 @@ export class MetalWarmPool {
     if (a.handle.workspaceDrive) {
       try { keptDrive = this.mgr.quarantineWorkspaceDrive(a.handle.workspaceDrive, label) } catch { /* reported below */ }
     }
-    try { kept = this.mgr.quarantineRootfs(a.handle.rootfs, label) } catch { /* reported below */ }
+    try { kept = await this.mgr.quarantineRootfs(a.handle.rootfs, label) } catch { /* reported below */ }
     if (keptDrive && !kept) kept = keptDrive
     if (kept) {
       try {
@@ -7015,7 +7020,7 @@ export class MetalWarmPool {
    */
   async gcSweep(opts: { force?: boolean } = {}): Promise<GcReport> {
     metrics.inc(M.gcRuns)
-    const orphansRemoved = this.reclaimOrphans()
+    const orphansRemoved = await this.reclaimOrphans()
     const staleReclaim = await this.reclaimStaleSnapshots()
 
     const disk = this.disk()
@@ -7050,7 +7055,7 @@ export class MetalWarmPool {
       for (const s of [...this.stagedSuspended.values()]) {
         if (this.openFlight.has(s.projectId) || this.suspendFlight.has(s.projectId)) continue
         bytesReclaimed += this.entryBytes(s)
-        this.dropStaged(s.projectId)
+        await this.dropStaged(s.projectId)
       }
     }
 
@@ -7147,7 +7152,7 @@ export class MetalWarmPool {
         if (this.assigned.has(id)) continue
         if (this.openFlight.has(id) || this.suspendFlight.has(id) || this.recycleFlight.has(id)) continue
         const b = this.entryBytes(s)
-        if (!this.evictLocal(id)) continue
+        if (!(await this.evictLocal(id))) continue
         projectIds.push(id)
         bytes += b
         await yieldToEventLoop()
@@ -7178,7 +7183,7 @@ export class MetalWarmPool {
       if (!head || head.rootfsIdentity !== this.classRootfsIdentity(head.vmClass ?? 'standard')) return false
     }
 
-    this.deleteLocalArtifacts(s.snapshot)
+    await this.deleteLocalArtifacts(s.snapshot)
     this.suspended.delete(projectId)
     this.index.remove(projectId)
 
@@ -7188,7 +7193,7 @@ export class MetalWarmPool {
     return true
   }
 
-  private deleteLocalArtifacts(snap: FcSnapshot): void {
+  private async deleteLocalArtifacts(snap: FcSnapshot): Promise<void> {
     for (const p of [snap.snapshotPath, snap.memFilePath]) {
       try {
         rmSync(p, { force: true })
@@ -7197,9 +7202,11 @@ export class MetalWarmPool {
       }
     }
     // rootfs may be a dm device / cow file — route through the manager so dm
-    // resources are torn down correctly.
+    // resources are torn down correctly. Awaited: `dmsetup remove --retry` is a
+    // child process now, and jumping to the next boot's work before it finishes
+    // is what starves the socket waiter this whole path was blocking.
     try {
-      this.mgr.releaseRootfs(snap.rootfs)
+      await this.mgr.releaseRootfs(snap.rootfs)
     } catch {
       /* ignore */
     }
@@ -7219,7 +7226,7 @@ export class MetalWarmPool {
     // VM restored onto; tearing that down would cut a running guest's network.
     if (!this.tapHeldByRunningVm(snap.net)) {
       try {
-        this.mgr.releaseTap(snap.net)
+        await this.mgr.releaseTap(snap.net)
       } catch {
         /* best-effort; the GC sweep retries from the host side */
       }
@@ -7241,7 +7248,7 @@ export class MetalWarmPool {
    * ones orphaned) or when the index and disk drift. Files backing a running
    * VM's memory mapping or a live cache entry are protected.
    */
-  reclaimOrphans(): number {
+  async reclaimOrphans(): Promise<number> {
     const protectedPaths = new Set<string>()
     for (const vm of this.available) {
       protectedPaths.add(vm.handle.rootfs)
@@ -7282,11 +7289,11 @@ export class MetalWarmPool {
     // boot+assign, regardless of which map does or doesn't reference it.
     const cutoff = Date.now() - ORPHAN_GRACE_MS
     let removed = 0
-    const sweepDir = (
+    const sweepDir = async (
       dir: string,
       match: (name: string) => boolean,
       kind: 'plain' | 'rootfs' | 'dataDrive' = 'plain',
-    ): void => {
+    ): Promise<void> => {
       let names: string[] = []
       try {
         names = readdirSync(dir)
@@ -7308,7 +7315,7 @@ export class MetalWarmPool {
         if (kind === 'rootfs' && this.cfg.rootfsCow === 'dm') {
           const vmId = name.replace(/\.cow$/, '')
           if (protectedPaths.has(`/dev/mapper/mvm-${vmId}`)) continue
-          if (this.mgr.rootfsDeviceMapped(vmId)) continue
+          if (await this.mgr.rootfsDeviceMapped(vmId)) continue
         }
         // Age gate: skip artifacts still within the in-flight grace window.
         try {
@@ -7317,7 +7324,7 @@ export class MetalWarmPool {
           continue // vanished under us — nothing to reclaim
         }
         try {
-          if (kind === 'rootfs') this.mgr.releaseRootfs(full)
+          if (kind === 'rootfs') await this.mgr.releaseRootfs(full)
           else if (kind === 'dataDrive') this.mgr.releaseDataDrive(full)
           else rmSync(full, { force: true })
           removed++
@@ -7327,13 +7334,13 @@ export class MetalWarmPool {
       }
     }
 
-    sweepDir(this.cfg.snapDir, (n) => n.endsWith('.vmstate') || n.endsWith('.mem'))
-    sweepDir(this.cfg.runDir, (n) => n.endsWith('.rootfs.ext4'), 'rootfs')
+    await sweepDir(this.cfg.snapDir, (n) => n.endsWith('.vmstate') || n.endsWith('.mem'))
+    await sweepDir(this.cfg.runDir, (n) => n.endsWith('.rootfs.ext4'), 'rootfs')
     // Docker-class second data drive — no shared base, so it's always a plain
     // file regardless of rootfsCow mode (see data-drive.ts).
-    sweepDir(this.cfg.runDir, (n) => n.endsWith('.data.ext4'), 'dataDrive')
-    sweepDir(this.cfg.runDir, (n) => n.endsWith(WORKSPACE_DRIVE_SUFFIX), 'dataDrive')
-    if (this.cfg.rootfsCow === 'dm') sweepDir(this.cfg.dmCowDir, (n) => n.endsWith('.cow'), 'rootfs')
+    await sweepDir(this.cfg.runDir, (n) => n.endsWith('.data.ext4'), 'dataDrive')
+    await sweepDir(this.cfg.runDir, (n) => n.endsWith(WORKSPACE_DRIVE_SUFFIX), 'dataDrive')
+    if (this.cfg.rootfsCow === 'dm') await sweepDir(this.cfg.dmCowDir, (n) => n.endsWith('.cow'), 'rootfs')
     return removed
   }
 
@@ -7379,7 +7386,7 @@ export class MetalWarmPool {
    * remove` orphaned the device, which then pinned its CoW past the GC's sweep).
    * Bounded per call; driven by the GC timer. Returns the number reclaimed.
    */
-  reconcileOrphanDevices(): number {
+  async reconcileOrphanDevices(): Promise<number> {
     if (this.cfg.rootfsCow !== 'dm') return 0
     return this.mgr.reconcileOrphanRootfs(this.ownedRootfsVmIds(), ORPHAN_GRACE_MS)
   }
@@ -7413,8 +7420,8 @@ export class MetalWarmPool {
    * than the GC's last sweep — so it is still the truth on a host with the GC
    * turned off, which is exactly where a leak would run unchecked.
    */
-  tapUsage(): { inUse: number; capacity: number } {
-    return { inUse: existingTapIndices().size, capacity: TAP_NET_CAPACITY }
+  async tapUsage(): Promise<{ inUse: number; capacity: number }> {
+    return { inUse: (await existingTapIndices()).size, capacity: TAP_NET_CAPACITY }
   }
 
   /**
@@ -7428,8 +7435,11 @@ export class MetalWarmPool {
    * that didn't go through `stopVM` keeps its four addresses, and the only
    * symptom is that spawns get slower to find a free index until there are none.
    */
-  reapOrphanTaps(): number {
-    const { removed, suspected, inUse } = this.mgr.reconcileOrphanTaps(this.ownedTapIndices(), ORPHAN_GRACE_MS)
+  async reapOrphanTaps(): Promise<number> {
+    const { removed, suspected, inUse } = await this.mgr.reconcileOrphanTaps(
+      this.ownedTapIndices(),
+      ORPHAN_GRACE_MS,
+    )
     if (removed) {
       metrics.inc(M.gcTapsReclaimed, removed)
       console.warn(`[pool] reclaimed ${removed} leaked tap device(s) (${suspected} suspected this sweep)`)
@@ -7481,9 +7491,17 @@ export class MetalWarmPool {
     metrics.gauge(M.repoUnsavedSeconds, worstUnsavedSec)
 
     // Only dm mode has exception stores to run out of; the other rootfs modes
-    // give each VM its own file and fail with an ordinary ENOSPC.
+    // give each VM its own file and fail with an ordinary ENOSPC. Sampled off
+    // the hot path (it reads `dmsetup status`): a gauge is state, so one poll
+    // interval of lag costs nothing and `publishGauges` stays synchronous for
+    // its callers in status()/gcSweep().
     if (this.cfg.rootfsCow !== 'dm') return
-    const cow = this.mgr.sampleCowUsage()
+    void this.publishCowGauges()
+  }
+
+  private async publishCowGauges(): Promise<void> {
+    const cow = await this.mgr.sampleCowUsage().catch(() => null)
+    if (!cow) return
     metrics.gauge(M.cowInvalid, cow.invalid)
     metrics.gauge(M.cowMaxUsedPct, +cow.maxUsedPct.toFixed(2))
     metrics.gauge(M.cowNearLimit, cow.nearLimit)
@@ -7686,20 +7704,20 @@ export class MetalWarmPool {
    * so the next resume must pull from the store — the cross-host mobility path.
    * Test/ops hook; not part of the normal request flow.
    */
-  evictLocal(projectId: string): boolean {
+  async evictLocal(projectId: string): Promise<boolean> {
     const s = this.suspended.get(projectId)
     if (!s) return false
-    this.deleteLocalArtifacts(s.snapshot)
+    await this.deleteLocalArtifacts(s.snapshot)
     this.suspended.delete(projectId)
     this.index.remove(projectId)
     return true
   }
 
   /** Delete a project's pre-warmed staged snapshot, if any. */
-  dropStaged(projectId: string): boolean {
+  async dropStaged(projectId: string): Promise<boolean> {
     const s = this.stagedSuspended.get(projectId)
     if (!s) return false
-    this.deleteLocalArtifacts(s.snapshot)
+    await this.deleteLocalArtifacts(s.snapshot)
     this.stagedSuspended.delete(projectId)
     this.stagedIndex.remove(projectId)
     return true
@@ -7709,11 +7727,11 @@ export class MetalWarmPool {
    * Drop staged snapshots not taken on one of `keep` (a newer staged build
    * replaced their image, so they can never be resumed). Returns the count.
    */
-  dropStagedSnapshots(keep: string[] = []): number {
+  async dropStagedSnapshots(keep: string[] = []): Promise<number> {
     let n = 0
     for (const s of [...this.stagedSuspended.values()]) {
       if (s.rootfsIdentity && keep.includes(s.rootfsIdentity)) continue
-      if (this.dropStaged(s.projectId)) n++
+      if (await this.dropStaged(s.projectId)) n++
     }
     if (n) console.log(`[pool] dropped ${n} pre-warmed snapshot(s) for a superseded staged rootfs`)
     return n
@@ -7727,7 +7745,7 @@ export class MetalWarmPool {
    * Their durable push was deferred while staged; `pushPendingDurable` does it
    * after the restart. Staged snapshots for any other identity are dropped.
    */
-  promoteStagedSnapshots(identities: string[]): number {
+  async promoteStagedSnapshots(identities: string[]): Promise<number> {
     // The base on disk is already the new image. This process keeps running
     // (drain, a last GC sweep) until the restart, and must judge freshness
     // against that image, or it reclaims the snapshots it just promoted.
@@ -7736,10 +7754,10 @@ export class MetalWarmPool {
     let n = 0
     for (const s of [...this.stagedSuspended.values()]) {
       if (!s.rootfsIdentity || !identities.includes(s.rootfsIdentity) || this.assigned.has(s.projectId)) {
-        this.dropStaged(s.projectId)
+        await this.dropStaged(s.projectId)
         continue
       }
-      this.evictLocal(s.projectId)
+      await this.evictLocal(s.projectId)
       const promoted: SuspendedVm = { ...s, durablePending: this.store.kind !== 'none' }
       this.stagedSuspended.delete(s.projectId)
       this.stagedIndex.remove(s.projectId)
@@ -7765,7 +7783,7 @@ export class MetalWarmPool {
       const outcome = await this.pushDurable(s, s.workspaceOrigin)
       if (this.suspended.get(s.projectId) !== s) continue
       if (outcome === 'blocked') {
-        this.evictLocal(s.projectId)
+        await this.evictLocal(s.projectId)
         continue
       }
       if (outcome === 'failed') continue
@@ -7817,10 +7835,10 @@ export class MetalWarmPool {
       stoppedVm = true
     }
 
-    if (this.dropStaged(projectId)) removedLocal = true
+    if (await this.dropStaged(projectId)) removedLocal = true
     const s = this.suspended.get(projectId)
     if (s) {
-      this.deleteLocalArtifacts(s.snapshot)
+      await this.deleteLocalArtifacts(s.snapshot)
       this.suspended.delete(projectId)
       this.index.remove(projectId)
       removedLocal = true

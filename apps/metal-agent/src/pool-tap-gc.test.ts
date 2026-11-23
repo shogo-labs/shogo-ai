@@ -122,7 +122,7 @@ describe('pool tap lifecycle', () => {
   test('evicting a snapshot releases its /30', async () => {
     const { pool, cfg, releasedTaps } = makePool(dir)
     seed(cfg, 'a', 12)
-    pool.rehydrate()
+    await pool.rehydrate()
 
     expect(await pool.evictForGc('a')).toBe(true)
     expect(releasedTaps).toEqual(['fctap12'])
@@ -131,7 +131,7 @@ describe('pool tap lifecycle', () => {
   test('destroying a suspended project releases its /30', async () => {
     const { pool, cfg, releasedTaps } = makePool(dir)
     seed(cfg, 'a', 30)
-    pool.rehydrate()
+    await pool.rehydrate()
 
     await pool.destroy('a')
     expect(releasedTaps).toEqual(['fctap30'])
@@ -143,7 +143,7 @@ describe('pool tap lifecycle', () => {
     // guest's network — strictly worse than leaking one /30.
     const { pool, cfg, releasedTaps } = makePool(dir)
     seed(cfg, 'a', 7)
-    pool.rehydrate()
+    await pool.rehydrate()
     ;(pool as any).assigned.set('a', {
       projectId: 'a',
       handle: { id: 'fcr-a', net: deriveNet(7) },
@@ -151,21 +151,21 @@ describe('pool tap lifecycle', () => {
     })
 
     await pool.evictForGc('a').catch(() => {})
-    ;(pool as any).evictLocal('a')
+    await (pool as any).evictLocal('a')
 
     expect(releasedTaps).toEqual([])
   })
 
-  test('the sweep is told every index a warm, assigned or suspended VM holds', () => {
+  test('the sweep is told every index a warm, assigned or suspended VM holds', async () => {
     let keep = new Set<number>()
     const { pool, cfg } = makePool(dir, {
-      reconcileOrphanTaps: ((k: Set<number>) => {
+      reconcileOrphanTaps: (async (k: Set<number>) => {
         keep = k
         return { removed: 0, suspected: 0, inUse: k.size }
       }) as any,
     })
     seed(cfg, 'suspended-proj', 4)
-    pool.rehydrate()
+    await pool.rehydrate()
     ;(pool as any).available.push({ handle: { id: 'fcvm-1', net: deriveNet(1) } })
     ;(pool as any).assigned.set('running', {
       projectId: 'running',
@@ -173,7 +173,7 @@ describe('pool tap lifecycle', () => {
       assignedAt: Date.now(),
     })
 
-    pool.reapOrphanTaps()
+    await pool.reapOrphanTaps()
 
     // 4 is the load-bearing one: a suspended VM has no process, so nothing else
     // vouches for its index — and handing that index to a fresh VM means the
@@ -181,12 +181,12 @@ describe('pool tap lifecycle', () => {
     expect([...keep].sort((a, b) => a - b)).toEqual([1, 2, 4])
   })
 
-  test('reports reclaimed taps and publishes the capacity gauge', () => {
+  test('reports reclaimed taps and publishes the capacity gauge', async () => {
     const { pool } = makePool(dir, {
-      reconcileOrphanTaps: (() => ({ removed: 3, suspected: 5, inUse: 40 })) as any,
+      reconcileOrphanTaps: (async () => ({ removed: 3, suspected: 5, inUse: 40 })) as any,
     })
 
-    expect(pool.reapOrphanTaps()).toBe(3)
+    expect(await pool.reapOrphanTaps()).toBe(3)
     const { counters, gauges } = metrics.snapshot()
     expect(counters.metal_gc_taps_reclaimed_total).toBeGreaterThanOrEqual(3)
     expect(gauges.metal_taps_in_use).toBe(40)

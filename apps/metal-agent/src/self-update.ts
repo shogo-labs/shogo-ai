@@ -318,9 +318,9 @@ function clearStagedMarker(): void {
 /** Pool callbacks the staging lifecycle needs; kept as hooks so this module never imports the pool. */
 export interface RootfsHooks {
   /** A new staged image replaced the old one: drop staged snapshots that are not for `identities`. */
-  onStaged?(identities: StagedRootfs['identities']): void
+  onStaged?(identities: StagedRootfs['identities']): void | Promise<unknown>
   /** About to switch: move pre-warmed snapshots for `identities` into the current cache. */
-  promote?(identities: StagedRootfs['identities']): number
+  promote?(identities: StagedRootfs['identities']): number | Promise<number>
 }
 
 export type ActivationDecision = 'activate' | 'self-activate' | 'wait' | 'refuse'
@@ -394,7 +394,7 @@ export async function maybeActivateRootfs(
     // Rename first: promoted snapshots on a host whose rename then failed would
     // look stale to the current image and be reclaimed.
     activateStagedImages(config.baseRootfs, config.dockerClass.baseRootfs || undefined)
-    const promoted = hooks.promote?.(s.identities) ?? 0
+    const promoted = (await hooks.promote?.(s.identities)) ?? 0
     writeRootfsMarker(s.version)
     clearStagedMarker()
     console.log(
@@ -437,7 +437,7 @@ export async function maybeRebuildRootfs(desired?: DesiredAgent | null, hooks: R
         `from ${desired!.runtimeImage ?? '$RUNTIME_IMAGE'}`,
     )
     const staged = await stageRootfs(config.agentDir, desired!)
-    hooks.onStaged?.(staged.identities)
+    await hooks.onStaged?.(staged.identities)
     console.log(
       `[self-update] rootfs for ${staged.version} staged (identity ${staged.identities.standard}) — ` +
         'serving on the current image until activateRootfs',
