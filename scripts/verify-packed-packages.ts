@@ -53,6 +53,12 @@
  *   bun scripts/verify-packed-packages.ts --skip-build
  *   bun scripts/verify-packed-packages.ts --keep     # keep the scratch dir
  *   bun scripts/verify-packed-packages.ts --only sdk,voice
+ *   bun scripts/verify-packed-packages.ts --rewrite-for-publish 2.6.3
+ *
+ * `--rewrite-for-publish <version>` is not a check: it applies the publish-time
+ * manifest rewrite to every lockstep package and exits. `publish-sdk.yml` uses it
+ * as its "Rewrite package.json for publish" step, so the release and this gate
+ * share one implementation — see `rewriteManifestForPublish`.
  *
  * `--skip-build` reuses the lockstep `dist/` already on disk; the standalone
  * packages are still built, because their packed bin needs the compiled entry.
@@ -94,8 +100,17 @@ export const LOCKSTEP_PACKAGES = ['core', 'agent', 'db', 'email', 'voice', 'cli'
 export const STANDALONE_PACKAGES = ['shogo-worker'] as const
 export const PUBLISHED_PACKAGES = [...LOCKSTEP_PACKAGES, ...STANDALONE_PACKAGES] as const
 
+/**
+ * `@shogo-ai/<dir>` for every package the workflows publish. A dependency on one
+ * of these is a sibling: it always resolves to the version being published, and
+ * never to the registry.
+ */
+const PUBLISHED_NAMES = new Set<string>(PUBLISHED_PACKAGES.map((dir) => `@shogo-ai/${dir}`))
+
 /** Synthetic version so every tarball in a run satisfies its siblings' ranges. */
 const GATE_VERSION = '0.0.0-gate'
+
+const DEP_FIELDS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'] as const
 
 type Failure = { pkg: string; check: string; detail: string }
 
@@ -135,37 +150,75 @@ function tail(text: string, lines = 12): string {
 
 /**
  * Apply the publish-time manifest mutations in place and return the original
- * text so the caller can restore the checkout. Deliberately identical to the
- * workflow's step: if the gate tested a different manifest than the release
- * ships, it would be testing nothing.
+ * text so the caller can restore the checkout. This is the *only* publish
+ * rewrite: `publish-sdk.yml` calls it through `--rewrite-for-publish`, so the
+ * manifest npm receives and the manifest the gate tests cannot drift.
+ *
+ * The rewrite is idempotent on purpose (SHO-524). A sibling dependency on a
+ * published package is pointed at `version` whatever its current spec is —
+ * `workspace:*` on a raw checkout, or the tag version when the release step has
+ * already stamped the checkout. Rewriting only `workspace:` specs left the
+ * gate's 0.0.0-gate tarballs asking for siblings at the unpublished tag version,
+ * so `npm install` went to the registry and every tag release died at the gate.
  */
-export function rewriteManifestForPublish(pkgDir: string, version: string): string {
+export function rewriteManifestForPublish(
+  pkgDir: string,
+  version: string,
+  log: (line: string) => void = () => {},
+): string {
   const file = join(pkgDir, 'package.json')
   const original = readFileSync(file, 'utf8')
   const manifest = JSON.parse(original) as Record<string, unknown>
 
   manifest.version = version
 
-  for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+  for (const field of DEP_FIELDS) {
     const deps = manifest[field] as Record<string, string> | undefined
     if (!deps) continue
     for (const [name, spec] of Object.entries(deps)) {
-      if (typeof spec !== 'string' || !spec.startsWith('workspace:')) continue
-      if (name.startsWith('@shogo-ai/')) deps[name] = version
-      else delete deps[name]
+      if (typeof spec !== 'string') continue
+      if (PUBLISHED_NAMES.has(name)) {
+        if (spec !== version) log(`Rewrote ${field}.${name}: ${spec} -> ${version}`)
+        deps[name] = version
+        continue
+      }
+      // Anything else that was only resolvable through the workspace is not
+      // published, so leaving it in the manifest would 404 the consumer.
+      if (spec.startsWith('workspace:')) {
+        delete deps[name]
+        log(`Stripped ${field}.${name} (${spec})`)
+      }
     }
   }
 
+  let strippedDevelopment = 0
   const stripDevelopment = (node: unknown): void => {
     if (node == null || typeof node !== 'object') return
     const record = node as Record<string, unknown>
-    delete record.development
+    if ('development' in record) {
+      delete record.development
+      strippedDevelopment += 1
+    }
     for (const value of Object.values(record)) stripDevelopment(value)
   }
   stripDevelopment(manifest.exports)
+  if (strippedDevelopment > 0) log(`Stripped ${strippedDevelopment} development export condition(s)`)
 
   writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`)
   return original
+}
+
+/**
+ * The publish workflow's "Rewrite package.json for publish" step, as one call:
+ * every lockstep package at the tag version, with the same log lines. Returns
+ * the original text per directory so a caller can restore the checkout.
+ */
+export function rewritePackagesForPublish(packageDirs: string[], version: string): Map<string, string> {
+  const originals = new Map<string, string>()
+  for (const dir of packageDirs) {
+    originals.set(dir, rewriteManifestForPublish(dir, version, (line) => console.log(line)))
+  }
+  return originals
 }
 
 /* ------------------------------------------------------------------------- */
@@ -563,7 +616,12 @@ process.stdout.write(JSON.stringify(out))
 /* ------------------------------------------------------------------------- */
 
 function parseArgs(argv: string[]) {
-  const options = { skipBuild: false, keep: false, only: null as string[] | null }
+  const options = {
+    skipBuild: false,
+    keep: false,
+    only: null as string[] | null,
+    rewriteForPublish: null as string | null,
+  }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === '--skip-build') options.skipBuild = true
@@ -571,6 +629,9 @@ function parseArgs(argv: string[]) {
     else if (arg === '--only') {
       const value = argv[index + 1] ?? ''
       options.only = value.split(',').map((entry) => entry.trim()).filter(Boolean)
+      index += 1
+    } else if (arg === '--rewrite-for-publish') {
+      options.rewriteForPublish = argv[index + 1] ?? ''
       index += 1
     }
   }
@@ -598,6 +659,18 @@ function build(skipPackages: boolean): void {
 
 function main(): number {
   const options = parseArgs(process.argv.slice(2))
+
+  if (options.rewriteForPublish !== null) {
+    const version = options.rewriteForPublish.trim()
+    if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+      console.error(`[packed-gate] --rewrite-for-publish needs a version (e.g. 2.6.3), got '${version}'`)
+      return 1
+    }
+    const dirs = LOCKSTEP_PACKAGES.map((dir) => join(REPO_ROOT, 'packages', dir))
+    rewritePackagesForPublish(dirs, version)
+    return 0
+  }
+
   const selected: string[] = options.only
     ? PUBLISHED_PACKAGES.filter((dir) => options.only!.includes(dir))
     : [...PUBLISHED_PACKAGES]

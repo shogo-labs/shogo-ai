@@ -154,50 +154,26 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          # Apply three mutations to every package's package.json:
+          # One implementation, shared with the packed-tarball gate below:
+          # `scripts/verify-packed-packages.ts --rewrite-for-publish` applies
+          # three mutations to every lockstep package's package.json:
           #   1. Set version to the tag version (lockstep release).
-          #   2. Workspace deps within `@shogo-ai/*` -> tag version.
+          #   2. Deps on a published `@shogo-ai/*` package -> tag version,
+          #      whatever their spec was.
           #      Other `workspace:*` deps -> stripped (not published).
           #   3. Remove `"development"` keys from `exports` (dev-only
           #      conditions that would ENOENT in a published consumer
           #      since the tarball ships only `dist/`).
+          #
+          # Do NOT re-inline this as a `node -e` here (SHO-524): when this step
+          # and the gate's rewrite were two copies, the gate repacked at
+          # `0.0.0-gate` while leaving this step's tag-version deps in place, so
+          # `npm install` went to the registry for unpublished siblings and
+          # every tag release died at the gate.
+          bun scripts/verify-packed-packages.ts --rewrite-for-publish "$VERSION"
           for pkg in $PACKAGES; do
-            dir="packages/$pkg"
-            echo "::group::Rewriting $dir/package.json"
-            (cd "$dir" && node -e '
-              const fs = require("fs");
-              const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-              pkg.version = process.env.VERSION;
-
-              for (const key of ["dependencies", "devDependencies", "peerDependencies"]) {
-                if (!pkg[key]) continue;
-                for (const [name, spec] of Object.entries(pkg[key])) {
-                  if (typeof spec !== "string" || !spec.startsWith("workspace:")) continue;
-                  if (name.startsWith("@shogo-ai/")) {
-                    pkg[key][name] = process.env.VERSION;
-                    console.log(`Rewrote ${key}.${name}: ${spec} -> ${process.env.VERSION}`);
-                  } else {
-                    delete pkg[key][name];
-                    console.log(`Stripped ${key}.${name} (${spec})`);
-                  }
-                }
-              }
-
-              let strippedDev = 0;
-              const stripDev = (obj) => {
-                if (obj === null || typeof obj !== "object") return;
-                if (Array.isArray(obj)) { for (const el of obj) stripDev(el); return; }
-                if ("development" in obj) { delete obj.development; strippedDev++; }
-                for (const v of Object.values(obj)) stripDev(v);
-              };
-              if (pkg.exports) stripDev(pkg.exports);
-              if (strippedDev > 0) console.log(`Stripped ${strippedDev} development export condition(s)`);
-
-              fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
-            ')
-            echo "--- Final $dir/package.json ---"
-            cat "$dir/package.json"
-            echo "::endgroup::"
+            echo "--- Final packages/$pkg/package.json ---"
+            cat "packages/$pkg/package.json"
           done
 
       - name: Verify tarball license isolation (every package)

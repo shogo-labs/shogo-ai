@@ -77,3 +77,15 @@ jobs:
         # Slow half: build, pack, install into a scratch consumer outside the
         # repo, then import every exports subpath and run every bin.
         run: bun run scripts/verify-packed-packages.ts
+
+      - name: Pack and install every published tarball (stamped, the tag shape)
+        # The gate above packs a *raw* checkout, where siblings still say
+        # `workspace:*`. A tag release is not raw: publish-sdk.yml rewrites every
+        # manifest to the tag version first, and the gate then repacks at
+        # `0.0.0-gate`. That combination is what blocked v2.6.2 (SHO-524), and no
+        # PR run exercised it. Stamp with the same function the release uses, run
+        # the gate against the stamped checkout, then restore.
+        run: |
+          bun scripts/verify-packed-packages.ts --rewrite-for-publish 99.0.0-ci
+          trap 'git checkout -- packages/*/package.json' EXIT
+          bun scripts/verify-packed-packages.ts --skip-build
