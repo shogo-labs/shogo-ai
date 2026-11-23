@@ -24,6 +24,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { cn } from '@shogo/shared-ui/primitives'
 import { getRuntimeApiUrl } from '../../lib/runtime-env'
+import { errorMessage } from '../../lib/error-message'
 
 function getApiBaseUrl(): string {
   const port = process.env.EXPO_PUBLIC_API_PORT ?? '8002'
@@ -95,7 +96,7 @@ export default function AdminLogsPage() {
       setLogPath(data.path || null)
       setTotalLines(data.total || 0)
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setLoading(false)
     }

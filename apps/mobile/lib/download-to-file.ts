@@ -16,10 +16,14 @@
  * networking stack and writes straight to disk, so the JS heap holds nothing
  * but a path, whatever the file's size.
  *
- * Nothing here imports React Native or expo statically: the module is unit
- * tested in a plain Bun process, and every platform call happens inside the
- * function that needs it.
+ * `react-native` and expo stay imported inside the function that needs them,
+ * except for the three primitives the share sheet uses. A dynamic
+ * `import('react-native')` reads every lazy getter on `react-native/index.js`
+ * through the wildcard interop, including the deprecated `PushNotificationIOS`
+ * one, which builds a `NativeEventEmitter` around a module this app does not
+ * link and throws (SHOGO-IOS-15). Naming them statically touches only them.
  */
+import { InteractionManager, Platform, Share } from 'react-native'
 
 /** How long a share sheet may wait for the screen to settle before it opens. */
 export const SHARE_SETTLE_MS = 2000
@@ -145,7 +149,6 @@ export async function shareCachedFile(
   name: string,
   options: ShareCachedFileOptions = {},
 ): Promise<void> {
-  const { InteractionManager, Platform, Share } = await import('react-native')
   // Let the screen settle before the OS presents its sheet.
   await new Promise<void>((resolve) => {
     let settled = false

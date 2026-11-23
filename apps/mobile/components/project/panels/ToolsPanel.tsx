@@ -38,6 +38,7 @@ import {
 import { densityFor } from "../../../lib/phone-density";
 import { useDomainHttp } from '../../../contexts/domain'
 import { agentFetch } from '../../../lib/agent-fetch'
+import { errorMessage } from '../../../lib/error-message'
 
 const LOG_PREFIX = '[ToolsPanel]'
 
@@ -128,7 +129,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
         // non-critical
       }
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setIsLoading(false)
     }
@@ -148,7 +149,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
       const data = await res.json()
       setSearchResults(data.results || [])
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setIsSearching(false)
     }
@@ -195,7 +196,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
         setSearchResults((prev) => prev.map((r) => ( r.id === result.id ? { ...r, installed: true } : r)),
         )
       } catch (err: any) {
-        setError(err.message)
+        setError(errorMessage(err))
       } finally {
         setInstalling(null)
       }
@@ -220,7 +221,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
         setSearchResults((prev) => prev.map((r) => ( r.id === toolId ? { ...r, installed: false } : r)),
         )
       } catch (err: any) {
-        setError(err.message)
+        setError(errorMessage(err))
       } finally {
         setUninstalling(null)
       }
@@ -267,7 +268,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
         }
       } catch (err: any) {
         console.error(LOG_PREFIX, `OAuth error for ${result.composioToolkit}:`, err)
-        setError(err.message)
+        setError(errorMessage(err))
         setConnecting(null)
       } finally {
         try {
@@ -313,7 +314,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
       }
     } catch (err: any) {
       console.error(LOG_PREFIX, `Reconnect error for ${toolkit}:`, err)
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setReconnectingToolkit(null)
       try {
@@ -332,7 +333,7 @@ export function ToolsPanel({ projectId, agentUrl, visible }: ToolsPanelProps) {
       await api.disconnectIntegration(http, connectionId, { projectId })
       await loadInstalledTools()
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setDisconnecting(null)
     }

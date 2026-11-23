@@ -5,6 +5,7 @@ import { HttpClient } from '@shogo-ai/sdk'
 import type { Permission, ProjectRole, WorkspaceRole } from '@shogo/authz'
 import { API_URL } from './api-url'
 import { authClient } from './auth-client'
+import { errorMessage } from './error-message'
 import { defaultLocalAccess, type LocalAccessPrefs } from './local-access'
 import { routeUrl } from './workspace-route'
 import { usageLogCsvUrl } from './usage-log-csv'
@@ -1016,7 +1017,7 @@ export const api = {
     } catch (cause: any) {
       const apiError = cause?.details?.error
       if (apiError?.code) {
-        const error = new Error(apiError.message ?? cause.message) as Error & { code?: string }
+        const error = new Error(apiError.message ?? errorMessage(cause)) as Error & { code?: string }
         error.code = apiError.code
         throw error
       }

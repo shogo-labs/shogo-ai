@@ -8,14 +8,17 @@
  * `(err as Error).message` on `undefined` throws inside the `.catch` that was
  * meant to swallow it — an unhandled rejection reported as "Cannot read
  * property 'message' of undefined" at launch (Sentry SHOGO-ANDROID-11).
+ *
+ * `fallback` is what to say when the rejection carried nothing at all, for
+ * call sites that used to write `err.message ?? 'Upload failed'`.
  */
-export function errorMessage(err: unknown): string {
+export function errorMessage(err: unknown, fallback = 'no error details'): string {
   if (err instanceof Error) return err.message || err.name || 'Error'
   if (typeof err === 'string') return err
   if (err && typeof err === 'object' && typeof (err as { message?: unknown }).message === 'string') {
     return (err as { message: string }).message
   }
-  if (err === undefined || err === null) return 'no error details'
+  if (err === undefined || err === null) return fallback
   try {
     return JSON.stringify(err)
   } catch {

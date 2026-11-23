@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { View, Text, Pressable, TextInput, ActivityIndicator } from 'react-native'
 import { Star } from 'lucide-react-native'
+import { errorMessage } from '../../lib/error-message'
 
 interface ReviewFormProps {
   onSubmit: (data: { rating: number; title: string; body: string }) => Promise<void>
@@ -26,7 +27,7 @@ export function ReviewForm({ onSubmit, existingReview }: ReviewFormProps) {
     try {
       await onSubmit({ rating, title, body })
     } catch (e: any) {
-      setError(e.message || 'Failed to submit review')
+      setError(errorMessage(e, 'Failed to submit review'))
     } finally {
       setSubmitting(false)
     }

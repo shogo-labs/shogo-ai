@@ -28,6 +28,7 @@ import {
   NativePhonePane,
   phonePaneScrollProps,
 } from "../../phone/NativePhonePane"
+import { errorMessage } from '../../../lib/error-message'
 
 type Period = '7d' | '30d' | '90d'
 type DailyCount = { date: string; count: number }
@@ -168,7 +169,7 @@ function useProjectAnalytics<T>(
       const result = await api.getProjectAnalytics<T>(http, projectId, endpoint, period)
       setData(result)
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setLoading(false)
     }

@@ -32,6 +32,7 @@ import { API_URL } from '../../../lib/api'
 import { PhonePanel } from './PhonePanel'
 import { useIsNativePhoneLayout } from '../../../lib/native-phone-layout'
 import { openExternalLink } from '../../../lib/open-external-link';
+import { errorMessage } from '../../../lib/error-message'
 
 interface ChannelInfo {
   type: string
@@ -353,7 +354,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
       const data = await res.json()
       setChannels(data.channels || [])
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setIsLoading(false)
     }
@@ -454,7 +455,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
       })
       await loadChannels()
     } catch (err: any) {
-      setFormError(err.message)
+      setFormError(errorMessage(err))
     } finally {
       setConnecting(null)
     }
@@ -478,7 +479,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
 
       await loadChannels()
     } catch (err: any) {
-      setFormError(err.message)
+      setFormError(errorMessage(err))
     } finally {
       setDisconnecting(null)
     }
@@ -509,7 +510,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
       })
       await loadChannels()
     } catch (err: any) {
-      setFormError(err.message)
+      setFormError(errorMessage(err))
     } finally {
       setSavingModel(null)
     }

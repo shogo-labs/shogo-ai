@@ -13,7 +13,15 @@
  * So the size and a ≤640 px JPEG are produced once, at send time, and stored
  * on the message part. Nothing here is allowed to block a send: every failure
  * returns null and the message goes out as it did before.
+ *
+ * `react-native` is imported statically. A dynamic `import('react-native')`
+ * reads every lazy getter on `react-native/index.js` through the wildcard
+ * interop, including the deprecated `PushNotificationIOS` one, which builds a
+ * `NativeEventEmitter` around a module this app does not link and throws
+ * (SHOGO-IOS-15). Name what you use, and the getters you never touch stay
+ * untouched.
  */
+import { Image as NativeImage } from "react-native"
 
 /** Long edge of a stored preview. A chat thumbnail never needs more. */
 export const PREVIEW_MAX_EDGE = 640
@@ -197,8 +205,7 @@ async function nativeImageSize(source: PreviewSource): Promise<ImageSize | null>
   if (known) return known
   const ref = sourceRef(source)
   if (!ref) return null
-  const { Image } = await import("react-native")
-  const getSize = (Image as { getSize?: unknown }).getSize
+  const getSize = (NativeImage as { getSize?: unknown }).getSize
   if (typeof getSize !== "function") return null
   return new Promise<ImageSize | null>((resolve) => {
     ;(
@@ -208,7 +215,7 @@ async function nativeImageSize(source: PreviewSource): Promise<ImageSize | null>
         fail?: () => void,
       ) => void
     ).call(
-      Image,
+      NativeImage,
       ref,
       (width: number, height: number) => resolve({ width, height }),
       () => resolve(null),

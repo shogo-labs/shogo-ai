@@ -33,8 +33,6 @@ export function DmsPanel({ variant = 'panel', initialFilter }: { variant?: 'pane
   const { starred, others } = useMemo(() => splitStarredDms(chat.list, filter), [chat.list, filter])
   const contacts = useMemo(() => recentContacts(chat.list), [chat.list])
   const { chats: recentChats } = useRecentAgentChats({ limit: 20, perAgent: false })
-  if (!chat.enabled || !chat.workspaceId) return null
-  const workspaceId = chat.workspaceId
   const screen = variant === 'screen'
 
   const agents = chat.mentionables?.agents ?? []
@@ -70,6 +68,9 @@ export function DmsPanel({ variant = 'panel', initialFilter }: { variant?: 'pane
     rest.sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''))
     return [...chatted, ...rest]
   }, [agents, lastChatByAgent])
+
+  if (!chat.enabled || !chat.workspaceId) return null
+  const workspaceId = chat.workspaceId
 
   // No "Note to self" shortcut: every member is provisioned one, so it is
   // already a row below, under your own name.
