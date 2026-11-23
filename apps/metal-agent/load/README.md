@@ -11,6 +11,25 @@ in-process on the host): this drives the node-agent HTTP API over the real
 network, so it measures the wake path including RTT + HTTP + concurrency, the
 same contract the control plane's `metal` pod-mode uses.
 
+## Density soak (how many VMs one host carries)
+
+The wake-path tests above answer "how fast does one project wake". The density
+soak answers a different question: **how many VMs can one host hold before agent
+turns degrade**, with the CPU and RAM knees reported separately and a
+`METAL_MAX_VMS_PER_HOST` recommendation from the data.
+
+```bash
+SSH_TARGET=root@<staging-host> HOST_ID=latitude-dal-1 BURST=1 \
+  bash scripts/metal-agent/run-density-soak.sh
+```
+
+It is staging-only (the runner refuses a host that is not registered to a
+staging control plane), cordons the host, swaps the env for the run, and tears
+everything down in a `trap`. See
+[`docs/runbooks/metal-density-soak.md`](../../docs/runbooks/metal-density-soak.md)
+for the safety steps, the `VmUsageHour` mix query, and how to read the report.
+
+
 ## Setup
 
 ```bash

@@ -50,6 +50,10 @@ Copyright (C) 2026 Shogo Technologies, Inc.
   *specific* commit landed inside the guest rootfs (a version string only
   proves which release was requested, not that the rebuild succeeded) — see
   `.github/runtime-image-baseline` for that verification method.
+- **Density**: how many VMs one host carries before agent turns degrade is
+  measured, not guessed — see
+  [`metal-density-soak.md`](./metal-density-soak.md) for the stepped + burst
+  soak, the CPU and RAM knees, and the `METAL_MAX_VMS_PER_HOST` recommendation.
 
 ## Auto-scaling (burst) — how it works
 
