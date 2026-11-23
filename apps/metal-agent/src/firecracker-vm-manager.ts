@@ -320,6 +320,14 @@ export class FirecrackerVMManager {
       if (existsSync(socketPath)) return
       await Bun.sleep(5)
     }
+    // The loop above is wall-clock bounded but the checks inside it are not:
+    // rootfs/tap provisioning runs synchronously, so the event loop can be
+    // blocked past the deadline and the first check after it resumes throws for
+    // a socket that firecracker bound milliseconds after it started (observed on
+    // latitude-dal-1: 102 of 175 boots "never appeared" with `Listening on API
+    // socket` already in every one of their serial logs). A socket that is
+    // there is a boot that worked, whenever we get to look.
+    if (existsSync(socketPath)) return
     throw new Error(`FC API socket never appeared: ${socketPath}`)
   }
 

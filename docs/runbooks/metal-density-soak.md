@@ -202,6 +202,25 @@ Two operational notes from that attempt:
   **After any interrupted run, restore before starting the next one:** remove
   `METAL_MAX_VMS_PER_HOST`, set `METAL_IDLE_SUSPEND_MS=1800000`, destroy every
   `soak-` VM, restart `metal-agent`.
+- **Cordoning without a super-admin session.** `POST
+  /api/admin/metal/hosts/:hostId/cordon` (and `--assume-cordoned` for its
+  absence) needs a super-admin session, which a developer sandbox does not have.
+  The placement path the controller actually uses is the host's `SHOGO-CTRL`
+  chain on `--dport 9900`, which accepts the control-plane egress
+  `157.151.142.64/32` and drops everything else. Deleting exactly that one rule
+  cordons the host for real — the control plane's `/assign` is dropped, while
+  `-i lo` (the soak's `http://127.0.0.1:9900`) and the guest subnet
+  `172.16.0.0/12` keep working:
+
+  ```bash
+  iptables -S SHOGO-CTRL > /root/shogo-ctrl.pre-cordon.rules   # keep this
+  iptables -D SHOGO-CTRL -s 157.151.142.64/32 -j ACCEPT
+  ```
+
+  It does **not** uncordon itself: a run started with `--assume-cordoned` leaves
+  the rule gone on teardown, so re-add it (`iptables -A SHOGO-CTRL -s
+  157.151.142.64/32 -j ACCEPT`) before you leave the host. This blocks new
+  placements only; VMs already resident keep running untouched.
 - **The host was not empty, and could not be measured as empty.** On 2026-11-23
   `latitude-dal-1` carried **308 resident staging projects** (86 running, ~202
   suspended, 93–105 Firecracker processes, 295 taps), reported `utilPct 108`
