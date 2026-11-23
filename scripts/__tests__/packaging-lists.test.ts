@@ -234,6 +234,24 @@ describe('release gate wiring', () => {
     expect(workflow).toContain('scripts/verify-packed-packages.ts')
   })
 
+  it('stamps the way the release does, so PR CI exercises the tag shape', () => {
+    // A raw checkout has `workspace:*` siblings; a tag release has already been
+    // stamped to the tag version. Only the stamped shape reproduces the gate
+    // failure that blocked v2.6.2 (SHO-524), so the gate runs it too.
+    const ci = read('.github/workflows/packaging-gate.yml')
+    expect(ci).toContain('verify-packed-packages.ts --rewrite-for-publish')
+    expect(ci).toContain('verify-packed-packages.ts --skip-build')
+  })
+
+  it('stamps the release with the gate rewrite, not a second copy', () => {
+    // These were two copies and they drifted: the gate repacked at
+    // `0.0.0-gate` while the release step's deps stayed at the tag version, so
+    // npm went to the registry for unpublished siblings (SHO-524).
+    const workflow = read('.github/workflows/publish-sdk.yml')
+    expect(workflow).toContain('verify-packed-packages.ts --rewrite-for-publish')
+    expect(workflow).not.toContain('process.env.VERSION')
+  })
+
   it('keeps the gate script and its list module in the repo', () => {
     expect(existsSync(join(ROOT, 'scripts/verify-packed-packages.ts'))).toBe(true)
     expect(existsSync(join(ROOT, 'scripts/packaging-lists.ts'))).toBe(true)
