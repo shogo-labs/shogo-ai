@@ -283,6 +283,16 @@ spec:
             # `shogo-published-data-${var.environment}`.
             - name: PUBLISH_DATA_BUCKET
               value: "shogo-published-data-staging"
+            # Project object storage (SHO-491): the SDK bucket API
+            # (`shogo bucket`, /api/bucket/*) stores agent-produced media here
+            # instead of base64 in chat. MUST match
+            # `shogo-project-buckets-${var.environment}` in
+            # terraform/modules/object-storage. Public reads are served by the
+            # subdomain-router Worker at `cdn.<publish_domain>/<projectId>/<key>`
+            # (read-only PAR, `p/<projectId>/public/<key>` only) — the API's
+            # presigned GET is the path for private objects.
+            - name: S3_PROJECT_BUCKET
+              value: "shogo-project-buckets-staging"
             - name: PUBLISH_DOMAIN
               # MUST match `publish_domain` in terraform/environments/staging
               # ("staging.shogo.one"). This API uploads into the *staging*
@@ -393,6 +403,12 @@ spec:
               value: "https://studio.staging.shogo.ai"
             - name: ALLOWED_ORIGINS
               value: "https://studio.staging.shogo.ai"
+            # learn.shogo.ai sign-in (routes/learn.ts, lib/learn-token.ts): the
+            # learn-only cookie is set on this parent domain; never the session.
+            - name: LEARN_COOKIE_DOMAIN
+              value: ".staging.shogo.ai"
+            - name: LEARN_ORIGINS
+              value: "https://learn.staging.shogo.ai"
             # Public hostname the desktop should use for the on-demand
             # tunnel WebSocket. Routed by api-tunnel-ingress.yaml directly
             # to the api revision pod (no DomainMapping → no broken WS
@@ -722,6 +738,33 @@ spec:
                 secretKeyRef:
                   name: api-secrets
                   key: SLACK_APP_ID
+                  optional: true
+            # WhatsApp Tech Provider (SHO-463). Optional so the pod boots before
+            # the secrets exist; until set the feature flag is false and the
+            # route returns 412.
+            - name: WHATSAPP_META_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: WHATSAPP_META_APP_ID
+                  optional: true
+            - name: WHATSAPP_META_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: WHATSAPP_META_APP_SECRET
+                  optional: true
+            - name: WHATSAPP_ES_CONFIG_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: WHATSAPP_ES_CONFIG_ID
+                  optional: true
+            - name: WHATSAPP_WEBHOOK_VERIFY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: WHATSAPP_WEBHOOK_VERIFY_TOKEN
                   optional: true
             # OpenRouter key for the model-provider fallback. Every deploy job
             # writes it into api-secrets; without this reader the cloud never

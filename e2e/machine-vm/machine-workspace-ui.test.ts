@@ -33,8 +33,12 @@ interface StackState {
   machineWorkspaceId: string
   machineWorkspaceName: string
   cloudWorkspaceId: string
+  /** Skips the API's per-IP limiter, which one browser trips here but a pod's do not. */
+  loadTestKey: string
   seeds: { cloud: Seeded; machine: Seeded }
 }
+
+const loadTestHeaders = () => ({ 'x-load-test-key': state.loadTestKey })
 
 let state: StackState
 
@@ -80,7 +84,7 @@ async function openMachineWorkspace(page: Page): Promise<void> {
 async function desktopChannelTexts(page: Page): Promise<string[]> {
   const res = await page.request.get(
     `${state.localApiBase}/api/conversations/${encodeURIComponent(state.seeds.machine.channelId)}/messages?limit=100`,
-    { headers: { cookie: state.localCookies } },
+    { headers: { cookie: state.localCookies, ...loadTestHeaders() } },
   )
   return ((await res.json()).messages ?? []).map((m: { text: string }) => m.text)
 }
@@ -118,6 +122,55 @@ test("the machine's channel, its thread, and a message sent from the cloud that 
   await expect.poll(() => desktopChannelTexts(page), { timeout: 30_000 }).toContain(text)
 })
 
+/**
+ * SHO-486 — Russell: "when I send a message in a channel of a remote workspace
+ * I do not see the reply unless I refresh. It works fine for a normal workspace
+ * or local workspace."
+ *
+ * The channel is open in the cloud studio and a reply is written on the desktop
+ * (which is how a desktop-run agent answers: the row lands on the machine and
+ * reaches Postgres through machine sync). It has to appear on the page as it
+ * arrives — no reload, no tab switch.
+ */
+// The stack relays the page's `/rt` WebSocket through to the cloud
+// (`machine-vm-stack.ts`), so what appears on the page here comes over the same
+// socket the studio uses — not a poll.
+test("a reply written on the machine appears in the open channel without a refresh", async ({ page }) => {
+  const seeded = state.seeds.machine
+  await openMachineWorkspace(page)
+  await page.goto(`/c/${seeded.channelId}`, { waitUntil: "domcontentloaded" })
+  const composer = page.getByLabel("Message", { exact: true }).first()
+  await expect(composer).toBeVisible({ timeout: 60_000 })
+  // The page is live before the reply exists, so nothing below can be a refetch.
+  for (const text of seeded.messageTexts) {
+    await expect(page.getByText(text).first()).toBeVisible({ timeout: 60_000 })
+  }
+
+  const text = `written on the machine ${Date.now()}`
+  const posted = await page.request.post(
+    `${state.localApiBase}/api/conversations/${encodeURIComponent(seeded.channelId)}/messages`,
+    { headers: { cookie: state.localCookies, origin: state.localApiBase, ...loadTestHeaders() }, data: { text } },
+  )
+  expect(posted.status(), await posted.text()).toBeLessThan(300)
+
+  // Split the two halves of "it shows up": the row has to reach the cloud
+  // first (machine sync), and only then can a socket deliver it. Asserting
+  // them apart says which one broke instead of just "the text is not there".
+  const onCloud = async () => {
+    const res = await page.request.get(
+      `${state.cloud}/api/conversations/${encodeURIComponent(seeded.channelId)}/messages?limit=50`,
+      { headers: { cookie: state.cookies, origin: state.cloud, ...loadTestHeaders() } },
+    )
+    if (!res.ok()) return `HTTP ${res.status()}`
+    const body = await res.json().catch(() => null)
+    const rows: any[] = Array.isArray(body?.messages) ? body.messages : Array.isArray(body) ? body : []
+    return rows.some((row) => String(row?.text ?? '').includes(text))
+  }
+  await expect.poll(onCloud, { timeout: 30_000, intervals: [500] }).toBe(true)
+
+  await expect(page.getByText(text).first()).toBeVisible({ timeout: 30_000 })
+})
+
 test("a chat turn from the cloud runs on the machine and reads the machine's disk", async ({ page }) => {
   const canary = `SHO257-UI-CANARY-${Date.now()}`
   const path = ".tmp/sho257-ui-canary.txt"
@@ -125,16 +178,23 @@ test("a chat turn from the cloud runs on the machine and reads the machine's dis
   // The plain cloud API: a hosted workspace's runtime calls go to its desktop
   // through the host tunnel (SHO-285). There is no relay URL to prefix.
   const relay = state.cloud
+  // The first call wakes the desktop and waits for its next heartbeat poll
+  // (SHO-506: up to 75s), so the request itself has to outlast the wake — the
+  // 20s default action timeout would cut off exactly the case this asserts.
   await expect
     .poll(
       async () =>
         (
           await page.request.put(
             `${relay}/api/workspaces/${state.machineWorkspaceId}/agent-proxy/agent/workspace/files/${path}`,
-            { headers: { cookie: state.cookies, origin: state.cloud }, data: { content: canary } },
+            {
+              headers: { cookie: state.cookies, origin: state.cloud, ...loadTestHeaders() },
+              data: { content: canary },
+              timeout: 90_000,
+            },
           )
         ).status(),
-      { timeout: 120_000, intervals: [2_000] },
+      { timeout: 200_000, intervals: [2_000] },
     )
     .toBe(200)
 

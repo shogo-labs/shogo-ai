@@ -161,7 +161,7 @@ export class SyncClient {
     try {
       this.ws = new WebSocket(url)
     } catch (err) {
-      console.error('[SyncClient] WebSocket creation failed:', (err as Error).message)
+      console.error('[SyncClient] WebSocket creation failed:', (err as Error | undefined)?.message ?? String(err))
       this.setStatus('error')
       this.scheduleReconnect()
       return
@@ -314,7 +314,7 @@ export class SyncClient {
         }
       }
     } catch (err) {
-      console.warn('[SyncClient] Catch-up sync failed:', (err as Error).message)
+      console.warn('[SyncClient] Catch-up sync failed:', (err as Error | undefined)?.message ?? String(err))
     }
   }
 
@@ -352,7 +352,7 @@ export class SyncClient {
       try {
         handler(event)
       } catch (err) {
-        console.error('[SyncClient] Event handler error:', (err as Error).message)
+        console.error('[SyncClient] Event handler error:', (err as Error | undefined)?.message ?? String(err))
       }
     }
   }

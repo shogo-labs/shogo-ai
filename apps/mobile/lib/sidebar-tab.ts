@@ -43,6 +43,7 @@ export function tabForPathname(pathname: string, conversations: TabConversation[
   if (/^\/(projects|project-chat|project-surface|new-project)(\/|$)/.test(path)) return 'projects'
   if (/^\/agent(\/|$)/.test(path)) return 'home'
   if (/^\/side-chats(\/|$)/.test(path)) return 'home'
+  if (/^\/chats(\/|$)/.test(path)) return 'home'
   if (/^\/activity(\/|$)/.test(path)) return 'activity'
   if (/^\/more(\/|$)/.test(path)) return 'more'
   if (/^\/meetings(\/|$)/.test(path)) return 'meetings'
@@ -102,6 +103,10 @@ export function setStoredTab(workspaceId: string | null | undefined, tab: Sideba
  * sections of Home on a phone, and Meetings and Goals live under More.
  */
 export function dockTabForPathname(pathname: string, conversations: TabConversation[] = []): 'home' | 'dms' | 'activity' | 'more' {
+  // /chats is the full-screen agent chat list, reached from DMs → Agents on a
+  // phone. The dock should highlight DMs; the desktop rail still shows Home
+  // (handled by tabForPathname returning 'home').
+  if (/^\/chats(\/|$)/.test(pathname)) return 'dms'
   switch (tabForPathname(pathname, conversations)) {
     case 'dms':
       return 'dms'

@@ -11,6 +11,8 @@ import {
   Prisma,
 } from '../lib/prisma'
 
+import { loadLearnProfile, type LearnProfileSummary } from './learn-profile.service'
+
 const MAINTENANCE_STREAK_GRACE_DAYS = 7
 
 export type CreatorReputationStats = {
@@ -46,7 +48,8 @@ export type CreatorPublicProfile = {
     badgeType: BadgeType
     earnedAt: Date
     metadata: unknown
-  }>
+  }>  /** The creator's Shogo Learn level and badges; null until they start learning. */
+  learn: LearnProfileSummary | null
 }
 
 export type CreatorLeaderboardEntry = {
@@ -409,6 +412,7 @@ export async function getCreatorPublicProfile(
       earnedAt: b.earnedAt,
       metadata: b.metadata,
     })),
+    learn: await loadLearnProfile(profile.userId).catch(() => null),
   }
 }
 

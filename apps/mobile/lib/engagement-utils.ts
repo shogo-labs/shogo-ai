@@ -223,11 +223,11 @@ export function heatLevel(count: number, max: number): 0 | 1 | 2 | 3 | 4 {
 }
 
 // ============================================================================
-// Donut
+// Donut / share ring
 // ============================================================================
 
-export interface DonutSegment {
-  model: string
+export interface ShareRingSegment {
+  id: string
   pct: number
   /** Length of the painted arc, in stroke-dasharray units. */
   dash: number
@@ -238,7 +238,7 @@ export interface DonutSegment {
 }
 
 /** Segments for a ring drawn as stacked circle strokes. Percentages are normalised, so rounding drift never leaves a gap. */
-export function donutSegments(shares: { model: string; pct: number }[], radius: number): DonutSegment[] {
+export function shareRingSegments(shares: { id: string; pct: number }[], radius: number): ShareRingSegment[] {
   const circumference = 2 * Math.PI * radius
   const total = shares.reduce((s, r) => s + Math.max(0, r.pct), 0)
   if (total <= 0) return []
@@ -246,8 +246,8 @@ export function donutSegments(shares: { model: string; pct: number }[], radius: 
   return shares.map((s) => {
     const frac = Math.max(0, s.pct) / total
     const dash = frac * circumference
-    const seg: DonutSegment = {
-      model: s.model,
+    const seg: ShareRingSegment = {
+      id: s.id,
       pct: s.pct,
       dash,
       gap: circumference - dash,
@@ -256,6 +256,20 @@ export function donutSegments(shares: { model: string; pct: number }[], radius: 
     consumed += dash
     return seg
   })
+}
+
+/** @deprecated Use `shareRingSegments` with `{ id, pct }` rows. `DonutSegment` is kept as an alias. */
+export interface DonutSegment extends ShareRingSegment {
+  /** @deprecated Alias for `id`. */
+  model: string
+}
+
+/** @deprecated Use `shareRingSegments` — this wrapper exists to keep `ModelShareDonut` unchanged. */
+export function donutSegments(shares: { model: string; pct: number }[], radius: number): DonutSegment[] {
+  return shareRingSegments(shares.map((s) => ({ id: s.model, pct: s.pct })), radius).map((seg) => ({
+    ...seg,
+    model: seg.id,
+  }))
 }
 
 /** Colour for a model series: palette by rank, with "Other" always neutral. */

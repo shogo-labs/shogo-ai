@@ -7,13 +7,14 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { createReactNativeMock } from '../../test/react-native-mock'
 
-mock.module('react-native', () => ({
-  Platform: { OS: 'web' },
-  Alert: { alert: () => {} },
-  Linking: { openURL: async () => undefined },
-  InteractionManager: { runAfterInteractions: (task: () => void) => task() },
-}))
+mock.module('react-native', () =>
+  createReactNativeMock({
+    Platform: { OS: 'web' } as never,
+    Alert: { alert: () => {} } as never,
+  }),
+)
 // The download falls back to the shared opener, which presents its in-app
 // browser first (SHO-436).
 mock.module('expo-web-browser', () => ({

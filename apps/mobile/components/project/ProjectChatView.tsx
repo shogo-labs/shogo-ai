@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useEffect, useState, type ReactNode } from "react";
-import { ActivityIndicator, View } from "react-native";
+import { ActivityIndicator, Platform, View } from "react-native";
 import { observer } from "mobx-react-lite";
 import { useAuth } from "../../contexts/auth";
 import { useDomainActions } from "@shogo/shared-app/domain";
@@ -79,7 +79,9 @@ export const ProjectChatView = observer(function ProjectChatView({
     chatScope: chatScope === "workspace" ? "workspace" : "project",
     initialPropsSessionId: initialRequestedSessionId,
     oneShotPresent: hasOneShotUrlParams === true,
-    enabled: !!onChatSessionUrlChange,
+    // Native has no address bar, and `window.location` does not exist there
+    // (SHO-504) — only the web surface mirrors the open chat into the URL.
+    enabled: Platform.OS === "web" && !!onChatSessionUrlChange,
     setParams: onChatSessionUrlChange,
   });
   useEffect(() => {

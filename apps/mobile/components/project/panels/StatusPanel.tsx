@@ -38,6 +38,7 @@ import {
   phonePaneScrollProps,
 } from "../../phone/NativePhonePane";
 import { MarkdownText } from '../../chat/MarkdownText'
+import { errorMessage } from '../../../lib/error-message'
 
 const CONTEXT_FILES = [
   { id: 'AGENTS.md', label: 'Agent' },
@@ -306,7 +307,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
         setHbError(`Failed to update heartbeat (HTTP ${res.status})`)
       }
     } catch (err: any) {
-      setHbError(err.message || 'Failed to toggle heartbeat')
+      setHbError(errorMessage(err, 'Failed to toggle heartbeat'))
     } finally {
       setHbToggling(false)
     }
@@ -322,7 +323,7 @@ export function StatusPanel({ projectId, agentUrl, visible, isPaidPlan }: Status
       setError(null)
       setLastFetchedAt(Date.now())
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     }
   }, [agentUrl])
 

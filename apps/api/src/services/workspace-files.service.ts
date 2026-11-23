@@ -76,7 +76,13 @@ export interface WorkspaceFileInventory {
   channelCount: number
   boardCount: number
   chatCount: number
+  /** Bytes on disk (`totalBytes`) plus the workspace's project buckets. */
   totalBytes: number | null
+  /**
+   * Bytes held in the workspace's project buckets (SHO-491). Object storage,
+   * not disk, but the delete wipes it too, so the confirm dialog must show it.
+   */
+  bucketBytes: number
 }
 
 /** Byte size of a directory tree, or null when the walk exceeds its budget. */
@@ -242,11 +248,19 @@ export async function workspaceFileInventory(
     if (existsSync(dir)) removedDirs.push(dir)
   }
 
-  const [channelCount, boardCount, chatCount] = await Promise.all([
+  const [channelCount, boardCount, chatCount, bucketTotals] = await Promise.all([
     db.conversation.count({ where: { workspaceId } }).catch(() => 0),
     db.board.count({ where: { workspaceId } }).catch(() => 0),
     db.chatSession.count({ where: { workspaceId } }).catch(() => 0),
+    // Project bucket bytes come from the index, never a bucket listing: the
+    // preview is a single read-only request (SHO-491).
+    db.projectBucketObject
+      ? db.projectBucketObject
+          .aggregate({ where: { project: { workspaceId } }, _sum: { size: true } })
+          .catch(() => null)
+      : Promise.resolve(null),
   ])
+  const bucketBytes = Number(bucketTotals?._sum?.size ?? 0)
 
   return {
     workspaceId: workspace.id,
@@ -256,7 +270,8 @@ export async function workspaceFileInventory(
     channelCount,
     boardCount,
     chatCount,
-    totalBytes,
+    totalBytes: totalBytes === null ? null : totalBytes + bucketBytes,
+    bucketBytes,
   }
 }
 

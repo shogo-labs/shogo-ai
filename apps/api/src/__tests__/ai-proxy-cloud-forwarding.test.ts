@@ -292,6 +292,175 @@ describe('AI proxy Shogo Cloud forwarding', () => {
     expect(text).not.toContain('shogo:retryable=true')
   })
 
+  describe('a Cloudflare edge error becomes a typed, retryable JSON error (SHO-517)', () => {
+    // Cloudflare answers a request that produced no response headers within
+    // 125s with an HTML 524 page, and other edge failures with 520–523. The
+    // runtime cannot classify an HTML body: it showed raw markup to the user
+    // and gave up. Forwarded as 504 + `upstream_timeout` it reads as 5xx
+    // (retryable) and the agent loop resumes the turn.
+    const CLOUDFLARE_524 =
+      '<!DOCTYPE html>\n<html>\n<head><title>studio.shogo.ai | 524: A timeout occurred</title></head>\n' +
+      '<body>\n<h1>Error 524</h1>\n<p>A timeout occurred.</p>\n</body>\n</html>\n'
+
+    test('524 text/html from cloud on a streaming chat-completions request → 504 JSON upstream_timeout', async () => {
+      nextFetchResponses.push(() => new Response(CLOUDFLARE_524, {
+        status: 524,
+        headers: { 'Content-Type': 'text/html; charset=UTF-8' },
+      }))
+
+      const app = buildApp()
+      const res = await app.fetch(new Request('http://x/api/ai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({
+          model: 'gemini-4-carbon',
+          stream: true,
+          messages: [{ role: 'user', content: 'write the whole generator in one file' }],
+        }),
+      }))
+
+      expect(res.status).toBe(504)
+      expect(res.headers.get('Content-Type')).toContain('application/json')
+      const body = await res.json() as any
+      expect(body.error).toMatchObject({ type: 'api_error', code: 'upstream_timeout' })
+      // No markup from the edge page reaches the client, in any field.
+      expect(JSON.stringify(body)).not.toContain('<')
+      expect(JSON.stringify(body)).not.toContain('html')
+    })
+
+    test('524 text/html from cloud on the Anthropic-native streaming path never enters the SSE wrapper', async () => {
+      nextFetchResponses.push(() => new Response(CLOUDFLARE_524, {
+        status: 524,
+        headers: { 'Content-Type': 'text/html; charset=UTF-8' },
+      }))
+
+      const app = buildApp()
+      const res = await app.fetch(new Request('http://x/api/ai/anthropic/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': TOKEN,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          stream: true,
+          messages: [{ role: 'user', content: 'write the whole generator in one file' }],
+        }),
+      }))
+
+      expect(res.status).toBe(504)
+      const text = await res.text()
+      const body = JSON.parse(text)
+      expect(body.error.code).toBe('upstream_timeout')
+      // A wrapped HTML body would surface as a retryable `upstream_truncated`
+      // marker on text that is not SSE at all.
+      expect(text).not.toContain('shogo:retryable')
+      expect(text).not.toContain('upstream_truncated')
+      expect(text).not.toContain('<!DOCTYPE')
+    })
+
+    test('another HTML 5xx (522) → 502 JSON upstream_error', async () => {
+      nextFetchResponses.push(() => new Response('<html><body>Error 522 connection timed out</body></html>', {
+        status: 522,
+        headers: { 'Content-Type': 'text/html' },
+      }))
+
+      const app = buildApp()
+      const res = await app.fetch(new Request('http://x/api/ai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({ model: 'gemini-4-carbon', messages: [{ role: 'user', content: 'hi' }] }),
+      }))
+
+      expect(res.status).toBe(502)
+      const body = await res.json() as any
+      expect(body.error).toMatchObject({ type: 'api_error', code: 'upstream_error' })
+      expect(JSON.stringify(body)).not.toContain('Error 522 connection timed out')
+    })
+
+    test('a real JSON provider error from cloud is NOT relabelled as an edge error', async () => {
+      const providerError = JSON.stringify({
+        type: 'error',
+        error: { type: 'api_error', message: 'Overloaded' },
+      })
+      nextFetchResponses.push(() => new Response(providerError, {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+
+      const app = buildApp()
+      const res = await app.fetch(new Request('http://x/api/ai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({ model: 'gemini-4-carbon', messages: [{ role: 'user', content: 'hi' }] }),
+      }))
+
+      expect(res.status).toBe(500)
+      expect(await res.text()).toBe(providerError)
+    })
+  })
+
+  describe('cloud early keepalives survive the desktop forwarder (SHO-517)', () => {
+    // The cloud proxy now answers a slow provider with `200 text/event-stream`
+    // plus `: keepalive` comments long before the model's first token. The
+    // desktop forwarder wraps that stream a second time, so a keepalive has to
+    // stay a comment: it is liveness, not content, and it must never stand in
+    // for the terminal event that ends the stream.
+    const anthropicStreamRequest = () => new Request('http://x/api/ai/anthropic/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': TOKEN,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        stream: true,
+        messages: [{ role: 'user', content: 'write the whole generator in one file' }],
+      }),
+    })
+
+    test('keepalives before the provider\'s first byte pass through and are not read as content', async () => {
+      nextFetchResponses.push(() => new Response([
+        ': keepalive 15000ms', '', ': keepalive 30000ms', '',
+        'event: message_start', 'data: {"type":"message_start","message":{"usage":{"input_tokens":7}}}', '',
+        'event: message_stop', 'data: {"type":"message_stop"}', '',
+      ].join('\n'), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }))
+
+      const app = buildApp()
+      const res = await app.fetch(anthropicStreamRequest())
+
+      expect(res.status).toBe(200)
+      expect(res.headers.get('Content-Type')).toContain('text/event-stream')
+      const text = await res.text()
+      expect(text).toContain(': keepalive 15000ms')
+      expect(text).toContain('message_start')
+      expect(text).toContain('message_stop')
+      // A completed stream stays completed: no synthetic truncation frame.
+      expect(text).not.toContain('upstream_truncated')
+      expect(text).not.toContain('[shogo:retryable=')
+    })
+
+    test('a cloud stream that dies after keepalives still ends as one retryable truncation frame', async () => {
+      nextFetchResponses.push(() => new Response(': keepalive 15000ms\n\n: keepalive 30000ms\n\n', {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }))
+
+      const app = buildApp()
+      const res = await app.fetch(anthropicStreamRequest())
+
+      expect(res.status).toBe(200)
+      const text = await res.text()
+      expect(text).toContain(': keepalive 15000ms')
+      // Keepalives are not a terminal event, so the dead provider is still
+      // reported as a retryable truncation rather than a clean finish.
+      expect(text).toContain('[shogo:retryable=true;code=upstream_truncated]')
+      expect(text.match(/\[shogo:retryable=/g) ?? []).toHaveLength(1)
+    })
+  })
+
   describe('workspace model allowlist applies to forwarded calls', () => {
     let invalidate: (workspaceId: string) => void
 

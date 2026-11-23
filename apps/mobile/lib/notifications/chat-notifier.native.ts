@@ -36,6 +36,7 @@ import type {
   NotificationPermissionState,
 } from './chat-notifier'
 import { lifecycleNotificationKind } from './lifecycle-click'
+import { errorMessage } from '../error-message'
 
 let handlerConfigured = false
 let androidChannelConfigured = false
@@ -227,7 +228,7 @@ export async function ensureNotificationPermission(): Promise<boolean> {
     if (!granted) console.warn('[notifications] Permission request was declined')
     return granted
   } catch (err) {
-    console.warn('[notifications] Permission check failed:', (err as Error).message)
+    console.warn('[notifications] Permission check failed:', errorMessage(err))
     return false
   }
 }

@@ -39,7 +39,8 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
-import { useLocalSearchParams, useRouter, Stack } from "expo-router";
+import { useRouter, Stack } from "expo-router";
+import { useProjectRouteParams } from "../../../../lib/use-project-route-params";
 import { observer } from "mobx-react-lite";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { LinearGradient } from "expo-linear-gradient";
@@ -78,7 +79,10 @@ import {
   usePlatformConfig,
 } from "../../../../lib/platform-config";
 import { resolveChatScope } from "../../../../lib/chat-scope";
-import { useProjectChatTabs } from "../../../../lib/project-chat-tabs";
+import {
+  inactiveChatTabStyle,
+  useProjectChatTabs,
+} from "../../../../lib/project-chat-tabs";
 import {
   hasChatUrlOneShotParams,
   isChatSessionOfProject,
@@ -127,6 +131,7 @@ import {
 } from "../../../../components/voice-mode/ChatBridgeContext";
 import { EzModeChatPanel } from "../../../../components/voice-mode/EzModeChatPanel";
 import { DEFAULT_MODEL } from "../../../../components/chat/ChatInput";
+import { resolvePickerModel } from "../../../../lib/chat-composer-memory";
 import {
   loadModelPreference,
   saveModelPreference,
@@ -273,7 +278,7 @@ const CANVAS_ERROR_LOG_TAIL = 30;
 
 export default observer(function ProjectLayout() {
   csMark("project:layout:render");
-  const params = useLocalSearchParams<{
+  const { params, preserved: preservedParams, rejectParam } = useProjectRouteParams<{
     id: string;
     chatSessionId?: string;
     fromConversation?: string;
@@ -343,11 +348,7 @@ export default observer(function ProjectLayout() {
     csMark("project:open-attempt", { projectId, openAttemptId });
     return () => clearOpenAttemptId(openAttemptId);
   }, [openAttemptId, projectId]);
-  const isIdeChatEmbed =
-    params.embed === "ide" ||
-    (Platform.OS === "web" &&
-      typeof window !== "undefined" &&
-      new URLSearchParams(window.location.search).get("embed") === "ide");
+  const isIdeChatEmbed = params.embed === "ide";
   const { width, height, isPhone: nativePhone } = useNativePhoneWindow();
   const isWide = width >= WIDE_BREAKPOINT;
   const insets = useSafeAreaInsets();
@@ -477,6 +478,10 @@ export default observer(function ProjectLayout() {
     chatScope: capturedChatScope,
     initialPropsSessionId,
     oneShotPresent: hasChatUrlOneShotParams(params),
+    // Keys a cold load restored (SHO-174). This hook is the only writer of the
+    // query, so it carries them: a second writer would be undone by this one on
+    // its next write, and `router.setParams` drops keys it does not pass.
+    preserved: preservedParams,
     enabled: Platform.OS === "web" && !isIdeChatEmbed,
     setParams: (next) => router.setParams(next as any),
   });
@@ -1261,16 +1266,39 @@ export default observer(function ProjectLayout() {
   // model-stamped message yet. Updated only on explicit user picks / cold load,
   // NOT when we apply a per-chat model on switch (so the fallback is preserved).
   const globalModelPrefRef = useRef<string | null>(null);
+  // The active chat's own model, as last reported by its ChatPanel (`null` when
+  // the chat has no pick of its own). It outranks the persisted preference: the
+  // read below re-runs when the catalog or the runtime URL arrives, and a late
+  // read must not replace the model the open chat already claimed (SHO-497).
+  const activeChatModelRef = useRef<string | null>(null);
   // Dedups the runtime PATCH when applying a chat's model on switch.
   const sessionModelSyncedRef = useRef<string | null>(null);
+  // A claim only lives as long as a chat is open: with no chat on screen the
+  // picker follows the preference again (a switch keeps its claim, so the
+  // picker does not flash between chats).
+  useEffect(() => {
+    if (!chatSessionId) activeChatModelRef.current = null;
+  }, [chatSessionId]);
   useEffect(() => {
     let cancelled = false;
     loadModelPreference(projectId).then((stored) => {
       if (cancelled) return;
       const next = stored ?? DEFAULT_MODEL;
       globalModelPrefRef.current = next;
-      setSelectedModel(next);
       setModelPrefLoaded(true);
+      // The chat's own model wins. Re-applying the preference here is what put
+      // a reloaded chat back on the last model picked anywhere, even though the
+      // chat's own pick was in the device cache and the panel had already
+      // reported it (SHO-497).
+      const resolved = resolvePickerModel({
+        chatModel: activeChatModelRef.current,
+        preference: next,
+        defaultModel: DEFAULT_MODEL,
+      });
+      setSelectedModel(resolved.model);
+      // A chat's model is synced by its own report; do not point the runtime at
+      // the preference behind its back.
+      if (resolved.fromChat) return;
       if (!agentUrl) return;
       const syncKey = `${projectId}:${next}`;
       if (modelPrefSyncedRef.current === syncKey) return;
@@ -1345,7 +1373,15 @@ export default observer(function ProjectLayout() {
   // back to the last-used global choice.
   const handleResolveSessionModel = useCallback(
     (modelId: string | null) => {
-      const next = modelId ?? globalModelPrefRef.current ?? DEFAULT_MODEL;
+      // The claim, recorded before any early return: this is the chat's own
+      // answer (including "this chat has none"), and a preference read that
+      // lands later must not overwrite it.
+      activeChatModelRef.current = modelId;
+      const { model: next } = resolvePickerModel({
+        chatModel: modelId,
+        preference: globalModelPrefRef.current,
+        defaultModel: DEFAULT_MODEL,
+      });
       if (selectedModelRef.current === next) return;
       setSelectedModel(next);
       if (!agentUrl) return;
@@ -1847,6 +1883,13 @@ export default observer(function ProjectLayout() {
   // (root cause of the "chat is always fullscreen" bug).
   const [attentionTab, setAttentionTab] = useState<string | null>(null);
   const effectiveTab = attentionTab ?? previewTab;
+  // `router.setParams` drops every key it is not handed, so a write that only
+  // carries its own param erases what the arrival URL restored (SHO-174): the
+  // `navTab` write below is what used to leave a reloaded `?tab=settings` URL
+  // holding `?navTab=settings` and nothing else. Read through a ref so the
+  // effect keeps its two dependencies.
+  const preservedParamsRef = useRef(preservedParams);
+  preservedParamsRef.current = preservedParams;
   // Mirror the visible pane into a dedicated (non-consumed) route param so
   // MobileBottomNav can highlight the right tab even when the pane changed
   // via in-page controls rather than a bottom-nav tap. Deliberately a
@@ -1855,7 +1898,10 @@ export default observer(function ProjectLayout() {
   // logic — nothing else reads `navTab`.
   useEffect(() => {
     if (!projectId) return;
-    router.setParams({ navTab: effectiveTab } as any);
+    router.setParams({
+      ...preservedParamsRef.current,
+      navTab: effectiveTab,
+    } as any);
   }, [projectId, effectiveTab]);
   // Set when the user (or Agent Type switch) explicitly asks for canvas this
   // session. Stops the canvas-disabled effect and a stale `?tab=chat-fullscreen`
@@ -2776,6 +2822,10 @@ export default observer(function ProjectLayout() {
     validatedDeepLinkIdsRef.current.add(key);
 
     const fallBackToProjectChat = () => {
+      // Stop the dead id speaking: it reached the router as well as the
+      // arrival URL, so without retracting both it is re-applied on the next
+      // render and the screen stays pinned to a chat that cannot open.
+      rejectParam("chatSessionId", incoming);
       // Let the pinned/default promotion own selection again.
       pinnedSessionAppliedRef.current = false;
       setOpenChatTabIds((prev) =>
@@ -2806,6 +2856,7 @@ export default observer(function ProjectLayout() {
     store,
     setOpenChatTabIds,
     capturedChatScope,
+    rejectParam,
   ]);
 
   const handleCreateNewSession = useCallback(async () => {
@@ -3643,14 +3694,7 @@ export default observer(function ProjectLayout() {
             className="flex-1"
             style={
               !isActive
-                ? {
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    opacity: 0,
-                  }
+                ? inactiveChatTabStyle(Platform.OS)
                 : nativePhone
                 ? {
                     flex: 1,
@@ -3662,6 +3706,7 @@ export default observer(function ProjectLayout() {
                 : undefined
             }
             pointerEvents={isActive ? "auto" : "none"}
+            aria-hidden={!isActive}
           >
             <PanelErrorBoundary panelName="Chat">
               <ChatPanel
@@ -3920,11 +3965,7 @@ export default observer(function ProjectLayout() {
         <Stack.Screen options={HIDDEN_HEADER_OPTIONS} />
         {/* A phone enters the project on this page, so keep the way back and
             the name on screen while it loads instead of a bare spinner. */}
-        {Platform.OS !== "web" ? (
-          <View className="bg-background" style={{ paddingTop: insets.top }}>
-            <ProjectSurfaceHeader projectId={projectId} />
-          </View>
-        ) : null}
+        <ProjectSurfaceHeader projectId={projectId} />
         <View className="flex-1 bg-background items-center justify-center px-6">
           {!showStalledRecovery && (
             <>

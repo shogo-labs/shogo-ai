@@ -62,6 +62,10 @@ export const MOVE_CLOSURE: Record<string, ClosureRule> = {
   UserGroup: { mode: 'always' },
   UserIntegrationWorkspaceGrant: { mode: 'always' },
   MeetingTemplate: { mode: 'always' },
+  // A domain and its suppression list are the workspace's sending identity.
+  MailDomain: { mode: 'always' },
+  MailSuppression: { mode: 'always' },
+
   // SHO-428: a course purchase belongs to the workspace as a whole, never to
   // one channel or project — the same as WorkspaceAgentProfile. A partial move
   // carries it, so the buyer keeps the course they paid for.
@@ -74,6 +78,8 @@ export const MOVE_CLOSURE: Record<string, ClosureRule> = {
   // ── a channel's own content ───────────────────────────────────────
   Board: { mode: 'conversation', fields: ['conversationId'] },
   Meeting: { mode: 'conversation', fields: ['conversationId'] },
+  // A mailbox is its conversation; its threads and mail follow it as children.
+  Mailbox: { mode: 'conversation', fields: ['conversationId'] },
 
   // ── reachable through a foreign key ───────────────────────────────
   // A chat with an agent belongs to the project it is about; a schedule

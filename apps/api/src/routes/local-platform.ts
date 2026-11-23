@@ -4,6 +4,7 @@
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { fetchCloudAgentModelDefaults, fetchCloudVisibleModels, getUpstreamCredential } from '../lib/federated-upstream'
+import { AUTO_MODEL_DEFAULTS } from '../lib/runtime/agent-model-defaults'
 import { resolvePlatformVisibleModels } from '../services/visible-models.service'
 import { getNativeProviderApiKeySync } from '../services/provider-credentials.service'
 
@@ -83,9 +84,9 @@ function localAgentModelDefaults() {
     advanced: process.env.AGENT_ADVANCED_MODEL || 'claude-sonnet-4-6',
     defaultMode: process.env.AGENT_DEFAULT_MODE || null,
     autoTiers: {
-      economy: { id: 'gpt-5.4-nano' },
-      standard: { id: 'claude-haiku-4-5-20251001' },
-      premium: { id: 'claude-sonnet-4-6' },
+      economy: { id: AUTO_MODEL_DEFAULTS.economy },
+      standard: { id: AUTO_MODEL_DEFAULTS.standard },
+      premium: { id: AUTO_MODEL_DEFAULTS.premium },
     },
     hasAdvancedModelAccess: true,
     deepseekModelIds: [],

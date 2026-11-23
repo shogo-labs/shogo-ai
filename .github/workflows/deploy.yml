@@ -73,6 +73,16 @@ on:
         required: false
         default: false
         type: boolean
+      emergency_skip_ci_gate:
+        description: 'Production only, outages: do not wait for the full CI suite (Lint, Typecheck, Test) on this commit. Requires emergency_reason. Combine with skip_staging_e2e_gate + force_rebuild_production for a hotfix branch.'
+        required: false
+        default: false
+        type: boolean
+      emergency_reason:
+        description: 'Required with emergency_skip_ci_gate: the incident and the PR being forced through (recorded on the run).'
+        required: false
+        default: ''
+        type: string
 
 # Production runs are serialized per ref here. Staging runs get a group of
 # their own so builds for successive commits overlap; the staging-rollout job
@@ -112,7 +122,35 @@ jobs:
       # run (which tested this exact commit on the queue's ref) and the push
       # run are re-read on every poll: a commit can arrive here while its
       # merge-queue run is still finishing.
+      - name: Emergency bypass of the CI gate
+        id: emergency
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.emergency_skip_ci_gate == 'true'
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment }}
+          REASON: ${{ github.event.inputs.emergency_reason }}
+          ACTOR: ${{ github.actor }}
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$ENVIRONMENT" != "production" ]; then
+            echo "::error::emergency_skip_ci_gate is production-only (staging deploys always wait for CI)"; exit 1
+          fi
+          if [ "${#REASON}" -lt 10 ]; then
+            echo "::error::emergency_skip_ci_gate needs emergency_reason (the incident and PR being forced through)"; exit 1
+          fi
+          echo "::warning title=CI gate bypassed::$ACTOR deployed $REF@${SHA:0:9} to production without waiting for CI: $REASON"
+          {
+            echo "## ⚠️ CI gate bypassed (emergency)"
+            echo ""
+            echo "- **Who:** $ACTOR"
+            echo "- **Ref:** \`$REF\` @ \`$SHA\`"
+            echo "- **Reason:** $REASON"
+            echo ""
+            echo "CI for this commit was still running or not yet green. Land the same change on main through the merge queue."
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Wait for CI to pass for this commit
+        if: steps.emergency.outcome != 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -1281,6 +1319,12 @@ jobs:
           if [ -n "${{ secrets.SLACK_SIGNING_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SLACK_SIGNING_SECRET="${{ secrets.SLACK_SIGNING_SECRET }}"); fi
           # Not read by the API today; plumbed for the future api_app_id check.
           if [ -n "${{ secrets.SLACK_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=SLACK_APP_ID="${{ secrets.SLACK_APP_ID }}"); fi
+          # WhatsApp Tech Provider (Embedded Signup flow — SHO-463). Unset keeps
+          # /api/channels/whatsapp/connect answering 412 instead of 503.
+          if [ -n "${{ secrets.WHATSAPP_META_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_META_APP_ID="${{ secrets.WHATSAPP_META_APP_ID }}"); fi
+          if [ -n "${{ secrets.WHATSAPP_META_APP_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_META_APP_SECRET="${{ secrets.WHATSAPP_META_APP_SECRET }}"); fi
+          if [ -n "${{ secrets.WHATSAPP_ES_CONFIG_ID }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_ES_CONFIG_ID="${{ secrets.WHATSAPP_ES_CONFIG_ID }}"); fi
+          if [ -n "${{ secrets.WHATSAPP_WEBHOOK_VERIFY_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_WEBHOOK_VERIFY_TOKEN="${{ secrets.WHATSAPP_WEBHOOK_VERIFY_TOKEN }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
@@ -1411,6 +1455,41 @@ jobs:
             psql -U postgres -d shogo -v ON_ERROR_STOP=1 < k8s/cnpg/ensure-extensions.sql \
             || { echo "::error::Could not install Postgres extensions on US"; exit 1; }
 
+      # Published apps' database (SHO-308 §1, SHO-514). A region whose
+      # `projects-pg` does not exist silently keeps every new server app on
+      # SQLite, so the cluster is deployed HERE rather than by hand: apply the
+      # PriorityClass, the cluster, wait for it, then the pooler and its
+      # deployment — all BEFORE the API manifests, so the API never starts with
+      # PROJECTS_DB_POOLER_HOST pointing at a Service with no endpoints.
+      #
+      # A Pod that names a PriorityClass which does not exist is rejected, so
+      # the class must land before the cluster. The cluster also needs the
+      # existing `cnpg-s3-credentials` Secret: the backup stanza is evaluated at
+      # bootstrap, and the check below names it when it is missing.
+      #
+      # Idempotent on a re-run: `apply` is a no-op once converged and `wait`
+      # returns as soon as the cluster is already Ready.
+      - name: Deploy projects-pg (published apps' database)
+        run: |
+          set -euo pipefail
+          # The backup stanza is evaluated at bootstrap: without this Secret the
+          # cluster sits in "Setting up primary" and the 15m wait below fails
+          # with no clue why. Name the cause here instead.
+          if ! kubectl get secret cnpg-s3-credentials -n "$NS_SYSTEM" >/dev/null 2>&1; then
+            echo "::error::Secret cnpg-s3-credentials is missing in $NS_SYSTEM on US — projects-pg cannot bootstrap its backups. Create it first (docs/runbooks/published-postgres.md)."
+            exit 1
+          fi
+          kubectl apply -f "k8s/overlays/${ENVIRONMENT}/priority-classes.yaml" \
+            || { echo "::error::Could not apply the shogo-db-critical PriorityClass on US"; exit 1; }
+          kubectl apply -f "k8s/cnpg/${ENVIRONMENT}-oci/projects-cluster.yaml" \
+            || { echo "::error::Could not apply the projects-pg cluster on US"; exit 1; }
+          kubectl wait --for=condition=Ready cluster/projects-pg -n "$NS_SYSTEM" --timeout=15m \
+            || { echo "::error::projects-pg did not become Ready within 15m on US"; kubectl describe cluster projects-pg -n "$NS_SYSTEM" || true; exit 1; }
+          kubectl apply -f "k8s/cnpg/${ENVIRONMENT}-oci/projects-pooler.yaml" \
+            || { echo "::error::Could not apply the projects-pg pooler on US"; exit 1; }
+          kubectl rollout status deployment/projects-pg-pooler-rw -n "$NS_SYSTEM" --timeout=5m \
+            || { echo "::error::projects-pg-pooler-rw did not roll out on US"; exit 1; }
+
       - name: Apply Kubernetes manifests
         run: |
           # Render RUNTIME_IMAGE into the api ksvc at apply time, mirroring the
@@ -1454,6 +1533,22 @@ jobs:
         run: |
           kubectl patch configmap config-defaults -n knative-serving --type merge \
             -p '{"data":{"max-revision-timeout-seconds":"3600","revision-idle-timeout-seconds":"0"}}' || true
+
+      # SHO-506: `revision-response-start-timeout-seconds` defaults to 300s and is
+      # armed per request by queue-proxy, which never disarms it on a hijacked
+      # (WebSocket) stream — so a desktop tunnel that opened cleanly was closed
+      # from behind at exactly 5:00 (`1006` on the client), whatever the
+      # revision's own `timeoutSeconds` (1800 on the api) said.
+      # The other 300s candidates are already off or ruled out: kourier
+      # `stream-idle-timeout: 0s` (patched above), the OCI LB's
+      # `oci-load-balancer-connection-idle-timeout` is 1800, and the kourier
+      # access log records `dur=300001` at each cut. 0 disables the
+      # response-start bound; the revision request timeout still bounds a
+      # request, and `revision-idle-timeout-seconds: 0` keeps a live stream alive.
+      - name: Ensure Knative queue-proxy does not cut hijacked WebSocket streams at 5 minutes
+        run: |
+          kubectl patch configmap config-defaults -n knative-serving --type merge \
+            -p '{"data":{"revision-response-start-timeout-seconds":"0"}}' || true
 
       # Durable guardrail (run 26873062665, 2026-06-03): bound runtime-image
       # accumulation on nodes. Each deploy pulls a new ~8 GB runtime image;
@@ -1637,6 +1732,22 @@ jobs:
           if [ -n "${{ needs.resolve-config.outputs.app_version }}" ] && [ "$REPORTED_VERSION" != "${{ needs.resolve-config.outputs.app_version }}" ]; then
             echo "::warning::US api reports $REPORTED_VERSION but the release resolved to ${{ needs.resolve-config.outputs.app_version }}"
           fi
+
+      # Object storage is NOT liveness: the api serves pages fine with no bucket,
+      # so /api/health would stay 200 while every upload failed `NoSuchBucket` at
+      # users (SHO-491 — a bucket merged, never applied, found hours later). The
+      # api probes its configured buckets and reports them on /api/health.storage;
+      # this gate makes an absence a red deploy instead of a quiet outage.
+      - name: Verify publish buckets exist
+        run: |
+          KOURIER_IP=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+          BODY_FILE=$(mktemp)
+          if [ -n "$KOURIER_IP" ]; then
+            curl -s --connect-timeout 5 --max-time 20 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/health?storage=refresh" -o "$BODY_FILE" || true
+          else
+            curl -s --connect-timeout 5 --max-time 20 "https://${{ env.DOMAIN }}/api/health?storage=refresh" -o "$BODY_FILE" || true
+          fi
+          bash .github/scripts/verify-storage-health.sh US "$BODY_FILE"
 
       # (removed) Knative warm-pool health gate — vestigial under metal-only
       # prod (see staging block). Metal is authoritative for project runtimes;
@@ -1960,6 +2071,12 @@ jobs:
           if [ -n "${{ secrets.SLACK_SIGNING_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SLACK_SIGNING_SECRET="${{ secrets.SLACK_SIGNING_SECRET }}"); fi
           # Not read by the API today; plumbed for the future api_app_id check.
           if [ -n "${{ secrets.SLACK_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=SLACK_APP_ID="${{ secrets.SLACK_APP_ID }}"); fi
+          # WhatsApp Tech Provider (Embedded Signup flow — SHO-463). Unset keeps
+          # /api/channels/whatsapp/connect answering 412 instead of 503.
+          if [ -n "${{ secrets.WHATSAPP_META_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_META_APP_ID="${{ secrets.WHATSAPP_META_APP_ID }}"); fi
+          if [ -n "${{ secrets.WHATSAPP_META_APP_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_META_APP_SECRET="${{ secrets.WHATSAPP_META_APP_SECRET }}"); fi
+          if [ -n "${{ secrets.WHATSAPP_ES_CONFIG_ID }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_ES_CONFIG_ID="${{ secrets.WHATSAPP_ES_CONFIG_ID }}"); fi
+          if [ -n "${{ secrets.WHATSAPP_WEBHOOK_VERIFY_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=WHATSAPP_WEBHOOK_VERIFY_TOKEN="${{ secrets.WHATSAPP_WEBHOOK_VERIFY_TOKEN }}"); fi
 
           kubectl create secret generic api-secrets \
             --namespace=${{ env.NS_SYSTEM }} \
@@ -2091,6 +2208,42 @@ jobs:
             psql -U postgres -d shogo -v ON_ERROR_STOP=1 < k8s/cnpg/ensure-extensions.sql \
             || { echo "::error::Could not install Postgres extensions on EU"; exit 1; }
 
+      # Published apps' database (SHO-308 §1, SHO-514). A region whose
+      # `projects-pg` does not exist silently keeps every new server app on
+      # SQLite, so the cluster is deployed HERE rather than by hand: apply the
+      # PriorityClass, the cluster, wait for it, then the pooler and its
+      # deployment — all BEFORE the API manifests, so the API never starts with
+      # PROJECTS_DB_POOLER_HOST pointing at a Service with no endpoints.
+      #
+      # A Pod that names a PriorityClass which does not exist is rejected, so
+      # the class must land before the cluster. The cluster also needs the
+      # existing `cnpg-s3-credentials` Secret: the backup stanza is evaluated at
+      # bootstrap, and the check below names it when it is missing.
+      #
+      # Idempotent on a re-run: `apply` is a no-op once converged and `wait`
+      # returns as soon as the cluster is already Ready. Published app databases
+      # are region-local: EU's cluster holds only the apps published in EU.
+      - name: Deploy projects-pg (published apps' database)
+        run: |
+          set -euo pipefail
+          # The backup stanza is evaluated at bootstrap: without this Secret the
+          # cluster sits in "Setting up primary" and the 15m wait below fails
+          # with no clue why. Name the cause here instead.
+          if ! kubectl get secret cnpg-s3-credentials -n "$NS_SYSTEM" >/dev/null 2>&1; then
+            echo "::error::Secret cnpg-s3-credentials is missing in $NS_SYSTEM on EU — projects-pg cannot bootstrap its backups. Create it first (docs/runbooks/published-postgres.md)."
+            exit 1
+          fi
+          kubectl apply -f "k8s/overlays/${ENVIRONMENT}/priority-classes.yaml" \
+            || { echo "::error::Could not apply the shogo-db-critical PriorityClass on EU"; exit 1; }
+          kubectl apply -f "k8s/cnpg/${ENVIRONMENT}-oci/projects-cluster.yaml" \
+            || { echo "::error::Could not apply the projects-pg cluster on EU"; exit 1; }
+          kubectl wait --for=condition=Ready cluster/projects-pg -n "$NS_SYSTEM" --timeout=15m \
+            || { echo "::error::projects-pg did not become Ready within 15m on EU"; kubectl describe cluster projects-pg -n "$NS_SYSTEM" || true; exit 1; }
+          kubectl apply -f "k8s/cnpg/${ENVIRONMENT}-oci/projects-pooler.yaml" \
+            || { echo "::error::Could not apply the projects-pg pooler on EU"; exit 1; }
+          kubectl rollout status deployment/projects-pg-pooler-rw -n "$NS_SYSTEM" --timeout=5m \
+            || { echo "::error::projects-pg-pooler-rw did not roll out on EU"; exit 1; }
+
       - name: Apply Kubernetes manifests
         run: |
           # Render RUNTIME_IMAGE into the api ksvc at apply time, mirroring the
@@ -2134,6 +2287,22 @@ jobs:
         run: |
           kubectl patch configmap config-defaults -n knative-serving --type merge \
             -p '{"data":{"max-revision-timeout-seconds":"3600","revision-idle-timeout-seconds":"0"}}' || true
+
+      # SHO-506: `revision-response-start-timeout-seconds` defaults to 300s and is
+      # armed per request by queue-proxy, which never disarms it on a hijacked
+      # (WebSocket) stream — so a desktop tunnel that opened cleanly was closed
+      # from behind at exactly 5:00 (`1006` on the client), whatever the
+      # revision's own `timeoutSeconds` (1800 on the api) said.
+      # The other 300s candidates are already off or ruled out: kourier
+      # `stream-idle-timeout: 0s` (patched above), the OCI LB's
+      # `oci-load-balancer-connection-idle-timeout` is 1800, and the kourier
+      # access log records `dur=300001` at each cut. 0 disables the
+      # response-start bound; the revision request timeout still bounds a
+      # request, and `revision-idle-timeout-seconds: 0` keeps a live stream alive.
+      - name: Ensure Knative queue-proxy does not cut hijacked WebSocket streams at 5 minutes
+        run: |
+          kubectl patch configmap config-defaults -n knative-serving --type merge \
+            -p '{"data":{"revision-response-start-timeout-seconds":"0"}}' || true
 
       # Durable guardrail (run 26873062665, 2026-06-03): bound runtime-image
       # accumulation on nodes. Each deploy pulls a new ~8 GB runtime image;
@@ -2611,6 +2780,22 @@ jobs:
           if [ -n "${{ needs.resolve-config.outputs.app_version }}" ] && [ "$REPORTED_VERSION" != "${{ needs.resolve-config.outputs.app_version }}" ]; then
             echo "::warning::EU api reports $REPORTED_VERSION but the release resolved to ${{ needs.resolve-config.outputs.app_version }}"
           fi
+
+      # Object storage is NOT liveness: the api serves pages fine with no bucket,
+      # so /api/health would stay 200 while every upload failed `NoSuchBucket` at
+      # users (SHO-491 — a bucket merged, never applied, found hours later). The
+      # api probes its configured buckets and reports them on /api/health.storage;
+      # this gate makes an absence a red deploy instead of a quiet outage.
+      - name: Verify publish buckets exist
+        run: |
+          KOURIER_IP=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+          if [ -z "$KOURIER_IP" ]; then
+            echo "::error::Kourier LoadBalancer IP not assigned; object storage cannot be verified"
+            exit 1
+          fi
+          BODY_FILE=$(mktemp)
+          curl -s --connect-timeout 5 --max-time 20 -H "Host: ${{ env.DOMAIN }}" "http://${KOURIER_IP}/api/health?storage=refresh" -o "$BODY_FILE" || true
+          bash .github/scripts/verify-storage-health.sh EU "$BODY_FILE"
 
       # (removed) Knative warm-pool health gate — vestigial under metal-only
       # prod (see staging block). Metal is authoritative for project runtimes;

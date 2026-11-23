@@ -36,6 +36,7 @@ import { useRouter } from 'expo-router'
 import { cn } from '@shogo/shared-ui/primitives'
 import { getAvailableModels, MODEL_ALIASES } from '@shogo/model-catalog'
 import { API_URL } from '../../../lib/api'
+import { errorMessage } from '../../../lib/error-message'
 
 const API_BASE = `${API_URL}/api/admin/evals`
 
@@ -390,7 +391,7 @@ function TriggerForm({ onTriggered }: { onTriggered: () => void }) {
         onTriggered()
       }
     } catch (e: any) {
-      setError(e.message ?? 'Network error')
+      setError(errorMessage(e, 'Network error'))
     }
     setSubmitting(false)
   }

@@ -27,6 +27,7 @@ let workspaces: Map<string, WorkspaceRow>
 let usersMap: Map<string, UserRow>
 let updateCalls: any[]
 let versionEventUpserts: any[]
+let activeDayUpserts: any[]
 let mintCalls: any[]
 let nextId = 0
 function gen(p='id'): string { nextId++; return `${p}_${nextId}` }
@@ -142,6 +143,12 @@ const prismaStub = {
       return create
     },
   },
+  deviceActiveDay: {
+    upsert: async ({ where, create, update }: any) => {
+      activeDayUpserts.push({ where, create, update })
+      return create
+    },
+  },
 }
 
 let throwMintNext = false
@@ -198,6 +205,7 @@ beforeEach(() => {
   usersMap = new Map()
   updateCalls = []
   versionEventUpserts = []
+  activeDayUpserts = []
   mintCalls = []
   nextId = 0
   throwMintNext = false
@@ -524,6 +532,40 @@ describe('POST /api-keys/validate', () => {
 // ─── POST /api-keys/heartbeat ──────────────────────────────────────────────
 
 describe('POST /api-keys/heartbeat', () => {
+  test('records one device_active_days row on the first touch of a UTC day', async () => {
+    apiKeys.push({
+      id: 'k1', name: 'K', keyHash: 'H(shogo_sk_x)', keyPrefix: 'p', workspaceId: 'w1', userId: 'u1',
+      expiresAt: null, revokedAt: null, kind: 'device',
+      deviceId: 'dev-1', deviceName: null, devicePlatform: 'darwin-arm64', deviceAppVersion: '2.3.6',
+      lastUsedAt: null, lastSeenAt: null, createdAt: new Date(),
+    })
+    const r = await app().request('/api/api-keys/heartbeat', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: 'shogo_sk_x', deviceAppVersion: '2.3.6' }),
+    })
+    expect(r.status).toBe(200)
+    expect(activeDayUpserts).toHaveLength(1)
+    const row = activeDayUpserts[0]
+    expect(row.create).toMatchObject({ deviceId: 'dev-1', os: 'macos', client: 'desktop', version: '2.3.6' })
+    expect(row.create.day).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    // Never a derived id — the column default owns it.
+    expect(row.create.id).toBeUndefined()
+  })
+
+  test('a second heartbeat the same day only bumps lastSeenAt', async () => {
+    apiKeys.push({
+      id: 'k1', name: 'K', keyHash: 'H(shogo_sk_x)', keyPrefix: 'p', workspaceId: 'w1', userId: 'u1',
+      expiresAt: null, revokedAt: null, kind: 'device',
+      deviceId: 'dev-1', deviceName: null, devicePlatform: 'darwin-arm64', deviceAppVersion: '2.3.6',
+      lastUsedAt: null, lastSeenAt: new Date(), createdAt: new Date(),
+    })
+    await app().request('/api/api-keys/heartbeat', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: 'shogo_sk_x', deviceAppVersion: '2.3.6' }),
+    })
+    expect(activeDayUpserts).toHaveLength(0)
+  })
+
   test('400 when key missing or malformed JSON', async () => {
     const r = await app().request('/api/api-keys/heartbeat', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -844,6 +886,51 @@ describe('planApiKeyTouch', () => {
     expect(t.data).toEqual({ lastSeenAt: NOW })
     expect(t.recordVersion).toBe(false)
   })
+
+  // ─── SHO-477: one device_active_days row per key per UTC day ────────────────
+
+  test('recordActiveDay: first touch of a UTC day is true', () => {
+    expect(planApiKeyTouch(deviceKey(), { now: NOW, touchLastUsed: true }).recordActiveDay).toBe(true)
+  })
+
+  test('recordActiveDay: a later touch the same UTC day is false', () => {
+    // NOW is 00:10Z; a touch an hour earlier is still 23rd October.
+    const earlierSameDay = new Date('2026-10-23T00:05:00.000Z')
+    const t = planApiKeyTouch(
+      deviceKey({ lastSeenAt: earlierSameDay }),
+      { now: NOW, touchLastUsed: true },
+    )
+    expect(t.recordActiveDay).toBe(false)
+  })
+
+  test('recordActiveDay: the first touch after midnight UTC is true', () => {
+    const lastNight = new Date('2026-10-22T23:58:00.000Z')
+    const justAfterMidnight = new Date('2026-10-23T00:01:00.000Z')
+    expect(
+      planApiKeyTouch(deviceKey({ lastSeenAt: lastNight }), { now: justAfterMidnight, touchLastUsed: true })
+        .recordActiveDay,
+    ).toBe(true)
+  })
+
+  test('recordActiveDay: a non-device key never records an active day', () => {
+    expect(planApiKeyTouch(userKey(), { now: NOW, touchLastUsed: true }).recordActiveDay).toBe(false)
+    expect(
+      planApiKeyTouch(userKey(), { now: NOW, touchLastUsed: false, alwaysTouchLastSeen: true }).recordActiveDay,
+    ).toBe(false)
+  })
+
+  test('recordActiveDay: a device active all day costs one row, not one per touch', () => {
+    let stored = deviceKey({ lastSeenAt: NOW, lastUsedAt: NOW })
+    let activeDayWrites = 0
+    // A device calling every 10 s for 20 minutes inside one UTC day.
+    for (let t = 10_000; t <= 20 * 60_000; t += 10_000) {
+      const now = new Date(NOW.getTime() + t)
+      const plan = planApiKeyTouch(stored, { now, touchLastUsed: true, reportedVersion: '1.0.0' })
+      if (plan.data) stored = { ...stored, ...plan.data } as typeof stored
+      if (plan.recordActiveDay) activeDayWrites++
+    }
+    expect(activeDayWrites).toBe(0)
+  })
 })
 
 describe('resolveApiKey write throttle', () => {
@@ -909,6 +996,21 @@ describe('resolveApiKey write throttle', () => {
     expect(updateCalls.length).toBe(1)
     expect(updateCalls[0].data.lastSeenAt).toBeInstanceOf(Date)
     expect(versionEventUpserts.length).toBe(0)
+  })
+
+  test('the first proxy call of a UTC day records one device_active_days row', async () => {
+    pushDevice()
+    await resolveApiKey('shogo_sk_x', { deviceAppVersion: '1.0.0' })
+    await settle()
+    expect(activeDayUpserts.length).toBe(1)
+    expect(activeDayUpserts[0].create).toMatchObject({ deviceId: 'dev-1', os: 'macos' })
+  })
+
+  test('a second proxy call the same day adds no device_active_days row', async () => {
+    pushDevice({ lastSeenAt: new Date(), lastUsedAt: new Date() })
+    await resolveApiKey('shogo_sk_x', { deviceAppVersion: '1.0.0' })
+    await settle()
+    expect(activeDayUpserts.length).toBe(0)
   })
 
   test('revoked, expired and app tokens are still rejected', async () => {

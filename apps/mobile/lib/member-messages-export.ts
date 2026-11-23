@@ -8,7 +8,7 @@
 
 import { memberMessagesCsvUrl } from './usage-log-csv'
 import type { EngagementPeriod } from './engagement-utils'
-import { openExternalLink } from './open-external-link';
+import { openDownloadUrl } from './open-external-link'
 
 /**
  * The export window for a period, as ISO. The messages route takes explicit
@@ -43,6 +43,5 @@ export function exportMemberMessages(input: {
 }
 
 function defaultOpen(url: string): void {
-  if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener')
-  else void openExternalLink(url)
+  openDownloadUrl(url)
 }

@@ -220,6 +220,44 @@ describe('HttpClient — response parsing', () => {
   })
 })
 
+describe('HttpClient — empty and malformed JSON bodies (SHO-483)', () => {
+  test('an empty application/json body is null, not a JSON parse error', async () => {
+    fetchImpl = async () =>
+      new Response('', { status: 200, headers: new Headers({ 'content-type': 'application/json' }) })
+    const client = new HttpClient({ baseUrl: 'https://api.test' })
+    const res = await client.get('/empty')
+    expect(res.data).toBeNull()
+  })
+
+  test('an empty error body reports the status, not "Unexpected end of input"', async () => {
+    fetchImpl = async () =>
+      new Response('', { status: 503, headers: new Headers({ 'content-type': 'application/json' }) })
+    const client = new HttpClient({ baseUrl: 'https://api.test' })
+    let err: unknown
+    try {
+      await client.get('/down')
+    } catch (e) {
+      err = e
+    }
+    expect(err).toBeInstanceOf(ShogoError)
+    expect((err as ShogoError).status).toBe(503)
+    expect((err as ShogoError).message).not.toMatch(/JSON|end of input/i)
+  })
+
+  test('a malformed error body still reports the status', async () => {
+    fetchImpl = async () =>
+      new Response('<html>bad gateway', { status: 502, headers: new Headers({ 'content-type': 'application/json' }) })
+    const client = new HttpClient({ baseUrl: 'https://api.test' })
+    let err: unknown
+    try {
+      await client.get('/gw')
+    } catch (e) {
+      err = e
+    }
+    expect((err as ShogoError).status).toBe(502)
+  })
+})
+
 describe('HttpClient — error handling', () => {
   test('non-ok with message field throws ShogoError using that message', async () => {
     fetchImpl = async () => makeJsonResponse({ message: 'oops' }, { status: 400 })

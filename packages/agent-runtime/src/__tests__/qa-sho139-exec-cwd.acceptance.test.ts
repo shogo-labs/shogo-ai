@@ -31,12 +31,12 @@ import {
   realpathSync,
   rmSync,
   statSync,
-  utimesSync,
   writeFileSync,
 } from 'fs'
 import { execFileSync } from 'child_process'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { stampMtime } from './helpers/stamp-mtime'
 import { createTools, hostToContainer, containerToHost, type ToolContext } from '../gateway-tools'
 import { TaskRegistry } from '../task-registry'
 import { taskOutputDir } from '../task-output'
@@ -227,10 +227,10 @@ describe('SHO-139 acceptance — exec leaves no cwd marker behind', () => {
     const staleRoot = join(TEST_DIR, `${EXEC_CWD_PREFIX}1600000000000-stale`)
     const staleNested = join(nested, `${EXEC_CWD_PREFIX}1600000000001-stale`)
     const fresh = join(nested, `${EXEC_CWD_PREFIX}${Date.now()}-fresh`)
-    const old = new Date(Date.now() - 20 * 60 * 1000)
     for (const f of [staleRoot, staleNested, fresh]) writeFileSync(f, '/some/cwd\n')
-    utimesSync(staleRoot, old, old)
-    utimesSync(staleNested, old, old)
+    stampMtime(staleRoot, Date.now() - 20 * 60 * 1000)
+    stampMtime(staleNested, Date.now() - 20 * 60 * 1000)
+    stampMtime(fresh)
 
     const removed = sweepExecCwdMarkers(TEST_DIR)
 

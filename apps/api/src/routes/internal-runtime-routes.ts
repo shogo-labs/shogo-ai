@@ -62,6 +62,7 @@ import {
 import { workspaceMeetingRoutes } from './workspace-meetings'
 import { agentChannelRoutes, type AgentChannelAuthContext } from './conversations'
 import { agentBoardRoutes } from './work-boards'
+import { agentMailRoutes } from './mail'
 import { agentSocialRoutes } from './social'
 import {
   createInternalAuthorizers,
@@ -76,7 +77,8 @@ import {
   type InternalIdentity,
 } from './internal-runtime-auth'
 import { projectTrustRoutes } from './internal-project-trust'
-import { signSharedFileToken } from '../lib/shared-file-token'
+import { signSharedFileToken, sharedFilePathProblem } from '../lib/shared-file-token'
+import { mintSharedFileLink as mintSharedFileOnCloud } from '../lib/shared-file-mint'
 import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
 import {
   REMOTE_DEVICE_CALL_HEADER,
@@ -155,6 +157,12 @@ export interface RuntimeInternalRoutesOptions {
   resolveSharedFileTarget?: (
     scope: { projectId?: string; workspaceId: string; path: string },
   ) => Promise<{ target: string; normalizedPath: string } | null>
+  /**
+   * Test seam (SHO-493): the instance-tunnel transport a cross-workspace call
+   * to a desktop-hosted workspace is forwarded over. Production leaves it out
+   * and the real `routes/instances` tunnel is used.
+   */
+  _hostTunnel?: import('../lib/host-tunnel').TunnelTransport
 }
 
 export function numberOr(value: unknown, fallback: number): number {
@@ -325,6 +333,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     loadAgentCall,
     loadGitHub,
     resolveSharedFileTarget,
+    _hostTunnel,
   } = opts
   const {
     validateAuth,
@@ -741,9 +750,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    * answered or forwarded by whichever instance owns that workspace's data: a
    * cloud workspace from a signed-in desktop goes out through `relayToCloud`
    * with that workspace's device key; a workspace whose compute is a paired
-   * desktop cannot be served from here, so it says `desktop_offline` instead of
-   * returning an empty 200. Every other request — and every call in the
-   * runtime's own workspace — falls straight through to the route, unchanged.
+   * desktop is forwarded over that host's tunnel, to the same path on the
+   * desktop's local API, which holds its boards, cards and chat in SQLite
+   * (SHO-493). Every other request — and every call in the runtime's own
+   * workspace — falls straight through to the route, unchanged.
    *
    * The check runs here, before anything leaves the machine, because this is
    * the only side holding the person's requester ticket and approval record.
@@ -788,18 +798,47 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       )
     }
     if (home.kind === 'desktop') {
-      const name = await (await import('../lib/prisma')).prisma.workspace
-        .findUnique({ where: { id: target }, select: { name: true } })
-        .then((w) => w?.name ?? null)
-        .catch(() => null)
-      return c.json(
-        {
-          error: {
-            code: 'desktop_offline',
-            message: `${name ?? 'That workspace'} runs on a paired desktop, which is not connected right now.`,
+      const { CROSS_WORKSPACE_TOOL_HEADER, forwardToHost } = await import('../lib/cross-workspace')
+      // A desktop's own API cannot reach another desktop, and its SQLite does
+      // not hold that workspace's rows: only the cloud can forward. Say so
+      // instead of answering from the wrong database (SHO-493).
+      if (process.env.SHOGO_LOCAL_MODE === 'true') {
+        const name = await prisma.workspace
+          .findUnique({ where: { id: target }, select: { name: true } })
+          .then((w) => w?.name ?? null)
+          .catch(() => null)
+        return c.json(
+          {
+            error: {
+              code: 'desktop_hosted',
+              message: `${name ?? 'That workspace'} runs on a paired desktop, and a call from this machine can only reach it through Shogo Cloud.`,
+            },
           },
+          503,
+        )
+      }
+      // A forwarded call acts for the person on the verified ticket; with no
+      // person there is nobody to attribute the desktop's write to.
+      if (!allowed.userId) {
+        return c.json(
+          {
+            error: {
+              code: 'requester_ticket_required',
+              message: "A cross-workspace call needs the person it is made for. Start the turn from that person's chat.",
+            },
+          },
+          403,
+        )
+      }
+      return forwardToHost(
+        c,
+        {
+          hostInstanceId: home.hostInstanceId,
+          requesterUserId: allowed.userId,
+          callerWorkspaceId: identity.workspaceId,
+          tool: c.req.header(CROSS_WORKSPACE_TOOL_HEADER) ?? null,
         },
-        503,
+        { _tunnel: _hostTunnel },
       )
     }
     return c.json(
@@ -929,9 +968,14 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         // workspace it claims to be (a project with attachments runs as a workspace runtime anchored on
         // itself); with no claim it speaks as the workspace agent.
         const projectId = identity?.kind === 'project' ? identity.projectId : undefined
-        // A cross-workspace call is made for a person; attribute the post to them.
+        // A cross-workspace call is made for a person; attribute the post to them,
+        // and remember that the authorizer verified them (SHO-493).
         const requesterId = scopeRequesterUserId(c)
-        return { workspaceId, projectId, ...(requesterId ? { userId: requesterId } : {}) }
+        return {
+          workspaceId,
+          projectId,
+          ...(requesterId ? { userId: requesterId, crossWorkspaceRequesterId: requesterId } : {}),
+        }
       },
     }),
   )
@@ -949,6 +993,21 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         // A cross-workspace call is made for a person; attribute the write to them.
         const userId = scopeRequesterUserId(c)
         return { workspaceId, projectId, ...(userId ? { userId } : {}) }
+      },
+    }),
+  )
+
+  app.route(
+    '/',
+    agentMailRoutes({
+      authorize: async (c) => {
+        const workspaceId = c.req.param('workspaceId')
+        if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+          return scopeDenied(c)
+        }
+        const identity = await authenticate(c)
+        const projectId = identity?.kind === 'project' ? identity.projectId : undefined
+        return { workspaceId, projectId }
       },
     }),
   )
@@ -1576,15 +1635,9 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       expiresInDays?: unknown
     } | null
     const path = typeof body?.path === 'string' ? body.path : ''
-    const segments = path.split('/')
-    if (
-      !path ||
-      path.length > 4096 ||
-      path.startsWith('/') ||
-      path.includes('\\') ||
-      segments.some((segment) => !segment || segment === '.' || segment === '..')
-    ) {
-      return c.json({ error: { code: 'invalid_path', message: 'path must be a relative workspace path' } }, 400)
+    const pathProblem = sharedFilePathProblem(path)
+    if (pathProblem) {
+      return c.json({ error: { code: 'invalid_path', message: pathProblem } }, 400)
     }
 
     const requestedDays =
@@ -1624,6 +1677,17 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         }
         signedPath = resolved.normalizedPath
       }
+
+      // A paired desktop's workspace is opened from the cloud, so the link has to
+      // be the cloud's: its origin and its signature (SHO-486). `null` means
+      // "mint it here" — a desktop that is not paired, or an unreachable cloud.
+      const relayed = await mintSharedFileOnCloud({
+        ...(scope.projectId ? { projectId: scope.projectId } : {}),
+        workspaceId: scope.workspaceId,
+        path: signedPath,
+        expiresInDays,
+      })
+      if (relayed) return c.json(relayed)
 
       const token = signSharedFileToken({
         ...(scope.projectId ? { projectId: scope.projectId } : {}),
@@ -3630,21 +3694,15 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         503,
       )
     } else {
-      const { ensureTunnelConnected } = await import('../routes/instances')
+      const { wakeHostTunnel } = await import('../routes/instances')
       const { hostTunnelRuntimeUrl } = await import('../lib/host-tunnel')
+      const { wakeRefusal } = await import('../lib/host-wake')
       const WAKE_DEADLINE_MS = Math.max(0, Number(process.env.SHOGO_HOST_WAKE_DEADLINE_MS ?? 5_000) || 0)
-      if (!(await ensureTunnelConnected(instanceId, WAKE_DEADLINE_MS))) {
-        return c.json(
-          {
-            error: {
-              code: 'device_offline',
-              message: `${instance.name} is offline${instance.lastSeenAt ? ` (last seen ${new Date(instance.lastSeenAt).toISOString()})` : ''}`,
-              instanceId,
-              lastSeenAt: instance.lastSeenAt ? new Date(instance.lastSeenAt).toISOString() : null,
-            },
-          },
-          503,
-        )
+      const wake = await wakeHostTunnel(instanceId, { staleProbeMs: WAKE_DEADLINE_MS })
+      if (wake.state !== 'connected') {
+        // `device_connecting` (retryable) when the machine's heartbeat is fresh but
+        // its tunnel missed the wake window; `device_offline` only when it is away.
+        return c.json({ error: wakeRefusal(wake, 'device', { subject: instance.name }) }, 503)
       }
 
       // The desktop's workspace agent proxy, reached through the same host tunnel
@@ -4001,6 +4059,140 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const { postInterruptedResume } = await import('../services/chat-resume.service')
     const result = await postInterruptedResume(chatSessionId, { toolName, resume })
     return c.json(result)
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/channels/whatsapp/connect-link
+   *
+   * Runtime-token auth. Called by the agent gateway's channel_connect tool
+   * when the user calls channel_connect({ type: "whatsapp", config: {} }).
+   */
+  app.post('/projects/:projectId/channels/whatsapp/connect-link', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+
+    const { whatsappEmbeddedSignupAvailable } = await import('../lib/whatsapp-platform')
+    if (!whatsappEmbeddedSignupAvailable()) {
+      return c.json({ code: 'whatsapp_embedded_signup_unavailable', error: 'WhatsApp Embedded Signup is not configured on this server.' }, 412)
+    }
+
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { workspaceId: true },
+    })
+    if (!project) return c.json({ error: 'Project not found' }, 404)
+
+    const { issueConnectLinkForRuntime } = await import('../routes/channels-whatsapp')
+    return issueConnectLinkForRuntime(c, {
+      workspaceId: project.workspaceId,
+      projectId,
+      userId: 'runtime',
+      instanceId: null,
+    })
+  })
+
+  /**
+   * GET /api/internal/projects/:projectId/channels/whatsapp/credentials
+   *
+   * Returns the decrypted access token for a platform-bound WhatsApp number.
+   * Runtime-token auth only; never logged.
+   */
+  app.get('/projects/:projectId/channels/whatsapp/credentials', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+
+    const phoneNumberId = c.req.query('phoneNumberId')
+    if (!phoneNumberId) return c.json({ error: 'phoneNumberId is required' }, 400)
+
+    const { decryptSecret } = await import('../lib/secret-crypto')
+    const { WHATSAPP_GRAPH_VERSION } = await import('@shogo/shared-runtime/whatsapp-graph')
+
+    const binding = await prisma.whatsAppNumberBinding.findUnique({
+      where: { phoneNumberId },
+      select: { projectId: true, wabaId: true, tokenEncrypted: true, status: true },
+    })
+    if (!binding) return c.json({ error: 'No binding found for this phoneNumberId', code: 'not_found' }, 404)
+    if (binding.projectId !== projectId) return c.json({ error: 'Binding belongs to a different project' }, 403)
+    if (binding.status !== 'active') return c.json({ error: `Binding status: ${binding.status}`, code: 'not_active' }, 409)
+
+    let accessToken: string
+    try {
+      accessToken = decryptSecret(binding.tokenEncrypted)
+    } catch {
+      return c.json({ error: 'Failed to decrypt access token' }, 500)
+    }
+
+    return c.json({ ok: true, accessToken, wabaId: binding.wabaId, graphVersion: WHATSAPP_GRAPH_VERSION })
+  })
+
+  /**
+   * GET /api/internal/projects/:projectId/channels/whatsapp/bindings
+   *
+   * List active WhatsApp bindings for this project (for reconcile-on-start).
+   */
+  app.get('/projects/:projectId/channels/whatsapp/bindings', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+
+    const bindings = await prisma.whatsAppNumberBinding.findMany({
+      where: { projectId },
+      select: {
+        phoneNumberId: true, wabaId: true, displayPhoneNumber: true,
+        verifiedName: true, coexistence: true, status: true, statusReason: true,
+        syncStartedAt: true, contactsSyncRequestId: true, historySyncRequestId: true,
+      },
+    })
+    return c.json({ ok: true, bindings })
+  })
+
+  /**
+   * DELETE /api/internal/projects/:projectId/channels/whatsapp/bindings/:phoneNumberId
+   *
+   * Remove a platform binding (called on channel_disconnect of a platform channel).
+   * Best-effort unsubscribes the WABA from Shogo's app if no other binding shares it.
+   */
+  app.delete('/projects/:projectId/channels/whatsapp/bindings/:phoneNumberId', async (c) => {
+    const projectId = c.req.param('projectId')
+    const phoneNumberId = c.req.param('phoneNumberId')
+    if (!projectId || !phoneNumberId) return c.json({ error: 'Missing params' }, 400)
+    const identity = await authenticate(c, projectId)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+
+    const binding = await prisma.whatsAppNumberBinding.findUnique({
+      where: { phoneNumberId },
+      select: { id: true, projectId: true, wabaId: true, tokenEncrypted: true },
+    })
+    if (!binding) return c.json({ ok: true, message: 'No binding found' })
+    if (binding.projectId !== projectId) return c.json({ error: 'Binding belongs to a different project' }, 403)
+
+    // Check if any other binding uses the same WABA
+    const otherBindings = await prisma.whatsAppNumberBinding.count({
+      where: { wabaId: binding.wabaId, phoneNumberId: { not: phoneNumberId } },
+    })
+
+    if (otherBindings === 0) {
+      // Best-effort WABA unsubscribe
+      try {
+        const { decryptSecret } = await import('../lib/secret-crypto')
+        const { WHATSAPP_API_BASE } = await import('@shogo/shared-runtime/whatsapp-graph')
+        const accessToken = decryptSecret(binding.tokenEncrypted)
+        await fetch(`${WHATSAPP_API_BASE}/${binding.wabaId}/subscribed_apps`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${accessToken}` },
+        })
+      } catch (err: any) {
+        console.warn('[WhatsApp] WABA unsubscribe failed (non-fatal):', err?.message)
+      }
+    }
+
+    await prisma.whatsAppNumberBinding.delete({ where: { phoneNumberId } })
+    return c.json({ ok: true })
   })
 
   return app

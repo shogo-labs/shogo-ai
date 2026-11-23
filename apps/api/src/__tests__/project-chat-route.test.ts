@@ -31,6 +31,7 @@ mock.module('@shogo/model-catalog', () => ({
   getModelEntry: (_id: string) => null,
   MODEL_DOLLAR_COSTS: {} as Record<string, any>,
   calculateDollarCost: () => 0,
+  getModelDollarCosts: (_m: string, _at?: Date) => ({ inputPerMillion: 0, outputPerMillion: 0, cachedInputPerMillion: 0, cacheWritePerMillion: 0 }),
   getModelBillingModel: (id: string) => id,
   resolveAgentModeDefault: (mode: string) => mode,
   AUTO_MODEL_ID: 'auto',
@@ -49,6 +50,41 @@ let projectFixture: { id: string; name: string; workspaceId: string } | null = {
 }
 let memberFixture: { id: string } | null = { id: 'member-1' }
 
+/** Every `chatMessage.create` the routes make, in order (role + model stamps). */
+const chatMessageWrites: Array<Record<string, any>> = []
+
+/**
+ * The run-model answer for this request, recording what the route asked about
+ * (SHO-497). Defaults to the fixed service's rule — the pick wins — so these
+ * route tests assert the *wiring* while the rule itself is covered in
+ * `agent-run-model-picked.test.ts`.
+ */
+const runModelCalls: Array<{
+  projectId: string | null
+  workspaceId: string | undefined
+  userId: string | null | undefined
+  requested: string | null | undefined
+}> = []
+let runModelAnswer: (requested: string | null | undefined) => any = (requested) => ({
+  model: requested ?? 'auto',
+  downgrade: null,
+  autoTiers: null,
+})
+mock.module('../services/agent-run-model.service', () => ({
+  AUTO_MODEL_ID: 'auto',
+  resolveAgentRunModelFor: async (
+    projectId: string | null,
+    workspaceId: string | undefined,
+    userId: string | null | undefined,
+    requested?: string | null,
+  ) => {
+    runModelCalls.push({ projectId, workspaceId, userId, requested })
+    return runModelAnswer(requested)
+  },
+  resolveAgentRunModel: async () => 'auto',
+  resolveAgentRunModelLabel: async () => ({ id: 'auto', label: 'Auto' }),
+}))
+
 mock.module('../lib/prisma', () => ({
   prisma: {
     project: {
@@ -59,12 +95,17 @@ mock.module('../lib/prisma', () => ({
       update: async () => ({}),
     },
     chatMessage: {
-      create: async (args: any) => ({ id: 'm-1', ...args.data }),
+      create: async (args: any) => {
+        chatMessageWrites.push(args?.data)
+        return { id: `m-${chatMessageWrites.length}`, ...args.data }
+      },
+      findUnique: async () => null,
       findMany: async () => [],
     },
     chatSession: {
       findUnique: async () => ({ id: 's-1' }),
       update: async () => ({ id: 's-1' }),
+      updateMany: async () => ({ count: 1 }),
     },
     toolCallLog: { createMany: async () => ({ count: 0 }) },
     member: {
@@ -222,6 +263,9 @@ afterAll(() => {
 beforeEach(() => {
   projectFixture = { id: 'p-1', name: 'Test', workspaceId: 'w-1' }
   memberFixture = { id: 'member-1' }
+  chatMessageWrites.length = 0
+  runModelCalls.length = 0
+  runModelAnswer = (requested) => ({ model: requested ?? 'auto', downgrade: null, autoTiers: null })
   hasBalanceResult = true
   balanceBlockReason = 'usage_limit_reached'
   hasAdvancedModelAccessResult = true
@@ -246,6 +290,23 @@ function buildApp() {
   const app = new Hono()
   app.route('/api', projectChatRoutes({ runtimeManager }))
   return app
+}
+
+/**
+ * Wait for a row the stream tracker writes *after* the response body drains —
+ * `trackUsageFromStream` owns persistence for the life of the turn, so the
+ * assistant row lands a tick after `res.text()` resolves.
+ */
+async function waitForRow(
+  predicate: (row: Record<string, any>) => boolean,
+): Promise<Record<string, any>> {
+  const deadline = Date.now() + 2000
+  while (Date.now() < deadline) {
+    const row = chatMessageWrites.find(predicate)
+    if (row) return row
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(`row was never written: ${JSON.stringify(chatMessageWrites)}`)
 }
 
 // =========================================================================
@@ -418,7 +479,7 @@ describe('POST /projects/:projectId/chat', () => {
 
   test('streams a successful runtime response with trusted billing user and model downgrade', async () => {
     hasAdvancedModelAccessResult = false
-    nextFetchResponse = () => new Response('data: {"type":"text","text":"hi"}\n\n', {
+    nextFetchResponse = () => new Response('data: {"type":"text-delta","delta":"hi"}\n\n', {
       status: 200,
       headers: {
         'Content-Type': 'text/event-stream',
@@ -456,6 +517,118 @@ describe('POST /projects/:projectId/chat', () => {
     expect(headers.get('x-runtime-token')).toBe('tok-1')
     expect(JSON.parse(String(lastFetchInit?.body)).agentMode).toBe('auto')
     expect(setProjectUserCalls).toEqual([{ projectId: 'p-1', userId: 'user-1' }])
+  })
+
+  test('keeps the picked model on the run and stamps the pick on the user row (SHO-497)', async () => {
+    // The person picked Opus and the agent's own config is Auto. The turn must
+    // run on Opus: the route asks the run-model step about *their* pick, and the
+    // forwarded body carries what it answered.
+    nextFetchResponse = () => new Response('data: {"type":"text-delta","delta":"hi"}\n\n', {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chatSessionId: 'chat-1',
+        userId: 'user-1',
+        agentMode: OPUS_UUID,
+        messageId: 'u-1',
+        messages: [{ id: 'u-1', role: 'user', content: 'hi' }],
+      }),
+    }))
+
+    expect(res.status).toBe(200)
+    await res.text()
+
+    // The run-model step is asked about the pick, not about the agent config.
+    expect(runModelCalls).toEqual([
+      { projectId: 'p-1', workspaceId: 'w-1', userId: 'user-1', requested: OPUS_UUID },
+    ])
+    const forwarded = JSON.parse(String(lastFetchInit?.body))
+    expect(forwarded.agentMode).toBe(OPUS_UUID)
+
+    // The question records the pick; the reply records the model that ran.
+    const userRow = chatMessageWrites.find((row) => row.role === 'user')
+    expect(userRow?.model).toBe(OPUS_UUID)
+    const assistantRow = await waitForRow((row) => row.role === 'assistant')
+    expect(assistantRow.model).toBe(OPUS_UUID)
+  })
+
+  test('a downgraded run still records the pick on the user row and the run model on the reply', async () => {
+    // AC3 (SHO-417): a pick above the person's role is downgraded for the run
+    // and the reply says so — but the question keeps the pick, so the composer
+    // does not adopt the downgrade either.
+    runModelAnswer = () => ({
+      model: 'auto',
+      downgrade: { from: OPUS_UUID, to: 'auto', fromLabel: 'Claude Opus 4.5' },
+      autoTiers: null,
+    })
+    nextFetchResponse = () => new Response('data: {"type":"text-delta","delta":"hi"}\n\n', {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chatSessionId: 'chat-1',
+        userId: 'user-1',
+        agentMode: OPUS_UUID,
+        messageId: 'u-1',
+        messages: [{ id: 'u-1', role: 'user', content: 'hi' }],
+      }),
+    }))
+
+    expect(res.status).toBe(200)
+    await res.text()
+
+    const forwarded = JSON.parse(String(lastFetchInit?.body))
+    expect(forwarded.agentMode).toBe('auto')
+    expect(forwarded.modelDowngrade).toEqual({
+      from: OPUS_UUID,
+      to: 'auto',
+      fromLabel: 'Claude Opus 4.5',
+    })
+
+    expect(chatMessageWrites.find((row) => row.role === 'user')?.model).toBe(OPUS_UUID)
+    const assistantRow = await waitForRow((row) => row.role === 'assistant')
+    expect(assistantRow.model).toBe('auto')
+  })
+
+  test('no agentMode: the run uses the agent config and no row is stamped advanced', async () => {
+    // AC4: a body with no pick (a channel-style run, or an older client) starts
+    // from the configured model, and the legacy `advanced` sentinel is gone —
+    // it used to be written on every reply and then adopted as a "pick".
+    runModelAnswer = () => ({ model: 'auto', downgrade: null, autoTiers: null })
+    nextFetchResponse = () => new Response('data: {"type":"text-delta","delta":"hi"}\n\n', {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+    const app = buildApp()
+    const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chatSessionId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'u-1',
+        messages: [{ id: 'u-1', role: 'user', content: 'hi' }],
+      }),
+    }))
+
+    expect(res.status).toBe(200)
+    await res.text()
+
+    expect(runModelCalls[0]?.requested).toBeUndefined()
+    expect(JSON.parse(String(lastFetchInit?.body)).agentMode).toBe('auto')
+    expect(chatMessageWrites.find((row) => row.role === 'user')?.model).toBeUndefined()
+    const assistantRow = await waitForRow((row) => row.role === 'assistant')
+    expect(assistantRow.model).toBe('auto')
+    expect(chatMessageWrites.some((row) => row.model === 'advanced')).toBe(false)
   })
 
   test('stamps the resolved native provider onto the forwarded body for a UUID model', async () => {

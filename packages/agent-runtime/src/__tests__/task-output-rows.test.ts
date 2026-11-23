@@ -11,6 +11,7 @@ import { mkdirSync, rmSync, utimesSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { TaskOutputWriter, listTaskOutputRows, taskOutputDir } from '../task-output'
+import { stampMtime } from './helpers/stamp-mtime'
 
 let dir: string
 let counter = 0
@@ -35,6 +36,7 @@ function writeFinishedLog(taskId: string, status: 'completed' | 'failed', title 
   })
   writer.append('3 pass\n0 fail\n')
   writer.finish({ status, exitCode: status === 'failed' ? 1 : 0, elapsedMs: 42_000 })
+  stampMtime(path)
   return path
 }
 
@@ -54,10 +56,12 @@ describe('listTaskOutputRows', () => {
   })
 
   test('a log with no footer is a task the runtime died under', () => {
+    const path = join(dir, 't_5e6f7a8b.log')
     writeFileSync(
-      join(dir, 't_5e6f7a8b.log'),
+      path,
       ['---', 'task_id: t_5e6f7a8b', 'source: shell', 'title: bun dev', `started_at: ${new Date().toISOString()}`, '---', '', 'ready on 8081', ''].join('\n'),
     )
+    stampMtime(path)
     const [row] = listTaskOutputRows(dir)
     expect(row?.taskId).toBe('t_5e6f7a8b')
     expect(row?.status).toBeUndefined()

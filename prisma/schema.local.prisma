@@ -44,9 +44,14 @@ model User {
   // null for users who never got that far.
   firstCapHitAt               DateTime?
   firstPreviewSeenAt          DateTime?
+  bannedAt                    DateTime?
+  banReason                   String?
+  bannedByUserId              String?
   createdAt                   DateTime @default(now())
   updatedAt                   DateTime @updatedAt
 
+  abuseFlagsAsSubject        AbuseFlag[] @relation("AbuseFlagUser")
+  abuseFlagsAsDecider        AbuseFlag[] @relation("AbuseFlagDecider")
   sessions                   Session[]
   accounts                   Account[]
   members                    Member[]
@@ -54,6 +59,8 @@ model User {
   agentTasks                 AgentTask[]
   agentSchedules             AgentSchedule[]
   starredProjects            StarredProject[]
+  learnLessonCompletions     LearnLessonCompletion[]
+  learnBadges                LearnBadge[]
   apiKeys                    ApiKey[]
   creatorProfile             CreatorProfile?
   signupAttribution          SignupAttribution?
@@ -246,6 +253,9 @@ model Workspace {
   proxyTurns             ProxyTurn[]
   conversations          Conversation[]
   chatInstallations      ChatInstallation[]
+  mailDomains            MailDomain[]
+  mailboxes              Mailbox[]
+  mailSuppressions       MailSuppression[]
   boards                 Board[]
   workItems              WorkItem[]
   plans                  Plan[]
@@ -268,6 +278,7 @@ model Workspace {
   socialAutomations      SocialAutomation[]
   socialAutomationRuns   SocialAutomationRun[]
   rootSecrets            WorkspaceRootSecret[]
+  whatsappNumberBindings WhatsAppNumberBinding[]
 
   @@index([parentWorkspaceId])
   @@index([machineInstanceId])
@@ -633,6 +644,7 @@ model Project {
   agentConfig            AgentConfig?
   agentTasks             AgentTask[]
   nativeApp              NativeApp?
+  bucketObjects          ProjectBucketObject[]
   meetings               Meeting[]
   marketplaceListing     MarketplaceListing?
   voiceConfig            VoiceProjectConfig?
@@ -2501,9 +2513,10 @@ model Instance {
   updatedAt     DateTime  @updatedAt
 
   workspace           Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  remoteActions       RemoteAction[]
-  pushSubscriptions   PushSubscription[]
-  preferredByProjects Project[]          @relation("ProjectPreferredInstance")
+  remoteActions          RemoteAction[]
+  pushSubscriptions      PushSubscription[]
+  preferredByProjects    Project[]          @relation("ProjectPreferredInstance")
+  whatsappNumberBindings WhatsAppNumberBinding[]
 
   @@unique([workspaceId, userId, hostname])
   @@index([workspaceId])
@@ -2619,6 +2632,39 @@ model DeviceVersionEvent {
   @@index([lastSeenAt])
   @@index([version])
   @@map("device_version_events")
+}
+
+/// One row per device per UTC day it was seen (heartbeat, proxy call or mint).
+///
+/// `api_keys` keeps only each key's *last* heartbeat, so "how many machines
+/// were alive on 3 November" could not be answered. This records the first
+/// touch of each UTC day and bumps `lastSeenAt` on later ones, so the count is
+/// one row per device per day without a write per request (SHO-160's budget).
+///
+/// Region-scoped with random ids like `device_version_events` (SHO-142): a key
+/// derived from replicated row content is identical in every region and
+/// poison-pills a peer's tablesync, so nothing ever passes `id` and `region` is
+/// part of the unique key.
+model DeviceActiveDay {
+  id          String   @id @default(cuid())
+  /// Region that wrote the row (`REGION_ID`, or `local` in single-region and
+  /// desktop mode). Always set; never NULL.
+  region      String
+  deviceId    String
+  /// UTC `YYYY-MM-DD` — the day this device was active.
+  day         String
+  /// macos | windows | linux | unknown
+  os          String   @default("unknown")
+  /// desktop | cli | unknown
+  client      String   @default("desktop")
+  /// The version reported on this day, when one was in hand.
+  version     String?
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime
+
+  @@unique([region, deviceId, day])
+  @@index([day])
+  @@map("device_active_days")
 }
 
 // =============================================================================
@@ -4995,9 +5041,9 @@ model VmMeterCursor {
   vmId       String
   /// Epoch ms of the assignment, as the agent reported it.
   assignedAt BigInt
-  agentMs    Int      @default(0)
-  appMs      Int      @default(0)
-  idleMs     Int      @default(0)
+  agentMs    BigInt   @default(0)
+  appMs      BigInt   @default(0)
+  idleMs     BigInt   @default(0)
   /// Last counter that was turned into usage; kept so a stale cursor is
   /// prunable without guessing (see pruneClosedMeters' server-side twin).
   lastSeenAt DateTime @default(now())
@@ -5222,6 +5268,268 @@ model CrossWorkspaceAudit {
   @@map("cross_workspace_audit")
 }
 
+// =============================================================================
+// Shogo Mail: workspace email on the workspace's own domain.
+// A mailbox is a private conversation; each email thread is a thread in it.
+// JSON-shaped columns are plain strings (encoded by apps/api/src/services/mail)
+// so the cloud and desktop schemas stay identical.
+// =============================================================================
+
+/// A domain a workspace sends and receives mail on. `mode`: shogo (the shared
+/// free domain, no DNS) | full (the workspace's own apex) | subdomain (e.g.
+/// ai.acme.com, leaving the apex on Google/Microsoft).
+/// status: pending | verifying | active | failed.
+model MailDomain {
+  id               String    @id @default(uuid())
+  workspaceId      String
+  domain           String
+  mode             String    @default("full")
+  status           String    @default("pending")
+  /// "resend" today; "ses" / "oci" later. Which provider holds the domain.
+  provider         String    @default("resend")
+  providerDomainId String?
+  /// JSON: [{ type, name, value, priority?, purpose, status }] — the DNS records to publish.
+  records          String    @default("[]")
+  sendingEnabled   Boolean   @default(true)
+  receivingEnabled Boolean   @default(true)
+  verifiedAt       DateTime?
+  lastCheckedAt    DateTime?
+  lastError        String?
+  /// Set when bounces or complaints crossed the line; nothing sends until an admin clears it.
+  sendingPausedAt  DateTime?
+  pauseReason      String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  mailboxes Mailbox[]
+
+  @@unique([workspaceId, domain])
+  @@index([domain])
+  @@index([status, lastCheckedAt])
+  @@map("mail_domains")
+}
+
+/// One address. kind: person | shared | agent. A person's mailbox is theirs
+/// alone; shared and agent mailboxes are read by the members of `conversationId`.
+/// sendPolicy (agents): approve (a person approves each send) | draft (agents
+/// only draft) | auto (agents send on their own).
+model Mailbox {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  domainId        String
+  localPart       String
+  /// Full lower-case address, e.g. support@acme.com. Unique per domain through (domainId, localPart).
+  address         String
+  kind            String    @default("shared")
+  displayName     String?
+  ownerUserId     String?
+  /// The agent that owns an agent mailbox: a project id, or "workspace".
+  agentRef        String?
+  conversationId  String
+  sendPolicy      String    @default("approve")
+  screenerEnabled Boolean   @default(false)
+  /// Receives mail for any unknown local part on its domain.
+  catchAll        Boolean   @default(false)
+  signature       String?
+  /// Hours an inbound thread may wait for a reply before it is overdue; null = no SLA.
+  slaHours        Int?
+  archivedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  domain    MailDomain    @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  threads   MailThread[]
+  messages  MailMessage[]
+  senders   MailSender[]
+  rules     MailRule[]
+  accounts  MailAccount[]
+
+  @@unique([domainId, localPart])
+  @@unique([conversationId])
+  @@index([address])
+  @@index([workspaceId])
+  @@map("mailboxes")
+}
+
+/// An email thread: the thread-root conversation message plus its mail state.
+/// category: important | feed | paper_trail | screener | spam.
+/// status: open | waiting | done.
+model MailThread {
+  id                String    @id @default(uuid())
+  workspaceId       String
+  mailboxId         String
+  rootMessageId     String
+  subject           String
+  normalizedSubject String
+  /// JSON array of lower-case addresses seen on the thread (not the mailbox itself).
+  participants      String    @default("[]")
+  category          String    @default("important")
+  status            String    @default("open")
+  assigneeUserId    String?
+  snoozedUntil      DateTime?
+  slaDueAt          DateTime?
+  lastInboundAt     DateTime?
+  lastMessageAt     DateTime  @default(now())
+  messageCount      Int       @default(0)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  mailbox  Mailbox       @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  messages MailMessage[]
+
+  @@unique([rootMessageId])
+  @@index([mailboxId, lastMessageAt])
+  @@index([mailboxId, normalizedSubject])
+  @@index([snoozedUntil])
+  @@index([assigneeUserId, status])
+  @@map("mail_threads")
+}
+
+/// One email. direction: inbound | outbound.
+/// status (outbound): draft | pending_approval | scheduled | sending | sent |
+/// delivered | bounced | complained | failed | cancelled. Inbound: received.
+model MailMessage {
+  id                    String    @id @default(uuid())
+  workspaceId           String
+  mailboxId             String
+  threadId              String?
+  conversationMessageId String?
+  direction             String
+  status                String
+  /// RFC 5322 Message-ID including the angle brackets.
+  rfcMessageId          String
+  inReplyTo             String?
+  /// Space-separated Message-IDs from the References header.
+  references            String?
+  fromAddress           String
+  fromName              String?
+  /// JSON arrays of { address, name? }.
+  toList                String    @default("[]")
+  ccList                String    @default("[]")
+  bccList               String    @default("[]")
+  replyTo               String?
+  subject               String
+  snippet               String?
+  textBody              String?
+  htmlStorageKey        String?
+  rawStorageKey         String?
+  /// JSON { spf, dkim, dmarc } as reported by the receiving server.
+  authResults           String?
+  spamVerdict           String?
+  /// JSON array of { name, mimeType, size, attachmentId? } for display before download.
+  attachmentMeta        String    @default("[]")
+  provider              String?
+  providerMessageId     String?
+  error                 String?
+  /// Who wrote it when an agent drafted it ("workspace" or a project id).
+  draftedByAgentRef     String?
+  approvedByUserId      String?
+  sentByUserId          String?
+  /// Outbound: not sent before this instant (undo window, send later).
+  sendAfter             DateTime?
+  sentAt                DateTime?
+  receivedAt            DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  mailbox Mailbox     @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  thread  MailThread? @relation(fields: [threadId], references: [id], onDelete: SetNull)
+
+  @@unique([mailboxId, rfcMessageId])
+  @@unique([conversationMessageId])
+  @@index([mailboxId, direction, createdAt])
+  @@index([workspaceId, direction, createdAt])
+  @@index([status, sendAfter])
+  @@index([providerMessageId])
+  @@index([threadId, createdAt])
+  @@map("mail_messages")
+}
+
+/// A Screener decision for one sender on one mailbox.
+/// decision: allow | block | feed | paper_trail.
+model MailSender {
+  id              String   @id @default(uuid())
+  mailboxId       String
+  address         String
+  decision        String
+  decidedByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@unique([mailboxId, address])
+  @@map("mail_senders")
+}
+
+/// A mailbox rule. `instruction` is the plain-English rule as a person wrote
+/// it; `match` and `action` (JSON) are what runs. match: { from?, fromDomain?,
+/// to?, subjectContains?, bodyContains?, hasAttachment?, bulk? }.
+/// action: { category?, assignTo?, status?, markDone?, createCard?: { board, channel? } }.
+model MailRule {
+  id              String   @id @default(uuid())
+  mailboxId       String
+  name            String
+  instruction     String?
+  match           String   @default("{}")
+  action          String   @default("{}")
+  enabled         Boolean  @default(true)
+  position        Int      @default(0)
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@index([mailboxId, position])
+  @@map("mail_rules")
+}
+
+/// An address this workspace must not send to (hard bounce, complaint, or by hand).
+model MailSuppression {
+  id          String   @id @default(uuid())
+  workspaceId String
+  address     String
+  /// bounce | complaint | manual
+  reason      String
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, address])
+  @@map("mail_suppressions")
+}
+
+/// An existing mailbox (Gmail, Outlook, any IMAP host) brought into Shogo.
+/// Its mail lands in `mailboxId` exactly like hosted mail, and replies go out
+/// through the account's own SMTP. provider: imap | gmail | microsoft.
+/// status: active | error | paused.
+model MailAccount {
+  id                   String    @id @default(uuid())
+  workspaceId          String
+  userId               String
+  mailboxId            String
+  provider             String    @default("imap")
+  address              String
+  /// Encrypted JSON: { imapHost, imapPort, smtpHost, smtpPort, username, password, tls } or OAuth tokens.
+  credentialsEncrypted String
+  /// JSON { uidValidity, lastUid } (IMAP) or the provider's history cursor.
+  syncCursor           String?
+  status               String    @default("active")
+  lastSyncAt           DateTime?
+  lastError            String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@unique([mailboxId, address])
+  @@index([status, lastSyncAt])
+  @@map("mail_accounts")
+}
+
 /// One purchase of a paid course (SHO-428). See prisma/schema.prisma for full
 /// semantics; local mode has no Stripe, so rows come from the license-key and
 /// admin paths (and a cloud-synced workspace's own row).
@@ -5285,4 +5593,136 @@ model WorkspaceRootSecret {
 
   @@index([workspaceId])
   @@map("workspace_root_secrets")
+}
+
+model AbuseFlag {
+  id              String    @id @default(uuid())
+  userId          String
+  runDate         String
+  category        String
+  severity        Int
+  confidence      String
+  summary         String
+  evidence        Json
+  clusterKey      String?
+  status          String    @default("flagged")
+  decidedByUserId String?
+  decidedAt       DateTime?
+  digestId        String?
+  model           String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user            User      @relation("AbuseFlagUser", fields: [userId], references: [id], onDelete: Cascade)
+  decidedBy       User?     @relation("AbuseFlagDecider", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, runDate, category])
+  @@index([status, createdAt])
+  @@index([clusterKey])
+  @@map("abuse_flags")
+}
+
+/// A learn.shogo.ai lesson the learner marked complete. Progress for every
+/// learn course except Solo Founder (whose progress lives on its course
+/// board, see CourseEnrollment.progress). XP, levels and streaks are derived
+/// from these rows; nothing about them is stored.
+model LearnLessonCompletion {
+  id          String   @id @default(uuid())
+  userId      String
+  courseId    String
+  lessonId    String
+  /// The learner's own calendar day (YYYY-MM-DD), for streaks.
+  day         String
+  completedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, courseId, lessonId])
+  @@index([userId, completedAt])
+  @@map("learn_lesson_completions")
+}
+
+/// A badge earned on learn.shogo.ai. Awarded by the API only, once per badge.
+model LearnBadge {
+  id       String   @id @default(uuid())
+  userId   String
+  /// Key from `LEARN_BADGES` in apps/api/src/config/learn-gamification.ts.
+  badgeId  String
+  earnedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, badgeId])
+  @@index([userId])
+  @@map("learn_badges")
+}
+
+// =============================================================================
+// WHATSAPP PLATFORM BINDINGS (Meta Tech Provider — Embedded Signup)
+// =============================================================================
+
+model WhatsAppNumberBinding {
+  id                 String    @id @default(cuid())
+  workspaceId        String
+  projectId          String
+  instanceId         String?
+
+  phoneNumberId        String    @unique
+  wabaId               String
+  businessId           String?
+  displayPhoneNumber   String?
+  verifiedName         String?
+
+  coexistence Boolean @default(false)
+
+  tokenEncrypted       String
+  pinEncrypted         String?
+
+  contactsSyncRequestId  String?
+  historySyncRequestId   String?
+  syncStartedAt          DateTime?
+
+  status       String @default("active")
+  statusReason String?
+
+  connectedByUserId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  instance  Instance? @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@index([wabaId])
+  @@index([workspaceId])
+  @@index([projectId])
+  @@map("whatsapp_number_bindings")
+}
+
+// =============================================================================
+// PROJECT BUCKET (SHO-491) — per-project Shogo-hosted object storage + CDN
+// =============================================================================
+
+/// One row per object in a project's bucket: the index `/bucket/objects`
+/// lists, the storage meter counts under `bucket`, and the upload gate reads.
+/// Bytes live under `<dataDir>/project-buckets/<projectId>/<visibility>/<key>`
+/// on desktop and `p/<projectId>/<visibility>/<key>` in `S3_PROJECT_BUCKET`.
+model ProjectBucketObject {
+  id          String   @id @default(cuid())
+  projectId   String
+  key         String
+  visibility  String   @default("public")
+  size        BigInt   @default(0)
+  contentType String?
+  etag        String?
+  sha256      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, visibility, key])
+  @@index([projectId])
+  @@index([createdAt])
+  @@map("project_bucket_objects")
 }

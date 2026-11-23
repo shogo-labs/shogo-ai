@@ -5,6 +5,7 @@ import { HttpClient } from '@shogo-ai/sdk'
 import type { Permission, ProjectRole, WorkspaceRole } from '@shogo/authz'
 import { API_URL } from './api-url'
 import { authClient } from './auth-client'
+import { errorMessage } from './error-message'
 import { defaultLocalAccess, type LocalAccessPrefs } from './local-access'
 import { routeUrl } from './workspace-route'
 import { usageLogCsvUrl } from './usage-log-csv'
@@ -67,6 +68,8 @@ export interface WorkspaceDeletionPreview {
   channelCount: number
   boardCount: number
   chatCount: number
+  /** `totalBytes` includes this: media in the workspace's project buckets. */
+  bucketBytes: number
   totalBytes: number | null
 }
 
@@ -226,6 +229,7 @@ import type {
   GoalPlanStep as SharedGoalPlanStep,
   GoalDeliverable as SharedGoalDeliverable,
   AgentTaskSummary as SharedAgentTaskSummary,
+  WorkspaceActiveChatPeek as SharedActiveChatPeek,
 } from '@shogo/shared-app'
 
 export type PersonalGoalStatus = SharedGoalStatus
@@ -238,6 +242,7 @@ export type PersonalGoalEvent = SharedGoalEventRecord
 export type PersonalGoalPlanStep = SharedGoalPlanStep
 export type PersonalGoalDeliverable = SharedGoalDeliverable
 export type PersonalAgentTaskSummary = SharedAgentTaskSummary
+export type ActiveChatPeek = SharedActiveChatPeek
 
 /** A marketplace creator's admin stats: marketplace metrics + platform spend. */
 export interface AdminCreatorStat {
@@ -917,6 +922,16 @@ export interface ProjectMachineState {
   canRestart: boolean
 }
 
+export interface RecentAgentChat {
+  chatSessionId: string
+  title: string
+  projectId: string | null
+  agentKey: string
+  agentName: string | null
+  lastActiveAt: string
+  preview: string | null
+}
+
 export const api = {
   /** POST /api/users/me/attribution (after signup; session cookie / token via HttpClient). */
   async postSignupAttribution(http: HttpClient, body: Record<string, unknown>) {
@@ -1002,7 +1017,7 @@ export const api = {
     } catch (cause: any) {
       const apiError = cause?.details?.error
       if (apiError?.code) {
-        const error = new Error(apiError.message ?? cause.message) as Error & { code?: string }
+        const error = new Error(apiError.message ?? errorMessage(cause)) as Error & { code?: string }
         error.code = apiError.code
         throw error
       }
@@ -2720,6 +2735,45 @@ export const api = {
     return res.data?.chats ?? []
   },
 
+  async getActiveChatPeek(
+    http: HttpClient,
+    workspaceId: string,
+    chatSessionId: string,
+  ): Promise<ActiveChatPeek | null> {
+    try {
+      const res = await http.get<ActiveChatPeek | { error: string }>(
+        `/api/workspaces/${encodeURIComponent(workspaceId)}/active-chats/${encodeURIComponent(chatSessionId)}/peek`,
+      )
+      // `HttpClient` answers `{ data, status, headers }` and has no `ok` flag —
+      // testing one here made every peek resolve to null, so `useRunPeek` read
+      // every live run as ended and the hover card closed as it opened (SHO-501).
+      if (res.data && 'error' in res.data) return null
+      return (res.data ?? null) as ActiveChatPeek | null
+    } catch (err) {
+      // A turn that ended between the poll and the hover is a 404 from this
+      // route, which means "nothing to peek at", not a failed request.
+      if ((err as { status?: number } | null)?.status === 404) return null
+      throw err
+    }
+  },
+
+
+  async listRecentAgentChats(
+    http: HttpClient,
+    workspaceId: string,
+    opts: { limit?: number; perAgent?: boolean } = {},
+  ): Promise<RecentAgentChat[]> {
+    const params = new URLSearchParams()
+    if (opts.limit !== undefined) params.set('limit', String(opts.limit))
+    if (opts.perAgent) params.set('perAgent', '1')
+    const query = params.toString() ? `?${params}` : ''
+    const res = await http.get<{ chats?: RecentAgentChat[] }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agent-chats/recent${query}`,
+    )
+    return res.data?.chats ?? []
+  },
+
+  
   /** Attach a project to an existing workspace session. */
   async attachProject(
     http: HttpClient,

@@ -188,6 +188,8 @@ const mockPrisma: any = {
   },
   // SHO-416: the signup trust gate's two reads.
   signupRiskAssessment: {
+    // SHO-459: banned-linked count resolves linked ids first.
+    findMany: async () => [],
     findUnique: async (args: any) => assessmentsByUser.get(args.where.userId) ?? null,
   },
   user: {

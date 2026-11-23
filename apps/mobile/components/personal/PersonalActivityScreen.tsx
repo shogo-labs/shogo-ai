@@ -20,6 +20,7 @@ import {
   ActivityErrorBanner,
   ActivityLoadingState,
 } from '../activity/ActivityFeedPrimitives'
+import { RunPeekHover } from '../activity/RunPeekHover'
 import { NeedsYourOkSection } from './NeedsYourOkSection'
 
 function activityIcon(item: PersonalWorkspaceActivity) {
@@ -155,8 +156,8 @@ export const PersonalActivityScreen = observer(function PersonalActivityScreen()
                     : chat.projectName || 'Workspace chat'
                 const title = chatTitle(chat)
                 return (
+                  <RunPeekHover key={`${chat.chatSessionId}:${chat.turnId}`} workspaceId={workspace?.id} chat={chat}>
                   <ActivityCard
-                    key={`${chat.chatSessionId}:${chat.turnId}`}
                     tone="primary"
                     icon={<AgentAvatar name={agent} projectId={chat.projectId} workspaceId={workspace?.id ?? null} size={30} />}
                     title={title}
@@ -182,6 +183,7 @@ export const PersonalActivityScreen = observer(function PersonalActivityScreen()
                     onPress={() => openActiveChat(router, chat)}
                     accessibilityLabel={`${title}, running`}
                   />
+                  </RunPeekHover>
                 )
               })}
             </View>

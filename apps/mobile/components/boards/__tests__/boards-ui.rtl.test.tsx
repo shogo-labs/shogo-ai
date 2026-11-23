@@ -316,6 +316,21 @@ describe('CardPane', () => {
     expect(screen.getByLabelText('Assignee: Unassigned')).toBeTruthy()
   })
 
+  // SHOGO-ANDROID-11: a native promise can reject with no value at all, and
+  // `catch((err: Error) => setNotice(err.message))` then threw inside the
+  // handler that was meant to report the failure — an unhandled rejection
+  // reported as "Cannot read property 'message' of undefined".
+  test('archiving with a rejection that carries no value shows a readable notice', async () => {
+    routes['POST /api/work-items/7/archive'] = () => {
+      throw undefined
+    }
+    render(createElement(CardPane, { itemId: '7', workspaceId: 'ws', me: 'u1', mentionables: mentionables as any, conversation, visible: true, onClose: () => {} }))
+
+    fireEvent.click(await screen.findByLabelText('Archive card'))
+
+    expect(await screen.findByText('no error details')).toBeTruthy()
+  })
+
   test('assigning to an agent patches the card', async () => {
     routes['PATCH /api/work-items/7'] = (c) => ({ item: item('7', 'c2', 1, c.body) })
     render(createElement(CardPane, { itemId: '7', workspaceId: 'ws', me: 'u1', mentionables: mentionables as any, conversation, visible: true, onClose: () => {} }))

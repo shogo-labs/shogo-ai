@@ -28,13 +28,25 @@ import type { Context } from 'hono'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { prisma } from './prisma'
 import { hostedWorkspacesResolveHere } from './cloud-topology'
+import { isAgentStreamPath } from './agent-stream-paths'
+import { wakeRefusal } from './host-wake'
 
 export const HOST_TUNNEL_PREFIX = '/api/internal/host-tunnel'
 
 const SECRET = process.env.SHOGO_HOST_TUNNEL_SECRET || randomBytes(24).toString('hex')
 
-/** How long a request waits for a sleeping desktop's tunnel before `host_offline`. */
+/**
+ * The short probe a *stale* host gets. A desktop whose heartbeat is older than
+ * `POLL_INTERVAL_IDLE_S * 2` has nothing polling to answer the wake, so waiting
+ * longer only delays the honest `host_offline` (SHO-506). A fresh host's wait is
+ * decided from its heartbeat by `wakeHostTunnel`, not by this value.
+ */
 const WAKE_DEADLINE_MS = Math.max(0, Number(process.env.SHOGO_HOST_WAKE_DEADLINE_MS ?? 5_000) || 0)
+
+/** The same deadline, for callers that forward over the tunnel themselves (SHO-493). */
+export function hostWakeDeadlineMs(): number {
+  return WAKE_DEADLINE_MS
+}
 
 /** The workspace's host, cached briefly: every runtime resolve asks. */
 const HOST_TTL_MS = 10_000
@@ -96,28 +108,25 @@ export function clientRuntimeUrl(resolved: { mode: string; url?: string | null }
   return resolved.mode === 'host-tunnel' ? null : resolved.url ?? null
 }
 
-export class HostOfflineError extends Error {
-  readonly code = 'host_offline'
-  constructor(readonly instanceId: string, readonly hostName: string | null) {
-    super(`${hostName || 'The desktop hosting this workspace'} is offline`)
-    this.name = 'HostOfflineError'
-  }
-}
-
-const STREAMING_SUFFIXES = ['/agent/chat', '/agent/quick-actions', '/agent/logs/stream']
-
-function isStreaming(method: string, path: string, accept: string | undefined): boolean {
+/**
+ * Does this tunnel request answer as an event stream?
+ *
+ * `rest` is the runtime-relative path (`/agent/chat/<id>/stream`). It uses the
+ * one shared predicate (`lib/agent-stream-paths`) rather than its own suffix
+ * list: a chat resume GET used to take the buffered path here, so rejoining a
+ * desktop-run turn from the cloud sat silent for the 30 s proxy timeout and then
+ * answered `502 host_tunnel_error` (SHO-486).
+ */
+function tunnelStreams(method: string, rest: string, accept: string | undefined): boolean {
   if (accept?.includes('text/event-stream')) return true
-  const clean = path.split('?')[0]
-  if (clean.endsWith('/agent/logs/stream')) return method === 'GET'
-  return method === 'POST' && STREAMING_SUFFIXES.some((suffix) => clean.endsWith(suffix))
+  return isAgentStreamPath(method, rest)
 }
 
 // `x-billing-user-id` is deliberately not forwarded: the only user a hosted
 // workspace may bill is the desktop's owner, which this handler knows, so the
 // caller does not get to name it.
 const FORWARD_HEADERS = ['content-type', 'accept', 'x-chat-session-id', 'last-event-id']
-const DROP_RESPONSE_HEADERS = new Set(['transfer-encoding', 'connection', 'set-cookie', 'content-length', 'content-encoding'])
+export const DROP_RESPONSE_HEADERS = new Set(['transfer-encoding', 'connection', 'set-cookie', 'content-length', 'content-encoding'])
 
 /** The only paths a tunnel request may carry: a runtime's own agent proxy. */
 const TUNNEL_TARGET_PATH = /^\/api\/(projects|workspaces)\/([^/]+)\/agent-proxy(\/.*)?$/
@@ -180,8 +189,16 @@ function secretMatches(given: string): boolean {
 }
 
 /** The instance-tunnel transport (the real one lives in `routes/instances`). */
-type TunnelTransport = {
+export type TunnelTransport = {
   ensureTunnelConnected: (instanceId: string, deadlineMs: number) => Promise<boolean>
+  /**
+   * The wake that tells `connected` from `connecting` from `offline` (SHO-506).
+   * Optional so a test double built before it existed still fits.
+   */
+  wakeHostTunnel?: (
+    instanceId: string,
+    opts?: { staleProbeMs?: number; maxWaitMs?: number },
+  ) => Promise<import('../routes/instances').HostWakeResult>
   sendTunnelRequest: (instanceId: string, payload: any) => Promise<{ status: number; headers?: Record<string, string>; body?: string }>
   sendTunnelStreamRequest: (instanceId: string, payload: any, onChunk: (chunk: any) => void) => { cancel: () => void }
   generateRequestId: () => string
@@ -259,10 +276,13 @@ export async function handleHostTunnel(c: Context, opts: HostTunnelOptions = {})
 
   const tunnel: TunnelTransport =
     opts._tunnel ?? ((await import('../routes/instances')) as unknown as TunnelTransport)
-  const { ensureTunnelConnected, sendTunnelRequest, sendTunnelStreamRequest, generateRequestId } = tunnel
-  if (!(await ensureTunnelConnected(instanceId, WAKE_DEADLINE_MS))) {
-    const err = new HostOfflineError(instanceId, instance.name)
-    return c.json({ error: { code: err.code, message: err.message, instanceId, retryable: true } }, 503)
+  const { wakeHostTunnel, ensureTunnelConnected, sendTunnelRequest, sendTunnelStreamRequest, generateRequestId } = tunnel
+  const wake = wakeHostTunnel
+    ? await wakeHostTunnel(instanceId, { staleProbeMs: WAKE_DEADLINE_MS })
+    : { state: (await ensureTunnelConnected(instanceId, WAKE_DEADLINE_MS)) ? 'connected' : 'offline', instanceId, name: instance.name, lastSeenAt: null, retryAfterSeconds: 0 } as any
+  if (wake.state !== 'connected') {
+    const refusal = wakeRefusal(wake, 'host', { subject: instance.name })
+    return c.json({ error: refusal }, 503)
   }
 
   const method = c.req.method
@@ -276,7 +296,7 @@ export async function handleHostTunnel(c: Context, opts: HostTunnelOptions = {})
   }
   const body = method === 'GET' || method === 'HEAD' ? undefined : await c.req.text()
 
-  if (isStreaming(method, path, c.req.header('accept'))) {
+  if (tunnelStreams(method, target.rest, c.req.header('accept'))) {
     const requestId = generateRequestId()
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {

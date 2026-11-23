@@ -17,7 +17,7 @@ mock.module("react-native", () =>
   }),
 )
 mock.module("@shogo/shared-ui/primitives", () => ({ cn: (...args: unknown[]) => args.filter(Boolean).join(" "), Avatar: () => createElement("span") }))
-mock.module("lucide-react-native", () => ({ Plus: () => createElement("span") }))
+mock.module("lucide-react-native", () => ({ Plus: () => createElement("span"), ChevronRight: () => createElement("span") }))
 mock.module(resolve(import.meta.dir, "../../PresenceDot"), () => ({ PresenceDot: () => createElement("span") }))
 mock.module(resolve(import.meta.dir, "../../ConversationRows"), () => ({
   ConversationRow: ({ conversation }: any) => createElement("div", { "data-testid": `row-${conversation.id}` }),
@@ -28,6 +28,15 @@ mock.module(resolve(import.meta.dir, "../../ConversationRows"), () => ({
   rowTitle: (c: any) => c.name ?? c.id,
 }))
 mock.module(resolve(import.meta.dir, "../../TeamChatSidebarProvider"), () => ({ useTeamChatNav: () => chat }))
+// SHO-473: the panel reads agent chat rows from here; stub the hook so the test
+// never loads expo-router's useFocusEffect (this file only asserts person DMs).
+mock.module(resolve(import.meta.dir, "../../../../hooks/useRecentAgentChats"), () => ({
+  useRecentAgentChats: () => ({ chats: [], loading: false }),
+}))
+mock.module("expo-router", () => ({
+  useRouter: () => ({ push: () => {} }),
+  useFocusEffect: () => {},
+}))
 
 const { DmsPanel } = await import("../DmsPanel")
 
@@ -131,5 +140,19 @@ describe("DmsPanel", () => {
     expect(screen.getByTestId("row-mine")).toBeTruthy()
     expect(screen.getByTestId("row-ana")).toBeTruthy()
     expect(screen.queryByText("Note to self")).toBeNull()
+  })
+
+  // SHOGO-IOS-14: the panel returned null above its last two useMemos, so a
+  // workspace that switched team chat on mid-session rendered more hooks than
+  // the previous render and React threw. Every hook must run before the return.
+  test("rerendering from disabled to enabled does not change the hook count", () => {
+    chat = { enabled: false, workspaceId: null, list: [convo({ id: "ana" })], activeId: null, openConversation: () => {}, startCreate: () => {} }
+    const { rerender } = render(createElement(DmsPanel, {}))
+    expect(screen.queryByTestId("row-ana")).toBeNull()
+
+    chat = { ...chat, enabled: true, workspaceId: "w1" }
+    rerender(createElement(DmsPanel, {}))
+
+    expect(screen.getByTestId("row-ana")).toBeTruthy()
   })
 })

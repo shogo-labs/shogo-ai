@@ -53,6 +53,7 @@ import { useDomainHttp } from '../../contexts/domain'
 import { AlwaysOnSection } from './AlwaysOnSection'
 import { isPublishPlanError, publishErrorMessage } from './publish-errors'
 import { openExternalLink } from '../../lib/open-external-link';
+import { errorMessage } from '../../lib/error-message'
 
 export type AccessLevel = 'anyone' | 'authenticated' | 'private' | 'password'
 
@@ -311,7 +312,7 @@ export function PublishDropdown({ projectId, projectName, onViewHistory, onOpenS
       // Unpublishing frees the always-on slot; refresh the AlwaysOnSection.
       bumpPublishState()
     } catch (err: any) {
-      setError(err.message || 'Failed to unpublish')
+      setError(errorMessage(err, 'Failed to unpublish'))
     } finally {
       setIsUnpublishing(false)
     }

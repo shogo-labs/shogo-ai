@@ -174,7 +174,7 @@ test("the drawer lists workspace chats newest activity first", async ({ page }) 
   await seedActiveWorkspace(page, workspace.id, "personal");
   await page.goto("/(app)");
 
-  await page.getByRole("button", { name: "Open chat sessions" }).click();
+  await page.getByRole("button", { name: /^(Open chat sessions|Chats)$/ }).click();
   await expect(page.getByText("Chats", { exact: true })).toBeVisible();
 
   const expectedOrder = activityOrder.map((row) => row.name);
@@ -216,7 +216,7 @@ test("the drawer lists workspace chats newest activity first", async ({ page }) 
     "a drawer-created chat is still named by the API's default",
   ).toBe("Workspace chat");
 
-  await page.getByRole("button", { name: "Open chat sessions" }).click();
+  await page.getByRole("button", { name: /^(Open chat sessions|Chats)$/ }).click();
   // The drawer lists every chat, so the created one sits above the chats that
   // were last active hours ago and none of those drops out of the list.
   await expect
@@ -296,7 +296,7 @@ test("pinned chats lead and the archived group is activity-ordered too", async (
   await seedActiveWorkspace(page, workspace.id, "personal");
   await page.goto("/(app)");
 
-  await page.getByRole("button", { name: "Open chat sessions" }).click();
+  await page.getByRole("button", { name: /^(Open chat sessions|Chats)$/ }).click();
   await expect(page.getByText("Chats", { exact: true })).toBeVisible();
 
   const ourRows = (labels: string[]) =>

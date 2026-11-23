@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Super-admin review of signup risk assessments.
+ * Super-admin review of signup risk assessments + abuse flags.
  *
  * Mounted at `/api/admin/signup-risk` (super-admin middleware applied in
- * server.ts). Shows every scored signup with the accounts it's linked to
- * (same IP prefix, device id, or canonical email), and lets an admin approve
- * the full credit, revoke it, or ban (revoke + end sessions).
+ * server.ts). Shows every scored signup with linked accounts, and lets an
+ * admin approve credit, revoke it, or issue a real ban (SHO-459: now sets
+ * User.bannedAt, kills sessions, revokes keys, stops runtimes).
  *
- * Limitation: `User` has no banned flag, so "ban" can't block login outright.
- * It revokes the credit and ends existing sessions; a repeat sign-in is still
- * possible and gets scored again.
+ * Abuse sub-routes:
+ *   GET  /abuse?status=     – list abuse flags
+ *   GET  /abuse/:userId     – flag detail + links + paid status + ban status
+ *   POST /:userId/ban       – real ban (now calls banUser)
+ *   POST /:userId/unban     – unban
+ *   POST /abuse/:flagId/clear – clear one flag
  */
 
 import { Hono, type Context } from 'hono'
@@ -19,6 +22,7 @@ import {
   approveSignupCredit,
   revokeSignupCredit,
 } from '../services/signup-credit.service'
+import { banUser, unbanUser } from '../services/abuse/ban'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -52,7 +56,6 @@ export function adminSignupRiskRoutes() {
 
     const rows = await prisma.signupRiskAssessment.findMany({
       where: {
-        // `pending` narrows to unreviewed medium/high; an explicit band wins.
         ...(pending ? { reviewDecision: null, band: { in: ['medium', 'high'] } } : {}),
         ...(band ? { band } : {}),
       },
@@ -61,7 +64,7 @@ export function adminSignupRiskRoutes() {
     })
     const users = await prisma.user.findMany({
       where: { id: { in: rows.map((r) => r.userId) } },
-      select: { id: true, email: true, name: true, emailVerified: true, createdAt: true },
+      select: { id: true, email: true, name: true, emailVerified: true, createdAt: true, bannedAt: true },
     })
     const userById = new Map(users.map((u) => [u.id, u]))
 
@@ -86,6 +89,7 @@ export function adminSignupRiskRoutes() {
         name: userById.get(r.userId)?.name ?? null,
         emailVerified: userById.get(r.userId)?.emailVerified ?? false,
         createdAt: userById.get(r.userId)?.createdAt ?? null,
+        bannedAt: userById.get(r.userId)?.bannedAt ?? null,
         score: r.score,
         band: r.band,
         decision: r.decision,
@@ -124,11 +128,10 @@ export function adminSignupRiskRoutes() {
     const allIds = [userId, ...linkedUserIds]
     const users = await prisma.user.findMany({
       where: { id: { in: allIds } },
-      select: { id: true, email: true, name: true, emailVerified: true, createdAt: true },
+      select: { id: true, email: true, name: true, emailVerified: true, createdAt: true, bannedAt: true },
     })
     const userById = new Map(users.map((u) => [u.id, u]))
 
-    // Paid = owns a workspace with an active or trialing subscription.
     const owners = await prisma.member.findMany({
       where: { userId: { in: allIds }, role: 'owner', projectId: null },
       select: { userId: true, workspaceId: true },
@@ -156,6 +159,7 @@ export function adminSignupRiskRoutes() {
         name: u?.name ?? null,
         emailVerified: u?.emailVerified ?? false,
         createdAt: u?.createdAt ?? null,
+        bannedAt: u?.bannedAt ?? null,
         paid,
         ip: a.ip,
         ipPrefix: a.ipPrefix,
@@ -210,17 +214,120 @@ export function adminSignupRiskRoutes() {
   })
 
   /**
-   * POST /api/admin/signup-risk/:userId/ban — revoke credit and end every
-   * session. There is no banned flag on User, so this does not block future
-   * sign-ins (see module header).
+   * POST /api/admin/signup-risk/:userId/ban — real ban (SHO-459).
+   * Sets User.bannedAt, kills sessions, revokes keys, cancels trial, stops runtimes.
    */
   app.post('/:userId/ban', async (c) => {
     const adminUserId = adminUserIdOf(c)
     if (!adminUserId) return c.json({ ok: false, error: 'unauthorized' }, 401)
     const userId = c.req.param('userId')
-    const result = await revokeSignupCredit({ userId, adminUserId, reviewDecision: 'banned' })
-    const ended = await prisma.session.deleteMany({ where: { userId } })
-    return c.json({ ok: true, revokedUsd: result.revokedUsd, sessionsEnded: ended.count })
+    const body = await c.req.json().catch(() => ({}))
+    const reason: string = body?.reason ?? 'admin-ban'
+    const result = await banUser({ userId, reason, bannedByUserId: adminUserId })
+    return c.json({ ok: true, ...result })
+  })
+
+  /**
+   * POST /api/admin/signup-risk/:userId/unban — lift a ban.
+   */
+  app.post('/:userId/unban', async (c) => {
+    const adminUserId = adminUserIdOf(c)
+    if (!adminUserId) return c.json({ ok: false, error: 'unauthorized' }, 401)
+    const userId = c.req.param('userId')
+    await unbanUser({ userId, adminUserId })
+    return c.json({ ok: true })
+  })
+
+  // =========================================================================
+  // Abuse sub-routes (SHO-459)
+  // =========================================================================
+
+  /** GET /api/admin/signup-risk/abuse?status=flagged|banned|cleared */
+  app.get('/abuse', async (c) => {
+    const status = c.req.query('status')
+    const db = prisma as any
+    const flags = await db.abuseFlag.findMany({
+      where: status ? { status } : {},
+      orderBy: [{ createdAt: 'desc' }],
+      take: 200,
+      include: { user: { select: { email: true, bannedAt: true } } },
+    })
+    return c.json({
+      ok: true,
+      flags: flags.map((f: any) => ({
+        id: f.id,
+        userId: f.userId,
+        email: f.user?.email ?? null,
+        bannedAt: f.user?.bannedAt ?? null,
+        runDate: f.runDate,
+        category: f.category,
+        severity: f.severity,
+        confidence: f.confidence,
+        status: f.status,
+        decidedByUserId: f.decidedByUserId,
+        decidedAt: f.decidedAt,
+        clusterKey: f.clusterKey,
+        createdAt: f.createdAt,
+      })),
+    })
+  })
+
+  /** GET /api/admin/signup-risk/abuse/:userId — flags + evidence for one user. */
+  app.get('/abuse/:userId', async (c) => {
+    const userId = c.req.param('userId')
+    const db = prisma as any
+    const [flags, user, assessment] = await Promise.all([
+      db.abuseFlag.findMany({
+        where: { userId },
+        orderBy: [{ createdAt: 'desc' }],
+      }),
+      prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true, email: true, name: true, createdAt: true, bannedAt: true, banReason: true },
+      }),
+      prisma.signupRiskAssessment.findUnique({
+        where: { userId },
+        select: { ipPrefix: true, deviceId: true, emailCanonical: true },
+      }),
+    ])
+    if (!user) return c.json({ ok: false, error: 'not_found' }, 404)
+
+    // Linked accounts sharing ipPrefix/deviceId/emailCanonical.
+    const ors: any[] = []
+    if (assessment?.ipPrefix) ors.push({ ipPrefix: assessment.ipPrefix })
+    if (assessment?.deviceId) ors.push({ deviceId: assessment.deviceId })
+    if (assessment?.emailCanonical) ors.push({ emailCanonical: assessment.emailCanonical })
+
+    const linked = ors.length
+      ? await prisma.signupRiskAssessment.findMany({
+          where: { userId: { not: userId }, OR: ors },
+          select: { userId: true, ipPrefix: true, deviceId: true, emailCanonical: true },
+          take: 30,
+        })
+      : []
+
+    const isPaid = !!(await prisma.subscription.findFirst({
+      where: {
+        status: { in: ['active', 'trialing', 'past_due'] },
+        workspace: { members: { some: { userId, role: 'owner', projectId: null } } },
+      },
+      select: { id: true },
+    }))
+
+    return c.json({ ok: true, user: { ...user, isPaid }, flags, linked })
+  })
+
+  /** POST /api/admin/signup-risk/abuse/:flagId/clear */
+  app.post('/abuse/:flagId/clear', async (c) => {
+    const adminUserId = adminUserIdOf(c)
+    if (!adminUserId) return c.json({ ok: false, error: 'unauthorized' }, 401)
+    const flagId = c.req.param('flagId')
+    const db = prisma as any
+    await db.abuseFlag.update({
+      where: { id: flagId },
+      data: { status: 'cleared', decidedByUserId: adminUserId, decidedAt: new Date() },
+    })
+    return c.json({ ok: true })
   })
 
   return app

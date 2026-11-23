@@ -21,6 +21,12 @@ import { join, resolve } from 'node:path'
 import { freePort, pairMachine, type PairedMachine } from '../../../../../e2e/staging/machine-pairing'
 
 export const REPO_ROOT = resolve(import.meta.dir, '../../../../..')
+/**
+ * The auth secret the cloud process is started with. Exported so a suite can
+ * give the paired desktop the same one — a capability token (a `share_file`
+ * link) is signed with it on one side and verified on the other (SHO-488).
+ */
+export const CLOUD_AUTH_SECRET = 'sho257-two-process-secret-0123456789abcdef'
 const PG_SETUP_SCRIPT = resolve(import.meta.dir, 'pg-test-db.ts')
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -68,7 +74,7 @@ export async function startCloud(opts: { pgServerUrl: string; redisUrl: string }
       API_PORT: String(port),
       PORT: String(port),
       NODE_ENV: 'development',
-      BETTER_AUTH_SECRET: 'sho257-two-process-secret-0123456789abcdef',
+      BETTER_AUTH_SECRET: CLOUD_AUTH_SECRET,
       BETTER_AUTH_URL: base,
       APP_URL: base,
       WORKSPACES_DIR: join(dataDir, 'workspaces'),

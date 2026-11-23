@@ -44,6 +44,7 @@ import {
   openApiCrashLog,
 } from './local-server'
 import { initSignozLogExporter, exportLogLine, shutdownSignozLogExporter, type DesktopLogLevel } from './signoz-log-exporter'
+import { appendMainLogLineSync, formatLogLine, formatLogMessage, resolveMainLogDir } from './main-log'
 import { getWebDir, getBunPath, getDbPath, getWorkspacesDir, getWorkspacesDirDecision, getDataDir } from './paths'
 import { listProjectRoots } from './git/projectRoots'
 import { resolveAllowedLocalFile } from './local-file-roots'
@@ -128,21 +129,13 @@ interface CloudLoginBody {
 //     when the buggy v1.7.8 release auto-quit after a failed migration,
 //     leaving only `[Desktop] === Shogo starting ===` in the log and
 //     nothing else to diagnose from.
-const logDir = process.platform === 'win32'
-  ? path.join(app.getPath('userData'), 'logs')
-  : path.join(app.getPath('home'), 'Library', 'Logs', 'Shogo')
+const logDir = resolveMainLogDir({
+  userDataDir: app.getPath('userData'),
+  homeDir: app.getPath('home'),
+})
 fs.mkdirSync(logDir, { recursive: true })
 const logFile = path.join(logDir, 'main.log')
 const logStream = fs.createWriteStream(logFile, { flags: 'a' })
-
-function formatLogMessage(args: unknown[]): string {
-  return args.map(a => (a instanceof Error ? a.stack || a.message : String(a))).join(' ')
-}
-
-function formatLogLine(level: string, args: unknown[]): string {
-  const ts = new Date().toISOString()
-  return `${ts} [${level}] ${formatLogMessage(args)}\n`
-}
 
 function toDesktopLogLevel(level: string): DesktopLogLevel {
   return level === 'ERROR' ? 'ERROR'
@@ -160,13 +153,10 @@ function writeLog(level: string, ...args: unknown[]): void {
 }
 
 function writeLogSync(level: string, ...args: unknown[]): void {
-  try {
-    fs.appendFileSync(logFile, formatLogLine(level, args))
-  } catch {
-    // If even the sync write fails (full disk, EACCES from a virus
-    // scanner) there is nothing useful we can do — the process is
-    // already on its way out.
-  }
+  // If even the sync write fails (full disk, EACCES from a virus
+  // scanner) there is nothing useful we can do — the process is
+  // already on its way out.
+  appendMainLogLineSync(logFile, level, ...args)
 }
 
 const origLog = console.log

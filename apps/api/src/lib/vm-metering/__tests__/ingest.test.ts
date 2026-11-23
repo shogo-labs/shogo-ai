@@ -28,9 +28,9 @@ interface Cursor {
   hostId: string
   vmId: string
   assignedAt: bigint
-  agentMs: number
-  appMs: number
-  idleMs: number
+  agentMs: bigint
+  appMs: bigint
+  idleMs: bigint
   lastSeenAt: Date
 }
 
@@ -106,9 +106,14 @@ const fakePrisma: any = {
     },
     deleteMany: async (args: any) => {
       const before = cursors.length
+      const liveExclusions: Array<{ vmId: string; assignedAt: bigint }> = args.where.NOT?.OR ?? []
       cursors = cursors.filter(
         (c) =>
-          !(c.hostId === args.where.hostId && c.lastSeenAt < args.where.lastSeenAt.lt),
+          !(
+            c.hostId === args.where.hostId &&
+            c.lastSeenAt < args.where.lastSeenAt.lt &&
+            !liveExclusions.some((x) => x.vmId === c.vmId && x.assignedAt === c.assignedAt)
+          ),
       )
       return { count: before - cursors.length }
     },
@@ -263,7 +268,7 @@ describe('ingestMetalMeters', () => {
     // 60 + 5 + 30. An accumulating cursor would read the last 35 s as a second
     // reset and bill 100 s — and keep over-billing for the process's lifetime.
     expect(totalSeconds().agent).toBe(95)
-    expect(cursors[0].agentMs).toBe(35_000)
+    expect(cursors[0].agentMs).toBe(BigInt(35_000))
   })
 
   it('keeps the sub-second remainder in the cursor', async () => {
@@ -273,7 +278,7 @@ describe('ingestMetalMeters', () => {
     // 500ms would be dropped on every tick.
     await ingestMetalMeters({ hostId: HOST, payload: payload({ agentMs: 1_200 }), now: new Date(T0 + 1_000) })
     expect(totalSeconds().agent).toBe(1)
-    expect(cursors[0].agentMs).toBe(1_000)
+    expect(cursors[0].agentMs).toBe(BigInt(1_000))
   })
 
   it('splits agent, app and idle seconds into separate columns', async () => {
@@ -322,7 +327,7 @@ describe('ingestMetalMeters', () => {
     expect(cursors).toHaveLength(1)
 
     await ingestMetalMeters({ hostId: HOST, payload: payload({ agentMs: 60_000 }), now: new Date(T0 + 30_000) })
-    expect(cursors[0].agentMs).toBe(60_000)
+    expect(cursors[0].agentMs).toBe(BigInt(60_000))
   })
 
   it('counts malformed rows without throwing, so liveness survives a bad meter', async () => {

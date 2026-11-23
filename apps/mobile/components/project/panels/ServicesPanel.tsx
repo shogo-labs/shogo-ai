@@ -24,6 +24,7 @@ import { API_URL, api } from '../../../lib/api'
 
 const LOG_PREFIX = '[ServicesPanel]'
 import { useDomainHttp } from '../../../contexts/domain'
+import { errorMessage } from '../../../lib/error-message'
 
 interface Connection {
   id: string
@@ -69,7 +70,7 @@ export function ServicesPanel({ projectId, agentUrl, visible }: ServicesPanelPro
       const data = await api.getIntegrationConnections(http, projectId)
       setConnections(data as Connection[])
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setIsLoading(false)
     }
@@ -86,7 +87,7 @@ export function ServicesPanel({ projectId, agentUrl, visible }: ServicesPanelPro
       await api.disconnectIntegration(http, connectionId, { projectId })
       await loadConnections()
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setDisconnecting(null)
     }
@@ -130,7 +131,7 @@ export function ServicesPanel({ projectId, agentUrl, visible }: ServicesPanelPro
       await loadConnections()
     } catch (err: any) {
       console.error(LOG_PREFIX, `Reconnect error for ${toolkit}:`, err)
-      setError(err.message)
+      setError(errorMessage(err))
       setReconnecting(null)
     } finally {
       try {

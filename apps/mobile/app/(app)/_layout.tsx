@@ -68,6 +68,7 @@ import { useNotificationClickRouter } from "../../lib/notifications/useNotificat
 import { useDesktopIslandRouter } from "../../lib/useDesktopIslandRouter";
 import { useMobilePushRegistration } from "../../lib/notifications/mobile-push-registration";
 import { useAppInstallHeartbeat } from "../../lib/app-install-heartbeat";
+import { useRegisterAppActivity } from "../../lib/register-app-activity";
 import { useNotifyOnTurnComplete } from "../../lib/notifications/preferences";
 import { mark as csMark } from "../../lib/cold-start-timing";
 import {
@@ -83,6 +84,7 @@ import { MobileBottomNav } from "../../components/layout/MobileBottomNav";
 import { TeamChatSidebarProvider } from "../../components/team-chat/TeamChatSidebarProvider";
 import { MobileWorkspaceShell } from "../../components/layout/MobileWorkspaceShell";
 import { useWorkspaceRemountKey } from "../../hooks/useWorkspaceRemountKey";
+import { useWorkspaceParamAdoption } from "../../hooks/useWorkspaceParamAdoption";
 import { sidebarOpenEvents } from "../../lib/sidebar-open-events";
 import { getCloudWorkspacesState, refreshCloudWorkspaces, subscribeCloudWorkspaces } from "../../lib/workspace-route";
 import { isConversationPath } from "../../lib/sidebar-tab";
@@ -165,6 +167,11 @@ const PHONE_OWN_CHROME_ROUTES = new Set([
   "huddles",
   "new-workspace",
   "f",
+  // A person's profile and an agent's profile draw the phone's glass header
+  // (SHO-490); without these the shared hamburger bar stacked above them and
+  // their own header started 54px down the screen.
+  "people",
+  "agents",
 ]);
 
 /**
@@ -211,6 +218,11 @@ function AppLayoutInner() {
   const activeWorkspace = useActiveWorkspace();
   const workspaceMountKey = useWorkspaceRemountKey(activeWorkspace?.id);
   const workspaces = useWorkspaceCollection();
+  // `?workspace=<id>` on any screen: the shell opens it, on a phone too. A link
+  // into a workspace on a paired computer used to land in the companion's own
+  // space on a phone and stay there, because only the web sidebar adopted it
+  // (SHO-494).
+  useWorkspaceParamAdoption();
   const router = useRouter();
   const pathname = usePathname();
   const isIdeEmbed = useMemo(() => {
@@ -353,6 +365,7 @@ function AppLayoutInner() {
   const [notifyOnTurnComplete] = useNotifyOnTurnComplete();
   useMobilePushRegistration(user?.id ?? null, notifyOnTurnComplete);
   useAppInstallHeartbeat(user?.id ?? null);
+  useRegisterAppActivity();
 
   useEffect(() => {
     if (isAuthenticated && posthog) {

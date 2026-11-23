@@ -31,14 +31,19 @@
  */
 
 import { S3Client, GetObjectCommand, PutObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3'
-import { watch } from 'fs'
-import { readdir, readFile, writeFile, mkdir, stat, unlink, rm } from 'fs/promises'
+import type { GetObjectCommandOutput } from '@aws-sdk/client-s3'
+import { watch, createReadStream, createWriteStream } from 'fs'
+import { readdir, readFile, writeFile, mkdir, stat, utimes, unlink, rm, mkdtemp, link, copyFile } from 'fs/promises'
 import { join, relative, dirname } from 'path'
 import { existsSync, statSync, mkdirSync } from 'fs'
 import { createHash } from 'crypto'
+import { Transform, type Readable } from 'stream'
+import { pipeline } from 'stream/promises'
 import { spawn } from './child-process'
 import * as tar from 'tar'
 import { isMacOSJunkName } from './macos-junk'
+import { lfsTrackedPaths, lfsPointerText, materializeLfsPointersFromStore } from './lfs'
+import { isPreconditionFailure, putFileToObjectStore } from './s3-object'
 
 /**
  * Extract a `.tar.gz` archive without blocking the Node/Bun event loop.
@@ -397,6 +402,13 @@ const SYNC_DEBOUNCE_MS = 3000
 /** S3 key prefix for deps archives (shared across projects) */
 const DEPS_CACHE_PREFIX = '_deps-cache'
 
+/**
+ * How often a streaming download logs its progress. A 1.7 GB archive over a
+ * cold link is minutes of silence otherwise, which is indistinguishable from a
+ * hung pod in the logs.
+ */
+const DOWNLOAD_PROGRESS_BYTES = 100 * 1024 * 1024
+
 export class S3Sync {
   private client: S3Client
   private config: Omit<Required<S3SyncConfig>, 'endpoint'> & { endpoint?: string }
@@ -437,6 +449,19 @@ export class S3Sync {
   /** Why the lineage is unknown, so a refused write explains itself. */
   private lineageUnknownReason: string = 'downloadAll() was never called on this instance'
   private allowUnconditionalWrite: boolean = false
+
+  /**
+   * Whether this workspace's Git LFS object bytes are durable in
+   * `<projectId>/lfs/objects/…` (the last push succeeded).
+   *
+   * When they are, `project-src.tar.gz` stores LFS-tracked files as their
+   * pointer text instead of their bytes: those bytes are already stored once,
+   * and shipping them again is what made a media-heavy project's archive 1.76
+   * GB (SHO-478). When they are not, the archive keeps the real bytes so the
+   * content is durable somewhere — the same rule `persistRepoToStore` applies
+   * to `.git/lfs/objects`.
+   */
+  private lfsObjectsDurable: boolean = false
 
   constructor(config: S3SyncConfig) {
     this.allowUnconditionalWrite = config.allowUnconditionalWrite ?? false
@@ -665,6 +690,91 @@ export class S3Sync {
   // ===========================================================================
 
   /**
+   * Stream one object straight to disk and report how many bytes arrived.
+   *
+   * `Body.transformToByteArray()` held the whole archive in RAM: a 1.76 GB
+   * `project-src.tar.gz` OOMKilled every 1 GiB published pod ~16 s into boot
+   * (SHO-478). `pipeline` keeps memory flat whatever the object size — the
+   * pattern `large-file-sync` and `repo-store` already use for the same reason.
+   *
+   * `onResponse` runs as soon as the `GetObject` response lands, before the
+   * body is read, so callers that anchor lineage on the ETag keep doing that at
+   * the same point in the sequence.
+   *
+   * Returns `null` when the response carries no body, and leaves no partial
+   * file behind when the transfer fails.
+   */
+  private async downloadObjectToFile(
+    key: string,
+    destPath: string,
+    onResponse?: (res: GetObjectCommandOutput) => void,
+  ): Promise<{ bytes: number; etag?: string; contentLength?: number } | null> {
+    const res = await this.client.send(new GetObjectCommand({
+      Bucket: this.config.bucket,
+      Key: key,
+    }))
+    onResponse?.(res)
+    if (!res.Body) return null
+
+    let bytes = 0
+    let nextLogAt = DOWNLOAD_PROGRESS_BYTES
+    const counter = new Transform({
+      transform(chunk: Buffer, _enc, cb) {
+        bytes += chunk.length
+        if (bytes >= nextLogAt) {
+          nextLogAt = bytes + DOWNLOAD_PROGRESS_BYTES
+          console.log(`[S3Sync] ${key}: ${(bytes / (1024 * 1024)).toFixed(0)} MB downloaded`)
+        }
+        cb(null, chunk)
+      },
+    })
+
+    try {
+      await pipeline(res.Body as unknown as Readable, counter, createWriteStream(destPath))
+    } catch (err) {
+      await unlink(destPath).catch(() => {})
+      throw err
+    }
+    return { bytes, etag: res.ETag, contentLength: res.ContentLength }
+  }
+
+  /**
+   * Replace every LFS pointer the last hydrate restored with the real bytes
+   * from `<prefix>/lfs/objects/…` (see `materializeLfsPointersFromStore`).
+   *
+   * Both hydrate paths land here or in a pod with no `.git` at all, so this is
+   * the one place that must not depend on `git lfs pull`. Best-effort: a
+   * missing object is logged and the boot continues, exactly like a failed
+   * `git lfs pull` would.
+   */
+  async materializeLfsObjects(): Promise<void> {
+    try {
+      const res = await materializeLfsPointersFromStore(this.config.localDir, this.config.prefix, {
+        store: { bucket: this.config.bucket, client: this.client },
+      })
+      if (res.pointers > 0) {
+        console.log(
+          `[S3Sync] LFS: ${res.materialized}/${res.pointers} object(s) restored from ` +
+            `${this.config.prefix}/lfs/objects (missing=${res.missing}, mismatched=${res.mismatched})`,
+        )
+      }
+    } catch (err: any) {
+      console.warn(`[S3Sync] LFS materialization failed (non-fatal): ${err?.message ?? err}`)
+    }
+  }
+
+  /**
+   * Tell this instance whether the workspace's LFS objects are durable in the
+   * object store. Only then may `project-src.tar.gz` ship pointer text instead
+   * of the bytes themselves.
+   */
+  setLfsObjectsDurable(durable: boolean): void {
+    if (this.lfsObjectsDurable === durable) return
+    this.lfsObjectsDurable = durable
+    console.log(`[S3Sync] lfsObjectsDurable=${durable} — project archives ${durable ? 'will store LFS pointer text' : 'will carry LFS bytes'}`)
+  }
+
+  /**
    * Download and extract project from S3 using layered archives.
    * 
    * Strategy:
@@ -772,48 +882,53 @@ export class S3Sync {
     // Step 1: Download project archive (source + dist)
     const projectStart = Date.now()
     const projectKey = this.getProjectArchiveKey()
+    const tempProject = join('/tmp', `project-${this.config.prefix}-src.tar.gz`)
     console.log(`[S3Sync] [downloadLayered] Step 1/2: Downloading project archive from s3://${this.config.bucket}/${projectKey}`)
 
-    const projectResponse = await this.client.send(new GetObjectCommand({
-      Bucket: this.config.bucket,
-      Key: projectKey,
-    }))
-    // The ETag anchors the lineage: a later upload may replace exactly this object.
-    if (projectResponse.ETag) {
-      this.projectLineage = { kind: 'descends', etag: projectResponse.ETag }
-    } else {
-      this.projectLineage = { kind: 'unknown' }
-      this.lineageUnknownReason =
-        'the store returned no ETag on GetObject, so there is nothing to anchor a conditional write to ' +
-        '(S3-compatible store omitting ETag?)'
+    let s3ResponseMs = 0
+    let downloaded: { bytes: number; etag?: string; contentLength?: number } | null = null
+    try {
+      downloaded = await this.downloadObjectToFile(projectKey, tempProject, (res) => {
+        // The ETag anchors the lineage: a later upload may replace exactly this object.
+        if (res.ETag) {
+          this.projectLineage = { kind: 'descends', etag: res.ETag }
+        } else {
+          this.projectLineage = { kind: 'unknown' }
+          this.lineageUnknownReason =
+            'the store returned no ETag on GetObject, so there is nothing to anchor a conditional write to ' +
+            '(S3-compatible store omitting ETag?)'
+        }
+        s3ResponseMs = Date.now() - projectStart
+        console.log(`[S3Sync] [downloadLayered] S3 GetObject response received in ${s3ResponseMs}ms (contentLength=${res.ContentLength ?? 'unknown'})`)
+      })
+
+      if (!downloaded) {
+        this.projectLineage = { kind: 'unknown' }
+        this.lineageUnknownReason = 'the project archive GetObject response had an empty body'
+        console.log(`[S3Sync] [downloadLayered] Empty project archive response — aborting`)
+        return this.getStats()
+      }
+
+      const projectDownloadMs = Date.now() - projectStart
+      console.log(`[S3Sync] [downloadLayered] Project archive downloaded: ${this.formatBytes(downloaded.bytes)} in ${projectDownloadMs}ms (streamed to ${tempProject})`)
+
+      // Extract project archive
+      const extractStart = Date.now()
+      const { usedBinary } = await extractTarFastNonBlocking(tempProject, this.config.localDir)
+      const projectExtractMs = Date.now() - extractStart
+      console.log(`[S3Sync] [downloadLayered] Project archive extracted in ${projectExtractMs}ms (via=${usedBinary ? 'system-tar' : 'node-tar'})`)
+      this.stats.projectExtractMs = projectExtractMs
+    } finally {
+      // A failed transfer must not fill /tmp either.
+      await unlink(tempProject).catch(() => {})
     }
-    const s3ResponseMs = Date.now() - projectStart
-    console.log(`[S3Sync] [downloadLayered] S3 GetObject response received in ${s3ResponseMs}ms (contentLength=${projectResponse.ContentLength ?? 'unknown'})`)
 
-    if (!projectResponse.Body) {
-      this.projectLineage = { kind: 'unknown' }
-      this.lineageUnknownReason = 'the project archive GetObject response had an empty body'
-      console.log(`[S3Sync] [downloadLayered] Empty project archive response — aborting`)
-      return this.getStats()
-    }
+    const projectData = downloaded
 
-    const streamStart = Date.now()
-    const projectData = await projectResponse.Body.transformToByteArray()
-    const streamMs = Date.now() - streamStart
-    const projectDownloadMs = Date.now() - projectStart
-    console.log(`[S3Sync] [downloadLayered] Project archive downloaded: ${this.formatBytes(projectData.length)} in ${projectDownloadMs}ms (stream read: ${streamMs}ms)`)
-
-    // Extract project archive
-    const extractStart = Date.now()
-    const tempProject = join('/tmp', `project-${this.config.prefix}-src.tar.gz`)
-    console.log(`[S3Sync] [downloadLayered] Writing temp file and extracting project archive...`)
-    await writeFile(tempProject, projectData)
-    const writeMs = Date.now() - extractStart
-    const { usedBinary } = await extractTarFastNonBlocking(tempProject, this.config.localDir)
-    const projectExtractMs = Date.now() - extractStart
-    console.log(`[S3Sync] [downloadLayered] Project archive extracted in ${projectExtractMs}ms (write: ${writeMs}ms, tar extract: ${projectExtractMs - writeMs}ms, via=${usedBinary ? 'system-tar' : 'node-tar'})`)
-    await unlink(tempProject).catch(() => {})
-    this.stats.projectExtractMs = projectExtractMs
+    // The archive stores LFS-tracked files as pointer text (their bytes live
+    // once, in `lfs/objects`), so put the real media back before anything
+    // serves this tree.
+    await this.materializeLfsObjects()
 
     // Step 2: Restore deps from cache (non-blocking)
     // Fire off deps restoration in the background so the pod can accept
@@ -836,13 +951,13 @@ export class S3Sync {
 
     const totalMs = Date.now() - totalStart
     const projectFileCount = await this.countFilesExcluding(this.config.localDir, ['node_modules'])
-    
+
     this.stats.downloaded = projectFileCount
     this.stats.lastSync = new Date()
-    this.stats.archiveSize = projectData.length
+    this.stats.archiveSize = projectData?.bytes
 
     console.log(`[S3Sync] [downloadLayered] ⚡ Source files ready in ${totalMs}ms — ${projectFileCount} source files (deps restoring in background)`)
-    console.log(`[S3Sync] [downloadLayered] Breakdown: s3Response=${s3ResponseMs}ms, streamRead=${streamMs}ms, extract=${projectExtractMs}ms`)
+    console.log(`[S3Sync] [downloadLayered] Breakdown: s3Response=${s3ResponseMs}ms, download+extract=${totalMs - s3ResponseMs}ms`)
     return this.getStats()
   }
 
@@ -913,44 +1028,39 @@ export class S3Sync {
     console.log(`[S3Sync] [restoreDeps] ⚡ Deps cache hit (hash: ${lockfileHash}, ${resolvedKey.ext}) — downloading...`)
     const depsStart = Date.now()
 
-    const depsResponse = await this.client.send(new GetObjectCommand({
-      Bucket: this.config.bucket,
-      Key: resolvedKey.key,
-    }))
-    const s3ResponseMs = Date.now() - depsStart
-    console.log(`[S3Sync] [restoreDeps] S3 GetObject response in ${s3ResponseMs}ms (contentLength=${depsResponse.ContentLength ?? 'unknown'})`)
-
-    if (!depsResponse.Body) {
-      console.log(`[S3Sync] [restoreDeps] Empty deps response — skipping`)
-      return
-    }
-
-    const streamStart = Date.now()
-    const depsData = await depsResponse.Body.transformToByteArray()
-    const streamMs = Date.now() - streamStart
-    const downloadMs = Date.now() - depsStart
-    console.log(`[S3Sync] [restoreDeps] Downloaded deps archive: ${this.formatBytes(depsData.length)} in ${downloadMs}ms (stream read: ${streamMs}ms)`)
-
     // Extract deps. Uses spawn('tar') so the JS event loop stays free
     // while decompression + the ~30k file writes happen in a child
     // process — critical for keeping `/ready` probes responsive during
     // cold start. extractTarFastNonBlocking dispatches gz vs zst by
     // file extension, so the tempfile name matters.
-    const extractStart = Date.now()
     const tempDeps = join('/tmp', `deps-${lockfileHash}.tar.${resolvedKey.ext}`)
-    console.log(`[S3Sync] [restoreDeps] Extracting deps archive (${this.formatBytes(depsData.length)})...`)
-    await writeFile(tempDeps, depsData)
-    const writeMs = Date.now() - extractStart
-    const { usedBinary } = await extractTarFastNonBlocking(tempDeps, this.config.localDir)
-    const extractMs = Date.now() - extractStart
-    console.log(`[S3Sync] [restoreDeps] Deps extracted in ${extractMs}ms (write: ${writeMs}ms, tar: ${extractMs - writeMs}ms, via=${usedBinary ? 'system-tar' : 'node-tar'})`)
-    await unlink(tempDeps).catch(() => {})
+    try {
+      let s3ResponseMs = 0
+      const downloaded = await this.downloadObjectToFile(resolvedKey.key, tempDeps, (res) => {
+        s3ResponseMs = Date.now() - depsStart
+        console.log(`[S3Sync] [restoreDeps] S3 GetObject response in ${s3ResponseMs}ms (contentLength=${res.ContentLength ?? 'unknown'})`)
+      })
+      if (!downloaded) {
+        console.log(`[S3Sync] [restoreDeps] Empty deps response — skipping`)
+        return
+      }
+      const downloadMs = Date.now() - depsStart
+      console.log(`[S3Sync] [restoreDeps] Downloaded deps archive: ${this.formatBytes(downloaded.bytes)} in ${downloadMs}ms`)
 
-    this.stats.depsCacheHit = true
-    this.stats.depsExtractMs = extractMs
-    this.currentLockfileHash = lockfileHash
+      const extractStart = Date.now()
+      console.log(`[S3Sync] [restoreDeps] Extracting deps archive (${this.formatBytes(downloaded.bytes)})...`)
+      const { usedBinary } = await extractTarFastNonBlocking(tempDeps, this.config.localDir)
+      const extractMs = Date.now() - extractStart
+      console.log(`[S3Sync] [restoreDeps] Deps extracted in ${extractMs}ms (via=${usedBinary ? 'system-tar' : 'node-tar'})`)
 
-    console.log(`[S3Sync] [restoreDeps] ⚡ COMPLETE in ${Date.now() - restoreStart}ms (download=${downloadMs}ms, extract=${extractMs}ms)`)
+      this.stats.depsCacheHit = true
+      this.stats.depsExtractMs = extractMs
+      this.currentLockfileHash = lockfileHash
+
+      console.log(`[S3Sync] [restoreDeps] ⚡ COMPLETE in ${Date.now() - restoreStart}ms (download=${downloadMs}ms, extract=${extractMs}ms)`)
+    } finally {
+      await unlink(tempDeps).catch(() => {})
+    }
   }
 
   /**
@@ -960,49 +1070,45 @@ export class S3Sync {
     const archiveKey = this.getLegacyArchiveKey()
     console.log(`[S3Sync] [downloadLegacy] Downloading legacy archive from s3://${this.config.bucket}/${archiveKey}`)
 
-    const s3Start = Date.now()
-    const response = await this.client.send(new GetObjectCommand({
-      Bucket: this.config.bucket,
-      Key: archiveKey,
-    }))
-    const s3ResponseMs = Date.now() - s3Start
-    console.log(`[S3Sync] [downloadLegacy] S3 GetObject response in ${s3ResponseMs}ms (contentLength=${response.ContentLength ?? 'unknown'})`)
-
-    if (!response.Body) {
-      console.log(`[S3Sync] [downloadLegacy] Empty response from S3 — aborting`)
-      return this.getStats()
-    }
-
-    const streamStart = Date.now()
-    const bodyArray = await response.Body.transformToByteArray()
-    const streamMs = Date.now() - streamStart
-    const downloadTime = Date.now() - s3Start
-    console.log(`[S3Sync] [downloadLegacy] Downloaded archive: ${this.formatBytes(bodyArray.length)} in ${downloadTime}ms (stream read: ${streamMs}ms)`)
-
     if (!existsSync(this.config.localDir)) {
       mkdirSync(this.config.localDir, { recursive: true })
     }
 
-    const extractStart = Date.now()
+    const s3Start = Date.now()
     const tempArchive = join('/tmp', `project-${this.config.prefix}.tar.gz`)
-    console.log(`[S3Sync] [downloadLegacy] Extracting archive (${this.formatBytes(bodyArray.length)})...`)
-    await writeFile(tempArchive, bodyArray)
-    const writeMs = Date.now() - extractStart
-    const { usedBinary } = await extractTarFastNonBlocking(tempArchive, this.config.localDir)
-    const extractTime = Date.now() - extractStart
-    console.log(`[S3Sync] [downloadLegacy] Extracted in ${extractTime}ms (write: ${writeMs}ms, tar: ${extractTime - writeMs}ms, via=${usedBinary ? 'system-tar' : 'node-tar'})`)
-    await unlink(tempArchive).catch(() => {})
+    try {
+      let s3ResponseMs = 0
+      const downloaded = await this.downloadObjectToFile(archiveKey, tempArchive, (res) => {
+        s3ResponseMs = Date.now() - s3Start
+        console.log(`[S3Sync] [downloadLegacy] S3 GetObject response in ${s3ResponseMs}ms (contentLength=${res.ContentLength ?? 'unknown'})`)
+      })
+      if (!downloaded) {
+        console.log(`[S3Sync] [downloadLegacy] Empty response from S3 — aborting`)
+        return this.getStats()
+      }
+      console.log(`[S3Sync] [downloadLegacy] Downloaded archive: ${this.formatBytes(downloaded.bytes)} in ${Date.now() - s3Start}ms`)
 
-    const fileCount = await this.countFiles(this.config.localDir)
-    this.stats.downloaded = fileCount
-    this.stats.lastSync = new Date()
-    this.stats.archiveSize = bodyArray.length
+      const extractStart = Date.now()
+      console.log(`[S3Sync] [downloadLegacy] Extracting archive (${this.formatBytes(downloaded.bytes)})...`)
+      const { usedBinary } = await extractTarFastNonBlocking(tempArchive, this.config.localDir)
+      const extractTime = Date.now() - extractStart
+      console.log(`[S3Sync] [downloadLegacy] Extracted in ${extractTime}ms (via=${usedBinary ? 'system-tar' : 'node-tar'})`)
 
-    const totalMs = Date.now() - totalStart
-    console.log(`[S3Sync] [downloadLegacy] COMPLETE in ${totalMs}ms: ${fileCount} files (${this.formatBytes(bodyArray.length)})`)
+      await this.materializeLfsObjects()
 
-    this.depsNeedUpload = true
-    return this.getStats()
+      const fileCount = await this.countFiles(this.config.localDir)
+      this.stats.downloaded = fileCount
+      this.stats.lastSync = new Date()
+      this.stats.archiveSize = downloaded.bytes
+
+      const totalMs = Date.now() - totalStart
+      console.log(`[S3Sync] [downloadLegacy] COMPLETE in ${totalMs}ms: ${fileCount} files (${this.formatBytes(downloaded.bytes)})`)
+
+      this.depsNeedUpload = true
+      return this.getStats()
+    } finally {
+      await unlink(tempArchive).catch(() => {})
+    }
   }
 
   // ===========================================================================
@@ -1098,17 +1204,119 @@ export class S3Sync {
       'chat-files',
     ])
     if (filesToInclude.length === 0) return null
-    await tar.create(
-      {
-        gzip: true,
-        file: destPath,
-        cwd: this.config.localDir,
-        portable: true,
-      },
-      filesToInclude.map((f) => relative(this.config.localDir, f)),
+    await this.createArchive(destPath, filesToInclude)
+    return { bytes: statSync(destPath).size }
+  }
+
+  /**
+   * Write `filesToInclude` into a gzipped tar at `destPath`.
+   *
+   * When this workspace's LFS objects are durable in the store, LFS-tracked
+   * files go in as their pointer text and their real bytes stay where they
+   * already are (`lfs/objects`). That is what keeps a media-heavy project's
+   * archive at source+dist size instead of re-shipping 1.7 GB of video on
+   * every save and every cold start (SHO-478). Otherwise the bytes are packed
+   * normally, because dropping them would leave the content durable nowhere.
+   */
+  private async createArchive(destPath: string, filesToInclude: string[]): Promise<void> {
+    const rels = filesToInclude.map((f) => relative(this.config.localDir, f))
+    const pointers = this.lfsObjectsDurable
+      ? await this.lfsPointerContents(rels)
+      : new Map<string, string>()
+
+    if (pointers.size === 0) {
+      await tar.create(
+        {
+          gzip: true,
+          file: destPath,
+          cwd: this.config.localDir,
+          portable: true,
+        },
+        rels,
+      )
+      return
+    }
+
+    // tar can only pack what is on disk, so stage the tree: hard links for the
+    // files that keep their bytes (no copy, no extra space), pointer text for
+    // the LFS-tracked ones.
+    const staging = await mkdtemp(join('/tmp', `s3-pack-${this.config.prefix}-`))
+    try {
+      for (const rel of rels) {
+        const dst = join(staging, rel)
+        await mkdir(dirname(dst), { recursive: true })
+        const pointer = pointers.get(rel)
+        if (pointer !== undefined) {
+          const src = join(this.config.localDir, rel)
+          const srcStat = await stat(src)
+          await writeFile(dst, pointer)
+          // Carry the original mtime: tar records it, so a fresh timestamp
+          // would change the archive bytes on every tick and defeat the
+          // "skip upload when the archive is unchanged" check.
+          await utimes(dst, srcStat.atime, srcStat.mtime)
+          continue
+        }
+        try {
+          await link(join(this.config.localDir, rel), dst)
+        } catch {
+          await copyFile(join(this.config.localDir, rel), dst)
+        }
+      }
+      await tar.create(
+        {
+          gzip: true,
+          file: destPath,
+          cwd: staging,
+          portable: true,
+        },
+        rels,
+      )
+    } finally {
+      await rm(staging, { recursive: true, force: true }).catch(() => {})
+    }
+    console.log(`[S3Sync] Packed ${rels.length} file(s), ${pointers.size} as LFS pointer text`)
+  }
+
+  /**
+   * Pointer text for every LFS-tracked path among `rels`.
+   *
+   * Hash the file itself rather than reading the staged blob out of git: a git
+   * LFS oid IS the sha256 of the content, so the pointer always describes the
+   * bytes in the workspace, including an edit that has not been committed yet.
+   */
+  private async lfsPointerContents(rels: string[]): Promise<Map<string, string>> {
+    const pointers = new Map<string, string>()
+    let tracked: Set<string>
+    try {
+      tracked = await lfsTrackedPaths(this.config.localDir, rels)
+    } catch (err: any) {
+      console.warn(`[S3Sync] LFS tracking lookup failed, packing real bytes: ${err?.message ?? err}`)
+      return pointers
+    }
+    if (tracked.size === 0) return pointers
+
+    const queue = rels.filter((rel) => tracked.has(rel))
+    const workers = Math.max(1, Math.min(4, queue.length))
+    await Promise.all(
+      Array.from({ length: workers }, async () => {
+        for (let rel = queue.shift(); rel; rel = queue.shift()) {
+          const full = join(this.config.localDir, rel)
+          try {
+            pointers.set(rel, lfsPointerText(await this.hashFile(full), statSync(full).size))
+          } catch (err: any) {
+            console.warn(`[S3Sync] could not hash LFS file ${rel}, packing its bytes: ${err?.message ?? err}`)
+          }
+        }
+      }),
     )
-    const bytes = (await readFile(destPath)).length
-    return { bytes }
+    return pointers
+  }
+
+  /** sha256 of a file, streamed so a large file never lands in memory. */
+  private async hashFile(filePath: string): Promise<string> {
+    const hash = createHash('sha256')
+    for await (const chunk of createReadStream(filePath)) hash.update(chunk as Buffer)
+    return hash.digest('hex')
   }
 
   /**
@@ -1128,7 +1336,7 @@ export class S3Sync {
    * is parked under `conflict/` so the work is recoverable, and this instance
    * stops writing until it re-reads.
    */
-  private async putProjectArchive(body: Uint8Array): Promise<'written' | 'refused' | 'conflict'> {
+  private async putProjectArchive(filePath: string, bytes: number): Promise<'written' | 'refused' | 'conflict'> {
     const key = this.getProjectArchiveKey()
     const lineage = this.projectLineage
 
@@ -1145,14 +1353,8 @@ export class S3Sync {
     }
 
     try {
-      const res = await this.client.send(new PutObjectCommand({
-        Bucket: this.config.bucket,
-        Key: key,
-        Body: body,
-        ContentType: 'application/gzip',
-        ...precondition,
-      }))
-      let etag = res.ETag
+      const res = await this.putObjectFromFile(key, filePath, bytes, 'application/gzip', precondition)
+      let etag = res.etag
       if (!etag) {
         // Some S3-compatible stores omit the ETag on PUT. Without one the next
         // conditional write has no anchor, so ask for it.
@@ -1170,19 +1372,14 @@ export class S3Sync {
       }
       return 'written'
     } catch (error: any) {
-      if (error?.name !== 'PreconditionFailed' && error?.$metadata?.httpStatusCode !== 412) throw error
+      if (!isPreconditionFailure(error)) throw error
 
       this.projectLineage = { kind: 'unknown' }
       this.lineageUnknownReason = 'a LINEAGE CONFLICT was detected: another runtime wrote the archive after we read it'
       const quarantineKey = `conflict/${this.config.prefix}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-src.tar.gz`
       let parked = false
       try {
-        await this.client.send(new PutObjectCommand({
-          Bucket: this.config.bucket,
-          Key: quarantineKey,
-          Body: body,
-          ContentType: 'application/gzip',
-        }))
+        await this.putObjectFromFile(quarantineKey, filePath, bytes, 'application/gzip')
         parked = true
       } catch (qErr: any) {
         console.error(`[S3Sync] could not park the losing archive: ${qErr?.message ?? qErr}`)
@@ -1195,6 +1392,28 @@ export class S3Sync {
       this.stats.errors.push(msg)
       return 'conflict'
     }
+  }
+
+  /**
+   * PUT `filePath` under `key` without ever holding it in memory.
+   *
+   * Delegates to the one object-store upload every writer shares (SHO-485):
+   * a single `PutObject` below the multipart threshold, else a part-buffered
+   * multipart upload that reads one part at a time from a file handle.
+   */
+  private async putObjectFromFile(
+    key: string,
+    filePath: string,
+    bytes: number,
+    contentType: string,
+    precondition: { IfMatch?: string; IfNoneMatch?: string } = {},
+  ): Promise<{ etag?: string }> {
+    return putFileToObjectStore(
+      { bucket: this.config.bucket, client: this.client },
+      key,
+      filePath,
+      { bytes, contentType, precondition },
+    )
   }
 
   private async uploadProjectArchive(forceWriteWhenSuppressed: boolean = false): Promise<void> {
@@ -1228,23 +1447,14 @@ export class S3Sync {
     this.pendingUploads.clear()
 
     // Create archive
-    await tar.create(
-      {
-        gzip: true,
-        file: tempArchive,
-        cwd: this.config.localDir,
-        portable: true,
-      },
-      filesToInclude.map(f => relative(this.config.localDir, f))
-    )
+    await this.createArchive(tempArchive, filesToInclude)
 
     const archiveTime = Date.now() - startTime
-    const archiveContent = await readFile(tempArchive)
-    const archiveSize = archiveContent.length
+    const archiveSize = statSync(tempArchive).size
     console.log(`[S3Sync] Created project archive in ${archiveTime}ms (${this.formatBytes(archiveSize)})`)
 
     // Hash the archive and skip upload if unchanged
-    const archiveHash = createHash('sha256').update(archiveContent).digest('hex')
+    const archiveHash = await this.hashFile(tempArchive)
     if (archiveHash === this.lastUploadHash) {
       console.log(`[S3Sync] Project archive unchanged (hash=${archiveHash.slice(0, 12)}), skipping upload`)
       await unlink(tempArchive).catch(() => {})
@@ -1262,7 +1472,7 @@ export class S3Sync {
     // Upload to S3
     const uploadStart = Date.now()
 
-    const outcome = await this.putProjectArchive(archiveContent)
+    const outcome = await this.putProjectArchive(tempArchive, archiveSize)
     if (outcome !== 'written') {
       // Refused or lost a race: the stored archive is untouched, and we must not
       // remember this content as uploaded or the next tick would skip retrying.
@@ -1366,14 +1576,13 @@ export class S3Sync {
 
     // Upload to S3 (content-addressed key)
     const uploadStart = Date.now()
-    const archiveContent = await readFile(tempArchive)
 
-    await this.client.send(new PutObjectCommand({
-      Bucket: this.config.bucket,
-      Key: depsKey,
-      Body: archiveContent,
-      ContentType: writeExt === 'zst' ? 'application/zstd' : 'application/gzip',
-    }))
+    await this.putObjectFromFile(
+      depsKey,
+      tempArchive,
+      archiveStats.size,
+      writeExt === 'zst' ? 'application/zstd' : 'application/gzip',
+    )
 
     const uploadTime = Date.now() - uploadStart
     console.log(`[S3Sync] Uploaded deps archive in ${uploadTime}ms`)
@@ -1683,15 +1892,14 @@ export class S3Sync {
       })
     })
 
-    const archiveContent = await readFile(tempArchive)
-    const archiveSize = archiveContent.length
+    const archiveSize = statSync(tempArchive).size
     console.log(
       `[S3Sync] snapshotFromGit: created ${this.formatBytes(archiveSize)} archive in ${Date.now() - startTime}ms`,
     )
 
     const archiveKey = this.getProjectArchiveKey()
     const uploadStart = Date.now()
-    const outcome = await this.putProjectArchive(archiveContent)
+    const outcome = await this.putProjectArchive(tempArchive, archiveSize)
     if (outcome !== 'written') {
       await unlink(tempArchive).catch(() => { })
       // Throw so the caller doesn't believe a cold-start snapshot exists.
@@ -1699,11 +1907,11 @@ export class S3Sync {
     }
     console.log(`[S3Sync] snapshotFromGit: uploaded to s3://${this.config.bucket}/${archiveKey} in ${Date.now() - uploadStart}ms`)
 
+    // Update our hash tracker so a subsequent `uploadAll` doesn't
+    // re-PUT an identical archive on top. Hashed before the file goes away.
+    this.lastUploadHash = await this.hashFile(tempArchive)
     await unlink(tempArchive).catch(() => { })
 
-    // Update our hash tracker so a subsequent `uploadAll` doesn't
-    // re-PUT an identical archive on top.
-    this.lastUploadHash = createHash('sha256').update(archiveContent).digest('hex')
     this.stats.archiveSize = archiveSize
   }
 

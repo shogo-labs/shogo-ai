@@ -20,6 +20,7 @@
  * | `chat_files`     | `artifacts/chat-attachments/<session>/`, `artifacts/conversations/<ws>/`, `artifacts/avatars/<user>/` | yes |
  * | `workspace_root` | `workspace-root/<workspaceId>/` — the durable workspace drive root     | yes    |
  * | `published`      | `PUBLISH_BUCKET/<subdomain>/`, `PUBLISH_DATA_BUCKET/<subdomain>/`      | yes    |
+ * | `bucket`         | `S3_PROJECT_BUCKET/p/<projectId>/<visibility>/<key>` (SHO-491)         | yes    |
  * | `vm_snapshots`   | `METAL_SNAP_BUCKET/metal-snapshots/<projectId>/snapshot/`              | **no** |
  *
  * The two overhead categories are ours, not the customer's: they are measured
@@ -40,6 +41,7 @@
 import { prisma } from '../lib/prisma'
 import { listAllArtifactObjects, listAllObjectsInS3, type ListedObject } from '../lib/s3'
 import { INSTANCE_SIZES, type InstanceSizeName } from '../config/instance-sizes'
+import { BUCKET_PREFIX, parseBucketObjectPath } from '../lib/project-bucket-keys'
 import { withGlobalJobLock } from '../lib/global-job-lock'
 import { homeRegionWorkspaceWhere } from '../lib/region'
 import {
@@ -85,6 +87,7 @@ export const STORAGE_CATEGORIES = [
   'chat_files',
   'workspace_root',
   'published',
+  'bucket',
   'vm_snapshots',
 ] as const
 
@@ -430,6 +433,30 @@ export async function measureStorageForWorkspaces(
     } catch (error: any) {
       console.error(`[Storage] Failed to list s3://${metalBucket}/${metalPrefix}:`, error?.message ?? error)
       unmeasuredGlobally.add('METAL_SNAP_BUCKET')
+    }
+  }
+
+  // 7) Project buckets (SHO-491): `p/<projectId>/<visibility>/<key>` in
+  //    `S3_PROJECT_BUCKET`. Shared namespace, so ONE listing per pass, and
+  //    every object is attributed to its project's workspace. Unset env means
+  //    unmeasured, never zero: a workspace must not look smaller because the
+  //    bucket was not configured on this deployment.
+  const projectBucket = envBucket('S3_PROJECT_BUCKET')
+  if (!projectBucket) {
+    if (process.env.SHOGO_LOCAL_MODE !== 'true') unmeasuredGlobally.add('S3_PROJECT_BUCKET')
+  } else {
+    try {
+      const objects = await listAllObjectsInS3(BUCKET_PREFIX, projectBucket)
+      for (const object of objects) {
+        const parsed = parseBucketObjectPath(object.key)
+        if (!parsed) continue
+        const workspaceId = projectWorkspace.get(parsed.projectId)
+        if (!workspaceId) continue
+        addObject(accumulators.get(workspaceId), 'bucket', object.size || 0, parsed.projectId)
+      }
+    } catch (error: any) {
+      console.error('[Storage] Failed to list S3_PROJECT_BUCKET:', error?.message ?? error)
+      unmeasuredGlobally.add('S3_PROJECT_BUCKET')
     }
   }
 

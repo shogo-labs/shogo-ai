@@ -25,6 +25,18 @@ export const NO_API_URL_ERROR =
   'Not available in this environment: no Shogo API is configured (SHOGO_API_URL is unset).'
 
 /**
+ * Timeout for a workspace-API call that may have to wake a paired desktop first
+ * (SHO-506).
+ *
+ * A workspace hosted on someone's Mac is reached through its tunnel, and the API
+ * waits for a sleeping desktop to notice the wake on its next heartbeat poll — up
+ * to 75s. A shorter client timeout cuts that wait off on this side and reports a
+ * failure the API never gave, so every call that can be forwarded to a host uses
+ * this instead.
+ */
+export const HOST_WAKE_TOLERANT_TIMEOUT_MS = 100_000
+
+/**
  * Public-facing API URL for URLs that end up in browser-facing contexts
  * (e.g. webchat widget embed snippets). Falls back to deriveApiUrl() for
  * local dev where everything runs on localhost.
@@ -107,6 +119,16 @@ export interface CrossWorkspaceTargetSummary {
   source: 'local' | 'cloud' | 'desktop'
   reachable: boolean
   unreachableReason?: 'cloud_signed_out' | 'cloud_unreachable' | 'desktop_hosted'
+  /**
+   * The paired desktop the workspace's compute lives on (SHO-493), so a refusal
+   * can name the machine and its last-seen time.
+   */
+  host?: {
+    instanceId: string
+    name: string | null
+    online: boolean
+    lastSeenAt: string | null
+  }
 }
 
 /** Every workspace the person behind this turn can reach (SHO-389). */
@@ -115,6 +137,8 @@ export async function fetchCrossWorkspaceTargets(
 ): Promise<CheckpointCallResult<{ workspaces: CrossWorkspaceTargetSummary[] }>> {
   return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/cross-workspace/targets`, {
     method: 'GET',
+    // The API asks each desktop host whether it is up, and a sleeping one is woken.
+    timeoutMs: HOST_WAKE_TOLERANT_TIMEOUT_MS,
   })
 }
 
@@ -1253,17 +1277,25 @@ export interface AgentScheduleUpdateRequest {
   notifyThreadRootId?: string | null
 }
 
+/**
+ * Every call on this surface goes through the workspace passthrough to the API,
+ * which forwards any of them to the desktop hosting that workspace, where it
+ * waits for the host's tunnel first (SHO-506). So the default here is the wake-tolerant
+ * timeout: a 20s default cut the wait off on this side and reported a client
+ * abort for a `board_list` the API was about to answer. A caller that must fail
+ * fast (a prompt-filling probe) passes its own `timeoutMs`.
+ */
 async function personalFetch<T>(
   path: string,
-  init: RequestInit & { parse?: (json: any) => T } = {},
+  init: RequestInit & { parse?: (json: any) => T; timeoutMs?: number } = {},
 ): Promise<CheckpointCallResult<T>> {
   const apiUrl = deriveApiUrl()
   if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
-  const { parse, ...rest } = init
+  const { parse, timeoutMs, ...rest } = init
   try {
     const res = await fetch(`${apiUrl}${path}`, {
       headers: getInternalHeaders(),
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(timeoutMs ?? HOST_WAKE_TOLERANT_TIMEOUT_MS),
       ...rest,
     })
     const json = await res.json().catch(() => null) as any

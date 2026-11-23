@@ -16,6 +16,8 @@ import { existsSync, mkdirSync, cpSync, rmSync, writeFileSync, readFileSync, rea
 import { auth } from './auth'
 import { resolveSubscriptionContext, selectPlanItem } from './services/stripe-subscription-sync.service'
 import { resolveCheckoutPriceId, normalizeCheckoutPlanId } from './services/stripe-price-lookup.service'
+import { refreshStorageHealthInBackground, storageHealth } from './services/storage-health.service'
+import { buildHealthPayload } from './lib/health-payload'
 // processInterleavedStream no longer needed — V2 SDK handles streaming natively
 import type { InstanceSizeName } from './config/instance-sizes'
 import { resolveWorkspaceDiskMiB, workspaceDiskIncludedGiB } from './config/instance-sizes'
@@ -26,6 +28,7 @@ import { REGION_ID, REGION_LABEL, REGION_PEERS, getPeer } from './lib/region'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
 import { slidesViewerRoutes } from './routes/slides-viewer'
+import { documentViewerRoutes } from './routes/document-viewer'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { pinChatToHomeRegion, pinProjectRoutesToHomeRegion } from './lib/chat-region-pin'
 import { RuntimeNotInHomeRegionError, runtimeNotInHomeRegionResponse } from './lib/runtime-home-region-guard'
@@ -38,6 +41,7 @@ import { computeUsageRoutes } from './routes/compute-usage'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
 import { conversationRoutes } from './routes/conversations'
 import { workBoardRoutes } from './routes/work-boards'
+import { mailRoutes, mailWebhookRoutes } from './routes/mail'
 import { accessPolicyRoutes } from './routes/access-policies'
 // Analytics routes are plain in-repo modules (Prisma only), so they mount in
 // local mode too. Loading them via server-cloud-deps left local 404ing.
@@ -56,10 +60,15 @@ import { createInviteLinkAfterAccept } from './routes/invite-link-after-accept'
 import { inviteLinkRoutes } from './routes/invite-links'
 import { invitationResendRoutes } from './routes/invitation-resend'
 import { invitationInfoRoutes } from './routes/invitation-info'
+import { learnRoutes, withLearnCookie, type LearnRoutesDeps } from './routes/learn'
+import { generateLearnCoachReply } from './lib/learn-coach-model'
+import { takeRateLimit } from './lib/chat-limits'
 import { rbacRoutes } from './routes/rbac'
 import { appActionsRoutes } from './routes/app-actions'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
 import { startChatSweepWorker, stopChatSweepWorker } from './jobs/run-chat-sweep'
+import { startTurnFrameSweepWorker, stopTurnFrameSweepWorker } from './jobs/run-turn-frame-sweep'
+import { installProcessErrorHandlers } from './lib/process-error-handlers'
 import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
 import { startConversationRelay, stopConversationRelay } from './lib/conversation-relay'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
@@ -70,6 +79,7 @@ import { databaseRoutes, stopAllPrismaStudios } from './routes/database'
 import { checkpointRoutes } from './routes/checkpoints'
 import { gitHttpRoutes } from './routes/git-http'
 import { gitLfsRoutes } from './routes/git-lfs'
+import { projectBucketPublicRoutes, projectBucketRoutes } from './routes/project-bucket'
 import { thumbnailRoutes, rewriteInlineThumbnails } from './routes/thumbnail'
 import { chatAttachmentRoutes } from './routes/chat-attachments'
 import { sharedFileRoutes } from './routes/shared-files'
@@ -169,7 +179,7 @@ import { resetCloudKeyState } from './lib/cloud-key-state'
 import { userProfileRoutes } from './routes/local-user'
 import { localCloudBillingRoutes } from './routes/local-cloud-billing'
 import { adminSignupRiskRoutes } from './routes/admin-signup-risk'
-import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, TRIAL_MAX_SEATS, TRIAL_SEAT_LIMIT_CODE, getChatAttachmentCap, getMonthlyIncludedForPlanAndPrice, promoCreditAvailableUsd, trialSeatLimitMessage } from './config/usage-plans'
+import { SIGNUP_CREDIT_TOTAL_USD, SIGNUP_CREDIT_VERIFIED_USD, TRIAL_MAX_SEATS, TRIAL_SEAT_LIMIT_CODE, WORKSPACE_LIMITS, getChatAttachmentCap, getMonthlyIncludedForPlanAndPrice, normalizePlanId, promoCreditAvailableUsd, trialSeatLimitMessage } from './config/usage-plans'
 import { meetingRoutes } from './routes/meetings'
 import { localProjectsRoutes } from './routes/local-projects'
 import { projectAttachmentRoutes } from './routes/project-attachments'
@@ -209,6 +219,7 @@ import {
 } from './middleware/auth'
 import { governsAllProjects, type Permission } from '@shogo/authz'
 import { decide, getAccess, loadAccess } from './lib/authz'
+import { whatsappEmbeddedSignupFeatureFlag } from './lib/whatsapp-platform'
 import {
   describeProjectDisk,
   instanceMinScale,
@@ -688,11 +699,13 @@ app.use('/api/preview/:projectId/ports/:port/render/*', previewFrameStrip)
 // block it there while cloud (same origin) never noticed. Strip the framing
 // headers on the way out of secureHeaders, the same way the preview proxy
 // does (SHO-426).
-app.use('/api/viewers/slides', async (c, next) => {
-  await next()
-  c.res.headers.delete('X-Frame-Options')
-  c.res.headers.delete('Cross-Origin-Opener-Policy')
-})
+for (const viewerPath of ['/api/viewers/slides', '/api/viewers/document']) {
+  app.use(viewerPath, async (c, next) => {
+    await next()
+    c.res.headers.delete('X-Frame-Options')
+    c.res.headers.delete('Cross-Origin-Opener-Policy')
+  })
+}
 
 // Security headers — X-Content-Type-Options, X-Frame-Options, etc.
 app.use('*', secureHeaders({
@@ -747,26 +760,8 @@ app.onError((err, c) => {
 
 // Process-level handlers: catch unhandled promise rejections and uncaught
 // exceptions that escape Hono's error boundary. Log them instead of crashing.
-process.on('unhandledRejection', (reason: any) => {
-  // AbortSignal.timeout() DOMExceptions are noisy and expected during cold
-  // starts / retries — log a single line instead of the full object.
-  if (reason?.name === 'TimeoutError' || reason?.name === 'AbortError') {
-    console.warn('[API] Suppressed timeout rejection:', reason.message)
-    return
-  }
-  console.error('[API] Unhandled promise rejection:', reason?.message || reason)
-  if (reason?.stack) {
-    console.error('[API] Stack:', reason.stack)
-  }
-})
-
-process.on('uncaughtException', (err: Error) => {
-  console.error('[API] Uncaught exception:', err.message)
-  if (err.stack) {
-    console.error('[API] Stack:', err.stack)
-  }
-  // For truly fatal errors (OOM, etc.), still crash — but DB/network errors should not kill the process
-})
+// Shared with the desktop composer, which had none of these until SHO-482.
+installProcessErrorHandlers('API')
 
 // CORS origins from environment - supports comma-separated list
 // Defaults to localhost for development
@@ -853,6 +848,14 @@ const csrfMiddleware = csrf({
     // Hono never passes `undefined` here — the wrapper below handles that
     // case before we get called. Kept defensively in case of upstream changes.
     if (!origin) return true
+    // The app's own origin, always (SHO-494). This handler replaces Hono's
+    // default rule (`origin === new URL(c.req.url).origin`), so a form POST from
+    // the API's own origin was refused whenever that origin was not in
+    // ALLOWED_ORIGINS — a self-host, a preview pod, a plain IP — and a channel
+    // attachment upload answered 403 "Forbidden" before its bytes were read. The
+    // URL's origin comes from the Host header, which a browser cannot forge, so
+    // a cross-site page still fails: its Origin is its own domain.
+    if (origin === new URL(c.req.url).origin) return true
     const isDevOrLocal = process.env.NODE_ENV !== 'production' || process.env.SHOGO_LOCAL_MODE === 'true'
     if (isDevOrLocal && (origin === 'null' || origin.startsWith('http://localhost:') || origin.startsWith('shogo://'))) {
       return true
@@ -947,7 +950,90 @@ app.use('/api/*', homeRegionWriteProxy)
 
 // Better Auth handler - mounted BEFORE other /api/* routes
 // Handles all authentication endpoints: sign-up, sign-in, sign-out, session, OAuth callbacks, etc.
-app.on(['GET', 'POST'], '/api/auth/*', async (c) => toNativeAuthHandback(await auth.handler(c.req.raw)))
+// learn.shogo.ai (see routes/learn.ts). `getSession` is shared with the auth
+// wrapper below, which keeps the learn cookie in step with the Studio session.
+const learnDeps: LearnRoutesDeps = {
+  getSession: async (headers) => {
+    const s = await auth.api.getSession({ headers })
+    return s?.user && s?.session ? { userId: s.user.id, sessionId: s.session.id } : null
+  },
+  isSessionLive: async (sessionId, userId) => {
+    const row = await prisma.session.findUnique({ where: { id: sessionId }, select: { userId: true, expiresAt: true } })
+    return !!row && row.userId === userId && row.expiresAt.getTime() > Date.now()
+  },
+  getUser: (userId) => prisma.user.findUnique({ where: { id: userId }, select: { id: true, name: true, email: true, image: true } }),
+  getWorkspaceIds: async (userId) => {
+    const rows = await prisma.member.findMany({ where: { userId, workspaceId: { not: null } }, select: { workspaceId: true } })
+    return [...new Set(rows.map((r) => r.workspaceId as string))]
+  },
+  getEffectivePlanId: (workspaceId) =>
+    typeof billingService.getEffectivePlanId === 'function' ? billingService.getEffectivePlanId(workspaceId) : Promise.resolve('free'),
+  getEnrollments: (userId, workspaceIds) =>
+    prisma.courseEnrollment.findMany({
+      where: { status: 'active', OR: [{ userId }, { workspaceId: { in: workspaceIds } }] },
+      select: { courseId: true, progress: true, completedAt: true },
+    }),
+  takeRateLimit,
+  generateCoachReply: generateLearnCoachReply,
+  listCompletions: (userId) =>
+    prisma.learnLessonCompletion.findMany({
+      where: { userId },
+      select: { courseId: true, lessonId: true, day: true, completedAt: true },
+    }),
+  recordCompletions: async (userId, rows) => {
+    if (!rows.length) return 0
+    const existing = await prisma.learnLessonCompletion.findMany({
+      where: { userId, OR: rows.map((r) => ({ courseId: r.courseId, lessonId: r.lessonId })) },
+      select: { courseId: true, lessonId: true },
+    })
+    const have = new Set(existing.map((e) => `${e.courseId}/${e.lessonId}`))
+    let added = 0
+    for (const r of rows) {
+      if (have.has(`${r.courseId}/${r.lessonId}`)) continue
+      try {
+        await prisma.learnLessonCompletion.create({ data: { userId, courseId: r.courseId, lessonId: r.lessonId, day: r.day } })
+        added++
+      } catch (err: any) {
+        // A concurrent request recorded it first; the unique key keeps one row.
+        if (err?.code !== 'P2002') throw err
+      }
+    }
+    return added
+  },
+  listBadges: (userId) => prisma.learnBadge.findMany({ where: { userId }, select: { badgeId: true, earnedAt: true } }),
+  awardBadges: async (userId, badgeIds) => {
+    for (const badgeId of badgeIds) {
+      try {
+        await prisma.learnBadge.create({ data: { userId, badgeId } })
+      } catch (err: any) {
+        if (err?.code !== 'P2002') throw err
+      }
+    }
+  },
+  getLevelEvidence: async (userId, workspaceIds) => {
+    const [publishedApps, agentCards] = await Promise.all([
+      prisma.project.count({ where: { createdBy: userId, publishedAt: { not: null }, workspaceId: { in: workspaceIds } } }),
+      prisma.workItem.findMany({
+        where: {
+          workspaceId: { in: workspaceIds },
+          completedAt: { not: null },
+          assigneeAgentRef: { not: null },
+          OR: [{ createdById: userId }, { board: { createdById: userId } }],
+        },
+        select: { assigneeAgentRef: true },
+        take: 5000,
+      }),
+    ])
+    return {
+      publishedApps,
+      agentCardsDone: agentCards.length,
+      agentsWithDoneCards: new Set(agentCards.map((w) => w.assigneeAgentRef)).size,
+    }
+  },
+  frontendUrl: getFrontendUrl,
+}
+
+app.on(['GET', 'POST'], '/api/auth/*', async (c) => withLearnCookie(c.req.raw, toNativeAuthHandback(await auth.handler(c.req.raw)), learnDeps))
 
 // Health check — includes Redis status for multi-pod deployments.
 // When tunnel-redis is in a degraded state (init completed but publisher
@@ -959,15 +1045,19 @@ const healthHandler = async (c: any) => {
   if (!redis.healthy) {
     console.warn('[Health] Redis unhealthy:', redis.error)
   }
-  const ok = !degraded && redis.healthy
-  const body = {
-    ok,
+  // Resolved on the first request and refreshed on a slow interval, so a probe
+  // never waits on a bucket. NOT part of `ok`: see lib/health-payload. The
+  // deploy gate asks for `?storage=refresh` so its verdict is authoritative.
+  const storage = await storageHealth({ force: c.req.query('storage') === 'refresh' })
+  const body = buildHealthPayload({
+    redis,
+    degraded,
+    storage,
     // The release this pod runs. Deploys fail their rollout gate on 0.0.0, so
     // admin analytics can always compare installs against the deployed tag.
     version: deployedAppVersionOrUnknown(),
-    redis: { healthy: redis.healthy, latencyMs: redis.latencyMs, degraded },
-  }
-  return c.json(body, ok ? 200 : 503)
+  })
+  return c.json(body, body.ok ? 200 : 503)
 }
 app.get('/api/health', healthHandler)
 app.get('/health', healthHandler)
@@ -1057,10 +1147,11 @@ app.get('/api/integrations/callback', (c) => {
   return c.html(html)
 })
 
-// The slides viewer page: a static, sandboxed document every file host frames
-// to render a PowerPoint deck (SHO-426). Same code for cloud and the desktop
-// local API, so the two can never drift.
+// Office viewer pages: static sandboxed documents every file host frames
+// to render office files (slides SHO-426, documents SHO-467). Same code for
+// cloud and desktop so the two can never drift.
 app.route('/api/viewers', slidesViewerRoutes())
+app.route('/api/viewers', documentViewerRoutes())
 
 // Platform config (tells frontend about local mode, enabled features, etc.)
 app.get('/api/config', async (c) => {
@@ -1104,6 +1195,9 @@ app.get('/api/config', async (c) => {
     mobileAgentShell: localMode,
     // Kill switch: a super-admin can turn boards off instance-wide without a deploy.
     workBoards: true,
+    // True when WHATSAPP_META_APP_ID/SECRET/ES_CONFIG_ID are set (cloud) or the
+    // user is signed in to Shogo Cloud (desktop — the real check is on cloud).
+    whatsappEmbeddedSignup: whatsappEmbeddedSignupFeatureFlag(localMode),
   }
 
   // Super-admin overrides from PlatformSetting (absence = use default).
@@ -1759,6 +1853,9 @@ void settleOrphanedAgentReplies(0).catch((err) => console.warn('[Channels] could
 registerBuiltInChatProviders()
 app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', workBoardRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', mailRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', mailWebhookRoutes())
+
 app.route('/api', accessPolicyRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', chatProviderRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))
@@ -1770,8 +1867,15 @@ startAgentScheduleWorker(getRuntimeManager())
 // Deliver workspace events (member.joined, Composio triggers) to their subscriptions.
 startEventDeliveryWorker(getRuntimeManager())
 void import('./services/composio-triggers.service').then((m) => m.startComposioTriggerReconciler()).catch(() => {})
+// Warm the object-storage verdict at boot (SHO-514). /api/health only ever
+// reads the cache — its probe timeout is 1s — so the first probe after a deploy
+// finds an answer instead of starting a HeadBucket round trip.
+refreshStorageHealthInBackground()
 startChatQueueWorker()
 startChatSweepWorker()
+// Journal retention for cloud too (SHO-482): the desktop sweep was the only one
+// that existed, so old frames accumulated here forever.
+startTurnFrameSweepWorker()
 startChannelWorkers()
 // Forward chat realtime events and presence to sibling regions (no-op in single-region mode).
 startConversationRelay()
@@ -1780,6 +1884,12 @@ app.route('/api', chatMentionRoutes({ resolveUserId: getAuthUserId }))
 // Workspace-level Slack base agent. Slack's Events API must terminate at one
 // stable API URL, then route each request to an enabled project runtime.
 app.route('/api', slackAgentRoutes({ resolveUserId: getAuthUserId, runtimeManager: getRuntimeManager() }))
+
+// WhatsApp platform routes (Meta Tech Provider — Embedded Signup)
+{
+  const { whatsappChannelRoutes } = await import('./routes/channels-whatsapp')
+  app.route('/api', whatsappChannelRoutes({ resolveUserId: getAuthUserId }))
+}
 startTunnelHeartbeat()
 
 // A blocked event loop here is invisible from the outside except as a tunnel
@@ -3708,6 +3818,22 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
     path === '/agent/channels/webchat/message' ||
     path.startsWith('/agent/channels/webchat/events/')
   const isChannelIngressPath = isPublicChannelIngressPath(c.req.path)
+  // Generic webhook channel is reachable without a Shogo session. If the
+  // caller sent `Authorization: Bearer <non-shogo_sk>` but no X-Webhook-Secret
+  // they are following the old docs — guide them to the right header.
+  const isWebhookIngressPath =
+    path === '/agent/channels/webhook/incoming' ||
+    /^\/agent\/channels\/webhook\/outbox\/[^/]+$/.test(path)
+  if (isWebhookIngressPath) {
+    const authHeader = c.req.header('authorization') || ''
+    const secretHeader = c.req.header('x-webhook-secret') || ''
+    if (authHeader.startsWith('Bearer ') && !authHeader.startsWith('Bearer shogo_sk_') && !secretHeader) {
+      return c.json({ error: 'Send the channel secret in the X-Webhook-Secret header (Authorization is not forwarded to the agent on this path)' }, 401)
+    }
+  }
+  // Teams activities carry Bot Framework JWTs in Authorization; forward that
+  // header to the runtime so botframework-auth.ts can validate it.
+  const isTeamsIngressPath = path === '/agent/channels/teams/messages'
   let authedUserId: string | null = null
   let authedWorkspaceId: string | null = null
   if (!isWebchatPath && !isChannelIngressPath) {
@@ -3833,6 +3959,14 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
       if (isChannelIngressPath) {
         const sig = c.req.header('x-hub-signature-256')
         if (sig) tunnelHeaders['x-hub-signature-256'] = sig
+        if (isTeamsIngressPath) {
+          const auth = c.req.header('authorization')
+          if (auth) tunnelHeaders['authorization'] = auth
+        }
+      }
+      if (isWebhookIngressPath) {
+        const webhookSecret = c.req.header('x-webhook-secret')
+        if (webhookSecret) tunnelHeaders['x-webhook-secret'] = webhookSecret
       }
       const tunnelBody = c.req.method === 'GET' || c.req.method === 'HEAD'
         ? undefined
@@ -3879,6 +4013,14 @@ app.all('/api/projects/:projectId/agent-proxy/*', async (c) => {
   if (isChannelIngressPath) {
     const sig = c.req.header('x-hub-signature-256')
     if (sig) headers.set('x-hub-signature-256', sig)
+    if (isTeamsIngressPath) {
+      const auth = c.req.header('authorization')
+      if (auth) headers.set('authorization', auth)
+    }
+  }
+  if (isWebhookIngressPath) {
+    const webhookSecret = c.req.header('x-webhook-secret')
+    if (webhookSecret) headers.set('x-webhook-secret', webhookSecret)
   }
   headers.set('x-runtime-token', runtimeToken)
 
@@ -6323,6 +6465,18 @@ app.route('/api', gitHttpRouter)
 const gitLfsRouter = gitLfsRoutes({ workspacesDir: workspacesDirResolved })
 app.route('/api', gitLfsRouter)
 
+// Mount the project bucket API (SHO-491). Object bytes never pass through the
+// API on cloud — `POST /uploads` mints a presigned PUT (or a multipart upload
+// for big files) and the client streams straight to object storage. Desktop has
+// no object storage, so the same ticket points at this API's upload route,
+// which streams to `<dataDir>/project-buckets/`. Auth is the project's own
+// session or runtime token, applied by `requireProjectAccess`.
+const projectBucketRouter = projectBucketRoutes()
+app.route('/api', projectBucketRouter)
+// The desktop stand-in for `cdn.<publish domain>`: public objects only, bytes
+// streamed from disk with `Range`. Cloud answers 404 here.
+app.route('/', projectBucketPublicRoutes())
+
 // Mount GitHub routes
 const githubRouter = githubRoutes()
 app.route('/api', githubRouter)
@@ -8261,6 +8415,13 @@ app.post('/api/billing/checkout', async (c) => {
   }
 })
 
+function planDecoration<T>(label: string, value: Promise<T> | T, fallback: T): Promise<T> {
+  return Promise.resolve(value).catch((err) => {
+    console.error(`[Billing] workspace-plan: ${label} failed, serving the plan without it:`, err)
+    return fallback
+  })
+}
+
 app.get('/api/billing/workspace-plan', async (c) => {
   try {
     const auth = c.get('auth') as any
@@ -8291,19 +8452,28 @@ app.get('/api/billing/workspace-plan', async (c) => {
       // wins, otherwise an active super-admin grant's `planId` confers the
       // tier. `source` lets the client distinguish so it doesn't try to send
       // a grant-only workspace through Stripe portal/checkout flows.
-      const plans: Record<string, { planId: string; status: string | null; source: 'subscription' | 'grant' | 'free'; canManageChildren: boolean }> = {}
+      //
+      // `includedWorkspaces` carries the plan's workspace cap and how many are
+      // already in use (1 = the parent itself). The client uses it to decide
+      // whether to offer the pooled-creation flow and what to show at cap (SHO-474).
+      const plans: Record<string, { planId: string; status: string | null; source: 'subscription' | 'grant' | 'free'; canManageChildren: boolean; includedWorkspaces: { limit: number | null; used: number } }> = {}
       await Promise.all(ids.filter(id => allowedIds.has(id)).map(async (id) => {
-        const [sub, effective] = await Promise.all([
+        const [sub, effective, childCount] = await Promise.all([
           billingService.getSubscription(id),
           billingService.getEffectivePlanId(id),
+          prisma.workspace.count({ where: { parentWorkspaceId: id } }),
         ])
         const source: 'subscription' | 'grant' | 'free' =
           sub ? 'subscription' : effective !== 'free' ? 'grant' : 'free'
+        const planId = sub?.planId ?? effective
+        const normalizedPlan = normalizePlanId(planId) ?? 'free'
+        const wsLimit = WORKSPACE_LIMITS[normalizedPlan]
         plans[id] = {
-          planId: sub?.planId ?? effective,
+          planId,
           status: sub?.status ?? (source === 'grant' ? 'active' : null),
           source,
           canManageChildren: manageableIds.has(id),
+          includedWorkspaces: { limit: wsLimit, used: 1 + childCount },
         }
       }))
       return c.json({ ok: true, plans })
@@ -8323,21 +8493,25 @@ app.get('/api/billing/workspace-plan', async (c) => {
     ])
     // Signup promo credit + trial eligibility for the billing UI. Cloud only
     // (local mode has no signup risk rows and no Stripe).
+    // These only decorate the billing UI. The plan above is what unlocks
+    // models, so a failure here is logged and must not fail the response: a
+    // throwing trial check once 500'd this route and every grant workspace
+    // looked Free (SHO-459).
     const cloudUserId = userId && !LOCAL_MODE ? userId : null
     const [promoUser, promoRisk, trialCheck] = await Promise.all([
-      cloudUserId
+      planDecoration('promo user', cloudUserId
         ? prisma.user.findUnique({ where: { id: cloudUserId }, select: { emailVerified: true } })
-        : null,
-      cloudUserId
+        : null, null),
+      planDecoration('promo risk', cloudUserId
         ? prisma.signupRiskAssessment.findUnique({ where: { userId: cloudUserId }, select: { decision: true } })
-        : null,
-      !sub && cloudUserId
+        : null, null),
+      planDecoration('trial eligibility', !sub && cloudUserId
         ? trialService.trialEligibility({
             userId: cloudUserId,
             workspaceId,
             request: readSignupRequestInfo(c.req.raw.headers),
           })
-        : { eligible: false },
+        : { eligible: false }, { eligible: false }),
     ])
     const promoEmailVerified = Boolean(promoUser?.emailVerified)
     const promoPendingUsd = promoEmailVerified
@@ -10798,6 +10972,7 @@ app.get('/api/invite-links/:token/info', async (c) => {
 // `/:id/info` can't fall through to the generated `GET /:id` (which requires
 // an authenticated session and the invitation to belong to the caller).
 app.route('/api/invitations', invitationInfoRoutes())
+app.route('/api/learn', learnRoutes(learnDeps))
 
 // Custom chat-message extension endpoints (truncate-from, etc.).
 // MUST be mounted BEFORE the generated routes so Hono matches the
@@ -10909,6 +11084,7 @@ async function gracefulShutdown(signal: string) {
   stopEventDeliveryWorker()
   stopChatQueueWorker()
   stopChatSweepWorker()
+  stopTurnFrameSweepWorker()
   stopChannelWorkers()
   stopConversationRelay()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
@@ -11519,6 +11695,13 @@ if (isKubernetes()) {
       startAnalyticsDigestCollector(prisma)
     } catch (err: any) {
       console.error('[AnalyticsDigest] Failed to start (non-fatal):', err.message)
+    }
+
+    try {
+      const { startAbuseCheckJob } = await import('./lib/abuse-check-job')
+      startAbuseCheckJob(prisma)
+    } catch (err: any) {
+      console.error('[abuse-check] Failed to start (non-fatal):', err.message)
     }
 
     try {

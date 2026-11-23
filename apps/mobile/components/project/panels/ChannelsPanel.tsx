@@ -32,6 +32,7 @@ import { API_URL } from '../../../lib/api'
 import { PhonePanel } from './PhonePanel'
 import { useIsNativePhoneLayout } from '../../../lib/native-phone-layout'
 import { openExternalLink } from '../../../lib/open-external-link';
+import { errorMessage } from '../../../lib/error-message'
 
 interface ChannelInfo {
   type: string
@@ -162,10 +163,8 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
     setupLabel: 'Webhook channel docs',
     description: 'Trigger this agent from Jira, Linear, Zapier, n8n, or any HTTP client',
     fields: [
-      // Shared secret — REQUIRED for any externally-reachable channel. If
-      // blank the runtime rejects every inbound webhook with 401, which is
-      // the safer default than "open to the world".
-      { key: 'secret', label: 'Shared Secret', placeholder: 'A long random string (e.g. openssl rand -hex 32)', secret: true },
+      // Shared secret — leave blank to generate one automatically on connect.
+      { key: 'secret', label: 'Shared Secret (optional)', placeholder: 'Leave blank to generate one', secret: true },
       // Optional default callback URL — if set, every reply gets POSTed
       // back there instead of (or in addition to) returning synchronously.
       { key: 'callbackUrl', label: 'Default Callback URL (optional)', placeholder: 'https://your-app.example.com/agent-reply', secret: false },
@@ -176,7 +175,12 @@ const CHANNEL_DEFS: Record<string, ChannelDef> = {
     emoji: '🟦',
     setupUrl: 'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade',
     setupLabel: 'Azure App Registrations',
-    fields: [],
+    fields: [
+      { key: 'appId', label: 'Application (client) ID', placeholder: 'From Azure App Registration', secret: false },
+      { key: 'appPassword', label: 'Client Secret', placeholder: 'From Certificates & secrets', secret: true },
+      { key: 'tenantId', label: 'Directory (tenant) ID (optional for multi-tenant)', placeholder: 'Required for single-tenant bots (post-2025)', secret: false },
+      { key: 'botName', label: 'Bot Name (optional)', placeholder: 'Shogo Agent', secret: false },
+    ],
   },
   webchat: {
     name: 'WebChat Widget',
@@ -209,8 +213,14 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
   const [formError, setFormError] = useState<string | null>(null)
   const [copiedSnippet, setCopiedSnippet] = useState(false)
   const [copiedWebhookUrl, setCopiedWebhookUrl] = useState(false)
+  const [copiedWebhookSecret, setCopiedWebhookSecret] = useState(false)
+  const [webhookSecretVisible, setWebhookSecretVisible] = useState(false)
   const [copiedWhatsAppCallbackUrl, setCopiedWhatsAppCallbackUrl] = useState(false)
   const [copiedWhatsAppVerifyToken, setCopiedWhatsAppVerifyToken] = useState(false)
+  const [waConnecting, setWaConnecting] = useState(false)
+  const [waConnectError, setWaConnectError] = useState<string | null>(null)
+  const [showWaAdvanced, setShowWaAdvanced] = useState(false)
+  const [copiedTeamsEndpoint, setCopiedTeamsEndpoint] = useState(false)
   const [phoneExpanded, setPhoneExpanded] = useState(false)
   const [slackAgentConfig, setSlackAgentConfig] = useState<{
     installed: boolean
@@ -219,25 +229,34 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
   const [slackAgentLoading, setSlackAgentLoading] = useState(false)
 
   /**
-   * Canonical, externally-callable webhook URL for this project.
+   * Canonical, externally-callable webhook incoming URL for this project.
    *
-   * This stays stable regardless of where the agent actually runs (cloud
-   * pod or a paired VPS via `client.machines.pinProject`), which is the
-   * whole point of the project-scoped agent-proxy. We compose it from the
-   * cloud `API_URL` and `projectId` directly — NOT from `agentUrl`, which
-   * may already be wrapped in `/api/instances/:id/p/` when the user has
-   * an active remote-instance selection. That wrapped form is a
-   * power-user escape hatch, never the URL you paste into Jira.
-   *
-   * See: apps/docs/docs/features/external-triggers/webhook-channel.md
+   * Preferred source: `incomingUrl` from `/agent/status` (SHO-462), which the
+   * runtime builds from its own `derivePublicApiUrl()` — correct for both cloud
+   * pods and paired-desktop tunnels. Fallback: compose from API_URL + projectId
+   * for the case where the status hasn't loaded yet.
    */
-  const publicWebhookUrl = API_URL
-    ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/webhook/incoming`
-    : null
+  const webhookChannel = channels.find((c) => c.type === 'webhook')
+  const publicWebhookUrl: string | null = (() => {
+    const fromStatus = webhookChannel?.metadata?.incomingUrl
+    if (typeof fromStatus === 'string' && fromStatus) return fromStatus
+    return API_URL
+      ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/webhook/incoming`
+      : null
+  })()
+  const webhookSecret: string | null = (() => {
+    const s = webhookChannel?.metadata?.webhookSecret
+    return typeof s === 'string' && s ? s : null
+  })()
 
   /** WhatsApp webhook callback URL — same proxy path, different suffix. */
   const whatsappCallbackUrl = API_URL
     ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/whatsapp/webhook`
+    : null
+
+  /** Teams messaging endpoint — paste this into the Azure Bot configuration. */
+  const teamsMessagingEndpoint = API_URL
+    ? `${API_URL.replace(/\/$/, '')}/api/projects/${projectId}/agent-proxy/agent/channels/teams/messages`
     : null
 
   /**
@@ -335,7 +354,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
       const data = await res.json()
       setChannels(data.channels || [])
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setIsLoading(false)
     }
@@ -436,7 +455,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
       })
       await loadChannels()
     } catch (err: any) {
-      setFormError(err.message)
+      setFormError(errorMessage(err))
     } finally {
       setConnecting(null)
     }
@@ -460,7 +479,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
 
       await loadChannels()
     } catch (err: any) {
-      setFormError(err.message)
+      setFormError(errorMessage(err))
     } finally {
       setDisconnecting(null)
     }
@@ -491,7 +510,7 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
       })
       await loadChannels()
     } catch (err: any) {
-      setFormError(err.message)
+      setFormError(errorMessage(err))
     } finally {
       setSavingModel(null)
     }
@@ -834,55 +853,105 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                     </View>
                   )}
 
-                  {/* Webhook public URL — visible whenever the user opens
-                      the channel, even before connecting, so they can wire
-                      external services in parallel. */}
-                  {type === 'webhook' && isExpanded && publicWebhookUrl && (
+                  {/* Webhook: incoming URL + secret — visible whenever expanded.
+                      URLs come from /agent/status (SHO-462) so they're always
+                      correct for cloud and paired-desktop tunnels. */}
+                  {type === 'webhook' && isExpanded && (publicWebhookUrl || webhookSecret) && (
                     <View className="px-3 pb-3 border-t border-border">
-                      <View className="mt-3 gap-2">
-                        <Text className="text-[11px] font-medium text-foreground">
-                          Public webhook URL
-                        </Text>
-                        <Text className="text-[10px] text-muted-foreground">
-                          Paste this into Jira, Linear, Zapier, n8n, or any caller. Always
-                          send <Text className="font-mono">Authorization: Bearer shogo_sk_…</Text>{' '}
-                          plus <Text className="font-mono">X-Webhook-Secret</Text> with the
-                          secret below.
-                        </Text>
-                        <View className="bg-muted/50 rounded-md p-2.5 border border-border">
-                          <Text className="text-[10px] text-foreground font-mono" selectable>
-                            {publicWebhookUrl}
-                          </Text>
-                        </View>
-                        <View className="flex-row items-center gap-2">
-                          <Pressable
-                            onPress={async () => {
-                              await Clipboard.setStringAsync(publicWebhookUrl)
-                              setCopiedWebhookUrl(true)
-                              setTimeout(() => setCopiedWebhookUrl(false), 2000)
-                            }}
-                            className="flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
-                          >
-                            {copiedWebhookUrl ? (
-                              <>
-                                <Check size={12} className="text-emerald-500" />
-                                <Text className="text-[10px] text-emerald-500">Copied!</Text>
-                              </>
-                            ) : (
-                              <>
-                                <Copy size={12} className="text-muted-foreground" />
-                                <Text className="text-[10px] text-muted-foreground">Copy URL</Text>
-                              </>
-                            )}
-                          </Pressable>
-                          <Pressable
-                            onPress={() => openExternalLink('https://docs.shogo.ai/docs/features/external-triggers/quickstart')}
-                            className="flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
-                          >
-                            <ExternalLink size={12} className="text-muted-foreground" />
-                            <Text className="text-[10px] text-muted-foreground">Quickstart</Text>
-                          </Pressable>
-                        </View>
+                      <View className="mt-3 gap-3">
+                        {publicWebhookUrl && (
+                          <View className="gap-1.5">
+                            <Text className="text-[11px] font-medium text-foreground">
+                              Incoming URL
+                            </Text>
+                            <Text className="text-[10px] text-muted-foreground">
+                              Paste into Jira, Zapier, n8n, or any caller. Send{' '}
+                              <Text className="font-mono">X-Webhook-Secret: {'<secret>'}</Text>
+                              {' '}— no API key needed.
+                            </Text>
+                            <View className="bg-muted/50 rounded-md p-2.5 border border-border">
+                              <Text className="text-[10px] text-foreground font-mono" selectable>
+                                {publicWebhookUrl}
+                              </Text>
+                            </View>
+                            <View className="flex-row items-center gap-2">
+                              <Pressable
+                                onPress={async () => {
+                                  await Clipboard.setStringAsync(publicWebhookUrl)
+                                  setCopiedWebhookUrl(true)
+                                  setTimeout(() => setCopiedWebhookUrl(false), 2000)
+                                }}
+                                className="flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                              >
+                                {copiedWebhookUrl ? (
+                                  <>
+                                    <Check size={12} className="text-emerald-500" />
+                                    <Text className="text-[10px] text-emerald-500">Copied!</Text>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy size={12} className="text-muted-foreground" />
+                                    <Text className="text-[10px] text-muted-foreground">Copy URL</Text>
+                                  </>
+                                )}
+                              </Pressable>
+                              <Pressable
+                                onPress={() => openExternalLink('https://docs.shogo.ai/docs/features/external-triggers/quickstart')}
+                                className="flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                              >
+                                <ExternalLink size={12} className="text-muted-foreground" />
+                                <Text className="text-[10px] text-muted-foreground">Quickstart</Text>
+                              </Pressable>
+                            </View>
+                          </View>
+                        )}
+                        {webhookSecret && (
+                          <View className="gap-1.5">
+                            <Text className="text-[11px] font-medium text-foreground">
+                              Shared Secret
+                            </Text>
+                            <Text className="text-[10px] text-muted-foreground">
+                              Send this in the{' '}
+                              <Text className="font-mono">X-Webhook-Secret</Text>
+                              {' '}header on every request.
+                            </Text>
+                            <View className="bg-muted/50 rounded-md p-2.5 border border-border flex-row items-center justify-between">
+                              <Text className="text-[10px] text-foreground font-mono flex-1" selectable={webhookSecretVisible}>
+                                {webhookSecretVisible ? webhookSecret : '•'.repeat(Math.min(webhookSecret.length, 32))}
+                              </Text>
+                              <Pressable
+                                onPress={() => setWebhookSecretVisible((v) => !v)}
+                                className="ml-2 p-1"
+                              >
+                                <Text className="text-[10px] text-muted-foreground">
+                                  {webhookSecretVisible ? 'Hide' : 'Show'}
+                                </Text>
+                              </Pressable>
+                            </View>
+                            <View className="flex-row items-center gap-2">
+                              <Pressable
+                                onPress={async () => {
+                                  await Clipboard.setStringAsync(webhookSecret)
+                                  setCopiedWebhookSecret(true)
+                                  setTimeout(() => setCopiedWebhookSecret(false), 2000)
+                                }}
+                                className="flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                              >
+                                {copiedWebhookSecret ? (
+                                  <>
+                                    <Check size={12} className="text-emerald-500" />
+                                    <Text className="text-[10px] text-emerald-500">Copied!</Text>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy size={12} className="text-muted-foreground" />
+                                    <Text className="text-[10px] text-muted-foreground">Copy Secret</Text>
+                                  </>
+                                )}
+                              </Pressable>
+                            </View>
+                          </View>
+                        )}
                       </View>
                     </View>
                   )}
@@ -960,6 +1029,122 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                             </Pressable>
                           </View>
                         )}
+                      </View>
+                    </View>
+                  )}
+
+                  {/* WhatsApp: callback URL + verify token (shown when connected) */}
+                  {type === 'whatsapp' && isConnected && (
+                    <View className="px-3 pb-3 border-t border-border">
+                      <View className="mt-3 gap-3">
+                        <Text className="text-[11px] font-medium text-foreground">
+                          Meta webhook configuration
+                        </Text>
+                        <Text className="text-[10px] text-muted-foreground">
+                          Paste these into Meta Developer Portal → WhatsApp → Configuration, then subscribe to <Text className="font-mono">messages</Text> and <Text className="font-mono">smb_message_echoes</Text> fields.
+                        </Text>
+
+                        {whatsappCallbackUrl && (
+                          <View className="gap-1.5">
+                            <Text className="text-[10px] font-medium text-foreground">Callback URL</Text>
+                            <View className="bg-muted/50 rounded-md p-2.5 border border-border">
+                              <Text className="text-[10px] text-foreground font-mono" selectable>
+                                {whatsappCallbackUrl}
+                              </Text>
+                            </View>
+                            <Pressable
+                              onPress={async () => {
+                                await Clipboard.setStringAsync(whatsappCallbackUrl)
+                                setCopiedWhatsAppCallbackUrl(true)
+                                setTimeout(() => setCopiedWhatsAppCallbackUrl(false), 2000)
+                              }}
+                              className="self-start flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                            >
+                              {copiedWhatsAppCallbackUrl ? (
+                                <>
+                                  <Check size={12} className="text-emerald-500" />
+                                  <Text className="text-[10px] text-emerald-500">Copied!</Text>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy size={12} className="text-muted-foreground" />
+                                  <Text className="text-[10px] text-muted-foreground">Copy URL</Text>
+                                </>
+                              )}
+                            </Pressable>
+                          </View>
+                        )}
+
+                        {channels.find((ch) => ch.type === 'whatsapp')?.metadata?.verifyToken && (
+                          <View className="gap-1.5">
+                            <Text className="text-[10px] font-medium text-foreground">Verify Token</Text>
+                            <View className="bg-muted/50 rounded-md p-2.5 border border-border">
+                              <Text className="text-[10px] text-foreground font-mono" selectable>
+                                {String(channels.find((ch) => ch.type === 'whatsapp')?.metadata?.verifyToken ?? '')}
+                              </Text>
+                            </View>
+                            <Pressable
+                              onPress={async () => {
+                                const token = String(channels.find((ch) => ch.type === 'whatsapp')?.metadata?.verifyToken ?? '')
+                                await Clipboard.setStringAsync(token)
+                                setCopiedWhatsAppVerifyToken(true)
+                                setTimeout(() => setCopiedWhatsAppVerifyToken(false), 2000)
+                              }}
+                              className="self-start flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                            >
+                              {copiedWhatsAppVerifyToken ? (
+                                <>
+                                  <Check size={12} className="text-emerald-500" />
+                                  <Text className="text-[10px] text-emerald-500">Copied!</Text>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy size={12} className="text-muted-foreground" />
+                                  <Text className="text-[10px] text-muted-foreground">Copy Token</Text>
+                                </>
+                              )}
+                            </Pressable>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  )}
+
+                  {/* Teams: messaging endpoint (shown when connected) */}
+                  {type === 'teams' && isConnected && teamsMessagingEndpoint && (
+                    <View className="px-3 pb-3 border-t border-border">
+                      <View className="mt-3 gap-2">
+                        <Text className="text-[11px] font-medium text-foreground">
+                          Messaging endpoint
+                        </Text>
+                        <Text className="text-[10px] text-muted-foreground">
+                          Paste this into Azure Bot → Configuration → Messaging endpoint, then enable the Teams channel.
+                        </Text>
+                        <View className="bg-muted/50 rounded-md p-2.5 border border-border">
+                          <Text className="text-[10px] text-foreground font-mono" selectable>
+                            {teamsMessagingEndpoint}
+                          </Text>
+                        </View>
+                        <Pressable
+                          onPress={async () => {
+                            await Clipboard.setStringAsync(teamsMessagingEndpoint)
+                            setCopiedTeamsEndpoint(true)
+                            setTimeout(() => setCopiedTeamsEndpoint(false), 2000)
+                          }}
+                          className="self-start flex-row items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md active:bg-muted"
+                        >
+                          {copiedTeamsEndpoint ? (
+                            <>
+                              <Check size={12} className="text-emerald-500" />
+                              <Text className="text-[10px] text-emerald-500">Copied!</Text>
+                            </>
+                          ) : (
+                            <>
+                              <Copy size={12} className="text-muted-foreground" />
+                              <Text className="text-[10px] text-muted-foreground">Copy URL</Text>
+                            </>
+                          )}
+                        </Pressable>
                       </View>
                     </View>
                   )}
@@ -1088,8 +1273,56 @@ export function ChannelsPanel({ projectId, workspaceId, agentUrl, visible, hasAd
                     </View>
                   )}
 
+                  {/* WhatsApp: Connect with Meta (one-click, platform flow) */}
+                  {type === 'whatsapp' && isExpanded && !isConnected && features.whatsappEmbeddedSignup && !showWaAdvanced && (
+                    <View className="px-3 pb-3 border-t border-border">
+                      <View className="mt-3 gap-2">
+                        <Pressable
+                          onPress={async () => {
+                            setWaConnectError(null)
+                            setWaConnecting(true)
+                            try {
+                              const res = await agentFetch(`/api/projects/${projectId}/channels/whatsapp/connect-link`, {
+                                method: 'POST',
+                              })
+                              if (!res.ok) {
+                                const body = await res.json().catch(() => ({})) as any
+                                setWaConnectError(body?.error ?? `Error ${res.status}`)
+                                return
+                              }
+                              const { url } = await res.json() as { url: string }
+                              openExternalLink(url)
+                            } catch (e: any) {
+                              setWaConnectError(e?.message ?? 'Network error')
+                            } finally {
+                              setWaConnecting(false)
+                            }
+                          }}
+                          disabled={waConnecting}
+                          className="flex-row items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-[#25d366] active:opacity-80"
+                        >
+                          {waConnecting && <ActivityIndicator size="small" color="#fff" />}
+                          <Text className="text-sm font-semibold text-white">
+                            {waConnecting ? 'Opening…' : 'Connect with Meta'}
+                          </Text>
+                        </Pressable>
+                        <Text className="text-[10px] text-muted-foreground text-center">
+                          Works with a number on the WhatsApp Business app — your phone keeps working.
+                        </Text>
+                        {waConnectError && (
+                          <Text className="text-[10px] text-destructive text-center">{waConnectError}</Text>
+                        )}
+                        <Pressable onPress={() => setShowWaAdvanced(true)} className="self-center mt-1">
+                          <Text className="text-[10px] text-muted-foreground underline">
+                            Use my own Meta app ▸
+                          </Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  )}
+
                   {/* Expandable config form */}
-                  {isExpanded && !isConnected && hasForm && (
+                  {isExpanded && !isConnected && hasForm && (type !== 'whatsapp' || !features.whatsappEmbeddedSignup || showWaAdvanced) && (
                     <View className="px-3 pb-3 border-t border-border">
                       <View className="mt-3 gap-2.5">
                         {def.fields.map(field => (

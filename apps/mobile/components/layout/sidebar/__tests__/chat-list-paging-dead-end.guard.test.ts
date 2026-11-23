@@ -74,4 +74,35 @@ describe("ChatSessionList paging", () => {
     // The Chats section and the Archived group: both scroll themselves.
     expect(drawer.length).toBe(2);
   });
+
+  test("onSeeAll targets are not dead-end redirects back to /agent", () => {
+    // Extract every route string pushed by onSeeAll handlers across call sites.
+    const onSeeAllRoutes: string[] = []
+    for (const relative of CALL_SITES) {
+      const source = readFileSync(join(MOBILE, relative), "utf8")
+      const blocks = callSiteProps(source)
+      for (const block of blocks) {
+        if (!/\bonSeeAll[=\s]/.test(block)) continue
+        // Pull strings like '/(app)/side-chats' or '/(app)/chats' out of the handler.
+        const match = block.match(/router\.push\(['"]([^'"]+)['"]/)
+        if (match) onSeeAllRoutes.push(match[1])
+      }
+    }
+    // For every extracted route, verify its index file is not a bare Redirect to /agent.
+    for (const route of onSeeAllRoutes) {
+      const seg = route.replace(/^\/(\(app\)\/)?/, "")
+      const indexPath = join(MOBILE, `app/(app)/${seg}/index.tsx`)
+      let indexSource: string
+      try {
+        indexSource = readFileSync(indexPath, "utf8")
+      } catch {
+        continue // route has no index redirect file
+      }
+      const isRedirectToAgent = indexSource.includes("<Redirect") && /href.*agent/.test(indexSource)
+      expect(
+        isRedirectToAgent,
+        `${route}/index.tsx redirects back to /agent — "See all" would bounce the user back to the chat without showing a list`,
+      ).toBe(false)
+    }
+  })
 });

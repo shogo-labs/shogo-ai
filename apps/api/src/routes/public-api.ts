@@ -43,6 +43,7 @@ import {
   proxyAnthropicStream,
   proxyAnthropicNonStream,
   splitOpenAIPromptUsage,
+  splitOpenAICompletionUsage,
   type ChatCompletionRequest,
 } from './ai-proxy'
 import { isModelAccessibleForWorkspace } from '../lib/runtime/agent-model-defaults'
@@ -409,16 +410,17 @@ export function publicApiRoutes() {
 
       const usage = result?.usage || {}
       const prompt = splitOpenAIPromptUsage(usage)
+      const completion = splitOpenAICompletionUsage(usage)
       recordUsage(
         payload,
         backingId,
         prompt.inputTokens,
-        usage.completion_tokens || 0,
+        completion.outputTokens,
         prompt.cachedInputTokens,
         prompt.cacheWriteTokens,
         null,
         null,
-        usage.completion_tokens_details?.reasoning_tokens || 0,
+        completion.reasoningTokens,
       )
 
       if (result && typeof result === 'object') result.model = publicId

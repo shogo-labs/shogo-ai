@@ -29,6 +29,7 @@ const SHEET_TAB_IDS = new Set<SheetTabId>([
   "workspace",
   "people",
   "chat",
+  "email",
   "models",
   "integrations",
   "automations",

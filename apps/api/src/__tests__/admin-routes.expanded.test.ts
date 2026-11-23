@@ -43,6 +43,10 @@ mock.module('../services/analytics.service', () => {
     getDesktopInstalls: record('desktopInstalls', { totalDevices: 2 }),
     getAppInstalls: record('appInstalls', { totals: { totalDevices: 3 } }),
     getAppVersions: record('appVersions', { desktop: { totalDevices: 3 }, adoption: [] }),
+    getDeviceActivityTimeseries: record('devicesTimeseries', {
+      trackingSince: '2026-11-01',
+      points: [{ date: '2026-11-01', daily: 2, weekly: 2, monthly: 2 }],
+    }),
     getChatAnalytics: record('chat', { messages: 4 }),
     getProjectAnalytics: record('projects', { total: 5 }),
     getBillingAnalytics: record('billing', { mrr: 6 }),
@@ -197,6 +201,7 @@ describe('adminRoutes analytics endpoints', () => {
       '/analytics/desktop-installs',
       '/analytics/app-installs',
       '/analytics/app-versions?days=14',
+      '/analytics/devices-timeseries?days=14',
       '/analytics/chat?period=7d',
       '/analytics/projects',
       '/analytics/billing',
@@ -225,6 +230,8 @@ describe('adminRoutes analytics endpoints', () => {
     expect(analyticsCalls.find(([name]) => name === 'funnel')?.[1]).toEqual(['7d', false])
     // Admin app-versions passes the window through as a number.
     expect(analyticsCalls.find(([name]) => name === 'appVersions')?.[1]).toEqual([{ days: 14 }])
+    // The devices trend passes its window through as a number too.
+    expect(analyticsCalls.find(([name]) => name === 'devicesTimeseries')?.[1]).toEqual([{ days: 14 }])
   })
 
   test('returns errors from analytics handlers as 500 responses', async () => {

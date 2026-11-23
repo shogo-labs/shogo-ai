@@ -277,11 +277,23 @@ module "publish_hosting" {
   # Null sends no header (the API enforces nothing until its copy is set).
   edge_proxy_secret = var.edge_proxy_secret
 
-  # OCI Object Storage's PAR API has eventual consistency against bucket
-  # creation. Without this depends_on, terraform parallelizes the
-  # published_apps bucket creation and the PAR creation, and the PAR
-  # gets a 404 before propagation completes.
-  depends_on = [module.object_storage]
+  # Read-only PAR base URL of this region's project-buckets Object Storage
+  # bucket. The Worker serves `/<projectId>/<key>` from the CDN edge and falls
+  # back to this origin. Empty in tier-2 regions (no Object Storage module).
+  project_bucket_origin = coalesce(one(module.object_storage[*].project_buckets_par_base_url), "")
+
+  # Dependencies on module.object_storage are expressed as VALUES, not as a
+  # module-level depends_on. A module-level depends_on defers every data source
+  # in this module whenever object storage has any pending change, which turned
+  # the PAR's `namespace` into "(known after apply)" and force-replaced the PAR,
+  # the `*.shogo.one` wildcard record, the published-apps/custom-domains Worker
+  # routes and the custom-hostname fallback origin in production (SHO-515).
+  #
+  # OCI's PAR API has eventual consistency against bucket creation, so the PAR
+  # still has to be created after the bucket: passing the bucket's NAME (a value
+  # that comes from the bucket resource) preserves that ordering.
+  object_storage_namespace = coalesce(one(module.object_storage[*].namespace), "")
+  published_apps_bucket    = one(module.object_storage[*].published_apps_bucket)
 }
 
 # =============================================================================

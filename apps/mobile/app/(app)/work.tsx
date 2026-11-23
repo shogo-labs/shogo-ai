@@ -34,6 +34,7 @@ import { assigneeOptions } from '../../lib/board-layout'
 import { EMPTY_SELECTION, handleKey, targetIds, toggleSelected, type SelectionState } from '../../lib/work-selection'
 import { ActivityFilterPicker } from '../../components/team-chat/ActivityFilterPicker'
 import { OptionSheet } from '../../components/boards/OptionSheet'
+import { errorMessage } from '../../lib/error-message'
 import { WorkItemRow } from '../../components/boards/WorkItemRow'
 import { CardTile } from '../../components/boards/BoardKanban'
 import { CardPane } from '../../components/boards/CardPane'
@@ -306,7 +307,7 @@ export default observer(function MyWorkScreen() {
                   if (!item || item.column?.category === category) return
                   setItems((list) => list.map((i) => (i.id === id && i.column ? { ...i, column: { ...i.column, category } } : i)))
                   api.move(id, { column: category })
-                    .catch((err: Error) => setNotice(`${item.key}: ${err.message}`))
+                    .catch((err: unknown) => setNotice(`${item.key}: ${errorMessage(err)}`))
                     .finally(() => void load())
                 }}
                 testID={`work-lane-${category}`}

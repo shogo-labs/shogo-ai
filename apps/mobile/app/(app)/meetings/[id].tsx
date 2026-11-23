@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { View, Text, Pressable, ScrollView, TextInput, ActivityIndicator, Modal } from 'react-native'
+import { View, Text, Pressable, ScrollView, TextInput, ActivityIndicator, Modal, useWindowDimensions } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import * as Clipboard from 'expo-clipboard'
@@ -23,6 +23,8 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { createHttpClient } from '../../../lib/api'
 import { formatDuration } from '../../../lib/format-duration'
+import { isPhoneLayout } from '../../../lib/native-phone-layout'
+import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../../../components/layout/PhoneScreenHeader'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import {
   isMeetingInFlight,
@@ -234,6 +236,12 @@ export default function MeetingDetailScreen() {
     else router.replace('/(app)/meetings' as any)
   }
 
+  // Hooks stay above the early returns: the loading page renders first, and a
+  // hook that only runs once the meeting has loaded crashes the screen.
+  const { width, height } = useWindowDimensions()
+  const phone = isPhoneLayout(width, height)
+  const header = usePhoneScreenHeaderInset()
+
   if (loading || !workspaceId) {
     return (
       <SafeAreaView className="flex-1 items-center justify-center bg-background">
@@ -259,18 +267,37 @@ export default function MeetingDetailScreen() {
   const templateName = templates.find((t) => t.id === (meeting.templateId ?? 'builtin:general'))?.name ?? 'General'
   const notesBody = meeting.enhancedNotes ? stripActionItemsSection(meeting.enhancedNotes) : ''
   const busy = meeting.status === 'recording' || meeting.status === 'transcribing'
+  const indent = phone ? '' : 'ml-8'
 
   return (
-    <SafeAreaView className="flex-1 bg-background" edges={['top', 'left', 'right']}>
-      <View className="border-b border-border/70 bg-card/70 px-4 pb-3 pt-3">
+    <SafeAreaView className="flex-1 bg-background" edges={phone ? ['left', 'right'] : ['top', 'left', 'right']}>
+      {phone ? (
+        <PhoneScreenHeader
+          title={meeting.title || 'Untitled Meeting'}
+          backLabel="Back to meetings"
+          onBack={backToMeetings}
+          onTitlePress={() => {
+            setTitleDraft(meeting.title || '')
+            setEditingTitle(true)
+          }}
+          onLayout={header.onLayout}
+        />
+      ) : null}
+      <View
+        className="border-b border-border/70 bg-card/70 px-4 pb-3 pt-3"
+        style={phone ? { paddingTop: header.height + 12 } : undefined}
+      >
+        {!phone || editingTitle ? (
         <View className="flex-row items-center gap-3 mb-2">
-          <Pressable
-            onPress={backToMeetings}
-            accessibilityLabel="Back to meetings"
-            className="-ml-1.5 rounded-xl p-2 active:bg-muted"
-          >
-            <ArrowLeft size={20} className="text-foreground" />
-          </Pressable>
+          {phone ? null : (
+            <Pressable
+              onPress={backToMeetings}
+              accessibilityLabel="Back to meetings"
+              className="-ml-1.5 rounded-xl p-2 active:bg-muted"
+            >
+              <ArrowLeft size={20} className="text-foreground" />
+            </Pressable>
+          )}
           {editingTitle ? (
             <TextInput
               value={titleDraft}
@@ -280,7 +307,7 @@ export default function MeetingDetailScreen() {
               autoFocus
               className="flex-1 border-b border-orange-500 pb-0.5 text-lg font-semibold text-foreground"
             />
-          ) : (
+          ) : phone ? null : (
             <Pressable
               onPress={() => {
                 setTitleDraft(meeting.title || '')
@@ -294,8 +321,9 @@ export default function MeetingDetailScreen() {
             </Pressable>
           )}
         </View>
+        ) : null}
 
-        <View className="flex-row flex-wrap items-center gap-3 ml-8">
+        <View className={cn('flex-row flex-wrap items-center gap-3', indent)}>
           <View className="flex-row items-center gap-1">
             <Clock size={12} className="text-muted-foreground" />
             <Text className="text-xs text-muted-foreground">
@@ -321,7 +349,7 @@ export default function MeetingDetailScreen() {
           )}
         </View>
 
-        <View className="ml-8 mt-3 flex-row flex-wrap items-center gap-2">
+        <View className={cn('mt-3 flex-row flex-wrap items-center gap-2', indent)}>
           <ActionButton
             icon={LayoutTemplate}
             label={templateName}
@@ -358,9 +386,9 @@ export default function MeetingDetailScreen() {
           <ActionButton icon={Trash2} label="Delete" onPress={() => setShowDeleteConfirm(true)} tone="danger" />
         </View>
 
-        {!!actionError && <Text className="ml-8 mt-2 text-xs text-red-600">{actionError}</Text>}
+        {!!actionError && <Text className={cn('mt-2 text-xs text-red-600', indent)}>{actionError}</Text>}
 
-        <View className="ml-8 mt-4 flex-row gap-1 self-start rounded-xl bg-muted/60 p-1">
+        <View className={cn('mt-4 flex-row gap-1 self-start rounded-xl bg-muted/60 p-1', indent)}>
           {(
             [
               ['notes', 'Notes'],

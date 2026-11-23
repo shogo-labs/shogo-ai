@@ -2263,9 +2263,89 @@ export function ActiveUsersTrendChart({
 }
 
 // =============================================================================
-// Quality & efficiency trend (cache hit, unit economics, agent quality)
+// Active devices trend (daily / rolling 7 / rolling 30, from device_active_days)
 // =============================================================================
 
+export interface DeviceActivityPoint {
+  date: string
+  daily: number
+  weekly: number
+  monthly: number
+  byOs: { macos: number; windows: number; linux: number; unknown: number }
+  byClient: { desktop: number; cli: number }
+}
+
+export interface DeviceActivityTimeseries {
+  trackingSince: string | null
+  points: DeviceActivityPoint[]
+}
+
+function formatTrackingDate(iso: string): string {
+  const date = new Date(iso.length === 10 ? `${iso}T00:00:00Z` : iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+/**
+ * Machines active per day, with rolling weekly / monthly windows.
+ *
+ * `trackingSince` is the first day the table has a row for: earlier days are
+ * not real zeros (the table did not exist), so they are dropped instead of
+ * drawing a flat line along the axis. Under two days of history there is
+ * nothing to read as a trend, so it says when collection started.
+ */
+export function ActiveDevicesTrendChart({
+  data,
+  loading,
+}: {
+  data: DeviceActivityTimeseries | null
+  loading?: boolean
+}) {
+  const trackingSince = data?.trackingSince ?? null
+  const points = data?.points ?? []
+  const tracked = trackingSince ? points.filter((p) => p.date >= trackingSince) : points
+
+  if (!loading && (!trackingSince || tracked.length < 2)) {
+    return (
+      <View className="rounded-xl border border-border bg-card p-4 gap-1">
+        <Text className="text-sm font-semibold text-foreground">Active devices over time</Text>
+        <Text className="text-xs text-muted-foreground">
+          {trackingSince
+            ? `Collecting data since ${formatTrackingDate(trackingSince)} — the trend appears after two days.`
+            : 'Collecting data — no device has reported yet.'}
+        </Text>
+      </View>
+    )
+  }
+
+  const days: StackedDay[] = tracked.map((d) => ({
+    date: d.date,
+    values: { daily: d.daily, weekly: d.weekly, monthly: d.monthly },
+  }))
+  const metrics: TrendMetricOption[] = [
+    { id: 'daily', label: 'Daily', color: STACKED_PALETTE[1], format: formatNumber, kind: 'rate' },
+    { id: 'weekly', label: 'Weekly', color: STACKED_PALETTE[0], format: formatNumber, kind: 'rate' },
+    { id: 'monthly', label: 'Monthly', color: STACKED_PALETTE[3], format: formatNumber, kind: 'rate' },
+  ]
+
+  return (
+    <MetricTrendChart
+      title="Active devices over time"
+      subtitle={
+        trackingSince
+          ? `Distinct machines per day · Tracking since ${formatTrackingDate(trackingSince)}`
+          : 'Distinct machines per day'
+      }
+      loading={loading}
+      days={days}
+      metrics={metrics}
+    />
+  )
+}
+
+// =============================================================================
+// Quality & efficiency trend (cache hit, unit economics, agent quality)
+// =============================================================================
 export interface QualityTimeseriesPoint {
   date: string
   cacheHitRatio: number

@@ -16,6 +16,7 @@
  */
 
 import { incomingWins } from './ingest-lww'
+import { announceLiveWrites, newLiveWrites, recordLiveWrite } from './live-events'
 import { CHANGE_TABLE } from './triggers'
 import { delegateName } from './models'
 import { foldOrphanedPersonalRoot } from './personal-workspace'
@@ -115,6 +116,9 @@ export async function applyHostFeedPage(
   let deleted = 0
   const touched: Array<{ model: string; recordId: string }> = []
   const queuedSessions = new Set<string>()
+  // What a window already open on this desktop has to hear about (SHO-486): a
+  // message the phone posted reaches it live instead of on the next refresh.
+  const liveWrites = newLiveWrites()
 
   const before = await prisma[delegateName('MachineSyncChange')]
     ?.findFirst({ orderBy: { seq: 'desc' }, select: { seq: true } })
@@ -148,6 +152,7 @@ export async function applyHostFeedPage(
         await delegate.upsert({ where: { id }, create: data, update: data })
         applied++
         touched.push({ model: entry.model, recordId: id })
+        recordLiveWrite(liveWrites, entry.model, current ? 'updated' : 'created', id, data, current)
         if (entry.model === 'ChatQueuedMessage' && data.status === 'pending' && typeof data.sessionId === 'string') {
           queuedSessions.add(data.sessionId)
         }
@@ -204,6 +209,8 @@ export async function applyHostFeedPage(
         .catch(() => {})
     }
   }
+
+  await announceLiveWrites(liveWrites, log)
 
   return { applied, skipped, deleted, queuedSessions: [...queuedSessions] }
 }

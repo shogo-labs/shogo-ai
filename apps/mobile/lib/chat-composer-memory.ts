@@ -621,6 +621,36 @@ export function useChatComposerMemory(
 }
 
 /**
+ * Legacy agent-mode sentinels a run could be stamped with before the per-turn
+ * pick existed. They name a tier, not a model, so they are never a pick.
+ */
+const LEGACY_AGENT_MODES = new Set(['advanced', 'basic'])
+
+/**
+ * The newest model a *person's own send* recorded for this chat, or `null`.
+ *
+ * Only `role: 'user'` rows count. An assistant row carries the model that
+ * actually ran — Auto's routed tier, or the model a role downgrade fell back to
+ * — and adopting it would rewrite the person's pick after every reply (SHO-497).
+ * Their own send still writes a user row, so a pick made on another device wins
+ * here exactly as it should.
+ */
+export function lastUserModelStamp(
+  messages: Array<{ role?: unknown; model?: unknown; createdAt?: unknown }> | null | undefined,
+): { model: string; createdAt: number } | null {
+  if (!messages || messages.length === 0) return null
+  let latest: { model: string; createdAt: number } | null = null
+  for (const message of messages) {
+    if (message?.role !== 'user') continue
+    const model = typeof message.model === 'string' ? message.model.trim() : ''
+    if (!model || LEGACY_AGENT_MODES.has(model)) continue
+    const createdAt = typeof message.createdAt === 'number' ? message.createdAt : 0
+    if (!latest || createdAt >= latest.createdAt) latest = { model, createdAt }
+  }
+  return latest
+}
+
+/**
  * Which model a chat should show. A model recorded by an explicit pick wins,
  * unless a model-stamped message is newer (it may have been sent from another
  * device) — then the stamp wins. Null means "nothing chat-specific": the caller
@@ -636,4 +666,25 @@ export function resolveChatModel(args: {
   const pickedAt = record?.modelAt ?? 0
   if (lastStampedModel && lastStampedAt > pickedAt) return lastStampedModel
   return picked ?? lastStampedModel ?? null
+}
+
+/**
+ * What the shared picker shows: a chat's own model, else the persisted
+ * last-used preference, else the default.
+ *
+ * `fromChat` is the half callers need beyond the value. The preference is read
+ * asynchronously and re-read whenever the model catalog or the runtime URL
+ * arrives, so it can land *after* the open chat has already reported its own
+ * model. That is when a reloaded chat went back to the last model picked in
+ * some other chat, even though its own pick was in the device cache (SHO-497):
+ * the chat's model outranks the preference, so a late read has nothing left to
+ * apply and nothing left to sync.
+ */
+export function resolvePickerModel(args: {
+  chatModel: string | null
+  preference: string | null
+  defaultModel: string
+}): { model: string; fromChat: boolean } {
+  if (args.chatModel) return { model: args.chatModel, fromChat: true }
+  return { model: args.preference ?? args.defaultModel, fromChat: false }
 }

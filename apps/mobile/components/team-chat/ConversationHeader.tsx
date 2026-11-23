@@ -8,6 +8,7 @@ import { Archive, Bell, BellOff, Check, ChevronLeft, ChevronRight, FileText, Fil
 import { cn } from '@shogo/shared-ui/primitives'
 import { LiquidGlassBackdrop } from '../ui/LiquidGlassBackdrop'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
+import { PhoneTitlePill } from '../layout/PhoneScreenHeader'
 import { MarkdownText } from '../chat/MarkdownText'
 import { WebTooltip } from '../chat/WebTooltip'
 import {
@@ -81,8 +82,12 @@ export interface ConversationHeaderProps {
   onOpenFiles?: () => void
   /** Open the channel doc. Passed for channels that support one. */
   onOpenDoc?: () => void
-  /** Open "Messages from <member>" for one member (`user:<id>` / `agent:<id>`). */
-  onOpenMemberMessages?: (from: string) => void
+  /** Filter the channel timeline to one member's messages. When `memberFilter` is set,
+   * the action reads "Clear member filter" and calls `onClearMemberFilter` instead. */
+  onFilterByMember?: (from: string) => void
+  onClearMemberFilter?: () => void
+  /** The active member filter key, if any (`user:<id>` / `agent:<id>`). */
+  memberFilter?: string | null
   onLayout?: (event: LayoutChangeEvent) => void
 }
 
@@ -96,7 +101,7 @@ function confirm(title: string, message: string): Promise<boolean> {
   )
 }
 
-export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, onDeleted, floating, onBack, onOpenFiles, onOpenDoc, onOpenMemberMessages, onLayout, tabsMenu }: ConversationHeaderProps) {
+export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, onDeleted, floating, onBack, onOpenFiles, onOpenDoc, onFilterByMember, onClearMemberFilter, memberFilter, onLayout, tabsMenu }: ConversationHeaderProps) {
   const insets = useSafeAreaInsets()
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
   const router = useRouter()
@@ -235,12 +240,12 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     const first = mine ?? conversation.members[0]
     return first ? memberFromKey(first) : null
   })()
-  if (onOpenMemberMessages && defaultMemberFrom && conversation.kind !== 'activity') {
+  if (onFilterByMember && defaultMemberFrom && conversation.kind !== 'activity') {
     actions.push({
       key: 'member-messages',
-      label: 'Filter by member',
+      label: memberFilter ? 'Clear member filter' : 'Filter by member',
       icon: (s) => <Filter size={s} className="text-muted-foreground" />,
-      onPress: () => onOpenMemberMessages(defaultMemberFrom),
+      onPress: memberFilter ? onClearMemberFilter ?? (() => {}) : () => onFilterByMember(defaultMemberFrom),
     })
   }
   actions.push({
@@ -290,7 +295,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     })
   }
 
-  const leading = peerId ? (
+  const titleAvatar = peerId ? (
     <View className="w-4 items-center">
       <PresenceDot userId={peerId} workspaceId={conversation.workspaceId} size={9} />
     </View>
@@ -409,7 +414,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
           mentionables={mentionables}
           onClose={() => setMembersOpen(false)}
           onChanged={onChanged}
-          onOpenMemberMessages={onOpenMemberMessages}
+          onFilterByMember={onFilterByMember}
         />
       )}
     </>
@@ -457,30 +462,15 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
               <ChevronLeft size={22} className="text-foreground" />
             </GlassButton>
           </Animated.View>
-          <Pressable
+          <PhoneTitlePill
+            title={title}
+            subtitle={subtitle}
+            titleIcon={titleAvatar}
+            titleLabel={`${title} details`}
+            titleOpacity={panelMounted ? 0 : 1}
             onPress={() => setDetailsOpen(true)}
-            accessibilityRole="button"
-            accessibilityLabel={`${title} details`}
-            className="min-w-0 flex-shrink justify-center overflow-hidden rounded-full bg-transparent px-4 shadow-sm"
-            style={{ height: CHROME_SIZE }}
             onLayout={(e) => setPillBox({ x: e.nativeEvent.layout.x, width: e.nativeEvent.layout.width })}
-          >
-            <LiquidGlassBackdrop style={{ borderRadius: CHROME_SIZE / 2 }} />
-            {/* The open panel draws its own copy of the title, so this one steps aside. */}
-            <View style={{ opacity: panelMounted ? 0 : 1 }}>
-              <View className="flex-row items-center gap-1.5">
-                {leading}
-                <Text className="flex-shrink text-[15px] font-semibold text-foreground" numberOfLines={1}>
-                  {title}
-                </Text>
-              </View>
-              {subtitle ? (
-                <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
-                  {subtitle}
-                </Text>
-              ) : null}
-            </View>
-          </Pressable>
+          />
           <View className="flex-1" pointerEvents="none" />
           <Animated.View
             className="flex-row items-center gap-2"
@@ -538,7 +528,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
                     style={{ paddingLeft: panel.interpolate({ inputRange: [0, 1], outputRange: [16, 56] }) }}
                   >
                     <View className="flex-row items-center gap-1.5">
-                      {leading}
+                      {titleAvatar}
                       <Text className="flex-shrink text-[15px] font-semibold text-foreground" numberOfLines={1}>{title}</Text>
                       {conversation.archivedAt ? (
                         <View className="rounded bg-muted px-1.5 py-0.5">
@@ -625,7 +615,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
   return (
     <View className="border-b border-border px-4 py-2.5" onLayout={(e) => setHeaderHeight(Math.round(e.nativeEvent.layout.height))}>
       <View className="flex-row items-center gap-2 overflow-hidden" onLayout={(e) => setActionRowWidth(Math.round(e.nativeEvent.layout.width))}>
-        {leading}
+        {titleAvatar}
         <Text className="min-w-0 flex-shrink text-base font-semibold text-foreground" numberOfLines={1}>
           {title}
         </Text>
@@ -1021,13 +1011,13 @@ function MembersModal({
   mentionables,
   onClose,
   onChanged,
-  onOpenMemberMessages,
+  onFilterByMember,
 }: {
   conversation: ConversationDetail
   mentionables: Mentionables | null
   onClose: () => void
   onChanged: () => void
-  onOpenMemberMessages?: (from: string) => void
+  onFilterByMember?: (from: string) => void
 }) {
   const [filter, setFilter] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -1076,18 +1066,18 @@ function MembersModal({
                   {m.name ?? 'Agent'}
                   {m.type === 'agent' ? <Text className="text-xs text-muted-foreground">{`  replies on ${m.agentTrigger}`}</Text> : null}
                 </Text>
-                {onOpenMemberMessages ? (
+                {onFilterByMember ? (
                   <Pressable
                     onPress={() => {
                       onClose()
-                      onOpenMemberMessages(memberFromKey(m))
+                      onFilterByMember(memberFromKey(m))
                     }}
                     accessibilityRole="button"
-                    accessibilityLabel={`Messages from ${m.name ?? 'Agent'}`}
+                    accessibilityLabel={`Filter by ${m.name ?? 'Agent'}`}
                     testID={`member-messages-open-${memberFromKey(m)}`}
                     className="rounded-md px-1.5 py-0.5 active:bg-muted"
                   >
-                    <Text className="text-xs text-primary">Messages</Text>
+                    <Text className="text-xs text-primary">Filter</Text>
                   </Pressable>
                 ) : null}
                 {conversation.canManage && (

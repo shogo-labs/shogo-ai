@@ -38,10 +38,13 @@ import {
   SLIDES_RENDER_TIMEOUT_MS,
   fetchSlidesBytes,
   parseSlidesViewerMessage,
+  parseDocumentViewerMessage,
   slidesChunkMessages,
   slidesPreviewErrorText,
   slidesViewerUrl,
+  documentViewerUrl,
   unsupportedPresentationMessage,
+  unsupportedDocumentMessage,
 } from "../project/panels/ide/slides-viewer-protocol"
 
 type MonacoNs = typeof import("monaco-editor")
@@ -88,6 +91,8 @@ export interface FileContentViewProps {
   onPreviewError?: (message: string) => void
   /** A deck's bytes the host already read (native: a workspace file). */
   slidesBytes?: ArrayBuffer
+  /** A Word document's bytes the host already read (native: a workspace file). */
+  documentBytes?: ArrayBuffer
   testID?: string
 }
 
@@ -118,14 +123,20 @@ export function FileContentView({
   binaryMessage = "No preview for this file type.",
   onPreviewError,
   slidesBytes,
+  documentBytes,
   testID,
 }: FileContentViewProps) {
   if (kind === "binary") {
-    // A `.key` / `.ppt` / `.odp` holds slides we cannot render: say what it is
-    // and what to do, rather than "no preview for this file type" (SHO-426).
+    // A `.key` / `.ppt` / `.odp` holds slides we cannot render; a `.doc` /
+    // `.odt` / `.rtf` holds text we cannot render. Say what it is and what to
+    // do, rather than "no preview for this file type" (SHO-426, SHO-467).
+    const msg =
+      unsupportedPresentationMessage(name) ??
+      unsupportedDocumentMessage(name) ??
+      binaryMessage
     return (
       <BinaryFallback
-        message={unsupportedPresentationMessage(name) ?? binaryMessage}
+        message={msg}
         download={download}
         url={url}
         name={name}
@@ -135,27 +146,40 @@ export function FileContentView({
   }
 
   if (kind === "markdown") {
+    const body = (
+      <MarkdownBody
+        value={text}
+        name={name}
+        pathKey={pathKey ?? viewerPathKey(path ?? name)}
+        language={language ?? "markdown"}
+        readOnly={readOnly}
+        themeMode={themeMode}
+        settings={settings}
+        editorTheme={editorTheme}
+        mdMode={mdMode}
+        onMdModeChange={onMdModeChange}
+        onChange={onChange}
+        onCursor={onCursor}
+        onEditorMount={onEditorMount}
+      />
+    )
+    // A phone renders RN primitives all the way down: a `<div>` has no native
+    // view config either, and the `.shogo-ide` palette it opens only exists in
+    // the DOM (SHOGO-ANDROID-1A / SHOGO-IOS-V).
+    if (Platform.OS !== "web") {
+      return (
+        <View className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden" testID={testID}>
+          {body}
+        </View>
+      )
+    }
     return (
       <div
         className="shogo-ide flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden"
         data-theme={themeMode}
         data-testid={testID}
       >
-        <MarkdownBody
-          value={text}
-          name={name}
-          pathKey={pathKey ?? viewerPathKey(path ?? name)}
-          language={language ?? "markdown"}
-          readOnly={readOnly}
-          themeMode={themeMode}
-          settings={settings}
-          editorTheme={editorTheme}
-          mdMode={mdMode}
-          onMdModeChange={onMdModeChange}
-          onChange={onChange}
-          onCursor={onCursor}
-          onEditorMount={onEditorMount}
-        />
+        {body}
       </div>
     )
   }
@@ -189,9 +213,23 @@ export function FileContentView({
     if (kind === "video" && url) return <NativeVideo url={url} download={download} testID={testID} />
     if (kind === "slides" && (url || slidesBytes)) {
       return (
-        <NativeSlides
+        <NativeOffice
+          kind="slides"
           url={url}
           bytes={slidesBytes}
+          name={name}
+          themeMode={themeMode}
+          download={download}
+          testID={testID}
+        />
+      )
+    }
+    if (kind === "document" && (url || documentBytes)) {
+      return (
+        <NativeOffice
+          kind="document"
+          url={url}
+          bytes={documentBytes}
           name={name}
           themeMode={themeMode}
           download={download}
@@ -257,19 +295,28 @@ function MarkdownBody({
     onMdModeChange?.(next)
   }
   const sourceLabel = readOnly ? "Source" : "Edit"
+  // The web tabs sit inside `.shogo-ide`, so they read the IDE palette. A phone
+  // has no `--ide-*` variables and uses the app's own theme tokens.
+  const webTabClass = (active: boolean) =>
+    `rounded px-2 py-0.5 text-[12px] ${
+      active ? "bg-[color:var(--ide-active)] text-[color:var(--ide-text)]" : "text-[color:var(--ide-muted)]"
+    }`
+  const nativeTabClass = (active: boolean) => `rounded px-2 py-0.5 ${active ? "bg-muted" : ""}`
+  const nativeTabTextClass = (active: boolean) =>
+    `text-[12px] ${active ? "text-foreground" : "text-muted-foreground"}`
 
-  const tabs = (
+  // The web tabs are real DOM buttons; a phone gets Pressable + Text. A raw
+  // `<button>` inside a `<View>` has no native view config, so rendering a
+  // Markdown file crashed the app with "View config getter callback for
+  // component `button`" (SHOGO-ANDROID-1A / SHOGO-IOS-V).
+  const webTabs = (
     <>
       <button
         type="button"
         data-testid="ide-md-mode-preview"
         aria-pressed={mode === "preview"}
         onClick={() => select("preview")}
-        className={`rounded px-2 py-0.5 text-[12px] ${
-          mode === "preview"
-            ? "bg-[color:var(--ide-active)] text-[color:var(--ide-text)]"
-            : "text-[color:var(--ide-muted)]"
-        }`}
+        className={webTabClass(mode === "preview")}
       >
         Preview
       </button>
@@ -278,21 +325,40 @@ function MarkdownBody({
         data-testid={readOnly ? "file-view-md-mode-source" : "ide-md-mode-edit"}
         aria-pressed={mode === "edit"}
         onClick={() => select("edit")}
-        className={`rounded px-2 py-0.5 text-[12px] ${
-          mode === "edit"
-            ? "bg-[color:var(--ide-active)] text-[color:var(--ide-text)]"
-            : "text-[color:var(--ide-muted)]"
-        }`}
+        className={webTabClass(mode === "edit")}
       >
         {sourceLabel}
       </button>
     </>
   )
 
+  const nativeTabs = (
+    <>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ selected: mode === "preview" }}
+        onPress={() => select("preview")}
+        testID="ide-md-mode-preview"
+        className={nativeTabClass(mode === "preview")}
+      >
+        <Text className={nativeTabTextClass(mode === "preview")}>Preview</Text>
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ selected: mode === "edit" }}
+        onPress={() => select("edit")}
+        testID={readOnly ? "file-view-md-mode-source" : "ide-md-mode-edit"}
+        className={nativeTabClass(mode === "edit")}
+      >
+        <Text className={nativeTabTextClass(mode === "edit")}>{sourceLabel}</Text>
+      </Pressable>
+    </>
+  )
+
   if (Platform.OS !== "web") {
     return (
       <View className="min-h-0 flex-1">
-        <View className="flex-row items-center gap-1 border-b border-border px-2 py-1">{tabs}</View>
+        <View className="flex-row items-center gap-1 border-b border-border px-2 py-1">{nativeTabs}</View>
         <ScrollView className="min-h-0 flex-1" contentContainerStyle={{ padding: 12 }}>
           {mode === "edit" ? (
             <Text selectable className="font-mono text-xs leading-5 text-foreground">
@@ -309,7 +375,7 @@ function MarkdownBody({
   return (
     <>
       <div className="flex items-center gap-1 border-b border-[color:var(--ide-border)] px-2 py-1">
-        {tabs}
+        {webTabs}
       </div>
       {mode === "edit" ? (
         <div className="min-h-0 flex-1">
@@ -530,15 +596,16 @@ function NativePdf({ url, name, testID }: { url: string; name: string; testID?: 
 }
 
 /**
- * A deck on a phone: the same `/api/viewers/slides` page the web app frames,
- * in a WebView (SHO-426). iOS's QuickLook is deliberately not used — one
- * renderer keeps iOS and Android identical, and the page keeps its opaque
- * origin from the CSP header.
+ * An office document on a phone: the same viewer page the web app frames, in a
+ * WebView (SHO-426 slides, SHO-467 documents). iOS QuickLook / system viewers
+ * are deliberately not used — one renderer keeps iOS and Android identical, and
+ * the page keeps its opaque origin from the CSP header.
  *
- * The WebView cannot be handed an ArrayBuffer, so the deck goes over the bridge
+ * The WebView cannot be handed an ArrayBuffer, so the bytes go over the bridge
  * as base64 chunks once the page says it is listening.
  */
-function NativeSlides({
+function NativeOffice({
+  kind,
   url,
   bytes: given,
   name,
@@ -546,6 +613,7 @@ function NativeSlides({
   download,
   testID,
 }: {
+  kind: "slides" | "document"
   url?: string | null
   bytes?: ArrayBuffer
   name: string
@@ -558,6 +626,11 @@ function NativeSlides({
   const bytesRef = useRef<ArrayBuffer | null>(null)
   const [state, setState] = useState<"loading" | "ready" | "error">("loading")
   const [message, setMessage] = useState<string | null>(null)
+
+  const viewerUri = kind === "slides" ? slidesViewerUrl(API_URL) : documentViewerUrl(API_URL)
+  const receiveFunc = kind === "slides" ? "__shogoSlidesReceive" : "__shogoDocReceive"
+  const parseMessage = kind === "slides" ? parseSlidesViewerMessage : parseDocumentViewerMessage
+  const testIdBase = kind === "slides" ? "file-view-slides" : "file-view-document"
 
   useEffect(() => {
     let cancelled = false
@@ -591,7 +664,7 @@ function NativeSlides({
     }
   }, [url, given, name])
 
-  // A deck that never reports back must not leave a dead frame.
+  // A document that never reports back must not leave a dead frame.
   useEffect(() => {
     if (state !== "loading") return
     const timer = setTimeout(() => {
@@ -601,20 +674,20 @@ function NativeSlides({
     return () => clearTimeout(timer)
   }, [state, name])
 
-  const sendDeck = useCallback(() => {
+  const sendFile = useCallback(() => {
     const bytes = bytesRef.current
     const frame = frameRef.current
     if (!bytes || !frame) return
     for (const chunk of slidesChunkMessages(name, themeMode, new Uint8Array(bytes))) {
-      frame.injectJavaScript(`window.__shogoSlidesReceive(${JSON.stringify(JSON.stringify(chunk))});true;`)
+      frame.injectJavaScript(`window.${receiveFunc}(${JSON.stringify(JSON.stringify(chunk))});true;`)
     }
-  }, [name, themeMode])
+  }, [name, themeMode, receiveFunc])
 
   if (state === "error") {
     return (
       <View
         className="flex-1 items-center justify-center gap-2 px-6 py-8"
-        testID={testID ?? "file-view-slides"}
+        testID={testID ?? testIdBase}
       >
         <Text className="text-center text-sm text-foreground">{message ?? `Could not render ${name}.`}</Text>
         {download ? (
@@ -628,21 +701,21 @@ function NativeSlides({
   }
 
   return (
-    <View className="flex-1 bg-background" testID={testID ?? "file-view-slides"}>
+    <View className="flex-1 bg-background" testID={testID ?? testIdBase}>
       <WebView
         ref={(instance: unknown) => {
           frameRef.current = (instance as { injectJavaScript: (script: string) => void } | null) ?? null
         }}
-        source={{ uri: slidesViewerUrl(API_URL) }}
+        source={{ uri: viewerUri }}
         style={{ flex: 1 }}
         javaScriptEnabled
         accessibilityLabel={name}
-        testID="file-view-slides-webview"
+        testID={`${testIdBase}-webview`}
         onMessage={(event: { nativeEvent?: { data?: unknown } }) => {
-          const parsed = parseSlidesViewerMessage(event?.nativeEvent?.data)
+          const parsed = parseMessage(event?.nativeEvent?.data)
           if (!parsed) return
           if (parsed.type === "ready") {
-            sendDeck()
+            sendFile()
             return
           }
           if (parsed.type === "rendered") {

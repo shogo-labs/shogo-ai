@@ -10,6 +10,8 @@
 import { Hono } from 'hono'
 import type { Permission } from '@shogo/authz'
 import { AudioTranscodeError, getTranscodedAudio } from '../lib/audio-transcode'
+import { forwardToShogoCloud } from '../lib/cloud-request-forward'
+import { isShogoCloudAuthed } from '../lib/cloud-forwarding'
 import { prisma } from '../lib/prisma'
 import { enforceAbility, loadAccess as loadAuthzAccess } from '../lib/authz'
 import { canReceive, subscribeWorkspaceEvents } from '../lib/conversation-bus'
@@ -40,6 +42,7 @@ import {
   editMessage,
   getConversationForUser,
   getMessage,
+  getMessages,
   getWorkspaceRole,
   joinConversation,
   leaveConversation,
@@ -184,6 +187,26 @@ function isoDateParam(value: string | undefined): Date | undefined {
   if (!value) return undefined
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? undefined : date
+}
+
+/**
+ * Read a channel attachment this computer does not hold (SHO-494).
+ *
+ * A workspace hosted on a paired computer is written by both sides: an
+ * attachment a cloud client uploads is stored in the cloud's object store and
+ * only its row syncs here, so the local disk answers ENOENT and the agent that
+ * runs on this computer — whose API is this one — would get a 404 for a file
+ * the message names. Fetch it from the cloud instead, forwarding the caller's
+ * own request (its capability token is the credential, and the cloud re-checks
+ * it). This is the reverse of what a `share_file` link does, and only for a
+ * desktop signed in to the cloud.
+ */
+function forwardMissingConversationFile(c: any): Promise<Response> | null {
+  if (!isShogoCloudAuthed()) return null
+  return forwardToShogoCloud(c, {
+    pathname: `/conversation-files/${encodeURIComponent(c.req.param('attachmentId'))}`,
+    search: new URL(c.req.url).search,
+  })
 }
 
 export function conversationRoutes(config: ConversationRoutesConfig): Hono {
@@ -476,6 +499,29 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       const { openAgentChatSession } = await import('../services/agent-chat.service')
       const chat = await openAgentChatSession(auth.workspaceId, auth.userId, projectId)
       return c.json({ chatSessionId: chat.id, projectId })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  /**
+   * The person's most recently active agent chats (workspace + project).
+   * Returns up to `limit` (default 5, max 100) chats ordered by lastActiveAt.
+   * Pass `perAgent=1` to keep at most one chat per agent.
+   */
+  router.get('/workspaces/:workspaceId/agent-chats/recent', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    const rawLimit = c.req.query('limit')
+    const perAgent = c.req.query('perAgent') === '1'
+    const limit = rawLimit !== undefined ? parseInt(rawLimit, 10) : 5
+    if (Number.isNaN(limit) || limit < 1 || limit > 100) {
+      return c.json({ error: { code: 'invalid_request', message: 'limit must be 1–100' } }, 400)
+    }
+    try {
+      const { listRecentAgentChats } = await import('../services/agent-chat.service')
+      const chats = await listRecentAgentChats(auth.workspaceId, auth.userId, { limit, perAgent })
+      return c.json({ chats })
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -928,6 +974,18 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
 
   // ─── Message-level ───────────────────────────────────────────────────────
 
+  // Quote cards ask for every message a page links to in one request.
+  router.get('/conversation-messages', async (c) => {
+    const userId = await requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      const ids = (c.req.query('ids') ?? '').split(',').map((id) => id.trim()).filter(Boolean)
+      return c.json(await getMessages(ids, userId))
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
   router.get('/conversation-messages/:messageId', async (c) => {
     const userId = await requireUser(c)
     if (userId instanceof Response) return userId
@@ -1224,7 +1282,17 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         'Cache-Control': 'private, max-age=300',
         'Accept-Ranges': 'bytes',
       }
-      const file = await readConversationFile(row.storageKey, download ? { downloadName: row.name } : undefined)
+      const file = await readConversationFile(row.storageKey, download ? { downloadName: row.name } : undefined).catch(
+        async (err) => {
+          // Not on this disk: an attachment uploaded from the cloud for a
+          // workspace this computer hosts (SHO-494). Read it from the cloud with
+          // the caller's own request, token and all.
+          const forwarded = forwardMissingConversationFile(c)
+          if (!forwarded) throw err
+          return { kind: 'forwarded' as const, response: await forwarded }
+        },
+      )
+      if (file.kind === 'forwarded') return file.response
       if (file.kind === 'redirect') {
         // An <img>, <video>, iframe or link click follows the redirect to object
         // storage happily, and a native client does too. A script fetch does
@@ -1277,6 +1345,13 @@ export interface AgentChannelAuthContext {
    * post in a channel are attributed alike.
    */
   userId?: string | null
+  /**
+   * The same person, when the authorizer is the one that verified them
+   * (SHO-493). Kept apart from `userId`, which session callers also set, so
+   * `agent_runs_list` / `agent_run_stop` can accept a Personal ticket for a
+   * call in another workspace without accepting "any signed-in caller".
+   */
+  crossWorkspaceRequesterId?: string | null
 }
 
 export interface AgentChannelRoutesConfig {
@@ -1965,6 +2040,11 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     if (projectCaller) {
       return c.json({ error: { code: 'workspace_agent_only', message: 'Only the workspace agent can see and stop other agents' } }, 403)
     }
+    // A cross-workspace call's ticket is signed for the caller's Personal
+    // workspace, so it cannot verify against this one (SHO-493). The
+    // authorizer already verified it there and put the person in the
+    // allowance; the per-conversation `loadAccess` limits below still apply.
+    if (auth.crossWorkspaceRequesterId) return auth.crossWorkspaceRequesterId
     const ticket = await verifyRequesterTicketInWorkspace(c.req.header(REQUESTER_TICKET_HEADER), auth.workspaceId).catch(() => null)
     if (!ticket) {
       return c.json({ error: { code: 'requester_required', message: 'A signed requester is required to see or stop agents' } }, 403)

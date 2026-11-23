@@ -111,3 +111,102 @@ describe('publish endpoints share the staging dir', () => {
     expect(((await res.json()) as { error: string }).error).toBe('project_not_attached')
   })
 })
+
+// ---------------------------------------------------------------------------
+// The archive does not cross the API (SHO-485 §2b)
+// ---------------------------------------------------------------------------
+
+/**
+ * Given a `bucket` + `key`, the runtime streams the tar it just made straight
+ * into object storage and answers with its location — no base64 body, so a
+ * media-heavy project's artifact never sits in the API's heap. Without a target
+ * it keeps the old body for a caller that has not been rolled out yet.
+ */
+describe('publish-artifact upload target', () => {
+  const fakeStore = () => {
+    const puts: Array<{ bucket: string; key: string; body: Buffer }> = []
+    return {
+      puts,
+      store: {
+        bucket: 'workspaces',
+        client: {
+          async send(command: any) {
+            if (command.constructor.name === 'PutObjectCommand') {
+              puts.push({
+                bucket: command.input.Bucket,
+                key: command.input.Key,
+                body: Buffer.from(command.input.Body),
+              })
+              return { ETag: '"etag"' }
+            }
+            return {}
+          },
+        },
+      },
+    }
+  }
+
+  function mountWithStore(workspaceDir: string, store: any): Hono {
+    const deps: PublishEndpointDeps = {
+      projectDir: () => workspaceDir,
+      outputRoot: (_projectId, projectDir) => projectDir,
+      objectStore: () => ({ client: store.client, bucket: store.bucket }),
+    }
+    const hono = new Hono()
+    hono.get('/agent/publish-artifact', (c) => handlePublishArtifact(c, deps))
+    return hono
+  }
+
+  it('uploads the tar itself and answers with the key and its size', async () => {
+    const { store, puts } = fakeStore()
+    const hono = mountWithStore(workspace, store)
+    const res = await hono.fetch(
+      new Request('http://runtime.test/agent/publish-artifact?projectId=p1&bucket=publish&key=acme/artifacts/abc.tar.gz'),
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { bucket: string; key: string; bytes: number; archive?: string }
+    expect(body.key).toBe('acme/artifacts/abc.tar.gz')
+    expect(body.bucket).toBe('publish')
+    expect(body.archive).toBeUndefined()
+    expect(puts.length).toBe(1)
+    expect(puts[0].key).toBe('acme/artifacts/abc.tar.gz')
+    expect(puts[0].body.subarray(0, 2)).toEqual(Buffer.from([0x1f, 0x8b]))
+    expect(body.bytes).toBe(puts[0].body.length)
+    // Still the last reader of the staging dir.
+    expect(existsSync(join(workspace, PUBLISH_STAGING_DIR))).toBe(false)
+  })
+
+  it('keeps the base64 body for a caller that names no target', async () => {
+    const { store, puts } = fakeStore()
+    const hono = mountWithStore(workspace, store)
+    const res = await hono.fetch(new Request('http://runtime.test/agent/publish-artifact?projectId=p1'))
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { archive?: string }
+    expect(typeof body.archive).toBe('string')
+    expect(puts.length).toBe(0)
+  })
+})
+
+describe('publish-artifact size guard', () => {
+  it('refuses a context over the named limit instead of letting the Job evict', async () => {
+    const previous = process.env.PUBLISH_ARTIFACT_MAX_BYTES
+    // 1 byte: the tar of any real project is bigger.
+    process.env.PUBLISH_ARTIFACT_MAX_BYTES = '1'
+    try {
+      const deps: PublishEndpointDeps = {
+        projectDir: () => workspace,
+        outputRoot: (_projectId, projectDir) => projectDir,
+      }
+      const hono = new Hono()
+      hono.get('/agent/publish-artifact', (c) => handlePublishArtifact(c, deps))
+      const res = await hono.fetch(new Request('http://runtime.test/agent/publish-artifact?projectId=p1'))
+      expect(res.status).toBe(413)
+      const body = (await res.json()) as { error: string; message: string }
+      expect(body.error).toBe('artifact_too_large')
+      expect(body.message).toContain('limit for an image build')
+    } finally {
+      if (previous === undefined) delete process.env.PUBLISH_ARTIFACT_MAX_BYTES
+      else process.env.PUBLISH_ARTIFACT_MAX_BYTES = previous
+    }
+  })
+})

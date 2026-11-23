@@ -512,23 +512,79 @@ function providerAccountId(target: any): string | null {
 
 /**
  * Where a provider target's live post can be found: Zernio names it
- * `platformPostUrl` on a list and `url`/`postUrl` on a create.
+ * `platformPostUrl` on a list, `publishedUrl`/`platformPostUrl` on a read and
+ * `url`/`postUrl` on a create.
  */
 function providerPostUrl(target: any): string | null {
-  for (const key of ['platformPostUrl', 'url', 'postUrl']) {
+  for (const key of ['platformPostUrl', 'publishedUrl', 'url', 'postUrl']) {
     const value = target?.[key]
     if (typeof value === 'string' && value) return value
   }
   return null
 }
 
-/** A provider target's own status, in our per-target vocabulary. */
-function targetStatusFrom(remote: any): string {
-  const status = typeof remote?.status === 'string' ? remote.status : ''
-  if (status === 'failed' || remote?.error) return 'failed'
-  if (status === 'pending' || status === 'publishing') return 'publishing'
-  if (status === 'cancelled' || status === 'deleted') return 'cancelled'
-  return 'published'
+/** The platform's own id for the published target, under any of its names. */
+function providerPlatformPostId(target: any): string | null {
+  for (const key of ['platformPostId', 'postId']) {
+    const value = target?.[key]
+    if (typeof value === 'string' && value) return value
+  }
+  return zernioId(target, 'platformPost')
+}
+
+/**
+ * Why a target failed, as the platform said it. `platformError.message` is the
+ * human sentence; `errorCategory` is the machine reason a retry could act on, so
+ * it rides along in brackets rather than replacing the sentence.
+ */
+function providerErrorMessage(remote: any): string | null {
+  const platformError = remote?.platformError
+  const message =
+    (typeof platformError === 'string' && platformError) ||
+    (typeof platformError?.message === 'string' && platformError.message) ||
+    (typeof remote?.error === 'string' && remote.error) ||
+    (typeof remote?.error?.message === 'string' && remote.error.message) ||
+    ''
+  if (!message) return null
+  const category = typeof remote?.errorCategory === 'string' ? remote.errorCategory : ''
+  return category ? `[${category}] ${message}` : message
+}
+
+/**
+ * A provider target's own status, in our per-target vocabulary — or `null` for
+ * a status we do not know, which leaves the row as it is. Only a status we
+ * understand may move a target: reading `scheduled`/`uploading` as `published`
+ * is how a scheduled post would look live the moment we started checking it.
+ */
+export function targetStatusFrom(remote: any): string | null {
+  const status = typeof remote?.status === 'string' ? remote.status.toLowerCase() : ''
+  if (status === 'failed' || status === 'error' || providerErrorMessage(remote)) return 'failed'
+  if (status === 'published' || status === 'completed' || status === 'posted') return 'published'
+  if (status === 'pending' || status === 'scheduled' || status === 'queued') return 'pending'
+  if (status === 'publishing' || status === 'uploading' || status === 'processing') return 'publishing'
+  if (status === 'cancelled' || status === 'canceled' || status === 'deleted') return 'cancelled'
+  return null
+}
+
+/**
+ * Write a provider target's state onto one of our targets, when it changed.
+ * `whenUnknown` is for the create path only: a publish-now create has already
+ * handed the post to the provider, so its answer is a receipt — whereas a
+ * reconcile read must never treat an unreadable status as published.
+ */
+function targetPatch(remote: any, target: any, whenUnknown?: string): Record<string, unknown> | null {
+  const status = targetStatusFrom(remote) ?? whenUnknown ?? target?.status
+  if (!status) return null
+  const patch = {
+    status,
+    platformPostId: providerPlatformPostId(remote) ?? target?.platformPostId ?? null,
+    platformPostUrl: providerPostUrl(remote) ?? target?.platformPostUrl ?? null,
+    error: status === 'failed' ? (providerErrorMessage(remote) ?? 'Publish failed') : null,
+  }
+  const changed = (Object.keys(patch) as (keyof typeof patch)[]).some(
+    (key) => (target?.[key] ?? null) !== patch[key],
+  )
+  return changed ? patch : null
 }
 
 function detailOf(err: unknown): { message: string; details: Record<string, unknown> } {
@@ -650,17 +706,11 @@ export async function dispatchPost(
   for (const target of post.targets) {
     const remote = byProviderAccount.get(target.account.zernioAccountId)
     if (!remote) continue
-    const failed = targetStatusFrom(remote) === 'failed'
-    await db.socialPostTarget.update({
-      where: { id: target.id },
-      data: {
-        status: targetStatusFrom(remote),
-        platformPostId:
-          typeof remote.postId === 'string' ? remote.postId : zernioId(remote, 'platformPost'),
-        platformPostUrl: providerPostUrl(remote),
-        error: failed ? String(remote.error ?? remote.platformError ?? 'Publish failed') : null,
-      },
-    })
+    // A status we cannot read leaves the row where it is — except that a
+    // publish-now create's answer is a receipt: it accepted the post, so an
+    // unknown state there is `published`, as it always was.
+    const patch = targetPatch(remote, target, publishNow ? 'published' : undefined)
+    if (patch) await db.socialPostTarget.update({ where: { id: target.id }, data: patch })
   }
 
   // A provider answer with no per-target detail means it accepted the whole
@@ -708,16 +758,160 @@ export async function dispatchPost(
   return getPost(workspaceId, post.id)
 }
 
+/** The post object inside a provider read, which arrives wrapped or bare. */
+function postDetailFrom(answer: any): any {
+  const wrapped = answer?.post ?? answer?.data?.post
+  if (wrapped && typeof wrapped === 'object') return wrapped
+  return answer && typeof answer === 'object' ? answer : null
+}
+
+function parseProviderDate(value: unknown): Date | null {
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value : null
+  if (typeof value !== 'string' || !value) return null
+  const parsed = new Date(value)
+  return Number.isFinite(parsed.getTime()) ? parsed : null
+}
+
+/** The post status our per-target rows add up to; a post with nothing out yet is publishing. */
+function postStatusFromCounts(targets: Array<{ status: string }>): PostStatus {
+  const published = targets.filter((row) => row.status === 'published').length
+  const failed = targets.filter((row) => row.status === 'failed').length
+  if (published === 0 && failed > 0) return 'failed'
+  if (failed > 0) return 'partial'
+  if (published > 0) return 'published'
+  return 'publishing'
+}
+
 /**
- * Ask the provider whether a `publishing` post actually landed.
+ * The one writer for a provider post's state, shared by the read path and the
+ * webhook so a post cannot end up described two different ways.
  *
- * A publish that timed out is left at `publishing` with no provider id, and
- * Zernio may well have accepted it. Rather than publish again, the next read
- * finds the post at Zernio by its content and accounts and adopts the result —
- * so the person sees what is really live instead of a stuck row.
+ * Targets are matched by provider account. A provider answer that omits a
+ * target leaves it alone, a status we do not understand leaves it alone, and
+ * re-applying the same state writes nothing — a redelivered webhook is a no-op.
  */
-async function reconcilePublishingPost(workspaceId: string, post: any) {
-  if (!post || post.status !== 'publishing' || post.zernioPostId) return post
+export async function applyProviderPostState(post: any, remote: any) {
+  const platforms: any[] = Array.isArray(remote?.platforms)
+    ? remote.platforms
+    : Array.isArray(remote?.targets)
+      ? remote.targets
+      : []
+  const byAccount = new Map(
+    platforms.map((entry: any) => [providerAccountId(entry), entry] as const).filter(([id]) => !!id),
+  )
+  for (const target of post.targets ?? []) {
+    const providerTarget = byAccount.get(target.account?.zernioAccountId)
+    if (!providerTarget) continue
+    const patch = targetPatch(providerTarget, target)
+    if (patch) await db.socialPostTarget.update({ where: { id: target.id }, data: patch })
+  }
+
+  const targets = await db.socialPostTarget.findMany({
+    where: { postId: post.id },
+    select: { status: true },
+  })
+  const status = postStatusFromCounts(targets)
+  // The provider's own `publishedAt` is the truth; without one, the moment we
+  // first saw the post go out is. An existing value is never overwritten, so a
+  // second read cannot walk the date forward.
+  const finished = status === 'published' || status === 'partial'
+  const publishedAt = post.publishedAt ?? (finished ? (parseProviderDate(remote?.publishedAt) ?? new Date()) : null)
+  const zernioPostId = post.zernioPostId ?? zernioId(remote, 'post')
+
+  const unchanged =
+    post.status === status &&
+    (post.zernioPostId ?? null) === zernioPostId &&
+    (post.publishedAt ? new Date(post.publishedAt).getTime() : null) ===
+      (publishedAt ? publishedAt.getTime() : null)
+  if (!unchanged) {
+    await db.socialPost.update({ where: { id: post.id }, data: { status, zernioPostId, publishedAt } })
+    post.status = status
+    post.zernioPostId = zernioPostId
+    post.publishedAt = publishedAt
+  }
+  return post
+}
+
+const missingPostLogged = new Set<string>()
+
+/** Room to explain a 404 once per post instead of on every read of a list. */
+function noteMissingProviderPost(post: any) {
+  const id = String(post.zernioPostId ?? post.id ?? '')
+  if (!id || missingPostLogged.has(id)) return
+  missingPostLogged.add(id)
+  console.warn('[Social] the provider has no post for a row we scheduled; leaving it as it is', {
+    postId: post.id,
+    zernioPostId: post.zernioPostId,
+  })
+}
+
+/**
+ * Has this row waited long enough for the provider to have an answer, and is it
+ * in a state where the answer could still change it?
+ */
+function dueForProviderCheck(post: any): boolean {
+  const now = Date.now()
+  if (post.status === 'scheduled') {
+    const due = post.scheduledFor ? new Date(post.scheduledFor).getTime() : NaN
+    return Number.isFinite(due) && due <= now - RECONCILE_GRACE_MS
+  }
+  if (post.status === 'publishing') return true
+  // A post can read finished while one leg is still in flight — a TikTok upload
+  // holds for up to 48 h — so a target that has not settled keeps it live for
+  // another check rather than freezing it on `publishing`.
+  return (post.targets ?? []).some((target: any) => target.status === 'publishing')
+}
+
+const RECONCILED_INCLUDE = {
+  targets: { include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } } },
+}
+
+/** Re-read rather than return the bare row: every caller of `getPost` reads `post.targets`. */
+async function rereadPost(workspaceId: string, post: any) {
+  const reconciled = await db.socialPost.findFirst({
+    where: { id: post.id, workspaceId },
+    include: RECONCILED_INCLUDE,
+  })
+  return reconciled ?? post
+}
+
+/** Read one post we already handed to Zernio, by the id it gave us. */
+async function reconcileKnownPost(workspaceId: string, post: any) {
+  if (!dueForProviderCheck(post)) return post
+  let detail: any
+  try {
+    const answer = await getSocialClient().request<any>({
+      workspaceId,
+      method: 'GET',
+      path: `/posts/${encodeURIComponent(post.zernioPostId)}`,
+    })
+    detail = postDetailFrom(answer)
+  } catch (err) {
+    // An unreachable provider is not evidence of anything, and a 404 for a post
+    // we scheduled is not proof it went out — Zernio may simply not have it yet.
+    // Either way the row stays as it is and the next read asks again.
+    if (err instanceof SocialError && err.status === 404) noteMissingProviderPost(post)
+    return post
+  }
+  if (!detail) return post
+  await applyProviderPostState(post, detail)
+  return rereadPost(workspaceId, post)
+}
+
+/**
+ * Ask the provider what happened to a post we already handed it.
+ *
+ * Two kinds of row go stale. A publish that timed out is left at `publishing`
+ * with no provider id, and Zernio may well have accepted it — rather than
+ * publish again, the next read finds it at Zernio by its content and accounts.
+ * A scheduled post keeps `scheduled` for ever because nothing ever wrote the
+ * provider's eventual answer back, so once it is due the same read fetches it by
+ * `zernioPostId`. Both end in `applyProviderPostState`, the one writer.
+ */
+export async function reconcilePost(workspaceId: string, post: any) {
+  if (!post) return post
+  if (post.zernioPostId) return reconcileKnownPost(workspaceId, post)
+  if (post.status !== 'publishing') return post
   const createdAt = post.createdAt instanceof Date ? post.createdAt : new Date(post.createdAt)
   if (!Number.isFinite(createdAt.getTime())) return post
   if (Date.now() - createdAt.getTime() < RECONCILE_GRACE_MS) return post
@@ -762,56 +956,10 @@ async function reconcilePublishingPost(workspaceId: string, post: any) {
   if (!match) return post
 
   const platforms: any[] = Array.isArray(match.platforms) ? match.platforms : []
-  const byAccount = new Map(
-    platforms.map((entry: any) => [providerAccountId(entry), entry] as const).filter(([id]) => !!id),
-  )
-  for (const target of post.targets ?? []) {
-    const remote = byAccount.get(target.account?.zernioAccountId)
-    if (!remote) continue
-    const status = targetStatusFrom(remote)
-    await db.socialPostTarget.update({
-      where: { id: target.id },
-      data: {
-        status,
-        platformPostId:
-          typeof remote.postId === 'string' ? remote.postId : zernioId(remote, 'platformPost'),
-        platformPostUrl: providerPostUrl(remote),
-        error: status === 'failed' ? String(remote.error ?? remote.platformError ?? 'Publish failed') : null,
-      },
-    })
-  }
+  if (platforms.length === 0) return post
 
-  const targets = await db.socialPostTarget.findMany({
-    where: { postId: post.id },
-    select: { status: true },
-  })
-  const published = targets.filter((row: any) => row.status === 'published').length
-  const failed = targets.filter((row: any) => row.status === 'failed').length
-  const status: PostStatus =
-    published === 0 && failed > 0
-      ? 'failed'
-      : failed > 0
-        ? 'partial'
-        : published > 0
-          ? 'published'
-          : 'publishing'
-
-  await db.socialPost.update({
-    where: { id: post.id },
-    data: {
-      status,
-      zernioPostId: zernioId(match, 'post'),
-      publishedAt: status === 'published' || status === 'partial' ? new Date() : null,
-    },
-  })
-  // Re-read rather than return the bare row: every caller of `getPost` reads
-  // `post.targets`, and a reconcile that dropped them would be a silent shape
-  // change mid-response.
-  const reconciled = await db.socialPost.findFirst({
-    where: { id: post.id, workspaceId },
-    include: { targets: { include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } } } },
-  })
-  return reconciled ?? post
+  await applyProviderPostState(post, match)
+  return rereadPost(workspaceId, post)
 }
 
 export async function listPosts(
@@ -828,13 +976,60 @@ export async function listPosts(
   }
   const posts = await db.socialPost.findMany({
     where,
-    include: { targets: { include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } } } },
+    include: RECONCILED_INCLUDE,
     orderBy: [{ scheduledFor: 'asc' }, { createdAt: 'desc' }],
     take: Math.min(Math.max(opts.limit ?? 50, 1), 200),
   })
+  return reconcileList(workspaceId, posts)
+}
+
+/** Will reading this row ask the provider anything? */
+function willAskProvider(post: any): boolean {
+  if (post.zernioPostId) return dueForProviderCheck(post)
+  return post.status === 'publishing'
+}
+
+/**
+ * Reconcile the stale rows of a page, bounded: 200 rows of history must not
+ * become 200 provider calls. Oldest first in the page, so a backlog drains over
+ * the next few reads rather than never.
+ */
+async function reconcileList(workspaceId: string, posts: any[], limit = 25): Promise<any[]> {
+  let asked = 0
   return Promise.all(
-    posts.map((post: any) => reconcilePublishingPost(workspaceId, post).catch(() => post)),
+    (posts ?? []).map((post: any) => {
+      if (asked >= limit || !willAskProvider(post)) return post
+      asked++
+      return reconcilePost(workspaceId, post).catch(() => post)
+    }),
   )
+}
+
+/**
+ * Reconcile the workspace's due posts before a count that reads their status.
+ *
+ * Bounded on purpose: a report may not turn into a hundred provider calls. The
+ * oldest rows go first, so a backlog drains over a few reads rather than never.
+ */
+export async function reconcileDuePosts(workspaceId: string, limit = 25) {
+  const dueBefore = new Date(Date.now() - RECONCILE_GRACE_MS)
+  const [scheduled, publishing] = await Promise.all([
+    db.socialPost.findMany({
+      where: { workspaceId, status: 'scheduled', zernioPostId: { not: null }, scheduledFor: { lte: dueBefore } },
+      include: RECONCILED_INCLUDE,
+      orderBy: { scheduledFor: 'asc' },
+      take: limit,
+    }),
+    db.socialPost.findMany({
+      where: { workspaceId, status: 'publishing', zernioPostId: { not: null } },
+      include: RECONCILED_INCLUDE,
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+    }),
+  ])
+  const due = [...(scheduled ?? []), ...(publishing ?? [])]
+  await reconcileList(workspaceId, due, limit)
+  return Math.min(due.length, limit)
 }
 
 export async function getPost(workspaceId: string, postId: string) {
@@ -843,7 +1038,7 @@ export async function getPost(workspaceId: string, postId: string) {
     include: { targets: { include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } } } },
   })
   if (!post) throw new SocialError(404, 'post_not_found', 'Post not found')
-  return reconcilePublishingPost(workspaceId, post).catch(() => post)
+  return reconcilePost(workspaceId, post).catch(() => post)
 }
 
 /** Reschedule or edit an unpublished post. Published targets are immutable. */
@@ -1052,5 +1247,7 @@ export async function calendar(workspaceId: string, from: Date, to: Date) {
     include: { targets: { include: { account: { select: { id: true, username: true, platform: true, zernioAccountId: true } } } } },
     orderBy: { scheduledFor: 'asc' },
   })
-  return posts
+  // The calendar draws a status per post, so it has to be the same status the
+  // list and the detail view show — reconciled, not read straight off the row.
+  return reconcileList(workspaceId, posts)
 }

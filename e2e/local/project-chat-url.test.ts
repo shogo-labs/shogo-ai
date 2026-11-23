@@ -23,6 +23,8 @@ const API = process.env.E2E_API_URL || "http://localhost:8002"
 let workspaceId = ""
 let projectId = ""
 let projectId2 = ""
+let project1Name = ""
+let project2Name = ""
 let seedIds2: string[] = []
 let alphaId = ""
 let bravoId = ""
@@ -131,6 +133,7 @@ test.describe("Project chat URL (local)", () => {
     })
     projectId = project.json?.data?.id ?? project.json?.id
     expect(projectId, JSON.stringify(project.json)).toBeTruthy()
+    project1Name = `QA chat url ${suffix}`
 
     for (const name of ["Alpha", "Bravo"]) {
       const created = await apiJson(page, "POST", "/api/chat-sessions", {
@@ -173,6 +176,7 @@ test.describe("Project chat URL (local)", () => {
     })
     projectId2 = project2.json?.data?.id ?? project2.json?.id
     expect(projectId2, JSON.stringify(project2.json)).toBeTruthy()
+    project2Name = `QA chat url ${suffix} two`
     for (const name of ["Charlie", "Delta"]) {
       const created = await apiJson(page, "POST", "/api/chat-sessions", {
         contextId: projectId2,
@@ -228,23 +232,60 @@ test.describe("Project chat URL (local)", () => {
     expect(await page.evaluate(() => history.length)).toBe(entriesBefore)
   })
 
-  // SHO-174: a cold load of ?chatSessionId=<chat> opens the project's pinned
-  // chat, not the one in the URL — on origin/main too, i.e. this PR neither
-  // causes nor fixes the read side. Kept as fixme so it starts enforcing the
-  // moment SHO-174 lands instead of either going red or being deleted.
-  test.fixme("a copied URL opens that exact chat, and a reload keeps it", async ({ page }) => {
+  test("a copied URL opens that exact chat, and a reload keeps it", async ({ page }) => {
     const loads = trackChatLoads(page)
     await prepare(page)
     await openProject(page, `?chatSessionId=${bravoId}`)
 
-    await expect.poll(() => chatParam(page), { timeout: 20_000 }).toBe(bravoId)
+    await expect(page).toHaveURL(new RegExp(`chatSessionId=${bravoId}`), { timeout: 20_000 })
     await expect(page.getByText(/BRAVO-SEED-/).first()).toBeVisible({ timeout: 20_000 })
     await expect.poll(() => loads.includes(bravoId), { timeout: 20_000 }).toBe(true)
 
     await page.reload()
     await composer(page).waitFor({ state: "visible", timeout: 120_000 })
-    expect(chatParam(page)).toBe(bravoId)
+    // The mirror repairs the address bar on a timer after the navigator settles
+    // (~0.6s in, one more pass at 0.9s), so right after a reload the param can
+    // be briefly absent while the chat itself is already open. Poll for the
+    // settled URL rather than reading it the instant the composer appears.
+    await expect.poll(() => chatParam(page), { timeout: 20_000 }).toBe(bravoId)
     await expect(page.getByText(/BRAVO-SEED-/).first()).toBeVisible({ timeout: 20_000 })
+  })
+
+  // The staging release gate (chat-long-turn) cold-loads `?chatSessionId=` and
+  // types into the first visible composer. A cold load restores the saved tabs
+  // first and appends the linked chat, so hidden tabs render before it; at
+  // `opacity: 0` alone their composers counted as visible, came first, and the
+  // click was swallowed by the real one stacked above.
+  test("a chat link opened with other chat tabs saved leaves one reachable composer", async ({ page }) => {
+    await prepare(page)
+    await openProject(page)
+    await page.getByLabel("Chat: Chat Alpha").click()
+    await expect.poll(() => chatParam(page), { timeout: 20_000 }).toBe(alphaId)
+    // Alpha is now a saved tab, so the cold load below restores it ahead of Bravo.
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            (key) => window.localStorage.getItem(key) ?? "",
+            `shogo:chatTabs:${projectId}`,
+          ),
+        { timeout: 20_000 },
+      )
+      .toContain(alphaId)
+
+    await openProject(page, `?chatSessionId=${bravoId}`)
+    await expect(page.getByText(/BRAVO-SEED-/).first()).toBeVisible({ timeout: 20_000 })
+
+    const mounted = page.getByTestId("project-composer-input")
+    expect(await mounted.count(), "the saved tabs should still be mounted").toBeGreaterThan(1)
+    const reachable = mounted.filter({ visible: true })
+    await expect(reachable).toHaveCount(1)
+
+    const draft = `typed-into-bravo-${Date.now()}`
+    await reachable.click({ timeout: 10_000 })
+    await reachable.fill(draft)
+    await expect(reachable).toHaveValue(draft)
+    await expect(page.getByRole("textbox", { name: "Chat message input" })).toHaveCount(1)
   })
 
   test("+ new chat names the new chat and drops the one-shot params", async ({ page }) => {
@@ -292,6 +333,54 @@ test.describe("Project chat URL (local)", () => {
     const url = new URL(page.url())
     expect(url.searchParams.get("newChat")).toBeNull()
     expect(url.searchParams.get("newChatNonce")).toBeNull()
+  })
+
+  test("the arrival query is spent once: leaving and returning does not replay it", async ({
+    page,
+  }) => {
+    await prepare(page)
+    await openProject(page, `?newChat=1&newChatNonce=${Date.now()}`, projectId2)
+
+    // The arrival minted the chat it names, and consumed the one-shot params.
+    await expect
+      .poll(
+        () => {
+          const current = chatParam(page)
+          return current && !seedIds2.includes(current) ? current : ""
+        },
+        { timeout: 40_000 },
+      )
+      .not.toBe("")
+    expect(new URL(page.url()).searchParams.get("newChat")).toBeNull()
+    // How many chats this project has, straight from the API: a replayed
+    // `newChat=1` mints one more on the way back in.
+    const chatCount = async () => {
+      const res = await apiJson(
+        page,
+        "GET",
+        `/api/chat-sessions?contextId=${projectId2}&contextType=project`,
+      )
+      return (res.json?.items ?? []).length
+    }
+    const before = await chatCount()
+    expect(before).toBeGreaterThan(seedIds2.length - 1)
+
+    // Leave the project inside the app and come back the way a user does: the
+    // sidebar pushes another project, Back returns. Both are client-side, so
+    // this is still the page load from above and its arrival query is spent.
+    const sidebar = page.getByRole("navigation", { name: "App sidebar" }).first()
+    await sidebar.getByRole("link", { name: `Project: ${project1Name}`, exact: true }).first().click()
+    await expect.poll(() => new URL(page.url()).pathname, { timeout: 40_000 }).toBe(
+      `/projects/${projectId}`,
+    )
+    await page.goBack()
+    await composer(page).waitFor({ state: "visible", timeout: 60_000 })
+
+    // The one-shot param must not have created another chat.
+    await expect
+      .poll(chatCount, { timeout: 20_000, message: "revisiting must not mint another chat" })
+      .toBe(before)
+    expect(new URL(page.url()).searchParams.get("newChat")).toBeNull()
   })
 
   test("an unknown chat id falls back to the project chat and corrects the URL", async ({ page }) => {

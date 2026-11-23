@@ -63,6 +63,8 @@
     "check:multiregion": "bun scripts/check-multiregion-cron-locks.ts",
     "check:ci-bun-install-token": "bun scripts/check-ci-bun-install-token.ts",
     "check:e2e-quarantine": "bun scripts/check-e2e-quarantine.ts",
+    "check:test-clock": "bun scripts/check-test-clock.ts",
+    "check:injected-clock": "bun scripts/check-injected-clock.ts",
     "check:higgsfield-docs": "bun scripts/check-higgsfield-docs.ts",
     "generate:runtime-env-doc": "bun scripts/gen-runtime-env-doc.ts",
     "check:runtime-env-doc": "bun scripts/gen-runtime-env-doc.ts --check",
@@ -182,6 +184,7 @@
     "@react-navigation/routers@7.5.3": "patches/@react-navigation%2Frouters@7.5.3.patch",
     "react-native-iap@12.16.4": "patches/react-native-iap@12.16.4.patch",
     "@mariozechner/pi-ai@0.73.1": "patches/@mariozechner%2Fpi-ai@0.73.1.patch",
-    "@bacons/apple-targets@5.0.0": "patches/@bacons%2Fapple-targets@5.0.0.patch"
+    "@bacons/apple-targets@5.0.0": "patches/@bacons%2Fapple-targets@5.0.0.patch",
+    "react-native-callkeep@4.6.1": "patches/react-native-callkeep@4.6.1.patch"
   }
 }

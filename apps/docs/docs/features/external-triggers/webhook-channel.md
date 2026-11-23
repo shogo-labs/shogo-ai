@@ -27,29 +27,27 @@ in the channel editor in studio.
 
 ## Authentication
 
-Send **both** of the following:
+Send the channel secret in a single header:
 
-1. **Cloud auth** (proves the caller has access to the project):
+```http
+X-Webhook-Secret: <your-secret>
+```
 
-   ```http
-   Authorization: Bearer shogo_sk_XXXXXXXXX
-   ```
+The secret is configured per-channel. If you don't provide one when
+connecting, Shogo generates a 64-character hex secret automatically
+(equivalent to `openssl rand -hex 32`).
 
-   Mint a key in **Settings → API Keys**. The key must belong to a user
-   who is a member of the project's workspace.
+**No `shogo_sk_*` API key is needed** to call this endpoint. The agent-proxy
+lets `/incoming` and `/outbox/<id>` through without a Shogo session;
+the channel secret is the only credential a third-party automation tool
+needs. A valid `shogo_sk_*` key will still work if you already use one
+(no regression), but it no longer has to be sent.
 
-2. **Channel auth** (proves the caller is allowed to trigger this channel):
-
-   ```http
-   X-Webhook-Secret: <your-secret>
-   ```
-
-   Configured per-channel in the studio channel editor under the `secret`
-   field. If `secret` is empty, the channel rejects all external requests.
-
-A request that passes cloud auth but fails channel auth gets `401`. A
-request that fails cloud auth gets `401` without the channel ever seeing
-it.
+:::tip Rotate the secret
+Reconnect with an explicit `secret` to rotate it:
+`channel_connect({ type: "webhook", config: { secret: "new-secret" } })`.
+Reconnecting **without** a secret keeps the existing one.
+:::
 
 ## Request body
 
@@ -79,11 +77,13 @@ its tool loop and returns the reply inline:
 HTTP/1.1 200 OK
 Content-Type: application/json
 
-{ "reply": "Done. PR opened at https://github.com/..." }
+{ "reply": "Done. PR opened at https://github.com/...", "correlationId": "webhook-1748..." }
 ```
 
-The runtime times out the reply at **120 seconds**. For long-running jobs,
-use async mode.
+The runtime times out the reply at **120 seconds**. When the timeout fires,
+the response is `202` with a `correlationId` and `outboxUrl` — see
+[Polling the outbox](#polling-the-outbox-timeout-fallback) below.
+For long-running jobs, use async mode.
 
 ### Async (recommended for long jobs)
 
@@ -94,7 +94,7 @@ reply to that URL when the agent finishes:
 HTTP/1.1 202 Accepted
 Content-Type: application/json
 
-{ "status": "accepted", "message": "Reply will be sent to the callback URL." }
+{ "status": "accepted", "correlationId": "webhook-1748..." }
 ```
 
 The callback POST looks like:
@@ -105,47 +105,74 @@ Content-Type: application/json
 
 {
   "reply": "...",
-  "correlationId": "<generated>",
-  "metadata": { ... }  // echoed back from the original request
+  "correlationId": "webhook-1748..."
 }
 ```
 
 Configure default callback headers per channel in the studio editor
-(`callbackHeaders` field, JSON-encoded) if your callback URL requires
-auth.
+(`callbackHeaders` field, JSON-encoded) if your callback URL requires auth.
+
+## Polling the outbox (timeout fallback)
+
+When a sync request times out, the response is:
+
+```http
+HTTP/1.1 202 Accepted
+Content-Type: application/json
+
+{
+  "status": "pending",
+  "correlationId": "webhook-1748...",
+  "outboxUrl": "https://api.shogo.ai/api/projects/.../agent-proxy/agent/channels/webhook/outbox/webhook-1748..."
+}
+```
+
+The agent's late reply lands in the outbox. Poll with:
+
+```http
+GET <outboxUrl>
+X-Webhook-Secret: <your-secret>
+```
+
+```json
+{ "messages": ["The PR is open at https://github.com/..."] }
+```
+
+The first successful GET drains and removes the entry. Outbox entries
+expire after 24 hours; each correlationId holds at most 100 messages.
+
+Some integrations that can't accept an inbound POST can also use the outbox
+for long-polling — send a message, then GET the outbox until messages appear.
 
 ## Status codes
 
 | Code | Meaning |
 | --- | --- |
-| `200` | Sync mode succeeded; body contains `reply`. |
-| `202` | Async mode accepted; reply will arrive at `callbackUrl`. |
+| `200` | Sync mode succeeded; body contains `reply` and `correlationId`. |
+| `202` | Accepted (async mode or sync timeout); body contains `correlationId` and optionally `outboxUrl`. |
 | `400` | Missing or non-string `message`. |
-| `401` | Cloud auth or channel secret rejected. |
-| `403` | The `shogo_sk_*` key doesn't have access to this project. |
+| `401` | Bad or missing `X-Webhook-Secret`. |
 | `503` (with `error.code: "instance_offline"`) | Project is pinned to a paired machine that's currently offline. See [external triggers quickstart](./quickstart). |
 | `503` (with `error.code: "agent_start_failed"`) | Cloud-pod runtime failed to cold-start. Retryable. |
 
-## Pulling pending replies (poll mode)
-
-Some integrations (e.g. legacy Zapier "trigger" steps) can't accept an
-inbound webhook. Use the outbox endpoint to long-poll instead:
-
-```http
-GET /agent/channels/webhook/outbox/<channelId>
-```
-
-Returns up to N pending outbound messages addressed to `channelId`.
-
 ## Health and activity
 
-The channel exposes two extra endpoints under the same agent-proxy path:
+The channel exposes two extra endpoints under the same agent-proxy path —
+**these require a Shogo session** (they leak message previews or run turns):
 
 - `GET .../agent/channels/webhook/health` — `{ connected, hasSecret, messageCount }`.
 - `GET .../agent/channels/webhook/activity` — last 50 inbound + outbound events,
   used by the studio Channels editor to show "last triggered" timestamps.
 
-Both are also auth-gated.
+## Example curl
+
+```bash
+curl -X POST \
+  "https://api.shogo.ai/api/projects/<projectId>/agent-proxy/agent/channels/webhook/incoming" \
+  -H "X-Webhook-Secret: $WEBHOOK_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Fix bug PROJ-123"}'
+```
 
 ## See also
 

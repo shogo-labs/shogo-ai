@@ -25,6 +25,7 @@ import { dirname, resolve } from 'node:path'
 import { isSafeRelativePath, parseSystemManifest } from './system-manifest'
 import { BOARD_TEMPLATES, boardTemplateArgs, findWorkTemplate, listWorkTemplates, mergeWorkTemplate } from './work-templates'
 import { crossWorkspaceTargetId } from './cross-workspace-scope'
+import { forgetWorkItemClaim, noteWorkItemClaim } from './work-item-claim'
 
 const MANIFEST_PATH = 'shogo-system.yaml'
 
@@ -114,8 +115,16 @@ function defineTool(
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return textResult({ error: 'This runtime has no workspace context, so boards are unavailable.', code: 'no_workspace' })
-      const result = await run(workspaceId, (params ?? {}) as Params)
-      if (result.ok) return textResult({ ok: true, ...(result.data ?? {}) })
+      const p = (params ?? {}) as Params
+      const result = await run(workspaceId, p)
+      if (result.ok) {
+        // Which card this session is working on (SHO-509): a service declared
+        // after a board call is owned by that card, so it can be released when
+        // the card finishes instead of being restarted on every boot.
+        const touched = result.data?.item?.key ?? result.data?.key ?? p.item
+        noteWorkItemClaim(ctx.sessionId, typeof touched === 'string' ? touched : undefined)
+        return textResult({ ok: true, ...(result.data ?? {}) })
+      }
       return textResult({ error: result.error ?? `${spec.label} failed`, code: result.code, status: result.status })
     },
   }
@@ -392,6 +401,22 @@ function itemMove(ctx: ToolContext) {
   }, async (ws, p) => {
     const { item, ...rest } = p
     const r = await agentBoardsRequest(ws, 'POST', `/agent-work-items/${enc(item)}/move`, { body: { ...rest, ...identity(ctx) } })
+    // A card that reaches Done/Dismissed owns no more services (SHO-509): its
+    // dev server would otherwise be restarted on every boot long after the work
+    // finished. Release them here, where the move actually lands.
+    if (r.ok) {
+      const category = r.data?.item?.column?.category ?? r.data?.item?.category
+      const key = r.data?.item?.key
+      if (typeof key === 'string' && TERMINAL_CATEGORIES.has(category ?? '')) {
+        // The card is finished, so this session is no longer working on it: a
+        // service declared after this point must not inherit the finished card.
+        if (ctx.sessionId) forgetWorkItemClaim(ctx.sessionId)
+        const released = await ctx.onCardFinished?.(key).catch(() => [] as string[])
+        if (released?.length) {
+          r.data = { ...r.data, released_services: released }
+        }
+      }
+    }
     return withCardTask(ctx, r.ok ? { ...r, data: { item: compactItem(r.data?.item), warnings: r.data?.warnings ?? [] } } : r, { handoff: true })
   })
 }

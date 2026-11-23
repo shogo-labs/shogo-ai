@@ -84,7 +84,7 @@ export function WorkspaceChatsPanel({ onNavPress }: { onNavPress?: () => void })
           busy: chats.creating,
         }}
         onSeeAll={() => {
-          router.push('/(app)/side-chats' as any)
+          router.push('/(app)/chats' as any)
           onNavPress?.()
         }}
         onSelect={openChat}

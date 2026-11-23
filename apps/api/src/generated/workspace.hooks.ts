@@ -8,7 +8,7 @@
  */
 
 import { customAlphabet } from 'nanoid'
-import { checkWorkspaceCreateAllowance, normaliseWorkspaceKind } from '../services/workspace-create-limit.service'
+import { checkWorkspaceCreateAllowance, checkIncludedWorkspaceAllowance, normaliseWorkspaceKind } from '../services/workspace-create-limit.service'
 import { getEffectivePlanId } from '../services/billing.service'
 import { homeRegionForNewWorkspace } from '../lib/region'
 import { clearConsentCache } from '../lib/proxy-capture'
@@ -17,7 +17,10 @@ import { hookAccess, hookCan, hookPrincipal } from '../lib/authz/hooks'
 
 const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 6)
 
-const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
+/** Read per-call so tests can toggle `SHOGO_LOCAL_MODE` without re-importing (matches receive.ts). */
+function isLocalMode(): boolean {
+  return process.env.SHOGO_LOCAL_MODE === 'true'
+}
 
 /**
  * Fields only a dedicated route may write. `runtimeDiskGiB` is plan-limited
@@ -73,18 +76,11 @@ async function validateChildWorkspaceCreation(
     }
   }
 
-  // Local mode unlocks all plan-gated features for development.
-  if (!isLocalMode) {
+  // Local mode unlocks all plan-gated features for development (SHO-43).
+  if (!isLocalMode()) {
     const plan = await getEffectivePlanId(parentWorkspaceId)
-    if (plan !== 'business' && plan !== 'enterprise') {
-      return {
-        ok: false,
-        error: {
-          code: "plan_required",
-          message: "Additional workspaces are included free on Business and Enterprise plans only",
-        },
-      }
-    }
+    const allowance = await checkIncludedWorkspaceAllowance(parentWorkspaceId, plan)
+    if (!allowance.ok) return allowance
   }
 
   return { ok: true }
@@ -405,6 +401,23 @@ export const workspaceHooks: WorkspaceHooks = {
             : "Access denied to this workspace",
         },
       }
+    }
+
+    // Project buckets (SHO-491): every object of every project in this
+    // workspace, plus the index rows. Runs here because the project rows the
+    // purge walks are still present — a cascade would take them first. A
+    // failure is logged, not fatal: the workspace delete must still happen, and
+    // an orphaned prefix is recoverable (the operator runbook sweeps it).
+    try {
+      const { purgeWorkspaceBuckets } = await import('../services/project-bucket.service')
+      const purged = await purgeWorkspaceBuckets(id)
+      if (purged.deleted > 0) {
+        console.log(
+          `[workspace.beforeDelete] purged ${purged.deleted} bucket object(s) across ${purged.projects} project(s)`,
+        )
+      }
+    } catch (err: any) {
+      console.warn(`[workspace.beforeDelete] bucket purge for ${id} failed:`, err?.message ?? err)
     }
 
     return { ok: true }

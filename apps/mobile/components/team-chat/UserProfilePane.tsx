@@ -14,38 +14,48 @@ import { MessageSquare, UserRound, X } from 'lucide-react-native'
 import { UserProfileBody } from './UserProfileBody'
 import { userFromKey } from '../../lib/member-messages'
 import type { ConversationDetail } from '../../lib/team-chat-api'
+import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../layout/PhoneScreenHeader'
 
 export function UserProfilePane({
   workspaceId,
   userId,
   conversation,
-  onOpenMemberMessages,
+  onFilterByMember,
   onClose,
+  floating,
 }: {
   workspaceId: string
   userId: string
   /** The channel the profile was opened from, when there is one. */
   conversation?: ConversationDetail | null
-  onOpenMemberMessages?: (from: string) => void
+  onFilterByMember?: (from: string) => void
   onClose: () => void
+  /** Phone: the profile is full-screen under the DM's floating glass header. */
+  floating?: boolean
 }) {
   // Activity channels are left out on purpose: they post-filter `canSeeMessage`
   // after the page is taken, so a filtered page can come back short. The header
   // action is hidden there for the same reason.
   const channel =
     conversation && (conversation.kind === 'public' || conversation.kind === 'private') ? conversation : null
+  const header = usePhoneScreenHeaderInset()
   return (
     <View className="flex-1">
-      <View className="flex-row items-center gap-2 border-b border-border px-4 py-2.5">
-        <UserRound size={16} className="text-muted-foreground" />
-        <Text className="min-w-0 flex-1 text-base font-semibold text-foreground">Profile</Text>
-        <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close profile" testID="user-profile-close" className="rounded-md p-1 active:bg-muted">
-          <X size={16} className="text-muted-foreground" />
-        </Pressable>
-      </View>
-      {channel && onOpenMemberMessages ? (
+      {floating ? (
+        <PhoneScreenHeader title="Profile" closeLabel="Close profile" closeTestID="user-profile-close" onClose={onClose} onLayout={header.onLayout} />
+      ) : (
+        <View className="flex-row items-center gap-2 border-b border-border px-4 py-2.5">
+          <UserRound size={16} className="text-muted-foreground" />
+          <Text className="min-w-0 flex-1 text-base font-semibold text-foreground">Profile</Text>
+          <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close profile" testID="user-profile-close" className="rounded-md p-1 active:bg-muted">
+            <X size={16} className="text-muted-foreground" />
+          </Pressable>
+        </View>
+      )}
+      <View className="min-h-0 flex-1" style={floating ? { paddingTop: header.height } : undefined}>
+      {channel && onFilterByMember ? (
         <Pressable
-          onPress={() => onOpenMemberMessages(userFromKey(userId))}
+          onPress={() => onFilterByMember(userFromKey(userId))}
           accessibilityRole="button"
           accessibilityLabel={`Messages in #${channel.name ?? 'channel'}`}
           testID="user-profile-member-messages"
@@ -58,6 +68,7 @@ export function UserProfilePane({
         </Pressable>
       ) : null}
       <UserProfileBody key={userId} workspaceId={workspaceId} userId={userId} onClose={onClose} />
+      </View>
     </View>
   )
 }

@@ -65,16 +65,83 @@ export function deepLinkedChatSessionId(
   return incoming
 }
 
+/**
+ * The id the viewer asked for, as the selection guards must read it.
+ *
+ * - an id a cold load restored (SHO-174) is the viewer's request even though
+ *   this mirror is the one writing it into the URL, because the router dropped
+ *   it on arrival;
+ * - otherwise an id in the URL that this mirror wrote itself is just our own
+ *   state echoed back and must not read as a deep link.
+ */
+export function resolveDeepLinkedChatSessionId(input: {
+  currentParam: ChatSessionParamValue
+  selfWrittenId: string | null
+  preservedChatSessionId?: string
+}): string | undefined {
+  const restored = firstChatSessionParam(input.preservedChatSessionId)
+  if (restored) return restored
+  return deepLinkedChatSessionId(input.currentParam, input.selfWrittenId)
+}
+
+/**
+ * The address bar with `preserved` keys added, or `null` when it already has
+ * them all.
+ *
+ * Needed because the router only re-serialises the URL when its *state*
+ * changes: on a cold load it parses `?chatSessionId=` into the state and then
+ * writes a barer URL, and a `setParams` that repeats what the state already
+ * holds is not a change, so nothing repairs the address bar. Rewriting the
+ * query directly fixes the one thing that is wrong (the URL) without inventing
+ * a state change that would remount the screen.
+ */
+/**
+ * When to re-check the address bar after a write. The linking layer parses the
+ * query into its state immediately but serialises the URL from that state in
+ * more than one pass, and the last pass — the one that drops the query — lands
+ * roughly 0.6s after the document starts. These delays straddle that window.
+ */
+const URL_REPAIR_DELAYS_MS = [900]
+
+export function withPreservedQuery(
+  search: string,
+  preserved: Record<string, string>
+): string | null {
+  const current = new URLSearchParams(search)
+  let changed = false
+  for (const [key, value] of Object.entries(preserved)) {
+    if (current.get(key) === value) continue
+    current.set(key, value)
+    changed = true
+  }
+  if (!changed) return null
+  const query = current.toString()
+  return query ? `?${query}` : ''
+}
+
 export interface ChatUrlMirrorInput {
   /** The chat the project page currently has open (`null` = none). */
   chatSessionId: string | null
-  /** `params.chatSessionId` as the router handed it to us. */
+  /** `params.chatSessionId` as the screen reads it. */
   currentParam: ChatSessionParamValue
   /** Any arrival-only params still in the URL. */
   oneShotPresent: boolean
   chatScope: ChatUrlScope
   /** The session the URL named on first mount (the workspace hand-off tab). */
   initialPropsSessionId: string | null
+  /**
+   * Arrival keys a cold load restored, which every write must keep (SHO-174).
+   * A key drops out once the screen changes its value itself.
+   */
+  preserved?: Record<string, string>
+  /**
+   * The address bar's own query, as `URLSearchParams` would read it. The router
+   * *state* is not the same thing: a cold load parses the query into the state
+   * and then serialises the URL without it, so `currentParam` can be exactly
+   * right while the address bar is bare. When a preserved key is missing or
+   * different here, the URL is wrong now and only a write can fix it.
+   */
+  urlQuery?: Record<string, string>
 }
 
 export interface ChatUrlWrite {
@@ -95,20 +162,32 @@ export function planChatUrlWrite(
   const { chatSessionId, currentParam, oneShotPresent } = input
   const incoming = firstChatSessionParam(currentParam)
 
+  // Keys a cold load restored must survive this write: the address bar is built
+  // from the router state, so a write that omits them drops them again. The
+  // chat keys are this function's own and are never taken from `preserved`.
+  const preserved: ChatUrlParams = {}
+  for (const [key, value] of Object.entries(input.preserved ?? {})) {
+    if (key === 'chatSessionId' || key === 'chatScope') continue
+    preserved[key] = value
+  }
+  // Is the address bar actually missing what the screen wants kept?
+  const preservedStale = input.urlQuery
+    ? Object.entries(preserved).some(([key, value]) => input.urlQuery![key] !== value)
+    : false
   if (!chatSessionId) {
     // No chat open (last tab closed): the URL must not keep naming one.
-    if (!incoming) return null
+    if (!incoming && !preservedStale) return null
     return {
       selfWrittenId: null,
-      params: { chatSessionId: undefined, chatScope: undefined },
+      params: { ...preserved, chatSessionId: undefined, chatScope: undefined },
     }
   }
 
-  // The URL already names the open chat and there is nothing one-shot left to
-  // drop. A param that arrived as a real deep link is deliberately not
-  // re-written: leaving it alone keeps it a deep link for the selection guards
-  // (they must not treat our own echo as the viewer's choice).
-  if (incoming === chatSessionId && !oneShotPresent) return null
+  // The URL already names the open chat, carries what the arrival asked for and
+  // has no one-shot params left. A param that arrived as a real deep link is
+  // deliberately not re-written: leaving it alone keeps it a deep link for the
+  // selection guards (they must not treat our own echo as the viewer's choice).
+  if (incoming === chatSessionId && !oneShotPresent && !preservedStale) return null
 
   // Keep workspace scope only for the tab the URL handed off; chats opened
   // afterwards are ordinary project chats (see `resolveChatScope`).
@@ -118,6 +197,7 @@ export function planChatUrlWrite(
     input.chatSessionId === input.initialPropsSessionId
 
   const params: ChatUrlParams = {
+    ...preserved,
     chatSessionId,
     chatScope: keepScope ? 'workspace' : undefined,
   }
@@ -146,12 +226,22 @@ export function isChatSessionOfProject(
   return input.allowCrossProject === true
 }
 
-export interface UseProjectChatUrlMirrorOptions {
-  chatSessionId: string | null
+/**
+ * Is there an address bar to mirror into? React Native (Hermes, native) exposes
+ * a global `window` with no `location`, so `typeof window === 'undefined'` is
+ * false on the phone while `window.location.search` throws — every read and
+ * write in this module goes through this check instead.
+ */
+export function canUseAddressBar(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.location?.search === 'string' &&
+    typeof window.history?.replaceState === 'function'
+  )
+}
+
+export interface UseProjectChatUrlMirrorOptions extends Omit<ChatUrlMirrorInput, 'currentParam'> {
   currentParam: ChatSessionParamValue
-  chatScope: ChatUrlScope
-  initialPropsSessionId: string | null
-  oneShotPresent: boolean
   /** Off for the IDE embed (it owns the URL) and for native (no address bar). */
   enabled: boolean
   /** `router.setParams` — pass the router's own function. */
@@ -170,6 +260,44 @@ export function useProjectChatUrlMirror(
   // Kept in a ref so an inline arrow `setParams` doesn't re-run the effect.
   const setParamsRef = useRef(options.setParams)
   setParamsRef.current = options.setParams
+  // Callers rebuild these objects every render; key the effect on their value
+  // so a mirror write is not attempted on every render.
+  const queryRef = useRef(options.preserved)
+  queryRef.current = options.preserved
+  const preservedKey = JSON.stringify(options.preserved ?? {})
+  // The address bar, read when a write is attempted rather than during render.
+  const readUrlQuery = (): Record<string, string> | undefined => {
+    if (!options.enabled || !canUseAddressBar()) return undefined
+    const query: Record<string, string> = {}
+    new URLSearchParams(window.location.search).forEach((value, key) => {
+      query[key] = value
+    })
+    return query
+  }
+  // A stale URL cannot be stale twice for the same intent: without this, a
+  // write that the router cannot serialise would be re-attempted every render.
+  const attemptedRef = useRef('')
+  // Repairs run on a timer, after the render that scheduled them: read the chat
+  // the screen is on *now* from this ref, never the one that render captured.
+  const liveChatRef = useRef(options.chatSessionId)
+  liveChatRef.current = options.chatSessionId
+  const repairUrl = () => {
+    if (!options.enabled || !canUseAddressBar()) return
+    const preserved = { ...queryRef.current }
+    if (!preserved || Object.keys(preserved).length === 0) return
+    // Never re-assert a chat the screen has already left — a dead or foreign id
+    // from the link is corrected by the screen, and repairing it here would put
+    // the rejected id back into the address bar.
+    const preservedChat = preserved.chatSessionId
+    if (preservedChat && preservedChat !== liveChatRef.current) delete preserved.chatSessionId
+    const next = withPreservedQuery(window.location.search, preserved)
+    if (next === null) return
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${window.location.pathname}${next}${window.location.hash}`,
+    )
+  }
   const {
     chatSessionId,
     currentParam,
@@ -180,19 +308,42 @@ export function useProjectChatUrlMirror(
   } = options
 
   useEffect(() => {
-    if (!enabled || !setParamsRef.current) return
+    // The guard the crash came from: a caller that forgot the platform check
+    // still must not run this effect where there is no address bar.
+    if (!enabled || !setParamsRef.current || !canUseAddressBar()) return
+    const intent = JSON.stringify([chatSessionId, oneShotPresent, preservedKey])
+    if (attemptedRef.current === intent) return
     const write = planChatUrlWrite({
       chatSessionId,
       currentParam,
       oneShotPresent,
       chatScope,
       initialPropsSessionId,
+      preserved: queryRef.current,
+      urlQuery: readUrlQuery(),
     })
-    if (!write) return
-    // Recorded before the write lands so the next render already knows the
-    // param is ours, not a deep link.
-    selfWrittenRef.current = write.selfWrittenId
-    setParamsRef.current(write.params)
+    if (write) {
+      attemptedRef.current = intent
+      // Recorded before the write lands so the next render already knows the
+      // param is ours, not a deep link.
+      selfWrittenRef.current = write.selfWrittenId
+      setParamsRef.current(write.params)
+    }
+    // The state already carried what this screen wants (or carried it only
+    // after the write), and the router never re-serialises on an identity
+    // change, so the address bar can still be the barer URL the linking layer
+    // settled on. Repair that one thing directly; a no-op when it already
+    // matches.
+    // The linking layer has not finished with the address bar when this runs:
+    // it settles the navigator on its initial route ~0.6s after load and
+    // replaces the URL with a barer one on the way. Repair now and again
+    // across that window; `withPreservedQuery` is a no-op once the URL is
+    // right, so the extra passes cost nothing.
+    repairUrl()
+    const timers = URL_REPAIR_DELAYS_MS.map((delay) => setTimeout(repairUrl, delay))
+    return () => {
+      for (const timer of timers) clearTimeout(timer)
+    }
   }, [
     enabled,
     chatSessionId,
@@ -200,12 +351,14 @@ export function useProjectChatUrlMirror(
     chatScope,
     initialPropsSessionId,
     oneShotPresent,
+    preservedKey,
   ])
 
   return {
-    deepLinkedChatSessionId: deepLinkedChatSessionId(
+    deepLinkedChatSessionId: resolveDeepLinkedChatSessionId({
       currentParam,
-      selfWrittenRef.current
-    ),
+      selfWrittenId: selfWrittenRef.current,
+      preservedChatSessionId: queryRef.current?.chatSessionId,
+    }),
   }
 }

@@ -686,11 +686,18 @@ describe('auth middleware', () => {
     expect(res.status).toBe(200)
   })
 
-  test('public whatsapp prefix bypasses auth', async () => {
+  test('public whatsapp webhook path bypasses auth', async () => {
+    const { app } = await buildApp()
+    app.get('/agent/channels/whatsapp/webhook', (c) => c.json({ ok: true }))
+    const res = await app.request('/agent/channels/whatsapp/webhook')
+    expect(res.status).toBe(200)
+  })
+
+  test('non-webhook whatsapp path does NOT bypass auth', async () => {
     const { app } = await buildApp()
     app.get('/agent/channels/whatsapp/anything', (c) => c.json({ ok: true }))
     const res = await app.request('/agent/channels/whatsapp/anything')
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(401)
   })
 })
 

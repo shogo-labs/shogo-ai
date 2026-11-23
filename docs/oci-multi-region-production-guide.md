@@ -340,7 +340,7 @@ spec:
     - name: platform-pg-eu
       barmanObjectStore:         # EU backup location (for reading EU WAL after switchover)
         endpointURL: https://ns.compat.objectstorage.eu-frankfurt-1.oraclecloud.com
-        destinationPath: s3://shogo-pg-backups-production-eu/platform/
+        destinationPath: s3://shogo-pg-backups-production/platform/
 
   backup:                        # local backup to US object store
     barmanObjectStore:
@@ -370,7 +370,7 @@ spec:
 
   backup:                        # local backup to EU object store (symmetric)
     barmanObjectStore:
-      destinationPath: s3://shogo-pg-backups-production-eu/platform/
+      destinationPath: s3://shogo-pg-backups-production/platform/
 ```
 
 ### Switchover procedure (zero data loss)

@@ -45,7 +45,12 @@ interface InstallResult {
 
 interface FakeDesktop {
   bridge: Record<string, unknown>
-  status: (payload: { status: string; releaseName?: string | null; availableVersion?: string | null }) => void
+  status: (payload: {
+    status: string
+    releaseName?: string | null
+    availableVersion?: string | null
+    error?: string | null
+  }) => void
   drain: (payload: { active: boolean; activity: Counts | null }) => void
   installCalls: () => Array<{ mode?: 'now' | 'when-idle' } | undefined>
   cancelCalls: () => number
@@ -116,6 +121,7 @@ function installBridge(options: {
           releaseName: payload.releaseName ?? null,
           availableVersion: payload.availableVersion ?? null,
           channel: 'stable',
+          error: payload.error ?? null,
         }),
       ),
     drain: (payload) => drainListeners.forEach((cb) => cb(payload)),
@@ -276,5 +282,39 @@ describe('UpdateBanner restart gate', () => {
 
     await waitFor(() => expect(fake.dismissNoticeCalls()).toBe(1))
     expect(banner('shogo-interrupted-notice')).toBeNull()
+  })
+
+  // SHO-510 AC3, banner half: a download that failed must say why. The page
+  // already showed the reason, so the banner silently looking like a fresh
+  // offer ("2.7.0 is available." + Download) was the bug QA caught.
+  test('a download that failed says why and still offers it again', async () => {
+    const fake = installBridge({ status: { status: 'available', availableVersion: '2.7.0' } })
+    render(createElement(UpdateBanner))
+
+    await waitFor(() => expect(banner('shogo-update-banner')).not.toBeNull())
+    expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument()
+
+    act(() =>
+      fake.status({
+        status: 'available',
+        availableVersion: '2.7.0',
+        error: 'Could not reach the update server — check your connection and try again.',
+      }),
+    )
+
+    await waitFor(() =>
+      expect(
+        screen.getByText('Could not reach the update server — check your connection and try again.'),
+      ).toBeInTheDocument(),
+    )
+    // The retry is the point: the offer stays, with the reason beside it.
+    expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument()
+    expect(screen.getByText('2.7.0 is available.')).toBeInTheDocument()
+
+    // A fresh status without a reason clears it, so the banner cannot sit on a
+    // stale message the next time the offer comes back.
+    act(() => fake.status({ status: 'available', availableVersion: '2.7.0' }))
+    await waitFor(() => expect(banner('shogo-update-banner-error')).toBeNull())
+    expect(screen.getByText('2.7.0 is available.')).toBeInTheDocument()
   })
 })

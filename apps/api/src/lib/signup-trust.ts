@@ -36,13 +36,17 @@ function isLocalMode(): boolean {
 }
 
 /** Why an account is held. Doubles as the API error code. */
-export type SignupTrustHold = 'email_verification_required' | 'account_review_required'
+export type SignupTrustHold =
+  | 'email_verification_required'
+  | 'account_review_required'
+  | 'account_banned'
 
 export const SIGNUP_TRUST_MESSAGES: Record<SignupTrustHold, string> = {
   email_verification_required:
     'Verify your email to start using AI. Check your inbox for the verification link, or resend it from Settings.',
   account_review_required:
     'Your account is under review. Contact support if you think this is a mistake.',
+  account_banned: 'Account suspended. Contact support@shogo.ai.',
 }
 
 /**
@@ -111,9 +115,9 @@ export async function getSignupTrustHold(
         where: { userId },
         select: { band: true, reviewDecision: true, signals: true },
       }),
-      client.user.findUnique({ where: { id: userId }, select: { emailVerified: true } }),
+      client.user.findUnique({ where: { id: userId }, select: { emailVerified: true, bannedAt: true } }),
     ])
-    hold = resolveHold(assessment, user?.emailVerified === true)
+    hold = resolveHold(assessment, user?.emailVerified === true, !!user?.bannedAt)
   } catch (err) {
     // Fail open. This read sits on the debit hot path, so a transient database
     // error must not stop every account from spending — the same reason a
@@ -134,7 +138,10 @@ export async function getSignupTrustHold(
 export function resolveHold(
   assessment: { band: string; reviewDecision: string | null; signals: unknown } | null,
   emailVerified: boolean,
+  banned: boolean = false,
 ): SignupTrustHold | null {
+  // A ban wins over every other branch, including approved/social.
+  if (banned) return 'account_banned'
   if (!assessment) return null
   if (assessment.reviewDecision === 'approved') return null
   const signals = (assessment.signals ?? {}) as { provider?: string }

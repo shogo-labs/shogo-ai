@@ -31,8 +31,13 @@
 
 import { spawn } from './child-process'
 import { createHash } from 'crypto'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { createWriteStream, existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
+import type { Dirent } from 'fs'
 import { join } from 'path'
+import { pipeline } from 'stream/promises'
+import { GetObjectCommand, HeadObjectCommand, S3Client } from '@aws-sdk/client-s3'
+import { isObjectNotFound } from './s3-object'
+import { parseByteRange } from './byte-range'
 
 import {
   classifyLargeFiles,
@@ -204,7 +209,17 @@ function runGitBuffer(
       clearTimeout(timer)
       resolve({ exitCode: code ?? -1, stdout: Buffer.concat(out), stderr: err.join('') })
     })
-    if (opts.input && child.stdin) child.stdin.end(opts.input)
+    if (opts.input && child.stdin) {
+      // git can exit before it reads stdin — `fatal: not a git repository`, a
+      // failed `cat-file`, a killed child. The pending write then fails with
+      // EPIPE, and an unhandled 'error' on a stream is an *uncaught exception*:
+      // on Linux it arrives as a next-tick throw that takes down whatever is
+      // running (in CI: the publish-artifact test, right after its request). The
+      // exit code already says what happened, so the failed write is expected
+      // and carries no information the caller needs.
+      child.stdin.on('error', () => {})
+      child.stdin.end(opts.input)
+    }
   })
 }
 
@@ -562,8 +577,13 @@ export function hasLocalLfsObject(workspaceDir: string, oid: string): boolean {
   return !!p && existsSync(p)
 }
 
-/** Keep only the paths `.gitattributes` marks `filter=lfs`. */
-async function lfsTrackedPaths(workspaceDir: string, paths: string[]): Promise<Set<string>> {
+/**
+ * Keep only the paths `.gitattributes` marks `filter=lfs`.
+ *
+ * Exported for `S3Sync`, which writes those files into `project-src.tar.gz` as
+ * pointer text instead of shipping the bytes a second time (SHO-478).
+ */
+export async function lfsTrackedPaths(workspaceDir: string, paths: string[]): Promise<Set<string>> {
   const tracked = new Set<string>()
   if (!paths.length) return tracked
   const input = Buffer.from(paths.join('\0') + '\0')
@@ -910,5 +930,380 @@ export async function lfsPull(cfg: LfsRemoteConfig): Promise<boolean> {
   } catch (err: any) {
     logger.warn(`[lfs] pull threw: ${err?.message ?? err}`)
     return false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Materializing pointer files from the object store (SHO-478)
+// ---------------------------------------------------------------------------
+//
+// `project-src.tar.gz` no longer carries LFS-tracked bytes — they are already
+// stored once under `<projectId>/lfs/objects/…`, and shipping them again made
+// a 1.76 GB archive of ~15 MB of real source. The archive therefore restores
+// those paths as their pointer text, and the bytes are put back on hydrate.
+//
+// This runs in a published pod, which has no `.git` and never runs the agent,
+// so it cannot use `git lfs pull`: it walks the tree, reads only files small
+// enough to be a pointer, and streams each object straight from the store.
+
+/**
+ * The object-storage surface LFS materialization needs. Structural rather than
+ * an `S3Client` so `S3Sync` can pass the client it already has, and a test can
+ * pass a plain fake.
+ */
+export interface LfsObjectStore {
+  bucket: string
+  client: { send(command: any): Promise<any> }
+  /**
+   * The object as a **length-known** body the host can serve itself — Bun's
+   * native S3 file, whose bytes stay in the store and whose size Bun knows.
+   *
+   * This is not an optimisation. `Bun.serve` replies to *any* `ReadableStream`
+   * body with `Transfer-Encoding: chunked` and drops an explicitly-set
+   * `Content-Length`, so piping a `GetObject` body loses the length the HTTP
+   * contract (and `<video>` progress/seek) needs. A Blob it can measure is the
+   * only body shape that keeps `Content-Length` on the wire; Bun also applies
+   * `Range` to it itself and forwards the object's own `Content-Type` and
+   * `ETag`. Absent on hosts without `Bun.S3Client` (the node test runner),
+   * where the caller falls back to a piped body.
+   */
+  bodyFile?(key: string): Blob
+}
+
+/** One pointer blob found in the working tree. */
+export interface LfsPointerFile {
+  /** Absolute path of the file holding the pointer text. */
+  path: string
+  oid: string
+  size: number
+}
+
+export interface LfsMaterializeResult {
+  /** Pointer blobs found in the tree. */
+  pointers: number
+  /** Objects streamed into place (the file now holds its real bytes). */
+  materialized: number
+  /** Objects the store does not have, or could not be read (boot continues). */
+  missing: number
+  /** Objects whose real length disagrees with the pointer's `size`. */
+  mismatched: number
+}
+
+/** Directories the pointer walk never descends into. */
+const LFS_WALK_SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  '.shogo',
+  '.expo',
+  '.metro-cache',
+  '.expo-shared',
+  '.tmp',
+  'chat-files',
+])
+
+/** The pointer text git-lfs itself writes for an object. */
+export function lfsPointerText(oid: string, size: number): string {
+  return `${LFS_POINTER_HEADER}\noid sha256:${oid}\nsize ${size}\n`
+}
+
+/**
+ * Whether this repo has any `filter=lfs` attribute. The pointer walk is not
+ * free on a large tree, and a project that never used LFS can skip it.
+ */
+export function repoUsesLfs(workspaceDir: string): boolean {
+  try {
+    return readFileSync(join(workspaceDir, '.gitattributes'), 'utf-8').includes('filter=lfs')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Every file under `workspaceDir` whose content is an LFS pointer. Only files
+ * at or below {@link LFS_POINTER_MAX_BYTES} are read, so a media-heavy tree
+ * costs a `stat` per file and nothing more.
+ */
+export function findLfsPointerFiles(workspaceDir: string): LfsPointerFile[] {
+  const found: LfsPointerFile[] = []
+  const walk = (dir: string): void => {
+    let entries: Dirent[]
+    try {
+      entries = readdirSync(dir, { withFileTypes: true }) as Dirent[]
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (!LFS_WALK_SKIP_DIRS.has(entry.name)) walk(full)
+        continue
+      }
+      if (!entry.isFile()) continue
+      try {
+        if (statSync(full).size > LFS_POINTER_MAX_BYTES) continue
+      } catch {
+        continue
+      }
+      let text: string
+      try {
+        text = readFileSync(full, 'utf-8')
+      } catch {
+        continue
+      }
+      const ptr = parseLfsPointer(text)
+      if (ptr) found.push({ path: full, oid: ptr.oid, size: ptr.size })
+    }
+  }
+  walk(workspaceDir)
+  return found
+}
+
+/**
+ * Put the real bytes back for every LFS pointer in `workspaceDir`, streaming
+ * each object from `<projectId>/lfs/objects/…` to its path.
+ *
+ * Best-effort by design: a missing or unreadable object is logged and the boot
+ * continues, exactly like a failed `git lfs pull` would. Uses an atomic
+ * `.lfs-tmp` rename so a failed transfer never leaves a truncated media file
+ * where a pointer used to be.
+ */
+export async function materializeLfsPointersFromStore(
+  workspaceDir: string,
+  projectId: string,
+  opts: { store?: LfsObjectStore | null; logger?: Logger; concurrency?: number } = {},
+): Promise<LfsMaterializeResult> {
+  const logger = opts.logger ?? console
+  const result: LfsMaterializeResult = { pointers: 0, materialized: 0, missing: 0, mismatched: 0 }
+  const store = opts.store ?? null
+  if (!store) {
+    logger.warn('[lfs] materialize: no object store configured — LFS files stay pointers')
+    return result
+  }
+  if (!repoUsesLfs(workspaceDir)) return result
+
+  const queue = findLfsPointerFiles(workspaceDir)
+  result.pointers = queue.length
+  if (!queue.length) return result
+
+  const started = Date.now()
+  const restore = async (ptr: LfsPointerFile): Promise<void> => {
+    const tmp = `${ptr.path}.lfs-tmp`
+    try {
+      const res = await store.client.send(
+        new GetObjectCommand({ Bucket: store.bucket, Key: lfsObjectKey(projectId, ptr.oid) }),
+      )
+      if (!res?.Body) {
+        result.missing++
+        logger.warn(`[lfs] materialize: empty body for ${ptr.oid} (${ptr.path})`)
+        return
+      }
+      await pipeline(res.Body as any, createWriteStream(tmp))
+      const got = statSync(tmp).size
+      if (got !== ptr.size) {
+        result.mismatched++
+        logger.warn(`[lfs] materialize: ${ptr.path} expected ${ptr.size} bytes, store returned ${got}`)
+        rmSync(tmp, { force: true })
+        return
+      }
+      renameSync(tmp, ptr.path)
+      result.materialized++
+    } catch (err: any) {
+      result.missing++
+      rmSync(tmp, { force: true })
+      logger.warn(`[lfs] materialize: ${ptr.path} not restored (${err?.name ?? 'error'}): ${String(err?.message ?? err).slice(0, 200)}`)
+    }
+  }
+
+  const workers = Math.max(1, Math.min(opts.concurrency ?? 4, queue.length))
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      for (let next = queue.shift(); next; next = queue.shift()) await restore(next)
+    }),
+  )
+
+  logger.log(
+    `[lfs] materialize: ${result.materialized}/${result.pointers} object(s) restored in ${Date.now() - started}ms` +
+      (result.missing || result.mismatched ? ` (missing=${result.missing}, mismatched=${result.mismatched})` : ''),
+  )
+  return result
+}
+
+/**
+ * The object store LFS objects live in, from env — the read-side twin of the
+ * store `S3Sync` passes to {@link materializeLfsPointersFromStore}.
+ *
+ * Null when the runtime has no object store configured, so a caller can fall
+ * back to serving what it has instead of throwing.
+ */
+export function lfsObjectStoreFromEnv(env: NodeJS.ProcessEnv = process.env): LfsObjectStore | null {
+  const bucket = (env.S3_LFS_BUCKET || env.S3_WORKSPACES_BUCKET || '').trim()
+  if (!bucket) return null
+  const client = new S3Client({
+    region: env.S3_REGION,
+    ...(env.S3_ENDPOINT ? { endpoint: env.S3_ENDPOINT, forcePathStyle: true } : {}),
+    credentials: env.AWS_ACCESS_KEY_ID
+      ? { accessKeyId: env.AWS_ACCESS_KEY_ID, secretAccessKey: env.AWS_SECRET_ACCESS_KEY || '' }
+      : undefined,
+  })
+  const bodyFile = bunS3BodyFile(bucket, env)
+  return { bucket, client, ...(bodyFile ? { bodyFile } : {}) }
+}
+
+/**
+ * Bun's native S3 file for a key, or `null` on a host without `Bun.S3Client`.
+ *
+ * A piped `GetObject` body becomes `Transfer-Encoding: chunked` and loses its
+ * `Content-Length` under `Bun.serve`, so this is the read shape that keeps the
+ * header on the wire (SHO-485, QA round 1). Bun also answers `Range` against it
+ * itself and forwards the object's `Content-Type`/`ETag`/`Last-Modified`, which
+ * is why the publish path stamps the object's metadata.
+ */
+function bunS3BodyFile(bucket: string, env: NodeJS.ProcessEnv): ((key: string) => Blob) | null {
+  const S3ClientCtor = (globalThis as any).Bun?.S3Client
+  if (typeof S3ClientCtor !== 'function') return null
+  const client = new S3ClientCtor({
+    bucket,
+    ...(env.S3_REGION ? { region: env.S3_REGION } : {}),
+    ...(env.S3_ENDPOINT ? { endpoint: env.S3_ENDPOINT } : {}),
+    ...(env.AWS_ACCESS_KEY_ID
+      ? { accessKeyId: env.AWS_ACCESS_KEY_ID, secretAccessKey: env.AWS_SECRET_ACCESS_KEY || '' }
+      : {}),
+  })
+  return (key: string) => client.file(key) as Blob
+}
+
+/** Whether an `If-None-Match` header names this ETag (weak comparison, list form, `*`). */
+export function etagMatches(ifNoneMatch: string | null | undefined, etag: string): boolean {
+  const raw = (ifNoneMatch || '').trim()
+  if (!raw) return false
+  const bare = etag.replace(/^W\//, '')
+  return raw
+    .split(',')
+    .map((part) => part.trim().replace(/^W\//, ''))
+    .some((part) => part === '*' || part === bare)
+}
+
+export type LfsObjectReadResult =
+  | {
+      status: 'ok'
+      /** The object's body — `null` for a `HEAD`, which only needs the headers. */
+      body: unknown | null
+      /**
+       * `true` when `body` is a Blob the host serves with its own
+       * `Content-Length` (Bun's S3 file), so the caller must **not** set
+       * `Content-Length`/`Content-Type`/`Range` headers over it — Bun answers
+       * those from the object and ignores overrides on this body type.
+       */
+      lengthKnown: boolean
+      totalSize: number
+      contentLength: number
+      contentRange?: string
+      etag: string
+    }
+  | { status: 'not-modified'; etag: string; totalSize: number }
+  | { status: 'missing'; etag: string }
+  | { status: 'unsatisfiable'; etag: string; totalSize: number }
+
+/**
+ * Open an LFS object, optionally ranged, straight from the store.
+ *
+ * This is what lets a published pod serve media it never wrote to disk
+ * (SHO-485): the pointer file under `dist/` names the object, and the bytes
+ * come from `<projectId>/lfs/objects/…` one request at a time.
+ *
+ * The body is a **length-known Blob** (`Bun.s3` file) wherever the host has
+ * one, because that is the only body `Bun.serve` answers with a real
+ * `Content-Length` — a piped stream becomes chunked and loses the header
+ * (QA round 1). The piped `GetObject` remains as the fallback for a host
+ * without `Bun.S3Client`, and `lengthKnown` tells the caller which it got.
+ *
+ * One `HEAD` (or `GetObject` on the fallback) precedes a ranged read: it
+ * answers existence (404), the store's own `ETag` — which is what a
+ * length-known body serves, so a `304` compares like with like — and the real
+ * size the range math and `416` need.
+ */
+export async function openLfsObjectStream(opts: {
+  projectId: string
+  oid: string
+  /** The pointer's declared size — used before the store answers, and for a `HEAD`-less fallback. */
+  size: number
+  store: LfsObjectStore
+  /** Raw `Range` request header. */
+  range?: string | null
+  /** Raw `If-None-Match` request header. */
+  ifNoneMatch?: string | null
+  /** `HEAD`: confirm the object is there, return no body. */
+  head?: boolean
+}): Promise<LfsObjectReadResult> {
+  const declaredEtag = `"${opts.oid}"`
+  const key = lfsObjectKey(opts.projectId, opts.oid)
+
+  let etag = declaredEtag
+  let totalSize = opts.size
+  let exists = true
+  try {
+    const head = await opts.store.client.send(new HeadObjectCommand({ Bucket: opts.store.bucket, Key: key }))
+    etag = typeof head?.ETag === 'string' && head.ETag ? head.ETag : declaredEtag
+    const stored = Number(head?.ContentLength)
+    if (Number.isFinite(stored)) totalSize = stored
+  } catch (err) {
+    if (isObjectNotFound(err)) {
+      exists = false
+    } else {
+      throw err
+    }
+  }
+  if (!exists) return { status: 'missing', etag }
+
+  if (etagMatches(opts.ifNoneMatch, etag)) return { status: 'not-modified', etag, totalSize }
+
+  // The same `Range` parser every file-serving route uses (byte-range.ts), so a
+  // `<video>` seeks the same way against a stored object as against a disk file.
+  const parsedRange = parseByteRange(opts.range, totalSize)
+  if (parsedRange.kind === 'unsatisfiable') return { status: 'unsatisfiable', etag, totalSize }
+  const range = parsedRange.kind === 'range' ? parsedRange : null
+  const contentRange = range ? `bytes ${range.start}-${range.end}/${totalSize}` : undefined
+  const contentLength = range ? range.end - range.start + 1 : totalSize
+
+  // A `HEAD` needs no body from either path; the caller answers it with the
+  // headers alone. (Bun also handles HEAD on a length-known body itself, but
+  // then it would have to talk to the store to learn the length.)
+  if (opts.head) {
+    return { status: 'ok', body: null, lengthKnown: true, totalSize, contentLength, contentRange, etag }
+  }
+
+  // Length-known body: the whole object, and Bun applies the request's Range
+  // itself (slice-free) so the 206 and its Content-Range come out of the store
+  // the same way they do for a file on disk.
+  const bodyFile = opts.store.bodyFile?.(key)
+  if (bodyFile) {
+    return { status: 'ok', body: bodyFile, lengthKnown: true, totalSize, contentLength, contentRange, etag }
+  }
+
+  try {
+    const res = await opts.store.client.send(
+      new GetObjectCommand({
+        Bucket: opts.store.bucket,
+        Key: key,
+        ...(range ? { Range: `bytes=${range.start}-${range.end}` } : {}),
+      }),
+    )
+    if (!res?.Body) return { status: 'missing', etag }
+    const stored = Number(res.ContentLength ?? contentLength)
+    return {
+      status: 'ok',
+      body: res.Body,
+      lengthKnown: false,
+      // The store's length wins over the pointer's for the body we are handing
+      // back; a mismatch means a corrupt object, and it must not become a
+      // truncated response.
+      totalSize: range ? totalSize : stored,
+      contentLength: stored,
+      contentRange,
+      etag,
+    }
+  } catch (err: any) {
+    if (isObjectNotFound(err)) return { status: 'missing', etag }
+    throw err
   }
 }

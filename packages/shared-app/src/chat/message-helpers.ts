@@ -474,6 +474,31 @@ export function parseUsageLimitError(
 
 const GENERIC_REQUEST_FAILED = 'The request failed. Please tap Retry to try again.'
 
+/**
+ * An HTML error page returned where the chat expected JSON or a stream — the
+ * CDN's own 502/503/504/52x page when the origin is unreachable. The AI SDK
+ * turns the response body into the error message, so the banner showed the
+ * page's raw `<!DOCTYPE html>…` markup (Sentry JAVASCRIPT-REACT-45).
+ */
+export function summarizeHtmlErrorPage(
+  rawMessage: string,
+): { status: number | null; title: string | null } | null {
+  const text = rawMessage.trimStart()
+  if (!/^(?:<!doctype html|<html[\s>]|<head[\s>])/i.test(text)) return null
+  const titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(text)
+  const title = titleMatch
+    ? titleMatch[1].replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim() || null
+    : null
+  const statusMatch = /\b([45]\d\d)\b/.exec(title ?? '') ?? /\bError code ([45]\d\d)\b/i.exec(text)
+  return { status: statusMatch ? Number(statusMatch[1]) : null, title }
+}
+
+function htmlErrorPageMessage(page: { status: number | null; title: string | null }): string {
+  const label = page.title?.replace(/^[^|]*\|\s*/, '') || (page.status ? `error ${page.status}` : null)
+  const detail = label ? ` (${label})` : ''
+  return `Shogo's servers didn't respond${detail}. Please tap Retry in a moment.`
+}
+
 export function formatErrorMessage(rawMessage: string): string {
   const cleaned = stripInternalErrorMarkers(rawMessage)
   // An empty message (an error with no text at all — see
@@ -481,6 +506,8 @@ export function formatErrorMessage(rawMessage: string): string {
   // empty banner: on Android a failed send showed no reason whatsoever
   // (SHOGO-ANDROID-5). Say something the person can act on.
   if (!cleaned.trim()) return GENERIC_REQUEST_FAILED
+  const htmlPage = summarizeHtmlErrorPage(cleaned)
+  if (htmlPage) return htmlErrorPageMessage(htmlPage)
   try {
     const parsed = JSON.parse(cleaned)
     if (parsed?.error?.code && ERROR_CODE_MESSAGES[parsed.error.code]) {

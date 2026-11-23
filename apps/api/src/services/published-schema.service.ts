@@ -35,6 +35,7 @@ import {
 } from '@shogo/shared-runtime/published-database'
 import { ensureEnvironmentDatabase, type PublishedDatabase } from './published-database.service'
 import { pushPublishedSchema } from './published-schema-push'
+import { readLiveSeedArchive } from './published-live-seed'
 
 const SCHEMA_TIMEOUT_MS = 180_000
 
@@ -46,8 +47,14 @@ export interface PreparedEnvironmentDatabase {
   database: PublishedDatabase | null
   /** True when this publish pushed the app's schema at the database. */
   applied: boolean
-  /** True when `prisma/dev.db` was loaded (an environment's first deploy). */
+  /** True when this publish loaded a database into the environment. */
   seeded: boolean
+  /**
+   * Which database the seed came from. `live-archive` is the archive the
+   * environment was already serving (a SQLite→Postgres switchover); `dev.db`
+   * is the builder's workspace database (an environment that was never live).
+   */
+  seededFrom: 'live-archive' | 'dev.db' | null
   seededRows: number
   schemaHash: string | null
   warnings: string[]
@@ -124,6 +131,7 @@ export async function prepareEnvironmentDatabase(
         database: null,
         applied: false,
         seeded: false,
+        seededFrom: null,
         seededRows: 0,
         schemaHash: null,
         warnings: [],
@@ -172,6 +180,7 @@ export async function prepareEnvironmentDatabase(
         database: provisioned.value,
         applied: false,
         seeded: false,
+        seededFrom: null,
         seededRows: 0,
         schemaHash: null,
         warnings: [],
@@ -181,7 +190,14 @@ export async function prepareEnvironmentDatabase(
 
   const env = await prisma.publishedEnvironment.findUnique({
     where: { projectId_name: { projectId, name: environment } },
-    select: { id: true, dbSchema: true, dbSchemaHash: true, dbProvider: true },
+    select: {
+      id: true,
+      dbSchema: true,
+      dbSchemaHash: true,
+      dbProvider: true,
+      // The published-data archive key is `{subdomain}/data.tar.gz`.
+      subdomain: true,
+    },
   })
 
   // 4. Classify against the schema the database already has. A dropped column or
@@ -218,10 +234,35 @@ export async function prepareEnvironmentDatabase(
   // the table.
   const seed = !env?.dbSchema
 
+  // A first deploy of an environment that is ALREADY LIVE ON SQLITE must seed
+  // from what that site is serving, not from the builder's `prisma/dev.db`
+  // (SHO-514). Every app published before its region had a `projects-pg` has
+  // `dbSchema: null` while real rows — sign-ups, runs, uploads — sit in
+  // `{subdomain}/data.tar.gz`; seeding from `dev.db` would hand Postgres the
+  // builder's rows and orphan everything the live site accumulated.
+  //
+  // The archive is read, never deleted: it is what `PUBLISH_POSTGRES=off`
+  // restores from, so the switch stays reversible.
+  let liveSeed: { archive: string; bytes: number } | null = null
+  if (seed && env?.subdomain) {
+    const live = await readLiveSeedArchive(env.subdomain)
+    if (!live.ok) {
+      return fail(live.code, live.message, 413, { environment })
+    }
+    liveSeed = live.value
+    if (liveSeed) {
+      console.log(
+        `[published-schema] ${projectId}/${environment} has no Postgres schema yet and is live on SQLite — ` +
+          `seeding from its archive (${liveSeed.bytes} bytes of prisma/dev.db), not prisma/dev.db`,
+      )
+    }
+  }
+  const seededFrom = seed ? (liveSeed ? ('live-archive' as const) : ('dev.db' as const)) : null
+
   let applied: { hash: string; warnings: string[]; seededRows: number } | null = null
   if (!unchanged) {
-    // The runtime exports the schema (and, on a first deploy, dev.db as SQL);
-    // the push itself runs here, inside the cluster, where projects-pg is
+    // The runtime exports the schema (and, on a first deploy, a database as
+    // SQL); the push itself runs here, inside the cluster, where projects-pg is
     // reachable. The database URL never leaves the API.
     let exported: { ok: boolean; status: number; data: any }
     try {
@@ -229,6 +270,11 @@ export async function prepareEnvironmentDatabase(
         mode: 'export',
         seed,
         expectedHash: resolved.hash,
+        // The live database travels as the archive the runtime converts to seed
+        // SQL — the converter stays in one place (the runtime's
+        // `published-schema-export`), and the runtime still never gets a
+        // database URL.
+        ...(liveSeed ? { seedArchive: liveSeed.archive } : {}),
       })
     } catch (err: any) {
       return fail(
@@ -292,6 +338,7 @@ export async function prepareEnvironmentDatabase(
       database: exposed.value,
       applied: !unchanged,
       seeded: seed && (applied?.seededRows ?? 0) > 0,
+      seededFrom: seed && (applied?.seededRows ?? 0) > 0 ? seededFrom : null,
       seededRows: applied?.seededRows ?? 0,
       schemaHash: hash,
       warnings: applied?.warnings ?? resolved.warnings ?? [],

@@ -38,6 +38,7 @@ type Store = {
   apiKeys: any[]
   appInstalls: any[]
   deviceVersionEvents: any[]
+  deviceActiveDays: any[]
 }
 
 const store: Store = {
@@ -54,6 +55,7 @@ const store: Store = {
   apiKeys: [],
   appInstalls: [],
   deviceVersionEvents: [],
+  deviceActiveDays: [],
 }
 
 // Stateful $queryRawUnsafe handler so getUserActivityTable / getUserFunnel tests
@@ -86,9 +88,9 @@ function matchWhere<T extends Record<string, any>>(row: T, where?: any): boolean
     if (v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Date)) {
       if ('endsWith' in v && !(typeof rv === 'string' && rv.toLowerCase().endsWith(String(v.endsWith).toLowerCase()))) return false
       if ('contains' in v && !(typeof rv === 'string' && rv.toLowerCase().includes(String(v.contains).toLowerCase()))) return false
-      if ('gte' in v && !(rv instanceof Date && rv >= v.gte)) return false
-      if ('lte' in v && !(rv instanceof Date && rv <= v.lte)) return false
-      if ('lt' in v && !(rv instanceof Date && rv < v.lt)) return false
+      if ('gte' in v && !(rv >= v.gte)) return false
+      if ('lte' in v && !(rv <= v.lte)) return false
+      if ('lt' in v && !(rv < v.lt)) return false
       if ('in' in v && !(v.in as any[]).includes(rv)) return false
       if ('not' in v && v.not !== undefined && rv === v.not) return false
       // Nested where keyed on a relation; just ignore for our stub.
@@ -118,6 +120,21 @@ function makeModel<T extends Record<string, any>>(rows: T[]) {
       return filtered.slice(args?.skip ?? 0, (args?.skip ?? 0) + (args?.take ?? filtered.length))
     },
     findUnique: async (args: any) => rows.find((r) => r.id === args?.where?.id) ?? null,
+    findFirst: async (args?: any) => {
+      let filtered = rows.filter((r) => matchWhere(r, args?.where))
+      if (args?.orderBy) {
+        const [key, dir] = Object.entries(args.orderBy as Record<string, string>)[0] ?? []
+        if (key) {
+          filtered = [...filtered].sort((a, b) => {
+            const av = a[key]
+            const bv = b[key]
+            if (av === bv) return 0
+            return (av > bv ? 1 : -1) * (dir === 'desc' ? -1 : 1)
+          })
+        }
+      }
+      return filtered[0] ?? null
+    },
     aggregate: async (args: any) => {
       const filtered = rows.filter((r) => matchWhere(r, args?.where))
       const sum: any = {}
@@ -171,6 +188,7 @@ const mockPrisma: any = {
   apiKey: makeModel(store.apiKeys),
   appInstall: makeModel(store.appInstalls),
   deviceVersionEvent: makeModel(store.deviceVersionEvents),
+  deviceActiveDay: makeModel(store.deviceActiveDays),
   $queryRawUnsafe: async (sql: string) => {
     rawSqlLog.push(sql)
     return queryRawQueue.length ? queryRawQueue.shift()! : []
@@ -228,6 +246,7 @@ beforeEach(() => {
   store.apiKeys.length = 0
   store.appInstalls.length = 0
   store.deviceVersionEvents.length = 0
+  store.deviceActiveDays.length = 0
   queryRawQueue = []
   rawSqlLog = []
   // The usage-group scan `getUsageSummary` reads from is cached per window.
@@ -1220,7 +1239,7 @@ describe('getAppVersions', () => {
       // Adoption is per (day, version), oldest devices still on 2.2.27 counted.
       const today = new Date().toISOString().split('T')[0]
       const todayStable = out.adoption.find((point) => point.date === today && point.version === '2.3.6')
-      expect(todayStable).toMatchObject({ channel: 'stable', devices: 1 })
+      expect(todayStable).toMatchObject({ channel: 'stable', devices: 1, client: 'desktop', os: 'macos' })
       expect(out.adoption.length).toBeGreaterThan(0)
     } finally {
       if (previous === undefined) delete process.env.APP_VERSION
@@ -1228,11 +1247,140 @@ describe('getAppVersions', () => {
     }
   })
 
+  test('adoption points carry client and os, keying desktop and CLI separately', async () => {
+    const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000)
+    store.deviceVersionEvents.push(
+      { deviceId: 'mac-d1', version: '2.3.6', channel: 'stable', os: 'macos', client: 'desktop', firstSeenAt: daysAgo(0), lastSeenAt: daysAgo(0) },
+      { deviceId: 'win-d2', version: '2.3.6', channel: 'stable', os: 'windows', client: 'desktop', firstSeenAt: daysAgo(0), lastSeenAt: daysAgo(0) },
+      { deviceId: 'cli-d3', version: 'shogo-cli/unknown', channel: 'stable', os: 'unknown', client: 'cli', firstSeenAt: daysAgo(0), lastSeenAt: daysAgo(0) },
+    )
+    rebuildModels()
+
+    const out = await analytics.getAppVersions({ days: 7 })
+    const today = new Date().toISOString().split('T')[0]
+
+    // macOS and Windows desktop points are separate rows.
+    const macPoint = out.adoption.find((p) => p.date === today && p.client === 'desktop' && p.os === 'macos')
+    const winPoint = out.adoption.find((p) => p.date === today && p.client === 'desktop' && p.os === 'windows')
+    const cliPoint = out.adoption.find((p) => p.date === today && p.client === 'cli')
+    expect(macPoint).toMatchObject({ client: 'desktop', os: 'macos', devices: 1 })
+    expect(winPoint).toMatchObject({ client: 'desktop', os: 'windows', devices: 1 })
+    expect(cliPoint).toMatchObject({ client: 'cli', devices: 1 })
+  })
+
   test('clamps the window and never returns a negative day count', async () => {
     const out = await analytics.getAppVersions({ days: -5 })
     expect(out.windowDays).toBe(1)
     expect(out.desktop.totalDevices).toBe(0)
     expect(out.adoption).toEqual([])
+  })
+})
+
+// =========================================================================
+// getDeviceActivityTimeseries — devices active per day (SHO-477 section 5)
+// =========================================================================
+
+describe('getDeviceActivityTimeseries', () => {
+  const day = (n: number) => {
+    const d = new Date()
+    d.setUTCHours(0, 0, 0, 0)
+    d.setUTCDate(d.getUTCDate() - n)
+    return d.toISOString().slice(0, 10)
+  }
+  const row = (deviceId: string, daysAgo: number, os = 'macos', client = 'desktop') => ({
+    region: 'local',
+    deviceId,
+    day: day(daysAgo),
+    os,
+    client,
+    version: '2.3.6',
+    lastSeenAt: new Date(`${day(daysAgo)}T08:00:00.000Z`),
+  })
+
+  test('daily, weekly and monthly counts match a hand-computed 10-day fixture', async () => {
+    // Three devices:
+    //   A: active every day for the last 10 days (macos, desktop)
+    //   B: active 9 and 2 days ago (windows, desktop)
+    //   C: active 10 and 1 days ago (linux, cli)
+    for (let d = 0; d < 10; d++) store.deviceActiveDays.push(row('A', d, 'macos', 'desktop'))
+    store.deviceActiveDays.push(row('B', 9, 'windows', 'desktop'))
+    store.deviceActiveDays.push(row('B', 2, 'windows', 'desktop'))
+    store.deviceActiveDays.push(row('C', 10, 'linux', 'cli'))
+    store.deviceActiveDays.push(row('C', 1, 'linux', 'cli'))
+    rebuildModels()
+
+    const out = await analytics.getDeviceActivityTimeseries({ days: 5 })
+
+    expect(out.trackingSince).toBe(day(10))
+    expect(out.points).toHaveLength(5)
+    expect(out.points.map((p) => p.date)).toEqual([day(4), day(3), day(2), day(1), day(0)])
+
+    const byDate = new Map(out.points.map((p) => [p.date, p]))
+
+    // Daily — distinct devices active that day.
+    //   day-4: A            (B is day-9/day-2, C is day-10/day-1)
+    //   day-3: A
+    //   day-2: A, B
+    //   day-1: A, C
+    //   day-0: A
+    expect(out.points.map((p) => p.daily)).toEqual([1, 1, 2, 2, 1])
+
+    // Weekly — rolling 7 days *ending* that day.
+    //   day-4 covers day-4..day-10: A (every day) + B (day-9) + C (day-10) = 3
+    //   day-2 covers day-2..day-8:  A + B (day-2)                     = 2
+    //   day-0 covers day-0..day-6:  A + B (day-2) + C (day-1)         = 3
+    expect(byDate.get(day(4))!.weekly).toBe(3)
+    expect(byDate.get(day(2))!.weekly).toBe(2)
+    expect(byDate.get(day(0))!.weekly).toBe(3)
+
+    // Monthly — rolling 30 days, so it also sees C's day-10 row.
+    expect(byDate.get(day(4))!.monthly).toBe(3)
+    expect(byDate.get(day(0))!.monthly).toBe(3)
+  })
+
+  test('byOs and byClient split sum to the daily count', async () => {
+    for (let d = 0; d < 3; d++) {
+      store.deviceActiveDays.push(row('mac', d, 'macos', 'desktop'))
+      store.deviceActiveDays.push(row('win', d, 'windows', 'desktop'))
+      store.deviceActiveDays.push(row('lnx', d, 'linux', 'cli'))
+      store.deviceActiveDays.push(row('odd', d, 'freebsd', 'cli'))
+    }
+    rebuildModels()
+
+    const out = await analytics.getDeviceActivityTimeseries({ days: 3 })
+    for (const point of out.points) {
+      expect(point.daily).toBe(4)
+      const osSum = point.byOs.macos + point.byOs.windows + point.byOs.linux + point.byOs.unknown
+      const clientSum = point.byClient.desktop + point.byClient.cli
+      expect(osSum).toBe(point.daily)
+      expect(clientSum).toBe(point.daily)
+      expect(point.byOs.unknown).toBe(1) // the unrecognised spelling
+      expect(point.byClient.cli).toBe(2)
+    }
+  })
+
+  test('a device tagged twice in one day by two regions counts once', async () => {
+    store.deviceActiveDays.push({ ...row('A', 0), region: 'us-ashburn-1' })
+    store.deviceActiveDays.push({ ...row('A', 0), region: 'eu-frankfurt-1', os: 'windows' })
+    rebuildModels()
+
+    const out = await analytics.getDeviceActivityTimeseries({ days: 1 })
+    expect(out.points).toHaveLength(1)
+    expect(out.points[0].daily).toBe(1)
+    // The newest sighting wins, so the splits still sum to one.
+    expect(out.points[0].byOs.macos + out.points[0].byOs.windows).toBe(1)
+  })
+
+  test('an empty table reports no tracking start and zeroed days', async () => {
+    const out = await analytics.getDeviceActivityTimeseries({ days: 3 })
+    expect(out.trackingSince).toBeNull()
+    expect(out.points).toHaveLength(3)
+    expect(out.points.every((p) => p.daily === 0 && p.weekly === 0 && p.monthly === 0)).toBe(true)
+  })
+
+  test('clamps the window and never returns a negative day count', async () => {
+    const out = await analytics.getDeviceActivityTimeseries({ days: -5 })
+    expect(out.points).toHaveLength(1)
   })
 })
 

@@ -37,6 +37,12 @@ mock.module('../../team-chat/AgentAvatar', () => ({
     createElement('span', { 'data-testid': `avatar-${name}`, 'data-project': projectId ?? 'workspace' }, name),
 }))
 
+mock.module('../RunPeekHover', () => ({
+  RunPeekHover: ({ children }: { children: unknown }) => children,
+  RunPeekHoverById: ({ children }: { children: unknown }) => children,
+  RunPeekHoverTask: ({ children }: { children: unknown }) => children,
+}))
+
 const stopRunningChat = mock(async () => true)
 mock.module('../../../lib/stop-running-chat', () => ({ stopRunningChat }))
 
@@ -119,5 +125,23 @@ describe('RunningNow', () => {
     )
 
     expect(screen.queryByTestId('stop-chat:sess-a:turn-a')).toBeNull()
+  })
+
+  test('stop is a sibling of the row, never a button inside a button', () => {
+    render(
+      createElement(RunningNow, {
+        entries: [chatRow()],
+        onOpen: () => {},
+        onStop: () => {},
+        workspaceId: 'ws-1',
+      }),
+    )
+
+    const stop = screen.getByTestId('stop-chat:sess-a:turn-a')
+    const rowButton = stop.parentElement!.querySelector('button')!
+    // A pressable inside a pressable is invalid markup that React warns about
+    // on every row, and the browser then chooses which one a click means.
+    expect(rowButton).toBeTruthy()
+    expect(rowButton.contains(stop)).toBe(false)
   })
 })

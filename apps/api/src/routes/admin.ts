@@ -280,6 +280,28 @@ export function adminRoutes(): Hono {
   })
 
   /**
+   * GET /analytics/devices-timeseries - Devices active per day
+   *
+   * `/analytics/devices` answers "which machines are alive now" from each key's
+   * last heartbeat; this answers "how many were alive on each day" from the
+   * `device_active_days` rows the touch path writes. `trackingSince` is the
+   * earliest day in the table, so the caller can avoid drawing a fake flat zero
+   * before it started.
+   */
+  router.get('/analytics/devices-timeseries', async (c) => {
+    try {
+      const rawDays = Number(new URL(c.req.url).searchParams.get('days') || '30')
+      const data = await analytics.getDeviceActivityTimeseries({
+        days: Number.isFinite(rawDays) ? rawDays : 30,
+      })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Analytics devices timeseries error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
    * GET /analytics/devices - Per-device activity list (online badge, version, idle)
    *
    * `app-installs` answers "how many devices"; this answers "which ones". Each

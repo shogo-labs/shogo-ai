@@ -209,7 +209,29 @@ export {
   lfsOverBudget,
   pruneLfsBudget,
   type LfsRemoteConfig,
+  lfsTrackedPaths,
+  lfsPointerText,
+  findLfsPointerFiles,
+  materializeLfsPointersFromStore,
+  lfsObjectStoreFromEnv,
+  openLfsObjectStream,
+  etagMatches,
+  type LfsObjectStore,
+  type LfsPointerFile,
+  type LfsMaterializeResult,
+  type LfsObjectReadResult,
 } from './lfs'
+
+export {
+  S3_MULTIPART_THRESHOLD_BYTES,
+  S3_MULTIPART_PART_BYTES,
+  objectExists,
+  putFileToObjectStore,
+  headObject,
+  stampObjectMetadata,
+  isObjectNotFound,
+  type S3ObjectStore,
+} from './s3-object'
 
 export {
   isShogoRuntimeState,
@@ -401,6 +423,7 @@ export {
 
 export {
   isContentHashedFilename,
+  sharedStaticAssetCacheControl,
   staticAssetCacheControl,
   shouldServeSpaFallback,
 } from './static-asset-cache'
@@ -468,3 +491,9 @@ export {
   isDigestPinnedImageRef,
   digestOfImageRef,
 } from './published-image-ref'
+
+export {
+  WHATSAPP_GRAPH_VERSION,
+  WHATSAPP_API_BASE,
+  verifyMetaSignature,
+} from './whatsapp-graph'

@@ -135,7 +135,7 @@ import {
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
-import { deriveApiUrl, fetchReachableChats, fetchWorkspacePause, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, postInterruptedResume, projectScopedId, runtimeServesProjectId, type SessionWakeState, type WorkspaceAgentsPause } from './internal-api'
+import { agentBoardsRequest, deriveApiUrl, fetchReachableChats, fetchWorkspacePause, getInternalHeaders, getProjectConfig, getProjectToolUsage, getSessionWakeState, getWorkspaceConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, postInterruptedResume, projectScopedId, runtimeServesProjectId, type SessionWakeState, type WorkspaceAgentsPause } from './internal-api'
 import { fetchEffectiveAbilities } from './access-gate'
 import { buildWorkspaceRootConflictContext, currentWorkspaceRootSync } from './workspace-root-sync'
 import {
@@ -165,7 +165,8 @@ import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
 import { AgentManager } from './agent-manager'
 import { loadWorkspaceCustomAgents } from './subagent'
 import { TaskRegistry, formatTaskNotification, type TaskLink, type TaskSource, type TaskStatus } from './task-registry'
-import { readDeclaredServices, shellQuote } from './services-registry'
+import { dedupeDeclaredServices, readDeclaredServices, shellQuote, undeclareService } from './services-registry'
+import { reapChildLedger } from '@shogo-ai/sdk/child-ledger'
 import { cleanupTaskOutputs, listTaskOutputRows, taskOutputBody, taskOutputDir, taskOutputRoot } from './task-output'
 import { createApiTaskClient } from './remote-tasks'
 import { releaseSessionBrowsers, reapOrphanChromium } from './browser-pool'
@@ -320,25 +321,63 @@ function parseAutoTierOverride(raw: string | undefined): AutoTierOverride | unde
 
 /**
  * Parse the per-turn Auto tier map the API stamps on a chat body (SHO-417).
- * Accepts either `{ economy: 'model-id' }` (what the API sends) or the
- * `{ economy: { id } }` shape `AGENT_AUTO_TIER_MAP` uses, so one parser covers
- * both. Malformed input is ignored: the process map then applies.
+ * Accepts a plain `{ economy: 'model-id' }` (an older API), the
+ * `{ economy: { id, provider?, upstream? } }` shape the API now sends (the
+ * cloud's tier entries carry their provider, SHO-481), and the same object
+ * shape `AGENT_AUTO_TIER_MAP` uses, so one parser covers all of them.
+ * Malformed input is ignored: the process map then applies.
  */
-function parseTurnAutoTiers(raw: unknown): AutoTierOverride | undefined {
+export function parseTurnAutoTiers(raw: unknown): AutoTierOverride | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const src = raw as Record<string, unknown>
   const out: AutoTierOverride = {}
   for (const tier of ['economy', 'standard', 'premium'] as const) {
     const entry = src[tier]
-    const id =
-      typeof entry === 'string'
-        ? entry.trim()
-        : entry && typeof entry === 'object' && typeof (entry as { id?: unknown }).id === 'string'
-          ? ((entry as { id: string }).id).trim()
-          : ''
-    if (id) out[tier] = { id }
+    if (typeof entry === 'string') {
+      const id = entry.trim()
+      if (id) out[tier] = { id }
+      continue
+    }
+    if (!entry || typeof entry !== 'object') continue
+    const e = entry as Record<string, unknown>
+    const id = typeof e.id === 'string' ? e.id.trim() : ''
+    if (!id) continue
+    const provider = typeof e.provider === 'string' && e.provider.trim() ? e.provider.trim() : undefined
+    const upstream = typeof e.upstream === 'string' && e.upstream.trim() ? e.upstream.trim() : undefined
+    out[tier] = { id, provider, upstream }
   }
   return Object.keys(out).length > 0 ? out : undefined
+}
+
+/**
+ * Merge the per-turn map over the process-wide one. The per-turn map wins on
+ * the model id (it is the person/cap-narrowed one, SHO-417), but a tier whose
+ * id matches the process-wide entry inherits its provider/upstream: an opaque
+ * cloud id cannot be inferred from its own string, and the env map is where
+ * that routing lives (SHO-481).
+ */
+export function mergeAutoTierOverrides(
+  turn: AutoTierOverride | undefined,
+  processWide: AutoTierOverride | undefined,
+): AutoTierOverride | undefined {
+  if (!turn) return processWide
+  if (!processWide) return turn
+  const out: AutoTierOverride = {}
+  for (const tier of ['economy', 'standard', 'premium'] as const) {
+    const t = turn[tier]
+    const p = processWide[tier]
+    if (!t) {
+      if (p) out[tier] = p
+      continue
+    }
+    const inherited = p?.id === t.id ? p : undefined
+    out[tier] = {
+      id: t.id,
+      provider: t.provider ?? inherited?.provider,
+      upstream: t.upstream ?? inherited?.upstream,
+    }
+  }
+  return out
 }
 
 const FALLBACK_SUMMARIZER_MODEL = { id: 'claude-haiku-4-5', provider: 'anthropic' }
@@ -930,6 +969,50 @@ export function capIntegrationMockResult(toolName: string, data: unknown): Agent
   return textResult(raw + annotation)
 }
 
+/** A paired desktop as the API's device list describes it. */
+export interface PairedDeviceSummary {
+  id: string
+  name: string
+  os: string | null
+  online: boolean
+  lastSeenAt: string | null
+}
+
+/**
+ * The model-facing "Your devices" block (SHO-285 Update 2, SHO-506). Pure so the
+ * guidance the model reads is asserted in tests: `device_offline` means stop,
+ * `device_connecting` means wait `retryAfterSeconds` and call once more.
+ */
+export function renderDevicesContext(devices: PairedDeviceSummary[]): string {
+  const lines = devices.map((device) => {
+    const state = device.online
+      ? 'online'
+      : `offline${device.lastSeenAt ? `, last seen ${device.lastSeenAt}` : ''}`
+    const where = device.os ? ` — ${device.os}` : ''
+    return `- **${device.name}** (${state})${where}`
+  })
+  return [
+    '## Your devices',
+    '',
+    "These are the user's paired desktops. Pass `device: \"<name>\"` to `exec`, `exec_wait`,",
+    '`exec_list`, `read_file`, `write_file`, `edit_file`, `delete_file` or `search` to run that',
+    "tool on one of them; each desktop resolves paths in its own runtime (use an absolute path to",
+    'reach beyond its workspace) and its own settings decide what is allowed: its owner can turn',
+    'remote tools off, and a command or file change waits for their approval on that computer.',
+    'An offline device answers `device_offline` with its last-seen time: do not retry it, say the',
+    'machine is asleep or away. A desktop that is online but whose connection is still opening',
+    'answers `device_connecting` with `retryAfterSeconds` — wait that long and make the call once',
+    'more. One that has not allowed remote tools answers `remote_device_tools_disabled`: say so',
+    'rather than retrying.',
+    'A request nobody approves on that computer answers `remote_approval_timeout` (or',
+    '`remote_approval_unavailable` when no Shogo window opened in time): ask the user to approve it',
+    'there, then try again.',
+    '',
+    ...lines,
+    '',
+  ].join('\n')
+}
+
 export class AgentGateway {
   private workspaceDir: string
   /**
@@ -1408,6 +1491,7 @@ export class AgentGateway {
   setAccountContext(ctx: AccountContext): void {
     this.accountContext = {
       ...(ctx.planId ? { planId: ctx.planId } : {}),
+      ...(ctx.desktopUnlimited ? { desktopUnlimited: true } : {}),
       ...(typeof ctx.canPublishSubdomain === 'boolean'
         ? { canPublishSubdomain: ctx.canPublishSubdomain }
         : {}),
@@ -1832,13 +1916,25 @@ export class AgentGateway {
     // Backfill a widget key for an already-connected webchat channel that has
     // none (channels connected from the Studio panel before SHO-380 never got
     // one), so existing embeds start working without a reconnect.
-    const webchatConfigPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
-    if (webchatConfigPath) {
+    const sharedConfigPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
+    if (sharedConfigPath) {
       const { backfillWebchatWidgetSecret } = await import('./channels/webchat-key')
-      const widgetSecret = backfillWebchatWidgetSecret(webchatConfigPath)
+      const widgetSecret = backfillWebchatWidgetSecret(sharedConfigPath)
       if (widgetSecret) {
         const entry = this.config.channels.find((c) => c.type === 'webchat')
         if (entry) entry.config = { ...entry.config, widgetSecret }
+      }
+
+      // Backfill a secret for any webhook channel that was saved before SHO-462
+      // (when the secret was optional). The channel rejects every request without
+      // one, so a missing secret at boot means no one can call it; generating
+      // one here makes existing channels work without a reconnect.
+      const { backfillChannelSecret } = await import('./channels/channel-secret')
+      const { generateWebhookSecret } = await import('./channels/webhook')
+      const webhookSecret = backfillChannelSecret(sharedConfigPath, 'webhook', 'secret', generateWebhookSecret)
+      if (webhookSecret) {
+        const entry = this.config.channels.find((c) => c.type === 'webhook')
+        if (entry) entry.config = { ...entry.config, secret: webhookSecret }
       }
     }
 
@@ -1903,10 +1999,19 @@ export class AgentGateway {
     // Bring back every service the agent declared with
     // `exec({ service: true })` — a cold boot and the first boot after a VM
     // recycle both land here, and for the recycle this is what makes the
-    // declaration worth having (SHO-399). Not awaited: a service that hangs on
-    // startup must not hold the gateway's own start, and each failure is
-    // logged with its name.
-    void this.restartDeclaredServices().catch((err: any) => {
+    // declaration worth having (SHO-399).
+    //
+    // Before that, clear what a previous run left behind (SHO-509): process
+    // groups whose owner is dead, duplicate declarations of the same command,
+    // and services whose card already finished. Each of those is a slot this
+    // boot does not need to spend, and a pile of them is what exhausted the
+    // process table. Not awaited: a service that hangs on startup must not hold
+    // the gateway's own start, and each failure is logged with its name.
+    void (async () => {
+      this.reapOrphanedProcessGroups()
+      await this.reapDeclaredServices()
+      await this.restartDeclaredServices()
+    })().catch((err: any) => {
       console.error('[AgentGateway] service restart failed:', err?.message ?? err)
     })
 
@@ -3055,6 +3160,10 @@ export class AgentGateway {
         // A late `wait` on a task whose entry was evicted reads the result back
         // from its log instead of reporting the task as unknown.
         resolveOutputRow: (id) => listTaskOutputRows(outputDir).find((row) => row.taskId === id) ?? null,
+        // A foreground command handed back on soft timeout holds its slot until
+        // this session goes quiet; the registry reads the session's own idle
+        // clock rather than keeping a second one (SHO-509).
+        sessionIdleMs: () => this.sessionManager.idleGapMs(sessionId),
       })
       reg = registry
 
@@ -3665,8 +3774,9 @@ export class AgentGateway {
 
     if (autoRouting) {
       // A per-turn map (narrowed to the person this run acts for) wins over the
-      // process-wide one, so an Auto fallback cannot leave their effective set.
-      const tierOverride = this.turnAutoTiers ?? this.autoTierOverride
+      // process-wide one, so an Auto fallback cannot leave their effective set;
+      // it inherits the env map's provider for ids the two share (SHO-481).
+      const tierOverride = mergeAutoTierOverrides(this.turnAutoTiers, this.autoTierOverride)
       autoTiers = buildAutoTierMap(autoTierIds(tierOverride))
       autoProviderHints = autoTierProviderHints(tierOverride)
       const estimatedTokens = this.sessionManager.estimateTokens(session)
@@ -3837,7 +3947,7 @@ export class AgentGateway {
       effectiveModel: modelId,
       effectiveProvider: provider,
       autoRouting,
-      autoTierOverride: this.turnAutoTiers ?? this.autoTierOverride,
+      autoTierOverride: mergeAutoTierOverrides(this.turnAutoTiers, this.autoTierOverride),
       dualPlan,
       shellState: sessionId ? {
         getCwd: () => this.shellCwd.get(sessionId!) || this.initialShellCwd(sessionWorkspaceDir),
@@ -3845,6 +3955,8 @@ export class AgentGateway {
         initialCwd: this.initialShellCwd(sessionWorkspaceDir),
       } : undefined,
       commandRegistry,
+      cancelServiceByName: (name: string, options?: { undeclare?: boolean }) => this.cancelServiceByName(name, options),
+      onCardFinished: (cardKey: string) => this.releaseCardServices(cardKey),
       guideRegistry: this.currentGuideRegistry,
       listWorktreeStatuses: this.isWorktreesEnabled() ? () => this.listWorktreeStatuses() : undefined,
       toolMockFns: this.toolMocks.size > 0 ? this.toolMocks : undefined,
@@ -5749,6 +5861,11 @@ export class AgentGateway {
       // summary, instead of stalling on a blank/boilerplate "ran out of steps"
       // turn. Synthetic continuation prompts accumulate into history so message
       // alternation stays valid; usage is folded forward for accurate billing.
+      //
+      // `maxIterationsExhausted` is also set when a provider error cut the turn
+      // short after real tool work (SHO-517): the call that failed is worth one
+      // more attempt, and the retry gets told to shrink a big write instead of
+      // sending the same oversized call again.
       const maxAutoContinuations = parseInt(process.env.AGENT_MAX_AUTO_CONTINUATIONS || '3', 10)
       let autoContinuations = 0
       const accumulatedNewMessages = [...result.newMessages]
@@ -5762,12 +5879,20 @@ export class AgentGateway {
       ) {
         autoContinuations++
         console.warn(
-          `${this.logPrefix} Auto-continuing after iteration ceiling (pass ${autoContinuations}/${maxAutoContinuations}) for session ${sessionId}`,
+          `${this.logPrefix} Auto-continuing after ${result.incompleteReason ?? 'iteration ceiling'} (pass ${autoContinuations}/${maxAutoContinuations}) for session ${sessionId}`,
         )
         const contHistory = [...history, ...accumulatedNewMessages]
+        // A failed large tool call (a whole file written in one request, on a
+        // huge context) is the one retry that must change shape, not just
+        // repeat: the provider had no first byte for over two minutes.
+        const splitWrites =
+          result.incompleteReason === 'provider_error'
+            ? ' If the call that failed was writing a large file in one go, split it: write_file for the first part, then append the rest in chunks of about 300 lines.'
+            : ''
         const contPrompt =
           'Continue — you ran out of steps before finishing. Pick up exactly where you left off and complete the remaining work. ' +
-          'When everything is done, end with a short summary of what you changed; if you are still not finished, say what remains.'
+          'When everything is done, end with a short summary of what you changed; if you are still not finished, say what remains.' +
+          splitWrites
         const contResult = await runAgentLoop({
           ...loopOptions,
           history: contHistory,
@@ -6875,13 +7000,7 @@ export class AgentGateway {
   private async buildDevicesContext(): Promise<string | null> {
     const apiUrl = deriveApiUrl()
     if (!apiUrl) return null
-    let devices: Array<{
-      id: string
-      name: string
-      os: string | null
-      online: boolean
-      lastSeenAt: string | null
-    }> = []
+    let devices: PairedDeviceSummary[] = []
     try {
       const res = await fetch(`${apiUrl}/api/internal/devices`, {
         headers: getInternalHeaders(),
@@ -6893,30 +7012,7 @@ export class AgentGateway {
       return null
     }
     if (!devices.length) return null
-    const lines = devices.map((device) => {
-      const state = device.online
-        ? 'online'
-        : `offline${device.lastSeenAt ? `, last seen ${device.lastSeenAt}` : ''}`
-      const where = device.os ? ` — ${device.os}` : ''
-      return `- **${device.name}** (${state})${where}`
-    })
-    return [
-      '## Your devices',
-      '',
-      "These are the user's paired desktops. Pass `device: \"<name>\"` to `exec`, `exec_wait`,",
-      '`exec_list`, `read_file`, `write_file`, `edit_file`, `delete_file` or `search` to run that',
-      "tool on one of them; each desktop resolves paths in its own runtime (use an absolute path to",
-      'reach beyond its workspace) and its own settings decide what is allowed: its owner can turn',
-      'remote tools off, and a command or file change waits for their approval on that computer.',
-      'An offline device answers `device_offline` with its last-seen time, and one that has not',
-      'allowed remote tools answers `remote_device_tools_disabled` — say which, rather than retrying.',
-      'A request nobody approves on that computer answers `remote_approval_timeout` (or',
-      '`remote_approval_unavailable` when no Shogo window opened in time): ask the user to approve it',
-      'there, then try again.',
-      '',
-      ...lines,
-      '',
-    ].join('\n')
+    return renderDevicesContext(devices)
   }
 
   /**
@@ -7545,7 +7641,7 @@ export class AgentGateway {
     }
 
     adapter.onMessage((msg) => this.processMessage(msg))
-    await adapter.connect(config)
+    await adapter.connect(config, this.workspaceDir)
     this.channels.set(type, adapter)
     console.log(`[AgentGateway] Connected channel: ${type}`)
   }
@@ -8475,8 +8571,117 @@ export class AgentGateway {
   }
 
   /**
-   * Bring every service declared in `.shogo/services.json` back up. Runs once on
-   * gateway start (cold boot, or the first boot after a recycle) and is what
+   * Stop a declared service by name (SHO-509).
+   *
+   * The name is the only handle the registry file gives — a re-declaration
+   * replaces a tree it can only identify by name, and a card that reaches Done
+   * owns its services by name. Searches every session's registry. By default it
+   * also removes the declaration so the next boot cannot bring it back; a
+   * replacement passes `{ undeclare: false }` so a failed spawn leaves the
+   * declaration in place and the service still comes back on the next boot.
+   */
+  async cancelServiceByName(name: string, options: { undeclare?: boolean } = {}): Promise<boolean> {
+    let found = false
+    for (const registry of this.commandRegistries.values()) {
+      const entry = registry.listAll().find((t) => t.service && t.name === name)
+      if (!entry) continue
+      found = true
+      try {
+        await registry.cancel(entry.id)
+      } catch (err: any) {
+        console.error(`[AgentGateway] could not cancel service ${name}: ${err?.message ?? err}`)
+      }
+    }
+    if (options.undeclare === false) return found
+    const undeclared = undeclareService(this.workspaceDir, name)
+    if (undeclared) console.log(`[AgentGateway] undeclared service ${name}`)
+    return found || undeclared
+  }
+
+  /**
+   * Undeclare every service declared for a card that has finished (SHO-509).
+   *
+   * A card's dev server is not needed after the card reaches Done/Dismissed,
+   * and leaving it declared is what built up 9 stale services across 4 projects
+   * until the process table ran out. Called when a card lands in a terminal
+   * column and again at boot for services whose card finished while the app was
+   * closed.
+   */
+  async releaseCardServices(cardKey: string): Promise<string[]> {
+    const key = cardKey.trim().toUpperCase()
+    if (!key) return []
+    const owned = readDeclaredServices(this.workspaceDir).filter(
+      (svc) => (svc.workItemKey ?? '').toUpperCase() === key,
+    )
+    const released: string[] = []
+    for (const svc of owned) {
+      if (await this.cancelServiceByName(svc.name)) released.push(svc.name)
+    }
+    if (released.length) {
+      console.log(`[AgentGateway] released ${released.length} service(s) for finished card ${key}: ${released.join(', ')}`)
+    }
+    return released
+  }
+
+  /**
+   * Drop declarations a boot should not resurrect (SHO-509).
+   *
+   * Two kinds: the same command declared twice (dedupe keeps the newest), and a
+   * service whose card is already Done/Dismissed. Both are read-only checks
+   * that need no fork, so this runs even when the machine is out of slots.
+   */
+  async reapDeclaredServices(): Promise<{ deduped: string[]; finished: string[] }> {
+    const deduped = dedupeDeclaredServices(this.workspaceDir)
+    if (deduped.length) {
+      console.log(`[AgentGateway] dropped duplicate service declarations: ${deduped.join(', ')}`)
+    }
+    const finished: string[] = []
+    const workspaceId = process.env.WORKSPACE_ID
+    for (const svc of readDeclaredServices(this.workspaceDir)) {
+      if (!svc.workItemKey || !workspaceId) continue
+      try {
+        const r = await agentBoardsRequest(workspaceId, 'GET', `/agent-work-items/${encodeURIComponent(svc.workItemKey)}`, {
+          query: { projectId: this.projectId },
+        })
+        const category = r.ok ? (r.data?.item?.column?.category ?? r.data?.item?.category) : undefined
+        if (category === 'done' || category === 'dismissed') {
+          undeclareService(this.workspaceDir, svc.name)
+          finished.push(svc.name)
+        }
+      } catch {
+        // A card we cannot read is not proof it finished: keep the service.
+      }
+    }
+    if (finished.length) {
+      console.log(`[AgentGateway] undeclared ${finished.length} service(s) whose card finished: ${finished.join(', ')}`)
+    }
+    return { deduped, finished }
+  }
+
+  /**
+   * Reap process groups a previous app run left behind (SHO-509).
+   *
+   * The child ledger records every contained group the runtime spawned. On a
+   * cold boot the owner that recorded them is gone, so anything still alive is
+   * an orphan holding slots this run needs. `spareLiveOwners` keeps a group
+   * whose owner is still alive (a sibling runtime sharing the workspace).
+   */
+  reapOrphanedProcessGroups(): { reaped: number; spared: number } {
+    try {
+      const result = reapChildLedger(this.workspaceDir, { spareLiveOwners: true, reapOwnerless: true })
+      const reaped = result.reaped?.length ?? 0
+      const spared = result.spared?.length ?? 0
+      if (reaped) console.log(`[AgentGateway] reaped ${reaped} orphaned process group(s) from a previous run`)
+      return { reaped, spared }
+    } catch (err: any) {
+      console.error(`[AgentGateway] process-group reap failed: ${err?.message ?? err}`)
+      return { reaped: 0, spared: 0 }
+    }
+  }
+
+  /**
+   * Bring every service declared in `.shogo/services.json` back up. Runs once
+   * on gateway start (cold boot, or the first boot after a recycle) and is what
    * makes `exec({ service: true })` mean something (SHO-399).
    *
    * Each service is restarted through the `exec` tool itself rather than a

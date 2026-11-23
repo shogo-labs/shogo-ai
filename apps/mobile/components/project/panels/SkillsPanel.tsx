@@ -23,6 +23,7 @@ import {
   phonePaneScrollProps,
 } from "../../phone/NativePhonePane";
 import { densityFor } from "../../../lib/phone-density"
+import { errorMessage } from '../../../lib/error-message'
 
 interface Skill {
   name: string
@@ -152,7 +153,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
         setRegistrySkills(registryData.skills || [])
       }
     } catch (err: any) {
-      setError(err.message)
+      setError(errorMessage(err))
     } finally {
       setIsLoading(false)
     }
@@ -178,7 +179,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
         }
         await loadSkills()
       } catch (err: any) {
-        setError(err.message)
+        setError(errorMessage(err))
       } finally {
         setInstalling(null)
       }
@@ -203,7 +204,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
         }
         await loadSkills()
       } catch (err: any) {
-        setError(err.message)
+        setError(errorMessage(err))
       } finally {
         setInstalling(null)
       }
@@ -226,7 +227,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
         }
         await loadSkills()
       } catch (err: any) {
-        setError(err.message)
+        setError(errorMessage(err))
       } finally {
         setRemoving(null)
       }

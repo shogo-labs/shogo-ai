@@ -247,6 +247,13 @@ export async function trackUsageFromStream(
      * names a different turn is not ours and is never persisted as this turn.
      */
     expectedTurnId?: string
+    /**
+     * The API-side `activityTurnId` (`ChatSession.activeTurnId`) under which
+     * `TurnJournalWriter` recorded this turn's `chat_turn_frames` rows.
+     * Distinct from `trackedTurnId` whenever upstream omits `X-Turn-Id` (or
+     * ends before `data-turn-start`), so completion cleanup deletes both keys.
+     */
+    journalTurnId?: string | null
     /** Workspace of a `project: null` turn, so its usage can still be recorded. */
     workspaceId?: string
   } = {},
@@ -267,7 +274,14 @@ export async function trackUsageFromStream(
   }
   const usageRef: { value: UsageSnapshot | null } = { value: null }
   const chatSessionId = options.chatSessionId ?? requestBody?.chatSessionId ?? null
-  const agentMode = requestBody?.agentMode || 'advanced'
+  // The model this run actually started with (after any downgrade), stamped on
+  // the assistant row. `null` when the body carried none — never the legacy
+  // `advanced` sentinel, which the composer would then adopt as a pick and
+  // reset to Auto (SHO-497).
+  const agentMode: string | null =
+    typeof requestBody?.agentMode === 'string' && requestBody.agentMode.trim()
+      ? requestBody.agentMode.trim()
+      : null
 
   // Accumulate tool call data incrementally as stream events arrive.
   // Keyed by toolCallId so args, result, and duration are captured correctly.
@@ -1276,9 +1290,16 @@ export async function trackUsageFromStream(
   unregisterSnapshotFlusher()
   // The turn reached its terminal frame, so the journal has nothing left to
   // recover: what the client has is now in the row (SHO-274). A turn that never
-  // gets here (the process died) keeps its frames for recovery.
-  if (observedTurnComplete && trackedTurnId) {
-    void deleteTurnFrames(trackedTurnId).catch(() => 0)
+  // gets here (the process died) keeps its frames for recovery. `TurnJournalWriter`
+  // keys rows on `journalTurnId` (`activityTurnId`), which can differ from the
+  // runtime's `data-turn-start` `trackedTurnId`; delete both when present.
+  if (observedTurnComplete) {
+    const turnIdsToDelete = new Set<string>()
+    if (options.journalTurnId) turnIdsToDelete.add(options.journalTurnId)
+    if (trackedTurnId) turnIdsToDelete.add(trackedTurnId)
+    for (const id of turnIdsToDelete) {
+      void deleteTurnFrames(id).catch(() => 0)
+    }
   }
   const partialTag = observedTurnComplete ? '' : ', partial'
   if (assistantMessageId) {
@@ -1583,6 +1604,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       let bodyIsJson = false
       try { parsedBody = JSON.parse(body); bodyIsJson = true } catch { /* not JSON, that's fine */ }
 
+      // The model the person picked for this turn, read before any guard or
+      // run-model downgrade rewrites `agentMode` (SHO-497). It is what their
+      // own message row records, so the composer keeps showing the pick after
+      // the reply even when the run used something else.
+      const requestedAgentMode =
+        typeof parsedBody?.agentMode === 'string' ? parsedBody.agentMode.trim() || null : null
+
       // Persisted chat messages use capability URLs for attachments. The
       // runtime still expects bytes/data URLs for the current model turn, so
       // hydrate only the explicit files and latest user message before proxying.
@@ -1738,12 +1766,21 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       }
 
       // AC5 (SHO-417): a run may not use a model the acting person cannot use.
-      // When the agent's configured model is above them, this run uses their
-      // default model and the runtime states it in the reply's first line. The
-      // agent's saved config is untouched. `auto` is a sentinel, not a model, so
-      // it is never downgraded — the narrowed tier map caps it instead.
+      // When that model is above them, this run uses their default model and the
+      // runtime states it in the reply's first line. The agent's saved config is
+      // untouched. `auto` is a sentinel, not a model, so it is never downgraded —
+      // the narrowed tier map caps it instead.
+      //
+      // The starting model is the person's pick for this turn (SHO-497); the
+      // agent's configured model is only the fallback for a body with no
+      // `agentMode`.
       if (verifiedUserId) {
-        const runModel = await resolveAgentRunModelFor(projectId, project.workspaceId, verifiedUserId)
+        const runModel = await resolveAgentRunModelFor(
+          projectId,
+          project.workspaceId,
+          verifiedUserId,
+          parsedBody.agentMode,
+        )
         if (runModel) {
           parsedBody.agentMode = runModel.model
           if (runModel.downgrade) parsedBody.modelDowngrade = runModel.downgrade
@@ -2026,7 +2063,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // turn and the transcript with no question. Awaited here, i.e. after the
       // usage-limit and attachment gates (a rejected send writes nothing) and
       // before the first proxy attempt.
-      const persistedUserMessage = await persistUserMessageForTurn(incomingChatSessionId, parsedBody as Record<string, unknown>)
+      const persistedUserMessage = await persistUserMessageForTurn(
+        incomingChatSessionId,
+        parsedBody as Record<string, unknown>,
+        { model: requestedAgentMode },
+      )
 
       // A hosted workspace whose desktop is offline queues the turn instead of
       // failing it; the desktop runs it when it is back (SHO-285).
@@ -2195,9 +2236,15 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             // typing in a window, so no other window attaches to it (SHO-53:
             // a window nobody is looking at must not start the task watch).
             // The dispatcher marks its internal calls with `X-Queue-User-Id`.
-            activityTurnId = await markTurnStarted(incomingChatSessionId, undefined, {
-              announce: !c.req.header("X-Queue-User-Id"),
-            })
+            // The id is the upstream's when it sent one (SHO-486), for the same
+            // reason as `workspace-chat`: a project chat in a hosted workspace
+            // runs on the desktop, and a second id invented here is a turn
+            // nothing is running.
+            activityTurnId = await markTurnStarted(
+              incomingChatSessionId,
+              response.headers.get('x-turn-id')?.trim() || undefined,
+              { announce: !c.req.header("X-Queue-User-Id") },
+            )
           } catch (error) {
             // Activity is observational; a schema/database issue must not block chat.
             console.warn(`[ProjectChat] Failed to mark active chat ${incomingChatSessionId}:`, error)
@@ -2298,6 +2345,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
             // pass it through so closeSession + persistence key on the
             // same id and never diverge from billing.
             chatSessionId: incomingChatSessionId,
+            journalTurnId: turnId,
             userId: billingUserId && billingUserId !== 'system' ? billingUserId : undefined,
             projectName: project.name,
             // Delegated task completion is announced by agent-tasks with a

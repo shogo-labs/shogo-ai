@@ -37,21 +37,34 @@ describe('isPrebuiltPublishedImage', () => {
 })
 
 describe('publishedBootPlan', () => {
-  it('skips source hydration, install and the watcher on a prebuilt image', () => {
+  it('skips source hydration, install, the watcher and LFS materialization on a prebuilt image', () => {
     expect(publishedBootPlan({ SHOGO_PREBUILT_IMAGE: 'true' })).toEqual({
       fromImage: true,
       hydrateSource: false,
       installDeps: false,
       watchFiles: false,
+      materializeLfs: false,
     })
   })
 
-  it('does all three when the pod boots the shared runtime image', () => {
+  it('does all four when the pod boots the shared runtime image', () => {
     expect(publishedBootPlan({})).toEqual({
       fromImage: false,
       hydrateSource: true,
       installDeps: true,
       watchFiles: true,
+      materializeLfs: true,
     })
+  })
+
+  // SHO-485 §1c: media on the pod's 2 Gi volume used to grow with the project
+  // (every LFS object copied at every cold start). An image-booted pod serves
+  // each object from `<projectId>/lfs/objects` on request instead, so the boot
+  // path must not copy it — and the legacy source-hydrate path, which runs a
+  // Vite build, still must.
+  it('never materializes LFS on an image boot, always on a source hydrate', () => {
+    expect(publishedBootPlan({ SHOGO_PREBUILT_IMAGE: 'true' }).materializeLfs).toBe(false)
+    expect(publishedBootPlan({ SHOGO_PREBUILT_IMAGE: 'false' }).materializeLfs).toBe(true)
+    expect(publishedBootPlan({}).materializeLfs).toBe(true)
   })
 })

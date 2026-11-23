@@ -160,7 +160,8 @@ test(
     const failed = await waitForMove(desktop.port, started.json.move.id)
     expect(failed.status).toBe('failed')
     // The create flow's own message, not a generic "the other side refused".
-    expect(failed.error).toMatch(/Additional workspaces require a paid subscription/)
+    // SHO-474: the free-tier copy now names the next tier from WORKSPACE_LIMITS.
+    expect(failed.error).toMatch(/You've used your free workspace\. Basic includes 3 workspaces/)
     expect(failed.targetWorkspaceId).toBeNull()
 
     const after = await stateOf(cloud)

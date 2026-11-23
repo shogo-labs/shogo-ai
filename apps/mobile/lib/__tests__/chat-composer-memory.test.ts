@@ -25,6 +25,8 @@ import {
   homeComposerMemoryKey,
   sanitizeRecord,
   resolveChatModel,
+  resolvePickerModel,
+  lastUserModelStamp,
   type ComposerMemoryStorage,
 } from "../chat-composer-memory"
 
@@ -285,6 +287,107 @@ describe("which model a chat shows", () => {
         lastStampedModel: null,
         lastStampedAt: 0,
       }),
+    ).toBeNull()
+  })
+})
+
+describe("what the shared picker shows after a reload (SHO-497)", () => {
+  const DEFAULT = "sonnet-5"
+
+  test("a chat's own model outranks a preference read that lands after it", () => {
+    // The order that failed in the browser: the project reloads, the open chat
+    // reports the pick it has in the device cache, and only then does the
+    // last-used preference finish loading (the read re-runs when the catalog
+    // arrives). Re-applying the preference there is what showed Sonnet — the
+    // model last picked in *another* chat — instead of this chat's Opus.
+    expect(
+      resolvePickerModel({
+        chatModel: "opus-uuid",
+        preference: "sonnet-uuid",
+        defaultModel: DEFAULT,
+      }),
+    ).toEqual({ model: "opus-uuid", fromChat: true })
+  })
+
+  test("with no chat claim the preference seeds the picker", () => {
+    expect(
+      resolvePickerModel({
+        chatModel: null,
+        preference: "sonnet-uuid",
+        defaultModel: DEFAULT,
+      }),
+    ).toEqual({ model: "sonnet-uuid", fromChat: false })
+  })
+
+  test("with neither, the default seeds it", () => {
+    expect(
+      resolvePickerModel({ chatModel: null, preference: null, defaultModel: DEFAULT }),
+    ).toEqual({ model: DEFAULT, fromChat: false })
+  })
+
+  test("an empty id is not a claim", () => {
+    expect(
+      resolvePickerModel({ chatModel: "", preference: "sonnet-uuid", defaultModel: DEFAULT }),
+    ).toEqual({ model: "sonnet-uuid", fromChat: false })
+  })
+})
+
+describe("which model stamp a chat remembers (SHO-497)", () => {
+  test("an assistant stamp never becomes the chat's model", () => {
+    // The reply is stamped with what the run used (Auto's tier, or a downgrade);
+    // adopting it is what turned a picked Opus back into Auto after every send.
+    expect(
+      lastUserModelStamp([
+        { role: "user", model: "opus-uuid", createdAt: 10 },
+        { role: "assistant", model: "auto", createdAt: 11 },
+      ]),
+    ).toEqual({ model: "opus-uuid", createdAt: 10 })
+  })
+
+  test("a chat whose rows carry only assistant stamps remembers nothing", () => {
+    expect(
+      lastUserModelStamp([
+        { role: "assistant", model: "auto", createdAt: 20 },
+        { role: "assistant", model: "claude-sonnet-4-6", createdAt: 21 },
+      ]),
+    ).toBeNull()
+  })
+
+  test("the legacy `advanced` sentinel is never a pick", () => {
+    expect(
+      lastUserModelStamp([
+        { role: "user", model: "advanced", createdAt: 5 },
+        { role: "assistant", model: "advanced", createdAt: 6 },
+      ]),
+    ).toBeNull()
+    // … and it does not outrank a real pick either.
+    expect(
+      lastUserModelStamp([
+        { role: "user", model: "opus-uuid", createdAt: 5 },
+        { role: "assistant", model: "advanced", createdAt: 99 },
+      ]),
+    ).toEqual({ model: "opus-uuid", createdAt: 5 })
+  })
+
+  test("the newest user stamp wins, so another device's send still lands", () => {
+    expect(
+      lastUserModelStamp([
+        { role: "user", model: "opus-uuid", createdAt: 10 },
+        { role: "user", model: "sonnet-uuid", createdAt: 30 },
+        { role: "assistant", model: "auto", createdAt: 31 },
+      ]),
+    ).toEqual({ model: "sonnet-uuid", createdAt: 30 })
+  })
+
+  test("a blank, missing or malformed stamp is ignored", () => {
+    expect(lastUserModelStamp(null)).toBeNull()
+    expect(lastUserModelStamp([])).toBeNull()
+    expect(
+      lastUserModelStamp([
+        { role: "user", model: "   ", createdAt: 1 },
+        { role: "user", model: 42, createdAt: 2 },
+        { role: "user", createdAt: 3 },
+      ]),
     ).toBeNull()
   })
 })

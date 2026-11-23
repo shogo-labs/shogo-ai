@@ -13,6 +13,7 @@ import { startAgentScheduleWorker, stopAgentScheduleWorker } from '../jobs/run-a
 import { startEventDeliveryWorker, stopEventDeliveryWorker } from '../jobs/run-event-delivery-dispatch'
 import { startChatQueueWorker, stopChatQueueWorker } from '../jobs/run-chat-queue-drain'
 import { startChatSweepWorker, stopChatSweepWorker } from '../jobs/run-chat-sweep'
+import { startTurnFrameSweepWorker, stopTurnFrameSweepWorker } from '../jobs/run-turn-frame-sweep'
 import { startChannelWorkers, stopChannelWorkers } from '../jobs/run-channel-workers'
 import { getLocalHeartbeatScheduler, startLocalHeartbeatScheduler } from './local-heartbeat-scheduler'
 import { startSocialRelayConsumer, stopSocialRelayConsumer } from '../services/social/relay-consumer'
@@ -41,6 +42,9 @@ export async function startLocalBackgroundWorkers({
   startEventDeliveryWorker(runtimeManager)
   startChatQueueWorker()
   startChatSweepWorker()
+  // The turn journal's retention pass (SHO-482): batched, a minute after boot,
+  // then every 10 min. It used to be a single blocking delete at boot.
+  startTurnFrameSweepWorker()
   startChannelWorkers()
   // Relayed Zernio events for this machine's local workspaces: the cloud
   // verified and stored them, this applies them locally and acks. A no-op
@@ -61,6 +65,7 @@ export function stopLocalBackgroundWorkers(): void {
   stopEventDeliveryWorker()
   stopChatQueueWorker()
   stopChatSweepWorker()
+  stopTurnFrameSweepWorker()
   stopChannelWorkers()
   stopSocialRelayConsumer()
   getLocalHeartbeatScheduler().stop()

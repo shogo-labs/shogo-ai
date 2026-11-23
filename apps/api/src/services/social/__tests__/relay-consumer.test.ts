@@ -185,6 +185,34 @@ describe('relayed event consumer', () => {
     expect(applied[0].payload).toEqual({ conversation: { id: 'conv_1' }, message: { id: 'msg_1' } })
   })
 
+  test('a post result delivery reaches the handler with its post detail intact', async () => {
+    const postEvent = delivery({
+      id: 'row-9',
+      eventId: 'evt_9',
+      type: 'post.published',
+      account: null,
+      detail: { _id: 'zp_9', status: 'published', platforms: [] },
+      payload: { post: { _id: 'zp_9', status: 'published' } } as never,
+    })
+    const { impl } = fakeFetch({ 'local-a': [postEvent] })
+    const applied: ApplySocialEventInput[] = []
+
+    const result = await drainRelayedEvents({
+      fetchImpl: impl,
+      resolveConfig: relayConfig,
+      localScopes: async () => ['local-a'],
+      apply: async (input) => {
+        applied.push(input)
+        return { status: 200, body: { ok: true } }
+      },
+    })
+
+    // The desktop applies it through the same `applySocialEvent` the cloud uses.
+    expect(result).toEqual({ fetched: 1, applied: 1, acked: 1 })
+    expect(applied[0].type).toBe('post.published')
+    expect(applied[0].detail).toEqual({ _id: 'zp_9', status: 'published', platforms: [] })
+  })
+
   test('a cloud scope or BYOK machine polls nothing at all', async () => {
     const { impl, calls } = fakeFetch({})
     const cloud = await drainRelayedEvents({
