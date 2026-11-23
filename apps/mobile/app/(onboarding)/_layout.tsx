@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, Text, View } from 'react-native'
+import { Text, View } from 'react-native'
 import { Redirect, Slot } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Button } from '@shogo/shared-ui/primitives'
@@ -10,6 +10,7 @@ import { DomainProvider } from '../../contexts/domain'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { autoSignInLocally } from '../../lib/auth-client'
 import { consumeNewSignupEvent, markNewSignup } from '../../lib/cometly'
+import { Spinner } from '@/components/ui/spinner'
 
 export default function OnboardingLayout() {
   const { isAuthenticated, isLoading, refreshSession, user } = useAuth()
@@ -84,7 +85,7 @@ export default function OnboardingLayout() {
     }
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       </View>
     )
   }

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { ActivityIndicator, Text, View } from 'react-native'
+import { Text, View } from 'react-native'
 import { TriangleAlert } from 'lucide-react-native'
 import { Button } from '@shogo/shared-ui/primitives'
 import { ShogoWordmark } from '../../branding/ShogoWordmark'
+import { Spinner } from '@/components/ui/spinner'
 
 interface SettingUpProps {
   message: string
@@ -41,7 +42,7 @@ export function SettingUp({ message, error, onRetry, onContinueAnyway }: Setting
           </>
         ) : (
           <View className="items-center gap-4" accessibilityLiveRegion="polite">
-            <ActivityIndicator size="small" className="text-muted-foreground" />
+            <Spinner tone="muted" size="small" />
             <Text className="text-center text-base text-muted-foreground">{message}</Text>
           </View>
         )}

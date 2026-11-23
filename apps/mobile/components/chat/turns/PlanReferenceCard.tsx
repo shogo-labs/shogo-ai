@@ -10,7 +10,7 @@
  */
 
 import { useCallback } from "react"
-import { View, Text, Pressable, ActivityIndicator } from "react-native"
+import { View, Text, Pressable } from "react-native"
 import { CheckCircle2, ClipboardList, ChevronRight } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { NATIVE_PHONE_DOCK_COMPOSER_GAP, useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
@@ -27,6 +27,7 @@ import {
   PLAN_READY_WEB_KICKER_CLASS,
 } from "../plan-ready-chrome"
 import type { PlanData } from "../PlanCard"
+import { Spinner } from '@/components/ui/spinner'
 
 export interface PlanReferenceCardProps {
   plan: PlanData
@@ -122,7 +123,7 @@ export function PlanReferenceCard({
             </Text>
           </Pressable>
         ) : isStreaming ? (
-          <ActivityIndicator size="small" />
+          <Spinner size="small" />
         ) : onViewPlan ? (
           <ChevronRight className="text-muted-foreground" size={PHONE_DENSITY.icon.md} />
         ) : null}
@@ -160,7 +161,7 @@ export function PlanReferenceCard({
       {isConfirmed ? (
         <CheckCircle2 className="h-4 w-4 text-green-500" size={COMPACT_DENSITY.icon.lg} />
       ) : isStreaming ? (
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       ) : !onViewPlan ? (
         null
       ) : (

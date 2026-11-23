@@ -16,12 +16,13 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { View, Text, Pressable, ActivityIndicator } from 'react-native'
+import { View, Text, Pressable } from 'react-native'
 import { Calculator, Cpu, Clock, Zap } from 'lucide-react-native'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useDomainHttp } from '../../contexts/domain'
 import { api } from '../../lib/api'
 import { Card, CardContent, Badge, cn } from '@shogo/shared-ui/primitives'
+import { Spinner } from '@/components/ui/spinner'
 
 interface UsageResponse {
   mode: 'shadow' | 'enforce'
@@ -127,7 +128,7 @@ export function ComputeUsageSection() {
   if (isLoading) {
     return (
       <View className="py-12 items-center gap-3">
-        <ActivityIndicator />
+        <Spinner />
         <Text className="text-xs text-muted-foreground">Loading compute usage…</Text>
       </View>
     )

@@ -9,7 +9,7 @@
  * for the team-chat messages you sent, newest first.
  */
 import { useCallback, useMemo, useState } from 'react'
-import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { FlatList, Image, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { AlarmClock, AtSign, Bot, ChevronRight, Heart, Lock, Megaphone, MessageCircleQuestion, MessageSquare, MessagesSquare, Square, Tag } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -28,6 +28,7 @@ import { AgentAvatar } from '../team-chat/AgentAvatar'
 import type { AgentTask } from '../../lib/api'
 import { RunPeekHover } from './RunPeekHover'
 import type { InboxKind } from '../../lib/team-chat-api'
+import { Spinner } from '@/components/ui/spinner'
 
 const KIND_ICON: Record<InboxKind, typeof AtSign> = {
   mention: AtSign,
@@ -200,7 +201,7 @@ export function ActivityFeed({ compact = false, withFloatingCreate = false }: Ac
               </Pressable>
             ) : null}
             {feed.running.length > 0 && <RunningNow entries={feed.running} compact={compact} onOpen={open} onStop={stop} workspaceId={workspaceId} />}
-            {loading ? <ActivityIndicator className="mt-8" /> : null}
+            {loading ? <Spinner className="mt-8" /> : null}
             {stopError && filter !== 'sent' ? <Text className="px-4 pt-2 text-sm text-destructive">{stopError}</Text> : null}
             {filter !== 'sent' && inbox.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{inbox.error}</Text> : null}
             {filter !== 'sent' && agents.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{readableAgentTaskError(agents.error, 'We could not refresh agent activity.')}</Text> : null}
@@ -230,7 +231,7 @@ export function ActivityFeed({ compact = false, withFloatingCreate = false }: Ac
         ListFooterComponent={
           paging.loadingMore ? (
             <View className="items-center py-3">
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             </View>
           ) : paging.hasMore ? (
             <Pressable

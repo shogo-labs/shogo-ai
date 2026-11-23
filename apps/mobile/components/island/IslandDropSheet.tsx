@@ -2,13 +2,14 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useState } from "react"
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native"
+import { Pressable, ScrollView, Text, View } from "react-native"
 import { FilePlus2, FileText, MessageSquarePlus, Paperclip } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { ProjectAvatar } from "./ProjectSwitcher"
 import { isTextFile, type IslandDropAction } from "./island-drop"
 import type { IslandProjectItem } from "./island-inbox"
 import type { IslandFileRef, IslandResult } from "./types"
+import { Spinner } from '@/components/ui/spinner'
 
 export function IslandDropSheet({
   files,
@@ -65,7 +66,7 @@ export function IslandDropSheet({
           {detail}
         </Text>
       </View>
-      {busy === action ? <ActivityIndicator size="small" /> : null}
+      {busy === action ? <Spinner size="small" /> : null}
     </Pressable>
   )
 
@@ -74,7 +75,7 @@ export function IslandDropSheet({
       <View className="flex-row flex-wrap gap-1">
         {files.map((file) => (
           <View key={file.path} className="flex-row items-center gap-1 rounded-md bg-white/10 px-1.5 py-0.5">
-            <FileText size={10} color="#a1a1aa" />
+            <FileText className="text-muted-foreground" size={10} />
             <Text className="max-w-[180px] text-[10px] text-zinc-200" numberOfLines={1}>
               {file.name}
             </Text>

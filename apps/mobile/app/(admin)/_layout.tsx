@@ -17,7 +17,6 @@ import {
   Text,
   Pressable,
   ScrollView,
-  ActivityIndicator,
   useWindowDimensions,
   Platform,
   Animated,
@@ -70,6 +69,7 @@ import { usePlatformConfig } from '../../lib/platform-config';
 import { densityFor } from "../../lib/phone-density"
 import { adminPageTitle, isAdminNavActive } from '../../lib/admin-nav'
 import { useAdminCheck } from '../../hooks/useAdminCheck'
+import { Spinner } from '@/components/ui/spinner'
 
 /**
  * Nav item access markers:
@@ -583,7 +583,7 @@ function AdminLayoutInner() {
     return (
       <SafeAreaView className="flex-1 bg-background">
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" />
+          <Spinner size="large" />
           <Text className="text-muted-foreground mt-3 text-sm">
             Verifying admin access...
           </Text>

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useEffect, useState, type ReactNode } from "react";
-import { ActivityIndicator, Platform, View } from "react-native";
+import { Platform, View } from "react-native";
 import { observer } from "mobx-react-lite";
 import { useAuth } from "../../contexts/auth";
 import { useDomainActions } from "@shogo/shared-app/domain";
@@ -15,6 +15,7 @@ import {
   useProjectChatUrlMirror,
   type ChatUrlParams,
 } from "../../lib/project-chat-url";
+import { Spinner } from '@/components/ui/spinner'
 
 export interface ProjectChatViewProps {
   projectId: string | undefined;
@@ -116,7 +117,7 @@ export const ProjectChatView = observer(function ProjectChatView({
   if (!chatSessionId) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator />
+        <Spinner />
       </View>
     );
   }

@@ -8,7 +8,7 @@
  * `goal_event` activity row links to.
  */
 import { useCallback, useState } from 'react'
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from 'react-native'
+import { Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from 'react-native'
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import {
@@ -31,6 +31,7 @@ import { api, type PersonalGoal, type PersonalGoalEvent, type PersonalAgentTaskS
 import { ArtifactCardList } from './ArtifactCard'
 import { isPhoneLayout } from '../../lib/native-phone-layout'
 import { PhoneScreenHeader, usePhoneScreenHeaderPadding } from '../layout/PhoneScreenHeader'
+import { Spinner } from '@/components/ui/spinner'
 
 type GoalWithDetail = PersonalGoal & { events: PersonalGoalEvent[]; agentTasks: PersonalAgentTaskSummary[] }
 
@@ -104,7 +105,7 @@ export const GoalDetailScreen = observer(function GoalDetailScreen() {
   if (loading) {
     return (
       <View className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator />
+        <Spinner />
       </View>
     )
   }
@@ -199,7 +200,7 @@ export const GoalDetailScreen = observer(function GoalDetailScreen() {
                     className="flex-1 items-center rounded-xl bg-emerald-600 px-3 py-2 active:opacity-80 disabled:opacity-50"
                   >
                     {decidingEventId === event.id ? (
-                      <ActivityIndicator size="small" color="#fff" />
+                      <Spinner className="text-white" size="small" />
                     ) : (
                       <Text className="text-sm font-semibold text-white">Approve</Text>
                     )}

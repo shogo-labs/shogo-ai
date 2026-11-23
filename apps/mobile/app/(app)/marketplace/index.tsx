@@ -9,7 +9,6 @@ import {
   ScrollView,
   TextInput,
   FlatList,
-  ActivityIndicator,
   Image,
   Platform,
 } from 'react-native'
@@ -49,6 +48,7 @@ import {
 import { useDebouncedValue } from '../../../hooks/useDebouncedValue'
 import { useMarketplaceGridLayout, MARKETPLACE_GRID_PAD_X, marketplaceGridCellClass } from '../../../hooks/useGridColumns'
 import { overlayScrollbarProps } from '../../../lib/overlay-scrollbar'
+import { Spinner } from '@/components/ui/spinner'
 
 interface ListingFromAPI {
   id: string
@@ -471,7 +471,7 @@ export default observer(function MarketplaceHomeScreen() {
               accessibilityRole="button"
               accessibilityLabel="Back to marketplace"
             >
-              <ArrowLeft size={16} color="#e27927" />
+              <ArrowLeft className="text-primary" size={16} />
               <Text className="text-sm font-medium text-primary">Back to marketplace</Text>
             </Pressable>
           </View>
@@ -686,7 +686,7 @@ export default observer(function MarketplaceHomeScreen() {
         style={!isNative ? { width: '100%', maxWidth: 1180, alignSelf: 'center' } : undefined}
       >
         <Pressable onPress={handleTopBarBack} hitSlop={6} className="p-1 mr-1">
-          <ArrowLeft size={20} color="#71717a" />
+          <ArrowLeft className="text-muted-foreground" size={20} />
         </Pressable>
         <View className="flex-1 min-w-0">
           <Text className="text-[11px] font-bold uppercase tracking-[1.2px] text-primary">Community tools</Text>
@@ -717,7 +717,7 @@ export default observer(function MarketplaceHomeScreen() {
             accessibilityRole="button"
             accessibilityLabel="Creators"
           >
-            {isNative ? <UserCircle size={19} color="#a1a1aa" /> : <Text className="text-xs font-medium text-muted-foreground">Creators</Text>}
+            {isNative ? <UserCircle size={19} /> : <Text className="text-xs font-medium text-muted-foreground text-muted-foreground">Creators</Text>}
           </Pressable>
           <Pressable
             onPress={() => router.push('/(app)/creator?tab=publish' as any)}
@@ -725,7 +725,7 @@ export default observer(function MarketplaceHomeScreen() {
             accessibilityRole="button"
             accessibilityLabel="Creator studio"
           >
-            <UserCircle size={isNative ? 18 : 14} color="#fff" />
+            <UserCircle className="text-primary-foreground" size={isNative ? 18 : 14} />
             {!isNative && <Text className="text-xs font-semibold text-primary-foreground">Creator</Text>}
           </Pressable>
         </View>
@@ -748,7 +748,7 @@ export default observer(function MarketplaceHomeScreen() {
         {isNative ? (
           <>
             <View className="flex-row items-center border border-primary/20 bg-background rounded-2xl px-3 h-12 w-full">
-              <Search size={16} color="#e27927" />
+              <Search className="text-primary" size={16} />
               <TextInput
                 className="flex-1 ml-2 text-sm text-foreground web:outline-none no-focus-ring"
                 placeholder="Search agents…"
@@ -761,7 +761,7 @@ export default observer(function MarketplaceHomeScreen() {
               />
               {searchQuery.length > 0 && (
                 <Pressable onPress={() => setSearchQuery('')} hitSlop={6}>
-                  <X size={14} color="#71717a" />
+                  <X className="text-muted-foreground" size={14} />
                 </Pressable>
               )}
             </View>
@@ -820,7 +820,7 @@ export default observer(function MarketplaceHomeScreen() {
           <>
             <View className="flex-row items-center gap-2">
               <View className="flex-row items-center bg-background border border-primary/20 rounded-2xl px-3 h-11 flex-1">
-                <Search size={16} color="#e27927" />
+                <Search className="text-primary" size={16} />
                 <TextInput
                   className="flex-1 ml-2 text-sm text-foreground web:outline-none no-focus-ring"
                   placeholder="Search agents…"
@@ -833,7 +833,7 @@ export default observer(function MarketplaceHomeScreen() {
                 />
                 {searchQuery.length > 0 && (
                   <Pressable onPress={() => setSearchQuery('')} hitSlop={6}>
-                    <X size={14} color="#71717a" />
+                    <X className="text-muted-foreground" size={14} />
                   </Pressable>
                 )}
               </View>
@@ -926,14 +926,14 @@ export default observer(function MarketplaceHomeScreen() {
             ListFooterComponent={
               loadingMore ? (
                 <View className="py-4 items-center">
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                 </View>
               ) : null
             }
             ListEmptyComponent={
               !loading ? (
                 <View className="items-center justify-center py-20 px-6">
-                  <Search size={32} color="#a1a1aa" />
+                  <Search className="text-muted-foreground" size={32} />
                   <Text className="text-foreground font-medium mt-3 mb-1">
                     No agents found
                   </Text>
@@ -976,14 +976,14 @@ export default observer(function MarketplaceHomeScreen() {
             ListFooterComponent={
               loadingMore ? (
                 <View className="py-4 items-center">
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                 </View>
               ) : null
             }
             ListEmptyComponent={
               !loading ? (
                 <View className="items-center justify-center py-20 px-6">
-                  <Search size={32} color="#a1a1aa" />
+                  <Search className="text-muted-foreground" size={32} />
                   <Text className="text-foreground font-medium mt-3 mb-1">
                     No agents found
                   </Text>
@@ -1153,7 +1153,7 @@ function SortMenu({
           <Text className="text-xs font-medium text-foreground">
             {SORT_LABELS[value]}
           </Text>
-          <ChevronDown size={12} color="#71717a" />
+          <ChevronDown className="text-muted-foreground" size={12} />
         </Pressable>
       )}
     >

@@ -6,7 +6,7 @@
  */
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { ActivityIndicator, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
+import { Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { Cloud, CloudOff, LogIn, LogOut, Plus, Settings, Sparkles, UserPlus, Zap } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import { usePostHogSafe } from "../../../contexts/posthog";
@@ -29,6 +29,7 @@ import { isInvitationExpired } from "../../../lib/api";
 import { usePendingInvitations } from "../../../lib/use-pending-invitations";
 import { useInviteDialog } from "../../workspace/invite-dialog-context";
 import { usePermissions } from "../../../hooks/usePermissions";
+import { Spinner } from '@/components/ui/spinner'
 
 type PendingInvitations = ReturnType<typeof usePendingInvitations>;
 
@@ -193,7 +194,7 @@ function PendingInvitationsSection({
                 )}
               >
                 {isAccepting ? (
-                  <ActivityIndicator size="small" color="white" />
+                  <Spinner tone="onPrimary" size="small" />
                 ) : (
                   <Text
                     className={cn(
@@ -215,7 +216,7 @@ function PendingInvitationsSection({
                 )}
               >
                 {isDeclining ? (
-                  <ActivityIndicator size="small" />
+                  <Spinner size="small" />
                 ) : (
                   <Text className="text-xs font-medium text-foreground">
                     {expired ? "Dismiss" : "Decline"}

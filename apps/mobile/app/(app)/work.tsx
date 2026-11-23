@@ -8,7 +8,7 @@
  * selection. Alt+Shift+F clears the filters.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, TextInput, View, useWindowDimensions } from 'react-native'
+import { Platform, Pressable, ScrollView, Text, TextInput, View, useWindowDimensions } from 'react-native'
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -41,6 +41,7 @@ import { CardPane } from '../../components/boards/CardPane'
 import { usePhoneChromeOverlay } from '../../components/layout/PhoneChromeOverlay'
 import { Lane } from '../../components/boards/Lane'
 import { DraggableCard } from '../../components/boards/drag'
+import { Spinner } from '@/components/ui/spinner'
 
 const api = workBoardsApi()
 const SIDE_PANE_MIN_WIDTH = 1024
@@ -260,7 +261,7 @@ export default observer(function MyWorkScreen() {
         </Pressable>
       ) : null}
       {loading && !items.length ? (
-        <View className="flex-1 items-center justify-center"><ActivityIndicator /></View>
+        <View className="flex-1 items-center justify-center"><Spinner /></View>
       ) : error && !items.length ? (
         <View className="flex-1 items-center justify-center gap-2 p-6">
           <Text className="text-center text-sm text-muted-foreground">{error}</Text>

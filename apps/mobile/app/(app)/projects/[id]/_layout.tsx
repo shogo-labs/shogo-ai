@@ -26,7 +26,6 @@ import {
   View,
   Text,
   Pressable,
-  ActivityIndicator,
   ScrollView,
   Platform,
   BackHandler,
@@ -249,6 +248,7 @@ import {
   markRuntimeReadyAndFlush,
   setOpenAttemptId,
 } from "../../../../lib/cold-start-timing";
+import { Spinner } from '@/components/ui/spinner'
 
 csMark("project:layout:module-load");
 
@@ -3969,7 +3969,7 @@ export default observer(function ProjectLayout() {
         <View className="flex-1 bg-background items-center justify-center px-6">
           {!showStalledRecovery && (
             <>
-              <ActivityIndicator size="large" />
+              <Spinner size="large" />
               <Text className="text-muted-foreground mt-3 text-sm">
                 {stillBootingRuntime
                   ? "Starting your project…"
@@ -3988,7 +3988,7 @@ export default observer(function ProjectLayout() {
           )}
           {showStalledRecovery && !runtimeCapacity && (
             <View className="w-full max-w-sm gap-3 items-center">
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
               <Text className="text-foreground text-base font-semibold text-center">
                 This is taking longer than expected
               </Text>
@@ -4210,7 +4210,7 @@ export default observer(function ProjectLayout() {
                 <PanelErrorBoundary panelName="Shogo IDE Chat">
                   {workspaceChatLoading ? (
                     <View className="flex-1 items-center justify-center bg-background">
-                      <ActivityIndicator size="large" />
+                      <Spinner size="large" />
                       <Text className="mt-3 text-sm text-muted-foreground">
                         Loading project chat…
                       </Text>
@@ -4408,7 +4408,7 @@ export default observer(function ProjectLayout() {
                           testID="workspace-chat-loading"
                           className="absolute inset-0 bg-background items-center justify-center"
                         >
-                          <ActivityIndicator size="large" />
+                          <Spinner size="large" />
                           <Text className="text-sm text-muted-foreground mt-3 text-center">
                             Starting workspace…
                           </Text>
@@ -5710,7 +5710,7 @@ function CanvasPanel({
           </>
         ) : (
           <>
-            <ActivityIndicator size="large" className="mb-4" />
+            <Spinner size="large" className="mb-4" />
             <Text
               className={cn(
                 "text-foreground font-medium mb-1",
@@ -5798,7 +5798,7 @@ function AppPreviewPanel({
   if (!previewUrl) {
     return (
       <View className="flex-1 items-center justify-center px-6">
-        <ActivityIndicator size="large" className="mb-4" />
+        <Spinner size="large" className="mb-4" />
         <Text className="text-muted-foreground text-center">
           Connecting to preview server...
         </Text>
@@ -5821,7 +5821,7 @@ function AppPreviewPanel({
 
         {!previewReady && (
           <View className="absolute inset-0 z-[5] items-center justify-center bg-background/90">
-            <ActivityIndicator size="large" className="mb-4" />
+            <Spinner size="large" className="mb-4" />
             <Text className="text-foreground font-medium text-base mb-1">
               {PHASE_LABELS[phase] || "Preparing preview..."}
             </Text>

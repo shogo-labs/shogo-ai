@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { View, Text, Pressable, ScrollView, ActivityIndicator, TextInput, StyleSheet } from 'react-native'
+import { View, Text, Pressable, ScrollView, TextInput, StyleSheet } from 'react-native'
 import { Zap, RefreshCw, BookOpen, Download, Check, Trash2, Plus, ChevronDown, ChevronRight, Search, Globe, FileCode } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { agentFetch } from '../../../lib/agent-fetch'
@@ -24,6 +24,7 @@ import {
 } from "../../phone/NativePhonePane";
 import { densityFor } from "../../../lib/phone-density"
 import { errorMessage } from '../../../lib/error-message'
+import { Spinner } from '@/components/ui/spinner'
 
 interface Skill {
   name: string
@@ -375,7 +376,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
       >
         {isLoading ? (
           <View className="items-center py-8">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
             <Text className="text-sm text-muted-foreground mt-2">Loading skills...</Text>
           </View>
         ) : showLibrary ? (
@@ -742,7 +743,7 @@ export function SkillsPanel({ projectId, agentUrl, visible }: SkillsPanelProps) 
                     <View className="px-3 pb-3 border-t border-border">
                       {isLoadingThis ? (
                         <View className="items-center py-4">
-                          <ActivityIndicator size="small" />
+                          <Spinner size="small" />
                         </View>
                       ) : content ? (
                         <>

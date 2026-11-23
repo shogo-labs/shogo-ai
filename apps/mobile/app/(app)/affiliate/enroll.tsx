@@ -9,13 +9,14 @@
  */
 
 import { useCallback, useState } from 'react'
-import { View, Text, ScrollView, Pressable, ActivityIndicator } from 'react-native'
+import { View, Text, ScrollView, Pressable } from 'react-native'
 import { useRouter } from 'expo-router'
 import { ArrowLeft, AlertTriangle, Sparkles } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Card, CardContent, Button, Input } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../../contexts/domain'
 import { affiliateApi } from '../../../lib/affiliate-api'
+import { Spinner } from '@/components/ui/spinner'
 
 function describeError(code: string): string {
   switch (code) {
@@ -159,7 +160,7 @@ export default function AffiliateEnrollScreen() {
         ) : null}
 
         <Button onPress={submit} disabled={submitting || !accepted} className="mt-1">
-          {submitting ? <ActivityIndicator /> : (
+          {submitting ? <Spinner /> : (
             <Text className="text-primary-foreground font-medium">Enroll</Text>
           )}
         </Button>

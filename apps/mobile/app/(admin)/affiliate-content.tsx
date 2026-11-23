@@ -19,7 +19,6 @@ import {
   TextInput,
   ScrollView,
   Pressable,
-  ActivityIndicator,
   RefreshControl,
   Switch,
   useWindowDimensions,
@@ -28,6 +27,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Clapperboard, Save, KeyRound, DollarSign, ShieldAlert, RefreshCw, RadioTower } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -242,7 +242,7 @@ export default function AffiliateContentSettingsPage() {
       <View className="flex-1 items-center justify-center bg-background px-4">
         <View className="w-full max-w-md rounded-2xl border border-border bg-card p-5 items-center">
           <View className="h-10 w-10 rounded-xl bg-primary/10 items-center justify-center">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           </View>
           <Text className="text-sm font-semibold text-foreground mt-3">Loading content CPM controls</Text>
           <Text className="text-xs text-muted-foreground mt-1 text-center">
@@ -465,7 +465,7 @@ export default function AffiliateContentSettingsPage() {
             disabled={saving}
             className={cn('flex-row items-center gap-1.5 px-4 py-2.5 rounded-lg', saving ? 'bg-muted' : 'bg-primary')}
           >
-            {saving ? <ActivityIndicator size="small" /> : <Save size={14} className="text-primary-foreground" />}
+            {saving ? <Spinner size="small" /> : <Save size={14} className="text-primary-foreground" />}
             <Text className={cn('text-sm font-medium', saving ? 'text-muted-foreground' : 'text-primary-foreground')}>
               Save settings
             </Text>

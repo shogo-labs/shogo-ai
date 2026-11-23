@@ -5,7 +5,7 @@
  * banner over a conversation with a live huddle. The call itself is the
  * floating `HuddleWindow`.
  */
-import { ActivityIndicator, Image, Pressable, Text, View } from 'react-native'
+import { Image, Pressable, Text, View } from 'react-native'
 import { Headphones, PhoneOff, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { WebTooltip } from '../chat/WebTooltip'
@@ -22,6 +22,7 @@ import {
 import { summarizeNames } from '../../lib/huddle-roster'
 import { type ConversationDetail, type HuddleParticipant } from '../../lib/team-chat-api'
 import { GlassButton } from './FloatingChrome'
+import { Spinner } from '@/components/ui/spinner'
 
 const MAX_FACES = 5
 
@@ -150,7 +151,7 @@ export function HuddleBanner({ conversation, me, label, topInset = 0 }: { conver
           <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
             {summary}
           </Text>
-          {call.status === 'joining' && inThis ? <ActivityIndicator size="small" /> : null}
+          {call.status === 'joining' && inThis ? <Spinner size="small" /> : null}
           {inThis && call.status !== 'joining' ? (
             <>
               {call.view !== 'expanded' ? (

@@ -14,7 +14,6 @@ import {
   FlatList,
   Pressable,
   TextInput,
-  ActivityIndicator,
   Image,
   RefreshControl,
   useWindowDimensions,
@@ -46,6 +45,7 @@ import { Text as UIText } from '@/components/ui/text'
 import { Button, ButtonText } from '@/components/ui/button'
 import { API_URL } from '../../../lib/api'
 import { resolveAvatarUrl } from "../../../lib/chat-attachment-url"
+import { Spinner } from '@/components/ui/spinner'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -466,7 +466,7 @@ export default function AdminUsersPage() {
         </View>
         {loading && !refreshing && (
           <View className="absolute inset-0 items-center justify-center bg-background/80">
-            <ActivityIndicator size="large" />
+            <Spinner size="large" />
           </View>
         )}
       </View>

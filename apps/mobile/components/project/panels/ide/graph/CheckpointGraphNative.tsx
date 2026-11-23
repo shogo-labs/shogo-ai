@@ -12,7 +12,7 @@
 // rollback on tap.
 
 import { useCallback, useMemo, useState } from 'react'
-import { View, Text, Pressable, ScrollView, ActivityIndicator, StyleSheet } from 'react-native'
+import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native'
 import Svg, { Path, Line, Circle, Text as SvgText, G } from 'react-native-svg'
 import {
   AlertTriangle,
@@ -42,6 +42,7 @@ import {
 import { avatarColor, initials, isAiAuthor, relativeTime } from './gitAvatar'
 import { CreateCheckpointModal, RollbackConfirmModal } from '../../CheckpointModals'
 import { NATIVE_PHONE_HAIRLINE_COLOR, useNativePhoneWindow } from '../../../../../lib/native-phone-layout'
+import { Spinner } from '@/components/ui/spinner'
 
 const CHECKPOINT_RING = '#f59e0b'
 const LIVE_RING = '#10b981'
@@ -244,7 +245,7 @@ export function CheckpointGraphNative({ projectId }: { projectId: string }) {
         </View>
       ) : graph.isLoading && graph.commits.length === 0 ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" />
+          <Spinner size="large" />
           <Text className="text-muted-foreground text-sm mt-3">Loading commit graph...</Text>
         </View>
       ) : graph.error ? (
@@ -296,7 +297,7 @@ export function CheckpointGraphNative({ projectId }: { projectId: string }) {
               disabled={graph.isLoadingMore}
               className="mx-4 mt-2 flex-row items-center justify-center gap-2 rounded-lg border border-border py-2 active:bg-muted"
             >
-              {graph.isLoadingMore && <ActivityIndicator size="small" />}
+              {graph.isLoadingMore && <Spinner size="small" />}
               <Text className="text-xs font-medium text-foreground">Load more</Text>
             </Pressable>
           )}

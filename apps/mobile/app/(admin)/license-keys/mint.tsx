@@ -17,7 +17,6 @@ import {
   ScrollView,
   Pressable,
   TextInput,
-  ActivityIndicator,
   Platform,
 } from 'react-native'
 import { useRouter } from 'expo-router'
@@ -34,6 +33,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { API_URL } from '../../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 const API_BASE = `${API_URL}/api/admin`
 
@@ -341,7 +341,7 @@ export default function MintLicenseKeysPage() {
               )}
             >
               {minting ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
                 <Sparkles size={14} className="text-primary-foreground" />
               )}

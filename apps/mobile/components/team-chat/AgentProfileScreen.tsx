@@ -6,7 +6,7 @@
  * Owners and workspace admins can change how the agent looks.
  */
 import { useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, Text, View, useWindowDimensions } from 'react-native'
+import { Pressable, ScrollView, Text, View, useWindowDimensions } from 'react-native'
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { ChevronLeft, FolderOpen, MessageSquare, Palette } from 'lucide-react-native'
@@ -21,6 +21,7 @@ import { useAgentLookEditor } from './useAgentLookEditor'
 import { openConversationTarget } from '../../lib/team-chat-nav'
 import { isPhoneLayout } from '../../lib/native-phone-layout'
 import { PhoneScreenHeader, usePhoneScreenHeaderInset } from '../layout/PhoneScreenHeader'
+import { Spinner } from '@/components/ui/spinner'
 
 const SIDE_PANE_MIN_WIDTH = 1024
 
@@ -93,7 +94,7 @@ export function AgentProfileScreen({ workspaceId, agentKey }: { workspaceId: str
             ) : null}
           </View>
 
-          {!card && !failed ? <ActivityIndicator /> : null}
+          {!card && !failed ? <Spinner /> : null}
           {failed ? <Text className="text-center text-sm text-muted-foreground">Couldn’t load this agent’s details.</Text> : null}
           {card ? (
             <View className="rounded-xl border border-border bg-card p-4">

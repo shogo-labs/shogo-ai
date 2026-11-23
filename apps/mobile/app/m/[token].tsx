@@ -5,7 +5,7 @@
  * no rough notes: just what the owner chose to share.
  */
 import { useEffect, useState } from 'react'
-import { View, Text, ScrollView, ActivityIndicator, Pressable } from 'react-native'
+import { View, Text, ScrollView, Pressable } from 'react-native'
 import { useLocalSearchParams } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { CheckSquare, Square } from 'lucide-react-native'
@@ -16,6 +16,7 @@ import type { MeetingActionItem } from '../../lib/meetings-api'
 import { MarkdownText } from '../../components/chat/MarkdownText'
 import { openExternalLink } from '../../lib/open-external-link';
 import { errorMessage } from '../../lib/error-message'
+import { Spinner } from '@/components/ui/spinner'
 
 interface SharedMeeting {
   title: string | null
@@ -53,7 +54,7 @@ export default function SharedMeetingScreen() {
   if (!meeting) {
     return (
       <SafeAreaView className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator color="#f97316" />
+        <Spinner />
       </SafeAreaView>
     )
   }

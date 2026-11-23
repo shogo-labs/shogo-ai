@@ -3,7 +3,6 @@
 
 import { useCallback, useMemo, useRef, useState } from "react"
 import {
-  ActivityIndicator,
   Pressable,
   ScrollView,
   Text,
@@ -15,6 +14,7 @@ import type { UIMessage } from "@ai-sdk/react"
 import { ArrowDown } from "lucide-react-native"
 import { TurnList } from "../chat/turns/TurnList"
 import { MarkdownText } from "../chat/MarkdownText"
+import { Spinner } from '@/components/ui/spinner'
 
 /** The island shows the tail of a chat; "Open in Shogo" has the rest. */
 const MAX_MESSAGES = 30
@@ -78,7 +78,7 @@ export function IslandConversation({
         ) : null}
         {isLoading && messages.length === 0 ? (
           <View className="items-center py-6">
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           </View>
         ) : messages.length === 0 && !liveReply ? (
           <Text className="py-6 text-center text-[12px] text-muted-foreground">

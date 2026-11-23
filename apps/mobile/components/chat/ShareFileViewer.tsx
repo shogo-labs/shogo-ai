@@ -15,7 +15,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
-  ActivityIndicator,
   Image,
   Modal,
   Platform,
@@ -36,6 +35,7 @@ import { blobMimeType, fileViewKind, type FileViewKind } from "../files/file-vie
 import { FileTypeIcon } from "./FileTypeIcon"
 import { GlassButton } from "../team-chat/FloatingChrome"
 import { PhoneScreenHeader, usePhoneScreenHeaderInset } from "../layout/PhoneScreenHeader"
+import { Spinner } from '@/components/ui/spinner'
 
 export type ShareFileTarget = Pick<InAppFileRef, "href" | "name"> &
   Partial<Pick<InAppFileRef, "kind" | "path">>
@@ -352,7 +352,7 @@ export function ShareFileView({ target, onClose, embedded = false, className, fl
             testID="share-file-download"
             className="flex-row items-center gap-1 rounded-md px-2 py-1 hover:bg-muted active:opacity-70"
           >
-            {saving ? <ActivityIndicator size="small" /> : <Download size={14} className="text-muted-foreground" />}
+            {saving ? <Spinner size="small" /> : <Download size={14} className="text-muted-foreground" />}
             <Text className="text-[11px] text-muted-foreground">Download</Text>
           </Pressable>
         ) : null}
@@ -377,7 +377,7 @@ export function ShareFileView({ target, onClose, embedded = false, className, fl
 
       {state.status === "loading" ? (
         <View className="flex-1 items-center justify-center py-8">
-          <ActivityIndicator />
+          <Spinner />
         </View>
       ) : null}
 

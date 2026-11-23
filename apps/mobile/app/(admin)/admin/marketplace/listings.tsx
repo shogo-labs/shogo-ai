@@ -16,7 +16,6 @@ import {
   Text,
   FlatList,
   Pressable,
-  ActivityIndicator,
   RefreshControl,
   ScrollView,
   useWindowDimensions,
@@ -40,6 +39,7 @@ import {
   ALL_LISTING_STATUSES,
   type ListingStatus,
 } from './_helpers'
+import { Spinner } from '@/components/ui/spinner'
 
 interface AdminListing {
   id: string
@@ -356,7 +356,7 @@ export default function MarketplaceListingsPage() {
           />
           {loading && !refreshing && (
             <View className="absolute inset-0 items-center justify-center bg-background/80">
-              <ActivityIndicator size="large" />
+              <Spinner size="large" />
             </View>
           )}
         </View>

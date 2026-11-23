@@ -16,9 +16,10 @@
  */
 
 import type { ReactNode } from 'react'
-import { ActivityIndicator, Pressable, Text, View } from 'react-native'
+import { Pressable, Text, View } from 'react-native'
 import { CircleAlert } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { Spinner } from '@/components/ui/spinner'
 
 export type ActivityCardTone = 'neutral' | 'primary' | 'destructive'
 
@@ -143,7 +144,7 @@ export function ActivityEmptyCard({ icon, title, message, centered = !icon }: Ac
 export function ActivityLoadingState() {
   return (
     <View className="flex-1 items-center justify-center py-14">
-      <ActivityIndicator />
+      <Spinner />
     </View>
   )
 }

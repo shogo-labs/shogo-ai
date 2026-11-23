@@ -18,7 +18,6 @@ import {
   Pressable,
   TextInput,
   FlatList,
-  ActivityIndicator,
   Switch,
   type ListRenderItemInfo,
 } from 'react-native'
@@ -33,6 +32,7 @@ import {
   ModalCloseButton,
 } from '@/components/ui/modal'
 import { cn } from '@shogo/shared-ui/primitives'
+import { Spinner } from '@/components/ui/spinner'
 
 export interface SlackProjectRow {
   id: string
@@ -116,7 +116,7 @@ export function SlackProjectsModal({
             ) : null}
           </View>
           {saving ? (
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           ) : (
             <Switch value={item.slackEnabled} onValueChange={(value) => onToggle(item.id, value)} />
           )}
@@ -239,7 +239,7 @@ export function SlackProjectsModal({
                 Disable {isFiltered ? 'shown' : 'all'}
               </Text>
             </Pressable>
-            {bulkSaving && <ActivityIndicator size="small" />}
+            {bulkSaving && <Spinner size="small" />}
           </View>
 
           {/* List — FlatList (not ScrollView+map) so this stays smooth

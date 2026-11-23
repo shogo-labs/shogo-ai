@@ -3,7 +3,6 @@
 
 import { useCallback, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
   Image,
   Pressable,
   Text,
@@ -23,6 +22,7 @@ import {
   type GenerateImageResult,
 } from "./generate-image-result";
 import { runGeneratedImageAction } from "../generated-image-actions";
+import { Spinner } from '@/components/ui/spinner'
 
 export interface GeneratedImageGalleryProps {
   tools: Array<{ tool: ToolCallData; id: string }>;
@@ -67,7 +67,7 @@ function GalleryTile({
               </Text>
             </>
           ) : (
-            <ActivityIndicator size="small" />
+            <Spinner size="small" />
           )}
         </View>
       ) : null}

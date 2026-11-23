@@ -2,13 +2,14 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useEffect, useState } from 'react'
-import { View, Text, FlatList, Pressable, ActivityIndicator, RefreshControl, Platform } from 'react-native'
+import { View, Text, FlatList, Pressable, RefreshControl, Platform } from 'react-native'
 import { useRouter } from 'expo-router'
 import { ArrowLeft, Landmark } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Card, CardContent, Badge } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../../contexts/domain'
 import { affiliateApi, type AffiliatePayoutRow } from '../../../lib/affiliate-api'
+import { Spinner } from '@/components/ui/spinner'
 
 function dollars(cents: number) { return `$${(cents / 100).toFixed(2)}` }
 
@@ -50,7 +51,7 @@ export default function PayoutsScreen() {
       </View>
 
       {loading ? (
-        <View className="py-16 items-center"><ActivityIndicator /></View>
+        <View className="py-16 items-center"><Spinner /></View>
       ) : (
         <FlatList
           data={rows}

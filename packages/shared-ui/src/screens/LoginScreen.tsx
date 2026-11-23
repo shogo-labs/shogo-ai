@@ -9,7 +9,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react'
 import type { ImageSourcePropType } from 'react-native'
-import { View, Text, TextInput, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Pressable, useWindowDimensions, Image, useColorScheme, Alert as RNAlert, Linking, Animated, Easing } from 'react-native'
+import { View, Text, TextInput, ScrollView, KeyboardAvoidingView, Platform, Pressable, useWindowDimensions, Image, useColorScheme, Alert as RNAlert, Linking, Animated, Easing } from 'react-native'
 import Svg, { G, Path, Rect } from 'react-native-svg'
 import { Eye, EyeOff, X } from 'lucide-react-native'
 import { Button } from '../primitives/Button'
@@ -19,6 +19,7 @@ import { Alert, AlertDescription } from '../primitives/Alert'
 import { Separator } from '../primitives/Separator'
 import { cn } from '../primitives/cn'
 import { ShogoWordmark } from '../branding/ShogoWordmark'
+import { Spinner } from '../primitives/Spinner'
 
 /** ~`text-muted-foreground` — lucide icons need explicit color */
 const PASSWORD_TOGGLE_ICON_COLOR = '#71717a'
@@ -537,7 +538,7 @@ function SignInForm({
       ) : null}
 
       <Button variant="brand" onPress={handleSubmit} disabled={isLoading || !email || !password} className="mt-1">
-        {isLoading ? <ActivityIndicator color="#fff" size="small" /> : 'Sign In'}
+        {isLoading ? <Spinner tone="onPrimary" size="small" /> : 'Sign In'}
       </Button>
     </View>
   )
@@ -687,7 +688,7 @@ function SignUpForm({
       ) : null}
 
       <Button variant="brand" onPress={handleSubmit} disabled={isLoading || !isFormValid} className="mt-1">
-        {isLoading ? <ActivityIndicator color="#fff" size="small" /> : 'Sign Up'}
+        {isLoading ? <Spinner tone="onPrimary" size="small" /> : 'Sign Up'}
       </Button>
     </View>
   )

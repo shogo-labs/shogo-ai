@@ -11,7 +11,6 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  ActivityIndicator,
   FlatList,
   Pressable,
   Text,
@@ -38,6 +37,7 @@ import {
   visibleProjectChatItems,
   type ProjectChatListItem,
 } from '../../lib/project-chat-sessions'
+import { Spinner } from '@/components/ui/spinner'
 
 export default observer(function ProjectChatsPage() {
   const router = useRouter()
@@ -169,7 +169,7 @@ export default observer(function ProjectChatsPage() {
       <View className="min-h-0 flex-1" style={{ paddingTop: header.height }}>
       {loading && sessions.length === 0 ? (
         <View className="flex-1 items-center justify-center">
-          <ActivityIndicator color="#f97316" />
+          <Spinner />
         </View>
       ) : activeSessions.length === 0 ? (
         <PhoneListEmpty
@@ -197,7 +197,7 @@ export default observer(function ProjectChatsPage() {
           ListFooterComponent={
             loadingMore ? (
               <View className="items-center py-4">
-                <ActivityIndicator color="#f97316" />
+                <Spinner />
               </View>
             ) : null
           }

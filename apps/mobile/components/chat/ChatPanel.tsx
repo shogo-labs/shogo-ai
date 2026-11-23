@@ -48,7 +48,6 @@ import {
   Platform,
   StyleSheet,
   type ViewStyle,
-  ActivityIndicator,
   KeyboardAvoidingView,
   Keyboard,
   type NativeScrollEvent,
@@ -422,6 +421,7 @@ import {
   type WorkspaceExperienceComposer,
 } from "@shogo/shared-app"
 import { openExternalLink } from "../../lib/open-external-link";
+import { Spinner } from '@/components/ui/spinner'
 
 /** Full composer (model picker + interaction modes, no forced mode) — the default for team workspaces and any caller that doesn't pass `composer`. */
 const DEFAULT_CHAT_COMPOSER: WorkspaceExperienceComposer =
@@ -10665,7 +10665,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             )}
           >
             {reconnecting ? (
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             ) : (
               <RefreshCw
                 size={12}
@@ -11092,7 +11092,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                       className="py-2 items-center"
                     >
                       {sessionMessages.isLoadingMore ? (
-                        <ActivityIndicator size="small" />
+                        <Spinner size="small" />
                       ) : (
                         <Text className="text-sm text-primary">
                           Load earlier messages

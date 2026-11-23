@@ -17,11 +17,12 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { View, Text, Pressable, ActivityIndicator, ScrollView } from 'react-native'
+import { View, Text, Pressable, ScrollView } from 'react-native'
 import { Cpu, Lock, RotateCw, Check } from 'lucide-react-native'
 import type { HttpClient } from '@shogo-ai/sdk'
 import { cn } from '@shogo/shared-ui/primitives'
 import { api, type ProjectMachineState, type MachineSizeId } from '../../lib/api'
+import { Spinner } from '@/components/ui/spinner'
 
 interface MachineSettingsProps {
   projectId: string
@@ -117,7 +118,7 @@ export function MachineSettings({ projectId, http }: MachineSettingsProps) {
   if (loading) {
     return (
       <View className="flex-1 items-center justify-center py-10">
-        <ActivityIndicator size="small" />
+        <Spinner size="small" />
       </View>
     )
   }
@@ -235,7 +236,7 @@ export function MachineSettings({ projectId, http }: MachineSettingsProps) {
             className={cn('rounded-md py-2 items-center mt-1', dirty && !saving ? 'bg-primary' : 'bg-muted')}
           >
             {saving ? (
-              <ActivityIndicator size="small" />
+              <Spinner size="small" />
             ) : (
               <Text
                 className={cn(
@@ -289,7 +290,7 @@ export function MachineSettings({ projectId, http }: MachineSettingsProps) {
               )}
             >
               {restarting ? (
-                <ActivityIndicator size="small" />
+                <Spinner size="small" />
               ) : (
                 <Text
                   className={cn('text-sm font-medium', restartPending ? 'text-primary-foreground' : 'text-foreground')}

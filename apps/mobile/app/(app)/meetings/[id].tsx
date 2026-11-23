@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { View, Text, Pressable, ScrollView, TextInput, ActivityIndicator, Modal, useWindowDimensions } from 'react-native'
+import { View, Text, Pressable, ScrollView, TextInput, Modal, useWindowDimensions } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import * as Clipboard from 'expo-clipboard'
@@ -41,6 +41,7 @@ import { notesForClipboard, parseTranscript, stripActionItemsSection } from '../
 import { useLiveMeetingTranscript } from '../../../lib/use-live-meeting-transcript'
 import { MarkdownText } from '../../../components/chat/MarkdownText'
 import { MeetingTranscript } from '../../../components/meetings/MeetingTranscript'
+import { Spinner } from '@/components/ui/spinner'
 
 type Tab = 'notes' | 'mine' | 'transcript'
 
@@ -65,18 +66,18 @@ function ActionButton({
       className={cn(
         'min-h-10 flex-row items-center gap-1.5 rounded-xl border px-3',
         tone === 'danger' ? 'border-red-200 active:bg-red-50' : 'border-border/70 active:bg-muted/70',
-        tone === 'primary' && 'border-orange-500/40 bg-orange-500/10',
+        tone === 'primary' && 'border-primary/40 bg-primary/10',
         disabled && 'opacity-40',
       )}
     >
       <Icon
         size={14}
-        className={tone === 'danger' ? 'text-red-500' : tone === 'primary' ? 'text-orange-600' : 'text-muted-foreground'}
+        className={tone === 'danger' ? 'text-red-500' : tone === 'primary' ? 'text-primary' : 'text-muted-foreground'}
       />
       <Text
         className={cn(
           'text-xs',
-          tone === 'danger' ? 'text-red-500' : tone === 'primary' ? 'text-orange-700 dark:text-orange-300' : 'text-muted-foreground',
+          tone === 'danger' ? 'text-red-500' : tone === 'primary' ? 'text-primary' : 'text-muted-foreground',
         )}
       >
         {label}
@@ -245,7 +246,7 @@ export default function MeetingDetailScreen() {
   if (loading || !workspaceId) {
     return (
       <SafeAreaView className="flex-1 items-center justify-center bg-background">
-        <ActivityIndicator color="#f97316" />
+        <Spinner />
       </SafeAreaView>
     )
   }
@@ -305,7 +306,7 @@ export default function MeetingDetailScreen() {
               onBlur={handleSaveTitle}
               onSubmitEditing={handleSaveTitle}
               autoFocus
-              className="flex-1 border-b border-orange-500 pb-0.5 text-lg font-semibold text-foreground"
+              className="flex-1 border-b border-primary pb-0.5 text-lg font-semibold text-foreground"
             />
           ) : phone ? null : (
             <Pressable
@@ -423,7 +424,7 @@ export default function MeetingDetailScreen() {
             )}
             {busy ? (
               <View className="items-center justify-center rounded-2xl border border-border/70 bg-card py-16">
-                <ActivityIndicator size="large" color="#f97316" className="mb-4" />
+                <Spinner size="large"  className="mb-4" />
                 <Text className="text-sm text-muted-foreground">
                   {meeting.status === 'recording' ? 'Recording in progress' : 'Transcribing…'}
                 </Text>
@@ -431,7 +432,7 @@ export default function MeetingDetailScreen() {
               </View>
             ) : meeting.enhanceStatus === 'running' && !meeting.enhancedNotes ? (
               <View className="items-center justify-center rounded-2xl border border-border/70 bg-card py-16">
-                <ActivityIndicator size="large" color="#f97316" className="mb-4" />
+                <Spinner size="large"  className="mb-4" />
                 <Text className="text-sm text-muted-foreground">Writing your notes…</Text>
               </View>
             ) : meeting.enhancedNotes ? (
@@ -441,7 +442,7 @@ export default function MeetingDetailScreen() {
                 </View>
                 {meeting.actionItems.length > 0 && (
                   <View className="rounded-2xl border border-border/70 bg-card p-4">
-                    <Text className="mb-3 text-[11px] font-semibold uppercase tracking-[1.2px] text-orange-600 dark:text-orange-300">
+                    <Text className="mb-3 text-[11px] font-semibold uppercase tracking-[1.2px] text-primary">
                       Action items
                     </Text>
                     {meeting.actionItems.map((item, index) => (
@@ -482,7 +483,7 @@ export default function MeetingDetailScreen() {
                 </Text>
                 <Pressable
                   onPress={() => enhance()}
-                  className="mt-4 rounded-xl bg-orange-500 px-4 py-2.5 active:bg-orange-600"
+                  className="mt-4 rounded-xl bg-primary px-4 py-2.5 active:bg-primary/80"
                 >
                   <Text className="text-sm text-white font-medium">Write notes</Text>
                 </Pressable>
@@ -514,7 +515,7 @@ export default function MeetingDetailScreen() {
           <View className="min-h-[180px] rounded-2xl border border-border/70 bg-card p-4">
             {meeting.status === 'transcribing' ? (
               <View className="items-center justify-center py-16">
-                <ActivityIndicator size="large" color="#f97316" className="mb-4" />
+                <Spinner size="large"  className="mb-4" />
                 <Text className="text-sm text-muted-foreground">Transcribing...</Text>
                 <Text className="text-xs text-muted-foreground mt-1">This may take a few minutes</Text>
               </View>
@@ -525,7 +526,7 @@ export default function MeetingDetailScreen() {
                   <Text className="text-xs text-muted-foreground mb-4 text-center px-8">{transcript.error}</Text>
                 )}
                 {localMode && meeting.hasAudio && (
-                  <Pressable onPress={retranscribe} className="rounded-xl bg-orange-500 px-4 py-2.5 active:bg-orange-600">
+                  <Pressable onPress={retranscribe} className="rounded-xl bg-primary px-4 py-2.5 active:bg-primary/80">
                     <Text className="text-sm text-white font-medium">Try Again</Text>
                   </Pressable>
                 )}
@@ -559,7 +560,7 @@ export default function MeetingDetailScreen() {
                     onPress={() => enhance(template.id)}
                     className={cn(
                       'mb-1.5 rounded-lg border px-3 py-2.5 active:bg-muted',
-                      selected ? 'border-orange-500/60 bg-orange-500/5' : 'border-border/70',
+                      selected ? 'border-primary/60 bg-primary/5' : 'border-border/70',
                     )}
                   >
                     <Text className="text-sm font-medium text-foreground">{template.name}</Text>
