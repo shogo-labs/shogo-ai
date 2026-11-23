@@ -30,8 +30,9 @@
  */
 
 import { spawn } from './child-process'
+import type { ChildProcess } from './child-process'
 import { createHash } from 'crypto'
-import { createWriteStream, existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
+import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import type { Dirent } from 'fs'
 import { join } from 'path'
 import { pipeline } from 'stream/promises'
@@ -107,6 +108,8 @@ function buildGitUrl(cloudApiUrl: string, projectId: string): string {
 
 const ATTR_HEADER = '# >>> shogo git-lfs (managed) >>>'
 const ATTR_FOOTER = '# <<< shogo git-lfs (managed) <<<'
+const ATTR_PATHS_HEADER = '# auto-tracked large files'
+const ATTR_PATHS_FOOTER = '# <<< auto-tracked large files <<<'
 
 /**
  * Curated set of binary-ish extensions tracked by Git LFS. Files outside
@@ -138,16 +141,59 @@ function attributeLineFor(ext: string): string {
   return `*.${ext} filter=lfs diff=lfs merge=lfs -text`
 }
 
+/** `.gitattributes` pattern for one exact, repo-root-relative path. */
+function attributeLineForPath(relPosix: string): string {
+  // Quoted and rooted: a leading `/` anchors the pattern to the repo root, so
+  // `media/logo.png` cannot also claim `deep/media/logo.png`. Quoting keeps
+  // spaces and `#` literal, the way `git lfs track` writes them.
+  const escaped = relPosix.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  return `"/${escaped}" filter=lfs diff=lfs merge=lfs -text`
+}
+
+/** The paths already carrying a path-specific rule in the managed block. */
+export function readManagedAttributePaths(workspaceDir: string): string[] {
+  let existing = ''
+  try {
+    existing = readFileSync(join(workspaceDir, '.gitattributes'), 'utf-8')
+  } catch {
+    return []
+  }
+  const start = existing.indexOf(ATTR_PATHS_HEADER)
+  if (start === -1) return []
+  const end = existing.indexOf(ATTR_PATHS_FOOTER, start)
+  if (end === -1) return []
+  const out: string[] = []
+  for (const line of existing.slice(start + ATTR_PATHS_HEADER.length, end).split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const m = /^"\/?(.+?)"\s+filter=lfs/.exec(trimmed) ?? /^\/?(\S+)\s+filter=lfs/.exec(trimmed)
+    if (m) out.push(m[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\'))
+  }
+  return out
+}
+
 /** The managed `.gitattributes` block (header + curated patterns + footer). */
-export function buildManagedAttributesBlock(): string {
-  return [ATTR_HEADER, ...DEFAULT_LFS_EXTENSIONS.map(attributeLineFor), ATTR_FOOTER].join('\n')
+export function buildManagedAttributesBlock(pathRules: string[] = []): string {
+  const lines = [ATTR_HEADER, ...DEFAULT_LFS_EXTENSIONS.map(attributeLineFor)]
+  if (pathRules.length) {
+    lines.push('', ATTR_PATHS_HEADER, ...pathRules.map(attributeLineForPath), ATTR_PATHS_FOOTER)
+  }
+  lines.push(ATTR_FOOTER)
+  return lines.join('\n')
 }
 
 /**
  * Write/refresh the Shogo-managed block in `<workspaceDir>/.gitattributes`,
  * preserving any user-authored entries outside the markers. Idempotent.
+ *
+ * `opts.pathRules` replaces the auto-tracked path rules inside the block. This
+ * is how {@link autoTrackLargeFiles} tracks N large files with zero `git lfs
+ * track` processes instead of N (SHO-531): we already own this file.
  */
-export function writeManagedGitAttributes(workspaceDir: string): void {
+export function writeManagedGitAttributes(
+  workspaceDir: string,
+  opts: { pathRules?: string[] } = {},
+): void {
   const attrPath = join(workspaceDir, '.gitattributes')
   let existing = ''
   try {
@@ -163,7 +209,8 @@ export function writeManagedGitAttributes(workspaceDir: string): void {
     }
   }
   existing = existing.replace(/\n{3,}/g, '\n\n').trim()
-  const next = [existing, buildManagedAttributesBlock()].filter(Boolean).join('\n\n') + '\n'
+  const pathRules = [...new Set(opts.pathRules ?? [])].sort()
+  const next = [existing, buildManagedAttributesBlock(pathRules)].filter(Boolean).join('\n\n') + '\n'
   writeFileSync(attrPath, next)
 }
 
@@ -175,12 +222,94 @@ interface GitResult {
   exitCode: number
   stdout: string
   stderr: string
+  /** `VmHWM` of the child in kB (Linux only) — what the OOM killer would score. */
+  peakRssKb?: number
 }
 
 interface GitBufferResult {
   exitCode: number
   stdout: Buffer
   stderr: string
+  peakRssKb?: number
+}
+
+/**
+ * Watch a child's peak resident set through `/proc/<pid>/status`, because the
+ * whole point of SHO-531 is knowing what a git/git-lfs child actually costs on
+ * a 4 GiB guest. `close` carries no rusage, so we sample while it lives; the
+ * last value survives for reporting after exit. No-op off Linux.
+ */
+function watchPeakRss(child: ChildProcess): { read: () => number | undefined; stop: () => void } {
+  if (process.platform !== 'linux' || !child.pid) return { read: () => undefined, stop: () => {} }
+  const path = `/proc/${child.pid}/status`
+  let peak = 0
+  const sample = () => {
+    try {
+      const m = /VmHWM:\s+(\d+) kB/.exec(readFileSync(path, 'utf-8'))
+      if (m) peak = Math.max(peak, Number(m[1]))
+    } catch { /* the child is gone — keep the last value */ }
+  }
+  sample()
+  const timer = setInterval(sample, 200)
+  // Node's timer has `unref`; a DOM-typed lib does not. Never keep the process
+  // alive just to sample a child's RSS.
+  ;(timer as unknown as { unref?: () => void }).unref?.()
+  return {
+    read: () => (peak > 0 ? peak : undefined),
+    stop: () => { sample(); clearInterval(timer) },
+  }
+}
+
+/**
+ * Run git and hand the parent one line at a time.
+ *
+ * `rev-list --objects --all` on a deep media history is hundreds of thousands
+ * of lines; buffering it into one JS string is a 4 GiB guest's worth of memory
+ * for a value we consume as a stream (SHO-531).
+ */
+function runGitLines(
+  args: string[],
+  cwd: string,
+  onLine: (line: string) => void,
+  opts: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+): Promise<GitResult> {
+  const timeoutMs = opts.timeoutMs ?? GIT_TIMEOUT_MS
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', args, {
+      cwd,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(opts.env ?? {}) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const rss = watchPeakRss(child)
+    const err: string[] = []
+    let rest = ''
+    let exitCode = -1
+    child.stdout?.setEncoding('utf-8')
+    child.stdout?.on('data', (chunk: string) => {
+      rest += chunk
+      let nl = rest.indexOf('\n')
+      while (nl !== -1) {
+        onLine(rest.slice(0, nl))
+        rest = rest.slice(nl + 1)
+        nl = rest.indexOf('\n')
+      }
+    })
+    child.stderr?.setEncoding('utf-8')
+    child.stderr?.on('data', (c: string) => err.push(c))
+    const timer = setTimeout(() => {
+      try { child.kill('SIGKILL') } catch { /* ignore */ }
+      rss.stop()
+      reject(new Error(`git ${args.join(' ')} timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
+    child.on('error', (e) => { clearTimeout(timer); rss.stop(); reject(e) })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (rest) onLine(rest)
+      exitCode = code ?? -1
+      rss.stop()
+      resolve({ exitCode, stdout: '', stderr: err.join(''), peakRssKb: rss.read() })
+    })
+  })
 }
 
 function runGitBuffer(
@@ -197,17 +326,20 @@ function runGitBuffer(
     })
     const out: Buffer[] = []
     const err: string[] = []
+    const rss = watchPeakRss(child)
     child.stdout?.on('data', (c: Buffer) => out.push(c))
     child.stderr?.setEncoding('utf-8')
     child.stderr?.on('data', (c: string) => err.push(c))
     const timer = setTimeout(() => {
       try { child.kill('SIGKILL') } catch { /* ignore */ }
+      rss.stop()
       reject(new Error(`git ${args.join(' ')} timed out after ${timeoutMs}ms`))
     }, timeoutMs)
-    child.on('error', (e) => { clearTimeout(timer); reject(e) })
+    child.on('error', (e) => { clearTimeout(timer); rss.stop(); reject(e) })
     child.on('close', (code) => {
       clearTimeout(timer)
-      resolve({ exitCode: code ?? -1, stdout: Buffer.concat(out), stderr: err.join('') })
+      rss.stop()
+      resolve({ exitCode: code ?? -1, stdout: Buffer.concat(out), stderr: err.join(''), peakRssKb: rss.read() })
     })
     if (opts.input && child.stdin) {
       // git can exit before it reads stdin — `fatal: not a git repository`, a
@@ -223,30 +355,369 @@ function runGitBuffer(
   })
 }
 
-function runGit(args: string[], cwd: string, env?: NodeJS.ProcessEnv): Promise<GitResult> {
+function runGit(
+  args: string[],
+  cwd: string,
+  env?: NodeJS.ProcessEnv,
+  opts: { input?: Buffer } = {},
+): Promise<GitResult> {
   return new Promise((resolve, reject) => {
     const child = spawn('git', args, {
       cwd,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(env ?? {}) },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [opts.input ? 'pipe' : 'ignore', 'pipe', 'pipe'],
     })
     const out: string[] = []
     const err: string[] = []
+    const rss = watchPeakRss(child)
     child.stdout?.setEncoding('utf-8')
     child.stderr?.setEncoding('utf-8')
     child.stdout?.on('data', (c: string) => out.push(c))
     child.stderr?.on('data', (c: string) => err.push(c))
     const timer = setTimeout(() => {
       try { child.kill('SIGKILL') } catch { /* ignore */ }
+      rss.stop()
       reject(new Error(`git ${args.join(' ')} timed out after ${GIT_TIMEOUT_MS}ms`))
     }, GIT_TIMEOUT_MS)
-    child.on('error', (e) => { clearTimeout(timer); reject(e) })
+    child.on('error', (e) => { clearTimeout(timer); rss.stop(); reject(e) })
     child.on('close', (code) => {
       clearTimeout(timer)
-      resolve({ exitCode: code ?? -1, stdout: out.join(''), stderr: err.join('') })
+      rss.stop()
+      resolve({ exitCode: code ?? -1, stdout: out.join(''), stderr: err.join(''), peakRssKb: rss.read() })
     })
+    if (opts.input && child.stdin) {
+      child.stdin.on('error', () => {}) // EPIPE when git exits before reading it
+      child.stdin.end(opts.input)
+    }
   })
 }
+
+// ---------------------------------------------------------------------------
+// One LFS operation at a time, per repo (SHO-531)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-workspace serialisation for LFS work.
+ *
+ * A save and a host export both reach for git/git-lfs on the SAME repo, and
+ * they used to run concurrently: `persistDurableRepo` called `lfsPushAll`
+ * outside the runner while `/pool/export*` started the runner's job, so two
+ * full-history scans and two sets of pushes ran side by side on a 2 vCPU box.
+ * One mutex per repo means a second caller joins the queue instead of doubling
+ * the peak.
+ *
+ * Keyed by the resolved workspace directory. Never acquire it twice on the
+ * same stack: the internal `*Unlocked` helpers exist for exactly that.
+ */
+const lfsLocks = new Map<string, Promise<unknown>>()
+
+export function withLfsLock<T>(workspaceDir: string, fn: () => Promise<T>): Promise<T> {
+  const key = resolveGitDir(workspaceDir) ?? workspaceDir
+  const previous = lfsLocks.get(key) ?? Promise.resolve()
+  const run = previous.then(fn, fn)
+  // Tracked without the rejection, so one failed operation never poisons the
+  // next waiter and the chain entry still compares by identity.
+  const tail = run.catch(() => undefined)
+  lfsLocks.set(key, tail)
+  void tail.finally(() => {
+    if (lfsLocks.get(key) === tail) lfsLocks.delete(key)
+  })
+  return run
+}
+
+/** Counters that prove (or disprove) the runaway loop in production. */
+export interface LfsStats {
+  /** Eviction passes that ran because the store was over budget. */
+  evictions: number
+  /** Eviction passes that freed 0 bytes — the number that must stop climbing. */
+  emptyEvictions: number
+  /** Eviction passes skipped because the store had not grown since the last one. */
+  backedOff: number
+  /** Objects removed from the local store. */
+  evictedObjects: number
+  /** Bytes removed from the local store. */
+  evictedBytes: number
+  /** Uploads skipped because the server already had the object. */
+  remoteSkips: number
+}
+
+const lfsStatCounters: LfsStats = {
+  evictions: 0,
+  emptyEvictions: 0,
+  backedOff: 0,
+  evictedObjects: 0,
+  evictedBytes: 0,
+  remoteSkips: 0,
+}
+
+/** Snapshot of the process's LFS counters. Exported for tests and `/pool` logs. */
+export function lfsStats(): LfsStats {
+  return { ...lfsStatCounters }
+}
+
+/** Test hook: reset the counters. */
+export function resetLfsStats(): void {
+  for (const k of Object.keys(lfsStatCounters) as Array<keyof LfsStats>) lfsStatCounters[k] = 0
+}
+
+// ---------------------------------------------------------------------------
+// Local store accounting and eviction (SHO-531)
+// ---------------------------------------------------------------------------
+
+/** `<git>/lfs/objects` — the only part of `.git/lfs` that holds media bytes. */
+export function lfsObjectsDir(workspaceDir: string): string | null {
+  const gitDir = resolveGitDir(workspaceDir)
+  return gitDir ? join(gitDir, 'lfs', 'objects') : null
+}
+
+/** A local LFS object and its size on disk. */
+export interface LocalLfsObject {
+  oid: string
+  bytes: number
+}
+
+/** Every object in the repo's local LFS store, with its size. */
+export function listLocalLfsObjects(workspaceDir: string): LocalLfsObject[] {
+  const root = lfsObjectsDir(workspaceDir)
+  if (!root || !existsSync(root)) return []
+  const out: LocalLfsObject[] = []
+  let fanout: string[]
+  try {
+    fanout = readdirSync(root)
+  } catch {
+    return []
+  }
+  for (const a of fanout) {
+    if (a.length !== 2) continue
+    let second: string[]
+    try {
+      second = readdirSync(join(root, a))
+    } catch {
+      continue
+    }
+    for (const b of second) {
+      if (b.length !== 2) continue
+      let names: string[]
+      try {
+        names = readdirSync(join(root, a, b))
+      } catch {
+        continue
+      }
+      for (const oid of names) {
+        if (!isValidLfsOid(oid)) continue
+        try {
+          out.push({ oid, bytes: statSync(join(root, a, b, oid)).size })
+        } catch { /* raced with another eviction */ }
+      }
+    }
+  }
+  return out
+}
+
+/** Bytes held by the local LFS object store. */
+export function lfsStoreBytes(workspaceDir: string): number {
+  const root = lfsObjectsDir(workspaceDir)
+  return root ? directorySizeBytes(root) : 0
+}
+
+/**
+ * Where we record the outcome of the last eviction pass, so a store that cannot
+ * be brought under budget is not re-scanned on every single commit.
+ */
+function evictMarkerPath(workspaceDir: string): string | null {
+  const gitDir = resolveGitDir(workspaceDir)
+  return gitDir ? join(gitDir, 'shogo', 'lfs-evict.json') : null
+}
+
+interface EvictMarker {
+  at: number
+  bytes: number
+}
+
+function readEvictMarker(workspaceDir: string): EvictMarker | null {
+  const path = evictMarkerPath(workspaceDir)
+  if (!path || !existsSync(path)) return null
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Partial<EvictMarker>
+    if (typeof parsed.at !== 'number' || typeof parsed.bytes !== 'number') return null
+    return { at: parsed.at, bytes: parsed.bytes }
+  } catch {
+    return null
+  }
+}
+
+function writeEvictMarker(workspaceDir: string, marker: EvictMarker): void {
+  const path = evictMarkerPath(workspaceDir)
+  if (!path) return
+  try {
+    mkdirSync(join(path, '..'), { recursive: true })
+    writeFileSync(path, JSON.stringify(marker))
+  } catch { /* best-effort */ }
+}
+
+export interface LfsEvictionResult {
+  /** False when the store was under budget or we were backing off. */
+  ran: boolean
+  bytesBefore: number
+  bytesAfter: number
+  evicted: number
+  /** Kept because HEAD or a worktree still references the object. */
+  keptReferenced: number
+  /** Kept because the server could not confirm it holds the bytes. */
+  keptUnconfirmed: number
+}
+
+/**
+ * Bring `.git/lfs` back under budget without git-lfs's pruner.
+ *
+ * `git lfs prune --force` could never free anything here, and cost a full
+ * history scan to find that out: git-lfs only prunes objects it believes are
+ * *pushed*, and it decides that from `refs/remotes/<lfs.pruneremotetocheck>`.
+ * Our remote is called `cloud` and `git_only` never pushes git refs, so no
+ * such ref exists, every object counts as unpushed, and `--force` keeps all of
+ * them. Before concluding that, prune walks the history with
+ * `git log -G 'oid sha256:' -p`, which makes git load every changed blob in
+ * full — raw media included. Over budget, that ran twice per commit and freed
+ * zero bytes, forever (SHO-531).
+ *
+ * We already know which objects are durable, so we do the decision ourselves:
+ * delete local objects that (a) the server confirms it holds and (b) neither
+ * HEAD's tree nor a live worktree's tree references. No history walk at all —
+ * HEAD's tree comes from one `git ls-tree`, and the candidate list is a
+ * `readdir` of the store.
+ */
+export async function evictLfsOverBudget(
+  workspaceDir: string,
+  opts: {
+    cfg?: LfsRemoteConfig | null
+    logger?: Logger
+    env?: NodeJS.ProcessEnv
+    /** Evict down to this fraction of the budget in one pass. */
+    targetRatio?: number
+  } = {},
+): Promise<LfsEvictionResult> {
+  return withLfsLock(workspaceDir, () =>
+    evictLfsOverBudgetUnlocked(workspaceDir, opts.cfg ?? null, opts.logger ?? console, opts.env, opts.targetRatio),
+  )
+}
+
+async function evictLfsOverBudgetUnlocked(
+  workspaceDir: string,
+  cfg: LfsRemoteConfig | null,
+  logger: Logger,
+  env: NodeJS.ProcessEnv = process.env,
+  targetRatio = 0.8,
+): Promise<LfsEvictionResult> {
+  const budget = lfsBudgetBytes(env)
+  const before = lfsStoreBytes(workspaceDir)
+  const idle: LfsEvictionResult = {
+    ran: false,
+    bytesBefore: before,
+    bytesAfter: before,
+    evicted: 0,
+    keptReferenced: 0,
+    keptUnconfirmed: 0,
+  }
+  if (before <= budget) return idle
+
+  // Back off: a store we could not shrink last time is not worth another pass
+  // until it has actually grown. This is what stops "every commit, forever".
+  const marker = readEvictMarker(workspaceDir)
+  const growthSlack = Math.max(64 * 1024 * 1024, budget * 0.01)
+  if (marker && before <= marker.bytes + growthSlack) {
+    lfsStatCounters.backedOff++
+    logger.warn(
+      `[lfs] evict skipped: store is ${(before / 1e9).toFixed(2)}GB over the ` +
+        `${(budget / 1e9).toFixed(2)}GB budget and has not grown since the last pass ` +
+        `(${(marker.bytes / 1e9).toFixed(2)}GB) — nothing left to evict`,
+    )
+    return idle
+  }
+
+  // Without a remote we cannot prove any object is durable, and deleting one
+  // would lose the only copy. Stay over budget rather than lose bytes.
+  if (!cfg) {
+    lfsStatCounters.backedOff++
+    logger.warn('[lfs] evict skipped: no remote configured, so no object can be confirmed durable')
+    return idle
+  }
+
+  lfsStatCounters.evictions++
+  const startedAt = Date.now()
+  const target = budget * targetRatio
+  let referenced: Set<string>
+  let local: LocalLfsObject[]
+  try {
+    referenced = await headLfsObjectIds(workspaceDir)
+    local = listLocalLfsObjects(workspaceDir)
+  } catch (err: any) {
+    logger.warn(`[lfs] evict skipped: could not read the local store (${err?.message ?? err})`)
+    return idle
+  }
+
+  let keptReferenced = 0
+  const candidates: LocalLfsObject[] = []
+  for (const o of local) {
+    if (referenced.has(o.oid)) keptReferenced++
+    else candidates.push(o)
+  }
+
+  // One decision per object, made by the server: an upload batch request for
+  // an object it already holds answers with no actions. A failed check must
+  // never delete anything, so it aborts the pass rather than guessing.
+  let remoteHas: Set<string>
+  try {
+    remoteHas = candidates.length
+      ? await lfsRemoteHasObjects(cfg, candidates.map((o) => ({ oid: o.oid, size: o.bytes })))
+      : new Set<string>()
+  } catch (err: any) {
+    logger.warn(`[lfs] evict aborted: server batch check failed (${err?.reason ?? 'other'}): ${err?.message ?? err}`)
+    writeEvictMarker(workspaceDir, { at: Date.now(), bytes: before })
+    return idle
+  }
+
+  let bytesAfter = before
+  let evicted = 0
+  let keptUnconfirmed = 0
+  for (const o of candidates) {
+    if (!remoteHas.has(o.oid)) {
+      keptUnconfirmed++
+      continue
+    }
+    // Stop once the store is back under the target: the rest stay cached.
+    if (bytesAfter <= target) continue
+    const path = localLfsObjectPath(workspaceDir, o.oid)
+    if (!path) continue
+    try {
+      rmSync(path, { force: true })
+      bytesAfter -= o.bytes
+      evicted++
+    } catch { /* raced with the clean filter writing the same object */ }
+  }
+
+  writeEvictMarker(workspaceDir, { at: Date.now(), bytes: bytesAfter })
+  lfsStatCounters.evictedObjects += evicted
+  lfsStatCounters.evictedBytes += Math.max(0, before - bytesAfter)
+  if (evicted === 0) lfsStatCounters.emptyEvictions++
+
+  const after = lfsStoreBytes(workspaceDir)
+  logger.log(
+    `[lfs] step=evict dir=${workspaceDir} ms=${Date.now() - startedAt} ` +
+      `local=${local.length} objects evicted=${evicted} ` +
+      `kept_referenced=${keptReferenced} kept_unconfirmed=${keptUnconfirmed} ` +
+      `bytes=${(before / 1e6).toFixed(1)}MB->${(after / 1e6).toFixed(1)}MB ` +
+      `budget=${(budget / 1e6).toFixed(1)}MB`,
+  )
+  return {
+    ran: true,
+    bytesBefore: before,
+    bytesAfter: after,
+    evicted,
+    keptReferenced,
+    keptUnconfirmed,
+  }
+}
+
 
 // ---------------------------------------------------------------------------
 // Repo setup (pod side, git_only only)
@@ -279,7 +750,7 @@ export async function ensureLfsRepoSetup(
 
 /**
  * Track any file larger than `thresholdBytes` that isn't already matched by
- * an LFS pattern, by appending a path-specific rule to `.gitattributes`.
+ * an LFS pattern, by writing a path-specific rule into `.gitattributes`.
  * Preserves the legacy "offload anything over the threshold" behavior for
  * extensions outside {@link DEFAULT_LFS_EXTENSIONS}. Best-effort.
  *
@@ -289,37 +760,73 @@ export async function ensureLfsRepoSetup(
  * already ignores, since tracking a path git will never stage only bloats
  * `.gitattributes`.
  *
+ * Two git processes per stage, however many large files there are: one
+ * `check-ignore --stdin` and one `check-attr --stdin`, then a single write of
+ * the file we already own. It used to be three processes *per file*
+ * (`check-ignore`, `check-attr`, `lfs track`), which on a media-heavy save
+ * meant hundreds of spawns per commit on a 2 vCPU guest (SHO-531).
+ *
  * Returns the number of newly-tracked paths.
  */
 export async function autoTrackLargeFiles(
   workspaceDir: string,
   thresholdBytes: number = largeFileThreshold(),
-  opts: { logger?: Logger } = {},
+  opts: { logger?: Logger; cfg?: LfsRemoteConfig | null } = {},
 ): Promise<number> {
   const logger = opts.logger ?? console
+  const cfg = opts.cfg !== undefined ? opts.cfg : lfsRemoteConfigFromEnv(workspaceDir, logger)
+  return withLfsLock(workspaceDir, () => autoTrackLargeFilesUnlocked(workspaceDir, thresholdBytes, logger, cfg))
+}
+
+async function autoTrackLargeFilesUnlocked(
+  workspaceDir: string,
+  thresholdBytes: number,
+  logger: Logger,
+  cfg: LfsRemoteConfig | null,
+): Promise<number> {
   if (!existsSync(join(workspaceDir, '.git'))) return 0
+  const startedAt = Date.now()
+  // Over budget: shrink the store first. If eviction brings it back under, keep
+  // tracking in this same pass — the gate exists to stop tracking into a store
+  // that can never shrink, not to stop tracking forever.
   if (lfsOverBudget(workspaceDir, { logger })) {
-    await pruneLfsBudget(workspaceDir, logger)
-    return 0
+    const eviction = await evictLfsOverBudgetUnlocked(workspaceDir, cfg, logger)
+    if (!eviction.ran && lfsOverBudget(workspaceDir, { logger })) return 0
   }
-  let tracked = 0
-  const candidates = classifyLargeFiles(workspaceDir, thresholdBytes)
-  for (const rel of candidates) {
+
+  const candidates: string[] = []
+  for (const rel of classifyLargeFiles(workspaceDir, thresholdBytes)) {
     const relPosix = rel.split(/[\\/]/).join('/')
     if (isShogoRuntimeState(relPosix)) continue
-    try {
-      const ignored = await runGit(['check-ignore', '-q', '--', relPosix], workspaceDir)
-      if (ignored.exitCode === 0) continue
-      const attr = await runGit(['check-attr', 'filter', '--', relPosix], workspaceDir)
-      if (attr.stdout.includes(': filter: lfs')) continue // already LFS-tracked
-      const res = await runGit(['lfs', 'track', '--', relPosix], workspaceDir)
-      if (res.exitCode === 0) tracked++
-    } catch (err: any) {
-      logger.warn(`[lfs] auto-track failed for ${relPosix}: ${err?.message ?? err}`)
-    }
+    candidates.push(relPosix)
   }
-  if (tracked) logger.log(`[lfs] auto-tracked ${tracked} large file(s) over ${thresholdBytes}B`)
-  return tracked
+  if (!candidates.length) return 0
+
+  // One `check-ignore` for the whole set: `-z --stdin` takes and returns
+  // NUL-separated paths, so a name with a newline survives intact.
+  const ignored = new Set<string>()
+  const ignoreRes = await runGitBuffer(['check-ignore', '-z', '--stdin'], workspaceDir, {
+    input: Buffer.from(candidates.join('\0') + '\0'),
+  })
+  if (ignoreRes.exitCode === 0) {
+    for (const p of ignoreRes.stdout.toString('utf-8').split('\0')) if (p) ignored.add(p)
+  }
+
+  const live = candidates.filter((p) => !ignored.has(p))
+  if (!live.length) return 0
+  const alreadyTracked = await lfsTrackedPaths(workspaceDir, live)
+
+  const fresh = live.filter((p) => !alreadyTracked.has(p))
+  if (!fresh.length) return 0
+
+  const pathRules = [...new Set([...readManagedAttributePaths(workspaceDir), ...fresh])]
+  writeManagedGitAttributes(workspaceDir, { pathRules })
+  logger.log(
+    `[lfs] step=autotrack dir=${workspaceDir} ms=${Date.now() - startedAt} ` +
+      `candidates=${candidates.length} ignored=${ignored.size} ` +
+      `already=${alreadyTracked.size} tracked=${fresh.length} git_spawns=2`,
+  )
+  return fresh.length
 }
 
 // ---------------------------------------------------------------------------
@@ -349,23 +856,8 @@ export function lfsOverBudget(
   if (bytes <= lfsBudgetBytes(opts.env)) return false
   logger.warn(
     `[lfs] ${workspaceDir}: local LFS store is ${(bytes / 1e9).toFixed(1)}GB over the ` +
-      `${(lfsBudgetBytes(opts.env) / 1e9).toFixed(1)}GB budget — tracking nothing new`,
+      `${(lfsBudgetBytes(opts.env) / 1e9).toFixed(1)}GB budget`,
   )
-  return true
-}
-
-/**
- * Free what nothing references, for a repo already over budget. `--force` is
- * required: without it git-lfs keeps objects younger than its own grace period,
- * which is every object a runaway `.shogo/*` rule just wrote.
- */
-export async function pruneLfsBudget(workspaceDir: string, logger: Logger = console): Promise<boolean> {
-  if (!existsSync(join(workspaceDir, '.git'))) return false
-  const res = await runGit(['lfs', 'prune', '--force'], workspaceDir)
-  if (res.exitCode !== 0) {
-    logger.warn(`[lfs] prune failed (${res.exitCode}): ${(res.stderr || '').slice(0, 400)}`)
-    return false
-  }
   return true
 }
 
@@ -434,10 +926,21 @@ export function lfsRemoteConfigFromEnv(
   return { workspaceDir, cloudApiUrl, runtimeAuthSecret, projectId, logger }
 }
 
+/**
+ * Remotes already confirmed for this process, keyed by `<gitdir>:<url>`.
+ *
+ * `ensureCloudRemote` used to run `remote get-url` (and often `remote add`) on
+ * every single push — two git processes per commit, per chunk, for an answer
+ * that cannot change unless the URL does (SHO-531).
+ */
+const ensuredCloudRemotes = new Set<string>()
+
 /** Ensure a remote named `remoteName` points at the project's smart-HTTP URL. */
 async function ensureCloudRemote(cfg: LfsRemoteConfig): Promise<string> {
   const remote = cfg.remoteName ?? 'cloud'
   const url = buildGitUrl(cfg.cloudApiUrl, cfg.projectId)
+  const key = `${resolveGitDir(cfg.workspaceDir) ?? cfg.workspaceDir}:${remote}:${url}`
+  if (ensuredCloudRemotes.has(key)) return remote
   const probe = await runGit(['remote', 'get-url', remote], cfg.workspaceDir)
   if (probe.exitCode === 0) {
     if (probe.stdout.trim() !== url) {
@@ -446,6 +949,7 @@ async function ensureCloudRemote(cfg: LfsRemoteConfig): Promise<string> {
   } else {
     await runGit(['remote', 'add', remote, url], cfg.workspaceDir)
   }
+  ensuredCloudRemotes.add(key)
   return remote
 }
 
@@ -455,12 +959,23 @@ async function ensureCloudRemote(cfg: LfsRemoteConfig): Promise<string> {
  * The bearer is scoped to the API origin. Unscoped, git-lfs also sends it on
  * the presigned object-storage transfers, which reject any `Authorization`
  * header that is not their own signature. The API has no locks endpoint.
+ *
+ * `lfs.concurrenttransfers` is capped low on purpose: git-lfs's default of 8
+ * holds eight in-flight object buffers, and on a 4 GiB guest the upload path is
+ * where the memory went (SHO-531). `SHOGO_LFS_CONCURRENT_TRANSFERS` overrides.
  */
 export function lfsConfigArgs(cfg: LfsRemoteConfig): string[] {
   const lfsUrl = buildLfsEndpointUrl(cfg.cloudApiUrl, cfg.projectId)
   const apiOrigin = `${new URL(cfg.cloudApiUrl).origin}/`
   const header = `http.${apiOrigin}.extraHeader=Authorization: Bearer ${cfg.runtimeAuthSecret}`
-  return ['-c', `lfs.url=${lfsUrl}`, '-c', header, '-c', 'lfs.locksverify=false']
+  const parsed = Number.parseInt(process.env.SHOGO_LFS_CONCURRENT_TRANSFERS ?? '', 10)
+  const transfers = Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 16) : 2
+  return [
+    '-c', `lfs.url=${lfsUrl}`,
+    '-c', header,
+    '-c', 'lfs.locksverify=false',
+    '-c', `lfs.concurrenttransfers=${transfers}`,
+  ]
 }
 
 /**
@@ -596,67 +1111,114 @@ export async function lfsTrackedPaths(workspaceDir: string, paths: string[]): Pr
   return tracked
 }
 
-/** Read every blob of `shas` in one `git cat-file --batch`. */
+/**
+ * Read every blob of `shas` in one `git cat-file --batch`.
+ *
+ * Only ever called with shas {@link blobInfo} has already bounded to
+ * `LFS_POINTER_MAX_BYTES`, so this buffers pointers (≤1 KiB each), never raw
+ * media. Reading an unbounded set here is what made a pre-LFS 50 MB blob cost
+ * 50 MB inside Bun just to be discarded (SHO-531).
+ */
 async function readBlobs(workspaceDir: string, shas: string[]): Promise<Map<string, Buffer>> {
   const out = new Map<string, Buffer>()
   if (!shas.length) return out
-  const res = await runGitBuffer(['cat-file', '--batch'], workspaceDir, {
-    input: Buffer.from(shas.join('\n') + '\n'),
-  })
-  if (res.exitCode !== 0) throw new Error(`git cat-file --batch failed: ${res.stderr.slice(0, 200)}`)
-  let buf = res.stdout
-  let at = 0
-  while (at < buf.length) {
-    const nl = buf.indexOf(0x0a, at)
-    if (nl === -1) break
-    const header = buf.toString('utf-8', at, nl).split(' ')
-    at = nl + 1
-    if (header.length < 3) continue // `<sha> missing`
-    const size = Number(header[2])
-    if (!Number.isFinite(size)) continue
-    if (header[1] === 'blob') out.set(header[0], buf.subarray(at, at + size))
-    at += size + 1
+  for (let i = 0; i < shas.length; i += LFS_CAT_FILE_CHUNK) {
+    const chunk = shas.slice(i, i + LFS_CAT_FILE_CHUNK)
+    const res = await runGitBuffer(['cat-file', '--batch'], workspaceDir, {
+      input: Buffer.from(chunk.join('\n') + '\n'),
+    })
+    if (res.exitCode !== 0) throw new Error(`git cat-file --batch failed: ${res.stderr.slice(0, 200)}`)
+    const buf = res.stdout
+    let at = 0
+    while (at < buf.length) {
+      const nl = buf.indexOf(0x0a, at)
+      if (nl === -1) break
+      const header = buf.toString('utf-8', at, nl).split(' ')
+      at = nl + 1
+      if (header.length < 3) continue // `<sha> missing`
+      const size = Number(header[2])
+      if (!Number.isFinite(size)) continue
+      if (header[1] === 'blob') out.set(header[0], buf.subarray(at, at + size))
+      at += size + 1
+    }
+  }
+  return out
+}
+
+/** Object shas per `git cat-file --batch-check` call. */
+const LFS_CAT_FILE_CHUNK = 2000
+/** Paths per `git check-attr --stdin` call. */
+const LFS_CHECK_ATTR_CHUNK = 2000
+
+/**
+ * Type and size of each sha, from `git cat-file --batch-check`.
+ *
+ * This is the gate that keeps raw media out of the process: a blob committed at
+ * a path that is LFS-tracked *now* but was committed raw (before tracking, or
+ * while the budget blocked tracking) would otherwise be read in full by
+ * `--batch` and thrown away by the `> LFS_POINTER_MAX_BYTES` check.
+ */
+async function blobInfo(
+  workspaceDir: string,
+  shas: string[],
+): Promise<Map<string, { type: string; size: number }>> {
+  const out = new Map<string, { type: string; size: number }>()
+  for (let i = 0; i < shas.length; i += LFS_CAT_FILE_CHUNK) {
+    const chunk = shas.slice(i, i + LFS_CAT_FILE_CHUNK)
+    const res = await runGit(
+      ['cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)'],
+      workspaceDir,
+      undefined,
+      { input: Buffer.from(chunk.join('\n') + '\n') },
+    )
+    if (res.exitCode !== 0) throw new Error(`git cat-file --batch-check failed: ${res.stderr.slice(0, 200)}`)
+    for (const line of res.stdout.split('\n')) {
+      if (!line) continue
+      const parts = line.split(' ')
+      // `<sha> missing` has two fields: unknown objects are simply not LFS.
+      if (parts.length < 3) continue
+      const size = Number(parts[2])
+      if (!Number.isFinite(size)) continue
+      out.set(parts[0], { type: parts[1], size })
+    }
   }
   return out
 }
 
 /**
- * LFS objects referenced by the commits in `tips..HEAD`-equivalent: every
- * object reachable from a ref but not from the durable tips. `tips: null`
- * scans everything (base exports, compaction, {@link lfsPushAll}).
+ * Resolve the LFS oids behind `blobPaths` (`sha -> paths`).
  *
- * One `rev-list`, one `check-attr`, one `cat-file`: no `git lfs` walk over
- * history, and we get the paths for free — which is what lets a missing object
- * be reported as files rather than a hash.
+ * Shared by the range scan and by {@link headLfsObjectIds}; the only difference
+ * between them is how the blob list was produced (history walk vs HEAD's tree).
+ * Three bounded steps: which paths `.gitattributes` marks LFS (chunked
+ * `check-attr`), which blobs are small enough to be pointers (`batch-check`),
+ * and only then are those blobs read.
  */
-export async function lfsObjectsInRange(
+async function lfsOidsForBlobPaths(
   workspaceDir: string,
-  tips: string[] | null,
+  blobPaths: Map<string, Set<string>>,
 ): Promise<LfsObjectRef[]> {
-  if (!existsSync(join(workspaceDir, '.git'))) return []
-  const args = ['rev-list', '--objects', '--all']
-  if (tips?.length) args.push('--not', ...tips)
-  const listed = await runGit(args, workspaceDir)
-  if (listed.exitCode !== 0) {
-    throw new LfsPushError(
-      `git rev-list failed (${listed.exitCode})`,
-      classifyLfsFailure(listed.stderr),
-      listed.stderr,
-    )
-  }
-  const blobPaths = new Map<string, Set<string>>()
-  for (const line of listed.stdout.split('\n')) {
-    if (!line) continue
-    const sp = line.indexOf(' ')
-    if (sp === -1) continue // a commit or tree without a path
-    const sha = line.slice(0, sp)
-    blobPaths.set(sha, (blobPaths.get(sha) ?? new Set()).add(line.slice(sp + 1)))
-  }
   if (blobPaths.size === 0) return []
+  const allPaths: string[] = []
+  for (const paths of blobPaths.values()) for (const p of paths) allPaths.push(p)
+  const tracked = new Set<string>()
+  for (let i = 0; i < allPaths.length; i += LFS_CHECK_ATTR_CHUNK) {
+    for (const p of await lfsTrackedPaths(workspaceDir, allPaths.slice(i, i + LFS_CHECK_ATTR_CHUNK))) {
+      tracked.add(p)
+    }
+  }
+  if (tracked.size === 0) return []
 
-  const candidates = [...blobPaths.keys()]
-  const tracked = await lfsTrackedPaths(workspaceDir, candidates.flatMap((sha) => [...(blobPaths.get(sha) ?? [])]))
-  const wanted = candidates.filter((sha) => [...(blobPaths.get(sha) ?? [])].some((p) => tracked.has(p)))
+  const candidates = [...blobPaths.keys()].filter((sha) =>
+    [...(blobPaths.get(sha) ?? [])].some((p) => tracked.has(p)),
+  )
+  if (candidates.length === 0) return []
+
+  const info = await blobInfo(workspaceDir, candidates)
+  const wanted = candidates.filter((sha) => {
+    const meta = info.get(sha)
+    return meta?.type === 'blob' && meta.size <= LFS_POINTER_MAX_BYTES
+  })
   if (wanted.length === 0) return []
 
   const blobs = await readBlobs(workspaceDir, wanted)
@@ -670,6 +1232,85 @@ export async function lfsObjectsInRange(
     byOid.set(pointer.oid, { oid: pointer.oid, size: pointer.size, paths })
   }
   return [...byOid.values()]
+}
+
+/**
+ * Every LFS oid the *current tree* references, from HEAD plus each live
+ * worktree's HEAD.
+ *
+ * `git ls-tree -r` reads one tree per ref — no commit walk — which is what lets
+ * eviction decide what to keep without the full-history scan that made
+ * `git lfs prune` unaffordable (SHO-531).
+ */
+export async function headLfsObjectIds(workspaceDir: string): Promise<Set<string>> {
+  const roots = [workspaceDir]
+  // Only pay for `worktree list` when this repo actually has linked worktrees.
+  const gitDir = resolveGitDir(workspaceDir)
+  if (gitDir && existsSync(join(gitDir, 'worktrees'))) {
+    const worktrees = await runGit(['worktree', 'list', '--porcelain'], workspaceDir)
+    if (worktrees.exitCode === 0) {
+      for (const line of worktrees.stdout.split('\n')) {
+        if (!line.startsWith('worktree ')) continue
+        const path = line.slice('worktree '.length).trim()
+        if (path && path !== workspaceDir) roots.push(path)
+      }
+    }
+  }
+
+  const keep = new Set<string>()
+  for (const root of roots) {
+    const blobPaths = new Map<string, Set<string>>()
+    const listed = await runGit(['ls-tree', '-r', '-z', '--full-tree', 'HEAD'], root)
+    if (listed.exitCode !== 0) continue // unborn HEAD, or a path that is not a checkout
+    for (const record of listed.stdout.split('\0')) {
+      if (!record) continue
+      const tab = record.indexOf('\t')
+      if (tab === -1) continue
+      const [, type, sha] = record.slice(0, tab).split(' ')
+      if (type !== 'blob') continue
+      blobPaths.set(sha, (blobPaths.get(sha) ?? new Set()).add(record.slice(tab + 1)))
+    }
+    for (const o of await lfsOidsForBlobPaths(root, blobPaths)) keep.add(o.oid)
+  }
+  return keep
+}
+
+/**
+ * LFS objects referenced by the commits in `tips..HEAD`-equivalent: every
+ * object reachable from a ref but not from the durable tips. `tips: null`
+ * scans everything (base exports, compaction, {@link lfsPushAll}).
+ *
+ * One `rev-list` (streamed, never buffered as one string), one chunked
+ * `check-attr`, one `cat-file --batch-check`, and `cat-file --batch` only on
+ * blobs small enough to be pointers: no `git lfs` walk over history. We get the
+ * paths for free, which is what lets a missing object be reported as files
+ * rather than a hash.
+ */
+export async function lfsObjectsInRange(
+  workspaceDir: string,
+  tips: string[] | null,
+): Promise<LfsObjectRef[]> {
+  if (!existsSync(join(workspaceDir, '.git'))) return []
+  const args = ['rev-list', '--objects', '--all']
+  if (tips?.length) args.push('--not', ...tips)
+  // sha -> paths, accumulated from the stream. Only names and ids live here:
+  // no blob content is ever held, whatever its size.
+  const blobPaths = new Map<string, Set<string>>()
+  const listed = await runGitLines(args, workspaceDir, (line) => {
+    if (!line) return
+    const sp = line.indexOf(' ')
+    if (sp === -1) return // a commit or tree without a path
+    const sha = line.slice(0, sp)
+    blobPaths.set(sha, (blobPaths.get(sha) ?? new Set()).add(line.slice(sp + 1)))
+  })
+  if (listed.exitCode !== 0) {
+    throw new LfsPushError(
+      `git rev-list failed (${listed.exitCode})`,
+      classifyLfsFailure(listed.stderr),
+      listed.stderr,
+    )
+  }
+  return lfsOidsForBlobPaths(workspaceDir, blobPaths)
 }
 
 /**
@@ -750,30 +1391,97 @@ export interface LfsPushProgress {
 export type LfsPushResult = LfsPushProgress
 
 /**
+ * The tips this repo has already pushed LFS objects through, or null when it
+ * has never recorded one (first save on a repo, or before this marker landed).
+ *
+ * LFS objects are content-addressed and the server never forgets them, so
+ * "objects reachable from HEAD were pushed" stays true no matter what happens
+ * to the git refs afterwards. That is what makes this a safe lower bound for
+ * the next push — and what turns a save's `rev-list --objects --all` over the
+ * whole history into a walk over the commits since the last save (SHO-531).
+ */
+export function lfsPushedTips(workspaceDir: string): string[] | null {
+  const gitDir = resolveGitDir(workspaceDir)
+  if (!gitDir) return null
+  const path = join(gitDir, 'shogo', 'lfs-pushed-tips')
+  try {
+    const raw = readFileSync(path, 'utf-8')
+    const tips = JSON.parse(raw) as { tips?: unknown }
+    if (!Array.isArray(tips.tips)) return null
+    const valid = tips.tips.filter((t): t is string => typeof t === 'string' && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(t))
+    return valid.length ? valid : null
+  } catch {
+    return null
+  }
+}
+
+/** Record that every LFS object reachable from `tips` is on the server. */
+function writeLfsPushedTips(workspaceDir: string, tips: string[]): void {
+  const gitDir = resolveGitDir(workspaceDir)
+  if (!gitDir || !tips.length) return
+  const path = join(gitDir, 'shogo', 'lfs-pushed-tips')
+  try {
+    mkdirSync(join(path, '..'), { recursive: true })
+    writeFileSync(path, JSON.stringify({ tips, at: Date.now() }))
+  } catch { /* best-effort: the next push just scans more */ }
+}
+
+/**
  * Push the LFS objects a repo needs for the commits since `tips`. Idempotent
  * and resumable: everything it does is keyed by content, so an interrupted run
  * picks up where it stopped instead of starting over.
+ *
+ * Serialised per repo (see {@link withLfsLock}) so a save and a host export
+ * never run two of these at once.
  *
  * Never throws for a missing object — it records the paths instead, so the
  * history still exports.
  */
 export async function lfsPushIncremental(
   cfg: LfsRemoteConfig,
-  opts: { tips?: string[] | null; logger?: Logger; onProgress?: (p: LfsPushProgress) => void } = {},
+  opts: {
+    tips?: string[] | null
+    logger?: Logger
+    onProgress?: (p: LfsPushProgress) => void
+    /**
+     * Advance `.git/shogo/lfs-pushed-tips` once the push completes. Default
+     * true; a caller pushing a range it does not own (a base export) opts out.
+     */
+    advanceTips?: boolean
+  } = {},
+): Promise<LfsPushResult> {
+  return withLfsLock(cfg.workspaceDir, () => lfsPushIncrementalUnlocked(cfg, opts))
+}
+
+async function lfsPushIncrementalUnlocked(
+  cfg: LfsRemoteConfig,
+  opts: {
+    tips?: string[] | null
+    logger?: Logger
+    onProgress?: (p: LfsPushProgress) => void
+    advanceTips?: boolean
+  } = {},
 ): Promise<LfsPushResult> {
   const logger = opts.logger ?? cfg.logger ?? console
   if (!existsSync(join(cfg.workspaceDir, '.git'))) {
     return { total: 0, pushed: 0, skipped: 0, missing: [] }
   }
-  // Never upload a runaway local store: if the repo is over budget, free the
-  // unreferenced objects first and let the budget gate in
-  // `autoTrackLargeFiles` keep it there.
-  if (lfsOverBudget(cfg.workspaceDir, { logger })) await pruneLfsBudget(cfg.workspaceDir, logger)
+  const startedAt = Date.now()
+  // Never upload a runaway local store: free what the server already holds
+  // before pushing more on top of it. Our own eviction (not `git lfs prune`),
+  // and it backs off on its own when there is nothing left to free.
+  const eviction = await evictLfsOverBudgetUnlocked(cfg.workspaceDir, cfg, logger)
+  // One `rev-parse` for the whole push: the marker advances to this HEAD.
+  const head = opts.advanceTips === false
+    ? ''
+    : (await runGit(['rev-parse', 'HEAD'], cfg.workspaceDir)).stdout.trim()
 
   const objects = await lfsObjectsInRange(cfg.workspaceDir, opts.tips ?? null)
   const progress: LfsPushProgress = { total: objects.length, pushed: 0, skipped: 0, missing: [] }
   if (objects.length === 0) {
     opts.onProgress?.(progress)
+    if (head) writeLfsPushedTips(cfg.workspaceDir, [head])
+    logger.log(`[lfs] step=push dir=${cfg.workspaceDir} ms=${Date.now() - startedAt} objects=0 — nothing new`)
     return progress
   }
 
@@ -784,9 +1492,9 @@ export async function lfsPushIncremental(
   // A cold boot pulls only HEAD's objects, so history can reference oids this
   // VM never had. If the server has them, nothing is missing and nothing is
   // uploaded.
-  const remoteHas = absentLocal.length ? await lfsRemoteHasObjects(cfg, absentLocal) : new Set<string>()
+  const remoteHasAbsent = absentLocal.length ? await lfsRemoteHasObjects(cfg, absentLocal) : new Set<string>()
   for (const o of absentLocal) {
-    if (remoteHas.has(o.oid)) progress.skipped++
+    if (remoteHasAbsent.has(o.oid)) progress.skipped++
     else progress.missing.push({ oid: o.oid, paths: o.paths })
   }
   if (progress.missing.length) {
@@ -796,7 +1504,21 @@ export async function lfsPushIncremental(
     )
   }
 
-  const pending = local.map((o) => o.oid)
+  // Objects we still hold locally are not automatically absent from the
+  // server: eviction leaves them cached on purpose, and a store copied between
+  // VMs arrives full. Ask once, then upload only what is genuinely new — this
+  // is what stops "re-push every local object on every save" (SHO-531).
+  const remoteHasLocal = local.length ? await lfsRemoteHasObjects(cfg, local) : new Set<string>()
+  const pending: string[] = []
+  for (const o of local) {
+    if (remoteHasLocal.has(o.oid)) {
+      progress.skipped++
+      lfsStatCounters.remoteSkips++
+    } else {
+      pending.push(o.oid)
+    }
+  }
+
   for (let i = 0; i < pending.length; i += LFS_PUSH_CHUNK) {
     const chunk = pending.slice(i, i + LFS_PUSH_CHUNK)
     await pushLfsObjectIds(cfg, chunk)
@@ -804,6 +1526,14 @@ export async function lfsPushIncremental(
     opts.onProgress?.({ ...progress, missing: [...progress.missing] })
   }
   opts.onProgress?.({ ...progress, missing: [...progress.missing] })
+
+  if (head) writeLfsPushedTips(cfg.workspaceDir, [head])
+  logger.log(
+    `[lfs] step=push dir=${cfg.workspaceDir} ms=${Date.now() - startedAt} ` +
+      `objects=${progress.total} uploaded=${progress.pushed} ` +
+      `already_remote=${progress.skipped} missing=${progress.missing.length} ` +
+      `evicted=${eviction.evicted}`,
+  )
   return progress
 }
 
