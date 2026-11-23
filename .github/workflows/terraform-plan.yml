@@ -114,13 +114,13 @@ jobs:
 
       - name: terraform init
         run: |
-          # production-eu has no committed lock file yet, so honor the lock
-          # where one exists and let init resolve versions where it doesn't.
-          lock_args=()
-          if [ -f .terraform.lock.hcl ]; then lock_args+=(-lockfile=readonly); fi
+          # Every environment commits a lock file, so init always honors it: a
+          # plan must never quietly resolve a provider version the lock pins.
+          # production-eu had no lock at all and edge-global's was locked on
+          # macOS only until SHO-521.
           terraform init \
             -backend-config="endpoint=${{ vars.OCI_S3_ENDPOINT }}" \
-            "${lock_args[@]}"
+            -lockfile=readonly
 
       - name: terraform validate
         run: terraform validate -no-color
