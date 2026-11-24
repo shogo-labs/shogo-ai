@@ -17,7 +17,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { dirname, join } from 'path'
-import { DensitySoak, parseArgs, parseDuration, parseEnvFile, renderEnvFile, resolveGuestUrl } from '../density-soak'
+import { DensitySoak, parseArgs, parseDuration, parseEnvFile, renderEnvFile, resolveGuestUrl, runKeepAliveTick, touchTargets } from '../density-soak'
 
 interface FakeState {
   assigned: { projectId: string }[]
@@ -311,5 +311,65 @@ describe('resolveGuestUrl', () => {
   test('is a no-op without a URL or a known public host', () => {
     expect(resolveGuestUrl(undefined, '72.46.85.83', () => rules)).toBeUndefined()
     expect(resolveGuestUrl('http://72.46.85.83:20044', '', () => rules)).toBe('http://72.46.85.83:20044')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// SHO-553 AC1: idle-role VMs must not receive keepalive touches when
+// METAL_IDLE_SUSPEND_MS=0.  The touch moves `lastRealActivityAt`, the exact
+// clock that idle reclaim reads, so touching idle VMs would prevent the
+// balloon from ever inflating and make run B identical to run A.
+// ---------------------------------------------------------------------------
+
+describe('touchTargets (AC1)', () => {
+  const vms = [
+    { projectId: 'agent-1', role: 'agent', assigned: true },
+    { projectId: 'app-1', role: 'app', assigned: true },
+    { projectId: 'idle-1', role: 'idle', assigned: true },
+    { projectId: 'idle-2', role: 'idle', assigned: true },
+    { projectId: 'agent-unassigned', role: 'agent', assigned: false },
+  ]
+
+  test('with idleSuspendMs=0, idle VMs are excluded', () => {
+    const targets = touchTargets(vms, 0)
+    expect(targets).toContain('agent-1')
+    expect(targets).toContain('app-1')
+    expect(targets).not.toContain('idle-1')
+    expect(targets).not.toContain('idle-2')
+  })
+
+  test('with idleSuspendMs=0, unassigned VMs are excluded regardless of role', () => {
+    const targets = touchTargets(vms, 0)
+    expect(targets).not.toContain('agent-unassigned')
+  })
+
+  test('with idleSuspendMs>0 (non-soak baseline), idle VMs are touched normally', () => {
+    const targets = touchTargets(vms, 1_800_000)
+    expect(targets).toContain('idle-1')
+    expect(targets).toContain('idle-2')
+    expect(targets).toContain('agent-1')
+  })
+})
+
+describe('runKeepAliveTick (AC1)', () => {
+  test('calls touch only for the targets touchTargets returns', () => {
+    const vms = [
+      { projectId: 'agent-1', role: 'agent', assigned: true },
+      { projectId: 'idle-1', role: 'idle', assigned: true },
+    ]
+    const touched: string[] = []
+    runKeepAliveTick((id) => touched.push(id), vms, 0)
+    expect(touched).toContain('agent-1')
+    expect(touched).not.toContain('idle-1')
+  })
+
+  test('touches the idle VM when idleSuspendMs is non-zero', () => {
+    const vms = [
+      { projectId: 'agent-1', role: 'agent', assigned: true },
+      { projectId: 'idle-1', role: 'idle', assigned: true },
+    ]
+    const touched: string[] = []
+    runKeepAliveTick((id) => touched.push(id), vms, 1_800_000)
+    expect(touched).toContain('idle-1')
   })
 })

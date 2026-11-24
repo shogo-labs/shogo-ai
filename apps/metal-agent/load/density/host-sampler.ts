@@ -19,9 +19,15 @@
  *
  * The parsers are pure and exported so they can be tested against fixture text
  * on any platform; the sampler itself is a no-op off Linux.
+ *
+ * SHO-553 added the reclaim and KSM series: per-VM `balloonedMiB` joined to the
+ * Firecracker process's `VmRSS` and `ksm_merging_pages`, the host's KSM counters,
+ * and the 10/30-minute per-idle-VM points the A/B/C comparison is read from.
  */
 
 import { readFileSync, readdirSync } from 'fs'
+import { hostKsm } from '../../src/host-ksm'
+import { KsmdCpuTracker, findKsmdPid, parseKsmCounters, procCpuTicks } from '../../src/host-ksm'
 
 export interface Meminfo {
   totalMiB: number
@@ -52,6 +58,28 @@ export interface Vmstat {
   pswpout: number
 }
 
+/**
+ * What KSM is doing on this host (SHO-534 shipped it, SHO-553 has to measure
+ * whether it earns its CPU). `null` on the sample means the host has no KSM
+ * sysfs tree at all — a different fact from "KSM is off", which reads as
+ * `run: false`.
+ */
+export interface KsmSample {
+  /** ksmd is scanning (`/sys/kernel/mm/ksm/run`). */
+  run: boolean
+  /** Pages currently shared — the actual saving. */
+  pagesSharing: number
+  /** Pages merged at least once over the host's lifetime. */
+  pagesShared: number
+  /** Full scans completed; flat while VMs churn means ksmd is behind. */
+  fullScans: number
+  /** Sum of `/proc/<fc pid>/ksm_merging_pages` over the soak's own VMs. */
+  soakMergingPages: number
+  /** ksmd CPU as % of one core over `ksmdCpuWindowMs`; null until a window closes. */
+  ksmdCpuPct: number | null
+  ksmdCpuWindowMs: number | null
+}
+
 export interface HostSample {
   ts: number
   mem: Meminfo | null
@@ -62,6 +90,8 @@ export interface HostSample {
   /** Firecracker processes seen, and their summed RSS. */
   fcProcs: number
   fcRssMiB: number
+  /** KSM counters and ksmd CPU, null when the host has no KSM. */
+  ksm: KsmSample | null
   /** Per-vCPU-thread run_delay, ms of wait per second of wall clock, p50/p95/max. */
   runDelayMsPerSec: { p50: number; p95: number; max: number; threads: number } | null
   /** Swap-in pages/s since the previous sample. */
@@ -176,6 +206,48 @@ export function processRssMiB(pid: number, procRoot = '/proc'): number {
   }
 }
 
+/**
+ * Every Firecracker vmId on this host, mapped to its pid.
+ *
+ * One walk of `/proc` for the whole fleet: the soak resolves ~160 VMs every
+ * 30 s, and a per-VM scan would be 160 walks of the same tree.
+ */
+export function firecrackerVmIds(procRoot = '/proc'): Map<string, number> {
+  const out = new Map<string, number>()
+  for (const pid of listFirecrackerPids(procRoot)) {
+    try {
+      const argv = readFileSync(`${procRoot}/${pid}/cmdline`, 'utf8').split('\0')
+      const i = argv.indexOf('--id')
+      if (i >= 0 && argv[i + 1]) out.set(argv[i + 1], pid)
+    } catch {
+      /* exited between readdir and read */
+    }
+  }
+  return out
+}
+
+/**
+ * The Firecracker pid behind a vmId.
+ *
+ * `/vms` reports the balloon figure per project and the RSS per host process,
+ * and the report has to pair them per VM, so they need a stable join key. The
+ * vmId is that key, and the one place it appears host-side is the process's own
+ * argv (`firecracker --id <vmId>`).
+ */
+export function firecrackerPidByVmId(vmId: string, procRoot = '/proc'): number | undefined {
+  return firecrackerVmIds(procRoot).get(vmId)
+}
+
+/** `/proc/<pid>/ksm_merging_pages`: pages of this process KSM has merged. */
+export function ksmMergingPages(pid: number, procRoot = '/proc'): number {
+  try {
+    const n = Number(readFileSync(`${procRoot}/${pid}/ksm_merging_pages`, 'utf8').trim())
+    return Number.isFinite(n) && n > 0 ? n : 0
+  } catch {
+    return 0
+  }
+}
+
 /** Every thread id of a process. */
 export function threadIds(pid: number, procRoot = '/proc'): number[] {
   try {
@@ -194,10 +266,20 @@ export function threadIds(pid: number, procRoot = '/proc'): number[] {
 export class HostSampler {
   private prev: HostSample | null = null
   private prevRunDelay = new Map<string, number>()
+  private readonly ksmd = new KsmdCpuTracker()
 
-  constructor(private readonly procRoot = '/proc') {}
+  constructor(
+    private readonly procRoot = '/proc',
+    private readonly ksmRoot = '/sys/kernel/mm/ksm',
+  ) {}
 
-  sample(now = Date.now()): HostSample {
+  /**
+   * `soakPids` are the Firecracker processes this run owns. Their
+   * `ksm_merging_pages` is the only per-run view of the merging — the sysfs
+   * counters are host-wide, and on a host that still has tenants resident a
+   * host-wide saving cannot be attributed to the soak.
+   */
+  sample(now = Date.now(), soakPids: number[] = []): HostSample {
     const read = (p: string): string | null => {
       try {
         return readFileSync(`${this.procRoot}/${p}`, 'utf8')
@@ -250,6 +332,7 @@ export class HostSampler {
       vmstat,
       fcProcs: pids.length,
       fcRssMiB,
+      ksm: this.sampleKsm(now, soakPids),
       runDelayMsPerSec:
         delays.length > 0
           ? { p50: +percentile(delays, 50).toFixed(2), p95: +percentile(delays, 95).toFixed(2), max: +Math.max(...delays).toFixed(2), threads: delays.length }
@@ -259,6 +342,59 @@ export class HostSampler {
     }
     this.prev = sample
     return sample
+  }
+
+  /**
+   * KSM counters plus ksmd's CPU on the same fixed 30 s window the agent
+   * publishes as `metal_ksmd_cpu_pct` (both go through `KsmdCpuTracker`), so the
+   * soak's number and the gauge mean the same thing. A KSM-less host yields
+   * `null`, not a row of zeros.
+   */
+  private sampleKsm(now: number, soakPids: number[]): KsmSample | null {
+    const counters = parseKsmCounters((file) => {
+      try {
+        return readFileSync(`${this.ksmRoot}/${file}`, 'utf8')
+      } catch {
+        return undefined
+      }
+    })
+    if (!counters) return null
+
+    let soakMergingPages = 0
+    for (const pid of soakPids) soakMergingPages += ksmMergingPages(pid, this.procRoot)
+
+    const out: KsmSample = { ...counters, soakMergingPages, ksmdCpuPct: null, ksmdCpuWindowMs: null }
+    const ksmdPid = findKsmdPid(
+      (dir) => {
+        try {
+          return readdirSync(dir)
+        } catch {
+          return []
+        }
+      },
+      (file) => {
+        try {
+          return readFileSync(file, 'utf8')
+        } catch {
+          return undefined
+        }
+      },
+    )
+    if (ksmdPid === undefined) return out
+
+    let stat: string | undefined
+    try {
+      stat = readFileSync(`${this.procRoot}/${ksmdPid}/stat`, 'utf8')
+    } catch {
+      return out
+    }
+    const ticks = procCpuTicks(stat)
+    if (ticks === undefined) return out
+
+    const rate = this.ksmd.push({ ticks, at: now })
+    out.ksmdCpuPct = rate.pct ?? null
+    out.ksmdCpuWindowMs = rate.windowMs ?? null
+    return out
   }
 }
 

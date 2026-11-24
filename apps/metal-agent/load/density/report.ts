@@ -10,9 +10,10 @@
  */
 
 import { mkdirSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import type { HostSample } from './host-sampler'
 import { TURN_STEPS, type Knees, type StepMetrics, type StepVerdict, type TurnStep } from './knee'
+import type { IdleMemoryPoint, ReclaimSummary } from './reclaim'
 
 /**
  * What `ramPhysicalMiB` counts. `soak-delta` is the host's Firecracker RSS
@@ -35,6 +36,13 @@ export interface StepRow extends StepMetrics {
   runDelayP95MsPerSec: number
   apiP95Ms: number
   verdict: StepVerdict
+  /** What an idle VM cost 10 / 30 min into the hold; absent on short holds. */
+  idleAt10?: IdleMemoryPoint | null
+  idleAt30?: IdleMemoryPoint | null
+  /** Ballooned RAM held by the step's idle-role VMs, MiB (0 when reclaim is off). */
+  balloonedIdleMiB?: number | null
+  /** How many idle-role VMs had a balloon at all. */
+  balloonedIdleVms?: number | null
 }
 
 /**
@@ -97,6 +105,8 @@ export interface ReportInput {
     perVmRssMiB: number
   }
   mix: { agent: number; app: number; idle: number }
+  /** Idle-VM cost, wake-from-reclaim and KSM for this run (SHO-553). */
+  reclaim?: ReclaimSummary
   notes?: string[]
 }
 
@@ -120,6 +130,14 @@ export function stepsCsv(rows: StepRow[]): string {
     'api_p95_ms',
     'cpu_pass',
     'ram_pass',
+    'idle_at10_soak_delta_per_vm_mib',
+    'idle_at10_vm_rss_minus_balloon_mib',
+    'idle_at10_idle_vms',
+    'idle_at30_soak_delta_per_vm_mib',
+    'idle_at30_vm_rss_minus_balloon_mib',
+    'idle_at30_idle_vms',
+    'ballooned_idle_mib',
+    'ballooned_idle_vms',
   ]
   const lines = rows.map((r) =>
     [
@@ -139,6 +157,14 @@ export function stepsCsv(rows: StepRow[]): string {
       f(r.apiP95Ms, 0),
       r.verdict.cpuPass,
       r.verdict.ramPass,
+      r.idleAt10 ? f(r.idleAt10.soakDeltaPerVmMiB) : '',
+      r.idleAt10?.vmVmRssMinusBalloonMiB ?? '',
+      r.idleAt10?.idleVms ?? '',
+      r.idleAt30 ? f(r.idleAt30.soakDeltaPerVmMiB) : '',
+      r.idleAt30?.vmVmRssMinusBalloonMiB ?? '',
+      r.idleAt30?.idleVms ?? '',
+      r.balloonedIdleMiB ?? '',
+      r.balloonedIdleVms ?? '',
     ].join(','),
   )
   return [head.join(','), ...lines].join('\n') + '\n'
@@ -159,6 +185,13 @@ export function samplesCsv(samples: HostSample[]): string {
     'fc_rss_mib',
     'run_delay_p95_ms_per_s',
     'swap_in_pages_per_s',
+    'ksm_run',
+    'ksm_pages_sharing',
+    'ksm_pages_shared',
+    'ksm_full_scans',
+    'ksm_soak_merging_pages',
+    'ksmd_cpu_pct',
+    'ksmd_cpu_window_ms',
   ]
   const lines = samples.map((s) =>
     [
@@ -175,6 +208,13 @@ export function samplesCsv(samples: HostSample[]): string {
       s.fcRssMiB,
       s.runDelayMsPerSec?.p95 ?? '',
       s.swapInPagesPerSec ?? '',
+      s.ksm ? s.ksm.run : '',
+      s.ksm?.pagesSharing ?? '',
+      s.ksm?.pagesShared ?? '',
+      s.ksm?.fullScans ?? '',
+      s.ksm?.soakMergingPages ?? '',
+      s.ksm?.ksmdCpuPct ?? '',
+      s.ksm?.ksmdCpuWindowMs ?? '',
     ].join(','),
   )
   return [head.join(','), ...lines].join('\n') + '\n'
@@ -320,6 +360,10 @@ export function renderReportMarkdown(input: ReportInput): string {
   }
   out.push('')
 
+  if (input.reclaim) {
+    out.push(...renderReclaimSection(input.reclaim))
+  }
+
   if (input.notes && input.notes.length > 0) {
     out.push('## Notes')
     out.push('')
@@ -333,6 +377,113 @@ export function renderReportMarkdown(input: ReportInput): string {
 export interface WrittenReport {
   dir: string
   files: string[]
+}
+
+/* ------------------------------------------------------------------------- *
+ * Idle reclaim + the A/B/C table (SHO-553)
+ * ------------------------------------------------------------------------- */
+
+const pct = (x: number | null | undefined, d = 0) => (x === null || x === undefined || !Number.isFinite(x) ? '—' : x.toFixed(d))
+
+/** One run's reclaim numbers as the runbook's Results table reads them. */
+export function renderReclaimSection(reclaim: ReclaimSummary): string[] {
+  const out: string[] = []
+  out.push('## Idle reclaim (SHO-553)')
+  out.push('')
+  out.push('| | |')
+  out.push('|---|---|')
+  const point = (p: IdleMemoryPoint | null, minutes: number) =>
+    p
+      ? `${pct(p.soakDeltaPerVmMiB)} MiB soak-delta over ${p.soakVms} VMs; VmRSS − balloon ${pct(p.vmVmRssMinusBalloonMiB)} MiB over ${p.idleVms} idle VM(s)`
+      : `not measured — the hold never reached ${minutes} min of idle`
+  out.push(`| host RAM per idle VM @10 min | ${point(reclaim.at10, 10)} |`)
+  out.push(`| host RAM per idle VM @30 min | ${point(reclaim.at30, 30)} |`)
+  out.push(
+    `| ballooned by idle VMs | ${
+      reclaim.balloonedIdleMiB === null
+        ? 'not measured'
+        : `${pct(reclaim.balloonedIdleMiB)} MiB across ${reclaim.balloonedIdleVms ?? 0} of the idle VMs (0 means no VM was reclaimed at its idle mark)`
+    } |`,
+  )
+  if (reclaim.wake) {
+    const w = reclaim.wake
+    out.push(
+      `| wake from reclaim | p50 ${w.p50Ms} ms · p95 ${w.p95Ms} ms over ${w.n} probe(s), ${w.errors} failed${
+        w.deltaP95Ms === null ? '' : ` · p95 vs baseline ${w.baselineP95Ms} ms = ${w.deltaP95Ms > 0 ? '+' : ''}${w.deltaP95Ms} ms (budget ≤ +100) → ${w.pass ? 'pass' : 'FAIL'}`
+      } |`,
+    )
+  } else {
+    out.push('| wake from reclaim | not measured |')
+  }
+  if (reclaim.ksm) {
+    const k = reclaim.ksm
+    out.push(
+      `| KSM | pages_sharing ${k.pagesSharing} · pages_shared ${k.pagesShared} · full_scans ${k.fullScans} · ksmd ${pct(k.ksmdCpuPct, 2)}% of one core over ${k.samples} sample(s) · soak merging pages max ${k.soakMergingPagesMax} |`,
+    )
+  } else {
+    out.push('| KSM | no KSM sysfs tree on this host |')
+  }
+  out.push('')
+  return out
+}
+
+export interface AbcRun {
+  /** Column heading, e.g. `A (baseline)`. */
+  label: string
+  input: ReportInput
+}
+
+const densest = (steps: StepRow[]): StepRow | undefined => [...steps].sort((a, b) => b.n - a.n)[0]
+
+/** Slowest turn step in the densest burst, ms. */
+function burstP95(input: ReportInput): number | null {
+  if (input.burst.length === 0) return null
+  const row = [...input.burst].sort((a, b) => b.n - a.n)[0]
+  return Math.max(...TURN_STEPS.map((s) => row.turnP95[s] ?? 0))
+}
+
+/**
+ * The three runs side by side, in the shape of the runbook's Results table.
+ *
+ * Written once, from the same `ReportInput`s the run directories were written
+ * from, so the table and the per-run reports cannot disagree. A cell the run
+ * did not measure stays `—`: an empty column is a measurement that has not
+ * happened, and filling it from the other runs is exactly what this card exists
+ * to stop.
+ */
+export function abcMarkdown(runs: AbcRun[]): string {
+  const out: string[] = []
+  out.push(`# Metal idle reclaim — A/B/C — ${new Date().toISOString()}`)
+  out.push('')
+  out.push('| | ' + runs.map((r) => r.label).join(' | ') + ' |')
+  out.push('|---|' + runs.map(() => '---').join('|') + '|')
+
+  const cell = (run: AbcRun, pick: (i: ReportInput, s: StepRow | undefined) => string) => pick(run.input, densest(run.input.steps))
+
+  const rows: [string, (i: ReportInput, s: StepRow | undefined) => string][] = [
+    ['host RAM per idle VM @10 min (MiB)', (i) => pct(i.reclaim?.at10?.soakDeltaPerVmMiB, 1)],
+    ['VmRSS − ballooned @10 min (MiB)', (i) => pct(i.reclaim?.at10?.vmVmRssMinusBalloonMiB, 1)],
+    ['host RAM per idle VM @30 min (MiB)', (i) => pct(i.reclaim?.at30?.soakDeltaPerVmMiB, 1)],
+    ['VmRSS − ballooned @30 min (MiB)', (i) => pct(i.reclaim?.at30?.vmVmRssMinusBalloonMiB, 1)],
+    ['ballooned by idle VMs (MiB)', (i) => pct(i.reclaim?.balloonedIdleMiB, 0)],
+    ['VMs per host at the RAM knee', (i) => String(i.recommendation.ramKnee || '—')],
+    ['ksmd CPU (% of one core)', (i) => (i.reclaim?.ksm ? pct(i.reclaim.ksm.ksmdCpuPct, 2) : 'n/a')],
+    ['KSM pages_sharing', (i) => (i.reclaim?.ksm ? String(i.reclaim.ksm.pagesSharing) : 'n/a')],
+    ['resume latency p95 (ms)', (_i, s) => pct(s?.resumeP95Ms, 0)],
+    ['wake from reclaim p50 / p95 (ms)', (i) => (i.reclaim?.wake ? `${i.reclaim.wake.p50Ms} / ${i.reclaim.wake.p95Ms}` : '—')],
+    ['wake p95 vs A (ms, budget ≤ +100)', (i) => (i.reclaim?.wake?.deltaP95Ms === null || i.reclaim?.wake?.deltaP95Ms === undefined ? '—' : `${i.reclaim.wake.deltaP95Ms > 0 ? '+' : ''}${i.reclaim.wake.deltaP95Ms}`)],
+    ['agent turn p95 under burst (ms)', (i) => pct(burstP95(i), 0)],
+    ['recommended METAL_IDLE_RECLAIM_MS', (i) => String(i.env.idleSuspendMs || '—')],
+  ]
+  for (const [label, pick] of rows) out.push(`| ${label} | ` + runs.map((r) => cell(r, pick)).join(' | ') + ' |')
+  out.push('')
+
+  for (const r of runs) {
+    const e = r.input.env
+    out.push(`- **${r.label}** — ${e.hostId} ${e.startedAt}${e.abortReason ? ` (**aborted:** ${e.abortReason})` : ''}`)
+  }
+  out.push('')
+  return out.join('\n')
 }
 
 /** One row per burst, so a recompute does not lose the burst result. */
@@ -376,7 +527,17 @@ export function writeReport(dir: string, input: ReportInput, samples: HostSample
     'turns.csv': turnsCsv(turns),
     'report.md': renderReportMarkdown(input),
     'env.json': JSON.stringify(input.env, null, 2) + '\n',
+    // The whole report, so `--abc` can build the A/B/C table from the runs that
+    // were written rather than from numbers retyped into the runbook.
+    'report.json': JSON.stringify(input, null, 2) + '\n',
   }
   for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body)
   return { dir, files: Object.keys(files) }
+}
+
+/** Write `abc.md` next to the run directories (or wherever `--abc` points). */
+export function writeAbc(path: string, runs: AbcRun[]): string {
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, abcMarkdown(runs))
+  return path
 }

@@ -88,9 +88,11 @@ describe('stepsCsv', () => {
 
   test('carries the pass/fail verdict', () => {
     const csv = stepsCsv([step(80, { oomKills: 1 })])
-    const row = csv.trim().split('\n')[1].split(',')
-    expect(row[row.length - 2]).toBe('true') // cpu_pass
-    expect(row[row.length - 1]).toBe('false') // ram_pass
+    const lines = csv.trim().split('\n')
+    const header = lines[0].split(',')
+    const row = lines[1].split(',')
+    expect(row[header.indexOf('cpu_pass')]).toBe('true')
+    expect(row[header.indexOf('ram_pass')]).toBe('false')
   })
 })
 
@@ -108,6 +110,7 @@ describe('samplesCsv', () => {
       runDelayMsPerSec: { p50: 1, p95: 4, max: 9, threads: 160 },
       swapInPagesPerSec: 0,
       memAvailablePct: 50,
+      ksm: null,
     }
     const csv = samplesCsv([s])
     const lines = csv.trim().split('\n')
@@ -218,7 +221,7 @@ describe('writeReport', () => {
   test('writes every file', () => {
     const dir = join(mkdtempSync(join(tmpdir(), 'density-report-')), 'density-test')
     const written = writeReport(dir, input([step(40)]), [], [])
-    expect(written.files.sort()).toEqual(['burst.csv', 'env.json', 'report.md', 'samples.csv', 'steps.csv', 'turns.csv'])
+    expect(written.files.sort()).toEqual(['burst.csv', 'env.json', 'report.json', 'report.md', 'samples.csv', 'steps.csv', 'turns.csv'])
     expect(readFileSync(join(dir, 'report.md'), 'utf8')).toContain('Metal density soak')
     expect(JSON.parse(readFileSync(join(dir, 'env.json'), 'utf8')).hostId).toBe('latitude-dal-1')
   })

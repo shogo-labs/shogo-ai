@@ -32,7 +32,19 @@
 import { execFileSync } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { HostSampler, oomKillsSince, percentile, type HostSample } from './density/host-sampler'
+import { HostSampler, firecrackerVmIds, oomKillsSince, percentile, processRssMiB, type HostSample } from './density/host-sampler'
+import {
+  balloonedIdleMiB as balloonedIdleMiBOf,
+  balloonedVms,
+  idleMemoryPoint,
+  idleVmStates,
+  pickWakeTargets,
+  reclaimSummary,
+  summarizeWake,
+  type IdleMemoryPoint,
+  type IdleVmState,
+  type WakeSummary,
+} from './density/reclaim'
 import { DEFAULT_MIX, allocateRoles, parseMix, roleCounts, type Mix, type Role } from './density/mix'
 import { DEFAULT_BOUNDS, TURN_STEPS, computeKnees, ramCeilingsBySize, type Bounds, type StepMetrics, type TurnStep } from './density/knee'
 import { primeWarmCache, runAgentTurn, startAppLoad, type AppLoadHandle, type TurnTimings } from './density/guest-workload'
@@ -70,6 +82,8 @@ export interface SoakOptions {
   dryRun: boolean
   /** Re-derive the report of an already-recorded run instead of soaking. */
   fromResults?: string
+  /** Build `abc.md` from two or more recorded runs (`label=dir,…`), no host needed. */
+  abc?: string
 }
 
 const num = (v: string | undefined, d: number) => {
@@ -130,6 +144,7 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv = process.env):
     bounds: DEFAULT_BOUNDS,
     dryRun: has('dry-run'),
     fromResults: get('from-results'),
+    abc: get('abc'),
   }
 }
 
@@ -277,6 +292,30 @@ interface SoakVm {
   role: Role
   url?: string
   assigned: boolean
+  /** When this VM came up. The idle marks only count VMs idle the whole interval. */
+  assignedAtMs: number
+  /** Firecracker id, learned from `/vms` — `/assign` does not return one. */
+  vmId?: string
+}
+
+/**
+ * Which soak VMs still need a keepalive touch.
+ *
+ * The touch stops the reaper suspending a VM mid-hold, and the soak runs with
+ * `METAL_IDLE_SUSPEND_MS=0`, so nothing is going to suspend anything. It also
+ * moves `lastRealActivityAt` — the exact clock idle reclaim reads — so touching
+ * the idle role would keep the balloon from ever inflating, i.e. it would switch
+ * off the feature the run exists to measure. Agent and app VMs are still
+ * touched: their turns and requests move the same clock, and a suspended one
+ * would void the step.
+ */
+export function touchTargets(vms: { projectId: string; role: string; assigned: boolean }[], idleSuspendMs: number): string[] {
+  return vms.filter((v) => v.assigned && (v.role !== 'idle' || idleSuspendMs !== 0)).map((v) => v.projectId)
+}
+
+/** One keepalive tick, exported so a test can prove idle VMs are left alone. */
+export function runKeepAliveTick(touch: (projectId: string) => void, vms: { projectId: string; role: string; assigned: boolean }[], idleSuspendMs: number): void {
+  for (const projectId of touchTargets(vms, idleSuspendMs)) touch(projectId)
 }
 
 export class DensitySoak {
@@ -305,6 +344,15 @@ export class DensitySoak {
   private appLoads: AppLoadHandle[] = []
   private abortReason: string | undefined
   private residentBefore: string[] = []
+  /** Firecracker pids of this run's VMs, refreshed with the host view. */
+  private soakPids: number[] = []
+  /** Wake-from-reclaim for the densest hold (SHO-553). */
+  private wake: WakeSummary | null = null
+  /**
+   * The `METAL_IDLE_SUSPEND_MS` the run put in place. 0 means the keepalive must
+   * leave the idle role alone — see `touchTargets`.
+   */
+  private effectiveIdleSuspendMs = 0
   private hostInfo: { model: string; kernel: string; fcVersion: string; threads: number; memMiB: number; gitSha: string } = {
     model: 'unknown',
     kernel: 'unknown',
@@ -528,7 +576,7 @@ export class DensitySoak {
       while (next < toAdd.length) {
         const item = toAdd[next++]
         const a = await this.agent.assign(item.projectId, ASSIGN_ENV)
-        const vm: SoakVm = { projectId: item.projectId, role: item.role, url: this.guestUrl(a.json?.url), assigned: a.ok }
+        const vm: SoakVm = { projectId: item.projectId, role: item.role, url: this.guestUrl(a.json?.url), assigned: a.ok, assignedAtMs: Date.now() }
         this.vms.push(vm)
         if (!a.ok) log('ramp', `assign ${item.projectId} failed (${a.status}): ${JSON.stringify(a.json).slice(0, 160)}`)
       }
