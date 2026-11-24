@@ -27,7 +27,7 @@ import { fitChatImage } from "./image-sizing"
 import { useNaturalImageSize } from "./image-natural-size"
 import { useMeasuredWidth } from "./use-measured-width"
 import { WorkedForGroup } from "./WorkedForGroup"
-import { ContextCompactionDivider } from "./ContextCompactionDivider"
+import { ContextCompactionDivider, ContextCompactingRow } from "./ContextCompactionDivider"
 import { PlanningStatusLine } from "./PlanningStatusLine"
 import { useDeferredBacklog } from "./use-deferred-backlog"
 import type { MessagePart, GroupedMessagePart } from "./types"
@@ -527,8 +527,8 @@ export const AssistantContent = memo(
     const throttledMessage = useThrottledWhileStreaming(message, isStreaming)
 
     const orderedParts = useMemo(
-      () => extractOrderedParts(throttledMessage, partReuseRef.current),
-      [throttledMessage],
+      () => extractOrderedParts(throttledMessage, partReuseRef.current, { streaming: isStreaming }),
+      [throttledMessage, isStreaming],
     )
 
     // Populate subagentStreamStore from agent_spawn tool results for the Agents panel
@@ -728,6 +728,10 @@ export const AssistantContent = memo(
 
       if (part.type === "compaction") {
         return <ContextCompactionDivider key={part.id} part={part} />
+      }
+
+      if (part.type === "compaction-pending") {
+        return <ContextCompactingRow key={part.id} chunks={part.chunks} />
       }
 
       if (part.type === "tool") {

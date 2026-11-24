@@ -793,11 +793,24 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
           }
         }
         if (iterations >= maxIterations && !abortTriggered) {
-          maxIterationsExhausted = true
-          incompleteReason = 'iteration_ceiling'
-          abortTriggered = true
-          abortReason = 'max_iterations'
-          agent.abort()
+          // A tools-free call that returned text is a completed answer, not a
+          // step-limit turn. The compaction summarizer runs with
+          // `maxIterations: 1, tools: []`, so every summarizer call used to be
+          // logged as `TURN_FAILURE iteration_ceiling` — three times as often
+          // once the map runs in parallel (SHO-556). A call that ran out of
+          // iterations while still wanting a tool is a real ceiling.
+          const turnText = Array.isArray(turnMsg?.content)
+            ? (turnMsg.content as any[]).some((block: any) => block?.type === 'text' && String(block.text ?? '').trim())
+            : false
+          const answeredWithoutTools =
+            toolCalls.length === 0 && turnToolCalls === 0 && turnText
+          if (!answeredWithoutTools) {
+            maxIterationsExhausted = true
+            incompleteReason = 'iteration_ceiling'
+            abortTriggered = true
+            abortReason = 'max_iterations'
+            agent.abort()
+          }
         }
         break
       }

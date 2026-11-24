@@ -481,6 +481,21 @@ describe('trackUsageFromStream — processLine branches', () => {
     expect(types.indexOf('data-context-summarized')).toBeGreaterThan(types.indexOf('text'))
   })
 
+  test('does not persist data-context-summarizing: the status row must not survive a reload (SHO-556)', async () => {
+    chatSessionFixture = { id: 's-compact-live' }
+    const stream = streamFromChunks([
+      'data: {"type":"text-delta","delta":"working on it"}\n',
+      'data: {"type":"data-context-summarizing","data":{"trigger":"mid-turn","tokensBefore":348000,"chunks":4}}\n',
+      'data: {"type":"data-context-summarized","data":{"trigger":"auto","tokensBefore":348000,"tokensAfter":38000,"messagesBefore":121,"messagesAfter":6,"summaryChars":900}}\n',
+      'data: {"type":"data-turn-complete","data":{"status":"completed"}}\n',
+    ])
+    await trackUsageFromStream(stream, { chatSessionId: 's-compact-live' }, { id: 'p-1', workspaceId: 'w-1' })
+    const parts = JSON.parse(prismaCalls.chatMessageCreate[0].data.parts)
+    // The spinner is live-only; the divider is the transcript row.
+    expect(parts.some((p: any) => p.type === 'data-context-summarizing')).toBe(false)
+    expect(parts.filter((p: any) => p.type === 'data-context-summarized')).toHaveLength(1)
+  })
+
   test('ignores [DONE], event:, id:, retry:, blank lines, and garbage non-JSON', async () => {
     const stream = streamFromChunks([
       '\n',

@@ -531,7 +531,7 @@ export type TeamChatEvent =
   | { type: 'message.created'; conversationId: string; message: ChatMessage; moved?: boolean }
   | { type: 'message.updated'; conversationId: string; message: ChatMessage }
   | { type: 'reaction.changed'; conversationId: string; messageId: string; reactions: ReactionSummary[] }
-  | { type: 'agent.delta'; conversationId: string; messageId: string; text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }>; queue?: QueuePosition | null; waiting?: { tool: string | null } | null }
+  | { type: 'agent.delta'; conversationId: string; messageId: string; text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }>; queue?: QueuePosition | null; waiting?: { tool: string | null } | null; summarizing?: boolean }
   | { type: 'agent.capacity'; workspaceId: string; limit: number; running: number; parked: number; queued: number }
   | { type: 'conversation.created'; conversationId: string; conversation: ConversationSummary }
   | { type: 'conversation.updated'; conversationId: string; conversation: ConversationSummary }

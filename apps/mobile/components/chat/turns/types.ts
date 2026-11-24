@@ -35,6 +35,18 @@ export type MessagePart =
       messagesAfter: number;
       id: string;
     }
+  | {
+      /**
+       * A compaction that is *running* right now: the runtime emits
+       * `data-context-summarizing` before its summarizer calls, and this row
+       * becomes the `compaction` divider above when `data-context-summarized`
+       * arrives. Transient — never persisted, so it cannot survive a reload.
+       */
+      type: "compaction-pending";
+      /** Summarizer calls this head is being cut into (> 1 gets "· N parts"). */
+      chunks: number;
+      id: string;
+    }
   | { type: "image"; url: string; mediaType: string; id: string }
   | { type: "file"; url: string; mediaType: string; id: string };
 

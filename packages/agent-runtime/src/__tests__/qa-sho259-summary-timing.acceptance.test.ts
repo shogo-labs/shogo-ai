@@ -189,7 +189,16 @@ describe('SHO-259 AC2: nothing summarizes at the end of a turn', () => {
       // The next turn summarizes *before* its first request: the provider never
       // sees the seeded history.
       const before = h.requests.length
-      await h.turn('second')
+      const turn2Frames = await h.turn('second')
+      // SHO-556 AC7: the turn-boundary compaction is announced before its
+      // summarizer calls and resolved into the transcript row afterwards.
+      const preTurn = framesOf(turn2Frames, 'data-context-summarizing')
+      expect(preTurn.length).toBeGreaterThanOrEqual(1)
+      expect(preTurn[0].data.trigger).toBe('pre-turn')
+      expect(preTurn[0].data.chunks).toBeGreaterThanOrEqual(1)
+      // Its resolving row comes later in the same turn.
+      const firstDone = turn2Frames.findIndex((f) => f.type === 'data-context-summarized')
+      expect(firstDone).toBeGreaterThan(turn2Frames.indexOf(preTurn[0]))
       const firstOfTurn2 = h.requests[before]
       // The seeded messages are gone: the request now leads with a summary and
       // is a fraction of what turn 1 sent. (The marker text itself survives
@@ -229,7 +238,16 @@ describe('SHO-259 AC3/AC5: the >10-minute rule between turns', () => {
       // Summarized before the first request, not after it.
       expect(h.requests[before]).toContain('Previous conversation summary')
       expect(h.requests[before].length).toBeLessThan(h.requests[before - 1].length * 0.6)
-      expect(framesOf(frames, 'data-context-summarized')).toHaveLength(0)
+      // The turn-boundary compaction reports itself so the UI can show
+      // "Summarizing…" and then resolve it into the divider (SHO-556). Before
+      // SHO-556 the pre-turn path emitted no frame at all, which is why this
+      // assertion used to be `toHaveLength(0)`.
+      const summarizing = framesOf(frames, 'data-context-summarizing')
+      expect(summarizing).toHaveLength(1)
+      expect(summarizing[0].data.trigger).toBe('idle')
+      const summarized = framesOf(frames, 'data-context-summarized')
+      expect(summarized).toHaveLength(1)
+      expect(frames.indexOf(summarizing[0])).toBeLessThan(frames.indexOf(summarized[0]))
     } finally {
       logs.restore()
       await h.stop()

@@ -8,7 +8,7 @@
  * in the composer dropped mid-turn. Before SHO-96 a compaction rewrote the
  * session's messages silently and left no trace in the transcript.
  */
-import { View, Text } from "react-native"
+import { ActivityIndicator, View, Text } from "react-native"
 import { Scissors } from "lucide-react-native"
 
 export interface ContextCompactionPart {
@@ -36,6 +36,31 @@ export function ContextCompactionDivider({ part }: { part: ContextCompactionPart
           Context summarized · {formatTokens(part.tokensBefore)} → {formatTokens(part.tokensAfter)}
           {folded > 0 ? ` · ${folded} messages folded` : ""}
           {` (${part.trigger})`}
+        </Text>
+      </View>
+      <View className="h-px flex-1 bg-border" />
+    </View>
+  )
+}
+
+/**
+ * The compaction that is running right now (SHO-556).
+ *
+ * Summarizing a 350k head is seconds-to-minutes of the runtime working with
+ * nothing on the wire. This row is the reason the turn has not answered yet: it
+ * appears when `data-context-summarizing` arrives, and the *next* frame
+ * (`data-context-summarized`) replaces it with the divider above once the new
+ * summary exists. Never persisted, so it cannot survive a reload.
+ */
+export function ContextCompactingRow({ chunks = 0 }: { chunks?: number }) {
+  return (
+    <View className="my-2 flex-row items-center gap-2" testID="context-compacting-row">
+      <View className="h-px flex-1 bg-border" />
+      <View className="flex-row items-center gap-1.5 rounded-full border border-border px-2 py-0.5">
+        <ActivityIndicator size="small" color="#8b8b8b" style={{ transform: [{ scale: 0.6 }] }} />
+        <Text className="text-[11px] text-muted-foreground">
+          Summarizing earlier conversation…
+          {chunks > 1 ? ` · ${chunks} parts` : ""}
         </Text>
       </View>
       <View className="h-px flex-1 bg-border" />
