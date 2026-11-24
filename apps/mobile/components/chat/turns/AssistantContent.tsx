@@ -35,6 +35,7 @@ import {
   groupWorkParts,
   partitionTurn,
   extractTurnTiming,
+  isTodoTool,
   shouldShowPlanningStatus,
 } from "./turnShaping"
 import { buildFallbackWorkedLabel } from "./workSummary"
@@ -536,11 +537,7 @@ export const AssistantContent = memo(
       // A work log shown inside a channel is read-only history; it must not feed a project's panels.
       if (bare) return
       for (const part of orderedParts) {
-        if (
-          part.type === "tool" &&
-          (part.tool.toolName === "TodoWrite" ||
-            part.tool.toolName === "todo_write")
-        ) {
+        if (part.type === "tool" && isTodoTool(part.tool.toolName)) {
           const todos = parseTodosForStore(part.tool.args)
           if (todos.length > 0) {
             todoStateStore.registerWrite(part.tool.id, todos)
@@ -766,10 +763,7 @@ export const AssistantContent = memo(
           return <AskUserAskedRow key={part.id} tool={part.tool} />
         }
 
-        if (
-          part.tool.toolName === "TodoWrite" ||
-          part.tool.toolName === "todo_write"
-        ) {
+        if (isTodoTool(part.tool.toolName)) {
           return <TodoRow key={part.id} tool={part.tool} />
         }
 

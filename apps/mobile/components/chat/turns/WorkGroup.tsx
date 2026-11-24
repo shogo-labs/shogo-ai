@@ -27,6 +27,8 @@ import { ExecWidget } from "./ExecWidget"
 import { ThinkingWidget } from "./ThinkingWidget"
 import { InlineToolWidget } from "./InlineToolWidget"
 import { CollapsibleToolGroup } from "./CollapsibleToolGroup"
+import { TodoRow } from "./TodoRow"
+import { isTodoTool } from "./turnShaping"
 import { summarizeWork } from "./workSummary"
 import type { MessagePart } from "./types"
 
@@ -123,6 +125,11 @@ function WorkGroupImpl({ items, isStreaming, isExpanded, onToggle, className }: 
                   onToggle={onRowToggle}
                 />
               )
+            }
+            // A todo call rides inside the run (SHO-574) — it renders as the
+            // same iconless pointer row, never the generic minimal row.
+            if (isTodoTool(item.tool.toolName)) {
+              return <TodoRow key={item.id} tool={item.tool} />
             }
             // Reads / searches / lists / fetches interleaved with
             // edits — render as compact minimal rows so the diff

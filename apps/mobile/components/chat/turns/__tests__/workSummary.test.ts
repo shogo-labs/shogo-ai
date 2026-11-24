@@ -19,6 +19,7 @@ import {
 } from "../workSummary"
 import type { GroupedMessagePart, MessagePart } from "../types"
 import type { ToolCallData } from "../../tools/types"
+import { groupWorkParts } from "../turnShaping"
 
 let uid = 0
 function nextId(prefix: string): string {
@@ -165,6 +166,30 @@ describe("tallyWork", () => {
     ]
     const { counts } = tallyWork(parts)
     expect(counts.readFiles).toBe(1)
+  })
+
+  test("a todo call inside the run adds nothing to the label (SHO-574)", () => {
+    const readonly = tallyWork([
+      tool("Read", { path: "/a.ts" }),
+      tool("todo_write", { todos: [{ content: "Ship it" }] }),
+      tool("exec", { command: "bun test" }),
+    ])
+    // No `generic` bucket and no `commands` — the todo is a pointer to the
+    // dock's Tasks panel, not work.
+    expect(readonly.counts.readFiles).toBe(1)
+    expect(readonly.counts.commands).toBe(1)
+    expect(readonly.counts.generic).toBe(0)
+    expect(readonly.counts.genericToolNames).toEqual([])
+
+    const summary = summarizeWork(
+      [
+        tool("edit_file", { path: "/b.ts", old_string: "x", new_string: "y" }),
+        tool("todo_write", { todos: [{ content: "Ship it" }] }),
+        tool("exec", { command: "bun test" }),
+      ],
+      "past",
+    )
+    expect(summary.label).toBe("Edited 1 file, ran 1 command")
   })
 
   test("empty input yields all-zero counts", () => {
@@ -468,6 +493,19 @@ describe("generic tools in work labels", () => {
     )
     expect(summary.kind).toBe("explored")
     expect(summary.label).toBe("Explored 1 file, team chat post")
+  })
+
+  test("end-to-end: read → todo → edit → todo → exec is one group labelled only for the work (SHO-574)", () => {
+    const grouped = groupWorkParts([
+      tool("Read", { path: "/a.ts" }),
+      tool("todo_write", { todos: [{ content: "Ship it" }] }),
+      tool("edit_file", { path: "/b.ts", old_string: "a", new_string: "b" }),
+      tool("todo_write", { todos: [{ content: "Ship it" }] }),
+      tool("exec", { command: "bun test" }),
+    ])
+    expect(grouped).toHaveLength(1)
+    const summary = summarizeWork(grouped[0]!.type === "work-group" ? grouped[0]!.items : [], "past")
+    expect(summary.label).toBe("Edited 1 file, ran 1 command")
   })
 })
 
