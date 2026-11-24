@@ -31,7 +31,7 @@ import {
   humanizeToolName,
   type ToolCallData,
 } from "../tools/types"
-import { isGenericTool } from "./turnShaping"
+import { isGenericTool, isTodoTool } from "./turnShaping"
 
 export type WorkKind = "edited" | "explored" | "ran" | "used"
 export type WorkTense = "present" | "past"
@@ -172,6 +172,10 @@ export function tallyWork(
   for (const item of items) {
     if (item.type !== "tool") continue
     const tool = item.tool
+
+    // The checklist is a pointer to the dock's Tasks panel, not work: a todo
+    // call rides along inside the group but counts toward nothing in its label.
+    if (isTodoTool(tool.toolName)) continue
 
     if (WRITE_TOOL_NAMES.has(tool.toolName)) {
       editedPaths.add(toolPath(tool) ?? tool.id)
