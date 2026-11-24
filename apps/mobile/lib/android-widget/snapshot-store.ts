@@ -6,6 +6,7 @@
  * published anything this launch, so it reads the last one from here.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { setStorageJson } from '../storage'
 import type { AgentGlanceSnapshot } from '../agent-glance'
 
 export const ANDROID_GLANCE_KEY = 'shogo.glance.v1'
@@ -22,7 +23,7 @@ export function parseStoredGlance(raw: string | null): AgentGlanceSnapshot | nul
 }
 
 export async function saveGlance(snapshot: AgentGlanceSnapshot): Promise<void> {
-  await AsyncStorage.setItem(ANDROID_GLANCE_KEY, JSON.stringify(snapshot))
+  await setStorageJson(ANDROID_GLANCE_KEY, snapshot)
 }
 
 export async function loadGlance(): Promise<AgentGlanceSnapshot | null> {

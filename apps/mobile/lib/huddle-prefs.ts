@@ -8,6 +8,7 @@
  */
 import { useSyncExternalStore } from 'react'
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { setStorageJson } from './storage'
 
 const STORAGE_KEY = 'shogo:huddle-prefs'
 
@@ -122,7 +123,7 @@ export function getHuddlePrefs(): HuddlePrefs {
 export function setHuddlePrefs(patch: Partial<HuddlePrefs>): void {
   prefs = { ...prefs, ...patch }
   notify()
-  void AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(prefs)).catch(() => {
+  void setStorageJson(STORAGE_KEY, prefs).catch(() => {
     // The choice then lasts until the app restarts.
   })
 }

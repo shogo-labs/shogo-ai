@@ -22,6 +22,7 @@ import {
   type ListRenderItemInfo,
 } from "react-native"
 import AsyncStorage from "@react-native-async-storage/async-storage"
+import { setStorageItem } from '@/lib/storage'
 import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
@@ -472,7 +473,7 @@ export function ChatSessionSidebar({
     // Skip the initial mount write before hydration so we don't clobber
     // a stored `1` with our default `false`.
     if (!projectId || !archivedHydratedRef.current) return
-    AsyncStorage.setItem(
+    setStorageItem(
       `${ARCHIVED_EXPANDED_STORAGE_PREFIX}${projectId}`,
       archivedExpanded ? "1" : "0",
     ).catch(() => {})

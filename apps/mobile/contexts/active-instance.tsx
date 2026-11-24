@@ -26,13 +26,14 @@ import {
 // surface and imports `auth-client`, whose better-auth client fetches its config
 // at module load. Only the URL is needed here.
 import { API_URL } from '../lib/api-url'
+import { removeStorageItem, setStorageItem } from '../lib/storage'
 
 // ─── Storage adapters ───────────────────────────────────────────────────────
 
 const asyncStorageAdapter: InstanceStorageAdapter = {
   getItem: (key) => AsyncStorage.getItem(key),
-  setItem: (key, value) => AsyncStorage.setItem(key, value),
-  removeItem: (key) => AsyncStorage.removeItem(key),
+  setItem: (key, value) => setStorageItem(key, value),
+  removeItem: (key) => removeStorageItem(key),
 }
 
 function getStorage(): InstanceStorageAdapter {

@@ -42,6 +42,7 @@ import { useRouter, Stack } from "expo-router";
 import { useProjectRouteParams } from "../../../../lib/use-project-route-params";
 import { observer } from "mobx-react-lite";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { setStorageItem } from '@/lib/storage'
 import { LinearGradient } from "expo-linear-gradient";
 import {
   useSDKDomain,
@@ -1563,7 +1564,7 @@ export default observer(function ProjectLayout() {
   // Persist last chat session to AsyncStorage
   useEffect(() => {
     if (projectId && chatSessionId) {
-      AsyncStorage.setItem(
+      setStorageItem(
         `shogo:lastChatSession:${projectId}`,
         chatSessionId
       ).catch((e) =>
@@ -1951,7 +1952,7 @@ export default observer(function ProjectLayout() {
   useEffect(() => {
     if (!projectId) return;
     if (showChatSessionsHydratedRef.current !== projectId) return;
-    AsyncStorage.setItem(
+    setStorageItem(
       `shogo:showChatHistory:${projectId}`,
       showChatSessions ? "1" : "0"
     ).catch(() => {});
@@ -1981,7 +1982,7 @@ export default observer(function ProjectLayout() {
 
   const persistChatPanelWidth = useCallback((w: number) => {
     setChatPanelWidth(w);
-    AsyncStorage.setItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(
+    setStorageItem(CHAT_PANEL_WIDTH_STORAGE_KEY, String(w)).catch(
       () => {}
     );
   }, []);
@@ -2076,7 +2077,7 @@ export default observer(function ProjectLayout() {
     // A landing-tab deep link is an explicit choice of surface; it also means
     // the folder-project Preview auto-open must never override it.
     previewTabUserPickedRef.current.add(projectId);
-    AsyncStorage.setItem(previewTabUserPickKey(projectId), requested).catch(
+    setStorageItem(previewTabUserPickKey(projectId), requested).catch(
       () => {}
     );
     const nativePhoneChat = nativePhone;
@@ -2196,7 +2197,7 @@ export default observer(function ProjectLayout() {
 
   useEffect(() => {
     if (projectId && previewTab && PERSISTABLE_PREVIEW_TABS.has(previewTab)) {
-      AsyncStorage.setItem(
+      setStorageItem(
         `${PREVIEW_TAB_STORAGE_PREFIX}${projectId}`,
         previewTab
       ).catch(() => {});
@@ -2390,7 +2391,7 @@ export default observer(function ProjectLayout() {
       // for this project — this session and every later one (SHO-200).
       if (projectId) {
         previewTabUserPickedRef.current.add(projectId);
-        AsyncStorage.setItem(previewTabUserPickKey(projectId), tabId).catch(
+        setStorageItem(previewTabUserPickKey(projectId), tabId).catch(
           () => {}
         );
       }
