@@ -47,12 +47,18 @@ export function buildStopRequest(config: StopRequestConfig): StopRequestResult |
     body: JSON.stringify(body),
   }
 
-  // Remote API requires auth credentials; local agent does not
+  // Remote API requires auth credentials; local agent does not.
+  //
+  // On native the cookie travels in the `Cookie` header and `credentials` must
+  // be `'omit'`: expo/fetch reads an undefined credentials as `'include'`, and
+  // on iOS that copies the shared cookie jar into the request on top of our
+  // header, which better-auth answers with 401 (SHO-564).
   if (!localAgentUrl) {
     if (platform === 'web') {
       init.credentials = 'include'
-    } else if (getCookie) {
-      const cookie = getCookie()
+    } else {
+      init.credentials = 'omit'
+      const cookie = getCookie?.()
       if (cookie) headers.Cookie = cookie
     }
   }
@@ -97,8 +103,9 @@ export function buildSubagentStopRequest(config: SubagentStopRequestConfig): Sto
   if (!localAgentUrl) {
     if (platform === 'web') {
       init.credentials = 'include'
-    } else if (getCookie) {
-      const cookie = getCookie()
+    } else {
+      init.credentials = 'omit'
+      const cookie = getCookie?.()
       if (cookie) headers.Cookie = cookie
     }
   }

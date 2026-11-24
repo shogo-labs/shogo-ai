@@ -1,20 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { Platform } from 'react-native'
-import { authClient } from './auth-client'
 import { fetchWithWakeRetry, isWakeRetryable } from './agent-retry'
+import { authedFetchInit } from './authed-fetch-init'
 
-/**
- * The headers a native request to an authenticated URL needs, for a caller that
- * cannot use `fetch` — a download streamed to disk by `expo-file-system`, which
- * takes headers but no request init. Web needs none: the browser sends the
- * session cookie itself.
- */
-export function nativeAuthHeaders(): Record<string, string> {
-  if (Platform.OS === 'web') return {}
-  const cookie = (authClient as any).getCookie?.()
-  return cookie ? { Cookie: cookie } : {}
-}
+export { authedCredentials, authedFetchInit, nativeAuthHeaders } from './authed-fetch-init'
 
 /**
  * Wraps `fetch` with the correct auth credentials for agent-proxy requests.
@@ -23,28 +12,16 @@ export function nativeAuthHeaders(): Record<string, string> {
  * cross-origin (web app :8081 -> API :8002).
  *
  * On native: reads the session cookie from Expo SecureStore via Better Auth's
- * `getCookie()` and passes it as a `Cookie` header (native `fetch` doesn't
- * send cookies automatically).
+ * `getCookie()` and passes it as a `Cookie` header with `credentials: 'omit'`
+ * (native `fetch` doesn't send cookies automatically, and `'include'` would
+ * let the platform's cookie jar corrupt the header — see `authedFetchInit`).
  *
  * A GET or HEAD that arrives while a hosted workspace's desktop is still waking
  * is retried once the host says it is up (SHO-538) — this is the one place every
  * agent-proxy loader goes through, so no caller has to know about the wake.
  */
 export function agentFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const isWeb = Platform.OS === 'web'
-  const extraHeaders: Record<string, string> = {}
-
-  if (!isWeb) {
-    const cookie = (authClient as any).getCookie?.()
-    if (cookie) extraHeaders['Cookie'] = cookie
-  }
-
-  const send = () =>
-    fetch(input, {
-      ...init,
-      headers: { ...extraHeaders, ...(init?.headers as Record<string, string>) },
-      credentials: isWeb ? 'include' : 'omit',
-    })
+  const send = () => fetch(input, authedFetchInit(init))
 
   return isWakeRetryable(init?.method) ? fetchWithWakeRetry(send) : send()
 }

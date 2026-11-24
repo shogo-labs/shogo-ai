@@ -385,7 +385,7 @@ import {
 import { type PlanData } from "./PlanCard"
 import { usePlanStreamSafe } from "./PlanStreamContext"
 import { AgentClient } from "@shogo-ai/sdk/agent"
-import { agentFetch } from "../../lib/agent-fetch"
+import { agentFetch, authedCredentials, authedFetchInit } from "../../lib/agent-fetch"
 import { openAuthFlow, preCreateAuthWindow } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { IntegrationConnectCard, type IntegrationAuthRequest } from "./IntegrationConnectCard"
@@ -1445,18 +1445,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
           return Array.isArray(response.data?.results) ? response.data.results : []
         }
         const fetchFn = expoFetch ?? globalThis.fetch
-        const headers: Record<string, string> = nativeHeaders
-          ? nativeHeaders()
-          : {}
         const params = new URLSearchParams(search)
         const response = await fetchFn(
           `${API_URL}/api/workspaces/${encodeURIComponent(
             workspaceId,
           )}/history/search?${params}`,
-          {
-            headers,
-            credentials: Platform.OS === "web" ? "include" : undefined,
-          } as any,
+          authedFetchInit() as any,
         )
         if (!response.ok) return []
         const data = await response.json()
@@ -1500,13 +1494,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     if (!url) return
     try {
       const fetchFn = expoFetch ?? globalThis.fetch
-      const headers: Record<string, string> = nativeHeaders
-        ? nativeHeaders()
-        : {}
-      const res = await fetchFn(`${url}/agent/quick-actions`, {
-        headers,
-        credentials: Platform.OS === "web" ? "include" : undefined,
-      } as any)
+      const res = await fetchFn(`${url}/agent/quick-actions`, authedFetchInit() as any)
       if (res.ok) {
         const data = await res.json()
         if (Array.isArray(data?.actions)) {
@@ -2361,13 +2349,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     if (!tasksUrl) return null
     try {
       const fetchFn = expoFetch ?? globalThis.fetch
-      const headers: Record<string, string> = nativeHeaders
-        ? nativeHeaders()
-        : {}
-      const init = {
-        headers,
-        credentials: Platform.OS === "web" ? "include" : undefined,
-      } as any
+      const init = authedFetchInit() as any
       let res = await fetchFn(tasksUrl, init)
       // Runtimes that predate tasks only list shell processes.
       if (res.status === 404) {
@@ -2401,14 +2383,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setKillingProcesses((prev) => new Set(prev).add(runId))
       try {
         const fetchFn = expoFetch ?? globalThis.fetch
-        const headers: Record<string, string> = nativeHeaders
-          ? nativeHeaders()
-          : {}
-        const init = {
-          method: "POST",
-          headers,
-          credentials: Platform.OS === "web" ? "include" : undefined,
-        } as any
+        const init = authedFetchInit({ method: "POST" }) as any
         let res = await fetchFn(
           `${base}/agent/chat/${currentSessionId}/tasks/${encodeURIComponent(runId)}/cancel`,
           init,
@@ -2448,10 +2423,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (!base || !currentSessionId) return null
       try {
         const fetchFn = expoFetch ?? globalThis.fetch
-        const headers: Record<string, string> = nativeHeaders ? nativeHeaders() : {}
         const res = await fetchFn(
           `${base}/agent/chat/${currentSessionId}/tasks/${encodeURIComponent(taskId)}/output`,
-          { headers, credentials: Platform.OS === "web" ? "include" : undefined } as any,
+          authedFetchInit() as any,
         )
         if (!res.ok) return null
         const data = await res.json()
@@ -4582,14 +4556,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
         if (cancelled) return
         try {
           const fetchFn = expoFetch ?? globalThis.fetch
-          const hdrs: Record<string, string> = nativeHeaders
-            ? nativeHeaders()
-            : {}
-          const res = await fetchFn(`${localAgentUrl}/agent/health`, {
-            headers: hdrs,
-            credentials: Platform.OS === "web" ? "include" : undefined,
-            signal: AbortSignal.timeout(5000),
-          } as any)
+          const res = await fetchFn(
+            `${localAgentUrl}/agent/health`,
+            authedFetchInit({ signal: AbortSignal.timeout(5000) }) as any,
+          )
           if (res.ok) {
             if (!cancelled) {
               setTunnelReconnecting(false)
@@ -4859,8 +4829,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
             chatWorkspaceId,
           ),
           fetch: expoFetch,
-          headers: nativeHeaders ? nativeHeaders() : undefined,
-          credentials: Platform.OS === "web" ? "include" : undefined,
+          // A getter: after a refused credential the probe re-establishes the
+          // session and asks again, and the retry has to carry the refreshed
+          // cookie rather than the dead one (SHO-564).
+          headers: nativeHeaders ?? undefined,
+          credentials: authedCredentials(),
+          // A 401 on this probe used to read as `unknown`, so the rejoin gave up
+          // and the live reply never came back. Refresh the session once and
+          // retry instead; if the refresh fails the snapshot comes back
+          // `refused` and we say the session is gone rather than pretending the
+          // chat is idle.
+          onRefused: () => reauthorizeChatRef.current(),
           retryDelaysMs: opts.retryDelaysMs,
           signal: controller.signal,
         })
@@ -4869,6 +4848,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // (SHO-287) and the "Rejoining live reply…" row (SHO-297). Scoped to the
         // chat on screen: a probe for a chat the person has left says nothing
         // about this one.
+        if (snapshot.refused && sessionId === currentSessionIdRef.current) {
+          setSessionExpired(true)
+        }
         if (sessionId === currentSessionIdRef.current) {
           const live = isLiveTurnOtherThan(snapshot, stoppedTurnIdRef.current)
           setLiveTurnActive(live)
@@ -4943,7 +4925,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               `${API_URL}/api/chat-messages?${new URLSearchParams(query).toString()}`,
               {
                 headers: nativeHeaders ? nativeHeaders() : {},
-                credentials: Platform.OS === "web" ? "include" : undefined,
+                credentials: authedCredentials(),
               } as any,
             )
               .then((response) => (response.ok ? response.json().catch(() => null) : null))
@@ -5415,7 +5397,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             url: turnUrl,
             fetch: expoFetch,
             headers: nativeHeaders ? nativeHeaders() : undefined,
-            credentials: Platform.OS === "web" ? "include" : undefined,
+            credentials: authedCredentials(),
           })
         ).status
       },
@@ -5495,7 +5477,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             url: turnUrl,
             fetch: expoFetch,
             headers: nativeHeaders ? nativeHeaders() : undefined,
-            credentials: Platform.OS === "web" ? "include" : undefined,
+            credentials: authedCredentials(),
           })
         ).status
       },
@@ -6018,7 +6000,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               `${API_URL}${path}?${new URLSearchParams(query).toString()}`,
               {
                 headers: nativeHeaders ? nativeHeaders() : {},
-                credentials: Platform.OS === "web" ? "include" : undefined,
+                credentials: authedCredentials(),
               } as any,
             )
               .then((response) =>
@@ -8047,7 +8029,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               url: probeUrl,
               fetch: expoFetch,
               headers: nativeHeaders ? nativeHeaders() : undefined,
-              credentials: Platform.OS === "web" ? "include" : undefined,
+              credentials: authedCredentials(),
             })
           }
         } catch {
@@ -9212,7 +9194,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               url: turnUrl,
               fetch: expoFetch,
               headers: nativeHeaders ? nativeHeaders() : undefined,
-              credentials: Platform.OS === "web" ? "include" : undefined,
+              credentials: authedCredentials(),
             })
           ).status
         } catch {
@@ -9319,7 +9301,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               url: turnUrl,
               fetch: expoFetch,
               headers: nativeHeaders ? nativeHeaders() : undefined,
-              credentials: Platform.OS === "web" ? "include" : undefined,
+              credentials: authedCredentials(),
             })
           } catch {
             snapshot = { status: "unknown", turnId: null, answered: false }
