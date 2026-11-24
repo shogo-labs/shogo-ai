@@ -924,9 +924,8 @@ export interface ProjectMachineState {
     label: string
     vcpus: number
     memMiB: number
-    allowed: boolean
-    /** Smallest workspace plan that allows this size; null for Standard. */
-    requiredTier: string | null
+    /** USD for one active hour of this size, from the platform's VM pricing. */
+    hourlyUsd: number
   }>
   instanceSize: string
   substrate: 'metal' | 'knative' | 'local'

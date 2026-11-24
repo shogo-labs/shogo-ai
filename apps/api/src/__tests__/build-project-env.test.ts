@@ -1012,7 +1012,7 @@ describe('buildProjectEnv — SHOGO_RUNTIME_CLASS (Docker project class)', () =>
     expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
   })
 
-  test('sets SHOGO_RUNTIME_CLASS=docker when settings.runtimeClass matches a docker-class tech stack, the platform gate is on, AND the workspace meets the tier floor', async () => {
+  test('sets SHOGO_RUNTIME_CLASS=docker when settings.runtimeClass matches a docker-class tech stack and the platform gate is on', async () => {
     isDockerClassEnabledMock.mockImplementation(() => true)
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-1',
@@ -1024,9 +1024,9 @@ describe('buildProjectEnv — SHOGO_RUNTIME_CLASS (Docker project class)', () =>
   })
 
   test('ignores settings.runtimeClass="docker" when the tech stack is NOT docker-capable, logging the mismatch', async () => {
-    // settings.runtimeClass alone must never grant the docker-class VM (and
-    // its bigger instance floor) — only the tech-stack registry's
-    // isDockerTechStack() can. See build-project-env.ts for the rationale.
+    // settings.runtimeClass alone must never grant the docker-class VM — only
+    // the tech-stack registry's isDockerTechStack() can. See
+    // build-project-env.ts for the rationale.
     isDockerClassEnabledMock.mockImplementation(() => true)
     findUniqueProjectMock.mockImplementation(async () => ({
       workspaceId: 'ws-1',

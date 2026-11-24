@@ -99,32 +99,36 @@ Business seats that were sold at $40 keep their larger $40/seat allowance
 until that switch — nothing included is withdrawn mid-period.
 :::
 
-## Compute (instance size)
+## Compute
 
 Your **plan** (above) controls AI usage windows, model access, and
-collaboration features. **Compute** is a separate add-on that controls how
-much CPU, RAM, and disk your workspace's projects get to run on — you can
-be on any plan and add more compute if a project needs it.
+collaboration features. **Compute** is not a tier you buy: each project runs on
+a microVM that is billed for the time it is actually running, at
+**$0.07 per vCPU-hour + $0.012 per GiB-hour** — the standard 2 vCPU / 4 GB
+machine is about $0.19 per active hour, and idle time is not charged. Like
+every other metered usage type, it draws from your plan's included usage and
+then your wallet.
 
-| Tier   | CPU  | RAM  | Disk   | Always-on |
-|--------|------|------|--------|-----------|
-| Micro  | 0.5  | 2 GB | 1 GB   | No (default, free) |
-| Small  | 1    | 4 GB | 5 GB   | Yes |
-| Medium | 2    | 8 GB | 20 GB  | Yes |
-| Large  | 4    | 16 GB| 100 GB | Yes |
-| XLarge | 8    | 32 GB| 200 GB | Yes |
+Every project runs on a **standard machine** (2 vCPU, 4 GB) by default. Any
+project can pick a bigger one in **Project → Settings → Machine**, where each
+size is listed with its hourly price:
 
-Every workspace starts on **Micro** at no extra cost. Upgrade from
-**Settings > Billing > Compute** at any time — the change applies to your
-running projects automatically (existing project sessions pick up the new
-resources on their next restart).
+| Size     | CPU | RAM    | ≈ per active hour |
+|----------|-----|--------|-------------------|
+| Standard | 2   | 4 GB   | $0.19             |
+| Medium   | 4   | 8 GB   | $0.38             |
+| Large    | 4   | 16 GB  | $0.47             |
+| XLarge   | 8   | 32 GB  | $0.94             |
 
-:::info Docker Compose projects require Large
-Projects built on the **Docker Compose** tech stack run a real Docker
-daemon plus your compose services, which need more than the default
-headroom. These projects require your workspace to be on the **Large**
-compute tier or higher — you'll be prompted to upgrade if you try to create
-one on a smaller tier.
+A bigger machine is accounted against the workspace's memory budget, so one
+large project cannot starve the others running beside it. Disk is separate —
+see **Storage**.
+
+:::info Docker Compose projects run on any plan
+Projects built on the **Docker Compose** tech stack run a real Docker daemon
+plus your compose services. They need no particular compute tier: they are
+available whenever the server has Docker projects enabled, and cost the same
+hourly rate as any other project.
 :::
 
 ## Managing your subscription
@@ -135,7 +139,7 @@ one on a smaller tier.
    - See your usage history (both in-window usage and overage)
    - Add or remove seats (Pro & Business)
    - Upgrade or downgrade your plan
-   - Upgrade or downgrade your compute tier
+   - Pick a bigger machine for a project, per project, in that project's Settings → Machine
    - Manage your payment method via Stripe
    - Enable overage and set a hard cap to control spending
    - Redeem a license key

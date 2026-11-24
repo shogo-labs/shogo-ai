@@ -158,6 +158,16 @@ export function roundUsd(value: number): number {
   return Math.round(value * 1e6) / 1e6
 }
 
+/**
+ * What one active hour of a machine of this shape costs, from `VM_PRICING`.
+ * The number the picker shows and the number the meter charges come from the
+ * same constants, so they cannot drift.
+ */
+export function vmHourlyUsd(vcpus: number, memMiB: number, pricing: VmPricing = VM_PRICING): number {
+  const gib = Math.max(0, memMiB) / MIB_PER_GIB
+  return roundUsd(Math.max(0, vcpus) * pricing.vcpuHour + gib * pricing.gibHour)
+}
+
 /** `VM_BILLING_MODE=shadow|enforce`, default `shadow`. */
 export function vmBillingMode(env: NodeJS.ProcessEnv = process.env): 'shadow' | 'enforce' {
   return env.VM_BILLING_MODE === 'enforce' ? 'enforce' : 'shadow'

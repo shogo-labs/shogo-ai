@@ -8,13 +8,17 @@
  * assigns a VM, so a change takes effect on the next start; the panel offers a
  * restart to apply it now.
  *
- * The workspace tier is a memory budget shared by every running project, so a
- * size is offered only when it fits in that budget, and the env builders count
- * the chosen size against it (`accountedVmMemMiB`). Going back to Standard is
- * always allowed.
+ * Every preset is offered on every workspace: the machine is paid for by the
+ * hour it runs (`VM_PRICING`), not by the workspace's tier, so the picker shows
+ * each size with its hourly price instead of locking the ones "above the plan".
+ * The workspace budget still caps what the size is accounted at
+ * (`accountedVmMemMiB`), so a big machine on a small workspace cannot evict its
+ * other running projects.
  */
 
-import { INSTANCE_SIZES, INSTANCE_SIZE_ORDER, type InstanceSizeName } from '../config/instance-sizes'
+import type { InstanceSizeName } from '../config/instance-sizes'
+import { INSTANCE_SIZES } from '../config/instance-sizes'
+import { vmHourlyUsd } from '../config/vm-pricing'
 
 export type MachineSubstrate = 'metal' | 'knative' | 'local'
 export type MachineSizeId = 'standard' | 'medium' | 'large' | 'xlarge'
@@ -40,20 +44,6 @@ export const MACHINE_SIZES: readonly MachineSizeSpec[] = [
 
 const STANDARD = MACHINE_SIZES[0]
 
-/** Smallest workspace tier whose memory budget holds `memMiB`. */
-export function tierForMachineMemory(memMiB: number): InstanceSizeName | null {
-  for (const size of INSTANCE_SIZE_ORDER) {
-    if (INSTANCE_SIZES[size].memoryGb * 1024 >= memMiB) return size
-  }
-  return null
-}
-
-export function machineSizeAllowed(spec: MachineSizeSpec, instanceSize: InstanceSizeName): boolean {
-  if (spec.id === 'standard') return true
-  const budgetMiB = (INSTANCE_SIZES[instanceSize] ?? INSTANCE_SIZES.micro).memoryGb * 1024
-  return spec.memMiB <= budgetMiB
-}
-
 export interface ProjectMachineDescription {
   current: {
     /** `custom` when an operator set a size that isn't one of the presets. */
@@ -62,7 +52,8 @@ export interface ProjectMachineDescription {
     vcpus: number
     memMiB: number
   }
-  options: Array<MachineSizeSpec & { allowed: boolean; requiredTier: InstanceSizeName | null }>
+  /** Every preset, with what one active hour of it costs. */
+  options: Array<MachineSizeSpec & { hourlyUsd: number }>
   instanceSize: InstanceSizeName
   substrate: MachineSubstrate
   /** A VM is up for this project now (a size change waits for a restart). */
@@ -98,11 +89,7 @@ export function describeProjectMachine(args: {
   const metal = args.substrate === 'metal'
   return {
     current: currentMachineSize(args.vmMemoryMiB, args.vmVcpus),
-    options: MACHINE_SIZES.map((s) => ({
-      ...s,
-      allowed: machineSizeAllowed(s, instanceSize),
-      requiredTier: s.id === 'standard' ? null : tierForMachineMemory(s.memMiB),
-    })),
+    options: MACHINE_SIZES.map((s) => ({ ...s, hourlyUsd: vmHourlyUsd(s.vcpus, s.memMiB) })),
     instanceSize,
     substrate: args.substrate,
     running: args.running,
@@ -113,10 +100,14 @@ export function describeProjectMachine(args: {
 
 export type MachineChangePlan =
   | { ok: true; size: MachineSizeSpec; vmMemoryMiB: number | null; vmVcpus: number | null }
-  | { ok: false; status: 400 | 422; code: string; message: string }
+  | { ok: false; status: 400; code: string; message: string }
 
-/** Validate a picked size against the workspace tier. Role checks are the route's job. */
-export function planMachineChange(sizeId: unknown, instanceSize: InstanceSizeName): MachineChangePlan {
+/**
+ * Validate a picked size. Every preset is allowed on every workspace — the
+ * machine is billed by the hour it runs, so there is no tier to check against.
+ * Role checks are the route's job.
+ */
+export function planMachineChange(sizeId: unknown): MachineChangePlan {
   const size = MACHINE_SIZES.find((s) => s.id === sizeId)
   if (!size) {
     return {
@@ -124,17 +115,6 @@ export function planMachineChange(sizeId: unknown, instanceSize: InstanceSizeNam
       status: 400,
       code: 'invalid_request',
       message: `size must be one of ${MACHINE_SIZES.map((s) => s.id).join(', ')}`,
-    }
-  }
-  if (!machineSizeAllowed(size, instanceSize)) {
-    const tier = tierForMachineMemory(size.memMiB)
-    return {
-      ok: false,
-      status: 422,
-      code: 'plan_ceiling',
-      message: `${size.label} (${size.vcpus} vCPU, ${size.memMiB / 1024} GB) needs the ${
-        tier ? INSTANCE_SIZES[tier].label : 'largest'
-      } workspace plan or higher.`,
     }
   }
   if (size.id === 'standard') return { ok: true, size, vmMemoryMiB: null, vmVcpus: null }

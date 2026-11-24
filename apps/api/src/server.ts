@@ -4795,7 +4795,7 @@ app.put('/api/projects/:projectId/machine', async (c) => {
     )
   }
   const body = await c.req.json<{ size?: string }>().catch(() => ({}) as { size?: string })
-  const plan = planMachineChange(body.size, before.instanceSize)
+  const plan = planMachineChange(body.size)
   if (!plan.ok) return c.json({ error: { code: plan.code, message: plan.message } }, plan.status)
 
   await prisma.project.update({
