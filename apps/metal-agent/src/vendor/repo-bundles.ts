@@ -257,7 +257,7 @@ function dropReverseIndexCache(dir: string): void {
 }
 
 /** Which of these object ids exist in the repo. */
-async function presentObjects(dir: string, shas: string[]): Promise<Set<string>> {
+export async function presentObjects(dir: string, shas: string[]): Promise<Set<string>> {
   const present = new Set<string>()
   if (shas.length === 0) return present
   const out = await gitOk(dir, ['cat-file', '--batch-check'], shas.join('\n') + '\n')
@@ -269,7 +269,7 @@ async function presentObjects(dir: string, shas: string[]): Promise<Set<string>>
 }
 
 /** Commit ids that the given object ids peel to. Non-commit tags are skipped. */
-async function peelToCommits(dir: string, shas: string[]): Promise<string[]> {
+export async function peelToCommits(dir: string, shas: string[]): Promise<string[]> {
   if (shas.length === 0) return []
   const out = await gitOk(dir, ['cat-file', '--batch-check'], shas.map((s) => `${s}^{commit}`).join('\n') + '\n')
   const commits = new Set<string>()
