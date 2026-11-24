@@ -27,6 +27,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config, type MetalConfig } from './config'
+import { metrics, M } from './metrics'
 import { MetalWarmPool } from './pool'
 import type { SnapshotStore } from './snapshot-store'
 import {
@@ -199,6 +200,35 @@ describe('AC1 — activation keeps the previous generation', () => {
     // No second spare generation.
     expect(existsSync(`${prev}.prev`)).toBe(false)
   })
+
+  test('a docker-class host keeps a .prev of both images', async () => {
+    // AC1 names the docker image explicitly: the class that serves docker
+    // projects must keep its own spare, and ROOTFS_PREV must describe both.
+    const dockerBase = join(dir, 'docker-runtime.ext4')
+    ;(config as any).dockerClass = { ...config.dockerClass, baseRootfs: dockerBase }
+    writeFileSync(config.baseRootfs, 'standard generation 1')
+    writeFileSync(dockerBase, 'docker generation 1')
+    stageFile(config.baseRootfs, 'standard generation 2')
+    stageFile(dockerBase, 'docker generation 2')
+    writeStagedMarker('v2')
+
+    await maybeActivateRootfs('v2', {
+      promote: async () => 0,
+      probeBoot: async () => null,
+      restart: noopRestart,
+    } as any)
+
+    expect(readFileSync(config.baseRootfs, 'utf8')).toBe('standard generation 2')
+    expect(readFileSync(prevRootfsPath(config.baseRootfs), 'utf8')).toBe('standard generation 1')
+    expect(readFileSync(dockerBase, 'utf8')).toBe('docker generation 2')
+    expect(readFileSync(prevRootfsPath(dockerBase), 'utf8')).toBe('docker generation 1')
+
+    // A rollback has to know what to spare for each class it restores.
+    const prevMarker = readPrevious(dir)
+    expect(prevMarker?.identities.standard).toMatch(/^sz\d+-mt\d+$/)
+    expect(prevMarker?.identities.docker).toMatch(/^sz\d+-mt\d+$/)
+    expect(prevMarker?.identities.standard).not.toBe(prevMarker?.identities.docker)
+  })
 })
 
 // ─── AC2: boot probe failure blocks the swap ─────────────────────────────────
@@ -208,6 +238,7 @@ describe('AC2 — boot probe failure leaves live image intact', () => {
     writeFileSync(config.baseRootfs, 'live generation')
     stageFile(config.baseRootfs)
     writeStagedMarker('v2', 'rev-aaa')
+    const probesBefore = metrics.snapshot().counters[M.rootfsBootProbeFailed] ?? 0
 
     const activated = await maybeActivateRootfs('v2', {
       promote: async () => 0,
@@ -231,6 +262,8 @@ describe('AC2 — boot probe failure leaves live image intact', () => {
     // And the rejected entry is exposed for the heartbeat.
     const rejected = getRejectedRootfs()
     expect(rejected?.version).toBe('v2')
+    // The refusal is visible on /metrics, not only in the log.
+    expect((metrics.snapshot().counters[M.rootfsBootProbeFailed] ?? 0) - probesBefore).toBe(1)
   })
 
   test('a bad-listed version is never re-activated even when the control plane says so', async () => {
@@ -267,6 +300,7 @@ describe('AC3 — watch window triggers rollback on a failure burst', () => {
     // 5 failures, 4 successes → rate = 5/9 ≈ 0.56 > 0.5.
     for (let i = 0; i < 4; i++) reportColdBoot(true)
     for (let i = 0; i < 5; i++) reportColdBoot(false, 'exited before healthy')
+    const rollbacksBefore = metrics.snapshot().counters[M.rootfsRollback] ?? 0
 
     const rolledBack = await maybeRollbackRootfs(T0 + 1000)
     expect(rolledBack).toBe(true)
@@ -281,6 +315,8 @@ describe('AC3 — watch window triggers rollback on a failure burst', () => {
     const bad = findBadRootfs(getBadRootfs(), 'v2')
     expect(bad).not.toBeNull()
     expect(bad!.reason).toContain('rollback')
+    // Counted, so a rollback in the field is visible without reading the journal.
+    expect((metrics.snapshot().counters[M.rootfsRollback] ?? 0) - rollbacksBefore).toBe(1)
   })
 
   test('4 failures does not trigger rollback, even at 100%', () => {
