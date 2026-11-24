@@ -259,6 +259,47 @@ type TunnelMessage = TunnelResponse | TunnelStreamChunk | TunnelHeartbeat | { ty
 
 const tunnels = new Map<string, TunnelConnection>()
 
+/**
+ * Set once this pod has been told to shut down.
+ *
+ * A socket opened while a pod is going away is registered and then told to move
+ * on immediately: the pod stays in its Service's endpoint list for a moment, so
+ * a desktop can land here after the drain broadcast went out (SHO-565).
+ */
+let drainingTunnels = false
+
+/** How long this pod expects to live after a drain — the `graceMs` it sends. */
+const TUNNEL_DRAIN_GRACE_MS = Math.max(
+  0,
+  Number(process.env.SHOGO_TUNNEL_DRAIN_GRACE_MS ?? 30_000) || 0,
+)
+
+/**
+ * Tell every open tunnel on this pod to move to another one (SHO-565).
+ *
+ * Called from the SIGTERM handler: the desktop opens a replacement on another
+ * pod first, so the turn in flight is never cut by this pod going away. Returns
+ * how many sockets were told.
+ */
+export function drainInstanceTunnels(): number {
+  drainingTunnels = true
+  const frame = JSON.stringify({ type: 'drain', graceMs: TUNNEL_DRAIN_GRACE_MS })
+  let sent = 0
+  for (const [instanceId, conn] of tunnels) {
+    try {
+      conn.ws.send(frame)
+      sent++
+    } catch (err) {
+      console.warn(
+        `[RemoteControl] drain frame to ${instanceId} failed:`,
+        (err as Error).message,
+      )
+    }
+  }
+  console.log(`[RemoteControl] Told ${sent} tunnel(s) to rotate off this pod`)
+  return sent
+}
+
 export function generateRequestId(): string {
   return `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
 }
@@ -352,7 +393,22 @@ export async function handleInstanceWsOpen(ws: WebSocket & { data?: any }) {
     data: { status: 'online', lastSeenAt: new Date(), wsRequestedAt: null },
   }).catch(() => {})
 
+  // Ownership is in Redis at this point, so the desktop may treat this socket
+  // as the one the cloud routes to (SHO-565). A rotation holds its replacement
+  // until this frame arrives, which is why it is sent only after the write.
+  sendTunnelFrame(ws, { type: 'ready', podId: getPodId() })
+  if (drainingTunnels) sendTunnelFrame(ws, { type: 'drain', graceMs: TUNNEL_DRAIN_GRACE_MS })
+
   console.log(`[RemoteControl] Instance ${instanceId} connected (workspace ${workspaceId}, pod ${getPodId()})`)
+}
+
+/** Best-effort control frame: a socket that died mid-write is not an error. */
+function sendTunnelFrame(ws: WebSocket & { data?: any }, frame: Record<string, unknown>): void {
+  try {
+    ws.send(JSON.stringify(frame))
+  } catch {
+    // The close handler owns the aftermath of a dead socket.
+  }
 }
 
 export function handleInstanceWsMessage(ws: WebSocket & { data?: any }, raw: string | Buffer) {
@@ -439,14 +495,27 @@ export function handleInstanceWsClose(
     tunnels.delete(instanceId)
   }
 
-  unregisterTunnelOwnership(instanceId).catch((err) => {
-    console.warn('[RemoteControl] unregisterTunnelOwnership failed:', (err as Error).message)
-  })
-
-  prisma.instance.update({
-    where: { id: instanceId },
-    data: { status: 'offline' },
-  }).catch(() => {})
+  unregisterTunnelOwnership(instanceId)
+    .then((wasOwner) => {
+      if (!wasOwner) {
+        // Another pod owns this machine: this socket was replaced (SHO-565), so
+        // the tunnel is alive — flipping the row offline would 503 every
+        // request until the next heartbeat.
+        console.log(
+          `[RemoteControl] Instance ${instanceId} moved to another pod — keeping it online (${closeInfo})`,
+        )
+        return undefined
+      }
+      return prisma.instance
+        .update({
+          where: { id: instanceId },
+          data: { status: 'offline' },
+        })
+        .catch(() => undefined)
+    })
+    .catch((err) => {
+      console.warn('[RemoteControl] unregisterTunnelOwnership failed:', (err as Error).message)
+    })
 
   console.log(`[RemoteControl] Instance ${instanceId} disconnected (${closeInfo})`)
 }
@@ -2178,6 +2247,8 @@ export const _testing = {
   activeControllers,
   computeNextPollIn,
   isWsRequested,
+  /** Put the "this pod is draining" flag back, so one test's drain cannot leak. */
+  resetTunnelDrain: () => { drainingTunnels = false },
   isViewerActive,
   markViewerActive,
   markControllerActive,

@@ -550,10 +550,3 @@ spec:
               memory: "6Gi"
               cpu: "3"
       timeoutSeconds: 1800
-      # The desktop tunnel WebSocket reaches this pod through queue-proxy
-      # (api-tunnel-ingress → :8012). A hijacked WebSocket never writes a
-      # response header, so queue-proxy's response-start timeout closed every
-      # tunnel at exactly 300 s (its stored default; `1006` on both ends,
-      # "WriteHeader on hijacked connection" in queue-proxy) and cut every
-      # remote-machine chat turn in flight. Match the request timeout.
-      responseStartTimeoutSeconds: 1800

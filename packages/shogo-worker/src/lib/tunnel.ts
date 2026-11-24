@@ -16,6 +16,12 @@
  *     polling (a graceful close), and an abnormal close reconnects the WS
  *     itself with backoff (SHO-506) instead of waiting for a wake that the
  *     cloud already cleared when this tunnel connected.
+ *   - A live socket is replaced before it can be taken away from under a
+ *     stream (SHO-565): on a `drain` frame from a pod that is shutting down,
+ *     or on the socket's own max-age timer, the replacement socket is opened
+ *     first and the old one is closed only once the cloud has confirmed the
+ *     new one owns the machine (`ready`). In-flight requests finish on the
+ *     socket that carried them; new ones use the replacement.
  *
  * MIT port of apps/api/src/lib/instance-tunnel.ts, restructured as a
  * class so multiple consumers (worker, future tests) can hold their
@@ -159,7 +165,37 @@ interface CancelMessage {
   requestId: string;
 }
 
-type IncomingMessage = TunnelRequest | CancelMessage | { type: 'ping' } | { type: string };
+/**
+ * The pod that just took ownership of this machine (SHO-565).
+ *
+ * Sent after the api pod has written the Redis ownership key, so a replacement
+ * socket is only promoted — and the old one only retired — once the cloud
+ * really routes new requests to it.
+ */
+interface TunnelReadyMessage {
+  type: 'ready';
+  podId?: string;
+}
+
+/**
+ * "This pod is going away — replace the socket before I close it" (SHO-565).
+ *
+ * Sent from a pod's SIGTERM handler. The worker opens the replacement first, so
+ * the turn in flight is never cut; `graceMs` is how long the pod expects to
+ * live, which is only used for logging.
+ */
+interface TunnelDrainMessage {
+  type: 'drain';
+  graceMs?: number;
+}
+
+type IncomingMessage =
+  | TunnelRequest
+  | CancelMessage
+  | TunnelReadyMessage
+  | TunnelDrainMessage
+  | { type: 'ping' }
+  | { type: string };
 
 type TunnelWebSocketInit = { headers: Record<string, string> };
 type TunnelWebSocketConstructor = new (url: string, init: TunnelWebSocketInit) => WebSocket;
@@ -205,6 +241,41 @@ const BACKOFF_MAX_MS = 60_000;
  * revoked key, a wrong URL — from retrying forever instead of polling.
  */
 const WS_RECONNECT_MAX_ATTEMPTS = 5;
+
+/**
+ * How long one socket may serve before the worker replaces it (SHO-565).
+ *
+ * A socket that lives forever is one Knative rollout, node drain or ingress
+ * timeout away from cutting a stream mid-turn. Replacing it on our own schedule
+ * — with the replacement open before the old one closes — keeps every cut on
+ * the worker's terms. Kept under `WS_IDLE_TIMEOUT_MS` so rotation always
+ * happens while a socket is still healthy.
+ */
+const WS_MAX_AGE_MS = 25 * 60 * 1000;
+/** Spread rotations of many desktops over a window instead of one instant. */
+const WS_MAX_AGE_JITTER_MS = 3 * 60 * 1000;
+/**
+ * Promote a replacement that the cloud never confirmed with `ready`.
+ *
+ * An older cloud has no `ready` frame, and its `open` handler already wrote the
+ * ownership key, so promote anyway rather than stranding the replacement. Short
+ * enough that rotation still happens well before the old socket is at risk.
+ */
+const WS_ROTATE_READY_FALLBACK_MS = 5_000;
+/**
+ * Pause before opening a replacement after a `drain`.
+ *
+ * A terminating pod stays in its Service's endpoint list for a moment, so an
+ * immediate reconnect can land right back on it. Waiting gives the endpoint
+ * update time to land; the drained socket keeps serving meanwhile.
+ */
+const WS_ROTATE_RETRY_MS = 5_000;
+/**
+ * How long a replaced socket may keep running the requests it already carries
+ * before it is closed anyway. A stream that never ends must not pin the socket
+ * (and the pod behind it) forever.
+ */
+const WS_DRAIN_GRACE_MS = 2 * 60 * 1000;
 
 /**
  * Protocol version advertised in heartbeat metadata. Stays lockstep with
@@ -289,6 +360,21 @@ export class WorkerTunnel {
   private wsReconnectAttempt = 0;
   /** Last time this WS carried anything (open, ping, request) — the idle window's start. */
   private wsLastActiveAt: number | null = null;
+  /** A replacement socket opened but not yet promoted over {@link ws} (SHO-565). */
+  private wsPending: WebSocket | null = null;
+  /**
+   * Sockets that have been replaced but are still finishing the requests they
+   * carried, mapped to the deadline timer that closes them anyway.
+   */
+  private wsRetired = new Map<WebSocket, ReturnType<typeof setTimeout>>();
+  /** Requests each socket is currently carrying — a retired socket closes at zero. */
+  private wsInflight = new Map<WebSocket, number>();
+  private wsMaxAgeTimer: ReturnType<typeof setTimeout> | null = null;
+  private wsRotateDelayTimer: ReturnType<typeof setTimeout> | null = null;
+  private wsReadyTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The rotation a delay is holding back (also lets a test run it at once). */
+  private wsRotateDelayFn: (() => void) | null = null;
+  private rotating = false;
   private lastHeartbeatError: string | null = null;
   private consecutiveAuthFailures = 0;
   private consecutiveAuthSuccesses = 0;
@@ -331,7 +417,13 @@ export class WorkerTunnel {
       clearTimeout(this.pollTimer);
       this.pollTimer = null;
     }
+    const pending = this.wsPending;
     this.cleanupWs();
+    // A replacement socket nobody watches would linger; the live one is left to
+    // the host, and the retired ones are closed by `cleanupWs`.
+    if (pending) {
+      try { pending.close(1000, 'Tunnel stopped'); } catch { /* already gone */ }
+    }
     this.log.log('[WorkerTunnel] Tunnel stopped');
   }
 
@@ -611,9 +703,10 @@ export class WorkerTunnel {
 
   // ─── On-demand WebSocket ────────────────────────────────────────
 
-  private async handleRequest(msg: TunnelRequest): Promise<void> {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    this.resetWsIdleTimer();
+  private async handleRequest(msg: TunnelRequest, socket: WebSocket | null = this.ws): Promise<void> {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    if (socket === this.ws) this.resetWsIdleTimer();
+    this.wsInflight.set(socket, (this.wsInflight.get(socket) ?? 0) + 1);
 
     const controller = new AbortController();
     this.activeAbortControllers.set(msg.requestId, controller);
@@ -639,7 +732,7 @@ export class WorkerTunnel {
             message: rejection.message,
             path: msg.path,
           }),
-        });
+        }, socket);
         return;
       }
 
@@ -673,7 +766,7 @@ export class WorkerTunnel {
             type: 'stream-error',
             requestId: msg.requestId,
             error: 'No response body for stream',
-          });
+          }, socket);
           return;
         }
         const decoder = new TextDecoder();
@@ -681,23 +774,23 @@ export class WorkerTunnel {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            if (this.ws?.readyState !== WebSocket.OPEN) break;
+            if (socket.readyState !== WebSocket.OPEN) break;
             this.sendFrame({
               type: 'stream-chunk',
               requestId: msg.requestId,
               data: decoder.decode(value, { stream: true }),
-            });
+            }, socket);
           }
-          if (this.ws?.readyState === WebSocket.OPEN) {
-            this.sendFrame({ type: 'stream-end', requestId: msg.requestId });
+          if (socket.readyState === WebSocket.OPEN) {
+            this.sendFrame({ type: 'stream-end', requestId: msg.requestId }, socket);
           }
         } catch (err: any) {
-          if (err?.name !== 'AbortError' && this.ws?.readyState === WebSocket.OPEN) {
+          if (err?.name !== 'AbortError' && socket.readyState === WebSocket.OPEN) {
             this.sendFrame({
               type: 'stream-error',
               requestId: msg.requestId,
               error: err?.message ?? String(err),
-            });
+            }, socket);
           }
         }
       } else {
@@ -705,12 +798,12 @@ export class WorkerTunnel {
         const binary = acceptsBase64 && !isTextualContentType(resp.headers.get('content-type'));
         const declared = Number(resp.headers.get('content-length') ?? '');
         if (acceptsBase64 && Number.isFinite(declared) && declared > TUNNEL_MAX_FRAME_BODY_BYTES) {
-          this.sendTooLarge(msg, declared);
+          this.sendTooLarge(msg, declared, socket);
           return;
         }
         const bytes = new Uint8Array(await resp.arrayBuffer());
         if (acceptsBase64 && bytes.byteLength > TUNNEL_MAX_FRAME_BODY_BYTES) {
-          this.sendTooLarge(msg, bytes.byteLength);
+          this.sendTooLarge(msg, bytes.byteLength, socket);
           return;
         }
         const respHeaders: Record<string, string> = {};
@@ -727,11 +820,11 @@ export class WorkerTunnel {
           headers: respHeaders,
           body: binary ? Buffer.from(bytes).toString('base64') : new TextDecoder().decode(bytes),
           ...(binary ? { bodyEncoding: 'base64' } : {}),
-        });
+        }, socket);
       }
     } catch (err: any) {
       if (err?.name === 'AbortError') return;
-      if (this.ws?.readyState !== WebSocket.OPEN) return;
+      if (socket.readyState !== WebSocket.OPEN) return;
       const payload = msg.stream
         ? { type: 'stream-error' as const, requestId: msg.requestId, error: err?.message ?? String(err) }
         : {
@@ -740,10 +833,26 @@ export class WorkerTunnel {
             status: 502,
             body: JSON.stringify({ error: err?.message ?? String(err) }),
           };
-      this.sendFrame(payload);
+      this.sendFrame(payload, socket);
     } finally {
       this.activeAbortControllers.delete(msg.requestId);
+      this.releaseRequest(socket);
     }
+  }
+
+  /**
+   * One request finished on `socket`. A socket that has been replaced closes as
+   * soon as the last one it carries is done, so a turn in flight is never cut
+   * but the old socket does not outlive its work either.
+   */
+  private releaseRequest(socket: WebSocket): void {
+    const left = (this.wsInflight.get(socket) ?? 1) - 1;
+    if (left > 0) {
+      this.wsInflight.set(socket, left);
+      return;
+    }
+    this.wsInflight.delete(socket);
+    if (this.wsRetired.has(socket)) this.closeRetiredSocket(socket, 'its last request finished');
   }
 
   /**
@@ -763,7 +872,7 @@ export class WorkerTunnel {
    * Refuse a body that cannot fit one frame, as a normal 502 the cloud can
    * read — never as a frame that makes the cloud close the socket.
    */
-  private sendTooLarge(msg: TunnelRequest, size: number): void {
+  private sendTooLarge(msg: TunnelRequest, size: number, socket: WebSocket | null = this.ws): void {
     this.sendFrame({
       type: 'response',
       requestId: msg.requestId,
@@ -775,13 +884,13 @@ export class WorkerTunnel {
         limit: TUNNEL_MAX_FRAME_BODY_BYTES,
         path: msg.path,
       }),
-    });
+    }, socket);
   }
 
-  private sendFrame(frame: Record<string, unknown>): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+  private sendFrame(frame: Record<string, unknown>, socket: WebSocket | null = this.ws): void {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
     try {
-      this.ws.send(JSON.stringify(frame));
+      socket.send(JSON.stringify(frame));
     } catch (err: any) {
       this.log.warn(`[WorkerTunnel] Frame send failed: ${err?.message ?? err}`);
     }
@@ -789,13 +898,30 @@ export class WorkerTunnel {
 
   private resetWsIdleTimer(): void {
     this.wsLastActiveAt = Date.now();
+    this.armWsIdleTimer(WS_IDLE_TIMEOUT_MS);
+  }
+
+  /**
+   * Arm the idle window on the *activity* clock, not the socket's: rotation
+   * replaces the socket but changes nothing about whether this machine is idle.
+   */
+  private armWsIdleTimer(ms: number): void {
     if (this.wsIdleTimer) clearTimeout(this.wsIdleTimer);
     this.wsIdleTimer = setTimeout(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.log.log('[WorkerTunnel] WebSocket idle timeout — closing, returning to polling');
         try { this.ws.close(1000, 'Idle timeout'); } catch { /* already gone */ }
       }
-    }, WS_IDLE_TIMEOUT_MS);
+    }, ms);
+  }
+
+  private rearmWsIdleTimer(): void {
+    if (this.wsLastActiveAt === null) {
+      this.resetWsIdleTimer();
+      return;
+    }
+    const remaining = Math.max(1_000, WS_IDLE_TIMEOUT_MS - (Date.now() - this.wsLastActiveAt));
+    this.armWsIdleTimer(remaining);
   }
 
   private startWsHeartbeat(): void {
@@ -809,46 +935,50 @@ export class WorkerTunnel {
     }, HEARTBEAT_INTERVAL_MS);
   }
 
-  private connectWs(): void {
-    if (this.stopped || this.ws) return;
-
-    const url = this.buildWsUrl();
+  private wsInit(): TunnelWebSocketInit {
     const hn = osHostname();
-    const os = platform();
-    const arch = osArch();
-    const name = this.opts.name ?? hn;
-
-    this.log.log(`[WorkerTunnel] Opening WebSocket to ${url} (hostname=${hn})`);
-
-    const wsInit: TunnelWebSocketInit = {
+    return {
       headers: {
         Authorization: `Bearer ${this.opts.apiKey}`,
         'User-Agent': workerUserAgent(),
         'x-shogo-hostname': hn,
-        'x-shogo-name': name,
-        'x-shogo-os': os,
-        'x-shogo-arch': arch,
+        'x-shogo-name': this.opts.name ?? hn,
+        'x-shogo-os': platform(),
+        'x-shogo-arch': osArch(),
         'x-shogo-kind': this.opts.kind ?? 'cli-worker',
         ...(this.deviceId ? { 'x-shogo-device-id': this.deviceId } : {}),
       },
     };
+  }
+
+  /**
+   * Create and wire one socket. Nothing here makes it the live tunnel: the
+   * caller decides whether it becomes active immediately (`connectWs`) or only
+   * after the cloud confirms it (`maybeRotate` → `ready`).
+   */
+  private openSocket(): WebSocket | null {
+    const url = this.buildWsUrl();
+    this.log.log(`[WorkerTunnel] Opening WebSocket to ${url} (hostname=${osHostname()})`);
 
     let socket: WebSocket;
     try {
-      socket = this.createTunnelWebSocket(url, wsInit);
+      socket = this.createTunnelWebSocket(url, this.wsInit());
     } catch (err: any) {
       this.log.error(`[WorkerTunnel] WebSocket creation failed: ${err?.message ?? err}`);
-      this.ws = null;
-      this.scheduleNextPoll(5);
-      return;
+      return null;
     }
-    this.ws = socket;
 
     socket.onopen = () => {
-      this.log.log('[WorkerTunnel] WebSocket connected — session active');
-      this.wsReconnectAttempt = 0;
-      this.startWsHeartbeat();
-      this.resetWsIdleTimer();
+      if (this.ws === socket) {
+        this.log.log('[WorkerTunnel] WebSocket connected — session active');
+        this.onSocketActive();
+        return;
+      }
+      this.log.log('[WorkerTunnel] Replacement WebSocket open — waiting for the cloud to confirm ownership');
+      // An older cloud never sends `ready` (its `open` handler already wrote the
+      // ownership key), so promote after a short wait instead of stranding it.
+      if (this.wsReadyTimer) clearTimeout(this.wsReadyTimer);
+      this.wsReadyTimer = setTimeout(() => this.confirmSocket(socket, 'no ready frame'), WS_ROTATE_READY_FALLBACK_MS);
     };
 
     socket.onmessage = (event) => {
@@ -861,8 +991,16 @@ export class WorkerTunnel {
       }
 
       if (msg.type === 'ping') {
-        this.sendFrame({ type: 'pong' });
-        this.resetWsIdleTimer();
+        this.sendFrame({ type: 'pong' }, socket);
+        if (socket === this.ws) this.resetWsIdleTimer();
+        return;
+      }
+      if (msg.type === 'ready') {
+        this.confirmSocket(socket, 'server confirmed ownership');
+        return;
+      }
+      if (msg.type === 'drain') {
+        this.onServerDrain(socket, msg as TunnelDrainMessage);
         return;
       }
       if (msg.type === 'cancel') {
@@ -871,7 +1009,7 @@ export class WorkerTunnel {
         return;
       }
       if (msg.type === 'request') {
-        void this.handleRequest(msg as TunnelRequest).catch((err) => {
+        void this.handleRequest(msg as TunnelRequest, socket).catch((err) => {
           this.log.error(`[WorkerTunnel] Error handling request: ${err?.message ?? err}`);
         });
         return;
@@ -881,6 +1019,27 @@ export class WorkerTunnel {
 
     socket.onclose = (event: { code: number; reason?: string }) => {
       this.log.log(`[WorkerTunnel] WebSocket closed: code=${event.code} reason=${event.reason || 'none'}`);
+
+      if (this.ws !== socket) {
+        // A replacement that never became live, or a socket that was replaced:
+        // the tunnel itself is unaffected, so there is nothing to reconnect.
+        const wasPending = this.wsPending === socket;
+        const timer = this.wsRetired.get(socket);
+        if (timer) clearTimeout(timer);
+        this.wsRetired.delete(socket);
+        this.wsInflight.delete(socket);
+        if (wasPending) {
+          this.wsPending = null;
+          this.rotating = false;
+          this.clearReadyTimer();
+          if (!this.stopped) {
+            this.log.log('[WorkerTunnel] Replacement socket closed before it was confirmed — keeping the current tunnel');
+            this.scheduleRotationRetry();
+          }
+        }
+        return;
+      }
+
       this.cleanupWs();
       if (this.stopped) return;
       if (event.code === 1000 || event.code === 4000) {
@@ -908,6 +1067,186 @@ export class WorkerTunnel {
     socket.onerror = (event: { message?: string }) => {
       this.log.error('[WorkerTunnel] WebSocket error:', event?.message ?? 'unknown');
     };
+
+    return socket;
+  }
+
+  private connectWs(): void {
+    if (this.stopped || this.ws) return;
+    const socket = this.openSocket();
+    if (!socket) {
+      this.ws = null;
+      this.scheduleNextPoll(5);
+      return;
+    }
+    // The first socket is live as soon as it opens: there is nothing to replace,
+    // and waiting for `ready` would strand this tunnel against an older cloud.
+    this.ws = socket;
+  }
+
+  /** The socket the cloud now routes to is open: start its timers. */
+  private onSocketActive(): void {
+    this.wsReconnectAttempt = 0;
+    this.startWsHeartbeat();
+    this.rearmWsIdleTimer();
+    this.armMaxAgeTimer();
+  }
+
+  /**
+   * Replace the live socket with a new one, in that order (SHO-565).
+   *
+   * The replacement is opened while the current socket keeps serving, and the
+   * current one is only retired once the cloud says the new one owns this
+   * machine — so no turn is ever cut by the swap.
+   */
+  private maybeRotate(reason: string, delayMs = 0): void {
+    if (this.stopped || this.rotating || this.wsPending) return;
+    const current = this.ws;
+    if (!current || current.readyState !== WebSocket.OPEN) return;
+
+    this.rotating = true;
+    const open = () => {
+      if (this.wsRotateDelayTimer) clearTimeout(this.wsRotateDelayTimer);
+      this.wsRotateDelayTimer = null;
+      this.wsRotateDelayFn = null;
+      if (this.stopped) {
+        this.rotating = false;
+        return;
+      }
+      const active = this.ws;
+      if (!active || active.readyState !== WebSocket.OPEN) {
+        // Nothing left to hand over from: the normal close path owns recovery.
+        this.rotating = false;
+        return;
+      }
+      this.log.log(`[WorkerTunnel] Rotating the tunnel (${reason}) — opening the replacement first`);
+      const socket = this.openSocket();
+      if (!socket) {
+        this.rotating = false;
+        this.log.warn('[WorkerTunnel] Could not open a replacement tunnel — keeping the current socket');
+        this.scheduleRotationRetry();
+        return;
+      }
+      this.wsPending = socket;
+      this.clearReadyTimer();
+      this.wsReadyTimer = setTimeout(() => this.confirmSocket(socket, 'no ready frame'), WS_ROTATE_READY_FALLBACK_MS);
+    };
+
+    if (delayMs > 0) {
+      if (this.wsRotateDelayTimer) clearTimeout(this.wsRotateDelayTimer);
+      this.wsRotateDelayFn = open;
+      this.wsRotateDelayTimer = setTimeout(open, delayMs);
+      return;
+    }
+    open();
+  }
+
+  /**
+   * Promote a replacement over the live socket and retire the old one.
+   *
+   * Called on the cloud's `ready` (ownership is in Redis, so new requests
+   * really do land on the new socket) or after {@link WS_ROTATE_READY_FALLBACK_MS}
+   * for a cloud too old to send it.
+   */
+  private confirmSocket(socket: WebSocket, why: string): void {
+    if (this.wsPending !== socket) return;
+    if (socket.readyState !== WebSocket.OPEN) return;
+    this.wsPending = null;
+    this.rotating = false;
+    this.clearReadyTimer();
+
+    const previous = this.ws;
+    this.ws = socket;
+    this.log.log(`[WorkerTunnel] Replacement WebSocket is live (${why}) — retiring the previous socket`);
+    this.onSocketActive();
+    if (previous && previous !== socket) this.retireSocket(previous);
+  }
+
+  /**
+   * Stop using a socket for new requests without closing it: whatever it is
+   * already carrying finishes there, then it closes.
+   */
+  private retireSocket(socket: WebSocket): void {
+    const inflight = this.wsInflight.get(socket) ?? 0;
+    if (inflight > 0) {
+      const timer = setTimeout(
+        () => this.closeRetiredSocket(socket, `${WS_DRAIN_GRACE_MS / 1000}s grace expired`),
+        WS_DRAIN_GRACE_MS,
+      );
+      this.wsRetired.set(socket, timer);
+      this.log.log(`[WorkerTunnel] Keeping the previous socket for ${inflight} in-flight request(s)`);
+      return;
+    }
+    this.closeRetiredSocket(socket, 'nothing in flight');
+  }
+
+  private closeRetiredSocket(socket: WebSocket, why: string): void {
+    const timer = this.wsRetired.get(socket);
+    if (timer) clearTimeout(timer);
+    this.wsRetired.delete(socket);
+    this.wsInflight.delete(socket);
+    try {
+      socket.close(1000, 'Rotated');
+    } catch {
+      // Already gone; nothing to close.
+    }
+    this.log.log(`[WorkerTunnel] Previous socket closed (${why})`);
+  }
+
+  /** A pod is shutting down: move the tunnel off it before it goes. */
+  private onServerDrain(socket: WebSocket, frame: TunnelDrainMessage): void {
+    const graceS = Math.round((frame.graceMs ?? 0) / 1000);
+    if (this.wsPending === socket) {
+      // The replacement landed on a pod that is going away too. Drop it, keep
+      // serving on the current socket, and try again once the terminating pod
+      // has left its Service's endpoints.
+      this.wsPending = null;
+      this.rotating = false;
+      this.clearReadyTimer();
+      try {
+        socket.close(1000, 'Pod draining');
+      } catch {
+        // Already gone.
+      }
+      this.log.log('[WorkerTunnel] Replacement pod is draining — retrying the rotation');
+      this.scheduleRotationRetry();
+      return;
+    }
+    if (this.ws === socket) {
+      this.log.log(
+        `[WorkerTunnel] Cloud pod is draining${graceS > 0 ? ` (${graceS}s grace)` : ''} — rotating the tunnel`,
+      );
+      this.maybeRotate('server drain', WS_ROTATE_RETRY_MS + Math.floor(Math.random() * 1_000));
+    }
+  }
+
+  private scheduleRotationRetry(): void {
+    if (this.stopped) return;
+    if (this.wsRotateDelayTimer) clearTimeout(this.wsRotateDelayTimer);
+    const delay = WS_ROTATE_RETRY_MS + Math.floor(Math.random() * 1_000);
+    const retry = () => {
+      this.wsRotateDelayTimer = null;
+      this.wsRotateDelayFn = null;
+      this.maybeRotate('drain retry');
+    };
+    this.wsRotateDelayFn = retry;
+    this.wsRotateDelayTimer = setTimeout(retry, delay);
+  }
+
+  private armMaxAgeTimer(): void {
+    if (this.wsMaxAgeTimer) clearTimeout(this.wsMaxAgeTimer);
+    const jitter = Math.floor(Math.random() * WS_MAX_AGE_JITTER_MS);
+    this.wsMaxAgeTimer = setTimeout(
+      () => this.maybeRotate('max age'),
+      WS_MAX_AGE_MS + jitter,
+    );
+  }
+
+  private clearReadyTimer(): void {
+    if (this.wsReadyTimer) {
+      clearTimeout(this.wsReadyTimer);
+      this.wsReadyTimer = null;
+    }
   }
 
   private cleanupWs(): void {
@@ -919,10 +1258,26 @@ export class WorkerTunnel {
       clearTimeout(this.wsIdleTimer);
       this.wsIdleTimer = null;
     }
+    for (const timer of [this.wsMaxAgeTimer, this.wsRotateDelayTimer, this.wsReadyTimer]) {
+      if (timer) clearTimeout(timer);
+    }
+    this.wsMaxAgeTimer = null;
+    this.wsRotateDelayTimer = null;
+    this.wsRotateDelayFn = null;
+    this.wsReadyTimer = null;
     for (const [, controller] of this.activeAbortControllers) {
       try { controller.abort(); } catch { /* nothing to do */ }
     }
     this.activeAbortControllers.clear();
+    // A replaced socket has nobody waiting on it: close it now rather than let
+    // it outlive the tunnel it belonged to.
+    for (const socket of [...this.wsRetired.keys()]) {
+      this.closeRetiredSocket(socket, 'tunnel torn down');
+    }
+    this.wsRetired.clear();
+    this.wsInflight.clear();
+    this.wsPending = null;
+    this.rotating = false;
     this.ws = null;
   }
 
@@ -939,10 +1294,28 @@ export class WorkerTunnel {
       scheduleWsReconnect: (delayMs: number) => self.scheduleWsReconnect(delayMs),
       shouldReconnectWs: () => self.shouldReconnectWs(),
       cleanupWs: () => self.cleanupWs(),
-      handleRequest: (msg: TunnelRequest) => self.handleRequest(msg),
+      handleRequest: (msg: TunnelRequest, socket?: WebSocket | null) => self.handleRequest(msg, socket),
       installFakeWs: (fake: WebSocket) => {
         self.ws = fake;
       },
+      installPendingWs: (fake: WebSocket | null) => {
+        self.wsPending = fake;
+      },
+      maybeRotate: (reason: string, delayMs?: number) => self.maybeRotate(reason, delayMs),
+      /** Run a rotation that a delay is holding back, without waiting it out. */
+      flushRotationDelay: () => {
+        const fn = self.wsRotateDelayFn;
+        if (self.wsRotateDelayTimer) clearTimeout(self.wsRotateDelayTimer);
+        self.wsRotateDelayTimer = null;
+        self.wsRotateDelayFn = null;
+        fn?.();
+      },
+      get rotateDelayPending() { return self.wsRotateDelayFn !== null; },
+      confirmSocket: (socket: WebSocket) => self.confirmSocket(socket, 'test'),
+      retireSocket: (socket: WebSocket) => self.retireSocket(socket),
+      onServerDrain: (socket: WebSocket, graceMs?: number) =>
+        self.onServerDrain(socket, { type: 'drain', graceMs }),
+      closeRetiredSocket: (socket: WebSocket) => self.closeRetiredSocket(socket, 'test'),
       getCloudUrl: () => self.getCloudUrl(),
       getWsBaseUrl: () => self.getWsBaseUrl(),
       buildWsUrl: () => self.buildWsUrl(),
@@ -958,7 +1331,14 @@ export class WorkerTunnel {
       BACKOFF_BASE_MS,
       BACKOFF_MAX_MS,
       WS_RECONNECT_MAX_ATTEMPTS,
+      WS_MAX_AGE_MS,
+      WS_MAX_AGE_JITTER_MS,
+      WS_ROTATE_READY_FALLBACK_MS,
+      WS_ROTATE_RETRY_MS,
+      WS_DRAIN_GRACE_MS,
       TUNNEL_PROTOCOL_VERSION,
+      armMaxAgeTimer: () => self.armMaxAgeTimer(),
+      openSocket: () => self.openSocket(),
       get currentPollInterval() { return self.currentPollInterval; },
       set currentPollInterval(v: number) { self.currentPollInterval = v; },
       get wsReconnectAttempt() { return self.wsReconnectAttempt; },
@@ -966,6 +1346,11 @@ export class WorkerTunnel {
       get wsLastActiveAt() { return self.wsLastActiveAt; },
       set wsLastActiveAt(v: number | null) { self.wsLastActiveAt = v; },
       get ws() { return self.ws; },
+      get wsPending() { return self.wsPending; },
+      get rotating() { return self.rotating; },
+      get wsRetired() { return self.wsRetired; },
+      get wsInflight() { return self.wsInflight; },
+      get maxAgeTimer() { return self.wsMaxAgeTimer; },
       get stopped() { return self.stopped; },
       get serverPublishedWsUrl() { return self.serverPublishedWsUrl; },
       set serverPublishedWsUrl(v: string | null) { self.serverPublishedWsUrl = v; },

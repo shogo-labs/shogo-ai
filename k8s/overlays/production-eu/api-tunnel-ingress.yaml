@@ -3,8 +3,10 @@
 # =============================================================================
 # See k8s/overlays/staging/api-tunnel-ingress.yaml for the full rationale.
 #
-# Routes `eu.tunnel.shogo.ai` → the EU api ksvc revision pods' queue-proxy
-# port, bypassing the Knative DomainMapping that drops WebSocket Upgrade.
+# Routes `eu.tunnel.shogo.ai` → the EU api ksvc revision pods' app container
+# port (8002), bypassing the Knative DomainMapping that drops WebSocket Upgrade
+# and queue-proxy, whose response-start timeout used to cut every tunnel at
+# 300 s (SHO-565).
 #
 # The regional hostname is intentional: the desktop must reach the same
 # region whose API issued its heartbeat, so each region advertises its own
@@ -29,7 +31,10 @@ spec:
   ports:
     - name: http
       port: 80
-      targetPort: 8012
+      # The app container port, not queue-proxy's 8012: this route must bypass
+      # Knative's proxy so no response-start/request deadline can cut the tunnel
+      # WS, and so open tunnels do not count as revision concurrency (SHO-565).
+      targetPort: 8002
       protocol: TCP
 ---
 apiVersion: networking.internal.knative.dev/v1alpha1

@@ -16,7 +16,7 @@
 # specifically for the desktop tunnel WS endpoint (`tunnel.staging.shogo.ai`).
 # It points a Knative Ingress (KIngress) directly at a regular ClusterIP
 # Service whose label-selector tracks the live api ksvc revision pods on
-# their queue-proxy port. There is no `rewriteHost` and no ExternalName
+# their *app* container port. There is no `rewriteHost` and no ExternalName
 # loopback, so Kourier produces a normal Envoy upstream cluster that
 # happily passes the WS Upgrade.
 #
@@ -26,7 +26,23 @@
 #     → Kourier external listener
 #     → Knative Ingress `api-tunnel`     (no DomainMapping, no rewriteHost)
 #     → Service `api-tunnel-direct`      (selector: serving.knative.dev/service=api)
-#     → api revision Pod  port 8012      (queue-proxy, then user container)
+#     → api revision Pod  port 8002      (the app container itself)
+#
+# Why the app port and not queue-proxy (SHO-565): a hijacked WebSocket never
+# writes a response header, and queue-proxy closes any connection still waiting
+# for one at `responseStartTimeoutSeconds` — every tunnel was cut at exactly
+# 300 s until that was raised, and raising it only moved the cut to the
+# revision's `timeoutSeconds`. It also counted each open tunnel as an in-flight
+# request, so idle desktops held revisions busy and delayed a rollout's drain.
+# Dialling the container port directly takes Knative's proxy out of the path
+# entirely: no response-start deadline, and no concurrency count. The trade is
+# that queue-proxy's metrics no longer cover this route (the app exports its own
+# open-tunnel count), and a tunnel no longer keeps a pod warm — `min-scale` does.
+#
+# A tunnel is disposable because the desktop replaces it before it can be
+# closed: on a `drain` frame from a SIGTERMing pod, or on its own max-age timer,
+# it opens the replacement first and retires the old socket only once the new
+# one owns the machine in Redis (SHO-565).
 #
 # The Service's label selector is on `serving.knative.dev/service=api`, not
 # on a specific revision name. Knative scales old revisions to zero, so in
@@ -58,7 +74,10 @@ spec:
   ports:
     - name: http
       port: 80
-      targetPort: 8012  # queue-proxy ingress port (preserves Knative concurrency tracking)
+      # The app container port, not queue-proxy's 8012: this route must bypass
+      # Knative's proxy so no response-start/request deadline can cut the
+      # tunnel WS and so open tunnels do not count as concurrency (SHO-565).
+      targetPort: 8002
       protocol: TCP
 ---
 apiVersion: networking.internal.knative.dev/v1alpha1

@@ -110,7 +110,9 @@ spec:
         # ─── Long-lived chat stream + WebSocket support ────────────────────
         # The desktop tunnel WebSocket bypasses Knative entirely via
         # api-tunnel-ingress.yaml (label-selector Service direct to the
-        # revision pod on :8012), so we don't need the activator pinned
+        # revision pod's app port, :8002 — not queue-proxy's :8012, so no
+        # response-start deadline cuts it and an idle tunnel is not counted
+        # as concurrency; SHO-565), so we don't need the activator pinned
         # on the data path for WS Upgrade survival.
         #
         # target-burst-capacity=0   Take the activator OUT of the request
@@ -142,13 +144,6 @@ spec:
       # `max-request-timeout-seconds` in knative-serving/config-defaults.
       # Keeping this within safe Knative defaults avoids that dependency.
       timeoutSeconds: 1800
-      # The desktop tunnel WebSocket reaches this pod through queue-proxy
-      # (api-tunnel-ingress → :8012). A hijacked WebSocket never writes a
-      # response header, so queue-proxy's response-start timeout closed every
-      # tunnel at exactly 300 s (its stored default; `1006` on both ends,
-      # "WriteHeader on hijacked connection" in queue-proxy) and cut every
-      # remote-machine chat turn in flight. Match the request timeout.
-      responseStartTimeoutSeconds: 1800
       serviceAccountName: api-service-account
       containers:
         - name: api
