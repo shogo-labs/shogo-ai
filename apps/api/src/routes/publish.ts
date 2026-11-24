@@ -1591,11 +1591,15 @@ export async function takePublishedSiteLive(input: {
 }
 
 /**
- * Options for {@link publishProject}. `subdomain` is required (the caller must
- * have decided/confirmed it). Everything else mirrors the publish request body.
+ * Options for {@link publishProject}. Everything mirrors the publish request
+ * body.
+ *
+ * `subdomain` is optional at the boundary (SHO-559): a re-publish omits it and
+ * inherits the project's saved one. A first publish that omits it is refused
+ * with `subdomain_required`.
  */
 export interface PublishProjectOptions {
-  subdomain: string
+  subdomain?: string
   accessLevel?: AccessLevel
   password?: string
   siteTitle?: string
@@ -1726,7 +1730,35 @@ async function preparePublish(
   fileSource: PublishFileSource,
 ): Promise<{ ok: true; prepared: PreparedPublish } | PublishRefusal> {
   const { subdomain: rawSubdomain, accessLevel = "anyone", password, siteTitle, siteDescription } = opts
-  const subdomain = rawSubdomain.toLowerCase()
+
+  // `subdomain` comes off an HTTP body, where the type guarantees nothing: a
+  // number or an object used to reach `.toLowerCase()` and answer 500
+  // (SHO-559). Only a string, or nothing at all, means anything here.
+  if (rawSubdomain !== undefined && typeof rawSubdomain !== "string") {
+    return { ok: false, status: 400, code: "invalid_body", message: "`subdomain` must be a string" }
+  }
+
+  const project = await prisma.project.findUnique({ where: { id: projectId } })
+  if (!project) {
+    return { ok: false, status: 404, code: "project_not_found", message: "Project not found" }
+  }
+
+  // A re-publish need not repeat the name the app is already live on: fall back
+  // to the saved subdomain, so only a project that has never been published has
+  // to supply one. Resolved here, once, for every caller — the desktop upload
+  // flow and the agent tool both used to carry their own copy of this rule.
+  const requestedSubdomain = typeof rawSubdomain === "string" ? rawSubdomain.trim() : ""
+  const subdomain = requestedSubdomain
+    ? requestedSubdomain.toLowerCase()
+    : (project.publishedSubdomain ?? "").toLowerCase()
+  if (!subdomain) {
+    return {
+      ok: false,
+      status: 400,
+      code: "subdomain_required",
+      message: "A subdomain is required for the first publish.",
+    }
+  }
 
   const validation = validateSubdomain(subdomain)
   if (!validation.valid) {
@@ -1735,11 +1767,6 @@ async function preparePublish(
 
   if (!ACCESS_LEVELS.has(accessLevel)) {
     return { ok: false, status: 400, code: "invalid_access_level", message: `Unknown access level: ${accessLevel}` }
-  }
-
-  const project = await prisma.project.findUnique({ where: { id: projectId } })
-  if (!project) {
-    return { ok: false, status: 404, code: "project_not_found", message: "Project not found" }
   }
 
   // Subdomain publishing is gated to Pro+. Only gate a first publish or a
@@ -3035,7 +3062,13 @@ export function publishRoutes() {
     const projectId = c.req.param("projectId")
     let body: PublishProjectOptions
     try {
-      body = await c.req.json<PublishProjectOptions>()
+      const parsed = await c.req.json<unknown>()
+      // `null`, an array or a bare string would make every field read
+      // undefined and hide the caller's mistake (SHO-559).
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return c.json({ error: { code: "invalid_body", message: "Request body must be a JSON object" } }, 400)
+      }
+      body = parsed as PublishProjectOptions
     } catch {
       return c.json({ error: { code: "invalid_body", message: "Invalid JSON body" } }, 400)
     }
