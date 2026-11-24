@@ -125,6 +125,7 @@ export async function getEnvironmentStatus(
         scale: scaleSettingsOf(env),
         dbProvider: env.dbProvider,
         dbName: env.dbName,
+        publishNotice: env.publishNotice,
       },
       replicas: {
         ready: pods.filter((p) => p.ready).length,

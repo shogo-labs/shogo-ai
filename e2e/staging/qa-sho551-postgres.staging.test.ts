@@ -429,8 +429,24 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     )
     evidence.orphanedParentStillInDb = orphansInDb
     saveEvidence()
-    // The report is the contract; the row must not have been carried over.
-    expect(String(JSON.stringify(republishBody))).toMatch(/orphan/i)
+    // The report is the contract; the row must not have been carried over. A
+    // publish answers 202, so the report cannot be in this response — it is
+    // recorded on the environment row (and served by the environment status GET)
+    // for exactly that reason.
+    const notice = await poll(
+      "the seed's orphan report on the environment row",
+      async () => {
+        const found = psql(
+          `select coalesce("publishNotice",'') from published_environments ` +
+            `where "projectId" = '${projectId}' and name = 'production'`,
+        )
+        return found && /orphan|deleted records/i.test(found) ? found : null
+      },
+      300_000,
+    )
+    evidence.publishNotice = notice
+    saveEvidence()
+    expect(notice, "the seed must report the rows it could not carry").toMatch(/deleted records/i)
     expect(orphansInDb, "the orphaned parent must not be seeded").toBe("0")
   })
 

@@ -4943,6 +4943,10 @@ model PublishedEnvironment {
   /// production failed (SHO-308 §8). Mirrors Project.publishStatus.
   publishStatus       String   @default("idle")
   publishError        String?
+  /// What a successful publish left out, in words the user can act on (SHO-551).
+  /// A publish answers 202, so the response body cannot carry the seed's
+  /// orphan report; the row keeps it for the dashboard and the status GET.
+  publishNotice       String?
   publishStatusAt     DateTime?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt

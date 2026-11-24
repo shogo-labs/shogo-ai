@@ -1293,6 +1293,15 @@ async function configurePublishedService(
           `(${tableList}). They are still in the SQLite archive and can be recovered.`
         console.log(`[Publish] ${seedNotice}`)
       }
+      // The response body cannot carry this: a publish answers 202 and finishes
+      // in the background (SHO-542), so without persisting it the report reaches
+      // nobody but the log. Writing it on every Postgres publish also clears a
+      // stale notice from an earlier seed that had orphans.
+      await prisma.publishedEnvironment
+        .update({ where: { id: environment.id }, data: { publishNotice: seedNotice ?? null } })
+        .catch((err: any) => {
+          console.warn("[Publish] could not record the seed notice:", err?.message ?? err)
+        })
     }
 
     // SHO-551 §F: a Postgres environment is not pinned to one replica. 1 at rest
