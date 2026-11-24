@@ -9,10 +9,11 @@
  */
 
 import { Platform, View, Text, Pressable, useWindowDimensions } from 'react-native'
-import { usePathname, useRouter } from 'expo-router'
+import { usePathname } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { ChevronLeft, Menu } from 'lucide-react-native'
+import { Menu } from 'lucide-react-native'
 import { NotificationBell } from '../notifications/NotificationBell'
+import { PhoneBackButton } from './PhoneBackButton'
 import { NATIVE_PHONE_HEADER_ICON_SIZE,
   WEB_WIDE_MIN_WIDTH, useNativePhoneIconChrome } from '../../lib/native-phone-layout'
 import { PHONE_DENSITY } from '../../lib/phone-density'
@@ -56,7 +57,6 @@ interface AppHeaderProps {
 }
 
 export function AppHeader({ onMenuPress, menuOpen = false, back = false }: AppHeaderProps) {
-  const router = useRouter()
   const { width } = useWindowDimensions()
   const pathname = usePathname()
   const insets = useSafeAreaInsets()
@@ -93,27 +93,19 @@ export function AppHeader({ onMenuPress, menuOpen = false, back = false }: AppHe
               }
         }
       >
-        <Pressable
-          onPress={
-            back
-              ? () => {
-                  if (router.canGoBack()) router.back()
-                  else router.replace('/(app)/more' as any)
-                }
-              : onMenuPress
-          }
-          accessibilityRole="button"
-          accessibilityLabel={back ? 'Back' : menuOpen ? 'Close menu' : 'Open menu'}
-          testID={back ? 'app-header-back' : undefined}
-          hitSlop={4}
-          className={overlayControlClass}
-        >
-          {back ? (
-            <ChevronLeft size={NATIVE_PHONE_HEADER_ICON_SIZE} color={icon.color} strokeWidth={icon.strokeWidth} />
-          ) : (
+        {back ? (
+          <PhoneBackButton />
+        ) : (
+          <Pressable
+            onPress={onMenuPress}
+            accessibilityRole="button"
+            accessibilityLabel={menuOpen ? 'Close menu' : 'Open menu'}
+            hitSlop={4}
+            className={overlayControlClass}
+          >
             <Menu size={NATIVE_PHONE_HEADER_ICON_SIZE} color={icon.color} strokeWidth={icon.strokeWidth} />
-          )}
-        </Pressable>
+          </Pressable>
+        )}
         {useFloatingChrome ? (
           <View className="flex-1" pointerEvents="none" />
         ) : (
