@@ -6,7 +6,6 @@ import {
   isPublishMetalAuthoritative,
   missingProjectsDatabaseConfig,
   resolvePublishDbProvider,
-  shouldProvisionPublishedDatabase,
   shouldServeStaticFromEdgeOnly,
 } from '../publish-substrate-config'
 
@@ -69,86 +68,6 @@ describe('publish-substrate-config', () => {
       expect(isPublishMetalAuthoritative()).toBe(false)
       process.env.SHOGO_METAL_ENABLED = 'true'
       expect(isPublishMetalAuthoritative()).toBe(false)
-    })
-  })
-
-  describe('shouldProvisionPublishedDatabase', () => {
-    it('is off until the cluster is fully configured', () => {
-      // Unknown infrastructure must not turn every server-app publish into a 503.
-      expect(shouldProvisionPublishedDatabase('knative')).toBe(false)
-      expect(missingProjectsDatabaseConfig()).toEqual([
-        'PROJECTS_DB_ADMIN_URL',
-        'PROJECTS_DB_POOLER_HOST',
-      ])
-    })
-
-    it('is still off with only the admin URL, because the refusal also needs the pooler', () => {
-      process.env.PROJECTS_DB_ADMIN_URL = 'postgres://admin@projects-pg-rw:5432/postgres'
-      expect(shouldProvisionPublishedDatabase('knative')).toBe(false)
-      expect(missingProjectsDatabaseConfig()).toEqual(['PROJECTS_DB_POOLER_HOST'])
-    })
-
-    it('is still off with only the pooler host, because provisioning needs the admin URL', () => {
-      process.env.PROJECTS_DB_POOLER_HOST = 'projects-pg-pooler-rw.shogo-staging-system.svc.cluster.local'
-      expect(shouldProvisionPublishedDatabase('knative')).toBe(false)
-      expect(missingProjectsDatabaseConfig()).toEqual(['PROJECTS_DB_ADMIN_URL'])
-    })
-
-    it('is on for a Knative publish once both are set', () => {
-      process.env.PROJECTS_DB_ADMIN_URL = 'postgres://admin@projects-pg-rw:5432/postgres'
-      process.env.PROJECTS_DB_POOLER_HOST = 'projects-pg-pooler-rw.shogo-staging-system.svc.cluster.local'
-      expect(shouldProvisionPublishedDatabase('knative')).toBe(true)
-      expect(missingProjectsDatabaseConfig()).toEqual([])
-    })
-
-    it('never provisions a database for a metal publish (SQLite archive stays)', () => {
-      process.env.PROJECTS_DB_ADMIN_URL = 'postgres://admin@projects-pg-rw:5432/postgres'
-      process.env.PROJECTS_DB_POOLER_HOST = 'projects-pg-pooler-rw.shogo-staging-system.svc.cluster.local'
-      process.env.PUBLISH_POSTGRES = 'on'
-      expect(shouldProvisionPublishedDatabase('metal')).toBe(false)
-    })
-
-    it('PUBLISH_POSTGRES=on forces it even without an admin URL, so a bad config fails loudly', () => {
-      process.env.PUBLISH_POSTGRES = 'on'
-      expect(shouldProvisionPublishedDatabase('knative')).toBe(true)
-    })
-
-    it('PUBLISH_POSTGRES=off takes publishes back to SQLite without unsetting the URLs', () => {
-      process.env.PROJECTS_DB_ADMIN_URL = 'postgres://admin@projects-pg-rw:5432/postgres'
-      process.env.PROJECTS_DB_POOLER_HOST = 'projects-pg-pooler-rw.shogo-staging-system.svc.cluster.local'
-      process.env.PUBLISH_POSTGRES = 'off'
-      expect(shouldProvisionPublishedDatabase('knative')).toBe(false)
-    })
-  })
-
-  // §G: the region switch now also takes a list of project ids, and an
-  // environment that is already on Postgres ignores the switch entirely.
-  describe('project-id list form', () => {
-    const KIF = '5925615d-0157-44d3-a114-41b35a14785e'
-    const NADA = 'c7d51ded-aa79-42a5-8e48-2b10222d743d'
-    const OTHER = '0c8a4d79-b3b2-4cfa-b2c1-95418f91d670'
-
-    it('is on only for the projects it lists', () => {
-      process.env.PUBLISH_POSTGRES = `${KIF},${NADA}`
-      expect(shouldProvisionPublishedDatabase('knative', KIF)).toBe(true)
-      expect(shouldProvisionPublishedDatabase('knative', NADA)).toBe(true)
-      expect(shouldProvisionPublishedDatabase('knative', OTHER)).toBe(false)
-    })
-
-    it('matches a short prefix, which is how the overlay reads', () => {
-      process.env.PUBLISH_POSTGRES = '5925615d'
-      expect(shouldProvisionPublishedDatabase('knative', KIF)).toBe(true)
-      expect(shouldProvisionPublishedDatabase('knative', OTHER)).toBe(false)
-    })
-
-    it('a list needs a project to match, so a caller with none stays off', () => {
-      process.env.PUBLISH_POSTGRES = KIF
-      expect(shouldProvisionPublishedDatabase('knative')).toBe(false)
-    })
-
-    it('stays off for metal whatever the list says', () => {
-      process.env.PUBLISH_POSTGRES = `${KIF},${NADA}`
-      expect(shouldProvisionPublishedDatabase('metal', KIF)).toBe(false)
     })
   })
 

@@ -60,7 +60,7 @@ order. Skipping one produces a specific, confusing failure, noted below.
 
 **This step is the switch.** Publishing moves an app onto Postgres only when the
 publish is going to Knative *and* `PROJECTS_DB_ADMIN_URL` is set
-(`shouldProvisionPublishedDatabase`), so the cluster coming up above is what turns
+(resolved per environment by `resolvePublishDbProvider`), so the cluster coming up above is what turns
 the feature on for the region — before it, a publish behaves exactly as it does
 today and the site keeps its SQLite archive. `PUBLISH_POSTGRES=on` forces it
 (useful to make a half-configured cluster fail as `database_unavailable` instead

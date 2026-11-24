@@ -51,45 +51,6 @@ export function shouldServeStaticFromEdgeOnly(): boolean {
 }
 
 /**
- * Whether a publish should move the app's data onto Postgres (SHO-308 §1).
- *
- * The publish pipeline provisions the environment's database, pushes the app's
- * schema at it and seeds it from `prisma/dev.db` — which can only work where the
- * `projects-pg` infrastructure exists. Two conditions, both real configuration
- * rather than a switch that hides a broken path:
- *
- *   1. the site is being published to **Knative**. A metal site keeps its SQLite
- *      data archive; that is the substrate's contract, and the escape hatch has
- *      to stay usable.
- *   2. the cluster is reachable *and* its databases have a pooled address —
- *      `PROJECTS_DB_ADMIN_URL` and `PROJECTS_DB_POOLER_HOST`. These are exactly
- *      the two things `ensureEnvironmentDatabase` refuses on (it answers
- *      `database_unavailable` for a missing pooler or a missing admin URL), so
- *      the gate and the refusal can never disagree: a region that would 503 is a
- *      region that this gate keeps on SQLite, publishing exactly as it does
- *      today. Checking only one of them would let the other turn every
- *      server-app publish into a 503.
- *
- * `PUBLISH_POSTGRES=on|off` forces the decision for a single rollout step —
- * `on` is how a misconfigured cluster surfaces as `database_unavailable` instead
- * of silently staying on SQLite, and `off` is how a publish is taken back off
- * Postgres without unsetting the URLs.
- *
- * `PUBLISH_POSTGRES=<projectId>[,<projectId>…]` moves the listed projects only
- * (§G): a rollout reaches named apps instead of a whole region, and the same
- * value rolls them back by listing someone else.
- */
-export function shouldProvisionPublishedDatabase(
-  substrateKind: 'knative' | 'metal',
-  projectId?: string | null,
-): boolean {
-  if (substrateKind !== 'knative') return false
-  const verdict = publishFlagAllows(parsePublishFlag(process.env.PUBLISH_POSTGRES), projectId)
-  if (verdict !== null) return verdict
-  return !!configuredProjectsDatabase()
-}
-
-/**
  * Whether this publish keeps the environment's database on Postgres (§G).
  *
  * `dbProvider` on the environment row is the record of what the pod is actually

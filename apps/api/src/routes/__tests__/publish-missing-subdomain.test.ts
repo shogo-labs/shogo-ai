@@ -161,7 +161,6 @@ mock.module('../../lib/substrate/router', () => ({
   }),
 }))
 mock.module('../../lib/publish-substrate-config', () => ({
-  shouldProvisionPublishedDatabase: () => false,
   // The publish route asks for the whole decision (§G1): an environment already
   // on Postgres stays there. These tests keep everything on SQLite.
   resolvePublishDbProvider: () => ({ provider: 'sqlite', reason: 'off' }),
