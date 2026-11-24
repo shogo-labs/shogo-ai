@@ -21,6 +21,7 @@ process.env.AI_PROXY_SECRET =
 const {
   deriveRuntimeToken,
   deriveWebhookToken,
+  derivePoolBootstrapSecret,
   parseRuntimeToken,
   verifyRuntimeToken,
   RUNTIME_TOKEN_V1_PREFIX,
@@ -280,5 +281,18 @@ describe('the dev-only fallback never signs a token that leaves the process', ()
     } finally {
       restore()
     }
+  })
+})
+
+describe('derivePoolBootstrapSecret (SEC-30)', () => {
+  test('is stable per warm pod and differs between pods', () => {
+    const a = derivePoolBootstrapSecret('warm-pool-aaaa')
+    expect(a).toMatch(/^[0-9a-f]{64}$/)
+    expect(derivePoolBootstrapSecret('warm-pool-aaaa')).toBe(a)
+    expect(derivePoolBootstrapSecret('warm-pool-bbbb')).not.toBe(a)
+  })
+
+  test('is not the runtime token of a project with the same name', () => {
+    expect(deriveRuntimeToken('warm-pool-aaaa')).not.toContain(derivePoolBootstrapSecret('warm-pool-aaaa'))
   })
 })

@@ -476,7 +476,28 @@ export async function startRelease(input: StartReleaseInput): Promise<StartRelea
     uploads.push({ kind: 'workflow', ...asset })
   }
 
+  // SEC-22: remember the slot this release was given, so `sourcesUploaded`
+  // accepts that key and nothing else, and only once.
+  const minted = uploads[0]?.bucketKey
+  if (minted) {
+    await db.nativeRelease.update({
+      where: { id: release.id },
+      data: { sourceBucketKey: pendingSourceKey(minted) },
+    })
+  }
+
   return { releaseId: release.id, kind, uploads, mode }
+}
+
+const PENDING_SOURCE_PREFIX = 'pending:'
+
+/** `sourceBucketKey` while the release waits for the runner's upload (SEC-22). */
+export function pendingSourceKey(bucketKey: string): string {
+  return `${PENDING_SOURCE_PREFIX}${bucketKey}`
+}
+
+export function isPendingSourceKey(value: string): boolean {
+  return value.startsWith(PENDING_SOURCE_PREFIX)
 }
 
 /**
@@ -487,11 +508,18 @@ export async function sourcesUploaded(opts: {
   releaseId: string
   bucketKey: string
   jobDraft?: Record<string, unknown>
+  /** The project the caller is authorized for; the release must belong to it. */
+  projectId?: string
 }): Promise<{ status: string; workflowRunId?: string }> {
   if (opts.jobDraft) assertRunnerJobDraft(opts.jobDraft)
 
   const release = await db.nativeRelease.findUnique({ where: { id: opts.releaseId } })
-  if (!release) throw new NativeReleaseError(404, 'native_release_missing', 'Unknown release.')
+  if (!release || (opts.projectId !== undefined && release.projectId !== opts.projectId)) {
+    throw new NativeReleaseError(404, 'native_release_missing', 'Unknown release.')
+  }
+  if (release.status !== 'queued') {
+    throw new NativeReleaseError(409, 'native_sources_rejected', 'This release is not waiting for an upload.')
+  }
 
   const credentials = await resolveEasCredentials({
     workspaceId: release.workspaceId,
@@ -525,10 +553,37 @@ export async function sourcesUploaded(opts: {
     )
   }
 
-  await db.nativeRelease.update({
-    where: { id: release.id },
+  // The balance was checked when the release started; check it again before
+  // the first thing that costs money.
+  if (release.createdById) {
+    await preflightBalance({
+      workspaceId: release.workspaceId,
+      memberId: release.createdById,
+      projection: {
+        builds: platforms.map((platform) => ({ platform, resourceClass: storeResourceClass(platform) })),
+        hasTests: !release.testOutcome && hasMaestro(release),
+      },
+    })
+  }
+
+  // SEC-22: one shot, with the key this release was issued. The claim is a
+  // conditional write so two concurrent calls cannot both start builds, and a
+  // finished release can never be replayed into new store builds.
+  const claimed = await db.nativeRelease.updateMany({
+    where: {
+      id: release.id,
+      status: 'queued',
+      sourceBucketKey: release.sourceBucketKey === null ? null : pendingSourceKey(opts.bucketKey),
+    },
     data: { sourceBucketKey: opts.bucketKey },
   })
+  if (claimed.count !== 1) {
+    throw new NativeReleaseError(
+      409,
+      'native_sources_rejected',
+      'This release is not waiting for an upload, or the archive is not the one it was issued.',
+    )
+  }
 
   if (!release.testOutcome && hasMaestro(release)) {
     const run = await createWorkflowRun(client, {
@@ -605,7 +660,7 @@ export async function startStoreBuilds(opts: {
   if (!opts.app.easAppId) {
     throw new NativeReleaseError(409, 'native_app_missing', 'No Expo project for this release.')
   }
-  if (!release.sourceBucketKey) {
+  if (!release.sourceBucketKey || isPendingSourceKey(release.sourceBucketKey)) {
     throw new NativeReleaseError(409, 'native_source_missing', 'This release has no uploaded archive.')
   }
 

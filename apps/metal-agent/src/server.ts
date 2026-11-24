@@ -28,6 +28,7 @@ import { type AuthMode, bucketPath, decideControlAuth, parseAuthMode } from './a
 import { config } from './config'
 import { injectE2eFault } from './e2e-faults'
 import { ControlFirewall } from './control-firewall'
+import { GuestIsolation } from './guest-isolation'
 import { type GuardedInterval, guardedInterval } from './guarded-interval'
 import { HYDRATE_STREAM_PREFIX } from './hydrate-proxy'
 import { currentIdleWindow } from './idle-policy'
@@ -83,6 +84,14 @@ try {
   console.log(`[metal-agent] control firewall: ${ctrlFirewall.describe()}`)
 } catch (err: any) {
   console.error(`[metal-agent] control firewall FAILED to apply (port stays open): ${err?.message ?? err}`)
+}
+
+// SEC-31: no guest may open a connection to another guest on this host.
+try {
+  new GuestIsolation().apply()
+  console.log('[metal-agent] guest isolation: tap-to-tap forwarding dropped')
+} catch (err: any) {
+  console.error(`[metal-agent] guest isolation FAILED to apply (guests can reach each other): ${err?.message ?? err}`)
 }
 
 async function json(req: Request): Promise<any> {

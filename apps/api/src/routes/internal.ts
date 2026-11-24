@@ -1416,6 +1416,7 @@ app.post('/projects/:projectId/native/releases/:releaseId/sources', async (c) =>
       releaseId: c.req.param('releaseId'),
       bucketKey: body.bucketKey,
       jobDraft: body.jobDraft,
+      projectId,
     })
     return c.json(result, 202)
   } catch (err) {

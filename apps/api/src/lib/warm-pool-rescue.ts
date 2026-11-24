@@ -163,9 +163,13 @@ export async function rescueStuckPromotedPods(
           }
           const { buildProjectEnv } = await import('./runtime/build-project-env')
           const env = await buildProjectEnv(ksvc.projectId, { logPrefix: 'WarmPoolRescue' })
+          const { derivePoolBootstrapSecret, POOL_BOOTSTRAP_HEADER } = await import('./runtime-token')
           const res = await fetch(`${ksvc.url}/pool/assign`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              [POOL_BOOTSTRAP_HEADER]: derivePoolBootstrapSecret(ksvc.serviceName),
+            },
             body: JSON.stringify({ projectId: ksvc.projectId, env }),
             signal: AbortSignal.timeout(assignTimeoutMs),
           })

@@ -116,7 +116,7 @@ mock.module('../lib/prisma', () => ({
     chatSession: {
       findUnique: async (args: any) => {
         prismaCalls.chatSessionFindUnique.push(args)
-        return chatSessionFixture
+        return chatSessionFixture && { contextType: 'project', contextId: 'p-1', ...chatSessionFixture }
       },
       update: async () => ({}),
     },
