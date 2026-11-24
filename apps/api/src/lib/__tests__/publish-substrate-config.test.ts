@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import {
   isPublishMetalAuthoritative,
   missingProjectsDatabaseConfig,
+  resolvePublishDbProvider,
   shouldProvisionPublishedDatabase,
   shouldServeStaticFromEdgeOnly,
 } from '../publish-substrate-config'
@@ -117,6 +118,100 @@ describe('publish-substrate-config', () => {
       process.env.PROJECTS_DB_POOLER_HOST = 'projects-pg-pooler-rw.shogo-staging-system.svc.cluster.local'
       process.env.PUBLISH_POSTGRES = 'off'
       expect(shouldProvisionPublishedDatabase('knative')).toBe(false)
+    })
+  })
+
+  // §G: the region switch now also takes a list of project ids, and an
+  // environment that is already on Postgres ignores the switch entirely.
+  describe('project-id list form', () => {
+    const KIF = '5925615d-0157-44d3-a114-41b35a14785e'
+    const NADA = 'c7d51ded-aa79-42a5-8e48-2b10222d743d'
+    const OTHER = '0c8a4d79-b3b2-4cfa-b2c1-95418f91d670'
+
+    it('is on only for the projects it lists', () => {
+      process.env.PUBLISH_POSTGRES = `${KIF},${NADA}`
+      expect(shouldProvisionPublishedDatabase('knative', KIF)).toBe(true)
+      expect(shouldProvisionPublishedDatabase('knative', NADA)).toBe(true)
+      expect(shouldProvisionPublishedDatabase('knative', OTHER)).toBe(false)
+    })
+
+    it('matches a short prefix, which is how the overlay reads', () => {
+      process.env.PUBLISH_POSTGRES = '5925615d'
+      expect(shouldProvisionPublishedDatabase('knative', KIF)).toBe(true)
+      expect(shouldProvisionPublishedDatabase('knative', OTHER)).toBe(false)
+    })
+
+    it('a list needs a project to match, so a caller with none stays off', () => {
+      process.env.PUBLISH_POSTGRES = KIF
+      expect(shouldProvisionPublishedDatabase('knative')).toBe(false)
+    })
+
+    it('stays off for metal whatever the list says', () => {
+      process.env.PUBLISH_POSTGRES = `${KIF},${NADA}`
+      expect(shouldProvisionPublishedDatabase('metal', KIF)).toBe(false)
+    })
+  })
+
+  describe('resolvePublishDbProvider', () => {
+    const KIF = '5925615d-0157-44d3-a114-41b35a14785e'
+
+    it('keeps an environment that is on Postgres there with PUBLISH_POSTGRES=off', () => {
+      // The §G1 failure: a SQLite image built against a Postgres DATABASE_URL
+      // fails the boot guard and the site never serves again.
+      process.env.PUBLISH_POSTGRES = 'off'
+      expect(
+        resolvePublishDbProvider({
+          serverBacked: true,
+          substrateKind: 'knative',
+          environmentProvider: 'postgres',
+          projectId: KIF,
+        }),
+      ).toEqual({ provider: 'postgres', reason: 'sticky' })
+    })
+
+    it('leaves a SQLite environment on SQLite when the flag is off', () => {
+      process.env.PUBLISH_POSTGRES = 'off'
+      expect(
+        resolvePublishDbProvider({
+          serverBacked: true,
+          substrateKind: 'knative',
+          environmentProvider: 'sqlite',
+          projectId: KIF,
+        }),
+      ).toEqual({ provider: 'sqlite', reason: 'off' })
+    })
+
+    it('moves only a listed project', () => {
+      process.env.PUBLISH_POSTGRES = KIF
+      expect(
+        resolvePublishDbProvider({ serverBacked: true, substrateKind: 'knative', environmentProvider: null, projectId: KIF }),
+      ).toEqual({ provider: 'postgres', reason: 'flag' })
+      expect(
+        resolvePublishDbProvider({
+          serverBacked: true,
+          substrateKind: 'knative',
+          environmentProvider: null,
+          projectId: '0c8a4d79-b3b2-4cfa-b2c1-95418f91d670',
+        }),
+      ).toEqual({ provider: 'sqlite', reason: 'off' })
+    })
+
+    it('falls back to the cluster configuration when the flag has no opinion', () => {
+      process.env.PROJECTS_DB_ADMIN_URL = 'postgres://admin@projects-pg-rw:5432/postgres'
+      process.env.PROJECTS_DB_POOLER_HOST = 'projects-pg-pooler-rw.svc.cluster.local'
+      expect(
+        resolvePublishDbProvider({ serverBacked: true, substrateKind: 'knative', environmentProvider: null, projectId: KIF }),
+      ).toEqual({ provider: 'postgres', reason: 'config' })
+    })
+
+    it('never moves a metal site or a static app', () => {
+      process.env.PUBLISH_POSTGRES = 'on'
+      expect(
+        resolvePublishDbProvider({ serverBacked: true, substrateKind: 'metal', environmentProvider: null }),
+      ).toEqual({ provider: 'sqlite', reason: 'metal' })
+      expect(
+        resolvePublishDbProvider({ serverBacked: false, substrateKind: 'knative', environmentProvider: null }),
+      ).toEqual({ provider: 'sqlite', reason: 'not-server-backed' })
     })
   })
 

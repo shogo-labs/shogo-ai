@@ -18,8 +18,12 @@
  *                            the cluster namespace the Job runs in (`shogo-builds`)
  *
  * `PUBLISH_BUILD_IMAGES=on|off` forces the decision for a single rollout step,
- * same as `PUBLISH_POSTGRES`.
+ * same as `PUBLISH_POSTGRES`. `PUBLISH_BUILD_IMAGES=<projectId>[,<projectId>…]`
+ * builds only for the listed projects (§G), so a per-commit rollout is the same
+ * knob as its rollback.
  */
+
+import { parsePublishFlag, publishFlagAllows } from './publish-flag'
 
 export interface PublishedBuildConfig {
   registry: string
@@ -76,11 +80,13 @@ export function publishedBuildSetup(): PublishedBuildSetup {
  * per-commit container at all. `PUBLISH_BUILD_IMAGES=off` takes a region back to
  * the shared runtime image without unsetting anything.
  */
-export function shouldBuildPublishedImage(substrateKind: 'knative' | 'metal'): boolean {
+export function shouldBuildPublishedImage(
+  substrateKind: 'knative' | 'metal',
+  projectId?: string | null,
+): boolean {
   if (substrateKind !== 'knative') return false
-  const override = (process.env.PUBLISH_BUILD_IMAGES || '').trim().toLowerCase()
-  if (override === 'off') return false
-  if (override === 'on') return true
+  const verdict = publishFlagAllows(parsePublishFlag(process.env.PUBLISH_BUILD_IMAGES), projectId)
+  if (verdict !== null) return verdict
   return publishedBuildSetup().ok
 }
 

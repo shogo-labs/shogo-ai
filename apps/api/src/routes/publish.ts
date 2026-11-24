@@ -780,7 +780,7 @@ export async function publishConfigureTimeoutMs(
       const { shouldBuildPublishedImage, publishedImageBuildTimeoutMs } = await import(
         "../lib/published-build-config"
       )
-      if (shouldBuildPublishedImage('knative')) {
+      if (shouldBuildPublishedImage('knative', projectId)) {
         return PUBLISH_CONFIGURE_TIMEOUT_MS + publishedImageBuildTimeoutMs() + readinessMs
       }
       return PUBLISH_CONFIGURE_TIMEOUT_MS + readinessMs
@@ -804,7 +804,7 @@ export async function willBuildPublishedImage(projectId: string): Promise<boolea
     const { getPublishSubstrate } = await import("../lib/substrate/router")
     const substrate = await getPublishSubstrate(projectId)
     const { shouldBuildPublishedImage } = await import("../lib/published-build-config")
-    return shouldBuildPublishedImage(substrate.kind as "knative" | "metal")
+    return shouldBuildPublishedImage(substrate.kind as "knative" | "metal", projectId)
   } catch (err: any) {
     console.warn(`[Publish] Could not resolve the image-build decision for ${projectId}: ${err?.message ?? err}`)
     return false
@@ -1214,181 +1214,242 @@ async function configurePublishedService(
   // metal publish (the escape hatch, which keeps SQLite) or in a cluster that has
   // no `PROJECTS_DB_ADMIN_URL` yet, publishing must behave exactly as it does
   // today rather than refusing every server app with `database_unavailable`.
-  const { shouldProvisionPublishedDatabase, missingProjectsDatabaseConfig } = await import(
+  //
+  // §G1: `dbProvider` on the environment wins over the region flag. A pod mounted
+  // with a Postgres `DATABASE_URL` whose publish builds a SQLite image fails the
+  // boot guard and never serves again, so an environment already on Postgres
+  // stays there whatever `PUBLISH_POSTGRES` says; only new moves consult it.
+  const { resolvePublishDbProvider, missingProjectsDatabaseConfig } = await import(
     "../lib/publish-substrate-config"
   )
-  const usePostgres = serverBacked && shouldProvisionPublishedDatabase(substrate.kind)
+  const dbDecision = resolvePublishDbProvider({
+    serverBacked,
+    substrateKind: substrate.kind as "knative" | "metal",
+    environmentProvider: (environment as { dbProvider?: string | null }).dbProvider ?? null,
+    projectId,
+  })
+  const usePostgres = dbDecision.provider === "postgres"
   if (serverBacked && !usePostgres) {
     const missing = missingProjectsDatabaseConfig()
     console.log(
       `[Publish] Keeping ${projectId}/${environmentName} on SQLite ` +
-        `(substrate=${substrate.kind}${missing.length ? `, projects-pg missing ${missing.join(", ")}` : ""})`,
+        `(reason=${dbDecision.reason}, substrate=${substrate.kind}${missing.length ? `, projects-pg missing ${missing.join(", ")}` : ""})`,
+    )
+  } else if (dbDecision.reason === "sticky") {
+    console.log(
+      `[Publish] ${projectId}/${environmentName} is already on Postgres — staying there regardless of PUBLISH_POSTGRES`,
     )
   }
-  let currentDbProvider: "sqlite" | "postgres" = "sqlite"
+  let currentDbProvider: "sqlite" | "postgres" = usePostgres ? "postgres" : "sqlite"
   let seedNotice: string | undefined
-  if (usePostgres) {
-    const { prepareEnvironmentDatabase } = await import("../services/published-schema.service")
-    const prepared = await prepareEnvironmentDatabase(projectId, environmentName, {
-      allowDataLoss: opts?.allowDataLoss === true,
-    })
-    if (!prepared.ok) {
-      throw new PublishConfigureError(prepared.code, prepared.message, prepared.status, prepared.details)
-    }
-    if (prepared.value.seeded) {
-      const source =
-        prepared.value.seededFrom === 'live-archive'
-          ? `the live archive (${subdomain}/data.tar.gz)`
-          : 'prisma/dev.db'
-      console.log(
-        `[Publish] Seeded ${environmentName} database for ${projectId} from ${source} ` +
-          `(${prepared.value.seededRows} rows)`,
-      )
-    }
-    currentDbProvider = "postgres"
-    if (prepared.value.orphans.length > 0) {
-      const totalOrphaned = prepared.value.orphans.reduce((sum, o) => sum + o.count, 0)
-      const tableList = prepared.value.orphans
-        .map((o) => `${o.table} (${o.count})`)
-        .join(', ')
-      seedNotice =
-        `${totalOrphaned} row(s) referencing deleted records were not copied to Postgres ` +
-        `(${tableList}). They are still in the SQLite archive and can be recovered.`
-      console.log(`[Publish] ${seedNotice}`)
-    }
-  }
 
-  // SHO-551 §F: a Postgres environment is not pinned to one replica. 1 at rest
-  // (the autoscaler's floor), max-scale above 1 so a traffic spike — or a
-  // deploy, where the new revision must be ready while the old one still
-  // serves — can get a second pod. SQLite environments stay at max 1: two pods
-  // would serve two different `prisma/dev.db` files.
-  //
-  // The result is persisted through `setEnvironmentScale`, the same path the
-  // Publishing dashboard uses, so the plan's cap and the local-state guard
-  // decide and the row agrees with the ksvc. A value computed here and thrown
-  // away was what let a later cutover/rollback re-apply one replica.
-  const rawScale = scaleSettingsOf(environment)
-  let scale = postgresScaleTarget(rawScale, {
-    alwaysOn: opts?.alwaysOn === true,
-    dbProvider: currentDbProvider,
-  })
-  if (scale.minReplicas !== rawScale.minReplicas || scale.maxReplicas !== rawScale.maxReplicas) {
-    const { setEnvironmentScale } = await import("../services/published-environments.service")
-    const applied = await setEnvironmentScale(projectId, environmentName, scale)
-    if (applied.ok) {
-      scale = applied.value.settings
-      console.log(
-        `[Publish] ${environmentName} scale for ${projectId}: min-scale ${scale.minReplicas}, ` +
-          `max-scale ${scale.maxReplicas} (was ${rawScale.minReplicas}/${rawScale.maxReplicas})`,
-      )
-    } else {
-      // The plan cap or the local-state guard refused it: keep what is stored
-      // rather than bypassing either.
-      console.log(
-        `[Publish] Keeping ${environmentName} at min-scale ${rawScale.minReplicas} / ` +
-          `max-scale ${rawScale.maxReplicas}: ${applied.message}`,
-      )
-      scale = rawScale
-    }
-  }
-
-  // One image per commit (SHO-308 §2). Built here, at publish time, so the
-  // ksvc boots from a pinned digest and a cold start is a container start —
-  // not `bun install` + `prisma generate` + a Vite build. Gated twice: static
-  // apps have nothing to build, and a cluster without the OCIR/build env keeps
-  // today's mutable-tag behaviour instead of refusing every publish.
-  const commitSha = await currentPublishedCommitSha(projectId)
-  let publishedImageRef: string | undefined
-  let publishedImageDigest: string | null = null
-  if (serverBacked && commitSha) {
-    const { publishedBuildSetup, shouldBuildPublishedImage } = await import("../lib/published-build-config")
-    if (shouldBuildPublishedImage(substrate.kind as "knative" | "metal")) {
-      const { ensurePublishedImage } = await import("../services/published-build.service")
-      const image = await ensurePublishedImage({
+  // §G3: moving a live SQLite environment to Postgres seeds from the archive its
+  // pod last uploaded, so writes made after that upload would be copied nowhere.
+  // The freeze stops writes, makes the pod flush, and waits for the fresh archive
+  // — and is lifted in the `finally` below, after the new revision serves or when
+  // the publish fails. A failure leaves the SQLite revision serving with its data.
+  let writeFreeze: import("../services/published-write-freeze").WriteFreeze | null = null
+  let freezeFailure: string | null = null
+  let publishedServerBacked = serverBacked
+  try {
+    if (usePostgres) {
+      const { createWriteFreeze } = await import("../services/published-write-freeze")
+      writeFreeze = createWriteFreeze({
         projectId,
-        environmentId: environment.id,
         subdomain,
-        commitSha,
-        alreadyBuilt: opts?.artifactAlreadyBuilt === true,
-        dbProvider: currentDbProvider,
+        environmentId: environment.id,
+        environmentName,
       })
-      if (!image.ok) {
-        // A publish must never ship a runtime it could not build: the ksvc
-        // would boot the shared image and serve the wrong commit.
-        //
-        // The code alone is not actionable — a build failure is a BuildKit log.
-        // Park it on the environment row (which is what the Deployment tab
-        // reads) before refusing, so the reason survives the HTTP response.
-        const { setEnvironmentPublishStatus } = await import("../services/published-ops.service")
-        const detail = image.logTail
-          ? `${image.code}: ${image.message}\n\n${image.logTail}`
-          : `${image.code}: ${image.message}`
-        await setEnvironmentPublishStatus(environment.id, "failed", detail).catch((err: any) => {
-          console.warn(`[Publish] could not record the build failure: ${err?.message ?? err}`)
-        })
-        throw new PublishConfigureError(image.code, detail, 503, { logTail: image.logTail })
+      const { prepareEnvironmentDatabase } = await import("../services/published-schema.service")
+      const prepared = await prepareEnvironmentDatabase(projectId, environmentName, {
+        allowDataLoss: opts?.allowDataLoss === true,
+        writeFreeze,
+      })
+      if (!prepared.ok) {
+        throw new PublishConfigureError(prepared.code, prepared.message, prepared.status, prepared.details)
       }
-      publishedImageRef = image.imageRef
-      publishedImageDigest = image.imageDigest
-      console.log(
-        `[Publish] ${image.reused ? "Reusing" : "Built"} ${image.imageDigest} for ${projectId}@${commitSha.slice(0, 8)}`,
-      )
-    } else {
-      const missing = publishedBuildSetup().missing
-      console.log(
-        `[Publish] No per-commit image for ${projectId} ` +
-          `(substrate=${substrate.kind}${missing.length ? `, missing ${missing.join(", ")}` : ", disabled by PUBLISH_BUILD_IMAGES"})`,
-      )
+      if (prepared.value.seeded) {
+        const source =
+          prepared.value.seededFrom === 'live-archive'
+            ? `the live archive (${subdomain}/data.tar.gz)`
+            : 'prisma/dev.db'
+        console.log(
+          `[Publish] Seeded ${environmentName} database for ${projectId} from ${source} ` +
+            `(${prepared.value.seededRows} rows)`,
+        )
+      }
+      currentDbProvider = "postgres"
+      if (prepared.value.orphans.length > 0) {
+        const totalOrphaned = prepared.value.orphans.reduce((sum, o) => sum + o.count, 0)
+        const tableList = prepared.value.orphans
+          .map((o) => `${o.table} (${o.count})`)
+          .join(', ')
+        seedNotice =
+          `${totalOrphaned} row(s) referencing deleted records were not copied to Postgres ` +
+          `(${tableList}). They are still in the SQLite archive and can be recovered.`
+        console.log(`[Publish] ${seedNotice}`)
+      }
     }
+
+    // SHO-551 §F: a Postgres environment is not pinned to one replica. 1 at rest
+    // (the autoscaler's floor), max-scale above 1 so a traffic spike — or a
+    // deploy, where the new revision must be ready while the old one still
+    // serves — can get a second pod. SQLite environments stay at max 1: two pods
+    // would serve two different `prisma/dev.db` files.
+    //
+    // The result is persisted through `setEnvironmentScale`, the same path the
+    // Publishing dashboard uses, so the plan's cap and the local-state guard
+    // decide and the row agrees with the ksvc. A value computed here and thrown
+    // away was what let a later cutover/rollback re-apply one replica.
+    const rawScale = scaleSettingsOf(environment)
+    let scale = postgresScaleTarget(rawScale, {
+      alwaysOn: opts?.alwaysOn === true,
+      dbProvider: currentDbProvider,
+    })
+    if (scale.minReplicas !== rawScale.minReplicas || scale.maxReplicas !== rawScale.maxReplicas) {
+      const { setEnvironmentScale } = await import("../services/published-environments.service")
+      const applied = await setEnvironmentScale(projectId, environmentName, scale)
+      if (applied.ok) {
+        scale = applied.value.settings
+        console.log(
+          `[Publish] ${environmentName} scale for ${projectId}: min-scale ${scale.minReplicas}, ` +
+            `max-scale ${scale.maxReplicas} (was ${rawScale.minReplicas}/${rawScale.maxReplicas})`,
+        )
+      } else {
+        // The plan cap or the local-state guard refused it: keep what is stored
+        // rather than bypassing either.
+        console.log(
+          `[Publish] Keeping ${environmentName} at min-scale ${rawScale.minReplicas} / ` +
+            `max-scale ${rawScale.maxReplicas}: ${applied.message}`,
+        )
+        scale = rawScale
+      }
+    }
+
+    // One image per commit (SHO-308 §2). Built here, at publish time, so the
+    // ksvc boots from a pinned digest and a cold start is a container start —
+    // not `bun install` + `prisma generate` + a Vite build. Gated twice: static
+    // apps have nothing to build, and a cluster without the OCIR/build env keeps
+    // today's mutable-tag behaviour instead of refusing every publish.
+    const commitSha = await currentPublishedCommitSha(projectId)
+    let publishedImageRef: string | undefined
+    let publishedImageDigest: string | null = null
+    if (serverBacked && commitSha) {
+      const { publishedBuildSetup, shouldBuildPublishedImage } = await import("../lib/published-build-config")
+      const buildWanted = shouldBuildPublishedImage(substrate.kind as "knative" | "metal", projectId)
+      if (buildWanted) {
+        const { ensurePublishedImage } = await import("../services/published-build.service")
+        const image = await ensurePublishedImage({
+          projectId,
+          environmentId: environment.id,
+          subdomain,
+          commitSha,
+          alreadyBuilt: opts?.artifactAlreadyBuilt === true,
+          dbProvider: currentDbProvider,
+        })
+        if (!image.ok) {
+          // A publish must never ship a runtime it could not build: the ksvc
+          // would boot the shared image and serve the wrong commit.
+          //
+          // The code alone is not actionable — a build failure is a BuildKit log.
+          // Park it on the environment row (which is what the Deployment tab
+          // reads) before refusing, so the reason survives the HTTP response.
+          const { setEnvironmentPublishStatus } = await import("../services/published-ops.service")
+          const detail = image.logTail
+            ? `${image.code}: ${image.message}\n\n${image.logTail}`
+            : `${image.code}: ${image.message}`
+          await setEnvironmentPublishStatus(environment.id, "failed", detail).catch((err: any) => {
+            console.warn(`[Publish] could not record the build failure: ${err?.message ?? err}`)
+          })
+          throw new PublishConfigureError(image.code, detail, 503, { logTail: image.logTail })
+        }
+        publishedImageRef = image.imageRef
+        publishedImageDigest = image.imageDigest
+        console.log(
+          `[Publish] ${image.reused ? "Reusing" : "Built"} ${image.imageDigest} for ${projectId}@${commitSha.slice(0, 8)}`,
+        )
+      } else {
+        const missing = publishedBuildSetup().missing
+        // §G1: a Postgres environment has no SQLite fallback. Its pod mounts a
+        // Postgres `DATABASE_URL`, and the app's own `db.ts`/provider only become
+        // PrismaPg inside a `pg` build context — booting the shared image against
+        // that URL exits on the boot guard instead of serving. So a flag that
+        // leaves a Postgres environment without its image is a publish that would
+        // take the site down: refuse it here, with the reason.
+        if (currentDbProvider === "postgres") {
+          throw new PublishConfigureError(
+            "build_unavailable",
+            `${projectId} is on Postgres, which needs its own image: ` +
+              (missing.length
+                ? `the build is not configured (missing ${missing.join(", ")}).`
+                : `PUBLISH_BUILD_IMAGES does not cover it.`),
+            503,
+          )
+        }
+        console.log(
+          `[Publish] No per-commit image for ${projectId} ` +
+            `(substrate=${substrate.kind}${missing.length ? `, missing ${missing.join(", ")}` : ", disabled by PUBLISH_BUILD_IMAGES"})`,
+        )
+      }
+    }
+
+    const result = await substrate.publish(projectId, {
+      subdomain,
+      serverBacked,
+      alwaysOn: opts?.alwaysOn,
+      environment: environmentName,
+      scale,
+      image: publishedImageRef,
+    })
+    publishedServerBacked = result.serverBacked
+    console.log(
+      `[Publish] Published ${projectId} via ${result.substrate} substrate ` +
+        `(serverBacked=${result.serverBacked}${result.url ? `, url=${result.url}` : ""})`,
+    )
+
+    // Record what this publish is rolling *before* waiting on it: a revision that
+    // never becomes Ready must leave a `failed` row with its name, not a `ready`
+    // one that supersedes the healthy deployment before it (SHO-536 §C).
+    const { recordPublishedDeployment, markPublishedDeploymentReady, markPublishedDeploymentFailed } =
+      await import("../services/published-deployments.service")
+    const { resolvePublishedImageRef } = await import("../services/published-ops.service")
+    const deployment = await recordPublishedDeployment({
+      environmentId: environment.id,
+      commitSha: commitSha ?? "",
+      // Prefer what the substrate reported running; the resolver is the same
+      // precedence, so this can only differ if a substrate chose something else.
+      imageRef: result.imageRef ?? resolvePublishedImageRef(),
+      // The digest is what rollback switches to — it is unaffected by a tag being
+      // moved, so it is recorded next to the ref rather than derived from it.
+      imageDigest: publishedImageDigest,
+      revisionName: result.revisionName ?? null,
+      status: "pending",
+    })
+
+    if (result.awaitReady) {
+      const readiness = await result.awaitReady(PUBLISH_READINESS_TIMEOUT_MS)
+      if (!readiness.ready) {
+        const { setEnvironmentPublishStatus } = await import("../services/published-ops.service")
+        const detail = `revision_not_ready: ${readiness.reason}`
+        await markPublishedDeploymentFailed(deployment.id).catch(() => undefined)
+        await setEnvironmentPublishStatus(environment.id, "failed", detail).catch(() => undefined)
+        console.warn(`[Publish] ${projectId}/${environmentName}: ${detail}`)
+        throw new PublishConfigureError("revision_not_ready", detail, 503)
+      }
+    }
+    await markPublishedDeploymentReady(deployment.id)
+  } catch (err: any) {
+    freezeFailure = err?.message ?? String(err)
+    throw err
+  } finally {
+    // Lifting maintenance is what puts the site back: an early return, a refusal
+    // or the new revision failing must all end the freeze, or a failed publish
+    // becomes an outage. On failure the environment is recorded `failed` with the
+    // reason, and the SQLite revision is still there serving its own data.
+    await writeFreeze?.end(freezeFailure)
   }
 
-  const result = await substrate.publish(projectId, {
-    subdomain,
-    serverBacked,
-    alwaysOn: opts?.alwaysOn,
-    environment: environmentName,
-    scale,
-    image: publishedImageRef,
-  })
-  console.log(
-    `[Publish] Published ${projectId} via ${result.substrate} substrate ` +
-      `(serverBacked=${result.serverBacked}${result.url ? `, url=${result.url}` : ""})`,
-  )
-
-  // Record what this publish is rolling *before* waiting on it: a revision that
-  // never becomes Ready must leave a `failed` row with its name, not a `ready`
-  // one that supersedes the healthy deployment before it (SHO-536 §C).
-  const { recordPublishedDeployment, markPublishedDeploymentReady, markPublishedDeploymentFailed } =
-    await import("../services/published-deployments.service")
-  const { resolvePublishedImageRef } = await import("../services/published-ops.service")
-  const deployment = await recordPublishedDeployment({
-    environmentId: environment.id,
-    commitSha: commitSha ?? "",
-    // Prefer what the substrate reported running; the resolver is the same
-    // precedence, so this can only differ if a substrate chose something else.
-    imageRef: result.imageRef ?? resolvePublishedImageRef(),
-    // The digest is what rollback switches to — it is unaffected by a tag being
-    // moved, so it is recorded next to the ref rather than derived from it.
-    imageDigest: publishedImageDigest,
-    revisionName: result.revisionName ?? null,
-    status: "pending",
-  })
-
-  if (result.awaitReady) {
-    const readiness = await result.awaitReady(PUBLISH_READINESS_TIMEOUT_MS)
-    if (!readiness.ready) {
-      const { setEnvironmentPublishStatus } = await import("../services/published-ops.service")
-      const detail = `revision_not_ready: ${readiness.reason}`
-      await markPublishedDeploymentFailed(deployment.id).catch(() => undefined)
-      await setEnvironmentPublishStatus(environment.id, "failed", detail).catch(() => undefined)
-      console.warn(`[Publish] ${projectId}/${environmentName}: ${detail}`)
-      throw new PublishConfigureError("revision_not_ready", detail, 503)
-    }
-  }
-  await markPublishedDeploymentReady(deployment.id)
-
-  return { serverBacked: result.serverBacked, notice: seedNotice }
+  return { serverBacked: publishedServerBacked, notice: seedNotice }
 }
 
 /** The commit the publish is shipping, for the deployment record. */

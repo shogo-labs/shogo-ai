@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'bun:test'
 import {
   buildPublishSchema,
+  buildSeedChunks,
   buildSeedSql,
   countSeedRows,
   dropOrphanedSeedRows,
@@ -460,5 +461,76 @@ model Review {
     const fixture = make()
     dropOrphanedSeedRows([fixture.stages, fixture.applications], relations, modelTables)
     expect(fixture.stages.rows).toHaveLength(3)
+  })
+})
+
+// §G4: a seed bigger than one request body is loaded in bounded chunks, so the
+// 64 MB per-request limit stops being a limit on what an app may own. Nada App's
+// builder dev.db is 91 MB, one table ~68 MB of SQL on its own.
+describe('chunked seed SQL', () => {
+  const table = (rows: number, width = 40) => ({
+    table: 'LiveSessionEvent',
+    columns: ['id', 'payload'],
+    rows: Array.from({ length: rows }, (_, i) => [i + 1, 'p'.repeat(width)]),
+    serialIdColumn: 'id',
+  })
+
+  it('keeps a small seed in one chunk, identical to buildSeedSql', () => {
+    const tables = [table(10)]
+    const chunks = buildSeedChunks(tables, 8 * 1024 * 1024)
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0]).toBe(buildSeedSql(tables))
+  })
+
+  it('splits a large seed into bounded, self-contained transactions', () => {
+    // 4,000 rows at ~50 bytes each is ~200 KB; a 40 KB chunk cannot hold it.
+    const chunks = buildSeedChunks([table(4_000)], 40_000)
+    expect(chunks.length).toBeGreaterThan(1)
+    for (const chunk of chunks) {
+      expect(chunk.startsWith('BEGIN;')).toBe(true)
+      expect(chunk.trimEnd().endsWith('COMMIT;')).toBe(true)
+      expect(Buffer.byteLength(chunk, 'utf-8')).toBeLessThanOrEqual(40_000)
+      // Every chunk loads on its own: one transaction per request.
+      expect(chunk.match(/BEGIN;/g)).toHaveLength(1)
+      expect(chunk.match(/COMMIT;/g)).toHaveLength(1)
+    }
+  })
+
+  it('loses no row and keeps the order across chunks', () => {
+    const tables = [table(4_000)]
+    const chunks = buildSeedChunks(tables, 40_000)
+    const ids = [...chunks.join('\n').matchAll(/\((\d+), 'p/g)].map((m) => Number(m[1]))
+    expect(ids).toEqual(Array.from({ length: 4_000 }, (_, i) => i + 1))
+  })
+
+  it('keeps parent tables ahead of children across a chunk boundary', () => {
+    const parent = { table: 'User', columns: ['id'], rows: Array.from({ length: 60 }, (_, i) => [i + 1]) }
+    const child = {
+      table: 'Post',
+      columns: ['id', 'authorId'],
+      rows: Array.from({ length: 60 }, (_, i) => [i + 1, i + 1]),
+    }
+    const chunks = buildSeedChunks([parent, child], 1_000)
+    expect(chunks.length).toBeGreaterThan(1)
+    const joined = chunks.join('\n')
+    expect(joined.indexOf('INSERT INTO "User"')).toBeLessThan(joined.indexOf('INSERT INTO "Post"'))
+  })
+
+  it('resets the sequence in the chunk that carried the rows', () => {
+    const chunks = buildSeedChunks([table(2_000)], 4_000)
+    const last = chunks[chunks.length - 1]!
+    expect(last).toContain(`setval(pg_get_serial_sequence('"LiveSessionEvent"', 'id')`)
+  })
+
+  it('gives a single enormous row its own chunk rather than splitting it', () => {
+    const wide = {
+      table: 'Blob',
+      columns: ['id', 'body'],
+      rows: [[1, 'x'.repeat(50_000)]],
+    }
+    const chunks = buildSeedChunks([wide], 1_000)
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0]).toContain('BEGIN;')
+    expect(chunks[0]!.length).toBeGreaterThan(50_000)
   })
 })

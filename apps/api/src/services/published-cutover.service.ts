@@ -1071,7 +1071,7 @@ export function defaultCutoverDeps(): CutoverDeps {
 
     async ensureImage(site, env) {
       const { publishedBuildSetup, shouldBuildPublishedImage } = await import('../lib/published-build-config')
-      if (!shouldBuildPublishedImage('knative')) {
+      if (!shouldBuildPublishedImage('knative', site.projectId)) {
         return {
           ok: false,
           code: 'build_not_configured',

@@ -35,6 +35,12 @@ export interface PushPublishedSchemaInput {
   schema: string
   /** Seed SQL from the runtime, or null to push the schema only. */
   seedSql: string | null
+  /**
+   * A seed too big for one runtime response (§G4): `count` chunks, fetched in
+   * order from the runtime and loaded one `db execute` at a time, so the size
+   * bound is per request rather than per database.
+   */
+  seedChunks?: { count: number; fetchChunk: (index: number) => Promise<{ ok: true; sql: string } | { ok: false; code: string; message: string }> }
   /** Direct (non-pooled) Postgres URL. */
   databaseUrl: string
 }
@@ -100,16 +106,41 @@ export async function pushPublishedSchema(
       }
     }
 
-    if (input.seedSql) {
-      const sqlPath = join(workDir, 'seed.sql')
-      writeFileSync(sqlPath, input.seedSql, 'utf-8')
-      try {
-        await run(['db', 'execute', '--config', configPath, '--file', sqlPath], workDir, env)
-      } catch (err: any) {
-        return {
-          ok: false,
-          code: 'seed_failed',
-          message: `Schema applied, but the seed data did not load: ${describeDatabaseFailure(String(err?.message ?? err), 'seed')}`,
+    if (input.seedSql || input.seedChunks) {
+      // One file per chunk and one `db execute` per file: a 91 MB seed (§G4,
+      // Nada App) becomes a dozen requests of a few MB each instead of a single
+      // one the runtime refused to hand over at all. Chunks are applied in order
+      // because `buildSeedChunks` preserves the topological table order, so a
+      // child chunk always follows its parent's.
+      const total = input.seedChunks?.count ?? 1
+      for (let index = 0; index < total; index++) {
+        let sql: string
+        if (input.seedChunks) {
+          const chunk = await input.seedChunks.fetchChunk(index)
+          if (!chunk.ok) {
+            return {
+              ok: false,
+              code: 'seed_failed',
+              message: `Schema applied, but chunk ${index + 1} of ${total} could not be read: ${chunk.message} (${chunk.code})`,
+            }
+          }
+          sql = chunk.sql
+        } else {
+          sql = input.seedSql as string
+        }
+        const sqlPath = join(workDir, total > 1 ? `seed-${index + 1}.sql` : 'seed.sql')
+        writeFileSync(sqlPath, sql, 'utf-8')
+        try {
+          await run(['db', 'execute', '--config', configPath, '--file', sqlPath], workDir, env)
+        } catch (err: any) {
+          const where = total > 1 ? ` in chunk ${index + 1} of ${total}` : ''
+          return {
+            ok: false,
+            code: 'seed_failed',
+            message: `Schema applied, but the seed data did not load${where}: ${describeDatabaseFailure(String(err?.message ?? err), 'seed')}`,
+          }
+        } finally {
+          rmSync(sqlPath, { force: true })
         }
       }
     }

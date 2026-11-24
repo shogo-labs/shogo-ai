@@ -7,6 +7,8 @@
  * publish route can read it cheaply without pulling a heavy controller.
  */
 
+import { parsePublishFlag, publishFlagAllows } from './publish-flag'
+
 /**
  * Whether NEW publishes are OWNED by the metal substrate.
  *
@@ -72,13 +74,53 @@ export function shouldServeStaticFromEdgeOnly(): boolean {
  * `on` is how a misconfigured cluster surfaces as `database_unavailable` instead
  * of silently staying on SQLite, and `off` is how a publish is taken back off
  * Postgres without unsetting the URLs.
+ *
+ * `PUBLISH_POSTGRES=<projectId>[,<projectId>…]` moves the listed projects only
+ * (§G): a rollout reaches named apps instead of a whole region, and the same
+ * value rolls them back by listing someone else.
  */
-export function shouldProvisionPublishedDatabase(substrateKind: 'knative' | 'metal'): boolean {
+export function shouldProvisionPublishedDatabase(
+  substrateKind: 'knative' | 'metal',
+  projectId?: string | null,
+): boolean {
   if (substrateKind !== 'knative') return false
-  const override = (process.env.PUBLISH_POSTGRES || '').trim().toLowerCase()
-  if (override === 'off') return false
-  if (override === 'on') return true
+  const verdict = publishFlagAllows(parsePublishFlag(process.env.PUBLISH_POSTGRES), projectId)
+  if (verdict !== null) return verdict
   return !!configuredProjectsDatabase()
+}
+
+/**
+ * Whether this publish keeps the environment's database on Postgres (§G).
+ *
+ * `dbProvider` on the environment row is the record of what the pod is actually
+ * mounted with, and the region switch must never contradict it. An environment
+ * that has moved to Postgres and is then published while `PUBLISH_POSTGRES` says
+ * `off` would otherwise build a SQLite image against a Postgres `DATABASE_URL`:
+ * the boot guard exits, the revision never becomes ready, and every later
+ * republish fails the same way. So a recorded Postgres environment stays on
+ * Postgres; taking it back to SQLite is an explicit cutover (which clears
+ * `dbProvider`), never a side effect of the flag.
+ *
+ * `sticky` is reported separately from `flag`/`config` so the publish log says
+ * which rule decided.
+ */
+export function resolvePublishDbProvider(input: {
+  serverBacked: boolean
+  substrateKind: 'knative' | 'metal'
+  /** `PublishedEnvironment.dbProvider` as stored. */
+  environmentProvider?: string | null
+  projectId?: string | null
+}): { provider: 'sqlite' | 'postgres'; reason: 'sticky' | 'flag' | 'config' | 'off' | 'not-server-backed' | 'metal' } {
+  if (!input.serverBacked) return { provider: 'sqlite', reason: 'not-server-backed' }
+  if (input.substrateKind !== 'knative') return { provider: 'sqlite', reason: 'metal' }
+  if (input.environmentProvider === 'postgres') return { provider: 'postgres', reason: 'sticky' }
+  const flag = parsePublishFlag(process.env.PUBLISH_POSTGRES)
+  const verdict = publishFlagAllows(flag, input.projectId)
+  if (verdict === true) return { provider: 'postgres', reason: 'flag' }
+  if (verdict === false) return { provider: 'sqlite', reason: 'off' }
+  return configuredProjectsDatabase()
+    ? { provider: 'postgres', reason: 'config' }
+    : { provider: 'sqlite', reason: 'off' }
 }
 
 /**

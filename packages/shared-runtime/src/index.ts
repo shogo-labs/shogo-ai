@@ -478,6 +478,8 @@ export {
   quoteIdent,
   quoteLiteral,
   buildSeedSql,
+  buildSeedChunks,
+  SEED_CHUNK_SQL_BYTES,
   countSeedRows,
   dropOrphanedSeedRows,
   PublishSchemaError,

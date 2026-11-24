@@ -145,6 +145,28 @@ async function callRuntimeSchema(
 }
 
 /**
+ * One chunk of a staged seed (§G4). Same endpoint and auth as the export that
+ * produced the token; each answer is a self-contained `BEGIN; … COMMIT;` bounded
+ * by the runtime's chunk size, so a 91 MB seed crosses over in a dozen requests
+ * instead of being refused as `seed_too_large`.
+ */
+async function callRuntimeSeedChunk(
+  projectId: string,
+  seedToken: string,
+  index: number,
+): Promise<{ ok: true; sql: string } | { ok: false; code: string; message: string }> {
+  const answer = await callRuntimeSchema(projectId, { mode: 'seed-chunk', seedToken, seedChunk: index })
+  if (!answer.ok || typeof answer.data?.sql !== 'string') {
+    return {
+      ok: false,
+      code: answer.data?.code ?? 'seed_chunk_failed',
+      message: answer.data?.message ?? `The runtime answered HTTP ${answer.status} for chunk ${index}`,
+    }
+  }
+  return { ok: true, sql: answer.data.sql }
+}
+
+/**
  * Make one published environment's database match the app: provision (or
  * reuse) it, apply the schema, seed it on first deploy, then hand the pod its
  * `DATABASE_URL`.
@@ -156,7 +178,7 @@ async function callRuntimeSchema(
 export async function prepareEnvironmentDatabase(
   projectId: string,
   environment: PublishedEnvironmentName,
-  opts: { allowDataLoss?: boolean } = {},
+  opts: { allowDataLoss?: boolean; writeFreeze?: import('./published-write-freeze').WriteFreeze } = {},
 ): Promise<PrepareEnvironmentDatabaseResult> {
   const fail = (code: string, message: string, status = 400, details?: Record<string, unknown>) =>
     ({ ok: false, code, message, status, details }) as const
@@ -287,6 +309,16 @@ export async function prepareEnvironmentDatabase(
   // restores from, so the switch stays reversible.
   let liveSeed: { archive: string; bytes: number } | null = null
   if (seed && env?.subdomain) {
+    // §G3: the archive is only as current as the serving pod's last upload (30 s
+    // by default). Freeze writes and make the pod flush BEFORE reading it, or
+    // every write since that upload — and every write the SQLite pod accepts
+    // while the Postgres revision rolls out — is copied nowhere. The freeze stays
+    // up until the caller releases it (after the new revision serves), and always
+    // lifts through its own `end()`.
+    if (opts.writeFreeze) {
+      const frozen = await opts.writeFreeze.begin()
+      if (!frozen.ok) return fail(frozen.code, frozen.message, 409, { environment })
+    }
     const live = await readLiveSeedArchive(env.subdomain)
     if (!live.ok) {
       return fail(live.code, live.message, 413, { environment })
@@ -297,6 +329,11 @@ export async function prepareEnvironmentDatabase(
         `[published-schema] ${projectId}/${environment} has no Postgres schema yet and is live on SQLite — ` +
           `seeding from its archive (${liveSeed.bytes} bytes of prisma/dev.db), not prisma/dev.db`,
       )
+    } else if (opts.writeFreeze?.begun) {
+      // Nothing to preserve, so nothing to freeze for: an app that has never been
+      // live has no archive and no pending writes. Lift immediately rather than
+      // holding a maintenance page over a publish that only pushes a schema.
+      await opts.writeFreeze.end(null)
     }
   }
   const seededFrom = seed ? (liveSeed ? ('live-archive' as const) : ('dev.db' as const)) : null
@@ -359,21 +396,37 @@ export async function prepareEnvironmentDatabase(
         { environment, seedSource: seedSource ?? null },
       )
     }
-    const seedSql: string | null = seed ? (exported.data?.seed?.sql ?? null) : null
+    const seedPayload = (seed ? exported.data?.seed : null) as
+      | { sql?: string; token?: string; chunkCount?: number; rows?: number }
+      | null
+    const seedToken = typeof seedPayload?.token === 'string' ? seedPayload.token : null
+    const seedChunkCount = Number(seedPayload?.chunkCount ?? 1)
 
     const pushed = await pushPublishedSchema({
       schema: schema.content,
-      seedSql,
+      seedSql: seedPayload?.sql ?? null,
+      // §G4: a seed bigger than one runtime response is collected chunk by chunk
+      // and loaded one `db execute` at a time — 91 MB (Nada App) fits; it used to
+      // be refused outright as `seed_too_large`.
+      ...(seedToken && seedChunkCount > 1
+        ? {
+            seedChunks: {
+              count: seedChunkCount,
+              fetchChunk: (index: number) => callRuntimeSeedChunk(projectId, seedToken, index),
+            },
+          }
+        : {}),
       databaseUrl: provisioned.value.directUrl,
     })
     if (!pushed.ok) {
       return fail(pushed.code, pushed.message, 500, { environment })
     }
     const exportedOrphans: SeedOrphan[] = Array.isArray(exported.data?.orphans) ? exported.data.orphans : []
+    const seededRows = seed ? (seedPayload?.rows ?? 0) : 0
     applied = {
       hash: schema.hash,
       warnings: schema.warnings ?? [],
-      seededRows: seedSql ? (exported.data?.seed?.rows ?? 0) : 0,
+      seededRows,
       orphans: exportedOrphans,
     }
   }

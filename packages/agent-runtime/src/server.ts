@@ -6692,6 +6692,31 @@ app.post('/agent/published-data/suspend', (c) => {
 })
 
 /**
+ * Upload this pod's writable state NOW instead of at the next sync interval
+ * (§G3). The publish flow calls it inside a write freeze, so the archive it is
+ * about to seed Postgres from holds the last write the SQLite site accepted —
+ * without it, up to `PUBLISHED_DATA_SYNC_INTERVAL` (30 s) of real writes stay on
+ * a pod that the new revision replaces.
+ *
+ * `flushed: false, unchanged: true` is a success: the archive already holds this
+ * pod's current bytes, so there is nothing newer to wait for.
+ */
+app.post('/agent/published-data/flush', async (c) => {
+  if (!IS_PUBLISHED_MODE) {
+    return c.json({ error: 'not_published_mode', message: 'Only server-backed published pods can be flushed' }, 400)
+  }
+  if (!publishedDataSyncInstance) {
+    return c.json({ ok: true, flushed: false, unchanged: true })
+  }
+  try {
+    const flushed = await publishedDataSyncInstance.flush()
+    return c.json({ ok: true, flushed, unchanged: !flushed })
+  } catch (err: any) {
+    return c.json({ error: 'flush_failed', message: err?.message ?? String(err) }, 500)
+  }
+})
+
+/**
  * Whitespace-insensitive fingerprint of `prisma/schema.prisma`, used by the
  * publish flow to detect dev<->published schema drift before pushing the dev
  * database onto the live app (pushing a newer-schema DB onto older published
@@ -6779,7 +6804,7 @@ app.post('/agent/published-schema', async (c) => {
   }
 
   let body: {
-    mode?: 'describe' | 'export'
+    mode?: 'describe' | 'export' | 'seed-chunk'
     seed?: boolean
     expectedHash?: string
     /**
@@ -6790,6 +6815,10 @@ app.post('/agent/published-schema', async (c) => {
      * `{subdomain}/data.tar.gz`.
      */
     seedArchive?: string
+    /** `seed-chunk`: the token `export` returned for a seed too big for one body. */
+    seedToken?: string
+    /** `seed-chunk`: which chunk to return, 0-based, fetched in order. */
+    seedChunk?: number
   }
   try {
     body = await c.req.json()
@@ -6797,8 +6826,19 @@ app.post('/agent/published-schema', async (c) => {
     return c.json({ ok: false, code: 'invalid_body', message: 'Expected a JSON body' }, 400)
   }
 
-  const { exportPublishedSchema, resolvePublishSchema } = await import('./published-schema-export')
+  const { exportPublishedSchema, resolvePublishSchema, takeSeedChunk } = await import('./published-schema-export')
   const mode = body.mode ?? 'describe'
+
+  // One chunk of a seed too big for one response body (§G4). The SQL was built
+  // and staged by the `export` that returned the token; this only hands it over.
+  if (mode === 'seed-chunk') {
+    if (typeof body.seedToken !== 'string' || !body.seedToken) {
+      return c.json({ ok: false, code: 'invalid_body', message: 'seedToken is required' }, 400)
+    }
+    const chunk = takeSeedChunk(body.seedToken, Number(body.seedChunk ?? 0))
+    if (!chunk.ok) return c.json({ ok: false, code: chunk.code, message: chunk.message }, 409)
+    return c.json({ ok: true, sql: chunk.sql, index: chunk.index, count: chunk.count })
+  }
 
   if (mode === 'describe') {
     let resolved
