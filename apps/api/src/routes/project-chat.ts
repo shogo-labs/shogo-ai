@@ -1024,6 +1024,14 @@ export async function trackUsageFromStream(
       persistenceDirty = true
     }
 
+    // Live status only: "Summarizing…" while the summarizer calls run
+    // (SHO-556). Deliberately NOT a persisted part — a reload must never
+    // resurrect a spinner that nothing will resolve. The transcript row is the
+    // `data-context-summarized` part below, which replaces it.
+    if (type === 'data-context-summarizing') {
+      return
+    }
+
     if (type === 'finish' || type === 'finish-step' || type === 'usage' || type === 'data-usage') {
       const usageData = data.usage || data.data
       if (usageData && (usageData.inputTokens || usageData.outputTokens || usageData.promptTokens || usageData.completionTokens || usageData.totalTokens)) {

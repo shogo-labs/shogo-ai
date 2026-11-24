@@ -97,7 +97,11 @@ function RunningAgentRow({
         ) : live?.queue || queuedSince ? (
           <AgentQueueStatus compact position={live?.queue?.position ?? null} />
         ) : (
-          <AgentWorkingStatus compact tools={live?.tools ?? (live?.tool ? [{ name: live.tool, done: false }] : [])} />
+          <AgentWorkingStatus
+            compact
+            summarizing={live?.summarizing ?? false}
+            tools={live?.tools ?? (live?.tool ? [{ name: live.tool, done: false }] : [])}
+          />
         )}
       </View>
       {openSession ? (

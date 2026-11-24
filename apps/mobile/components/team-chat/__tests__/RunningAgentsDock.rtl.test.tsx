@@ -137,6 +137,30 @@ describe('RunningAgentsDock', () => {
     expect(screen.getByTestId('agent-working-status-compact').textContent).toBe('Running 1 command')
   })
 
+  test('a reply that is summarizing its context says so instead of "Working…" (SHO-556)', () => {
+    render(
+      createElement(RunningAgentsDock, {
+        replies: [running('m1', 'Billing Bot')],
+        // The runtime is compacting before it can answer: no tool is running,
+        // and the reason the turn has not started is what the row must say.
+        streaming: { m1: { text: '', tool: null, summarizing: true } },
+        ...handlers(),
+      }),
+    )
+    expect(screen.getByTestId('agent-working-status-compact').textContent).toBe('Summarizing…')
+  })
+
+  test('a reply that has finished summarizing goes back to its work line (SHO-556)', () => {
+    render(
+      createElement(RunningAgentsDock, {
+        replies: [running('m1', 'Billing Bot')],
+        streaming: { m1: { text: '', tool: 'exec', tools: [{ name: 'exec', done: false }], summarizing: false } },
+        ...handlers(),
+      }),
+    )
+    expect(screen.getByTestId('agent-working-status-compact').textContent).toBe('Running 1 command')
+  })
+
   test('a reply with no tool yet still says it is working', () => {
     render(
       createElement(RunningAgentsDock, {
