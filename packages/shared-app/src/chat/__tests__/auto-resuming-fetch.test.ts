@@ -94,6 +94,79 @@ describe('createAutoResumingFetch', () => {
     expect(text).toContain('text-delta')
   })
 
+  describe('a stream relayed through a machine tunnel (no response headers)', () => {
+    const tunnelResponse = (body: ReadableStream<Uint8Array>) =>
+      new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+
+    test('learns the turn from data-turn-start and resumes from the last seq', async () => {
+      const urls: string[] = []
+      const baseFetch: any = async (url: string) => {
+        urls.push(url)
+        if (urls.length === 1) {
+          return tunnelResponse(
+            streamFrom([
+              sseFrame({ type: 'data-turn-start', data: { turnId: TURN_ID, chatSessionId: SESSION_ID, startedAt: 1 } }),
+              sseFrame({ type: 'text-delta', delta: 'before the cut ' }),
+              sseFrame({ type: 'data-turn-seq', data: { seq: 7 } }),
+            ]),
+          )
+        }
+        return tunnelResponse(
+          streamFrom([
+            sseFrame({ type: 'text-delta', delta: 'after the cut' }),
+            sseFrame({ type: 'data-turn-complete', data: { turnId: TURN_ID } }),
+          ]),
+        )
+      }
+      const fetcher = createAutoResumingFetch(baseFetch, { logger: SILENT_LOGGER, initialBackoffMs: 1, maxBackoffMs: 1 })
+      const r = await fetcher(POST_URL, { method: 'POST' })
+      const text = await readAll(r.body!)
+      expect(urls[1]).toBe(`${POST_URL}/${SESSION_ID}/stream?fromSeq=7`)
+      expect(text).toContain('before the cut')
+      expect(text).toContain('after the cut')
+      expect(text).toContain('data-turn-complete')
+    })
+
+    test('a resumed body that starts another turn is not appended', async () => {
+      let calls = 0
+      const baseFetch: any = async () => {
+        calls++
+        if (calls === 1) {
+          return tunnelResponse(
+            streamFrom([
+              sseFrame({ type: 'data-turn-start', data: { turnId: TURN_ID, chatSessionId: SESSION_ID, startedAt: 1 } }),
+              sseFrame({ type: 'data-turn-seq', data: { seq: 2 } }),
+            ]),
+          )
+        }
+        return tunnelResponse(
+          streamFrom([
+            sseFrame({ type: 'data-turn-start', data: { turnId: 'turn_NEXT', chatSessionId: SESSION_ID, startedAt: 2 } }),
+            sseFrame({ type: 'text-delta', delta: 'wrong turn' }),
+          ]),
+        )
+      }
+      const fetcher = createAutoResumingFetch(baseFetch, { logger: SILENT_LOGGER, initialBackoffMs: 1, maxBackoffMs: 1 })
+      const r = await fetcher(POST_URL, { method: 'POST' })
+      const text = await readAll(r.body!)
+      expect(calls).toBe(2)
+      expect(text).not.toContain('wrong turn')
+      expect(text).not.toContain('turn_NEXT')
+    })
+
+    test('a header-less stream that never names a turn is not resumed', async () => {
+      let calls = 0
+      const baseFetch: any = async () => {
+        calls++
+        return tunnelResponse(streamFrom([sseFrame({ type: 'text-delta', delta: 'hi' })]))
+      }
+      const fetcher = createAutoResumingFetch(baseFetch, { logger: SILENT_LOGGER, initialBackoffMs: 1, maxBackoffMs: 1 })
+      const r = await fetcher(POST_URL, { method: 'POST', headers: { 'X-Chat-Session-Id': SESSION_ID } })
+      expect(await readAll(r.body!)).toContain('hi')
+      expect(calls).toBe(1)
+    })
+  })
+
   test('forwards a normal turn (start + complete) without reconnecting', async () => {
     const body = streamFrom([
       sseFrame({ type: 'data-turn-start', data: { turnId: TURN_ID, chatSessionId: SESSION_ID, startedAt: 1 } }),

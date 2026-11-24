@@ -110,7 +110,9 @@ spec:
         # ─── Long-lived chat stream + WebSocket support ────────────────────
         # The desktop tunnel WebSocket bypasses Knative entirely via
         # api-tunnel-ingress.yaml (label-selector Service direct to the
-        # revision pod on :8012), so we don't need the activator pinned
+        # revision pod's app port, :8002 — not queue-proxy's :8012, so no
+        # response-start deadline cuts it and an idle tunnel is not counted
+        # as concurrency; SHO-565), so we don't need the activator pinned
         # on the data path for WS Upgrade survival.
         #
         # target-burst-capacity=0   Take the activator OUT of the request
