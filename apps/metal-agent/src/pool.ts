@@ -995,6 +995,13 @@ export interface AssignedVm {
   /** Last `repoHeadSha` the guest reported; export when it changes. */
   repoHeadSha?: string
   /**
+   * The guest reported that its root holds no git repo at all (a merged
+   * workspace runtime keeps its projects' repos in subfolders). There is
+   * nothing to export and nothing that can be undurable, so the sweep must not
+   * ask — and a HEAD cached before that report must not pin it (SHO-540).
+   */
+  repoAbsent?: boolean
+  /**
    * The `repoHeadSha` whose `.git` is already durable (written or
    * quarantined). The periodic sweep skips the VM while HEAD still matches.
    */
@@ -3768,6 +3775,10 @@ export class MetalWarmPool {
 
   private async saveRepoInner(a: AssignedVm): Promise<boolean> {
     if (publishedSourceId(a.projectId)) return false
+    // No root repo in the guest: there are no commits to make durable, and
+    // asking for an export only produced a 500 `not a git repository` every
+    // sweep (SHO-540).
+    if (a.repoAbsent) return false
     if (a.repoHydratePending) return false
     const lineage = this.repoLineageOf(a)
     if (lineage.kind === 'untrusted') {
@@ -4766,6 +4777,7 @@ export class MetalWarmPool {
         await this.healUntrustedRepo(a)
         continue
       }
+      if (a.repoAbsent) continue
       if (a.repoHeadSha && a.repoHeadSha === a.repoExportedHeadSha) continue
       if (a.repoExportRetryAt && now < a.repoExportRetryAt) continue
       try {
@@ -6412,6 +6424,7 @@ export class MetalWarmPool {
             appRequestCount?: number
             lastAgentRequestAt?: number | null
             repoHeadSha?: string | null
+            repoPresent?: boolean
             previewHealth?: Array<{ projectId: string; apiPhase: string; apiReady: boolean }>
           }
           a.lastHealthOk = true
@@ -6526,6 +6539,18 @@ export class MetalWarmPool {
           }
           if (typeof body.appRequestCount === 'number') a.appRequestCount = body.appRequestCount
 
+          // A guest whose root has no repo says so: nothing to export, and a
+          // HEAD cached from an earlier boot must not pin it as undurable for
+          // the rest of its life (SHO-540).
+          if (body.repoPresent === false) {
+            a.repoAbsent = true
+            if (a.repoHeadSha) {
+              a.repoHeadSha = undefined
+              a.repoExportedHeadSha = undefined
+            }
+          } else if (body.repoPresent === true) {
+            a.repoAbsent = false
+          }
           const sha = typeof body.repoHeadSha === 'string' && body.repoHeadSha ? body.repoHeadSha : undefined
           if (sha && sha !== a.repoHeadSha) {
             a.repoHeadSha = sha

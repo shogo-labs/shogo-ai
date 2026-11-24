@@ -247,6 +247,29 @@ describe('/pool/activity', () => {
     expect(body.previewHealth).toBeUndefined()
   })
 
+  test('a runtime with no root repo says so, and reports no HEAD (SHO-540)', async () => {
+    const { app } = await buildApp({
+      config: {
+        getActivityStats: () => ({ activeSessions: 0, lastActivityAt: null, repoHeadSha: null, repoPresent: false }),
+      },
+    })
+    const body = await (await app.request('/pool/activity')).json()
+    expect(body.repoPresent).toBe(false)
+    expect(body.repoHeadSha).toBeNull()
+  })
+
+  test('a runtime with a repo reports its HEAD and repoPresent:true', async () => {
+    const head = 'b'.repeat(40)
+    const { app } = await buildApp({
+      config: {
+        getActivityStats: () => ({ activeSessions: 0, lastActivityAt: null, repoHeadSha: head, repoPresent: true }),
+      },
+    })
+    const body = await (await app.request('/pool/activity')).json()
+    expect(body.repoPresent).toBe(true)
+    expect(body.repoHeadSha).toBe(head)
+  })
+
   test('passes per-project sidecar health through for the metal watchdog', async () => {
     const previewHealth = [{ projectId: 'p1', apiPhase: 'crashed', apiReady: false }]
     const { app } = await buildApp({
