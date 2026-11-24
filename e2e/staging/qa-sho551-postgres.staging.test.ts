@@ -38,9 +38,15 @@ const LIVE = `https://${SUBDOMAIN}.staging.shogo.one`
 const ORPHAN_PARENT = "qa-sho551-orphan-parent"
 const ROW_EMAIL = `qa-sho551-${STAMP}@example.com`
 
-/** The backend must stay untouched — the test writes through its generated CRUD. */
+/**
+ * The fixture has to be a **server-backed** app. §F is about the Prisma client the
+ * app talks to Postgres with, and a static "Single Page App" never reaches the code
+ * under test — round 7 built one, which is how `!serverBacked` was hit at all.
+ */
 const APP_PROMPT =
-  "Do not change prisma/schema.prisma, server.tsx, custom-routes.ts, package.json or any backend file. " +
+  "Build a server-backed app: keep prisma/schema.prisma with its User model and keep the " +
+  "generated CRUD API in server.tsx. Do not change prisma/schema.prisma, server.tsx, " +
+  "custom-routes.ts, package.json or any other backend file. " +
   'Only replace src/App.tsx with a single page that renders the heading "SHO-551 QA". Nothing else.'
 
 const KUBECONFIG = `${homedir()}/.kube/config-shogo-staging`
@@ -250,6 +256,12 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     evidence.podSchemaHead = schema.slice(0, 1200)
     const models = [...schema.matchAll(/^model\s+(\w+)/gm)].map((m) => m[1])
     evidence.models = models
+    // A static fixture would pass the publish and then prove nothing: there is no
+    // Prisma client to check and no generated route to call. Say so here.
+    expect(
+      models.length,
+      "the fixture must be a server-backed Prisma app — §F tests the client that talks to Postgres",
+    ).toBeGreaterThan(0)
 
     // The defect this spec exists to catch (SHO-551): the environment row said
     // Postgres while the artifact was built SQLite-native — `provider = "sqlite"`
