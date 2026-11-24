@@ -1094,6 +1094,25 @@ describe('buildProjectEnv — SHOGO_RUNTIME_CLASS (Docker project class)', () =>
     expect(env.SHOGO_VM_BOOT_MEM_MIB).toBe('8192')
   })
 
+  test('accounts an XLarge picked machine at the micro budget while booting it at 32 GiB', async () => {
+    // SHO-578 §E lets any workspace pick any preset. The host boots the picked
+    // size, but the workspace budget only ever accounts the tier's own memory
+    // (`accountedVmMemMiB`), so one big machine cannot evict the rest of a
+    // micro workspace's running projects.
+    isDockerClassEnabledMock.mockImplementation(() => true)
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      vmMemoryMiB: 32768,
+      vmVcpus: 8,
+      workspace: { instanceSize: 'micro' },
+      settings: { techStackId: 'docker-compose' },
+    }))
+    const env = await buildProjectEnv('proj-rc-xlarge-micro', { forMetal: true })
+    expect(env.SHOGO_RUNTIME_CLASS).toBe('docker')
+    expect(env.SHOGO_VM_MEM_MIB).toBe('2048')
+    expect(env.SHOGO_VM_BOOT_MEM_MIB).toBe('32768')
+  })
+
   test('refuses with docker_class_disabled and a standard VM when the platform gate is off', async () => {
     isDockerClassEnabledMock.mockImplementation(() => false)
     findUniqueProjectMock.mockImplementation(async () => ({

@@ -59,6 +59,16 @@ describe('describeProjectMachine', () => {
     expect(d.canChange).toBe(true)
     expect(d.canRestart).toBe(true)
   })
+  it('never sends a tier gate or plan wording — SHO-578 AC', () => {
+    // The picker must not carry `allowed`/`requiredTier` any more, and nothing
+    // in the payload may point at a workspace plan or a Billing upgrade: the
+    // machine is sold by the hour, not by the tier.
+    const d = describeProjectMachine({ vmMemoryMiB: null, vmVcpus: null, instanceSize: 'micro', substrate: 'metal', running: true })
+    for (const option of d.options) {
+      expect(Object.keys(option).sort()).toEqual(['hourlyUsd', 'id', 'label', 'memMiB', 'vcpus'])
+    }
+    expect(JSON.stringify(d)).not.toMatch(/requiredTier|allowed|\bplan\b|billing|upgrade/i)
+  })
   it('is read-only off metal', () => {
     const d = describeProjectMachine({ vmMemoryMiB: null, vmVcpus: null, instanceSize: 'large', substrate: 'local', running: false })
     expect(d.canChange).toBe(false)
