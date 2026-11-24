@@ -47,6 +47,7 @@ import {
   clearManagedExclude,
 } from './large-file-sync'
 import { directorySizeBytes, isShogoRuntimeState, resolveGitDir } from './shogo-state-paths'
+import { peelToCommits, presentObjects } from './repo-bundles'
 
 type Logger = Pick<Console, 'log' | 'warn' | 'error'>
 
@@ -439,6 +440,12 @@ export interface LfsStats {
   evictedBytes: number
   /** Uploads skipped because the server already had the object. */
   remoteSkips: number
+  /**
+   * Range tips a caller named that this repo no longer holds (a deleted branch,
+   * a gc'd commit after a rewrite). Each one would have made `rev-list` die with
+   * `fatal: bad object` — the deterministic export 503 of SHO-540.
+   */
+  unknownTips: number
 }
 
 const lfsStatCounters: LfsStats = {
@@ -448,6 +455,7 @@ const lfsStatCounters: LfsStats = {
   evictedObjects: 0,
   evictedBytes: 0,
   remoteSkips: 0,
+  unknownTips: 0,
 }
 
 /** Snapshot of the process's LFS counters. Exported for tests and `/pool` logs. */
@@ -1276,6 +1284,72 @@ export async function headLfsObjectIds(workspaceDir: string): Promise<Set<string
 }
 
 /**
+ * The tips `--not` may safely name: only the ones this repo still holds, peeled
+ * to commits. `null` means "walk everything".
+ *
+ * A tip the repo no longer has — a deleted branch, a commit gc'd after the
+ * SHO-105 ref rewrite, a checkpoint revert, a heal that re-rooted history —
+ * makes `rev-list` exit 128 with `fatal: bad object <sha>`, which failed every
+ * export on every host and pinned those VMs against idle suspend forever
+ * (SHO-540). A dropped tip is not a lost push: the walk simply covers more
+ * objects, and the remote batch check skips the ones the server already has.
+ *
+ * Fallback order when the caller's tips are all gone: the repo's own
+ * pushed-tips marker (the other valid lower bound), then a full scan.
+ */
+export async function lfsRangeBase(workspaceDir: string, tips: string[] | null): Promise<string[] | null> {
+  if (!tips?.length) return null
+  const wanted = [...new Set(tips)]
+  let present: Set<string>
+  try {
+    present = await presentObjects(workspaceDir, wanted)
+  } catch (err: any) {
+    // Cannot tell what we hold, so name nothing: a full scan is always correct.
+    console.warn(`[lfs] range base: could not check ${wanted.length} tip(s) in ${workspaceDir}: ${err?.message ?? err}`)
+    return null
+  }
+  const unknown = wanted.filter((sha) => !present.has(sha))
+  const known = await peelToCommits(workspaceDir, [...present]).catch(() => [] as string[])
+  if (unknown.length === 0) return known.length ? known : null
+
+  lfsStatCounters.unknownTips += unknown.length
+  if (known.length) {
+    noteUnknownRangeBase(workspaceDir, unknown)
+    return known
+  }
+
+  const marker = lfsPushedTips(workspaceDir)
+  if (marker?.length) {
+    const markerPresent = await presentObjects(workspaceDir, marker).catch(() => new Set<string>())
+    const fromMarker = await peelToCommits(workspaceDir, [...markerPresent]).catch(() => [] as string[])
+    if (fromMarker.length) {
+      noteUnknownRangeBase(workspaceDir, unknown, 'range base is the pushed-tips marker')
+      return fromMarker
+    }
+  }
+  noteUnknownRangeBase(workspaceDir, unknown, 'full scan')
+  return null
+}
+
+/**
+ * Log a dropped range base once per distinct set, not once per retry: a host
+ * that keeps sending the same stale sha would otherwise repeat this line every
+ * sweep for every VM on the box.
+ */
+const notedUnknownRangeBases = new Set<string>()
+function noteUnknownRangeBase(workspaceDir: string, unknown: string[], instead?: string): void {
+  const shorts = unknown.map((sha) => sha.slice(0, 12)).sort()
+  const key = `${workspaceDir}:${shorts.join(',')}`
+  if (notedUnknownRangeBases.has(key)) return
+  if (notedUnknownRangeBases.size > 500) notedUnknownRangeBases.clear()
+  notedUnknownRangeBases.add(key)
+  console.warn(
+    `[lfs] range base: dropped ${unknown.length} unknown tip(s) ${shorts.join(' ')}` +
+      `${instead ? ` (${instead})` : ''}`,
+  )
+}
+
+/**
  * LFS objects referenced by the commits in `tips..HEAD`-equivalent: every
  * object reachable from a ref but not from the durable tips. `tips: null`
  * scans everything (base exports, compaction, {@link lfsPushAll}).
@@ -1291,8 +1365,9 @@ export async function lfsObjectsInRange(
   tips: string[] | null,
 ): Promise<LfsObjectRef[]> {
   if (!existsSync(join(workspaceDir, '.git'))) return []
+  const base = await lfsRangeBase(workspaceDir, tips)
   const args = ['rev-list', '--objects', '--all']
-  if (tips?.length) args.push('--not', ...tips)
+  if (base?.length) args.push('--not', ...base)
   // sha -> paths, accumulated from the stream. Only names and ids live here:
   // no blob content is ever held, whatever its size.
   const blobPaths = new Map<string, Set<string>>()
@@ -1563,8 +1638,11 @@ export class LfsPushRunner {
   /** Join the running job for these tips, or start one. Already-completed keys settle at once. */
   async run(cfg: LfsRemoteConfig, tips: string[] | null): Promise<LfsPushJob> {
     const logger = this.opts.logger ?? cfg.logger ?? console
+    // Key the job by the tips it will actually walk: two callers naming the same
+    // base (one with a stale sha the repo dropped) are the same job (SHO-540).
+    const base = await lfsRangeBase(cfg.workspaceDir, tips)
     const head = (await runGit(['rev-parse', 'HEAD'], cfg.workspaceDir)).stdout.trim()
-    const tipsKey = this.tipsKey(cfg, tips)
+    const tipsKey = this.tipsKey(cfg, base)
     const key = `${tipsKey}@${head}`
     this.prune()
 
@@ -1583,7 +1661,7 @@ export class LfsPushRunner {
     const state: LfsPushJob['state'] = { total: 0, pushed: 0, skipped: 0, missing: [], done: false }
     const job: LfsPushJob = { key, startedAt: Date.now(), state, settled: Promise.resolve() }
     job.settled = lfsPushIncremental(cfg, {
-      tips,
+      tips: base,
       logger,
       onProgress: (p) => {
         state.total = p.total

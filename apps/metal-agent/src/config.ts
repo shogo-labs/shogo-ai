@@ -11,6 +11,7 @@
 import { readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+import { DEFAULT_MIN_FAILURES, DEFAULT_ROLLBACK_RATE, DEFAULT_WATCH_MS } from './rootfs-rollback'
 
 const env = (k: string, d: string) => process.env[k] ?? d
 
@@ -668,6 +669,27 @@ export const config = {
   rootDiskGcPct: parseInt(env('METAL_ROOT_DISK_GC_PCT', '70'), 10),
   /** How often the unattended image sweep runs (it still waits for the disk % above). */
   imageGcIntervalMs: parseInt(env('METAL_IMAGE_GC_INTERVAL_MS', String(60 * 60_000)), 10),
+
+  // --- Rootfs watch window (auto-rollback after an activation) --------------
+
+  /**
+   * How long a freshly activated rootfs is on probation. The pool reports every
+   * cold boot it starts from the live image and `maybeRollbackRootfs` puts the
+   * previous generation back when the window fills with failures — a bad image
+   * is live for at most this long instead of until someone notices (staging,
+   * 2026-11-23: an hour of failed boots). Must outlast a normal release's boot
+   * churn (re-warm, users returning) so ordinary load is not mistaken for a
+   * broken image, and stay short enough that the bad image cannot serve a burst.
+   */
+  rootfsWatchMs: parseInt(env('METAL_ROOTFS_WATCH_MS', String(DEFAULT_WATCH_MS)), 10),
+  /** Cold-boot failures in the window before a rollback is considered at all. */
+  rootfsRollbackMinFailures: parseInt(env('METAL_ROOTFS_ROLLBACK_MIN_FAILURES', String(DEFAULT_MIN_FAILURES)), 10),
+  /**
+   * …and the failure RATE they must exceed (`failures / (failures + successes)`).
+   * Both are required: a floor alone rolls back a healthy host having a bad
+   * minute, a rate alone rolls back on two failures out of three boots.
+   */
+  rootfsRollbackRate: parseFloat(env('METAL_ROOTFS_ROLLBACK_RATE', String(DEFAULT_ROLLBACK_RATE))),
 
   // --- Phase 1 (Tier 2 docker project class): VM classes --------------------
   dockerClass,

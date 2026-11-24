@@ -398,7 +398,7 @@ badly, it does not boot at all — `Kernel panic - not syncing: Requested init /
 failed (error -2)` before userspace. On 2026-11-23 staging activated such an
 image and lost every cold boot on the host until it was rebuilt by hand.
 
-Three gates now stand between a broken build and the fleet, and a failure at any
+Four gates now stand between a broken build and the fleet, and a failure at any
 of them leaves the live image in service:
 
 1. `build-runtime-rootfs.sh` builds into a private `mktemp -d` (its own
@@ -407,18 +407,107 @@ of them leaves the live image in service:
    before the rename. `VERIFY_ROOTFS_IMAGE_ONLY=<image> bash
    build-runtime-rootfs.sh` runs just that check against any image file.
 2. `buildRootfsImage` refuses to rename a build whose guest init is missing.
-3. `maybeActivateRootfs` probes each staged image before the rename — on the
-   control plane's `activateRootfs` and on the self-activate path after 3h. On a
-   bad one it logs `REFUSING to activate rootfs …`, leaves the staged file for
-   inspection, clears the staged marker so the next heartbeat rebuilds, and the
-   host keeps serving its current image.
+3. `maybeActivateRootfs` probes each staged image with `debugfs` before the
+   rename — on the control plane's `activateRootfs` and on the self-activate
+   path after 3h. On a bad one it logs `REFUSING to activate rootfs …`, leaves
+   the staged file for inspection, clears the staged marker so the next heartbeat
+   rebuilds, and the host keeps serving its current image.
+4. `maybeActivateRootfs` boots a real throwaway VM from the staged image before
+   the swap (SHO-552). Gate 3 catches a missing init; this catches an init that
+   is present, executable, and still cannot serve a VM. On failure it logs
+   `REFUSING to activate rootfs … boot probe failed: …`, marks the version as
+   bad so the next heartbeat does not rebuild the same broken release, and leaves
+   the live image untouched.
 
-To check a host by hand:
+To check the guest init by hand:
 
 ```bash
 debugfs -R 'stat /usr/local/bin/fc-init' /opt/fc-spike/img/runtime.ext4
 # Inode: … Mode:  0755 …
 ```
+
+### The previous generation is kept, and bad versions are remembered (SHO-552)
+
+**`.prev` backup.** Before every rename, `activateStagedImages` parks the
+outgoing image at `<base>.prev` (e.g. `runtime.ext4.prev`). Exactly one spare
+generation is kept per class — a second activation replaces `.prev`. It survives
+until either the 15-minute watch closes and disk is reclaimed normally, or a
+rollback puts it back.
+
+**Watch window.** For 15 minutes after an activation (`METAL_ROOTFS_WATCH_MS`,
+default 15 min) the host watches its cold boots. If ≥ 5 fail and more than half
+of all boots fail, the agent rolls back automatically: it renames `runtime.ext4.prev`
+back to `runtime.ext4`, restores `ROOTFS_SHA`, logs
+
+```
+[self-update] ROLLED BACK rootfs <new> → <prev>: <f>/<n> cold boots failed in <m>m (<top error>) — restarting metal-agent...
+```
+
+and restarts. The rolled-back version is added to the bad list so it cannot be
+re-applied. Adjust the thresholds with `METAL_ROOTFS_ROLLBACK_MIN_FAILURES` and
+`METAL_ROOTFS_ROLLBACK_RATE`.
+
+**Manual rollback.** When the control plane can reach the host (and it still has
+a `.prev`), trigger a rollback immediately without waiting for the watch window:
+
+```bash
+curl -sX POST http://<host>:9900/admin/rollback-rootfs
+# {"ok":true}      ← process restarts; SSH may drop
+```
+
+If there is no `.prev` (a host that has not activated anything since the last
+restart, or whose spare was dropped for disk space), the response is 409:
+
+```json
+{"ok":false,"error":"runtime.ext4.prev is missing — this host has nothing to roll back to"}
+```
+
+The file-swap equivalent when the HTTP port is unreachable:
+
+```bash
+systemctl stop metal-agent
+mv /opt/metal-agent/runtime.ext4.prev /opt/metal-agent/runtime.ext4
+# docker class too, if present:
+mv /opt/metal-agent/docker-runtime.ext4.prev /opt/metal-agent/docker-runtime.ext4
+# restore the version marker:
+echo <prev-version> > /opt/metal-agent/ROOTFS_SHA
+rm -f /opt/metal-agent/ROOTFS_WATCH /opt/metal-agent/ROOTFS_PREV
+systemctl start metal-agent
+```
+
+**Bad list.** `ROOTFS_BAD` (`/opt/metal-agent/ROOTFS_BAD`) is a JSON list of
+versions and revisions proven not to boot, capped at the last 20. `shouldRebuildRootfs`
+and `maybeActivateRootfs` skip anything on it. The heartbeat reports the most
+recent entry as `rootfsRejected` on `/api/internal/metal/fleet`, which is how a
+host stuck on an older image explains itself. To read it, from any replica or
+from a host:
+
+```bash
+# Fleet view — the same field the release gate and the promote script can read.
+curl -s -H "Authorization: Bearer $METAL_REGISTER_TOKEN" \
+  http://api:3000/api/internal/metal/fleet \
+  | jq -r '.hosts[] | "\(.hostId)  \(.rootfsRevision // "-")  \(.rootfsRejected // "-")"'
+# dal-1  718a651b...  {"version":"v1.2.3","revision":"abc123","reason":"boot probe failed: standard image: VM never became healthy","at":1748000000000}
+# dal-2  50be8578...  -
+
+# On the host itself:
+cat /opt/metal-agent/ROOTFS_BAD | jq .
+# [{"version":"v1.2.3","revision":"abc123","reason":"boot probe failed: standard image: VM never became healthy","at":1748000000000}]
+```
+
+To force a retry of a version on the bad list (after a fix is deployed):
+
+```bash
+# Remove just that entry:
+cat /opt/metal-agent/ROOTFS_BAD | jq 'map(select(.version != "v1.2.3"))' \
+  | sudo tee /opt/metal-agent/ROOTFS_BAD
+```
+
+**Stale `*.bak` files.** Hosts that were manually recovered before SHO-552 may
+still have `runtime.ext4.bak` or similar files from July 2026. These are not
+managed by the agent and are not counted in space budgets. Remove them by hand
+when disk pressure appears: `rm /opt/metal-agent/runtime.ext4.bak`. The `.prev`
+files from the new mechanism are distinct and are managed automatically.
 
 An image replaced out of band (a manual rebuild over `METAL_ROOTFS`) also needs
 the agent's shared base loop re-attached; the agent re-checks the loop's backing

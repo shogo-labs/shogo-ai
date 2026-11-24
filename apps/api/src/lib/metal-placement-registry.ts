@@ -78,6 +78,8 @@ export interface HostScalars {
   rootDisk?: RootDiskScalars
   /** A rebuilt rootfs built beside the live one, waiting for activation. Drives the switch-over pre-warm. */
   stagedRootfs?: StagedRootfsReport
+  /** The rootfs generation most recently proven not to boot (SHO-552). See RootfsRejectedReport. */
+  rootfsRejected?: RootfsRejectedReport
   /** The host's last heartbeat came from an agent about to restart (control port briefly down). */
   restarting?: boolean
   lastSeenAt: number
@@ -94,6 +96,24 @@ export interface StagedRootfsReport {
   prewarm?: boolean
   /** Pre-warmed snapshots the host holds on the staged image. */
   stagedSnapshots?: number
+}
+
+/**
+ * The rootfs generation a host has most recently proven unusable (SHO-552), as
+ * reported in its heartbeat. Passive: nothing in the control plane gates on it,
+ * it exists so the fleet view can say WHY a host is sitting on an older
+ * revision instead of the one the release pinned — the agent refuses to rebuild
+ * or re-activate a generation on this list.
+ */
+export interface RootfsRejectedReport {
+  /** Release the rejected image was built for. */
+  version: string
+  /** Commit stamped inside that image, when it could be read. */
+  revision: string | null
+  /** What went wrong, e.g. `boot probe failed: ...` or `rollback: 6/8 cold boots failed`. */
+  reason: string
+  /** Epoch ms the agent added it to its bad list. */
+  at: number
 }
 
 export interface Placement {
