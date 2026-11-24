@@ -61,6 +61,8 @@ export interface DesktopConfig {
   meetings: MeetingConfig
   bugReport?: BugReportConfig
   island: IslandConfig
+  /** Menu-bar item: whether the attention count is drawn beside the icon. */
+  tray: TrayConfig
   /** Global dictation shortcuts (push-to-talk and hands-free). */
   dictation: DictationConfig
   /** Stable per-machine identifier. Generated on first launch and used so
@@ -118,11 +120,21 @@ const DEFAULT_ISLAND_CONFIG: IslandConfig = {
   soundVolume: DEFAULT_ISLAND_SOUND_VOLUME,
 }
 
+export interface TrayConfig {
+  /** Show the number of chats that need you / have a new reply beside the icon. */
+  showCount: boolean
+}
+
+const DEFAULT_TRAY_CONFIG: TrayConfig = {
+  showCount: true,
+}
+
 const DEFAULT_CONFIG: Omit<DesktopConfig, 'deviceId'> = {
   mode: 'local',
   hostRuntime: getDefaultHostRuntimeConfig(),
   meetings: { ...DEFAULT_MEETING_CONFIG },
   island: { ...DEFAULT_ISLAND_CONFIG },
+  tray: { ...DEFAULT_TRAY_CONFIG },
   dictation: { ...DEFAULT_DICTATION_CONFIG },
   updateChannel: 'stable',
   spotlightHintDismissed: false,
@@ -188,6 +200,12 @@ export function readConfig(): DesktopConfig {
         parsed.island.soundVolume <= 1
           ? parsed.island.soundVolume
           : DEFAULT_ISLAND_CONFIG.soundVolume,
+    },
+    tray: {
+      showCount:
+        typeof parsed.tray?.showCount === 'boolean'
+          ? parsed.tray.showCount
+          : DEFAULT_TRAY_CONFIG.showCount,
     },
     dictation: normalizeDictationConfig(parsed.dictation),
     deviceId: existingDeviceId || generateDeviceId(),

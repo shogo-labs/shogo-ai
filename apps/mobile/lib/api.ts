@@ -943,6 +943,10 @@ export interface RecentAgentChat {
   agentName: string | null
   lastActiveAt: string
   preview: string | null
+  /** The person pinned this chat, so it leads the list. */
+  isPinned: boolean
+  /** A turn is running in it right now. */
+  running: boolean
 }
 
 export const api = {
@@ -2772,11 +2776,12 @@ export const api = {
   async listRecentAgentChats(
     http: HttpClient,
     workspaceId: string,
-    opts: { limit?: number; perAgent?: boolean } = {},
+    opts: { limit?: number; perAgent?: boolean; includePinned?: boolean } = {},
   ): Promise<RecentAgentChat[]> {
     const params = new URLSearchParams()
     if (opts.limit !== undefined) params.set('limit', String(opts.limit))
     if (opts.perAgent) params.set('perAgent', '1')
+    if (opts.includePinned) params.set('includePinned', '1')
     const query = params.toString() ? `?${params}` : ''
     const res = await http.get<{ chats?: RecentAgentChat[] }>(
       `/api/workspaces/${encodeURIComponent(workspaceId)}/agent-chats/recent${query}`,

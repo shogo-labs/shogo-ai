@@ -23,6 +23,7 @@ import { homeRegionWorkspaceWhere } from '../lib/region'
 import { sendPushToUser } from '../lib/push-notifications'
 import { agentDisplayName } from './conversation.service'
 import { accessibleProjectsWhere } from '../lib/authz'
+import { isRunningNow } from './chat-turn-state.service'
 import { PROJECT_CALL_MESSAGE_AGENT } from '@shogo/shared-runtime/project-call-chat'
 
 const db = prisma as any
@@ -353,6 +354,10 @@ export interface RecentAgentChat {
   lastActiveAt: string
   /** Last user-visible message text, trimmed to 120 chars. */
   preview: string | null
+  /** The person pinned this chat, so it leads the list. */
+  isPinned: boolean
+  /** A turn is running in it right now (the `active-chats` predicate). */
+  running: boolean
 }
 
 /**
@@ -360,6 +365,11 @@ export interface RecentAgentChat {
  *
  * When `perAgent` is true, keeps only the newest session per agent.
  * `limit` defaults to 5; max 100.
+ *
+ * `includePinned` orders pinned chats first (still newest-first within the
+ * pinned group) so a pinned chat is returned even when it is older than
+ * `limit` unpinned ones. Without it the order is exactly `lastActiveAt desc`,
+ * which is what every other caller relies on.
  *
  * The "this person talked in a chat" predicate is shared with
  * `member-messages.service.ts`: a ChatMessage with `role: 'user'`,
@@ -369,7 +379,7 @@ export interface RecentAgentChat {
 export async function listRecentAgentChats(
   workspaceId: string,
   userId: string,
-  opts: { limit?: number; perAgent?: boolean } = {},
+  opts: { limit?: number; perAgent?: boolean; includePinned?: boolean } = {},
 ): Promise<RecentAgentChat[]> {
   const limit = Math.min(opts.limit ?? 5, 100)
 
@@ -396,7 +406,9 @@ export async function listRecentAgentChats(
         { contextType: 'project', project: { workspaceId, AND: readable } },
       ],
     },
-    orderBy: { lastActiveAt: 'desc' },
+    orderBy: opts.includePinned
+      ? [{ isPinned: 'desc' as const }, { lastActiveAt: 'desc' as const }]
+      : { lastActiveAt: 'desc' as const },
     take: limit * 10, // over-fetch so perAgent dedup doesn't under-shoot
     select: {
       id: true,
@@ -405,6 +417,9 @@ export async function listRecentAgentChats(
       contextType: true,
       contextId: true,
       lastActiveAt: true,
+      isPinned: true,
+      activeTurnId: true,
+      activeTurnHeartbeatAt: true,
       project: {
         select: { id: true, name: true },
       },
@@ -440,6 +455,8 @@ export async function listRecentAgentChats(
       agentName: projectId ? (s.project?.name ?? null) : wsAgentName,
       lastActiveAt: (s.lastActiveAt as Date).toISOString(),
       preview: rawPreview ? rawPreview.slice(0, 120) : null,
+      isPinned: s.isPinned,
+      running: isRunningNow(s.activeTurnId, s.activeTurnHeartbeatAt),
     })
     if (result.length >= limit) break
   }

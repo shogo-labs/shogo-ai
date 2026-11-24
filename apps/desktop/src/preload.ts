@@ -380,6 +380,22 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   islandUpdate: (snapshot: unknown) => {
     ipcRenderer.send('island:update', snapshot)
   },
+  /** Publishes the menu-bar dropdown's model (see apps/desktop/src/tray-protocol.ts). */
+  trayUpdate: (model: unknown) => {
+    ipcRenderer.send('tray:update', model)
+  },
+  /** Tray actions that only the app can carry out (new chat, clear dots). */
+  onTrayAction: (callback: (action: { type: 'new-chat' } | { type: 'clear-notifications' }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, action: unknown) => {
+      if (!action || typeof action !== 'object') return
+      const type = (action as { type?: unknown }).type
+      if (type === 'new-chat' || type === 'clear-notifications') callback({ type })
+    }
+    ipcRenderer.on('tray-action', listener)
+    return () => {
+      ipcRenderer.removeListener('tray-action', listener)
+    }
+  },
   onIslandAction: (callback: (action: unknown) => void) => {
     ipcRenderer.on('island-action', (_event, action) => callback(action))
   },
@@ -909,6 +925,15 @@ if (process.env.SHOGO_E2E === '1' || process.env.PLAYWRIGHT_E2E === '1') {
     },
     getActiveSurface() {
       return document.querySelector('[data-shogo-terminal-surface="true"]') !== null
+    },
+    /** The menu-bar dropdown as plain lines, built by main from the real
+     * template. See apps/desktop/e2e/tray-menu.spec.ts. */
+    getTrayMenu(): Promise<string[]> {
+      return ipcRenderer.invoke('tray:debug-menu')
+    },
+    /** Click a dropdown row by label, exactly as a person would. */
+    clickTrayItem(label: string): Promise<boolean> {
+      return ipcRenderer.invoke('tray:debug-click', label)
     },
   })
 }
