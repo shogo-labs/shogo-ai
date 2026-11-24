@@ -19,7 +19,7 @@
 // building a new one; `KEEP_PROJECT=1` leaves the project behind on success.
 import { test, expect, type Page } from "./fixtures"
 import { signUp, waitForAgentResponse } from "./helpers"
-import { INITIAL_BUILD_TIMEOUT_MS, createProject, sendProjectChatMessage } from "./agent-chat"
+import { createProject, sendProjectChatMessage } from "./agent-chat"
 import { publishRequestTimeoutMs } from "../../packages/shared-runtime/src/publish-timeouts"
 import { execFileSync } from "node:child_process"
 import { writeFileSync } from "node:fs"
@@ -48,6 +48,17 @@ const APP_PROMPT =
   "generated CRUD API in server.tsx. Do not change prisma/schema.prisma, server.tsx, " +
   "custom-routes.ts, package.json or any other backend file. " +
   'Only replace src/App.tsx with a single page that renders the heading "SHO-551 QA". Nothing else.'
+
+/**
+ * Building the fixture is *setup*, not the thing under test, and on staging it is
+ * not a 3-minute job. Measured 2026-11-24: the shared 180s `INITIAL_BUILD_TIMEOUT_MS`
+ * expired while the turn was still streaming productively (34k → 35k tokens and
+ * climbing), so the spec failed in setup and none of the §F checks ran. The staging
+ * API was also spending its whole 60s AgentProxy spawn-lease window failing to get a
+ * pool connection (63 times in 70 min), which alone consumes a third of 180s.
+ * The turn is bounded by this budget and the test's own 40-minute timeout.
+ */
+const FIXTURE_BUILD_TIMEOUT_MS = 900_000
 
 const KUBECONFIG = `${homedir()}/.kube/config-shogo-staging`
 
@@ -232,7 +243,7 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
 
     if (!projectId) {
       projectId = await createProject(page, APP_PROMPT)
-      await waitForAgentResponse(page, INITIAL_BUILD_TIMEOUT_MS)
+      await waitForAgentResponse(page, FIXTURE_BUILD_TIMEOUT_MS)
     }
     evidence.projectId = projectId
     saveEvidence()
