@@ -20,7 +20,7 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { copyFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
@@ -63,16 +63,23 @@ function makeMgr() {
  * A stand-in firecracker: an executable NAMED `firecracker` that takes the same
  * `--api-sock … --id …` argv and then sits there, like a VMM whose guest is
  * booting.
+ *
+ * It has to be a real binary, not a shell script: the kernel rewrites a script's
+ * argv to `['/bin/bash', '/path/to/firecracker', …]`, so `scanHostFcProcs` —
+ * which matches argv[0] — never saw the old (script) stand-in as firecracker and
+ * every assertion here passed over an empty scan. A copy of `/bin/sh` keeps
+ * argv[0] = this path, `-c 'sleep 300'` blocks like a booting VMM, and the
+ * trailing `--id <id>` stays in the argv for the scan to read.
  */
 function spawnFakeFc(dir: string, id: string): { kill: (s?: any) => void; pid: number } {
   const bin = join(dir, 'bin')
   mkdirSync(bin, { recursive: true })
   const exe = join(bin, 'firecracker')
   if (!Bun.file(exe).size) {
-    writeFileSync(exe, '#!/bin/bash\nsleep 300\n')
+    copyFileSync('/bin/sh', exe)
     chmodSync(exe, 0o755)
   }
-  const child = Bun.spawn([exe, '--api-sock', join(dir, 'run', `${id}.sock`), '--id', id], {
+  const child = Bun.spawn([exe, '-c', 'sleep 300', '--api-sock', join(dir, 'run', `${id}.sock`), '--id', id], {
     stdout: 'ignore',
     stderr: 'ignore',
   })
@@ -97,6 +104,11 @@ describe('startup host-scan reaper vs a VM that is still booting', () => {
     const child = spawnFakeFc(dir, id)
     const age = await waitForAge(child.pid)
     expect(age).toBeLessThan(120_000)
+
+    // The scan must actually see it, or every assertion below passes over an
+    // empty host and proves nothing — the stand-in was a shell script once and
+    // this bit was missing, so the whole file was green for the wrong reason.
+    expect(mgr.scanHostFcProcs()).toContainEqual({ pid: child.pid, id })
 
     // Empty keep-set: exactly the state that killed staging's warm pool — the id
     // is not in the adopted set, because the VM is a fresh warm boot.
