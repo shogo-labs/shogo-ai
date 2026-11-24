@@ -209,14 +209,28 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     console.log(`[qa-sho551] publish -> ${published.status()} ${JSON.stringify(publishBody)}`)
     expect(published.ok(), `publish failed: ${JSON.stringify(publishBody)}`).toBeTruthy()
 
-    const envRow = psql(
-      `select coalesce("dbProvider",'(null)') || ' | ' || coalesce("dbName",'(null)') from published_environments ` +
-        `where "projectId" = '${projectId}' and name = 'production'`,
+    // `publish` answers 202 and builds in the background, so the environment row
+    // appears — and gains its provider — only once the pipeline reaches it.
+    // Polling the row is also what surfaces a build failure with its own
+    // message, instead of a bare timeout further down.
+    const envRow = await poll(
+      "the published environment to become Postgres",
+      async () => {
+        const row = psql(
+          `select coalesce("dbProvider",'-') || ' | ' || coalesce("dbName",'-') || ' | ' || coalesce("publishStatus",'-') || ' | ' || coalesce(left("publishError",400),'-') from published_environments ` +
+            `where "projectId" = '${projectId}' and name = 'production'`,
+        )
+        if (!row.trim()) return null
+        const [provider, , status] = row.split("|").map((part) => part.trim())
+        return status === "failed" || provider === "postgres" ? row : null
+      },
+      900_000,
     )
     evidence.environmentRow = envRow
     dbName = envRow.split("|")[1]?.trim() ?? ""
     saveEvidence()
     console.log(`[qa-sho551] environment: ${envRow}`)
+    expect(envRow, "the publish must not have failed").not.toMatch(/\|\s*failed\s*\|/)
     expect(envRow, "the published environment must be Postgres").toContain("postgres")
 
     await poll(

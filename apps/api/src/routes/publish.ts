@@ -1384,15 +1384,24 @@ async function configurePublishedService(
     // available" is not enough — it has to be the `pg` build. Its pod mounts a
     // Postgres `DATABASE_URL`, and the app only becomes PrismaPg inside a `pg`
     // build context; anything else serves the SQLite client and writes to a
-    // per-pod LibSQL file (QA round 5 on staging). The check sits outside the
-    // `serverBacked && commitSha` branch on purpose: a publish with no commit to
-    // build, or one that is not server-backed, used to skip image resolution
-    // entirely and fall through to the shared image.
+    // per-pod LibSQL file (QA round 5 on staging).
+    //
+    // Only when this publish was supposed to produce that image, though. A first
+    // publish has no `publishedCommitSha` — the publish writes it only once it has
+    // succeeded — so no image is built for it by design, and the environment is
+    // served from the Postgres-converted artifact the runtime uploads. Refusing
+    // there locked every new project out of Postgres permanently: the commit the
+    // build wants is written by a publish that has to succeed first.
     if (currentDbProvider === "postgres") {
-      const { publishedBuildSetup, postgresImageRefusal } = await import("../lib/published-build-config")
+      const { publishedBuildSetup, shouldBuildPublishedImage, postgresImageRefusal } = await import(
+        "../lib/published-build-config"
+      )
       const refusal = postgresImageRefusal({
         imageRef: publishedImageRef,
-        commitSha,
+        buildPlanned:
+          serverBacked &&
+          !!commitSha &&
+          shouldBuildPublishedImage(substrate.kind as "knative" | "metal", projectId),
         serverBacked,
         missing: publishedBuildSetup().missing,
       })

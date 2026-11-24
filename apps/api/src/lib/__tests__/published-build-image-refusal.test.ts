@@ -15,29 +15,33 @@ describe('postgresImageRefusal', () => {
     expect(
       postgresImageRefusal({
         imageRef: 'iad.ocir.io/shogo/published/proj1:abc123def0-pg',
-        commitSha: 'abc123def0',
+        buildPlanned: true,
         serverBacked: true,
         missing: [],
       }),
     ).toBeNull()
   })
 
-  it('refuses a publish with no commit to build from', () => {
+  // A first publish writes `publishedCommitSha` only once it has succeeded, so it
+  // has no commit to build an image from. Refusing there locked every new project
+  // out of Postgres for good: staging had seven `qa-sho551` environments and not
+  // one ever served.
+  it('does not refuse a first publish, which has no commit to build from yet', () => {
     expect(
-      postgresImageRefusal({ imageRef: undefined, commitSha: null, serverBacked: true, missing: [] }),
-    ).toBe('the project has no published commit to build one from.')
+      postgresImageRefusal({ imageRef: undefined, buildPlanned: false, serverBacked: true, missing: [] }),
+    ).toBeNull()
   })
 
   it('refuses a publish that is not server-backed', () => {
     expect(
-      postgresImageRefusal({ imageRef: undefined, commitSha: 'abc123def0', serverBacked: false, missing: [] }),
+      postgresImageRefusal({ imageRef: undefined, buildPlanned: true, serverBacked: false, missing: [] }),
     ).toBe('the publish is not server-backed, so no image is built for it.')
   })
 
   it('names the variables the image build is missing', () => {
     const refusal = postgresImageRefusal({
       imageRef: undefined,
-      commitSha: 'abc123def0',
+      buildPlanned: true,
       serverBacked: true,
       missing: ['PUBLISH_REGISTRY', 'PUBLISH_BUILD_NAMESPACE'],
     })
@@ -46,7 +50,7 @@ describe('postgresImageRefusal', () => {
 
   it('refuses an environment the flag does not cover', () => {
     expect(
-      postgresImageRefusal({ imageRef: undefined, commitSha: 'abc123def0', serverBacked: true, missing: [] }),
+      postgresImageRefusal({ imageRef: undefined, buildPlanned: true, serverBacked: true, missing: [] }),
     ).toBe('PUBLISH_BUILD_IMAGES does not cover it.')
   })
 })

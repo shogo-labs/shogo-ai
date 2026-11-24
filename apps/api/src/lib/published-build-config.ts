@@ -104,13 +104,22 @@ export function shouldBuildPublishedImage(
 export function postgresImageRefusal(input: {
   /** The image ref this publish resolved, if any. */
   imageRef: string | null | undefined
-  commitSha: string | null | undefined
+  /**
+   * Whether this publish was supposed to produce an image of its own.
+   *
+   * A first publish has no `publishedCommitSha` — the publish writes it only once
+   * it has succeeded — so no image is built for it, and the environment is served
+   * from the Postgres-converted artifact the runtime uploads. Refusing there
+   * locked every new project out of Postgres permanently, because the commit the
+   * build wants is written by a publish that has to succeed first.
+   */
+  buildPlanned: boolean
   serverBacked: boolean
   /** Variables the image build is missing, from `publishedBuildSetup()`. */
   missing: string[]
 }): string | null {
   if (input.imageRef) return null
-  if (!input.commitSha) return 'the project has no published commit to build one from.'
+  if (!input.buildPlanned) return null
   if (!input.serverBacked) return 'the publish is not server-backed, so no image is built for it.'
   if (input.missing.length) return `the build is not configured (missing ${input.missing.join(', ')}).`
   return 'PUBLISH_BUILD_IMAGES does not cover it.'
