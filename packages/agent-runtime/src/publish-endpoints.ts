@@ -37,6 +37,7 @@ import type { Context } from 'hono'
 import { isMacOSJunkName, putFileToObjectStore } from '@shogo/shared-runtime'
 import { publishArtifactInlineMaxBytes, publishArtifactMaxBytes } from '@shogo/shared-runtime/publish-timeouts'
 import { cleanupStagingOutput } from './build-output-commit'
+import { isObjectStoreAuthFailure } from './object-store-errors'
 import {
   ArtifactMediaOffloadError,
   createPublishedArtifactFilter,
@@ -230,39 +231,29 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
     await cp(projectDir, contextDir, { recursive: true, filter })
     await cp(stagingDir, join(contextDir, 'dist'), { recursive: true })
 
-    // SHO-551 B: when the API requests a Postgres build context, overwrite
-    // prisma/schema.prisma and src/lib/db.tsx in the copied context.
-    // The editor's own files are never touched.
-    const targetDb = (c.req.query('db') || '').trim()
-    if (targetDb === 'postgres') {
-      const { buildPublishSchema } = await import('@shogo/shared-runtime/published-schema')
-      const { generateDbModule } = await import('@shogo-ai/sdk/generators/server-generator')
-      const rawSchemaPath = join(projectDir, 'prisma', 'schema.prisma')
-      if (existsSync(rawSchemaPath)) {
-        const { readFileSync, writeFileSync, mkdirSync } = await import('node:fs')
-        try {
-          const rawSchema = readFileSync(rawSchemaPath, 'utf-8')
-          const pgSchema = buildPublishSchema(rawSchema)
-          const ctxSchemaPath = join(contextDir, 'prisma', 'schema.prisma')
-          mkdirSync(join(contextDir, 'prisma'), { recursive: true })
-          writeFileSync(ctxSchemaPath, pgSchema.content, 'utf-8')
-          // db.tsx must exist and use PrismaPg — the runtime always writes
-          // db.tsx for SQLite at /templates/copy, so overwrite in the context.
-          const dbTsxPath = join(contextDir, 'src', 'lib', 'db.tsx')
-          if (existsSync(join(projectDir, 'src', 'lib', 'db.tsx'))) {
-            mkdirSync(join(contextDir, 'src', 'lib'), { recursive: true })
-            writeFileSync(dbTsxPath, generateDbModule(), 'utf-8')
-          }
-          console.log('[agent-runtime] publish-artifact: wrote Postgres schema + db.tsx into build context')
-        } catch (err: any) {
-          console.warn('[agent-runtime] publish-artifact: could not write Postgres context:', err?.message ?? err)
-        }
+    // SHO-551 B: when the API requests a Postgres build context, one helper
+    // rewrites the copy — schema, db.tsx and the adapter dependency. The
+    // editor's own files are never touched, and there is exactly one
+    // implementation: the inline copy that used to live here shipped db.tsx
+    // without promoting @prisma/adapter-pg, so the image booted into
+    // `Cannot find module '@prisma/adapter-pg'` (QA round 1).
+    if ((c.req.query('db') || '').trim() === 'postgres') {
+      const { applyPostgresBuildContext } = await import('./published-build-db')
+      const result = applyPostgresBuildContext(contextDir)
+      for (const warning of result.warnings) {
+        console.warn('[agent-runtime] publish-artifact: postgres context:', warning)
       }
+      console.log(
+        result.applied
+          ? '[agent-runtime] publish-artifact: Postgres schema, db.tsx and adapter written into build context'
+          : '[agent-runtime] publish-artifact: build context already Postgres — left unchanged',
+      )
     }
     // Media out before the tar, so neither the tar nor the upload carries it.
     // SHO-551 C: a CredentialsProviderError on the runtime's own store is not
     // fatal — media stays in the tar and the upload still goes through putUrl.
     let offloaded: ArtifactMediaOffloadResult | null = null
+    let offloadSkipped: 'no_object_store' | 'credentials' | null = null
     if (store) {
       try {
         offloaded = await offloadArtifactMedia({
@@ -275,24 +266,31 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
         if (err instanceof ArtifactMediaOffloadError) {
           return c.json({ error: 'lfs_object_missing', message: err.message }, 500)
         }
-        const isCredentialsError = /CredentialsProvider|AccessDenied|InvalidAccessKeyId/i.test(String(err?.name ?? '') + String(err?.message ?? ''))
-        if (isCredentialsError) {
+        if (isObjectStoreAuthFailure(err)) {
+          offloadSkipped = 'credentials'
           console.warn('[agent-runtime] publish-artifact: media offload skipped (credentials unavailable):', err?.message ?? err)
         } else {
           throw err
         }
       }
+    } else {
+      offloadSkipped = 'no_object_store'
     }
     await tar.create({ gzip: true, file: archivePath, cwd: contextDir, portable: true }, ['.'])
     const { size: bytes } = await stat(archivePath)
     cleanupStagingOutput(outputRoot, PUBLISH_STAGING_DIR)
 
-    // With no store the media stays in the tar, and a size refusal that follows
-    // is caused by that rather than by the project (SHO-536).
-    const offload = store ? null : { skipped: 'no_object_store' as const }
-    const mediaStayed = offload
-      ? ' Media could not be moved out because this runtime has no object store, so the context carries the project\'s media.'
-      : ''
+    // Media that could not be moved out stays in the tar, and a size refusal that
+    // follows is caused by that rather than by the project (SHO-536). Say which
+    // reason it was, so a metal host missing S3 credentials is not reported as a
+    // runtime with no store at all.
+    const offload = offloadSkipped ? { skipped: offloadSkipped } : null
+    const mediaStayed =
+      offloadSkipped === 'no_object_store'
+        ? " Media could not be moved out because this runtime has no object store, so the context carries the project's media."
+        : offloadSkipped === 'credentials'
+          ? " Media could not be moved out because this runtime's object store has no usable credentials, so the context carries the project's media."
+          : ''
 
     // The Job's src volume is a 2 Gi `emptyDir`: an artifact over the limit is
     // an eviction with no explanation, so refuse it here with a name, before
@@ -335,6 +333,20 @@ export async function handlePublishArtifact(c: Context, deps: PublishEndpointDep
           { bytes, contentType: 'application/gzip' },
         )
       } catch (err: any) {
+        // A named error, not `artifact_failed`: the caller can only fix this by
+        // minting a presigned putUrl, and the message has to say so (SHO-551 C).
+        if (isObjectStoreAuthFailure(err)) {
+          return c.json(
+            {
+              error: 'object_store_credentials_unavailable',
+              message:
+                'This runtime has an object store configured but no usable credentials, so it cannot ' +
+                'write the build context itself. Retry with a presigned putUrl (the API mints one with ' +
+                `its own credentials). Underlying error: ${err?.message ?? String(err)}`,
+            },
+            502,
+          )
+        }
         return c.json({ error: 'artifact_upload_failed', message: err?.message ?? String(err) }, 502)
       }
       return c.json({ bucket: targetBucket, key: targetKey, bytes, offloaded, ...(offload ? { offload } : {}) })

@@ -98,7 +98,13 @@ describe('ensurePublishedImage', () => {
     const res = await ensurePublishedImage(
       input,
       deps({
-        findReusableImage: async () => ({ imageRef: `repo@${digest}`, imageDigest: digest }),
+        // A recorded ref carries the commit tag (plus the variant suffix when the
+        // build was Postgres). Only a tag ref can be attributed to a variant, so
+        // only a tag ref is reused (SHO-551 B, QA round 1).
+        findReusableImage: async () => ({
+          imageRef: `repo:${input.commitSha.toLowerCase()}`,
+          imageDigest: digest,
+        }),
         createJob: async () => {
           created++
         },
@@ -595,6 +601,36 @@ describe('ensurePublishedImage on a Postgres environment', () => {
         findReusableImage: async () => ({ imageRef: pgRef, imageDigest: 'sha256:' + 'a'.repeat(64) }),
         uploadArtifact: async () => { calls.push('upload'); return { url: 'https://bucket/artifact.tar.gz' } },
         createJob: async () => { calls.push('create') },
+        readJob: fakeRead,
+        deleteJob: fakeDelete,
+        sleep: fakeSleep,
+        log: () => {},
+      },
+    )
+    expect(calls).toContain('upload')
+    expect(calls).toContain('create')
+  })
+
+  // QA round 1: a digest-pinned ref carries no variant at all, so it cannot be
+  // attributed to this publish shape. Reusing it was how a SQLite image could
+  // end up as a Postgres pod.
+  it('does not reuse a digest-pinned ref for a Postgres publish', async () => {
+    const calls: string[] = []
+    await ensurePublishedImage(
+      { projectId: 'proj1', environmentId: 'env1', subdomain: 'my-app', commitSha: 'abc123def0', dbProvider: 'postgres' },
+      {
+        config: fakeConfig,
+        findReusableImage: async () => ({
+          imageRef: `iad.ocir.io/shogo/shogo/published/proj1@sha256:${'c'.repeat(64)}`,
+          imageDigest: `sha256:${'c'.repeat(64)}`,
+        }),
+        uploadArtifact: async () => {
+          calls.push('upload')
+          return { url: 'https://bucket/artifact.tar.gz' }
+        },
+        createJob: async () => {
+          calls.push('create')
+        },
         readJob: fakeRead,
         deleteJob: fakeDelete,
         sleep: fakeSleep,

@@ -414,77 +414,95 @@ export function dropOrphanedSeedRows(
   modelTables: Map<string, string>,
 ): { tables: SeedTableData[]; orphans: SeedOrphan[] } {
   const tableOf = (model: string) => modelTables.get(model) ?? model
-  // Parent key sets keyed by `parentTable\u0001col1,col2` so two FKs pointing at
-  // the same parent with different referenced columns don't share one set.
-  const parentKeys = new Map<string, Set<string>>()
 
-  const buildParentKeySet = (parentTable: string, parentColumns: string[], cacheKey: string) => {
-    if (parentKeys.has(cacheKey)) return parentKeys.get(cacheKey)!
-    const parentData = tables.find((p) => p.table === parentTable)
-    const keySet = new Set<string>()
-    if (parentData) {
-      const refIdxs = parentColumns.map((col) => parentData.columns.indexOf(col))
-      if (refIdxs.every((i) => i >= 0)) {
-        for (const row of parentData.rows) {
-          keySet.add(refIdxs.map((i) => String(row[i])).join('\u0001'))
-        }
-      }
-    }
-    parentKeys.set(cacheKey, keySet)
-    return keySet
+  // Working copy: each table's surviving rows shrink as passes run, and every
+  // pass reads the *surviving* parent rows. Reading the original set instead
+  // left a grandchild of a dropped row in place, and the seed then failed on
+  // the next FK down (SHO-551, QA round 1).
+  const byTable = new Map<string, SeedTableData>(tables.map((t) => [t.table, { ...t, rows: [...t.rows] }]))
+
+  // Every relation where this table is the child, indexed once.
+  const childRelationsOf = new Map<string, SeedRelation[]>()
+  for (const rel of relations) {
+    if (rel.childColumns.length === 0 || rel.parentColumns.length === 0) continue
+    const childTable = tableOf(rel.child)
+    const list = childRelationsOf.get(childTable)
+    if (list) list.push(rel)
+    else childRelationsOf.set(childTable, [rel])
   }
 
-  const result: SeedTableData[] = []
-  const orphans: SeedOrphan[] = []
+  // Dropping a row can orphan its own children, so keep dropping until a pass
+  // changes nothing. Each pass only removes rows, so this terminates.
+  const orphanCounts = new Map<string, SeedOrphan>()
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const table of byTable.values()) {
+      const childRelations = childRelationsOf.get(table.table)
+      if (!childRelations || table.rows.length === 0) continue
 
-  for (const t of tables) {
-    // Collect every relation where this table is the child.
-    const childRelations = relations.filter(
-      (r) => tableOf(r.child) === t.table && r.childColumns.length > 0 && r.parentColumns.length > 0,
-    )
-    if (childRelations.length === 0) {
-      result.push(t)
-      continue
-    }
+      for (const rel of childRelations) {
+        const parentTable = tableOf(rel.parent)
+        // A parent table with no rows in the dump (or none left after earlier
+        // passes) has no valid FK targets, so every non-null FK is an orphan.
+        const parentData = byTable.get(parentTable)
+        const childIdxs = rel.childColumns.map((col) => table.columns.indexOf(col))
+        if (childIdxs.some((i) => i < 0)) continue // column not found — skip the check
+        const refIdxs = parentData
+          ? rel.parentColumns.map((col) => parentData.columns.indexOf(col))
+          : [-1]
+        if (refIdxs.some((i) => i < 0) && parentData) continue
 
-    let kept = t.rows
-    for (const rel of childRelations) {
-      const parentTable = tableOf(rel.parent)
-      const cacheKey = `${parentTable}\u0001${rel.parentColumns.join(',')}`
-      const parentKeySet = buildParentKeySet(parentTable, rel.parentColumns, cacheKey)
-      const childIdxs = rel.childColumns.map((col) => t.columns.indexOf(col))
-      if (childIdxs.some((i) => i < 0)) continue // column not found — skip the check
-      const sampleIds: unknown[] = []
-      const next: unknown[][] = []
-      for (const row of kept) {
-        const fkVal = row[childIdxs[0]!]
-        // A NULL FK is an optional relation — no parent required, keep the row.
-        if (fkVal === null || fkVal === undefined) {
-          next.push(row)
-          continue
+        const parentKeySet = new Set<string>()
+        if (parentData) {
+          for (const row of parentData.rows) {
+            parentKeySet.add(refIdxs.map((i) => String(row[i])).join('\u0001'))
+          }
         }
-        const key = childIdxs.map((i) => String(row[i])).join('\u0001')
-        if (parentKeySet.has(key)) {
-          next.push(row)
+
+        const next: unknown[][] = []
+        const sampleIds: unknown[] = []
+        for (const row of table.rows) {
+          const fkVal = row[childIdxs[0]!]
+          // A NULL FK is an optional relation — no parent required, keep the row.
+          if (fkVal === null || fkVal === undefined) {
+            next.push(row)
+            continue
+          }
+          const key = childIdxs.map((i) => String(row[i])).join('\u0001')
+          if (parentKeySet.has(key)) {
+            next.push(row)
+          } else if (sampleIds.length < 10) {
+            sampleIds.push(fkVal)
+          }
+        }
+        if (next.length === table.rows.length) continue
+
+        const column = rel.childColumns.join(', ')
+        const dropped = table.rows.length - next.length
+        const countKey = `${table.table}\u0001${column}\u0001${parentTable}`
+        const existing = orphanCounts.get(countKey)
+        if (existing) {
+          existing.count += dropped
+          for (const id of sampleIds) {
+            if (existing.sampleIds.length < 10) existing.sampleIds.push(id)
+          }
         } else {
-          if (sampleIds.length < 10) sampleIds.push(fkVal)
+          orphanCounts.set(countKey, {
+            table: table.table,
+            column,
+            parent: parentTable,
+            count: dropped,
+            sampleIds,
+          })
         }
-      }
-      if (next.length < kept.length) {
-        orphans.push({
-          table: t.table,
-          column: rel.childColumns.join(', '),
-          parent: parentTable,
-          count: kept.length - next.length,
-          sampleIds,
-        })
-        kept = next
+        table.rows = next
+        changed = true
       }
     }
-    result.push({ ...t, rows: kept })
   }
 
-  return { tables: result, orphans }
+  return { tables: [...byTable.values()], orphans: [...orphanCounts.values()] }
 }
 
 /** Rows copied, for the publish report and the agent's tool result. */

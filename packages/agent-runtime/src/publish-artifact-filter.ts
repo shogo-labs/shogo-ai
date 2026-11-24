@@ -19,6 +19,7 @@ import ignore from 'ignore'
 import { isShogoRuntimeSubtree } from '@shogo/shared-runtime/shogo-state-paths'
 import { headObject, lfsObjectKey, lfsPointerText, lfsTrackedPaths, putFileToObjectStore, sharedStaticAssetCacheControl, stampObjectMetadata, type S3ObjectStore } from '@shogo/shared-runtime'
 import { staticMimeFor } from './dist-response'
+import { isObjectStoreAuthFailure } from './object-store-errors'
 
 /** Root-relative paths that never belong in the image. */
 const SKIP_AT_ROOT = new Set(['node_modules', '.git', '.shogo', 'dist', '.tmp'])
@@ -404,6 +405,12 @@ export async function offloadArtifactMedia(opts: {
         result.reused++
       }
     } catch (err) {
+      // A credentials failure is not data loss: the object was never readable
+      // because this runtime has no usable keys. Rethrowing it unchanged lets
+      // the caller keep the media in the tar and still upload the artifact;
+      // wrapping it here made a metal host with `S3_LFS_BUCKET` and no access
+      // key report `lfs_object_missing` and 500 the whole publish (SHO-551 C).
+      if (isObjectStoreAuthFailure(err)) throw err
       throw new ArtifactMediaOffloadError(referencing[0]!, oid, err)
     }
     for (const entry of group.entries) {

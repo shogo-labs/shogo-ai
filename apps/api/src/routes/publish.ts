@@ -1187,6 +1187,7 @@ async function configurePublishedService(
   const { ensureProductionEnvironment, getEnvironment, scaleSettingsOf } = await import(
     "../services/published-environments.service"
   )
+  const { postgresScaleTarget } = await import("../lib/published-scale")
   const environmentName = opts?.environment ?? "production"
   const environment =
     environmentName === "production"
@@ -1257,17 +1258,40 @@ async function configurePublishedService(
     }
   }
 
-  // SHO-551 F: Postgres environments run with min-scale 1 and max-scale > 1.
-  // SQLite environments stay at max 1 (single-writer data-sync safety).
-  const POSTGRES_MAX_REPLICAS = 5
+  // SHO-551 §F: a Postgres environment is not pinned to one replica. 1 at rest
+  // (the autoscaler's floor), max-scale above 1 so a traffic spike — or a
+  // deploy, where the new revision must be ready while the old one still
+  // serves — can get a second pod. SQLite environments stay at max 1: two pods
+  // would serve two different `prisma/dev.db` files.
+  //
+  // The result is persisted through `setEnvironmentScale`, the same path the
+  // Publishing dashboard uses, so the plan's cap and the local-state guard
+  // decide and the row agrees with the ksvc. A value computed here and thrown
+  // away was what let a later cutover/rollback re-apply one replica.
   const rawScale = scaleSettingsOf(environment)
-  const scale = currentDbProvider === "postgres"
-    ? {
-        minReplicas: Math.max(rawScale.minReplicas, 1),
-        maxReplicas: Math.max(rawScale.maxReplicas, POSTGRES_MAX_REPLICAS),
-        size: rawScale.size,
-      }
-    : rawScale
+  let scale = postgresScaleTarget(rawScale, {
+    alwaysOn: opts?.alwaysOn === true,
+    dbProvider: currentDbProvider,
+  })
+  if (scale.minReplicas !== rawScale.minReplicas || scale.maxReplicas !== rawScale.maxReplicas) {
+    const { setEnvironmentScale } = await import("../services/published-environments.service")
+    const applied = await setEnvironmentScale(projectId, environmentName, scale)
+    if (applied.ok) {
+      scale = applied.value.settings
+      console.log(
+        `[Publish] ${environmentName} scale for ${projectId}: min-scale ${scale.minReplicas}, ` +
+          `max-scale ${scale.maxReplicas} (was ${rawScale.minReplicas}/${rawScale.maxReplicas})`,
+      )
+    } else {
+      // The plan cap or the local-state guard refused it: keep what is stored
+      // rather than bypassing either.
+      console.log(
+        `[Publish] Keeping ${environmentName} at min-scale ${rawScale.minReplicas} / ` +
+          `max-scale ${rawScale.maxReplicas}: ${applied.message}`,
+      )
+      scale = rawScale
+    }
+  }
 
   // One image per commit (SHO-308 §2). Built here, at publish time, so the
   // ksvc boots from a pinned digest and a cold start is a container start —

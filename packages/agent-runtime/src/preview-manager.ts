@@ -38,7 +38,7 @@ import {
 import { containChild, type Containment } from './process-tree'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
 import { checkServerTsxDrift, healServerTsxDrift, captureServerCustomRegions, reapplyServerCustomRegions } from './server-tsx-drift'
-import { enforceSchemaHeader, headerIsDowngraded, enforcePrismaConfig, configIsDowngraded } from '@shogo-ai/sdk/generators'
+import { enforceSchemaHeader, headerIsDowngraded, enforcePrismaConfig, configIsDowngraded, databaseUrlGuard } from '@shogo-ai/sdk/generators'
 import {
   commitBuildOutputAsync,
   cleanupStagingOutput,
@@ -3178,6 +3178,18 @@ export class PreviewManager {
     }
 
     const devDb = join(cwd, 'prisma', 'dev.db')
+
+    // A published Postgres pod runs a `provider = "postgresql"` schema, and the
+    // API pushes that schema into the environment's database itself
+    // (`pushPublishedSchema`). Pushing `file:…/dev.db` here would exit P1013
+    // ("the URL must start with the protocol postgresql://") — and since SHO-551
+    // made a failed push fatal, that turned into a revision that never became
+    // ready (QA round 1, reproduced). So the pod skips its own push entirely.
+    if (databaseUrlGuard(process.env.DATABASE_URL).isPostgres) {
+      console.log(`[${LOG_PREFIX}] DATABASE_URL is Postgres — the API owns this schema, skipping db push`)
+      timings.dbPush = 0
+      return
+    }
 
     // SHO-551 D: in a published pod, always run an additive db push even when
     // dev.db already exists — a republish may add new nullable columns that the

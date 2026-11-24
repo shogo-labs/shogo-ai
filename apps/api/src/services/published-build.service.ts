@@ -162,17 +162,17 @@ export async function ensurePublishedImage(
   const variant = input.dbProvider === 'postgres' ? 'pg' : undefined
 
   // The image does not depend on the environment — only env vars differ — so a
-  // commit built for staging is the same image production runs. Guard the reuse
-  // against a cross-variant mismatch: a SQLite image must not run as a Postgres
-  // pod (or vice versa) — the db driver is baked into the image (SHO-551 B).
+  // commit built for staging is the same image production runs. The variant is
+  // part of the reuse key, because the db driver is baked into the image (SHO-551 B):
+  // the default `findReusableImage` filters on the recorded tag, and this check
+  // makes a deps implementation that returns the wrong variant unusable rather
+  // than silently serving a SQLite client to a Postgres pod.
   const reusable = await deps.findReusableImage({ projectId: input.projectId, commitSha, variant })
   const { publishedImageCommitTag: commitTagFn } = await import('@shogo/shared-runtime/published-image-ref')
   const expectedTag = commitTagFn(commitSha, variant)
-  // A digest-pinned ref (`repo@sha256:…`) is content-addressed, so it cannot
-  // be a cross-variant mismatch. Only check the tag suffix on tag refs.
-  const ref = reusable?.imageRef ?? ''
-  const isDigestPinned = ref.includes('@sha256:')
-  const reusableMatchesVariant = isDigestPinned || ref.endsWith(`:${expectedTag}`)
+  // A tag ref carries the variant as its suffix. A digest-pinned ref carries no
+  // variant, so it cannot be attributed to this publish shape and is not reused.
+  const reusableMatchesVariant = !!reusable?.imageRef.endsWith(`:${expectedTag}`)
   if (reusable?.imageDigest && reusableMatchesVariant) {
     deps.log(`[PublishedBuild] Reusing ${reusable.imageDigest} for ${input.projectId}@${commitSha.slice(0, 8)}`)
     return {
@@ -334,8 +334,14 @@ function defaultDeps(): PublishedBuildDeps {
 }
 
 /**
- * The commit's image if this project (in any environment) already has one.
+ * The commit's image if this project (in any environment) already has one, for
+ * **this build variant**.
+ *
  * `imageDigest` is what makes reuse safe: a tag can be moved, a digest cannot.
+ * The variant is in the key too, because the database driver is baked into the
+ * image — reusing a SQLite build for a Postgres publish (or the reverse) boots a
+ * pod with the wrong driver, and the recorded `:<sha>` / `:<sha>-pg` tag is the
+ * only place that distinction is stored (SHO-551 B, QA round 1).
  */
 async function findReusableImage(input: {
   projectId: string
@@ -352,12 +358,17 @@ async function findReusableImage(input: {
   const environmentIds = (environments ?? []).map((row: { id: string }) => row.id)
   if (environmentIds.length === 0) return null
 
+  const { publishedImageCommitTag } = await import('@shogo/shared-runtime/published-image-ref')
+  const expectedTag = publishedImageCommitTag(input.commitSha, input.variant)
+
   const row = await (prisma as any).publishedDeployment.findFirst({
     where: {
       commitSha: input.commitSha,
       environmentId: { in: environmentIds },
       imageDigest: { not: null },
       status: 'ready',
+      // Exact tag match, both ways: `:abc123` never matches `:abc123-pg`.
+      imageRef: { endsWith: `:${expectedTag}` },
     },
     orderBy: { createdAt: 'desc' },
   })
