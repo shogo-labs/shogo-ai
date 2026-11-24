@@ -26,7 +26,9 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { config } from './config'
+import { config, type MetalConfig } from './config'
+import { MetalWarmPool } from './pool'
+import type { SnapshotStore } from './snapshot-store'
 import {
   addBadRootfs,
   findBadRootfs,
@@ -66,13 +68,22 @@ const saved = {
   dockerBaseRootfs: config.dockerClass.baseRootfs,
 }
 
-/** A `debugfs` that always says the guest init is there and executable. */
+/**
+ * A `debugfs` that always says the guest init is there and executable, and
+ * answers `cat` with the revision stamped into a real image — so
+ * `captureOutgoingGeneration` can read a revision out of the outgoing image
+ * the same way it does on a host.
+ */
 function fakeDebugfs(): void {
   const bin = join(dir, 'bin')
   mkdirSync(bin, { recursive: true })
   writeFileSync(
     join(bin, 'debugfs'),
     `#!/usr/bin/env bash
+if [[ "$*" == *"cat /etc/shogo-runtime-revision"* ]]; then
+  echo "abc1234"
+  exit 0
+fi
 echo "Inode: 42   Type: regular    Mode:  0755   Flags: 0x0"
 `,
   )
@@ -124,8 +135,9 @@ afterEach(() => {
 // ─── AC1: .prev is kept; a second activation replaces it ─────────────────────
 
 describe('AC1 — activation keeps the previous generation', () => {
-  test('activation writes .prev and ROOTFS_PREV before it stamps ROOTFS_SHA', async () => {
+  test('activation writes .prev and a correct ROOTFS_PREV before it stamps ROOTFS_SHA', async () => {
     writeFileSync(config.baseRootfs, 'generation 1')
+    writeFileSync(join(dir, 'ROOTFS_SHA'), 'v1')
     stageFile(config.baseRootfs, 'generation 2')
     writeStagedMarker('v2')
 
@@ -140,9 +152,19 @@ describe('AC1 — activation keeps the previous generation', () => {
     expect(existsSync(prev)).toBe(true)
     expect(readFileSync(prev, 'utf8')).toBe('generation 1')
 
+    // The marker has to describe the image that was live a moment ago, because
+    // after the rename nothing else can: the version it was serving, the
+    // revision stamped inside it, and the identity its snapshots were taken on.
     const prevMarker = readPrevious(dir)
     expect(prevMarker).not.toBeNull()
+    expect(prevMarker!.version).toBe('v1')
+    expect(prevMarker!.revision).toBe('abc1234')
+    expect(prevMarker!.identities.standard).toMatch(/^sz\d+-mt\d+$/)
     expect(typeof prevMarker!.activatedAt).toBe('number')
+    // …and the host now claims the new release, with the watch open.
+    expect(getRootfsSha()).toBe('v2')
+    expect(getRootfsWatch()?.version).toBe('v2')
+    expect(getRootfsWatch()?.prevVersion).toBe('v1')
   })
 
   test('a second activation replaces .prev — never accumulates a second generation', async () => {
@@ -404,6 +426,82 @@ describe('AC5 — prev identity is kept by reclaimStaleSnapshots during the watc
 
     // Watch is cleared: no identities to spare.
     expect(readWatch(dir)).toBeNull()
+  })
+
+  /**
+   * The contract AC5 actually cares about: `reclaimStaleSnapshots` — the sweep
+   * that deletes local snapshots taken on a superseded rootfs — must skip the
+   * generation a rollback would resume from, and resume deleting once the watch
+   * closes. Asserted on the real pool method, not on the markers, because the
+   * markers round-tripping says nothing about whether the sweep honours them.
+   */
+  test('reclaimStaleSnapshots spares the previous generation while a watch is open, and reclaims it after', async () => {
+    mkdirSync(join(dir, 'snap'), { recursive: true })
+    mkdirSync(join(dir, 'run'), { recursive: true })
+    writeFileSync(config.baseRootfs, Buffer.alloc(1024))
+    const cfg = {
+      ...config,
+      work: dir,
+      snapDir: join(dir, 'snap'),
+      runDir: join(dir, 'run'),
+      poolSize: 0,
+      snapStore: 'none',
+    } as unknown as MetalConfig
+    // Only the teardown calls the sweep makes: no VM is ever booted here.
+    const mgr = {
+      releaseRootfs: async () => {},
+      releaseDataDrive: () => {},
+      releaseTap: async () => {},
+    }
+    const pool = new MetalWarmPool(mgr as any, cfg, { kind: 'none' } as unknown as SnapshotStore)
+
+    const files = {
+      snapshotPath: join(dir, 'p1.vmstate'),
+      memFilePath: join(dir, 'p1.mem'),
+      rootfs: join(dir, 'p1.rootfs.ext4'),
+    }
+    for (const p of Object.values(files)) writeFileSync(p, 'x')
+    // A snapshot taken on the generation the activation just replaced: stale
+    // against the live image, and exactly what a rollback would restore from.
+    ;(pool as any).suspended.set('ws:proj:p1', {
+      projectId: 'ws:proj:p1',
+      snapshot: {
+        vmId: 'vm-1',
+        ...files,
+        net: { tap: 'fctap1', guestIp: '127.0.0.1', guestMac: 'aa:bb:cc:dd:ee:ff' },
+        vcpus: 2,
+        memoryMB: 1024,
+        createdAt: 1,
+        bytesMem: 2,
+        bytesState: 2,
+        bytesRootfs: 2,
+        vmClass: 'standard',
+      },
+      suspendedAt: 1,
+      lastAccessAt: 1,
+      rootfsIdentity: 'PREV-IMAGE',
+    } as any)
+
+    writeWatch(dir, { version: 'v2', prevVersion: 'v1', activatedAt: 1, until: Date.now() + 60_000 })
+    writePrevious(dir, {
+      version: 'v1',
+      revision: 'rev-v1',
+      identities: { standard: 'PREV-IMAGE' },
+      activatedAt: 1,
+    })
+
+    const kept = await (pool as any).reclaimStaleSnapshots(10)
+    expect(kept.projectIds).toEqual([])
+    expect((pool as any).suspended.has('ws:proj:p1')).toBe(true)
+    expect(existsSync(files.snapshotPath)).toBe(true)
+
+    // Watch closed (expired or rolled back) → normal reclaim resumes, and the
+    // same entry is stale-and-reclaimable again.
+    rmSync(join(dir, 'ROOTFS_WATCH'), { force: true })
+    const reclaimed = await (pool as any).reclaimStaleSnapshots(10)
+    expect(reclaimed.projectIds).toEqual(['ws:proj:p1'])
+    expect((pool as any).suspended.has('ws:proj:p1')).toBe(false)
+    expect(existsSync(files.snapshotPath)).toBe(false)
   })
 })
 
