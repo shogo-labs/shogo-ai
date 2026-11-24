@@ -11,7 +11,7 @@
 import { Tray, Menu, nativeImage, app, type NativeImage, type MenuItemConstructorOptions } from 'electron'
 import fs from 'fs'
 import path from 'path'
-import { startRecording, stopRecording, getRecordingStatus, setMeetingConfig } from './recording'
+import { startRecording, stopRecording, getRecordingStatus, setMeetingConfig, onRecordingStateChange } from './recording'
 import { readConfig, writeConfig, type MeetingConfig } from './config'
 import {
   buildTrayMenuTemplate,
@@ -53,6 +53,9 @@ let lastTemplateSignature: string | null = null
 let lastTemplate: MenuItemConstructorOptions[] = []
 /** The 1 s tick that keeps the recording timer live. Only runs while recording. */
 let titleTimer: ReturnType<typeof setInterval> | null = null
+/** Dropped on destroy, so a tray rebuilt after a cloud-mode restart does not
+ * leave a second listener on the recording. */
+let unsubscribeRecordingState: (() => void) | null = null
 
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60)
@@ -253,6 +256,11 @@ export function createTray(next: Partial<TrayOptions> = {}): void {
   tray.setToolTip('Shogo')
   rebuild({ force: true })
 
+  // A recording can start from the Meetings submenu, the island prompt, the
+  // app's own controls or auto-detect; the icon and timer follow the capture
+  // itself rather than the click that began it.
+  unsubscribeRecordingState = onRecordingStateChange(() => refreshTray())
+
   // Left-click opens the dropdown on every platform. Recording moved into
   // Meetings ▸; a click that silently started a capture was the old surprise.
   tray.on('click', () => tray?.popUpContextMenu())
@@ -262,6 +270,8 @@ export function createTray(next: Partial<TrayOptions> = {}): void {
 
 export function destroyTray(): void {
   stopTitleTimer()
+  unsubscribeRecordingState?.()
+  unsubscribeRecordingState = null
   if (tray) {
     tray.destroy()
     tray = null

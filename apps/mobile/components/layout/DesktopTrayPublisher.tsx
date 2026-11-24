@@ -113,6 +113,22 @@ export function DesktopTrayPublisher() {
     return chatSessionEvents.subscribe(sync)
   }, [enabled])
 
+  // "Clear All Notifications" has to reach the rows this window published, not
+  // just the sidebar's: a project chat's blue dot lived here until the next
+  // 10 s poll. Dropped locally rather than by re-reading the island, so the
+  // result does not depend on which clear listener ran first.
+  useEffect(() => {
+    if (!enabled) return
+    return chatSessionEvents.subscribeClearCompletions(() => {
+      setCompletedProjectIds([])
+      setIslandSessions((current) =>
+        current.some((session) => session.status === 'done')
+          ? current.map((session) => (session.status === 'done' ? { ...session, status: 'idle' as const } : session))
+          : current,
+      )
+    })
+  }, [enabled])
+
   useEffect(() => {
     if (!enabled || !desktop) return
     const model = buildTrayModel({
