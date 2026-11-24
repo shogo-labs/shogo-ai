@@ -28,6 +28,8 @@ import { readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { reactNativeMockBase } from './react-native-mock'
 
+const Platform = reactNativeMockBase.Platform
+
 /**
  * Every physical copy of `react-native` a module in this repo can reach.
  *
@@ -210,6 +212,14 @@ mock.module(agentFetchPath, () => ({
   // A download streamed by `expo-file-system` takes headers instead of a
   // `RequestInit`; under test there is no session to attach (SHO-434).
   nativeAuthHeaders: () => ({}),
+  // The platform half of the same rule (SHO-564): web asks the browser for
+  // its cookies, native carries the session in a header and keeps the jar out.
+  authedCredentials: () => (Platform.OS === 'web' ? 'include' : 'omit'),
+  authedFetchInit: (init: RequestInit = {}) => ({
+    ...init,
+    headers: { ...((init.headers as Record<string, string> | undefined) ?? {}) },
+    credentials: Platform.OS === 'web' ? 'include' : 'omit',
+  }),
 }))
 
 // `authed-event-source` transitively loads `auth-client` → `better-auth`

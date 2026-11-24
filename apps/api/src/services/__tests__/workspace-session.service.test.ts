@@ -18,6 +18,9 @@ interface State {
   findManyAttached: any[]
   // project.findUnique result: the workspace that owns the looked-up project
   projectWorkspaceId: string | null
+  // chatMessage.groupBy(_count) answer: sessionId -> message count
+  messageCounts: Record<string, number>
+  groupByCalls: any[]
 }
 
 const s: State = {
@@ -32,6 +35,8 @@ const s: State = {
   deleteManyCount: 0,
   findManyAttached: [],
   projectWorkspaceId: null,
+  messageCounts: {},
+  groupByCalls: [],
 }
 
 mock.module('../../lib/prisma', () => ({
@@ -79,6 +84,15 @@ mock.module('../../lib/prisma', () => ({
       deleteMany: async (_args: any) => ({ count: s.deleteManyCount }),
       findMany: async (_args: any) => s.findManyAttached,
     },
+    chatMessage: {
+      groupBy: async (args: any) => {
+        s.groupByCalls.push(args)
+        const ids: string[] = args.where.sessionId.in
+        return ids
+          .filter((id) => id in s.messageCounts)
+          .map((id) => ({ sessionId: id, _count: { _all: s.messageCounts[id] } }))
+      },
+    },
     project: {
       findMany: async (args: any) => {
         const ids: string[] = args.where.id.in
@@ -104,6 +118,8 @@ beforeEach(() => {
   s.deleteManyCount = 0
   s.findManyAttached = []
   s.projectWorkspaceId = null
+  s.messageCounts = {}
+  s.groupByCalls = []
 })
 
 describe('upgradeProjectSessionToWorkspace', () => {
@@ -292,18 +308,44 @@ describe('listWorkspaceSessions', () => {
 
   it('reports how many messages each chat has, so an empty one is reusable', async () => {
     s.listedSessions = [
-      { id: 'used', inferredName: 'Chat', _count: { messages: 4 } },
-      { id: 'empty', inferredName: 'Chat', _count: { messages: 0 } },
+      { id: 'used', inferredName: 'Chat' },
+      { id: 'empty', inferredName: 'Chat' },
+      { id: 'never-opened', inferredName: 'Chat' },
     ]
+    // A chat with no rows at all is absent from the grouped result.
+    s.messageCounts = { used: 4 }
     const sessions = await svc.listWorkspaceSessions('ws-1', 'user-1')
     expect(sessions.map((row: any) => [row.id, row.messageCount])).toEqual([
       ['used', 4],
       ['empty', 0],
+      ['never-opened', 0],
     ])
-    // The count is folded into `messageCount`; the raw `_count` stays internal.
-    expect(sessions[0]).not.toHaveProperty('_count')
     expect(sessions[0]).toMatchObject({ inferredName: 'Chat' })
-    expect(s.findManySessionCalls[0].include._count).toEqual({ select: { messages: true } })
+  })
+
+  // SHO-564: `include: { _count: { select: { messages: true } } }` made Postgres
+  // re-aggregate the whole chat_messages session index once per session (6.86 s
+  // for 124 chats). The count now comes from one grouped scan over the ids.
+  it('counts with one grouped query instead of a _count include', async () => {
+    s.listedSessions = [{ id: 'a' }, { id: 'b' }]
+    s.messageCounts = { a: 2, b: 7 }
+    await svc.listWorkspaceSessions('ws-1', 'user-1')
+
+    expect(s.findManySessionCalls[0].include).toEqual({ attachedProjects: true })
+    expect(s.findManySessionCalls[0].include._count).toBeUndefined()
+    expect(s.groupByCalls).toHaveLength(1)
+    expect(s.groupByCalls[0]).toMatchObject({
+      by: ['sessionId'],
+      where: { sessionId: { in: ['a', 'b'] } },
+      _count: { _all: true },
+    })
+  })
+
+  it('does not query at all for a workspace with no chats', async () => {
+    s.listedSessions = []
+    const sessions = await svc.listWorkspaceSessions('ws-1', 'user-1')
+    expect(sessions).toEqual([])
+    expect(s.groupByCalls).toHaveLength(0)
   })
 })
 
