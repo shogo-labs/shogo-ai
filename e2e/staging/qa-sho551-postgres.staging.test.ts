@@ -38,9 +38,15 @@ const LIVE = `https://${SUBDOMAIN}.staging.shogo.one`
 const ORPHAN_PARENT = "qa-sho551-orphan-parent"
 const ROW_EMAIL = `qa-sho551-${STAMP}@example.com`
 
-/** The backend must stay untouched — the test writes through its generated CRUD. */
+/**
+ * The fixture has to be a **server-backed** app. §F is about the Prisma client the
+ * app talks to Postgres with, and a static "Single Page App" never reaches the code
+ * under test — round 7 built one, which is how `!serverBacked` was hit at all.
+ */
 const APP_PROMPT =
-  "Do not change prisma/schema.prisma, server.tsx, custom-routes.ts, package.json or any backend file. " +
+  "Build a server-backed app: keep prisma/schema.prisma with its User model and keep the " +
+  "generated CRUD API in server.tsx. Do not change prisma/schema.prisma, server.tsx, " +
+  "custom-routes.ts, package.json or any other backend file. " +
   'Only replace src/App.tsx with a single page that renders the heading "SHO-551 QA". Nothing else.'
 
 const KUBECONFIG = `${homedir()}/.kube/config-shogo-staging`
@@ -209,14 +215,28 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     console.log(`[qa-sho551] publish -> ${published.status()} ${JSON.stringify(publishBody)}`)
     expect(published.ok(), `publish failed: ${JSON.stringify(publishBody)}`).toBeTruthy()
 
-    const envRow = psql(
-      `select coalesce("dbProvider",'(null)') || ' | ' || coalesce("dbName",'(null)') from published_environments ` +
-        `where "projectId" = '${projectId}' and name = 'production'`,
+    // `publish` answers 202 and builds in the background, so the environment row
+    // appears — and gains its provider — only once the pipeline reaches it.
+    // Polling the row is also what surfaces a build failure with its own
+    // message, instead of a bare timeout further down.
+    const envRow = await poll(
+      "the published environment to become Postgres",
+      async () => {
+        const row = psql(
+          `select coalesce("dbProvider",'-') || ' | ' || coalesce("dbName",'-') || ' | ' || coalesce("publishStatus",'-') || ' | ' || coalesce(left("publishError",400),'-') from published_environments ` +
+            `where "projectId" = '${projectId}' and name = 'production'`,
+        )
+        if (!row.trim()) return null
+        const [provider, , status] = row.split("|").map((part) => part.trim())
+        return status === "failed" || provider === "postgres" ? row : null
+      },
+      900_000,
     )
     evidence.environmentRow = envRow
     dbName = envRow.split("|")[1]?.trim() ?? ""
     saveEvidence()
     console.log(`[qa-sho551] environment: ${envRow}`)
+    expect(envRow, "the publish must not have failed").not.toMatch(/\|\s*failed\s*\|/)
     expect(envRow, "the published environment must be Postgres").toContain("postgres")
 
     await poll(
@@ -236,6 +256,46 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     evidence.podSchemaHead = schema.slice(0, 1200)
     const models = [...schema.matchAll(/^model\s+(\w+)/gm)].map((m) => m[1])
     evidence.models = models
+    // A static fixture would pass the publish and then prove nothing: there is no
+    // Prisma client to check and no generated route to call. Say so here.
+    expect(
+      models.length,
+      "the fixture must be a server-backed Prisma app — §F tests the client that talks to Postgres",
+    ).toBeGreaterThan(0)
+
+    // The defect this spec exists to catch (SHO-551): the environment row said
+    // Postgres while the artifact was built SQLite-native — `provider = "sqlite"`
+    // and a libsql client — so Prisma talked libsql at a Postgres socket and
+    // every generated CRUD route 500'd. The row is not the proof; the artifact is.
+    expect(schema, "the deployed schema must be Postgres-native").toContain('provider = "postgresql"')
+    expect(schema, "the deployed schema must not still say sqlite").not.toMatch(/provider\s*=\s*"sqlite"/)
+    const dbModule = podExec(pod!, ["sh", "-lc", "cat /app/src/lib/db.ts /app/src/lib/db.tsx 2>/dev/null || true"])
+    evidence.podDbModuleHead = dbModule.slice(0, 800)
+    if (!dbModule.startsWith("<kubectl failed") && dbModule.trim().length > 0) {
+      expect(dbModule, "the pod's Prisma client must be the pg adapter").toContain("PrismaPg")
+      expect(dbModule, "the pod must not construct a libsql client").not.toContain("PrismaLibSql")
+    }
+
+    // The two ways a Postgres environment ends up on SQLite *anyway* (QA round 8):
+    // the ksvc boots the SHARED runtime image, so its boot hydrates the git tag —
+    // a SQLite schema, a LibSQL client, and a `prisma/dev.db` that absorbs every
+    // write while `projects-pg` stays empty. The schema/db.ts assertions above
+    // catch the symptom; these catch the cause, so a regression names it.
+    const image = kubectl(["get", "pod", pod!, "-o", "jsonpath={.spec.containers[0].image}"]).trim()
+    evidence.podImage = image
+    saveEvidence()
+    expect(image, "a Postgres environment must run its own per-commit build").toContain("/published/")
+    const devDb = podExec(pod!, [
+      "sh",
+      "-lc",
+      'for p in /app/prisma/dev.db /app/workspace/prisma/dev.db; do [ -e "$p" ] && echo "EXISTS $p"; done; echo checked',
+    ])
+    evidence.podDevDb = devDb.slice(0, 400)
+    saveEvidence()
+    expect(
+      devDb,
+      "a Postgres pod must not carry a SQLite database — that is the per-pod file writes were landing in",
+    ).not.toContain("EXISTS")
 
     for (const m of models.filter((m) => m === "User").concat(models.filter((m) => m !== "User"))) {
       const candidate = routePathFor(m)
