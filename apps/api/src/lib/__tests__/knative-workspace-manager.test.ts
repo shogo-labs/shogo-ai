@@ -203,3 +203,35 @@ describe('buildKnativeWorkspaceService — pod spec', () => {
     expect(ann['autoscaling.knative.dev/target-burst-capacity']).toBe('0')
   })
 })
+
+/**
+ * SHO-560. A workspace runtime's AI proxy token refresh has to mint the same
+ * member set the pod booted with. The Service bakes that set into
+ * `WORKSPACE_PROJECT_IDS` at create time and is never rebuilt, so reading it
+ * back is the only faithful source — a chat session may be long gone.
+ */
+describe('workspaceMembersFromServiceSpec', () => {
+  const { workspaceMembersFromServiceSpec } = mod
+
+  it('reads the baked member ids from the created Service', () => {
+    const svc = buildKnativeWorkspaceService(baseOpts())
+    expect(workspaceMembersFromServiceSpec(svc)).toEqual(['p1', 'p2'])
+  })
+
+  it('reads an empty set for a workspace-session runtime with no members', () => {
+    const svc = buildKnativeWorkspaceService(
+      baseOpts({ attachedProjectIds: [], env: { WORKSPACE_PROJECT_IDS: '' } }),
+    )
+    expect(workspaceMembersFromServiceSpec(svc)).toEqual([])
+  })
+
+  it('returns null when no container carries the marker', () => {
+    expect(workspaceMembersFromServiceSpec({})).toBeNull()
+    expect(workspaceMembersFromServiceSpec({ spec: { template: { spec: { containers: [{}] } } } })).toBeNull()
+    expect(
+      workspaceMembersFromServiceSpec({
+        spec: { template: { spec: { containers: [{ env: [{ name: 'OTHER', value: 'x' }] }] } } },
+      }),
+    ).toBeNull()
+  })
+})
