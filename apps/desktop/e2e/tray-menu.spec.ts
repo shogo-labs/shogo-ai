@@ -23,6 +23,7 @@ import { _electron as electron, expect, test, type ElectronApplication, type Pag
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { mainAppWindow } from './electron-helpers'
 
 const E2E_ENABLED = process.env.PLAYWRIGHT_E2E === '1'
 test.skip(!E2E_ENABLED, 'set PLAYWRIGHT_E2E=1 to run')
@@ -78,12 +79,17 @@ async function launchApp(userDataDir: string): Promise<{ app: ElectronApplicatio
     env: {
       ...process.env,
       SHOGO_SKIP_LOCAL_SERVER: 'true',
-      SHOGO_E2E: 'true',
+      // Preload gates the `shogoTesting` bridge (and main its tray debug IPC) on
+      // the literal '1', not any truthy string.
+      SHOGO_E2E: '1',
       ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
     },
     timeout: 60_000,
   })
-  const page = await app.firstWindow({ timeout: 60_000 })
+  // Not `firstWindow()`: the island window opens at the same moment and can
+  // win the race, and this spec needs the window that publishes the model and
+  // receives the navigation.
+  const page = await mainAppWindow(app)
   await installMinimalMockLocalApi(page)
   await page.reload({ waitUntil: 'domcontentloaded' })
   await page.waitForFunction(
