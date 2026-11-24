@@ -35,7 +35,7 @@ import {
 } from '@shogo/shared-runtime/published-database'
 import { ensureEnvironmentDatabase, type PublishedDatabase } from './published-database.service'
 import { pushPublishedSchema } from './published-schema-push'
-import { readLiveSeedArchive } from './published-live-seed'
+import { headLiveSeedArchive, readLiveSeedArchive } from './published-live-seed'
 import type { SeedOrphan } from '@shogo/shared-runtime/published-schema'
 
 const SCHEMA_TIMEOUT_MS = 180_000
@@ -156,7 +156,18 @@ async function callRuntimeSchema(
 export async function prepareEnvironmentDatabase(
   projectId: string,
   environment: PublishedEnvironmentName,
-  opts: { allowDataLoss?: boolean } = {},
+  opts: {
+    allowDataLoss?: boolean
+    writeFreeze?: import('./published-write-freeze').WriteFreeze
+    /**
+     * Start a brand-new published database with no rows (`data: 'empty'`, §G4).
+     * Valid only on an environment's FIRST Postgres deploy with nothing to
+     * lose: no schema of its own and no live SQLite archive. The schema is
+     * pushed and nothing is seeded — `prisma/dev.db` is never read, so a builder
+     * database over the seed cap cannot block the switch.
+     */
+    data?: 'empty'
+  } = {},
 ): Promise<PrepareEnvironmentDatabaseResult> {
   const fail = (code: string, message: string, status = 400, details?: Record<string, unknown>) =>
     ({ ok: false, code, message, status, details }) as const
@@ -265,6 +276,41 @@ export async function prepareEnvironmentDatabase(
   }
 
   const unchanged = env?.dbSchemaHash === resolved.hash && env?.dbProvider === 'postgres'
+
+  // §G4: an app whose builder database is too big to seed (Nada App's 91 MB) can
+  // be started empty instead — but only where that cannot cost anything. Both
+  // refusals are named, so the caller acts on them instead of guessing why the
+  // publish stopped.
+  const startEmpty = opts.data === 'empty'
+  if (startEmpty) {
+    if (env?.dbSchema) {
+      return fail(
+        'data_empty_not_allowed',
+        `${environment} already has a Postgres schema. data: 'empty' only starts a database that has never been ` +
+          `seeded — it never wipes one. Publish without the option to apply the schema to the existing database.`,
+        400,
+        { environment },
+      )
+    }
+    const live = env?.subdomain
+      ? await headLiveSeedArchive(env.subdomain)
+      : ({ ok: true, exists: false, bytes: 0 } as const)
+    if (!live.ok) return fail(live.code, live.message, 413, { environment })
+    if (live.exists) {
+      return fail(
+        'data_empty_not_allowed',
+        `${environment} is already live on SQLite (${env?.subdomain}/data.tar.gz, ` +
+          `${(live.bytes / (1024 * 1024)).toFixed(1)} MB), so starting empty would leave everything that site has ` +
+          `written behind. Publish without the option to move its rows to Postgres instead.`,
+        400,
+        { environment, archiveBytes: live.bytes },
+      )
+    }
+    console.log(
+      `[published-schema] ${projectId}/${environment} starting empty (data: 'empty') — schema only, no seed`,
+    )
+  }
+
   // Seed only a database that has never had one: republishing must never
   // overwrite what the live site has written (Q4 seeds staging from dev.db, not
   // from production, and this is the same rule for both environments).
@@ -274,7 +320,7 @@ export async function prepareEnvironmentDatabase(
   // duplicate key — after the destructive push it was meant to rescue has already
   // dropped the column. Accepting data loss accepts the drop; it does not refill
   // the table.
-  const seed = !env?.dbSchema
+  const seed = !env?.dbSchema && !startEmpty
 
   // A first deploy of an environment that is ALREADY LIVE ON SQLITE must seed
   // from what that site is serving, not from the builder's `prisma/dev.db`
@@ -287,6 +333,16 @@ export async function prepareEnvironmentDatabase(
   // restores from, so the switch stays reversible.
   let liveSeed: { archive: string; bytes: number } | null = null
   if (seed && env?.subdomain) {
+    // §G3: the archive is only as current as the serving pod's last upload (30 s
+    // by default). Freeze writes and make the pod flush BEFORE reading it, or
+    // every write since that upload — and every write the SQLite pod accepts
+    // while the Postgres revision rolls out — is copied nowhere. The freeze stays
+    // up until the caller releases it (after the new revision serves), and always
+    // lifts through its own `end()`.
+    if (opts.writeFreeze) {
+      const frozen = await opts.writeFreeze.begin()
+      if (!frozen.ok) return fail(frozen.code, frozen.message, 409, { environment })
+    }
     const live = await readLiveSeedArchive(env.subdomain)
     if (!live.ok) {
       return fail(live.code, live.message, 413, { environment })
@@ -297,6 +353,11 @@ export async function prepareEnvironmentDatabase(
         `[published-schema] ${projectId}/${environment} has no Postgres schema yet and is live on SQLite — ` +
           `seeding from its archive (${liveSeed.bytes} bytes of prisma/dev.db), not prisma/dev.db`,
       )
+    } else if (opts.writeFreeze?.begun) {
+      // Nothing to preserve, so nothing to freeze for: an app that has never been
+      // live has no archive and no pending writes. Lift immediately rather than
+      // holding a maintenance page over a publish that only pushes a schema.
+      await opts.writeFreeze.end(null)
     }
   }
   const seededFrom = seed ? (liveSeed ? ('live-archive' as const) : ('dev.db' as const)) : null

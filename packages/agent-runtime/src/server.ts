@@ -6692,6 +6692,31 @@ app.post('/agent/published-data/suspend', (c) => {
 })
 
 /**
+ * Upload this pod's writable state NOW instead of at the next sync interval
+ * (§G3). The publish flow calls it inside a write freeze, so the archive it is
+ * about to seed Postgres from holds the last write the SQLite site accepted —
+ * without it, up to `PUBLISHED_DATA_SYNC_INTERVAL` (30 s) of real writes stay on
+ * a pod that the new revision replaces.
+ *
+ * `flushed: false, unchanged: true` is a success: the archive already holds this
+ * pod's current bytes, so there is nothing newer to wait for.
+ */
+app.post('/agent/published-data/flush', async (c) => {
+  if (!IS_PUBLISHED_MODE) {
+    return c.json({ error: 'not_published_mode', message: 'Only server-backed published pods can be flushed' }, 400)
+  }
+  if (!publishedDataSyncInstance) {
+    return c.json({ ok: true, flushed: false, unchanged: true })
+  }
+  try {
+    const flushed = await publishedDataSyncInstance.flush()
+    return c.json({ ok: true, flushed, unchanged: !flushed })
+  } catch (err: any) {
+    return c.json({ error: 'flush_failed', message: err?.message ?? String(err) }, 500)
+  }
+})
+
+/**
  * Whitespace-insensitive fingerprint of `prisma/schema.prisma`, used by the
  * publish flow to detect dev<->published schema drift before pushing the dev
  * database onto the live app (pushing a newer-schema DB onto older published

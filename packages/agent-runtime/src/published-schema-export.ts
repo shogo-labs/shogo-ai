@@ -272,7 +272,8 @@ export async function exportPublishedSchema(
         code: 'seed_too_large',
         message:
           `The seed database is ${Math.round(bytes / (1024 * 1024))} MB as SQL; a publish seeds at most ` +
-          `${MAX_SEED_SQL_BYTES / (1024 * 1024)} MB. Remove rows the published app does not need and publish again.`,
+          `${MAX_SEED_SQL_BYTES / (1024 * 1024)} MB. Remove rows the published app does not need and publish again, ` +
+          `or — if this app should start with no rows — publish with {\"data\":\"empty\"} to push the schema alone.`,
         status: 413,
       }
     }

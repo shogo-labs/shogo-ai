@@ -5700,6 +5700,12 @@ function createPublishTool(ctx: ToolContext): AgentTool {
             'Only after the user explicitly confirms: proceed even though the schema change destroys data (a dropped table/column, a narrowed type, or a new required column with no default). Publishing is refused with `destructive_schema_change` otherwise — show the user exactly which fields would lose data first.',
         }),
       ),
+      data: Type.Optional(
+        Type.Union([Type.Literal('empty')], {
+          description:
+            "Pass \"empty\" to start this environment's FIRST Postgres database with the app's schema and no rows — the way past `seed_too_large` (the builder database is too big to seed). Nothing is copied: the builder's dev.db is never read. Refused with `data_empty_not_allowed` when the environment already has a Postgres schema or is live on SQLite with data, so it can never wipe or abandon rows. Only use it when the user has agreed the live app should start with no data.",
+        }),
+      ),
       target: Type.Optional(
         Type.Union(
           [Type.Literal('web'), Type.Literal('ios'), Type.Literal('android'), Type.Literal('native')],
@@ -5802,6 +5808,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         project_id,
         environment,
         allow_data_loss,
+        data,
         ops_action,
         min_replicas,
         max_replicas,
@@ -5824,6 +5831,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         project_id?: string
         environment?: 'production' | 'staging'
         allow_data_loss?: boolean
+        data?: 'empty'
         ops_action?: 'status' | 'metrics' | 'logs' | 'scale' | 'rollback' | 'redeploy' | 'promote' | 'create_env' | 'delete_env' | 'list'
         min_replicas?: number
         max_replicas?: number
@@ -5920,6 +5928,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         siteDescription: site_description,
         environment: environment === 'staging' ? 'staging' : 'production',
         allowDataLoss: allow_data_loss === true,
+        data,
       })
 
       if (!res.ok) {
