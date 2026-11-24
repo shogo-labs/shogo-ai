@@ -18,11 +18,12 @@ import {
   Pressable,
   TextInput,
   FlatList,
-  useColorScheme,
   type ListRenderItemInfo,
 } from "react-native"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import { setStorageItem } from '@/lib/storage'
+import { withAlpha } from '@/lib/accent-themes'
+import { useAccentColors } from '@/contexts/accent-theme'
 import { LinearGradient } from "expo-linear-gradient"
 import { cn } from "@shogo/shared-ui/primitives"
 import {
@@ -428,10 +429,11 @@ export function ChatSessionSidebar({
   // Selected-row highlight uses a horizontal gradient that fades the primary
   // tint out toward the right edge — matches the sidebar wrapper's right-
   // edge fade so the selection stripe doesn't terminate in a hard line. The
-  // primary token differs between themes (light: rgb(226,121,39), dark:
-  // rgb(240,144,80) — see global.css), so we resolve the rgb here once.
-  const colorScheme = useColorScheme()
-  const primaryRgb = colorScheme === 'dark' ? '240,144,80' : '226,121,39'
+  // tint follows the live accent (`useAccentColors`), so a non-default accent
+  // tints the row in its own hue instead of orange.
+  const accent = useAccentColors()
+  const selectionTint = withAlpha(accent.primary, 0.1)
+  const selectionTintEnd = withAlpha(accent.primary, 0)
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState("")
   const [internalSearchOpen, setInternalSearchOpen] = useState(false)
@@ -668,7 +670,7 @@ export function ChatSessionSidebar({
             // so siblings (text + icons) stack on top; pointerEvents="none"
             // keeps row taps reaching the parent Pressable.
             <LinearGradient
-              colors={[`rgba(${primaryRgb},0.10)`, `rgba(${primaryRgb},0)`]}
+              colors={[selectionTint, selectionTintEnd]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 0 }}
               pointerEvents="none"

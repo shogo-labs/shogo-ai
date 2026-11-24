@@ -60,11 +60,11 @@ export const CHATGPT_COMPOSER = {
   dark: {
     fill: SURFACE_COLORS.dark.container,
     border: SURFACE_COLORS.dark.containerHighest,
-    borderFocus: '#F09050',
+    borderFocus: '#E27927',
     text: NATIVE_PHONE_ICON.dark,
     placeholder: '#A3A3A3',
     icon: NATIVE_PHONE_ICON.dark,
-    sendFill: '#F09050',
+    sendFill: '#E27927',
     sendIcon: '#FFFFFF',
   },
 } as const
