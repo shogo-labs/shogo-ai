@@ -58,6 +58,13 @@ export interface FcVmConfig {
   vmClass?: VmClass
   /** Golden image to provision the rootfs from instead of the class base (the staged rootfs). */
   rootfsBase?: string
+  /**
+   * `rootfsBase` is the image that will BECOME the class base (the boot probe).
+   * Provision it the way live will provision it after the rename — in dm mode a
+   * snapshot over a loop of that file, not a full copy, which is a different boot
+   * path and can pass while every live boot fails (SHO-563).
+   */
+  rootfsBaseBecomesClassBase?: boolean
 }
 
 export interface FcVmHandle {
@@ -117,6 +124,58 @@ function serialTail(path: string, lines = 10): string {
     return tail ? `\n--- serial tail ---\n${tail}` : ''
   } catch {
     return ''
+  }
+}
+
+/** The last thing the guest printed, on one line: what a boot error is read for. */
+export function serialLastLine(path: string, max = 200): string {
+  try {
+    const lines = readFileSync(path, 'utf8').trimEnd().split('\n')
+    const last = (lines[lines.length - 1] ?? '').replace(/[\r\n]+/g, ' ').trim()
+    return last.length > max ? `${last.slice(0, max)}…` : last
+  } catch {
+    return ''
+  }
+}
+
+/** The last `lines` lines of a VM's serial log (empty when unreadable). */
+export function readSerialTail(path: string, lines = 20): string {
+  return serialTail(path, lines).replace(/^\n--- serial tail ---\n/, '')
+}
+
+let bootTimeCache: number | null = null
+
+/** Boot wall-clock (ms since epoch), from /proc/stat's `btime`. */
+function bootTimeMs(): number | null {
+  if (bootTimeCache !== null) return bootTimeCache
+  try {
+    const m = /^btime\s+(\d+)$/m.exec(readFileSync('/proc/stat', 'utf8'))
+    bootTimeCache = m ? parseInt(m[1], 10) * 1000 : null
+  } catch {
+    bootTimeCache = null
+  }
+  return bootTimeCache
+}
+
+/**
+ * How long a process has been alive, in ms, straight from /proc — so the answer
+ * is right for a process this agent did not spawn (a survivor of the previous
+ * one). `undefined` when it cannot be read.
+ */
+export function procAgeMs(pid: number, now = Date.now()): number | undefined {
+  const btime = bootTimeMs()
+  if (btime === null) return undefined
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    // The comm field (2) is parenthesised and may itself contain spaces and
+    // parentheses, so the numbered fields only line up after the LAST ')'.
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+    const startTicks = parseInt(fields[19], 10) // field 22: starttime, in clock ticks
+    if (!Number.isFinite(startTicks)) return undefined
+    // USER_HZ is 100 on every Linux ABI the kernel exposes to userspace.
+    return now - (btime + (startTicks / 100) * 1000)
+  } catch {
+    return undefined
   }
 }
 
@@ -321,16 +380,39 @@ export class FirecrackerVMManager {
   }
 
   /**
-   * SIGKILL every firecracker process on the host whose `--id` is NOT in
-   * `keepIds`. Run ONCE at startup, AFTER adoption, to clear VMs the previous
-   * agent left behind that we did not re-adopt: old warm-pool VMs (no state to
-   * lose) and assigned VMs whose guest failed health. `keepIds` must be the set
-   * of adopted handle ids. Returns the number reaped.
+   * SIGKILL every firecracker process on the host that `keepIds` does not name —
+   * the startup safety net for processes leaked by a previous agent instance.
+   *
+   * Two guards, both learned the hard way:
+   *   1. `keepIds` must be every id the pool currently owns, not just the ones it
+   *      ADOPTED: warm and in-flight boots are not in the live registry, and at
+   *      startup the fill runs while `adopt()` is still health-probing survivors.
+   *   2. A process younger than `graceMs` is never an orphan, whatever the
+   *      registry says. Its real age comes from /proc, so this holds for a VM
+   *      booting right now whether or not this process spawned it.
+   *
+   * Without both, staging killed its own warm pool on 2026-11-24 (SHO-563): the
+   * activation restart spawned 8 warm VMs at 08:47:24, the health probes in
+   * `adopt()` finished at 08:47:26, and this scan SIGKILLed all 8 of them — which
+   * the probation watch then read as 8/8 failed cold boots and rolled a perfectly
+   * good image back.
    */
-  reapHostOrphans(keepIds: Set<string>): number {
+  reapHostOrphans(keepIds: Set<string>, opts: { graceMs?: number; now?: number } = {}): number {
+    const graceMs = opts.graceMs ?? ORPHAN_PROC_GRACE_MS
+    const now = opts.now ?? Date.now()
     let killed = 0
+    let unreadable = 0
     for (const { pid, id } of this.scanHostFcProcs()) {
       if (id && keepIds.has(id)) continue
+      const age = procAgeMs(pid, now)
+      if (age === undefined) {
+        // Age unknown is not evidence of an orphan. A leaked process costs one
+        // more sweep; killing a booting one costs a VM (and, in a watch window,
+        // the image).
+        unreadable++
+        continue
+      }
+      if (age < graceMs) continue
       try {
         process.kill(pid, 'SIGKILL')
         killed++
@@ -345,8 +427,35 @@ export class FirecrackerVMManager {
         }
       }
     }
+    if (unreadable) {
+      console.warn(`[fc] could not read the age of ${unreadable} firecracker process(es) — left alone this pass`)
+    }
     if (killed) console.warn(`[fc] reaped ${killed} non-adopted firecracker process(es) at startup`)
     return killed
+  }
+
+  /**
+   * How a spawned VM's firecracker process ended, for a boot error: the exit
+   * code and the signal that killed it. `null` when there is nothing to report
+   * (an adopted pid, or a process still running).
+   */
+  procExit(id: string): { code: number | null; signal: string | null; ageMs: number } | null {
+    const proc = this.procs.get(id)
+    if (!proc || proc.exitCode === null) return null
+    const born = this.spawnedAt.get(id)
+    return {
+      code: proc.exitCode,
+      signal: (proc.signalCode as string | null) ?? null,
+      ageMs: born ? Date.now() - born : 0,
+    }
+  }
+
+  /** One line saying why a VM that never answered /health is gone. */
+  exitSummary(id: string): string {
+    const exit = this.procExit(id)
+    if (!exit) return 'firecracker process is gone'
+    const how = exit.signal ? `signal ${exit.signal}` : `code ${exit.code}`
+    return `${how} ${(exit.ageMs / 1000).toFixed(1)}s after spawn`
   }
 
   /**
@@ -509,11 +618,10 @@ export class FirecrackerVMManager {
     const serialLog = join(this.cfg.runDir, `${id}.serial`)
 
     // Per-VM writable rootfs off the class's golden image (full copy / reflink
-    // CoW / dm-snapshot depending on METAL_ROOTFS_COW). dm mode is restricted
-    // to 'standard' by isVmClassSupported()/callers, so it never reaches here
-    // with a non-default base — provision() always uses cfg.baseRootfs in dm
-    // mode regardless of what's passed.
-    const rootfs = await this.rootfs.provision(id, cfg.rootfsBase ?? cc.baseRootfs)
+    // CoW / dm-snapshot depending on METAL_ROOTFS_COW).
+    const rootfs = await this.rootfs.provision(id, cfg.rootfsBase ?? cc.baseRootfs, {
+      dmBase: !!cfg.rootfsBaseBecomesClassBase,
+    })
     let dataDrive: string | undefined
     let workspaceDrive: string | undefined
     // From here on any throw must NOT leak the FC process / tap / rootfs: a

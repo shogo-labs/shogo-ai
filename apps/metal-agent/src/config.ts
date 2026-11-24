@@ -691,6 +691,17 @@ export const config = {
    */
   rootfsRollbackRate: parseFloat(env('METAL_ROOTFS_ROLLBACK_RATE', String(DEFAULT_ROLLBACK_RATE))),
 
+  /**
+   * How long a boot probe holds its VM up after it first answers /health
+   * (METAL_ROOTFS_PROBE_HOLD_MS, default 30 s). An image that answers once and
+   * then dies is a bad image, and stopping the probe at the first 200 OK scored
+   * one of those healthy (SHO-563: the probe passed, then every live boot on the
+   * activated image died). Long enough to catch a start-up crash that happens
+   * after the server binds, short enough that a probe of a big image stays
+   * inside an operator's patience and the activation's own timeout.
+   */
+  rootfsProbeHoldMs: parseInt(env('METAL_ROOTFS_PROBE_HOLD_MS', '30000'), 10),
+
   // --- Phase 1 (Tier 2 docker project class): VM classes --------------------
   dockerClass,
 } as const

@@ -93,6 +93,7 @@ class TestPool extends MetalWarmPool {
 
 let dir: string
 const cfg = config as { -readonly [K in keyof typeof config]: (typeof config)[K] }
+const savedIdleSuspendMs = cfg.idleSuspendMs
 const realFetch = globalThis.fetch
 
 beforeEach(() => {
@@ -102,6 +103,7 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = realFetch
+  cfg.idleSuspendMs = savedIdleSuspendMs
   rmSync(dir, { recursive: true, force: true })
 })
 

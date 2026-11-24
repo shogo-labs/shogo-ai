@@ -183,14 +183,27 @@ export interface CowUsage {
   maxUsedPct: number
 }
 
+/** The one host command runner this module needs (injectable for tests). */
+export type RootfsExec = (cmd: string, args: string[]) => Promise<string>
+
 export class RootfsProvisioner {
   readonly mode: RootfsMode
   private warnedCowFloor = false
   private warnedReflinkFallback = false
   private baseLoop: string | null = null // shared RO loop for the golden base (dm mode)
   private baseLoopPending: Promise<string> | null = null
+  /**
+   * vmId → read-only loop of a base OTHER than `cfg.baseRootfs` (dm mode). Only
+   * the boot probe creates these: it snapshots the staged image the way live
+   * will snapshot it once the rename lands, so the probe sees the live boot path
+   * instead of a full copy of it (SHO-563). Detached with the VM.
+   */
+  private probeBaseLoops = new Map<string, string>()
 
-  constructor(private cfg: MetalConfig) {
+  constructor(
+    private cfg: MetalConfig,
+    private exec: RootfsExec = run,
+  ) {
     this.mode = cfg.rootfsCow
     if (this.mode === 'dm') mkdirSync(cfg.dmCowDir, { recursive: true })
   }
@@ -200,20 +213,21 @@ export class RootfsProvisioner {
    * (defaults to the standard `cfg.baseRootfs` — e.g. a docker-class VM's
    * layered image). Returns the FC backing path.
    *
-   * dm mode snapshots only the standard golden base. A different
-   * `baseRootfsOverride` (the docker-class image) is copied to its own file
-   * so it never shares that snapshot device.
+   * dm mode snapshots only the golden base. Two other kinds of base exist:
+   *   - `dmBase`: a file that WILL become the golden base — the staged image the
+   *     boot probe boots before activation. It is snapshotted exactly the way
+   *     live will snapshot it after the rename (its own read-only loop + a CoW
+   *     store), because booting a full copy proves only that a copy boots, and
+   *     that is not the path production takes (SHO-563).
+   *   - anything else (the docker-class image): copied to its own file so it
+   *     never shares the standard snapshot device.
    */
-  provision(vmId: string, baseRootfsOverride?: string): Promise<string> {
-    // A docker-class image is a different file from the dm golden base. Copy
-    // it instead of snapshotting the standard rootfs, which would boot the
-    // wrong disk.
-    if (
-      this.mode === 'dm' &&
-      baseRootfsOverride &&
-      baseRootfsOverride !== this.cfg.baseRootfs
-    ) {
-      return this.provisionCopy(vmId, false, baseRootfsOverride)
+  provision(vmId: string, baseRootfsOverride?: string, opts: { dmBase?: boolean } = {}): Promise<string> {
+    if (this.mode === 'dm' && baseRootfsOverride) {
+      if (opts.dmBase) return this.provisionDm(vmId, baseRootfsOverride)
+      if (baseRootfsOverride !== this.cfg.baseRootfs) {
+        return this.provisionCopy(vmId, false, baseRootfsOverride)
+      }
     }
     switch (this.mode) {
       case 'dm':
@@ -319,6 +333,7 @@ export class RootfsProvisioner {
     if (this.isDmPath(rootfsPath)) {
       const vmId = this.vmIdFromDmPath(rootfsPath)
       const removed = await this.detachDm(vmId)
+      await this.detachProbeBaseLoop(vmId)
       // Only drop the CoW backing file once its device is ACTUALLY gone. Deleting
       // it while the device is still mapped (a failed "busy" remove) is exactly
       // what orphaned ~12k devices on staging AND defeated the GC's CoW sweep,
@@ -348,7 +363,7 @@ export class RootfsProvisioner {
     if (this.mode !== 'dm') return 0
     let names: string[] = []
     try {
-      names = (await run('dmsetup', ['ls']))
+      names = (await this.exec('dmsetup', ['ls']))
         .split('\n')
         .map((l) => l.split(/\s+/)[0])
         .filter((n) => n.startsWith('mvm-'))
@@ -371,7 +386,7 @@ export class RootfsProvisioner {
         /* stat failed → treat as reapable */
       }
       try {
-        await run('dmsetup', ['remove', '--retry', name])
+        await this.exec('dmsetup', ['remove', '--retry', name])
       } catch {
         continue // still busy — a later sweep retries
       }
@@ -392,7 +407,7 @@ export class RootfsProvisioner {
   /** Open count of a mapper device (0 when nothing has it open, or on error). */
   private async deviceOpenCount(dmName: string): Promise<number> {
     try {
-      const m = /Open count:\s*(\d+)/.exec(await run('dmsetup', ['info', dmName]))
+      const m = /Open count:\s*(\d+)/.exec(await this.exec('dmsetup', ['info', dmName]))
       return m ? parseInt(m[1], 10) : 0
     } catch {
       return 0
@@ -404,7 +419,7 @@ export class RootfsProvisioner {
     let detached = 0
     let out = ''
     try {
-      out = await run('losetup', ['-a'])
+      out = await this.exec('losetup', ['-a'])
     } catch {
       return 0
     }
@@ -414,7 +429,7 @@ export class RootfsProvisioner {
       const dev = line.split(':')[0]?.trim()
       if (!dev) continue
       try {
-        await run('losetup', ['-d', dev])
+        await this.exec('losetup', ['-d', dev])
         detached++
       } catch {
         /* still referenced by a live dm device — leave it */
@@ -514,7 +529,7 @@ export class RootfsProvisioner {
       if (state === 'current' || (state === 'unknown' && existsSync(this.baseLoop))) return this.baseLoop
       await this.detachBaseLoop()
     }
-    const dev = await run('losetup', ['--find', '--show', '--read-only', this.cfg.baseRootfs])
+    const dev = await this.exec('losetup', ['--find', '--show', '--read-only', this.cfg.baseRootfs])
     this.baseLoop = dev
     return dev
   }
@@ -538,14 +553,14 @@ export class RootfsProvisioner {
     this.baseLoop = null
     if (!loop) return
     try {
-      await run('losetup', ['-d', loop])
+      await this.exec('losetup', ['-d', loop])
     } catch {
       /* still an origin for a live snapshot — leave it to the GC */
     }
   }
 
-  private baseSectors(): number {
-    return Math.floor(statSync(this.cfg.baseRootfs).size / 512)
+  private baseSectors(base: string = this.cfg.baseRootfs): number {
+    return Math.floor(statSync(base).size / 512)
   }
 
   /**
@@ -557,9 +572,9 @@ export class RootfsProvisioner {
    * exceptions does not degrade — the kernel invalidates it and every write on
    * that device fails from then on.
    */
-  private cowTargetBytes(): number {
+  private cowTargetBytes(base: string = this.cfg.baseRootfs): number {
     const { bytes, raisedFloor } = cowTargetBytes(
-      statSync(this.cfg.baseRootfs).size,
+      statSync(base).size,
       this.cfg.dmCowSize,
     )
     if (raisedFloor && !this.warnedCowFloor) {
@@ -573,11 +588,11 @@ export class RootfsProvisioner {
     return bytes
   }
 
-  private async provisionDm(vmId: string): Promise<string> {
+  private async provisionDm(vmId: string, base: string = this.cfg.baseRootfs): Promise<string> {
     const cow = this.cowFile(vmId)
     // Sparse CoW store: only written (diverged) blocks consume NVMe.
-    ensureCowSize(cow, this.cowTargetBytes())
-    await this.attachDm(vmId, true)
+    ensureCowSize(cow, this.cowTargetBytes(base))
+    await this.attachDm(vmId, true, base)
     return this.dmPath(vmId)
   }
 
@@ -596,8 +611,8 @@ export class RootfsProvisioner {
    *      detaching the old one, leaking a loop device per suspend/resume cycle
    *      until the host runs out of /dev/loop* on a long-lived node.
    */
-  private async attachDm(vmId: string, fresh = false): Promise<void> {
-    const base = await this.ensureBaseLoop()
+  private async attachDm(vmId: string, fresh = false, basePath: string = this.cfg.baseRootfs): Promise<void> {
+    const base = basePath === this.cfg.baseRootfs ? await this.ensureBaseLoop() : await this.ensureProbeBaseLoop(vmId, basePath)
     const cow = this.cowFile(vmId)
     if (!existsSync(cow)) throw new Error(`dm CoW store missing for ${vmId}: ${cow}`)
     // Already mapped → reuse (no remove/recreate, no new loop). See above.
@@ -605,14 +620,46 @@ export class RootfsProvisioner {
     // Fresh mapping: clear any stale loop still bound to this CoW first so we
     // never accumulate orphaned loop devices across restore cycles.
     await this.detachCowLoops(cow)
-    this.growCow(vmId, cow)
-    const cowLoop = await run('losetup', ['--find', '--show', cow])
-    const sectors = this.baseSectors()
+    this.growCow(vmId, cow, basePath)
+    const cowLoop = await this.exec('losetup', ['--find', '--show', cow])
+    const sectors = this.baseSectors(basePath)
     // snapshot target: <origin> <cow> <persistent> <chunksize(sectors)>
     // 'P' = persistent (survives device removal so the diff is restorable).
     const table = `0 ${sectors} snapshot ${base} ${cowLoop} P ${DM_CHUNK_SECTORS}`
-    await run('dmsetup', ['create', this.dmName(vmId), '--table', table])
+    await this.exec('dmsetup', ['create', this.dmName(vmId), '--table', table])
     void fresh
+  }
+
+  /**
+   * The read-only loop for a base other than the live golden image: the staged
+   * image a boot probe is vetting. One per probe VM, so two parallel probes never
+   * fight over one loop, and detached with the VM (see `detachProbeBaseLoop`).
+   */
+  private async ensureProbeBaseLoop(vmId: string, base: string): Promise<string> {
+    const existing = this.probeBaseLoops.get(vmId)
+    if (existing) {
+      const state = baseLoopState(this.baseLoopBackingFile(existing), base)
+      if (state === 'current' || (state === 'unknown' && existsSync(existing))) return existing
+      await this.detachProbeBaseLoop(vmId)
+    }
+    const dev = await this.exec('losetup', ['--find', '--show', '--read-only', base])
+    this.probeBaseLoops.set(vmId, dev)
+    return dev
+  }
+
+  /**
+   * Detach a probe VM's own base loop. A loop a live snapshot still uses as its
+   * origin refuses (EBUSY) and that is fine: `release` removes the device first.
+   */
+  private async detachProbeBaseLoop(vmId: string): Promise<void> {
+    const loop = this.probeBaseLoops.get(vmId)
+    if (!loop) return
+    this.probeBaseLoops.delete(vmId)
+    try {
+      await this.exec('losetup', ['-d', loop])
+    } catch {
+      /* still an origin for a live snapshot — the GC catches it */
+    }
   }
 
   /**
@@ -629,10 +676,10 @@ export class RootfsProvisioner {
    * exactly where this sits. Shrinking would strand allocated exceptions past
    * the end of the device, so a store that is already larger is left alone.
    */
-  private growCow(vmId: string, cow: string): void {
+  private growCow(vmId: string, cow: string, base: string = this.cfg.baseRootfs): void {
     try {
       const before = statSync(cow).size
-      const target = this.cowTargetBytes()
+      const target = this.cowTargetBytes(base)
       if (ensureCowSize(cow, target) === 'grown') {
         console.log(
           `[rootfs] grew CoW store for ${vmId} from ${(before / 1024 ** 3).toFixed(1)} to ` +
@@ -657,7 +704,7 @@ export class RootfsProvisioner {
   private async detachDm(vmId: string): Promise<boolean> {
     let gone = true
     try {
-      if (await this.dmExists(vmId)) await run('dmsetup', ['remove', '--retry', this.dmName(vmId)])
+      if (await this.dmExists(vmId)) await this.exec('dmsetup', ['remove', '--retry', this.dmName(vmId)])
     } catch {
       gone = !(await this.dmExists(vmId))
     }
@@ -668,10 +715,10 @@ export class RootfsProvisioner {
   /** Detach any loop devices still bound to a CoW store file (best-effort). */
   private async detachCowLoops(cow: string): Promise<void> {
     try {
-      const out = await run('losetup', ['-j', cow])
+      const out = await this.exec('losetup', ['-j', cow])
       for (const line of out.split('\n')) {
         const dev = line.split(':')[0]?.trim()
-        if (dev) await run('losetup', ['-d', dev])
+        if (dev) await this.exec('losetup', ['-d', dev])
       }
     } catch {
       /* best-effort */
@@ -694,7 +741,7 @@ export class RootfsProvisioner {
   async sampleCowUsage(nearLimitPct = 80): Promise<CowUsage> {
     if (this.mode !== 'dm') return { measured: 0, invalid: 0, nearLimit: 0, maxUsedPct: 0 }
     try {
-      return parseCowStatus(await run('dmsetup', ['status']), nearLimitPct)
+      return parseCowStatus(await this.exec('dmsetup', ['status']), nearLimitPct)
     } catch {
       return { measured: 0, invalid: 0, nearLimit: 0, maxUsedPct: 0 }
     }
@@ -702,7 +749,7 @@ export class RootfsProvisioner {
 
   private async dmExists(vmId: string): Promise<boolean> {
     try {
-      await run('dmsetup', ['info', this.dmName(vmId)])
+      await this.exec('dmsetup', ['info', this.dmName(vmId)])
       return true
     } catch {
       return false

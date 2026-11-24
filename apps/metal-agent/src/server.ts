@@ -45,15 +45,18 @@ import { announceRestarting, reportPlacement, startRegistration } from './regist
 import { RequestDrain } from './request-drain'
 import {
   getRejectedRootfs,
+  getRootfsFailed,
   getRootfsPrev,
   getRootfsRevision,
   getRootfsSha,
   getRootfsWatch,
   getStagedRootfs,
   imagesToKeep,
+  keptRootfsImage,
   maybeImageGc,
   restartAgent,
   rollbackRootfs,
+  type KeptImageName,
 } from './self-update'
 import { SerialWatcher } from './serial-watcher'
 const pool = new MetalWarmPool()
@@ -197,6 +200,9 @@ async function handle(req: Request, srv: PeerLookup): Promise<Response> {
           // otherwise none of it is visible without catting the markers.
           rootfsPrevious: getRootfsPrev(),
           rootfsWatch: getRootfsWatch(),
+          // The generation a rollback took out of service and kept for inspection
+          // (SHO-563): what it was, why, and where its evidence is.
+          rootfsFailed: getRootfsFailed(),
           rootfsRejected: getRejectedRootfs(),
         })
       }
@@ -215,6 +221,31 @@ async function handle(req: Request, srv: PeerLookup): Promise<Response> {
           restart: () => setTimeout(restartAgent, 500),
         })
         return Response.json(res, { status: res.ok ? 200 : 409 })
+      }
+
+      // Boot a kept image on demand (SHO-563): `live`, `prev`, `staged` or
+      // `failed`. This is how an operator answers "would that image have
+      // booted?" without activating it, and how the image a rollback kept is
+      // inspected after the fact. It boots real VMs and holds them for `holdMs`
+      // (default METAL_ROOTFS_PROBE_HOLD_MS), so it is slow by design; it never
+      // touches the live image, the pool or the watch ledger, and a probe VM is
+      // never counted as a cold boot of the live image.
+      if (path === '/admin/probe-rootfs' && req.method === 'POST') {
+        const body = await json(req).catch(() => ({}) as any)
+        const name = String(body?.image ?? '').trim() as KeptImageName
+        if (!['live', 'prev', 'staged', 'failed'].includes(name)) {
+          return Response.json(
+            { error: `image must be one of live, prev, staged, failed (got '${body?.image ?? ''}')` },
+            { status: 400 },
+          )
+        }
+        const vmClass = body?.vmClass === 'docker' ? 'docker' : 'standard'
+        const holdMs = Number.isFinite(body?.holdMs) ? Math.max(0, Math.min(10 * 60_000, Number(body.holdMs))) : undefined
+        if (!keptRootfsImage(name, vmClass)) {
+          return Response.json({ ok: false, error: `no ${name} image for the ${vmClass} class on this host` }, { status: 404 })
+        }
+        const res = await pool.probeKeptRootfs(name, vmClass, holdMs)
+        return Response.json(res, { status: res.ok ? 200 : 422 })
       }
       if (path === '/metrics') return new Response(metrics.prometheus(), { headers: { 'Content-Type': 'text/plain; version=0.0.4' } })
 
