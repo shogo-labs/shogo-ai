@@ -244,7 +244,10 @@ next to its density run.
 | wake from reclaim p50 / p95 (ms) | | | |
 | wake p95 vs A (ms, budget ≤ +100) | — | | |
 | agent turn p95 under burst (ms) | | | |
-| recommended METAL_IDLE_RECLAIM_MS | | | |
+| METAL_IDLE_RECLAIM_MS (run setting) | off | 300000 | 300000 |
+
+**Recommendation for prod** (reclaim on/off, `METAL_IDLE_RECLAIM_MS`, FPR) — fill
+from the three columns once they exist; KSM stays Russell's call.
 
 The row names are `abcMarkdown()`'s, so its output pastes in here unchanged.
 From `apps/metal-agent`:

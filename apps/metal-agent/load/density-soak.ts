@@ -851,6 +851,7 @@ export class DensitySoak {
       hostThreads: this.hostInfo.threads,
       maxVmsPerHost: Number(this.originalEnv?.METAL_MAX_VMS_PER_HOST ?? 80),
       idleSuspendMs: Number(this.originalEnv?.METAL_IDLE_SUSPEND_MS ?? 0),
+      idleReclaimMs: Number(this.originalEnv?.METAL_IDLE_RECLAIM_MS ?? 0),
       startedAt: this.startedAt,
       finishedAt: new Date().toISOString(),
       abortReason: this.abortReason,

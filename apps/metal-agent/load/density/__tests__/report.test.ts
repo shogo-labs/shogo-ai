@@ -273,6 +273,12 @@ describe('abcMarkdown', () => {
     const md = abcMarkdown([{ label: 'A', input: input([step(40)]) }, { label: 'C', input: aborted }])
     expect(md).toContain('(**aborted:** MemAvailable < 5%)')
   })
+
+  test('shows the reclaim window each run actually used, not a per-column "recommendation"', () => {
+    const b = { ...withReclaim(), env: { ...withReclaim().env, idleReclaimMs: 300000 } }
+    const md = abcMarkdown([{ label: 'A', input: input([step(40)]) }, { label: 'B', input: b }])
+    expect(md).toContain('| METAL_IDLE_RECLAIM_MS (run setting) | off | 300000 |')
+  })
 })
 
 describe('readReportInput', () => {

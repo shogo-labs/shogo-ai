@@ -86,6 +86,8 @@ export interface RunEnv {
   hostThreads: number
   maxVmsPerHost: number
   idleSuspendMs: number
+  /** `METAL_IDLE_RECLAIM_MS` this run put in place. 0/absent = reclaim was off. */
+  idleReclaimMs?: number
   startedAt: string
   finishedAt?: string
   abortReason?: string
@@ -473,7 +475,7 @@ export function abcMarkdown(runs: AbcRun[]): string {
     ['wake from reclaim p50 / p95 (ms)', (i) => (i.reclaim?.wake ? `${i.reclaim.wake.p50Ms} / ${i.reclaim.wake.p95Ms}` : '—')],
     ['wake p95 vs A (ms, budget ≤ +100)', (i) => (i.reclaim?.wake?.deltaP95Ms === null || i.reclaim?.wake?.deltaP95Ms === undefined ? '—' : `${i.reclaim.wake.deltaP95Ms > 0 ? '+' : ''}${i.reclaim.wake.deltaP95Ms}`)],
     ['agent turn p95 under burst (ms)', (i) => pct(burstP95(i), 0)],
-    ['recommended METAL_IDLE_RECLAIM_MS', (i) => String(i.env.idleSuspendMs || '—')],
+    ['METAL_IDLE_RECLAIM_MS (run setting)', (i) => (i.env.idleReclaimMs ? String(i.env.idleReclaimMs) : 'off')],
   ]
   for (const [label, pick] of rows) out.push(`| ${label} | ` + runs.map((r) => cell(r, pick)).join(' | ') + ' |')
   out.push('')
