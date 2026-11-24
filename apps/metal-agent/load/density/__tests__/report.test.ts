@@ -6,7 +6,8 @@ import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { computeKnees, type StepMetrics, type TurnStep } from '../knee'
-import { perVmRssMiB, renderReportMarkdown, samplesCsv, stepsCsv, turnsCsv, writeReport, type ReportInput, type StepRow } from '../report'
+import { abcMarkdown, parseAbcRuns, perVmRssMiB, readReportInput, renderReportMarkdown, samplesCsv, stepsCsv, turnsCsv, writeAbc, writeReport, type AbcRun, type ReportInput, type StepRow } from '../report'
+import type { ReclaimSummary } from '../reclaim'
 import type { HostSample } from '../host-sampler'
 
 const baseline: Record<TurnStep, number> = { cpu: 3000, install: 2000, build: 3000 }
@@ -224,5 +225,109 @@ describe('writeReport', () => {
     expect(written.files.sort()).toEqual(['burst.csv', 'env.json', 'report.json', 'report.md', 'samples.csv', 'steps.csv', 'turns.csv'])
     expect(readFileSync(join(dir, 'report.md'), 'utf8')).toContain('Metal density soak')
     expect(JSON.parse(readFileSync(join(dir, 'env.json'), 'utf8')).hostId).toBe('latitude-dal-1')
+  })
+})
+
+function withReclaim(over: Partial<ReclaimSummary> = {}): ReportInput {
+  return {
+    ...input([step(40)]),
+    reclaim: {
+      at10: { minutes: 10, soakDeltaPerVmMiB: 300.4, vmVmRssMinusBalloonMiB: 250.2, idleVms: 32, soakVms: 40 },
+      at30: { minutes: 30, soakDeltaPerVmMiB: 410.7, vmVmRssMinusBalloonMiB: 200.9, idleVms: 30, soakVms: 40 },
+      balloonedIdleMiB: 6144,
+      balloonedIdleVms: 32,
+      wake: { n: 12, p50Ms: 180, p95Ms: 240, errors: 0, baselineP95Ms: 200, deltaP95Ms: 40, pass: true },
+      ksm: { pagesSharing: 12345, pagesShared: 6789, fullScans: 42, ksmdCpuPct: 3.5, soakMergingPagesMax: 900, samples: 12 },
+      ...over,
+    },
+  }
+}
+
+describe('abcMarkdown', () => {
+  test('puts one column per run in the order given', () => {
+    const md = abcMarkdown([{ label: 'A (baseline)', input: input([step(40)]) }, { label: 'B (reclaim + FPR)', input: withReclaim() }])
+    expect(md).toContain('| | A (baseline) | B (reclaim + FPR) |')
+    expect(md).toContain('host RAM per idle VM @10 min (MiB)')
+  })
+
+  test('reads every reclaim number from the run that measured it', () => {
+    const md = abcMarkdown([{ label: 'A', input: input([step(40)]) }, { label: 'B', input: withReclaim() }])
+    expect(md).toContain('| host RAM per idle VM @10 min (MiB) | — | 300.4 |')
+    expect(md).toContain('| VmRSS − ballooned @30 min (MiB) | — | 200.9 |')
+    expect(md).toContain('| ballooned by idle VMs (MiB) | — | 6144 |')
+    expect(md).toContain('| ksmd CPU (% of one core) | n/a | 3.50 |')
+    expect(md).toContain('| KSM pages_sharing | n/a | 12345 |')
+    expect(md).toContain('| wake from reclaim p50 / p95 (ms) | — | 180 / 240 |')
+    expect(md).toContain('| wake p95 vs A (ms, budget ≤ +100) | — | +40 |')
+  })
+
+  test('a cell a run did not measure stays a dash, never borrowed from another run', () => {
+    const md = abcMarkdown([{ label: 'A', input: input([step(40)]) }, { label: 'B', input: withReclaim({ wake: null, ksm: null }) }])
+    // B's wake/ksm are null: its row must be empty even though column A is too.
+    expect(md).toContain('| wake from reclaim p50 / p95 (ms) | — | — |')
+    expect(md).toContain('| ksmd CPU (% of one core) | n/a | n/a |')
+  })
+
+  test('records an aborted run and its reason', () => {
+    const aborted = { ...withReclaim(), env: { ...withReclaim().env, abortReason: 'MemAvailable < 5%' } }
+    const md = abcMarkdown([{ label: 'A', input: input([step(40)]) }, { label: 'C', input: aborted }])
+    expect(md).toContain('(**aborted:** MemAvailable < 5%)')
+  })
+})
+
+describe('readReportInput', () => {
+  test('round-trips what writeReport wrote', () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'density-read-')), 'run')
+    writeReport(dir, withReclaim(), [], [])
+    const back = readReportInput(dir)
+    expect(back.env.hostId).toBe('latitude-dal-1')
+    expect(back.steps[0].n).toBe(40)
+    expect(back.reclaim?.at10?.soakDeltaPerVmMiB).toBe(300.4)
+  })
+
+  test('says which directory lacks a report.json, not just ENOENT', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'density-noreport-'))
+    expect(() => readReportInput(empty)).toThrow(new RegExp(`^${empty} has no report\\.json`))
+  })
+})
+
+describe('parseAbcRuns', () => {
+  const write = (rows: StepRow[]): string => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'density-abc-')), 'run')
+    writeReport(dir, input(rows), [], [])
+    return dir
+  }
+
+  test('reads label=dir pairs in order', () => {
+    const a = write([step(40)])
+    const b = write([step(60)])
+    const runs = parseAbcRuns(`A=${a}, B=${b}`)
+    expect(runs.map((r) => r.label)).toEqual(['A', 'B'])
+    expect(runs[1].input.steps[0].n).toBe(60)
+  })
+
+  test('needs at least two runs', () => {
+    expect(() => parseAbcRuns(`A=${write([step(40)])}`)).toThrow(/at least two runs/)
+  })
+
+  test('rejects a bare path with no label', () => {
+    expect(() => parseAbcRuns('a,b')).toThrow(/label=dir/)
+  })
+
+  test('names the directory when report.json is missing', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'density-empty-'))
+    expect(() => parseAbcRuns(`A=${write([step(40)])},B=${empty}`)).toThrow(/no report\.json/)
+  })
+})
+
+describe('writeAbc', () => {
+  test('writes abcMarkdown to the given path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'density-abc-out-'))
+    const path = join(dir, 'nested', 'abc.md')
+    const runs: AbcRun[] = [{ label: 'A', input: input([step(40)]) }, { label: 'B', input: withReclaim() }]
+    expect(writeAbc(path, runs)).toBe(path)
+    const body = readFileSync(path, 'utf8')
+    expect(body).toContain('| | A | B |')
+    expect(body).toContain('| host RAM per idle VM @10 min (MiB) | — | 300.4 |')
   })
 })

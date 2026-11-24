@@ -49,7 +49,7 @@ import { DEFAULT_MIX, allocateRoles, parseMix, roleCounts, type Mix, type Role }
 import { DEFAULT_BOUNDS, TURN_STEPS, computeKnees, ramCeilingsBySize, type Bounds, type StepMetrics, type TurnStep } from './density/knee'
 import { primeWarmCache, runAgentTurn, startAppLoad, type AppLoadHandle, type TurnTimings } from './density/guest-workload'
 import { assertStagingHost, DEFAULT_STAGING_CONTROL_PLANES, DEFAULT_STAGING_HOSTS } from './density/staging-guard'
-import { perVmRssMiB as perVmRssMiBFrom, writeReport, type BurstRow, type ReportInput, type RunEnv, type StepRow } from './density/report'
+import { perVmRssMiB as perVmRssMiBFrom, parseAbcRuns, writeAbc, writeReport, type BurstRow, type ReportInput, type RunEnv, type StepRow } from './density/report'
 import { recomputeReport } from './density/recompute'
 
 // ---------------------------------------------------------------------------
@@ -84,6 +84,8 @@ export interface SoakOptions {
   fromResults?: string
   /** Build `abc.md` from two or more recorded runs (`label=dir,…`), no host needed. */
   abc?: string
+  /** Where `--abc` writes its table. Defaults to `abc.md` in the working directory. */
+  abcOut?: string
 }
 
 const num = (v: string | undefined, d: number) => {
@@ -145,6 +147,7 @@ export function parseArgs(argv: string[], env: NodeJS.ProcessEnv = process.env):
     dryRun: has('dry-run'),
     fromResults: get('from-results'),
     abc: get('abc'),
+    abcOut: get('abc-out'),
   }
 }
 
@@ -927,6 +930,13 @@ export class DensitySoak {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2))
+  if (opts.abc) {
+    const runs = parseAbcRuns(opts.abc)
+    const path = writeAbc(opts.abcOut ?? join(process.cwd(), 'abc.md'), runs)
+    console.log(`\n===== DENSITY SOAK (A/B/C) =====`)
+    console.log(`abc: ${path}`)
+    return
+  }
   if (opts.fromResults) {
     const { report, path } = recomputeReport(opts.fromResults, opts.bounds)
     console.log(`\n===== DENSITY SOAK (recomputed) =====`)

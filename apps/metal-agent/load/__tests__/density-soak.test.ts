@@ -281,6 +281,16 @@ describe('parseArgs', () => {
     expect(o.allowHosts).toEqual(['latitude-dal-1'])
     expect(o.allowControlPlanes).toContain('api-staging.shogo.ai')
   })
+
+  test('--abc and --abc-out reach the options', () => {
+    const o = parseArgs(['--abc', 'A=results/a,B=results/b', '--abc-out', '/tmp/abc.md'], {})
+    expect(o.abc).toBe('A=results/a,B=results/b')
+    expect(o.abcOut).toBe('/tmp/abc.md')
+  })
+
+  test('--abc-out defaults to abc.md only when the flag is absent', () => {
+    expect(parseArgs(['--abc', 'A=a,B=b'], {}).abcOut).toBeUndefined()
+  })
 })
 
 describe('resolveGuestUrl', () => {

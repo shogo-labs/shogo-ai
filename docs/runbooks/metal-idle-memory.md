@@ -185,13 +185,18 @@ grep -q '^MemoryKSM=yes' /etc/systemd/system/metal-agent.service && echo "unit O
 systemctl restart metal-agent
 grep -c . /proc/$(pgrep -x firecracker | head -1)/ksm_merging_pages   # > 0 once warmed
 
-# Sampling that the soak report does not carry (KSM): run alongside the soak.
-while sleep 5; do
-  printf '%s ' "$(date +%s)"
-  awk '/^ksmd /{print "cpu_ticks=" $14+$15}' /proc/stat 2>/dev/null
-  cat /sys/kernel/mm/ksm/{pages_sharing,pages_shared,full_scans,run} | tr '\n' ' '
-  awk '/^MemAvailable|^MemTotal/{printf "%s=%s ", $1, $2}' /proc/meminfo; echo
-done >> /root/ksm-sample-<run>.log
+# Sampling that the soak report does not carry (KSM). Do NOT loop over /proc/stat
+# looking for a `ksmd` line — ksmd is not a top-level /proc/stat entry, so that
+# loop prints nothing. The harness already samples it: `sampleKsm()` in
+# load/density/host-sampler.ts reads /sys/kernel/mm/ksm/* and sums
+# /proc/<fc pid>/ksm_merging_pages over the run's VMs on the same 30 s window the
+# pool gauge uses. Run the soak and read its report.
+#
+# One-off check on the host, if you want the raw numbers by hand:
+pgrep -x ksmd | while read -r p; do
+  awk '{print "ksmd_cpu_ticks=" $14+$15}' /proc/$p/stat   # fields 14+15 = utime+stime
+done
+cat /sys/kernel/mm/ksm/{pages_sharing,pages_shared,full_scans,run} | tr '\n' ' '; echo
 ```
 
 `--assume-cordoned` skips the cordon API, so the run needs no super-admin token —
@@ -210,10 +215,13 @@ restore-after-an-interrupted-run list (`METAL_MAX_VMS_PER_HOST`,
 
 ### Record for each run
 
-- **per idle VM, host RAM** at 10 min and 30 min idle: `(MemTotal − MemAvailable) / N`, plus the per-VM `VmRSS` cross-check.
+- **per idle VM, host RAM** at 10 min and 30 min idle. Two numbers, both from VMs that were idle since assign for the whole interval:
+  (a) **soak-delta** — the host RSS the soak added ÷ soak VMs resident at that mark (`HostSample.fcRssMiB` minus the pre-soak `rssBeforeMiB`);
+  (b) **VmRSS − balloonedMiB**, the mean over the idle-role soak VMs.
+  Never use `(MemTotal − MemAvailable) / N`: tenant VMs are reclaimed too when `METAL_IDLE_RECLAIM=1`, so a host-wide figure cannot be attributed to the soak.
 - **VMs-per-host RAM knee** from the step ladder (highest N with no OOM, no sustained swap-in, memory PSI `full avg60` < 1%, `MemAvailable` > 10%).
 - **ksmd CPU**: average of `metal_ksmd_cpu_pct` over the hold — budget **≤ 10% of one thread**.
-- **resume latency**: time to the first proxied request after an idle period, A vs B, p50/p95. Budget **≤ +100 ms p95**. The soak's resume probe already measures this.
+- **wake-from-reclaim latency**: at the end of each hold, one proxied request to ≥ 10 idle-role VMs that are ballooned (`balloonedMiB > 0` in B/C; the same count of idle VMs in A), timed to the response, p50/p95 per run. Budget **≤ +100 ms p95 over A**. This is a *different* measurement from suspend→resume: `probeResume()` times `/suspend` → `/assign`, i.e. a snapshot restore, and never touches a balloon. Keep both — with reclaim on, a VM suspended while ballooned must still restore and deflate (SHO-534's `restoreVM` gate).
 - **agent turn times under the burst**: must not regress (the soak's `turns.csv`).
 - **snap/restore with free page reporting on**: snapshot a B-run VM, restore it, confirm the guest boots and its balloon config still reads back (the config lives in the vmstate). Also restore a snapshot taken **before** the change (free page reporting off) to prove the two coexist.
 
@@ -225,18 +233,41 @@ next to its density run.
 | | A (baseline) | B (reclaim + FPR) | C (B + KSM) |
 |---|---|---|---|
 | host RAM per idle VM @10 min (MiB) | | | |
+| VmRSS − ballooned @10 min (MiB) | | | |
 | host RAM per idle VM @30 min (MiB) | | | |
+| VmRSS − ballooned @30 min (MiB) | | | |
+| ballooned by idle VMs (MiB) | | | |
 | VMs per host at the RAM knee | | | |
 | ksmd CPU (% of one core) | n/a | n/a | |
-| resume latency p50 / p95 (ms) | | | |
+| KSM pages_sharing | n/a | n/a | |
+| resume latency p95 (ms) | | | |
+| wake from reclaim p50 / p95 (ms) | | | |
+| wake p95 vs A (ms, budget ≤ +100) | — | | |
 | agent turn p95 under burst (ms) | | | |
+| recommended METAL_IDLE_RECLAIM_MS | | | |
 
-> **Not yet measured.** The harness, the code and this procedure are complete,
-> but the run needs SSH to the staging host plus a super-admin token for the
-> cordon, and the developer sandbox has neither (the same blocker SHO-445's
-> runbook records). **Do not estimate these numbers — the whole point is that the
-> current settings are guesses.** Whoever has host access runs the three runs and
-> fills the table.
+The row names are `abcMarkdown()`'s, so its output pastes in here unchanged.
+From `apps/metal-agent`:
+
+```bash
+bun run load/density-soak.ts --abc \
+  'A (baseline)=load/results/<a>,B (reclaim + FPR)=load/results/<b>,C (B + KSM)=load/results/<c>'
+```
+
+It writes `abc.md` in `apps/metal-agent` (`--abc-out <path>` to write it
+elsewhere) from each directory's `report.json` — no host, no retyped numbers.
+The labels become the column headings, so use the three above for a straight
+paste. A cell a run never measured stays `—`; nothing is borrowed from another
+column.
+
+> **Not measured yet.** The harness (idle keepalive skip, wake-from-reclaim probe,
+> KSM/balloon sampler, the 10/30-min math and `abc.md`) is committed on
+> `sho-553-idle-reclaim-abc`, and this procedure needs only SSH to the host —
+> `--assume-cordoned` means no super-admin token. What is missing is a clean host:
+> run A is only comparable with B and C when the staging host is not carrying
+> ~250 resident tenant VMs. Fill the table with `--abc label=dir,…` once the three
+> runs exist in `apps/metal-agent/load/results/`; **do not estimate these numbers
+> — the whole point is that the current settings are guesses.**
 
 ## KSM: the security decision record
 

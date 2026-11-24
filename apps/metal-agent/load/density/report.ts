@@ -9,7 +9,7 @@
  * asserted in a unit test without touching the filesystem.
  */
 
-import { mkdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import type { HostSample } from './host-sampler'
 import { TURN_STEPS, type Knees, type StepMetrics, type StepVerdict, type TurnStep } from './knee'
@@ -540,4 +540,38 @@ export function writeAbc(path: string, runs: AbcRun[]): string {
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, abcMarkdown(runs))
   return path
+}
+
+/**
+ * Read back one run's `report.json` so `--abc` can build the A/B/C table from
+ * the runs that were written, not from numbers retyped into the runbook.
+ * Throws with the directory in the message: a missing `report.json` means the
+ * run predates the file or the path is wrong, and both are worth saying.
+ */
+export function readReportInput(dir: string): ReportInput {
+  const path = join(dir, 'report.json')
+  if (!existsSync(path)) {
+    throw new Error(`${dir} has no report.json (written by writeReport) — pass the run directory, not its parent`)
+  }
+  return JSON.parse(readFileSync(path, 'utf8')) as ReportInput
+}
+
+/**
+ * `A=results/a,B=results/b,C=results/c` → the three columns, in the order given.
+ * Two runs is the minimum: one column is not a comparison.
+ */
+export function parseAbcRuns(spec: string): AbcRun[] {
+  const runs: AbcRun[] = []
+  for (const part of spec.split(',')) {
+    const trimmed = part.trim()
+    if (!trimmed) continue
+    const eq = trimmed.indexOf('=')
+    if (eq <= 0) throw new Error(`--abc expects label=dir pairs, got "${trimmed}"`)
+    const label = trimmed.slice(0, eq).trim()
+    const dir = trimmed.slice(eq + 1).trim()
+    if (!label || !dir) throw new Error(`--abc expects label=dir pairs, got "${trimmed}"`)
+    runs.push({ label, input: readReportInput(dir) })
+  }
+  if (runs.length < 2) throw new Error(`--abc needs at least two runs, got ${runs.length}`)
+  return runs
 }
