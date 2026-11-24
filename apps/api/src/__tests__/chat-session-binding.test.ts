@@ -65,8 +65,12 @@ describe('project-chat routes check the binding before touching history', () => 
   test('POST /chat checks before the history seed and the user-message write', () => {
     const check = src.indexOf("isChatSessionBound(incomingChatSessionId, { kind: 'project', projectId }")
     expect(check).toBeGreaterThan(0)
-    expect(check).toBeLessThan(src.indexOf('historySeedForTurn(\n          incomingChatSessionId'))
-    expect(check).toBeLessThan(src.indexOf('persistUserMessageForTurn(incomingChatSessionId'))
+    const seed = src.search(/historySeedForTurn\(\s*incomingChatSessionId/)
+    const persist = src.search(/persistUserMessageForTurn\(\s*incomingChatSessionId/)
+    expect(seed).toBeGreaterThan(0)
+    expect(persist).toBeGreaterThan(0)
+    expect(check).toBeLessThan(seed)
+    expect(check).toBeLessThan(persist)
   })
 
   test('stream, turn and stop check too', () => {
