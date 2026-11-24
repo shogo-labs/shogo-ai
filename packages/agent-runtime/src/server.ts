@@ -1034,6 +1034,12 @@ const { app, state, logTiming } = await createRuntimeApp({
     // metal (SHO-348).
     const liveStreams = streamRegistry.liveCount()
     const busy = guestBusy({ turns: work.turns, tasks: work.tasks, liveStreams })
+    // A merged workspace runtime keeps its projects' repos in subfolders and
+    // never has a root `.git`, and a runtime whose repo was dropped has none
+    // either. Reporting a HEAD it can never export refused that VM for
+    // durability on every sweep, forever (SHO-540).
+    const repoPresent = existsSync(join(WORKSPACE_DIR, '.git'))
+    if (!repoPresent) cachedRepoHeadSha = null
     return {
       activeSessions: stats.length,
       lastActivityAt: lastSessionActivity,
@@ -1043,7 +1049,8 @@ const { app, state, logTiming } = await createRuntimeApp({
       activeTurns: work.turns,
       activeTasks: work.tasks,
       activeChildren: work.children ?? 0,
-      repoHeadSha: cachedRepoHeadSha,
+      repoHeadSha: repoPresent ? cachedRepoHeadSha : null,
+      repoPresent,
       previewHealth: safePreviewHealth(),
     }
   },
@@ -3848,18 +3855,28 @@ app.post('/pool/export-repo-bundle', async (c) => {
       if (typeof s !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(s)) throw new Error('since must be object ids')
       return s
     })
+    // A workspace runtime keeps its members' repos in subfolders and has no
+    // root `.git`, so there is nothing here to bundle. Asking git for a
+    // snapshot used to answer 500, which the host recorded as a failed export
+    // for a VM that has no repo at all — and, since the guest kept reporting a
+    // HEAD, refused it for durability forever (SHO-540). Say "no repo" instead.
+    if (!existsSync(join(destinationDir, '.git'))) {
+      return c.json({ code: 'no-repo', error: 'this runtime has no root git repo' }, 404)
+    }
     await flushGitBeforeExport(destinationDir)
-    // A workspace runtime keeps its members' repos in subfolders and drops
-    // the root `.git`, so the root can have no repo and nothing to push.
-    //
     // The push is a background job (SHO-442): a media-heavy history takes
     // minutes, so the request waits only `waitMs` and then answers 202 with
     // progress. The next call joins the same job instead of starting over, and
     // a host that stopped waiting cannot make it restart.
     let lfsMissing: import('@shogo/shared-runtime').LfsMissingObject[] = []
-    if (isLfsActive() && existsSync(join(destinationDir, '.git'))) {
+    if (isLfsActive()) {
       const waitMs = Math.min(Math.max(Number(body?.waitMs) || LFS_PUSH_WAIT_MS, 0), 120_000)
-      const push = await awaitLfsPush(destinationDir, since, waitMs)
+      // Both lower bounds are valid: the refs the host's last manifest covered,
+      // and the tips this repo recorded as pushed. Naming both walks the union
+      // of what is still unsent instead of everything since the older one.
+      const marker = since ? lfsPushedTips(destinationDir) : null
+      const base = since && marker?.length ? [...new Set([...since, ...marker])] : since
+      const push = await awaitLfsPush(destinationDir, base, waitMs)
       if (push?.state === 'pending') {
         return c.json(
           {
