@@ -237,6 +237,19 @@ test.describe("SHO-551 Postgres publishing on staging", () => {
     const models = [...schema.matchAll(/^model\s+(\w+)/gm)].map((m) => m[1])
     evidence.models = models
 
+    // The defect this spec exists to catch (SHO-551): the environment row said
+    // Postgres while the artifact was built SQLite-native — `provider = "sqlite"`
+    // and a libsql client — so Prisma talked libsql at a Postgres socket and
+    // every generated CRUD route 500'd. The row is not the proof; the artifact is.
+    expect(schema, "the deployed schema must be Postgres-native").toContain('provider = "postgresql"')
+    expect(schema, "the deployed schema must not still say sqlite").not.toMatch(/provider\s*=\s*"sqlite"/)
+    const dbModule = podExec(pod!, ["sh", "-lc", "cat /app/src/lib/db.ts /app/src/lib/db.tsx 2>/dev/null || true"])
+    evidence.podDbModuleHead = dbModule.slice(0, 800)
+    if (!dbModule.startsWith("<kubectl failed") && dbModule.trim().length > 0) {
+      expect(dbModule, "the pod's Prisma client must be the pg adapter").toContain("PrismaPg")
+      expect(dbModule, "the pod must not construct a libsql client").not.toContain("PrismaLibSql")
+    }
+
     for (const m of models.filter((m) => m === "User").concat(models.filter((m) => m !== "User"))) {
       const candidate = routePathFor(m)
       const probe = await page.request.get(`${LIVE}/api/${candidate}`, { timeout: 30_000, failOnStatusCode: false })
