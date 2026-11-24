@@ -18,7 +18,11 @@
 import { Hono } from 'hono'
 import { resolveDesiredForHost, setFleetChannelRelease, type AgentRelease } from '../lib/metal-agent-release'
 import { ingestMetalMeters } from '../lib/vm-metering/ingest'
-import { getMetalPlacementRegistry, type StagedRootfsReport } from '../lib/metal-placement-registry'
+import {
+  getMetalPlacementRegistry,
+  type RootfsRejectedReport,
+  type StagedRootfsReport,
+} from '../lib/metal-placement-registry'
 import { activateRootfsFor, enqueueRefresh } from '../lib/metal-rewarm'
 import {
   registerMetalHost,
@@ -55,6 +59,21 @@ function parseStagedRootfs(raw: any): StagedRootfsReport | undefined {
     stagedAt: raw.stagedAt != null ? Number(raw.stagedAt) : undefined,
     prewarm: raw.prewarm != null ? Boolean(raw.prewarm) : undefined,
     stagedSnapshots: raw.stagedSnapshots != null ? Number(raw.stagedSnapshots) : undefined,
+  }
+}
+
+/**
+ * The last rootfs generation this host proved unusable (SHO-552). Forwarded as
+ * reported — the agent owns the bad list; the control plane only displays it so
+ * a host stuck on an older revision can be explained without shelling into it.
+ */
+function parseRootfsRejected(raw: any): RootfsRejectedReport | undefined {
+  if (!raw || typeof raw !== 'object' || !raw.version) return undefined
+  return {
+    version: String(raw.version),
+    revision: raw.revision != null ? String(raw.revision) : null,
+    reason: String(raw.reason ?? 'unknown'),
+    at: raw.at != null ? Number(raw.at) : 0,
   }
 }
 
@@ -156,6 +175,7 @@ export function metalRoutes(): Hono {
       metrics: body.metrics && typeof body.metrics === 'object' ? body.metrics : undefined,
       idle: parseHostIdle(body.idle),
       stagedRootfs: parseStagedRootfs(body.stagedRootfs),
+      rootfsRejected: parseRootfsRejected(body.rootfsRejected),
       restarting: body.restarting === true ? true : undefined,
     })
 

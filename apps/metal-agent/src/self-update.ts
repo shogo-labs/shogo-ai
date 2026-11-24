@@ -27,11 +27,29 @@ import { createHash } from 'crypto'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { config } from './config'
+import { config, type VmClass } from './config'
 import { rootDiskUsage } from './disk'
 import { runImageGc } from './image-gc'
 import { metrics, M } from './metrics'
 import { computeRootfsIdentity } from './snapshot-store'
+import {
+  ColdBootLedger,
+  addBadRootfs as addToBadList,
+  clearPrevious,
+  clearWatch,
+  findBadRootfs,
+  latestBadRootfs,
+  readBadList,
+  readPrevious,
+  readWatch,
+  rollbackDecision,
+  writeBadList,
+  writePrevious,
+  writeWatch,
+  type BadRootfs,
+  type RootfsPrevious,
+  type RootfsWatch,
+} from './rootfs-rollback'
 
 export interface DesiredAgent {
   version: string
@@ -212,6 +230,122 @@ function writeRootfsMarker(version: string): void {
 }
 
 /**
+ * Clearing ROOTFS_SHA is a real state: a host that never rebuilt has no marker,
+ * and stamping a placeholder there would make the release gate think it had.
+ */
+function clearRootfsMarker(): void {
+  rmSync(join(config.agentDir, ROOTFS_MARKER), { force: true })
+}
+
+// --- keeping the outgoing generation -----------------------------------------
+//
+// Activation is a rename, and a rename destroys the destination: before
+// SHO-552 the image that had been serving was gone the instant the new one
+// landed, so one bad build was unrecoverable on that host (staging 2026-11-23
+// kept serving nothing until it was rebuilt by hand). Every activation now
+// parks the outgoing image at `<base>.prev` first. Exactly one generation is
+// kept — a second `.prev` would be an 11 GB copy nobody has ever booted, on the
+// one disk where space is the failure mode.
+
+export const PREV_SUFFIX = '.prev'
+
+export function prevRootfsPath(base: string): string {
+  return `${base}${PREV_SUFFIX}`
+}
+
+/** The generation an activation displaced (see `RootfsPrevious`). */
+export function getRootfsPrev(): RootfsPrevious | null {
+  return readPrevious(config.agentDir)
+}
+
+export function getRootfsWatch(): RootfsWatch | null {
+  return readWatch(config.agentDir)
+}
+
+/** Generations proven unusable — never rebuilt, never re-applied. */
+export function getBadRootfs(): BadRootfs[] {
+  return readBadList(config.agentDir)
+}
+
+/** The most recent rejection, reported on the heartbeat as `rootfsRejected`. */
+export function getRejectedRootfs(): BadRootfs | null {
+  return latestBadRootfs(config.agentDir)
+}
+
+export function markRootfsBad(
+  version: string,
+  revision: string | null | undefined,
+  reason: string,
+  at = Date.now(),
+): void {
+  const list = addToBadList(getBadRootfs(), { version, revision: revision ?? null, reason, at })
+  writeBadList(config.agentDir, list)
+}
+
+/**
+ * Every cold boot the pool starts from the LIVE image, for the watch window.
+ * Module state on purpose: it dies with the process, and every activation
+ * restarts the process — so a window never inherits another generation's boots.
+ */
+export const coldBoots = new ColdBootLedger()
+
+export function reportColdBoot(ok: boolean, error?: string): void {
+  coldBoots.record(ok, error)
+}
+
+/**
+ * The last resort before a rebuild: delete the spare generation so the pull and
+ * the build have room. Only ever called when the disk is still over the GC
+ * threshold with every other image already collected, and NEVER while a watch is
+ * open — then `.prev` is the only image a rollback could restore. Failure here is
+ * a log line, never a failed build: a host that cannot free the space is exactly
+ * the host that must not skip its rootfs rebuild silently.
+ */
+function dropPreviousGeneration(usedPct: number): void {
+  if (getRootfsWatch()) return
+  const bases = [config.baseRootfs, config.dockerClass.baseRootfs].filter((b): b is string => !!b)
+  for (const base of bases) {
+    const prev = prevRootfsPath(base)
+    if (!existsSync(prev)) continue
+    try {
+      const gb = statSync(prev).size / 1e9
+      rmSync(prev, { force: true })
+      console.warn(
+        `[self-update] dropped ${prev} (${gb.toFixed(1)}GB): root disk at ${usedPct.toFixed(0)}% ` +
+          `after image GC and no rootfs watch is open — no rollback target until the next activation`,
+      )
+    } catch (err: any) {
+      console.warn(`[self-update] could not drop ${prev}:`, err?.message ?? err)
+    }
+  }
+  clearPrevious(config.agentDir)
+}
+
+/**
+ * Everything about the image currently serving, captured BEFORE the rename that
+ * replaces it. The revision and identity of the outgoing file cannot be read
+ * afterwards, and a rollback needs both: the revision goes into the bad list
+ * (so the same build is never applied again) and the identity is what tells the
+ * snapshot GC which cache entries a rollback would need.
+ */
+function captureOutgoingGeneration(now: number): RootfsPrevious {
+  const identities: RootfsPrevious['identities'] = {}
+  if (existsSync(config.baseRootfs)) {
+    identities.standard = computeRootfsIdentity(config, config.baseRootfs)
+  }
+  if (config.dockerClass.baseRootfs && existsSync(config.dockerClass.baseRootfs)) {
+    identities.docker = computeRootfsIdentity(config, config.dockerClass.baseRootfs)
+  }
+  let revision: string | null = null
+  try {
+    revision = readImageRevision(config.baseRootfs)
+  } catch {
+    revision = null
+  }
+  return { version: readRootfsMarker(), revision, identities, activatedAt: now }
+}
+
+/**
  * Pure decision: should we rebuild the golden rootfs, INDEPENDENT of whether the
  * agent code version changed?
  *
@@ -228,15 +362,22 @@ function writeRootfsMarker(version: string): void {
  * version: rebuild iff the desired release asks for it AND we have not already
  * built the rootfs for that release version. This fires once per rebuild-flagged
  * version and never loops.
+ *
+ * `rejected` is the bad list (ROOTFS_BAD): a generation already proven not to
+ * boot a VM is never rebuilt. Without that, a refusal clears the staged marker
+ * and the very next heartbeat rebuilds the same broken release — an 11 GB pull
+ * and a build, every 30 seconds, forever (SHO-552).
  */
 export function shouldRebuildRootfs(
   desired: DesiredAgent | null | undefined,
   lastBuilt: string | null,
   enabled: boolean,
   staged: string | null = null,
+  rejected: BadRootfs[] = getBadRootfs(),
 ): boolean {
   if (!enabled) return false
   if (!desired?.version || !desired?.rebuildRootfs) return false
+  if (findBadRootfs(rejected, desired.version, desired.runtimeRevision)) return false
   return desired.version !== lastBuilt && desired.version !== staged
 }
 
@@ -378,7 +519,16 @@ export interface RootfsHooks {
   promote?(identities: StagedRootfs['identities']): number | Promise<number>
   /** Why a staged image cannot boot, or null. Defaults to the debugfs probe. */
   guestInitProblem?(image: string): string | null
+  /**
+   * Boot a real VM from `image` and report why it could not become healthy, or
+   * null when it did (pool.probeBoot). The static probe above only proves the
+   * guest init is there; this is the only gate that says the image actually
+   * serves. Absent on a host with no free slot (or in tests): the activation
+   * then proceeds on the static checks with a warning, never blocks.
+   */
+  probeBoot?(image: string, vmClass: VmClass): Promise<string | null>
 }
+
 
 export type ActivationDecision = 'activate' | 'self-activate' | 'wait' | 'refuse'
 
@@ -401,18 +551,61 @@ export function rootfsActivationDecision(
 }
 
 /**
- * Rename each staged image over its live base. The standard image goes last:
- * it carries the marker that says the switch happened, so a crash in between
- * leaves a host that retries rather than one that half-switched silently.
+ * Park `base` at `base.prev` and rename the staged image over it. The standard
+ * image goes last: it carries the marker that says the switch happened, so a
+ * crash in between leaves a host that retries rather than one that half-switched
+ * silently.
+ *
+ * The outgoing image is kept (SHO-552). `rename` replaces `.prev` when one is
+ * already there, so exactly one generation survives and a `.prev` never
+ * accumulates into a second 11 GB copy nobody has booted.
  */
 export function activateStagedImages(baseRootfs: string, dockerBaseRootfs?: string): void {
   if (dockerBaseRootfs && existsSync(stagedRootfsPath(dockerBaseRootfs))) {
+    keepPreviousGeneration(dockerBaseRootfs)
     renameSync(stagedRootfsPath(dockerBaseRootfs), dockerBaseRootfs)
   }
+  keepPreviousGeneration(baseRootfs)
   renameSync(stagedRootfsPath(baseRootfs), baseRootfs)
 }
 
+/** `base` → `base.prev`, replacing any earlier generation. No-op if `base` is missing. */
+function keepPreviousGeneration(base: string): void {
+  if (!existsSync(base)) return
+  renameSync(base, prevRootfsPath(base))
+}
+
 let lastRefusedActivation: string | null = null
+
+/**
+ * Boot a real VM from each staged image before the swap (SHO-552). The static
+ * probe proves the guest init exists; only a boot proves the image serves, and
+ * on 2026-11-23 staging swapped in one that had all its files and still could
+ * not boot a single VM. Returns the first problem, or null.
+ *
+ * A host with no probe hook (no pool, a test) activates on the static checks
+ * alone with a warning: a gate that cannot run must never be a gate that blocks.
+ */
+async function bootProbeStaged(s: StagedRootfs, hooks: RootfsHooks): Promise<string | null> {
+  if (!hooks.probeBoot) {
+    console.warn(
+      `[self-update] no boot probe available — activating rootfs ${s.version} on its static checks alone`,
+    )
+    return null
+  }
+  const images: Array<[VmClass, string | undefined]> = [
+    ['docker', config.dockerClass.baseRootfs],
+    ['standard', config.baseRootfs],
+  ]
+  for (const [vmClass, base] of images) {
+    if (!base) continue
+    const image = stagedRootfsPath(base)
+    if (!existsSync(image)) continue
+    const problem = await hooks.probeBoot(image, vmClass)
+    if (problem) return `${vmClass} image: ${problem}`
+  }
+  return null
+}
 
 /**
  * Switch to the staged rootfs when `rootfsActivationDecision` says so: rename
@@ -448,6 +641,21 @@ export async function maybeActivateRootfs(
           `activateRootfs from the control plane — switching on our own`,
       )
     }
+    // A generation already proven unusable is never re-applied — not on the
+    // control plane's word, not on our own (SHO-552). The staged file stays for
+    // inspection; the marker goes so the heartbeat stops retrying it.
+    const bad = findBadRootfs(getBadRootfs(), s.version, s.runtimeRevision)
+    if (bad) {
+      if (lastRefusedActivation !== s.version) {
+        lastRefusedActivation = s.version
+        console.error(
+          `[self-update] REFUSING to activate rootfs ${s.version}: marked bad at ` +
+            `${new Date(bad.at).toISOString()} (${bad.reason}); live image untouched`,
+        )
+      }
+      clearStagedMarker()
+      return false
+    }
     // Rename first: promoted snapshots on a host whose rename then failed would
     // look stale to the current image and be reclaimed.
     //
@@ -469,23 +677,53 @@ export async function maybeActivateRootfs(
           `${unusable.image} left in place for inspection, live image untouched; ` +
           `the staged marker is cleared so the next heartbeat rebuilds`,
       )
+      markRootfsBad(s.version, s.runtimeRevision, unusable.problem ?? 'cannot boot', now)
       clearStagedMarker()
       return false
     }
+    // The gate that matters: a real cold boot from the staged image. Same signal
+    // a bad release produces in production — `waitForHealth` never answers.
+    const bootProblem = await bootProbeStaged(s, hooks)
+    if (bootProblem) {
+      console.error(
+        `[self-update] REFUSING to activate rootfs ${s.version}: boot probe failed: ${bootProblem}. ` +
+          `Live image untouched; the staged marker is cleared and ${s.version} is marked bad so it is not rebuilt`,
+      )
+      metrics.inc(M.rootfsBootProbeFailed)
+      markRootfsBad(s.version, s.runtimeRevision, `boot probe failed: ${bootProblem}`, now)
+      clearStagedMarker()
+      return false
+    }
+    // Capture what we are about to destroy BEFORE the rename: the outgoing
+    // revision (for the bad list) and its rootfs identity (for the snapshot GC)
+    // cannot be read once the file is gone.
+    const prev = captureOutgoingGeneration(now)
+    if (!prev.identities.standard && !prev.identities.docker) {
+      console.warn('[self-update] outgoing rootfs has no identity — a rollback will not spare its snapshots')
+    }
+    writePrevious(config.agentDir, prev)
     activateStagedImages(config.baseRootfs, config.dockerClass.baseRootfs || undefined)
+    // Probation starts with the image live: every cold boot the pool starts from
+    // now until `until` counts, and `maybeRollbackRootfs` undoes the swap if
+    // they mostly fail.
+    writeWatch(config.agentDir, {
+      version: s.version,
+      prevVersion: prev.version,
+      activatedAt: now,
+      until: now + config.rootfsWatchMs,
+    })
+    coldBoots.reset()
     const promoted = (await hooks.promote?.(s.identities)) ?? 0
     writeRootfsMarker(s.version)
     clearStagedMarker()
     console.log(
-      `[self-update] activated rootfs ${s.version} (${promoted} pre-warmed snapshot(s) promoted) — restarting metal-agent...`,
+      `[self-update] activated rootfs ${s.version} (${promoted} pre-warmed snapshot(s) promoted; ` +
+        `${Math.round(config.rootfsWatchMs / 60_000)}m watch, previous generation kept at ${prevRootfsPath(config.baseRootfs)}) ` +
+        `— restarting metal-agent...`,
     )
     // Without an 'error' listener a missing systemctl is an uncaught exception in
     // the middle of an activation, not a failed restart.
-    const restart = spawn('systemctl', ['restart', 'metal-agent'], { detached: true, stdio: 'ignore' })
-    restart.on('error', (err) =>
-      console.error('[self-update] activated the rootfs but could not restart metal-agent:', err.message),
-    )
-    restart.unref()
+    restartAgent()
     return true
   } catch (err: any) {
     console.error('[self-update] rootfs activation failed (will retry):', err?.message ?? err)
@@ -493,6 +731,129 @@ export async function maybeActivateRootfs(
   } finally {
     updating = false
   }
+}
+
+/** Detached graceful restart. Without the 'error' listener a missing systemctl is an uncaught exception. */
+export function restartAgent(): void {
+  const restart = spawn('systemctl', ['restart', 'metal-agent'], { detached: true, stdio: 'ignore' })
+  restart.on('error', (err) =>
+    console.error('[self-update] could not restart metal-agent:', err.message),
+  )
+  restart.unref()
+}
+
+export interface RollbackResult {
+  ok: boolean
+  error?: string
+}
+
+/**
+ * Put the previous generation back and delete the one that failed (SHO-552).
+ *
+ * The bad image is dropped rather than kept: `.prev` is the only spare the host
+ * has room for, and after a rollback it has to hold the image that works. So the
+ * rename over `base` destroys the bad inode, the marker goes back to the version
+ * that was serving, and the bad list keeps its revision so no later heartbeat
+ * rebuilds it.
+ *
+ * Never throws; returns why it refused instead. Used by both the automatic
+ * watch (`maybeRollbackRootfs`) and an operator (`POST /admin/rollback-rootfs`).
+ */
+export async function rollbackRootfs(
+  reason: 'auto' | 'manual',
+  opts: { now?: number; restart?: () => void } = {},
+): Promise<RollbackResult> {
+  const now = opts.now ?? Date.now()
+  const base = config.baseRootfs
+  const prevPath = prevRootfsPath(base)
+  const prev = getRootfsPrev()
+  if (!prev) {
+    return { ok: false, error: 'no ROOTFS_PREV marker — this host has nothing to roll back to' }
+  }
+  if (!existsSync(prevPath)) {
+    return { ok: false, error: `${prevPath} is missing — this host has nothing to roll back to` }
+  }
+  if (updating) {
+    return { ok: false, error: 'an update or rootfs build is in progress — retry when it finishes' }
+  }
+  updating = true
+  try {
+    const watch = getRootfsWatch()
+    const counts = coldBoots.counts(watch?.activatedAt ?? 0)
+    const total = counts.failures + counts.successes
+    const badVersion = readRootfsMarker() ?? watch?.version ?? 'unknown'
+    // Read the doomed image's own revision before the rename: after it, the only
+    // copy is gone, and the bad list needs the revision to refuse a rebuild of
+    // the same build under a different version.
+    let badRevision: string | null = null
+    try {
+      badRevision = readImageRevision(base)
+    } catch {
+      badRevision = null
+    }
+    if (config.dockerClass.baseRootfs) {
+      const dockerPrev = prevRootfsPath(config.dockerClass.baseRootfs)
+      if (existsSync(dockerPrev)) renameSync(dockerPrev, config.dockerClass.baseRootfs)
+    }
+    renameSync(prevPath, base)
+    if (prev.version) writeRootfsMarker(prev.version)
+    else clearRootfsMarker()
+    clearPrevious(config.agentDir)
+    clearWatch(config.agentDir)
+    coldBoots.reset()
+    const minutes = watch ? Math.max(0, Math.round((now - watch.activatedAt) / 60_000)) : 0
+    const why = `${reason} rollback: ${counts.failures}/${total} cold boots failed` +
+      (counts.topError ? ` (${counts.topError})` : '')
+    markRootfsBad(badVersion, badRevision, why, now)
+    metrics.inc(M.rootfsRollback)
+    console.log(
+      `[self-update] ROLLED BACK rootfs ${badVersion} → ${prev.version ?? 'previous generation'}` +
+        `${reason === 'manual' ? ' (manual)' : ''}: ${counts.failures}/${total} cold boots failed ` +
+        `in ${minutes}m${counts.topError ? ` (${counts.topError})` : ''} — restarting metal-agent...`,
+    )
+    ;(opts.restart ?? restartAgent)()
+    return { ok: true }
+  } catch (err: any) {
+    const msg = err?.message ?? String(err)
+    console.error('[self-update] rootfs rollback failed:', msg)
+    return { ok: false, error: msg }
+  } finally {
+    updating = false
+  }
+}
+
+/**
+ * Called on every heartbeat tick: has the generation we just activated failed to
+ * boot enough VMs to send the host back? A watch that ends with the image still
+ * healthy is closed here, once, so a later failure storm is not attributed to an
+ * activation from an hour ago.
+ */
+export async function maybeRollbackRootfs(now = Date.now()): Promise<boolean> {
+  if (updating) return false
+  const watch = getRootfsWatch()
+  if (!watch) return false
+  const counts = coldBoots.counts(watch.activatedAt)
+  const decision = rollbackDecision({
+    failures: counts.failures,
+    successes: counts.successes,
+    now,
+    watch,
+    minFailures: config.rootfsRollbackMinFailures,
+    rate: config.rootfsRollbackRate,
+  })
+  if (decision === 'ok') return false
+  if (decision === 'expired') {
+    clearWatch(config.agentDir)
+    const total = counts.failures + counts.successes
+    console.log(
+      `[self-update] rootfs ${watch.version} passed its watch: ${counts.failures}/${total} cold boots ` +
+        `failed in ${Math.round((watch.until - watch.activatedAt) / 60_000)}m — keeping it, and releasing ${prevRootfsPath(config.baseRootfs)} to the disk`,
+    )
+    return false
+  }
+  const res = await rollbackRootfs('auto', { now })
+  if (!res.ok) console.error('[self-update] automatic rollback refused:', res.error)
+  return res.ok
 }
 
 /**
@@ -680,8 +1041,16 @@ export async function stageRootfs(baseDir: string, desired: DesiredAgent): Promi
   // Free space BEFORE the pull. A host at 100% (dal-2) cannot successfully pull,
   // so cleanup must not be conditional on the rebuild succeeding — and the
   // collector keeps the image we are about to build from.
+  //
+  // A rebuild needs room for base + `.prev` + `.staged`: keeping the last good
+  // image per class means each class now holds two, and the space check has to
+  // count them (SHO-552). If the disk is still tight after the image GC, the
+  // spare generation goes — it is the only thing here nobody is booting. Never
+  // outside a watch window though: during one, `.prev` IS the rollback target.
   if (rootDiskUsage('/').usedPct >= config.rootDiskGcPct) {
     await collectUnderLock('pre-rebuild', keep)
+    const after = rootDiskUsage('/').usedPct
+    if (after >= config.rootDiskGcPct) dropPreviousGeneration(after)
   }
   await buildRootfsImage({
     script,

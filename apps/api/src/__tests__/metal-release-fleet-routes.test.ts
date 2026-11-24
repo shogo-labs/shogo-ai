@@ -119,4 +119,38 @@ describe('metal /release and /fleet', () => {
     expect(byId['dal-1']).toMatchObject({ region: 'us', rootfsSha: 'v2.0.18', rootfsRevision: SHA, live: true })
     expect(byId['dal-2'].rootfsRevision).toBeUndefined()
   })
+
+  // SHO-552: the agent refuses to rebuild or re-activate a rootfs generation it
+  // proved broken, so it stays on the old image and looks merely "behind". The
+  // heartbeat's explanation has to survive the register route's whitelist and
+  // reach /fleet, or nobody can tell a bad release from a slow rollout.
+  it('/fleet reports the rootfs generation a host rejected, and why', async () => {
+    const rejected = {
+      version: 'v2.0.19',
+      revision: SHA,
+      reason: 'boot probe failed: guest exited before healthy (no fc-init)',
+      at: 1_764_000_000_000,
+    }
+    await req('/register', { method: 'POST', token: TOKEN, body: { ...REG, rootfsRejected: rejected } })
+    await req('/register', { method: 'POST', token: TOKEN, body: { ...REG, hostId: 'dal-2', meshIp: '10.8.0.3' } })
+
+    const body = (await (await req('/fleet', { token: TOKEN })).json()) as any
+    const byId = Object.fromEntries(body.hosts.map((h: any) => [h.hostId, h]))
+    expect(byId['dal-1'].rootfsRejected).toEqual(rejected)
+    // A host that never rejected anything stays absent, not a stub object.
+    expect(byId['dal-2'].rootfsRejected).toBeUndefined()
+  })
+
+  it('does not let a malformed rootfsRejected through to /fleet', async () => {
+    await req('/register', {
+      method: 'POST',
+      token: TOKEN,
+      body: { ...REG, rootfsRejected: { version: 'v2.0.19', background: 'nope' } },
+    })
+
+    const body = (await (await req('/fleet', { token: TOKEN })).json()) as any
+    const host = body.hosts.find((h: any) => h.hostId === 'dal-1')
+    // Only the known shape is forwarded — no arbitrary heartbeat key reaches the panel.
+    expect(host.rootfsRejected).toEqual({ version: 'v2.0.19', revision: null, reason: 'unknown', at: 0 })
+  })
 })
