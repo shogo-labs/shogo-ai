@@ -58,6 +58,7 @@ import { NotificationPermissionBanner } from "../../components/notifications/Not
 import { AgentLimitBanner } from "../../components/AgentLimitBanner";
 import { DurabilityBanner } from "../../components/DurabilityBanner";
 import { AgentGlancePublisher } from "../../components/layout/AgentGlancePublisher";
+import { DesktopTrayPublisher } from "../../components/layout/DesktopTrayPublisher";
 import { HuddleWindow } from "../../components/team-chat/HuddleWindow";
 import { HuddleRinger } from "../../components/team-chat/HuddleRinger";
 import { AppHeader } from "../../components/layout/AppHeader";
@@ -716,6 +717,7 @@ function AppLayoutInner() {
       {!isIdeEmbed ? <AgentLimitBanner /> : null}
       {!isIdeEmbed ? <DurabilityBanner /> : null}
       {!isIdeEmbed ? <AgentGlancePublisher /> : null}
+      {!isIdeEmbed ? <DesktopTrayPublisher /> : null}
       {!isIdeEmbed ? <HuddleWindow /> : null}
       {!isIdeEmbed ? <HuddleRinger /> : null}
       {/* The shell stays mounted on every phone route and only toggles its

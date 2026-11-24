@@ -44,6 +44,32 @@ const CLEARED_TURN = {
   activeTurnHeartbeatAt: null,
 } as const
 
+/**
+ * "A turn is running right now" as a `ChatSession` where-clause.
+ *
+ * The one predicate every surface that paints a live spinner asks through, so
+ * `active-chats` and the recent-chat list (the desktop tray) can never disagree
+ * about which chat is running. `staleAfterMs` defaults to
+ * `RUNNING_NOW_WINDOW_MS`; only a caller with its own liveness window passes it.
+ */
+export function runningNowWhere(staleAfterMs: number = RUNNING_NOW_WINDOW_MS) {
+  return {
+    activeTurnId: { not: null },
+    activeTurnHeartbeatAt: { gt: new Date(Date.now() - staleAfterMs) },
+  } as const
+}
+
+/** The row-level twin of `runningNowWhere`, for a query that already selected
+ * `activeTurnId`/`activeTurnHeartbeatAt` and cannot carry the where-clause. */
+export function isRunningNow(
+  activeTurnId: string | null,
+  activeTurnHeartbeatAt: Date | null,
+  staleAfterMs: number = RUNNING_NOW_WINDOW_MS,
+): boolean {
+  if (!activeTurnId || !activeTurnHeartbeatAt) return false
+  return activeTurnHeartbeatAt.getTime() > Date.now() - staleAfterMs
+}
+
 export type ActiveChatTurn = {
   chatSessionId: string
   turnId: string
@@ -412,11 +438,10 @@ export async function listActiveChatTurns(
   opts: { staleAfterMs?: number; viewerUserId?: string } = {},
 ): Promise<ActiveChatTurn[]> {
   const staleAfterMs = opts.staleAfterMs ?? RUNNING_NOW_WINDOW_MS
-  const heartbeatAfter = new Date(Date.now() - staleAfterMs)
   const sessions = await prisma.chatSession.findMany({
     where: {
       isArchived: false,
-      activeTurnHeartbeatAt: { gt: heartbeatAfter },
+      ...runningNowWhere(staleAfterMs),
       OR: [
         { workspaceId },
         { project: { workspaceId } },
