@@ -1153,7 +1153,7 @@ describe('the ingest', () => {
       { name: 'schemas', typeName: 'String', isList: true },
       { name: 'createdAt', typeName: 'DateTime' },
     ])
-    const createdAt = new Date('2026-11-24T00:00:00.000Z')
+    const createdAt = new Date()
     const row = normaliseRow(
       'ChatMessage',
       { id: 'm1', content: 'plain', fields: { a: ['b', 2] }, schemas: ['x'], createdAt },
