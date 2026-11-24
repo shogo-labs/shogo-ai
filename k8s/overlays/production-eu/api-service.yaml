@@ -292,6 +292,14 @@ spec:
             # docs/runbooks/published-images.md — the Secret and the egress rule
             # are manual per region, and PUBLISH_BUILD_IMAGES=off rolls back
             # without unsetting these.
+            # Pinned off until SHO-551 lands (KIF CRM, 2026-11-24): the SQLite→Postgres
+            # seed refuses orphaned rows, published pods never swap db.ts/provider to
+            # Postgres, and metal-hosted editors can't upload the image artifact.
+            # Turn each on only after it is verified end to end on staging.
+            - name: PUBLISH_POSTGRES
+              value: "off"
+            - name: PUBLISH_BUILD_IMAGES
+              value: "off"
             - name: PUBLISH_BUILD_REGISTRY
               value: "eu-frankfurt-1.ocir.io"
             - name: PUBLISH_BUILD_NAMESPACE
