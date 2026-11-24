@@ -75,4 +75,27 @@ describe('moreItems', () => {
       expect(item.subtitle.length).toBeGreaterThan(0)
     }
   })
+
+  test('the phone More screen lists Projects first, for both workspace kinds', () => {
+    const team = moreItems({ kind: 'team', marketplace: true, canvasesHidden: false, projects: true })
+    expect(team[0]).toEqual({
+      id: 'projects',
+      icon: 'projects',
+      title: 'Projects',
+      subtitle: 'Every project in this workspace',
+      href: '/(app)/projects',
+    })
+    // First, ahead of Analytics; the rest of the list keeps its order.
+    expect(ids(team).slice(1)).toEqual(ids(moreItems({ kind: 'team', marketplace: true, canvasesHidden: false })))
+    expect(ids(moreItems({ kind: 'personal', marketplace: false, canvasesHidden: true, projects: true }))).toEqual([
+      'projects',
+      'analytics',
+      'settings',
+    ])
+  })
+
+  test('Projects is absent unless the caller asks for it: the wide sidebar already has the tab', () => {
+    expect(ids(moreItems({ kind: 'team', marketplace: true, canvasesHidden: false }))).not.toContain('projects')
+    expect(ids(moreItems({ kind: 'personal', marketplace: false, canvasesHidden: true }))).not.toContain('projects')
+  })
 })

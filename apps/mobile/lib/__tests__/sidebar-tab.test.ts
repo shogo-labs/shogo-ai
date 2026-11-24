@@ -119,6 +119,14 @@ describe('phone dock', () => {
     expect(dockTabForPathname('/tasks')).toBe('more')
     expect(dockTabForPathname('/meetings')).toBe('more')
   })
+
+  test('the Projects list belongs to More, and a project page stays Home', () => {
+    expect(dockTabForPathname('/projects')).toBe('more')
+    expect(dockTabForPathname('/(app)/projects')).toBe('more')
+    expect(dockTabForPathname('/(app)/projects/')).toBe('more')
+    expect(dockTabForPathname('/projects/p1')).toBe('home')
+    expect(dockTabForPathname('/projects/p1/canvas')).toBe('home')
+  })
 })
 
 describe('isConversationPath', () => {

@@ -4,7 +4,7 @@
 // Leaf import: the `@shogo/shared-app` barrel also loads the domain SDK.
 import { CANVAS_NAV_HIDDEN, TASKS_NAV_HIDDEN } from '../../../packages/shared-app/src/hooks/useWorkspaceExperience'
 
-export type MoreIcon = 'analytics' | 'tasks' | 'work' | 'marketplace' | 'files' | 'social' | 'settings'
+export type MoreIcon = 'analytics' | 'projects' | 'tasks' | 'work' | 'marketplace' | 'files' | 'social' | 'settings'
 
 export interface MoreItem {
   id: string
@@ -14,9 +14,14 @@ export interface MoreItem {
   href: string
 }
 
-export function moreItems(opts: { kind: 'personal' | 'team'; marketplace: boolean; canvasesHidden?: boolean; tasksHidden?: boolean; workBoards?: boolean; social?: boolean; analytics?: boolean }): MoreItem[] {
+export function moreItems(opts: { kind: 'personal' | 'team'; marketplace: boolean; canvasesHidden?: boolean; tasksHidden?: boolean; workBoards?: boolean; social?: boolean; analytics?: boolean; projects?: boolean }): MoreItem[] {
   // Usage and cost optimizer: workspace owners/admins only, local included.
   const items: MoreItem[] = []
+  // The full Projects screen has no tab of its own on a phone, so the More
+  // screen (which has no rail beside it) lists it first.
+  if (opts.projects) {
+    items.push({ id: 'projects', icon: 'projects', title: 'Projects', subtitle: 'Every project in this workspace', href: '/(app)/projects' })
+  }
   if (opts.analytics ?? true) {
     items.push({ id: 'analytics', icon: 'analytics', title: 'Analytics', subtitle: 'Workspace usage and the cost optimizer', href: '/(app)/analytics' })
   }

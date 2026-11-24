@@ -258,6 +258,10 @@ function AppLayoutInner() {
     /^\/(app\/)?projects\/[^/]+/.test(pathname.replace(/^\/(app\/)?/, "/")) &&
     pathname !== "/projects" &&
     pathname !== "/(app)/projects";
+  // The Projects list is reached from More on a phone, so its header goes back
+  // there instead of opening the sidebar drawer (SHO-570).
+  const isProjectsList =
+    pathname.replace(/^\/(app\/)?/, "/").replace(/\/+$/, "") === "/projects";
   // The mobile shell is coupled to the workspace runtime: without it, the
   // legacy home remains available instead of exposing a chat that cannot run
   // turns. All workspace kinds share this mobile chrome; wide web keeps the
@@ -695,7 +699,7 @@ function AppLayoutInner() {
         !isIdeEmbed &&
         !suppressNarrowAppHeader &&
         !useMobileWorkspaceShell ? (
-          <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} />
+          <AppHeader onMenuPress={toggleDrawer} menuOpen={drawerOpen} back={isProjectsList} />
         ) : null
       }
       bottomNav={
