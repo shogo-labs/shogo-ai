@@ -603,9 +603,6 @@ app.post('/projects/:projectId/publish', async (c) => {
     return c.json({ error: { code: 'invalid_body', message: 'Invalid JSON body' } }, 400)
   }
   const environment = body.environment === 'staging' ? 'staging' : 'production'
-  if (!body.subdomain && environment !== 'staging') {
-    return c.json({ error: { code: 'subdomain_required', message: 'subdomain is required' } }, 400)
-  }
 
   try {
     const { startPublish } = await import('./publish')
@@ -614,8 +611,12 @@ app.post('/projects/:projectId/publish', async (c) => {
     // The tool polls the GET above for the outcome (SHO-542) — the metal
     // runtime reaches this API through the public URL, which has the same
     // ~100 s edge limit.
+    //
+    // `subdomain` is passed through untouched: the same runner owns both the
+    // `subdomain_required` refusal and the re-publish fallback to the saved
+    // subdomain (SHO-559), so this route must not pre-empt either.
     const started = await startPublish(projectId, {
-      subdomain: body.subdomain ?? '',
+      subdomain: body.subdomain,
       accessLevel: body.accessLevel,
       password: body.password,
       siteTitle: body.siteTitle,

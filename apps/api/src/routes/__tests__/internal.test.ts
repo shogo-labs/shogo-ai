@@ -1487,12 +1487,30 @@ describe('POST /projects/:projectId/publish', () => {
     expect(res.status).toBe(400)
   })
 
-  test('400 when subdomain missing', async () => {
+  test('forwards a missing subdomain untouched — the shared runner owns subdomain_required', async () => {
+    // The route used to pre-empt the runner with its own check and `?? ''`,
+    // which is why a re-publish of a live app could not omit the name (SHO-559).
+    // Refusal and fallback both belong to `preparePublish`.
+    store.publishResult = {
+      ok: false,
+      status: 400,
+      code: 'subdomain_required',
+      message: 'A subdomain is required for the first publish.',
+    }
     const res = await app.request('/projects/p1/publish', {
       method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify({}),
     })
     expect(res.status).toBe(400)
     expect((await res.json()).error.code).toBe('subdomain_required')
+    expect(store.publishCalledWith).toEqual({
+      projectId: 'p1',
+      opts: {
+        subdomain: undefined, accessLevel: undefined, password: undefined,
+        siteTitle: undefined, siteDescription: undefined,
+        environment: 'production',
+        allowDataLoss: false,
+      },
+    })
   })
 
   test('202 accepts and forwards options to startPublish', async () => {
