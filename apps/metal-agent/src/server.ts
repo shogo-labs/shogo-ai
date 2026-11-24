@@ -43,7 +43,18 @@ import {
 import { PortForward } from './port-forward'
 import { announceRestarting, reportPlacement, startRegistration } from './register'
 import { RequestDrain } from './request-drain'
-import { getRootfsRevision, getRootfsSha, getStagedRootfs, imagesToKeep, maybeImageGc } from './self-update'
+import {
+  getRejectedRootfs,
+  getRootfsPrev,
+  getRootfsRevision,
+  getRootfsSha,
+  getRootfsWatch,
+  getStagedRootfs,
+  imagesToKeep,
+  maybeImageGc,
+  restartAgent,
+  rollbackRootfs,
+} from './self-update'
 import { SerialWatcher } from './serial-watcher'
 const pool = new MetalWarmPool()
 // Pre-mesh data path: DNAT a public host port to each assigned guest and hand
@@ -181,9 +192,30 @@ async function handle(req: Request, srv: PeerLookup): Promise<Response> {
           rootfsSha: getRootfsSha(),
           rootfsRevision: getRootfsRevision(),
           stagedRootfs: getStagedRootfs(),
+          // The rollback state (SHO-552): what a rollback would put back, whether
+          // the live image is still on probation, and what was rejected last —
+          // otherwise none of it is visible without catting the markers.
+          rootfsPrevious: getRootfsPrev(),
+          rootfsWatch: getRootfsWatch(),
+          rootfsRejected: getRejectedRootfs(),
         })
       }
       if (path === '/vms') return Response.json(pool.status())
+
+
+      // Manual rollback (SHO-552): put `<base>.prev` back now, instead of waiting
+      // for the watch to decide. The automatic path covers a host whose cold
+      // boots fail; this covers the failure a boot cannot see (a bad kernel
+      // config, a project that could never boot on the new image) and a
+      // watchdog-only host. Same auth tier as /gc.
+      if (path === '/admin/rollback-rootfs' && req.method === 'POST') {
+        const res = await rollbackRootfs('manual', {
+          // Let this response flush before the process goes down: the handler
+          // lives in the agent being restarted.
+          restart: () => setTimeout(restartAgent, 500),
+        })
+        return Response.json(res, { status: res.ok ? 200 : 409 })
+      }
       if (path === '/metrics') return new Response(metrics.prometheus(), { headers: { 'Content-Type': 'text/plain; version=0.0.4' } })
 
       // A guest redeeming a hydrate grant. Not part of the control-plane API:

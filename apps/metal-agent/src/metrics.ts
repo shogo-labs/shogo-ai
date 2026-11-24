@@ -80,6 +80,13 @@ export const M = {
   suspendRetiredStale: 'metal_suspend_retired_stale_total',
   // VMs moved off a superseded rootfs by the rollout rotation (pool.rotateStale).
   rolloutRotated: 'metal_rollout_rotated_total',
+  // A staged rootfs was refused because a real VM could not boot from it
+  // (SHO-552). Non-zero means a release is broken and this host stayed on the
+  // image it had — the log line names the error.
+  rootfsBootProbeFailed: 'metal_rootfs_boot_probe_failed_total',
+  // Activations undone automatically after a burst of failed cold boots, and by
+  // an operator (`POST /admin/rollback-rootfs`).
+  rootfsRollback: 'metal_rootfs_rollback_total',
   resumeLocalHits: 'metal_resume_local_hits_total',
   resumeStoreHits: 'metal_resume_store_hits_total',
   resumeColdMiss: 'metal_resume_cold_miss_total',

@@ -95,7 +95,7 @@ import {
   type RepoManifestLfsMissing,
 } from './vendor/repo-bundles'
 import { readSerialTail } from './serial-watcher'
-import { stagedRootfsPath } from './self-update'
+import { getRootfsPrev, getRootfsWatch, reportColdBoot, stagedRootfsPath } from './self-update'
 import type { ArchiveRef } from './archive-ref'
 import { describeHomeStateArchive, uploadHomeStateGuarded } from './home-state-archive'
 
@@ -1727,6 +1727,13 @@ export class MetalWarmPool {
     throw new Error(`VM ${handle.id} never became healthy`)
   }
 
+  /**
+   * Boot one VM, reporting every cold boot from the LIVE image to the rootfs
+   * watch (SHO-552). `rootfsBase` given means it is not a boot of the image
+   * currently serving: an assignment pinned to another class image, the
+   * activation boot-probe, or a rollout rotation — none of those say anything
+   * about whether the image we just activated works.
+   */
   private async bootOne(
     pool = true,
     vmClass: VmClass = 'standard',
@@ -1735,25 +1742,56 @@ export class MetalWarmPool {
   ): Promise<PooledVm> {
     // startVM resolves memory and vCPUs from the class's own config
     // (classConfig in config.ts) unless an assignment asked for a bigger VM.
-    const handle = await this.mgr.startVM({
-      vmClass,
-      ...(rootfsBase ? { rootfsBase } : {}),
-      ...(size?.memoryMB ? { memoryMB: size.memoryMB } : {}),
-      ...(size?.cpus ? { cpus: size.cpus } : {}),
-    })
+    const fromLiveImage = !rootfsBase
+    let handle: FcVmHandle
+    try {
+      handle = await this.mgr.startVM({
+        vmClass,
+        ...(rootfsBase ? { rootfsBase } : {}),
+        ...(size?.memoryMB ? { memoryMB: size.memoryMB } : {}),
+        ...(size?.cpus ? { cpus: size.cpus } : {}),
+      })
+    } catch (err: any) {
+      if (fromLiveImage) reportColdBoot(false, err?.message ?? String(err))
+      throw err
+    }
     // startVM self-cleans a partial boot; a VM that boots but never becomes
     // healthy is our responsibility to stop, or its FC process leaks (never
     // enters `available`/`assigned`, so nothing else would ever kill it).
     this.inFlight.add(handle.id)
     try {
       await this.waitForHealth(handle, () => this.mgr.isRunning(handle))
-    } catch (err) {
+    } catch (err: any) {
       await this.mgr.stopVM(handle).catch(() => {})
+      if (fromLiveImage) reportColdBoot(false, err?.message ?? String(err))
       throw err
     } finally {
       this.inFlight.delete(handle.id)
     }
+    if (fromLiveImage) reportColdBoot(true)
     return { handle, ready: true, createdAt: Date.now() }
+  }
+
+  /**
+   * Boot one VM from `rootfsBase` and stop it: the activation gate (SHO-552).
+   * Returns why the image could not serve a VM, or null when one became healthy.
+   *
+   * This is the only check that proves an image works — the static probe only
+   * proves `/usr/local/bin/fc-init` is inside it. It uses the ordinary boot path
+   * and the normal health timeout (`healthRetries × healthIntervalMs`), so it
+   * sees exactly what a user's cold boot would have seen. It never enters
+   * `available`/`assigned` and is never reported to the watch: a probe that fails
+   * is already fatal on its own, and counting it twice would roll a good image
+   * back on its first activation. Never throws.
+   */
+  async probeBoot(vmClass: VmClass, rootfsBase: string): Promise<string | null> {
+    try {
+      const vm = await this.bootOne(false, vmClass, rootfsBase)
+      await this.mgr.stopVM(vm.handle).catch(() => {})
+      return null
+    } catch (err: any) {
+      return err?.message ?? String(err)
+    }
   }
 
   /**
@@ -5834,6 +5872,23 @@ export class MetalWarmPool {
     return !!s.rootfsIdentity && s.rootfsIdentity !== this.classRootfsIdentity(s.snapshot.vmClass ?? 'standard')
   }
 
+  /**
+   * Rootfs identities a rollback could restore — empty unless a watch is open
+   * (SHO-552). An image is only restorable while it is still the one at
+   * `<base>.prev`, and those identities come from the marker written before the
+   * activation renamed it there.
+   *
+   * Snapshots for these are stale relative to the LIVE rootfs, so reclaim would
+   * drop them: the fleet would come back from a rollback with an empty cache and
+   * cold-boot everything, which is the cost the rollback exists to avoid.
+   */
+  private rollbackSnapshotIdentities(): Set<string> {
+    if (!getRootfsWatch()) return new Set()
+    const prev = getRootfsPrev()
+    if (!prev) return new Set()
+    return new Set(Object.values(prev.identities).filter((id): id is string => !!id))
+  }
+
   /** Whether a snapshot taken from this VM right now could never be pushed. */
   private bootSnapshotIsStale(a: AssignedVm): boolean {
     const identity = this.bootRootfsIdentity(a)
@@ -7692,6 +7747,12 @@ export class MetalWarmPool {
    *
    * The guard keeps one drain in flight: the sweep timer keeps firing during a
    * long drain, and a second pass over the same entries would be wasted work.
+   *
+   * One extra skip while a post-activation watch is open (SHO-552): a snapshot
+   * taken against the generation we just replaced is exactly what a rollback
+   * needs, and reclaiming it would leave a rollback that boots every project
+   * cold — or, worse, one that "succeeds" and loses the home states. The watch
+   * ends in 15 minutes and normal reclaim resumes; nothing is lost by waiting.
    */
   private async reclaimStaleSnapshots(
     max = STALE_RECLAIM_PER_SWEEP,
@@ -7701,6 +7762,8 @@ export class MetalWarmPool {
     if (this.staleReclaimRunning) return { projectIds, bytes }
     this.staleReclaimRunning = true
     try {
+      // Read once per sweep: one agentDir read pair, not one per snapshot.
+      const rollbackTargets = this.rollbackSnapshotIdentities()
       // Snapshot the ids: we await inside the loop, so the live map may gain a
       // freshly-suspended entry underneath us. Anything new is next sweep's.
       for (const id of [...this.suspended.keys()]) {
@@ -7709,6 +7772,7 @@ export class MetalWarmPool {
         // project may have woken and re-suspended onto the CURRENT rootfs.
         const s = this.suspended.get(id)
         if (!s || !this.localSnapshotIsStale(s)) continue
+        if (s.rootfsIdentity && rollbackTargets.has(s.rootfsIdentity)) continue
         // Never race the paths that own the entry: a running VM is not suspended
         // at all, and an in-flight open is already deciding this snapshot's fate.
         if (this.assigned.has(id)) continue
