@@ -91,6 +91,32 @@ export function shouldBuildPublishedImage(
 }
 
 /**
+ * Why a Postgres environment cannot publish, or `null` when it has its image.
+ *
+ * A Postgres environment must run its own `pg` build — the app only becomes a
+ * PrismaPg client inside one. "An image existed" is not the question: the
+ * cutover and a publish with no commit to build both used to reach
+ * `substrate.publish` with no image ref and fall through to the shared image,
+ * which shipped a SQLite client against projects-pg (SHO-551, QA round 5).
+ *
+ * Exported so the rule is testable without driving the whole publish route.
+ */
+export function postgresImageRefusal(input: {
+  /** The image ref this publish resolved, if any. */
+  imageRef: string | null | undefined
+  commitSha: string | null | undefined
+  serverBacked: boolean
+  /** Variables the image build is missing, from `publishedBuildSetup()`. */
+  missing: string[]
+}): string | null {
+  if (input.imageRef) return null
+  if (!input.commitSha) return 'the project has no published commit to build one from.'
+  if (!input.serverBacked) return 'the publish is not server-backed, so no image is built for it.'
+  if (input.missing.length) return `the build is not configured (missing ${input.missing.join(', ')}).`
+  return 'PUBLISH_BUILD_IMAGES does not cover it.'
+}
+
+/**
  * How long the API waits for one per-commit image build before failing the
  * publish.
  *

@@ -1373,25 +1373,34 @@ async function configurePublishedService(
         )
       } else {
         const missing = publishedBuildSetup().missing
-        // §G1: a Postgres environment has no SQLite fallback. Its pod mounts a
-        // Postgres `DATABASE_URL`, and the app's own `db.ts`/provider only become
-        // PrismaPg inside a `pg` build context — booting the shared image against
-        // that URL exits on the boot guard instead of serving. So a flag that
-        // leaves a Postgres environment without its image is a publish that would
-        // take the site down: refuse it here, with the reason.
-        if (currentDbProvider === "postgres") {
-          throw new PublishConfigureError(
-            "build_unavailable",
-            `${projectId} is on Postgres, which needs its own image: ` +
-              (missing.length
-                ? `the build is not configured (missing ${missing.join(", ")}).`
-                : `PUBLISH_BUILD_IMAGES does not cover it.`),
-            503,
-          )
-        }
         console.log(
           `[Publish] No per-commit image for ${projectId} ` +
             `(substrate=${substrate.kind}${missing.length ? `, missing ${missing.join(", ")}` : ", disabled by PUBLISH_BUILD_IMAGES"})`,
+        )
+      }
+    }
+
+    // §G1: a Postgres environment has no SQLite fallback, and "some image was
+    // available" is not enough — it has to be the `pg` build. Its pod mounts a
+    // Postgres `DATABASE_URL`, and the app only becomes PrismaPg inside a `pg`
+    // build context; anything else serves the SQLite client and writes to a
+    // per-pod LibSQL file (QA round 5 on staging). The check sits outside the
+    // `serverBacked && commitSha` branch on purpose: a publish with no commit to
+    // build, or one that is not server-backed, used to skip image resolution
+    // entirely and fall through to the shared image.
+    if (currentDbProvider === "postgres") {
+      const { publishedBuildSetup, postgresImageRefusal } = await import("../lib/published-build-config")
+      const refusal = postgresImageRefusal({
+        imageRef: publishedImageRef,
+        commitSha,
+        serverBacked,
+        missing: publishedBuildSetup().missing,
+      })
+      if (refusal) {
+        throw new PublishConfigureError(
+          "build_unavailable",
+          `${projectId} is on Postgres, which needs its own image: ${refusal}`,
+          503,
         )
       }
     }
