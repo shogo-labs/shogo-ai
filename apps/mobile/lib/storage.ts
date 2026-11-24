@@ -19,6 +19,7 @@
  * means everywhere it happens.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import * as Sentry from '@sentry/react-native'
 
 export function getStorageItem(key: string): Promise<string | null> {
   return AsyncStorage.getItem(key)
@@ -35,10 +36,7 @@ export async function removeStorageItem(key: string): Promise<void> {
  */
 export async function setStorageItem(key: string, value: string): Promise<void> {
   if (typeof value !== 'string') {
-    // Not a warning about style: `RNCAsyncStorage` would call `-length` on
-    // whatever crossed the bridge and abort the app. Name the key so the next
-    // one of these is one line in the log instead of a crash report.
-    console.warn(`[storage] refusing to write a non-string for "${key}"; removing it instead`)
+    refuseWrite(key, value)
     await removeStorageItem(key)
     return
   }
@@ -58,8 +56,23 @@ export async function setStorageJson(key: string, value: unknown): Promise<void>
     json = undefined
   }
   if (typeof json !== 'string') {
+    refuseWrite(key, value)
     await removeStorageItem(key)
     return
   }
   await AsyncStorage.setItem(key, json)
+}
+
+/**
+ * A refused write is the one place a non-string could still have reached
+ * native, so it has to leave a trail that survives into the next crash report.
+ * SHOGO-IOS-16 (SHO-566) could not name its own key — the event carried no JS
+ * frames and this app captures no console breadcrumbs — so the key and the
+ * `typeof` go into a breadcrumb, never the value itself.
+ */
+function refuseWrite(key: string, value: unknown): void {
+  const kind = value === null ? 'null' : typeof value
+  const message = `[storage] refused a ${kind} for "${key}"; removed the key instead`
+  console.warn(message)
+  Sentry.addBreadcrumb({ category: 'storage', level: 'warning', message })
 }

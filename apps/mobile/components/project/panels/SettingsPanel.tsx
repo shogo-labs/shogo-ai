@@ -31,6 +31,7 @@ import {
 } from 'react-native'
 import { Check, ChevronDown } from 'lucide-react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { setStorageItem } from '@/lib/storage'
 import { cn } from '@shogo/shared-ui/primitives'
 import { nativeContentWidth, nativeSettingsPaneStyle, NATIVE_PHONE_PICKER_INSET, NATIVE_PHONE_PICKER_GUTTER, NATIVE_PHONE_HAIRLINE_COLOR,
   NATIVE_PHONE_SYSTEM_GRAY,
@@ -130,12 +131,12 @@ export function SettingsPanel({ visible, groups, requestedItem }: SettingsPanelP
     if (!requestedItem) return
     if (!flatItems.some((it) => it.id === requestedItem.id)) return
     setActiveId(requestedItem.id)
-    AsyncStorage.setItem(ACTIVE_SECTION_STORAGE_KEY, requestedItem.id).catch(() => {})
+    setStorageItem(ACTIVE_SECTION_STORAGE_KEY, requestedItem.id).catch(() => {})
   }, [requestedItem, flatItems])
 
   const handleSelect = useCallback((id: string) => {
     setActiveId(id)
-    AsyncStorage.setItem(ACTIVE_SECTION_STORAGE_KEY, id).catch(() => {})
+    setStorageItem(ACTIVE_SECTION_STORAGE_KEY, id).catch(() => {})
   }, [])
 
   const activeItem = useMemo(

@@ -15,6 +15,7 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { setStorageItem } from '@/lib/storage'
 
 const STORAGE_KEY_PREFIX = 'shogo:personal-shell-welcome-seen:'
 const seenInMemory = new Set<string>()
@@ -46,7 +47,7 @@ export function useWelcomeMessage(workspaceId: string | undefined): {
         // appear again the next time the screen mounts.
         seenInMemory.add(storageKey)
         setShowWelcome(true)
-        AsyncStorage.setItem(storageKey, 'true').catch(() => {
+        setStorageItem(storageKey, 'true').catch(() => {
           // The in-memory guard still prevents repeats during this session.
         })
       })
@@ -64,7 +65,7 @@ export function useWelcomeMessage(workspaceId: string | undefined): {
     if (!workspaceId) return
     const storageKey = STORAGE_KEY_PREFIX + workspaceId
     seenInMemory.add(storageKey)
-    AsyncStorage.setItem(storageKey, 'true').catch(() => {
+    setStorageItem(storageKey, 'true').catch(() => {
       // Non-fatal: worst case the banner reappears next open.
     })
   }, [workspaceId])

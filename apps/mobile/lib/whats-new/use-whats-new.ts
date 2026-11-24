@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { setStorageItem } from '../storage'
 import { useGlobalSearchParams, useSegments } from "expo-router";
 import { useAuth } from "../../contexts/auth";
 import { api, createHttpClient } from "../api";
@@ -127,7 +128,7 @@ export function useWhatsNew() {
 
     const userId = user?.id;
     if (!userId) return;
-    void AsyncStorage.setItem(`${SEEN_KEY_PREFIX}${userId}`, release.version);
+    void setStorageItem(`${SEEN_KEY_PREFIX}${userId}`, release.version);
     void api
       .markAnnouncementSeen(createHttpClient(), release.version)
       .catch(() => {

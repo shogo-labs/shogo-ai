@@ -7,6 +7,7 @@
  * dock bounce on desktop, so it lives on this device only.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { setStorageItem } from '../storage'
 
 const STORAGE_KEY = 'shogo:announce-huddle-calls'
 
@@ -43,7 +44,7 @@ export async function setAnnounceHuddleCallsPreference(enabled: boolean): Promis
   cached = enabled
   notify()
   try {
-    await AsyncStorage.setItem(STORAGE_KEY, enabled ? 'true' : 'false')
+    await setStorageItem(STORAGE_KEY, enabled ? 'true' : 'false')
   } catch {
     // The choice then lasts until the app restarts.
   }

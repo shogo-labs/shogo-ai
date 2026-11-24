@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Pressable, Text, View } from 'react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { setStorageItem } from '@/lib/storage'
 import { Sparkles, X } from 'lucide-react-native'
 import { Spinner } from '@/components/ui/spinner'
 
@@ -50,7 +51,7 @@ function useDismissed(userId: string | undefined): { dismissed: boolean; dismiss
   const dismiss = useCallback(() => {
     setDismissed(true)
     if (!userId) return
-    AsyncStorage.setItem(STORAGE_KEY_PREFIX + userId, 'true').catch(() => {
+    setStorageItem(STORAGE_KEY_PREFIX + userId, 'true').catch(() => {
       // Non-fatal: worst case the banner reappears next open.
     })
   }, [userId])

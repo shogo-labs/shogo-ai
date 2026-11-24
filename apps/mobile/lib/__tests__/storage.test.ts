@@ -19,6 +19,21 @@ import { resolve } from 'node:path'
 const store = new Map<string, string>()
 /** Every value the real modules handed to `setItem`, in order. */
 const written: { key: string; value: unknown }[] = []
+/** What a refused write left for the next crash report to carry. */
+const breadcrumbs: { category?: string; level?: string; message?: string }[] = []
+
+mock.module('@sentry/react-native', () => {
+  const stub = {
+    init: () => {},
+    wrap: <T,>(component: T) => component,
+    captureException: () => 'stub-event-id',
+    captureMessage: () => 'stub-event-id',
+    addBreadcrumb: (b: { category?: string; level?: string; message?: string }) => {
+      breadcrumbs.push(b)
+    },
+  }
+  return { ...stub, default: stub }
+})
 
 mock.module('@react-native-async-storage/async-storage', () => ({
   default: {
@@ -57,6 +72,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   written.length = 0
+  breadcrumbs.length = 0
 })
 
 afterEach(async () => {
@@ -91,6 +107,20 @@ describe('setStorageItem — a non-string never reaches native', () => {
       expect(store.has('shogo:test:bad')).toBe(false)
     }
     expect(nonString()).toEqual([])
+  })
+
+  test('a refused write names its key and type for the next crash report', async () => {
+    // SHOGO-IOS-16 could not say which key or what type produced the NSNull:
+    // the event had no JS frames and no console breadcrumbs. The next one has to.
+    await storage.setStorageItem('shogo:test:named', undefined as unknown as string)
+    await storage.setStorageItem('shogo:test:num', 42 as unknown as string)
+
+    expect(breadcrumbs).toHaveLength(2)
+    for (const crumb of breadcrumbs) expect(crumb.category).toBe('storage')
+    expect(breadcrumbs[0]?.message).toContain('"shogo:test:named"')
+    expect(breadcrumbs[0]?.message).toContain('undefined')
+    expect(breadcrumbs[1]?.message).toContain('"shogo:test:num"')
+    expect(breadcrumbs[1]?.message).toContain('number')
   })
 })
 

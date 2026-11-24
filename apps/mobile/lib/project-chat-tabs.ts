@@ -10,6 +10,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { setStorageJson } from './storage'
 import type { ViewStyle } from 'react-native'
 
 export type TabsHydration =
@@ -118,10 +119,7 @@ export function useProjectChatTabs({
 
   useEffect(() => {
     if (!projectId || tabsHydration === 'loading') return
-    AsyncStorage.setItem(
-      chatTabsStorageKey(projectId),
-      JSON.stringify(openChatTabIds),
-    ).catch(() => {})
+    setStorageJson(chatTabsStorageKey(projectId), openChatTabIds).catch(() => {})
   }, [projectId, openChatTabIds, tabsHydration])
 
   useEffect(() => {

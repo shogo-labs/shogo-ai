@@ -76,6 +76,7 @@ import { usePersistedMessageIds } from "./use-persisted-message-ids"
 import { usageLimitNoticeFor } from "./usage-limit-notice"
 import { useAuthOptional, getAuthUserSnapshot } from "../../contexts/auth"
 import AsyncStorage from "@react-native-async-storage/async-storage"
+import { setStorageItem } from '@/lib/storage'
 import {
   extractTextContent,
   formatErrorMessage,
@@ -735,7 +736,7 @@ async function getStoredCollapsed(): Promise<boolean> {
 
 async function setStoredCollapsed(collapsed: boolean): Promise<void> {
   try {
-    await AsyncStorage.setItem(STORAGE_KEY_COLLAPSED, String(collapsed))
+    await setStorageItem(STORAGE_KEY_COLLAPSED, String(collapsed))
   } catch {
     // Silently ignore storage errors
   }
